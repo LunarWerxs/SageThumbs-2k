@@ -6,3 +6,5 @@
 # `rustup show`.
 [toolchain]
 channel = "stable-x86_64-pc-windows-msvc"
+# Travel with the repo so a fresh checkout (and CI) has the lint/format tools.
+components = ["clippy", "rustfmt"]

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build · clippy · test (windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc + clippy/rustfmt,
+      # which rustup installs on first cargo invocation. No setup action needed.
+      - name: Toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # Default (permissive) feature set only — the `rar` feature statically
+      # compiles RarLab's proprietary UnRAR C++ and is deliberately NOT built here.
+      - name: Build
+        run: cargo build --release
+
+      # Gates on clippy's deny-by-default correctness lints (the build fails if a
+      # new one appears). Style warnings are not yet a hard gate.
+      - name: Clippy
+        run: cargo clippy --release
+
+      # Library unit tests only. The tests/ integration suite needs a live
+      # registry/COM/desktop, and the codec differential tests need on-disk
+      # fixtures — both are environment-gated and don't run on a clean runner.
+      - name: Test
+        run: cargo test --release --lib
