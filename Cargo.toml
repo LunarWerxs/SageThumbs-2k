@@ -40,7 +40,7 @@ img-parts = "0.4"
 # NASM); default-features=false drops the duplicate `image` dep. MIT OR Apache-2.0.
 webp = { version = "0.3", default-features = false }
 # Pure-Rust SVG rasterizer (MIT/Apache) — a format Windows can't thumbnail.
-resvg = "0.45"
+resvg = "0.47"
 windows-registry = "0.6"
 windows-core = "0.62"
 windows-implement = "0.60"
@@ -51,7 +51,6 @@ windows-future = "0.3"
 # --- Ebook / comic-archive cover extraction (the DarkThumbs port) ---
 # All pure-Rust, MIT/Apache. zip stays deflate-only (miniz_oxide) to avoid C.
 zip = { version = "2", default-features = false, features = ["deflate"] }
-quick-xml = "0.36"
 base64 = "0.22"
 encoding_rs = "0.8"
 percent-encoding = "2"

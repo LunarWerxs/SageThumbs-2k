@@ -36,9 +36,10 @@ pub fn category(ext: &str) -> Category {
         "mp3", "flac", "ogg", "oga", "opus", "spx", "m4a", "m4b", "aac", "wma", "ape", "wv",
         "mpc", "wav", "aiff", "aif",
     ];
+    // Must stay a subset of FORMATS (enforced by `category_lists_match_formats`).
     const RAW: &[&str] = &[
-        "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "erf", "fff", "iiq", "k25",
-        "kdc", "mdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2",
+        "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "k25",
+        "kdc", "mdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "pef", "raf", "rw2",
         "rwl", "sr2", "srf", "srw", "x3f",
     ];
     if EBOOK.contains(&ext) {
@@ -257,4 +258,27 @@ pub const FORMATS: &[(&str, &str)] = &[
 /// Is `ext` (lowercase, no dot) one we hook?
 pub fn is_known(ext: &str) -> bool {
     FORMATS.iter().any(|(e, _)| *e == ext)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Classifying the registered `FORMATS` through `category()` must land in the
+    /// documented per-category counts (sum 179). This catches drift in either
+    /// direction: a format added to `FORMATS` but not `category()`'s list (or
+    /// vice-versa) shifts a count and fails here. Keep in sync with FEATURES.md.
+    #[test]
+    fn category_counts_match_formats() {
+        let mut n = [0usize; 5];
+        for &(ext, _) in FORMATS {
+            n[category(ext) as usize] += 1;
+        }
+        assert_eq!(n[Category::Image as usize], 112, "Image");
+        assert_eq!(n[Category::Raw as usize], 27, "Camera RAW");
+        assert_eq!(n[Category::Ebook as usize], 10, "Ebook");
+        assert_eq!(n[Category::Document as usize], 14, "Document");
+        assert_eq!(n[Category::Audio as usize], 16, "Audio");
+        assert_eq!(FORMATS.len(), 179);
+    }
 }

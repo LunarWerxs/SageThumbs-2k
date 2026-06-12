@@ -1,6 +1,6 @@
 /target
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock IS committed — this ships binaries, so builds must be reproducible.
 *.pdb
 *.msix
 *.pfx

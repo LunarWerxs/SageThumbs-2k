@@ -72,16 +72,18 @@ pub fn info(input: &str, json: bool) -> Result<String, String> {
         return Err(format!("cannot read {input}"));
     }
     if json {
-        let gps = i.gps.map(|(a, b)| format!("[{a},{b}]")).unwrap_or_else(|| "null".to_string());
-        Ok(format!(
-            "{{\"width\":{},\"height\":{},\"make\":{},\"model\":{},\"datetime\":{},\"gps\":{}}}",
-            i.width,
-            i.height,
-            json_str(&i.make),
-            json_str(&i.model),
-            json_str(&i.datetime),
-            gps
-        ))
+        // A malformed EXIF rational (0 denominator) can produce inf/NaN; drop it
+        // rather than emit `NaN`, which is not valid JSON.
+        let gps = i.gps.filter(|(a, b)| a.is_finite() && b.is_finite()).map(|(a, b)| [a, b]);
+        Ok(serde_json::json!({
+            "width": i.width,
+            "height": i.height,
+            "make": i.make,
+            "model": i.model,
+            "datetime": i.datetime,
+            "gps": gps,
+        })
+        .to_string())
     } else {
         let mut s = format!("{} x {} px", i.width, i.height);
         if let Some(m) = &i.make {
@@ -103,14 +105,17 @@ pub fn info(input: &str, json: bool) -> Result<String, String> {
 /// List every supported input extension (with category + description).
 pub fn list_formats(json: bool) -> String {
     if json {
-        let items: Vec<String> = formats::FORMATS
+        let items: Vec<_> = formats::FORMATS
             .iter()
             .map(|(ext, desc)| {
-                let cat = formats::category_label(formats::category(ext));
-                format!("{{\"ext\":\"{ext}\",\"category\":\"{cat}\",\"description\":{}}}", json_lit(desc))
+                serde_json::json!({
+                    "ext": ext,
+                    "category": formats::category_label(formats::category(ext)),
+                    "description": desc,
+                })
             })
             .collect();
-        format!("[{}]", items.join(","))
+        serde_json::Value::Array(items).to_string()
     } else {
         let mut s = format!("{} supported input formats:\n", formats::FORMATS.len());
         for (ext, desc) in formats::FORMATS {
@@ -118,30 +123,6 @@ pub fn list_formats(json: bool) -> String {
         }
         s
     }
-}
-
-/// JSON string literal for an `Option<String>` (null when None).
-fn json_str(o: &Option<String>) -> String {
-    o.as_deref().map(json_lit).unwrap_or_else(|| "null".to_string())
-}
-
-/// Minimal JSON string escaping.
-fn json_lit(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 #[cfg(test)]

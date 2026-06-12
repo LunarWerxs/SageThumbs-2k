@@ -205,6 +205,11 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
+// COM ABI export: the Windows loader calls this by name (it cannot observe a
+// Rust `unsafe` marker), and we null-check every pointer before use under the
+// panic guard. The clippy correctness lint that wants raw-pointer-deref exports
+// marked `unsafe` doesn't apply to a `#[no_mangle] extern` entry point.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "system" fn DllGetClassObject(
     rclsid: *const GUID,

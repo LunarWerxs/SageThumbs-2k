@@ -18,7 +18,7 @@ AppId={{B0A1C2D3-E4F5-4607-8899-AABBCCDDEEFF}
 AppName={#AppName}
 AppVersion={#AppVer}
 AppPublisher={#Publisher}
-AppPublisherURL=https://github.com/lunawerx/sagethumbs2k
+AppPublisherURL=https://github.com/LunarWerxs/SageThumbs-2k
 DefaultDirName={autopf}\SageThumbs2K
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -37,7 +37,7 @@ PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-Name: "full"; Description: "Full - all 144 formats (recommended)"
+Name: "full"; Description: "Full - all 179 formats (recommended)"
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
@@ -71,6 +71,6 @@ Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Options"; \
 
 [UninstallRun]
 ; Unregister before files are removed (our DllUnregisterServer also unhooks the
-; 144 formats and fires SHChangeNotify).
+; 179 formats and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregSt2k"
