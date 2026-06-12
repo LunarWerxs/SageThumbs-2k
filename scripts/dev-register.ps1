@@ -13,7 +13,7 @@ param(
     [switch]$Unregister,
     [switch]$Debug,   # set HKCU\Software\SageThumbs2K\Debug=1 for verbose logging
     # Artifacts live in a space-free target dir (see .cargo/config.toml).
-    [string]$Dll = (@("D:\st2k-target\debug\sagethumbs2k.dll", "$PSScriptRoot\..\target\debug\sagethumbs2k.dll") | Where-Object { Test-Path $_ } | Select-Object -First 1)
+    [string]$Dll = (@("$PSScriptRoot\..\target\debug\sagethumbs2k.dll", "D:\st2k-target\debug\sagethumbs2k.dll") | Where-Object { Test-Path $_ } | Select-Object -First 1)
 )
 
 $ErrorActionPreference = 'Stop'

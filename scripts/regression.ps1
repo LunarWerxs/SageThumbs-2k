@@ -8,7 +8,7 @@ param(
     [int]$Size = 96
 )
 $ErrorActionPreference = 'Continue'
-$st2k = @("D:\st2k-target\release\st2k.exe", "$PSScriptRoot\..\target\release\st2k.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+$st2k = @("$PSScriptRoot\..\target\release\st2k.exe", "D:\st2k-target\release\st2k.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $st2k) { throw "st2k.exe not built (cargo build --release --bin st2k)" }
 $magick = (Get-ChildItem 'C:\Program Files\ImageMagick*\magick.exe' -EA SilentlyContinue | Select-Object -First 1).FullName
 

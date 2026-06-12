@@ -15,7 +15,7 @@
 [CmdletBinding()]
 param(
     [switch]$Unregister,
-    [string]$ExternalLocation = (@("D:\st2k-target\release", "$PSScriptRoot\..\target\release") | Where-Object { Test-Path $_ } | Select-Object -First 1)
+    [string]$ExternalLocation = (@("$PSScriptRoot\..\target\release", "D:\st2k-target\release") | Where-Object { Test-Path $_ } | Select-Object -First 1)
 )
 
 $ErrorActionPreference = 'Stop'

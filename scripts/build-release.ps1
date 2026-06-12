@@ -20,7 +20,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$targetRel = @('D:\st2k-target\release', "$PSScriptRoot\..\target\release") | Where-Object { Test-Path $_ } | Select-Object -First 1
+$targetRel = @("$PSScriptRoot\..\target\release", 'D:\st2k-target\release') | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 # 1) Version from Cargo.toml -------------------------------------------------
 $ver = ([regex]::Match((Get-Content "$root\Cargo.toml" -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value

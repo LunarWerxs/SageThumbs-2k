@@ -13,7 +13,7 @@
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
-    [string]$BuildDir = (@('D:\st2k-target\release', "$PSScriptRoot\..\target\release") | Where-Object { Test-Path $_ } | Select-Object -First 1)
+    [string]$BuildDir = (@("$PSScriptRoot\..\target\release", 'D:\st2k-target\release') | Where-Object { Test-Path $_ } | Select-Object -First 1)
 )
 $ErrorActionPreference = 'Stop'
 $prog = Join-Path $env:ProgramFiles 'SageThumbs2K'

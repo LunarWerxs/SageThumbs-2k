@@ -16,7 +16,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $magick = (Get-ChildItem 'C:\Program Files\ImageMagick*\magick.exe' -EA SilentlyContinue | Select-Object -First 1).FullName
 if (-not $magick) { $magick = (Get-Command magick -EA SilentlyContinue).Source }
 if (-not $magick) { throw "Full ImageMagick not found (needed to generate samples)." }
-$st2k = @("D:\st2k-target\release\st2k.exe", "$PSScriptRoot\..\target\release\st2k.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+$st2k = @("$PSScriptRoot\..\target\release\st2k.exe", "D:\st2k-target\release\st2k.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
 # --- 1) A distinctive base image: corner color blocks (catch flips/mirrors),
