@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparse identity package for SageThumbs 2K.
+
+  Grants package identity to the unpackaged Win32 DLL/EXE (which live in the
+  external location passed at registration) so Windows 11 will surface the
+  IExplorerCommand verb in the modern context menu and load the thumbnail
+  provider via the COM surrogate. Register (dev) with:
+
+    Add-AppxPackage -Register packaging\AppxManifest.xml -ExternalLocation <dir-with-dll+exe>
+
+  (Developer Mode must be on; no signing/makeappx needed for loose registration.
+  A signed, packed .msix for distribution needs the Windows SDK — Phase 2/M7.)
+-->
+<Package
+  IgnorableNamespaces="uap uap3 uap10 rescap com desktop2 desktop4 desktop5"
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5">
+
+  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="0.2.0.0" ProcessorArchitecture="neutral" />
+
+  <Properties>
+    <DisplayName>SageThumbs 2K</DisplayName>
+    <PublisherDisplayName>SageThumbs 2K</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="SageThumbs2K" Executable="sagethumbs2k-app.exe"
+                 uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements AppListEntry="none" DisplayName="SageThumbs 2K"
+                          Description="Modern thumbnails and context menu for image files"
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+
+        <!-- COM server: both coclasses hosted out-of-process via the surrogate.
+             The CLSIDs match guids.rs. -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <!-- IExplorerCommand context-menu verb, activated out-of-proc in
+                 dllhost via the generic surrogate (PowerToys' PowerRename uses
+                 exactly this). The thumbnail provider is NOT packaged: it is
+                 registered classically via DllRegisterServer (regsvr32, elevated),
+                 the proven path that doesn't need package identity. -->
+            <com:SurrogateServer DisplayName="SageThumbs 2K Context Menu">
+              <com:Class Id="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" Path="sagethumbs2k.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+
+        <!-- (Thumbnails are handled by the classic regsvr32 registration, not
+             the package — see register.rs.) -->
+
+        <!-- Windows 11 modern context-menu verb. -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type=".jpg">
+              <desktop5:Verb Id="SageThumbs2K" Clsid="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type=".jpeg">
+              <desktop5:Verb Id="SageThumbs2K" Clsid="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type=".png">
+              <desktop5:Verb Id="SageThumbs2K" Clsid="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type=".gif">
+              <desktop5:Verb Id="SageThumbs2K" Clsid="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type=".bmp">
+              <desktop5:Verb Id="SageThumbs2K" Clsid="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type=".webp">
+              <desktop5:Verb Id="SageThumbs2K" Clsid="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

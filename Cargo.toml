@@ -1,0 +1,126 @@
+[package]
+name = "sagethumbs2k"
+version = "0.2.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Modern Rust thumbnail + context-menu shell extension (SageThumbs 2K)"
+repository = "https://github.com/LunarWerxs/SageThumbs-2k"
+rust-version = "1.80"
+
+[lib]
+# cdylib = the shipped DLL; rlib lets integration tests link the crate.
+crate-type = ["cdylib", "rlib"]
+
+# Stub EXE so the sparse package has an Application entry (see src/bin/app.rs).
+[[bin]]
+name = "sagethumbs2k-app"
+path = "src/bin/app.rs"
+
+# `st2k` — the command-line / AI-agent tool (console subsystem).
+[[bin]]
+name = "st2k"
+path = "src/bin/cli.rs"
+
+[dependencies]
+# Phase 1 only DECODES, so disable default features (which pull the heavy AVIF
+# encoder rav1e) and enable just the decoders we want. Encoders for the
+# convert-to verbs come in Phase-2/M6; AVIF/HEIC decode comes via WIC in M2.
+image = { version = "0.25", default-features = false, features = [
+    "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
+] }
+kamadak-exif = "0.6"
+# JSON for the `st2k --mcp` MCP server (JSON-RPC 2.0 over stdio). Pure-Rust,
+# MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from
+# the shell-extension DLL (which never touches the mcp module).
+serde_json = "1"
+# Lossless metadata strip (rewrite JPEG segments / PNG chunks, no pixel re-encode).
+# Pure-Rust, MIT OR Apache-2.0. Adds `bytes` as the only new transitive crate.
+img-parts = "0.4"
+# Lossy WebP encode (image-webp only does lossless). libwebp via cc (no cmake/
+# NASM); default-features=false drops the duplicate `image` dep. MIT OR Apache-2.0.
+webp = { version = "0.3", default-features = false }
+# Pure-Rust SVG rasterizer (MIT/Apache) — a format Windows can't thumbnail.
+resvg = "0.45"
+windows-registry = "0.6"
+windows-core = "0.62"
+windows-implement = "0.60"
+# WinRT async plumbing (IAsyncOperation/IAsyncAction/AsyncStatus) for the OS PDF
+# renderer in pdf.rs. Same version `windows` 0.62 pulls in transitively.
+windows-future = "0.3"
+
+# --- Ebook / comic-archive cover extraction (the DarkThumbs port) ---
+# All pure-Rust, MIT/Apache. zip stays deflate-only (miniz_oxide) to avoid C.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.36"
+base64 = "0.22"
+encoding_rs = "0.8"
+percent-encoding = "2"
+# 7-Zip (cb7) — pure-Rust; keep zstd/brotli/lz4 OFF so it stays C-free.
+sevenz-rust2 = { version = "0.13", default-features = false }
+# Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
+# Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
+lofty = "0.22"
+# RAR (cbr) is behind the `rar` feature: it statically compiles RarLab's UnRAR
+# C++ (proprietary "UnRAR license" — decompression-only use is permitted). A
+# clean, 100%-permissive build simply omits the feature.
+unrar = { version = "0.5", optional = true }
+tempfile = { version = "3", optional = true }
+
+[features]
+# `rar` is opt-in during the release build; left off by default while iterating
+# (it compiles RarLab's UnRAR C++). Enable with --features rar.
+default = []
+rar = ["dep:unrar", "dep:tempfile"]
+
+[build-dependencies]
+# Embeds the app manifest (Common-Controls v6 + DPI awareness) into the EXE so
+# the Options dialog renders with the native Win11 control theme.
+embed-manifest = "1.4"
+# Build-time only: parse locales/*.toml into a static table. No runtime TOML
+# parser ships in the DLL — translations are baked in as &'static str.
+toml = "0.8"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Com_Urlmon", # URLDownloadToFileW for remote banner/ad images
+    "Win32_Networking_WinInet", # InternetOpenUrlW + INTERNET_FLAG_RELOAD: cache-free ad-manifest fetch
+    "Win32_System_LibraryLoader",
+    "Win32_Storage_FileSystem", # Get/SetFileAttributesW for the folder-icon verb
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Imaging",
+    "Win32_Globalization",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Input_KeyboardAndMouse",
+    # WinRT: the OS PDF rasterizer (Windows.Data.Pdf) — PDF first-page thumbnails
+    # with zero bundled bytes (no pdfium.dll, no Ghostscript). Windows 10+.
+    "Data_Pdf",
+    "Storage_Streams",
+    "Foundation",
+    # WinRT OCR (Windows.Media.Ocr) — image → text, in-box, zero bundled bytes.
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Globalization",
+]
+
+# Phase 1 builds on the default x86_64-pc-windows-gnu toolchain.
+# Phase 2 (sparse-package signing) switches the default target to ...-msvc.
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

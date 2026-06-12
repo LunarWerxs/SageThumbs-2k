@@ -1,0 +1,8 @@
+# Pin the MSVC host toolchain so a fresh checkout builds identically to the dev
+# machine. MSVC was previously enforced only by a machine-global `rustup override`
+# (not committed) — the system default host is ...-gnu, and the repo's build/install
+# scripts plus the .cargo/config.toml custom target-dir assume the MSVC layout.
+# This file travels with the repo so the pin can't silently fall off. Verify with
+# `rustup show`.
+[toolchain]
+channel = "stable-x86_64-pc-windows-msvc"
