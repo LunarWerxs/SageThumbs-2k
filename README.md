@@ -165,7 +165,7 @@ It's a small [Cloudflare Worker](packaging/analytics/), the beacon is visible in
 
 ## 📜 License
 
-**[PolyForm Noncommercial License 1.0.0](LICENSE.md)** — free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license** ([open an issue](https://github.com/LunarWerxs/SageThumbs-2k/issues) to arrange one). © 2026 Lunarwerx.
+**[PolyForm Noncommercial License 1.0.0](.github/LICENSE.md)** — free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license** ([open an issue](https://github.com/LunarWerxs/SageThumbs-2k/issues) to arrange one). © 2026 Lunarwerx.
 
 SageThumbs 2K is a **clean-room rewrite** — **not** a derivative of the GPLv2 C++ original, and it uses **no GFL**. Every decoder is pure-Rust or an OS codec (RAR/CBR comics use the pure-Rust [`rars`](https://crates.io/crates/rars) crate — no proprietary UnRAR), so the project's own code is entirely original and its dependencies are permissively licensed — which is what lets us license it as we choose. The optional bundled ImageMagick (for the exotic long tail) ships under its own permissive license and runs only as a sandboxed subprocess.
 

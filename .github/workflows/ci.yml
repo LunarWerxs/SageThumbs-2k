@@ -82,4 +82,4 @@ jobs:
           # Checks the committed Cargo.lock (advisories + licenses) against
           # deny.toml's allowlist over the full (now fully-permissive) graph.
           command: check
-          arguments: --locked
+          arguments: --locked --config .github/deny.toml

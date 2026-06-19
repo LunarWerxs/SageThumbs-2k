@@ -2,7 +2,8 @@
 name = "sagethumbs2k"
 version = "0.4.6"
 edition = "2021"
-license-file = "LICENSE.md"
+build = "build/build.rs"
+license-file = ".github/LICENSE.md"
 publish = false                     # a Windows shell-extension app — never goes to crates.io
 description = "Modern Rust thumbnail + context-menu shell extension (SageThumbs 2K)"
 repository = "https://github.com/LunarWerxs/SageThumbs-2k"
