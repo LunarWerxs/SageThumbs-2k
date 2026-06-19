@@ -1,0 +1,782 @@
+//! Shared Win32 primitives for the SageThumbs 2K app binary.
+//!
+//! Low-level, reused-across-dialogs helpers: control creation + font, the
+//! translated-string shorthand, wide-string conversion, the app icon / artwork
+//! loaders, button & combo & edit & folder-picker & clipboard helpers, the
+//! `http(s)`-only `open_url` guard, and the small Win32 const/style bits that the
+//! `windows` metadata doesn't surface.
+
+use core::ffi::c_void;
+use std::os::windows::ffi::OsStrExt;
+use std::sync::OnceLock;
+
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    CreateFontIndirectW, DeleteObject, GetDC, GetTextExtentPoint32W, GetStockObject,
+    ReleaseDC, SelectObject, DEFAULT_GUI_FONT, HBITMAP, HBRUSH, HFONT, HGDIOBJ,
+};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::WindowsProgramming::MulDiv;
+use windows::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
+use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::*;
+
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+use windows::Win32::UI::Shell::{
+    FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
+    SHCreateItemFromParsingName, SHGetKnownFolderPath, FOLDERID_Desktop, FOS_FORCEFILESYSTEM,
+    FOS_PICKFOLDERS, KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
+};
+
+use sagethumbs2k::i18n;
+
+/// Shorthand for a translated UI string in the active language.
+pub(crate) fn t(key: &str) -> &'static str {
+    i18n::t(key)
+}
+
+// ---- Control IDs (shared across every dialog) --------------------------
+pub(crate) const IDOK: i32 = 1;
+pub(crate) const IDCANCEL: i32 = 2;
+
+// --- Branding (edit these / swap the assets to rebrand) -----------------
+pub(crate) const URL_PARENT: &str = "https://lunarwerx.com";
+pub(crate) const URL_PRODUCT: &str = "https://connections.icu";
+pub(crate) const URL_GITHUB: &str = "https://github.com/LunarWerxs/SageThumbs-2k";
+/// The About box's LunarWerx wordmark links here.
+pub(crate) const URL_COMPANIES: &str = "https://lunarwerx.com/#companies";
+
+/// Window/taskbar icon (16/32/48). Embedded; the EXE-file icon in Explorer comes
+/// from the installer's shortcut. A `app.ico` next to the EXE overrides at runtime.
+const APP_ICO: &[u8] = include_bytes!("../../../assets/app-win.ico");
+
+pub(crate) fn wide(s: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// Read a WinInet request handle to EOF, capped at `max_bytes`. Returns the FULL
+/// body, or `None` on a read error or an over-cap response — never a truncated
+/// body. Both remote clients (the sponsor GET in `sponsors.rs` and the screenshot POST in
+/// `screenshot/upload.rs`) parse/decode the result, so partial bytes must not be
+/// handed back looking like success. Shared so the read loop and the over-cap
+/// policy live in exactly one place (the POST path used to return the truncated
+/// body on over-cap — a corrupt URL; this fixes it for both).
+pub(crate) unsafe fn wininet_drain(req: *mut c_void, max_bytes: usize) -> Option<Vec<u8>> {
+    use windows::Win32::Networking::WinInet::InternetReadFile;
+    let mut data = Vec::new();
+    let mut buf = [0u8; 16384];
+    loop {
+        let mut read = 0u32;
+        if InternetReadFile(req, buf.as_mut_ptr() as *mut c_void, buf.len() as u32, &mut read)
+            .is_err()
+        {
+            return None; // read error → response is incomplete, don't trust it
+        }
+        if read == 0 {
+            break; // end of stream
+        }
+        data.extend_from_slice(&buf[..read as usize]);
+        if data.len() > max_bytes {
+            return None; // oversized / never-ending → reject (no truncated bodies)
+        }
+    }
+    Some(data)
+}
+
+/// The system message font (Segoe UI / Segoe UI Variable on Win11), cached.
+/// Falls back to the stock GUI font if the metrics query fails.
+pub(crate) unsafe fn gui_font() -> HFONT {
+    static FONT: OnceLock<usize> = OnceLock::new();
+    let p = *FONT.get_or_init(|| {
+        let mut ncm = NONCLIENTMETRICSW {
+            cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+            ..Default::default()
+        };
+        let hf = if SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            ncm.cbSize,
+            Some(&mut ncm as *mut _ as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok()
+        {
+            CreateFontIndirectW(&ncm.lfMessageFont)
+        } else {
+            HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
+        };
+        hf.0 as usize
+    });
+    HFONT(p as *mut c_void)
+}
+
+// ---- DPI scaling --------------------------------------------------------
+// The app declares PerMonitorV2 but lays out in 96-DPI pixels. Every layout
+// coordinate/size is routed through `dpi_scale`, so a non-96 monitor gets a
+// proportionally larger layout. SAFETY PROPERTY: at 96 DPI the factor is 1.0
+// (`MulDiv(v, 96, 96) == v`), so a standard display is byte-identical to before.
+
+/// Scale a 96-DPI design pixel value `v` to an explicit `dpi`. `MulDiv(v, dpi,
+/// 96)` — exactly the identity when dpi == 96, which is the safety property that
+/// keeps a standard display byte-identical.
+pub(crate) fn dpi_scale_dpi(v: i32, dpi: i32) -> i32 {
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    unsafe { MulDiv(v, dpi, 96) }
+}
+
+/// Scale a 96-DPI design pixel value `v` to the window's current DPI.
+pub(crate) fn dpi_scale(hwnd: HWND, v: i32) -> i32 {
+    let dpi = unsafe { GetDpiForWindow(hwnd) } as i32; // 0 on a bad HWND → treated as 96
+    dpi_scale_dpi(v, dpi)
+}
+
+/// Create a DPI-aware GUI font for `hwnd`: the system message font with its
+/// height scaled to the window's DPI (via SystemParametersInfoForDpi, which
+/// returns the metrics already sized for that DPI). Cached per DPI. Falls back
+/// to the plain 96-DPI [`gui_font`] if the query fails. At 96 DPI this matches
+/// `gui_font` (identity), keeping a standard display unchanged.
+pub(crate) unsafe fn gui_font_for(hwnd: HWND) -> HFONT {
+    let dpi = GetDpiForWindow(hwnd);
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    if dpi == 96 {
+        return gui_font();
+    }
+    // Cache one scaled font per DPI value (handful of distinct DPIs in practice).
+    static FONTS: OnceLock<std::sync::Mutex<Vec<(u32, usize)>>> = OnceLock::new();
+    let cache = FONTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(&(_, p)) = guard.iter().find(|(d, _)| *d == dpi) {
+        return HFONT(p as *mut c_void);
+    }
+    let mut ncm = NONCLIENTMETRICSW {
+        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    let hf = if SystemParametersInfoForDpi(
+        SPI_GETNONCLIENTMETRICS.0,
+        ncm.cbSize,
+        Some(&mut ncm as *mut _ as *mut c_void),
+        0,
+        dpi,
+    )
+    .is_ok()
+    {
+        CreateFontIndirectW(&ncm.lfMessageFont)
+    } else {
+        gui_font() // fall back to the unscaled font
+    };
+    guard.push((dpi, hf.0 as usize));
+    hf
+}
+
+/// A slightly smaller, semibold variant of the GUI font for the owner-drawn
+/// section headers — gives them a typographic step-down from the body labels.
+/// Cached per DPI; falls back to [`gui_font_for`] if the metrics query fails.
+pub(crate) unsafe fn gui_font_header(hwnd: HWND) -> HFONT {
+    let dpi = GetDpiForWindow(hwnd);
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    static FONTS: OnceLock<std::sync::Mutex<Vec<(u32, usize)>>> = OnceLock::new();
+    let cache = FONTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(&(_, p)) = guard.iter().find(|(d, _)| *d == dpi) {
+        return HFONT(p as *mut c_void);
+    }
+    let mut ncm = NONCLIENTMETRICSW {
+        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    let hf = if SystemParametersInfoForDpi(
+        SPI_GETNONCLIENTMETRICS.0,
+        ncm.cbSize,
+        Some(&mut ncm as *mut _ as *mut c_void),
+        0,
+        dpi,
+    )
+    .is_ok()
+    {
+        let mut lf = ncm.lfMessageFont;
+        // lfWidth = 0 lets GDI choose the natural width for the height — otherwise a
+        // non-zero width carried over while we shrink the height distorts the aspect
+        // ("squished") and a synthesized semibold compounds it. Keep the message
+        // font's own weight, just a touch smaller.
+        lf.lfWidth = 0;
+        lf.lfHeight = MulDiv(lf.lfHeight, 19, 20); // ~5% smaller than body
+        CreateFontIndirectW(&lf)
+    } else {
+        gui_font_for(hwnd)
+    };
+    guard.push((dpi, hf.0 as usize));
+    hf
+}
+
+/// Minimal WM_DPICHANGED handler shared by every top-level wndproc: move/resize
+/// the window to the suggested rect Windows hands us in `lparam`. The controls
+/// are laid out once at WM_CREATE for the creation DPI; this keeps the frame
+/// correct when the window is dragged across monitors with different DPIs.
+pub(crate) unsafe fn wm_dpichanged(hwnd: HWND, lparam: LPARAM) {
+    if lparam.0 == 0 {
+        return;
+    }
+    let r = &*(lparam.0 as *const RECT);
+    let _ = SetWindowPos(
+        hwnd,
+        None,
+        r.left,
+        r.top,
+        r.right - r.left,
+        r.bottom - r.top,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+/// Register a window class, create the dialog, apply dark mode, show it, and run
+/// a message pump. Collapses the near-identical boilerplate every dialog builder
+/// repeated. `w`/`h` are 96-DPI design pixels (scaled to the creating monitor's
+/// DPI). Returns the created HWND once the pump exits (for the non-modal case) /
+/// once the modal popup closes.
+///
+/// `modal`:
+///  * `None` — a top-level dialog (CW_USEDEFAULT position, app icon, owns the
+///    thread's pump until WM_QUIT). Used for the Convert / Files-to-folder /
+///    Tags-to-folders windows.
+///  * `Some(owner)` — a modal popup centered over `owner`: disables `owner`,
+///    pumps until the popup is destroyed (no WM_QUIT, so the parent dialog's own
+///    pump survives), then re-enables `owner`. Used for the per-format Settings…
+///    popup.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn run_dialog(
+    class: PCWSTR,
+    wndproc: WNDPROC,
+    title: &str,
+    w: i32,
+    h: i32,
+    modal: Option<HWND>,
+) -> Option<HWND> {
+    let hinst: HINSTANCE = GetModuleHandleW(None).ok()?.into();
+    let dark = crate::dark::is_dark();
+    let wc = WNDCLASSW {
+        lpfnWndProc: wndproc,
+        hInstance: hinst,
+        lpszClassName: class,
+        // A top-level dialog carries the app icon + arrow cursor; the modal popup
+        // inherits its owner's icon (the original popup set neither).
+        hIcon: if modal.is_none() { app_icon().unwrap_or_default() } else { Default::default() },
+        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+        hbrBackground: if dark { crate::dark::dark_bg_brush() } else { HBRUSH(16isize as *mut c_void) },
+        ..Default::default()
+    };
+    RegisterClassW(&wc); // idempotent: re-register returns 0 (already registered) — fine
+
+    // Geometry: design pixels scaled to the relevant DPI. The owner's DPI for a
+    // modal popup; the primary monitor's DPI otherwise (a top-level dialog opens
+    // at CW_USEDEFAULT, so we use the system DPI as the creation DPI).
+    let dpi_ref = modal.unwrap_or_default();
+    let creation_dpi = if dpi_ref.0.is_null() { dpi_for_system() } else { GetDpiForWindow(dpi_ref) as i32 };
+    let (sw, sh) = (dpi_scale_dpi(w, creation_dpi), dpi_scale_dpi(h, creation_dpi));
+
+    let (ex_style, style, x, y, parent) = match modal {
+        None => (
+            WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            None,
+        ),
+        Some(owner) => {
+            // Center over the owner.
+            let mut orc = RECT::default();
+            let _ = GetWindowRect(owner, &mut orc);
+            let px = orc.left + ((orc.right - orc.left) - sw) / 2;
+            let py = orc.top + ((orc.bottom - orc.top) - sh) / 2;
+            (WS_EX_DLGMODALFRAME, WS_POPUP | WS_CAPTION | WS_SYSMENU, px, py, Some(owner))
+        }
+    };
+
+    let title_w = wide(title);
+    let hwnd = CreateWindowExW(
+        ex_style,
+        class,
+        PCWSTR(title_w.as_ptr()),
+        style,
+        x,
+        y,
+        sw,
+        sh,
+        parent,
+        None,
+        Some(hinst),
+        None,
+    )
+    .ok()?;
+
+    if dark {
+        crate::dark::dark_control(hwnd, w!("DarkMode_Explorer"));
+        crate::dark::dark_titlebar(hwnd);
+    }
+
+    match modal {
+        None => {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            pump_until_quit(hwnd);
+        }
+        Some(owner) => {
+            let _ = EnableWindow(owner, false);
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            pump_until_closed(hwnd);
+            let _ = EnableWindow(owner, true);
+        }
+    }
+    Some(hwnd)
+}
+
+/// The primary monitor's effective DPI (for a CW_USEDEFAULT top-level dialog,
+/// which has no HWND yet to query). Falls back to 96.
+pub(crate) fn dpi_for_system() -> i32 {
+    unsafe {
+        let dc = GetDC(None);
+        let dpi = windows::Win32::Graphics::Gdi::GetDeviceCaps(
+            Some(dc),
+            windows::Win32::Graphics::Gdi::LOGPIXELSX,
+        );
+        ReleaseDC(None, dc);
+        if dpi == 0 { 96 } else { dpi }
+    }
+}
+
+/// Standard top-level pump: dialog-key translation + dispatch until WM_QUIT.
+unsafe fn pump_until_quit(hwnd: HWND) {
+    let mut msg = MSG::default();
+    loop {
+        let r = GetMessageW(&mut msg, None, 0, 0).0;
+        if r == 0 || r == -1 {
+            break;
+        }
+        if !IsDialogMessageW(hwnd, &msg).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// Modal pump: runs until `hwnd` destroys itself (the popup uses no
+/// PostQuitMessage, which would otherwise kill the parent dialog's loop).
+unsafe fn pump_until_closed(hwnd: HWND) {
+    let mut msg = MSG::default();
+    while IsWindow(Some(hwnd)).as_bool() {
+        let r = GetMessageW(&mut msg, None, 0, 0).0;
+        if r == 0 || r == -1 {
+            break;
+        }
+        if !IsDialogMessageW(hwnd, &msg).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// Create a child control, set the GUI font, return its HWND. `x/y/cw/ch` are
+/// 96-DPI design pixels — routed through [`dpi_scale`] for the parent's DPI, so
+/// at 96 DPI the geometry is unchanged (identity).
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn ctl(
+    parent: HWND,
+    class: PCWSTR,
+    text: &str,
+    style: WINDOW_STYLE,
+    x: i32,
+    y: i32,
+    cw: i32,
+    ch: i32,
+    id: i32,
+    hinst: HINSTANCE,
+) -> HWND {
+    let (x, y, cw, ch) = (
+        dpi_scale(parent, x),
+        dpi_scale(parent, y),
+        dpi_scale(parent, cw),
+        dpi_scale(parent, ch),
+    );
+    let t = wide(text);
+    let h = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        class,
+        PCWSTR(t.as_ptr()),
+        // WS_CLIPSIBLINGS so a control can't repaint over a higher-z-order sibling
+        // (the Settings dialog's scroll mask relies on this; harmless elsewhere).
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
+        x,
+        y,
+        cw,
+        ch,
+        Some(parent),
+        Some(HMENU(id as usize as *mut c_void)),
+        Some(hinst),
+        None,
+    )
+    .expect("create control");
+    SendMessageW(h, WM_SETFONT, Some(WPARAM(gui_font_for(parent).0 as usize)), Some(LPARAM(1)));
+    if crate::dark::is_dark() {
+        // Edit boxes use the dark common-file-dialog style; everything else the
+        // dark Explorer style (themed checkbox glyphs, scrollbars, list rows).
+        let theme = if class.0 == EDIT.0 {
+            w!("DarkMode_CFD")
+        } else {
+            w!("DarkMode_Explorer")
+        };
+        crate::dark::dark_control(h, theme);
+    }
+    h
+}
+
+pub(crate) const STATIC: PCWSTR = w!("STATIC");
+pub(crate) const BUTTON: PCWSTR = w!("BUTTON");
+pub(crate) const EDIT: PCWSTR = w!("EDIT");
+pub(crate) const COMBOBOX: PCWSTR = w!("COMBOBOX");
+pub(crate) const SYSLINK: PCWSTR = w!("SysLink");
+
+// ---- Layout cursor ------------------------------------------------------
+// A tiny row-cursor for the form-style dialogs: a left margin, an indent for
+// nested rows, a label column, an edit column, and a row pitch. Values are
+// 96-DPI DESIGN pixels — `ctl()` scales them to the live DPI, so the cursor and
+// item #1's DPI seam are one and the same (no separate scaling here). The cursor
+// reproduces a section's exact original geometry (so a 96-DPI layout is
+// byte-identical), it just removes the hand-copied per-row arithmetic.
+
+pub(crate) const MARGIN: i32 = 16; // left edge of group labels
+pub(crate) const INDENT: i32 = 26; // left edge of indented (in-group) controls
+pub(crate) const LABEL_W: i32 = 190; // label column width (settings limits rows)
+pub(crate) const EDIT_X: i32 = 224; // left edge of the edit/value column (settings)
+pub(crate) const BTN_H: i32 = 28; // standard pushbutton height
+
+/// A tidy home for the hand-rolled Win32 message/style constants the `windows`
+/// metadata doesn't surface. Re-exported below, so callers still reference them
+/// as `crate::win::SS_BITMAP` etc. — gathering them here is purely organizational
+/// (no behavior change).
+pub(crate) mod winshim {
+    // STATIC control styles.
+    pub(crate) const SS_CENTER: u32 = 0x0000_0001;
+    pub(crate) const SS_OWNERDRAW: u32 = 0x0000_000D;
+    pub(crate) const SS_BITMAP: u32 = 0x0000_000E;
+    pub(crate) const SS_NOTIFY: u32 = 0x0000_0100;
+    /// Pin the static to its created size and fit the image to it, instead of the
+    /// default (the static grows to the image — which let oversized remote sponsor
+    /// banners cover the footer buttons).
+    pub(crate) const SS_REALSIZECONTROL: u32 = 0x0000_0040;
+
+    // Tooltip-window style bits.
+    pub(crate) const TTS_ALWAYSTIP: u32 = 0x01;
+    pub(crate) const TTS_NOPREFIX: u32 = 0x02;
+
+    // Button control messages (CheckDlgButton/IsDlgButtonChecked aren't in this
+    // windows-rs metadata, so drive the BUTTON control directly) + result.
+    pub(crate) const BM_GETCHECK_MSG: u32 = 0x00F0;
+    pub(crate) const BM_SETCHECK_MSG: u32 = 0x00F1;
+    pub(crate) const BST_CHECKED: isize = 1;
+
+    /// Edit-control "select text" message.
+    pub(crate) const EM_SETSEL: u32 = 0x00B1;
+
+    // ListView checkbox state-image bits — INDEXTOSTATEIMAGEMASK(2 / 1).
+    pub(crate) const CHECKED: u32 = 0x2000;
+    pub(crate) const UNCHECKED: u32 = 0x1000;
+}
+pub(crate) use winshim::*;
+
+pub(crate) const fn make_lparam(low: i32, high: i32) -> isize {
+    ((low & 0xFFFF) | (high << 16)) as isize
+}
+
+/// Open a URL in the default browser (sponsor links + the remote sponsor banner).
+/// Refuses anything that isn't `http(s)://` so a compromised sponsor manifest can't
+/// route us to `file:`, a UNC path, or a custom protocol handler.
+pub(crate) unsafe fn open_url(url: &str) {
+    if !crate::sponsors::is_web_url(url) {
+        return;
+    }
+    let u = wide(url);
+    let _ = ShellExecuteW(None, w!("open"), PCWSTR(u.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+}
+
+/// Read a DLL-handed list file (one path per line) into a Vec, trimming each
+/// line and dropping blanks, then deleting the temp list file. Shared by the
+/// three `--xxx <listfile>` dialog modes (Convert, Files-to-folder,
+/// Tags-to-folders), which all consumed it identically.
+pub(crate) fn read_listfile(path: &str) -> Vec<String> {
+    let files: Vec<String> = std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let _ = std::fs::remove_file(path);
+    files
+}
+
+/// A NUL-terminated wide buffer (e.g. a SysLink's szUrl) as a String.
+pub(crate) fn wstr_to_string(w: &[u16]) -> String {
+    let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());
+    String::from_utf16_lossy(&w[..end])
+}
+
+/// Decode logo/banner artwork to an HBITMAP sized to `w`x`h`. Prefers a file of
+/// `override_name` next to the EXE (user-swappable) and falls back to the
+/// embedded `default_png`.
+pub(crate) unsafe fn load_art(default_png: &[u8], override_name: &str, w: u32, h: u32) -> Option<HBITMAP> {
+    let from_file = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(override_name)))
+        .and_then(|f| std::fs::read(f).ok());
+    let data = from_file.as_deref().unwrap_or(default_png);
+    sagethumbs2k::app_image::image_to_hbitmap_sized(data, w, h).map(|h| HBITMAP(h as *mut c_void))
+}
+
+/// Load the app icon for the title bar + taskbar. Prefers an `app.ico` next to
+/// the EXE (swappable), else the embedded icon written to a temp file (LoadImageW
+/// needs a path). None if unavailable.
+///
+/// Cached in a `OnceLock` like [`gui_font`]: every dialog asks for the icon at
+/// creation, so loading it once avoids leaking a fresh HICON (and rewriting the
+/// temp file) on every call. 0 in the slot means "tried and failed".
+pub(crate) unsafe fn app_icon() -> Option<HICON> {
+    static ICON: OnceLock<usize> = OnceLock::new();
+    let p = *ICON.get_or_init(|| {
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("app.ico")))
+            .filter(|p| p.exists());
+        let path = beside.unwrap_or_else(|| {
+            let mut p = std::env::temp_dir();
+            p.push("sagethumbs2k.ico");
+            let _ = std::fs::write(&p, APP_ICO);
+            p
+        });
+        let w = wide(&path.to_string_lossy());
+        match LoadImageW(None, PCWSTR(w.as_ptr()), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE) {
+            Ok(h) => h.0 as usize,
+            Err(_) => 0,
+        }
+    });
+    (p != 0).then_some(HICON(p as *mut c_void))
+}
+
+/// Set a static control's bitmap, freeing whatever bitmap it held before.
+pub(crate) unsafe fn set_static_bitmap(ctl: HWND, hbmp: HBITMAP) {
+    let old = SendMessageW(ctl, STM_SETIMAGE, Some(WPARAM(IMAGE_BITMAP.0 as usize)), Some(LPARAM(hbmp.0 as isize)));
+    if old.0 != 0 {
+        let _ = DeleteObject(HGDIOBJ(old.0 as *mut c_void));
+    }
+}
+
+/// Pixel width of `s` rendered in the GUI font (for centering controls).
+pub(crate) unsafe fn text_width(s: &str) -> i32 {
+    let hdc = GetDC(None);
+    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
+    let w = wide(s);
+    let n = w.len().saturating_sub(1);
+    let mut sz = windows::Win32::Foundation::SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &w[..n], &mut sz);
+    SelectObject(hdc, old);
+    ReleaseDC(None, hdc);
+    sz.cx
+}
+
+/// Show a simple warning message box owned by the dialog.
+pub(crate) unsafe fn message_box(hwnd: HWND, text: &str, caption: &str) {
+    let t = wide(text);
+    let c = wide(caption);
+    MessageBoxW(Some(hwnd), PCWSTR(t.as_ptr()), PCWSTR(c.as_ptr()), MB_OK | MB_ICONWARNING);
+}
+
+// ---- Small control helpers ---------------------------------------------
+
+pub(crate) unsafe fn check(hwnd: HWND, id: i32, on: bool) {
+    if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+        SendMessageW(h, BM_SETCHECK_MSG, Some(WPARAM(on as usize)), Some(LPARAM(0)));
+    }
+}
+pub(crate) unsafe fn checked(hwnd: HWND, id: i32) -> bool {
+    match GetDlgItem(Some(hwnd), id) {
+        Ok(h) => SendMessageW(h, BM_GETCHECK_MSG, None, None).0 == BST_CHECKED,
+        Err(_) => false,
+    }
+}
+
+pub(crate) unsafe fn combo_sel(hwnd: HWND, id: i32) -> usize {
+    GetDlgItem(Some(hwnd), id)
+        .map(|c| SendMessageW(c, CB_GETCURSEL, None, None).0.max(0) as usize)
+        .unwrap_or(0)
+}
+
+pub(crate) unsafe fn set_edit_text(hwnd: HWND, id: i32, text: &str) {
+    if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+        let w = wide(text);
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+    }
+}
+
+pub(crate) unsafe fn get_edit_text(hwnd: HWND, id: i32) -> String {
+    let Ok(h) = GetDlgItem(Some(hwnd), id) else {
+        return String::new();
+    };
+    let n = GetWindowTextLengthW(h);
+    if n <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; n as usize + 1];
+    let got = GetWindowTextW(h, &mut buf) as usize;
+    String::from_utf16_lossy(&buf[..got])
+}
+
+/// The current user's Desktop folder (the `Desktop` known folder — follows a moved/
+/// redirected Desktop, unlike a hardcoded `%USERPROFILE%\Desktop`). Empty on failure.
+pub(crate) unsafe fn desktop_dir() -> String {
+    match SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None) {
+        Ok(pw) => {
+            let s = pw.to_string().unwrap_or_default();
+            CoTaskMemFree(Some(pw.0 as *const c_void));
+            s
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// Folder picker via IFileOpenDialog (FOS_PICKFOLDERS).
+pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    let opts = dlg.GetOptions().ok()?;
+    dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).ok()?;
+    dlg.Show(Some(owner)).ok()?;
+    let item: IShellItem = dlg.GetResult().ok()?;
+    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    s
+}
+
+/// PNG "Save as" dialog via IFileSaveDialog. Unlike the classic GetSaveFileNameW — which
+/// drifts to the top-left / behind a fullscreen owner like the capture overlay — this
+/// centres itself on the owner, so it can't get lost. Seeds the dialog with folder `dir`
+/// and default file `name`. Returns the chosen path (a `.png`), or None if cancelled.
+pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option<String> {
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let dlg: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    let spec_name = wide("PNG image");
+    let spec_ext = wide("*.png");
+    let specs = [COMDLG_FILTERSPEC {
+        pszName: PCWSTR(spec_name.as_ptr()),
+        pszSpec: PCWSTR(spec_ext.as_ptr()),
+    }];
+    let _ = dlg.SetFileTypes(&specs);
+    let ext = wide("png");
+    let _ = dlg.SetDefaultExtension(PCWSTR(ext.as_ptr()));
+    let nm = wide(name);
+    let _ = dlg.SetFileName(PCWSTR(nm.as_ptr()));
+    if !dir.is_empty() {
+        let dw = wide(dir);
+        if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(dw.as_ptr()), None) {
+            let _ = dlg.SetFolder(&item);
+        }
+    }
+    dlg.Show(Some(owner)).ok()?;
+    let item: IShellItem = dlg.GetResult().ok()?;
+    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    s
+}
+
+/// "Save settings as" dialog (a `.json` file) via IFileSaveDialog — centres on `owner`
+/// like [`pick_save_png`]. Seeds the default file `name`; returns the chosen path or None.
+pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<String> {
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let dlg: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    let spec_name = wide("SageThumbs 2K settings");
+    let spec_ext = wide("*.json");
+    let specs = [COMDLG_FILTERSPEC {
+        pszName: PCWSTR(spec_name.as_ptr()),
+        pszSpec: PCWSTR(spec_ext.as_ptr()),
+    }];
+    let _ = dlg.SetFileTypes(&specs);
+    let ext = wide("json");
+    let _ = dlg.SetDefaultExtension(PCWSTR(ext.as_ptr()));
+    let nm = wide(name);
+    let _ = dlg.SetFileName(PCWSTR(nm.as_ptr()));
+    dlg.Show(Some(owner)).ok()?;
+    let item: IShellItem = dlg.GetResult().ok()?;
+    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    s
+}
+
+/// "Open settings" dialog (a `.json` file) via IFileOpenDialog. Returns the chosen path
+/// or None. Open dialogs default to file-must-exist, so a bad pick can't reach us.
+pub(crate) unsafe fn pick_open_settings(owner: HWND) -> Option<String> {
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    if let Ok(opts) = dlg.GetOptions() {
+        let _ = dlg.SetOptions(opts | FOS_FORCEFILESYSTEM);
+    }
+    let spec_name = wide("SageThumbs 2K settings");
+    let spec_ext = wide("*.json");
+    let specs = [COMDLG_FILTERSPEC {
+        pszName: PCWSTR(spec_name.as_ptr()),
+        pszSpec: PCWSTR(spec_ext.as_ptr()),
+    }];
+    let _ = dlg.SetFileTypes(&specs);
+    dlg.Show(Some(owner)).ok()?;
+    let item: IShellItem = dlg.GetResult().ok()?;
+    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    s
+}
+
+/// Put `text` on the clipboard as Unicode text. Best-effort. Delegates the unsafe
+/// HGLOBAL ownership dance to the one shared writer in the lib's `clipboard` module.
+pub(crate) unsafe fn set_clipboard_text(text: &str) -> bool {
+    let bytes = sagethumbs2k::clipboard::utf16_nul_bytes(text);
+    sagethumbs2k::clipboard::set_clipboard(sagethumbs2k::clipboard::CF_UNICODETEXT, &bytes)
+}

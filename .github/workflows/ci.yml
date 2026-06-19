@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build · clippy · test (windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc + clippy/rustfmt,
+      # which rustup installs on first cargo invocation. No setup action needed.
+      - name: Toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # RAR/CBR is the pure-Rust `rars` crate (always on, no feature gate), so this
+      # default build already covers it — the whole dependency graph is permissive.
+      - name: Build
+        run: cargo build --release
+
+      # Gates on ALL clippy lints across every target (bins, lib, tests): any new
+      # warning is promoted to an error and fails the build. The tree is kept
+      # warning-clean; intentional exceptions carry a local #[allow] with a reason.
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      # Library unit tests.
+      - name: Test
+        run: cargo test --release --lib
+
+      # Integration tests (tests/) drive the built shell-extension DLL in-process,
+      # the way Explorer does: the COM thumbnail handshake (com_roundtrip) and the
+      # IExplorerCommand verb flyout + invoke (explorer_command). They LoadLibrary
+      # the cdylib from the target dir and run headless (no registration, no admin,
+      # no Explorer), so they belong in CI — `--lib` above never exercises them.
+      # Rebuild the cdylib FRESH first: the clippy step can leave a check-only
+      # artifact, and `cargo test` does NOT refresh the cdylib (so a stale/missing
+      # DLL would make LoadLibrary pick up old code). The registry/desktop-dependent
+      # tests (packaged_load, settings_gate) are #[ignore]d and stay out of this run.
+      - name: Integration tests
+        run: |
+          cargo build --release
+          cargo test --release --tests
+
+  # License + advisory + source/ban audit. The whole dependency graph is now
+  # 100% permissive (RAR/CBR via the pure-Rust `rars` crate — no proprietary
+  # UnRAR anywhere), so this proves the build is license-clean. Config +
+  # allowlist live in deny.toml.
+  deny:
+    name: cargo-deny (licenses · advisories — default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc, which rustup can't
+      # use on this Linux runner ("target triple in channel name"). cargo-deny only
+      # needs `cargo metadata` (toolchain-agnostic; the windows-msvc *target* is set
+      # in deny.toml), so drop the pin here and let the action's Linux toolchain run.
+      - name: Drop windows-only toolchain pin (Linux runner)
+        run: rm -f rust-toolchain.toml
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Checks the committed Cargo.lock (advisories + licenses) against
+          # deny.toml's allowlist over the full (now fully-permissive) graph.
+          command: check
+          arguments: --locked

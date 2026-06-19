@@ -1,0 +1,183 @@
+[package]
+name = "sagethumbs2k"
+version = "0.4.6"
+edition = "2021"
+license-file = "LICENSE.md"
+publish = false                     # a Windows shell-extension app — never goes to crates.io
+description = "Modern Rust thumbnail + context-menu shell extension (SageThumbs 2K)"
+repository = "https://github.com/LunarWerxs/SageThumbs-2k"
+rust-version = "1.85"   # jxl-oxide (pure-Rust JPEG XL decoder) is Rust edition 2024
+
+[lib]
+# cdylib = the shipped DLL; rlib lets integration tests link the crate.
+crate-type = ["cdylib", "rlib"]
+
+# Stub EXE so the sparse package has an Application entry (see src/bin/app/main.rs).
+[[bin]]
+name = "sagethumbs2k-app"
+path = "src/bin/app/main.rs"
+
+# `st2k` — the command-line / AI-agent tool (console subsystem).
+[[bin]]
+name = "st2k"
+path = "src/bin/cli.rs"
+
+[dependencies]
+# Default features off (they'd pull the heavy AVIF encoder rav1e); we enable just
+# the codecs we use. AVIF/HEIC *decode* comes via WIC; exotic convert-to targets
+# (PSD/DDS/JP2/…) are encoded through the bundled ImageMagick, not `image`.
+image = { version = "0.25", default-features = false, features = [
+    "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
+] }
+kamadak-exif = "0.6"
+# JSON for the `st2k --mcp` MCP server (JSON-RPC 2.0 over stdio). Pure-Rust,
+# MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from
+# the shell-extension DLL (which never touches the mcp module).
+serde_json = "1"
+# Lossless metadata strip (rewrite JPEG segments / PNG chunks, no pixel re-encode).
+# Pure-Rust, MIT OR Apache-2.0. Adds `bytes` as the only new transitive crate.
+img-parts = "0.4"
+# Lossy WebP encode (image-webp only does lossless), via libwebp/cc — the ONLY C
+# dependency in the build. OPTIONAL behind the `webp-lossy` feature (off by default)
+# so the default build is pure-Rust and needs no C compiler. The release installer
+# opts in (build-release.ps1); without it, a lossy-WebP request degrades to lossless
+# WebP (via the `image` crate). MIT OR Apache-2.0.
+webp = { version = "0.3", default-features = false, optional = true }
+# Pure-Rust SVG rasterizer (MIT/Apache) — a format Windows can't thumbnail.
+# default-features off: we render with `usvg::Options::default()` and never load a
+# fontdb, so `text`/`system-fonts`/`memmap-fonts` are dead weight, and we don't need
+# the `raster-images` (<image>-tag) decoder. Shapes/paths/gradients still render.
+resvg = { version = "0.47", default-features = false }
+windows-registry = "0.6"
+windows-core = "0.62"
+windows-implement = "0.60"
+# WinRT async plumbing (IAsyncOperation/IAsyncAction/AsyncStatus) for the OS PDF
+# renderer in pdf.rs. Same version `windows` 0.62 pulls in transitively.
+windows-future = "0.3"
+
+# --- Ebook / comic-archive cover extraction (the DarkThumbs port) ---
+# All pure-Rust, MIT/Apache. We only ever READ zip members, so we want inflate
+# without the zopfli *encoder*. zip's umbrella `deflate` feature hardcodes both
+# `flate2/rust_backend` AND `deflate-zopfli`. Instead: `deflate-flate2` selects
+# the flate2 read path, the implicit `flate2` feature activates zip's optional
+# flate2 dependency (which zip declares with default-features = false), and the
+# direct flate2 dep below supplies its pure-Rust `rust_backend` (miniz_oxide) via
+# feature unification — C-free, and no zopfli.
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+base64 = "0.22"
+encoding_rs = "0.8"
+percent-encoding = "2"
+# 7-Zip (cb7) — pure-Rust; keep zstd/brotli/lz4 OFF so it stays C-free.
+sevenz-rust2 = { version = "0.13", default-features = false }
+# Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
+# Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
+lofty = "0.22"
+# RAR (cbr) cover decode — the PURE-RUST `rars` crate (MIT OR Apache-2.0, no C, no
+# proprietary UnRAR, `#![forbid(unsafe_code)]`). Validated byte-identical to UnRAR on
+# real RAR3/RAR5 + a real comic. Replaces the old optional `unrar` C++ dep (2026-06-15),
+# so `.cbr` now works in the DEFAULT build and there's no longer a non-permissive piece
+# anywhere. Default features only (the `fast`=SIMD/nightly and `parallel`=rayon features
+# are left off). Reads from memory, so no `tempfile` spill is needed either.
+rars = "0.2"
+# DjVu (.djvu) cover decode — the maintained pure-Rust `djvu-rs` codec (MIT, C-free,
+# fuzzed). Replaced our hand-rolled zp/iw44/jb2/djvu stack (2026-06-14): deletes ~2,400
+# lines of our own arithmetic-coder/wavelet/bilevel code + gains full multipage support,
+# at ~+0.27 MB of DLL. `std` is REQUIRED: its render pipeline needs it at runtime. We
+# tried `default-features=false` (the low-level no_std API) to shed std's export deps —
+# a SECOND `png` + `zip`/`zopfli` + `jpeg-encoder`, ~159 KB used only for PDF/TIFF/EPUB/
+# image EXPORT — and it COMPILED but produced no image (decode silently fails no_std).
+# So keep `std`; decode-only otherwise (no image/tiff/epub/jpeg export, no OCR/async/cli/
+# parallel/serde/mmap).
+djvu-rs = { version = "0.19", default-features = false, features = ["std"] }
+# JPEG XL (.jxl) decode — the pure-Rust `jxl-oxide` crate (MIT OR Apache-2.0, C-free).
+# jxl is an ADVERTISED format (formats.rs) but neither the `image` crate nor WIC decode
+# it, and build-release.ps1 strips the jxl coder out of the bundled magick — so without
+# this tier jxl silently fails to thumbnail on a clean install. The `image` feature
+# yields a DynamicImage via the ImageDecoder trait (gray/RGB/alpha, 8/16-bit, float).
+# `default-features = false` DROPS the `rayon` feature on purpose: rayon would land a
+# global thread pool inside explorer.exe (the same reason parallel.rs hand-rolls its
+# pool). The optional `lcms2` (a C ICC binding) stays off — thumbnails don't need CMS.
+# NOTE: jxl-oxide is Rust edition 2024 → bumps our MSRV to 1.85 (rust-version above).
+jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
+
+[features]
+# (`.cbr`/RAR is now always-on via the pure-Rust `rars` crate — no feature gate.)
+default = []
+# Lossy WebP encode via libwebp (C). Off by default → pure-Rust build; the release
+# installer enables it. Without it, lossy-WebP convert falls back to lossless WebP.
+webp-lossy = ["dep:webp"]
+# Builds the shell-extension DLL with ONLY the `menu_*` translation keys instead of
+# the full 36-language LOCALES table, shrinking the cdylib by ~0.2–0.28 MB (it loads
+# into Explorer and only looks up `menu_*` strings). The release pipeline enables it
+# for a SECOND `cargo build --lib` that produces the slim DLL; the EXEs/CLI keep the
+# full table. NEVER use on the default build — it would strip the app's dialog strings.
+dll-i18n-subset = []
+
+[build-dependencies]
+# Embeds the app manifest (Common-Controls v6 + DPI awareness) into the EXE so
+# the Options dialog renders with the native Win11 control theme.
+embed-manifest = "1.4"
+# Build-time only: parse locales/*.toml into a static table. No runtime TOML
+# parser ships in the DLL — translations are baked in as &'static str.
+toml = "0.8"
+# VERSIONINFO (FileVersion/ProductVersion = pkg version, ProductName "SageThumbs
+# 2K") is embedded by build.rs's own windres pass — folded into the existing
+# manifest+icon .rc for the EXEs, and a separate `rustc-link-arg-cdylib` object
+# for the DLL. We deliberately do NOT pull `winresource`/`embed-resource`: under
+# the pinned MSVC toolchain they need `vswhom` + `winreg 0.52` (to locate
+# rc.exe), neither of which is in this machine's offline cargo cache, and they'd
+# double-embed VERSIONINFO on the bins that already carry the windres object.
+# windres is already a build requirement here (the file icon), with a graceful
+# cargo:warning fallback if it's missing.
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Networking_WinInet", # InternetOpenUrlW: HTTPS-only, size-capped fetch of the remote ad manifest + images
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation", # GetLocalTime for screenshot filenames
+    "Win32_System_WindowsProgramming", # MulDiv for the app dialogs' DPI scaling
+    "Win32_UI_HiDpi", # GetDpiForWindow + SystemParametersInfoForDpi (PerMonitorV2 layout scaling)
+    "Win32_Storage_FileSystem", # Get/SetFileAttributesW for the folder-icon verb
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_Controls_Dialogs", # ChooseColorW / ChooseFontW for the screenshot colour + text pickers
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus", # anti-aliased annotation drawing in the screenshot tool
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Imaging",
+    # Media Foundation: grab a representative frame for VIDEO thumbnails via the OS's
+    # installed codecs (zero bundled bytes), streamed from disk via an IMFByteStream.
+    "Win32_Media_MediaFoundation",
+    "Win32_Globalization",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Input_KeyboardAndMouse",
+    # WinRT: the OS PDF rasterizer (Windows.Data.Pdf) — PDF first-page thumbnails
+    # with zero bundled bytes (no pdfium.dll, no Ghostscript). Windows 10+.
+    "Data_Pdf",
+    "Storage_Streams",
+    "Foundation",
+    # WinRT OCR (Windows.Media.Ocr) — image → text, in-box, zero bundled bytes.
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Globalization",
+]
+
+# Toolchain is pinned to stable-x86_64-pc-windows-msvc (rust-toolchain.toml).
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

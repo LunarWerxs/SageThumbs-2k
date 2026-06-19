@@ -1,0 +1,106 @@
+# cargo-deny configuration for SageThumbs 2K.
+#
+# Run locally with:
+#     cargo deny check
+#
+# CI runs this on the DEFAULT feature set via the `deny` job in
+# .github/workflows/ci.yml. SageThumbs 2K's OWN code is PolyForm-Noncommercial-licensed
+# (see LICENSE.md — non-permissive/source-available, so the root crate is `publish = false`
+# and skipped via [licenses].private below); this file proves every DEPENDENCY is permissive.
+#
+# NOTE — the entire graph is now 100% permissive. RAR/CBR support moved from the
+# proprietary UnRAR C++ (`unrar`/`unrar_sys`, behind an old `rar` feature) to the
+# PURE-RUST `rars` crate (MIT OR Apache-2.0, `#![forbid(unsafe_code)]`) on
+# 2026-06-15, so there is no longer any non-OSI / proprietary code or license
+# exception anywhere — `cargo deny check` passes on the default build with nothing
+# to allowlist.
+
+# ----------------------------------------------------------------------------
+[graph]
+# Match the shipped targets. Most deps are pure-Rust and target-agnostic, but
+# pinning the targets keeps the resolved graph (and the advisory/license scan)
+# deterministic and avoids flagging crates only reachable on platforms we never
+# build for.
+targets = [
+    { triple = "x86_64-pc-windows-msvc" },
+]
+# Evaluate optional deps too, so the scan stays honest about what *could* be
+# compiled in.
+all-features = false
+
+# ----------------------------------------------------------------------------
+[advisories]
+# Scan the committed Cargo.lock against the RustSec advisory DB. Anything with a
+# known vulnerability or an unmaintained/yanked status fails the build.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# No `ignore` entries: the default graph currently has no known-unfixable
+# advisory. If one ever appears that genuinely cannot be patched, add it here
+# with a dated comment explaining why — never blanket-ignore.
+ignore = [
+    # paste 1.0.15 is UNMAINTAINED (RUSTSEC-2024-0436) — not a vulnerability, just no
+    # longer updated. A tiny, stable proc-macro pulled transitively by `lofty` (the
+    # audio-tag reader); no maintained drop-in exists and it compiles fine. Remove this
+    # when lofty stops depending on it, or escalate if a real vuln is ever filed. (2026-06-14)
+    "RUSTSEC-2024-0436",
+]
+# Yanked crates in the lockfile should fail (the lock is committed, so this
+# catches a bad pin landing in the repo).
+yanked = "deny"
+
+# ----------------------------------------------------------------------------
+[licenses]
+# Allowlist covering the actual DEFAULT-feature graph (derived from Cargo.lock):
+#   MIT / Apache-2.0 ........ the overwhelming majority of the tree
+#   Apache-2.0 WITH LLVM-exception ... linux-raw-sys / wasi / r-efi style deps
+#   BSD-2-Clause ............ arrayref
+#   BSD-3-Clause ............ tiny-skia, tiny-skia-path, encoding_rs (AND component)
+#   Zlib .................... foldhash
+#   Unicode-3.0 ............. unicode-ident (AND component of its SPDX expr)
+# (No MPL-2.0 or ISC crate is present in the default graph, so neither is
+#  allowed here — keep this list tight to what actually resolves.)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    # jpeg-encoder (pulled by djvu-rs's `std` feature) is "(MIT OR Apache-2.0) AND IJG".
+    # The IJG (Independent JPEG Group) license is FSF Free/Libre + permissive (the classic
+    # libjpeg license), so it fits the permissive-only policy. (2026-06-14)
+    "IJG",
+]
+# Crates whose SPDX expression is an AND of several IDs (e.g. unicode-ident is
+# "(MIT OR Apache-2.0) AND Unicode-3.0") must have EVERY ANDed term allowed.
+# Require a high confidence match when cargo-deny harvests the license text.
+confidence-threshold = 0.93
+
+# The root crate (sagethumbs2k) ships under PolyForm Noncommercial — a non-permissive,
+# source-available license — and is `publish = false`. Skip workspace members so this
+# scan checks only DEPENDENCY licenses, which remain 100% permissive (MIT/Apache/BSD/…).
+private = { ignore = true }
+
+# (No license exceptions needed: the whole graph is permissive now that RAR/CBR
+# uses the pure-Rust `rars` crate instead of the proprietary UnRAR C++.)
+
+# ----------------------------------------------------------------------------
+[bans]
+# A duplicated crate version is a smell (bigger binary, slower build) but not a
+# hard failure — the resvg / image / windows stacks legitimately pull a couple
+# of overlapping minor versions. Surface them without breaking CI.
+multiple-versions = "warn"
+# Wildcard ("*") version requirements make the lockfile non-reproducible; flag
+# them.
+wildcards = "warn"
+# We don't currently forbid any specific crate or force a single source.
+deny = []
+skip = []
+
+# ----------------------------------------------------------------------------
+[sources]
+# Only crates.io is expected. A git or alternate-registry dependency sneaking in
+# should be noticed.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

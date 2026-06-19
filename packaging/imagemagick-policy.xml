@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hardened ImageMagick security policy for SageThumbs 2K.
+
+  We only ever READ a raster image and WRITE a PNG to stdout, in an isolated
+  child process. This policy disables everything that carries the worst CVE
+  history or could shell out / touch the network, and bounds resources — defense
+  in depth on top of the subprocess kill-timeout in decode.rs. ImageMagick reads
+  this file from its own directory (next to magick.exe in the install dir).
+-->
+<policymap>
+  <!-- Resource ceilings (belt-and-suspenders with the 20 s subprocess timeout). -->
+  <policy domain="resource" name="memory" value="512MiB"/>
+  <policy domain="resource" name="map" value="1GiB"/>
+  <policy domain="resource" name="area" value="512MP"/>
+  <policy domain="resource" name="disk" value="2GiB"/>
+  <policy domain="resource" name="time" value="20"/>
+  <policy domain="resource" name="list-length" value="256"/>
+
+  <!-- Document / PostScript / vector coders: never needed, historically the
+       most dangerous (Ghostscript RCE class). SVG is handled by resvg, not here. -->
+  <policy domain="coder" rights="none" pattern="{PS,PS2,PS3,EPS,EPT,EPT2,EPT3,EPI,EPSF,EPSI,PDF,PDFA,XPS,AI}"/>
+  <policy domain="coder" rights="none" pattern="{SVG,MSVG,RSVG}"/>
+
+  <!-- Scripting / indirection / network / interactive coders. -->
+  <policy domain="coder" rights="none" pattern="{MSL,MVG,MAGICK,SCRIPT}"/>
+  <policy domain="coder" rights="none" pattern="{URL,HTTPS,HTTP,FTP,FILE,EPHEMERAL,INLINE,SHOW,WIN,X,CLIPBOARD,SCREENSHOT}"/>
+  <policy domain="coder" rights="none" pattern="{LABEL,CAPTION,TEXT,PANGO,HTM,HTML}"/>
+
+  <!-- Block external delegate programs (Ghostscript, ffmpeg, etc.). Built-in
+       module coders (libheif/libwebp/openjpeg, etc.) are NOT delegates and keep
+       working. -->
+  <policy domain="delegate" rights="none" pattern="*"/>
+
+  <!-- No indirect file reads via @filename, and no writing arbitrary modules. -->
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="module" rights="none" pattern="{HTTPS,URL}"/>
+</policymap>
