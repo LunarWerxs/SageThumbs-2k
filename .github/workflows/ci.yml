@@ -21,16 +21,13 @@ jobs:
       - name: Toolchain
         run: rustup show
 
+      # Swatinem/rust-cache keys on the rustc version + Cargo.lock + job AND prunes
+      # stale build artifacts before saving. The old hashFiles(Cargo.lock)-only
+      # actions/cache did neither: it restored a wholesale `target/` across commits
+      # (same key when Cargo.lock is unchanged), which accumulated into an intermittent
+      # release-LTO link error ("unresolved external symbol core::panicking::assert_failed").
       - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+        uses: Swatinem/rust-cache@v2
 
       # RAR/CBR is the pure-Rust `rars` crate (always on, no feature gate), so this
       # default build already covers it — the whole dependency graph is permissive.
