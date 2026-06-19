@@ -9,9 +9,11 @@
 //! icon — never worse than before. A non-video ISO-BMFF (HEIC/AVIF, which share the `ftyp`
 //! box) is excluded by [`is_video_magic`] so the image tiers still handle it.
 
+use std::time::Duration;
+
 use image::{DynamicImage, RgbaImage};
 use windows::Win32::Media::MediaFoundation::*;
-use windows::Win32::System::Com::IStream;
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IStream, COINIT_MULTITHREADED};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 
 /// D3DFMT_X8R8G8B8 — the format id for `MFVideoFormat_RGB32`, for the stride fallback.
@@ -65,8 +67,19 @@ impl Drop for MfSession {
     }
 }
 
+/// Wall-clock cap on a single in-memory video frame-grab. Media Foundation's `ReadSample`
+/// has no internal timeout, so a stalling/hostile codec could otherwise spin the calling
+/// thread; the 64-sample cap in [`grab`] bounds samples skipped, NOT time inside the codec.
+/// We run the grab on a worker joined with this deadline (mirrors the SVG/PDF tiers); on
+/// expiry we return `None` (default icon) and let the worker exit on its own.
+const VIDEO_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// Grab a frame from a COM `IStream` (the shell thumbnail path) — streams from disk, never
-/// buffering the whole file.
+/// buffering the whole file. Runs in the ISOLATED thumbnail host (`dllhost.exe`), so it is
+/// bounded by process isolation + Explorer's own thumbnail timeout rather than an
+/// in-process wall-clock cap — keeping the zero-buffering stream for multi-GB movies. The
+/// in-memory [`frame_from_bytes`] path (which we DO own the thread for) is the one wrapped
+/// in [`VIDEO_TIMEOUT`].
 pub fn frame_from_istream(stream: &IStream) -> Option<DynamicImage> {
     unsafe {
         let bs = MFCreateMFByteStreamOnStream(stream).ok()?;
@@ -76,12 +89,36 @@ pub fn frame_from_istream(stream: &IStream) -> Option<DynamicImage> {
 
 /// Grab a frame from in-memory bytes (the CLI / `decode_preview` path). Wraps the bytes in
 /// a memory stream — fine for the size-capped CLI read, not the unbounded shell path.
+/// Bounded by [`VIDEO_TIMEOUT`] so a codec that wedges inside `ReadSample` can't hang the
+/// caller's thread.
 pub fn frame_from_bytes(bytes: &[u8]) -> Option<DynamicImage> {
-    unsafe {
-        let stream = SHCreateMemStream(Some(bytes))?;
+    let owned = bytes.to_vec();
+    grab_budgeted(move || unsafe {
+        let stream = SHCreateMemStream(Some(&owned))?;
         let bs = MFCreateMFByteStreamOnStream(&stream).ok()?;
         grab(&bs)
-    }
+    })
+}
+
+/// Run a frame-grab closure on a worker thread under [`VIDEO_TIMEOUT`]. The worker owns its
+/// inputs and initializes its own (MTA) COM apartment for the MF / WIC components; on
+/// timeout the receiver is dropped and the worker simply finishes and exits (a leaked
+/// thread in a disposable host is acceptable — same trade as `decode_svg` / `pdf`).
+fn grab_budgeted<F>(f: F) -> Option<DynamicImage>
+where
+    F: FnOnce() -> Option<DynamicImage> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // S_OK / S_FALSE both add a ref to balance; RPC_E_CHANGED_MODE does not.
+        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let r = f();
+        if inited {
+            unsafe { CoUninitialize() };
+        }
+        let _ = tx.send(r);
+    });
+    rx.recv_timeout(VIDEO_TIMEOUT).ok().flatten()
 }
 
 /// Core: source-reader → RGB32 → first decoded frame → straight-RGBA image.

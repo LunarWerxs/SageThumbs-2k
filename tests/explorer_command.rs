@@ -148,7 +148,14 @@ fn convert_verb_invoke_creates_file() {
         let arr: IShellItemArray = SHCreateShellItemArrayFromShellItem(&item).expect("item array");
 
         jpg.Invoke(&arr, None).expect("Invoke");
-        assert!(dir.join("v.jpg").exists(), "Invoke should have created v.jpg");
+        // Invoke now dispatches the verb to a DETACHED worker (so the shell thread no longer
+        // blocks on the batch), so poll for the output rather than assuming it's done.
+        let out = dir.join("v.jpg");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !out.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(out.exists(), "Invoke should have created v.jpg");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -182,8 +189,16 @@ fn clipboard_verb_copies_image_to_clipboard() {
 
         clip.Invoke(&arr, None).expect("Invoke");
 
-        // Read CF_DIB back off the clipboard and check the header.
+        // Read CF_DIB back off the clipboard and check the header. Invoke runs the verb on a
+        // DETACHED worker now, so wait for the clipboard to actually be populated first (the
+        // raw SetClipboardData handle persists after the worker thread exits).
         const CF_DIB: u32 = 8;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while windows::Win32::System::DataExchange::IsClipboardFormatAvailable(CF_DIB).is_err()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         OpenClipboard(None).expect("OpenClipboard");
         let h: HANDLE = GetClipboardData(CF_DIB).expect("GetClipboardData(CF_DIB)");
         let p = GlobalLock(HGLOBAL(h.0)) as *const BITMAPINFOHEADER;

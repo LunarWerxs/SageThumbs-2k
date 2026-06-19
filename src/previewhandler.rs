@@ -45,6 +45,15 @@ use crate::{decode, safety};
 /// Whole-stream read ceiling — shared with the thumbnail path's DoS budget.
 const MAX_BYTES: usize = decode::limits::MAX_INPUT_BYTES as usize;
 
+/// Wall-clock budget for a single preview decode, enforced OFF the host thread (see
+/// [`decode_preview_budgeted`]) so a slow/exotic decode can never freeze prevhost's
+/// message pump. The image/WIC fast tiers finish far under this; the ImageMagick
+/// subprocess long tail is the only thing that can approach it. On expiry the pane
+/// shows empty and the worker finishes + drops its result on its own. Sized above a
+/// typical magick decode (~1–4s) so normal exotic previews still render, but well
+/// under the ~20s the host could otherwise be frozen for.
+const PREVIEW_DECODE_BUDGET: core::time::Duration = core::time::Duration::from_secs(12);
+
 /// Our child window class name (registered once per process).
 const CLASS_NAME: windows::core::PCWSTR = windows::core::w!("SageThumbs2KPreview");
 
@@ -154,16 +163,20 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
             if !self.ensure_window() {
                 return Err(Error::from(E_FAIL));
             }
-            // Decode is best-effort: on failure we still show an (empty) themed pane
-            // rather than returning an error the host surfaces loudly.
-            let decoded = {
+            // Drain the shell's IStream on THIS thread: a stream marshaled into our
+            // STA apartment can't be touched from a worker thread.
+            let bytes = {
                 let borrow = self.stream.borrow();
                 let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
-                match unsafe { read_stream(stream, MAX_BYTES) } {
-                    Some(bytes) => decode::decode_preview(&bytes).ok(),
-                    None => None,
-                }
+                unsafe { read_stream(stream, MAX_BYTES) }
             };
+            // Decode OFF the host thread under a wall-clock budget. The fast tiers
+            // return well under it; only the exotic long tail (an ImageMagick
+            // subprocess, an OS video codec, a huge image) can approach it — and we
+            // would rather paint an empty pane than freeze prevhost's message pump
+            // waiting on it. Decode is best-effort either way: a failure OR a timeout
+            // shows the themed-but-empty pane, never a loud host error.
+            let decoded = bytes.and_then(decode_preview_budgeted);
             *self.pixels.borrow_mut() = decoded.map(|img| {
                 let rgba = img.to_rgba8();
                 let (w, h) = (rgba.width(), rgba.height());
@@ -466,6 +479,20 @@ unsafe fn make_dib(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Option<HBITMAP> {
         dst[i * 4 + 3] = 255;
     }
     Some(hbmp)
+}
+
+/// Run [`decode::decode_preview`] on a detached worker thread, returning its result
+/// only if it finishes within [`PREVIEW_DECODE_BUDGET`]. On timeout returns `None` and
+/// leaves the worker running — it sends into a now-dropped channel (the send simply
+/// errors) and exits on its own — so the calling host thread is blocked for at most the
+/// budget. Safe off the apartment thread: `DynamicImage` is `Send` and the worker
+/// touches only the pure decoder, no COM/GDI/HWND state.
+fn decode_preview_budgeted(bytes: Vec<u8>) -> Option<image::DynamicImage> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(decode::decode_preview(&bytes).ok());
+    });
+    rx.recv_timeout(PREVIEW_DECODE_BUDGET).ok().flatten()
 }
 
 /// Drain an `IStream` into a `Vec`, bounded by `max`. Rewinds first. `None` on a

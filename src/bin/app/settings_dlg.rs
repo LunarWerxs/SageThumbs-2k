@@ -1739,6 +1739,43 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             WM_CREATE => {
                 let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap().into();
                 build_controls(hwnd, hinst);
+                // Lazy, throttled, background update check: it never blocks this window
+                // opening, hits GitHub at most once a day (cached on disk in between), and
+                // stays silent unless a newer release exists — then it posts WM_APP_UPDATE
+                // to quietly nudge (no popup). See `update::lazy_check`.
+                let target = hwnd.0 as isize;
+                crate::update::lazy_check(move |tag| {
+                    let raw = Box::into_raw(Box::new(tag));
+                    let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(HWND(target as *mut core::ffi::c_void)),
+                        crate::update::WM_APP_UPDATE,
+                        WPARAM(0),
+                        LPARAM(raw as isize),
+                    );
+                    if posted.is_err() {
+                        // The window vanished before delivery — reclaim the boxed tag.
+                        drop(Box::from_raw(raw));
+                    }
+                });
+                LRESULT(0)
+            }
+            crate::update::WM_APP_UPDATE => {
+                // A lazy background check found a newer release. Reclaim the boxed tag and
+                // NON-intrusively relabel the "Check for updates" button into a quiet nudge
+                // (no popup); clicking it still runs check_for_updates → the download prompt.
+                let tag = if lparam.0 != 0 {
+                    *Box::from_raw(lparam.0 as *mut String)
+                } else {
+                    String::new()
+                };
+                if let Ok(btn) = GetDlgItem(Some(hwnd), ID_CHECK_UPDATES) {
+                    let label = if tag.is_empty() {
+                        wide("Update available")
+                    } else {
+                        wide(&format!("Update to v{tag}"))
+                    };
+                    let _ = SetWindowTextW(btn, PCWSTR(label.as_ptr()));
+                }
                 LRESULT(0)
             }
             WM_GETMINMAXINFO => {

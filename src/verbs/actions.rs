@@ -473,6 +473,41 @@ fn reveal_is_noise(out: &std::path::Path, sources: &[String]) -> bool {
         .any(|s| std::path::Path::new(s).parent() == Some(out_dir))
 }
 
+/// Run a context-menu action on a DETACHED worker thread, then surface any error and
+/// reveal new-folder output — so the shell's `IContextMenu::InvokeCommand` /
+/// `IExplorerCommand::Invoke` returns immediately instead of blocking explorer.exe's UI
+/// thread for the (possibly many-file, many-second) batch. The worker holds a
+/// [`crate::ModuleRef`] (so the DLL can't unload mid-action) and initializes its own STA
+/// COM apartment (verbs may touch WIC / the shell); it owns clones of every input, so it
+/// keeps NO reference to the COM object that launched it. `owner` is the parent HWND (as
+/// `isize`) for the error MessageBox, or `None`.
+pub fn run_action_detached(action: VerbAction, paths: Vec<String>, owner: Option<isize>) {
+    let _ = std::thread::Builder::new().name("st2k-verb".into()).spawn(move || {
+        // Keep the DLL pinned for the action's lifetime (a detached thread outlives the
+        // Invoke call that spawned it). `ModuleRef::default()` is NOT a no-op — its `Default`
+        // impl does the `dll_add_ref()`; clippy's "use `ModuleRef`" suggestion would skip it.
+        #[allow(clippy::default_constructed_unit_structs)]
+        let _module = crate::ModuleRef::default();
+        // STA matches the shell thread the verb used to run on (ShellExecute / clipboard /
+        // WIC all behave there). S_OK / S_FALSE add a ref to balance; RPC_E_CHANGED_MODE
+        // (already an MTA thread) does not, so only CoUninitialize when we actually inited.
+        let inited = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            )
+        }
+        .is_ok();
+        let report = run_action(action, &paths);
+        let parent = owner.map(|h| windows::Win32::Foundation::HWND(h as *mut core::ffi::c_void));
+        report.surface(parent);
+        report.reveal(&paths);
+        if inited {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    });
+}
+
 /// Dispatch a verb over the selected paths (best-effort). Returns an
 /// [`ActionReport`] the Invoke callers surface to the user on failure.
 pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {

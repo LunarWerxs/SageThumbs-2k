@@ -173,7 +173,10 @@ fn build_preview(path: &str) -> Option<Preview> {
     // reserved in QueryContextMenu, so a name+size row degrades more gracefully than
     // a blank gap. `null` hbm + 0×0 are handled by `paint_preview`.
     let decoded = std::fs::read(path).ok().and_then(|bytes| {
-        let img = crate::decode::decode_preview(&bytes).ok()?;
+        // decode_MENU_preview, not decode_preview: this runs on explorer.exe's UI
+        // thread, so it must use only the cheap in-process tiers (no magick/video/
+        // pdf/svg) or a single right-click on an exotic file would freeze the shell.
+        let img = crate::decode::decode_menu_preview(&bytes).ok()?;
         let (ow, oh) = crate::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
         // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
         // normal/tall ones stay capped at the 88px height (unchanged from before).
@@ -899,13 +902,11 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 _ => return Err(Error::from(E_FAIL)),
             };
             let paths = self.paths.borrow().clone();
-            let report = verbs::run_action(action, &paths);
-            // The shell window is the natural parent (may be null — MessageBox
-            // copes, creating a top-level dialog). Silent on success / delegation.
-            report.surface(Some(pici.hwnd));
-            // On a clean success, reveal the output ONLY if it went to a new folder;
-            // in-place outputs (a sibling next to a source) don't pop a window.
-            report.reveal(&paths);
+            // Run the (possibly multi-file, multi-second) batch on a DETACHED worker so
+            // this Invoke returns immediately instead of freezing explorer.exe's UI
+            // thread; the worker surfaces errors + reveals new-folder output itself. The
+            // shell window is the natural parent for any error dialog.
+            verbs::run_action_detached(action, paths, Some(pici.hwnd.0 as isize));
             Ok(())
         })
     }

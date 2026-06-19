@@ -220,13 +220,10 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
         safety::guard(|| {
             if let verbs::MenuItem::Verb(_, action) = self.item {
                 let paths = unsafe { items_to_paths(items) };
-                let report = verbs::run_action(*action, &paths);
-                // The modern command has no parent HWND handy — None lets
-                // MessageBox create a top-level dialog. Silent on success.
-                report.surface(None);
-                // On a clean success, reveal the output ONLY if it went to a new
-                // folder; in-place outputs (next to a source) don't pop a window.
-                report.reveal(&paths);
+                // Detached worker (see contextmenu.rs): return from Invoke immediately so
+                // the shell thread isn't blocked for the batch. No parent HWND handy here,
+                // so the error MessageBox (if any) is a top-level dialog.
+                verbs::run_action_detached(*action, paths, None);
             }
             Ok(())
         })

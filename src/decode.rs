@@ -169,7 +169,15 @@ mod magick_gate {
     /// Max concurrent magick children. 4 × ~512 MiB ≈ 2 GiB worst case — safe on any
     /// modern machine, still ~4× faster than serial on the exotic long tail.
     const MAX: i32 = 4;
-    const INFINITE: u32 = 0xFFFF_FFFF;
+    /// Bounded acquire deadline (ms). A LEAKED permit — a host process hard-killed
+    /// mid-decode never runs `Permit::drop`, and Windows does NOT restore a semaphore
+    /// count when a holder dies (semaphores have no abandoned-state, unlike a mutex) —
+    /// would otherwise wedge the gate to 0 for the whole logon session, so every later
+    /// magick decode blocks forever (a must-kill/reboot hang in prevhost/dllhost). With
+    /// a finite wait we fall back to UNCAPPED instead of blocking the calling (often a
+    /// shell/host) thread indefinitely. 5s is ample for a real slot to free (a magick
+    /// decode is ≤20s but usually <3s) yet self-heals a leaked/wedged gate fast.
+    const GATE_WAIT_MS: u32 = 5_000;
     const WAIT_OBJECT_0: u32 = 0;
 
     /// The shared semaphore handle (created once, kept for the process lifetime —
@@ -195,13 +203,16 @@ mod magick_gate {
         }
     }
 
-    /// Block until a magick slot is free. Returns `None` only if the semaphore
-    /// couldn't be created/acquired — the caller then proceeds UNCAPPED (best-effort:
-    /// a missing cap must never wedge decoding). No deadlock risk: a magick decode
-    /// never spawns another magick, and the permit is always released on drop.
+    /// Acquire a magick slot, waiting at most [`GATE_WAIT_MS`]. Returns `None` if the
+    /// semaphore couldn't be created, the wait timed out, or it otherwise failed — in
+    /// every such case the caller proceeds UNCAPPED (best-effort: a missing or wedged
+    /// cap must never block decoding, only bound its memory). A genuine permit is always
+    /// released on drop; a timed-out wait acquired nothing, so there is nothing to
+    /// release. This finite wait is what prevents a leaked permit (see [`GATE_WAIT_MS`])
+    /// from turning into an indefinite host-process hang.
     pub(super) fn acquire() -> Option<Permit> {
         let h = handle()?;
-        (unsafe { WaitForSingleObject(h, INFINITE) } == WAIT_OBJECT_0).then(|| Permit(h))
+        (unsafe { WaitForSingleObject(h, GATE_WAIT_MS) } == WAIT_OBJECT_0).then(|| Permit(h))
     }
 }
 
@@ -217,7 +228,7 @@ enum RawPreviewOrder {
 
 /// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA.
 /// Stops at the first tier that decodes. No resize, no orientation — raw pixels.
-fn decode_any(bytes: &[u8], raw_preview: RawPreviewOrder) -> Result<DynamicImage> {
+fn decode_any(bytes: &[u8], raw_preview: RawPreviewOrder, external: bool) -> Result<DynamicImage> {
     // Per-tier breadcrumb: each tier's underlying error Display is logged before
     // we fall through, so a failed decode is diagnosable (`-Debug` on) instead of
     // every tier collapsing to a bare E_FAIL. Logging is gated by `log_debug`.
@@ -267,31 +278,41 @@ fn decode_any(bytes: &[u8], raw_preview: RawPreviewOrder) -> Result<DynamicImage
         Ok(img) => return Ok(img),
         Err(e) => crate::safety::log_debug(&format!("decode tier `TGA` failed: {e}")),
     }
-    let magick_err = match decode_via_magick(bytes) {
-        Ok(img) => return Ok(img),
-        Err(e) => {
-            crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
-            e
-        }
-    };
-    if raw_preview == RawPreviewOrder::AfterExternal {
-        match decode_raw_preview(bytes) {
+    // ImageMagick subprocess (the exotic long tail) + the full-fidelity after-external
+    // RAW fallback. SKIPPED entirely when `external` is false: the classic in-shell menu
+    // preview ([`decode_menu_preview`]) runs on explorer.exe's OWN UI thread and cannot
+    // afford a subprocess (≤20s) there — it falls back to the cheap embedded-JPEG slice
+    // below, or a caption-only tile.
+    let mut last_err = Error::from(E_FAIL);
+    if external {
+        match decode_via_magick(bytes) {
             Ok(img) => return Ok(img),
-            Err(e) => crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}")),
+            Err(e) => {
+                crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
+                last_err = e;
+            }
+        }
+        if raw_preview == RawPreviewOrder::AfterExternal {
+            match decode_raw_preview(bytes) {
+                Ok(img) => return Ok(img),
+                Err(e) => crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}")),
+            }
         }
     }
-    // Last resort: every real decoder failed (or is absent — e.g. a clean compact install
-    // with no Microsoft RAW Image Extension and no bundled ImageMagick). If the file still
-    // embeds ANY decodable JPEG — a camera RAW's small EXIF thumbnail, a document preview —
-    // show that rather than a blank tile. Strictly additive: only reached AFTER every
-    // higher-fidelity tier above has failed, so it can never downgrade a good result.
+    // Last resort (CHEAP — a linear byte scan + image-tier decode, no subprocess, so the
+    // menu path runs it too): every real decoder failed (or is absent — e.g. a clean
+    // compact install with no Microsoft RAW Image Extension and no bundled ImageMagick).
+    // If the file still embeds ANY decodable JPEG — a camera RAW's small EXIF thumbnail, a
+    // document preview — show that rather than a blank tile. Strictly additive: only
+    // reached AFTER every higher-fidelity tier above has failed, so it can't downgrade a
+    // good result.
     if let Some(jpeg) = largest_embedded_jpeg(bytes, LENIENT_RAW_PREVIEW) {
         match decode_with_image(jpeg) {
             Ok(img) => return Ok(img),
             Err(e) => crate::safety::log_debug(&format!("decode tier `embedded-jpeg (lenient)` failed: {e}")),
         }
     }
-    Err(magick_err)
+    Err(last_err)
 }
 
 /// JPEG XL signature: a bare codestream (`FF 0A`) or the ISOBMFF container's `JXL `
@@ -905,6 +926,33 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal)
 }
 
+/// CHEAP, in-process-only preview decode for the CLASSIC CONTEXT MENU, whose
+/// owner-drawn thumbnail is built on explorer.exe's OWN UI thread (the classic
+/// `IContextMenu` loads IN-PROCESS, unlike the isolated thumbnail/preview hosts). Uses
+/// only the container baked-preview extractor + the fast pure-Rust / WIC image tiers,
+/// and deliberately SKIPS every heavy tier — the ImageMagick subprocess (≤20s), Media
+/// Foundation video, the WinRT PDF rasterizer, and resvg SVG (≤10s) — so a single
+/// right-click can never freeze the shell. A file whose only decodable tier is one of
+/// those gets a caption-only menu tile (the caller degrades to name + size) instead of
+/// hanging explorer. Container covers are themselves cheap (a baked JPEG/PNG slice), so
+/// epub/cbz/psd/… still show a thumbnail here.
+pub fn decode_menu_preview(bytes: &[u8]) -> Result<DynamicImage> {
+    if let Some(cover) = crate::container::extract_cover(bytes) {
+        return match cover {
+            crate::container::CoverOut::Bytes(b) => decode_cheap(&b),
+            crate::container::CoverOut::Image(img) => Ok(img),
+        };
+    }
+    decode_cheap(bytes)
+}
+
+/// The fast subset of the image tiers (jxl-signature → `image` crate → WIC → TGA →
+/// embedded-JPEG), EXIF-oriented like the full path but with NO external/subprocess
+/// tier (`external = false`) and no SVG/PDF/video. Used by [`decode_menu_preview`].
+fn decode_cheap(bytes: &[u8]) -> Result<DynamicImage> {
+    Ok(apply_exif_orientation(decode_any(bytes, RawPreviewOrder::BeforeExternal, false)?, bytes))
+}
+
 fn decode_preview_with_raw_order(bytes: &[u8], raw_preview: RawPreviewOrder) -> Result<DynamicImage> {
     // Video: grab a representative frame via the OS Media Foundation codecs (no bundled
     // bytes). Magic-gated, so only actual videos pay the MF cost (HEIC/AVIF share the
@@ -955,7 +1003,7 @@ fn decode_image_with_raw_order(bytes: &[u8], raw_preview: RawPreviewOrder) -> Re
                     return Ok(img); // vector; no EXIF orientation
                 }
             }
-            return Ok(apply_exif_orientation(decode_any(&inner, raw_preview)?, &inner));
+            return Ok(apply_exif_orientation(decode_any(&inner, raw_preview, true)?, &inner));
         }
     }
     if looks_like_svg(bytes) {
@@ -966,7 +1014,7 @@ fn decode_image_with_raw_order(bytes: &[u8], raw_preview: RawPreviewOrder) -> Re
             return Ok(img); // vector; no EXIF orientation
         }
     }
-    Ok(apply_exif_orientation(decode_any(bytes, raw_preview)?, bytes))
+    Ok(apply_exif_orientation(decode_any(bytes, raw_preview, true)?, bytes))
 }
 
 /// Inflate a gzip stream with a hard output cap (decompression-bomb guard) for
@@ -1631,7 +1679,7 @@ mod tests {
         // take that shortcut ahead of a real decoder: this valid 2x2 TGA carries a
         // large trailing JPEG that the early path would otherwise prefer.
         let bytes = tiny_tga_with_trailing_jpeg();
-        let early = decode_any(&bytes, RawPreviewOrder::BeforeExternal).unwrap();
+        let early = decode_any(&bytes, RawPreviewOrder::BeforeExternal, true).unwrap();
         assert_eq!((early.width(), early.height()), (192, 192));
 
         let full = decode_full(&bytes).unwrap();
