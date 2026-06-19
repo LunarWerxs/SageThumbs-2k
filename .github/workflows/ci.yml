@@ -13,6 +13,17 @@ jobs:
   build-test:
     name: build · clippy · test (windows-msvc)
     runs-on: windows-latest
+    env:
+      # The shipped release profile uses FAT LTO (lto=true) on a crate that is BOTH a
+      # cdylib and an rlib. That combination intermittently fails to link in CI with
+      # "unresolved external symbol" errors: LTO internalizes symbols for the cdylib,
+      # and the bins that link the same crate as an rlib then can't find them (a known,
+      # nondeterministic cdylib+rlib+LTO interaction — it links fine locally most of the
+      # time). CI only needs to prove the code compiles, is clippy-clean, and passes the
+      # tests — none of which require LTO — so disable it here for a reliable, faster
+      # link. The shipped fat-LTO build is still validated by the local pre-push preflight
+      # (scripts/preflight.ps1) before anything reaches main.
+      CARGO_PROFILE_RELEASE_LTO: "false"
     steps:
       - uses: actions/checkout@v4
 
