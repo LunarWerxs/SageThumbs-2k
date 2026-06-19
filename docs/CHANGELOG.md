@@ -2,6 +2,23 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.4.7
+
+- **Fixed preview-pane hangs.** Selecting an image in a file dialog or the Explorer reading/
+  preview pane could freeze and sometimes need the preview host killed (or a reboot). Previews
+  now decode off the host's UI thread, and an internal concurrency lock that could leak when a
+  host was force-killed is now self-healing — so the hang can no longer build up over time.
+- **Right-clicking an exotic file no longer freezes Explorer.** The classic right-click menu's
+  preview now uses only the fast built-in decoders, never a slow external one on the shell
+  thread.
+- **Video previews and thumbnails are time-bounded**, so a stalling codec can't hang the
+  preview or thumbnail.
+- **Right-click actions run in the background.** Convert, Resize, Rotate, Strip metadata, and
+  the rest no longer freeze the Explorer window while they work — even across many files.
+- **Automatic update check.** Opening **Settings** now does a quiet, once-a-day background
+  check for a newer version and flags the "Check for updates" button when one is available —
+  no nagging pop-ups, and never more than once a day.
+
 ## 0.4.6
 
 - **Video thumbnails** — Explorer now shows a representative frame for video files
