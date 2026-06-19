@@ -13,17 +13,6 @@ jobs:
   build-test:
     name: build · clippy · test (windows-msvc)
     runs-on: windows-latest
-    env:
-      # The shipped release profile uses FAT LTO (lto=true) on a crate that is BOTH a
-      # cdylib and an rlib. That combination intermittently fails to link in CI with
-      # "unresolved external symbol" errors: LTO internalizes symbols for the cdylib,
-      # and the bins that link the same crate as an rlib then can't find them (a known,
-      # nondeterministic cdylib+rlib+LTO interaction — it links fine locally most of the
-      # time). CI only needs to prove the code compiles, is clippy-clean, and passes the
-      # tests — none of which require LTO — so disable it here for a reliable, faster
-      # link. The shipped fat-LTO build is still validated by the local pre-push preflight
-      # (scripts/preflight.ps1) before anything reaches main.
-      CARGO_PROFILE_RELEASE_LTO: "false"
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +34,24 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      # Integration tests (tests/) drive the built shell-extension DLL in-process the
+      # way Explorer does: the COM thumbnail handshake (com_roundtrip) and the
+      # IExplorerCommand verb flyout + invoke (explorer_command). They LoadLibrary the
+      # cdylib from the target dir and `use sagethumbs2k` (link the rlib), and run
+      # headless (no registration, no admin, no Explorer). The registry/desktop tests
+      # (packaged_load, settings_gate) are #[ignore]d and stay out of this run.
+      #
+      # ORDER MATTERS — this runs RIGHT AFTER the clean Build, BEFORE clippy/lib-test,
+      # so it reuses the pristine cdylib + rlib the Build step just produced WITHOUT a
+      # rebuild. The package is crate-type = ["cdylib", "rlib"]; re-running
+      # `cargo build --release` after clippy's --all-targets check pass intermittently
+      # rebuilt the lib and tripped cargo's cdylib/rlib output-filename collision
+      # (rust-lang/cargo#6313), yielding an rlib full of "unresolved external symbol"
+      # link errors. Reusing the Build step's artifacts (no second build here) sidesteps
+      # it entirely; `cargo test --tests` only compiles the new test binaries.
+      - name: Integration tests
+        run: cargo test --release --tests
+
       # Gates on ALL clippy lints across every target (bins, lib, tests): any new
       # warning is promoted to an error and fails the build. The tree is kept
       # warning-clean; intentional exceptions carry a local #[allow] with a reason.
@@ -54,20 +61,6 @@ jobs:
       # Library unit tests.
       - name: Test
         run: cargo test --release --lib
-
-      # Integration tests (tests/) drive the built shell-extension DLL in-process,
-      # the way Explorer does: the COM thumbnail handshake (com_roundtrip) and the
-      # IExplorerCommand verb flyout + invoke (explorer_command). They LoadLibrary
-      # the cdylib from the target dir and run headless (no registration, no admin,
-      # no Explorer), so they belong in CI — `--lib` above never exercises them.
-      # Rebuild the cdylib FRESH first: the clippy step can leave a check-only
-      # artifact, and `cargo test` does NOT refresh the cdylib (so a stale/missing
-      # DLL would make LoadLibrary pick up old code). The registry/desktop-dependent
-      # tests (packaged_load, settings_gate) are #[ignore]d and stay out of this run.
-      - name: Integration tests
-        run: |
-          cargo build --release
-          cargo test --release --tests
 
   # License + advisory + source/ban audit. The whole dependency graph is now
   # 100% permissive (RAR/CBR via the pure-Rust `rars` crate — no proprietary
