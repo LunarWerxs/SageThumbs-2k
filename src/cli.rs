@@ -1,6 +1,6 @@
 //! Command-line / agent API — the verbs the `st2k` console binary exposes.
 //!
-//! Every verb reuses the exact same engine the shell extension uses (310-format
+//! Every verb reuses the exact same engine the shell extension uses (312-format
 //! decode via `decode_full`, the convert/rotate/strip/OCR/PDF logic), so an
 //! installed SageThumbs 2K doubles as an offline image toolbox for scripts and
 //! AI agents — no extra installs. Each verb returns `Ok(stdout text)` or
@@ -12,7 +12,7 @@ use crate::{decode, formats, ocr, strip, topdf, verbs};
 
 /// Render any supported image to `output` (format from its extension) at most
 /// `max_dim` px on the long edge (`0` = full size). The headline verb: produces
-/// previews for the ~310 types Windows itself can't.
+/// previews for the ~312 types Windows itself can't.
 pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, String> {
     // Cap the read at the shared input budget (metadata-checked before allocating)
     // so a scripted/agent/MCP call can't load a multi-GB file wholesale — the same

@@ -3,8 +3,12 @@
 //!     1. <meta name="cover" content="ID"> -> <item id="ID" href="...">
 //!     2. content="ID" that is itself an image path
 //!     3. EPUB3 <item properties="cover-image"|id="cover-image" href="...">
-//!     4. brute-force: first archive image whose name contains "cover"
-//! SVG covers (e.g. Standard Ebooks) flow straight to resvg via the decoder.
+//!     4. deprecated EPUB2 <guide><reference type="cover" href="..."> (often xhtml)
+//!     5. brute-force: first archive image whose name contains "cover"
+//! When the resolved cover is itself an (x)html WRAPPER page (cover.xhtml that just
+//! <img>/<svg>-references the real image — Standard Ebooks, many EPUB2 books), we
+//! follow it to the embedded image instead of handing the shell undecodable XHTML
+//! (DarkThumbs issues #9 / #20 / #34). SVG cover *files* flow straight to resvg.
 
 use super::zipfmt::{read_index, read_named, Zip};
 
@@ -21,7 +25,19 @@ pub fn extract(zip: &mut Zip) -> Option<Vec<u8>> {
         None => String::new(),
     };
 
-    let cover_path = cover_from_opf(&opf, &rootdir).or_else(|| brute_force_cover(zip))?;
+    let cover_path = cover_from_opf(&opf, &rootdir)
+        .or_else(|| guide_cover(&opf, &rootdir))
+        .or_else(|| brute_force_cover(zip))?;
+
+    // The cover may be an XHTML wrapper that only references the real image. Follow
+    // it; if the wrapper holds no usable image, fall back to brute-force search.
+    if is_html_path(&cover_path) {
+        if let Some(img) = resolve_html_cover(zip, &cover_path) {
+            return Some(img);
+        }
+        let fallback = brute_force_cover(zip)?;
+        return read_named_ci(zip, &fallback);
+    }
     read_named_ci(zip, &cover_path)
 }
 
@@ -56,6 +72,95 @@ fn brute_force_cover(zip: &mut Zip) -> Option<String> {
         }
     }
     None
+}
+
+// ---- xhtml-wrapper cover following (#9 / #20 / #34) ----
+
+/// Does this archive path point at an (x)html page rather than a real image?
+fn is_html_path(p: &str) -> bool {
+    let lower = p.to_ascii_lowercase();
+    lower.ends_with(".xhtml") || lower.ends_with(".html") || lower.ends_with(".htm")
+}
+
+/// Deprecated EPUB2 cover declaration: `<guide><reference type="cover" href="...">`.
+/// The href is OPF-relative (usually a cover.xhtml page, occasionally an image).
+fn guide_cover(opf: &str, rootdir: &str) -> Option<String> {
+    let pos = opf.find("type=\"cover\"")?;
+    let tag = tag_around(opf, pos)?;
+    if !tag.contains("reference") {
+        return None;
+    }
+    let href = tag_attr(tag, "href")?;
+    Some(pct(&join(rootdir, &href)))
+}
+
+/// Read an (x)html cover wrapper and return the image it references: the first
+/// `<img src>` or SVG `<image (xlink:)href>`, resolved relative to the page's own
+/// directory (so `../Images/cover.jpg` works), then fetched from the archive.
+fn resolve_html_cover(zip: &mut Zip, html_path: &str) -> Option<Vec<u8>> {
+    let html = read_named_ci(zip, html_path)?;
+    let html = String::from_utf8_lossy(&html);
+    let src = first_html_image(&html)?;
+    let base = match html_path.rfind('/') {
+        Some(p) => &html_path[..=p],
+        None => "",
+    };
+    let resolved = resolve_relative(base, &pct(&src));
+    if !super::is_image_name(&resolved) {
+        return None;
+    }
+    read_named_ci(zip, &resolved)
+}
+
+/// First image reference in an (x)html/SVG page: the earliest `<img` (HTML) or
+/// `<image` (SVG) tag — note `<img` is NOT a prefix of `<image` (img vs im*a*ge),
+/// so both must be searched. We then read `src`, else `xlink:href`, else `href`.
+fn first_html_image(html: &str) -> Option<String> {
+    let mut search = 0usize;
+    loop {
+        let rest = html.get(search..)?;
+        let next = ["<img", "<image"].iter().filter_map(|pat| rest.find(pat)).min()?;
+        let pos = search + next;
+        if let Some(tag) = tag_from(html, pos) {
+            let href = tag_attr(tag, "src")
+                .or_else(|| tag_attr(tag, "xlink:href"))
+                .or_else(|| tag_attr(tag, "href"));
+            if let Some(v) = href {
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+        search = pos + 1; // past this '<' so we don't re-match the same tag
+    }
+}
+
+/// The `<...>` tag that STARTS at byte position `start` (the '<').
+fn tag_from(s: &str, start: usize) -> Option<&str> {
+    let rel_end = s.get(start..)?.find('>')?;
+    s.get(start..start + rel_end + 1)
+}
+
+/// Resolve `href` (may contain `./`, `../`, a leading `/`, or a `#fragment`)
+/// against `base` (a dir ending in `/`, or empty), normalizing to an archive path.
+fn resolve_relative(base: &str, href: &str) -> String {
+    let href = href.split('#').next().unwrap_or(href);
+    let combined = if let Some(abs) = href.strip_prefix('/') {
+        abs.to_string()
+    } else {
+        format!("{base}{href}")
+    };
+    let mut out: Vec<&str> = Vec::new();
+    for part in combined.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            p => out.push(p),
+        }
+    }
+    out.join("/")
 }
 
 // ---- tiny XML/string helpers (mirroring DarkThumbs' substring search) ----
@@ -125,4 +230,55 @@ fn read_named_ci(zip: &mut Zip, name: &str) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_path_detection() {
+        assert!(is_html_path("OEBPS/Text/cover.xhtml"));
+        assert!(is_html_path("cover.HTML"));
+        assert!(is_html_path("a/b.htm"));
+        assert!(!is_html_path("Images/cover.jpg"));
+        assert!(!is_html_path("cover.svg")); // an SVG file is a real image (resvg)
+    }
+
+    #[test]
+    fn relative_resolution() {
+        assert_eq!(resolve_relative("OEBPS/Text/", "../Images/cover.jpg"), "OEBPS/Images/cover.jpg");
+        assert_eq!(resolve_relative("OEBPS/Text/", "./pic.png"), "OEBPS/Text/pic.png");
+        assert_eq!(resolve_relative("OEBPS/Text/", "cover.jpg#x"), "OEBPS/Text/cover.jpg");
+        assert_eq!(resolve_relative("OEBPS/Text/", "/Images/c.jpg"), "Images/c.jpg");
+        assert_eq!(resolve_relative("", "cover.png"), "cover.png");
+    }
+
+    #[test]
+    fn first_image_in_img_and_svg() {
+        // plain <img>
+        assert_eq!(
+            first_html_image(r#"<html><body><img alt="c" src="../Images/cover.jpg"/></body></html>"#).as_deref(),
+            Some("../Images/cover.jpg")
+        );
+        // SVG <image xlink:href> (Standard Ebooks style)
+        assert_eq!(
+            first_html_image(r#"<svg><image width="1" xlink:href="images/cover.svg"/></svg>"#).as_deref(),
+            Some("images/cover.svg")
+        );
+        // SVG <image href> (no xlink namespace)
+        assert_eq!(
+            first_html_image(r#"<svg><image href="cover.png"/></svg>"#).as_deref(),
+            Some("cover.png")
+        );
+        assert_eq!(first_html_image("<html><body>no images here</body></html>"), None);
+    }
+
+    #[test]
+    fn guide_reference_cover() {
+        let opf = r#"<package><guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide></package>"#;
+        assert_eq!(guide_cover(opf, "OEBPS/").as_deref(), Some("OEBPS/Text/cover.xhtml"));
+        // a <meta name="cover"> alone (no <reference>) must not be mistaken for a guide
+        assert_eq!(guide_cover(r#"<meta name="cover" content="id"/>"#, ""), None);
+    }
 }

@@ -30,11 +30,11 @@ pub enum Category {
 // keeping this the single place the lists live, instead of a mirrored copy.
 // Each MUST stay a subset of `FORMATS` (enforced by `category_lists_are_subset_of_formats`).
 const EBOOK_EXTS: &[&str] = &[
-    "azw", "azw3", "cb7", "cbr", "cbt", "cbz", "epub", "fb2", "fbz", "mobi", "prc",
+    "azw", "azw3", "cb7", "cbr", "cbt", "cbz", "epub", "fb2", "fbz", "mobi", "phz", "prc",
 ];
 const DOCUMENT_EXTS: &[&str] = &[
     "pdf", "djv", "djvu", "odt", "ods", "odp", "odg", "odf", "ott", "ots", "otp",
-    "pptx", "pptm", "potx", "key", "pages", "numbers", "indd", "vsdx", "vsdm", "vsd", "pub",
+    "pptx", "pptm", "potx", "key", "pages", "numbers", "indd", "vsdx", "vsdm", "vsd", "pub", "ggb",
     // Microsoft Word / Excel / PowerPoint (OOXML packages + legacy OLE compound docs).
     "docx", "docm", "dotx", "dotm", "doc", "dot",
     "xlsx", "xlsm", "xlsb", "xltx", "xltm", "xls", "xlt",
@@ -335,11 +335,13 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("fb2", "FictionBook 2 ebook"),
     ("fbz", "FictionBook 2 ebook (zipped)"),
     ("mobi", "Mobipocket / Kindle ebook"),
+    ("phz", "Comic / image archive (ZIP)"),
     ("prc", "Mobipocket / Palm ebook"),
     // --- Documents (page 1 render or embedded preview) ---
     ("pdf", "Portable Document Format (page 1)"),
     ("djv", "DjVu document"),
     ("djvu", "DjVu document"),
+    ("ggb", "GeoGebra worksheet"),
     ("odt", "OpenDocument Text"),
     ("ods", "OpenDocument Spreadsheet"),
     ("odp", "OpenDocument Presentation"),

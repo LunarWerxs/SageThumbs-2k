@@ -168,13 +168,30 @@ impl ThumbnailProvider_Impl {
                         // ("0 = unlimited" means "up to MAX_BYTES").
                         let max = cfg.max_file_bytes.min(MAX_BYTES as u64);
                         let size = unsafe { stream_size(stream) };
-                        if let Some(size) = size {
-                            if size > max {
-                                safety::log_debug(&format!("GetThumbnail: skip, {size} bytes over limit"));
-                                return Err(Error::from(E_FAIL));
+                        match size {
+                            // Oversized: the whole-file read is a DoS risk, so we skip it —
+                            // EXCEPT a giant comic ARCHIVE (CBZ/CB7), which we stream: read
+                            // only its central directory + one cover entry over the IStream,
+                            // never buffering the whole archive. (CBR can't — `rars` needs the
+                            // full buffer — so a huge .cbr still gets the default icon.)
+                            Some(size) if size > max => {
+                                match unsafe { archive_cover_streamed(stream) } {
+                                    Some(cover) => {
+                                        safety::log_debug(&format!(
+                                            "GetThumbnail: streamed cover from {size}-byte archive"
+                                        ));
+                                        cover
+                                    }
+                                    None => {
+                                        safety::log_debug(&format!(
+                                            "GetThumbnail: skip, {size} bytes over limit"
+                                        ));
+                                        return Err(Error::from(E_FAIL));
+                                    }
+                                }
                             }
+                            _ => unsafe { read_all(stream, MAX_BYTES, size)? },
                         }
-                        unsafe { read_all(stream, MAX_BYTES, size)? }
                     }
                 }
             };
@@ -217,6 +234,24 @@ unsafe fn peek_is_video(stream: &IStream) -> bool {
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     let got = (got as usize).min(head.len());
     hr.is_ok() && crate::video::is_video_magic(&head[..got])
+}
+
+/// For an OVERSIZED file (past the in-memory cap), sniff whether it's a streamable
+/// comic archive (CBZ/ZIP/CB7) and, if so, pull just the cover over the IStream — the
+/// central directory + one entry, never the whole archive. Returns None for anything
+/// else (incl. CBR, which `rars` can't read without a full buffer), so the caller
+/// skips it. Rewinds the stream to 0 before handing it to the archive reader.
+unsafe fn archive_cover_streamed(stream: &IStream) -> Option<Vec<u8>> {
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let mut head = [0u8; 8];
+    let mut got: u32 = 0;
+    let hr = stream.Read(head.as_mut_ptr() as *mut c_void, head.len() as u32, Some(&mut got));
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let got = (got as usize).min(head.len());
+    if hr.is_err() || got < head.len() {
+        return None;
+    }
+    crate::container::archive_cover_seek(IStreamReader { stream: stream.clone() }, &head[..got])
 }
 
 /// Result of the audio-art probe. The three cases are distinct so the caller can

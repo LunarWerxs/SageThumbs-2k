@@ -44,6 +44,15 @@ pub fn pick_cover(entries: &[Entry]) -> Option<usize> {
         candidates
     };
 
+    // Prefer image types the COMPACT (no-ImageMagick) install can actually decode: a
+    // JPEG-2000 cover renders only on the full build, so fall back to it only when no
+    // natively-decodable image exists — never let a .jp2 shadow a sibling .jpg (#94).
+    let candidates = {
+        let native: Vec<usize> =
+            candidates.iter().copied().filter(|&i| !is_exotic_cover(&entries[i].name)).collect();
+        if native.is_empty() { candidates } else { native }
+    };
+
     // Prefer an image whose filename contains "cover" (default on).
     let pool = if crate::settings::container_prefer_cover() {
         let covers: Vec<usize> = candidates
@@ -86,6 +95,14 @@ fn is_scanlation_junk(name: &str) -> bool {
     ["credit", "logo", "recruit", "invite"].iter().any(|w| f.contains(w))
 }
 
+/// Cover image types that decode ONLY on the full (ImageMagick/openjpeg) install
+/// (JPEG-2000). [`pick_cover`] deprioritizes these so a compact install never picks an
+/// undecodable cover when a natively-decodable sibling page exists.
+fn is_exotic_cover(name: &str) -> bool {
+    let ext = filename(name).rsplit('.').next().unwrap_or("").to_string();
+    matches!(ext.as_str(), "jp2" | "j2k" | "jpf" | "jpx" | "jpm")
+}
+
 /// Lowercased final path component.
 fn filename(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_ascii_lowercase()
@@ -101,4 +118,21 @@ fn demote_brackets(s: &str) -> String {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exotic_cover_detection() {
+        // JPEG-2000 family = full-install-only → deprioritized.
+        assert!(is_exotic_cover("Page 01.JP2"));
+        assert!(is_exotic_cover("scans/cover.jpx"));
+        assert!(is_exotic_cover("x.j2k"));
+        // Natively / WIC-decodable types are NOT exotic.
+        assert!(!is_exotic_cover("Page 01.jpg"));
+        assert!(!is_exotic_cover("cover.png"));
+        assert!(!is_exotic_cover("art.webp"));
+    }
 }

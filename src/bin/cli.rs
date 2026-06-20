@@ -1,5 +1,5 @@
 //! `st2k` — the SageThumbs 2K command-line tool. A thin arg parser over
-//! `sagethumbs2k::cli`, exposing the bundled engine (decode 310 formats, convert,
+//! `sagethumbs2k::cli`, exposing the bundled engine (decode 312 formats, convert,
 //! rotate, strip, OCR, PDF, thumbnail) to scripts and AI agents. Console
 //! subsystem (no `windows_subsystem = "windows"`), so stdout/stderr work.
 

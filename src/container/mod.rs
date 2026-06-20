@@ -209,6 +209,23 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     None
 }
 
+/// Stream a cover from an OVERSIZED archive (past the in-memory size cap) using a
+/// seekable reader — the shell's IStream — so a multi-hundred-MB CBZ/CB7 thumbnails
+/// without ever buffering the whole file. ZIP-family and 7-Zip support seeking; RAR
+/// can't (the `rars` crate needs the full buffer), so a giant CBR still falls through
+/// to the default icon. `head` is the first bytes (already peeked) for the magic sniff.
+pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(reader: R, head: &[u8]) -> Option<Vec<u8>> {
+    // ZIP family: CBZ / ZIP (and any zip of images).
+    if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") || head.starts_with(b"PK\x07\x08") {
+        return zipfmt::cover_from_reader(reader);
+    }
+    // 7-Zip: CB7.
+    if head.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
+        return sevenz::extract_seek(reader);
+    }
+    None
+}
+
 /// REAL pixel dimensions of the underlying document, for container formats whose
 /// extracted cover is only a small baked-in preview (PSD/PSB today). Captions /
 /// info displays show these instead of the preview's dimensions — a 4700×800 PSD
@@ -232,6 +249,10 @@ pub fn real_dims(bytes: &[u8]) -> Option<(u32, u32)> {
 pub(crate) const COVER_IMAGE_EXTS: &[&str] = &[
     "bmp", "ico", "gif", "jpg", "jpe", "jfif", "jpeg", "png", "tif", "tiff", "svg", "webp",
     "jxr", "nrw", "nef", "dng", "cr2", "heif", "heic", "avif", "jxl",
+    // JPEG-2000 — decodes only on the full (ImageMagick/openjpeg) install, so
+    // `select::pick_cover` treats these as a LAST RESORT: a .jp2 page never shadows a
+    // sibling .jpg that the compact (no-magick) install could actually render.
+    "jp2", "j2k", "jpf", "jpx", "jpm",
 ];
 
 /// Cover extensions we accept that are intentionally NOT standalone `FORMATS`
@@ -256,6 +277,33 @@ pub(crate) fn is_image_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The oversized-archive STREAMING path: extract a cover from a real seekable
+    /// File handle (not an in-memory `&[u8]`), proving a multi-hundred-MB CBZ can be
+    /// thumbnailed off the IStream without buffering the whole archive (#90). The
+    /// `zip` crate seeks to the central directory + reads only the chosen entry.
+    #[test]
+    fn archive_cover_seek_streams_from_a_real_file() {
+        use std::io::{Read, Seek, Write};
+        let path = std::env::temp_dir().join(format!("st2k_stream_{}.cbz", std::process::id()));
+        {
+            let f = std::fs::File::create(&path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("readme.txt", opts).unwrap(); // non-image: not a cover candidate
+            zw.write_all(b"not an image").unwrap();
+            zw.start_file("page1.jpg", opts).unwrap(); // the cover page
+            zw.write_all(b"\xFF\xD8\xFFcover-bytes").unwrap();
+            zw.finish().unwrap();
+        }
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut head = [0u8; 8];
+        file.read_exact(&mut head).unwrap();
+        file.rewind().unwrap();
+        let cover = archive_cover_seek(file, &head);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(cover.as_deref(), Some(&b"\xFF\xD8\xFFcover-bytes"[..]));
+    }
 
     /// Every cover extension must be a real `FORMATS` entry (so we never pick an
     /// archive member we can't actually decode) — except the documented WIC-only

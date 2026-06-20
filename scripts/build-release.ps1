@@ -30,6 +30,13 @@ if (-not $ver) { throw "Could not read version from Cargo.toml" }
 Write-Host "SageThumbs 2K release pipeline - version $ver" -ForegroundColor Cyan
 
 # 2) Build -------------------------------------------------------------------
+# Statically link the MSVC CRT into the shipped binaries so the DLL has NO external
+# VC++ Redistributable dependency — regsvr32/DllRegisterServer can't fail with
+# 0x8007007E (ERROR_MOD_NOT_FOUND) on a clean machine missing the VC++ runtime.
+# Set here (TRACKED) so every release build is reproducibly crt-static even from a
+# fresh clone; the machine-local .cargo/config.toml carries the same flag for dev
+# builds. (RUSTFLAGS overrides config [target] rustflags — keep them identical.)
+$env:RUSTFLAGS = '-C target-feature=+crt-static'
 if (-not $SkipBuild) {
     # CBR/RAR is now the pure-Rust `rars` crate (always on, no feature). `webp-lossy`
     # (libwebp, BSD — the one optional C piece) is enabled for the shipped installer;

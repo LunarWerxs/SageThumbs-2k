@@ -1,13 +1,30 @@
 //! ZIP-family container dispatch: EPUB (OPF cover cascade), FBZ (zipped FB2),
 //! or a plain image zip / CBZ (first page by cover-selection).
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek};
 
 use zip::ZipArchive;
 
 use super::select::{pick_cover, Entry};
 
 pub(crate) type Zip<'a> = ZipArchive<Cursor<&'a [u8]>>;
+
+/// Stream a comic/image-zip cover from a SEEKABLE reader without buffering the whole
+/// archive — the `zip` crate seeks to the central directory and reads only the chosen
+/// entry. Used for oversized CBZ/ZIP (past the in-memory size cap), where the reader is
+/// the shell's IStream. Only the generic image-pick (no epub/office/project dispatch —
+/// those packages are never that large).
+pub(crate) fn cover_from_reader<R: Read + Seek>(reader: R) -> Option<Vec<u8>> {
+    let mut zip = ZipArchive::new(reader).ok()?;
+    cover_image_only(&mut zip)
+}
+
+/// The generic CBZ / image-zip cover: natural-first cover image, one entry read.
+pub(crate) fn cover_image_only<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
+    let entries = list_entries(zip);
+    let idx = pick_cover(&entries)?;
+    read_index(zip, idx)
+}
 
 /// Extract the cover bytes from a ZIP-family container.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -46,9 +63,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     }
 
     // CBZ / generic image zip: natural-first cover image.
-    let entries = list_entries(&mut zip);
-    let idx = pick_cover(&entries)?;
-    read_index(&mut zip, idx)
+    cover_image_only(&mut zip)
 }
 
 fn has_entry(zip: &mut Zip, name: &str) -> bool {
@@ -68,7 +83,7 @@ fn find_entry_ext(zip: &mut Zip, dot_ext: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn list_entries(zip: &mut Zip) -> Vec<Entry> {
+pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry> {
     let mut out = Vec::new();
     for i in 0..zip.len() {
         if let Ok(f) = zip.by_index(i) {
@@ -82,7 +97,7 @@ pub(crate) fn list_entries(zip: &mut Zip) -> Vec<Entry> {
     out
 }
 
-pub(crate) fn read_index(zip: &mut Zip, idx: usize) -> Option<Vec<u8>> {
+pub(crate) fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>, idx: usize) -> Option<Vec<u8>> {
     let f = zip.by_index(idx).ok()?;
     if f.size() > super::MAX_COVER {
         return None;
@@ -92,7 +107,7 @@ pub(crate) fn read_index(zip: &mut Zip, idx: usize) -> Option<Vec<u8>> {
     (!buf.is_empty()).then_some(buf)
 }
 
-pub(crate) fn read_named(zip: &mut Zip, name: &str) -> Option<Vec<u8>> {
+pub(crate) fn read_named<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<Vec<u8>> {
     let f = zip.by_name(name).ok()?;
     if f.size() > super::MAX_COVER {
         return None;

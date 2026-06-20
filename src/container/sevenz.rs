@@ -3,14 +3,21 @@
 //! CB7). We read the archive's metadata to pick the cover, then decode just that
 //! entry (a solid block may decode a few neighbors — fine for a thumbnail).
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek};
 
 use sevenz_rust2::{Password, SevenZReader};
 
 use super::select::{pick_cover, Entry};
 
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut reader = SevenZReader::new(Cursor::new(bytes), Password::empty()).ok()?;
+    extract_seek(Cursor::new(bytes))
+}
+
+/// Like [`extract`], but over any seekable reader — used to stream an oversized CB7
+/// cover off the shell's IStream (sevenz-rust2 reads metadata + the one entry without
+/// buffering the whole archive).
+pub fn extract_seek<R: Read + Seek>(source: R) -> Option<Vec<u8>> {
+    let mut reader = SevenZReader::new(source, Password::empty()).ok()?;
 
     // SAFETY: in a SOLID archive, read_file decodes the whole block to reach any
     // entry, and sevenz-rust2 eagerly `Vec::with_capacity(entry.size)` per

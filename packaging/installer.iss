@@ -37,7 +37,7 @@ PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-Name: "full"; Description: "Full - all 310 formats (recommended)"
+Name: "full"; Description: "Full - all 312 formats (recommended)"
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
@@ -93,7 +93,7 @@ Filename: "powershell.exe"; \
 Filename: "{sys}\certutil.exe"; Parameters: "-delstore TrustedPeople SageThumbs2K"; \
   Flags: runhidden waituntilterminated; RunOnceId: "DelCert"
 ; Unregister before files are removed (our DllUnregisterServer also unhooks the
-; 310 formats and fires SHChangeNotify).
+; 312 formats and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregSt2k"
 

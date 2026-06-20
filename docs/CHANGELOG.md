@@ -2,6 +2,24 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.4.8
+
+- **Thumbnails now work on a clean Windows install.** The shell extension no longer
+  depends on the Visual C++ runtime, so it registers and shows thumbnails even on a fresh
+  machine that's missing the VC++ redistributable — previously that produced no thumbnails
+  and a cryptic "failed to register" error during install.
+- **More EPUB covers show up.** Books that reference their cover through a wrapper page
+  instead of the image directly — e.g. Standard Ebooks and many older EPUBs — now display
+  the real cover rather than a blank icon.
+- **Very large comic archives thumbnail again.** A CBZ or CB7 over 256 MB now shows its
+  cover, read straight from the archive without loading the whole file into memory, instead
+  of falling back to a generic icon.
+- **Two more formats** — GeoGebra worksheets (**.ggb**) and **.phz** comic archives —
+  bringing the total to **312**. A JPEG-2000 page inside a comic archive can now serve as
+  the cover too (on the full install).
+- **DjVu hardening verified** — the specific scanned documents that crashed the previous
+  generation of this kind of extension render cleanly here.
+
 ## 0.4.7
 
 - **Fixed preview-pane hangs.** Selecting an image in a file dialog or the Explorer reading/
