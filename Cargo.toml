@@ -1,6 +1,20 @@
+[workspace]
+members = ["dll"]
+# Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
+# `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs
+# (the CLAUDE.md contract; CI + the integration tests rely on the DLL existing).
+default-members = [".", "dll"]
+resolver = "2"
+
+# Shared version for the rlib (`sagethumbs2k`) + the cdylib wrapper (`sagethumbs2k-dll`),
+# so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
+# with packaging/AppxManifest.xml's <Identity Version>.
+[workspace.package]
+version = "0.4.8"
+
 [package]
 name = "sagethumbs2k"
-version = "0.4.8"
+version.workspace = true
 edition = "2021"
 build = "build/build.rs"
 license-file = ".github/LICENSE.md"
@@ -10,8 +24,13 @@ repository = "https://github.com/LunarWerxs/SageThumbs-2k"
 rust-version = "1.85"   # jxl-oxide (pure-Rust JPEG XL decoder) is Rust edition 2024
 
 [lib]
-# cdylib = the shipped DLL; rlib lets integration tests link the crate.
-crate-type = ["cdylib", "rlib"]
+# Renamed `sagethumbs2k` -> `sagethumbs2k_core`: the shipped DLL is now a SEPARATE
+# `sagethumbs2k` cdylib crate (see `dll/`) that wraps this rlib's COM entry points. No
+# crate is both cdylib AND rlib anymore, which eliminates the intermittent cargo#6313
+# link collision that broke CI. This crate is rlib-only — linked by the two bins and
+# the integration tests; the bins/tests now `use sagethumbs2k_core`.
+name = "sagethumbs2k_core"
+crate-type = ["rlib"]
 
 # Stub EXE so the sparse package has an Application entry (see src/bin/app/main.rs).
 [[bin]]

@@ -27,7 +27,7 @@ pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32)
     }
 
     // The unsafe HGLOBAL ownership dance lives once in the lib's `clipboard` module.
-    let _ = sagethumbs2k::clipboard::set_clipboard(sagethumbs2k::clipboard::CF_DIB, &dib);
+    let _ = sagethumbs2k_core::clipboard::set_clipboard(sagethumbs2k_core::clipboard::CF_DIB, &dib);
 }
 
 /// BGRA (top-down) -> an opaque RGBA image (GDI bitmaps carry no alpha).

@@ -51,7 +51,7 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k::i18n;
+use sagethumbs2k_core::i18n;
 
 use crate::convert::run_convert_dialog;
 use crate::dark::{dark_bg_brush, dark_control, dark_titlebar, init_dark_app, is_dark};
@@ -62,7 +62,7 @@ use crate::win::app_icon;
 
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
-    sagethumbs2k::safety::install_panic_hook("app");
+    sagethumbs2k_core::safety::install_panic_hook("app");
     unsafe {
         let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
 

@@ -1394,6 +1394,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagethumbs2k-dll"
+version = "0.4.8"
+dependencies = [
+ "sagethumbs2k",
+ "windows-core",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"

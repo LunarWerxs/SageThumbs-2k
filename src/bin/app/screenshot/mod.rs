@@ -31,7 +31,7 @@ pub(crate) use upload::run_upload;
 /// real (known-folder) Desktop instead of a baked-in path. Used by the capture
 /// overlay (autosave + the Save-As starting folder) and the Settings display.
 pub(crate) fn effective_save_dir() -> String {
-    let d = sagethumbs2k::settings::screenshot_save_dir();
+    let d = sagethumbs2k_core::settings::screenshot_save_dir();
     if d.trim().is_empty() {
         unsafe { crate::win::desktop_dir() }
     } else {
@@ -44,7 +44,7 @@ use std::os::windows::process::CommandExt;
 // Don't flash a console + don't inherit the spawner's stdio handles — otherwise a
 // detached background child (the daemon, a pin window) keeps a parent's handle
 // alive and can hang a `Start-Process -Wait` (and is just unclean).
-use sagethumbs2k::CREATE_NO_WINDOW;
+use sagethumbs2k_core::CREATE_NO_WINDOW;
 
 /// Spawn another instance of ourselves with `args`, fully detached (null stdio, no
 /// console). Used everywhere the feature launches a sibling process (capture,

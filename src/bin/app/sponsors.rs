@@ -73,7 +73,7 @@ fn manifest_bytes() -> Option<&'static [u8]> {
             // anonymous install/usage tally: app version, OS generation+build, and a
             // one-shot `new=1` the FIRST time this install ever reports. No identifier,
             // no IP (the server sees that from the connection itself), nothing per-user.
-            let is_new = !sagethumbs2k::settings::install_reported();
+            let is_new = !sagethumbs2k_core::settings::install_reported();
             let url = format!(
                 "{BANNER_URL}?v={}&os={}&new={}",
                 env!("CARGO_PKG_VERSION"),
@@ -86,7 +86,7 @@ fn manifest_bytes() -> Option<&'static [u8]> {
                 // Burn the one-shot "fresh install" marker only once the report has
                 // actually reached the server — an offline first run retries next time.
                 if is_new && res.is_some() {
-                    sagethumbs2k::settings::set_install_reported();
+                    sagethumbs2k_core::settings::set_install_reported();
                 }
                 let _ = tx.send(res);
             });
@@ -358,9 +358,9 @@ fn build_sponsors_from_manifest(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<Spo
             let Some(img_bytes) = http_fetch(url, false) else { continue };
             // Animated GIF → many frames; anything else → one still frame.
             let (frames, delay_ms) =
-                if let Some((fr, d)) = sagethumbs2k::app_image::decode_gif_frames_sized(&img_bytes, w, h) {
+                if let Some((fr, d)) = sagethumbs2k_core::app_image::decode_gif_frames_sized(&img_bytes, w, h) {
                     (fr, d)
-                } else if let Some(handle) = sagethumbs2k::app_image::image_to_hbitmap_sized(&img_bytes, w, h) {
+                } else if let Some(handle) = sagethumbs2k_core::app_image::image_to_hbitmap_sized(&img_bytes, w, h) {
                     (vec![handle], 0)
                 } else {
                     continue;

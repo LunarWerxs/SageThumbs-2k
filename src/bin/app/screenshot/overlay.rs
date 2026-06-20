@@ -998,7 +998,7 @@ unsafe fn finish_copy(s: &Shot) {
 /// commits in-progress text first.)
 unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
     let Some((buf, w, h)) = compose(s) else { return false };
-    if sagethumbs2k::settings::screenshot_use_save_dir() {
+    if sagethumbs2k_core::settings::screenshot_use_save_dir() {
         output::save_png_to_dir(std::path::Path::new(&super::effective_save_dir()), &buf, w, h)
     } else {
         let mut saved = false;

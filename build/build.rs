@@ -26,13 +26,9 @@ fn main() {
         if !embed_manifest_and_icon() {
             let _ = embed_manifest(new_manifest("SageThumbs2K.Options"));
         }
-        // The cdylib (shell-extension DLL) carries no manifest/icon object, so its
-        // VERSIONINFO goes in a SEPARATE windres object linked ONLY into the
-        // cdylib (`rustc-link-arg-cdylib`) — so right-click sagethumbs2k.dll ->
-        // Properties -> Details shows a version (critical for telling which build
-        // is loaded in a given dllhost.exe). Best-effort: skipped if windres is
-        // unavailable (REPORTED via cargo:warning, never fails the build).
-        embed_dll_version();
+        // The shell-extension DLL's VERSIONINFO is now emitted by the separate
+        // `sagethumbs2k-dll` cdylib crate (dll/build.rs) — THIS crate is rlib-only and
+        // no longer produces a cdylib, so `rustc-link-arg-cdylib` would do nothing here.
     }
     // (RAR/CBR is now the pure-Rust `rars` crate — no C, no UnRAR, so the old
     // advapi32 link the `rar` feature needed is gone.)
@@ -145,39 +141,6 @@ fn versioninfo_rc(file_desc: &str, orig_name: &str) -> String {
          \x20 END\n\
          END\n",
     )
-}
-
-/// Embed VERSIONINFO into the **cdylib** (sagethumbs2k.dll) via a standalone
-/// windres object linked with `cargo:rustc-link-arg-cdylib` (so ONLY the DLL
-/// picks it up — the EXEs get theirs from `embed_manifest_and_icon`). The DLL has
-/// no other resource object, so there's no `.rsrc` concat hazard. Best-effort:
-/// if `OUT_DIR`/windres is unavailable, emit a `cargo:warning` and move on — the
-/// build still succeeds, the DLL just lacks a version (REPORTED, never fatal).
-fn embed_dll_version() {
-    let out = match std::env::var("OUT_DIR") {
-        Ok(o) => o,
-        Err(_) => return,
-    };
-    let rc = versioninfo_rc("SageThumbs 2K shell extension", "sagethumbs2k.dll");
-    if std::fs::write(format!("{out}/dll_version.rc"), rc).is_err() {
-        println!("cargo:warning=DLL VERSIONINFO: couldn't write dll_version.rc; DLL will have no version");
-        return;
-    }
-    let obj = format!("{out}/dll_version.o");
-    for windres in ["windres", "x86_64-w64-mingw32-windres"] {
-        let status = std::process::Command::new(windres)
-            .args(["-I", &out, &format!("{out}/dll_version.rc"), "-O", "coff", "-o", &obj])
-            .status();
-        if matches!(status, Ok(s) if s.success()) {
-            // -arg-cdylib targets the DLL only; the EXEs already have VERSIONINFO.
-            println!("cargo:rustc-link-arg-cdylib={obj}");
-            return;
-        }
-    }
-    println!(
-        "cargo:warning=DLL VERSIONINFO: windres unavailable; sagethumbs2k.dll will have no \
-         file version (the two EXEs still do). Install binutils/llvm-windres to enable it."
-    );
 }
 
 /// Parse every `locales/<code>.toml` into a generated `LOCALES` table that

@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use image::ImageFormat;
 
-use sagethumbs2k::{convert_file_opts, settings, ConvertOpts, Resize, Target};
+use sagethumbs2k_core::{convert_file_opts, settings, ConvertOpts, Resize, Target};
 
 use crate::dark::{dark_ctlcolor, dark_theme_combo};
 use crate::win::{
@@ -194,7 +194,7 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         SendMessageW(fcombo, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
     }
     // Magick-backed exotic targets, only when ImageMagick is present (full install).
-    if sagethumbs2k::magick_available() {
+    if sagethumbs2k_core::magick_available() {
         for (name, _) in CV_MAGICK_FORMATS {
             let w = wide(name);
             SendMessageW(fcombo, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
@@ -338,7 +338,7 @@ unsafe fn start_convert(hwnd: HWND) {
         // Progress is posted as each file finishes (from worker threads;
         // `PostMessageW` is thread-safe), keeping the bar live.
         let done = std::sync::atomic::AtomicUsize::new(0);
-        let outs: Vec<Option<PathBuf>> = sagethumbs2k::parallel::map_indexed(
+        let outs: Vec<Option<PathBuf>> = sagethumbs2k_core::parallel::map_indexed(
             &files,
             0, // auto worker count = available_parallelism
             |_, f| {
@@ -363,9 +363,9 @@ unsafe fn start_convert(hwnd: HWND) {
                         convert_file_opts(f, opts, &dir).ok()
                     }
                     // One image → one single-page PDF (reserved name in `dir`).
-                    CvTarget::Pdf => sagethumbs2k::convert_image_to_pdf_in(f, &dir, quality).ok(),
+                    CvTarget::Pdf => sagethumbs2k_core::convert_image_to_pdf_in(f, &dir, quality).ok(),
                     // Exotic target written by the bundled ImageMagick (reserved name).
-                    CvTarget::Magick(ext) => sagethumbs2k::convert_to_magick_in(f, &dir, ext, resize).ok(),
+                    CvTarget::Magick(ext) => sagethumbs2k_core::convert_to_magick_in(f, &dir, ext, resize).ok(),
                 }
             },
             || {

@@ -96,7 +96,7 @@ unsafe fn lw_logo_hbitmap(w: u32, h: u32) -> Option<HBITMAP> {
         image::imageops::overlay(&mut chip, &logo, 0, 0);
         chip
     };
-    sagethumbs2k::app_image::rgba_to_hbitmap(w, h, rgba.as_raw()).map(|h| HBITMAP(h as *mut c_void))
+    sagethumbs2k_core::app_image::rgba_to_hbitmap(w, h, rgba.as_raw()).map(|h| HBITMAP(h as *mut c_void))
 }
 
 unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {

@@ -40,7 +40,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k::{default_menu_tokens, formats, i18n, settings, MENU_SEP_TOKEN};
+use sagethumbs2k_core::{default_menu_tokens, formats, i18n, settings, MENU_SEP_TOKEN};
 
 use crate::sponsors::{
     drop_sponsor_rotator, show_current_image, spawn_remote_sponsors, sponsors_enabled,
@@ -1581,7 +1581,7 @@ unsafe fn check_for_updates(hwnd: HWND) {
 /// Open the diagnostics log in the user's default text editor (or its folder if the
 /// log doesn't exist yet), so a user can find it and send it in for a bug report.
 unsafe fn open_diagnostics_log() {
-    let path = match sagethumbs2k::safety::log_file() {
+    let path = match sagethumbs2k_core::safety::log_file() {
         Some(p) if p.exists() => p,
         // No log yet → open its folder (the user sees there's nothing to send).
         Some(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or(p),

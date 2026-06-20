@@ -1,9 +1,9 @@
 //! `st2k` — the SageThumbs 2K command-line tool. A thin arg parser over
-//! `sagethumbs2k::cli`, exposing the bundled engine (decode 312 formats, convert,
+//! `sagethumbs2k_core::cli`, exposing the bundled engine (decode 312 formats, convert,
 //! rotate, strip, OCR, PDF, thumbnail) to scripts and AI agents. Console
 //! subsystem (no `windows_subsystem = "windows"`), so stdout/stderr work.
 
-use sagethumbs2k::cli;
+use sagethumbs2k_core::cli;
 
 const USAGE: &str = "\
 st2k — SageThumbs 2K command line
@@ -92,7 +92,7 @@ fn need<'a>(pos: &'a [&'a String], i: usize) -> Result<&'a str, String> {
 
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
-    sagethumbs2k::safety::install_panic_hook("st2k");
+    sagethumbs2k_core::safety::install_panic_hook("st2k");
     // WIC / WinRT decoders (HEIC, PDF, RAW via the OS) need COM.
     unsafe {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -109,7 +109,7 @@ fn main() {
     // MCP server mode (`st2k --mcp` or `st2k mcp`): hand off to the stdio
     // JSON-RPC loop, which owns stdin/stdout until the client disconnects.
     if args.iter().any(|a| a == "--mcp") || args.first().map(|s| s == "mcp").unwrap_or(false) {
-        if let Err(e) = sagethumbs2k::mcp::serve() {
+        if let Err(e) = sagethumbs2k_core::mcp::serve() {
             eprintln!("st2k --mcp: {e}");
             std::process::exit(1);
         }

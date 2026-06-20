@@ -1,0 +1,33 @@
+[package]
+name = "sagethumbs2k-dll"
+version.workspace = true
+edition = "2021"
+build = "build.rs"
+publish = false
+license-file = "../.github/LICENSE.md"
+description = "SageThumbs 2K shell-extension DLL — a thin cdylib over the sagethumbs2k rlib"
+
+# The shipped shell-extension DLL. `name = "sagethumbs2k"` so the output is
+# `sagethumbs2k.dll` (the name regsvr32 / the installer / Explorer expect). This crate
+# is cdylib-ONLY; the core logic + the two EXEs live in the `sagethumbs2k` package
+# (rlib `sagethumbs2k_core`). No crate is both cdylib+rlib → no cargo#6313 collision.
+[lib]
+name = "sagethumbs2k"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The core rlib (package `sagethumbs2k`, lib `sagethumbs2k_core`). Aliased to
+# `st2k_core` so the dependency name doesn't collide with THIS crate's lib name
+# (`sagethumbs2k`), which cargo would reject.
+st2k_core = { package = "sagethumbs2k", path = ".." }
+# Only for the COM entry-point signatures (GUID / HRESULT). No Win32 features needed —
+# DllMain takes the HMODULE as a raw isize so this stays a featherweight dep.
+windows-core = "0.62"
+
+[features]
+# Forward to the core crate so the release pipeline can opt in (build-release.ps1).
+default = []
+webp-lossy = ["st2k_core/webp-lossy"]
+# The slim-DLL i18n subset (menu_* keys only). build-release.ps1 builds the shipped DLL
+# with this; the EXEs keep the full 36-language table.
+dll-i18n-subset = ["st2k_core/dll-i18n-subset"]

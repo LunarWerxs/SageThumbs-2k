@@ -85,7 +85,7 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     register_configured_hotkey(hwnd);
 
     // Tray icon is shown unless the user hid it in Settings (the hotkey still works).
-    if !sagethumbs2k::settings::screenshot_hide_tray() {
+    if !sagethumbs2k_core::settings::screenshot_hide_tray() {
         add_tray_icon(hwnd);
     }
 
@@ -122,9 +122,9 @@ fn hkf_to_mods(hkf: u32) -> HOT_KEY_MODIFIERS {
 /// from the persisted settings. Best-effort — if a chord is taken the tray menu
 /// still works. The quick hotkey is skipped when its vk is 0 (disabled).
 unsafe fn register_configured_hotkey(hwnd: HWND) {
-    let (hkf, vk) = sagethumbs2k::settings::screenshot_hotkey();
+    let (hkf, vk) = sagethumbs2k_core::settings::screenshot_hotkey();
     let _ = RegisterHotKey(Some(hwnd), HOTKEY_ID, hkf_to_mods(hkf), vk);
-    let (qhkf, qvk) = sagethumbs2k::settings::screenshot_quick_hotkey();
+    let (qhkf, qvk) = sagethumbs2k_core::settings::screenshot_quick_hotkey();
     if qvk != 0 {
         let _ = RegisterHotKey(Some(hwnd), QUICK_HOTKEY_ID, hkf_to_mods(qhkf), qvk);
     }
@@ -155,7 +155,7 @@ unsafe fn tray_data(hwnd: HWND, with_payload: bool) -> NOTIFYICONDATAW {
 /// hardcoded default. The stored value always comes from the Settings dropdown, so
 /// it matches one of the presets; an unknown value falls back to the default label.
 fn hotkey_label() -> &'static str {
-    let (m, v) = sagethumbs2k::settings::screenshot_hotkey();
+    let (m, v) = sagethumbs2k_core::settings::screenshot_hotkey();
     let packed = (m << 8) | v;
     crate::settings_dlg::SHOT_PRESETS
         .iter()
@@ -204,7 +204,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
                 register_configured_hotkey(hwnd);
                 // Reconcile the tray icon with the (possibly just-changed) setting.
-                if sagethumbs2k::settings::screenshot_hide_tray() {
+                if sagethumbs2k_core::settings::screenshot_hide_tray() {
                     remove_tray_icon(hwnd);
                 } else {
                     add_tray_icon(hwnd);
@@ -227,7 +227,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     IDM_HIDE => {
                         // Hide the tray icon but keep the hotkey running (matches the
                         // Settings "Hide tray icon" toggle). Restore via Settings.
-                        let _ = sagethumbs2k::settings::set_dword("ScreenshotHideTray", 1);
+                        let _ = sagethumbs2k_core::settings::set_dword("ScreenshotHideTray", 1);
                         remove_tray_icon(hwnd);
                     }
                     IDM_QUIT => {

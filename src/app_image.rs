@@ -4,7 +4,7 @@
 //! remote-downloaded images for the Win32 EXEs (About box logo, Options banner,
 //! ad/banner image). They live out of the crate root because the DLL never uses
 //! them (LTO dead-strips them from the cdylib); the EXEs link them from the rlib
-//! as `sagethumbs2k::app_image::*`. Pure relocation — see `crate::dib` for the
+//! as `sagethumbs2k_core::app_image::*`. Pure relocation — see `crate::dib` for the
 //! shared DIB builder.
 
 use core::ffi::c_void;

@@ -12,7 +12,7 @@
 use serde_json::{Map, Value as Json};
 use windows_registry::{Key, CURRENT_USER};
 
-use sagethumbs2k::settings::ROOT;
+use sagethumbs2k_core::settings::ROOT;
 
 /// Read one registry key's values into a JSON object — DWORDs as numbers, strings as
 /// strings; any other value type is skipped (we only ever store those two).

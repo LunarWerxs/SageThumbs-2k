@@ -1,7 +1,7 @@
 //! The DLL's "Sort into folders ▸ By audio tag" verb on an audio selection
 //! (`--tags-to-folders <listfile>`). Dialog: destination, a `$artist - $album`
 //! folder-name template, and copy-vs-move. The sort engine is in the lib
-//! (`sagethumbs2k::tags_to_folders`).
+//! (`sagethumbs2k_core::tags_to_folders`).
 
 use std::sync::OnceLock;
 
@@ -106,7 +106,7 @@ extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         }
                         let move_files = checked(hwnd, CID_TTF_MOVE);
                         let (done, skipped) = if let Some(files) = TTF_FILES.get() {
-                            sagethumbs2k::tags_to_folders(files, std::path::Path::new(&dest), &template, &missing, move_files)
+                            sagethumbs2k_core::tags_to_folders(files, std::path::Path::new(&dest), &template, &missing, move_files)
                         } else {
                             (0, 0)
                         };

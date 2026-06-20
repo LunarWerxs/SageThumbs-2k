@@ -42,26 +42,25 @@ if (-not $SkipBuild) {
     # (libwebp, BSD — the one optional C piece) is enabled for the shipped installer;
     # the plain `cargo build` dev/clean build leaves it off (then lossy-WebP convert
     # falls back to lossless WebP).
-    $feat = @('--features', 'webp-lossy')
-    Write-Host "[1/4] cargo build --release $($feat -join ' ')" -ForegroundColor Green
+    # `-p sagethumbs2k`: the rlib + the two EXEs (full 36-language i18n). The DLL is a
+    # SEPARATE package (`sagethumbs2k-dll`) built slim below — so we can't `--features`
+    # the whole workspace at once (cargo rejects `--features` across >1 package).
+    $feat = @('-p', 'sagethumbs2k', '--features', 'webp-lossy')
+    Write-Host "[1/4] cargo build --release $($feat -join ' ')  (rlib + EXEs)" -ForegroundColor Green
     Push-Location $root
     try { cargo build --release @feat; if ($LASTEXITCODE) { throw "cargo build failed" } } finally { Pop-Location }
 
     # --- Slim shell-extension DLL ------------------------------------------------
-    # WHY a SECOND build: build.rs compiles locales/*.toml into ONE static LOCALES
-    # table that's `include!`d by the shared lib, and the main `cargo build` above
-    # emits all three artifacts (cdylib + 2 EXEs) from a SINGLE compilation. build.rs
-    # runs once per cargo invocation and can't know which artifact will consume the
-    # generated table, and there's no per-crate-type cfg. So we do a separate
-    # `cargo build --lib` with the `dll-i18n-subset` feature: that rebuild filters
-    # the LOCALES table down to the `menu_*` keys the DLL actually looks up, shrinking
-    # the cdylib by ~0.2–0.28 MB. The EXEs keep the full 36-language table (the main
-    # build above). We MUST pass the SAME extra features as the main build so the slim
-    # DLL is otherwise identical (webp-lossy affects linked code, not just EXEs).
-    $featSlim = @('--features', 'webp-lossy,dll-i18n-subset')
-    Write-Host "[1b/4] cargo build --lib --release $($featSlim -join ' ')  (slim DLL)" -ForegroundColor Green
+    # The DLL (`sagethumbs2k-dll` cdylib) is built SEPARATELY with `dll-i18n-subset`
+    # forwarded to the core crate, which filters build.rs's static LOCALES table down
+    # to the `menu_*` keys the DLL actually looks up (~0.2–0.28 MB smaller). The EXEs
+    # (built above, full 36-language table) are a DIFFERENT package, so there's no
+    # feature-unification clash — the two `-p` builds key their core-crate artifacts by
+    # feature set independently. Same `webp-lossy` so the slim DLL is otherwise identical.
+    $featSlim = @('-p', 'sagethumbs2k-dll', '--features', 'webp-lossy,dll-i18n-subset')
+    Write-Host "[1b/4] cargo build --release $($featSlim -join ' ')  (slim DLL)" -ForegroundColor Green
     Push-Location $root
-    try { cargo build --lib --release @featSlim; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
+    try { cargo build --release @featSlim; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
 }
 
 # 3) Stage -------------------------------------------------------------------

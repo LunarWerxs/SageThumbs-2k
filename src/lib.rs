@@ -57,7 +57,7 @@ pub fn magick_available() -> bool {
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
 
-use windows::core::{Error, Interface, BOOL, GUID, HRESULT};
+use windows::core::{Error, Interface, GUID, HRESULT};
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_POINTER, HMODULE, S_FALSE, S_OK};
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
@@ -133,16 +133,21 @@ impl Drop for ModuleRef {
     }
 }
 
-#[no_mangle]
-pub extern "system" fn DllMain(hmodule: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
+// COM entry-point IMPLEMENTATIONS. These used to be the `#[no_mangle] extern "system"`
+// `Dll*` exports directly; they now live as plain `pub fn`s here (the rlib `core`),
+// and the thin `sagethumbs2k` cdylib crate (`dll/`) wraps each in a `#[no_mangle]`
+// shim. Splitting the cdylib into its own crate means NO crate is both `cdylib` AND
+// `rlib`, which eliminates the intermittent cargo#6313 link collision that broke CI.
+
+/// DllMain: capture our `HMODULE` (as a raw `isize`, so the cdylib shim needs no
+/// `windows` types) on process-attach to resolve our own path later.
+pub fn dll_main(hmodule: isize, reason: u32) {
     if reason == DLL_PROCESS_ATTACH {
-        HMODULE_PTR.store(hmodule.0 as isize, Ordering::SeqCst);
+        HMODULE_PTR.store(hmodule, Ordering::SeqCst);
     }
-    BOOL(1)
 }
 
-#[no_mangle]
-pub extern "system" fn DllCanUnloadNow() -> HRESULT {
+pub fn dll_can_unload_now() -> HRESULT {
     // == 0 (not <= 0): the count is now clamped at zero in `dll_release`, so it can
     // never go negative; testing `<= 0` would fail dangerous on a hypothetical
     // underflow by reporting "safe to unload" while an object is still live.
@@ -153,13 +158,11 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
-// COM ABI export: the Windows loader calls this by name (it cannot observe a
-// Rust `unsafe` marker), and we null-check every pointer before use under the
-// panic guard. The clippy correctness lint that wants raw-pointer-deref exports
-// marked `unsafe` doesn't apply to a `#[no_mangle] extern` entry point.
+// The Windows loader calls the cdylib's `DllGetClassObject` by name; this is its body.
+// We null-check every pointer before use under the panic guard, so the clippy
+// raw-pointer-deref lint doesn't apply.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-#[no_mangle]
-pub extern "system" fn DllGetClassObject(
+pub fn dll_get_class_object(
     rclsid: *const GUID,
     riid: *const GUID,
     ppv: *mut *mut c_void,
@@ -182,16 +185,14 @@ pub extern "system" fn DllGetClassObject(
     })
 }
 
-#[no_mangle]
-pub extern "system" fn DllRegisterServer() -> HRESULT {
+pub fn dll_register_server() -> HRESULT {
     safety::guard_hr(|| match module_path().and_then(|p| register::register(&p)) {
         Ok(()) => S_OK,
         Err(e) => e.code(),
     })
 }
 
-#[no_mangle]
-pub extern "system" fn DllUnregisterServer() -> HRESULT {
+pub fn dll_unregister_server() -> HRESULT {
     safety::guard_hr(|| match register::unregister() {
         Ok(()) => S_OK,
         Err(e) => e.code(),

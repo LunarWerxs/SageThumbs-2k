@@ -1,7 +1,7 @@
 //! A name-prompt dialog for the DLL's "Files to folder" verb on a multi-file
 //! selection (`--files-to-folder <listfile>`). Single-file selections are handled
 //! in the DLL with no prompt. The actual create-folder-and-move lives in the lib
-//! (`sagethumbs2k::files_to_folder`), shared with the DLL's single-file path.
+//! (`sagethumbs2k_core::files_to_folder`), shared with the DLL's single-file path.
 
 use std::sync::OnceLock;
 
@@ -72,7 +72,7 @@ extern "system" fn f2f_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             name = t("f2f_default_name").to_string();
                         }
                         if let Some(files) = F2F_FILES.get() {
-                            let _ = sagethumbs2k::files_to_folder(files, &name);
+                            let _ = sagethumbs2k_core::files_to_folder(files, &name);
                         }
                         let _ = DestroyWindow(hwnd);
                     }

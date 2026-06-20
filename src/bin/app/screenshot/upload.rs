@@ -59,7 +59,7 @@ fn upload_host() -> Result<UploadHost, String> {
         field: "fileToUpload".into(),
         extra: vec![("reqtype".into(), "fileupload".into())],
     };
-    let Ok(key) = windows_registry::CURRENT_USER.open(sagethumbs2k::settings::ROOT) else {
+    let Ok(key) = windows_registry::CURRENT_USER.open(sagethumbs2k_core::settings::ROOT) else {
         return Ok(catbox());
     };
     let url = match key.get_string("ScreenshotUploadUrl") {

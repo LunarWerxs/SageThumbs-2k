@@ -22,7 +22,7 @@ thread_local! {
 
 /// Gather verbose metadata for `path` and show it in a scrollable, copyable window.
 pub fn run_image_info(path: &str) {
-    let text = sagethumbs2k::read_info_verbose(path);
+    let text = sagethumbs2k_core::read_info_verbose(path);
     INFO.with(|i| *i.borrow_mut() = text);
     unsafe {
         run_dialog(w!("SageThumbs2KImageInfo"), Some(info_wndproc), "Image info", 480, 470, None);

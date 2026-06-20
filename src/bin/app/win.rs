@@ -34,7 +34,7 @@ use windows::Win32::UI::Shell::{
     FOS_PICKFOLDERS, KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
 };
 
-use sagethumbs2k::i18n;
+use sagethumbs2k_core::i18n;
 
 /// Shorthand for a translated UI string in the active language.
 pub(crate) fn t(key: &str) -> &'static str {
@@ -532,7 +532,7 @@ pub(crate) unsafe fn load_art(default_png: &[u8], override_name: &str, w: u32, h
         .and_then(|p| p.parent().map(|d| d.join(override_name)))
         .and_then(|f| std::fs::read(f).ok());
     let data = from_file.as_deref().unwrap_or(default_png);
-    sagethumbs2k::app_image::image_to_hbitmap_sized(data, w, h).map(|h| HBITMAP(h as *mut c_void))
+    sagethumbs2k_core::app_image::image_to_hbitmap_sized(data, w, h).map(|h| HBITMAP(h as *mut c_void))
 }
 
 /// Load the app icon for the title bar + taskbar. Prefers an `app.ico` next to
@@ -777,6 +777,6 @@ pub(crate) unsafe fn pick_open_settings(owner: HWND) -> Option<String> {
 /// Put `text` on the clipboard as Unicode text. Best-effort. Delegates the unsafe
 /// HGLOBAL ownership dance to the one shared writer in the lib's `clipboard` module.
 pub(crate) unsafe fn set_clipboard_text(text: &str) -> bool {
-    let bytes = sagethumbs2k::clipboard::utf16_nul_bytes(text);
-    sagethumbs2k::clipboard::set_clipboard(sagethumbs2k::clipboard::CF_UNICODETEXT, &bytes)
+    let bytes = sagethumbs2k_core::clipboard::utf16_nul_bytes(text);
+    sagethumbs2k_core::clipboard::set_clipboard(sagethumbs2k_core::clipboard::CF_UNICODETEXT, &bytes)
 }
