@@ -13,11 +13,10 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11** — the cle
 ![Formats](https://img.shields.io/badge/formats-312-2ea44f)
 [![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?display_name=tag)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![Installs](https://img.shields.io/endpoint?url=https%3A%2F%2Fst2k.connections.icu%2Fbadge)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
-
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
 
-[**⬇ Download**](https://github.com/LunarWerxs/SageThumbs-2k/releases) · [Features](#-features) · [Formats](#-supported-formats) · [Build from source](#-build-from-source)
+[**⬇ Download**](https://github.com/LunarWerxs/SageThumbs-2k/releases) · [Features](#-features) · [Formats](#-supported-formats) · [Changelog](docs/CHANGELOG.md) · [Build from source](#-build-from-source)
 
 <br/>
 
@@ -81,6 +80,18 @@ The original **SageThumbs** was a Windows legend — it made Explorer show thumb
 <div align="center">
 <img src="assets/screenshots/preview1.png" alt="Windows Explorer showing real thumbnails for camera RAW, PSD, AVIF, OpenEXR, JPEG-XL, comics and more" width="840" />
 </div>
+
+---
+
+## ⭐ Like it? Help it grow
+
+Built in the open by one person, free for personal use — no ads, no tracking, no paywall. If SageThumbs 2K earns a spot on your "install on every new PC" list, a few seconds of support goes a *long* way:
+
+- ⭐ **[Star the repo](https://github.com/LunarWerxs/SageThumbs-2k)** — the single biggest signal that this is worth maintaining.
+- 📝 **[Leave a review on SourceForge](https://sourceforge.net/projects/sagethumbs-2k/)** — helps people find a thumbnailer they can actually trust.
+- 👍 **[Like it on AlternativeTo](https://alternativeto.net/software/sagethumbs-2k/about/)** — surfaces it for everyone searching for a SageThumbs / DarkThumbs alternative.
+
+Hit a bug, or a format that won't thumbnail? **[Open an issue](https://github.com/LunarWerxs/SageThumbs-2k/issues)** — that helps just as much.
 
 ---
 
