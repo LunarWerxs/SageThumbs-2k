@@ -12,7 +12,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11** — the cle
 [![Built with Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=222)](#-how-it-works)
 ![Formats](https://img.shields.io/badge/formats-313-2ea44f)
 [![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?display_name=tag)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
-[![Installs](https://img.shields.io/endpoint?url=https%3A%2F%2Fst2k.connections.icu%2Fbadge)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
+[![Installs](https://img.shields.io/endpoint?url=https%3A%2F%2Fst2k.lunarwerx.com%2Fbadge)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
 

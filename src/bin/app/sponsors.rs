@@ -41,7 +41,7 @@ use crate::win::{set_static_bitmap, wide, URL_PRODUCT};
 /// The startup fetch appends a small, **non-identifying** query string
 /// (`?v=<app-version>&os=<win-generation-build>&new=<0|1>`) — see [`manifest_bytes`]. No
 /// identifier is sent; `new=1` is a one-shot "fresh install" marker, not a per-machine id.
-pub(crate) const BANNER_URL: &str = "https://st2k.connections.icu/sponsor";
+pub(crate) const BANNER_URL: &str = "https://st2k.lunarwerx.com/sponsor";
 
 /// Banner default artwork, embedded so the reserved banner area shows *something*
 /// while the real sponsor images download (only ever displayed once the feed has

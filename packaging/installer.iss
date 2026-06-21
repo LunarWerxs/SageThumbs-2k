@@ -117,7 +117,7 @@ begin
     Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
     // resolve, connect, send, receive (ms) — capped so a dead network fails fast.
     Http.SetTimeouts(1500, 1500, 1500, 2000);
-    Http.Open('GET', 'https://st2k.connections.icu/sponsor?uninstall=1&v={#AppVer}', False);
+    Http.Open('GET', 'https://st2k.lunarwerx.com/sponsor?uninstall=1&v={#AppVer}', False);
     Http.SetRequestHeader('User-Agent', 'SageThumbs2K-Uninstaller');
     Http.Send('');
   except

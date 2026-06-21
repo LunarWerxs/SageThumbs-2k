@@ -47,7 +47,9 @@ pub(crate) const IDCANCEL: i32 = 2;
 
 // --- Branding (edit these / swap the assets to rebrand) -----------------
 pub(crate) const URL_PARENT: &str = "https://lunarwerx.com";
-pub(crate) const URL_PRODUCT: &str = "https://connections.icu";
+// The product's own home. No dedicated domain yet, so this is the GitHub repo
+// (where users actually get + engage with it). Repoint if a product site appears.
+pub(crate) const URL_PRODUCT: &str = "https://github.com/LunarWerxs/SageThumbs-2k";
 pub(crate) const URL_GITHUB: &str = "https://github.com/LunarWerxs/SageThumbs-2k";
 /// The About box's LunarWerx wordmark links here.
 pub(crate) const URL_COMPANIES: &str = "https://lunarwerx.com/#companies";
