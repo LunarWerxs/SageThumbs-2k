@@ -41,8 +41,9 @@ pub use menu::{
 // Encode / convert / resize primitives and descriptors.
 #[allow(unused_imports)]
 pub use encode::{
-    convert_file, convert_file_opts, convert_image_to_pdf_in, convert_to, convert_to_magick,
-    convert_to_magick_in, resize_file, shrink_for_email, transform_file, ConvertOpts, Resize, Target,
+    compress_to_size, convert_file, convert_file_opts, convert_image_to_pdf_in, convert_to,
+    convert_to_magick, convert_to_magick_in, resize_file, shrink_for_email, transform_file,
+    ConvertOpts, Resize, Target,
 };
 pub(crate) use encode::{flatten_onto_white, read_capped};
 

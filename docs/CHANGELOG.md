@@ -2,6 +2,20 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.4.9
+
+- **Correct colors for wide-gamut photos.** Thumbnails of Display-P3 / Adobe RGB images
+  (most modern phone and camera photos) are now color-managed to sRGB, so they match what
+  you see in Photos or a browser instead of looking over-saturated.
+- **Crisp pixel art & icons.** Tiny images (sprites, 16–64 px icons) now scale up sharp
+  instead of being blurred into a smudge.
+- **Compress to a target file size.** The `st2k` command-line tool gained
+  `compress <file> --max-size 1MB` (or `500KB`, etc.) — it finds the best quality that
+  fits under your size limit.
+- **No more stuck blank thumbnails.** If a file decodes to nothing, Explorer now shows the
+  normal file icon instead of caching an empty tile you couldn't clear.
+- **Apple Live Photos (.livp)** now show their still image — bringing the total to **313**.
+
 ## 0.4.8
 
 - **Thumbnails now work on a clean Windows install.** The shell extension no longer

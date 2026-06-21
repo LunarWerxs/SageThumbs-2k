@@ -24,7 +24,7 @@
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5">
 
-  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="0.4.8.0" ProcessorArchitecture="neutral" />
+  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="0.4.9.0" ProcessorArchitecture="neutral" />
 
   <Properties>
     <DisplayName>SageThumbs 2K</DisplayName>

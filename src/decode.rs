@@ -1121,21 +1121,52 @@ fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
 pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Result<Decoded> {
     let cx = cx.max(1);
 
-    if use_embedded && cx <= crate::settings::EMBEDDED_MAX_REQUEST {
-        if let Some(img) = embedded_thumbnail(bytes) {
-            crate::safety::log_debug("decode: used embedded EXIF thumbnail");
-            return Ok(fit_to_box(img, cx));
+    let img = if use_embedded && cx <= crate::settings::EMBEDDED_MAX_REQUEST {
+        match embedded_thumbnail(bytes) {
+            Some(t) => {
+                crate::safety::log_debug("decode: used embedded EXIF thumbnail");
+                t
+            }
+            None => decode_preview(bytes)?,
         }
-    }
+    } else {
+        decode_preview(bytes)?
+    };
 
-    Ok(fit_to_box(decode_preview(bytes)?, cx))
+    let decoded = fit_to_box(img, cx);
+    // Watchdog: a fully-transparent thumbnail is invisible — almost always a decode that
+    // "succeeded" into nothing. Fail it so Explorer shows the file's icon instead of
+    // caching a blank tile the user can't clear without nuking the thumbnail cache.
+    if is_fully_transparent(&decoded.rgba) {
+        crate::safety::log_debug("decode: thumbnail was fully transparent — rejecting as blank");
+        return Err(Error::from(E_FAIL));
+    }
+    Ok(decoded)
 }
 
-/// Fit within a `cx`-by-`cx` box, preserving aspect ratio, never upscaling.
+/// True when every pixel is fully transparent (alpha 0) — i.e. nothing visible.
+fn is_fully_transparent(rgba: &[u8]) -> bool {
+    !rgba.is_empty() && rgba.chunks_exact(4).all(|px| px[3] == 0)
+}
+
+/// Sources at or below this size (longest edge) are treated as pixel-art / icons and
+/// integer-upscaled with Nearest so they stay crisp. Kept small on purpose: nearest-
+/// upscaling a *small photo* would look blocky, so anything bigger is left native.
+const NEAREST_UPSCALE_MAX: u32 = 64;
+
+/// Fit within a `cx`-by-`cx` box, preserving aspect ratio. Large images shrink with
+/// Lanczos3; tiny pixel-art / icons are integer-upscaled with Nearest so they render
+/// crisp instead of bilinear-smeared; mid-size images are left native (Explorer scales).
 fn fit_to_box(img: DynamicImage, cx: u32) -> Decoded {
     let (w, h) = (img.width(), img.height());
+    let long = w.max(h);
     let img = if w > cx || h > cx {
         img.resize(cx, cx, FilterType::Lanczos3)
+    } else if w > 0 && h > 0 && long <= NEAREST_UPSCALE_MAX && long * 2 <= cx {
+        // Tiny sprite/icon: scale by the largest integer factor that fits, with Nearest
+        // (integer + Nearest = perfectly crisp pixels, no blur).
+        let factor = cx / long;
+        img.resize_exact(w * factor, h * factor, FilterType::Nearest)
     } else {
         img
     };
@@ -1270,8 +1301,9 @@ fn decode_with_image(bytes: &[u8]) -> Result<DynamicImage> {
 /// are still bounded by [`limits::MAX_DIM`]; only the alloc ceiling varies (the
 /// PSD-composite re-decode of OUR own bounded PNG passes a larger one).
 fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage> {
+    use image::ImageDecoder;
     use std::io::Cursor;
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+    let reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|_| Error::from(E_FAIL))?;
     // Explicit limits enforced during a single decode pass: reject oversized
@@ -1280,8 +1312,66 @@ fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage>
     limits.max_image_width = Some(MAX_DIM);
     limits.max_image_height = Some(MAX_DIM);
     limits.max_alloc = Some(max_alloc);
-    reader.limits(limits);
-    reader.decode().map_err(|_| Error::from(E_FAIL))
+    // Decode via the decoder (not `reader.decode()`) so we can read the embedded ICC
+    // profile and color-manage to sRGB before the pixels hit the resize/DIB path.
+    let mut decoder = reader.into_decoder().map_err(|_| Error::from(E_FAIL))?;
+    decoder.set_limits(limits).map_err(|_| Error::from(E_FAIL))?;
+    let icc = decoder.icc_profile().ok().flatten();
+    let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
+    Ok(apply_icc_to_srgb(img, icc))
+}
+
+/// Color-manage an embedded ICC profile to sRGB so wide-gamut (Display-P3 / Adobe RGB /
+/// …) thumbnails match a color-managed viewer instead of rendering over-saturated — and
+/// then having Explorer cache the wrong colors. Uses the pure-Rust `moxcms` we ALREADY
+/// ship (via `image`/`jxl-oxide`), so this adds no dependency and no size.
+///
+/// Scope: 8-bit RGB/RGBA with an RGB-space profile. No-profile, CMYK, Lab, gray, and
+/// 16-bit images pass through untouched (CMYK→sRGB needs the raw CMYK samples and is a
+/// separate, harder transform). Best-effort: any parse/transform failure returns the
+/// image unchanged, so color management can never turn a good thumbnail into a blank.
+fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> DynamicImage {
+    use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
+
+    let Some(icc) = icc.filter(|p| !p.is_empty()) else {
+        return img;
+    };
+    let Ok(src) = ColorProfile::new_from_slice(&icc) else {
+        return img;
+    };
+    // Only matrix/RGB display profiles here — never mangle CMYK/Lab/etc.
+    if src.color_space != DataColorSpace::Rgb {
+        return img;
+    }
+    let dst = ColorProfile::new_srgb();
+
+    // Transform a flat 8-bit buffer (sample count is preserved, so the ImageBuffer
+    // rebuild can't fail). On any error, keep the ORIGINAL pixels — never a blank.
+    let cms = |layout: Layout, px: Vec<u8>| -> Vec<u8> {
+        let mut out = vec![0u8; px.len()];
+        match src.create_transform_8bit(layout, &dst, layout, TransformOptions::default()) {
+            Ok(t) if t.transform(&px, &mut out).is_ok() => out,
+            _ => px,
+        }
+    };
+
+    match img {
+        DynamicImage::ImageRgb8(buf) => {
+            let (w, h) = buf.dimensions();
+            let out = cms(Layout::Rgb, buf.into_raw());
+            image::RgbImage::from_raw(w, h, out)
+                .map(DynamicImage::ImageRgb8)
+                .unwrap_or_else(|| DynamicImage::new_rgb8(w, h))
+        }
+        DynamicImage::ImageRgba8(buf) => {
+            let (w, h) = buf.dimensions();
+            let out = cms(Layout::Rgba, buf.into_raw());
+            image::RgbaImage::from_raw(w, h, out)
+                .map(DynamicImage::ImageRgba8)
+                .unwrap_or_else(|| DynamicImage::new_rgba8(w, h))
+        }
+        other => other,
+    }
 }
 
 /// Decode via Windows Imaging Component using whatever codecs the OS has
@@ -1497,10 +1587,11 @@ mod tests {
     }
 
     #[test]
-    fn never_upscales_small_images() {
-        // 20x10 requested at 256 stays 20x10 (matches legacy SageThumbs behavior).
-        let d = decode_thumbnail_opts(&png_bytes(20, 10, [0, 255, 0, 255]), 256, false).unwrap();
-        assert_eq!((d.width, d.height), (20, 10));
+    fn midsize_images_are_not_upscaled() {
+        // Above the tiny pixel-art threshold (>64px) a small image stays native — only
+        // LARGE images shrink, only TINY (<=64px) sprites are Nearest-upscaled.
+        let d = decode_thumbnail_opts(&png_bytes(100, 50, [0, 255, 0, 255]), 256, false).unwrap();
+        assert_eq!((d.width, d.height), (100, 50));
     }
 
     #[test]
@@ -1699,7 +1790,8 @@ mod tests {
             enc.encode_frame(Frame::new(blue)).unwrap();
         }
         let d = decode_thumbnail_opts(&bytes, 96, false).unwrap();
-        assert_eq!((d.width, d.height), (20, 20)); // no upscale
+        // 20px sprite Nearest-upscales by an integer factor (96/20 -> 4x = 80px).
+        assert_eq!((d.width, d.height), (80, 80));
         assert!(d.rgba[0] > 180 && d.rgba[2] < 90, "expected first (red) frame, got {:?}", &d.rgba[0..4]);
     }
 
@@ -1714,6 +1806,60 @@ mod tests {
         let i = (((d.height / 2) * d.width + d.width / 2) * 4) as usize;
         assert!(d.rgba[i] > 180 && d.rgba[i + 1] < 90 && d.rgba[i + 3] == 255,
             "center should be red, got {:?}", &d.rgba[i..i + 4]);
+    }
+
+    #[test]
+    fn icc_color_management_to_srgb() {
+        use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
+        // No embedded profile → the image must come back byte-for-byte unchanged.
+        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([30, 150, 80])));
+        assert_eq!(
+            apply_icc_to_srgb(img.clone(), None).to_rgb8(),
+            img.to_rgb8(),
+            "no profile must pass through untouched"
+        );
+        // A real Display-P3 profile (encoded via moxcms) must color-manage a saturated
+        // color toward sRGB — values change, dimensions preserved, never blanked.
+        let p3 = moxcms::ColorProfile::new_display_p3().encode().expect("encode P3");
+        let managed = apply_icc_to_srgb(img.clone(), Some(p3));
+        assert_eq!(managed.dimensions(), (2, 2));
+        assert_ne!(
+            managed.to_rgb8(),
+            img.to_rgb8(),
+            "a Display-P3 pixel must be transformed, not passed through"
+        );
+        // A CMYK-space profile must be left alone (we only handle RGB profiles).
+        let cmyk_unhandled = apply_icc_to_srgb(img.clone(), Some(vec![0u8; 4])); // junk ICC
+        assert_eq!(cmyk_unhandled.to_rgb8(), img.to_rgb8(), "bad ICC → unchanged");
+    }
+
+    #[test]
+    fn fully_transparent_thumbnail_is_rejected_blank() {
+        // A fully-transparent decode is invisible → reject so Explorer shows the icon.
+        let clear = png_bytes(32, 32, [0, 0, 0, 0]);
+        assert!(
+            decode_thumbnail_opts(&clear, 256, false).is_err(),
+            "fully-transparent thumbnail must be rejected as blank"
+        );
+        // Anything with visible pixels is fine.
+        let opaque = png_bytes(32, 32, [10, 20, 30, 255]);
+        assert!(decode_thumbnail_opts(&opaque, 256, false).is_ok());
+    }
+
+    #[test]
+    fn tiny_sprite_nearest_upscales_but_midsize_stays_native() {
+        // 16×16 sprite in a 256 box → integer Nearest upscale to 16× = 256 (crisp).
+        let sprite = png_bytes(16, 16, [10, 20, 30, 255]);
+        let d = decode_thumbnail_opts(&sprite, 256, false).unwrap();
+        assert_eq!((d.width, d.height), (256, 256), "16px sprite should nearest-upscale to 256");
+        // 200×200 is above the sprite threshold → must stay native (no blocky upscale).
+        let mid = png_bytes(200, 200, [10, 20, 30, 255]);
+        let d2 = decode_thumbnail_opts(&mid, 256, false).unwrap();
+        assert_eq!((d2.width, d2.height), (200, 200), "mid-size image must stay native");
+        // A large image still shrinks to fit.
+        let big = png_bytes(800, 600, [10, 20, 30, 255]);
+        let d3 = decode_thumbnail_opts(&big, 256, false).unwrap();
+        assert!(d3.width <= 256 && d3.height <= 256 && d3.width.max(d3.height) == 256);
     }
 
     #[test]

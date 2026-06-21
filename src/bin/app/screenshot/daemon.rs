@@ -17,7 +17,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_SHIFT,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, ShellExecuteW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -35,6 +36,14 @@ const IDM_CAPTURE: usize = 101;
 const IDM_SETTINGS: usize = 102;
 const IDM_QUIT: usize = 103;
 const IDM_HIDE: usize = 104;
+/// Periodic update check (only this already-resident process runs it — no scheduled task).
+const UPDATE_TIMER_ID: usize = 9;
+/// Re-attempt every 6h; `update::lazy_check_worker` throttles the actual network hit to 1/day.
+const UPDATE_TIMER_MS: u32 = 6 * 60 * 60 * 1000;
+/// A newer release was found (lparam = `Box<String>` tag); posted from the check thread.
+const WM_UPDATE_FOUND: u32 = WM_APP + 3;
+/// The user clicked our update toast (Shell tray notification balloon).
+const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 
 pub(super) const CLASS: PCWSTR = w!("SageThumbs2KShotDaemon");
 
@@ -87,6 +96,15 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     // Tray icon is shown unless the user hid it in Settings (the hotkey still works).
     if !sagethumbs2k_core::settings::screenshot_hide_tray() {
         add_tray_icon(hwnd);
+    }
+
+    // Opt-in periodic update check. ONLY this already-resident process does it — there is
+    // no scheduled task or service. The actual network hit is throttled to once/day inside
+    // `update::lazy_check_worker`; this 6h timer just re-attempts (covering machines left
+    // on for days). One check fires shortly after startup, then on each timer tick.
+    if sagethumbs2k_core::settings::update_auto_check() {
+        let _ = SetTimer(Some(hwnd), UPDATE_TIMER_ID, UPDATE_TIMER_MS, None);
+        kick_update_check(hwnd);
     }
 
     let mut msg = MSG::default();
@@ -188,6 +206,57 @@ unsafe fn show_tray_menu(hwnd: HWND) {
     let _ = DestroyMenu(menu);
 }
 
+/// Spawn the throttled, Worker-routed update check on a background thread. If it finds a
+/// newer release it posts `WM_UPDATE_FOUND` back to the daemon window (which owns the tray
+/// icon) carrying the version tag in a `Box<String>`.
+unsafe fn kick_update_check(hwnd: HWND) {
+    let hwnd_raw = hwnd.0 as isize; // HWND isn't Send; ferry the raw handle to the worker.
+    crate::update::lazy_check_worker(move |tag| unsafe {
+        let boxed = Box::into_raw(Box::new(tag)) as isize;
+        // PostMessageW is safe cross-thread; the UI thread reclaims the box.
+        if PostMessageW(
+            Some(HWND(hwnd_raw as *mut core::ffi::c_void)),
+            WM_UPDATE_FOUND,
+            WPARAM(0),
+            LPARAM(boxed),
+        )
+        .is_err()
+        {
+            drop(Box::from_raw(boxed as *mut String)); // window gone — don't leak
+        }
+    });
+}
+
+/// Pop a tray "update available" balloon (clickable → the releases page). A no-op if the
+/// tray icon is hidden, in which case the next Settings open still surfaces the update.
+unsafe fn show_update_toast(hwnd: HWND, tag: &str) {
+    let mut nid = tray_data(hwnd, false);
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    let title = wide("SageThumbs 2K update available");
+    let info = wide(&format!("Version {tag} is ready — click to download."));
+    for (d, s) in nid.szInfoTitle.iter_mut().zip(title.iter()) {
+        *d = *s;
+    }
+    for (d, s) in nid.szInfo.iter_mut().zip(info.iter()) {
+        *d = *s;
+    }
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+/// Open the GitHub releases page in the default browser (the update toast's click target).
+unsafe fn open_releases() {
+    let url = wide(crate::update::RELEASES_URL);
+    ShellExecuteW(
+        None,
+        w!("open"),
+        PCWSTR(url.as_ptr()),
+        PCWSTR::null(),
+        PCWSTR::null(),
+        SW_SHOWNORMAL,
+    );
+}
+
 extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -217,6 +286,21 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     spawn(Some("--screenshot"));
                 } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
                     show_tray_menu(hwnd);
+                } else if ev == NIN_BALLOONUSERCLICK {
+                    open_releases(); // clicked the "update available" toast
+                }
+                LRESULT(0)
+            }
+            WM_TIMER => {
+                if wparam.0 == UPDATE_TIMER_ID {
+                    kick_update_check(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_UPDATE_FOUND => {
+                if lparam.0 != 0 {
+                    let tag = *Box::from_raw(lparam.0 as *mut String);
+                    show_update_toast(hwnd, &tag);
                 }
                 LRESULT(0)
             }
@@ -242,6 +326,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 LRESULT(0)
             }
             WM_DESTROY => {
+                let _ = KillTimer(Some(hwnd), UPDATE_TIMER_ID);
                 remove_tray_icon(hwnd);
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);

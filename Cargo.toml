@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.4.8"
+version = "0.4.9"
 
 [package]
 name = "sagethumbs2k"
@@ -49,6 +49,12 @@ path = "src/bin/cli.rs"
 image = { version = "0.25", default-features = false, features = [
     "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
 ] }
+# Color management: apply an embedded ICC profile to bring wide-gamut (Display-P3 /
+# Adobe RGB) thumbnails into sRGB so they aren't over-saturated (and don't get cached
+# wrong). NOT a new dependency — `image` (and `jxl-oxide`) ALREADY pull moxcms 0.8
+# transitively, so naming it here shares the same compiled crate = zero added bytes.
+# Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
+moxcms = "0.8"
 kamadak-exif = "0.6"
 # JSON for the `st2k --mcp` MCP server (JSON-RPC 2.0 over stdio). Pure-Rust,
 # MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from

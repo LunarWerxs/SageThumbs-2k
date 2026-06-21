@@ -101,7 +101,7 @@ fn manifest_bytes() -> Option<&'static [u8]> {
 /// (e.g. `win11-22631`), read from `HKLM\…\CurrentVersion`. Describes the OS, not the
 /// user: it carries no identifier and can't single anyone out. Falls back to a `0`
 /// build if the key can't be read.
-fn os_tag() -> String {
+pub(crate) fn os_tag() -> String {
     use windows_registry::LOCAL_MACHINE;
     let build: u32 = LOCAL_MACHINE
         .open(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")

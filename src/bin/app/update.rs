@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::sponsors::http_fetch;
+use crate::sponsors::{http_fetch, os_tag, BANNER_URL};
 
 /// The GitHub "latest release" endpoint for this repo.
 const RELEASES_API: &str = "https://api.github.com/repos/LunarWerxs/SageThumbs-2k/releases/latest";
@@ -129,6 +129,56 @@ pub(crate) fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
             }
             UpdateCheck::UpToDate => write_cache(now, env!("CARGO_PKG_VERSION")),
             UpdateCheck::Failed => {}
+        }
+    });
+}
+
+/// Ask the sponsor Worker for the latest version. The Worker already serves a `latest`
+/// field in its manifest (sourced from GitHub server-side + edge-cached), so the client
+/// never touches GitHub directly and can't be rate-limited. This fetch doubles as the
+/// periodic heartbeat check-in (new=0 — the fresh-install marker is owned by the app's
+/// own startup path). Returns the latest tag (e.g. "0.4.9") or None on any failure.
+fn latest_from_worker() -> Option<String> {
+    let url = format!("{BANNER_URL}?v={}&os={}&new=0", env!("CARGO_PKG_VERSION"), os_tag());
+    let bytes = http_fetch(&url, true)?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let tag = json.get("latest")?.as_str()?.trim();
+    (!tag.is_empty()).then(|| tag.to_string())
+}
+
+/// LAZY, THROTTLED background update check routed through the sponsor Worker (the
+/// resident screenshot helper calls this on a timer). Hits the network at most once per
+/// [`CHECK_INTERVAL`] and — unlike [`lazy_check`] — does NOT re-nudge from the cache in
+/// between, so a newer version toasts at most once per interval instead of every tick.
+/// Falls back to the direct GitHub [`check`] if the Worker didn't supply a version.
+pub(crate) fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F) {
+    std::thread::spawn(move || {
+        let now = now_secs();
+        if let Some((last, _)) = read_cache() {
+            if now.saturating_sub(last) < CHECK_INTERVAL.as_secs() {
+                return; // checked recently — don't re-toast within the interval
+            }
+        }
+        // Worker first (also the heartbeat check-in); GitHub as a fallback.
+        let newer = match latest_from_worker() {
+            Some(tag) => {
+                write_cache(now, &tag); // cache whatever the latest is (newer or not)
+                is_newer(&tag).then_some(tag)
+            }
+            None => match check() {
+                UpdateCheck::Available(tag) => {
+                    write_cache(now, &tag);
+                    Some(tag)
+                }
+                UpdateCheck::UpToDate => {
+                    write_cache(now, env!("CARGO_PKG_VERSION"));
+                    None
+                }
+                UpdateCheck::Failed => None,
+            },
+        };
+        if let Some(tag) = newer {
+            on_newer(tag);
         }
     });
 }

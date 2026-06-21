@@ -49,6 +49,36 @@ pub fn rotate(input: &str, by: &str) -> Result<String, String> {
         .map_err(|_| format!("rotate failed: {input}"))
 }
 
+/// Compress to a target file size → a "(compressed)" JPEG sibling at or under
+/// `target_bytes` (quality binary-search + downscale fallback). See [`parse_size`].
+pub fn compress(input: &str, target_bytes: u64) -> Result<String, String> {
+    verbs::compress_to_size(input, target_bytes)
+        .map(|p| p.display().to_string())
+        .map_err(|_| format!("compress failed: {input}"))
+}
+
+/// Parse a human size — `"1MB"`, `"500KB"`, `"800kb"`, or a bare byte count `"800000"` —
+/// into bytes. Decimal units (1KB = 1000 B), case-insensitive, optional trailing `B`.
+pub fn parse_size(s: &str) -> Result<u64, String> {
+    let lower = s.trim().to_ascii_lowercase();
+    let core = lower.strip_suffix('b').unwrap_or(&lower); // tolerate MB/KB/B
+    let (num, mult) = if let Some(n) = core.strip_suffix('m') {
+        (n, 1_000_000u64)
+    } else if let Some(n) = core.strip_suffix('k') {
+        (n, 1_000)
+    } else {
+        (core, 1)
+    };
+    let v: f64 = num
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad size '{s}' (try 1MB / 500KB / 800000)"))?;
+    if v <= 0.0 {
+        return Err(format!("size must be positive: '{s}'"));
+    }
+    Ok((v * mult as f64) as u64)
+}
+
 /// Strip EXIF/IPTC/XMP metadata in place (JPEG/PNG, lossless).
 pub fn strip_meta(input: &str) -> Result<String, String> {
     strip::strip_metadata(input).map_err(|_| format!("strip failed (JPEG/PNG only): {input}"))?;

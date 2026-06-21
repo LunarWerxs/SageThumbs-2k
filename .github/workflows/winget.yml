@@ -1,0 +1,34 @@
+# Auto-publish each GitHub release to the Windows Package Manager (winget).
+#
+# How it works: when a release is *published* (not draft/pre-release), this submits a
+# pull request to microsoft/winget-pkgs with an updated manifest pointing at the new
+# installer asset. Set up once → zero ongoing work.
+#
+# One-time setup (owner): create a CLASSIC GitHub PAT with `public_repo` scope and add it
+# as a repo secret named WINGET_TOKEN (Settings → Secrets and variables → Actions).
+# The FIRST package submission is done by hand with Komac (the action is for updates);
+# every release after that is automatic via this workflow.
+name: Publish to winget
+
+on:
+  release:
+    types: [released] # published, non-prerelease
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to (re)publish, e.g. v0.4.9
+        required: true
+
+jobs:
+  winget:
+    runs-on: windows-latest
+    steps:
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          # winget package identifier: Publisher.Package (PascalCase, no spaces).
+          identifier: LunarWerxs.SageThumbs2K
+          # Match the installer asset on the release (SageThumbs2K-Setup-<ver>.exe).
+          installers-regex: 'SageThumbs2K-Setup-.*\.exe$'
+          release-tag: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}

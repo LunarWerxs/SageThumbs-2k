@@ -14,6 +14,7 @@ USAGE:
                                                 bulk-process many files/folders in parallel (one process)
   st2k convert   <in> <out> [--quality N] [--webp-quality N] [--resize WxH|N%]   (--webp-quality → lossy WebP)
   st2k rotate    <in> --by right|left|180|fliph|flipv
+  st2k compress  <in> --max-size 1MB|500KB|N    shrink to a target file size (JPEG, quality+scale search)
   st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG, lossless)
   st2k ocr       <in>                           recognize text → stdout
   st2k pdf       <out.pdf> <in> [in...]         combine images into one PDF
@@ -71,6 +72,12 @@ fn run(args: &[String]) -> Result<String, String> {
             let i = need(&pos, 0)?;
             let by = flag(rest, "--by").ok_or("rotate needs --by right|left|180|fliph|flipv")?;
             cli::rotate(i, &by)
+        }
+        "compress" => {
+            let i = need(&pos, 0)?;
+            let max = flag(rest, "--max-size")
+                .ok_or("compress needs --max-size (e.g. 1MB, 500KB, 800000)")?;
+            cli::compress(i, cli::parse_size(&max)?)
         }
         "strip" => cli::strip_meta(need(&pos, 0)?),
         "ocr" => cli::ocr(need(&pos, 0)?),

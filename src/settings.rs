@@ -368,6 +368,21 @@ pub fn verbose_logging() -> bool {
     get_dword("Debug", 0) != 0
 }
 
+// ---- Updates ------------------------------------------------------------
+
+/// Whether the resident screenshot helper periodically checks for a newer release
+/// (throttled to once/day) and pops a tray toast when one exists. ON by default, but
+/// only has any effect while the screenshot helper is actually running — that already-
+/// resident process does the check, so there is NO separate scheduled task or service.
+pub fn update_auto_check() -> bool {
+    get_dword("UpdateAutoCheck", 1) != 0
+}
+
+/// Persist the auto-update-check toggle.
+pub fn set_update_auto_check(on: bool) -> windows_registry::Result<()> {
+    set_dword("UpdateAutoCheck", on as u32)
+}
+
 // ---- Per-extension enable (read by registration) ------------------------
 
 /// Whether a given extension (no dot, lowercase) is hooked. Enabled unless an

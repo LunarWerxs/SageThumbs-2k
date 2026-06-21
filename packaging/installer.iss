@@ -37,7 +37,7 @@ PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-Name: "full"; Description: "Full - all 312 formats (recommended)"
+Name: "full"; Description: "Full - all 313 formats (recommended)"
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
@@ -78,9 +78,8 @@ Filename: "{sys}\certutil.exe"; Parameters: "-addstore -f TrustedPeople ""{app}\
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion"""; \
   StatusMsg: "Registering the modern context menu..."; Flags: runhidden waituntilterminated; Check: ModernMenuBundled
-; Launch Settings right after install (checked by default): the user sees the app,
-; and the startup sponsor fetch fires once here — which is our anonymous install
-; tally. `skipifsilent` keeps unattended installs quiet.
+; Launch Settings right after install (checked by default) so the user sees the app.
+; `skipifsilent` keeps unattended installs quiet.
 Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
   Flags: postinstall nowait skipifsilent
 
@@ -93,7 +92,7 @@ Filename: "powershell.exe"; \
 Filename: "{sys}\certutil.exe"; Parameters: "-delstore TrustedPeople SageThumbs2K"; \
   Flags: runhidden waituntilterminated; RunOnceId: "DelCert"
 ; Unregister before files are removed (our DllUnregisterServer also unhooks the
-; 312 formats and fires SHChangeNotify).
+; 313 formats and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregSt2k"
 
@@ -105,4 +104,29 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
 function ModernMenuBundled: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\SageThumbs2K.msix'));
+end;
+
+// Best-effort one-shot HTTPS GET on uninstall, over WinHttp with short timeouts and all
+// errors swallowed so it never blocks or slows the uninstall. Only a real uninstall
+// reaches it — an in-place upgrade does not run the uninstaller.
+procedure NotifyUninstall;
+var
+  Http: Variant;
+begin
+  try
+    Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
+    // resolve, connect, send, receive (ms) — capped so a dead network fails fast.
+    Http.SetTimeouts(1500, 1500, 1500, 2000);
+    Http.Open('GET', 'https://st2k.connections.icu/sponsor?uninstall=1&v={#AppVer}', False);
+    Http.SetRequestHeader('User-Agent', 'SageThumbs2K-Uninstaller');
+    Http.Send('');
+  except
+    // best-effort only — never surface or block on failure.
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    NotifyUninstall;
 end;

@@ -125,6 +125,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("hdr", "Radiance RGBE image format"),
     ("heic", "High Efficiency Image Format"),
     ("heif", "High Efficiency Image Format"),
+    ("livp", "Apple Live Photo"),
     ("icb", "Truevision Targa image"),
     ("ico", "Microsoft icon"),
     ("icon", "Microsoft icon"),
