@@ -158,19 +158,7 @@ cargo build --release            # sagethumbs2k.dll + sagethumbs2k-app.exe + st2
 
 ## 🔒 Privacy
 
-No accounts, no profiles, no ad-tracking, no selling anything — and the whole thing is right here in the source. The honest version:
-
-**What checks in:** on startup the app fetches a small sponsor file from our server (the same fetch that decides whether a sponsor banner shows). That one request carries three non-personal things so we can keep a rough **install + usage count**:
-
-- the **app version** (e.g. `0.4.5`),
-- the **Windows generation + build** (e.g. `win11-22631`),
-- a one-time **"fresh install"** marker, only the very first time a new install ever checks in.
-
-**What it never sends:** no name, email, account, or device ID; no file names, paths, or contents; and we don't store your IP. There's **no per-machine identifier**, so we can count installs but can't follow you across sessions.
-
-**Why:** so we know roughly how many people use SageThumbs 2K and which versions/OSes to keep supporting. Bragging rights and prioritization — nothing more.
-
-It's a small [Cloudflare Worker](packaging/analytics/), the beacon is visible in [`sponsors.rs`](src/bin/app/sponsors.rs), and the download badge up top is just GitHub's own public counter.
+No accounts, no profiles, no tracking, no selling anything. On startup the app makes one small request to our server carrying only non-personal info — the **app version**, the **Windows version**, and a one-time **"new install"** marker — so we can keep a rough, anonymous **install count**. It never sends your name, your files, paths, or IP, and there's **no per-machine identifier**, so we can count installs but can't identify or follow you.
 
 ---
 
