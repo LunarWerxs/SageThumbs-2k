@@ -39,9 +39,8 @@ use crate::win::{set_static_bitmap, wide, URL_PRODUCT};
 /// that sponsor comes up.
 ///
 /// The startup fetch appends a small, **non-identifying** query string
-/// (`?v=<app-version>&os=<win-generation-build>&new=<0|1>`) so the endpoint can keep
-/// an anonymous install/usage tally — see [`manifest_bytes`]. No identifier is sent;
-/// `new=1` is a one-shot "fresh install" marker, not a per-machine id.
+/// (`?v=<app-version>&os=<win-generation-build>&new=<0|1>`) — see [`manifest_bytes`]. No
+/// identifier is sent; `new=1` is a one-shot "fresh install" marker, not a per-machine id.
 pub(crate) const BANNER_URL: &str = "https://st2k.connections.icu/sponsor";
 
 /// Banner default artwork, embedded so the reserved banner area shows *something*
@@ -69,9 +68,8 @@ fn manifest_bytes() -> Option<&'static [u8]> {
     static CACHE: OnceLock<Option<Vec<u8>>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            // Append the (non-identifying) beacon params so the endpoint can keep an
-            // anonymous install/usage tally: app version, OS generation+build, and a
-            // one-shot `new=1` the FIRST time this install ever reports. No identifier,
+            // Append the (non-identifying) params: app version, OS generation+build, and
+            // a one-shot `new=1` the FIRST time this install ever reports. No identifier,
             // no IP (the server sees that from the connection itself), nothing per-user.
             let is_new = !sagethumbs2k_core::settings::install_reported();
             let url = format!(

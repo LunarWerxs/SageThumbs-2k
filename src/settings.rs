@@ -52,11 +52,8 @@ pub fn set_dword(name: &str, value: u32) -> windows_registry::Result<()> {
     CURRENT_USER.create(ROOT)?.set_u32(name, value)
 }
 
-/// One-time install-report flag for the anonymous install count. `false` until the
-/// app has successfully reported a fresh install to the sponsor endpoint once, then
-/// `true` forever. It is a plain boolean — NOT a per-machine identifier — so the
-/// startup beacon can mark exactly one "new install" hit without ever tracking the
-/// user across sessions.
+/// One-time flag: `false` until the app has reported a fresh install once, then `true`
+/// forever. A plain boolean — NOT a per-machine identifier.
 pub fn install_reported() -> bool {
     get_dword("InstallReported", 0) != 0
 }

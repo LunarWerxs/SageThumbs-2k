@@ -36,7 +36,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11** — the cle
 - 🧰 **Right-click toolkit:** convert, resize, lossless rotate, combine-to-PDF/CBZ, system-wide eyedropper, OCR, and more — all non-destructive, and **multi-file jobs run in parallel across every core**.
 - 🎛️ **Make the menu yours** — **drag-reorder** (and show/hide) every right-click entry *and* its dividers; the context menu mirrors your layout exactly.
 - 🎨 **Native Win11 UI**, system-following **dark mode**, **36 languages**.
-- 🦀 100% clean-room **Rust**, **free for personal use** ([PolyForm Noncommercial](#-license)) — no GFL, no spyware, no personal data (just an [anonymous install count](#-privacy)).
+- 🦀 100% clean-room **Rust**, **free for personal use** ([PolyForm Noncommercial](#-license)) — no GFL, no spyware, no personal data.
 
 > **[Download the installer →](https://github.com/LunarWerxs/SageThumbs-2k/releases)** Two clicks and your File Explorer just... works.
 
@@ -153,12 +153,6 @@ Requires the **MSVC** Rust toolchain, VS Build Tools (Desktop C++), and — for 
 cargo build --release            # sagethumbs2k.dll + sagethumbs2k-app.exe + st2k.exe
 .\scripts\build-release.ps1      # full pipeline → dist\SageThumbs2K-Setup-<ver>.exe
 ```
-
----
-
-## 🔒 Privacy
-
-No accounts, no profiles, no tracking, no selling anything. On startup the app makes one small request to our server carrying only non-personal info — the **app version**, the **Windows version**, and a one-time **"new install"** marker — so we can keep a rough, anonymous **install count**. It never sends your name, your files, paths, or IP, and there's **no per-machine identifier**, so we can count installs but can't identify or follow you.
 
 ---
 

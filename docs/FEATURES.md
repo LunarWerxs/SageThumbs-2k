@@ -9,8 +9,7 @@ documentation.)
 > rebuilds the abandoned SageThumbs — Explorer thumbnails for 313 file types plus
 > a rich right-click image toolkit — and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0). No personal data, no
-> per-user tracking — just an anonymous install count (see the README's Privacy
-> section).
+> per-user tracking.
 
 ---
 
