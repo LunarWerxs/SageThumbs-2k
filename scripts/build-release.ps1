@@ -111,8 +111,9 @@ if ($bundleMagick) {
     # WebP (handled by the image crate / WIC tiers BEFORE ImageMagick is reached),
     # and the cairo/pango/rsvg SVG-render stack (we use resvg; SVG is policy-off).
     # Dropping them was regression-verified to lose ZERO decodable formats. The
-    # glib/harfbuzz/freetype/raqm text-shaping stack stays - MagickCore HARD-links
-    # it at load, so magick.exe won't start without it.
+    # glib/harfbuzz/freetype/fribidi/raqm text-shaping stack (~5 MB) is HARD-linked by
+    # MagickCore at load (magick.exe won't start without it) but is pure dead weight - we
+    # only decode raster -> PNG, never render text/captions - so we STUB it below.
     Copy-Item "$($im.FullName)\magick.exe" "$stage\magick"
     Copy-Item "$($im.FullName)\*.dll" "$stage\magick"
     Copy-Item "$($im.FullName)\*.xml" "$stage\magick"
@@ -129,6 +130,55 @@ if ($bundleMagick) {
     foreach ($d in $dropDll) { [System.IO.File]::Delete("$stage\magick\$d") }
     $dropCoder = 'heic','heif','avif','jxl','exr','webp','svg','msvg','video','mpeg','url','clipboard'
     foreach ($c in $dropCoder) { [System.IO.File]::Delete("$stage\magick\modules\coders\IM_MOD_RL_$($c)_.dll") }
+
+    # STUB the text-shaping stack (~5 MB raw). MagickCore hard-links glib/harfbuzz/freetype/
+    # fribidi/raqm at load, so they can't just be deleted - magick.exe won't start. But we never
+    # render text, so we replace each with a tiny stub DLL exporting the same symbols as no-ops:
+    # the import table resolves at load, the text functions are simply never called on the
+    # raster-decode path. Regenerated from the installed ImageMagick's own exports on every build,
+    # so an IM upgrade adapts automatically. Regression-verified to lose ZERO decodable formats
+    # (glib included). See packaging/MAGICK.md. Needs gendef + gcc (the same mingw that provides
+    # windres); if they're absent we warn and ship the full stack rather than fail the release.
+    $mingwBin = $null
+    $wr = Get-Command windres, x86_64-w64-mingw32-windres -EA SilentlyContinue | Select-Object -First 1
+    if ($wr) { $mingwBin = Split-Path $wr.Source }
+    if (-not $mingwBin -or -not (Test-Path (Join-Path $mingwBin 'gendef.exe'))) {
+        $c = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\*WinLibs*\mingw64\bin\gendef.exe" -EA SilentlyContinue | Select-Object -First 1
+        if ($c) { $mingwBin = Split-Path $c.FullName }
+    }
+    $gendef = if ($mingwBin) { Join-Path $mingwBin 'gendef.exe' } else { $null }
+    $gcc = if ($mingwBin) { Join-Path $mingwBin 'gcc.exe' } else { $null }
+    if ($gendef -and $gcc -and (Test-Path $gendef) -and (Test-Path $gcc)) {
+        $stubWork = Join-Path $stage 'magick\_stubwork'
+        New-Item -ItemType Directory $stubWork -Force | Out-Null
+        foreach ($t in 'glib','harfbuzz','freetype','fribidi','raqm') {
+            $dll = "CORE_RL_$($t)_.dll"
+            $src = Join-Path $im.FullName $dll
+            if (-not (Test-Path $src)) { continue }
+            Push-Location $stubWork
+            try {
+                & $gendef $src 2>$null | Out-Null
+                $stubC = @('int __stdcall DllMainCRTStartup(void* h,unsigned r,void* x){(void)h;(void)r;(void)x;return 1;}')
+                $buildDef = @('EXPORTS'); $inExports = $false
+                foreach ($l in (Get-Content "CORE_RL_$($t)_.def")) {
+                    if ($l -match '^EXPORTS') { $inExports = $true; continue }
+                    if (-not $inExports) { continue }
+                    if ($l -match '^([A-Za-z_]\S*)') {
+                        $n = $matches[1]
+                        if ($l -match '\bDATA\b') { $stubC += "void* $n=0;"; $buildDef += "$n DATA" }
+                        else { $stubC += "int $n(void){return 0;}"; $buildDef += "$n" }
+                    }
+                }
+                Set-Content 'stub.c' $stubC -Encoding ascii
+                Set-Content 'build.def' $buildDef -Encoding ascii
+                & $gcc -O2 -shared -nostdlib -o (Join-Path "$stage\magick" $dll) 'stub.c' 'build.def' -e DllMainCRTStartup 2>$null
+            } finally { Pop-Location }
+        }
+        Remove-Item $stubWork -Recurse -Force -EA SilentlyContinue
+        Write-Host "      stubbed the magick text stack (glib/harfbuzz/freetype/fribidi/raqm, ~5 MB)" -ForegroundColor DarkGray
+    } else {
+        Write-Host "      WARNING: gendef/gcc not found (need mingw); shipping the FULL magick text stack (+5 MB)" -ForegroundColor Yellow
+    }
 
     # magick.exe (and our MSVC binaries) need the VC++ runtime - bundle it app-local
     # so the long-tail tier works even on machines without the VC++ redist installed.

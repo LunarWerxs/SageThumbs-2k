@@ -9,7 +9,7 @@
 //! `panic = "abort"`: every read is bounds-checked (`Option`) and every chain walk
 //! is iteration-capped so a hostile/looping file can't hang or OOM the host.
 
-use super::util::{le16, le32};
+use super::util::{le16, le32, le64};
 
 const SIG: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
@@ -21,12 +21,6 @@ const MAX_STREAM: usize = 32 * 1024 * 1024;
 
 pub fn looks_like_ole(head: &[u8]) -> bool {
     head.starts_with(&SIG)
-}
-
-fn le64(b: &[u8], o: usize) -> Option<u64> {
-    b.get(o..o + 8).map(|s| {
-        u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]])
-    })
 }
 
 fn sector_off(s: u32, sector_size: usize) -> Option<usize> {

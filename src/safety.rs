@@ -112,7 +112,7 @@ pub fn log(msg: &str) {
 /// Always-on error logging — for genuine failures (a crash, a COM boundary panic, a
 /// thumbnail that couldn't be produced), NOT the verbose `log_debug` traces. Prefixed
 /// `ERROR` so a user-sent log is greppable.
-pub fn log_error(msg: &str) {
+pub(crate) fn log_error(msg: &str) {
     log(&format!("ERROR {msg}"));
 }
 

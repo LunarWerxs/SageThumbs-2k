@@ -1356,6 +1356,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ruzstd"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fad02996bfc73da3e301efe90b1837be9ed8f4a462b6ed410aa35d00381de89f"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "safe_arch"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1366,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "djvu-rs",
@@ -1382,6 +1391,7 @@ dependencies = [
  "percent-encoding",
  "rars",
  "resvg",
+ "ruzstd",
  "serde_json",
  "sevenz-rust2",
  "toml",
@@ -1392,11 +1402,12 @@ dependencies = [
  "windows-implement",
  "windows-registry",
  "zip",
+ "zune-jpeg",
 ]
 
 [[package]]
 name = "sagethumbs2k-dll"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "sagethumbs2k",
  "windows-core",
@@ -1534,6 +1545,12 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strict-num"
@@ -1713,6 +1730,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "twox-hash"
+version = "1.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
+dependencies = [
+ "cfg-if",
+ "static_assertions",
 ]
 
 [[package]]

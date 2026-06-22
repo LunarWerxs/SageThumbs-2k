@@ -162,6 +162,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("kra", "Krita document"),
     ("3mf", "3D Manufacturing Format"),
     ("fcstd", "FreeCAD document"),
+    ("f3d", "Autodesk Fusion 360 archive"),
     ("gcode", "3D-printer G-code (sliced)"),
     ("gco", "3D-printer G-code (sliced)"),
     ("afphoto", "Affinity Photo document"),

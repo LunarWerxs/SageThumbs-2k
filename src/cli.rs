@@ -1,7 +1,7 @@
 //! Command-line / agent API — the verbs the `st2k` console binary exposes.
 //!
-//! Every verb reuses the exact same engine the shell extension uses (312-format
-//! decode via `decode_full`, the convert/rotate/strip/OCR/PDF logic), so an
+//! Every verb reuses the exact same engine the shell extension uses (every format
+//! we decode via `decode_full`, the convert/rotate/strip/OCR/PDF logic), so an
 //! installed SageThumbs 2K doubles as an offline image toolbox for scripts and
 //! AI agents — no extra installs. Each verb returns `Ok(stdout text)` or
 //! `Err(message)`; the binary prints and maps to an exit code.
@@ -12,7 +12,7 @@ use crate::{decode, formats, ocr, strip, topdf, verbs};
 
 /// Render any supported image to `output` (format from its extension) at most
 /// `max_dim` px on the long edge (`0` = full size). The headline verb: produces
-/// previews for the ~312 types Windows itself can't.
+/// previews for the formats Windows itself can't.
 pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, String> {
     // Cap the read at the shared input budget (metadata-checked before allocating)
     // so a scripted/agent/MCP call can't load a multi-GB file wholesale — the same
@@ -47,6 +47,19 @@ pub fn rotate(input: &str, by: &str) -> Result<String, String> {
     verbs::transform_file(input, t)
         .map(|p| p.display().to_string())
         .map_err(|_| format!("rotate failed: {input}"))
+}
+
+/// Decode `input` and return it as in-memory PNG bytes, fit within `max_dim` (0 = full
+/// size). Powers the MCP `view` tool — lets an AI agent SEE any of our supported formats
+/// directly (HEIC/RAW/PSD/ebook covers/CAD previews/…), not just convert them to a file.
+pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
+    let bytes = decode::read_capped(input).map_err(|e| e.to_string())?;
+    let img = decode::decode_preview(&bytes).map_err(|_| format!("cannot decode {input}"))?;
+    let img = if max_dim > 0 { img.thumbnail(max_dim, max_dim) } else { img };
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// Compress to a target file size → a "(compressed)" JPEG sibling at or under

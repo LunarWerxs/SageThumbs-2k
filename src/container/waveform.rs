@@ -18,6 +18,8 @@ use std::io::{Read, Seek, SeekFrom};
 
 use image::{ImageFormat, Rgba, RgbaImage};
 
+use super::util::{be16, le16};
+
 /// Rendered once at a fixed size; the thumbnail pipeline then downsizes it to the
 /// requested edge (never upscaled). A 2:1 canvas suits a waveform.
 const OUT_W: u32 = 512;
@@ -296,15 +298,6 @@ fn draw(peaks: &[f32]) -> Vec<u8> {
     // it ever did, an empty Vec just yields the default icon downstream.
     let _ = image::DynamicImage::ImageRgba8(img).write_to(&mut out, ImageFormat::Png);
     out.into_inner()
-}
-
-// Local little/big-endian readers (the `util` ones are `pub(super)` to `container`
-// but live a module away; these keep `waveform` self-contained and bounds-checked).
-fn le16(b: &[u8], o: usize) -> Option<u16> {
-    b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
-}
-fn be16(b: &[u8], o: usize) -> Option<u16> {
-    b.get(o..o + 2).map(|s| u16::from_be_bytes([s[0], s[1]]))
 }
 
 #[cfg(test)]

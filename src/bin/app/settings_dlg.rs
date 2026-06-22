@@ -165,6 +165,8 @@ const ID_EXPORT: i32 = 1173;
 // Diagnostics actions: clear Windows' thumbnail cache + check GitHub for a newer release.
 const ID_REBUILD_CACHE: i32 = 1174;
 const ID_CHECK_UPDATES: i32 = 1175;
+// Re-register all enabled formats (fixes thumbnails stolen by another app).
+const ID_REPAIR_ASSOC: i32 = 1176;
 
 /// Per-item menu-visibility checkboxes (XnShell-style "Displayed menu items").
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's
@@ -635,6 +637,7 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox("Verbose logging (write detailed traces)", cb, 300, ID_VERBOSE_LOG);
     lc.button("Open diagnostics log", 184, ID_OPEN_LOG);
     lc.button("Rebuild thumbnail cache", 184, ID_REBUILD_CACHE);
+    lc.button("Repair file associations", 184, ID_REPAIR_ASSOC);
     lc.button("Check for updates", 184, ID_CHECK_UPDATES);
 
     // Reset / Import / Export share one row. Reset sets every control to factory
@@ -1225,7 +1228,7 @@ unsafe fn load_values(hwnd: HWND) {
 /// Reset every control to the factory defaults (does not write yet).
 unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, true);
-    check(hwnd, ID_USE_EMBEDDED, false);
+    check(hwnd, ID_USE_EMBEDDED, true); // ON by default — see settings::use_embedded
     check(hwnd, ID_ENABLE_MENU, true);
     check(hwnd, ID_MENU_ALL_TYPES, false);
     let _ = SetDlgItemInt(hwnd, ID_MAXSIZE, settings::DEFAULT_MAX_FILE_MB, false);
@@ -1624,6 +1627,48 @@ unsafe fn reregister_elevated() -> bool {
     (h.0 as usize) > 32
 }
 
+/// "Repair file associations" — the fix for blank/stuck thumbnails after another program
+/// stole SageThumbs' shell hooks (the classic complaint), or an update left them stale.
+/// Re-runs the full elevated registration (rewrites every enabled format's thumbnail /
+/// context-menu / property hooks back to us), then clears the thumbnail cache + restarts
+/// Explorer so the repaired thumbnails render immediately instead of serving stale blanks.
+unsafe fn repair_associations(hwnd: HWND) {
+    let warn = wide(
+        "This re-registers SageThumbs 2K for all your enabled file types — the fix when \
+         thumbnails go blank after another program takes over a format — then clears the \
+         thumbnail cache and briefly restarts File Explorer (your taskbar will blink).\n\nContinue?",
+    );
+    let cap = wide("Repair File Associations");
+    if MessageBoxW(Some(hwnd), PCWSTR(warn.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONWARNING) != IDYES {
+        return;
+    }
+    if !reregister_elevated() {
+        msg(
+            hwnd,
+            "Couldn't re-register — the elevation prompt was declined or failed. Nothing was changed.",
+            "Repair File Associations",
+            MB_ICONERROR,
+        );
+        return;
+    }
+    // Registration rewrote the hooks; drop the stale cached thumbnails + restart Explorer so
+    // the repaired ones render right away. (The cmd sequence gives regsvr32 time to finish.)
+    let _ = std::process::Command::new("cmd")
+        .args([
+            "/c",
+            "taskkill /f /im explorer.exe >nul 2>&1 & \
+             del /f /q \"%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" >nul 2>&1 & \
+             start \"\" explorer.exe",
+        ])
+        .spawn();
+    msg(
+        hwnd,
+        "File associations repaired. Thumbnails will rebuild as you browse.",
+        "Repair File Associations",
+        MB_ICONINFORMATION,
+    );
+}
+
 // ---- Vertical resize: let the user drag the window taller --------------------------
 // The window grows in HEIGHT only (width locked in WM_GETMINMAXINFO). On WM_SIZE the
 // bottom-anchored controls slide down / the stretchy ones grow, and the left scroll
@@ -1871,6 +1916,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     ID_EXPORT => export_settings_to_file(hwnd),
                     ID_IMPORT => import_settings_from_file(hwnd),
                     ID_REBUILD_CACHE => rebuild_thumbnail_cache(hwnd),
+                    ID_REPAIR_ASSOC => repair_associations(hwnd),
                     ID_CHECK_UPDATES => check_for_updates(hwnd),
                     ID_BANNER if notify == STN_CLICKED => {
                         // Open the currently-shown sponsor's link (or the product page

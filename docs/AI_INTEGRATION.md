@@ -22,7 +22,7 @@ extension today:
 
 | Capability | Backed by | Lives in |
 |---|---|---|
-| Decode **312 formats** → PNG (RAW, HEIC, PSD, MS Office, ebook/comic covers, PDF page 1, SVG, …) | image crate + WIC + bundled ImageMagick + resvg | `decode::decode_full` |
+| Decode **314 formats** → PNG (RAW, HEIC, PSD, MS Office, ebook/comic covers, PDF page 1, SVG, …) | image crate + WIC + bundled ImageMagick + resvg | `decode::decode_full` |
 | **Convert** (PNG/JPG/WebP/BMP/GIF/TIFF/ICO) + quality + **resize** | image crate | `verbs::convert_to` (CLI exact-path) / `verbs::convert_file_opts` (GUI) |
 | **Rotate / flip** | image crate | `verbs::transform_file` |
 | **Strip metadata** (lossless EXIF/IPTC/XMP) | img-parts | `strip::strip_metadata` |
@@ -46,7 +46,7 @@ strip     <in>                        # in place, lossless (JPEG/PNG; keeps the 
 info      <in> [--json]               # dims + EXIF/GPS  -> stdout (JSON)
 ocr       <in> [--json]               # recognized text  -> stdout (needs a Windows OCR language pack)
 pdf       <out> <in...>               # combine images into one PDF
-thumbnail <in> <out.png> [--size 256] # render any of the 312 types to PNG (default 256px)
+thumbnail <in> <out.png> [--size 256] # render any of the 314 types to PNG (default 256px)
 batch     <thumbnail|convert> <in|dir...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%]
                                       # bulk-process many files/folders in ONE process, fanned out across all cores
 formats   [--json]                    # list supported extensions + categories

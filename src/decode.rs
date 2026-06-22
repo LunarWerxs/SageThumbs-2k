@@ -25,8 +25,9 @@ use image::DynamicImage;
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, IWICImagingFactory, GUID_WICPixelFormat32bppRGBA,
-    WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
+    CLSID_WICImagingFactory, IWICBitmapFrameDecode, IWICColorContext, IWICImagingFactory,
+    GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom,
+    WICColorContextProfile, WICDecodeMetadataCacheOnLoad,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::SHCreateMemStream;
@@ -645,10 +646,11 @@ fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
     decode_via_magick_spec(bytes, "-", MAGICK_MAX_EDGE, timeout)
 }
 
-/// Is this a Windows metafile (placeable/memory WMF, or EMF)? Used only to pick the
-/// shorter [`METAFILE_TIMEOUT`] for the magick tier — a renderable metafile is fast,
-/// a pathological one is cut early instead of burning the full magick budget.
-fn looks_like_metafile(b: &[u8]) -> bool {
+/// Is this a Windows metafile (placeable/memory WMF, or EMF)? Picks the shorter
+/// [`METAFILE_TIMEOUT`] for the magick tier here, and is the single home for the
+/// metafile magic bytes — `container::looks_like_raster` also calls it so the
+/// signatures live in exactly one place.
+pub(crate) fn looks_like_metafile(b: &[u8]) -> bool {
     b.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A])                    // placeable WMF
         || b.starts_with(&[0x01, 0x00, 0x09, 0x00, 0x00, 0x03]) // memory WMF METAHEADER
         || (b.len() >= 44 && b[0..4] == [0x01, 0x00, 0x00, 0x00] && &b[40..44] == b" EMF") // EMF
@@ -1313,6 +1315,14 @@ fn decode_with_image(bytes: &[u8]) -> Result<DynamicImage> {
 fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage> {
     use image::ImageDecoder;
     use std::io::Cursor;
+    // CMYK JPEGs: the image crate converts CMYK→RGB naively (ignoring the embedded CMYK
+    // ICC) → wrong colors. Intercept + color-manage the raw CMYK ourselves; on any miss
+    // fall through to the image crate's existing conversion (never worse than today).
+    if is_cmyk_jpeg(bytes) {
+        if let Some(img) = decode_cmyk_jpeg(bytes) {
+            return Ok(img);
+        }
+    }
     let reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|_| Error::from(E_FAIL))?;
@@ -1329,6 +1339,89 @@ fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage>
     let icc = decoder.icc_profile().ok().flatten();
     let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
     Ok(apply_icc_to_srgb(img, icc))
+}
+
+/// Quick check: a JPEG whose frame header declares 4 components (CMYK / YCCK). Walks the
+/// markers only (no pixel decode), so it's cheap to run on every JPEG before the image tier.
+fn is_cmyk_jpeg(b: &[u8]) -> bool {
+    if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
+        return false;
+    }
+    let mut i = 2usize;
+    while i + 9 < b.len() {
+        if b[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = b[i + 1];
+        // Standalone markers (no length payload): 0xFF padding, SOI, EOI, RSTn, TEM.
+        if marker == 0xFF || marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+            i += 2;
+            continue;
+        }
+        // SOFn markers carry the component count — all 0xC0..=0xCF except DHT/JPG/DAC.
+        if (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
+            // [FFCn][len:2][precision:1][height:2][width:2][Nf:1] → Nf at offset +9.
+            return b.get(i + 9) == Some(&4);
+        }
+        let len = ((b[i + 2] as usize) << 8) | b[i + 3] as usize;
+        if len < 2 {
+            return false;
+        }
+        i += 2 + len;
+    }
+    false
+}
+
+/// Decode a CMYK/YCCK JPEG to color-managed sRGB: pull the RAW 4-channel CMYK from
+/// zune-jpeg (the image crate would convert it to RGB naively, dropping the profile), then
+/// run it through the embedded CMYK ICC → sRGB with moxcms. Returns `None` (caller falls
+/// back to the image crate's RGB) if it isn't really CMYK, lacks a usable CMYK profile, or
+/// fails — so this can only ever improve a CMYK thumbnail, never blank one.
+fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
+    use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
+    use zune_jpeg::zune_core::bytestream::ZCursor;
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    use zune_jpeg::zune_core::options::DecoderOptions;
+    use zune_jpeg::JpegDecoder;
+
+    let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::CMYK);
+    let mut dec = JpegDecoder::new_with_options(ZCursor::new(bytes), opts);
+    dec.decode_headers().ok()?;
+    match dec.input_colorspace()? {
+        ColorSpace::CMYK | ColorSpace::YCCK => {}
+        _ => return None,
+    }
+    let info = dec.info()?;
+    let (w, h) = (u32::from(info.width), u32::from(info.height));
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64) * (h as u64) > MAX_PIXELS {
+        return None;
+    }
+    // We can only color-manage with the embedded CMYK profile — without one there is no
+    // sound CMYK→RGB, so defer to the image crate's existing (naive) conversion.
+    let icc = dec.icc_profile()?;
+    let src = ColorProfile::new_from_slice(&icc).ok()?;
+    if src.color_space != DataColorSpace::Cmyk {
+        return None;
+    }
+    let cmyk = dec.decode().ok()?; // 4 bytes/px
+    let px = (w as usize) * (h as usize);
+    if cmyk.len() < px * 4 {
+        return None;
+    }
+    // moxcms takes CMYK + alpha (`Cmyka`, 5 channels); pad each pixel with an opaque alpha.
+    let mut cmyka = vec![0u8; px * 5];
+    for i in 0..px {
+        cmyka[i * 5..i * 5 + 4].copy_from_slice(&cmyk[i * 4..i * 4 + 4]);
+        cmyka[i * 5 + 4] = 255;
+    }
+    let dst = ColorProfile::new_srgb();
+    let transform = src
+        .create_transform_8bit(Layout::Cmyka, &dst, Layout::Rgba, TransformOptions::default())
+        .ok()?;
+    let mut rgba = vec![0u8; px * 4];
+    transform.transform(&cmyka, &mut rgba).ok()?;
+    image::RgbaImage::from_raw(w, h, rgba).map(DynamicImage::ImageRgba8)
 }
 
 /// Color-manage an embedded ICC profile to sRGB so wide-gamut (Display-P3 / Adobe RGB /
@@ -1433,7 +1526,123 @@ unsafe fn wic_decode(bytes: &[u8]) -> Result<DynamicImage> {
     converter.CopyPixels(std::ptr::null(), stride, &mut buf)?;
 
     let img = image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))?;
-    Ok(DynamicImage::ImageRgba8(img))
+    // Color-manage to sRGB: HEIC/AVIF/RAW carry their wide-gamut profile (iPhone photos
+    // are Display P3) in a WIC color context. The format converter above is pixel-format
+    // only — NOT color-space — so without this the P3 values render mis-saturated (and
+    // Explorer caches the wrong colors). Reuses the image tier's moxcms `apply_icc_to_srgb`.
+    // AVIF/HEIC keep their profile in the ISOBMFF `colr` box — WIC's AV1/HEVC codecs do
+    // NOT surface it via GetColorContexts (verified: count=0) — so read it ourselves first;
+    // fall back to a WIC color context for the other WIC formats (RAW/JXR).
+    let icc = isobmff_color_icc(bytes).or_else(|| wic_icc(&factory, &frame));
+    Ok(apply_icc_to_srgb(DynamicImage::ImageRgba8(img), icc))
+}
+
+/// Extract the display color profile from an ISOBMFF (AVIF/HEIC) `colr` box. WIC's AV1/HEVC
+/// codecs don't surface it via `GetColorContexts`, so wide-gamut AVIF/HEIC would otherwise
+/// render mis-saturated. Handles an embedded ICC (`prof`/`rICC`) directly, AND maps the
+/// common CICP `nclx` signal (Display-P3 / sRGB) to a built-in profile so even nclx-only
+/// files (e.g. iPhone HEIC) color-manage. Returns ICC bytes for [`apply_icc_to_srgb`].
+fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
+    // Only walk real ISOBMFF (starts with an `ftyp` box) — never chew through a RAW/JXR.
+    if bytes.get(4..8) != Some(b"ftyp") {
+        return None;
+    }
+    fn walk(buf: &[u8], depth: u8) -> Option<Vec<u8>> {
+        if depth > 6 {
+            return None;
+        }
+        let mut p = 0usize;
+        while p + 8 <= buf.len() {
+            let size = u32::from_be_bytes(buf[p..p + 4].try_into().ok()?) as usize;
+            let typ = &buf[p + 4..p + 8];
+            let (hdr, end) = match size {
+                1 => (16usize, p.checked_add(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?) as usize)?),
+                0 => (8usize, buf.len()),
+                n if n >= 8 => (8usize, p.checked_add(n)?),
+                _ => return None,
+            };
+            if end > buf.len() || end < p + hdr {
+                return None;
+            }
+            let body = &buf[p + hdr..end];
+            match typ {
+                b"colr" => {
+                    if let Some(icc) = colr_profile(body) {
+                        return Some(icc);
+                    }
+                }
+                // `meta` is a FullBox (4-byte version+flags precede its children).
+                b"meta" => {
+                    if let Some(r) = body.get(4..).and_then(|c| walk(c, depth + 1)) {
+                        return Some(r);
+                    }
+                }
+                b"iprp" | b"ipco" => {
+                    if let Some(r) = walk(body, depth + 1) {
+                        return Some(r);
+                    }
+                }
+                _ => {}
+            }
+            p = end;
+        }
+        None
+    }
+    walk(bytes, 0)
+}
+
+/// One `colr` box body → ICC bytes: a direct embedded profile, or a CICP `nclx` signal
+/// mapped to a built-in profile (Display-P3 / sRGB) encoded as ICC. `None` for signals we
+/// don't translate (leaves the image untouched — never a wrong guess).
+fn colr_profile(body: &[u8]) -> Option<Vec<u8>> {
+    match body.get(0..4)? {
+        b"prof" | b"rICC" => {
+            let icc = &body[4..];
+            (!icc.is_empty() && icc.len() <= 4 * 1024 * 1024).then(|| icc.to_vec())
+        }
+        b"nclx" => {
+            // colour_primaries (u16), then transfer + matrix we don't need here.
+            let primaries = u16::from_be_bytes(body.get(4..6)?.try_into().ok()?);
+            match primaries {
+                12 => moxcms::ColorProfile::new_display_p3().encode().ok(), // SMPTE EG 432-1
+                _ => None, // 1 = BT.709/sRGB (no-op); others left untouched
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The embedded ICC profile from a WIC frame's first PROFILE-type color context (where
+/// HEIC/AVIF/RAW keep their wide-gamut profile). `None` for an Exif-flag-only context, no
+/// context, or any COM hiccup — best-effort, so a failure just means "no color management".
+unsafe fn wic_icc(factory: &IWICImagingFactory, frame: &IWICBitmapFrameDecode) -> Option<Vec<u8>> {
+    let mut count: u32 = 0;
+    frame.GetColorContexts(&mut [], &mut count).ok()?;
+    let count = (count as usize).min(8); // a sane image has 1-2; cap the pathological
+    if count == 0 {
+        return None;
+    }
+    let mut ctxs: Vec<Option<IWICColorContext>> = Vec::with_capacity(count);
+    for _ in 0..count {
+        ctxs.push(Some(factory.CreateColorContext().ok()?));
+    }
+    let mut got = count as u32;
+    frame.GetColorContexts(&mut ctxs, &mut got).ok()?;
+    for ctx in ctxs.into_iter().flatten() {
+        let Ok(kind) = ctx.GetType() else { continue };
+        if kind != WICColorContextProfile {
+            continue; // an Exif color-space FLAG, not an ICC profile — skip
+        }
+        let mut n: u32 = 0;
+        if ctx.GetProfileBytes(&mut [], &mut n).is_err() || n == 0 || n as u64 > 4 * 1024 * 1024 {
+            continue;
+        }
+        let mut buf = vec![0u8; n as usize];
+        if ctx.GetProfileBytes(&mut buf, &mut n).is_ok() {
+            return Some(buf);
+        }
+    }
+    None
 }
 
 /// Map the 8 EXIF orientation values onto `image` transforms. Phone JPEGs
@@ -1841,6 +2050,58 @@ mod tests {
         // A CMYK-space profile must be left alone (we only handle RGB profiles).
         let cmyk_unhandled = apply_icc_to_srgb(img.clone(), Some(vec![0u8; 4])); // junk ICC
         assert_eq!(cmyk_unhandled.to_rgb8(), img.to_rgb8(), "bad ICC → unchanged");
+    }
+
+    #[test]
+    fn colr_box_profile_extraction() {
+        // Embedded ICC: `prof` / `rICC` colour types → the raw profile bytes.
+        assert_eq!(colr_profile(&[&b"prof"[..], &[1, 2, 3, 4]].concat()), Some(vec![1, 2, 3, 4]));
+        assert_eq!(colr_profile(&[&b"rICC"[..], &[9, 9]].concat()), Some(vec![9, 9]));
+        // CICP nclx Display-P3 (primaries = 12) → a non-empty built-in profile.
+        assert!(
+            colr_profile(&[b'n', b'c', b'l', b'x', 0, 12, 0, 13, 0, 1, 0]).is_some_and(|v| !v.is_empty()),
+            "nclx Display-P3 maps to a profile"
+        );
+        // nclx BT.709/sRGB (primaries = 1) is a no-op; junk / empty → None.
+        assert_eq!(colr_profile(&[b'n', b'c', b'l', b'x', 0, 1, 0, 13, 0, 1, 0]), None);
+        assert_eq!(colr_profile(b"prof"), None, "empty profile");
+        assert_eq!(colr_profile(b"xxxxyyyy"), None, "unknown colour_type");
+    }
+
+    #[test]
+    fn isobmff_colr_box_walk() {
+        // Minimal AVIF-ish tree: ftyp + meta(FullBox){ iprp{ ipco{ colr(prof + ICC) }}}.
+        fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let size = (8 + body.len()) as u32;
+            [&size.to_be_bytes()[..], &typ[..], body].concat()
+        }
+        let icc = vec![7u8; 32];
+        let colr = bx(b"colr", &[&b"prof"[..], &icc].concat());
+        let ipco = bx(b"ipco", &colr);
+        let iprp = bx(b"iprp", &ipco);
+        let meta = bx(b"meta", &[&[0u8; 4][..], &iprp].concat()); // meta FullBox: 4-byte ver/flags
+        let file = [bx(b"ftyp", b"avif"), meta].concat();
+        assert_eq!(isobmff_color_icc(&file), Some(icc), "ICC pulled from the nested colr box");
+        // A non-ISOBMFF buffer (no leading `ftyp`) is never walked.
+        assert_eq!(isobmff_color_icc(&[0xFFu8; 64]), None);
+    }
+
+    #[test]
+    fn detects_cmyk_jpeg_by_component_count() {
+        // Minimal JPEG: SOI + SOF0 declaring `nf` components + EOI. CMYK/YCCK are 4-component.
+        fn jpeg_with_components(nf: u8) -> Vec<u8> {
+            let len = 8 + 3 * nf as usize; // SOF0 length field
+            let mut b = vec![0xFF, 0xD8]; // SOI
+            b.extend_from_slice(&[0xFF, 0xC0, (len >> 8) as u8, len as u8, 8, 0, 1, 0, 1, nf]);
+            b.extend(std::iter::repeat_n(0u8, 3 * nf as usize)); // component specs
+            b.extend_from_slice(&[0xFF, 0xD9]); // EOI
+            b
+        }
+        assert!(is_cmyk_jpeg(&jpeg_with_components(4)), "4-component JPEG = CMYK/YCCK");
+        assert!(!is_cmyk_jpeg(&jpeg_with_components(3)), "3-component = YCbCr/RGB");
+        assert!(!is_cmyk_jpeg(&jpeg_with_components(1)), "1-component = grayscale");
+        assert!(!is_cmyk_jpeg(&[0x89, b'P', b'N', b'G', 0, 0, 0, 0]), "PNG is not a CMYK JPEG");
+        assert!(!is_cmyk_jpeg(&[]), "empty input");
     }
 
     #[test]

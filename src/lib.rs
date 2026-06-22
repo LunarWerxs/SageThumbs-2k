@@ -31,6 +31,7 @@ mod ocr;
 pub mod parallel;
 mod pdf;
 mod previewhandler;
+mod propstore;
 mod strip;
 mod topdf;
 pub mod i18n;
@@ -46,9 +47,8 @@ mod vstream;
 pub use topdf::combine_to_pdf;
 pub use strip::read_info_verbose;
 pub use verbs::{
-    convert_file_opts, convert_image_to_pdf_in, convert_to_magick, convert_to_magick_in,
-    default_menu_tokens, files_to_folder, tags_to_folders, ConvertOpts, Resize, Target,
-    MENU_SEP_TOKEN,
+    convert_file_opts, convert_image_to_pdf_in, convert_to_magick_in, default_menu_tokens,
+    files_to_folder, tags_to_folders, ConvertOpts, Resize, Target, MENU_SEP_TOKEN,
 };
 
 /// Is ImageMagick available? Gates the magick-backed Convert targets (PSD/DDS/…),
@@ -180,6 +180,7 @@ pub fn dll_get_class_object(
             && clsid != guids::CLSID_EXPLORER_COMMAND
             && clsid != guids::CLSID_CONTEXT_MENU
             && clsid != guids::CLSID_PREVIEW_HANDLER
+            && clsid != guids::CLSID_PROPERTY_STORE
         {
             return CLASS_E_CLASSNOTAVAILABLE;
         }

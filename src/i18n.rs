@@ -41,21 +41,13 @@ fn lookup(idx: usize, key: &str) -> Option<&'static str> {
 const MISSING_KEY: &str = "\u{27e8}?\u{27e9}";
 
 /// Switch language by code (e.g. "fr", "zh-TW"). Returns false if unknown.
-pub fn set_locale(code: &str) -> bool {
+pub(crate) fn set_locale(code: &str) -> bool {
     if let Some(i) = LOCALES.iter().position(|(c, _)| *c == code) {
         CURRENT.store(i, Ordering::Relaxed);
         true
     } else {
         false
     }
-}
-
-/// The active language code.
-pub fn current_code() -> &'static str {
-    LOCALES
-        .get(CURRENT.load(Ordering::Relaxed))
-        .map(|(c, _)| *c)
-        .unwrap_or("en")
 }
 
 /// All available language codes, English first.

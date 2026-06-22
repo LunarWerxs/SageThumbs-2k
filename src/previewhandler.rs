@@ -6,7 +6,7 @@
 //! (via `IInitializeWithStream`), a parent `HWND` + bounds (`SetWindow`), and a
 //! themed background colour (`SetBackgroundColor`); on `DoPreview` we decode the
 //! stream with the SAME tiered decoder the thumbnail path uses
-//! (`decode::decode_preview` — so all 287 formats, ebook/comic covers, audio
+//! (`decode::decode_preview` — so all registered formats, ebook/comic covers, audio
 //! waveforms, etc. work here too) and paint it, aspect-preserved, into a child
 //! window.
 //!
@@ -517,4 +517,56 @@ unsafe fn read_stream(stream: &IStream, max: usize) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_dib;
+    use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, HBITMAP, BITMAP};
+
+    /// Read the top-left BGRA quad out of a DIB-section HBITMAP, then free it.
+    unsafe fn first_px(hbmp: HBITMAP) -> [u8; 4] {
+        let mut bm = BITMAP::default();
+        let n = GetObjectW(
+            hbmp.into(),
+            core::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut _ as *mut core::ffi::c_void),
+        );
+        assert!(n != 0 && !bm.bmBits.is_null(), "make_dib must produce a real DIB section");
+        let px = core::slice::from_raw_parts(bm.bmBits as *const u8, 4);
+        let out = [px[0], px[1], px[2], px[3]];
+        let _ = DeleteObject(hbmp.into());
+        out
+    }
+
+    /// Untrusted decoded dimensions must be rejected (None), never deref/overflow —
+    /// this runs in prevhost on attacker-influenced sizes.
+    #[test]
+    fn make_dib_rejects_bad_dims_without_crashing() {
+        unsafe {
+            assert!(make_dib(0, 5, &[0u8; 64], 0).is_none(), "zero width");
+            assert!(make_dib(5, 0, &[0u8; 64], 0).is_none(), "zero height");
+            assert!(make_dib(-3, 4, &[0u8; 64], 0).is_none(), "negative width");
+            assert!(make_dib(2, 2, &[0u8; 4], 0).is_none(), "buffer too short (2x2 needs 16 bytes)");
+            assert!(make_dib(i32::MAX, i32::MAX, &[0u8; 4], 0).is_none(), "w*h overflow guard");
+        }
+    }
+
+    /// The alpha-over-background compositing math (the bit `WM_PAINT` later StretchBlts).
+    /// `bg` is a COLORREF 0x00BBGGRR; 0x00FF_0000 is opaque blue.
+    #[test]
+    fn make_dib_composites_alpha_over_background() {
+        unsafe {
+            // Opaque red over blue copies straight through -> BGRA [0,0,255,255].
+            let red = make_dib(1, 1, &[255, 0, 0, 255], 0x00FF_0000).unwrap();
+            assert_eq!(first_px(red), [0, 0, 255, 255], "opaque red");
+
+            // 50% red over blue: R ≈ 200*128/255 ≈ 100, B ≈ 255*127/255 ≈ 127.
+            let half = make_dib(1, 1, &[200, 0, 0, 128], 0x00FF_0000).unwrap();
+            let [b, g, r, a] = first_px(half);
+            assert_eq!((g, a), (0, 255), "no green; DIB opaque");
+            assert!((r as i32 - 100).abs() <= 2, "R composited ~100, got {r}");
+            assert!((b as i32 - 127).abs() <= 2, "B composited ~127, got {b}");
+        }
+    }
 }

@@ -85,7 +85,7 @@ pub struct ImageInfo {
 
 /// Read dimensions + camera/date/GPS EXIF (best-effort; missing fields stay None).
 pub fn read_info(path: &str) -> ImageInfo {
-    use exif::{In, Reader, Tag, Value};
+    use exif::{In, Reader, Tag};
     let mut info = ImageInfo::default();
 
     if let Ok(rdr) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
@@ -131,24 +131,8 @@ pub fn read_info(path: &str) -> ImageInfo {
     info.model = txt(Tag::Model);
     info.datetime = txt(Tag::DateTimeOriginal).or_else(|| txt(Tag::DateTime));
 
-    fn dms(exif: &exif::Exif, coord: Tag, refr: Tag, neg_ref: u8) -> Option<f64> {
-        let f = exif.get_field(coord, In::PRIMARY)?;
-        let v = match &f.value {
-            Value::Rational(r) if r.len() >= 3 => r,
-            _ => return None,
-        };
-        let mut deg = v[0].to_f64() + v[1].to_f64() / 60.0 + v[2].to_f64() / 3600.0;
-        if let Some(rf) = exif.get_field(refr, In::PRIMARY) {
-            if let Value::Ascii(a) = &rf.value {
-                if a.first().and_then(|s| s.first()) == Some(&neg_ref) {
-                    deg = -deg;
-                }
-            }
-        }
-        Some(deg)
-    }
-    let lat = dms(&exif, Tag::GPSLatitude, Tag::GPSLatitudeRef, b'S');
-    let lon = dms(&exif, Tag::GPSLongitude, Tag::GPSLongitudeRef, b'W');
+    let lat = gps_dms(&exif, Tag::GPSLatitude, Tag::GPSLatitudeRef, b'S');
+    let lon = gps_dms(&exif, Tag::GPSLongitude, Tag::GPSLongitudeRef, b'W');
     if let (Some(la), Some(lo)) = (lat, lon) {
         info.gps = Some((la, lo));
     }
@@ -346,7 +330,10 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
     if file.seek(std::io::SeekFrom::Start(0)).is_err() {
         return out;
     }
-    let Ok(probe) = Probe::new(std::io::BufReader::new(file)).guess_file_type() else {
+    // Route through &mut dyn ReadSeek so lofty is monomorphized once across all callers
+    // (see crate::container::ReadSeek), not separately for BufReader<File>.
+    let mut br = std::io::BufReader::new(file);
+    let Ok(probe) = Probe::new(&mut br as &mut dyn crate::container::ReadSeek).guess_file_type() else {
         return out;
     };
     let Ok(tagged) = probe.read() else {

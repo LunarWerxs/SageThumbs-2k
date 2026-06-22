@@ -59,7 +59,7 @@ pub fn extract_reader<R: Read + Seek>(mut reader: R) -> Option<Vec<u8>> {
 
 /// Front-cover (or first) album art via lofty's tag reader. `None` if the format
 /// is unidentified, untagged, or carries no picture.
-fn lofty_cover<R: Read + Seek>(reader: &mut R) -> Option<Vec<u8>> {
+fn lofty_cover(reader: &mut dyn super::ReadSeek) -> Option<Vec<u8>> {
     reader.seek(SeekFrom::Start(0)).ok()?;
     let tagged = Probe::new(reader).guess_file_type().ok()?.read().ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;

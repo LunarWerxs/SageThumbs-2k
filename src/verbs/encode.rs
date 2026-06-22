@@ -104,20 +104,13 @@ pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
     })
 }
 
-/// Largest source file the verbs will load — the SAME ceiling the thumbnail
-/// provider applies, via the shared `decode::limits::MAX_INPUT_BYTES`. The verbs
-/// read by path rather than via the size-capped stream, so they apply the ceiling
-/// themselves before pulling the file into memory.
-const MAX_VERB_BYTES: u64 = crate::decode::limits::MAX_INPUT_BYTES;
-
-/// Read a file into memory, refusing anything past `MAX_VERB_BYTES` (checked via
-/// metadata, before the allocation) so a multi-GB file can't be loaded wholesale.
+/// Read a file into memory, refusing anything past the shared
+/// `decode::limits::MAX_INPUT_BYTES` ceiling (checked via metadata before the
+/// allocation) so a multi-GB file can't be loaded wholesale. Delegates to
+/// [`crate::decode::read_capped`] — the SAME DoS budget the thumbnail path uses —
+/// and flattens the io error to `E_FAIL` for the verb call sites.
 pub(crate) fn read_capped(path: &str) -> Result<Vec<u8>> {
-    let meta = std::fs::metadata(path).map_err(|_| Error::from(E_FAIL))?;
-    if meta.len() > MAX_VERB_BYTES {
-        return Err(Error::from(E_FAIL));
-    }
-    std::fs::read(path).map_err(|_| Error::from(E_FAIL))
+    crate::decode::read_capped(path).map_err(|_| Error::from(E_FAIL))
 }
 
 /// Output extensions the `image` crate can't encode — written through the bundled

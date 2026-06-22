@@ -37,7 +37,7 @@ PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-Name: "full"; Description: "Full - all 313 formats (recommended)"
+Name: "full"; Description: "Full - all 314 formats (recommended)"
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
@@ -94,7 +94,7 @@ Filename: "powershell.exe"; \
   Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage; Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -like '*SageThumbs2K*' | Remove-Item -Force"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregAppx"
 ; Unregister before files are removed (our DllUnregisterServer also unhooks the
-; 313 formats and fires SHChangeNotify).
+; 314 formats and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregSt2k"
 

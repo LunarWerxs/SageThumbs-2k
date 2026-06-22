@@ -10,6 +10,7 @@ use crate::command::ExplorerCommand;
 use crate::contextmenu::ContextMenu;
 use crate::guids;
 use crate::previewhandler::PreviewHandler;
+use crate::propstore::PropertyStore;
 use crate::safety;
 use crate::thumbprovider::ThumbnailProvider;
 
@@ -54,6 +55,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
                 guids::CLSID_EXPLORER_COMMAND => ExplorerCommand::default().into(),
                 guids::CLSID_CONTEXT_MENU => ContextMenu::default().into(),
                 guids::CLSID_PREVIEW_HANDLER => PreviewHandler::default().into(),
+                guids::CLSID_PROPERTY_STORE => PropertyStore::default().into(),
                 _ => return Err(Error::from(E_NOINTERFACE)),
             };
 

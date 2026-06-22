@@ -34,6 +34,13 @@ pub const CLSID_PREVIEW_HANDLER: GUID =
     GUID::from_u128(0x2C8F1A3D_6B4E_4D9C_A1F2_7E3B5C8D0A46);
 pub const CLSID_PREVIEW_HANDLER_STR: &str = "{2C8F1A3D-6B4E-4D9C-A1F2-7E3B5C8D0A46}";
 
+/// SageThumbs 2K property handler (IPropertyStore + IInitializeWithStream). Surfaces image
+/// dimensions / EXIF camera / audio tags in Explorer's Details pane, info-tips, and columns.
+/// Loads in-process into explorer.exe + SearchIndexer.exe (read-only, panic-guarded).
+pub const CLSID_PROPERTY_STORE: GUID =
+    GUID::from_u128(0x5E1A7C92_8F3D_4B6A_A0E4_3C7B9D2F1A68);
+pub const CLSID_PROPERTY_STORE_STR: &str = "{5E1A7C92-8F3D-4B6A-A0E4-3C7B9D2F1A68}";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +64,7 @@ mod tests {
         assert_eq!(CLSID_THUMBNAIL_PROVIDER_STR, format!("{{{}}}", bare(CLSID_THUMBNAIL_PROVIDER)));
         assert_eq!(CLSID_CONTEXT_MENU_STR, format!("{{{}}}", bare(CLSID_CONTEXT_MENU)));
         assert_eq!(CLSID_PREVIEW_HANDLER_STR, format!("{{{}}}", bare(CLSID_PREVIEW_HANDLER)));
+        assert_eq!(CLSID_PROPERTY_STORE_STR, format!("{{{}}}", bare(CLSID_PROPERTY_STORE)));
     }
 
     /// Every CLSID literal in the package manifest must be the Explorer-command

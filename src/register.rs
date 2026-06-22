@@ -19,12 +19,25 @@ use windows::core::Result;
 use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
 use windows_registry::{CLASSES_ROOT, LOCAL_MACHINE};
 
-use crate::guids::{CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_THUMBNAIL_PROVIDER_STR};
+use crate::guids::{
+    CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
+    CLSID_THUMBNAIL_PROVIDER_STR,
+};
 use crate::settings;
 
 const NAME: &str = "SageThumbs 2K Thumbnail Provider";
 const CM_NAME: &str = "SageThumbs 2K Context Menu";
 const PV_NAME: &str = "SageThumbs 2K Preview Handler";
+const PS_NAME: &str = "SageThumbs 2K Property Handler";
+/// The machine-wide list mapping an extension to its IPropertyStore handler CLSID.
+const PROPERTY_HANDLERS: &str =
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem\PropertyHandlers";
+/// Hover info-tip + Details-tab layout. ONE combined list serves every category: the shell
+/// only shows properties the store actually returns a value for, so image files surface
+/// Dimensions/Camera and audio files surface Artist/Title from the same list.
+const PROP_INFOTIP: &str =
+    "prop:System.ItemTypeText;System.Image.Dimensions;System.Music.Artist;System.Title;System.Size";
+const PROP_FULLDETAILS: &str = "prop:System.Image.Dimensions;System.Image.HorizontalSize;System.Image.VerticalSize;System.Photo.CameraManufacturer;System.Photo.CameraModel;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Size;System.DateModified";
 /// The IThumbnailProvider shell-extension handler category GUID.
 const THUMB_HANDLER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
 /// The IPreviewHandler category GUID — the `shellex` slot the preview host reads.
@@ -75,8 +88,76 @@ pub fn register(dll_path: &str) -> Result<()> {
     // PreviewHandlers list) must never break the thumbnail/context-menu setup above.
     let _ = register_preview_handler(dll_path, &approved);
 
+    // The property handler (Details pane / info-tip / columns). Best-effort: a locked-down
+    // PropertySystem subtree must never break the thumbnail/context-menu setup above.
+    let _ = register_property_handler(dll_path, &approved);
+
     notify_shell();
     Ok(())
+}
+
+/// Register the IPropertyStore coclass: its COM server (threaded "Both" — it also loads in the
+/// MTA SearchIndexer), the per-extension `PropertyHandlers\.<ext>` binding, and a combined
+/// info-tip / full-details property list so the values actually surface in Explorer.
+fn register_property_handler(dll_path: &str, approved: &windows_registry::Key) -> Result<()> {
+    register_inproc_server(CLSID_PROPERTY_STORE_STR, PS_NAME, dll_path, approved)?;
+    // Property handlers prefer "Both" (the shared helper defaults to Apartment).
+    CLASSES_ROOT
+        .create(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}\\InprocServer32"))?
+        .set_string("ThreadingModel", "Both")?;
+    for (ext, _) in crate::formats::FORMATS {
+        if settings::format_enabled(ext) {
+            let _ = hook_ext_propstore(ext);
+        } else {
+            unhook_ext_propstore(ext);
+        }
+    }
+    Ok(())
+}
+
+/// `(HKLM PropertyHandlers\.<ext>, HKCR SystemFileAssociations\.<ext>)` for one extension.
+fn propstore_keys(ext: &str) -> (String, String) {
+    (
+        format!("{PROPERTY_HANDLERS}\\.{ext}"),
+        format!("SystemFileAssociations\\.{ext}"),
+    )
+}
+
+/// Bind one extension to our property handler + write its property lists — but ONLY where the
+/// slot is empty or already ours. We must NEVER replace Windows' (or another product's) richer
+/// property handler: jpg/png/heic/mp3/mp4/mkv/flac/… all have a built-in handler that knows far
+/// more than we do, so they keep it. Our value is the formats with NO property handler at all
+/// (PSD/RAW/EPUB/comics/CAD/Krita/SVG/…), where dimensions in the Details pane is a pure win.
+fn hook_ext_propstore(ext: &str) -> Result<()> {
+    let (handler, assoc) = propstore_keys(ext);
+    let existing = LOCAL_MACHINE.open(&handler).ok().and_then(|k| k.get_string("").ok());
+    if !matches!(existing.as_deref(), None | Some("") | Some(CLSID_PROPERTY_STORE_STR)) {
+        return Ok(()); // a real handler already owns this extension — leave it alone
+    }
+    LOCAL_MACHINE.create(&handler)?.set_string("", CLSID_PROPERTY_STORE_STR)?;
+    let a = CLASSES_ROOT.create(&assoc)?;
+    a.set_string("InfoTip", PROP_INFOTIP)?;
+    a.set_string("FullDetails", PROP_FULLDETAILS)?;
+    Ok(())
+}
+
+/// Remove our property-handler binding + the prop lists, but ONLY where they're still ours
+/// (never clobber a handler / info-tip another product set).
+fn unhook_ext_propstore(ext: &str) {
+    let (handler, assoc) = propstore_keys(ext);
+    if let Ok(k) = LOCAL_MACHINE.open(&handler) {
+        if k.get_string("").ok().as_deref() == Some(CLSID_PROPERTY_STORE_STR) {
+            let _ = LOCAL_MACHINE.remove_tree(&handler);
+        }
+    }
+    if let Ok(k) = CLASSES_ROOT.open(&assoc) {
+        if k.get_string("InfoTip").ok().as_deref() == Some(PROP_INFOTIP) {
+            let _ = k.remove_value("InfoTip");
+        }
+        if k.get_string("FullDetails").ok().as_deref() == Some(PROP_FULLDETAILS) {
+            let _ = k.remove_value("FullDetails");
+        }
+    }
 }
 
 /// Register the IPreviewHandler coclass: its COM server, the surrogate `AppID`
@@ -217,11 +298,13 @@ pub fn unregister() -> Result<()> {
     for (ext, _) in crate::formats::FORMATS {
         unhook_ext_and_prune(ext);
         unhook_ext_preview_and_prune(ext);
+        unhook_ext_propstore(ext);
     }
     let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
     let _ = CLASSES_ROOT.remove_tree("*\\shellex\\ContextMenuHandlers\\SageThumbs2K");
     let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
     let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_PREVIEW_HANDLER_STR}"));
+    let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"));
     if let Ok(list) = LOCAL_MACHINE.open(PREVIEW_HANDLERS) {
         let _ = list.remove_value(CLSID_PREVIEW_HANDLER_STR);
     }
@@ -229,6 +312,7 @@ pub fn unregister() -> Result<()> {
         let _ = approved.remove_value(CLSID_THUMBNAIL_PROVIDER_STR);
         let _ = approved.remove_value(CLSID_CONTEXT_MENU_STR);
         let _ = approved.remove_value(CLSID_PREVIEW_HANDLER_STR);
+        let _ = approved.remove_value(CLSID_PROPERTY_STORE_STR);
     }
     notify_shell();
     Ok(())

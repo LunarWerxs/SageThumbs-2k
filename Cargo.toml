@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 
 [package]
 name = "sagethumbs2k"
@@ -22,6 +22,13 @@ publish = false                     # a Windows shell-extension app — never go
 description = "Modern Rust thumbnail + context-menu shell extension (SageThumbs 2K)"
 repository = "https://github.com/LunarWerxs/SageThumbs-2k"
 rust-version = "1.85"   # jxl-oxide (pure-Rust JPEG XL decoder) is Rust edition 2024
+
+# cargo-machete reads crate NAMES + source text, so it MISSES two real uses and flags
+# them falsely: `kamadak-exif` is imported as `exif` (`exif::Reader` in src/decode.rs),
+# and `windows-core` is referenced only inside the `#[implement]` macro's generated code.
+# Ignore both so the unused-dep check stays green and surfaces only genuine findings.
+[package.metadata.cargo-machete]
+ignored = ["kamadak-exif", "windows-core"]
 
 [lib]
 # Renamed `sagethumbs2k` -> `sagethumbs2k_core`: the shipped DLL is now a SEPARATE
@@ -55,6 +62,11 @@ image = { version = "0.25", default-features = false, features = [
 # transitively, so naming it here shares the same compiled crate = zero added bytes.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
 moxcms = "0.8"
+# CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
+# → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
+# `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
+# color-manage CMYK→sRGB via moxcms above. Re-exports `zune_core` (ColorSpace/DecoderOptions).
+zune-jpeg = "0.5"
 kamadak-exif = "0.6"
 # JSON for the `st2k --mcp` MCP server (JSON-RPC 2.0 over stdio). Pure-Rust,
 # MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from
@@ -75,6 +87,9 @@ webp = { version = "0.3", default-features = false, optional = true }
 # the `raster-images` (<image>-tag) decoder. Shapes/paths/gradients still render.
 resvg = { version = "0.47", default-features = false }
 windows-registry = "0.6"
+# NOT unused despite what cargo-machete says: the `#[implement]` macro from
+# windows-implement EXPANDS to code that references `windows_core::` paths, so the
+# direct dep must stay or every COM coclass fails its IUnknownImpl bound.
 windows-core = "0.62"
 windows-implement = "0.60"
 # WinRT async plumbing (IAsyncOperation/IAsyncAction/AsyncStatus) for the OS PDF
@@ -91,6 +106,10 @@ windows-future = "0.3"
 # feature unification — C-free, and no zopfli.
 zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Autodesk Fusion 360 `.f3d` stores its preview PNG as a zstd-compressed ZIP entry,
+# which the `zip` crate can't inflate without the zstd C lib. `ruzstd` is a pure-Rust,
+# decode-only zstd implementation (MIT OR Apache-2.0) — keeps the build C-free.
+ruzstd = "0.7"
 base64 = "0.22"
 encoding_rs = "0.8"
 percent-encoding = "2"
@@ -173,6 +192,7 @@ features = [
     "Win32_Storage_FileSystem", # Get/SetFileAttributesW for the folder-icon verb
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Storage_EnhancedStorage", # PKEY_* property keys (System.Image.*/Photo.*/Music.*) for the property handler
     "Win32_UI_Controls_Dialogs", # ChooseColorW / ChooseFontW for the screenshot colour + text pickers
     "Win32_Graphics_Gdi",
     "Win32_Graphics_GdiPlus", # anti-aliased annotation drawing in the screenshot tool

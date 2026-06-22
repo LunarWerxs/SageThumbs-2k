@@ -89,6 +89,29 @@ New-Zip "$OutDir\sample.kra" @{ 'mimetype' = 'application/x-krita'; 'mergedimage
 New-Zip "$OutDir\sample.ora" @{ 'mimetype' = 'image/openraster'; 'Thumbnails/thumbnail.png' = $png }
 New-Zip "$OutDir\sample.3mf" @{ '3D/3dmodel.model' = '<model/>'; 'Metadata/thumbnail.png' = $png }
 New-Zip "$OutDir\sample.fcstd" @{ 'Document.xml' = '<doc/>'; 'thumbnails/Thumbnail.png' = $png }
+# Autodesk Fusion 360 .f3d — a ZIP whose preview PNG is ZSTD-compressed (Fusion's real
+# layout), so it exercises the pure-Rust `ruzstd` decode path. PowerShell's ZipFile can't
+# WRITE zstd, so build it via Python (zipfile.ZIP_ZSTANDARD); if Python/zstd isn't
+# available, fall back to a deflate ZIP at the same path (still renders via the normal read).
+$f3dPng = "$OutDir\_f3d.png"; [System.IO.File]::WriteAllBytes($f3dPng, $png)
+$f3dPy = @"
+import zipfile
+png = open(r'$f3dPng','rb').read()
+with zipfile.ZipFile(r'$OutDir\sample.f3d','w') as z:
+    z.writestr('Components/part.brep', b'\x00'*200)
+    zi = zipfile.ZipInfo('FusionAssetName[Active]/Previews/small.png')
+    zi.compress_type = zipfile.ZIP_ZSTANDARD
+    z.writestr(zi, png)
+"@
+Remove-Item "$OutDir\sample.f3d" -EA SilentlyContinue
+foreach ($py in 'python', 'python3') {
+    $exe = Get-Command $py -EA SilentlyContinue
+    if ($exe) { & $exe.Source -c $f3dPy 2>$null; if (Test-Path "$OutDir\sample.f3d") { break } }
+}
+if (-not (Test-Path "$OutDir\sample.f3d")) {
+    New-Zip "$OutDir\sample.f3d" @{ 'Components/part.brep' = [byte[]](1, 2, 3); 'FusionAssetName[Active]/Previews/small.png' = $png }
+}
+Remove-Item $f3dPng -EA SilentlyContinue
 New-Zip "$OutDir\sample.epub" @{ 'mimetype' = 'application/epub+zip'; 'META-INF/container.xml' = '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'; 'content.opf' = '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest><item id="c" href="cover.png" media-type="image/png" properties="cover-image"/></manifest></package>'; 'cover.png' = $png }
 # Design-app project files (ZIP + embedded preview; same trick as kra/ora):
 # Sketch, Procreate, and Apple iWork (Keynote/Pages/Numbers).
@@ -295,6 +318,58 @@ print("ok")
         if ($res -notmatch 'ok') { Write-Host "  (mpc: $res — install mutagen to generate; skipped)" }
     } catch { Write-Host "  (mpc: $($_.Exception.Message); skipped)" }
 } else { Write-Host "  (mpc: needs python+mutagen; sample.mpc skipped)" }
+
+# --- 8) Alias / variant extensions + video samples (complete the full format set) ----
+# Our decoders CONTENT-SNIFF, so an alias is the same bytes as a base format under a
+# different extension - a valid coverage test that the extension is hooked and decodes.
+$aliasMap = [ordered]@{
+    blend    = (1..32 | ForEach-Object { "blend$_" })    # Blender auto-save backups
+    psd      = @('pdd', 'psdt')                            # Photoshop bitmap / template
+    tga      = @('tpic'); iff = @('ilbm'); jxr = @('wmp')
+    jp2      = @('jpf', 'jpx')                             # JPEG-2000 variants
+    hdr      = @('hdri', 'rgbe', 'xyze')                  # Radiance HDR variants
+    heic     = @('heics', 'heifs', 'hif')                # HEIF variants
+    skp      = @('skb'); emf = @('emg'); exr = @('cxr'); cdr = @('cmx')
+    afpub    = @('aftemplate'); indd = @('indt'); pspimage = @('psp')
+    cbz      = @('phz'); pcd = @('ph')
+    orf      = @('ori'); iiq = @('bay', 'cap'); dcr = @('drf', 'dcs'); pef = @('ptx'); dng = @('pxn')
+}
+$aliasN = 0
+foreach ($b in $aliasMap.Keys) {
+    $src = "$OutDir\sample.$b"; if (-not (Test-Path $src)) { continue }
+    foreach ($a in $aliasMap[$b]) { Copy-Item $src "$OutDir\sample.$a" -Force; $aliasN++ }
+}
+# wmz = gzip-compressed WMF (mirrors emz = gzip(emf)).
+if (Test-Path "$OutDir\sample.wmf") {
+    $wmf = [System.IO.File]::ReadAllBytes("$OutDir\sample.wmf")
+    $fs = [System.IO.File]::Create("$OutDir\sample.wmz")
+    $gz = New-Object System.IO.Compression.GzipStream($fs, [System.IO.Compression.CompressionMode]::Compress)
+    $gz.Write($wmf, 0, $wmf.Length); $gz.Dispose(); $fs.Dispose(); $aliasN++
+}
+# GeoGebra .ggb: a ZIP whose root geogebra_thumbnail.png is the preview.
+$ggbPrev = "$OutDir\_ggb.png"; & $magick $base -resize 200x140 $ggbPrev 2>$null
+if (Test-Path $ggbPrev) {
+    New-Zip "$OutDir\sample.ggb" @{ 'geogebra_thumbnail.png' = [System.IO.File]::ReadAllBytes($ggbPrev); 'geogebra.xml' = '<?xml version="1.0"?><geogebra/>' }
+    Remove-Item $ggbPrev -Force -EA SilentlyContinue; $aliasN++
+}
+Write-Host "[corpus] $aliasN alias/variant samples (Blender backups, image + RAW aliases, wmz, ggb)"
+
+# Small per-container video clips so the Media Foundation video tier is exercised. The
+# mp4-family (mp4/m4v/mov/qt/3gp/3g2/f4v) shares one ISO-BMFF clip; others are per-container.
+# Codec-less ones (mpg/mpeg/flv/ts/m2ts/mts/vob/ogv) still exercise the path - they fall to the
+# default icon, but must not crash or hang - so they belong in the corpus as coverage.
+if (-not $SkipDownloads) {
+    $vidBase = 'https://filesamples.com/samples/video'
+    foreach ($v in 'mp4', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'mpg', 'mpeg', 'ts', 'm2ts', 'mts', 'vob', 'ogv') {
+        try { Invoke-WebRequest "$vidBase/$v/sample_640x360.$v" -OutFile "$OutDir\sample.$v" -UseBasicParsing -TimeoutSec 90 }
+        catch { Write-Host "  video download failed: $v" }
+    }
+    foreach ($p in @(, @('mp4', 'm4v')) + @(, @('mp4', 'mov')) + @(, @('mp4', 'qt')) + @(, @('mp4', '3gp')) + @(, @('mp4', '3g2')) + @(, @('mp4', 'f4v')) + @(, @('avi', 'divx')) + @(, @('wmv', 'asf')) + @(, @('mpg', 'm2v'))) {
+        if (Test-Path "$OutDir\sample.$($p[0])") { Copy-Item "$OutDir\sample.$($p[0])" "$OutDir\sample.$($p[1])" -Force }
+    }
+    Write-Host "[corpus] video samples downloaded + container-aliased"
+}
+else { Write-Host "  (video samples need network; -SkipDownloads given - skipped)" }
 
 $count = (Get-ChildItem $OutDir -File | Where-Object { $_.Name -notlike '_*' }).Count
 Write-Host "[corpus] $count sample files in $OutDir" -ForegroundColor Green

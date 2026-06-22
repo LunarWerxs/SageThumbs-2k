@@ -131,9 +131,13 @@ pub fn max_thumb_size() -> u32 {
     clamp_thumb_size(w, h)
 }
 
-/// Prefer the image's embedded (EXIF) thumbnail when the request is small.
+/// Prefer the image's embedded (EXIF) thumbnail when the request is small (<= 96px).
+/// ON by default: for a small tile of a 12-50 MP photo, grabbing the camera-baked ~160px
+/// thumbnail is sub-millisecond vs a full multi-megapixel decode + downscale, and at that
+/// size it's visually identical. Falls back to a full decode when no embedded thumb exists.
+/// Users who want byte-exact small tiles can turn it off in Settings.
 pub fn use_embedded() -> bool {
-    get_dword("UseEmbedded", 0) != 0
+    get_dword("UseEmbedded", 1) != 0
 }
 
 /// A snapshot of the four settings every `GetThumbnail` consults, read with a
@@ -169,7 +173,7 @@ pub fn thumb_settings() -> ThumbSettings {
         enabled: g("EnableThumbs", 1) != 0,
         max_file_bytes: if mb == 0 { u64::MAX } else { mb * 1024 * 1024 },
         max_thumb: clamp_thumb_size(g("Width", DEFAULT_THUMB_SIZE), g("Height", DEFAULT_THUMB_SIZE)),
-        use_embedded: g("UseEmbedded", 0) != 0,
+        use_embedded: g("UseEmbedded", 1) != 0,
     }
 }
 

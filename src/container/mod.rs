@@ -11,6 +11,14 @@
 
 use image::DynamicImage;
 
+/// Combined `Read + Seek` for dynamic dispatch. Funneling every `lofty` read through one
+/// `&mut dyn ReadSeek` instead of a fresh monomorphization per concrete reader type (Cursor /
+/// the shell IStream / `BufReader<File>` plus lofty's internal `Take`/`Unsynchronized` wrappers,
+/// ~9 copies) trims ~400 KB off the DLL with identical behavior. Used by the audio cover
+/// extractor ([`audio`]) and [`crate::strip::read_audio_tags`].
+pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
+impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
+
 mod affinity;
 mod audio;
 mod blend;
@@ -67,11 +75,20 @@ pub(crate) fn looks_like_raster(data: &[u8]) -> bool {
         || data.starts_with(b"GIF8") // GIF
         || data.starts_with(b"BM") // BMP
         || (data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP") // WebP
-        // Windows metafiles — decodable since we added emf/wmf (magick tier). Lets
-        // container previews stored as EMF/WMF through (e.g. Visio docProps/thumbnail.emf).
-        || (data.len() >= 44 && data[0..4] == [0x01, 0x00, 0x00, 0x00] && &data[40..44] == b" EMF") // EMF
-        || data.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A]) // placeable WMF
-        || data.starts_with(&[0x01, 0x00, 0x09, 0x00, 0x00, 0x03]) // standard (memory) WMF METAHEADER
+        // Windows metafiles (EMF / placeable + memory WMF) — decodable via the magick
+        // tier (e.g. Visio docProps/thumbnail.emf). Shares decode::looks_like_metafile
+        // so the magic bytes live in exactly one place.
+        || crate::decode::looks_like_metafile(data)
+}
+
+/// ZIP-family signature (local-file / central-dir / end-of-central-dir headers).
+fn is_zip(b: &[u8]) -> bool {
+    b.starts_with(b"PK\x03\x04") || b.starts_with(b"PK\x05\x06") || b.starts_with(b"PK\x07\x08")
+}
+
+/// 7-Zip signature.
+fn is_7z(b: &[u8]) -> bool {
+    b.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
 }
 
 /// Does `head` (the first bytes of a file) look like an audio container that may
@@ -100,11 +117,11 @@ pub(crate) fn audio_asf_tags<R: std::io::Read + std::io::Seek>(reader: &mut R) -
 /// If `bytes` is a recognized ebook/comic container, return its cover image.
 pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     // ZIP family: EPUB / CBZ / FBZ (and any zip of images).
-    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") || bytes.starts_with(b"PK\x07\x08") {
+    if is_zip(bytes) {
         return zipfmt::extract(bytes).map(CoverOut::Bytes);
     }
     // 7-Zip: CB7.
-    if bytes.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
+    if is_7z(bytes) {
         return sevenz::extract(bytes).map(CoverOut::Bytes);
     }
     // RAR 4.x ("Rar!\x1A\x07\x00") and 5.x ("Rar!\x1A\x07\x01\x00"): CBR. Pure-Rust
@@ -216,11 +233,11 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
 /// to the default icon. `head` is the first bytes (already peeked) for the magic sniff.
 pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(reader: R, head: &[u8]) -> Option<Vec<u8>> {
     // ZIP family: CBZ / ZIP (and any zip of images).
-    if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") || head.starts_with(b"PK\x07\x08") {
+    if is_zip(head) {
         return zipfmt::cover_from_reader(reader);
     }
     // 7-Zip: CB7.
-    if head.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
+    if is_7z(head) {
         return sevenz::extract_seek(reader);
     }
     None
@@ -336,5 +353,109 @@ mod tests {
                 "`{ext}` is no longer a cover extension — remove it from COVER_ONLY_EXCEPTIONS",
             );
         }
+    }
+
+    /// On-demand FUZZER for the container cover extractors — our untrusted-input surface
+    /// (a hostile file lands here inside Explorer's thumbnail host under `panic = "abort"`).
+    /// Seeds from the real test corpus, applies random mutations (bit/byte flips, truncate,
+    /// insert, extend) plus degenerate buffers, and asserts `extract_cover` never PANICS
+    /// (an abort would take down Explorer). Deterministic PRNG → any crash is reproducible;
+    /// failing inputs are saved to TEMP. Run on demand (DEV profile, so the catch_unwind
+    /// below actually catches — the release profile is panic=abort):
+    ///   cargo test --lib fuzz_extract_cover -- --ignored --nocapture
+    #[test]
+    #[ignore = "fuzzer — run on demand with --ignored"]
+    fn fuzz_extract_cover() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        // Seeds: every corpus sample (size-capped) + a few degenerate buffers.
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test-corpus");
+        let mut seeds: Vec<Vec<u8>> = vec![Vec::new(), vec![0u8; 64], vec![0xFFu8; 64]];
+        if let Ok(rd) = std::fs::read_dir(&corpus) {
+            for entry in rd.flatten() {
+                if let Ok(b) = std::fs::read(entry.path()) {
+                    if !b.is_empty() && b.len() <= 1_000_000 {
+                        seeds.push(b);
+                    }
+                }
+            }
+        }
+        eprintln!("fuzz_extract_cover: {} seeds", seeds.len());
+
+        // Deterministic xorshift64 PRNG (reproducible; no rand dep).
+        let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rng = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+
+        // Quiet the panic hook during the run so a caught panic doesn't flood stderr.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        const ITERS: u64 = 30_000;
+        let mut crashes: Vec<(u64, Vec<u8>)> = Vec::new();
+        for i in 0..ITERS {
+            let mut data = seeds[(rng() as usize) % seeds.len()].clone();
+            let nmut = 1 + rng() % 10;
+            for _ in 0..nmut {
+                if data.is_empty() {
+                    data.push((rng() & 0xff) as u8);
+                    continue;
+                }
+                match rng() % 6 {
+                    0 => {
+                        let p = (rng() as usize) % data.len();
+                        data[p] ^= 1u8 << (rng() % 8);
+                    }
+                    1 => {
+                        let p = (rng() as usize) % data.len();
+                        data[p] = (rng() & 0xff) as u8;
+                    }
+                    2 => {
+                        let p = (rng() as usize) % data.len();
+                        data.truncate(p);
+                    }
+                    3 => {
+                        let p = (rng() as usize) % (data.len() + 1);
+                        data.insert(p, (rng() & 0xff) as u8);
+                    }
+                    4 => {
+                        for _ in 0..(rng() % 64) {
+                            data.push((rng() & 0xff) as u8);
+                        }
+                    }
+                    _ => {
+                        let p = (rng() as usize) % data.len();
+                        data[p] = data[p].wrapping_add(1);
+                    }
+                }
+            }
+            let bytes = data.clone();
+            if catch_unwind(AssertUnwindSafe(|| {
+                let _ = extract_cover(&bytes);
+            }))
+            .is_err()
+            {
+                crashes.push((i, data));
+                if crashes.len() >= 20 {
+                    break;
+                }
+            }
+        }
+
+        std::panic::set_hook(prev);
+
+        if !crashes.is_empty() {
+            for (i, data) in &crashes {
+                let p = std::env::temp_dir().join(format!("st2k_fuzz_crash_{i}.bin"));
+                let _ = std::fs::write(&p, data);
+                eprintln!("PANIC iter {i}: {} bytes -> {}", data.len(), p.display());
+            }
+            panic!("fuzz_extract_cover found {} panicking input(s)", crashes.len());
+        }
+        eprintln!("fuzz_extract_cover: {ITERS} iterations, 0 panics");
     }
 }

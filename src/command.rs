@@ -84,12 +84,20 @@ unsafe fn selection_has_image(items: Ref<'_, IShellItemArray>) -> bool {
 /// Enabled only when the selection contains a supported image — mirrors the
 /// classic `IContextMenu` gate (`contextmenu.rs`) so the modern Win11 menu
 /// behaves the same. `ECS_HIDDEN` removes the verb from the flyout entirely.
-unsafe fn image_state(items: Ref<'_, IShellItemArray>) -> u32 {
-    if settings::menu_enabled() && selection_has_image(items) {
+/// The enabled/hidden verdict shared by both `IExplorerCommand::GetState` impls: the
+/// verb shows only when the menu is enabled AND the selection holds a supported image.
+/// The menu_enabled() gate is re-checked every call so a settings change is honored
+/// without a new command object.
+fn state_for(has_image: bool) -> u32 {
+    if settings::menu_enabled() && has_image {
         ECS_ENABLED.0 as u32
     } else {
         ECS_HIDDEN.0 as u32
     }
+}
+
+unsafe fn image_state(items: Ref<'_, IShellItemArray>) -> u32 {
+    state_for(selection_has_image(items))
 }
 
 // ---- Root command -------------------------------------------------------
@@ -150,12 +158,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
                     v
                 }
             };
-            let state = if settings::menu_enabled() && has {
-                ECS_ENABLED.0 as u32
-            } else {
-                ECS_HIDDEN.0 as u32
-            };
-            Ok(state)
+            Ok(state_for(has))
         })
     }
     fn Invoke(&self, _items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {

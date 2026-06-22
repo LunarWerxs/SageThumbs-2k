@@ -4,7 +4,7 @@
 //! as a child process, exchanges newline-delimited JSON-RPC 2.0 messages over
 //! stdin/stdout, and terminates it when the client closes. Every tool just calls
 //! the same [`crate::cli`] verbs the command line uses, so an agent gets the
-//! bundled offline image engine (decode 288 formats, convert, rotate, strip,
+//! bundled offline image engine (decode all registered formats, convert, rotate, strip,
 //! OCR, PDF, info) with zero extra installs.
 //!
 //! The transport is the MCP stdio framing: one JSON-RPC message per line, no
@@ -12,6 +12,7 @@
 
 use std::io::{BufRead, Write};
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 
 use crate::cli;
@@ -88,6 +89,10 @@ fn tool_defs() -> Value {
         "Render any supported image ({} formats Windows often can't, incl. HEIC/RAW/PSD/ebook covers) to an image file, capped to a max long-edge size.",
         formats::FORMATS.len()
     );
+    let view_desc = format!(
+        "Decode a file and RETURN IT AS AN IMAGE you can see directly — for any of the {} supported formats Windows often can't open (HEIC/RAW/PSD/ebook & comic covers/CAD previews/audio cover art/…). Use it to look at, describe, caption, OCR-by-eye, or analyze a file's visual content. Returns an image content block, not a file path.",
+        formats::FORMATS.len()
+    );
     json!([
         {
             "name": "thumbnail",
@@ -99,6 +104,14 @@ fn tool_defs() -> Value {
             }, "required": ["input", "output"] }
         },
         {
+            "name": "view",
+            "description": view_desc,
+            "inputSchema": { "type": "object", "properties": {
+                "input": str_prop("path to the source file"),
+                "size": { "type": "integer", "description": "max long-edge in px (default 512)" }
+            }, "required": ["input"] }
+        },
+        {
             "name": "convert",
             "description": "Convert an image to another format (format from the output extension), with optional quality and resize.",
             "inputSchema": { "type": "object", "properties": {
@@ -108,6 +121,14 @@ fn tool_defs() -> Value {
                 "webp_quality": { "type": "integer", "description": "1-100 → lossy WebP at this quality (only for .webp output; omit for lossless WebP)" },
                 "resize": str_prop("optional 'WxH' (fit, no upscale) or 'N%' (scale)")
             }, "required": ["input", "output"] }
+        },
+        {
+            "name": "compress",
+            "description": "Compress an image to a target file size → a '(compressed)' JPEG sibling at or under the limit (quality binary-search, then downscale if needed).",
+            "inputSchema": { "type": "object", "properties": {
+                "input": str_prop("source image path"),
+                "max_size": str_prop("target size, e.g. '1MB', '500KB', or a byte count")
+            }, "required": ["input", "max_size"] }
         },
         {
             "name": "rotate",
@@ -165,6 +186,22 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
     let empty = json!({});
     let args = params.get("arguments").unwrap_or(&empty);
 
+    // `view` returns an IMAGE content block (base64 PNG) so the agent can SEE the file —
+    // handled before the text-returning dispatch below.
+    if name == "view" {
+        let Some(input) = args.get("input").and_then(|v| v.as_str()) else {
+            return result(id, json!({ "content": [{ "type": "text", "text": "missing string argument 'input'" }], "isError": true }));
+        };
+        let size = args.get("size").and_then(|v| v.as_u64()).unwrap_or(512) as u32;
+        return match cli::view_png(input, size) {
+            Ok(png) => result(
+                id,
+                json!({ "content": [{ "type": "image", "data": STANDARD.encode(&png), "mimeType": "image/png" }], "isError": false }),
+            ),
+            Err(msg) => result(id, json!({ "content": [{ "type": "text", "text": msg }], "isError": true })),
+        };
+    }
+
     match dispatch_tool(name, args) {
         Ok(text) => result(id, json!({ "content": [{ "type": "text", "text": text }], "isError": false })),
         Err(msg) => result(id, json!({ "content": [{ "type": "text", "text": msg }], "isError": true })),
@@ -185,6 +222,7 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
             let wq = args.get("webp_quality").and_then(|v| v.as_u64()).map(|w| w.clamp(1, 100) as u8);
             cli::convert(&need("input")?, &need("output")?, q, wq, cli::parse_resize(want("resize").as_deref())?)
         }
+        "compress" => cli::compress(&need("input")?, cli::parse_size(&need("max_size")?)?),
         "rotate" => cli::rotate(&need("input")?, &need("by")?),
         "strip" => cli::strip_meta(&need("input")?),
         "ocr" => cli::ocr(&need("input")?),
