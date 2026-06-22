@@ -30,6 +30,14 @@ OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; Rich VERSIONINFO on Setup.exe — a metadata-less installer is heuristic-AV
+; false-positive bait (same reason the binaries + magick stubs carry it).
+VersionInfoVersion={#AppVer}
+VersionInfoProductVersion={#AppVer}
+VersionInfoCompany={#Publisher}
+VersionInfoProductName={#AppName}
+VersionInfoDescription={#AppName} Setup
+VersionInfoCopyright=SageThumbs 2K
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Shell-extension registration writes HKLM + Program Files → needs elevation.
