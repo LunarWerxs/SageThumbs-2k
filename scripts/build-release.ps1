@@ -38,6 +38,20 @@ Write-Host "SageThumbs 2K release pipeline - version $ver" -ForegroundColor Cyan
 # builds. (RUSTFLAGS overrides config [target] rustflags — keep them identical.)
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 if (-not $SkipBuild) {
+    # Version metadata + app manifest + icon are embedded into the binaries via windres
+    # in build.rs, which SILENTLY falls back to NO metadata if windres isn't on PATH.
+    # Metadata-less / manifest-less binaries are classic heuristic-AV false-positive bait,
+    # so FAIL the release build loudly here rather than ship flag-bait (a plain dev
+    # `cargo build` stays tolerant — this guard is release-only).
+    $windres = Get-Command windres, x86_64-w64-mingw32-windres, llvm-windres -EA SilentlyContinue | Select-Object -First 1
+    if (-not $windres) {
+        throw "windres not found on PATH. build.rs needs it to embed VERSIONINFO/manifest/icon; " +
+              "without it the release binaries ship with NO version metadata (a common AV " +
+              "false-positive trigger). Install binutils/LLVM (e.g. " +
+              "'winget install BrechtSanders.WinLibs.POSIX.UCRT' or LLVM), then retry."
+    }
+    Write-Host "      windres: $($windres.Source)" -ForegroundColor DarkGray
+
     # CBR/RAR is now the pure-Rust `rars` crate (always on, no feature). `webp-lossy`
     # (libwebp, BSD — the one optional C piece) is enabled for the shipped installer;
     # the plain `cargo build` dev/clean build leaves it off (then lossy-WebP convert

@@ -959,7 +959,17 @@ fn decode_preview_with_raw_order(bytes: &[u8], raw_preview: RawPreviewOrder) -> 
     // `ftyp` box but are excluded). Any decode failure falls through to the image tiers,
     // which then fail to the file's default icon — never worse than before.
     if crate::video::is_video_magic(bytes) {
-        if let Some(frame) = crate::video::frame_from_bytes(bytes) {
+        // Prefer the smart targeted read for a representative ~30% keyframe built from the
+        // container's own index — MP4/MOV via the `moov` (`crate::mp4`), Matroska/WebM via the
+        // Cues (`crate::mkv`). Each self-gates to its container and returns None otherwise (or
+        // when the index can't be mapped), so we fall back to decoding a frame off the buffer.
+        let frame = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), 0.30)
+            .or_else(|| crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), 0.30))
+            .and_then(|mini| crate::video::frame_from_bytes(&mini))
+            // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
+            // seek its own index to the true ~30 % frame (no head-prefix depth cap).
+            .or_else(|| crate::video::frame_from_bytes_repr(bytes));
+        if let Some(frame) = frame {
             return Ok(frame);
         }
     }

@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "base64",
  "djvu-rs",
@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k-dll"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "sagethumbs2k",
  "windows-core",

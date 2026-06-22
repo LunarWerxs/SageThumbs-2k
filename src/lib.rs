@@ -21,6 +21,8 @@ mod fsutil;
 mod guids;
 mod jpegtran;
 pub mod mcp;
+mod mkv;
+mod mp4;
 mod ocr;
 // Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
 // verbs). `pub` so the companion `sagethumbs2k-app` bin can drive it, `doc(hidden)`
@@ -38,6 +40,7 @@ pub mod settings;
 mod thumbprovider;
 mod verbs;
 mod video;
+mod vstream;
 
 /// Conversion API surfaced for the companion app's Convert… dialog.
 pub use topdf::combine_to_pdf;

@@ -70,13 +70,15 @@ Name: "{group}\Uninstall SageThumbs 2K"; Filename: "{uninstallexe}"
 ; Register the thumbnail provider + classic context-menu handler (HKLM).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
   StatusMsg: "Registering the shell extension..."; Flags: runhidden waituntilterminated
-; Modern Win11 context menu (signed sparse package). Trust our self-signed cert
+; Modern Win11 context menu (signed sparse package): trust our self-signed cert
 ; (machine TrustedPeople — app packages only, not a root CA), then sideload the
-; package bound to the install dir. Both run only when the package was bundled.
-Filename: "{sys}\certutil.exe"; Parameters: "-addstore -f TrustedPeople ""{app}\SageThumbs2K.cer"""; \
-  StatusMsg: "Trusting the package certificate..."; Flags: runhidden waituntilterminated; Check: ModernMenuBundled
+; package bound to the install dir. ONE -NoProfile powershell call using native
+; cmdlets (Import-Certificate + Add-AppxPackage) — deliberately NO -ExecutionPolicy
+; Bypass (it only gates script *files*, never the inline cmdlets we pass via -Command)
+; and NO certutil, so the installer doesn't resemble a script-dropper to AV heuristics.
+; Runs only when the package was bundled.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion"""; \
+  Parameters: "-NoProfile -Command ""Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion"""; \
   StatusMsg: "Registering the modern context menu..."; Flags: runhidden waituntilterminated; Check: ModernMenuBundled
 ; Launch Settings right after install (checked by default) so the user sees the app.
 ; `skipifsilent` keeps unattended installs quiet.
@@ -85,12 +87,12 @@ Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
 
 [UninstallRun]
 ; Remove the modern-menu package + its trusted cert (best-effort; harmless if the
-; package was never installed). Done before the DLL unregister/file removal.
+; package was never installed). ONE -NoProfile powershell call with native cmdlets,
+; no -ExecutionPolicy Bypass / certutil (see the [Run] note) so the uninstaller stays
+; off AV heuristics too. Done before the DLL unregister/file removal.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage"""; \
+  Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage; Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -like '*SageThumbs2K*' | Remove-Item -Force"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregAppx"
-Filename: "{sys}\certutil.exe"; Parameters: "-delstore TrustedPeople SageThumbs2K"; \
-  Flags: runhidden waituntilterminated; RunOnceId: "DelCert"
 ; Unregister before files are removed (our DllUnregisterServer also unhooks the
 ; 313 formats and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \

@@ -2,6 +2,19 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.5.0
+
+- **Video thumbnails, done properly.** Explorer now reliably shows a thumbnail for your
+  videos — and it's a *representative* frame from about a third of the way in, not the black
+  intro, fade-in, or studio logo you'd get from the opening frame. Covers **MP4, MOV, M4V,
+  MKV, WebM, AVI, and WMV**.
+- **Fast even on huge 4K files.** For MP4 and MKV we read the video's own index and pull just
+  the single frame we need (a few megabytes) instead of scanning the file — so a folder of
+  multi-gigabyte movies on a slow drive thumbnails quickly, and can no longer peg a CPU core
+  or leave blank tiles that never resolve.
+- Formats Windows itself has no codec for (MPEG-1/2 **.mpg/.mpeg**, Flash **.flv**) keep the
+  normal file icon — nothing can produce a thumbnail for them without an installed codec.
+
 ## 0.4.9
 
 - **Correct colors for wide-gamut photos.** Thumbnails of Display-P3 / Adobe RGB images
