@@ -23,7 +23,28 @@ jobs:
   winget:
     runs-on: windows-latest
     steps:
+      # winget-releaser can only UPDATE a package that already exists in winget-pkgs; the
+      # FIRST version must be merged by hand (Microsoft review). Until that lands, skip
+      # gracefully instead of failing every release. Once the package exists, this passes
+      # through and auto-publishes with zero changes. Manifests live at
+      # manifests/<first-letter-lowercased>/<Publisher>/<Package>/.
+      - name: Check the package is onboarded to winget-pkgs
+        id: onboarded
+        shell: bash
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/l/LunarWerxs/SageThumbs2K")
+          if [ "$code" = "200" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=winget skipped::LunarWerxs.SageThumbs2K not yet in winget-pkgs (HTTP $code) — auto-publish resumes once the first submission is merged."
+          fi
+
       - name: Submit to winget-pkgs
+        if: steps.onboarded.outputs.exists == 'true'
         uses: vedantmgoyal9/winget-releaser@v2
         with:
           # winget package identifier: Publisher.Package (PascalCase, no spaces).
