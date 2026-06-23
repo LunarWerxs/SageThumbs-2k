@@ -68,10 +68,15 @@ here", "thumbnail this CR3"). Implemented in `src/mcp.rs`:
 - `serve()` runs the stdin→stdout loop; `handle(&Value)` is a pure, testable
   dispatcher for `initialize` / `tools/list` / `tools/call` / `ping` (notifications
   draw no reply; unknown requests → JSON-RPC `-32601`; a stray UTF-8 BOM is tolerated).
-- 8 tools = the CLI verbs **minus `batch`** (thumbnail / convert / rotate / strip / ocr /
-  pdf / info / formats — `batch` is CLI-only), each with a JSON-Schema, each calling
-  `cli::*`. Tool failures return a result with `isError: true`; protocol faults use
-  JSON-RPC errors.
+- 10 tools = the CLI verbs **minus `batch`** (thumbnail / convert / rotate / strip / ocr /
+  pdf / info / formats — `batch` is CLI-only) **plus two agent-native tools** (`view` /
+  `compress`), each with a JSON-Schema, each calling `cli::*`. Tool failures return a
+  result with `isError: true`; protocol faults use JSON-RPC errors.
+  - **`view`** — decode any of the 314 formats and return it as an MCP image content
+    block (base64 PNG) so the calling agent can **SEE** the file directly (RAW, HEIC,
+    PSD, ebook/comic covers, PDF page 1, …), no intermediate file on disk.
+  - **`compress`** — re-encode an image to a smaller file (format / quality / resize),
+    over the same `verbs::convert_*` pipeline as the CLI.
 - One dep added: **`serde_json`** (pure-Rust, MIT/Apache) — reachable only from the
   CLI binary, so LTO dead-strips it from the shell-extension DLL. No network.
 - **Use it:** point an MCP client (Claude Desktop, an IDE agent) at

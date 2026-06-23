@@ -2,6 +2,33 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.6.0
+
+- **Details in Explorer for 300+ formats Windows can't read.** A new property handler
+  surfaces image dimensions, EXIF camera info, and audio tags in Explorer's Details pane,
+  hover tooltips, and sortable/groupable columns — for the formats Windows has no idea how
+  to read on its own. Read-only and crash-isolated behind a panic boundary, like the
+  thumbnail provider.
+- **Proper color management.** Embedded ICC profiles and wide-gamut images (Display P3 /
+  Adobe RGB) now render in correct sRGB instead of looking over-saturated. AVIF/HEIC read
+  their profile from the ISOBMFF `colr` box (including the CICP nclx Display-P3 signal that
+  iPhone HEIC uses), and CMYK JPEGs are color-managed through their embedded CMYK profile.
+  Pure Rust — no C dependencies.
+- **Autodesk Fusion 360 (.f3d)** thumbnails — read from the zstd-compressed preview inside
+  the file's ZIP container — bringing the total to **314**.
+- **Repair file associations** button (Settings → Diagnostics): re-registers SageThumbs for
+  all your enabled formats when another app has taken over the thumbnails, then clears the
+  thumbnail cache.
+- **MCP `view` and `compress` tools.** The AI/agent server gained a `view` tool that decodes
+  any of the 314 formats to a PNG image block so an agent can actually *see* the file, plus a
+  `compress` tool.
+- **Smaller installer (~1.5 MB lighter).** The bundled ImageMagick text-shaping stack
+  (glib/harfbuzz/freetype/fribidi/raqm) is stubbed out — we only decode raster images, never
+  render text.
+- **Hardening.** Fuzzing and Miri over the untrusted-input parsers, COM round-trip tests for
+  the preview and property handlers, dead-code cleanup, and the test corpus extended to cover
+  all 314 formats.
+
 ## 0.5.0
 
 - **Video thumbnails, done properly.** Explorer now reliably shows a thumbnail for your

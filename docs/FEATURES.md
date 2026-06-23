@@ -24,7 +24,7 @@ grouped):
 
 | Category | Examples | How |
 |---|---|---|
-| **Image** (188) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **psp/pspimage** (Paint Shop Pro), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, dds, exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (DOS-EPS preview), … | image crate / WIC / ImageMagick / resvg (SVG) |
+| **Image** (188) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **psp/pspimage** (Paint Shop Pro), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, dds, exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (DOS-EPS preview), **f3d** (Autodesk Fusion 360), … | image crate / WIC / ImageMagick / resvg (SVG) |
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI) |
 | **Document** (42) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
@@ -37,7 +37,9 @@ crate** (MIT — no C, no GPL): the page's pre-rendered thumbnail when present, 
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
 including multipage shared-dictionary pages. EPS thumbnails come from the
 DOS-EPS embedded TIFF preview (no Ghostscript needed); plain-text EPS has no preview to
-extract. Photoshop files thumbnail from their embedded preview, but Convert / Resize /
+extract. **Autodesk Fusion 360** `.f3d` thumbnails come from the zstd-compressed preview
+inside the archive's ZIP container, inflated by the pure-Rust `ruzstd` decoder (no C dep).
+Photoshop files thumbnail from their embedded preview, but Convert / Resize /
 Image info use the REAL full-resolution composite.*
 
 **Notable wins Windows itself can't do:** ebook/comic covers, Office/ODF previews
@@ -47,13 +49,22 @@ project files** whose baked-in preview we extract directly (no rendering, no
 codecs, works even on the ImageMagick-free compact install): **Photoshop**
 `.psd/.psb`, **Affinity** `.afphoto/.afdesign/.afpub`, **Clip Studio** `.clip`,
 **Krita** `.kra`, **OpenRaster** `.ora`, **Blender** `.blend`, **3MF** `.3mf`,
-**FreeCAD** `.fcstd`, and 3D-printer **G-code** `.gcode`. *No Windows tool
+**FreeCAD** `.fcstd`, **Autodesk Fusion 360** `.f3d`, and 3D-printer **G-code**
+`.gcode`. *No Windows tool
 thumbnails most of these — PSD now works without ImageMagick, and `.clip`'s preview
 is read straight out of its embedded SQLite database (no extra dependency).*
 
 **Per-type toggle:** the Options dialog lists every format with a checkbox; turn
 any on/off (multi-select with Shift/Ctrl, then Space or right-click → Check/
 Uncheck/Toggle selected).
+
+**Details for the formats Windows can't read:** a companion **property handler**
+(`IPropertyStore`) surfaces each file's facts in Explorer the same way the built-in
+ones do — image **dimensions**, **EXIF camera** info, and **audio tags** now show up in
+the Details pane, the hover tooltip, and as **sortable / groupable columns** for the
+300+ formats Windows has no native reader for. It's **read-only** (it never writes back
+to your files) and **crash-isolated** behind the same panic boundary as the thumbnail
+provider, so a malformed file can't take down Explorer.
 
 ---
 
@@ -188,8 +199,10 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 - **Diagnostics:** a **Verbose logging** toggle and an **Open diagnostics log** button —
   the app writes a rotating log (version/OS header + a panic hook that records any crash
   by `file:line` before `panic = abort` aborts) to `%LOCALAPPDATA%\SageThumbs2K.log`, so a
-  bug report can ship a real repro. Plus a **Reset all settings** button that restores
-  every option to its factory default.
+  bug report can ship a real repro. A **Repair file associations** button re-registers
+  SageThumbs for every enabled format when another app has hijacked the thumbnails, then
+  clears the thumbnail cache so the fixed types redraw. Plus a **Reset all settings**
+  button that restores every option to its factory default.
 - **About:** logo, version, a link, a tagline. The main view also carries a small
   author credit and an (optionally remote) promo banner.
 
@@ -207,6 +220,13 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 - **Trimmed ImageMagick** is bundled for the long tail of formats (RAW, DICOM, PCX,
   J2K, …); the installer's "compact" mode omits it, so nothing must-have depends on
   it.
+- **Colour-managed thumbnails:** images carrying an embedded ICC profile or a
+  wide-gamut tag (Display P3 / Adobe RGB) are converted into sRGB before display, so
+  they no longer look over-saturated next to ordinary photos. AVIF/HEIC read their
+  profile from the ISOBMFF `colr` box — including the CICP `nclx` Display-P3 signal
+  iPhone HEIC uses — and CMYK JPEGs are converted through their embedded CMYK profile.
+  All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the transform), no C
+  colour-engine dependency.
 - **Lossless where it matters:** metadata strip rewrites JPEG segments / PNG chunks
   without touching pixels; rotate writes a copy rather than re-compressing in place.
 - **Permissive, lean dependencies:** MIT/Apache/BSD only; no GPL/AGPL, **no
@@ -224,7 +244,9 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 
 ## 5. Packaging
 
-- Inno Setup installer (~10.6 MB full, with the trimmed ImageMagick), `full` / `compact` / `custom`.
+- Inno Setup installer (~9 MB full — ~1.5 MB lighter since the trimmed ImageMagick's
+  text-shaping stack (glib / harfbuzz / freetype / fribidi / raqm) is stubbed out: we
+  only ever decode raster, never render text), `full` / `compact` / `custom`.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
   cleanly unregisters on uninstall.
 - App/installer/shortcut icon embedded from the logo.
@@ -251,8 +273,10 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 > `st2k` command-line tool) **and** Phase 2 (`st2k --mcp`, an MCP server) are both
 > built + installed. `st2k` verbs: `thumbnail · convert · batch · rotate · strip · ocr ·
 > pdf · info [--json] · formats [--json]` — the bundled engine as an offline image
-> toolbox for scripts and agents, zero extra installs. The core 8 verbs are also exposed
-> as **MCP tools** so an AI client can discover and call them (`batch` is CLI-only).
+> toolbox for scripts and agents, zero extra installs. **Ten tools** are exposed over
+> **MCP** so an AI client can discover and call them — the core verbs plus two agent-first
+> tools, **`view`** (decode any file to a PNG image block the agent can actually *see*) and
+> **`compress`** (`batch` is CLI-only).
 
 **Idea:** because SageThumbs already bundles real image
 capabilities (314-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
@@ -268,11 +292,13 @@ bundle anything new** — only surface existing functions.
    cores), `formats`. All logic lives in the `lib` (`verbs`, `strip`, `ocr`, `topdf`,
    `decode`, `parallel`); the CLI is a thin arg-parser over the same functions the menu
    uses. (Shipped as a separate binary, not a flag on the Options app.)
-2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0) — exposes the same 8
-   verbs as MCP tools (`tools/list` + `tools/call`) so an agent auto-discovers and
-   calls them. Newline-delimited stdio, spawned on demand by the client (not a
-   daemon); one small dep (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an
-   MCP client at `C:\Program Files\SageThumbs2K\st2k.exe` with arg `--mcp`.
+2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0) — exposes **10** MCP
+   tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
+   core verbs plus **`view`** — which decodes any of the 314 formats to a PNG **image
+   block** so an AI agent can actually *see* the file — and **`compress`**. Newline-
+   delimited stdio, spawned on demand by the client (not a daemon); one small dep
+   (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an MCP client at
+   `C:\Program Files\SageThumbs2K\st2k.exe` with arg `--mcp`.
 3. **Net effect:** installing SageThumbs gives any local agent a free, offline
    image-processing toolbox — convert, OCR, metadata, PDF, thumbnail — over the
    formats Windows itself can't handle, with zero extra installs.
