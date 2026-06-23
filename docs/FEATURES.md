@@ -244,7 +244,7 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 
 ## 5. Packaging
 
-- Inno Setup installer (~9 MB full — ~1.5 MB lighter since the trimmed ImageMagick's
+- Inno Setup installer (~8.79 MB full — ~1.5 MB lighter since the trimmed ImageMagick's
   text-shaping stack (glib / harfbuzz / freetype / fribidi / raqm) is stubbed out: we
   only ever decode raster, never render text), `full` / `compact` / `custom`.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);

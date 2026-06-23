@@ -103,7 +103,7 @@ Hit a bug, or a format that won't thumbnail? **[Open an issue](https://github.co
 1. **[Download `SageThumbs2K-Setup-<version>.exe`](https://github.com/LunarWerxs/SageThumbs-2k/releases)** and run it.
 2. That's it — open any folder of exotic images.
 
-- **Full** (~10.6 MB) bundles a hardened ImageMagick → all **314** formats.
+- **Full** (~8.79 MB) bundles a hardened ImageMagick → all **314** formats.
 - **Compact** skips ImageMagick → the pure-Rust + OS-codec formats only.
 
 > The installer registers a classic shell extension via `regsvr32` and trusts a self-signed cert for the Win11 modern menu. It's a *classic* extension by design — not an MSIX sandbox — because it spawns ImageMagick as a subprocess.
