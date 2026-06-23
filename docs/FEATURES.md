@@ -6,7 +6,7 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs — Explorer thumbnails for 314 file types plus
+> rebuilds the abandoned SageThumbs — Explorer thumbnails for 315 file types plus
 > a rich right-click image toolkit — and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0). No personal data, no
 > per-user tracking.
@@ -19,7 +19,7 @@ SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
 decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
 SVG), with embedded-cover/first-page extraction for containers.
 
-**314 registered extensions, in six categories** (also how the Options list is
+**315 registered extensions, in six categories** (also how the Options list is
 grouped):
 
 | Category | Examples | How |
@@ -28,10 +28,10 @@ grouped):
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI) |
 | **Document** (42) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
-| **Audio** (16) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, wav, aiff | embedded album art via `lofty` — **plus a hand-rolled ASF parser for WMA** (cover art + tags), which `lofty` can't read |
+| **Audio** (17) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c** | embedded album art via `lofty` — **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
 | **Video** (22) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (~30 % in, not the intro) via the OS **Media Foundation** codecs (no bundled bytes). MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest 30 % (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream — never streaming the whole movie. (`.mpg/.mpeg/.flv` need MPEG-1/2 or FLV decoders Windows doesn't ship, so they keep the default icon.) |
 
-*Counts sum to **314** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+*Counts sum to **315** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT — no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
@@ -279,7 +279,7 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 > **`compress`** (`batch` is CLI-only).
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (314-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (315-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new** — only surface existing functions.
@@ -287,14 +287,14 @@ bundle anything new** — only surface existing functions.
 **Status:**
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem) — verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
-   (combine), `thumbnail` (render any of the 314 types to PNG), **`batch`** (bulk
+   (combine), `thumbnail` (render any of the 315 types to PNG), **`batch`** (bulk
    thumbnail/convert over many files/folders in ONE process, fanned out across all CPU
    cores), `formats`. All logic lives in the `lib` (`verbs`, `strip`, `ocr`, `topdf`,
    `decode`, `parallel`); the CLI is a thin arg-parser over the same functions the menu
    uses. (Shipped as a separate binary, not a flag on the Options app.)
 2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0) — exposes **10** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs plus **`view`** — which decodes any of the 314 formats to a PNG **image
+   core verbs plus **`view`** — which decodes any of the 315 formats to a PNG **image
    block** so an AI agent can actually *see* the file — and **`compress`**. Newline-
    delimited stdio, spawned on demand by the client (not a daemon); one small dep
    (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an MCP client at

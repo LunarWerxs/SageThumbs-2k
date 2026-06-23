@@ -72,19 +72,30 @@ fn manifest_bytes() -> Option<&'static [u8]> {
             // a one-shot `new=1` the FIRST time this install ever reports. No identifier,
             // no IP (the server sees that from the connection itself), nothing per-user.
             let is_new = !sagethumbs2k_core::settings::install_reported();
+            // On a fresh report, a leftover "tombstone" version (left by a prior uninstall)
+            // marks this as a reinstall rather than a first-time install — note that plus the
+            // version it came from. Still no identifier; just a one-shot returning-vs-new flag.
+            let prev = is_new.then(sagethumbs2k_core::settings::tombstone_version).flatten();
+            let reinstall = match &prev {
+                Some(v) => format!("&reinstall=1&prev={v}"),
+                None => String::new(),
+            };
             let url = format!(
-                "{BANNER_URL}?v={}&os={}&new={}",
+                "{BANNER_URL}?v={}&os={}&new={}{}",
                 env!("CARGO_PKG_VERSION"),
                 os_tag(),
                 u8::from(is_new),
+                reinstall,
             );
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let res = http_fetch(&url, true);
-                // Burn the one-shot "fresh install" marker only once the report has
-                // actually reached the server — an offline first run retries next time.
+                // Burn the one-shot "fresh install" marker — and the reinstall tombstone —
+                // only once the report has actually reached the server (an offline first run
+                // retries next time).
                 if is_new && res.is_some() {
                     sagethumbs2k_core::settings::set_install_reported();
+                    sagethumbs2k_core::settings::clear_tombstone();
                 }
                 let _ = tx.send(res);
             });

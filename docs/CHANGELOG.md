@@ -2,6 +2,21 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.6.1
+
+- **Crisp thumbnails at large/Hi-DPI icon sizes.** Raised the maximum generated thumbnail
+  edge from 256 px to 1024 px. On 4K displays and the larger ("jumbo") icon views, Explorer
+  asks for thumbnails bigger than 256 px; we used to hand back an undersized 256 px image,
+  which looked soft *and* couldn't be cached durably — so Explorer re-generated it on every
+  refresh, re-decoding a frame from each (potentially multi-GB) video each time. Now we honor
+  the requested size up to 1024 px, so big thumbnails are sharp and stay cached. Smaller views
+  are unchanged.
+- **Audio waveform thumbnails.** WAV, AIFF and AIFF-C files with no embedded cover art now
+  show a drawn waveform instead of a blank icon — a quick visual of the sound. Files that do
+  have album art still show the artwork; compressed formats (MP3/FLAC/…) are unchanged.
+- **+1 format — AIFF-C (`.aifc`).** The audio handler now also covers AIFF-C, bringing the
+  total to **315** supported file types.
+
 ## 0.6.0
 
 - **Details in Explorer for 300+ formats Windows can't read.** A new property handler

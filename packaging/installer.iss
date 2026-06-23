@@ -45,7 +45,7 @@ PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-Name: "full"; Description: "Full - all 314 formats (recommended)"
+Name: "full"; Description: "Full - all 315 formats (recommended)"
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
@@ -102,9 +102,15 @@ Filename: "powershell.exe"; \
   Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage; Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -like '*SageThumbs2K*' | Remove-Item -Force"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregAppx"
 ; Unregister before files are removed (our DllUnregisterServer also unhooks the
-; 314 formats and fires SHChangeNotify).
+; 315 formats and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregSt2k"
+
+[UninstallDelete]
+; Tidy the per-user runtime files Windows would otherwise leave behind (diagnostics log +
+; update-check cache in %LOCALAPPDATA%), so an uninstall leaves nothing stray on disk.
+Type: files; Name: "{localappdata}\SageThumbs2K.log"
+Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 
 [Code]
 // The signed sparse package is bundled only when build-release.ps1 ran with the
@@ -137,6 +143,11 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurUninstallStep = usUninstall then
+  if CurUninstallStep = usUninstall then begin
     NotifyUninstall;
+    // Tidy the per-user leftovers Windows keeps on uninstall: drop our whole HKCU settings
+    // subtree, then leave only a tiny marker noting the version last installed.
+    RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\SageThumbs2K');
+    RegWriteStringValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'Tombstone', '{#AppVer}');
+  end;
 end;

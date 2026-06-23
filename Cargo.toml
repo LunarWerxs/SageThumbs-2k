@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 
 [package]
 name = "sagethumbs2k"

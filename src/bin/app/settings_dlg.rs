@@ -167,6 +167,8 @@ const ID_REBUILD_CACHE: i32 = 1174;
 const ID_CHECK_UPDATES: i32 = 1175;
 // Re-register all enabled formats (fixes thumbnails stolen by another app).
 const ID_REPAIR_ASSOC: i32 = 1176;
+// Toggle the background update check (the one the resident hotkey helper runs).
+const ID_UPDATE_AUTO: i32 = 1177;
 
 /// Per-item menu-visibility checkboxes (XnShell-style "Displayed menu items").
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's
@@ -638,6 +640,9 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.button("Open diagnostics log", 184, ID_OPEN_LOG);
     lc.button("Rebuild thumbnail cache", 184, ID_REBUILD_CACHE);
     lc.button("Repair file associations", 184, ID_REPAIR_ASSOC);
+    // Background update check (default ON; only acts while the resident hotkey helper
+    // runs — no separate scheduled task). The manual button below works regardless.
+    lc.checkbox("Automatically check for updates", cb, 300, ID_UPDATE_AUTO);
     lc.button("Check for updates", 184, ID_CHECK_UPDATES);
 
     // Reset / Import / Export share one row. Reset sets every control to factory
@@ -1218,6 +1223,7 @@ unsafe fn load_values(hwnd: HWND) {
     set_shot_dir_label(hwnd);
     update_save_dir_enabled(hwnd);
     check(hwnd, ID_VERBOSE_LOG, settings::verbose_logging());
+    check(hwnd, ID_UPDATE_AUTO, settings::update_auto_check());
     // Instant screenshot is on iff a quick-save hotkey is stored (vk != 0); grey the
     // picker to match.
     check(hwnd, ID_SHOT_QUICK_ENABLE, settings::screenshot_quick_hotkey().1 != 0);
@@ -1242,6 +1248,7 @@ unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_MENU_CHECKER, true);
     check(hwnd, ID_PRESERVE_DATE, false);
     check(hwnd, ID_VERBOSE_LOG, false);
+    check(hwnd, ID_UPDATE_AUTO, true); // background update check defaults ON
     // Menu preview: reset to the SAME first-run default the getter uses
     // (settings::DEFAULT_MENU_PREVIEW = 1, the SageThumbs submenu). These used to
     // disagree — the getter defaulted to 1 while "Defaults" forced 2 — so a fresh
@@ -1343,6 +1350,7 @@ unsafe fn apply_settings(hwnd: HWND) {
     let _ = settings::set_dword("PreviewChecker", checked(hwnd, ID_MENU_CHECKER) as u32);
     let _ = settings::set_dword("PreserveFileDate", checked(hwnd, ID_PRESERVE_DATE) as u32);
     let _ = settings::set_dword("Debug", checked(hwnd, ID_VERBOSE_LOG) as u32);
+    let _ = settings::set_update_auto_check(checked(hwnd, ID_UPDATE_AUTO));
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
         // Persist BOTH per-item visibility AND the row order (drag-to-reorder), reading
         // each row's lParam so a reordered list — items AND divider rows — saves

@@ -7,7 +7,7 @@
 //! recognizably the same:
 //!   - EnableThumbs  (1)   master on/off for the thumbnail provider
 //!   - MaxSize       (100) skip files larger than this many MB
-//!   - Width/Height  (256) generated thumbnail size, clamped to [32, 512]
+//!   - Width/Height  (1024) max generated thumbnail edge, clamped to [32, 1024]
 //!   - UseEmbedded   (0)   prefer the image's embedded (EXIF) thumbnail for
 //!     small requests — faster, lower quality
 //!   - JPEG          (90)  "Convert to JPG" quality (0–100)
@@ -27,9 +27,15 @@ pub const ROOT: &str = r"Software\SageThumbs2K";
 
 // Defaults + bounds, matching the legacy SageThumbs.h constants.
 pub const DEFAULT_MAX_FILE_MB: u32 = 100; // FILE_MAX_SIZE
-pub const DEFAULT_THUMB_SIZE: u32 = 256; // THUMB_STORE_SIZE
+// Raised from the legacy 256/512 (2026-06-22): on Hi-DPI / 4K / large ("jumbo")
+// icon views the shell requests thumbnails well past 512px. Capping below the
+// requested size handed back an undersized bitmap the shell could neither display
+// crisply NOR durably cache — so it re-extracted on every refresh (an expensive
+// 4K video-frame decode each time). We honor the request up to 1024 now; small
+// views are unaffected (the provider still does `cx.min(max_thumb)`).
+pub const DEFAULT_THUMB_SIZE: u32 = 1024; // THUMB_STORE_SIZE (was 256)
 pub const THUMB_MIN: u32 = 32; // THUMB_MIN_SIZE
-pub const THUMB_MAX: u32 = 512; // THUMB_MAX_SIZE
+pub const THUMB_MAX: u32 = 1024; // THUMB_MAX_SIZE (was 512)
 pub const EMBEDDED_MAX_REQUEST: u32 = 96; // THUMB_EMBEDDED_MIN_SIZE
 pub const DEFAULT_JPEG: u32 = 90; // JPEG_DEFAULT
 pub const DEFAULT_PNG: u32 = 9; // PNG_DEFAULT
@@ -61,6 +67,26 @@ pub fn install_reported() -> bool {
 /// Mark the fresh-install report as sent (see [`install_reported`]). Best-effort.
 pub fn set_install_reported() {
     let _ = set_dword("InstallReported", 1);
+}
+
+/// The version last installed, left as a single "tombstone" value by the uninstaller after
+/// it wipes the rest of [`ROOT`]. Its presence on a fresh install means this machine had us
+/// before — a reinstall, not a first-time user. A plain version string, NOT an identifier.
+pub fn tombstone_version() -> Option<String> {
+    CURRENT_USER
+        .open(ROOT)
+        .ok()
+        .and_then(|k| k.get_string("Tombstone").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Drop the reinstall tombstone once it has been reported, so a reinstall is recognized at
+/// most once (the next fresh report — if any — looks like a first-time install again).
+pub fn clear_tombstone() {
+    if let Ok(k) = CURRENT_USER.open(ROOT) {
+        let _ = k.remove_value("Tombstone");
+    }
 }
 
 /// The UI-language override (e.g. "fr", "zh-TW"), or None to follow the system
@@ -122,7 +148,7 @@ pub(crate) fn clamp_thumb_size(w: u32, h: u32) -> u32 {
     w.max(h).clamp(THUMB_MIN, THUMB_MAX)
 }
 
-/// The max thumbnail edge to generate, clamped to the legacy [32, 512] range.
+/// The max thumbnail edge to generate, clamped to the [32, 1024] range.
 /// The original stored Width/Height separately; we cap the square request box
 /// at the larger of the two so either knob raises the ceiling.
 pub fn max_thumb_size() -> u32 {
@@ -154,7 +180,7 @@ pub struct ThumbSettings {
     pub enabled: bool,
     /// `MaxSize` resolved to bytes (`u64::MAX` when the user limit is 0/unlimited).
     pub max_file_bytes: u64,
-    /// `Width`/`Height` reduced + clamped to the legacy [32, 512] edge.
+    /// `Width`/`Height` reduced + clamped to the [32, 1024] edge.
     pub max_thumb: u32,
     /// `UseEmbedded` — prefer the embedded thumbnail for small requests.
     pub use_embedded: bool,

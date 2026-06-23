@@ -42,7 +42,7 @@ const DOCUMENT_EXTS: &[&str] = &[
 ];
 const AUDIO_EXTS: &[&str] = &[
     "mp3", "flac", "ogg", "oga", "opus", "spx", "m4a", "m4b", "aac", "wma", "ape", "wv",
-    "mpc", "wav", "aiff", "aif",
+    "mpc", "wav", "aiff", "aif", "aifc",
 ];
 const RAW_EXTS: &[&str] = &[
     "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "k25",
@@ -401,9 +401,10 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("ape", "Monkey's Audio (album art)"),
     ("wv", "WavPack audio (album art)"),
     ("mpc", "Musepack audio (album art)"),
-    ("wav", "WAV audio (album art)"),
-    ("aiff", "AIFF audio (album art)"),
-    ("aif", "AIFF audio (album art)"),
+    ("wav", "WAV audio (waveform / album art)"),
+    ("aiff", "AIFF audio (waveform / album art)"),
+    ("aif", "AIFF audio (waveform / album art)"),
+    ("aifc", "AIFF-C audio (waveform / album art)"),
     // ---- Video (a representative frame, grabbed via OS Media Foundation codecs) ----
     ("mp4", "MPEG-4 Video"),
     ("m4v", "MPEG-4 Video (iTunes)"),
