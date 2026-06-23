@@ -50,8 +50,6 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11** — the cle
 >
 > Please tell your friends, star the repo and if you find anything broken, please let me know.
 
-> **Update — v0.6.2 (bug-fix), and an apology.** Some recent 0.6.x builds had a serious bug: opening a file dialog — for example, attaching or uploading a file in your browser — could **hang for up to ~2 minutes**, and the preview pane could come up blank/white. A tool whose entire job is to *not* break your shell shouldn't do that, and missing it stung — the first couple of attempts didn't fully land, either. It's properly fixed now, and I followed it with an audit that tracked down and fixed every similar issue elsewhere in the shell code. Sorry to anyone it bit, and thank you for your patience.
-
 ---
 
 ## The story

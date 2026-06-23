@@ -10,7 +10,7 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
   attaching or uploading a file in your browser — could freeze for a long time as the dialog closed,
   and the preview pane could come up blank/white. The image preview now runs on its own
   message-pumping thread, so closing the dialog is instant and the preview paints reliably. *(This
-  was the big one — there's a note about it in the README.)*
+  was the big one.)*
 - **Preview pane now follows your theme.** The preview's background matches Windows dark/light mode
   instead of always being white — even when the host dialog hands the preview the wrong color.
 - **Fixed: an unusual or corrupt file can no longer stall the shell.** A hardening pass put a strict
