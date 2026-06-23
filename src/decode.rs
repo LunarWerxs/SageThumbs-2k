@@ -1072,6 +1072,11 @@ fn decode_svg(bytes: &[u8]) -> Result<DynamicImage> {
     let owned = bytes.to_vec();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // Pin the DLL for this detached worker's lifetime — on timeout it outlives this call
+        // and `DllCanUnloadNow` ignores it, so the in-process thumbnail/preview host could
+        // unload the DLL mid-render and crash. Mirrors run_action_detached.
+        #[allow(clippy::default_constructed_unit_structs)]
+        let _module = crate::ModuleRef::default();
         let _ = tx.send(render_svg(&owned));
     });
     match rx.recv_timeout(SVG_TIMEOUT) {

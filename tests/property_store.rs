@@ -90,6 +90,28 @@ fn property_store_exposes_image_dimensions() {
 }
 
 #[test]
+fn property_store_skips_oversized_file_fast() {
+    // A hooked file larger than the 256 MiB input ceiling must be SKIPPED by the dimension
+    // probe — never read into the caller's address space, never decoded — so selecting a
+    // multi-GB upload in a host app's file-open dialog can't freeze it. This guards the 0.6.1
+    // in-process property-handler hang (an unbounded std::fs::read + full decode on the shell's
+    // thread). Uses a sparse `set_len` file: 300 MiB logical, ~no real disk/IO, and the probe
+    // refuses it on the metadata length before reading a byte.
+    let p = std::env::temp_dir().join(format!("st2k_propstore_oversized_{}.dng", std::process::id()));
+    {
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_len(300 * 1024 * 1024).unwrap(); // > decode::limits::MAX_INPUT_BYTES (256 MiB)
+    }
+    let store = unsafe { make_store(&p) }.unwrap();
+    let t = std::time::Instant::now();
+    let count = unsafe { store.GetCount() }.unwrap();
+    let ms = t.elapsed().as_millis();
+    let _ = std::fs::remove_file(&p);
+    assert_eq!(count, 0, "oversized file must yield no properties (read skipped before decode)");
+    assert!(ms < 2000, "oversized file must return fast, not block on a whole-file read; took {ms} ms");
+}
+
+#[test]
 fn property_store_is_read_only() {
     let png = write_temp_png(8, 8);
     let store = unsafe { make_store(&png) }.unwrap();

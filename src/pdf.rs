@@ -9,7 +9,11 @@
 //! The work runs on a dedicated MTA thread: WinRT's blocking waits can deadlock
 //! inside a single-threaded apartment, and we can't assume which apartment the
 //! shell's thumbnail host thread is in. A fresh MTA thread makes the wait safe
-//! regardless of the caller, and isolates COM init/uninit.
+//! regardless of the caller, and isolates COM init/uninit. The caller `recv_timeout`s
+//! that worker under a HOST-SIDE budget ([`PDF_TIMEOUT`]) — the four internal async ops
+//! are each capped at ~30 s, so a malformed/encrypted PDF could otherwise park the
+//! in-process shell thumbnail thread for ~120 s. The worker holds a [`crate::ModuleRef`]
+//! so that a render which outlives the budget can't let the DLL unload mid-run.
 
 use std::time::Duration;
 
@@ -23,22 +27,34 @@ use windows_future::{AsyncStatus, IAsyncAction, IAsyncOperation};
 /// Render the first page of a PDF to PNG bytes, scaled so its long edge is
 /// ~`max_dim` px. Returns `None` on any failure (encrypted, malformed, the API
 /// unavailable on this OS, …) so the shell falls back to the default icon.
+/// Host-side wall-clock budget for the whole PDF render, enforced by the CALLER (not the
+/// worker). Without it, a pathological PDF could park the in-process shell thumbnail thread
+/// for ~120 s (four serial 30 s [`WAIT_BUDGET`] async ops). On expiry we return `None` and
+/// let the worker finish + exit on its own (a leaked thread in a disposable host is the
+/// accepted trade-off, same as `decode_svg`).
+const PDF_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub fn render_first_page(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
     let owned = bytes.to_vec();
-    // Own MTA thread (see module docs); join blocks the caller for the result.
-    let worker = std::thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Dedicated MTA thread (see module docs). We `recv_timeout` instead of `join()` so a
+    // malformed/encrypted PDF can never park the in-process shell thumbnail thread past
+    // PDF_TIMEOUT. The worker holds a ModuleRef so that, if it outlives the budget, the
+    // in-process host can't unload the DLL mid-render and access-violate (mirrors decode_svg).
+    std::thread::spawn(move || {
+        #[allow(clippy::default_constructed_unit_structs)]
+        let _module = crate::ModuleRef::default();
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let out = render(&owned, max_dim).ok();
         if inited {
             unsafe { CoUninitialize() };
         }
-        out
+        let _ = tx.send(out);
     });
-    match worker.join() {
+    match rx.recv_timeout(PDF_TIMEOUT) {
         Ok(out) => out,
         Err(_) => {
-            // A panic in the WinRT worker would otherwise vanish as a plain None.
-            crate::safety::log_debug("pdf: render worker thread panicked");
+            crate::safety::log_debug("pdf: render exceeded the wall-clock deadline");
             None
         }
     }

@@ -84,7 +84,32 @@ pub struct ImageInfo {
 }
 
 /// Read dimensions + camera/date/GPS EXIF (best-effort; missing fields stay None).
+///
+/// The UNBOUNDED flavour, for explicit user-initiated callers running in their OWN process —
+/// the CLI `st2k info` and the right-click "Image info" dialog. When the cheap header probes
+/// miss (PSD/EPS/HEIC/RAW/containers), it reads the whole file and runs the full
+/// magick-capable decode to report the TRUE document size. For the in-process
+/// [`IPropertyStore`](crate::propstore) handler — which the shell loads into Explorer,
+/// SearchIndexer, AND a host app's file-open dialog — use [`read_info_bounded`] instead: an
+/// unbounded whole-file read + up-to-20 s decode on that hot path froze the caller (selecting
+/// a multi-GB upload in Chrome's file picker locked the whole browser — the 0.6.1
+/// property-handler hang).
 pub fn read_info(path: &str) -> ImageInfo {
+    read_info_impl(path, false)
+}
+
+/// [`read_info`] for the in-process property handler. The dimension fallback reads at most
+/// `decode::limits::MAX_INPUT_BYTES` via [`crate::decode::read_capped`] (which SKIPS a larger
+/// file before allocating) instead of slurping an arbitrarily large one into the caller's
+/// address space. A genuinely oversized media file then reports no dimensions — an image
+/// decoder can't derive them anyway, and not freezing the host is worth more than a
+/// Details-pane number. `propstore` additionally runs this under a wall-clock budget off the
+/// host thread, so even a slow in-cap decode can't stall the shell.
+pub fn read_info_bounded(path: &str) -> ImageInfo {
+    read_info_impl(path, true)
+}
+
+fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
     use exif::{In, Reader, Tag};
     let mut info = ImageInfo::default();
 
@@ -97,9 +122,16 @@ pub fn read_info(path: &str) -> ImageInfo {
     // Formats the image crate can't probe (PSD, EPS, HEIC/RAW, containers): the
     // cheap container header probe first, then a full-fidelity decode — so
     // "Image info" / `st2k info` report the REAL document size, not 0×0 and not
-    // the embedded preview's size.
+    // the embedded preview's size. A `bounded` caller caps the read at the 256 MiB
+    // input ceiling and skips anything larger (see `read_info_bounded`); the unbounded
+    // caller slurps the whole file for the true size of an arbitrarily large document.
     if info.width == 0 && info.height == 0 {
-        if let Ok(bytes) = std::fs::read(path) {
+        let bytes = if bounded {
+            crate::decode::read_capped(path).ok()
+        } else {
+            std::fs::read(path).ok()
+        };
+        if let Some(bytes) = bytes {
             if let Some((w, h)) = crate::container::real_dims(&bytes)
                 .or_else(|| crate::decode::decode_full(&bytes).ok().map(|i| (i.width(), i.height())))
             {

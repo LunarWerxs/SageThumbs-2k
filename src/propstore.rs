@@ -31,6 +31,13 @@ use windows::Win32::UI::Shell::PropertiesSystem::{
 
 use crate::safety;
 
+/// Hard wall-clock cap on the in-process file probe (see [`PropertyStore_Impl::build_props`]).
+/// The bounded probe normally returns in well under this; the budget only ever elapses for a
+/// pathological in-cap file — a slow ImageMagick decode tail, a network / cloud-placeholder
+/// stall — and on expiry we expose NO properties rather than freeze Explorer / SearchIndexer /
+/// the host's file-open dialog. Same discipline as the preview handler's `decode_preview_budgeted`.
+const PROBE_BUDGET: core::time::Duration = core::time::Duration::from_secs(3);
+
 #[implement(IPropertyStore, IInitializeWithFile)]
 pub struct PropertyStore {
     _ref: crate::ModuleRef,
@@ -122,8 +129,21 @@ impl PropertyStore_Impl {
             return out;
         };
 
+        // Probe the file OFF the host thread under a wall-clock budget. This coclass loads
+        // IN-PROCESS into Explorer, SearchIndexer, AND a host app's file-open dialog, so the
+        // probe must never stall the caller: an oversized file is skipped (`read_info_bounded`),
+        // and a slow in-cap decode is abandoned at `PROBE_BUDGET`, exposing no properties rather
+        // than freezing the shell (selecting a large upload in Chrome's file picker used to lock
+        // the browser here). Only PLAIN data (`ImageInfo` + `AudioTags`, both `Send`) crosses
+        // back; the `PROPVARIANT`s below are built on THIS COM thread.
+        let Some((info, tags)) = probe_budgeted(path.clone()) else {
+            safety::log_debug(&format!(
+                "PropStore::build_props: probe over budget or unreadable -> 0 props for {path}"
+            ));
+            return out;
+        };
+
         // Image dimensions + EXIF camera (same probe "Image info" uses, under the decode guards).
-        let info = crate::strip::read_info(&path);
         if info.width > 0 && info.height > 0 {
             out.push((
                 PKEY_Image_Dimensions,
@@ -139,8 +159,7 @@ impl PropertyStore_Impl {
             out.push((PKEY_Photo_CameraModel, PROPVARIANT::from(model.as_str())));
         }
 
-        // Audio tags (lofty + our ASF parser). Returns empties for non-audio, so this is cheap.
-        let tags = crate::strip::read_audio_tags(&path);
+        // Audio tags (lofty + our ASF parser) — probed alongside `info` above. Empty for non-audio.
         if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
             out.push((PKEY_Music_Artist, PROPVARIANT::from(artist.as_str())));
         }
@@ -162,4 +181,38 @@ impl PropertyStore_Impl {
         ));
         out
     }
+}
+
+/// Run the bounded file probe ([`crate::strip::read_info_bounded`] + audio tags) on a detached
+/// worker, returning its result only if it finishes within [`PROBE_BUDGET`]. On timeout returns
+/// `None` and leaves the worker to finish and exit on its own (its send into the dropped channel
+/// just errors), so the calling shell thread blocks for at most the budget. The worker takes its
+/// OWN COM apartment for the WIC/WinRT decode tiers the dimension probe leans on for RAW/HEIC —
+/// the host thread's apartment doesn't extend to a thread we spawned. `ImageInfo`/`AudioTags` are
+/// plain `Send` data; no COM object crosses the channel.
+fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip::AudioTags)> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // Pin the DLL for this detached worker's whole lifetime. On timeout we return but
+        // leave this thread running, and `DllCanUnloadNow` does NOT count it — so when the
+        // host (e.g. a file-open dialog in Chrome) releases the property object on CLOSE, the
+        // DLL could unload mid-probe → crash-on-close. Mirrors run_action_detached.
+        #[allow(clippy::default_constructed_unit_structs)]
+        let _module = crate::ModuleRef::default();
+        // S_OK/S_FALSE took a COM ref → balance it with CoUninitialize; RPC_E_CHANGED_MODE
+        // (already an MTA thread) did not, so it must NOT be balanced. Mirrors parallel.rs.
+        let inited = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+        let probed = (
+            crate::strip::read_info_bounded(&path),
+            crate::strip::read_audio_tags(&path),
+        );
+        // All WIC objects the decode created are already dropped inside `read_info_bounded`,
+        // so the apartment carries no live COM ref here.
+        if inited {
+            unsafe { CoUninitialize() };
+        }
+        let _ = tx.send(probed);
+    });
+    rx.recv_timeout(PROBE_BUDGET).ok()
 }

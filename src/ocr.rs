@@ -5,6 +5,8 @@
 //! Runs on a dedicated MTA thread and blocks the WinRT async via `pdf::block_op`
 //! (same pattern as the PDF thumbnailer — windows-future's `.join()` is private).
 
+use std::time::Duration;
+
 use windows::core::{Error, Result, HSTRING};
 use windows::Globalization::Language;
 use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapDecoder, BitmapPixelFormat};
@@ -31,22 +33,37 @@ pub fn ocr_to_clipboard(path: &str) -> Result<()> {
 /// Recognize text in image `bytes` (used by `ocr_to_clipboard` and the test hook).
 /// Runs on a fresh MTA thread (blocking `.get()`-style waits can deadlock in an
 /// STA; we can't assume the shell host's apartment).
+/// Host-side budget for the whole OCR run (decode + recognize). The internal `block_op`
+/// waits are each capped at ~30 s but several stack, so bound the total here. OCR is reached
+/// only via `run_action_detached` (already off the UI thread + DLL pinned), but we apply the
+/// same recv_timeout + ModuleRef discipline as every other detached WinRT worker so the path
+/// is self-contained, not reliant on the caller's structure.
+const OCR_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub(crate) fn recognize_bytes(bytes: &[u8]) -> Result<String> {
     let owned = bytes.to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Fresh MTA thread (blocking WinRT waits can deadlock in an STA; we can't assume the
+    // caller's apartment). `recv_timeout` instead of `join()` so a pathological image can't
+    // park the caller; on timeout the worker finishes + exits on its own. It holds a ModuleRef
+    // so a post-timeout worker can't let the DLL unload mid-run (mirrors decode_svg / pdf.rs).
     std::thread::spawn(move || {
+        #[allow(clippy::default_constructed_unit_structs)]
+        let _module = crate::ModuleRef::default();
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let out = recognize(&owned);
         if inited {
             unsafe { CoUninitialize() };
         }
-        out
-    })
-    .join()
-    .map_err(|_| {
-        // Don't let a panic in the WinRT OCR worker vanish into a generic failure.
-        crate::safety::log_debug("ocr: recognize worker thread panicked");
-        Error::from(E_FAIL)
-    })?
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(OCR_TIMEOUT) {
+        Ok(out) => out,
+        Err(_) => {
+            crate::safety::log_debug("ocr: recognize exceeded the wall-clock deadline");
+            Err(Error::from(E_FAIL))
+        }
+    }
 }
 
 fn recognize(bytes: &[u8]) -> Result<String> {

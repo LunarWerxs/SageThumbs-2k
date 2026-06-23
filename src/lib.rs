@@ -251,3 +251,37 @@ pub(crate) fn module_path() -> windows::core::Result<String> {
         }
     }
 }
+
+#[cfg(test)]
+mod unload_guard_tests {
+    /// The invariant every DETACHED worker relies on: while a worker holds a [`ModuleRef`],
+    /// `DllCanUnloadNow` must report S_FALSE, so the shell can't unload the DLL while that
+    /// thread is still executing our code. The budgeted decode workers (preview / property /
+    /// video / svg) leak past their wall-clock budget, so without this they let the host
+    /// unload the DLL on dialog CLOSE → access-violation crash-on-close. Guards that regression.
+    #[test]
+    fn detached_worker_ref_blocks_unload() {
+        use std::sync::mpsc;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (ended_tx, ended_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            #[allow(clippy::default_constructed_unit_structs)]
+            let module = super::ModuleRef::default(); // exactly what the budgeted workers now do
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap(); // hold the ref open until the test releases us
+            drop(module);
+            ended_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        // Adding a live ref can only ever force S_FALSE — robust under the parallel test
+        // harness (other refs only reinforce it), so this assertion is deterministic.
+        assert_eq!(
+            super::dll_can_unload_now(),
+            windows::Win32::Foundation::S_FALSE,
+            "a live detached-worker ModuleRef must block DllCanUnloadNow"
+        );
+        release_tx.send(()).unwrap();
+        ended_rx.recv().unwrap();
+    }
+}

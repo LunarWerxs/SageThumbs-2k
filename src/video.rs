@@ -204,6 +204,11 @@ where
 {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // Pin the DLL for this detached worker's whole lifetime: on timeout we return but
+        // leave it running, and `DllCanUnloadNow` ignores it, so the thumbnail host could
+        // unload the DLL mid-grab and crash. Mirrors run_action_detached.
+        #[allow(clippy::default_constructed_unit_structs)]
+        let _module = crate::ModuleRef::default();
         // S_OK / S_FALSE both add a ref to balance; RPC_E_CHANGED_MODE does not.
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let r = f();

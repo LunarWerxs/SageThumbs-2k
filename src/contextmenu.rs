@@ -140,6 +140,60 @@ fn preview_size_ok(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The `Send` result of the off-thread menu-preview decode: the scaled RGBA thumbnail (the GDI
+/// DIB is created on the caller's UI thread) plus the file's true source dimensions.
+struct MenuThumb {
+    rgba: Vec<u8>,
+    w: i32,
+    h: i32,
+    ow: u32,
+    oh: u32,
+}
+
+/// Wall-clock budget for the off-thread menu-preview decode. Normal files decode well under
+/// this; the cap exists so a slow-but-in-cap image (complex HEIC/AVIF, a 16384² file) can't
+/// freeze the menu's first paint for longer than this before falling back to caption-only.
+const MENU_PREVIEW_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Read + decode `path` to a scaled menu thumbnail on a DETACHED worker under a budget, so the
+/// decode never blocks explorer.exe's menu paint thread past [`MENU_PREVIEW_BUDGET`]. Mirrors
+/// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `crate::ModuleRef` and inits
+/// COM (the WIC HEIC/AVIF/RAW tier needs an apartment); on timeout it finishes + exits on its
+/// own and the caller degrades to a caption-only tile. Uses ONLY the cheap in-process tiers
+/// (`decode_menu_preview` — no magick/video/pdf/svg), so the worker is fast and bundled-byte-free.
+fn decode_menu_thumb_budgeted(path: &str) -> Option<MenuThumb> {
+    let path = path.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        #[allow(clippy::default_constructed_unit_structs)]
+        let _module = crate::ModuleRef::default();
+        let inited = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            )
+        }
+        .is_ok();
+        let out = (|| {
+            let bytes = std::fs::read(&path).ok()?;
+            let img = crate::decode::decode_menu_preview(&bytes).ok()?;
+            let (ow, oh) =
+                crate::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
+            // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
+            // normal/tall ones stay capped at the 88px height.
+            let thumb = img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX);
+            let rgba = thumb.to_rgba8();
+            let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+            Some(MenuThumb { rgba: rgba.into_raw(), w, h, ow, oh })
+        })();
+        if inited {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+        let _ = tx.send(out);
+    });
+    rx.recv_timeout(MENU_PREVIEW_BUDGET).ok().flatten()
+}
+
 /// Decode `path` into the menu-preview payload (thumbnail DIB + caption lines).
 /// Called LAZILY from the owner-draw measure/draw path, not from `QueryContextMenu`,
 /// so the decode happens as the (sub)menu paints rather than before it opens.
@@ -172,19 +226,14 @@ fn build_preview(path: &str) -> Option<Preview> {
     // CAPTION-ONLY tile (name + size, no thumbnail): the owner-draw slot was already
     // reserved in QueryContextMenu, so a name+size row degrades more gracefully than
     // a blank gap. `null` hbm + 0×0 are handled by `paint_preview`.
-    let decoded = std::fs::read(path).ok().and_then(|bytes| {
-        // decode_MENU_preview, not decode_preview: this runs on explorer.exe's UI
-        // thread, so it must use only the cheap in-process tiers (no magick/video/
-        // pdf/svg) or a single right-click on an exotic file would freeze the shell.
-        let img = crate::decode::decode_menu_preview(&bytes).ok()?;
-        let (ow, oh) = crate::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
-        // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
-        // normal/tall ones stay capped at the 88px height (unchanged from before).
-        let thumb = img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX);
-        let rgba = thumb.to_rgba8();
-        let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-        let hbm = unsafe { crate::dib::create_premultiplied_dib(w, h, rgba.as_raw()).ok()? };
-        Some((hbm, w, h, ow, oh))
+    // Decode OFF explorer's menu paint thread under a wall-clock budget (the in-proc-COM rule):
+    // the cheap tiers are fast on normal files, but a large HEIC/RAW or a 16384² in-cap image
+    // has no internal TIME bound and this would otherwise run on the menu's own paint thread.
+    // The DIB (a GDI object) is created HERE from the worker's plain-RGBA result; only the
+    // decode (the slow part) is offloaded. On timeout -> caption-only tile (handled below).
+    let decoded = decode_menu_thumb_budgeted(path).and_then(|t| {
+        let hbm = unsafe { crate::dib::create_premultiplied_dib(t.w, t.h, &t.rgba).ok()? };
+        Some((hbm, t.w, t.h, t.ow, t.oh))
     });
     let (hbm, w, h, info) = match decoded {
         Some((hbm, w, h, ow, oh)) => (hbm, w, h, format!("{ow} \u{00d7} {oh} px  \u{2013}  {size_txt}")),

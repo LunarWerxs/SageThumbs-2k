@@ -2,6 +2,25 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.6.2
+
+A bug-fix release centered on a serious file-dialog problem, plus a sweep for anything like it.
+
+- **Fixed: file dialogs could hang for up to ~2 minutes.** Opening a file picker — for example,
+  attaching or uploading a file in your browser — could freeze for a long time as the dialog closed,
+  and the preview pane could come up blank/white. The image preview now runs on its own
+  message-pumping thread, so closing the dialog is instant and the preview paints reliably. *(This
+  was the big one — there's a note about it in the README.)*
+- **Preview pane now follows your theme.** The preview's background matches Windows dark/light mode
+  instead of always being white — even when the host dialog hands the preview the wrong color.
+- **Fixed: an unusual or corrupt file can no longer stall the shell.** A hardening pass put a strict
+  time limit (and crash-safety guard) on *every* in-process decode path — PDF thumbnails, the
+  right-click menu preview, OCR, the Details/property handler, and the SVG / video / camera-RAW
+  helpers — so no single file can freeze Explorer, a file dialog, or the preview host. Earlier builds
+  could stall on a malformed PDF or a very large image.
+- **Fixed: a rare crash when closing a file dialog.** Background decode helpers now keep the
+  extension loaded until they finish, so the shell can't unload it out from under a running decode.
+
 ## 0.6.1
 
 - **Crisp thumbnails at large/Hi-DPI icon sizes.** Raised the maximum generated thumbnail
