@@ -1571,10 +1571,27 @@ unsafe fn check_for_updates(hwnd: HWND) {
         }
         crate::update::UpdateCheck::Available(tag) => {
             let text = wide(&format!(
-                "A newer version is available: {tag}\n(You have {ver}.)\n\nOpen the download page?"
+                "A newer version is available: {tag}\n(You have {ver}.)\n\nDownload and install it now? SageThumbs updates itself in the background — Explorer briefly restarts, and you'll get a confirmation when it's done."
             ));
             if MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONINFORMATION) == IDYES {
-                open_url(crate::update::RELEASES_URL);
+                // Shows a native progress dialog (download → verify → install) on its own
+                // thread, then launches the elevated installer. Blocks this thread meanwhile.
+                match crate::update::download_and_install(hwnd) {
+                    // Installer launched (UAC accepted): it closes us, upgrades in place,
+                    // restarts Explorer, and relaunches with --updated to confirm — so exit.
+                    Ok(_) => std::process::exit(0),
+                    // A user-initiated cancel (the progress dialog's Cancel, or declining the
+                    // UAC prompt) shouldn't nag; only a real failure offers the manual page.
+                    Err(msg) if msg.contains("cancel") => {}
+                    Err(msg) => {
+                        let t = wide(&format!(
+                            "Couldn't complete the update:\n{msg}\n\nOpen the download page instead?"
+                        ));
+                        if MessageBoxW(Some(hwnd), PCWSTR(t.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONWARNING) == IDYES {
+                            open_url(crate::update::RELEASES_URL);
+                        }
+                    }
+                }
             }
         }
         crate::update::UpdateCheck::Failed => {

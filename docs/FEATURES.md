@@ -203,6 +203,12 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
   SageThumbs for every enabled format when another app has hijacked the thumbnails, then
   clears the thumbnail cache so the fixed types redraw. Plus a **Reset all settings**
   button that restores every option to its factory default.
+- **Updates:** a **Check for updates** button (plus an *Automatically check for updates*
+  toggle) asks GitHub whether a newer release exists. When one is available, SageThumbs can
+  **download and install it for you** — a progress bar shows the download, the file is
+  integrity-checked, Windows asks once for permission, and the new version installs in the
+  background and confirms with a quiet tray notification when it's done. You can still grab
+  the installer from the releases page by hand if you prefer.
 - **About:** logo, version, a link, a tagline. The main view also carries a small
   author credit and an (optionally remote) promo banner.
 

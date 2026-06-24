@@ -2,6 +2,13 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.6.3
+
+- **One-click updates.** When a new version is available, **Settings ▸ Check for updates** can now
+  download and install it for you — a progress bar shows the download, Windows asks once for
+  permission, and the update installs in the background and confirms when it's done. No more hunting
+  down the installer by hand. (You can still grab it from the releases page if you prefer.)
+
 ## 0.6.2
 
 A bug-fix release centered on a serious file-dialog problem, plus a sweep for anything like it.

@@ -160,6 +160,16 @@ fn main() {
             }
             return;
         }
+        // Self-update confirmation: `--updated <ver>` is launched by the installer's [Run]
+        // step right after a SILENT self-update finishes — pop a NON-BLOCKING tray toast
+        // ("you're now on <ver>"), then exit. No modal dialog, so the update stays silent.
+        // The installer gates this relaunch on its own /UPDATED marker, so a normal
+        // interactive install never triggers it.
+        if let Some(pos) = args.iter().position(|a| a == "--updated") {
+            let ver = args.get(pos + 1).map_or(env!("CARGO_PKG_VERSION"), String::as_str);
+            crate::update::show_updated_toast(ver);
+            return;
+        }
 
         let class = w!("SageThumbs2KOptions");
         let wc = WNDCLASSW {

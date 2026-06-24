@@ -92,6 +92,12 @@ Filename: "powershell.exe"; \
 ; `skipifsilent` keeps unattended installs quiet.
 Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
   Flags: postinstall nowait skipifsilent
+; After a SILENT self-update (the running app launched setup with /UPDATED), relaunch the
+; freshly installed app with --updated <ver> so it shows a "you're now on <ver>" note.
+; Gated on /UPDATED via WasSelfUpdate, so a normal interactive install never triggers it
+; (and it runs even though that install was silent — no skipifsilent here, deliberately).
+Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
+  Flags: nowait; Check: WasSelfUpdate
 
 [UninstallRun]
 ; Remove the modern-menu package + its trusted cert (best-effort; harmless if the
@@ -120,6 +126,22 @@ Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 function ModernMenuBundled: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\SageThumbs2K.msix'));
+end;
+
+// True when the running app launched this setup as a SILENT self-update — it passes the
+// custom /UPDATED switch. Gates the post-update "you're now on <ver>" relaunch so a normal
+// interactive install never shows it.
+function WasSelfUpdate: Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 1 to ParamCount do
+    if CompareText(ParamStr(i), '/UPDATED') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
 end;
 
 // Best-effort one-shot HTTPS GET on uninstall, over WinHttp with short timeouts and all

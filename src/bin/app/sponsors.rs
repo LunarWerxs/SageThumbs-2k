@@ -268,6 +268,19 @@ fn is_https_url(url: &str) -> bool {
 /// per-sponsor image URLs pass `reload = false` and may be cached. Returns None on a
 /// non-HTTPS URL, any WinINet failure, an empty body, or an over-cap response.
 pub(crate) fn http_fetch(url: &str, reload: bool) -> Option<Vec<u8>> {
+    http_fetch_capped(url, reload, MAX_REMOTE_BYTES, MANIFEST_TIMEOUT_SECS)
+}
+
+/// Like [`http_fetch`] but with an explicit byte cap + per-phase timeout (seconds). The
+/// self-updater uses this to pull the multi-MB installer with a far longer receive window
+/// than the tiny manifest needs. Same guarantees otherwise: HTTPS-only, bounded, returns
+/// None on a non-HTTPS URL, any WinINet failure, an empty body, or an over-cap response.
+pub(crate) fn http_fetch_capped(
+    url: &str,
+    reload: bool,
+    max_bytes: usize,
+    timeout_secs: u64,
+) -> Option<Vec<u8>> {
     if !is_https_url(url) {
         return None;
     }
@@ -285,7 +298,7 @@ pub(crate) fn http_fetch(url: &str, reload: bool) -> Option<Vec<u8>> {
         }
         // Bound each network phase so a slow/dead host can't stall the synchronous
         // startup manifest check (which would freeze the Settings window on open).
-        let timeout_ms: u32 = (MANIFEST_TIMEOUT_SECS as u32) * 1000;
+        let timeout_ms: u32 = (timeout_secs as u32) * 1000;
         for opt in [
             INTERNET_OPTION_CONNECT_TIMEOUT,
             INTERNET_OPTION_RECEIVE_TIMEOUT,
@@ -309,10 +322,89 @@ pub(crate) fn http_fetch(url: &str, reload: bool) -> Option<Vec<u8>> {
             let _ = InternetCloseHandle(session);
             return None;
         }
-        let data = crate::win::wininet_drain(req, MAX_REMOTE_BYTES);
+        let data = crate::win::wininet_drain(req, max_bytes);
         let _ = InternetCloseHandle(req);
         let _ = InternetCloseHandle(session);
         data.filter(|d| !d.is_empty())
+    }
+}
+
+/// Stream an HTTPS download into memory, invoking `on_progress(downloaded_bytes)` after each
+/// chunk — return `false` from it to abort (e.g. the user hit Cancel). Always reloads (no
+/// cache), bounded by `max_bytes` + per-phase timeouts. The self-updater uses this to drive a
+/// live progress bar while pulling the installer. None on a non-HTTPS URL, any WinINet
+/// failure, an abort, or an over-cap / empty body.
+pub(crate) fn http_download_streaming(
+    url: &str,
+    max_bytes: usize,
+    timeout_secs: u64,
+    on_progress: &mut dyn FnMut(u64) -> bool,
+) -> Option<Vec<u8>> {
+    if !is_https_url(url) {
+        return None;
+    }
+    use windows::Win32::Networking::WinInet::{
+        InternetCloseHandle, InternetOpenUrlW, InternetOpenW, InternetReadFile,
+        InternetSetOptionW, INTERNET_FLAG_NO_CACHE_WRITE, INTERNET_FLAG_PRAGMA_NOCACHE,
+        INTERNET_FLAG_RELOAD, INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT,
+        INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
+    };
+    unsafe {
+        let agent = wide("SageThumbs2K");
+        let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
+        if session.is_null() {
+            return None;
+        }
+        let timeout_ms: u32 = (timeout_secs as u32) * 1000;
+        for opt in [
+            INTERNET_OPTION_CONNECT_TIMEOUT,
+            INTERNET_OPTION_RECEIVE_TIMEOUT,
+            INTERNET_OPTION_SEND_TIMEOUT,
+        ] {
+            let _ = InternetSetOptionW(
+                Some(session),
+                opt,
+                Some(&timeout_ms as *const u32 as *const c_void),
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+        let url_w = wide(url);
+        let flags = INTERNET_FLAG_SECURE
+            | INTERNET_FLAG_RELOAD
+            | INTERNET_FLAG_NO_CACHE_WRITE
+            | INTERNET_FLAG_PRAGMA_NOCACHE;
+        let req = InternetOpenUrlW(session, PCWSTR(url_w.as_ptr()), None, flags, None);
+        if req.is_null() {
+            let _ = InternetCloseHandle(session);
+            return None;
+        }
+        let mut data = Vec::new();
+        let mut buf = [0u8; 65536];
+        let mut ok = true;
+        loop {
+            let mut read = 0u32;
+            if InternetReadFile(req, buf.as_mut_ptr() as *mut c_void, buf.len() as u32, &mut read)
+                .is_err()
+            {
+                ok = false; // read error → incomplete, don't trust it
+                break;
+            }
+            if read == 0 {
+                break; // end of stream
+            }
+            data.extend_from_slice(&buf[..read as usize]);
+            if data.len() > max_bytes {
+                ok = false; // oversized / never-ending → reject
+                break;
+            }
+            if !on_progress(data.len() as u64) {
+                ok = false; // caller asked to stop (cancel)
+                break;
+            }
+        }
+        let _ = InternetCloseHandle(req);
+        let _ = InternetCloseHandle(session);
+        (ok && !data.is_empty()).then_some(data)
     }
 }
 
