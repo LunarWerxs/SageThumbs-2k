@@ -810,7 +810,11 @@ pub fn magick_available() -> bool {
 /// format and magick is only the output coder. Same isolation as the decode
 /// path: child process, `-limit`s, and an external kill-timeout. None of our
 /// inputs reach magick's parsers (only our own re-encoded PNG does).
-pub fn encode_via_magick(img: &DynamicImage, out: &std::path::Path) -> Result<()> {
+pub fn encode_via_magick(
+    img: &DynamicImage,
+    out: &std::path::Path,
+    quality: Option<u8>,
+) -> Result<()> {
     use std::io::{Read, Write};
 
     // Self-defend: this is the single chokepoint for the magick-backed Convert
@@ -829,11 +833,18 @@ pub fn encode_via_magick(img: &DynamicImage, out: &std::path::Path) -> Result<()
 
     let mut cmd = Command::new(exe);
     add_magick_limits(&mut cmd);
-    cmd.args([
-        "png:-", // the image arrives as PNG on stdin (our own re-encode)
-        out_str, // write the target format, inferred from the extension
-    ])
-    .stdin(Stdio::piped())
+    // `png:-` (our own re-encode on stdin) → the target file (format inferred from the
+    // extension). When a quality is given (lossy magick targets like AVIF/JXL), pass it
+    // through as `-quality N`; lossless targets (PSD/DDS/…) pass `None` and get magick's
+    // default. Owned Strings so the optional `-quality N` slots in without lifetime games.
+    let mut args: Vec<String> = vec!["png:-".to_string()];
+    if let Some(q) = quality {
+        args.push("-quality".to_string());
+        args.push(q.clamp(1, 100).to_string());
+    }
+    args.push(out_str.to_string());
+    cmd.args(&args)
+        .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .creation_flags(CREATE_NO_WINDOW);
@@ -925,6 +936,22 @@ pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
 /// preview, where a container's embedded preview is exactly what we want (fast,
 /// no subprocess). SVG is rasterized; raster formats get EXIF orientation.
 pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
+    // PSD/PSB with transparency: Photoshop's baked-in preview (resource 1036) is a
+    // JPEG — no alpha — so a background-removed document would thumbnail with a flat
+    // WHITE background. Render the real layer composite (which preserves alpha)
+    // instead; fall back to the baked-preview path when there's no compositor (the
+    // compact / no-ImageMagick install) or the composite fails. Opaque PSDs skip
+    // this and keep the fast embedded-preview path. (`decode_full` runs its own
+    // composite attempt before falling back here, so this lives on the preview entry
+    // only — never double-running magick.)
+    if bytes.starts_with(b"8BPS") && crate::container::psd_has_alpha(bytes) {
+        match decode_psd_composite(bytes) {
+            Ok(img) => return Ok(img),
+            Err(e) => crate::safety::log_debug(&format!(
+                "transparent PSD composite failed ({e}); using baked preview"
+            )),
+        }
+    }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal)
 }
 

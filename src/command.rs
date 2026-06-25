@@ -59,8 +59,10 @@ unsafe fn items_to_paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
 /// True if the selection contains at least one supported image. Lazy: iterates
 /// the array and stops at the FIRST match instead of materializing every path
 /// into a Vec — each display name is freed right after its extension is tested
-/// and no String is kept. Mirrors the classic `is_image` gate.
-unsafe fn selection_has_image(items: Ref<'_, IShellItemArray>) -> bool {
+/// and no String is kept. Mirrors the classic `is_image` gate. Takes `items` by
+/// reference (windows-rs `Ref` is neither `Copy` nor `Clone`) so the same handle
+/// can also feed `selection_is_audio_only` in `menu_item_state`.
+unsafe fn selection_has_image(items: &Ref<'_, IShellItemArray>) -> bool {
     let Ok(arr) = items.ok() else {
         return false;
     };
@@ -81,6 +83,37 @@ unsafe fn selection_has_image(items: Ref<'_, IShellItemArray>) -> bool {
     false
 }
 
+/// True if the selection is non-empty AND every file is audio (music). Mirrors the
+/// classic `audio_only` gate (`contextmenu.rs`): an audio-only selection hides the
+/// image-only top-level verbs in the modern flyout. Unlike `selection_has_image` this
+/// must visit EVERY item (one non-audio file flips the answer false), freeing each
+/// display name as it goes. An empty / unreadable selection is not audio-only.
+unsafe fn selection_is_audio_only(items: &Ref<'_, IShellItemArray>) -> bool {
+    let Ok(arr) = items.ok() else {
+        return false;
+    };
+    let Ok(count) = arr.GetCount() else {
+        return false;
+    };
+    if count == 0 {
+        return false;
+    }
+    for i in 0..count {
+        let Ok(item) = arr.GetItemAt(i) else {
+            return false;
+        };
+        let Ok(pw) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
+            return false;
+        };
+        let audio = pw.to_string().map(|s| verbs::is_audio(&s)).unwrap_or(false);
+        CoTaskMemFree(Some(pw.0 as *const c_void));
+        if !audio {
+            return false;
+        }
+    }
+    true
+}
+
 /// Enabled only when the selection contains a supported image — mirrors the
 /// classic `IContextMenu` gate (`contextmenu.rs`) so the modern Win11 menu
 /// behaves the same. `ECS_HIDDEN` removes the verb from the flyout entirely.
@@ -96,8 +129,81 @@ fn state_for(has_image: bool) -> u32 {
     }
 }
 
-unsafe fn image_state(items: Ref<'_, IShellItemArray>) -> u32 {
+/// Visibility of the ROOT "SageThumbs 2K" flyout. Like [`state_for`] for a supported selection,
+/// but ALSO shown — in CONDENSED mode — on an UNSUPPORTED selection when the user enabled "show
+/// the menu on all file types", mirroring the classic handler (`contextmenu.rs`). Before this the
+/// modern Win11 flyout hid itself on any non-image selection regardless of the setting, so the
+/// toggle was a silent no-op for stock Win11 users. The condensed item set is chosen in
+/// `EnumSubCommands` from the same cached `has_image` verdict GetState computes here.
+fn root_state(has_image: bool) -> u32 {
+    if settings::menu_enabled() && (has_image || settings::menu_all_file_types()) {
+        ECS_ENABLED.0 as u32
+    } else {
+        ECS_HIDDEN.0 as u32
+    }
+}
+
+unsafe fn image_state(items: &Ref<'_, IShellItemArray>) -> u32 {
     state_for(selection_has_image(items))
+}
+
+/// Per-item visibility for a top-level flyout command. The modern flyout's
+/// `EnumSubCommands` lists every top-level verb with NO selection context (it can't
+/// filter the list like the classic `QueryContextMenu` does), so the audio gate lands
+/// here instead: start from the shared image gate (menu enabled + supported selection),
+/// then HIDE an image-only TOP-LEVEL verb when the selection is audio-only — those verbs
+/// no-op or produce garbage on a sound file. Audio-ok top-level items
+/// (files_to_folder/rename/sort/settings, per [`verbs::top_level_audio_ok`]) and every
+/// nested child stay on the base gate (so e.g. the Rename ▸ flyout keeps its audio
+/// patterns). `top_level` is false for items created by a group's own `EnumSubCommands`,
+/// so the gate only ever hides whole top-level groups, never their leaves.
+unsafe fn menu_item_state(
+    item: &verbs::MenuItem,
+    top_level: bool,
+    items: &Ref<'_, IShellItemArray>,
+) -> u32 {
+    let base = image_state(items);
+    if base != ECS_ENABLED.0 as u32 {
+        return base; // menu off or unsupported selection — already hidden
+    }
+    if top_level && !verbs::top_level_audio_ok(item.title()) && selection_is_audio_only(items) {
+        return ECS_HIDDEN.0 as u32;
+    }
+    base
+}
+
+// ---- Modern-menu quick verbs --------------------------------------------
+//
+// Each quick verb (Convert into ▸ / Convert… / Resize ▸ / Rotate ▸) is its OWN top-level
+// IExplorerCommand coclass (own CLSID + `desktop5:Verb` in the package manifest), so Windows 11
+// surfaces it DIRECTLY on the modern context menu instead of two levels deep inside the root
+// flyout — the modern twin of the classic "quick verbs on main menu" Option (the limitation the
+// root `EnumSubCommands` note describes). They reuse the `MenuCommand` flyout machinery: a quick
+// verb is a `MenuCommand` flagged `quick_root`, gated by `menu_quick_verbs()` ON TOP of the shared
+// image+audio gate (`menu_item_state` with `top_level: true`), so it's hidden by default, hidden
+// when the toggle is off, and hidden on an audio-only selection — exactly like the classic copy.
+
+/// Binds each quick-verb CLSID to the `MENU` item it surfaces and its manifest `desktop5:Verb`
+/// id. The keys MUST equal [`verbs::QUICK_KEYS`] in order (a test pins this) so the modern quick
+/// verbs and the classic `quick_items()` stay the same set; the verb ids must match the `Id="…"`
+/// attributes in `packaging/AppxManifest.xml`.
+const QUICK_VERBS: &[(GUID, &str, &str)] = &[
+    (crate::guids::CLSID_QUICK_CONVERT_INTO, "menu_convert_into", "SageThumbs2KConvertInto"),
+    (crate::guids::CLSID_QUICK_CONVERT_DIALOG, "menu_convert_dialog", "SageThumbs2KConvertDialog"),
+    (crate::guids::CLSID_QUICK_RESIZE, "menu_resize", "SageThumbs2KResize"),
+    (crate::guids::CLSID_QUICK_ROTATE, "menu_rotate", "SageThumbs2KRotate"),
+];
+
+/// Whether `clsid` is one of the modern-menu quick-verb coclasses (so the DLL hands it out).
+pub fn is_quick_clsid(clsid: GUID) -> bool {
+    QUICK_VERBS.iter().any(|(c, _, _)| *c == clsid)
+}
+
+/// The `MENU` item a quick-verb `clsid` surfaces, or `None` if `clsid` isn't a quick verb.
+/// Looks the CLSID's key up in [`QUICK_VERBS`], then finds that top-level item in `MENU`.
+pub fn quick_root_item(clsid: GUID) -> Option<&'static verbs::MenuItem> {
+    let key = QUICK_VERBS.iter().find(|(c, _, _)| *c == clsid).map(|(_, k, _)| *k)?;
+    verbs::MENU.iter().find(|it| it.title() == key)
 }
 
 // ---- Root command -------------------------------------------------------
@@ -153,12 +259,12 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
             let has = match self.has_image.get() {
                 Some(v) => v,
                 None => {
-                    let v = unsafe { selection_has_image(items) };
+                    let v = unsafe { selection_has_image(&items) };
                     self.has_image.set(Some(v));
                     v
                 }
             };
-            Ok(state_for(has))
+            Ok(root_state(has))
         })
     }
     fn Invoke(&self, _items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
@@ -170,16 +276,52 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
     }
     fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {
         safety::guard_val(|| {
+            // NOTE: the "Quick verbs on the main menu" Setting (`MenuQuickVerbs`) is NOT honored
+            // here — and can't be. IExplorerCommand owns only its own single flyout; it has no way
+            // to add sibling items to Explorer's main context menu the way the classic
+            // QueryContextMenu handler does (`contextmenu.rs` §2). Surfacing them would mean
+            // declaring extra top-level verbs in the AppxManifest (separate coclasses), a larger
+            // change. The classic menu honors the toggle; on stock Win11 these verbs live one level
+            // in, inside this flyout.
+            //
             // One snapshot of the visibility subkey for this enumeration (instead of
             // a key-open per item).
             let vis = settings::menu_visibility();
-            let items: Vec<IExplorerCommand> = verbs::MENU
-                .iter()
-                .filter(|it| !matches!(it, verbs::MenuItem::Separator))
-                // Per-item visibility: hide top-level entries the user unticked in Settings.
-                .filter(|it| vis.shown(it.title()))
-                .map(|it| MenuCommand::new(it).into())
-                .collect();
+            // CONDENSED mode: an UNSUPPORTED selection with "show on all file types" enabled gets
+            // the file-agnostic utility set (Files-to-folder / Sort / Rename / Pick color / Settings),
+            // mirroring the classic handler. GetState ran first and cached has_image; `Some(false)`
+            // means the selection had no supported image. (Default to the full menu if GetState
+            // somehow didn't run — `None` → not condensed.)
+            // `!= Some(true)` (not `== Some(false)`): if GetState somehow didn't run first
+            // (has_image == None) AND the toggle is on, default to the condensed set — the safe
+            // choice for "show on all file types", since the full image menu would otherwise show
+            // (and no-op) on an unsupported file.
+            let condensed = self.has_image.get() != Some(true) && settings::menu_all_file_types();
+            let items: Vec<IExplorerCommand> = if condensed {
+                verbs::condensed_top_level()
+                    .into_iter()
+                    .map(|(it, _)| it)
+                    .filter(|it| !matches!(it, verbs::MenuItem::Separator))
+                    .filter(|it| vis.shown(it.title()))
+                    // Condensed items are file-agnostic → always enabled (the `true` condensed flag).
+                    .map(|it| MenuCommand::new(it, true, true).into())
+                    .collect()
+            } else {
+                // `ordered_top_level()` (not raw `MENU`) so the user's drag-reorder in Settings
+                // also applies to the modern flyout, matching the classic handler. Leaf indices
+                // aren't used here (IExplorerCommand dispatches the action directly), so the `_`
+                // start-index is discarded.
+                verbs::ordered_top_level()
+                    .into_iter()
+                    .map(|(it, _)| it)
+                    .filter(|it| !matches!(it, verbs::MenuItem::Separator))
+                    // Per-item visibility: hide top-level entries the user unticked in Settings.
+                    .filter(|it| vis.shown(it.title()))
+                    // These ARE the top-level items — `top_level: true` so `GetState` can hide
+                    // the image-only ones on an audio-only selection.
+                    .map(|it| MenuCommand::new(it, true, false).into())
+                    .collect()
+            };
             Ok(SubCommandEnum::new(items).into())
         })
     }
@@ -191,13 +333,44 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
 pub struct MenuCommand {
     _ref: crate::ModuleRef,
     item: &'static verbs::MenuItem,
+    /// True when this command is a TOP-LEVEL flyout entry (created by the root's
+    /// `EnumSubCommands`), false when it's a child created by a group's own
+    /// `EnumSubCommands`. Only top-level image-only verbs are hidden on an audio-only
+    /// selection (see [`menu_item_state`]); children inherit the base gate.
+    top_level: bool,
+    /// True for the CONDENSED items shown on an unsupported selection ("show on all file
+    /// types"). These are file-agnostic, so they're enabled whenever the menu is on — they
+    /// BYPASS the image/audio gate that would otherwise hide them (the selection is, by
+    /// definition, not a supported image here). Propagated to a group's children so a
+    /// condensed group's leaves (e.g. Sort ▸ …) aren't hidden by the gate either.
+    condensed: bool,
+    /// True when this command is a TOP-LEVEL modern-menu QUICK verb (its own coclass +
+    /// `desktop5:Verb`, see [`QUICK_VERBS`]) rather than an item inside the root flyout. A
+    /// quick root additionally requires `menu_quick_verbs()` in `GetState` and carries the app
+    /// icon in `GetIcon` so it reads as ours on the bare modern menu. Always built with
+    /// `top_level: true`, `condensed: false`; never propagated to children (a group's leaves
+    /// are plain `MenuCommand::new` items).
+    quick_root: bool,
 }
 
 impl MenuCommand {
     // ModuleRef::default()'s side effect (live-object add-ref) must run; keep the Default call.
     #[allow(clippy::default_constructed_unit_structs)]
-    fn new(item: &'static verbs::MenuItem) -> Self {
-        Self { _ref: crate::ModuleRef::default(), item }
+    fn new(item: &'static verbs::MenuItem, top_level: bool, condensed: bool) -> Self {
+        Self { _ref: crate::ModuleRef::default(), item, top_level, condensed, quick_root: false }
+    }
+
+    /// A top-level modern-menu quick verb wrapping a `MENU` group/leaf (see [`QUICK_VERBS`]).
+    /// Top-level (so the audio-only gate applies) and never condensed.
+    #[allow(clippy::default_constructed_unit_structs)]
+    pub fn quick_root(item: &'static verbs::MenuItem) -> Self {
+        Self {
+            _ref: crate::ModuleRef::default(),
+            item,
+            top_level: true,
+            condensed: false,
+            quick_root: true,
+        }
     }
 }
 
@@ -206,7 +379,15 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
         safety::guard_val(|| alloc_pwstr(crate::i18n::t(self.item.title())))
     }
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        Err(Error::from(E_NOTIMPL))
+        // A top-level quick verb carries the app icon (like the root command) so it's
+        // recognizable as ours on the bare modern menu; flyout children stay icon-less.
+        if !self.quick_root {
+            return Err(Error::from(E_NOTIMPL));
+        }
+        safety::guard_val(|| {
+            let exe = crate::sibling_of_dll(crate::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
+            alloc_pwstr(&format!("{},-1", exe.display()))
+        })
     }
     fn GetToolTip(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         Err(Error::from(E_NOTIMPL))
@@ -217,7 +398,26 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
         Err(Error::from(E_NOTIMPL))
     }
     fn GetState(&self, items: Ref<'_, IShellItemArray>, _slow: BOOL) -> Result<u32> {
-        safety::guard_val(|| Ok(unsafe { image_state(items) }))
+        safety::guard_val(|| {
+            // A top-level quick verb also requires the quick-verbs Option (so it's hidden by
+            // default), then the shared image+audio gate (`top_level: true` → hidden on an
+            // audio-only selection). Re-read each call so a settings change is honored live.
+            if self.quick_root {
+                if !settings::menu_quick_verbs() {
+                    return Ok(ECS_HIDDEN.0 as u32);
+                }
+                return Ok(unsafe { menu_item_state(self.item, true, &items) });
+            }
+            // Condensed (file-agnostic) items skip the image/audio gate: enabled while the menu is on.
+            if self.condensed {
+                return Ok(if settings::menu_enabled() {
+                    ECS_ENABLED.0 as u32
+                } else {
+                    ECS_HIDDEN.0 as u32
+                });
+            }
+            Ok(unsafe { menu_item_state(self.item, self.top_level, &items) })
+        })
     }
     fn Invoke(&self, items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
         safety::guard(|| {
@@ -245,7 +445,10 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
                 let items: Vec<IExplorerCommand> = children
                     .iter()
                     .filter(|c| !matches!(c, verbs::MenuItem::Separator))
-                    .map(|c| MenuCommand::new(c).into())
+                    // Children of a group — `top_level: false` so the audio gate never
+                    // hides individual leaves (e.g. the Rename ▸ audio patterns). Propagate
+                    // `condensed` so a condensed group's leaves stay enabled too.
+                    .map(|c| MenuCommand::new(c, false, self.condensed).into())
                     .collect();
                 Ok(SubCommandEnum::new(items).into())
             }
@@ -329,5 +532,44 @@ impl IEnumExplorerCommand_Impl for SubCommandEnum_Impl {
             clone.pos.set(self.pos.get());
             Ok(clone.into())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The modern quick verbs MUST be the same set, in the same order, as the classic
+    /// `quick_items()` — i.e. [`QUICK_VERBS`] keys == [`verbs::QUICK_KEYS`]. If `QUICK_KEYS`
+    /// changes (a quick verb added/removed/reordered) without updating the CLSID table + the
+    /// manifest verbs, the two menus would silently diverge — this turns that into a CI failure.
+    #[test]
+    fn quick_verbs_match_quick_keys() {
+        let keys: Vec<&str> = QUICK_VERBS.iter().map(|(_, k, _)| *k).collect();
+        assert_eq!(keys, verbs::QUICK_KEYS, "QUICK_VERBS keys must equal verbs::QUICK_KEYS");
+    }
+
+    /// Every quick-verb CLSID resolves to a real top-level `MENU` item, and `is_quick_clsid`
+    /// recognizes it; a non-quick CLSID does not.
+    #[test]
+    fn quick_clsids_resolve_to_menu_items() {
+        for (clsid, key, _) in QUICK_VERBS {
+            assert!(is_quick_clsid(*clsid), "is_quick_clsid missed {key}");
+            let item = quick_root_item(*clsid).unwrap_or_else(|| panic!("no MENU item for {key}"));
+            assert_eq!(item.title(), *key, "quick_root_item returned the wrong MENU node for {key}");
+        }
+        assert!(!is_quick_clsid(crate::guids::CLSID_EXPLORER_COMMAND));
+        assert!(quick_root_item(crate::guids::CLSID_EXPLORER_COMMAND).is_none());
+    }
+
+    /// The quick-verb CLSIDs are all distinct (a copy-paste dup would make two verbs activate
+    /// the same coclass and silently collapse to one item).
+    #[test]
+    fn quick_clsids_are_distinct() {
+        for (i, (a, _, _)) in QUICK_VERBS.iter().enumerate() {
+            for (b, _, _) in &QUICK_VERBS[i + 1..] {
+                assert_ne!(a, b, "duplicate quick-verb CLSID");
+            }
+        }
     }
 }

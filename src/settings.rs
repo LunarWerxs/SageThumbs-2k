@@ -20,7 +20,7 @@
 //! instance — so a change in the Options dialog takes effect immediately for
 //! new requests without restarting the surrogate host.
 
-use windows_registry::CURRENT_USER;
+use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
 
 /// HKCU root for all our settings (and the per-extension subkeys).
 pub const ROOT: &str = r"Software\SageThumbs2K";
@@ -56,6 +56,14 @@ fn get_dword(name: &str, default: u32) -> u32 {
 /// Write a DWORD setting (creating the root key if needed). Best-effort.
 pub fn set_dword(name: &str, value: u32) -> windows_registry::Result<()> {
     CURRENT_USER.create(ROOT)?.set_u32(name, value)
+}
+
+/// Read a DWORD, distinguishing "absent" (`None`) from a stored value — unlike
+/// [`get_dword`], which can't tell a missing key from a key that holds the default.
+/// Used by the screenshot-daemon enable migration to tell a never-set flag from an
+/// explicit `0`.
+pub fn get_dword_opt(name: &str) -> Option<u32> {
+    CURRENT_USER.open(ROOT).and_then(|k| k.get_u32(name)).ok()
 }
 
 /// One-time flag: `false` until the app has reported a fresh install once, then `true`
@@ -251,6 +259,16 @@ pub fn cv_webp_lossless() -> bool {
 pub fn cv_png_level() -> u32 {
     get_dword("CvPngLevel", 6).clamp(0, 9)
 }
+/// Convert dialog: lossy-magick (AVIF / JPEG XL) export quality, 1–100. Drives the
+/// `-quality` flag passed to ImageMagick for those targets. Default 50 — a good
+/// size/quality balance for AVIF (and reasonable for JXL).
+pub fn cv_magick_quality() -> u32 {
+    get_dword("CvMagickQuality", 50).clamp(1, 100)
+}
+/// Persist the Convert dialog's AVIF/JXL quality (clamped 1–100).
+pub fn set_cv_magick_quality(q: u32) {
+    let _ = set_dword("CvMagickQuality", q.clamp(1, 100));
+}
 
 /// Persist the Convert dialog's per-format settings (best-effort; clamped).
 pub fn set_cv_settings(jpeg_quality: u32, webp_quality: u32, webp_lossless: bool, png_level: u32) {
@@ -296,6 +314,26 @@ pub fn menu_preview() -> u32 {
 /// its submenu, so we don't crowd the main menu unless the user opts in.
 pub fn menu_quick_verbs() -> bool {
     get_dword("MenuQuickVerbs", 0) != 0
+}
+
+/// Whether the SIGNED sparse package — which declares the modern Win11 quick-verb verbs
+/// (Convert into / Convert… / Resize / Rotate) — is installed and active. Written to HKLM by
+/// the installer right after `Add-AppxPackage` succeeds (`ModernMenuActive=1`) and cleared on
+/// uninstall; the dev `install.ps1` writes it only when it registers the package.
+///
+/// The classic `IContextMenu` handler reads this to decide whether to emit ITS OWN top-level
+/// quick-verb copies. When the package is active, Windows BRIDGES the packaged verbs into the
+/// legacy "Show more options" menu — so emitting our copies there too would DOUBLE-LIST the
+/// quick verbs. Package active → classic omits its copies and lets the bridged ones serve;
+/// package absent → classic keeps them (the only source). Read from HKLM (machine-wide; written
+/// under elevation, readable by anyone). Defaults to `false`, so a machine without the package
+/// behaves exactly as before.
+pub fn modern_menu_active() -> bool {
+    LOCAL_MACHINE
+        .open(ROOT)
+        .and_then(|k| k.get_u32("ModernMenuActive"))
+        .map(|v| v != 0)
+        .unwrap_or(false)
 }
 
 /// Draw a subtle checkerboard behind the menu preview's transparent areas, so a
@@ -345,6 +383,42 @@ pub fn screenshot_quick_hotkey() -> (u32, u32) {
 /// Persist the quick-save hotkey (packed HOTKEYF/VK; `0` = disabled).
 pub fn set_screenshot_quick_hotkey(packed: u32) -> windows_registry::Result<()> {
     set_dword("ScreenshotQuickHotkey", packed & 0xFFFF)
+}
+
+// ---- Custom action hotkey (the user-assignable "action -> hotkey" binding) ----
+// A single global hotkey bound to one of a curated set of actions (color picker,
+// screenshot, convert…, rotate, files-to-folder, strip metadata, open settings). The
+// action is a small opaque id (the app's `hotkey::ACTIONS` table owns the id→behavior
+// map); the chord is packed exactly like the screenshot hotkeys (high byte HOTKEYF_*,
+// low byte VK; `0` vk = unbound). It rides the SAME opt-in screenshot daemon, which
+// registers + dispatches it — so a bound custom hotkey keeps that daemon resident even
+// when the screenshot feature itself is off.
+
+/// Default custom action id when none is stored: `1` = the colour picker (the headline ask).
+pub const DEFAULT_CUSTOM_ACTION: u32 = 1;
+
+/// The chosen custom-action id (see the app `hotkey::ACTIONS` table). Defaults to the
+/// colour picker; the binding is only live once a hotkey is also assigned.
+pub fn custom_action() -> u32 {
+    get_dword("CustomAction", DEFAULT_CUSTOM_ACTION)
+}
+
+/// Persist the chosen custom-action id.
+pub fn set_custom_action(id: u32) -> windows_registry::Result<()> {
+    set_dword("CustomAction", id)
+}
+
+/// The custom action's hotkey as `(hotkeyf_mods, vk)`; `0` vk = unbound (no hotkey
+/// registered). The daemon skips registration when vk is 0, so the binding stays off
+/// until the user picks a chord in Settings.
+pub fn custom_action_hotkey() -> (u32, u32) {
+    let v = get_dword("CustomActionHotkey", 0);
+    ((v >> 8) & 0xFF, v & 0xFF)
+}
+
+/// Persist the custom action hotkey (packed HOTKEYF/VK; `0` = unbound).
+pub fn set_custom_action_hotkey(packed: u32) -> windows_registry::Result<()> {
+    set_dword("CustomActionHotkey", packed & 0xFFFF)
 }
 
 /// Hide the screenshot daemon's notification-area (tray) icon. Off by default —

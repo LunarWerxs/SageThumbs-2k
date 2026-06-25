@@ -5,14 +5,16 @@
 
 use core::ffi::c_void;
 
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     AlphaBlend, BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
-    DeleteDC, DeleteObject, EndPaint, FillRect, GetDC, GetDIBits, IntersectClipRect, InvalidateRect,
-    MonitorFromRect, ReleaseDC, RestoreDC, SaveDC, SelectObject, SetBkMode, SetTextColor, TextOutW,
-    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
-    HGDIOBJ, LOGFONTW, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GetDC, GetDIBits, GetPixel,
+    IntersectClipRect, InvalidateRect, MonitorFromRect, ReleaseDC, RestoreDC, SaveDC, SelectObject,
+    SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
+    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, COLORONCOLOR, DIB_RGB_COLORS,
+    DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBITMAP, HDC, HGDIOBJ, LOGFONTW, MONITOR_DEFAULTTONEAREST,
+    PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Controls::Dialogs::{
@@ -53,6 +55,12 @@ struct Shot {
     pen_pts: Vec<POINT>,
     cur: POINT,
     typing: Option<(POINT, String)>,
+    // True while Ctrl-dragging the *active* (not-yet-committed) text box to reposition
+    // it without ending the edit. Paired with `move_from` for the drag delta.
+    typing_drag: bool,
+    // True for one paint after the Eyedropper copies a colour — flips the loupe label
+    // to a "Copied" confirmation. Cleared on the next cursor move.
+    eye_copied: bool,
     // A pending UTF-16 high surrogate from a WM_CHAR, awaiting its low surrogate (a
     // non-BMP character arrives as two WM_CHAR messages). None most of the time.
     pending_hi: Option<u16>,
@@ -188,6 +196,8 @@ pub(crate) unsafe fn run_capture(hinst: HINSTANCE) {
         pen_pts: Vec::new(),
         cur: POINT::default(),
         typing: None,
+        typing_drag: false,
+        eye_copied: false,
         pending_hi: None,
         number_next: 1,
         selected: None,
@@ -297,8 +307,13 @@ pub(crate) unsafe fn capture_instant() {
     }
     output::copy_dib_to_clipboard(&buf, vw, vh);
     // The editor-less instant capture can't prompt, so it always auto-saves to the
-    // effective save folder (the configured one, or the Desktop by default).
-    output::save_png_to_dir(std::path::Path::new(&super::effective_save_dir()), &buf, vw, vh);
+    // effective save folder (the configured one, or the Desktop by default). It IS on the
+    // clipboard regardless; log a save failure (full/unwritable folder) so it's diagnosable
+    // instead of vanishing silently.
+    let dir = super::effective_save_dir();
+    if !output::save_png_to_dir(std::path::Path::new(&dir), &buf, vw, vh) {
+        sagethumbs2k_core::safety::log(&format!("instant capture: PNG save to {dir} failed (it's still on the clipboard)"));
+    }
 }
 
 extern "system" fn shot_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -316,9 +331,14 @@ extern "system" fn shot_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                 let p = pt(lparam);
                 match s.sel {
                     None => {
-                        s.sel_dragging = true;
-                        s.sel_anchor = p;
-                        s.cur = p;
+                        if s.tool == Tool::Eyedropper {
+                            // Pick a colour without dragging a region first (E + click).
+                            sample_pixel(s, p);
+                        } else {
+                            s.sel_dragging = true;
+                            s.sel_anchor = p;
+                            s.cur = p;
+                        }
                     }
                     Some(sel) => {
                         let dpi = dpi_for_sel(sel);
@@ -399,15 +419,29 @@ extern "system" fn shot_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                             return LRESULT(0);
                         }
                         let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-                        if ctrl || s.tool == Tool::Move {
+                        if ctrl && s.typing.is_some() && s.tool == Tool::Text {
+                            // Ctrl-drag while typing repositions the *active* text box
+                            // (you stay in edit mode) — place the caption as you write it.
+                            s.typing_drag = true;
+                            s.move_from = Some(p);
+                        } else if ctrl || s.tool == Tool::Move {
                             // Move tool — or Ctrl-drag with any tool — grabs the
                             // topmost shape under the cursor (if any).
                             s.selected = tools::hit_shape(&s.shapes, p.x, p.y);
                             s.move_from = s.selected.map(|_| p);
+                        } else if s.tool == Tool::Eyedropper {
+                            sample_pixel(s, p); // grab the pixel's colour; never draws
                         } else if s.tool == Tool::Text {
-                            commit_text(s);
-                            s.typing = Some((p, String::new()));
-                            s.pending_hi = None; // fresh buffer, no half-typed surrogate
+                            // Click while typing = finish & deselect (no new box on this
+                            // click); a click when idle starts a fresh box. Predictable
+                            // "click away to commit" instead of spawning an empty box you
+                            // then have to Esc out of.
+                            if s.typing.is_some() {
+                                commit_text(s);
+                            } else {
+                                s.typing = Some((p, String::new()));
+                                s.pending_hi = None; // fresh buffer, no half-typed surrogate
+                            }
                         } else if s.tool == Tool::Number {
                             let n = s.number_next;
                             s.number_next += 1;
@@ -428,8 +462,28 @@ extern "system" fn shot_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
             WM_MOUSEMOVE => {
                 let s = &mut *shot_ptr(hwnd);
                 let p = pt(lparam);
+                // The Eyedropper loupe tracks the cursor: clear the "copied" flash and
+                // repaint just the old + new loupe areas (not the whole virtual screen,
+                // which would be a heavy blit per tick on a multi-monitor desktop).
+                if s.tool == Tool::Eyedropper {
+                    let old = loupe_rect(s, s.cur.x, s.cur.y);
+                    let new = loupe_rect(s, p.x, p.y);
+                    s.eye_copied = false;
+                    let _ = InvalidateRect(Some(hwnd), Some(&old), false);
+                    let _ = InvalidateRect(Some(hwnd), Some(&new), false);
+                }
                 s.cur = p;
                 if s.sel_dragging {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                } else if s.typing_drag {
+                    // Reposition the active text box by the cursor delta (still editing).
+                    if let Some(from) = s.move_from {
+                        if let Some((at, _)) = s.typing.as_mut() {
+                            at.x += p.x - from.x;
+                            at.y += p.y - from.y;
+                        }
+                        s.move_from = Some(p);
+                    }
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 } else if let (Some(from), Some(idx)) = (s.move_from, s.selected) {
                     // Drag the grabbed shape by the cursor delta.
@@ -472,6 +526,9 @@ extern "system" fn shot_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                     if (r.right - r.left) > 4 && (r.bottom - r.top) > 4 {
                         s.sel = Some(r);
                     }
+                } else if s.typing_drag {
+                    s.typing_drag = false;
+                    s.move_from = None; // done repositioning the active text box
                 } else if s.move_from.is_some() {
                     s.move_from = None; // finished dragging the selected shape
                 } else if let Some(a) = s.draw_from.take() {
@@ -618,6 +675,7 @@ unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
     if vk == VK_ESCAPE.0 {
         if s.typing.is_some() {
             s.typing = None; // cancel the in-progress text only
+            s.typing_drag = false; // and any active reposition drag
             s.pending_hi = None; // drop any half-typed surrogate
             return true;
         }
@@ -698,6 +756,7 @@ unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
         x if x == b'H' as u16 => Some(Tool::Highlight),
         x if x == b'B' as u16 => Some(Tool::Pixelate), // B = blur/blockify
         x if x == b'I' as u16 => Some(Tool::Invert),
+        x if x == b'E' as u16 => Some(Tool::Eyedropper),
         x if x == b'M' as u16 => Some(Tool::Move),
         _ => None,
     };
@@ -706,6 +765,7 @@ unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
         s.tool = t;
         s.selected = None; // dropping the move selection when switching tools
         s.move_from = None;
+        s.typing_drag = false;
         return true;
     }
     if vk == b'K' as u16 {
@@ -748,7 +808,7 @@ fn finish_shape(s: &mut Shot, a: POINT, b: POINT) {
         Tool::Highlight => Shape::Highlight { r: tools::norm(a, b), color },
         Tool::Pixelate => Shape::Pixelate { r: tools::norm(a, b) },
         Tool::Invert => Shape::Invert { r: tools::norm(a, b) },
-        Tool::Text | Tool::Number | Tool::Move => return,
+        Tool::Text | Tool::Number | Tool::Eyedropper | Tool::Move => return,
     };
     // Skip a tiny accidental drag for any rect-based shape.
     if matches!(&shape,
@@ -760,6 +820,147 @@ fn finish_shape(s: &mut Shot, a: POINT, b: POINT) {
     }
     s.shapes.push(shape);
     s.redo.clear();
+}
+
+/// The Eyedropper: read the colour of the frozen-screenshot pixel under `p`, make it
+/// the active drawing colour, and copy `#RRGGBB` to the clipboard — the whole point of
+/// the tool is "grab a colour and go." Client coords map 1:1 to the snapshot (the
+/// overlay spans the virtual screen from its top-left), so we read straight from
+/// `s.shot`. A `CLR_INVALID` read (cursor past the bitmap edge) is ignored.
+unsafe fn sample_pixel(s: &mut Shot, p: POINT) {
+    let c = GetPixel(s.shot, p.x, p.y);
+    if c.0 == 0xFFFF_FFFF {
+        return; // CLR_INVALID — outside the snapshot
+    }
+    s.cur_color = c;
+    let (r, g, b) = (c.0 & 0xFF, (c.0 >> 8) & 0xFF, (c.0 >> 16) & 0xFF);
+    let _ = crate::win::set_clipboard_text(&format!("#{r:02X}{g:02X}{b:02X}"));
+    s.eye_copied = true; // flash the loupe's "Copied" confirmation until the next move
+}
+
+// ---- Eyedropper magnifier loupe --------------------------------------------
+// A port of the standalone `--eyedropper` picker's loupe into the overlay. We
+// can't just launch that tool here: it would snapshot the *dimmed* overlay and
+// pick washed-out colours. Instead we draw the same magnifier from the overlay's
+// own BRIGHT snapshot (`s.shot`) so the zoomed pixels + sampled colour are true.
+
+const LOUPE_K: i32 = 7; // half-window: a (2K+1)² block of screen pixels shown
+const LOUPE_SPAN: i32 = 2 * LOUPE_K + 1; // 15 px sampled across
+const LOUPE_MAG: i32 = 150; // magnified loupe size (design px) → 10× zoom
+const LOUPE_LBL: i32 = 46; // label strip height (design px): hex row + hint row
+
+/// Sample `(r, g, b)` from the bright snapshot DC at `(x, y)` (clamped in-bounds).
+unsafe fn shot_sample(shot: HDC, x: i32, y: i32, vw: i32, vh: i32) -> (u8, u8, u8) {
+    let x = x.clamp(0, (vw - 1).max(0));
+    let y = y.clamp(0, (vh - 1).max(0));
+    let c = GetPixel(shot, x, y).0; // 0x00BBGGRR, or CLR_INVALID
+    if c == 0xFFFF_FFFF {
+        return (0, 0, 0);
+    }
+    ((c & 0xFF) as u8, ((c >> 8) & 0xFF) as u8, ((c >> 16) & 0xFF) as u8)
+}
+
+/// The loupe box (magnifier + label strip) for a cursor at `(cx, cy)`, nudged to
+/// stay fully on the virtual screen. `mag`/`lbl`/`gap` are already DPI-scaled.
+fn loupe_box(cx: i32, cy: i32, vw: i32, vh: i32, mag: i32, lbl: i32, gap: i32) -> RECT {
+    let (bw, bh) = (mag, mag + lbl);
+    let mut bx = cx + gap;
+    let mut by = cy + gap;
+    if bx + bw > vw {
+        bx = cx - gap - bw;
+    }
+    if by + bh > vh {
+        by = cy - gap - bh;
+    }
+    bx = bx.clamp(0, (vw - bw).max(0));
+    by = by.clamp(0, (vh - bh).max(0));
+    RECT { left: bx, top: by, right: bx + bw, bottom: by + bh }
+}
+
+/// The on-screen rect the loupe occupies for a cursor at `(cx, cy)` — used to
+/// invalidate just the old/new loupe area on each move instead of the whole screen.
+unsafe fn loupe_rect(s: &Shot, cx: i32, cy: i32) -> RECT {
+    let dpi = match s.sel {
+        Some(sel) => dpi_for_sel(sel),
+        None => dpi_for_sel(RECT { left: cx, top: cy, right: cx + 1, bottom: cy + 1 }),
+    };
+    let mag = crate::win::dpi_scale_dpi(LOUPE_MAG, dpi);
+    let lbl = crate::win::dpi_scale_dpi(LOUPE_LBL, dpi);
+    let gap = crate::win::dpi_scale_dpi(18, dpi);
+    loupe_box(cx, cy, s.vw, s.vh, mag, lbl, gap)
+}
+
+/// Draw the magnifier loupe near `(cx, cy)` into `hdc`, zooming the bright `shot`.
+/// Mirrors the standalone picker: nearest-neighbour 10× block, a red ring on the
+/// picked pixel, then a swatch + `#RRGGBB` + status hint. `copied` flips the hint to
+/// a confirmation right after a pick.
+// Geometry + state are all distinct scalars the GDI draw needs; bundling them into a
+// struct would just move the arg list, so allow the count here.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_loupe(hdc: HDC, shot: HDC, cx: i32, cy: i32, vw: i32, vh: i32, dpi: i32, copied: bool) {
+    let mag = crate::win::dpi_scale_dpi(LOUPE_MAG, dpi);
+    let lbl = crate::win::dpi_scale_dpi(LOUPE_LBL, dpi);
+    let gap = crate::win::dpi_scale_dpi(18, dpi);
+    let pad = crate::win::dpi_scale_dpi(5, dpi);
+    let swsz = crate::win::dpi_scale_dpi(16, dpi);
+    let lb = loupe_box(cx, cy, vw, vh, mag, lbl, gap);
+    let (bx, by) = (lb.left, lb.top);
+
+    // The LOUPE_SPAN² sample window around the cursor, shifted to stay fully inside
+    // the snapshot so StretchBlt never reads out of bounds (cursor at a screen edge).
+    // `kx`/`ky` are the cursor pixel's cell within that (possibly shifted) window.
+    let sx = (cx - LOUPE_K).clamp(0, (vw - LOUPE_SPAN).max(0));
+    let sy = (cy - LOUPE_K).clamp(0, (vh - LOUPE_SPAN).max(0));
+    let kx = (cx - sx).clamp(0, LOUPE_SPAN - 1);
+    let ky = (cy - sy).clamp(0, LOUPE_SPAN - 1);
+
+    // Magnified pixels — nearest-neighbour so each screen pixel is a crisp block.
+    SetStretchBltMode(hdc, COLORONCOLOR);
+    let _ = StretchBlt(hdc, bx, by, mag, mag, Some(shot), sx, sy, LOUPE_SPAN, LOUPE_SPAN, SRCCOPY);
+
+    // Red ring on the cursor's cell (the pixel that gets picked). Boundaries are taken
+    // per-edge from the StretchBlt grid so the ring stays aligned at any DPI.
+    let cc = RECT {
+        left: bx + kx * mag / LOUPE_SPAN,
+        top: by + ky * mag / LOUPE_SPAN,
+        right: bx + (kx + 1) * mag / LOUPE_SPAN,
+        bottom: by + (ky + 1) * mag / LOUPE_SPAN,
+    };
+    let red = CreateSolidBrush(rgb(255, 40, 40));
+    FrameRect(hdc, &cc, red);
+    let _ = DeleteObject(red.into());
+
+    // Label strip: swatch + hex (row 1), then a status hint (row 2).
+    let (r, g, b) = shot_sample(shot, cx, cy, vw, vh);
+    let strip = RECT { left: bx, top: by + mag, right: bx + mag, bottom: by + mag + lbl };
+    let lbg = CreateSolidBrush(rgb(24, 24, 24));
+    FillRect(hdc, &strip, lbg);
+    let _ = DeleteObject(lbg.into());
+    let sw = RECT { left: bx + pad, top: by + mag + pad, right: bx + pad + swsz, bottom: by + mag + pad + swsz };
+    let swb = CreateSolidBrush(rgb(r, g, b));
+    FillRect(hdc, &sw, swb);
+    let _ = DeleteObject(swb.into());
+
+    SelectObject(hdc, HGDIOBJ(gui_font().0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, rgb(240, 240, 240));
+    let mut hex = wide(&format!("#{r:02X}{g:02X}{b:02X}"));
+    let hn = hex.len().saturating_sub(1);
+    let mut hr = RECT { left: bx + pad * 2 + swsz, top: by + mag, right: bx + mag, bottom: by + mag + swsz + pad * 2 };
+    DrawTextW(hdc, &mut hex[..hn], &mut hr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    let (hint_txt, hint_col) =
+        if copied { ("Copied \u{2713}", rgb(120, 220, 120)) } else { ("Click to copy", rgb(150, 150, 150)) };
+    SetTextColor(hdc, hint_col);
+    let mut hint = wide(hint_txt);
+    let hin = hint.len().saturating_sub(1);
+    let mut hir = RECT { left: bx + pad, top: by + mag + swsz + pad, right: bx + mag, bottom: by + mag + lbl };
+    DrawTextW(hdc, &mut hint[..hin], &mut hir, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    // Outer + magnifier borders.
+    let border = CreateSolidBrush(rgb(0, 0, 0));
+    FrameRect(hdc, &RECT { left: bx, top: by, right: bx + mag, bottom: by + mag + lbl }, border);
+    FrameRect(hdc, &RECT { left: bx, top: by, right: bx + mag, bottom: by + mag }, border);
+    let _ = DeleteObject(border.into());
 }
 
 /// Commit a non-empty active text buffer into a placed Text shape.
@@ -853,6 +1054,17 @@ unsafe fn shot_paint(hwnd: HWND) {
         }
     }
     draw_hint(mem, s);
+
+    // The Eyedropper magnifier follows the cursor, on top of everything. Sized for
+    // the monitor under the cursor (committed selection if there is one, else the
+    // cursor point); drawn from the bright snapshot so the zoom shows true colours.
+    if s.tool == Tool::Eyedropper {
+        let dpi = match s.sel {
+            Some(sel) => dpi_for_sel(sel),
+            None => dpi_for_sel(RECT { left: s.cur.x, top: s.cur.y, right: s.cur.x + 1, bottom: s.cur.y + 1 }),
+        };
+        draw_loupe(mem, s.shot, s.cur.x, s.cur.y, s.vw, s.vh, dpi, s.eye_copied);
+    }
 
     // One blit to the window.
     let _ = BitBlt(hdc, 0, 0, s.vw, s.vh, Some(mem), 0, 0, SRCCOPY);
@@ -999,7 +1211,19 @@ unsafe fn finish_copy(s: &Shot) {
 unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
     let Some((buf, w, h)) = compose(s) else { return false };
     if sagethumbs2k_core::settings::screenshot_use_save_dir() {
-        output::save_png_to_dir(std::path::Path::new(&super::effective_save_dir()), &buf, w, h)
+        let dir = super::effective_save_dir();
+        let ok = output::save_png_to_dir(std::path::Path::new(&dir), &buf, w, h);
+        if !ok {
+            // A `false` here is a DISK failure (full/unwritable/missing folder), NOT a cancel
+            // (the Save-As path can't run in this branch). Tell the user — otherwise the caller
+            // treats false as "keep editing" and the capture silently never lands.
+            with_modal(hwnd, || {
+                let m = wide(&crate::win::t("shot_save_failed").replace("{dir}", &dir));
+                let cap = wide("SageThumbs 2K");
+                MessageBoxW(Some(hwnd), PCWSTR(m.as_ptr()), PCWSTR(cap.as_ptr()), MB_OK | MB_ICONWARNING);
+            });
+        }
+        ok
     } else {
         let mut saved = false;
         // Drop the overlay's always-on-top so the picker isn't trapped behind the
@@ -1041,6 +1265,7 @@ unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> bool {
             s.tool = t;
             s.selected = None;
             s.move_from = None;
+            s.typing_drag = false;
             s.text_flyout = false;
             s.font_dropdown = false;
             s.color_flyout = false;

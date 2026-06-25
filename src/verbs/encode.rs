@@ -137,7 +137,9 @@ pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
     // `convert_to_magick`). `encode_via_magick` removes a partial file on failure,
     // so a failed encode still leaves nothing behind.
     if ext_needs_magick(target.ext) {
-        decode::encode_via_magick(&img, slot.path())?;
+        // The quick "Convert into ▸ AVIF/JXL" verb: magick's default quality (None) — kept
+        // byte-identical to before. The Convert… dialog carries an explicit quality instead.
+        decode::encode_via_magick(&img, slot.path(), None)?;
         preserve_src_time(Path::new(path), slot.path());
         return Ok(slot.path().to_path_buf());
     }
@@ -456,6 +458,7 @@ pub fn convert_file_opts(path: &str, opts: ConvertOpts, out_dir: &Path) -> Resul
             tmp,
         )
     })?;
+    preserve_src_time(Path::new(path), slot.path());
     Ok(slot.path().to_path_buf())
 }
 
@@ -474,7 +477,10 @@ pub fn convert_to(input: &str, out: &Path, quality: u8, webp_quality: Option<u8>
     // bundled ImageMagick (this is the path the quick "Convert into ▸ AVIF" verb
     // hits when it runs out-of-process via `st2k convert <in> <out.avif>`).
     if ext_needs_magick(&ext) {
-        return convert_to_magick(input, out, resize);
+        // None = magick's default quality, so the quick verb's out-of-process (`st2k convert`)
+        // path stays byte-identical to its in-process twin. The Convert… dialog uses
+        // `convert_to_magick_in` with an explicit quality instead.
+        return convert_to_magick(input, out, resize, None);
     }
     let bytes = read_capped(input)?;
     let mut img = apply_resize(decode::decode_full(&bytes)?, resize);
@@ -493,10 +499,10 @@ pub fn convert_to(input: &str, out: &Path, quality: u8, webp_quality: Option<u8>
 /// exotic Convert targets the `image` crate can't encode (PSD/DDS/JP2/EXR/…).
 /// Decodes with OUR pipeline (so every input format works), applies `resize`, then
 /// hands magick a PNG to write `out` (format inferred from its extension).
-pub fn convert_to_magick(input: &str, out: &Path, resize: Resize) -> Result<()> {
+pub fn convert_to_magick(input: &str, out: &Path, resize: Resize, quality: Option<u8>) -> Result<()> {
     let bytes = read_capped(input)?;
     let img = apply_resize(decode::decode_full(&bytes)?, resize);
-    decode::encode_via_magick(&img, out)?;
+    decode::encode_via_magick(&img, out, quality)?;
     preserve_src_time(Path::new(input), out);
     Ok(())
 }
@@ -505,7 +511,13 @@ pub fn convert_to_magick(input: &str, out: &Path, resize: Resize) -> Result<()> 
 /// picking a collision-free reserved name (race-safe under parallel batches).
 /// Wraps [`convert_to_magick`] so the Convert… dialog's exotic targets carry no
 /// naming logic. Returns the output path.
-pub fn convert_to_magick_in(input: &str, out_dir: &Path, ext: &str, resize: Resize) -> Result<PathBuf> {
+pub fn convert_to_magick_in(
+    input: &str,
+    out_dir: &Path,
+    ext: &str,
+    resize: Resize,
+    quality: Option<u8>,
+) -> Result<PathBuf> {
     let stem = Path::new(input).file_stem().and_then(|s| s.to_str()).unwrap_or("image").to_string();
     let dir = out_dir.to_path_buf();
     let e = ext.to_string();
@@ -513,7 +525,7 @@ pub fn convert_to_magick_in(input: &str, out_dir: &Path, ext: &str, resize: Resi
         let name = if n == 0 { format!("{stem}.{e}") } else { format!("{stem} ({n}).{e}") };
         dir.join(name)
     });
-    convert_to_magick(input, slot.path(), resize)?;
+    convert_to_magick(input, slot.path(), resize, quality)?;
     Ok(slot.path().to_path_buf())
 }
 
@@ -529,6 +541,7 @@ pub fn convert_image_to_pdf_in(input: &str, out_dir: &Path, quality: u8) -> Resu
     });
     let one = [input.to_string()];
     crate::topdf::combine_to_pdf(&one, slot.path(), quality)?;
+    preserve_src_time(Path::new(input), slot.path());
     Ok(slot.path().to_path_buf())
 }
 

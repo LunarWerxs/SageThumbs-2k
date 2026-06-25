@@ -25,6 +25,8 @@ $shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'SageThum
 if ($Uninstall) {
     if (Test-Path "$prog\sagethumbs2k.dll") { regsvr32 /s /u "$prog\sagethumbs2k.dll" }
     Get-AppxPackage $pkg | Remove-AppxPackage -ErrorAction SilentlyContinue
+    # Clear the modern-menu marker (see install path below).
+    Remove-ItemProperty 'HKLM:\SOFTWARE\SageThumbs2K' -Name 'ModernMenuActive' -ErrorAction SilentlyContinue
     # Remove the Start-menu shortcut (current + legacy "Options" name) and the
     # obsolete screenshot shortcuts (the screenshot tool is controlled via Settings now).
     foreach ($f in @('SageThumbs 2K.lnk', 'SageThumbs 2K Options.lnk',
@@ -53,16 +55,21 @@ Copy-Item "$root\packaging\Assets" $prog -Recurse -Force
 # system-installed magick (this dev/compact install bundles none of its own).
 Copy-Item "$root\packaging\imagemagick-policy.xml" "$prog\policy.xml" -Force
 
-# Thumbnails + classic context menu (machine-wide, HKLM). This single classic
-# IContextMenu handler now serves the WHOLE menu (owner-drawn preview + quick
-# verbs + full "SageThumbs 2K" submenu with Settings) in "Show more options".
+# Thumbnails + classic context menu (machine-wide, HKLM). This classic IContextMenu
+# handler serves the full owner-drawn preview + "SageThumbs 2K" submenu with Settings
+# in "Show more options" (and the whole right-click menu on classic-menu machines).
 regsvr32 /s "$prog\sagethumbs2k.dll"
-# Classic-menu-only: we no longer register the sparse package. A packaged
-# `windows.fileExplorerContextMenus` verb gets bridged into "Show more options"
-# and would double-list "SageThumbs 2K" next to our classic handler (the "off on
-# its own" duplicate). Remove any package a prior install/signed-installer left
-# behind so only the classic handler remains. (See packaging\AppxManifest.xml.)
+# Modern Win11 menu: register the sparse package (Dev Mode, UNSIGNED loose -Register —
+# the signed installer.iss path uses the packed .msix instead) so the packaged QUICK
+# verbs (Convert into / Convert… / Resize / Rotate) appear on the compact Win11 menu.
+# Then set the HKLM marker the classic handler reads (settings::modern_menu_active): with
+# the package active, Windows bridges those quick verbs into "Show more options", so the
+# classic handler omits ITS own quick-verb copies to avoid double-listing them. The full
+# flyout + preview stay on the classic handler. (See packaging\AppxManifest.xml.)
 Get-AppxPackage $pkg | Remove-AppxPackage -ErrorAction SilentlyContinue
+Add-AppxPackage -Register "$prog\AppxManifest.xml" -ExternalLocation $prog -ForceUpdateFromAnyVersion
+New-Item -Path 'HKLM:\SOFTWARE\SageThumbs2K' -Force | Out-Null
+New-ItemProperty -Path 'HKLM:\SOFTWARE\SageThumbs2K' -Name 'ModernMenuActive' -Value 1 -PropertyType DWord -Force | Out-Null
 
 # Start Menu shortcut to the Options dialog.
 $ws = New-Object -ComObject WScript.Shell

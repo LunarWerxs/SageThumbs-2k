@@ -37,6 +37,9 @@ pub(super) enum Tool {
     Highlight,
     Pixelate,
     Invert,
+    /// Sample the colour of a pixel in the frozen screenshot (copies its hex to the
+    /// clipboard + sets the active colour). Doesn't draw — it's a pick-and-go tool.
+    Eyedropper,
     /// Select an existing annotation and drag it (or Delete it). Doesn't draw.
     Move,
 }
@@ -55,6 +58,7 @@ impl Tool {
             Tool::Highlight => "Highlight",
             Tool::Pixelate => "Pixelate",
             Tool::Invert => "Invert",
+            Tool::Eyedropper => "Pick",
             Tool::Move => "Move",
         }
     }
@@ -211,7 +215,7 @@ pub(super) unsafe fn draw_inprogress(
         Tool::Highlight | Tool::Pixelate | Tool::Invert => {
             outline_rect(hdc, ox, oy, norm(a, b), color, 1)
         }
-        Tool::Text | Tool::Number | Tool::Move => {}
+        Tool::Text | Tool::Number | Tool::Eyedropper | Tool::Move => {}
     }
 }
 

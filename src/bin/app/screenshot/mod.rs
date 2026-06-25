@@ -22,7 +22,7 @@ mod tools;
 mod upload;
 
 pub(crate) use daemon::run_daemon;
-pub(crate) use enable::{is_daemon_running, is_enabled, reload_hotkey, set_enabled};
+pub(crate) use enable::{is_daemon_running, is_enabled, quit, reload_hotkey, set_enabled};
 pub(crate) use overlay::{capture_instant, run_capture};
 pub(crate) use upload::run_upload;
 

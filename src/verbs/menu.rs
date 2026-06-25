@@ -449,8 +449,11 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
 /// carries its ORIGINAL leaf-start index so command ids match the default [`leaves`] and
 /// dispatch is unchanged (a click maps to the same action as on the full menu).
 pub fn condensed_top_level() -> Vec<(&'static MenuItem, u32)> {
-    const KEYS: &[&str] =
-        &["menu_files_to_folder", "menu_sort", "menu_rename", "menu_pick_color"];
+    // Only verbs that actually DO something on a file we can't read: move-to-folder + the
+    // system-wide colour picker. Sort-into-folders and Rename are dropped here — they key off
+    // image dimensions / EXIF / audio tags, so on a truly unsupported file (e.g. a .docx) they'd
+    // silently no-op. (Audio files take `audio_top_level` instead, where Sort/Rename DO apply.)
+    const KEYS: &[&str] = &["menu_files_to_folder", "menu_pick_color"];
     let mut items: Vec<(&'static MenuItem, u32)> = Vec::new();
     let mut sep: Option<(&'static MenuItem, u32)> = None;
     let mut settings: Option<(&'static MenuItem, u32)> = None;
@@ -472,6 +475,57 @@ pub fn condensed_top_level() -> Vec<(&'static MenuItem, u32)> {
         items.push(st);
     }
     items
+}
+
+/// The AUDIO-only top-level items shown when every selected file is audio (music
+/// files): only the verbs that mean something for audio — Files to folder · Rename ▸
+/// (its artist-title / track-title patterns) · Sort ▸ (by tags) — then a divider + the
+/// always-last Settings. The image-only verbs (Convert/Resize/Rotate/Wallpaper/…) are
+/// dropped because they no-op or produce garbage on a sound file. Mirrors
+/// [`condensed_top_level`] exactly: each item carries its ORIGINAL leaf-start index so
+/// command ids match the default [`leaves`] and dispatch is unchanged (a click maps to
+/// the same action as on the full menu). KEYS are kept in sync with
+/// [`top_level_audio_ok`] (which adds the always-shown Settings).
+pub fn audio_top_level() -> Vec<(&'static MenuItem, u32)> {
+    // Pick color is a system-wide screen picker (works regardless of the selected file), so it
+    // belongs here too — it was previously offered on the condensed (unsupported) menu but not
+    // the audio one, an inconsistency.
+    const KEYS: &[&str] = &["menu_files_to_folder", "menu_rename", "menu_sort", "menu_pick_color"];
+    let mut items: Vec<(&'static MenuItem, u32)> = Vec::new();
+    let mut sep: Option<(&'static MenuItem, u32)> = None;
+    let mut settings: Option<(&'static MenuItem, u32)> = None;
+    let mut idx = 0u32;
+    for it in MENU {
+        if matches!(it, MenuItem::Separator) {
+            sep.get_or_insert((it, idx));
+        } else if it.title() == "menu_settings" {
+            settings = Some((it, idx));
+        } else if KEYS.contains(&it.title()) {
+            items.push((it, idx));
+        }
+        idx += count_leaves(it);
+    }
+    if let Some(s) = sep {
+        items.push(s);
+    }
+    if let Some(st) = settings {
+        items.push(st);
+    }
+    items
+}
+
+/// Is this TOP-LEVEL menu item meaningful for an AUDIO-only selection? True for the
+/// audio-relevant verbs ([`audio_top_level`]'s KEYS) plus the always-shown Settings;
+/// false for the image-only verbs. The modern Win11 flyout can't filter its top-level
+/// list (its `EnumSubCommands` has no selection context — see `command.rs`), so it gates
+/// each item's `GetState` on this instead, returning `ECS_HIDDEN` for an image-only
+/// top-level verb when the selection is audio-only. Keep in sync with
+/// [`audio_top_level`].
+pub fn top_level_audio_ok(title: &str) -> bool {
+    matches!(
+        title,
+        "menu_files_to_folder" | "menu_rename" | "menu_sort" | "menu_pick_color" | "menu_settings"
+    )
 }
 
 #[cfg(test)]
@@ -666,5 +720,61 @@ mod tests {
             1,
             "messy dividers collapse to just the Settings divider",
         );
+    }
+
+    /// `audio_top_level` surfaces ONLY the audio-relevant verbs (Rename ▸ ·
+    /// Files to folder · Sort ▸, in MENU order), then exactly one divider + the
+    /// always-last Settings — each carrying its ORIGINAL leaf-start index so a click
+    /// dispatches to the SAME action as on the full menu. `top_level_audio_ok` agrees
+    /// on exactly that set (incl. Settings). This is the audio counterpart of the
+    /// `condensed`/`ordered` id-stability tests above.
+    #[test]
+    fn audio_top_level_is_audio_set_with_stable_ids() {
+        // Canonical leaf-start per top-level item (depth-first leaf order) — the same
+        // map the ordered test checks ids against.
+        let mut canon = std::collections::HashMap::new();
+        let mut idx = 0u32;
+        for it in MENU {
+            if !it.title().is_empty() {
+                canon.insert(it.title(), idx);
+            }
+            idx += count_leaves(it);
+        }
+
+        let out = audio_top_level();
+        let titles: Vec<&str> = out.iter().map(|(it, _)| it.title()).collect();
+
+        // The audio verbs in MENU order, then a divider ("") + Settings last. Pick color is a
+        // system-wide screen picker (works on any selection), so it's in this set too.
+        assert_eq!(
+            titles,
+            vec!["menu_rename", "menu_files_to_folder", "menu_sort", "menu_pick_color", "", "menu_settings"],
+            "audio menu = rename / files-to-folder / sort / pick-color + divider + Settings",
+        );
+        assert_eq!(
+            out.iter().filter(|(it, _)| matches!(it, MenuItem::Separator)).count(),
+            1,
+            "exactly one divider, before Settings",
+        );
+        assert_eq!(out.last().unwrap().0.title(), "menu_settings", "Settings stays last");
+
+        // Every non-divider item keeps its canonical leaf-start index → ids stay stable.
+        for (it, start) in &out {
+            if !it.title().is_empty() {
+                assert_eq!(*start, canon[it.title()], "id offset drifted for {}", it.title());
+            }
+        }
+
+        // `top_level_audio_ok` matches `audio_top_level`'s set plus Settings, and rejects
+        // the image-only verbs (which the surfaces hide on an audio-only selection).
+        for k in ["menu_files_to_folder", "menu_rename", "menu_sort", "menu_pick_color", "menu_settings"] {
+            assert!(top_level_audio_ok(k), "{k} should be audio-ok");
+        }
+        for k in [
+            "menu_convert_into", "menu_convert_dialog", "menu_resize", "menu_rotate",
+            "menu_wallpaper", "menu_copy", "menu_set_folder_icon",
+        ] {
+            assert!(!top_level_audio_ok(k), "{k} is image-only");
+        }
     }
 }

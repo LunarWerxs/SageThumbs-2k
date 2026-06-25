@@ -524,7 +524,15 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
         paint_preview(memdc, RECT { left: 0, top: 0, right: iw, bottom: ih }, &p, cbg, cfg);
         let _ = GdiFlush();
 
-        let n = (iw * ih * 4) as usize;
+        // Compute the byte count in usize with checked math — `(iw * ih * 4) as usize` multiplies
+        // as i32 first and could overflow into an undersized length for the `from_raw_parts` below
+        // (unsound). In practice the dims are tiny preview sizes, but bail cleanly on anything absurd.
+        let Some(n) = (iw as usize).checked_mul(ih as usize).and_then(|p| p.checked_mul(4)) else {
+            SelectObject(memdc, oldbmp);
+            let _ = DeleteDC(memdc);
+            let _ = DeleteObject(dib.into());
+            return false;
+        };
         let src = core::slice::from_raw_parts(bits as *const u8, n);
         let mut rgba = vec![0u8; n];
         for i in 0..(iw * ih) as usize {
@@ -743,6 +751,13 @@ impl IContextMenu_Impl for ContextMenu_Impl {
             if condensed && !settings::menu_all_file_types() {
                 return S_OK; // nothing for non-image selections
             }
+            // An AUDIO-only selection (supported, so not condensed, but every file is a
+            // music file) gets the audio view: the image-only verbs (Convert/Resize/
+            // Rotate/Wallpaper/…) no-op or produce garbage on sound, so we drop them and
+            // show only the audio-relevant set (Files to folder · Rename ▸ · Sort ▸ +
+            // Settings). `all()` is false for an empty selection, but `condensed` already
+            // is true then, so `!condensed` guards that.
+            let audio_only = !condensed && paths.iter().all(|p| verbs::is_audio(p));
             // Honor the shell's allotted command-id range [idcmdfirst, idcmdlast]
             // (inclusive). Each leaf consumes one id; popup parents do not.
             // Overflowing the range can collide with a neighboring handler's ids
@@ -803,7 +818,20 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 //    below the preview. Each is built starting at its GLOBAL leaf
                 //    index, so it reuses the submenu's command ids — a click on
                 //    either copy invokes the same action and we claim no extra ids.
-                if settings::menu_quick_verbs() && !condensed {
+                // The quick verbs are Convert/Resize/Rotate — all image-only, so they're
+                // suppressed for an audio-only selection too (same reason the audio view
+                // drops them from the submenu below).
+                //    SUPPRESSED when the signed sparse package is active: it declares the SAME
+                //    quick verbs as modern IExplorerCommand commands, and Windows bridges those
+                //    DOWN into this legacy "Show more options" menu. Emitting our copies too
+                //    would double-list Convert/Resize/Rotate here, so we defer to the bridged
+                //    packaged verbs (settings::modern_menu_active + packaging/AppxManifest.xml).
+                //    The full "SageThumbs 2K" flyout below is unaffected — still listed once.
+                if settings::menu_quick_verbs()
+                    && !condensed
+                    && !audio_only
+                    && !settings::modern_menu_active()
+                {
                     for item in verbs::quick_items() {
                         // Honor per-item visibility: a hidden top-level item drops
                         // its quick-verb copy from the main menu too.
@@ -872,10 +900,13 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                     // reorder in Settings). Each item keeps its ORIGINAL leaf-start
                     // index, so command ids stay stable — the dispatch side reads the
                     // default leaves()/slot_for, so only the insertion order changes.
-                    // Full custom-ordered tree for a supported selection; the condensed
-                    // file-agnostic set for an unsupported one (show-on-all-file-types).
+                    // Full custom-ordered tree for a supported image selection; the
+                    // audio-only set for a music selection; the condensed file-agnostic
+                    // set for an unsupported one (show-on-all-file-types).
                     let top = if condensed {
                         verbs::condensed_top_level()
+                    } else if audio_only {
+                        verbs::audio_top_level()
                     } else {
                         verbs::ordered_top_level()
                     };

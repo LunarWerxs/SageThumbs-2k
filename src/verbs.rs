@@ -33,9 +33,10 @@ mod menu;
 // Menu-tree model + flattening helpers.
 #[allow(unused_imports)]
 pub use menu::{
-    condensed_top_level, count_leaves, default_menu_tokens, id_for, leaves, ordered_top_level,
-    quick_items, slot_for, CmdSlot, EmailSize, LeafId, MenuItem, QuickItem, RenamePattern,
-    Transform, VerbAction, WallpaperMode, MENU, MENU_SEP_TOKEN, QUICK_KEYS,
+    audio_top_level, condensed_top_level, count_leaves, default_menu_tokens, id_for, leaves,
+    ordered_top_level, quick_items, slot_for, top_level_audio_ok, CmdSlot, EmailSize, LeafId,
+    MenuItem, QuickItem, RenamePattern, Transform, VerbAction, WallpaperMode, MENU, MENU_SEP_TOKEN,
+    QUICK_KEYS,
 };
 
 // Encode / convert / resize primitives and descriptors.
@@ -54,7 +55,7 @@ pub use fileops::{combine_to_cbz, files_to_folder, sort_by_dimensions, tags_to_f
 // Dispatch + the non-encode actions.
 #[allow(unused_imports)]
 pub use actions::{
-    copy_to_clipboard, is_image, prepare_wallpaper, prepare_wallpaper_in, run_action,
+    copy_to_clipboard, is_audio, is_image, prepare_wallpaper, prepare_wallpaper_in, run_action,
     run_action_detached, set_wallpaper, ActionReport,
 };
 
@@ -610,7 +611,7 @@ mod tests {
             .unwrap();
         for ext in ["psd", "dds", "pcx", "jp2", "sgi"] {
             let out = dir.join(format!("o.{ext}"));
-            convert_to_magick(png.to_str().unwrap(), &out, Resize::None)
+            convert_to_magick(png.to_str().unwrap(), &out, Resize::None, None)
                 .unwrap_or_else(|e| panic!("magick {ext} failed: {e:?}"));
             assert!(out.exists() && std::fs::metadata(&out).unwrap().len() > 0, "{ext} should be written");
         }
@@ -625,6 +626,7 @@ mod tests {
             album: Some("Discovery".into()),
             title: Some("Aerodynamic".into()),
             track: Some(3),
+            ..Default::default()
         };
         assert_eq!(tag_base(RenamePattern::ArtistTitle, &full).as_deref(), Some("Daft Punk - Aerodynamic"));
         assert_eq!(tag_base(RenamePattern::TrackTitle, &full).as_deref(), Some("03 - Aerodynamic")); // zero-padded
@@ -745,6 +747,7 @@ mod tests {
             album: Some("B".into()),
             title: Some("T".into()),
             track: Some(5),
+            ..Default::default()
         };
         assert_eq!(expand_template("$artist - $album", &t, "X"), "A - B");
         assert_eq!(expand_template("$track $title", &t, "X"), "05 T"); // track zero-padded

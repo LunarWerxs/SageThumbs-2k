@@ -178,10 +178,17 @@ pub fn files_to_folder(paths: &[String], folder_name: &str) -> Result<PathBuf> {
     }
     std::fs::create_dir_all(&dir).map_err(|_| Error::from(E_FAIL))?;
 
-    for p in paths {
-        let _ = move_into(Path::new(p), &dir);
-    }
+    // Count successful moves so a TOTAL failure (permissions, cross-volume, locked files)
+    // surfaces as an error instead of a fake success — callers build the user-facing report
+    // (and the dialog message) off this Result. (A partial move still succeeds: the common
+    // failure modes fail every file, which the 0-moved check catches.)
+    let moved = paths.iter().filter(|p| move_into(Path::new(p), &dir).is_ok()).count();
     refresh_dir(&parent);
+    if moved == 0 {
+        // Nothing landed in the new folder — clean up the empty dir we just made.
+        let _ = std::fs::remove_dir(&dir);
+        return Err(Error::from(E_FAIL));
+    }
     Ok(dir)
 }
 

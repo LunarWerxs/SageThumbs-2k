@@ -41,7 +41,7 @@ const SEPW: i32 = 11; // separator gap width
 
 /// The ordered toolbar items, grouped by `Sep` dividers: draw tools · text/number ·
 /// region effects · colour · move + actions. Every button is a square icon.
-fn items() -> [(Button, i32); 22] {
+fn items() -> [(Button, i32); 23] {
     [
         (Button::Tool(Tool::Rect), CELL),
         (Button::Tool(Tool::Ellipse), CELL),
@@ -57,6 +57,7 @@ fn items() -> [(Button, i32); 22] {
         (Button::Tool(Tool::Invert), CELL),
         (Button::Sep, SEPW),
         (Button::Color, CELL),
+        (Button::Tool(Tool::Eyedropper), CELL),
         (Button::Sep, SEPW),
         (Button::Tool(Tool::Move), CELL),
         (Button::Undo, CELL),
@@ -136,6 +137,7 @@ pub(super) fn button_tip(btn: Button) -> &'static str {
         Button::Tool(Tool::Highlight) => "Highlight (H) — translucent marker",
         Button::Tool(Tool::Pixelate) => "Pixelate (B) — blur/blockify a region",
         Button::Tool(Tool::Invert) => "Invert (I) — invert a region's colours",
+        Button::Tool(Tool::Eyedropper) => "Pick colour (E) — click a pixel to copy its hex",
         Button::Tool(Tool::Move) => "Move (M) — drag a shape · Del removes · or Ctrl-drag",
         Button::Color => "Colour (K) — cycle the palette",
         Button::Undo => "Undo (Ctrl+Z)",
@@ -626,10 +628,11 @@ unsafe fn icon_font(dpi: i32) -> HFONT {
 /// or special handling (Colour swatch / Separator).
 fn button_glyph(btn: Button) -> Option<u16> {
     Some(match btn {
-        Button::Tool(Tool::Pen) => 0xE70F,       // Edit (pencil)
-        Button::Tool(Tool::Text) => 0xE8D2,      // Font ("A")
-        Button::Tool(Tool::Highlight) => 0xE7E6, // Highlight (marker)
-        Button::Tool(Tool::Move) => 0xE7C2,      // Move (four-way arrows)
+        Button::Tool(Tool::Pen) => 0xE70F,        // Edit (pencil)
+        Button::Tool(Tool::Text) => 0xE8D2,       // Font ("A")
+        Button::Tool(Tool::Highlight) => 0xE7E6,  // Highlight (marker)
+        Button::Tool(Tool::Eyedropper) => 0xEF3C, // Eyedropper (colour picker)
+        Button::Tool(Tool::Move) => 0xE7C2,       // Move (four-way arrows)
         Button::Undo => 0xE7A7,
         Button::Redo => 0xE7A6,
         Button::Copy => 0xE8C8,

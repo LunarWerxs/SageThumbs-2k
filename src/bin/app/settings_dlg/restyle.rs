@@ -99,10 +99,46 @@ unsafe fn draw_check_glyph(
     }
 }
 
-/// A flat rounded checkbox: an 18-px box (accent fill + white tick when checked,
-/// outlined otherwise) followed by the label. The control stays a
-/// BS_AUTOCHECKBOX, so its checked state, keyboard toggle and the
-/// `check()`/`checked()` helpers keep working — we only repaint it.
+/// A Win11-style toggle SWITCH (the v3 look): a pill track at the control's RIGHT
+/// edge — accent fill + knob-right when on, outlined track + knob-left when off —
+/// with the label filling the row to its left. The control stays a BS_AUTOCHECKBOX,
+/// so its checked state, keyboard toggle and the `check()`/`checked()` helpers keep
+/// working — we only repaint it. (List checkboxes still use `draw_check_glyph`.)
+#[allow(clippy::too_many_arguments)] // a GDI glyph painter — hdc + geometry args, no struct gain
+unsafe fn draw_switch_glyph(
+    hwnd: HWND,
+    hdc: HDC,
+    x: i32,
+    top: i32,
+    bottom: i32,
+    w: i32,
+    h: i32,
+    on: bool,
+    active: bool,
+) {
+    let y = top + (bottom - top - h) / 2;
+    let rad = h; // full-pill rounding (RoundRect ellipse == height)
+    SelectObject(hdc, GetStockObject(DC_BRUSH));
+    SelectObject(hdc, GetStockObject(DC_PEN));
+    if on {
+        SetDCBrushColor(hdc, ACCENT());
+        SetDCPenColor(hdc, if active { ACCENT_HOT() } else { ACCENT() });
+    } else {
+        SetDCBrushColor(hdc, CHECK_BG());
+        SetDCPenColor(hdc, if active { ACCENT() } else { BORDER_STRONG() });
+    }
+    let _ = RoundRect(hdc, x, y, x + w, y + h, rad, rad);
+    // Knob: a filled circle that sits left (off) or right (on).
+    let pad = s(hwnd, 3);
+    let kd = h - pad * 2;
+    let ky = y + pad;
+    let kx = if on { x + w - kd - pad } else { x + pad };
+    let knob = if on { ON_ACCENT() } else { BORDER_STRONG() };
+    SetDCBrushColor(hdc, knob);
+    SetDCPenColor(hdc, knob);
+    let _ = RoundRect(hdc, kx, ky, kx + kd, ky + kd, kd, kd);
+}
+
 unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     let cd = &*nmcd;
     let hdc = cd.hdc;
@@ -113,12 +149,11 @@ unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
 
     fill(hdc, &rc, DARK_BG());
 
-    let g = s(hwnd, 18);
-    let gx = rc.left + s(hwnd, 1);
-    draw_check_glyph(hwnd, hdc, gx, rc.top, rc.bottom, g, s(hwnd, 5), on, active);
+    let sw_w = s(hwnd, 38);
+    let sw_h = s(hwnd, 20);
 
-    let tx = gx + g + s(hwnd, 10);
-    let mut tr = RECT { left: tx, top: rc.top, right: rc.right, bottom: rc.bottom };
+    // Label fills the row, leaving room for the switch on the right.
+    let mut tr = RECT { left: rc.left, top: rc.top, right: rc.right - sw_w - s(hwnd, 12), bottom: rc.bottom };
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, DARK_TEXT());
@@ -130,6 +165,9 @@ unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
         &mut tr,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
     );
+
+    // Switch at the right edge of the control rect.
+    draw_switch_glyph(hwnd, hdc, rc.right - sw_w, rc.top, rc.bottom, sw_w, sw_h, on, active);
     CDRF_SKIPDEFAULT as isize
 }
 
@@ -283,7 +321,12 @@ unsafe fn draw_rounded_panel(
 /// dropdown fields (behind their controls), then the column + footer hairlines.
 pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
-        draw_rounded_panel(hwnd, hdc, list, SURFACE(), BORDER(), 16, 3, 3, 3);
+        // Only when the file-types list is actually shown — in the v3 layout it's one
+        // category among several, so its SURFACE card must NOT paint over the other
+        // category panes (it would darken them and make labels look boxed).
+        if IsWindowVisible(list).as_bool() {
+            draw_rounded_panel(hwnd, hdc, list, SURFACE(), BORDER(), 16, 3, 3, 3);
+        }
     }
     // Field frames hug the controls. The snug (18px) edits hold digits/short text,
     // whose font cell centers but whose ink rides high (no descender), so the frame
@@ -402,34 +445,6 @@ unsafe extern "system" fn combo_subclass(
             // while scrolling the page. Forward the wheel to the parent dialog so the
             // PAGE scrolls instead. (An OPEN dropdown's list is a separate window, so
             // it still scrolls normally when actually browsing it.)
-            if let Ok(parent) = GetParent(h) {
-                return SendMessageW(parent, msg, Some(w), Some(l));
-            }
-            return LRESULT(0);
-        }
-        _ => {}
-    }
-    DefSubclassProc(h, msg, w, l)
-}
-
-/// Forward `WM_MOUSEWHEEL` to the parent dialog. Standard child controls
-/// (checkbox / static / edit) consume the wheel and never bubble it up, so without
-/// this the dark-mode left column won't scroll while the cursor is over a control —
-/// i.e. over most of the column. `scroll::init_scroll` applies this to every
-/// left-column child so the wheel scrolls the page no matter what it's over.
-pub(super) unsafe extern "system" fn wheel_forward_subclass(
-    h: HWND,
-    msg: u32,
-    w: WPARAM,
-    l: LPARAM,
-    uid: usize,
-    _data: usize,
-) -> LRESULT {
-    match msg {
-        WM_NCDESTROY => {
-            let _ = RemoveWindowSubclass(h, Some(wheel_forward_subclass), uid);
-        }
-        WM_MOUSEWHEEL => {
             if let Ok(parent) = GetParent(h) {
                 return SendMessageW(parent, msg, Some(w), Some(l));
             }

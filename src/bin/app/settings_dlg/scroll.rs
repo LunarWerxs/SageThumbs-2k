@@ -29,38 +29,6 @@ thread_local! {
     pub(super) static SCROLL: core::cell::RefCell<ScrollData> = core::cell::RefCell::new(ScrollData::default());
 }
 
-/// Subclass id for the wheel-forwarder attached to each left-column child so the
-/// mouse wheel scrolls the page even when the cursor is over a control.
-const WHEEL_FWD_SUBCLASS: usize = 1140;
-
-struct CollectCtx {
-    dialog: HWND,
-    exclude: [HWND; 5],
-    items: Vec<HWND>,
-    max_bottom: i32,
-    right_edge: i32,
-}
-
-unsafe extern "system" fn collect_scrollables(child: HWND, lparam: LPARAM) -> BOOL {
-    let ctx = &mut *(lparam.0 as *mut CollectCtx);
-    if ctx.exclude.contains(&child) {
-        return BOOL(1);
-    }
-    let mut r = RECT::default();
-    if GetWindowRect(child, &mut r).is_err() {
-        return BOOL(1);
-    }
-    let mut tl = POINT { x: r.left, y: r.top };
-    let mut br = POINT { x: r.right, y: r.bottom };
-    let _ = ScreenToClient(ctx.dialog, &mut tl);
-    let _ = ScreenToClient(ctx.dialog, &mut br);
-    if tl.x < ctx.right_edge {
-        ctx.items.push(child);
-        ctx.max_bottom = ctx.max_bottom.max(br.y);
-    }
-    BOOL(1)
-}
-
 /// The viewport's bottom edge in client px — the TOP of the fold mask, which the resize
 /// reflow (`on_resize`) moves down when the window is dragged taller. So the scroll math
 /// follows the live window height without hardcoding the design bottom. Falls back to the
@@ -75,70 +43,6 @@ pub(super) unsafe fn view_bottom_dev(dialog: HWND) -> i32 {
         }
     }
     dpi_scale(dialog, LEFT_VIEW_BOTTOM)
-}
-
-/// Collect the left-column controls and size the scrollbar. Call once, after all
-/// controls (incl. the scrollbar + mask) are built.
-pub(super) unsafe fn init_scroll(dialog: HWND) {
-    let view_top = dpi_scale(dialog, LEFT_VIEW_TOP);
-    let viewport_h = (view_bottom_dev(dialog) - view_top).max(1);
-    let gi = |id| GetDlgItem(Some(dialog), id).unwrap_or_default();
-    let sb = gi(ID_SCROLLBAR);
-    // Child z-order here is "earlier-created sits higher", so set it explicitly:
-    // scrollbar + mask above the scrolling controls (so the mask hides the row
-    // straddling the fold), banner above the mask (so it shows over it).
-    let zfix = |h: HWND| {
-        let _ = SetWindowPos(h, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    };
-    zfix(sb);
-    zfix(gi(ID_LEFT_MASK));
-    zfix(gi(ID_BANNER));
-    // The footer (About / credit / Cancel / Save) lives in the bottom chrome zone.
-    // With no sponsor banner it rises into the banner's old slot, which the full-
-    // width mask also covers — so raise it above the mask (the mask's opaque fill is
-    // the dialog bg, so the controls read cleanly on top). Harmless with a sponsor
-    // present (the footer is below the mask then anyway).
-    for id in [ID_ABOUT, ID_PROMO_LINK, IDCANCEL, IDOK] {
-        zfix(gi(id));
-    }
-    let mut ctx = CollectCtx {
-        dialog,
-        exclude: [sb, gi(ID_LEFT_MASK), gi(ID_BANNER), gi(ID_ABOUT), gi(ID_PROMO_LINK)],
-        items: Vec::new(),
-        max_bottom: 0,
-        right_edge: dpi_scale(dialog, LEFT_RIGHT_EDGE),
-    };
-    let _ = EnumChildWindows(Some(dialog), Some(collect_scrollables), LPARAM(&mut ctx as *mut _ as isize));
-    // Standard child controls (checkbox/static/edit) swallow WM_MOUSEWHEEL instead of
-    // bubbling it to the dialog, so the column wouldn't scroll while the cursor is over
-    // a control (i.e. most of it). Subclass each collected child to forward the wheel up.
-    for &h in &ctx.items {
-        let _ = SetWindowSubclass(h, Some(restyle::wheel_forward_subclass), WHEEL_FWD_SUBCLASS, 0);
-    }
-    let content_h = (ctx.max_bottom - view_top + dpi_scale(dialog, 10)).max(viewport_h);
-    let range = (content_h - viewport_h).max(0);
-    let si = SCROLLINFO {
-        cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
-        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
-        nMin: 0,
-        nMax: content_h - 1,
-        nPage: viewport_h as u32,
-        nPos: 0,
-        nTrackPos: 0,
-    };
-    SetScrollInfo(sb, SB_CTL, &si, true);
-    if range == 0 {
-        let _ = ShowWindow(sb, SW_HIDE);
-    }
-    SCROLL.with(|s| {
-        let mut s = s.borrow_mut();
-        s.items = ctx.items;
-        s.scrollbar = sb;
-        s.pos = 0;
-        s.range = range;
-        s.viewport_h = viewport_h;
-    });
-    update_visibility(dialog);
 }
 
 /// Hide controls fully outside the viewport (so they can't paint over the

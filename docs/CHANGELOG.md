@@ -2,6 +2,68 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.7.0
+
+- **Redesigned Settings window.** The old single long scroll is gone — Settings now opens with a
+  Windows 11-style **category rail** down the left (General · File types · Ebook/comic · Right-click
+  menu · Screenshots · Quick action · Advanced) and a clean content page on the right, with on/off
+  **toggle switches**, category icons, and a titled header per page. Everyday options sit up front;
+  diagnostics, updates and backup tuck under **Advanced**. Same settings, far less clutter. (The new
+  labels are translatable; languages without the new strings yet fall back to English.)
+- **Assign your own hotkey to a tool.** Pick an action (color picker, take a screenshot, Convert…,
+  rotate, move-to-folder, strip metadata, or open Settings) and a keyboard shortcut, and that shortcut
+  now works anywhere. The file actions run on whatever you've got selected in Explorer — or pop a file
+  picker if nothing's selected. It reuses the existing screenshot helper, so there's no extra
+  background program.
+- **Cleaner right-click menu on music files.** Right-clicking an audio file (MP3, FLAC, …) no longer
+  shows image-only actions like Resize, Rotate, or Set as wallpaper — just the ones that make sense
+  (move to folder, rename by tag, sort by tag).
+- **AVIF / JPEG XL quality slider.** The Convert… dialog now lets you set the quality for AVIF and
+  JPEG XL output (it only had this for JPEG and WebP before).
+- **+1 format: DSD audio (`.dsf`).** Album-art thumbnails for DSD audio files — now **316** supported
+  file types.
+- **Fixed: Photoshop files with a transparent background now preview correctly.** If you removed the
+  background in Photoshop and saved, the thumbnail used to show a solid **white** background — because it
+  came from Photoshop's built-in preview image, which can't store transparency. SageThumbs now renders the
+  actual layered image (keeping the transparency) for transparent PSD/PSB files. This was never a
+  refresh/cache problem — the thumbnail was always current, just flattened. (Needs the full install; the
+  compact, ImageMagick-free build still falls back to the white preview.)
+- **Fixed: dimensions now appear in the Explorer details pane.** The 0.6.0 update added image
+  dimensions, camera info, and audio tags for the formats Windows can't read — but they only showed up
+  in a file's Properties window and its hover tooltip, *not* in the details pane along the bottom (or
+  side) of the Explorer window, where a PSD, camera RAW, EPUB, etc. still listed only its date and size.
+  They now show there too.
+- **A lot more file info in Explorer.** While fixing the above we found the handler was reading several
+  useful facts and then throwing them away. Now, for the 300+ formats Windows can't read, Explorer's
+  Details pane / Properties / columns also show: **date taken, GPS location, color depth and DPI** for
+  photos and camera RAW; and **length (duration), bitrate, genre and year** for audio (OGG, Opus, AIFF,
+  Musepack, …). Camera RAW even gets its GPS location where Windows itself shows nothing.
+- **Those columns are now offered, not hidden.** You can right-click a column header (or "Choose
+  columns…") in a folder of PSDs/RAWs/etc. and actually pick Dimensions, Date taken, Length, Artist, …
+  as a **sortable/groupable column** — previously the data existed but Explorer never offered it for
+  those file types. The files are also classified for `kind:` search (e.g. Krita/OpenRaster as pictures).
+- **Fixed: "Show menu on all file types" now works on Windows 11's default menu.** The setting that adds
+  a small file-utility menu (move to folder / sort / rename / pick color) to *unsupported* files only
+  took effect on the old "Show more options" menu — on the modern Win11 right-click menu it did nothing.
+  Now it works there too.
+- **Fixed: more video formats get thumbnails.** **`.ts` / `.m2ts` / `.mts` (MPEG transport streams) and
+  `.ogv` (Ogg video)** were registered but always showed a blank icon — they were being routed to the
+  wrong decoder. They now use the OS video path like every other video. (`.flv` and raw `.mpg`/`.m2v`
+  are routed correctly too, but only show a frame if Windows actually has that codec installed.)
+- **Fixed: "Keep original file date" now applies to the Convert dialog.** The toggle worked for the
+  quick one-click converts but was skipped by the **Convert…** dialog, so its output always got the
+  current date. It's honored everywhere now.
+- **Fixed: searching by the info we add now works.** The dimensions/camera/audio details showed in the
+  Details pane but were stored in a form Windows Search wouldn't index — so "find by artist/camera/date"
+  never matched our files. They're now stored in the canonical form the index and column-grouping expect.
+- **Fixed: "Files to folder" tells you when it can't.** If creating the folder or moving the files failed
+  (read-only, locked, different drive), the dialog used to just close as if it worked. It now shows a
+  message and stays open so you can retry. The global-hotkey actions and the screenshot save now report
+  failures too, instead of silently doing nothing.
+- **+ audio length, bitrate, genre and year for WMA**, and a cleaner uninstall that no longer leaves
+  stray registry entries behind (including from very old versions). Under the hood: a security hardening
+  pass on the one-click updater (re-verifies the installer on disk right before it runs).
+
 ## 0.6.3
 
 - **One-click updates.** When a new version is available, **Settings ▸ Check for updates** can now
@@ -145,7 +207,6 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
   so a format/size change shows up immediately (Settings → Diagnostics).
 - **More reliable camera-RAW thumbnails** — RAW files now fall back to their embedded preview
   even when it's small, so they thumbnail on a clean Windows install with no extra codecs.
-- About box now credits the original author and shows the license.
 
 ## 0.4.5
 

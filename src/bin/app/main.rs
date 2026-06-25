@@ -29,8 +29,10 @@ mod about;
 mod sponsors;
 mod convert;
 mod dark;
+mod explorer_selection;
 mod eyedropper;
 mod files_to_folder;
+mod hotkey;
 mod image_info;
 mod screenshot;
 mod settings_dlg;
@@ -129,6 +131,13 @@ fn main() {
             crate::screenshot::run_daemon(hinst);
             return;
         }
+        // Custom action hotkey: `--hotkey-action` (spawned by the daemon when the user's
+        // assigned chord fires) runs whichever action they bound in Settings ▸ Screenshots —
+        // colour picker, screenshot, or a file verb over the Explorer selection / a picker.
+        if args.iter().any(|a| a == "--hotkey-action") {
+            crate::hotkey::run_hotkey_action(hinst);
+            return;
+        }
         // Upload mode: `--upload <png>` POSTs a capture to a keyless host and copies
         // the URL to the clipboard (spawned by the capture overlay's Upload button).
         if let Some(pos) = args.iter().position(|a| a == "--upload") {
@@ -200,26 +209,29 @@ fn main() {
         // which flashes on a fast scroll. Clipping the children out of the parent's paint
         // — paired with the double-buffered WM_PAINT + WM_ERASEBKGND no-op in
         // `settings_dlg` — makes each scroll frame atomic (no erase-then-paint flicker).
-        let style =
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN;
-        // The control layout is laid out in 96-DPI design pixels and scaled per
-        // control by `ctl()`; the window frame itself must scale to match. The
-        // window opens at CW_USEDEFAULT (no HWND yet), so size against the primary
-        // monitor's DPI. At 96 DPI this is the original 736×680 (identity).
-        let sys_dpi = crate::win::dpi_for_system();
-        let win_w = win::dpi_scale_dpi(736, sys_dpi);
-        // The settings module owns the footer/banner geometry; derive the outer
-        // window height from the same values so disabled sponsors leave no gap.
-        let sponsors_on = sponsors::sponsors_enabled();
-        let win_h_design = settings_dlg::window_height_design(dark, sponsors_on);
-        let win_h = win::dpi_scale_dpi(win_h_design, sys_dpi);
+        // v3 layout is a fixed-size nav-rail + content-pane shell (no scrolling
+        // column), so the window is NOT user-resizable — drop WS_THICKFRAME.
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+        // The control layout is in 96-DPI design pixels, scaled per control by `ctl()`
+        // (`GetDpiForWindow`); the window frame must scale to the SAME DPI or the
+        // fixed-size v3 shell clips its controls. Size AND position the window for the
+        // monitor under the cursor — the one it opens on — so the frame DPI matches the
+        // controls' DPI on mixed-DPI multi-monitor setups and after a post-login scale
+        // change. (The old `dpi_for_system()` + CW_USEDEFAULT used the LOGIN primary DPI,
+        // which mismatched the actual monitor and clipped the toggles / fields / footer.)
+        let (mon_dpi, work) = win::cursor_monitor_metrics();
+        // v3 nav-rail + content-pane shell: fixed 772×588 (96-dpi design), DPI-scaled.
+        let win_w = win::dpi_scale_dpi(772, mon_dpi);
+        let win_h = win::dpi_scale_dpi(588, mon_dpi);
+        let x = work.left + ((work.right - work.left) - win_w).max(0) / 2;
+        let y = work.top + ((work.bottom - work.top) - win_h).max(0) / 2;
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
             class,
             w!("SageThumbs 2K — Settings"),
             style,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            x,
+            y,
             win_w,
             win_h,
             None,

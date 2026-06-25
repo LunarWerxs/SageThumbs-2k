@@ -25,6 +25,32 @@ pub fn header_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
+/// True when the document's merged composite carries a transparency (alpha)
+/// channel — i.e. the header's channel count (@12) exceeds the colour channels for
+/// its colour mode (@24). Photoshop bakes its embedded preview (resource 1036) as a
+/// JPEG, which has NO alpha, so a transparent PSD (e.g. a removed background) would
+/// thumbnail with a flat WHITE background off that preview. Callers use this to
+/// render the real layer composite (which keeps alpha) for those instead. A rare
+/// extra *spot* channel can also bump the count — that false positive just renders
+/// the (still-correct) composite the slower way, never a wrong image.
+pub fn has_alpha(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"8BPS") {
+        return false;
+    }
+    let (Some(channels), Some(mode)) = (be16(bytes, 12), be16(bytes, 24)) else {
+        return false;
+    };
+    // Colour channels per PSD colour mode: RGB/Lab = 3, CMYK = 4, everything else
+    // (Bitmap/Grayscale/Indexed/Duotone/Multichannel) = 1. An alpha channel makes
+    // `channels` exceed this base.
+    let colour = match mode {
+        3 | 9 => 3, // RGB, Lab
+        4 => 4,     // CMYK
+        _ => 1,     // Bitmap, Grayscale, Indexed, Duotone, Multichannel
+    };
+    channels > colour
+}
+
 /// Extract the embedded JPEG thumbnail from a PSD/PSB, or None.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     if !bytes.starts_with(b"8BPS") {
@@ -134,5 +160,35 @@ mod tests {
 
         assert!(extract(b"not a psd at all").is_none());
         assert!(header_dims(b"not a psd at all").is_none());
+    }
+
+    /// Build just the 26-byte PSD header for the given channel count + colour mode.
+    fn psd_header(channels: u16, mode: u16) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.extend_from_slice(b"8BPS");
+        h.extend_from_slice(&[0, 1]); // version 1 (PSD)
+        h.extend_from_slice(&[0u8; 6]); // reserved
+        h.extend_from_slice(&channels.to_be_bytes());
+        h.extend_from_slice(&100u32.to_be_bytes()); // height
+        h.extend_from_slice(&100u32.to_be_bytes()); // width
+        h.extend_from_slice(&[0, 8]); // depth
+        h.extend_from_slice(&mode.to_be_bytes());
+        h
+    }
+
+    #[test]
+    fn has_alpha_keys_off_channel_count_per_mode() {
+        // RGB (mode 3): 3 channels = opaque, 4 = transparent (the removed-background case).
+        assert!(!has_alpha(&psd_header(3, 3)));
+        assert!(has_alpha(&psd_header(4, 3)));
+        // CMYK (mode 4): base is 4 channels; a 5th is alpha.
+        assert!(!has_alpha(&psd_header(4, 4)));
+        assert!(has_alpha(&psd_header(5, 4)));
+        // Grayscale (mode 1): base 1, a 2nd channel is alpha.
+        assert!(!has_alpha(&psd_header(1, 1)));
+        assert!(has_alpha(&psd_header(2, 1)));
+        // Not a PSD / too short → never claims alpha.
+        assert!(!has_alpha(b"not a psd"));
+        assert!(!has_alpha(b"8BPS"));
     }
 }

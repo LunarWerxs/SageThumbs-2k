@@ -46,6 +46,12 @@ pub fn extract_reader<R: Read + Seek>(mut reader: R) -> Option<Vec<u8>> {
     if let Some(cover) = asf_cover(&mut reader) {
         return Some(cover);
     }
+    // DSD (.dsf) THIRD: lofty 0.22 has no DSF reader either, so hand-parse the DSD
+    // header's pointer to its trailing ID3v2 tag and pull the cover out. Non-DSF
+    // input bails on the magic → the lofty path runs as before.
+    if let Some(cover) = dsf_cover(&mut reader) {
+        return Some(cover);
+    }
     // lofty for every other tagged format. Borrowed (`&mut`) so we keep ownership
     // of the reader for the waveform fallback below.
     if let Some(cover) = lofty_cover(&mut reader) {
@@ -160,6 +166,10 @@ const ASF_META_GUID: [u8; 16] =
 /// fields. Same GUID as the Header Object except the first byte (0x33 vs 0x30).
 const ASF_CONTENT_DESC_GUID: [u8; 16] =
     [0x33, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C];
+/// File Properties Object — GUID 8CABDCA1-A947-11CF-8EE4-00C00C205365. Carries Play Duration
+/// (100-ns) and Maximum Bitrate (bps), which lofty can't read for ASF (no ASF support at all).
+const ASF_FILE_PROPS_GUID: [u8; 16] =
+    [0xA1, 0xDC, 0xAB, 0x8C, 0x47, 0xA9, 0xCF, 0x11, 0x8E, 0xE4, 0x00, 0xC0, 0x0C, 0x20, 0x53, 0x65];
 
 /// Max ASF Header Object we'll read into memory (cover + slack; bomb guard). The
 /// art lives inside this header, so we never touch the (huge) media body.
@@ -209,6 +219,12 @@ pub(crate) struct AsfTags {
     pub album: Option<String>,
     pub title: Option<String>,
     pub track: Option<u32>,
+    pub genre: Option<String>,
+    pub year: Option<u32>,
+    /// Playback length in ms (0 = unknown), from the File Properties Object.
+    pub duration_ms: u64,
+    /// Overall bitrate in kbps (0 = unknown), from the File Properties Object's Maximum Bitrate.
+    pub bitrate_kbps: u32,
 }
 
 /// Pull artist/album/title/track from an ASF/WMA file (the Content Description
@@ -284,7 +300,21 @@ fn collect_tags(guid: &[u8], payload: &[u8], tags: &mut AsfTags) {
         ecd_attrs(payload, |name, dtype, val| apply_text_attr(name, dtype, val, tags));
     } else if guid == ASF_MDLIB_GUID || guid == ASF_META_GUID {
         mdlib_attrs(payload, |name, dtype, val| apply_text_attr(name, dtype, val, tags));
+    } else if guid == ASF_FILE_PROPS_GUID {
+        file_props(payload, tags);
     }
+}
+
+/// Read Play Duration + Maximum Bitrate from the File Properties Object body. Offsets (after the
+/// 24-byte object header `walk_objects` already stripped): play_duration u64 @40 (100-ns units,
+/// INCLUDES the preroll), preroll u64 @56 (ms), max_bitrate u32 @76 (bits/sec). Bounds-checked by
+/// `le64`/`le32` (`?` bails on a short body).
+fn file_props(body: &[u8], tags: &mut AsfTags) -> Option<()> {
+    let play_ms = le64(body, 40)? / 10_000;
+    let preroll_ms = le64(body, 56)?;
+    tags.duration_ms = play_ms.saturating_sub(preroll_ms);
+    tags.bitrate_kbps = le32(body, 76)? / 1000;
+    Some(())
 }
 
 /// Extended Content Description Object body: `count(u16)` then descriptors of
@@ -364,6 +394,11 @@ fn apply_text_attr(name: &[u8], dtype: u16, value: &[u8], tags: &mut AsfTags) {
                 tags.title.get_or_insert(s);
             } else if name_eq(name, b"WM/TrackNumber") && tags.track.is_none() {
                 tags.track = parse_track(&s);
+            } else if name_eq(name, b"WM/Genre") {
+                tags.genre.get_or_insert(s);
+            } else if name_eq(name, b"WM/Year") && tags.year.is_none() {
+                // WM/Year is a string ("2003"); keep only the leading 4-digit year.
+                tags.year = s.get(..4).and_then(|y| y.parse().ok());
             }
         }
         // DWORD: WM/Track is a zero-based integer
@@ -427,6 +462,108 @@ fn skip_utf16z(v: &[u8], mut p: usize) -> Option<usize> {
     }
 }
 
+/// DSD (`.dsf`) album art. lofty 0.22 has no DSF reader, so — like the hand-rolled
+/// ASF and APEv2 paths above — we parse it directly: the `DSD ` header chunk holds a
+/// pointer to a trailing **ID3v2** tag (the same tag MP3 puts at the *front*), and we
+/// pull the front-cover `APIC` frame out of it. Non-DSF input bails on the magic.
+fn dsf_cover<R: Read + Seek>(reader: &mut R) -> Option<Vec<u8>> {
+    reader.seek(SeekFrom::Start(0)).ok()?;
+    let mut hdr = [0u8; 28];
+    reader.read_exact(&mut hdr).ok()?;
+    if &hdr[0..4] != b"DSD " {
+        return None; // not DSD — let the lofty path try it
+    }
+    // Bytes 20..28: file offset of the metadata (ID3v2) chunk; 0 == no metadata.
+    let meta_ptr = le64(&hdr, 20)?;
+    if meta_ptr == 0 {
+        return None;
+    }
+    reader.seek(SeekFrom::Start(meta_ptr)).ok()?;
+    let mut id3 = [0u8; 10];
+    reader.read_exact(&mut id3).ok()?;
+    if &id3[0..3] != b"ID3" {
+        return None;
+    }
+    let major = id3[3];
+    // The ID3v2 tag size is always synchsafe. Cap the read so a bogus size can't
+    // force a huge allocation; a real cover tag is comfortably under this.
+    let tag_len = (id3_synchsafe(&id3[6..10])? as usize).min(64 * 1024 * 1024);
+    let mut body = vec![0u8; tag_len];
+    reader.read_exact(&mut body).ok()?;
+    id3v2_front_cover(&body, major)
+}
+
+/// Scan ID3v2 frames for an `APIC` picture, preferring the front cover (type 3).
+fn id3v2_front_cover(body: &[u8], major: u8) -> Option<Vec<u8>> {
+    let mut pos = 0usize;
+    let mut fallback: Option<Vec<u8>> = None;
+    while pos + 10 <= body.len() {
+        let id = &body[pos..pos + 4];
+        if id == [0, 0, 0, 0] {
+            break; // padding region — no more frames
+        }
+        // Frame size is synchsafe in ID3v2.4, plain big-endian in 2.3/2.2-on-2.3-header.
+        let sz = &body[pos + 4..pos + 8];
+        let size = if major >= 4 {
+            id3_synchsafe(sz)?
+        } else {
+            u32::from_be_bytes([sz[0], sz[1], sz[2], sz[3]])
+        } as usize;
+        let start = pos + 10;
+        let end = start.checked_add(size)?;
+        if end > body.len() {
+            break;
+        }
+        if id == b"APIC" {
+            if let Some((ptype, img)) = parse_apic(&body[start..end]) {
+                if ptype == 3 {
+                    return Some(img); // front cover — best match
+                }
+                fallback.get_or_insert(img);
+            }
+        }
+        pos = end;
+    }
+    fallback
+}
+
+/// Parse one `APIC` frame body: `encoding(u8), mime(latin1\0), pic_type(u8),
+/// description(\0 — 2 bytes for UTF-16), image[…]`. Returns `(pic_type, image)` when
+/// the trailing bytes are a size-bounded raster we can decode.
+fn parse_apic(d: &[u8]) -> Option<(u8, Vec<u8>)> {
+    let enc = *d.first()?;
+    let mut p = 1usize;
+    while *d.get(p)? != 0 {
+        p += 1; // MIME type (latin1, NUL-terminated)
+    }
+    p += 1;
+    let ptype = *d.get(p)?;
+    p += 1;
+    // Description, NUL-terminated. UTF-16 (enc 1/2) uses a 2-byte terminator.
+    if enc == 1 || enc == 2 {
+        loop {
+            let pair = d.get(p..p + 2)?;
+            p += 2;
+            if pair == [0, 0] {
+                break;
+            }
+        }
+    } else {
+        while *d.get(p)? != 0 {
+            p += 1;
+        }
+        p += 1;
+    }
+    let img = d.get(p..)?;
+    (super::looks_like_raster(img) && img.len() as u64 <= super::MAX_COVER).then(|| (ptype, img.to_vec()))
+}
+
+/// Decode a 4-byte ID3v2 synchsafe integer (the high bit of each byte is zero).
+fn id3_synchsafe(b: &[u8]) -> Option<u32> {
+    let b = b.get(0..4)?;
+    Some(((b[0] as u32 & 0x7f) << 21) | ((b[1] as u32 & 0x7f) << 14) | ((b[2] as u32 & 0x7f) << 7) | (b[3] as u32 & 0x7f))
+}
+
 /// Cheap magic sniff so we only run lofty on actual audio containers. (Cover art
 /// in MP3 lives in ID3v2, which sits at the file start, so "ID3" covers MP3.)
 pub fn looks_like_audio(b: &[u8]) -> bool {
@@ -437,6 +574,7 @@ pub fn looks_like_audio(b: &[u8]) -> bool {
         || b.starts_with(b"wvpk")                               // WavPack
         || b.starts_with(b"MPCK")                               // Musepack SV8
         || b.starts_with(b"MP+")                                // Musepack SV7
+        || b.starts_with(b"DSD ")                               // DSD stream (.dsf — ID3v2 cover)
         // MP4/M4A audio: ftyp with an AUDIO brand. Crucially this excludes the
         // image MP4 brands (heic/heix/mif1/avif/…) so HEIC/AVIF still take the
         // normal image path instead of being misrouted here.
@@ -532,6 +670,42 @@ mod tests {
         p.extend_from_slice(&nm);
         p.extend_from_slice(value);
         p
+    }
+
+    /// Build a 4-byte ID3v2 synchsafe size (high bit of each byte is zero).
+    fn synchsafe_bytes(n: u32) -> [u8; 4] {
+        [((n >> 21) & 0x7f) as u8, ((n >> 14) & 0x7f) as u8, ((n >> 7) & 0x7f) as u8, (n & 0x7f) as u8]
+    }
+
+    /// A minimal `.dsf`: the 28-byte `DSD ` header pointing at a trailing ID3v2.4 tag
+    /// whose single `APIC` frame (front cover) wraps `image`.
+    fn dsf_with_cover(image: &[u8]) -> Vec<u8> {
+        let mut apic = vec![0u8]; // text encoding: latin1
+        apic.extend_from_slice(b"image/jpeg\0"); // MIME
+        apic.push(3); // picture type: front cover
+        apic.push(0); // empty description (latin1 NUL)
+        apic.extend_from_slice(image);
+        let mut frame = b"APIC".to_vec();
+        frame.extend_from_slice(&synchsafe_bytes(apic.len() as u32));
+        frame.extend_from_slice(&[0, 0]); // frame flags
+        frame.extend_from_slice(&apic);
+        let mut id3 = b"ID3".to_vec();
+        id3.extend_from_slice(&[4, 0, 0]); // v2.4.0, no flags
+        id3.extend_from_slice(&synchsafe_bytes(frame.len() as u32));
+        id3.extend_from_slice(&frame);
+        let mut f = b"DSD ".to_vec();
+        f.extend_from_slice(&28u64.to_le_bytes()); // DSD chunk size
+        f.extend_from_slice(&(28 + id3.len() as u64).to_le_bytes()); // total file size
+        f.extend_from_slice(&28u64.to_le_bytes()); // metadata pointer → right after the header
+        f.extend_from_slice(&id3);
+        f
+    }
+
+    /// DSD `.dsf` carries its cover in a trailing ID3v2 tag that lofty can't read; the
+    /// hand-rolled `dsf_cover` must pull the front-cover APIC out.
+    #[test]
+    fn dsf_cover_reads_id3v2_apic() {
+        assert_eq!(extract(&dsf_with_cover(FAKE_JPEG)), Some(FAKE_JPEG.to_vec()));
     }
 
     #[test]

@@ -423,13 +423,13 @@ impl PreviewHandler_Impl {
             Some(px) => Box::new((DecodedRgba { w: px.w, h: px.h, rgba: px.rgba.clone() }, self.bg.get())),
             None => return,
         };
+        let raw = Box::into_raw(payload);
         unsafe {
-            _ = PostMessageW(
-                Some(hwnd),
-                WM_PREVIEW_RENDER,
-                WPARAM(0),
-                LPARAM(Box::into_raw(payload) as isize),
-            );
+            if PostMessageW(Some(hwnd), WM_PREVIEW_RENDER, WPARAM(0), LPARAM(raw as isize)).is_err() {
+                // The window died between the child() check and here — the message will never be
+                // processed (and so never reclaim the Box). Free it now so it doesn't leak.
+                drop(Box::from_raw(raw));
+            }
         }
     }
 

@@ -48,7 +48,8 @@ pub use topdf::combine_to_pdf;
 pub use strip::read_info_verbose;
 pub use verbs::{
     convert_file_opts, convert_image_to_pdf_in, convert_to_magick_in, default_menu_tokens,
-    files_to_folder, tags_to_folders, ConvertOpts, Resize, Target, MENU_SEP_TOKEN,
+    files_to_folder, run_action, tags_to_folders, ConvertOpts, Resize, Target, Transform,
+    VerbAction, MENU_SEP_TOKEN,
 };
 
 /// Is ImageMagick available? Gates the magick-backed Convert targets (PSD/DDS/…),
@@ -181,6 +182,10 @@ pub fn dll_get_class_object(
             && clsid != guids::CLSID_CONTEXT_MENU
             && clsid != guids::CLSID_PREVIEW_HANDLER
             && clsid != guids::CLSID_PROPERTY_STORE
+            // The modern-menu quick verbs (Convert into / Convert… / Resize / Rotate) are their
+            // own coclasses, activated via the package surrogate; the factory builds them from
+            // the CLSID→MENU mapping in command::QUICK_VERBS.
+            && !command::is_quick_clsid(clsid)
         {
             return CLASS_E_CLASSNOTAVAILABLE;
         }

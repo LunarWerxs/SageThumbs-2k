@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.6.3"
+version = "0.7.0"
 
 [package]
 name = "sagethumbs2k"
@@ -188,6 +188,7 @@ features = [
     "Win32_Security_Cryptography", # BCryptHash (SHA-256): verify the downloaded installer before the self-update runs it
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation", # GetLocalTime for screenshot filenames
+    "Win32_System_Time", # SystemTimeToFileTime: EXIF DateTaken (YYYY:MM:DD…) -> FILETIME for the property handler
     "Win32_System_WindowsProgramming", # MulDiv for the app dialogs' DPI scaling
     "Win32_UI_HiDpi", # GetDpiForWindow + SystemParametersInfoForDpi (PerMonitorV2 layout scaling)
     "Win32_Storage_FileSystem", # Get/SetFileAttributesW for the folder-icon verb

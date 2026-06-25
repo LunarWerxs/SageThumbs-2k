@@ -51,8 +51,6 @@ pub(crate) const URL_PARENT: &str = "https://lunarwerx.com";
 // (where users actually get + engage with it). Repoint if a product site appears.
 pub(crate) const URL_PRODUCT: &str = "https://github.com/LunarWerxs/SageThumbs-2k";
 pub(crate) const URL_GITHUB: &str = "https://github.com/LunarWerxs/SageThumbs-2k";
-/// The About box's LunarWerx wordmark links here.
-pub(crate) const URL_COMPANIES: &str = "https://lunarwerx.com/#companies";
 
 /// Window/taskbar icon (16/32/48). Embedded; the EXE-file icon in Explorer comes
 /// from the installer's shortcut. A `app.ico` next to the EXE overrides at runtime.
@@ -216,6 +214,83 @@ pub(crate) unsafe fn gui_font_header(hwnd: HWND) -> HFONT {
     hf
 }
 
+/// A larger semibold font for the v3 category page-header title (~22px @ 96dpi).
+/// Cached per DPI; falls back to [`gui_font_for`] if the metrics query fails.
+pub(crate) unsafe fn gui_font_title(hwnd: HWND) -> HFONT {
+    let dpi = GetDpiForWindow(hwnd);
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    static FONTS: OnceLock<std::sync::Mutex<Vec<(u32, usize)>>> = OnceLock::new();
+    let cache = FONTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(&(_, p)) = guard.iter().find(|(d, _)| *d == dpi) {
+        return HFONT(p as *mut c_void);
+    }
+    let mut ncm = NONCLIENTMETRICSW {
+        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    let hf = if SystemParametersInfoForDpi(
+        SPI_GETNONCLIENTMETRICS.0,
+        ncm.cbSize,
+        Some(&mut ncm as *mut _ as *mut c_void),
+        0,
+        dpi,
+    )
+    .is_ok()
+    {
+        let mut lf = ncm.lfMessageFont;
+        lf.lfWidth = 0;
+        lf.lfHeight = -MulDiv(22, dpi as i32, 96);
+        lf.lfWeight = 600; // FW_SEMIBOLD
+        CreateFontIndirectW(&lf)
+    } else {
+        gui_font_for(hwnd)
+    };
+    guard.push((dpi, hf.0 as usize));
+    hf
+}
+
+/// A GUI font at an arbitrary point/pixel size and weight, DPI-scaled and cached
+/// per `(px, weight, dpi)`. `px` is the cap height in 96-DPI design pixels (scaled
+/// to `hwnd`'s DPI); `weight` is an `lfWeight` (e.g. 700 = FW_BOLD). Used by the
+/// About box for its big bold product title. Falls back to [`gui_font_for`] if the
+/// metrics query fails. Caching keeps repeated dialog opens from leaking HFONTs.
+pub(crate) unsafe fn gui_font_sized(hwnd: HWND, px: i32, weight: i32) -> HFONT {
+    let dpi = GetDpiForWindow(hwnd);
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    // (px, weight, dpi, HFONT-as-usize) memo rows.
+    #[allow(clippy::type_complexity)]
+    static FONTS: OnceLock<std::sync::Mutex<Vec<(i32, i32, u32, usize)>>> = OnceLock::new();
+    let cache = FONTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(&(_, _, _, p)) = guard.iter().find(|(x, w, d, _)| *x == px && *w == weight && *d == dpi) {
+        return HFONT(p as *mut c_void);
+    }
+    let mut ncm = NONCLIENTMETRICSW {
+        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    let hf = if SystemParametersInfoForDpi(
+        SPI_GETNONCLIENTMETRICS.0,
+        ncm.cbSize,
+        Some(&mut ncm as *mut _ as *mut c_void),
+        0,
+        dpi,
+    )
+    .is_ok()
+    {
+        let mut lf = ncm.lfMessageFont;
+        lf.lfWidth = 0; // let GDI pick the natural width for the height (no squish)
+        lf.lfHeight = -MulDiv(px, dpi as i32, 96);
+        lf.lfWeight = weight;
+        CreateFontIndirectW(&lf)
+    } else {
+        gui_font_for(hwnd)
+    };
+    guard.push((px, weight, dpi, hf.0 as usize));
+    hf
+}
+
 /// Minimal WM_DPICHANGED handler shared by every top-level wndproc: move/resize
 /// the window to the suggested rect Windows hands us in `lparam`. The controls
 /// are laid out once at WM_CREATE for the creation DPI; this keeps the frame
@@ -347,6 +422,35 @@ pub(crate) fn dpi_for_system() -> i32 {
         );
         ReleaseDC(None, dc);
         if dpi == 0 { 96 } else { dpi }
+    }
+}
+
+/// Effective DPI + work-area rect of the monitor under the cursor (where the user is).
+/// A top-level window sizes AND positions itself for the monitor it actually opens on,
+/// so the window frame's DPI matches the per-control `dpi_scale()` (`GetDpiForWindow`) —
+/// even on a mixed-DPI multi-monitor setup, or after the user changed scale without
+/// signing out. `dpi_for_system()` reports the LOGIN-time primary DPI, which is wrong in
+/// those cases and left the fixed-size v3 Settings window clipping its controls. 96/primary
+/// fallback on any failure.
+pub(crate) fn cursor_monitor_metrics() -> (i32, windows::Win32::Foundation::RECT) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    };
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    unsafe {
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+        let (mut dx, mut dy) = (96u32, 96u32);
+        let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+        let mut mi = MONITORINFO {
+            cbSize: core::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let _ = GetMonitorInfoW(mon, &mut mi);
+        ((if dx == 0 { 96 } else { dx as i32 }), mi.rcWork)
     }
 }
 

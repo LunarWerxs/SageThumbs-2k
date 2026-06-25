@@ -52,6 +52,7 @@ static QUALITY: AtomicI32 = AtomicI32::new(90); // JPEG quality 1..=100
 static WEBP_QUALITY: AtomicI32 = AtomicI32::new(80); // lossy WebP quality 1..=100
 static WEBP_LOSSLESS: AtomicI32 = AtomicI32::new(0); // 1 = lossless, 0 = lossy (default — WebP is for small files)
 static PNG_LEVEL: AtomicI32 = AtomicI32::new(6); // PNG compression 0..=9
+static MAGICK_QUALITY: AtomicI32 = AtomicI32::new(50); // AVIF/JXL quality 1..=100 (-quality N)
 /// First output file produced by the most recent run — drives the "Open output
 /// folder?" prompt on completion. Reset when a run starts; set by the worker on
 /// its first success. (Only `Option`/`PathBuf` ops under the lock, so it can never
@@ -171,6 +172,7 @@ pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
     WEBP_QUALITY.store(settings::cv_webp_quality() as i32, Ordering::Relaxed);
     WEBP_LOSSLESS.store(settings::cv_webp_lossless() as i32, Ordering::Relaxed);
     PNG_LEVEL.store(settings::cv_png_level() as i32, Ordering::Relaxed);
+    MAGICK_QUALITY.store(settings::cv_magick_quality() as i32, Ordering::Relaxed);
 
     let title = t("cv_title").replace("{n}", &n.to_string());
     run_dialog(
@@ -365,7 +367,13 @@ unsafe fn start_convert(hwnd: HWND) {
                     // One image → one single-page PDF (reserved name in `dir`).
                     CvTarget::Pdf => sagethumbs2k_core::convert_image_to_pdf_in(f, &dir, quality).ok(),
                     // Exotic target written by the bundled ImageMagick (reserved name).
-                    CvTarget::Magick(ext) => sagethumbs2k_core::convert_to_magick_in(f, &dir, ext, resize).ok(),
+                    CvTarget::Magick(ext) => {
+                        // AVIF/JXL honor the quality slider; the lossless exotic targets
+                        // (PSD/DDS/…) get magick's default (None).
+                        let q = matches!(ext, "avif" | "jxl")
+                            .then(|| MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8);
+                        sagethumbs2k_core::convert_to_magick_in(f, &dir, ext, resize, q).ok()
+                    }
                 }
             },
             || {
@@ -391,12 +399,20 @@ const SK_NONE: i32 = 0;
 const SK_JPEG: i32 = 1;
 const SK_WEBP: i32 = 2;
 const SK_PNG: i32 = 3;
+/// Lossy ImageMagick targets (AVIF / JPEG XL) — a single quality slider, passed to
+/// magick as `-quality N`. (Other magick targets like PSD/DDS have no quality knob.)
+const SK_MAGICK_Q: i32 = 4;
 /// Which settings panel the popup should show (set before opening).
 static POPUP_KIND: AtomicI32 = AtomicI32::new(SK_JPEG);
 
 /// The settings panel a format index needs (JPEG/PDF → quality, WebP →
-/// lossless+quality, PNG → compression, others → none).
+/// lossless+quality, PNG → compression, AVIF/JXL → magick quality, others → none).
 fn settings_kind(idx: usize) -> i32 {
+    if let Some((_, ext)) = CV_MAGICK_FORMATS.get(idx.wrapping_sub(CV_FORMATS.len())) {
+        // Magick targets sit after the native ones. Only the lossy ones (AVIF/JXL) get a
+        // quality slider; the rest (PSD/DDS/…) have no quality knob.
+        return if matches!(*ext, "avif" | "jxl") { SK_MAGICK_Q } else { SK_NONE };
+    }
     match CV_FORMATS.get(idx) {
         Some((_, Some(ImageFormat::Jpeg), _)) | Some((_, None, _)) => SK_JPEG,
         Some((_, Some(ImageFormat::WebP), _)) => SK_WEBP,
@@ -419,6 +435,7 @@ unsafe fn run_format_settings(owner: HWND, _hinst: HINSTANCE, idx: usize) {
     let title = match kind {
         SK_WEBP => t("cv_set_webp_title"),
         SK_PNG => t("cv_set_png_title"),
+        SK_MAGICK_Q => "AVIF / JPEG XL quality",
         _ => t("cv_set_jpeg_title"),
     };
     run_dialog(
@@ -450,6 +467,7 @@ extern "system" fn settings_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 let (label, lo, hi, init) = match kind {
                     SK_PNG => (t("cv_compression"), 0, 9, PNG_LEVEL.load(Ordering::Relaxed)),
                     SK_WEBP => (t("cv_quality"), 1, 100, WEBP_QUALITY.load(Ordering::Relaxed)),
+                    SK_MAGICK_Q => (t("cv_quality"), 1, 100, MAGICK_QUALITY.load(Ordering::Relaxed)),
                     _ => (t("cv_jpeg_quality"), 1, 100, QUALITY.load(Ordering::Relaxed)),
                 };
                 ctl(hwnd, STATIC, label, WINDOW_STYLE(0), 16, y, 200, 18, -1, hinst);
@@ -492,6 +510,7 @@ extern "system" fn settings_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                                 WEBP_LOSSLESS.store(checked(hwnd, CID_POPUP_LOSSLESS) as i32, Ordering::Relaxed);
                                 WEBP_QUALITY.store(pos.clamp(1, 100), Ordering::Relaxed);
                             }
+                            SK_MAGICK_Q => MAGICK_QUALITY.store(pos.clamp(1, 100), Ordering::Relaxed),
                             _ => QUALITY.store(pos.clamp(1, 100), Ordering::Relaxed),
                         }
                         // Persist so the choice survives the next launch (HKCU).
@@ -501,6 +520,7 @@ extern "system" fn settings_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                             WEBP_LOSSLESS.load(Ordering::Relaxed) != 0,
                             PNG_LEVEL.load(Ordering::Relaxed) as u32,
                         );
+                        settings::set_cv_magick_quality(MAGICK_QUALITY.load(Ordering::Relaxed) as u32);
                         let _ = DestroyWindow(hwnd);
                     }
                     IDCANCEL => {

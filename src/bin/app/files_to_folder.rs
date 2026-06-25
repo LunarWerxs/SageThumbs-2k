@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
 use crate::win::{
-    ctl, get_edit_text, read_listfile, run_dialog, t, wm_dpichanged, BUTTON, EDIT, STATIC,
+    ctl, get_edit_text, read_listfile, run_dialog, t, wide, wm_dpichanged, BUTTON, EDIT, STATIC,
     EM_SETSEL, IDCANCEL, IDOK,
 };
 
@@ -71,10 +71,19 @@ extern "system" fn f2f_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         if name.is_empty() {
                             name = t("f2f_default_name").to_string();
                         }
-                        if let Some(files) = F2F_FILES.get() {
-                            let _ = sagethumbs2k_core::files_to_folder(files, &name);
+                        // Keep the dialog open on failure (with a message) instead of
+                        // silently closing as if it worked — the create/move can fail on
+                        // permissions, a read-only/locked file, or a cross-volume move.
+                        match F2F_FILES.get().map(|files| sagethumbs2k_core::files_to_folder(files, &name)) {
+                            Some(Err(_)) => {
+                                let m = wide(t("f2f_failed"));
+                                let cap = wide("SageThumbs 2K");
+                                MessageBoxW(Some(hwnd), PCWSTR(m.as_ptr()), PCWSTR(cap.as_ptr()), MB_OK | MB_ICONWARNING);
+                            }
+                            _ => {
+                                let _ = DestroyWindow(hwnd);
+                            }
                         }
-                        let _ = DestroyWindow(hwnd);
                     }
                     IDCANCEL => {
                         let _ = DestroyWindow(hwnd);

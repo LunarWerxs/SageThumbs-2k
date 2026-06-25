@@ -6,7 +6,7 @@ use windows::core::{Error, Interface, Ref, Result, BOOL, GUID, IUnknown};
 use windows::Win32::Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE, E_POINTER};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 
-use crate::command::ExplorerCommand;
+use crate::command::{self, ExplorerCommand};
 use crate::contextmenu::ContextMenu;
 use crate::guids;
 use crate::previewhandler::PreviewHandler;
@@ -56,6 +56,12 @@ impl IClassFactory_Impl for ClassFactory_Impl {
                 guids::CLSID_CONTEXT_MENU => ContextMenu::default().into(),
                 guids::CLSID_PREVIEW_HANDLER => PreviewHandler::default().into(),
                 guids::CLSID_PROPERTY_STORE => PropertyStore::default().into(),
+                // A modern-menu quick verb (Convert into / Convert… / Resize / Rotate):
+                // construct a top-level MenuCommand over the MENU item that CLSID maps to.
+                clsid if command::is_quick_clsid(clsid) => match command::quick_root_item(clsid) {
+                    Some(item) => command::MenuCommand::quick_root(item).into(),
+                    None => return Err(Error::from(E_NOINTERFACE)),
+                },
                 _ => return Err(Error::from(E_NOINTERFACE)),
             };
 

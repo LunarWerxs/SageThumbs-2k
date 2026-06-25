@@ -22,7 +22,7 @@ extension today:
 
 | Capability | Backed by | Lives in |
 |---|---|---|
-| Decode **315 formats** → PNG (RAW, HEIC, PSD, MS Office, ebook/comic covers, PDF page 1, SVG, …) | image crate + WIC + bundled ImageMagick + resvg | `decode::decode_full` |
+| Decode **316 formats** → PNG (RAW, HEIC, PSD, MS Office, ebook/comic covers, PDF page 1, SVG, …) | image crate + WIC + bundled ImageMagick + resvg | `decode::decode_full` |
 | **Convert** (PNG/JPG/WebP/BMP/GIF/TIFF/ICO) + quality + **resize** | image crate | `verbs::convert_to` (CLI exact-path) / `verbs::convert_file_opts` (GUI) |
 | **Rotate / flip** | image crate | `verbs::transform_file` |
 | **Strip metadata** (lossless EXIF/IPTC/XMP) | img-parts | `strip::strip_metadata` |
@@ -46,7 +46,7 @@ strip     <in>                        # in place, lossless (JPEG/PNG; keeps the 
 info      <in> [--json]               # dims + EXIF/GPS  -> stdout (JSON)
 ocr       <in> [--json]               # recognized text  -> stdout (needs a Windows OCR language pack)
 pdf       <out> <in...>               # combine images into one PDF
-thumbnail <in> <out.png> [--size 256] # render any of the 315 types to PNG (default 256px)
+thumbnail <in> <out.png> [--size 256] # render any of the 316 types to PNG (default 256px)
 batch     <thumbnail|convert> <in|dir...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%]
                                       # bulk-process many files/folders in ONE process, fanned out across all cores
 formats   [--json]                    # list supported extensions + categories
@@ -72,7 +72,7 @@ here", "thumbnail this CR3"). Implemented in `src/mcp.rs`:
   pdf / info / formats — `batch` is CLI-only) **plus two agent-native tools** (`view` /
   `compress`), each with a JSON-Schema, each calling `cli::*`. Tool failures return a
   result with `isError: true`; protocol faults use JSON-RPC errors.
-  - **`view`** — decode any of the 315 formats and return it as an MCP image content
+  - **`view`** — decode any of the 316 formats and return it as an MCP image content
     block (base64 PNG) so the calling agent can **SEE** the file directly (RAW, HEIC,
     PSD, ebook/comic covers, PDF page 1, …), no intermediate file on disk.
   - **`compress`** — re-encode an image to a smaller file (format / quality / resize),

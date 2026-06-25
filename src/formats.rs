@@ -34,7 +34,7 @@ const EBOOK_EXTS: &[&str] = &[
 ];
 const DOCUMENT_EXTS: &[&str] = &[
     "pdf", "djv", "djvu", "odt", "ods", "odp", "odg", "odf", "ott", "ots", "otp",
-    "pptx", "pptm", "potx", "key", "pages", "numbers", "indd", "vsdx", "vsdm", "vsd", "pub", "ggb",
+    "pptx", "pptm", "potx", "key", "pages", "numbers", "indd", "indt", "vsdx", "vsdm", "vsd", "pub", "ggb",
     // Microsoft Word / Excel / PowerPoint (OOXML packages + legacy OLE compound docs).
     "docx", "docm", "dotx", "dotm", "doc", "dot",
     "xlsx", "xlsm", "xlsb", "xltx", "xltm", "xls", "xlt",
@@ -42,7 +42,7 @@ const DOCUMENT_EXTS: &[&str] = &[
 ];
 const AUDIO_EXTS: &[&str] = &[
     "mp3", "flac", "ogg", "oga", "opus", "spx", "m4a", "m4b", "aac", "wma", "ape", "wv",
-    "mpc", "wav", "aiff", "aif", "aifc",
+    "mpc", "wav", "aiff", "aif", "aifc", "dsf",
 ];
 const RAW_EXTS: &[&str] = &[
     "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "k25",
@@ -57,6 +57,18 @@ const RAW_EXTS: &[&str] = &[
 const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v",
     "mpg", "mpeg", "m2v", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
+];
+
+/// Extensions SageThumbs hooked in PAST versions but dropped in the 2026-06-11 triage (see
+/// CLAUDE.md §5 — unrenderable). They are NOT in `FORMATS`, so the normal register/unregister
+/// loops never touch their keys — an upgrade or uninstall would otherwise leave OUR stale
+/// thumbnail/preview `shellex` hooks behind on any machine that ran an older build. `register()`
+/// and `unregister()` sweep this list to clean those orphans. MUST stay disjoint from `FORMATS`
+/// (enforced by `removed_extensions_disjoint_from_formats`). NOTE: `mpc` is NOT here — the
+/// Magick-Pixel-Cache `.mpc` was dropped, but `.mpc` is now LIVE as Musepack audio.
+pub const REMOVED_EXTENSIONS: &[&str] = &[
+    "aai", "art", "avs", "cache", "hrz", "ipl", "mtv", "palm", "six", "jpt", "fax", "g3", "g4",
+    "otb", "wbmp", "rgb", "pct", "pict",
 ];
 
 /// Classify an extension into a display category.
@@ -405,6 +417,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("aiff", "AIFF audio (waveform / album art)"),
     ("aif", "AIFF audio (waveform / album art)"),
     ("aifc", "AIFF-C audio (waveform / album art)"),
+    ("dsf", "DSD audio (album art)"),
     // ---- Video (a representative frame, grabbed via OS Media Foundation codecs) ----
     ("mp4", "MPEG-4 Video"),
     ("m4v", "MPEG-4 Video (iTunes)"),
@@ -561,6 +574,19 @@ mod tests {
             FORMATS.len() - non_image,
             "Image is the remainder of FORMATS",
         );
+    }
+
+    /// `REMOVED_EXTENSIONS` (the historically-dropped exts we sweep on register/unregister)
+    /// MUST NOT overlap `FORMATS` — otherwise the cleanup would unhook a LIVE format.
+    #[test]
+    fn removed_extensions_disjoint_from_formats() {
+        for &ext in REMOVED_EXTENSIONS {
+            assert!(
+                !FORMATS.iter().any(|&(e, _)| e == ext),
+                "REMOVED_EXTENSIONS contains \"{ext}\" which is still a live FORMATS entry — \
+                 the register/unregister cleanup sweep would unhook it",
+            );
+        }
     }
 
     /// `FORMATS` must have no duplicate extensions — a dupe would double-count in

@@ -49,11 +49,27 @@ pub fn is_video_magic(head: &[u8]) -> bool {
             || brand == b"M4P ";
         return !not_video; // mp4/mov/m4v/3gp brands → video
     }
+    // MPEG-TS (.ts/.mts): 188-byte packets, each led by the 0x47 sync byte. Requiring TWO
+    // syncs (head[0] AND head[188]) avoids matching any file that merely starts with 'G'.
+    // M2TS (.m2ts) prefixes each packet with a 4-byte timestamp → sync at offset 4, 192 stride.
+    // (Needs a head ≥197 bytes — `peek_is_video`/`decode` pass enough; a short head just skips.)
+    if head.len() > 188 && head[0] == 0x47 && head[188] == 0x47 {
+        return true;
+    }
+    if head.len() > 196 && head[4] == 0x47 && head[196] == 0x47 {
+        return true;
+    }
     head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])                 // Matroska / WebM (EBML)
         || (head.starts_with(b"RIFF") && &head[8..12] == b"AVI ") // AVI
         || head.starts_with(&[0x30, 0x26, 0xB2, 0x75])          // ASF / WMV header GUID
         || head.starts_with(b"FLV")                              // Flash Video
-        || head.starts_with(&[0x00, 0x00, 0x01, 0xBA]) // MPEG program stream pack header
+        || head.starts_with(&[0x00, 0x00, 0x01, 0xBA])          // MPEG program-stream pack header
+        || head.starts_with(&[0x00, 0x00, 0x01, 0xB3])          // MPEG video sequence header (.m2v, raw .mpg)
+        // Ogg (.ogv carries Theora/VP8 video). Ogg AUDIO (Vorbis/Opus/Speex) ALSO uses this
+        // magic, so a frame-grab miss must fall back to the album-art path — the CLI
+        // (`decode_preview_with_raw_order`) already falls through to `extract_cover`, and the
+        // thumbnail provider's video branch falls through to `audio_art` for OggS (see there).
+        || head.starts_with(b"OggS")
 }
 
 /// Balances `MFStartup` with `MFShutdown` (both are ref-counted, so per-call is safe).

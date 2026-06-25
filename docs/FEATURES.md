@@ -6,7 +6,7 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs — Explorer thumbnails for 315 file types plus
+> rebuilds the abandoned SageThumbs — Explorer thumbnails for 316 file types plus
 > a rich right-click image toolkit — and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0). No personal data, no
 > per-user tracking.
@@ -19,7 +19,7 @@ SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
 decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
 SVG), with embedded-cover/first-page extraction for containers.
 
-**315 registered extensions, in six categories** (also how the Options list is
+**316 registered extensions, in six categories** (also how the Options list is
 grouped):
 
 | Category | Examples | How |
@@ -28,10 +28,10 @@ grouped):
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI) |
 | **Document** (42) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
-| **Audio** (17) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c** | embedded album art via `lofty` — **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
+| **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty` — **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
 | **Video** (22) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (~30 % in, not the intro) via the OS **Media Foundation** codecs (no bundled bytes). MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest 30 % (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream — never streaming the whole movie. (`.mpg/.mpeg/.flv` need MPEG-1/2 or FLV decoders Windows doesn't ship, so they keep the default icon.) |
 
-*Counts sum to **315** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+*Counts sum to **316** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT — no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
@@ -39,8 +39,10 @@ including multipage shared-dictionary pages. EPS thumbnails come from the
 DOS-EPS embedded TIFF preview (no Ghostscript needed); plain-text EPS has no preview to
 extract. **Autodesk Fusion 360** `.f3d` thumbnails come from the zstd-compressed preview
 inside the archive's ZIP container, inflated by the pure-Rust `ruzstd` decoder (no C dep).
-Photoshop files thumbnail from their embedded preview, but Convert / Resize /
-Image info use the REAL full-resolution composite.*
+Photoshop files thumbnail from their embedded preview — and a **transparent** PSD
+(e.g. a removed background) renders the real layered composite so it keeps its
+transparency instead of flattening to white — while Convert / Resize / Image info
+always use the REAL full-resolution composite.*
 
 **Notable wins Windows itself can't do:** ebook/comic covers, Office/ODF previews
 (no in-box handler), PDF first page (no in-box thumbnailer), Ogg/Opus/APE album
@@ -60,11 +62,15 @@ Uncheck/Toggle selected).
 
 **Details for the formats Windows can't read:** a companion **property handler**
 (`IPropertyStore`) surfaces each file's facts in Explorer the same way the built-in
-ones do — image **dimensions**, **EXIF camera** info, and **audio tags** now show up in
-the Details pane, the hover tooltip, and as **sortable / groupable columns** for the
-300+ formats Windows has no native reader for. It's **read-only** (it never writes back
-to your files) and **crash-isolated** behind the same panic boundary as the thumbnail
-provider, so a malformed file can't take down Explorer.
+ones do — for the 300+ formats Windows has no native reader for, it fills in image
+**dimensions**, **colour depth** and **DPI**, **EXIF camera / date taken / GPS location**,
+and for audio the **length, bitrate, artist, album, title, track, genre and year**. These
+appear in the **bottom/side Details pane**, the **Properties ▸ Details** tab, the **hover
+tooltip**, and as **sortable / groupable columns** — and the columns are *offered* in the
+"Choose columns…" picker for those file types, not just reachable by search. (Camera RAW
+even gets its GPS location, which Windows itself leaves blank.) It's **read-only** (it never
+writes back to your files) and **crash-isolated** behind the same panic boundary as the
+thumbnail provider, so a malformed file can't take down Explorer.
 
 ---
 
@@ -82,13 +88,14 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Convert into ▸** PNG · JPG · WebP · WebP (lossless) · **AVIF** · BMP · GIF · TIFF ·
   Icon (.ico) — one-click, writes a new file next to the original (never overwrites).
   *HEIC→JPG works here too (a `.heic` decodes via WIC).* *(AVIF is written via the bundled
-  ImageMagick; on a compact no-magick install that one verb just no-ops.)*
+  ImageMagick; on a compact no-magick install that one verb reports an error — ImageMagick not
+  available — rather than silently doing nothing.)*
 - **Convert…** (top-level) — opens the **Convert dialog** (XnView-style): an
   **Output format** dropdown — native **JPG · PNG · WebP · BMP · GIF · TIFF · ICO ·
   TGA · QOI · PNM · PDF**, plus (on a full install with the bundled ImageMagick)
-  **16 more: PSD · DDS · JP2 · PCX · SGI · EXR · HDR · Farbfeld · PAM · PFM · DPX ·
+  **18 more: AVIF · JPEG XL · PSD · DDS · JP2 · PCX · SGI · EXR · HDR · Farbfeld · PAM · PFM · DPX ·
   FITS · XPM · PICT · RAS · PALM** — a per-format **Settings…** button (JPEG quality ·
-  **WebP lossless/lossy + quality** · PNG compression), a **Resize** checkbox with
+  **WebP lossless/lossy + quality** · PNG compression · **AVIF / JPEG XL quality**), a **Resize** checkbox with
   presets *or* a custom **W × H**, an output-folder picker, and a progress bar. Batch:
   applies to the whole selection. On completion it offers to **open the output folder**.
   *(The magick-only formats are hidden on the compact install that ships without
@@ -131,6 +138,11 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   mouse becomes an eyedropper anywhere on screen, with a 10× magnifier loupe that
   follows the cursor; **press Space (or click)** to copy the pixel's `#RRGGBB` to
   the clipboard, Esc to cancel. Picks from anywhere — not just the selected image.
+  The **screenshot region editor** carries the same eyedropper as a tool (the
+  **pipette button** on the toolbar, or the **`E`** key): the magnifier loupe lets
+  you sample any pixel of the frozen capture — a click copies its `#RRGGBB`, flashes
+  "Copied ✓", and sets it as the annotation colour, so you can grab a colour and Esc
+  out, or keep drawing in it.
 - **Strip metadata (EXIF/GPS)** — lossless removal of EXIF/IPTC/XMP/comments
   (keeps the ICC color profile).
 
@@ -160,9 +172,13 @@ custom-drawn items.*
 
 ## 3. Options dialog
 
-Reached from the Start-menu shortcut (`SageThumbs 2K`). Native Win32,
-dark-mode aware, 36 languages. **Resizable taller** — drag the bottom edge to grow
-the window and the left options get a bigger scroll viewport (width stays fixed).
+Reached from the Start-menu shortcut (`SageThumbs 2K`) — the window is titled
+**Settings**. Native Win32, dark-mode aware, 36 languages. **Redesigned in 0.7.0**: a
+Windows 11-style **category rail** (General · File types · Ebook/comic · Right-click menu ·
+Screenshots · Quick action · Advanced) on the left with a content page on the right —
+**toggle switches**, category icons, and a titled header per page. Everyday knobs up front;
+Diagnostics / Updates / Backup tuck under **Advanced**. (Fixed-size window; the old single
+long scroll is gone.)
 
 - **Thumbnails:** enable thumbnails, prefer embedded (EXIF) thumbnails, enable the
   right-click menu, **show the menu on all file types** (so it's there everywhere — an
@@ -190,7 +206,12 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
   on, Ctrl+S auto-saves a timestamped PNG to a folder you pick with **Set save folder…**
   (defaults to your Desktop); when off, Ctrl+S asks where to save each time. **Hide the
   tray icon** (the hotkey still fires), plus a live status line + Restart button. Quitting
-  from the tray disables the hotkey for good.
+  from the tray disables the hotkey for good. **Custom action hotkey:** assign ONE global
+  hotkey to any of a curated set of actions — **pick a color** (the screen color picker),
+  take a screenshot, Convert…, rotate right, move files into a new folder, strip metadata,
+  or open Settings. Screen-wide actions run instantly; the file actions operate on the
+  current **Explorer selection** (or prompt with a file picker when nothing is selected).
+  It rides the same opt-in helper, so binding one needs no extra background process.
 - **Supported file types:** the full per-extension checklist (Extension / Category
   / Description columns), with bulk select and a **Defaults** button that re-ticks the
   recommended set — this resets *only* the file-type list (the whole-dialog factory reset
@@ -264,14 +285,16 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 
 ## 6. Planned / deferred
 
-- **Convert hub:** AVIF encode (WIC HEIF encoder — codec-availability gating), EPS,
-  more exotic targets via the bundled ImageMagick. *(Lossy WebP already shipped — `webp`
-  0.3, lossless/lossy + quality in the Convert dialog.)*
-- **Quick edits:** lossless JPEG rotate (jpegtran-style, no recompression),
-  set-as-lock-screen, contact sheet / montage, copy-as-base64 data URI.
-- **DjVu** rendered via the maintained pure-Rust `djvu-rs` crate (replaced our hand-rolled
-  ZP/IW44/JB2 stack 2026-06-14) — multipage shared-dictionary (`INCL`→`Djbz`) pages now
-  render fully (the old hand-roll degraded them to background-only).
+- **Convert hub:** EPS encode + more exotic targets via the bundled ImageMagick. *(AVIF and
+  JPEG XL encode already SHIP via the bundled ImageMagick, with a quality slider in the Convert
+  dialog; lossless/lossy WebP shipped too. A native WIC-backed HEIF/AVIF encoder is a possible
+  future optimization to shrink the ImageMagick dependency for those targets.)*
+- **Quick edits:** set-as-lock-screen, contact sheet / montage, copy-as-base64 data URI.
+  *(Lossless JPEG rotate — jpegtran-style, no recompression — already shipped, see §2.)*
+
+*(**DjVu** and the lossless-JPEG-rotate bullets used to live here as "planned"; both shipped
+— DjVu via the pure-Rust `djvu-rs` crate, see §1 — and were moved out so this list only shows
+genuinely-outstanding work.)*
 
 ### 6a. AI / agent integration — **CLI + MCP server shipped** (`st2k.exe`)
 
@@ -285,7 +308,7 @@ the window and the left options get a bigger scroll viewport (width stays fixed)
 > **`compress`** (`batch` is CLI-only).
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (315-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (316-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new** — only surface existing functions.
@@ -293,14 +316,14 @@ bundle anything new** — only surface existing functions.
 **Status:**
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem) — verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
-   (combine), `thumbnail` (render any of the 315 types to PNG), **`batch`** (bulk
+   (combine), `thumbnail` (render any of the 316 types to PNG), **`batch`** (bulk
    thumbnail/convert over many files/folders in ONE process, fanned out across all CPU
    cores), `formats`. All logic lives in the `lib` (`verbs`, `strip`, `ocr`, `topdf`,
    `decode`, `parallel`); the CLI is a thin arg-parser over the same functions the menu
    uses. (Shipped as a separate binary, not a flag on the Options app.)
 2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0) — exposes **10** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs plus **`view`** — which decodes any of the 315 formats to a PNG **image
+   core verbs plus **`view`** — which decodes any of the 316 formats to a PNG **image
    block** so an AI agent can actually *see* the file — and **`compress`**. Newline-
    delimited stdio, spawned on demand by the client (not a daemon); one small dep
    (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an MCP client at

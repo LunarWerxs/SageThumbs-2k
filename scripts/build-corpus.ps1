@@ -371,5 +371,42 @@ if (-not $SkipDownloads) {
 }
 else { Write-Host "  (video samples need network; -SkipDownloads given - skipped)" }
 
+# --- 9) Coverage completion: formats the steps above don't otherwise emit -----
+# png: the base IS a PNG, but it's named _base.png (skipped by the _* harness filter),
+# so emit a plain sample.png. aifc: AIFF-C reads through the SAME content-sniffed lofty
+# path as .aiff, so a byte-copy is a valid hook+decode coverage test (like the aliases).
+if (Test-Path $base) { Copy-Item $base "$OutDir\sample.png" -Force }
+if (Test-Path "$OutDir\sample.aiff") { Copy-Item "$OutDir\sample.aiff" "$OutDir\sample.aifc" -Force }
+# dsf: DSD audio has its OWN magic ("DSD "), so a byte-copy alias would only test the hook,
+# not lofty's DSF reader. Fetch a real minimal DSF and embed the base PNG as an ID3v2 cover
+# (mirrors the .mpc path above). Best-effort: needs python + mutagen + network.
+if ($py -and -not $SkipDownloads -and -not (Test-Path "$OutDir\sample.dsf")) {
+    try {
+        $dsfSrc = "$OutDir\_dsf_base.dsf"
+        Invoke-WebRequest 'https://raw.githubusercontent.com/quodlibet/mutagen/main/tests/data/2822400-1ch-0s-silence.dsf' -OutFile $dsfSrc -UseBasicParsing -TimeoutSec 30
+        $mkd = @'
+import sys
+try:
+    from mutagen.dsf import DSF
+    from mutagen.id3 import APIC
+except ImportError:
+    print("mutagen-missing"); sys.exit(0)
+src, out, cover = sys.argv[1], sys.argv[2], sys.argv[3]
+open(out, "wb").write(open(src, "rb").read())
+f = DSF(out)
+if f.tags is None:
+    f.add_tags()
+f.tags.add(APIC(encoding=3, mime="image/png", type=3, desc="cover", data=open(cover, "rb").read()))
+f.save()
+print("ok")
+'@
+        $mkdFile = "$OutDir\_mkdsf.py"; [System.IO.File]::WriteAllText($mkdFile, $mkd)
+        $resd = & $py $mkdFile $dsfSrc "$OutDir\sample.dsf" $base 2>&1
+        Remove-Item $mkdFile, $dsfSrc -Force -EA SilentlyContinue
+        if ($resd -notmatch 'ok') { Write-Host "  (dsf: $resd - install mutagen to generate; skipped)" }
+    } catch { Write-Host "  (dsf: $($_.Exception.Message); skipped)" }
+} elseif (-not (Test-Path "$OutDir\sample.dsf")) { Write-Host "  (dsf: needs python+mutagen+network; sample.dsf skipped)" }
+Write-Host "[corpus] coverage completion: png + aifc + dsf"
+
 $count = (Get-ChildItem $OutDir -File | Where-Object { $_.Name -notlike '_*' }).Count
 Write-Host "[corpus] $count sample files in $OutDir" -ForegroundColor Green

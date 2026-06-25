@@ -81,6 +81,14 @@ pub struct ImageInfo {
     pub model: Option<String>,
     pub datetime: Option<String>,
     pub gps: Option<(f64, f64)>,
+    /// Bits per PIXEL (e.g. 24 for RGB8, 32 for RGBA8); 0 = unknown. Surfaced as
+    /// `System.Image.BitDepth` by the property handler.
+    pub bit_depth: u32,
+    /// Print resolution in pixels-per-inch from EXIF X/YResolution (cm values
+    /// normalized to inches); 0.0 = absent. Surfaced as
+    /// `System.Image.Horizontal/VerticalResolution`.
+    pub dpi_x: f64,
+    pub dpi_y: f64,
 }
 
 /// Read dimensions + camera/date/GPS EXIF (best-effort; missing fields stay None).
@@ -110,13 +118,18 @@ pub fn read_info_bounded(path: &str) -> ImageInfo {
 }
 
 fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
-    use exif::{In, Reader, Tag};
+    use exif::{In, Reader, Tag, Value};
+    use image::ImageDecoder;
     let mut info = ImageInfo::default();
 
     if let Ok(rdr) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
-        if let Ok((w, h)) = rdr.into_dimensions() {
+        // `into_decoder` (vs the old `into_dimensions`) also exposes the color type,
+        // so we capture bits-per-pixel in the same cheap header read — no extra I/O.
+        if let Ok(dec) = rdr.into_decoder() {
+            let (w, h) = dec.dimensions();
             info.width = w;
             info.height = h;
+            info.bit_depth = dec.color_type().bits_per_pixel() as u32;
         }
     }
     // Formats the image crate can't probe (PSD, EPS, HEIC/RAW, containers): the
@@ -139,9 +152,28 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
                 info.height = h;
             }
         }
+        // VIDEO last resort (UNBOUNDED callers only — `st2k info` / the Image-info dialog):
+        // grab one frame to report its geometry. NOT for the in-shell property handler
+        // (`bounded`): `frame_from_path` spawns an 8 s Media-Foundation worker, which can
+        // outlive the property probe's 3 s budget and pile up MF sessions in Explorer/
+        // SearchIndexer on a folder of stalling videos. flv/ogv simply report no dimensions
+        // in the Details pane (graceful) rather than risk the shell.
+        if !bounded && info.width == 0 && info.height == 0 {
+            let ext = Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            if matches!(crate::formats::category(&ext), crate::formats::Category::Video) {
+                if let Some(img) = crate::video::frame_from_path(path) {
+                    info.width = img.width();
+                    info.height = img.height();
+                }
+            }
+        }
         if info.width == 0 && info.height == 0 {
-            // All probes (image-crate header, container canvas, full decode) failed
-            // — leave a breadcrumb so a "shows no dimensions" report is diagnosable
+            // All probes (image-crate header, container canvas, full decode, video frame)
+            // failed — leave a breadcrumb so a "shows no dimensions" report is diagnosable
             // instead of silently surfacing the 0×0 sentinel.
             crate::safety::log_debug(&format!("read_info: could not determine dimensions for {path}"));
         }
@@ -161,7 +193,30 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
     };
     info.make = txt(Tag::Make);
     info.model = txt(Tag::Model);
-    info.datetime = txt(Tag::DateTimeOriginal).or_else(|| txt(Tag::DateTime));
+    // CAPTURE time only — NOT a fallback to Tag::DateTime (the file-modified stamp editors
+    // write), because this feeds System.Photo.DateTaken. Showing an edit timestamp as "Date
+    // taken" is wrong and inconsistent with Windows' own photo handler (which never falls back).
+    info.datetime = txt(Tag::DateTimeOriginal);
+
+    // Print resolution (DPI). ResolutionUnit: 2 = inches (the usual), 3 = cm — cm
+    // values are normalized to inches so the property is always pixels-per-inch.
+    let unit = exif
+        .get_field(Tag::ResolutionUnit, In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .unwrap_or(2);
+    let res = |t: Tag| -> Option<f64> {
+        match &exif.get_field(t, In::PRIMARY)?.value {
+            Value::Rational(r) => r.first().map(|x| x.to_f64()),
+            _ => None,
+        }
+    };
+    let to_dpi = |v: f64| if unit == 3 { v * 2.54 } else { v };
+    if let Some(x) = res(Tag::XResolution) {
+        info.dpi_x = to_dpi(x);
+    }
+    if let Some(y) = res(Tag::YResolution) {
+        info.dpi_y = to_dpi(y);
+    }
 
     let lat = gps_dms(&exif, Tag::GPSLatitude, Tag::GPSLatitudeRef, b'S');
     let lon = gps_dms(&exif, Tag::GPSLongitude, Tag::GPSLongitudeRef, b'W');
@@ -336,12 +391,18 @@ pub struct AudioTags {
     pub album: Option<String>,
     pub title: Option<String>,
     pub track: Option<u32>,
+    pub genre: Option<String>,
+    pub year: Option<u32>,
+    /// Playback length in milliseconds (0 = unknown). Surfaced as `System.Media.Duration`.
+    pub duration_ms: u64,
+    /// Overall bitrate in kbps (0 = unknown). Surfaced as `System.Audio.EncodingBitrate`.
+    pub bitrate_kbps: u32,
 }
 
 /// Read an audio file's primary tag (artist/album/title/track). Empty/missing
 /// fields stay None. Mirrors `container::audio`'s proven `Probe` read path.
 pub fn read_audio_tags(path: &str) -> AudioTags {
-    use lofty::file::TaggedFileExt;
+    use lofty::file::{AudioFile, TaggedFileExt};
     use lofty::probe::Probe;
     use lofty::tag::Accessor;
     use std::io::Seek;
@@ -357,6 +418,10 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
         out.album = t.album;
         out.title = t.title;
         out.track = t.track;
+        out.genre = t.genre;
+        out.year = t.year;
+        out.duration_ms = t.duration_ms;
+        out.bitrate_kbps = t.bitrate_kbps;
         return out;
     }
     if file.seek(std::io::SeekFrom::Start(0)).is_err() {
@@ -371,6 +436,13 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
     let Ok(tagged) = probe.read() else {
         return out;
     };
+    // Audio PROPERTIES (duration/bitrate) come from the decoded stream, not a tag — so
+    // read them BEFORE the tag check: a perfectly valid file can have a duration but no
+    // tags, and we still want its length in the Details pane.
+    let props = tagged.properties();
+    out.duration_ms = props.duration().as_millis() as u64;
+    out.bitrate_kbps = props.overall_bitrate().unwrap_or(0);
+
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
         return out;
     };
@@ -383,6 +455,8 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
     out.album = tag.album().and_then(clean);
     out.title = tag.title().and_then(clean);
     out.track = tag.track();
+    out.genre = tag.genre().and_then(clean);
+    out.year = tag.year();
     out
 }
 

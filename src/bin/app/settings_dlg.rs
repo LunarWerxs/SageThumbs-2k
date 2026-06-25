@@ -9,7 +9,7 @@
 
 use core::ffi::c_void;
 
-use windows::core::{w, BOOL, PCWSTR, PWSTR};
+use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, DeleteDC,
@@ -169,6 +169,18 @@ const ID_CHECK_UPDATES: i32 = 1175;
 const ID_REPAIR_ASSOC: i32 = 1176;
 // Toggle the background update check (the one the resident hotkey helper runs).
 const ID_UPDATE_AUTO: i32 = 1177;
+// Custom action hotkey (the user-assignable "action -> hotkey" binding): an action
+// picker + a hotkey-chord picker, both under the Screenshots section.
+const ID_LBL_SHOT_ACTION: i32 = 1178;
+const ID_SHOT_ACTION: i32 = 1179;
+const ID_LBL_SHOT_ACTION_HK: i32 = 1180;
+const ID_SHOT_ACTION_HK: i32 = 1181;
+// v3 reorg: an explicit enable toggle for the custom action (gates the two combos),
+// plus group sub-headers for the reorganized General / Advanced pages.
+const ID_CUSTOM_ACTION_ENABLE: i32 = 1182;
+const ID_LBL_UPDATES: i32 = 1184;
+const ID_LBL_BACKUP: i32 = 1185;
+const ID_LBL_HOTKEY_SVC: i32 = 1186;
 
 /// Per-item menu-visibility checkboxes (XnShell-style "Displayed menu items").
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's
@@ -238,10 +250,6 @@ fn sponsor_layout(_dark: bool, sponsors_on: bool) -> SponsorLayout {
     let banner_y = 460;
     let foot_y = if sponsors_on { 534 } else { 470 };
     SponsorLayout { banner_y, foot_y, credit_y: foot_y + 6 }
-}
-
-pub(crate) fn window_height_design(_dark: bool, sponsors_on: bool) -> i32 {
-    sponsor_layout(_dark, sponsors_on).foot_y + 76
 }
 
 // Left-column vertical rhythm (96-dpi design px). These are TOP MARGINS — the gap
@@ -510,9 +518,9 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
 
     // ===== General: right-click menu integration + UI language =====
     // Menu toggles grouped as checkboxes, then the two dropdowns below them.
-    lc.header(t("grp_general"), hdr, ID_LBL_GENERAL, false);
+    lc.header(t("grp_lang_files"), hdr, ID_LBL_GENERAL, false);
     lc.checkbox(t("chk_enable_menu"), cb, 300, ID_ENABLE_MENU);
-    lc.checkbox("Show menu on all file types", cb, 300, ID_MENU_ALL_TYPES);
+    lc.checkbox(t("chk_menu_all_types"), cb, 300, ID_MENU_ALL_TYPES);
     lc.checkbox(t("chk_menu_quick"), cb, 312, ID_MENU_QUICK);
     lc.checkbox(t("chk_menu_checker"), cb, 300, ID_MENU_CHECKER);
     lc.checkbox(t("chk_preserve_date"), cb, 312, ID_PRESERVE_DATE);
@@ -570,7 +578,7 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     }
     // A subtle "Reset order" button under the list — restores the default drag order
     // when a reorder gets messy (keeps each item's checkbox state).
-    lc.button("Reset order", 110, ID_MENU_RESET);
+    lc.button(t("btn_menu_reset"), 110, ID_MENU_RESET);
     // Check states are seeded in load_values (rows exist now).
 
     // ===== Screenshots: capture service + hotkey =====
@@ -586,7 +594,7 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // Ctrl+S destination toggle — kept WITH the other screenshot checkboxes (owner pref:
     // checkboxes grouped, then dropdowns). On → auto-save to the fixed folder below
     // (Desktop by default); off → Ctrl+S prompts each time. (Ctrl+C always copies.)
-    lc.checkbox("Save to a set folder on Ctrl+S", cb, 300, ID_SHOT_USE_DIR);
+    lc.checkbox(t("chk_shot_use_dir"), cb, 300, ID_SHOT_USE_DIR);
     let shot = lc.combo(t("lbl_shot_hotkey"), ID_LBL_SHOT_HK, 200, ID_SHOT_HOTKEY);
     for &(label, _) in SHOT_PRESETS {
         let w = wide(label);
@@ -619,40 +627,80 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     SendMessageW(quick, CB_SETCURSEL, Some(WPARAM(qsel)), None);
     dark_theme_combo(quick);
     restyle::dark_combo_subclass(quick, ID_SHOT_QUICK_HOTKEY);
+    // Custom action hotkey: ONE user-assignable [action] + [hotkey] binding (the owner's
+    // "two dropdowns" request). The chosen action fires from a global hotkey owned by this
+    // same daemon. The action combo lists the curated `hotkey::ACTIONS`; the hotkey combo is
+    // a "(none)" entry + the SHOT_PRESETS chords, where "(none)" = unbound. Seeded inline
+    // from settings; persisted in apply_settings; reset in load_defaults.
+    let act = lc.combo(t("lbl_custom_action"), ID_LBL_SHOT_ACTION, 200, ID_SHOT_ACTION);
+    for &(_, label) in crate::hotkey::ACTIONS {
+        let w = wide(label);
+        SendMessageW(act, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    let cur_action = settings::custom_action();
+    let asel = crate::hotkey::ACTIONS.iter().position(|&(id, _)| id == cur_action).unwrap_or(0);
+    SendMessageW(act, CB_SETCURSEL, Some(WPARAM(asel)), None);
+    dark_theme_combo(act);
+    restyle::dark_combo_subclass(act, ID_SHOT_ACTION);
+    // Its hotkey: item 0 is "(none)" (unbound); items 1.. mirror SHOT_PRESETS.
+    let ahk = lc.combo(t("lbl_custom_action_hk"), ID_LBL_SHOT_ACTION_HK, 220, ID_SHOT_ACTION_HK);
+    let none_w = wide(t("opt_none_unassigned"));
+    SendMessageW(ahk, CB_ADDSTRING, None, Some(LPARAM(none_w.as_ptr() as isize)));
+    for &(label, _) in SHOT_PRESETS {
+        let w = wide(label);
+        SendMessageW(ahk, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    let (cam, cav) = settings::custom_action_hotkey();
+    let cpacked = (cam << 8) | cav;
+    let hksel = if cav == 0 {
+        0
+    } else {
+        SHOT_PRESETS.iter().position(|&(_, p)| p == cpacked).map_or(0, |i| i + 1)
+    };
+    SendMessageW(ahk, CB_SETCURSEL, Some(WPARAM(hksel)), None);
+    dark_theme_combo(ahk);
+    restyle::dark_combo_subclass(ahk, ID_SHOT_ACTION_HK);
     // The Ctrl+S save folder: a read-only path display + the picker button. (The "Save to
     // a set folder" toggle lives up with the checkboxes.) Both grey out while that toggle is
     // off — see `update_save_dir_enabled`. The display seeds in load_values; the button
     // persists the pick immediately.
     lc.status(ID_SHOT_DIR);
-    lc.button("Set save folder…", 150, ID_SHOT_SET_DIR);
+    lc.button(t("btn_set_save_dir"), 150, ID_SHOT_SET_DIR);
     // Live status of the background hotkey daemon + a Start/Restart button. The
     // hotkey does nothing unless this tray helper is running, so make it visible
     // and recoverable (seeded in load_values + refreshed on Restart).
     lc.status(ID_SHOT_STATUS);
-    lc.button("Restart hotkey service", 184, ID_SHOT_RESTART);
+    // Right-align the service status so it reads as a badge on the right; its word is
+    // tinted green (running) / red (otherwise) in the WM_CTLCOLORSTATIC handler.
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_SHOT_STATUS) {
+        const SS_RIGHT: u32 = 0x0002; // static right-align style (not surfaced by windows-rs here)
+        let st = GetWindowLongW(h, GWL_STYLE) as u32 | SS_RIGHT;
+        SetWindowLongW(h, GWL_STYLE, st as i32);
+    }
+    lc.button(t("btn_restart_hotkey"), 184, ID_SHOT_RESTART);
 
     // ===== Diagnostics =====
     // A user-sendable log of errors + crashes (a panic hook captures crashes before the
     // process aborts). "Verbose logging" flips the HKCU Debug DWORD so detailed traces
     // are written too; "Open diagnostics log" reveals the file for the user to send in.
-    lc.header("DIAGNOSTICS", hdr, ID_LBL_DIAG, false);
-    lc.checkbox("Verbose logging (write detailed traces)", cb, 300, ID_VERBOSE_LOG);
-    lc.button("Open diagnostics log", 184, ID_OPEN_LOG);
-    lc.button("Rebuild thumbnail cache", 184, ID_REBUILD_CACHE);
-    lc.button("Repair file associations", 184, ID_REPAIR_ASSOC);
+    lc.header(t("grp_diagnostics"), hdr, ID_LBL_DIAG, false);
+    lc.checkbox(t("chk_verbose_log"), cb, 300, ID_VERBOSE_LOG);
+    lc.button(t("btn_open_log"), 184, ID_OPEN_LOG);
+    lc.button(t("btn_rebuild_cache"), 184, ID_REBUILD_CACHE);
+    lc.button(t("btn_repair_assoc"), 184, ID_REPAIR_ASSOC);
     // Background update check (default ON; only acts while the resident hotkey helper
     // runs — no separate scheduled task). The manual button below works regardless.
-    lc.checkbox("Automatically check for updates", cb, 300, ID_UPDATE_AUTO);
-    lc.button("Check for updates", 184, ID_CHECK_UPDATES);
+    lc.checkbox(t("chk_update_auto"), cb, 300, ID_UPDATE_AUTO);
+    lc.button(t("btn_check_updates"), 184, ID_CHECK_UPDATES);
 
     // Reset / Import / Export share one row. Reset sets every control to factory
     // defaults (the user clicks Save to persist, like any other change — the top-right
     // "Defaults" only resets the file-type list). Import/Export round-trip the whole
     // settings tree to a human-readable JSON file.
     lc.button_row(&[
-        ("Reset Settings", ID_RESET_ALL),
-        ("Import Settings", ID_IMPORT),
-        ("Export Settings", ID_EXPORT),
+        (t("btn_reset_all"), ID_RESET_ALL),
+        (t("btn_import"), ID_IMPORT),
+        (t("btn_export"), ID_EXPORT),
     ]);
 
     // ===== Right column: supported file types =====
@@ -781,11 +829,483 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     ctl(hwnd, BUTTON, t("btn_cancel"), WS_TABSTOP, 508, layout.foot_y, 92, BTN_H, IDCANCEL, hinst);
     ctl(hwnd, BUTTON, t("btn_ok"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 608, layout.foot_y, 104, BTN_H, IDOK, hinst);
 
+    // v3 reorg extras (repositioned by apply_v3_layout): the custom-action enable
+    // toggle + the new group sub-headers for the merged General / regrouped Advanced.
+    ctl(hwnd, BUTTON, t("chk_custom_action"), cb, 0, 0, 300, 20, ID_CUSTOM_ACTION_ENABLE, hinst);
+    ctl(hwnd, STATIC, t("grp_updates"), hdr, 0, 0, 322, 18, ID_LBL_UPDATES, hinst);
+    ctl(hwnd, STATIC, t("grp_backup"), hdr, 0, 0, 322, 18, ID_LBL_BACKUP, hinst);
+    ctl(hwnd, STATIC, t("grp_hotkey_svc"), hdr, 0, 0, 322, 18, ID_LBL_HOTKEY_SVC, hinst);
+
     set_window_title(hwnd);
     load_values(hwnd);
+    // The custom-action toggle reflects whether a hotkey is bound; it gates the two combos.
+    check(hwnd, ID_CUSTOM_ACTION_ENABLE, settings::custom_action_hotkey().1 != 0);
+    update_custom_action_enabled(hwnd);
     add_tooltips(hwnd, hinst);
-    scroll::init_scroll(hwnd);
+    // v3 layout: relocate the controls created above into a category nav-rail +
+    // content-pane shell (replacing the single scrolling column). Done as a
+    // post-creation reposition so all the seeding/combo/list logic stays intact.
+    apply_v3_layout(hwnd, hinst);
 }
+
+// ===================== v3 layout: nav rail + content pane =====================
+// Geometry (96-dpi design px). The window is nav rail (left) + a content pane that
+// shows ONE category at a time; the rest of the controls are hidden.
+const NAV_X: i32 = 8;
+const NAV_TOP: i32 = 14;
+const NAV_W: i32 = 188;
+const NAV_ITEM_H: i32 = 38;
+const PANE_X: i32 = 212;
+const PANE_W: i32 = 528;
+const PANE_TOP: i32 = 16;
+const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
+const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT (1700..1707)
+const ID_PANE_HEADER: i32 = 1710;
+const NCAT: usize = 7;
+/// Localized nav-rail / page-header label for category `ci`. Pulls from `t()` so a
+/// live language switch re-texts it (the nav statics + pane header re-read this).
+fn nav_label(ci: usize) -> &'static str {
+    match ci {
+        0 => t("nav_general"),
+        1 => t("nav_filetypes"),
+        2 => t("nav_ebook"),
+        3 => t("nav_menu"),
+        4 => t("nav_screenshots"),
+        5 => t("nav_quickaction"),
+        _ => t("nav_advanced"),
+    }
+}
+
+/// One row in a category's content pane. Ids reference controls already created by
+/// `build_controls`; the layout just repositions them.
+#[derive(Clone, Copy)]
+enum Row {
+    Head(i32),               // group sub-header (owner-draw static)
+    Switch(i32),             // a checkbox, drawn as a toggle switch
+    Pair(i32, i32, i32, i32),// label, field, field_w, field_h (combo field_h>40)
+    Btn(i32, i32),           // button id, width
+    BtnStatus(i32, i32, i32),// button (left) + right-aligned status, one row: btn_id, btn_w, status_id
+    Status(i32),             // dynamic status line
+    Btn3(i32, i32, i32),     // three equal buttons on one row
+    Wide(i32),               // a full-width control (search edit)
+    ListFill(i32),           // a list that fills down to the footer
+    ListAuto(i32),           // a list that keeps its measured height
+}
+
+// Category order: General (Thumbnails+General merged) · File types · Ebook/comic ·
+// Right-click menu · Screenshots · Advanced.
+fn cat_rows(ci: usize) -> &'static [Row] {
+    use Row::*;
+    match ci {
+        0 => &[
+            // General = the merged Thumbnails + General (Custom action is its own tab now).
+            Switch(ID_ENABLE_THUMBS), Switch(ID_USE_EMBEDDED), Switch(ID_MENU_CHECKER),
+            Head(ID_LBL_LIMITS),
+            Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18), Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
+            Pair(ID_LBL_JPEG, ID_JPEG, 84, 18), Pair(ID_LBL_PNG, ID_PNG, 84, 18),
+            Head(ID_LBL_GENERAL), // "Language & files"
+            Pair(ID_LBL_LANG, ID_LANG, 156, 200), Switch(ID_PRESERVE_DATE),
+        ],
+        1 => &[
+            Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),
+            Wide(ID_SEARCH),
+            ListFill(ID_LIST),
+        ],
+        2 => &[
+            // Ebook/comic — its own tab now.
+            Switch(ID_C_SORT), Switch(ID_C_PREFER_COVER), Switch(ID_C_SKIP_SCAN),
+        ],
+        3 => &[
+            Switch(ID_ENABLE_MENU), Switch(ID_MENU_ALL_TYPES), Switch(ID_MENU_QUICK),
+            Pair(ID_LBL_PREVIEW, ID_MENU_PREVIEW, 156, 200),
+            Head(ID_LBL_MENU_ITEMS),
+            ListAuto(ID_MENU_ITEMS_LIST), Btn(ID_MENU_RESET, 110),
+        ],
+        4 => &[
+            // Screenshots — custom action moved to General, hotkey service to Advanced.
+            Switch(ID_SHOT_ENABLE), Switch(ID_SHOT_HIDE_TRAY), Switch(ID_SHOT_QUICK_ENABLE), Switch(ID_SHOT_USE_DIR),
+            Pair(ID_LBL_SHOT_HK, ID_SHOT_HOTKEY, 156, 200),
+            Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
+            Status(ID_SHOT_DIR), Btn(ID_SHOT_SET_DIR, 150),
+        ],
+        5 => &[
+            // Quick action — bind a global hotkey to run a tool.
+            Switch(ID_CUSTOM_ACTION_ENABLE),
+            Pair(ID_LBL_SHOT_ACTION, ID_SHOT_ACTION, 156, 200),
+            Pair(ID_LBL_SHOT_ACTION_HK, ID_SHOT_ACTION_HK, 156, 200),
+        ],
+        _ => &[
+            // Advanced — clear groups: Diagnostics / Updates / Hotkey service / Backup.
+            Head(ID_LBL_DIAG),
+            Switch(ID_VERBOSE_LOG), Btn(ID_OPEN_LOG, 184), Btn(ID_REBUILD_CACHE, 184), Btn(ID_REPAIR_ASSOC, 184),
+            Head(ID_LBL_UPDATES),
+            Switch(ID_UPDATE_AUTO), Btn(ID_CHECK_UPDATES, 184),
+            Head(ID_LBL_HOTKEY_SVC),
+            BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS),
+            Head(ID_LBL_BACKUP),
+            Btn3(ID_RESET_ALL, ID_IMPORT, ID_EXPORT),
+        ],
+    }
+}
+
+#[derive(Default)]
+struct NavState {
+    active: usize,
+    cats: Vec<Vec<HWND>>,
+}
+thread_local! {
+    static NAV: std::cell::RefCell<NavState> = std::cell::RefCell::new(NavState::default());
+}
+
+/// Mix `pct`% of `fg` over `bg` (both 0x00BBGGRR COLORREFs) — for accent tints.
+fn blend(fg: COLORREF, bg: COLORREF, pct: i32) -> COLORREF {
+    let ch = |sh: u32| {
+        let a = ((fg.0 >> sh) & 0xFF) as i32;
+        let b = ((bg.0 >> sh) & 0xFF) as i32;
+        (((a * pct + b * (100 - pct)) / 100) as u32) & 0xFF
+    };
+    COLORREF(ch(0) | (ch(8) << 8) | (ch(16) << 16))
+}
+
+/// Draw a category's line icon (matching the v3 web SVGs) in an `sz`×`sz` box at
+/// `(x, y)`, stroked in `color`. Hollow shapes, ~1.5px stroke — a Fluent line look.
+unsafe fn draw_cat_icon(hdc: HDC, ci: usize, x: i32, y: i32, sz: i32, color: COLORREF) {
+    use windows::Win32::Graphics::Gdi::Ellipse;
+    let pw = (sz / 12).max(1);
+    let pen = CreatePen(PS_SOLID, pw, color);
+    let oldp = SelectObject(hdc, HGDIOBJ(pen.0));
+    let oldb = SelectObject(hdc, GetStockObject(windows::Win32::Graphics::Gdi::NULL_BRUSH));
+    // Map the 24-unit SVG space into the box: x-coords via mx, y-coords via my.
+    let mx = |v: i32| x + v * sz / 24;
+    let my = |v: i32| y + v * sz / 24;
+    let pt = |a: i32, b: i32| POINT { x: mx(a), y: my(b) };
+    match ci {
+        0 => {
+            // image: framed rect + sun + mountain
+            let _ = RoundRect(hdc, mx(3), my(3), mx(21), my(21), sz / 4, sz / 4);
+            let _ = Ellipse(hdc, mx(6), my(6), mx(11), my(11));
+            let _ = Polyline(hdc, &[pt(21, 15), pt(16, 10), pt(5, 21)]);
+        }
+        1 => {
+            // grid: four rounded squares
+            for (gx, gy) in [(3, 3), (13, 3), (3, 13), (13, 13)] {
+                let _ = RoundRect(hdc, mx(gx), my(gy), mx(gx + 8), my(gy + 8), sz / 8, sz / 8);
+            }
+        }
+        2 => {
+            // book: cover + spine + page lines (Ebook/comic)
+            let _ = RoundRect(hdc, mx(5), my(4), mx(19), my(20), sz / 8, sz / 8);
+            let _ = Polyline(hdc, &[pt(8, 4), pt(8, 20)]);
+            let _ = Polyline(hdc, &[pt(11, 9), pt(16, 9)]);
+            let _ = Polyline(hdc, &[pt(11, 13), pt(16, 13)]);
+        }
+        3 => {
+            // menu: three lines (last shorter)
+            for (yy, x2) in [(6, 20), (12, 20), (18, 14)] {
+                let _ = Polyline(hdc, &[pt(4, yy), pt(x2, yy)]);
+            }
+        }
+        4 => {
+            // camera: body + bump + lens
+            let _ = RoundRect(hdc, mx(3), my(8), mx(21), my(19), sz / 8, sz / 8);
+            let _ = Polyline(hdc, &[pt(8, 8), pt(9, 6), pt(15, 6), pt(16, 8)]);
+            let _ = Ellipse(hdc, mx(9), my(10), mx(15), my(16));
+        }
+        5 => {
+            // bolt: a lightning shape (Quick action)
+            let _ = Polyline(hdc, &[pt(13, 2), pt(7, 13), pt(11, 13), pt(10, 22), pt(18, 10), pt(12, 10), pt(13, 2)]);
+        }
+        _ => {
+            // sliders: two lines, each with a knob
+            let _ = Polyline(hdc, &[pt(4, 8), pt(20, 8)]);
+            let _ = Polyline(hdc, &[pt(4, 16), pt(20, 16)]);
+            let _ = Ellipse(hdc, mx(13), my(5), mx(19), my(11));
+            let _ = Ellipse(hdc, mx(5), my(13), mx(11), my(19));
+        }
+    }
+    SelectObject(hdc, oldp);
+    SelectObject(hdc, oldb);
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+}
+
+fn cat_blurb(ci: usize) -> &'static str {
+    match ci {
+        0 => t("blurb_general"),
+        1 => t("blurb_filetypes"),
+        2 => t("blurb_ebook"),
+        3 => t("blurb_menu"),
+        4 => t("blurb_screenshots"),
+        5 => t("blurb_quickaction"),
+        _ => t("blurb_advanced"),
+    }
+}
+
+/// Owner-draw a nav-rail item: an accent-tinted pill + accent icon + bar when
+/// active; a muted icon + plain text otherwise.
+unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool) {
+    let hdc = d.hDC;
+    let rc = d.rcItem;
+    let ci = (d.CtlID as i32 - ID_NAV_BASE) as usize;
+    fill(hdc, &rc, DARK_BG());
+    if active {
+        SelectObject(hdc, GetStockObject(DC_BRUSH));
+        SelectObject(hdc, GetStockObject(DC_PEN));
+        let tint = blend(ACCENT(), DARK_BG(), 16);
+        SetDCBrushColor(hdc, tint);
+        SetDCPenColor(hdc, tint);
+        let _ = RoundRect(
+            hdc,
+            rc.left + dpi_scale(hwnd, 4),
+            rc.top + dpi_scale(hwnd, 3),
+            rc.right - dpi_scale(hwnd, 4),
+            rc.bottom - dpi_scale(hwnd, 3),
+            dpi_scale(hwnd, 8),
+            dpi_scale(hwnd, 8),
+        );
+        let bar = RECT {
+            left: rc.left,
+            top: rc.top + dpi_scale(hwnd, 10),
+            right: rc.left + dpi_scale(hwnd, 3),
+            bottom: rc.bottom - dpi_scale(hwnd, 10),
+        };
+        fill(hdc, &bar, ACCENT());
+    }
+    let isz = dpi_scale(hwnd, 17);
+    let iy = rc.top + (rc.bottom - rc.top - isz) / 2;
+    draw_cat_icon(hdc, ci, rc.left + dpi_scale(hwnd, 16), iy, isz, if active { ACCENT() } else { HEADER_TEXT() });
+    SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, DARK_TEXT());
+    let mut label = control_text(d.hwndItem);
+    let n = label.len().saturating_sub(1);
+    let mut tr = RECT { left: rc.left + dpi_scale(hwnd, 44), ..rc };
+    DrawTextW(hdc, &mut label[..n], &mut tr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+}
+
+/// Owner-draw the per-pane header: an accent-tinted icon chip + the active
+/// category's bold title + a muted blurb (the v3 page-header look).
+unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
+    let hdc = d.hDC;
+    let rc = d.rcItem;
+    fill(hdc, &rc, DARK_BG());
+    let ci = NAV.with(|n| n.borrow().active);
+    let chip = dpi_scale(hwnd, 34);
+    SelectObject(hdc, GetStockObject(DC_BRUSH));
+    SelectObject(hdc, GetStockObject(DC_PEN));
+    let tint = blend(ACCENT(), DARK_BG(), 16);
+    SetDCBrushColor(hdc, tint);
+    SetDCPenColor(hdc, tint);
+    let _ = RoundRect(hdc, rc.left, rc.top, rc.left + chip, rc.top + chip, dpi_scale(hwnd, 9), dpi_scale(hwnd, 9));
+    let isz = dpi_scale(hwnd, 18);
+    draw_cat_icon(hdc, ci, rc.left + (chip - isz) / 2, rc.top + (chip - isz) / 2, isz, ACCENT());
+    let tx = rc.left + dpi_scale(hwnd, 46);
+    SelectObject(hdc, HGDIOBJ(crate::win::gui_font_title(hwnd).0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, DARK_TEXT());
+    let mut title = wide(nav_label(ci));
+    let tn = title.len().saturating_sub(1);
+    let mut tr = RECT { left: tx, top: rc.top - dpi_scale(hwnd, 2), right: rc.right, bottom: rc.top + dpi_scale(hwnd, 24) };
+    DrawTextW(hdc, &mut title[..tn], &mut tr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
+    SetTextColor(hdc, HEADER_TEXT());
+    let mut blurb = wide(cat_blurb(ci));
+    let bn = blurb.len().saturating_sub(1);
+    let mut br = RECT { left: tx, top: rc.top + dpi_scale(hwnd, 26), right: rc.right, bottom: rc.bottom };
+    DrawTextW(hdc, &mut blurb[..bn], &mut br, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+}
+
+/// Show category `ci`'s controls, hide the others, repaint the nav + pane.
+unsafe fn switch_category(hwnd: HWND, ci: usize) {
+    NAV.with(|n| {
+        let mut n = n.borrow_mut();
+        n.active = ci;
+        for (i, ctrls) in n.cats.iter().enumerate() {
+            let cmd = if i == ci { SW_SHOW } else { SW_HIDE };
+            for &c in ctrls {
+                let _ = ShowWindow(c, cmd);
+            }
+        }
+    });
+    for i in 0..NCAT as i32 {
+        if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
+            let _ = InvalidateRect(Some(nav), None, true);
+        }
+    }
+    if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
+        let _ = InvalidateRect(Some(ph), None, true);
+    }
+    let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
+unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
+    // Hide the old scrolling chrome + the headers the nav/page-header now title.
+    // (ID_LBL_GENERAL is now a sub-header on the merged General page; ID_LBL_EBOOK is
+    // orphaned — Ebook/comic is its own tab with no sub-header.)
+    for id in [ID_LBL_THUMBS, ID_LBL_EBOOK, ID_LBL_SHOT, ID_LBL_FORMATS, ID_SCROLLBAR, ID_LEFT_MASK, ID_BANNER] {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = ShowWindow(c, SW_HIDE);
+        }
+    }
+
+    let mut cr = RECT::default();
+    let _ = GetClientRect(hwnd, &mut cr);
+    let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96) as i32;
+    let client_w = (cr.right - cr.left) * 96 / dpi;
+    let client_h = (cr.bottom - cr.top) * 96 / dpi;
+    let footer_y = client_h - 40;
+
+    let sc = |v: i32| dpi_scale(hwnd, v);
+    let place = |id: i32, x: i32, y: i32, w: i32, h: i32| -> Option<HWND> {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = SetWindowPos(c, None, sc(x), sc(y), sc(w), sc(h), SWP_NOZORDER | SWP_NOACTIVATE);
+            Some(c)
+        } else {
+            None
+        }
+    };
+
+    // Nav rail.
+    #[allow(clippy::needless_range_loop)] // i drives both the label index and position/id math
+    for i in 0..NCAT {
+        ctl(
+            hwnd,
+            STATIC,
+            nav_label(i),
+            WINDOW_STYLE(SS_OWNERDRAW | SS_NOTIFY),
+            NAV_X,
+            NAV_TOP + i as i32 * NAV_ITEM_H,
+            NAV_W,
+            NAV_ITEM_H,
+            ID_NAV_BASE + i as i32,
+            hinst,
+        );
+    }
+
+    // Per-pane header (icon chip + bold category title + blurb), redrawn per active
+    // category. Always visible; content sits below it.
+    ctl(hwnd, STATIC, "", WINDOW_STYLE(SS_OWNERDRAW), PANE_X, PANE_TOP, PANE_W, PANE_HEAD_H, ID_PANE_HEADER, hinst);
+
+    let mut cats: Vec<Vec<HWND>> = vec![Vec::new(); NCAT];
+    #[allow(clippy::needless_range_loop)] // ci indexes cats AND is passed to cat_rows(ci)
+    for ci in 0..NCAT {
+        let mut y = PANE_TOP + PANE_HEAD_H + 8;
+        let mut first = true;
+        for &row in cat_rows(ci) {
+            match row {
+                Row::Head(id) => {
+                    if !first {
+                        y += 14;
+                    }
+                    if let Some(c) = place(id, PANE_X, y, PANE_W, 18) {
+                        cats[ci].push(c);
+                    }
+                    y += 24;
+                }
+                Row::Switch(id) => {
+                    if let Some(c) = place(id, PANE_X, y, PANE_W, 28) {
+                        cats[ci].push(c);
+                    }
+                    y += 32;
+                }
+                Row::Pair(lbl, field, fw, fh) => {
+                    let lbl_dy = if fh > 40 { 4 } else { 2 };
+                    if let Some(c) = place(lbl, PANE_X, y + lbl_dy, 220, 18) {
+                        cats[ci].push(c);
+                    }
+                    if let Some(c) = place(field, PANE_X + PANE_W - fw, y, fw, fh) {
+                        cats[ci].push(c);
+                    }
+                    y += 34;
+                }
+                Row::Btn(id, w) => {
+                    if let Some(c) = place(id, PANE_X, y, w, 26) {
+                        cats[ci].push(c);
+                    }
+                    y += 32;
+                }
+                Row::BtnStatus(bid, bw, sid) => {
+                    if let Some(c) = place(bid, PANE_X, y, bw, 26) {
+                        cats[ci].push(c);
+                    }
+                    // status right-aligned on the SAME row, in the space to the RIGHT of the
+                    // button (non-overlapping, so the static's bg fill can't cover the button).
+                    let sx = PANE_X + bw + 12;
+                    if let Some(c) = place(sid, sx, y + 4, PANE_W - bw - 12, 18) {
+                        cats[ci].push(c);
+                    }
+                    y += 32;
+                }
+                Row::Status(id) => {
+                    if let Some(c) = place(id, PANE_X, y, PANE_W, 18) {
+                        cats[ci].push(c);
+                    }
+                    y += 22;
+                }
+                Row::Btn3(a, b, c3) => {
+                    let gap = 8;
+                    let w = (PANE_W - 2 * gap) / 3;
+                    for (i, id) in [a, b, c3].into_iter().enumerate() {
+                        if let Some(c) = place(id, PANE_X + i as i32 * (w + gap), y, w, 26) {
+                            cats[ci].push(c);
+                        }
+                    }
+                    y += 34;
+                }
+                Row::Wide(id) => {
+                    y += 8; // extra breathing room above (the search box read squished)
+                    if let Some(c) = place(id, PANE_X, y, PANE_W, 24) {
+                        cats[ci].push(c);
+                    }
+                    y += 24 + 12; // and below
+                }
+                Row::ListFill(id) => {
+                    let h = (footer_y - 8 - y).max(60);
+                    if let Some(c) = place(id, PANE_X, y, PANE_W, h) {
+                        cats[ci].push(c);
+                    }
+                    y += h + 4;
+                }
+                Row::ListAuto(id) => {
+                    let mut wr = RECT::default();
+                    let measured = if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+                        let _ = GetWindowRect(c, &mut wr);
+                        ((wr.bottom - wr.top) * 96 / dpi).max(40)
+                    } else {
+                        40
+                    };
+                    // Cap so the row(s) below (e.g. Reset order) + the footer stay
+                    // on-screen; the list scrolls internally if its rows don't fit.
+                    let avail = (footer_y - y - 8 - 36).max(80);
+                    let cur_h = measured.min(avail);
+                    if let Some(c) = place(id, PANE_X, y, PANE_W, cur_h) {
+                        cats[ci].push(c);
+                    }
+                    y += cur_h + 6;
+                }
+            }
+            first = false;
+        }
+    }
+
+    // Footer (always visible).
+    place(ID_ABOUT, 16, footer_y, 90, 28);
+    place(ID_PROMO_LINK, 116, footer_y + 6, 240, 20);
+    place(IDCANCEL, client_w - 200, footer_y, 88, 28);
+    place(IDOK, client_w - 104, footer_y, 96, 28);
+
+    // The file-types list is now PANE_W wide — refit its Description column to fill.
+    if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
+        fit_columns(list);
+    }
+
+    NAV.with(|n| {
+        let mut n = n.borrow_mut();
+        n.active = 0;
+        n.cats = cats;
+    });
+    switch_category(hwnd, 0);
+}
+// =================== end v3 layout ===================
 
 /// (control id, hint locale key) for every tooltip. Shared by `add_tooltips`
 /// (initial install) and `refresh_tooltips` (re-translate on a live language
@@ -1070,7 +1590,7 @@ unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_JPEG, "lbl_jpeg"),
         (ID_LBL_PNG, "lbl_png"),
         (ID_LBL_EBOOK, "grp_ebook"),
-        (ID_LBL_GENERAL, "grp_general"),
+        (ID_LBL_GENERAL, "grp_lang_files"),
         (ID_C_SORT, "chk_sort"),
         (ID_C_PREFER_COVER, "chk_prefer_cover"),
         (ID_C_SKIP_SCAN, "chk_skip_scanlation"),
@@ -1087,11 +1607,43 @@ unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_SHOT_QUICK_HK, "lbl_shot_quick_hotkey"),
         (ID_PRESERVE_DATE, "chk_preserve_date"),
         (ID_LBL_MENU_ITEMS, "grp_menu_items"),
+        (ID_MENU_ALL_TYPES, "chk_menu_all_types"),
+        (ID_MENU_RESET, "btn_menu_reset"),
+        (ID_SHOT_USE_DIR, "chk_shot_use_dir"),
+        (ID_SHOT_SET_DIR, "btn_set_save_dir"),
+        (ID_SHOT_RESTART, "btn_restart_hotkey"),
+        (ID_LBL_SHOT_ACTION, "lbl_custom_action"),
+        (ID_LBL_SHOT_ACTION_HK, "lbl_custom_action_hk"),
+        (ID_CUSTOM_ACTION_ENABLE, "chk_custom_action"),
+        (ID_LBL_DIAG, "grp_diagnostics"),
+        (ID_VERBOSE_LOG, "chk_verbose_log"),
+        (ID_OPEN_LOG, "btn_open_log"),
+        (ID_REBUILD_CACHE, "btn_rebuild_cache"),
+        (ID_REPAIR_ASSOC, "btn_repair_assoc"),
+        (ID_UPDATE_AUTO, "chk_update_auto"),
+        (ID_CHECK_UPDATES, "btn_check_updates"),
+        (ID_LBL_UPDATES, "grp_updates"),
+        (ID_LBL_BACKUP, "grp_backup"),
+        (ID_LBL_HOTKEY_SVC, "grp_hotkey_svc"),
+        (ID_RESET_ALL, "btn_reset_all"),
+        (ID_IMPORT, "btn_import"),
+        (ID_EXPORT, "btn_export"),
         (IDOK, "btn_ok"),
         (IDCANCEL, "btn_cancel"),
     ];
     for &(id, key) in pairs {
         set_dlg_text(hwnd, id, t(key));
+    }
+    // Re-text + repaint the owner-draw nav rail and the page header (they read their
+    // labels from nav_label()/cat_blurb(), which now follow the active language).
+    for i in 0..NCAT as i32 {
+        set_dlg_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
+        if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
+            let _ = InvalidateRect(Some(nav), None, true);
+        }
+    }
+    if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
+        let _ = InvalidateRect(Some(ph), None, true);
     }
     // The "Menu items" checklist rows relabel from their own menu keys (single col).
     // Rows may be in a custom drag-reorder, so read each ROW's key from its lParam —
@@ -1175,11 +1727,11 @@ unsafe fn refresh_shot_status(hwnd: HWND) {
     // so toggling it updates the status line + Restart button immediately.
     let enabled = checked(hwnd, ID_SHOT_ENABLE);
     let txt = if !enabled {
-        "Hotkey service: off"
+        "Off"
     } else if crate::screenshot::is_daemon_running() {
-        "Hotkey service: running"
+        "Running"
     } else {
-        "Hotkey service: enabled but stopped \u{2014} click Restart"
+        "Stopped \u{2014} click Restart"
     };
     set_shot_status(hwnd, txt);
     // The Restart button does nothing when the hotkey is off — disable + repaint it.
@@ -1274,6 +1826,13 @@ unsafe fn load_defaults(hwnd: HWND) {
         let d = SHOT_PRESETS.iter().position(|&(l, _)| l == QUICK_DEFAULT_LABEL).unwrap_or(0);
         SendMessageW(quick, CB_SETCURSEL, Some(WPARAM(d)), None);
     }
+    // Custom action binding: back to the default action (index 0 = colour picker) + unbound.
+    if let Ok(act) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
+        SendMessageW(act, CB_SETCURSEL, Some(WPARAM(0)), None);
+    }
+    if let Ok(ahk) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
+        SendMessageW(ahk, CB_SETCURSEL, Some(WPARAM(0)), None); // "(none)"
+    }
     update_quick_enabled(hwnd);
     check(hwnd, ID_SHOT_HIDE_TRAY, false);
     // Factory reset of the Ctrl+S destination: toggle off + clear the folder (which
@@ -1316,6 +1875,21 @@ unsafe fn update_quick_enabled(hwnd: HWND) {
     }
     if let Ok(lbl) = GetDlgItem(Some(hwnd), ID_LBL_SHOT_QUICK_HK) {
         let _ = InvalidateRect(Some(lbl), None, true);
+    }
+}
+
+/// Gate the custom-action combos by the "Enable custom action" toggle. When off,
+/// force its hotkey combo to "(none)" (so Save writes it unbound) and grey both.
+unsafe fn update_custom_action_enabled(hwnd: HWND) {
+    let on = checked(hwnd, ID_CUSTOM_ACTION_ENABLE);
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(c, on);
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
+        if !on {
+            SendMessageW(c, CB_SETCURSEL, Some(WPARAM(0)), None); // "(none)" — unbound
+        }
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(c, on);
     }
 }
 
@@ -1424,11 +1998,29 @@ unsafe fn apply_settings(hwnd: HWND) {
     let _ = settings::set_screenshot_quick_hotkey(qpacked);
     let _ = settings::set_dword("ScreenshotHideTray", checked(hwnd, ID_SHOT_HIDE_TRAY) as u32);
     let _ = settings::set_screenshot_use_save_dir(checked(hwnd, ID_SHOT_USE_DIR));
-    let shot_on = checked(hwnd, ID_SHOT_ENABLE);
-    crate::screenshot::set_enabled(shot_on);
-    if shot_on {
-        crate::screenshot::reload_hotkey();
+    // Custom action hotkey: persist the chosen action + its chord (item 0 of the hotkey combo
+    // = "(none)" = unbound). Written BEFORE set_enabled() below so the daemon reconcile — which
+    // keeps the daemon resident whenever a custom hotkey is bound — sees the new state.
+    if let Ok(act) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
+        let sel = SendMessageW(act, CB_GETCURSEL, None, None).0;
+        if let Some(&(id, _)) = crate::hotkey::ACTIONS.get(sel.max(0) as usize) {
+            let _ = settings::set_custom_action(id);
+        }
     }
+    if let Ok(ahk) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
+        let sel = SendMessageW(ahk, CB_GETCURSEL, None, None).0;
+        let packed = if sel <= 0 {
+            0 // "(none)" — unbound
+        } else {
+            SHOT_PRESETS.get((sel - 1) as usize).map_or(0, |&(_, p)| p)
+        };
+        let _ = settings::set_custom_action_hotkey(packed);
+    }
+    let shot_on = checked(hwnd, ID_SHOT_ENABLE);
+    // set_enabled persists the screenshot flag, then reconciles the daemon (start/stop +
+    // re-register) accounting for BOTH the screenshot feature and the custom hotkey saved
+    // above — so it covers the "daemon needed only for a custom hotkey" case too.
+    crate::screenshot::set_enabled(shot_on);
 
     // Per-format flags. Collect the changes first; persist them, then run the
     // elevated re-register that rewrites the HKCR shell hooks to match. If that
@@ -1802,6 +2394,23 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         {
             return crate::dark::dark_ctlcolor_dim(wparam);
         }
+        // The hotkey-service status word: green when running/started, red otherwise.
+        if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+            && GetDlgItem(Some(hwnd), ID_SHOT_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+        {
+            let hdc = HDC(wparam.0 as *mut c_void);
+            let running = GetDlgItem(Some(hwnd), ID_SHOT_STATUS)
+                .map(|s| {
+                    let txt = String::from_utf16_lossy(&control_text(s));
+                    txt.contains("Running") || txt.contains("Started")
+                })
+                .unwrap_or(false);
+            let col = if running { COLORREF(0x0059_C734) } else { COLORREF(0x004D_48E5) }; // green / red
+            SetTextColor(hdc, col);
+            windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+            SetBkMode(hdc, TRANSPARENT);
+            return LRESULT(dark_bg_brush().0 as isize);
+        }
         if let Some(r) = dark_ctlcolor(msg, wparam) {
             return r;
         }
@@ -1887,7 +2496,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                         if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
                             let text = get_edit_text(hwnd, ID_SEARCH);
                             // EN_CHANGE fires on every keystroke, and populate_list
-                            // deletes + reinserts all 223 rows. Skip that whole rebuild
+                            // deletes + reinserts all 316 rows. Skip that whole rebuild
                             // when the NORMALIZED filter hasn't actually changed (a no-op
                             // edit, case-only change, or trailing whitespace).
                             let needle = text.trim().to_lowercase();
@@ -1915,6 +2524,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     // Instant-screenshot checkbox: enable/disable its hotkey picker live.
                     ID_SHOT_ENABLE => refresh_shot_status(hwnd),
                     ID_SHOT_QUICK_ENABLE => update_quick_enabled(hwnd),
+                    ID_CUSTOM_ACTION_ENABLE => update_custom_action_enabled(hwnd),
                     ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
                     ID_SHOT_SET_DIR => {
                         // Pick the Ctrl+S save folder; persist immediately + refresh the
@@ -1933,7 +2543,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                         crate::screenshot::set_enabled(true);
                         crate::screenshot::reload_hotkey();
                         check(hwnd, ID_SHOT_ENABLE, true);
-                        set_shot_status(hwnd, "Hotkey service: started");
+                        set_shot_status(hwnd, "Started");
                     }
                     ID_LANG if notify == CBN_SELCHANGE => on_lang_change(hwnd),
                     ID_ABOUT => show_about(hwnd),
@@ -1943,6 +2553,9 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     ID_REBUILD_CACHE => rebuild_thumbnail_cache(hwnd),
                     ID_REPAIR_ASSOC => repair_associations(hwnd),
                     ID_CHECK_UPDATES => check_for_updates(hwnd),
+                    nav if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&nav) && notify == STN_CLICKED => {
+                        switch_category(hwnd, (nav - ID_NAV_BASE) as usize);
+                    }
                     ID_BANNER if notify == STN_CLICKED => {
                         // Open the currently-shown sponsor's link (or the product page
                         // if no sponsor feed loaded).
@@ -2073,8 +2686,14 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     DrawTextW(d.hDC, &mut label[..n], &mut rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                     LRESULT(1)
                 } else if d.CtlType == ODT_STATIC {
+                    let cid = d.CtlID as i32;
                     if d.CtlID == ID_LEFT_MASK as u32 {
                         scroll::draw_left_mask(hwnd, d);
+                    } else if cid == ID_PANE_HEADER {
+                        draw_pane_header(hwnd, d);
+                    } else if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&cid) {
+                        let active = NAV.with(|n| n.borrow().active) == (cid - ID_NAV_BASE) as usize;
+                        draw_nav_item(hwnd, d, active);
                     } else {
                         // The owner-drawn section headers (uppercase label + divider).
                         restyle::draw_section_header(hwnd, d);

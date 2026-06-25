@@ -364,9 +364,26 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
         if !verify_installer_bytes(&bytes, &asset) {
             return Err("the download failed its integrity check");
         }
+        if asset.sha256.is_none() {
+            // No per-asset checksum from the release API → only the MZ-header + size checks ran.
+            // Log it so a missing release-workflow digest is visible, not a silent downgrade.
+            sagethumbs2k_core::safety::log(
+                "update: release asset carries no sha256 digest — installer verified by header + size only",
+            );
+        }
         let mut path = std::env::temp_dir();
         path.push(format!("SageThumbs2K-Setup-{tag}.exe"));
         std::fs::write(&path, &bytes).map_err(|_| "couldn't save the installer")?;
+        // Re-verify the ON-DISK bytes right before the elevated launch. `fs::write` then
+        // `ShellExecuteW("runas")` is a TOCTOU window: another process with %TEMP% write access
+        // could swap the file, and the UAC prompt would then elevate the swapped binary. Re-reading
+        // and re-verifying what's actually on disk shrinks that window to near-zero (a swap during
+        // or just after the write is caught). On any mismatch, delete and abort.
+        let on_disk_ok = std::fs::read(&path).map(|d| verify_installer_bytes(&d, &asset)).unwrap_or(false);
+        if !on_disk_ok {
+            let _ = std::fs::remove_file(&path);
+            return Err("the saved installer failed re-verification");
+        }
         unsafe {
             set_line(&dlg, 1, "Installing update\u{2026}");
             let _ = dlg.SetProgress64(1, 1); // full bar; Inno's silent bar now shows the install
@@ -374,6 +391,7 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
         if launch_installer_silent(&path) {
             Ok(())
         } else {
+            let _ = std::fs::remove_file(&path); // UAC-cancel / launch failure → don't leave the .exe in %TEMP%
             Err("the update was cancelled at the Windows permission prompt")
         }
     })();

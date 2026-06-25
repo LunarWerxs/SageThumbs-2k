@@ -353,8 +353,9 @@ pub fn is_image(path: &str) -> bool {
 }
 
 /// Does `path` have an audio extension (one we read tags from)? Gates the
-/// audio-only verbs (rename-by-tag dispatch, Tags→Folders).
-fn is_audio(path: &str) -> bool {
+/// audio-only verbs (rename-by-tag dispatch, Tags→Folders) and the audio-only
+/// menu views on both surfaces (`contextmenu.rs` / `command.rs`).
+pub fn is_audio(path: &str) -> bool {
     match std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())

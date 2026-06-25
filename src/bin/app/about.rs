@@ -1,36 +1,90 @@
-//! The About box.
+//! The About box — the "2026" card.
 //!
-//! A small popup: logo, version, the company links (SysLink), a tagline, and the
-//! clickable LunarWerx wordmark. The richer home for the promotion; the main
-//! Settings dialog keeps just the footer link.
+//! A compact, owner-drawn popup that mirrors the product mock: the eye logo, the
+//! product title + subtitle, two clickable status *pills* (a GitHub version chip
+//! that opens the repo, and a live "Up to date" update-check chip), the license /
+//! copyright in the bottom-left, and the clickable LunarWerx Studios wordmark in
+//! the bottom-right. The update check runs on a worker thread when the box opens
+//! and again whenever the user clicks the status pill, so the chip is never stale.
 
 use core::ffi::c_void;
 
 use windows::core::{w, BOOL};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::HBITMAP;
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, DrawTextW, Ellipse, FillRect,
+    GetStockObject, GetTextExtentPoint32W, InvalidateRect, RoundRect, SelectObject, SetBkColor,
+    SetBkMode, SetDCBrushColor, SetDCPenColor, SetTextColor, DC_BRUSH, DC_PEN, DT_LEFT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBITMAP, HBRUSH, HDC, HGDIOBJ, SRCCOPY, TRANSPARENT,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{NMHDR, NMLINK, NM_CLICK, NM_RETURN};
+use windows::Win32::UI::Controls::DRAWITEMSTRUCT;
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::{dark_bg_brush, dark_control, dark_ctlcolor, dark_titlebar, is_dark};
-use crate::win::{
-    app_icon, ctl, dpi_scale_dpi, load_art, open_url, set_static_bitmap, t, text_width,
-    wm_dpichanged, wstr_to_string, BUTTON, STATIC, SYSLINK, SS_BITMAP, SS_CENTER, SS_NOTIFY,
-    IDCANCEL, IDOK, URL_COMPANIES, URL_GITHUB,
+use crate::dark::{
+    dark_bg_brush, dark_control, dark_ctlcolor, dark_titlebar, is_dark, rgb, BORDER_STRONG,
+    BTN_FACE, DARK_BG, DARK_TEXT, DISABLED_TEXT, HEADER_TEXT,
 };
-use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+use crate::update;
+use crate::win::{
+    app_icon, ctl, dpi_scale, dpi_scale_dpi, gui_font_for, gui_font_sized, load_art, open_url,
+    set_static_bitmap, t, text_width, wide, wm_dpichanged, IDCANCEL, IDOK, SS_BITMAP, SS_CENTER,
+    SS_NOTIFY, SS_OWNERDRAW, STATIC, URL_GITHUB, URL_PARENT,
+};
 
-// Company promotion (the About box's clickable controls).
-const ID_ABOUT_LINK: i32 = 1121;
-/// The clickable LunarWerx wordmark in the About box.
+// ---- Control IDs --------------------------------------------------------
+/// The clickable LunarWerx Studios wordmark (bottom-right) → the company site.
 const ID_LW_LOGO: i32 = 1119;
+/// The GitHub version chip → the repo.
+const ID_VER_PILL: i32 = 1201;
+/// The live update-check chip → re-check (or, when an update exists, the releases page).
+const ID_STATUS_PILL: i32 = 1202;
+const ID_SUBTITLE: i32 = 1203;
+const ID_LICENSE: i32 = 1204;
+const ID_COPYRIGHT: i32 = 1205;
 
-/// Logo artwork, embedded so it always renders. A `logo.png` next to the EXE
-/// overrides at runtime (user-swappable).
+/// Posted from the update-check worker thread back to the About window: the check
+/// finished. `WPARAM` = outcome (0 up-to-date, 1 update available, 2 failed);
+/// `LPARAM` = a `Box<String>` (the newer tag) when WPARAM==1 — the handler reclaims it.
+const WM_ABOUT_CHECKED: u32 = WM_APP + 1;
+
+/// Client size in 96-DPI design pixels (DPI-scaled per control / for the frame).
+const CW: i32 = 440;
+const CH: i32 = 300;
+
+/// Logo artwork, embedded so it always renders. A `logo.png` next to the EXE overrides.
 const LOGO_PNG: &[u8] = include_bytes!("../../../assets/logo.png");
-/// LunarWerx wordmark (white-on-transparent, 1680×273) for the About box.
+/// LunarWerx Studios wordmark — the LIGHT (white) variant on transparent (1680×273), for the
+/// dark card.
 const LW_LOGO_PNG: &[u8] = include_bytes!("../../../assets/lw_logo_white.png");
+/// LunarWerx Studios wordmark — the DARK (navy) variant on transparent (4911×941), for the
+/// light card.
+const LW_LOGO_DARK_PNG: &[u8] = include_bytes!("../../../assets/lw_logo_dark.png");
+/// GitHub "mark" (white silhouette on transparent) for the version pill.
+const GH_PNG: &[u8] = include_bytes!("../../../assets/github_mark.png");
+
+/// Version-pill GitHub icon size (96-dpi design px). Big enough that the octocat reads as
+/// the GitHub mark and not a blob at the pill scale.
+const ICON: i32 = 18;
+
+/// The latest update-check outcome, shown by the status pill.
+enum Status {
+    Checking,
+    UpToDate,
+    Available(String),
+    Failed,
+}
+
+/// Per-window state, owned via `GWLP_USERDATA`.
+struct About {
+    status: Status,
+    /// A network check is in flight — ignore extra status-pill clicks until it lands.
+    checking: bool,
+    /// The GitHub mark, pre-composited on the pill fill so the blit is seamless. Freed
+    /// in `WM_NCDESTROY`.
+    gh_icon: Option<HBITMAP>,
+}
 
 /// Open the About box, owned by `parent`.
 pub(crate) unsafe fn show_about(parent: HWND) {
@@ -48,16 +102,12 @@ pub(crate) unsafe fn show_about(parent: HWND) {
     };
     RegisterClassW(&wc);
 
-    // Scale the frame to the parent's DPI so the (ctl-scaled) controls fit at >96
-    // DPI. Identity at 96 (dpi_scale_dpi(v, 96) == v) → no change on a standard display.
+    // Size the frame so the *client* area is exactly the design size, scaled to the
+    // parent's DPI (identity at 96 → standard displays are unchanged).
     let dpi = GetDpiForWindow(parent) as i32;
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     let exstyle = WS_EX_DLGMODALFRAME;
-    // Size the frame so the *client* area is exactly the design size (400×422
-    // scaled). The controls center on a 400-wide client; creating the window at
-    // 400 wide instead left the client ~frame px narrower, so everything sat
-    // right-of-center. AdjustWindowRectExForDpi adds the frame back.
-    let mut rc = RECT { left: 0, top: 0, right: dpi_scale_dpi(400, dpi), bottom: dpi_scale_dpi(446, dpi) };
+    let mut rc = RECT { left: 0, top: 0, right: dpi_scale_dpi(CW, dpi), bottom: dpi_scale_dpi(CH, dpi) };
     let _ = AdjustWindowRectExForDpi(&mut rc, style, BOOL(0).into(), exstyle, dpi as u32);
     if let Ok(hwnd) = CreateWindowExW(
         exstyle,
@@ -81,98 +131,374 @@ pub(crate) unsafe fn show_about(parent: HWND) {
     }
 }
 
-/// The LunarWerx wordmark sized to `w`×`h`. The art is white-on-transparent, so
-/// in LIGHT mode it's composited onto a dark chip first (it would otherwise be
-/// invisible on the pale dialog); in dark mode the transparency is kept.
+// ---- Colour helpers -----------------------------------------------------
+
+fn color_r(c: COLORREF) -> u8 { (c.0 & 0xFF) as u8 }
+fn color_g(c: COLORREF) -> u8 { ((c.0 >> 8) & 0xFF) as u8 }
+fn color_b(c: COLORREF) -> u8 { ((c.0 >> 16) & 0xFF) as u8 }
+
+unsafe fn s(hwnd: HWND, v: i32) -> i32 {
+    dpi_scale(hwnd, v)
+}
+
+unsafe fn about_state(hwnd: HWND) -> *mut About {
+    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut About
+}
+
+/// The LunarWerx Studios wordmark bytes + aspect ratio for the active theme: the LIGHT
+/// (white) variant on the dark card, the DARK (navy) variant on the light card. Picking the
+/// matching variant means each is legible composited straight onto its theme background — no
+/// dark backing chip.
+fn lw_logo() -> (&'static [u8], f32) {
+    if is_dark() {
+        (LW_LOGO_PNG, 1680.0 / 273.0)
+    } else {
+        (LW_LOGO_DARK_PNG, 4911.0 / 941.0)
+    }
+}
+
+/// The themed LunarWerx wordmark sized to `w`×`h`. A STATIC's SS_BITMAP ignores alpha (it
+/// BitBlts), so the transparent art is composited onto the card background — seamless in both
+/// themes (dark bg in dark mode, light bg in light mode).
 unsafe fn lw_logo_hbitmap(w: u32, h: u32) -> Option<HBITMAP> {
-    let logo = image::load_from_memory(LW_LOGO_PNG)
+    let (bytes, _) = lw_logo();
+    let logo = image::load_from_memory(bytes)
         .ok()?
         .resize_exact(w, h, image::imageops::FilterType::Lanczos3)
         .to_rgba8();
-    let rgba = if is_dark() {
-        logo
-    } else {
-        let mut chip = image::RgbaImage::from_pixel(w, h, image::Rgba([43, 43, 43, 255]));
-        image::imageops::overlay(&mut chip, &logo, 0, 0);
-        chip
-    };
-    sagethumbs2k_core::app_image::rgba_to_hbitmap(w, h, rgba.as_raw()).map(|h| HBITMAP(h as *mut c_void))
+    let base = DARK_BG();
+    let mut out = image::RgbaImage::from_pixel(w, h, image::Rgba([color_r(base), color_g(base), color_b(base), 255]));
+    image::imageops::overlay(&mut out, &logo, 0, 0);
+    sagethumbs2k_core::app_image::rgba_to_hbitmap(w, h, out.as_raw()).map(|h| HBITMAP(h as *mut c_void))
+}
+
+/// The GitHub mark at `px`², tinted `fg` and composited over `fill` (the pill face),
+/// so it can be BitBlt'd straight onto the pill with no alpha-blend. The source PNG
+/// is a white silhouette whose alpha carries the shape.
+unsafe fn github_icon_hbitmap(px: u32, fill: COLORREF, fg: COLORREF) -> Option<HBITMAP> {
+    let src = image::load_from_memory(GH_PNG)
+        .ok()?
+        .resize_exact(px.max(1), px.max(1), image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    let (fr, fgc, fb) = (color_r(fill), color_g(fill), color_b(fill));
+    let (gr, gg, gb) = (color_r(fg), color_g(fg), color_b(fg));
+    let mut out = image::RgbaImage::new(src.width(), src.height());
+    for (o, p) in out.pixels_mut().zip(src.pixels()) {
+        let a = p[3] as u32; // octocat coverage
+        let mix = |dst: u8, on: u8| ((on as u32 * a + dst as u32 * (255 - a)) / 255) as u8;
+        *o = image::Rgba([mix(fr, gr), mix(fgc, gg), mix(fb, gb), 255]);
+    }
+    sagethumbs2k_core::app_image::rgba_to_hbitmap(out.width(), out.height(), out.as_raw())
+        .map(|h| HBITMAP(h as *mut c_void))
 }
 
 unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
-    let logo = ctl(hwnd, STATIC, "", WINDOW_STYLE(SS_BITMAP), 164, 18, 72, 72, -1, hinst);
+    // The GitHub mark, built first (composited on the resting pill face) so the very
+    // first pill paint already has it.
+    let icon_px = s(hwnd, ICON).max(1) as u32;
+    let icon = github_icon_hbitmap(icon_px, BTN_FACE(), DARK_TEXT());
+    let st = about_state(hwnd);
+    if !st.is_null() {
+        (*st).gh_icon = icon;
+    }
+
+    // Eye logo, centered near the top.
+    let logo = ctl(hwnd, STATIC, "", WINDOW_STYLE(SS_BITMAP), (CW - 72) / 2, 20, 72, 72, -1, hinst);
     if let Some(hbmp) = load_art(LOGO_PNG, "logo.png", 72, 72) {
         set_static_bitmap(logo, hbmp);
     }
-    let center = WINDOW_STYLE(SS_CENTER);
-    ctl(hwnd, STATIC, "SageThumbs 2K", center, 20, 100, 360, 22, -1, hinst);
-    let ver = format!("{} {}", t("about_version"), env!("CARGO_PKG_VERSION"));
-    ctl(hwnd, STATIC, &ver, center, 20, 124, 360, 18, -1, hinst);
-    ctl(hwnd, STATIC, t("about_desc"), center, 20, 150, 360, 18, -1, hinst);
-    // Center the repo link: measure the visible text and place the SysLink rect so
-    // it sits in the middle (SysLink left-aligns its text within its own rect).
-    let visible = "github.com/LunarWerxs/SageThumbs-2k";
-    let tw = text_width(visible);
-    let lx = ((400 - tw) / 2).max(8);
-    let link = format!("<a href=\"{URL_GITHUB}\">{visible}</a>");
-    ctl(hwnd, SYSLINK, &link, WINDOW_STYLE(0), lx, 184, tw + 8, 20, ID_ABOUT_LINK, hinst);
-    ctl(hwnd, STATIC, t("about_tagline"), center, 20, 216, 360, 34, -1, hinst);
-    // The LunarWerx wordmark, below the tagline and above Close; clicking it
-    // opens the companies page (SS_NOTIFY → STN_CLICKED; hand cursor in wndproc).
-    // Tuned size/spacing: 231×38 (25% down from 308×50), 30px above Close.
-    let lw = ctl(hwnd, STATIC, "", WINDOW_STYLE(SS_BITMAP | SS_NOTIFY), 84, 258, 231, 38, ID_LW_LOGO, hinst);
-    if let Some(hbmp) = lw_logo_hbitmap(231, 38) {
+
+    // Product title — big + bold — then the muted subtitle.
+    let title = ctl(hwnd, STATIC, "SageThumbs 2K", WINDOW_STYLE(SS_CENTER), 20, 100, CW - 40, 34, -1, hinst);
+    SendMessageW(title, WM_SETFONT, Some(WPARAM(gui_font_sized(hwnd, 26, 700).0 as usize)), Some(LPARAM(1)));
+    ctl(hwnd, STATIC, t("about_subtitle"), WINDOW_STYLE(SS_CENTER), 20, 138, CW - 40, 18, ID_SUBTITLE, hinst);
+
+    // The two status pills, centered as a group. Each pill's width is fixed (the
+    // version is constant; the status pill is sized to its widest possible text), so
+    // the owner-draw just centers content inside.
+    let ver = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let ver_w = 14 + ICON + 7 + text_width(&ver) + 14;
+    let cand = [
+        t("about_checking").to_string(),
+        t("about_uptodate").to_string(),
+        t("about_check_failed").to_string(),
+        format!("{} 99.99.99", t("about_update")),
+    ];
+    let max_tw = cand.iter().map(|c| text_width(c)).max().unwrap_or(80);
+    let status_w = 14 + 10 + 8 + max_tw + 14;
+    let gap = 12;
+    let gx = (CW - (ver_w + gap + status_w)) / 2;
+    let pill = WINDOW_STYLE(SS_OWNERDRAW | SS_NOTIFY);
+    ctl(hwnd, STATIC, "", pill, gx, 174, ver_w, 30, ID_VER_PILL, hinst);
+    ctl(hwnd, STATIC, "", pill, gx + ver_w + gap, 174, status_w, 30, ID_STATUS_PILL, hinst);
+
+    // Bottom-left: license + copyright (muted via WM_CTLCOLORSTATIC).
+    ctl(hwnd, STATIC, "PolyForm Noncommercial 1.0.0", WINDOW_STYLE(0), 22, 250, 210, 16, ID_LICENSE, hinst);
+    ctl(hwnd, STATIC, "\u{00a9} 2026 Lunarwerx", WINDOW_STYLE(0), 22, 268, 210, 16, ID_COPYRIGHT, hinst);
+
+    // Bottom-right: the clickable LunarWerx Studios wordmark. The two theme variants have
+    // different aspect ratios, so size the control to the active one (fixed height, width
+    // from the aspect) — no squish — and right-anchor it.
+    let (_, lw_aspect) = lw_logo();
+    let lw_h = 26;
+    let lw_w = (lw_h as f32 * lw_aspect).round() as i32;
+    let lw = ctl(hwnd, STATIC, "", WINDOW_STYLE(SS_BITMAP | SS_NOTIFY), CW - 22 - lw_w, 252, lw_w, lw_h, ID_LW_LOGO, hinst);
+    if let Some(hbmp) = lw_logo_hbitmap(lw_w as u32, lw_h as u32) {
         set_static_bitmap(lw, hbmp);
     }
-    // Credit the original author + show the license/copyright. The project is a clean-room
-    // rewrite — the SageThumbs name is Nikolay Raspopov's — so we credit him in the About
-    // box as well as the README. (Kept in English: proper nouns + a license name.)
-    ctl(hwnd, STATIC, "A clean-room rewrite of SageThumbs by Nikolay Raspopov.", center, 20, 300, 360, 16, -1, hinst);
-    ctl(hwnd, STATIC, "PolyForm Noncommercial 1.0.0  \u{00b7}  \u{00a9} 2026 Lunarwerx", center, 20, 320, 360, 16, -1, hinst);
-    ctl(hwnd, BUTTON, t("btn_close"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 158, 352, 84, 28, IDOK, hinst);
+}
+
+// ---- Update check (worker thread → WM_ABOUT_CHECKED) --------------------
+
+/// Kick off a fresh GitHub update check on a worker thread; it posts the outcome
+/// back to `hwnd` via [`WM_ABOUT_CHECKED`]. HWND isn't `Send`, so the raw handle
+/// value crosses the thread boundary and is rebuilt for the (thread-safe) post.
+unsafe fn start_check(hwnd: HWND) {
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let (code, lp) = match update::check() {
+            update::UpdateCheck::UpToDate => (0usize, 0isize),
+            update::UpdateCheck::Available(tag) => (1usize, Box::into_raw(Box::new(tag)) as isize),
+            update::UpdateCheck::Failed => (2usize, 0isize),
+        };
+        let _ = PostMessageW(
+            Some(HWND(raw as *mut c_void)),
+            WM_ABOUT_CHECKED,
+            WPARAM(code),
+            LPARAM(lp),
+        );
+    });
+}
+
+unsafe fn invalidate_status(hwnd: HWND) {
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_STATUS_PILL) {
+        let _ = InvalidateRect(Some(h), None, true);
+    }
+}
+
+/// Status-pill click: open the releases page when an update is waiting, otherwise
+/// re-run the check (unless one is already in flight).
+unsafe fn on_status_click(hwnd: HWND) {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return;
+    }
+    if let Status::Available(_) = (*st).status {
+        open_url(update::RELEASES_URL);
+        return;
+    }
+    if (*st).checking {
+        return;
+    }
+    (*st).checking = true;
+    (*st).status = Status::Checking;
+    invalidate_status(hwnd);
+    start_check(hwnd);
+}
+
+// ---- Owner-draw ---------------------------------------------------------
+
+/// Text extent of `text` in the HDC's currently-selected font.
+unsafe fn measure(hdc: HDC, text: &str) -> i32 {
+    let w = wide(text);
+    let n = w.len().saturating_sub(1);
+    let mut sz = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &w[..n], &mut sz);
+    sz.cx
+}
+
+unsafe fn fill_rc(hdc: HDC, rc: &RECT, color: COLORREF) {
+    SetDCBrushColor(hdc, color);
+    FillRect(hdc, rc, HBRUSH(GetStockObject(DC_BRUSH).0));
+}
+
+/// Paint the rounded pill frame (face + hairline border) into `rc` — full-stadium
+/// rounding (ellipse == height).
+unsafe fn pill_frame(hwnd: HWND, hdc: HDC, rc: &RECT) {
+    SelectObject(hdc, GetStockObject(DC_BRUSH));
+    SelectObject(hdc, GetStockObject(DC_PEN));
+    SetDCBrushColor(hdc, BTN_FACE());
+    SetDCPenColor(hdc, BORDER_STRONG());
+    let h = rc.bottom - rc.top;
+    let inset = s(hwnd, 1);
+    let _ = RoundRect(hdc, rc.left, rc.top, rc.right - inset, rc.bottom - inset, h, h);
+}
+
+/// Blit an opaque bitmap into `dst` at `(x,y)`, `w`×`h`.
+unsafe fn blit(dst: HDC, hbmp: HBITMAP, x: i32, y: i32, w: i32, h: i32) {
+    let mdc = CreateCompatibleDC(Some(dst));
+    if mdc.is_invalid() {
+        return;
+    }
+    let old = SelectObject(mdc, HGDIOBJ(hbmp.0));
+    let _ = BitBlt(dst, x, y, w, h, Some(mdc), 0, 0, SRCCOPY);
+    SelectObject(mdc, old);
+    let _ = DeleteDC(mdc);
+}
+
+/// Draw text left-aligned + vertically centered starting at `left`.
+unsafe fn draw_text(hdc: HDC, text: &str, left: i32, rc: &RECT, color: COLORREF) {
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, color);
+    let mut buf = wide(text);
+    let n = buf.len().saturating_sub(1);
+    let mut tr = RECT { left, top: rc.top, right: rc.right, bottom: rc.bottom };
+    DrawTextW(hdc, &mut buf[..n], &mut tr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+}
+
+unsafe fn draw_ver_pill(hwnd: HWND, d: &DRAWITEMSTRUCT) {
+    let hdc = d.hDC;
+    let rc = d.rcItem;
+    fill_rc(hdc, &rc, DARK_BG());
+    pill_frame(hwnd, hdc, &rc);
+
+    let icon_px = s(hwnd, ICON);
+    let gap = s(hwnd, 7);
+    let ver = format!("v{}", env!("CARGO_PKG_VERSION"));
+    SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
+    let tw = measure(hdc, &ver);
+    let group = icon_px + gap + tw;
+    let gx = rc.left + ((rc.right - rc.left) - group) / 2;
+    let iy = rc.top + ((rc.bottom - rc.top) - icon_px) / 2;
+    let st = about_state(hwnd);
+    if !st.is_null() {
+        if let Some(icon) = (*st).gh_icon {
+            blit(hdc, icon, gx, iy, icon_px, icon_px);
+        }
+    }
+    draw_text(hdc, &ver, gx + icon_px + gap, &rc, DARK_TEXT());
+}
+
+/// Map the current status to (dot colour, label).
+unsafe fn status_display(st: *mut About) -> (COLORREF, String) {
+    if st.is_null() {
+        return (rgb(150, 150, 150), t("about_checking").to_string());
+    }
+    match &(*st).status {
+        Status::Checking => (rgb(150, 150, 150), t("about_checking").to_string()),
+        Status::UpToDate => (rgb(63, 185, 80), t("about_uptodate").to_string()),
+        Status::Available(tag) => (rgb(210, 153, 34), format!("{} {}", t("about_update"), tag)),
+        Status::Failed => (rgb(190, 110, 110), t("about_check_failed").to_string()),
+    }
+}
+
+unsafe fn draw_status_pill(hwnd: HWND, d: &DRAWITEMSTRUCT) {
+    let hdc = d.hDC;
+    let rc = d.rcItem;
+    fill_rc(hdc, &rc, DARK_BG());
+    pill_frame(hwnd, hdc, &rc);
+
+    let (dot, text) = status_display(about_state(hwnd));
+    let dotd = s(hwnd, 10);
+    let gap = s(hwnd, 8);
+    SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
+    let tw = measure(hdc, &text);
+    let group = dotd + gap + tw;
+    let gx = rc.left + ((rc.right - rc.left) - group) / 2;
+    let dy = rc.top + ((rc.bottom - rc.top) - dotd) / 2;
+    // Status dot.
+    SelectObject(hdc, GetStockObject(DC_BRUSH));
+    SelectObject(hdc, GetStockObject(DC_PEN));
+    SetDCBrushColor(hdc, dot);
+    SetDCPenColor(hdc, dot);
+    let _ = Ellipse(hdc, gx, dy, gx + dotd, dy + dotd);
+    draw_text(hdc, &text, gx + dotd + gap, &rc, DARK_TEXT());
+}
+
+unsafe fn ctlcolor_text(hdc: HDC, color: COLORREF) -> LRESULT {
+    SetTextColor(hdc, color);
+    SetBkColor(hdc, DARK_BG());
+    SetBkMode(hdc, TRANSPARENT);
+    LRESULT(dark_bg_brush().0 as isize)
 }
 
 extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
+        // Muted on-surface colours for the subtitle / license / copyright — handled
+        // BEFORE the generic static colouring so they don't get the default text colour.
+        if msg == WM_CTLCOLORSTATIC {
+            let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
+            let hdc = HDC(wparam.0 as *mut c_void);
+            let muted = match id {
+                ID_SUBTITLE | ID_LICENSE => Some(HEADER_TEXT()),
+                ID_COPYRIGHT => Some(DISABLED_TEXT()),
+                _ => None,
+            };
+            if let Some(c) = muted {
+                return ctlcolor_text(hdc, c);
+            }
+        }
         if let Some(r) = dark_ctlcolor(msg, wparam) {
             return r;
         }
         match msg {
             WM_CREATE => {
                 let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+                let state = Box::new(About { status: Status::Checking, checking: true, gh_icon: None });
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
                 build_about(hwnd, hinst);
+                start_check(hwnd); // check on open
+                LRESULT(0)
+            }
+            WM_DRAWITEM => {
+                let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
+                match d.CtlID as i32 {
+                    ID_VER_PILL => draw_ver_pill(hwnd, d),
+                    ID_STATUS_PILL => draw_status_pill(hwnd, d),
+                    _ => {}
+                }
+                LRESULT(1)
+            }
+            WM_ABOUT_CHECKED => {
+                let st = about_state(hwnd);
+                if !st.is_null() {
+                    (*st).checking = false;
+                    (*st).status = match wparam.0 {
+                        1 => {
+                            let tag = if lparam.0 != 0 {
+                                *Box::from_raw(lparam.0 as *mut String)
+                            } else {
+                                String::new()
+                            };
+                            Status::Available(tag)
+                        }
+                        2 => Status::Failed,
+                        _ => Status::UpToDate,
+                    };
+                } else if lparam.0 != 0 {
+                    // Window torn down between post and dispatch — reclaim the tag.
+                    drop(Box::from_raw(lparam.0 as *mut String));
+                }
+                invalidate_status(hwnd);
                 LRESULT(0)
             }
             WM_COMMAND => {
                 let id = (wparam.0 & 0xFFFF) as i32;
-                if id == IDOK || id == IDCANCEL {
-                    let _ = DestroyWindow(hwnd);
-                } else if id == ID_LW_LOGO {
-                    open_url(URL_COMPANIES); // the wordmark is a link (STN_CLICKED)
+                let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+                match id {
+                    IDOK | IDCANCEL => {
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    ID_LW_LOGO if notify == STN_CLICKED => open_url(URL_PARENT),
+                    ID_VER_PILL if notify == STN_CLICKED => open_url(URL_GITHUB),
+                    ID_STATUS_PILL if notify == STN_CLICKED => on_status_click(hwnd),
+                    _ => {}
                 }
                 LRESULT(0)
             }
             WM_SETCURSOR => {
-                // Hand cursor over the clickable wordmark; everything else default.
+                // Hand cursor over the three clickables; default elsewhere.
                 let over = HWND(wparam.0 as *mut c_void);
-                if GetDlgItem(Some(hwnd), ID_LW_LOGO).map(|h| h == over).unwrap_or(false) {
+                let clickable = [ID_LW_LOGO, ID_VER_PILL, ID_STATUS_PILL]
+                    .iter()
+                    .any(|&id| GetDlgItem(Some(hwnd), id).map(|h| h == over).unwrap_or(false));
+                if clickable {
                     if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
                         SetCursor(Some(hand));
                     }
                     return LRESULT(1);
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_NOTIFY => {
-                let nmhdr = lparam.0 as *const NMHDR;
-                if (*nmhdr).code == NM_CLICK || (*nmhdr).code == NM_RETURN {
-                    let link = lparam.0 as *const NMLINK;
-                    let url = wstr_to_string(&(*link).item.szUrl);
-                    if !url.is_empty() {
-                        open_url(&url);
-                    }
-                }
-                LRESULT(0)
             }
             WM_DPICHANGED => {
                 wm_dpichanged(hwnd, lparam);
@@ -181,6 +507,17 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             WM_CLOSE => {
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
+            }
+            WM_NCDESTROY => {
+                let p = about_state(hwnd);
+                if !p.is_null() {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                    let st = Box::from_raw(p);
+                    if let Some(icon) = st.gh_icon {
+                        let _ = DeleteObject(HGDIOBJ(icon.0));
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }

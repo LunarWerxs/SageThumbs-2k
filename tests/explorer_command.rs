@@ -25,10 +25,17 @@ use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::UI::Shell::{
     SHCreateItemFromParsingName, SHCreateShellItemArrayFromShellItem, IExplorerCommand, IShellItem,
-    IShellItemArray, ECF_HASSUBCOMMANDS,
+    IShellItemArray, ECF_HASSUBCOMMANDS, ECS_ENABLED, ECS_HIDDEN,
 };
 
+use sagethumbs2k_core::settings;
+
 const CLSID_EXPLORER_COMMAND: GUID = GUID::from_u128(0xD4F1C8A2_3E7B_4A96_8C0F_6B1E2D9A4C57);
+// The four modern-menu quick-verb coclasses (must match guids.rs / AppxManifest.xml).
+const CLSID_QUICK_CONVERT_INTO: GUID = GUID::from_u128(0x1C7F4E2A_9D63_4B85_A0F1_7E2C5B9D4A60);
+const CLSID_QUICK_CONVERT_DIALOG: GUID = GUID::from_u128(0x2D8A5F3B_0E74_4C96_B1A2_8F3D6CAE5B71);
+const CLSID_QUICK_RESIZE: GUID = GUID::from_u128(0x3E9B6A4C_1F85_4DA7_C2B3_9A4E7DBF6C82);
+const CLSID_QUICK_ROTATE: GUID = GUID::from_u128(0x4FAC7B5D_2096_4EB8_D3C4_AB5F8ECA7D93);
 
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
@@ -38,7 +45,7 @@ fn dll_path() -> std::path::PathBuf {
     exe.parent().unwrap().parent().unwrap().join("sagethumbs2k.dll")
 }
 
-unsafe fn create_command() -> Result<IExplorerCommand> {
+unsafe fn create_for(clsid: GUID) -> Result<IExplorerCommand> {
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     let path = dll_path();
     assert!(path.exists(), "cdylib not built at {path:?}");
@@ -48,9 +55,21 @@ unsafe fn create_command() -> Result<IExplorerCommand> {
     let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
 
     let mut factory_ptr: *mut c_void = std::ptr::null_mut();
-    dll_get_class_object(&CLSID_EXPLORER_COMMAND, &IClassFactory::IID, &mut factory_ptr).ok()?;
+    dll_get_class_object(&clsid, &IClassFactory::IID, &mut factory_ptr).ok()?;
     let factory = IClassFactory::from_raw(factory_ptr);
     factory.CreateInstance(None)
+}
+
+unsafe fn create_command() -> Result<IExplorerCommand> {
+    create_for(CLSID_EXPLORER_COMMAND)
+}
+
+/// A single-file IShellItemArray over `path` (the file must exist), like the shell passes.
+unsafe fn item_array(path: &std::path::Path) -> IShellItemArray {
+    let pw: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let item: IShellItem =
+        SHCreateItemFromParsingName(PCWSTR(pw.as_ptr()), None).expect("shell item");
+    SHCreateShellItemArrayFromShellItem(&item).expect("item array")
 }
 
 unsafe fn title_of(c: &IExplorerCommand) -> String {
@@ -210,6 +229,74 @@ fn clipboard_verb_copies_image_to_clipboard() {
         assert_eq!(bih.biWidth, 24);
         assert_eq!(bih.biHeight.abs(), 18);
         assert_eq!(bih.biBitCount, 32);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The modern-menu QUICK verbs are their own top-level coclasses (each its own CLSID):
+/// the right structure (Convert into ▸ / Resize ▸ / Rotate ▸ are groups; Convert… is a
+/// leaf) and the right GetState gate (an image is enabled iff the menu + quick-verbs
+/// Options are on; an audio-only selection is always hidden, regardless of the toggle).
+#[test]
+fn quick_verbs_structure_and_gate() {
+    unsafe {
+        // Convert into ▸ — a group carrying the format leaves.
+        let conv = create_for(CLSID_QUICK_CONVERT_INTO).expect("create convert-into");
+        assert_eq!(title_of(&conv), "Convert into");
+        assert!(
+            conv.GetFlags().expect("GetFlags") & ECF_HASSUBCOMMANDS.0 as u32 != 0,
+            "Convert into should advertise sub-commands"
+        );
+        let fmts: Vec<String> = collect_subcommands(&conv).iter().map(|c| title_of(c)).collect();
+        for want in ["PNG", "JPG", "WebP"] {
+            assert!(fmts.iter().any(|t| t == want), "missing format {want} in {fmts:?}");
+        }
+
+        // Convert… — a leaf (no sub-commands).
+        let dlg = create_for(CLSID_QUICK_CONVERT_DIALOG).expect("create convert-dialog");
+        assert_eq!(
+            dlg.GetFlags().expect("GetFlags") & ECF_HASSUBCOMMANDS.0 as u32,
+            0,
+            "Convert\u{2026} is a leaf, not a submenu"
+        );
+
+        // Resize ▸ and Rotate ▸ — groups with children.
+        for clsid in [CLSID_QUICK_RESIZE, CLSID_QUICK_ROTATE] {
+            let cmd = create_for(clsid).expect("create group");
+            assert!(
+                cmd.GetFlags().expect("GetFlags") & ECF_HASSUBCOMMANDS.0 as u32 != 0,
+                "quick group should advertise sub-commands"
+            );
+            assert!(!collect_subcommands(&cmd).is_empty(), "quick group should have children");
+        }
+
+        // Gating. Build a real PNG and an (extension-only) audio file.
+        let dir = std::env::temp_dir().join("st2k_quick_gate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("q.png");
+        let mut img = image::RgbaImage::new(8, 8);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([1, 2, 3, 255]);
+        }
+        image::DynamicImage::ImageRgba8(img)
+            .save_with_format(&png, ImageFormat::Png)
+            .unwrap();
+        let mp3 = dir.join("q.mp3");
+        std::fs::write(&mp3, b"").unwrap(); // is_convertible_image gates on extension only
+
+        let cmd = create_for(CLSID_QUICK_RESIZE).expect("create");
+        // Image selection → ECS_ENABLED iff the menu + quick-verbs Options are both on.
+        let want_enabled = settings::menu_enabled() && settings::menu_quick_verbs();
+        let png_state = cmd.GetState(&item_array(&png), false).expect("GetState png");
+        assert_eq!(
+            png_state == ECS_ENABLED.0 as u32,
+            want_enabled,
+            "image quick verb should be enabled iff EnableMenu && MenuQuickVerbs"
+        );
+        // Audio-only selection → ECS_HIDDEN regardless of the toggle.
+        let mp3_state = cmd.GetState(&item_array(&mp3), false).expect("GetState mp3");
+        assert_eq!(mp3_state, ECS_HIDDEN.0 as u32, "audio-only must hide the quick verb");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

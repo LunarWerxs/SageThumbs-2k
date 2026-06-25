@@ -11,6 +11,7 @@ afpub
 aftemplate
 ai
 aif
+aifc
 aiff
 ape
 apng
@@ -92,6 +93,7 @@ dotm
 dotx
 dpx
 drf
+dsf
 dwg
 dxt1
 dxt5
@@ -102,8 +104,8 @@ eps
 epub
 erf
 exr
-f4v
 f3d
+f4v
 farbfeld
 fb2
 fbz
@@ -158,6 +160,7 @@ key
 kra
 lbm
 livp
+m2ts
 m4a
 m4b
 m4v
@@ -177,6 +180,7 @@ mp4
 mpc
 mpo
 mrw
+mts
 nef
 nrw
 numbers
@@ -187,6 +191,7 @@ ods
 odt
 oga
 ogg
+ogv
 opus
 ora
 orf
@@ -264,6 +269,7 @@ tiff64
 tim
 tm2
 tpic
+ts
 vda
 vicar
 viff

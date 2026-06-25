@@ -24,7 +24,7 @@
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5">
 
-  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="0.6.3.0" ProcessorArchitecture="neutral" />
+  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="0.7.0.0" ProcessorArchitecture="neutral" />
 
   <Properties>
     <DisplayName>SageThumbs 2K</DisplayName>
@@ -56,17 +56,28 @@
                           Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
 
-        <!-- COM server: both coclasses hosted out-of-process via the surrogate.
-             The CLSIDs match guids.rs. -->
+        <!-- COM server: the IExplorerCommand coclasses hosted out-of-process via the
+             surrogate. The CLSIDs match guids.rs (pinned by the
+             manifest_clsids_match_known test). -->
         <com:Extension Category="windows.comServer">
           <com:ComServer>
-            <!-- IExplorerCommand context-menu verb, activated out-of-proc in
+            <!-- IExplorerCommand context-menu verbs, activated out-of-proc in
                  dllhost via the generic surrogate (PowerToys' PowerRename uses
                  exactly this). The thumbnail provider is NOT packaged: it is
                  registered classically via DllRegisterServer (regsvr32, elevated),
-                 the proven path that doesn't need package identity. -->
+                 the proven path that doesn't need package identity.
+
+                 D4F1C8A2 is the (currently dormant) root "SageThumbs 2K" flyout — kept
+                 registered for COM activation but with NO verb pointing at it, so it
+                 never renders (re-adding a root verb would double-list "SageThumbs 2K"
+                 next to the classic handler; see the FileExplorerContextMenus note below).
+                 The four 1C7F…/2D8A…/3E9B…/4FAC… coclasses are the top-level quick verbs. -->
             <com:SurrogateServer DisplayName="SageThumbs 2K Context Menu">
               <com:Class Id="D4F1C8A2-3E7B-4A96-8C0F-6B1E2D9A4C57" Path="sagethumbs2k.dll" ThreadingModel="STA" />
+              <com:Class Id="1C7F4E2A-9D63-4B85-A0F1-7E2C5B9D4A60" Path="sagethumbs2k.dll" ThreadingModel="STA" />
+              <com:Class Id="2D8A5F3B-0E74-4C96-B1A2-8F3D6CAE5B71" Path="sagethumbs2k.dll" ThreadingModel="STA" />
+              <com:Class Id="3E9B6A4C-1F85-4DA7-C2B3-9A4E7DBF6C82" Path="sagethumbs2k.dll" ThreadingModel="STA" />
+              <com:Class Id="4FAC7B5D-2096-4EB8-D3C4-AB5F8ECA7D93" Path="sagethumbs2k.dll" ThreadingModel="STA" />
             </com:SurrogateServer>
           </com:ComServer>
         </com:Extension>
@@ -74,21 +85,38 @@
         <!-- (Thumbnails are handled by the classic regsvr32 registration, not
              the package — see register.rs.) -->
 
-        <!-- NO modern (Win11 new-menu) context-menu verb.
+        <!-- Modern (Win11 new-menu) QUICK VERBS.
 
-             We deliberately ship ONLY the classic IContextMenu handler
-             (contextmenu.rs, registered via regsvr32 under *\shellex). A packaged
-             `windows.fileExplorerContextMenus` verb would appear in the new menu
-             AND get bridged down into "Show more options" — listing
-             "SageThumbs 2K" TWICE in the classic menu next to our own classic
-             handler, with the bridged copy unable to host the owner-drawn preview.
-             Windows offers no flag to make a packaged verb new-menu-only, so the
-             only way to have the rich cohesive classic menu (preview + quick verbs
-             + full submenu with Settings, all in one place) with NO duplicate is to
-             drop the packaged verb entirely. The trade: SageThumbs 2K shows in
-             "Show more options" only, not the compact Win11 menu. (If a future
-             Windows build adds a new-menu-only flag, re-add the desktop4
-             FileExplorerContextMenus extension here pointing at D4F1C8A2.) -->
+             Convert into ▸ / Convert… / Resize ▸ / Rotate ▸ surfaced as their OWN
+             top-level entries on the compact Win11 context menu, one click away — the
+             modern twin of the classic "quick verbs on main menu" Option. Each Verb
+             points at its own coclass (command.rs::QUICK_VERBS ↔ guids.rs, pinned by
+             the quick_verbs_match_quick_keys + manifest_clsids_match_known tests). Each
+             verb's GetState is HIDDEN unless EnableMenu AND MenuQuickVerbs are on AND the
+             selection holds a supported, non-audio image — so they're absent by default
+             and vanish when the toggle is off, never cluttering the menu uninvited.
+
+             We deliberately do NOT declare a verb for the ROOT "SageThumbs 2K" flyout
+             (D4F1C8A2): a packaged verb is bridged by Windows into the legacy "Show more
+             options" menu, and a root "SageThumbs 2K" there would sit next to our own
+             classic IContextMenu handler's "SageThumbs 2K" — listing it TWICE. The quick
+             verbs are bridged too, but the classic handler detects the package
+             (settings::modern_menu_active, set by the installer) and OMITS its own
+             top-level quick-verb copies, so they're listed exactly once in the legacy
+             menu. The full flyout + owner-drawn preview stay on the classic handler.
+
+             Type="*" (all files) keeps the manifest from enumerating 300+ formats; the
+             per-verb GetState gate does the real filtering. -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="SageThumbs2KConvertInto"   Clsid="1C7F4E2A-9D63-4B85-A0F1-7E2C5B9D4A60" />
+              <desktop5:Verb Id="SageThumbs2KConvertDialog" Clsid="2D8A5F3B-0E74-4C96-B1A2-8F3D6CAE5B71" />
+              <desktop5:Verb Id="SageThumbs2KResize"        Clsid="3E9B6A4C-1F85-4DA7-C2B3-9A4E7DBF6C82" />
+              <desktop5:Verb Id="SageThumbs2KRotate"        Clsid="4FAC7B5D-2096-4EB8-D3C4-AB5F8ECA7D93" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
 
       </Extensions>
     </Application>

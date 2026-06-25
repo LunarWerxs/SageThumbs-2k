@@ -254,6 +254,14 @@ pub fn real_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
+/// True when a PSD/PSB document is transparent (its merged composite has an alpha
+/// channel). The baked-in preview (resource 1036) is a JPEG with no alpha, so the
+/// thumbnail/preview path renders the real layer composite for these instead of a
+/// flat white preview. See [`psd::has_alpha`].
+pub fn psd_has_alpha(bytes: &[u8]) -> bool {
+    psd::has_alpha(bytes)
+}
+
 /// Raster-image extensions we accept as an archive cover. A curated subset of the
 /// formats our decoder can read (NOT all of `formats::FORMATS` — most FORMATS
 /// entries, e.g. ebook/audio/document types, are not valid cover images). Mirrors

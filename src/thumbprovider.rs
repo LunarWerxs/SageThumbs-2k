@@ -181,31 +181,33 @@ impl ThumbnailProvider_Impl {
                             unsafe { mp4_remux_moov(stream) }
                                 .and_then(|buf| crate::video::frame_from_bytes(&buf))
                         });
-                    return match frame {
-                        Some(frame) => {
-                            let decoded = decode::thumbnail_from_image(frame, cx.min(cfg.max_thumb));
-                            let hbmp = unsafe {
-                                dib::create_premultiplied_dib(
-                                    decoded.width as i32,
-                                    decoded.height as i32,
-                                    &decoded.rgba,
-                                )?
-                            };
-                            unsafe {
-                                *phbmp = hbmp;
-                                *pdwalpha = WTSAT_ARGB;
-                            }
-                            safety::log_debug(&format!(
-                                "GetThumbnail: video frame {}x{}",
-                                decoded.width, decoded.height
-                            ));
-                            Ok(())
+                    if let Some(frame) = frame {
+                        let decoded = decode::thumbnail_from_image(frame, cx.min(cfg.max_thumb));
+                        let hbmp = unsafe {
+                            dib::create_premultiplied_dib(
+                                decoded.width as i32,
+                                decoded.height as i32,
+                                &decoded.rgba,
+                            )?
+                        };
+                        unsafe {
+                            *phbmp = hbmp;
+                            *pdwalpha = WTSAT_ARGB;
                         }
-                        None => {
-                            safety::log_debug("GetThumbnail: video with no decodable frame");
-                            Err(Error::from(E_FAIL))
-                        }
-                    };
+                        safety::log_debug(&format!(
+                            "GetThumbnail: video frame {}x{}",
+                            decoded.width, decoded.height
+                        ));
+                        return Ok(());
+                    }
+                    // No decodable frame. OggS is ambiguous — an audio-only .ogg/.opus matches
+                    // the video magic too, so fall THROUGH to the album-art path below instead of
+                    // failing. A genuine video container the OS can't decode stops here.
+                    if !unsafe { peek_is_ogg(stream) } {
+                        safety::log_debug("GetThumbnail: video with no decodable frame");
+                        return Err(Error::from(E_FAIL));
+                    }
+                    safety::log_debug("GetThumbnail: OggS not video — trying album art");
                 }
 
                 // Audio: the album art lives in the metadata, so we seek straight
@@ -289,12 +291,26 @@ unsafe fn stream_size(stream: &IStream) -> Option<u64> {
 /// clean. HEIC/AVIF and M4A/M4B share MP4's `ftyp` box but are excluded by `is_video_magic`.
 unsafe fn peek_is_video(stream: &IStream) -> bool {
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 16];
+    // 208 bytes: enough to verify the MPEG-TS / M2TS sync-byte STRIDE (a second 0x47 at
+    // offset 188 / 196) so we don't false-match any file that merely starts with 'G'.
+    let mut head = [0u8; 208];
     let mut got: u32 = 0;
     let hr = stream.Read(head.as_mut_ptr() as *mut c_void, head.len() as u32, Some(&mut got));
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     let got = (got as usize).min(head.len());
     hr.is_ok() && crate::video::is_video_magic(&head[..got])
+}
+
+/// Is the stream head the Ogg container magic (`OggS`)? Ogg carries both video (.ogv) and
+/// audio (Vorbis/Opus/Speex), so a video frame-grab miss on an Ogg means it's audio-only —
+/// the caller then falls back to the album-art path instead of failing.
+unsafe fn peek_is_ogg(stream: &IStream) -> bool {
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let mut head = [0u8; 4];
+    let mut got: u32 = 0;
+    let hr = stream.Read(head.as_mut_ptr() as *mut c_void, 4, Some(&mut got));
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    hr.is_ok() && got == 4 && &head == b"OggS"
 }
 
 /// Recover the backing file path from the shell's thumbnail `IStream` via `IStream::Stat`

@@ -1,6 +1,6 @@
 ; Inno Setup script for SageThumbs 2K.
 ; Built by scripts\build-release.ps1, which stages files into packaging\stage\
-; and passes the version via /DAppVer.  Do not run this by hand — run the
+; and passes the version via /DAppVer.  Do not run this by hand - run the
 ; pipeline so the binaries + bundled ImageMagick are freshly staged.
 
 #ifndef AppVer
@@ -13,7 +13,7 @@
 #define Publisher "lunarwerx"
 
 [Setup]
-; Stable upgrade GUID — keep constant across releases so updates replace cleanly.
+; Stable upgrade GUID - keep constant across releases so updates replace cleanly.
 AppId={{B0A1C2D3-E4F5-4607-8899-AABBCCDDEEFF}
 AppName={#AppName}
 AppVersion={#AppVer}
@@ -30,7 +30,7 @@ OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; Rich VERSIONINFO on Setup.exe — a metadata-less installer is heuristic-AV
+; Rich VERSIONINFO on Setup.exe - a metadata-less installer is heuristic-AV
 ; false-positive bait (same reason the binaries + magick stubs carry it).
 VersionInfoVersion={#AppVer}
 VersionInfoProductVersion={#AppVer}
@@ -40,12 +40,12 @@ VersionInfoDescription={#AppName} Setup
 VersionInfoCopyright=SageThumbs 2K
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Shell-extension registration writes HKLM + Program Files → needs elevation.
+; Shell-extension registration writes HKLM + Program Files -> needs elevation.
 PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-Name: "full"; Description: "Full - all 315 formats (recommended)"
+Name: "full"; Description: "Full - all 316 formats (recommended)"
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
@@ -57,7 +57,7 @@ Name: "magick"; Description: "ImageMagick engine - 100+ extra formats (RAW, DICO
 Source: "stage\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 Source: "stage\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 Source: "stage\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-; Signed sparse package + its public cert → the Windows 11 modern context menu.
+; Signed sparse package + its public cert -> the Windows 11 modern context menu.
 ; Built by packaging\make-msix.ps1 (self-signed; skipped with -NoModernMenu).
 Source: "stage\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 Source: "stage\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
@@ -74,14 +74,23 @@ Source: "stage\magick\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 Name: "{group}\SageThumbs 2K"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\app.ico"
 Name: "{group}\Uninstall SageThumbs 2K"; Filename: "{uninstallexe}"
 
+[Registry]
+; Modern-menu marker (HKLM): set only when the signed package is bundled (and thus the
+; [Run] step below registers it). The classic IContextMenu handler reads this - when the
+; package is active, Windows bridges the packaged quick verbs into "Show more options", so
+; the classic handler omits ITS own copies to avoid double-listing them
+; (settings::modern_menu_active). Removed on uninstall with the value/key.
+Root: HKLM; Subkey: "Software\SageThumbs2K"; ValueType: dword; ValueName: "ModernMenuActive"; \
+  ValueData: 1; Flags: uninsdeletevalue uninsdeletekeyifempty; Check: ModernMenuBundled
+
 [Run]
 ; Register the thumbnail provider + classic context-menu handler (HKLM).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
   StatusMsg: "Registering the shell extension..."; Flags: runhidden waituntilterminated
 ; Modern Win11 context menu (signed sparse package): trust our self-signed cert
-; (machine TrustedPeople — app packages only, not a root CA), then sideload the
+; (machine TrustedPeople - app packages only, not a root CA), then sideload the
 ; package bound to the install dir. ONE -NoProfile powershell call using native
-; cmdlets (Import-Certificate + Add-AppxPackage) — deliberately NO -ExecutionPolicy
+; cmdlets (Import-Certificate + Add-AppxPackage) - deliberately NO -ExecutionPolicy
 ; Bypass (it only gates script *files*, never the inline cmdlets we pass via -Command)
 ; and NO certutil, so the installer doesn't resemble a script-dropper to AV heuristics.
 ; Runs only when the package was bundled.
@@ -95,7 +104,7 @@ Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
 ; After a SILENT self-update (the running app launched setup with /UPDATED), relaunch the
 ; freshly installed app with --updated <ver> so it shows a "you're now on <ver>" note.
 ; Gated on /UPDATED via WasSelfUpdate, so a normal interactive install never triggers it
-; (and it runs even though that install was silent — no skipifsilent here, deliberately).
+; (and it runs even though that install was silent - no skipifsilent here, deliberately).
 Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
   Flags: nowait; Check: WasSelfUpdate
 
@@ -108,7 +117,7 @@ Filename: "powershell.exe"; \
   Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage; Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -like '*SageThumbs2K*' | Remove-Item -Force"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregAppx"
 ; Unregister before files are removed (our DllUnregisterServer also unhooks the
-; 315 formats and fires SHChangeNotify).
+; 316 formats and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregSt2k"
 
@@ -128,7 +137,7 @@ begin
   Result := FileExists(ExpandConstant('{app}\SageThumbs2K.msix'));
 end;
 
-// True when the running app launched this setup as a SILENT self-update — it passes the
+// True when the running app launched this setup as a SILENT self-update - it passes the
 // custom /UPDATED switch. Gates the post-update "you're now on <ver>" relaunch so a normal
 // interactive install never shows it.
 function WasSelfUpdate: Boolean;
@@ -144,28 +153,168 @@ begin
     end;
 end;
 
+// The "why are you leaving?" answer collected by the uninstall survey (AskUninstallReason),
+// read by NotifyUninstall. Reason is a short bucket key (alnum); Note is optional free text.
+var
+  UninstallReason: String;
+  UninstallNote: String;
+
+// Percent-encode a string for safe use as a URL query value. ASCII only - any non-ASCII
+// char is dropped rather than mis-encoded (the note is best-effort analytics, not exact text).
+function UrlEncode(const S: String): String;
+var
+  i, Code: Integer;
+  C: Char;
+begin
+  Result := '';
+  for i := 1 to Length(S) do begin
+    C := S[i];
+    if ((C >= 'A') and (C <= 'Z')) or ((C >= 'a') and (C <= 'z')) or
+       ((C >= '0') and (C <= '9')) or (C = '-') or (C = '_') or (C = '.') or (C = '~') then
+      Result := Result + C
+    else begin
+      Code := Ord(C);
+      if Code <= 127 then
+        Result := Result + '%' + Format('%.2x', [Code]);
+      // non-ASCII: dropped on purpose (avoids corrupting multi-byte chars w/o a UTF-8 encoder)
+    end;
+  end;
+end;
+
+// A small, skippable, anonymous "why are you uninstalling?" survey shown right before the
+// removal. Pure-Win32 modal (no browser); fills UninstallReason/UninstallNote. Either button
+// lets the uninstall proceed - Skip just leaves both empty. Never shown on a silent uninstall.
+procedure AskUninstallReason;
+var
+  F: TSetupForm;
+  Lbl, NoteLbl: TNewStaticText;
+  Radios: array[0..6] of TNewRadioButton;
+  Note: TNewEdit;
+  BtnSend, BtnSkip: TNewButton;
+  Keys, Texts: array[0..6] of String;
+  i, y: Integer;
+begin
+  UninstallReason := '';
+  UninstallNote := '';
+
+  Keys[0] := 'buggy';       Texts[0] := 'It did not work - no thumbnails, errors, or crashes';
+  Keys[1] := 'slow';        Texts[1] := 'Too slow or used too much memory / CPU';
+  Keys[2] := 'missing';     Texts[2] := 'Missing a file format or feature I needed';
+  Keys[3] := 'alternative'; Texts[3] := 'Found a better alternative';
+  Keys[4] := 'temporary';   Texts[4] := 'Just trying it out / only needed it temporarily';
+  Keys[5] := 'confusing';   Texts[5] := 'Too confusing or hard to use';
+  Keys[6] := 'other';       Texts[6] := 'Other (please tell us below)';
+
+  F := TSetupForm.Create(nil);
+  try
+    F.Caption := 'SageThumbs 2K';
+    // Native look: use the modern UI font (TSetupForm.Create(nil) otherwise inherits the
+    // dated default). Set BEFORE creating children so labels/radios/buttons inherit it.
+    F.Font.Name := 'Segoe UI';
+    F.Font.Size := 9;
+    F.ClientWidth := ScaleX(470);
+    F.ClientHeight := ScaleY(350);
+    F.Position := poScreenCenter;
+    F.BorderStyle := bsDialog;
+
+    Lbl := TNewStaticText.Create(F);
+    Lbl.Parent := F;
+    Lbl.Left := ScaleX(16);
+    Lbl.Top := ScaleY(14);
+    Lbl.Width := F.ClientWidth - ScaleX(32);
+    Lbl.AutoSize := False;
+    Lbl.WordWrap := True;
+    Lbl.Height := ScaleY(38);
+    Lbl.Caption := 'Sorry to see you go! Mind telling us why you''re uninstalling?' + #13#10 +
+      'It''s optional and anonymous - it only helps us improve SageThumbs 2K.';
+
+    y := ScaleY(58);
+    for i := 0 to 6 do begin
+      Radios[i] := TNewRadioButton.Create(F);
+      Radios[i].Parent := F;
+      Radios[i].Left := ScaleX(18);
+      Radios[i].Top := y;
+      Radios[i].Width := F.ClientWidth - ScaleX(36);
+      Radios[i].Caption := Texts[i];
+      y := y + ScaleY(23);
+    end;
+
+    NoteLbl := TNewStaticText.Create(F);
+    NoteLbl.Parent := F;
+    NoteLbl.Left := ScaleX(16);
+    NoteLbl.Top := y + ScaleY(6);
+    NoteLbl.Caption := 'Anything else? (optional)';
+
+    Note := TNewEdit.Create(F);
+    Note.Parent := F;
+    Note.Left := ScaleX(16);
+    Note.Top := y + ScaleY(24);
+    Note.Width := F.ClientWidth - ScaleX(32);
+    Note.MaxLength := 200;
+
+    BtnSend := TNewButton.Create(F);
+    BtnSend.Parent := F;
+    BtnSend.Width := ScaleX(130);
+    BtnSend.Height := ScaleY(28);
+    BtnSend.Top := F.ClientHeight - ScaleY(40);
+    BtnSend.Left := F.ClientWidth - ScaleX(146);
+    BtnSend.Caption := 'Send feedback';
+    BtnSend.ModalResult := mrOk;
+    BtnSend.Default := True;
+
+    BtnSkip := TNewButton.Create(F);
+    BtnSkip.Parent := F;
+    BtnSkip.Width := ScaleX(100);
+    BtnSkip.Height := ScaleY(28);
+    BtnSkip.Top := BtnSend.Top;
+    BtnSkip.Left := BtnSend.Left - ScaleX(108);
+    BtnSkip.Caption := 'Skip';
+    BtnSkip.ModalResult := mrCancel;
+    BtnSkip.Cancel := True;
+
+    if F.ShowModal = mrOk then begin
+      for i := 0 to 6 do
+        if Radios[i].Checked then
+          UninstallReason := Keys[i];
+      UninstallNote := Trim(Note.Text);
+    end;
+  finally
+    F.Free;
+  end;
+end;
+
 // Best-effort one-shot HTTPS GET on uninstall, over WinHttp with short timeouts and all
 // errors swallowed so it never blocks or slows the uninstall. Only a real uninstall
-// reaches it — an in-place upgrade does not run the uninstaller.
+// reaches it - an in-place upgrade does not run the uninstaller. Carries the survey answer
+// (reason bucket + optional note) so the worker can tally WHY, not just how many.
 procedure NotifyUninstall;
 var
   Http: Variant;
+  Url: String;
 begin
   try
+    Url := 'https://st2k.lunarwerx.com/sponsor?uninstall=1&v={#AppVer}';
+    if UninstallReason <> '' then
+      Url := Url + '&reason=' + UninstallReason;
+    if UninstallNote <> '' then
+      Url := Url + '&note=' + UrlEncode(UninstallNote);
     Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
-    // resolve, connect, send, receive (ms) — capped so a dead network fails fast.
+    // resolve, connect, send, receive (ms) - capped so a dead network fails fast.
     Http.SetTimeouts(1500, 1500, 1500, 2000);
-    Http.Open('GET', 'https://st2k.lunarwerx.com/sponsor?uninstall=1&v={#AppVer}', False);
+    Http.Open('GET', Url, False);
     Http.SetRequestHeader('User-Agent', 'SageThumbs2K-Uninstaller');
     Http.Send('');
   except
-    // best-effort only — never surface or block on failure.
+    // best-effort only - never surface or block on failure.
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
+    // Ask why first (interactive uninstalls only), then beacon the answer with the tally.
+    if not UninstallSilent then
+      AskUninstallReason;
     NotifyUninstall;
     // Tidy the per-user leftovers Windows keeps on uninstall: drop our whole HKCU settings
     // subtree, then leave only a tiny marker noting the version last installed.

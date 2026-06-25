@@ -1,6 +1,6 @@
 # Security Policy
 
-SageThumbs 2K renders **288 file formats**, most of them parsed from untrusted files, and
+SageThumbs 2K renders **316 file formats**, most of them parsed from untrusted files, and
 its thumbnail/menu code runs **inside Windows Explorer**. We take memory-safety and
 crash-isolation seriously — it's 100% pure-Rust, built with `panic = "abort"` and a
 `catch_unwind` guard at every COM boundary, and the heavy ImageMagick path runs as a

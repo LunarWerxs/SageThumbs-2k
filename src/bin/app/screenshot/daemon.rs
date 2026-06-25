@@ -27,6 +27,9 @@ use crate::win::{app_icon, wide};
 const HOTKEY_ID: i32 = 1;
 /// The optional second "quick-save" hotkey (full-screen → clipboard+PNG, no editor).
 const QUICK_HOTKEY_ID: i32 = 2;
+/// The user-assignable "custom action" hotkey (colour picker / convert / rotate / … —
+/// see [`crate::hotkey`]). Spawns `--hotkey-action`, which runs whichever action is bound.
+const CUSTOM_HOTKEY_ID: i32 = 3;
 const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by the Settings window (via `enable::reload_hotkey`) when the user picks
 /// a different capture hotkey, so a running daemon re-reads + re-registers it.
@@ -140,11 +143,21 @@ fn hkf_to_mods(hkf: u32) -> HOT_KEY_MODIFIERS {
 /// from the persisted settings. Best-effort — if a chord is taken the tray menu
 /// still works. The quick hotkey is skipped when its vk is 0 (disabled).
 unsafe fn register_configured_hotkey(hwnd: HWND) {
-    let (hkf, vk) = sagethumbs2k_core::settings::screenshot_hotkey();
-    let _ = RegisterHotKey(Some(hwnd), HOTKEY_ID, hkf_to_mods(hkf), vk);
-    let (qhkf, qvk) = sagethumbs2k_core::settings::screenshot_quick_hotkey();
-    if qvk != 0 {
-        let _ = RegisterHotKey(Some(hwnd), QUICK_HOTKEY_ID, hkf_to_mods(qhkf), qvk);
+    // The capture + quick-save hotkeys belong to the SCREENSHOT feature — register them only
+    // while it's enabled, so a daemon kept alive solely for a custom hotkey doesn't also grab
+    // Ctrl+PrtScn.
+    if super::is_enabled() {
+        let (hkf, vk) = sagethumbs2k_core::settings::screenshot_hotkey();
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_ID, hkf_to_mods(hkf), vk);
+        let (qhkf, qvk) = sagethumbs2k_core::settings::screenshot_quick_hotkey();
+        if qvk != 0 {
+            let _ = RegisterHotKey(Some(hwnd), QUICK_HOTKEY_ID, hkf_to_mods(qhkf), qvk);
+        }
+    }
+    // The user-assignable custom action hotkey — independent of the screenshot feature.
+    let (chkf, cvk) = sagethumbs2k_core::settings::custom_action_hotkey();
+    if cvk != 0 {
+        let _ = RegisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID, hkf_to_mods(chkf), cvk);
     }
 }
 
@@ -264,6 +277,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 match wparam.0 as i32 {
                     HOTKEY_ID => spawn(Some("--screenshot")),
                     QUICK_HOTKEY_ID => spawn(Some("--screenshot-instant")),
+                    CUSTOM_HOTKEY_ID => spawn(Some("--hotkey-action")),
                     _ => {}
                 }
                 LRESULT(0)
@@ -271,6 +285,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_RELOAD => {
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
+                let _ = UnregisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID);
                 register_configured_hotkey(hwnd);
                 // Reconcile the tray icon with the (possibly just-changed) setting.
                 if sagethumbs2k_core::settings::screenshot_hide_tray() {
@@ -315,11 +330,12 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         remove_tray_icon(hwnd);
                     }
                     IDM_QUIT => {
-                        // "Exit" disables the hotkey for real: drop the HKCU autostart
-                        // entry (so it won't relaunch at next logon) AND close the
-                        // daemon (set_enabled(false) posts WM_CLOSE → WM_DESTROY, which
-                        // removes the tray icon + unregisters the hotkey).
-                        super::set_enabled(false);
+                        // "Exit" disables the daemon for real: drop the HKCU autostart entry
+                        // (so it won't relaunch at next logon) AND close the daemon (quit posts
+                        // WM_CLOSE → WM_DESTROY, which removes the tray icon + unregisters the
+                        // hotkeys). Unlike `set_enabled(false)`, `quit` stops even when a custom
+                        // hotkey is bound — an explicit "stop everything".
+                        super::quit();
                     }
                     _ => {}
                 }
@@ -330,6 +346,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 remove_tray_icon(hwnd);
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
+                let _ = UnregisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID);
                 PostQuitMessage(0);
                 LRESULT(0)
             }

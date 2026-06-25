@@ -15,16 +15,28 @@
 //! LAZILY on the first query, so the indexer pays nothing until something actually asks.
 
 use core::cell::RefCell;
+use core::mem::ManuallyDrop;
 
 use windows_implement::implement;
-use windows::core::{Error, Result, PCWSTR};
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, PROPERTYKEY, STG_E_ACCESSDENIED};
-use windows::Win32::Storage::EnhancedStorage::{
-    PKEY_Image_Dimensions, PKEY_Image_HorizontalSize, PKEY_Image_VerticalSize, PKEY_Music_AlbumTitle,
-    PKEY_Music_Artist, PKEY_Music_TrackNumber, PKEY_Photo_CameraManufacturer, PKEY_Photo_CameraModel,
-    PKEY_Title,
+use windows::core::{Error, Result, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{
+    E_FAIL, E_INVALIDARG, FILETIME, PROPERTYKEY, STG_E_ACCESSDENIED, SYSTEMTIME,
 };
-use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+use windows::Win32::System::Com::CoTaskMemAlloc;
+use windows::Win32::System::Variant::VT_LPWSTR;
+use windows::Win32::Storage::EnhancedStorage::{
+    PKEY_Audio_EncodingBitrate, PKEY_GPS_LatitudeDecimal, PKEY_GPS_LongitudeDecimal,
+    PKEY_Image_BitDepth, PKEY_Image_Dimensions, PKEY_Image_HorizontalResolution,
+    PKEY_Image_HorizontalSize, PKEY_Image_VerticalResolution, PKEY_Image_VerticalSize,
+    PKEY_Media_Duration, PKEY_Media_Year, PKEY_Music_AlbumTitle, PKEY_Music_Artist,
+    PKEY_Music_Genre, PKEY_Music_TrackNumber, PKEY_Photo_CameraManufacturer, PKEY_Photo_CameraModel,
+    PKEY_Photo_DateTaken, PKEY_Title, PKEY_Video_FrameHeight, PKEY_Video_FrameWidth,
+};
+use windows::Win32::System::Com::StructuredStorage::{
+    InitPropVariantFromFileTime, InitPropVariantFromStringVector, PROPVARIANT, PROPVARIANT_0,
+    PROPVARIANT_0_0, PROPVARIANT_0_0_0,
+};
+use windows::Win32::System::Time::{SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithFile, IInitializeWithFile_Impl, IPropertyStore, IPropertyStore_Impl,
 };
@@ -143,34 +155,78 @@ impl PropertyStore_Impl {
             return out;
         };
 
+        let ext = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let is_video = matches!(crate::formats::category(&ext), crate::formats::Category::Video);
+
         // Image dimensions + EXIF camera (same probe "Image info" uses, under the decode guards).
         if info.width > 0 && info.height > 0 {
             out.push((
                 PKEY_Image_Dimensions,
-                PROPVARIANT::from(format!("{} x {}", info.width, info.height).as_str()),
+                pv_lpwstr(&format!("{} x {}", info.width, info.height)),
             ));
             out.push((PKEY_Image_HorizontalSize, PROPVARIANT::from(info.width)));
             out.push((PKEY_Image_VerticalSize, PROPVARIANT::from(info.height)));
+            // For the video formats that reach us (flv/ogv) the same geometry IS the frame
+            // size — surface it under the video keys too, so the pane labels it correctly.
+            if is_video {
+                out.push((PKEY_Video_FrameWidth, PROPVARIANT::from(info.width)));
+                out.push((PKEY_Video_FrameHeight, PROPVARIANT::from(info.height)));
+            }
         }
         if let Some(make) = info.make.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Photo_CameraManufacturer, PROPVARIANT::from(make.as_str())));
+            out.push((PKEY_Photo_CameraManufacturer, pv_lpwstr(&make)));
         }
         if let Some(model) = info.model.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Photo_CameraModel, PROPVARIANT::from(model.as_str())));
+            out.push((PKEY_Photo_CameraModel, pv_lpwstr(&model)));
+        }
+        // EXIF capture date → System.Photo.DateTaken (VT_FILETIME). Only when it parses.
+        if let Some(dt) = info.datetime.as_deref().and_then(datetime_to_propvariant) {
+            out.push((PKEY_Photo_DateTaken, dt));
+        }
+        if info.bit_depth > 0 {
+            out.push((PKEY_Image_BitDepth, PROPVARIANT::from(info.bit_depth)));
+        }
+        if info.dpi_x > 0.0 {
+            out.push((PKEY_Image_HorizontalResolution, PROPVARIANT::from(info.dpi_x)));
+        }
+        if info.dpi_y > 0.0 {
+            out.push((PKEY_Image_VerticalResolution, PROPVARIANT::from(info.dpi_y)));
+        }
+        if let Some((lat, lon)) = info.gps {
+            out.push((PKEY_GPS_LatitudeDecimal, PROPVARIANT::from(lat)));
+            out.push((PKEY_GPS_LongitudeDecimal, PROPVARIANT::from(lon)));
         }
 
         // Audio tags (lofty + our ASF parser) — probed alongside `info` above. Empty for non-audio.
         if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_Artist, PROPVARIANT::from(artist.as_str())));
+            out.push((PKEY_Music_Artist, pv_lpwstr_vec(&artist))); // multi-value key
         }
         if let Some(album) = tags.album.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_AlbumTitle, PROPVARIANT::from(album.as_str())));
+            out.push((PKEY_Music_AlbumTitle, pv_lpwstr(&album)));
         }
         if let Some(title) = tags.title.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Title, PROPVARIANT::from(title.as_str())));
+            out.push((PKEY_Title, pv_lpwstr(&title)));
         }
         if let Some(track) = tags.track.filter(|&t| t > 0) {
             out.push((PKEY_Music_TrackNumber, PROPVARIANT::from(track)));
+        }
+        if let Some(genre) = tags.genre.filter(|s| !s.is_empty()) {
+            out.push((PKEY_Music_Genre, pv_lpwstr_vec(&genre))); // multi-value key
+        }
+        if let Some(year) = tags.year.filter(|&y| y > 0) {
+            out.push((PKEY_Media_Year, PROPVARIANT::from(year)));
+        }
+        // System.Media.Duration is in 100-nanosecond units (VT_UI8); ms × 10 000.
+        if tags.duration_ms > 0 {
+            out.push((PKEY_Media_Duration, PROPVARIANT::from(tags.duration_ms.saturating_mul(10_000))));
+        }
+        // System.Audio.EncodingBitrate is bits-per-second (VT_UI4); kbps × 1000.
+        if tags.bitrate_kbps > 0 {
+            out.push((PKEY_Audio_EncodingBitrate, PROPVARIANT::from(tags.bitrate_kbps.saturating_mul(1000))));
         }
 
         safety::log_debug(&format!(
@@ -181,6 +237,82 @@ impl PropertyStore_Impl {
         ));
         out
     }
+}
+
+/// Build a `VT_LPWSTR` PROPVARIANT — the canonical type for single-string `System.*` properties.
+/// `PROPVARIANT::from(&str)` makes a `VT_BSTR`; the Details pane coerces and displays that, but the
+/// Windows SEARCH INDEXER rejects `VT_BSTR` for these keys, so property/`kind:` search never finds
+/// the file. The string is `CoTaskMemAlloc`'d and OWNED by the variant — its `Drop`
+/// (`PropVariantClear`) `CoTaskMemFree`s it. (Constructed the same way the `windows` crate builds
+/// its own integer `From` impls; there is no single-string `InitPropVariantFromString` in this
+/// crate version, only the vector form.)
+fn pv_lpwstr(s: &str) -> PROPVARIANT {
+    let wide: Vec<u16> = s.encode_utf16().chain(core::iter::once(0)).collect();
+    unsafe {
+        let p = CoTaskMemAlloc(wide.len() * 2) as *mut u16;
+        if p.is_null() {
+            return PROPVARIANT::default();
+        }
+        core::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+        PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_LPWSTR,
+                    wReserved1: 0,
+                    wReserved2: 0,
+                    wReserved3: 0,
+                    Anonymous: PROPVARIANT_0_0_0 { pwszVal: PWSTR(p) },
+                }),
+            },
+        }
+    }
+}
+
+/// Build a `VT_VECTOR | VT_LPWSTR` PROPVARIANT for the multi-value string keys. System.Music.Artist
+/// and System.Music.Genre carry the `PDTF_MULTIPLEVALUES` schema flag, so a scalar string is the
+/// wrong canonical type for the index — these must be a string vector (one element here, since our
+/// extractors yield a single value). `InitPropVariantFromStringVector` copies the strings.
+fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
+    let wide: Vec<u16> = s.encode_utf16().chain(core::iter::once(0)).collect();
+    let arr = [PCWSTR(wide.as_ptr())];
+    unsafe { InitPropVariantFromStringVector(Some(&arr)) }.unwrap_or_default()
+}
+
+/// Build a `VT_FILETIME` PROPVARIANT from an EXIF datetime (`"YYYY:MM:DD HH:MM:SS"`, also
+/// tolerating `-`/`/` date separators and trailing sub-seconds). Returns `None` for a
+/// malformed or never-set (all-zero) stamp.
+///
+/// EXIF `DateTimeOriginal` is the camera's LOCAL wall-clock with no timezone. `System.Photo.DateTaken`
+/// is a UTC `FILETIME` that the shell converts back to local for display — so we must convert the
+/// local components to UTC FIRST (`TzSpecificLocalTimeToSystemTime`, using the machine's current
+/// zone), or the displayed time would be shifted by the local UTC offset. With the conversion, the
+/// Details pane shows the original wall-clock — matching Windows' own photo property handler.
+fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
+    let (date, time) = s.split_once(' ')?;
+    let d: Vec<&str> = date.split([':', '-', '/']).collect();
+    let t: Vec<&str> = time.split([':', '.']).collect();
+    if d.len() != 3 || t.len() < 3 {
+        return None;
+    }
+    let num = |x: &str| x.trim().parse::<u16>().ok();
+    let local = SYSTEMTIME {
+        wYear: num(d[0])?,
+        wMonth: num(d[1])?,
+        wDay: num(d[2])?,
+        wHour: num(t[0])?,
+        wMinute: num(t[1])?,
+        wSecond: num(t[2])?,
+        wDayOfWeek: 0,
+        wMilliseconds: 0,
+    };
+    if local.wYear == 0 || local.wMonth == 0 || local.wDay == 0 {
+        return None; // a camera that never had its clock set writes 0000:00:00
+    }
+    let mut utc = SYSTEMTIME::default();
+    unsafe { TzSpecificLocalTimeToSystemTime(None, &local, &mut utc) }.ok()?;
+    let mut ft = FILETIME::default();
+    unsafe { SystemTimeToFileTime(&utc, &mut ft) }.ok()?;
+    unsafe { InitPropVariantFromFileTime(&ft) }.ok()
 }
 
 /// Run the bounded file probe ([`crate::strip::read_info_bounded`] + audio tags) on a detached
