@@ -62,6 +62,20 @@ jobs:
       - name: Test
         run: cargo test --release --lib
 
+  # Drift guard (no build needed): every asset referenced by include_bytes!/include_str!
+  # or a README/docs <img> must be git-tracked; the README badge + FEATURES format count
+  # must match src/formats.rs FORMATS; the AppxManifest version must match Cargo.toml.
+  # Catches the "referenced-but-not-committed" + version/count drift classes that have
+  # broken releases — fails fast, before anything ships. See scripts/check-consistency.ps1.
+  consistency:
+    name: consistency (assets · counts · version)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check-consistency
+        shell: pwsh
+        run: ./scripts/check-consistency.ps1
+
   # License + advisory + source/ban audit. The whole dependency graph is now
   # 100% permissive (RAR/CBR via the pure-Rust `rars` crate — no proprietary
   # UnRAR anywhere), so this proves the build is license-clean. Config +
