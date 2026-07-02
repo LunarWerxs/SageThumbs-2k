@@ -38,15 +38,26 @@ try {
     $sha = (git rev-parse HEAD).Trim()
     Write-Host "[3/6] push main + wait for CI on $($sha.Substring(0,7))" -ForegroundColor Green
     git push origin main; if ($LASTEXITCODE) { throw "git push failed" }
+    # Find the CI run for THIS exact commit (it can take a few seconds to register).
     $runId = $null
-    for ($i = 0; $i -lt 40 -and -not $runId; $i++) {
+    for ($i = 0; $i -lt 60 -and -not $runId; $i++) {
         Start-Sleep -Seconds 6
-        $runId = (gh run list --branch main --workflow CI --json headSha, databaseId, status `
+        $runId = (gh run list --branch main --workflow CI --json headSha, databaseId `
                 --jq "[.[] | select(.headSha==`"$sha`")][0].databaseId" 2>$null)
     }
     if (-not $runId) { throw "no CI run found for $sha after waiting - check Actions" }
-    gh run watch $runId --exit-status --interval 15
-    if ($LASTEXITCODE) { throw "CI is RED on $($sha.Substring(0,7)) - NOT releasing. Fix + re-run." }
+    # POLL the run to completion via `gh run view` (JSON). We deliberately do NOT use
+    # `gh run watch`: it needs a live TTY and exits non-zero when run headless (from a
+    # background / non-interactive shell), which aborts the release even though CI is fine
+    # (this is exactly what broke the 0.7.1 release run).
+    Write-Host "      run $runId found - waiting for it to finish..." -ForegroundColor Green
+    $status = ''
+    for ($i = 0; $i -lt 160 -and ($status -eq '' -or $status -eq 'queued' -or $status -eq 'in_progress'); $i++) {
+        Start-Sleep -Seconds 15
+        $status = (gh run view $runId --json status --jq .status 2>$null)
+    }
+    $concl = (gh run view $runId --json conclusion --jq .conclusion 2>$null)
+    if ($concl -ne 'success') { throw "CI on $($sha.Substring(0,7)) finished '$concl' (not success) - NOT releasing. Fix + re-run." }
     Write-Host "      CI green." -ForegroundColor Green
 
     # 4) build the shippable signed installer (CI validates code; it doesn't build the installer).
