@@ -43,6 +43,11 @@ const IDM_HIDE: usize = 104;
 const UPDATE_TIMER_ID: usize = 9;
 /// Re-attempt every 6h; `update::lazy_check_worker` throttles the actual network hit to 1/day.
 const UPDATE_TIMER_MS: u32 = 6 * 60 * 60 * 1000;
+/// Mutual supervision: re-ensure our [`watchdog`](super::watchdog) is alive on a short timer
+/// (the watchdog does the same for us). Either process dying alone is then recovered within
+/// seconds; single-instance means re-ensuring is a no-op when it's already up.
+const WATCHDOG_TIMER_ID: usize = 10;
+const WATCHDOG_TIMER_MS: u32 = 5000;
 /// A newer release was found (lparam = `Box<String>` tag); posted from the check thread.
 const WM_UPDATE_FOUND: u32 = WM_APP + 3;
 /// The user clicked our update toast (Shell tray notification balloon).
@@ -109,6 +114,17 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
         let _ = SetTimer(Some(hwnd), UPDATE_TIMER_ID, UPDATE_TIMER_MS, None);
         kick_update_check(hwnd);
     }
+
+    // Bring up our lightweight watchdog so this daemon gets restarted if it ever dies
+    // (a `panic = "abort"` build takes the whole process — and all hotkeys — down on any
+    // panic). Only while we're actually wanted at logon; single-instance, so it's a no-op
+    // if one's already supervising. This also protects existing installs whose autostart
+    // still launches the daemon directly, with no autostart-entry migration. The timer then
+    // re-ensures it (mutual supervision) so a lone watchdog death is also recovered.
+    if super::supervise_wanted() {
+        super::ensure_watchdog();
+    }
+    let _ = SetTimer(Some(hwnd), WATCHDOG_TIMER_ID, WATCHDOG_TIMER_MS, None);
 
     let mut msg = MSG::default();
     loop {
@@ -307,8 +323,13 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 LRESULT(0)
             }
             WM_TIMER => {
-                if wparam.0 == UPDATE_TIMER_ID {
-                    kick_update_check(hwnd);
+                match wparam.0 {
+                    UPDATE_TIMER_ID => kick_update_check(hwnd),
+                    // Re-check the watchdog is alive; re-spawn it if it isn't and we're still
+                    // wanted (a manually-launched daemon with no autostart entry won't — the
+                    // guard then falls through to the no-op arm below).
+                    WATCHDOG_TIMER_ID if super::supervise_wanted() => super::ensure_watchdog(),
+                    _ => {}
                 }
                 LRESULT(0)
             }
@@ -343,6 +364,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             WM_DESTROY => {
                 let _ = KillTimer(Some(hwnd), UPDATE_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), WATCHDOG_TIMER_ID);
                 remove_tray_icon(hwnd);
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);

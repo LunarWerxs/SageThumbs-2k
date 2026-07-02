@@ -20,6 +20,7 @@ USAGE:
   st2k pdf       <out.pdf> <in> [in...]         combine images into one PDF
   st2k info      <in> [--json]                  dimensions + camera/date/GPS
   st2k formats   [--json]                       list supported input formats
+  st2k devmode   [on|off|status]                exclude THIS machine from anonymous usage stats
   st2k --mcp                                     run as an MCP server (stdio JSON-RPC, for AI agents)
   st2k --version | -V                            print the version and exit
 ";
@@ -88,6 +89,7 @@ fn run(args: &[String]) -> Result<String, String> {
         }
         "info" => cli::info(need(&pos, 0)?, has_flag(rest, "--json")),
         "formats" => Ok(cli::list_formats(has_flag(rest, "--json"))),
+        "devmode" => cli::devmode(pos.first().map(|s| s.as_str()).unwrap_or("status")),
         "" | "-h" | "--help" | "help" => Ok(USAGE.to_string()),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }

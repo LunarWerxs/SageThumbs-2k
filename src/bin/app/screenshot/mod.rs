@@ -20,11 +20,16 @@ mod prefs;
 mod toolbar;
 mod tools;
 mod upload;
+mod watchdog;
 
 pub(crate) use daemon::run_daemon;
-pub(crate) use enable::{is_daemon_running, is_enabled, quit, reload_hotkey, set_enabled};
+pub(crate) use enable::{
+    ensure_watchdog, heal_if_wanted, is_daemon_running, is_enabled, quit, reload_hotkey,
+    set_enabled, supervise_wanted,
+};
 pub(crate) use overlay::{capture_instant, run_capture};
-pub(crate) use upload::run_upload;
+pub(crate) use upload::{run_upload, run_upload_keep};
+pub(crate) use watchdog::run_watchdog;
 
 /// The folder Ctrl+S auto-saves to when the "fixed save folder" option is on: the
 /// user's configured folder, or the Desktop when unset — so the default follows the

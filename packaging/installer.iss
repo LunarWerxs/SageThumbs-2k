@@ -8,7 +8,7 @@
 #endif
 
 #define AppName "SageThumbs 2K"
-#define AppExe "sagethumbs2k-app.exe"
+#define AppExe "SageThumbs2K.exe"
 #define AppDll "sagethumbs2k.dll"
 #define Publisher "lunarwerx"
 
@@ -291,9 +291,15 @@ procedure NotifyUninstall;
 var
   Http: Variant;
   Url: String;
+  DevFlag: Cardinal;
 begin
   try
     Url := 'https://st2k.lunarwerx.com/sponsor?uninstall=1&v={#AppVer}';
+    // A developer's own test box opts out of the analytics tally (HKCU DevMachine=1). The
+    // subtree is still present here (it's deleted AFTER this), so tag the uninstall beacon
+    // with &dev=1 too, so the Worker drops it like the app's check-ins.
+    if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'DevMachine', DevFlag) and (DevFlag = 1) then
+      Url := Url + '&dev=1';
     if UninstallReason <> '' then
       Url := Url + '&reason=' + UninstallReason;
     if UninstallNote <> '' then

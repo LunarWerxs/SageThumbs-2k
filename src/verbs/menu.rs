@@ -65,6 +65,9 @@ pub enum VerbAction {
     Convert(Target),
     Transform(Transform),
     Clipboard,
+    /// Upload the selected image(s) to a keyless host — the companion app POSTs each
+    /// and copies the returned link(s) to the clipboard; the originals are untouched.
+    Upload,
     Wallpaper(WallpaperMode),
     CombineToPdf,
     /// Combine the selected images into one CBZ (zip) comic archive.
@@ -199,6 +202,7 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::Verb("menu_pick_color", VerbAction::Eyedropper),
     MenuItem::Verb("menu_strip_meta", VerbAction::StripMetadata),
     MenuItem::Verb("menu_copy", VerbAction::Clipboard),
+    MenuItem::Verb("menu_upload", VerbAction::Upload),
     MenuItem::Separator,
     MenuItem::Verb("menu_set_folder_icon", VerbAction::SetFolderIcon),
     MenuItem::Group("menu_wallpaper", &[
@@ -631,7 +635,7 @@ mod tests {
     fn leaf_count_snapshot() {
         assert_eq!(
             leaf_count(),
-            42,
+            43,
             "MENU leaf count changed — re-check quick_items()/preview-slot math, then update this snapshot",
         );
     }

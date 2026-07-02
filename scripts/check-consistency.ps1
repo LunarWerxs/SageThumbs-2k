@@ -1,18 +1,18 @@
 <#
-  check-consistency.ps1 — guards the drift classes that have bitten releases:
+  check-consistency.ps1 - guards the drift classes that have bitten releases:
 
-   1. ASSET TRACKING — every file referenced by `include_bytes!`/`include_str!` (in src/)
+   1. ASSET TRACKING - every file referenced by `include_bytes!`/`include_str!` (in src/)
       or an <img src=...> / ](...) in README/docs that points at assets/ MUST be git-tracked.
       (The 0.7.0 CI break + the preview4.png hero risk were both "referenced but not committed":
       it builds/renders locally because the file is on disk, then breaks on a clean checkout.)
 
-   2. FORMAT COUNT — the count in the README shields badge and docs/FEATURES.md must match the
+   2. FORMAT COUNT - the count in the README shields badge and docs/FEATURES.md must match the
       number of entries in src/formats.rs `FORMATS`.
 
-   3. VERSION — packaging/AppxManifest.xml must carry the Cargo.toml version (the MSIX version
+   3. VERSION - packaging/AppxManifest.xml must carry the Cargo.toml version (the MSIX version
       is a hand-written literal that has silently drifted before).
 
-  Exit 1 (with the offending items) on any mismatch; exit 0 when clean. Runs fast (no build) —
+  Exit 1 (with the offending items) on any mismatch; exit 0 when clean. Runs fast (no build) -
   wired into CI and called by release.ps1 before tagging. Run it locally before you push.
 #>
 $ErrorActionPreference = 'Stop'
@@ -24,7 +24,7 @@ $tracked = @{}
 & git -C $root ls-files | ForEach-Object { $tracked[$_] = $true }
 
 # --- 1) referenced assets must be git-tracked ---------------------------------
-# include_bytes!/include_str! — path is relative to the .rs file that references it.
+# include_bytes!/include_str! - path is relative to the .rs file that references it.
 Get-ChildItem (Join-Path $root 'src') -Recurse -Filter *.rs | ForEach-Object {
   $dir = $_.DirectoryName; $name = $_.Name
   foreach ($m in [regex]::Matches((Get-Content $_.FullName -Raw), 'include_(?:bytes|str)!\(\s*"([^"]+)"')) {
@@ -50,7 +50,7 @@ foreach ($doc in $docs) {
 # &[&str] (no tuple) so this pattern counts FORMATS only. (Cross-checked == `st2k formats`.)
 $count = ([regex]::Matches((Get-Content (Join-Path $root 'src\formats.rs') -Raw), '\(\s*"[A-Za-z0-9]+"\s*,\s*"')).Count
 if ($count -lt 250) {
-  $fail.Add("FORMATS count parse looks wrong ($count) — the regex in this script needs fixing")
+  $fail.Add("FORMATS count parse looks wrong ($count) - the regex in this script needs fixing")
 }
 else {
   $readme = Get-Content (Join-Path $root 'README.md') -Raw
@@ -73,4 +73,4 @@ if ($fail.Count) {
   $fail | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
   exit 1
 }
-Write-Host "[consistency] OK — assets tracked, format count = $count, version $ver consistent." -ForegroundColor Green
+Write-Host "[consistency] OK - assets tracked, format count = $count, version $ver consistent." -ForegroundColor Green

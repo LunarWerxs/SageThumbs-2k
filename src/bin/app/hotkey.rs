@@ -24,6 +24,7 @@ pub(crate) const ACTIONS: &[(u32, &str)] = &[
     (5, "Move file(s) into a new folder"),
     (6, "Strip image metadata"),
     (7, "Open SageThumbs 2K Settings"),
+    (8, "Upload image(s) (copy link)"),
 ];
 
 /// What a bound action does + what input it needs.
@@ -48,6 +49,7 @@ fn kind_for(id: u32) -> Option<Kind> {
         5 => Kind::AnyFileVerb(VerbAction::FilesToFolder),
         6 => Kind::ImageVerb(VerbAction::StripMetadata),
         7 => Kind::OpenSettings,
+        8 => Kind::ImageVerb(VerbAction::Upload),
         _ => return None,
     })
 }

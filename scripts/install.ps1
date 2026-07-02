@@ -36,7 +36,7 @@ if ($Uninstall) {
     }
     # Turn the screenshot hotkey off: remove its autostart entry + stop the daemon.
     Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'SageThumbs2KScreenshot' -ErrorAction SilentlyContinue
-    Get-Process sagethumbs2k-app -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process SageThumbs2K -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     if (Test-Path $prog) { Remove-Item $prog -Recurse -Force -ErrorAction SilentlyContinue }
     Write-Host "SageThumbs 2K uninstalled."
     return
@@ -44,7 +44,8 @@ if ($Uninstall) {
 
 New-Item -ItemType Directory -Path $prog -Force | Out-Null
 Copy-Item "$BuildDir\sagethumbs2k.dll" $prog -Force
-Copy-Item "$BuildDir\sagethumbs2k-app.exe" $prog -Force
+# Build target is `sagethumbs2k-app`; install under the shipped name `SageThumbs2K.exe`.
+Copy-Item "$BuildDir\sagethumbs2k-app.exe" (Join-Path $prog 'SageThumbs2K.exe') -Force
 # The CLI / MCP server (`st2k --mcp`). The dist installer ships it; the dev
 # install used to omit it, leaving a live CLI check running stale code.
 Copy-Item "$BuildDir\st2k.exe" $prog -Force
@@ -68,13 +69,17 @@ regsvr32 /s "$prog\sagethumbs2k.dll"
 # flyout + preview stay on the classic handler. (See packaging\AppxManifest.xml.)
 Get-AppxPackage $pkg | Remove-AppxPackage -ErrorAction SilentlyContinue
 Add-AppxPackage -Register "$prog\AppxManifest.xml" -ExternalLocation $prog -ForceUpdateFromAnyVersion
-New-Item -Path 'HKLM:\SOFTWARE\SageThumbs2K' -Force | Out-Null
-New-ItemProperty -Path 'HKLM:\SOFTWARE\SageThumbs2K' -Name 'ModernMenuActive' -Value 1 -PropertyType DWord -Force | Out-Null
+# Set the modern-menu marker the classic handler reads (settings::modern_menu_active) via
+# reg.exe and tolerate failure: on a machine where this key already exists with a locked-down
+# ACL, `New-Item -Force` throws "Requested registry access is not allowed" (it reopens/replaces
+# the key), which would abort the whole install. The value is idempotent, so a failed write on
+# a key that's already correct is harmless.
+try { & reg.exe add 'HKLM\SOFTWARE\SageThumbs2K' /v ModernMenuActive /t REG_DWORD /d 1 /f 2>$null | Out-Null } catch {}
 
 # Start Menu shortcut to the Options dialog.
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut($shortcut)
-$sc.TargetPath = "$prog\sagethumbs2k-app.exe"
+$sc.TargetPath = "$prog\SageThumbs2K.exe"
 $sc.WorkingDirectory = $prog
 $sc.Description = 'SageThumbs 2K'
 $sc.Save()

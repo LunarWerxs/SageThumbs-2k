@@ -8,7 +8,29 @@
 
 use std::path::Path;
 
-use crate::{decode, formats, ocr, strip, topdf, verbs};
+use crate::{decode, formats, ocr, settings, strip, topdf, verbs};
+
+/// `st2k devmode on|off|status` — toggle the developer-test-box analytics opt-out (the HKCU
+/// `DevMachine` flag). When ON, this machine's anonymous startup check-ins carry `&dev=1`, so the
+/// analytics Worker drops them from the public counters instead of letting your own build/test
+/// churn inflate the stats. A plain machine-local flag, not an identifier; OFF on every real install.
+pub fn devmode(sub: &str) -> Result<String, String> {
+    match sub {
+        "on" | "enable" | "1" => {
+            settings::set_dev_machine(true).map_err(|_| "couldn't write the DevMachine flag".to_string())?;
+            Ok("dev mode ON — this machine's check-ins are now excluded from analytics (&dev=1).".into())
+        }
+        "off" | "disable" | "0" => {
+            settings::set_dev_machine(false).map_err(|_| "couldn't clear the DevMachine flag".to_string())?;
+            Ok("dev mode OFF — this machine's check-ins are counted normally again.".into())
+        }
+        "status" | "" => Ok(format!(
+            "dev mode is {} (HKCU\\Software\\SageThumbs2K\\DevMachine)",
+            if settings::is_dev_machine() { "ON — your check-ins are excluded" } else { "OFF — your check-ins are counted" }
+        )),
+        other => Err(format!("unknown devmode '{other}' (use: on | off | status)")),
+    }
+}
 
 /// Render any supported image to `output` (format from its extension) at most
 /// `max_dim` px on the long edge (`0` = full size). The headline verb: produces

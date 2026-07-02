@@ -573,6 +573,13 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
                 None => ActionReport::default(),
             }
         }
+        VerbAction::Upload => {
+            // Upload the selected image(s) to the keyless host in the companion app,
+            // which copies the resulting link(s) to the clipboard. The originals are
+            // never modified; the app owns the network + result UX (delegated).
+            launch_upload(paths);
+            ActionReport::delegated()
+        }
         VerbAction::Wallpaper(mode) => {
             // One wallpaper. Use the first *image* in the selection (see above).
             match paths.iter().find(|p| is_image(p.as_str())) {
@@ -800,6 +807,26 @@ fn launch_convert_dialog(paths: &[String]) {
     }
     if let Some(s) = lf.to_str() {
         launch_app(&["--convert", s]);
+    }
+}
+
+/// Launch the companion EXE's keyless uploader over the selected images (path list
+/// via a temp file, like [`launch_convert_dialog`]). The app POSTs each file and
+/// copies the resulting link(s) to the clipboard; the ORIGINAL files are never
+/// modified or deleted (the app's `--upload-keep` path keeps them, unlike the
+/// screenshot `--upload` path which deletes its throwaway capture).
+fn launch_upload(paths: &[String]) {
+    let imgs: Vec<String> = paths.iter().filter(|p| is_image(p.as_str())).cloned().collect();
+    if imgs.is_empty() {
+        return;
+    }
+    let mut lf = std::env::temp_dir();
+    lf.push(format!("st2k_upload_{}.lst", std::process::id()));
+    if std::fs::write(&lf, imgs.join("\r\n")).is_err() {
+        return;
+    }
+    if let Some(s) = lf.to_str() {
+        launch_app(&["--upload-keep", s]);
     }
 }
 

@@ -77,6 +77,22 @@ pub fn set_install_reported() {
     let _ = set_dword("InstallReported", 1);
 }
 
+/// True on a machine flagged as a developer's own test box (HKCU `DevMachine` DWORD = 1).
+/// When set, the app appends `&dev=1` to its anonymous check-in beacons so the analytics
+/// Worker drops them from the public counters — this keeps the owner's own build/install/
+/// test churn from inflating the numbers (each app launch is a check-in). It is a plain
+/// machine-local opt-in flag, NOT an identifier, and is absent (the default) on every real
+/// install. Set it with [`set_dev_machine`] (or `reg add HKCU\Software\SageThumbs2K /v
+/// DevMachine /t REG_DWORD /d 1`).
+pub fn is_dev_machine() -> bool {
+    get_dword("DevMachine", 0) != 0
+}
+
+/// Set or clear the developer-test-box flag (see [`is_dev_machine`]). Best-effort.
+pub fn set_dev_machine(on: bool) -> windows_registry::Result<()> {
+    set_dword("DevMachine", on as u32)
+}
+
 /// The version last installed, left as a single "tombstone" value by the uninstaller after
 /// it wipes the rest of [`ROOT`]. Its presence on a fresh install means this machine had us
 /// before — a reinstall, not a first-time user. A plain version string, NOT an identifier.

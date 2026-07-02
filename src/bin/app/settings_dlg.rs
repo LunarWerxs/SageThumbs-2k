@@ -203,6 +203,7 @@ const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1148, "menu_pick_color"),
     (1149, "menu_strip_meta"),
     (1161, "menu_copy"),
+    (1183, "menu_upload"),
     (1162, "menu_set_folder_icon"),
     (1163, "menu_wallpaper"),
 ];
@@ -922,8 +923,8 @@ fn cat_rows(ci: usize) -> &'static [Row] {
             ListAuto(ID_MENU_ITEMS_LIST), Btn(ID_MENU_RESET, 110),
         ],
         4 => &[
-            // Screenshots — custom action moved to General, hotkey service to Advanced.
-            Switch(ID_SHOT_ENABLE), Switch(ID_SHOT_HIDE_TRAY), Switch(ID_SHOT_QUICK_ENABLE), Switch(ID_SHOT_USE_DIR),
+            // Screenshots — custom action moved to General; hotkey service + "Hide tray icon" to Advanced.
+            Switch(ID_SHOT_ENABLE), Switch(ID_SHOT_QUICK_ENABLE), Switch(ID_SHOT_USE_DIR),
             Pair(ID_LBL_SHOT_HK, ID_SHOT_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
             Status(ID_SHOT_DIR), Btn(ID_SHOT_SET_DIR, 150),
@@ -936,12 +937,15 @@ fn cat_rows(ci: usize) -> &'static [Row] {
         ],
         _ => &[
             // Advanced — clear groups: Diagnostics / Updates / Hotkey service / Backup.
+            // The three diagnostic buttons share one row (like Backup) — the pane is wide,
+            // and this keeps the page compact enough to also hold "Hide tray icon" with no
+            // scrolling / taller window.
             Head(ID_LBL_DIAG),
-            Switch(ID_VERBOSE_LOG), Btn(ID_OPEN_LOG, 184), Btn(ID_REBUILD_CACHE, 184), Btn(ID_REPAIR_ASSOC, 184),
+            Switch(ID_VERBOSE_LOG), Btn3(ID_OPEN_LOG, ID_REBUILD_CACHE, ID_REPAIR_ASSOC),
             Head(ID_LBL_UPDATES),
             Switch(ID_UPDATE_AUTO), Btn(ID_CHECK_UPDATES, 184),
             Head(ID_LBL_HOTKEY_SVC),
-            BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS),
+            BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS), Switch(ID_SHOT_HIDE_TRAY),
             Head(ID_LBL_BACKUP),
             Btn3(ID_RESET_ALL, ID_IMPORT, ID_EXPORT),
         ],
@@ -1702,6 +1706,11 @@ unsafe fn set_column_text(list: HWND, idx: i32, s: &str) {
     SendMessageW(list, LVM_SETCOLUMNW, Some(WPARAM(idx as usize)), Some(LPARAM(&mut col as *mut _ as isize)));
 }
 
+/// Repeating timer that keeps the hotkey-service status line live while Settings is open, so
+/// it reflects a self-heal / watchdog restart (or the daemon dying) without reopening the
+/// dialog. IDs 1–2 are the sponsor banner timers (see [`crate::sponsors`]); this is the third.
+const TIMER_SHOT_STATUS: usize = 3;
+
 /// Populate every control from the persisted settings.
 /// Set the screenshot status line's text.
 unsafe fn set_shot_status(hwnd: HWND, txt: &str) {
@@ -2418,6 +2427,9 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             WM_CREATE => {
                 let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap().into();
                 build_controls(hwnd, hinst);
+                // Keep the hotkey-service status line live (so a self-heal on open, or a
+                // watchdog restart, flips "Stopped" → "Running" without reopening).
+                let _ = SetTimer(Some(hwnd), TIMER_SHOT_STATUS, 1000, None);
                 // Lazy, throttled, background update check: it never blocks this window
                 // opening, hits GitHub at most once a day (cached on disk in between), and
                 // stays silent unless a newer release exists — then it posts WM_APP_UPDATE
@@ -2745,6 +2757,11 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                 }
                 LRESULT(0)
             }
+            // Keep the hotkey-service status line honest while the dialog is open.
+            WM_TIMER if wparam.0 == TIMER_SHOT_STATUS => {
+                refresh_shot_status(hwnd);
+                LRESULT(0)
+            }
             // Advance the current image's GIF animation one frame (frames are reused
             // each loop, so don't free the prior one; WM_DESTROY frees them all).
             WM_TIMER if wparam.0 == TIMER_BANNER => {
@@ -2827,6 +2844,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                 LRESULT(0)
             }
             WM_DESTROY => {
+                let _ = KillTimer(Some(hwnd), TIMER_SHOT_STATUS);
                 // Stop + free the sponsor rotation (both timers + every sponsor's bitmaps).
                 if let Ok(banner) = GetDlgItem(Some(hwnd), ID_BANNER) {
                     let _ = KillTimer(Some(hwnd), TIMER_BANNER);

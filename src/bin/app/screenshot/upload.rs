@@ -92,8 +92,14 @@ fn upload_host() -> Result<UploadHost, String> {
 
 const MAX_RESP: usize = 64 * 1024; // a URL response is tiny; cap to be safe
 
-/// Upload `path`, copy the resulting URL to the clipboard, tell the user, then
-/// delete the temp file.
+/// Caption for the screenshot-upload completion dialogs.
+const SHOT_CAPTION: &str = "SageThumbs 2K — Screenshot";
+/// Caption for the right-click "Upload" verb's completion dialogs.
+const FILE_CAPTION: &str = "SageThumbs 2K — Upload";
+
+/// Upload `path` (a throwaway capture PNG), copy the resulting URL to the clipboard,
+/// tell the user, then DELETE the temp file. Spawned by the capture overlay's Upload
+/// button via `--upload <png>`.
 pub(crate) unsafe fn run_upload(path: &str) {
     // Resolve (and validate) the endpoint first, so a misconfigured custom host
     // gives a specific message instead of a generic "couldn't upload".
@@ -101,34 +107,101 @@ pub(crate) unsafe fn run_upload(path: &str) {
         Ok(h) => h,
         Err(msg) => {
             let _ = std::fs::remove_file(path);
-            notify(&msg, true);
+            notify(&msg, SHOT_CAPTION, true);
             return;
         }
     };
-    let url = std::fs::read(path).ok().and_then(|bytes| upload(&bytes, &host));
+    let url = std::fs::read(path).ok().and_then(|bytes| upload(&bytes, "screenshot.png", &host));
     let _ = std::fs::remove_file(path);
     match url {
         Some(u) => {
             let _ = set_clipboard_text(&u);
-            notify(&format!("Uploaded — the link is on your clipboard:\n\n{u}"), false);
+            crate::upload_result::show_upload_result("Uploaded — the link is on your clipboard.", &u);
         }
         None => notify(
             "Couldn't upload the screenshot (no connection, or the host rejected it).",
+            SHOT_CAPTION,
             true,
         ),
     }
 }
 
+/// Upload the USER files listed (one path per line) in `list_path` — the right-click
+/// "Upload" verb's path — copy the resulting URL(s) to the clipboard (one per line),
+/// and report. Unlike [`run_upload`], these are the user's own files and are **never
+/// deleted**; only the temporary list file is removed. Spawned by the DLL verb via
+/// `--upload-keep <list>`.
+pub(crate) unsafe fn run_upload_keep(list_path: &str) {
+    let host = match upload_host() {
+        Ok(h) => h,
+        Err(msg) => {
+            let _ = std::fs::remove_file(list_path);
+            notify(&msg, FILE_CAPTION, true);
+            return;
+        }
+    };
+    // The DLL writes the selection CRLF-joined; tolerate either ending, drop blanks.
+    let files: Vec<String> = std::fs::read_to_string(list_path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    let _ = std::fs::remove_file(list_path); // the list is ours; the images are NOT
+    if files.is_empty() {
+        return;
+    }
+    let total = files.len();
+    // Upload each file under its real name so the host keeps the extension (the
+    // returned link then stays viewable in a browser).
+    let urls: Vec<String> = files
+        .iter()
+        .filter_map(|f| {
+            let name = std::path::Path::new(f)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("upload");
+            std::fs::read(f).ok().and_then(|bytes| upload(&bytes, name, &host))
+        })
+        .collect();
+    if urls.is_empty() {
+        notify(
+            "Couldn't upload (no connection, or the host rejected the file).",
+            FILE_CAPTION,
+            true,
+        );
+        return;
+    }
+    let joined = urls.join("\r\n");
+    let _ = set_clipboard_text(&joined);
+    let heading = if total == 1 {
+        "Uploaded — the link is on your clipboard.".to_string()
+    } else if urls.len() == total {
+        format!("Uploaded all {total} images — the links are on your clipboard.")
+    } else {
+        format!(
+            "Uploaded {} of {} images ({} failed) — the links are on your clipboard.",
+            urls.len(),
+            total,
+            total - urls.len(),
+        )
+    };
+    crate::upload_result::show_upload_result(&heading, &joined);
+}
+
 /// A simple completion message (the upload process has no window of its own).
-unsafe fn notify(msg: &str, error: bool) {
+unsafe fn notify(msg: &str, caption: &str, error: bool) {
     let body: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-    let cap: Vec<u16> = "SageThumbs 2K — Screenshot".encode_utf16().chain(std::iter::once(0)).collect();
+    let cap: Vec<u16> = caption.encode_utf16().chain(std::iter::once(0)).collect();
     let icon = if error { MB_ICONWARNING } else { MB_ICONINFORMATION };
     MessageBoxW(None, PCWSTR(body.as_ptr()), PCWSTR(cap.as_ptr()), MB_OK | icon);
 }
 
 /// Build the multipart body and POST it; return the response URL on success.
-unsafe fn upload(png: &[u8], h: &UploadHost) -> Option<String> {
+/// `filename` goes in the Content-Disposition so the host preserves the file's
+/// extension (catbox keys the returned URL off it — a `.jpg` stays viewable).
+unsafe fn upload(bytes: &[u8], filename: &str, h: &UploadHost) -> Option<String> {
     let boundary = "----st2kBoundary8x9f2aQ1z";
     let mut body: Vec<u8> = Vec::new();
     for (name, val) in &h.extra {
@@ -139,12 +212,12 @@ unsafe fn upload(png: &[u8], h: &UploadHost) -> Option<String> {
     }
     body.extend_from_slice(
         format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"screenshot.png\"\r\nContent-Type: image/png\r\n\r\n",
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
             h.field
         )
         .as_bytes(),
     );
-    body.extend_from_slice(png);
+    body.extend_from_slice(bytes);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
     let headers = format!("Content-Type: multipart/form-data; boundary={boundary}");

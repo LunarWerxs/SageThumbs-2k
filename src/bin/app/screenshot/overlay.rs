@@ -13,8 +13,8 @@ use windows::Win32::Graphics::Gdi::{
     IntersectClipRect, InvalidateRect, MonitorFromRect, ReleaseDC, RestoreDC, SaveDC, SelectObject,
     SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
     AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, COLORONCOLOR, DIB_RGB_COLORS,
-    DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBITMAP, HDC, HGDIOBJ, LOGFONTW, MONITOR_DEFAULTTONEAREST,
-    PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+    DT_CALCRECT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBITMAP, HDC, HGDIOBJ, LOGFONTW,
+    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Controls::Dialogs::{
@@ -1028,6 +1028,11 @@ unsafe fn shot_paint(hwnd: HWND) {
     if sel.right > sel.left && sel.bottom > sel.top {
         tools::frame(mem, sel, rgb(0, 174, 255), 1);
     }
+    // Live "W × H" pixel readout while dragging the region, so the user can size things
+    // precisely. Drag-only: once committed, the toolbar + hint strip take over the space.
+    if s.sel_dragging && sel.right > sel.left && sel.bottom > sel.top {
+        draw_dim_badge(mem, s, sel);
+    }
     if let Some(committed) = s.sel {
         let dpi = dpi_for_sel(committed);
         let buttons = toolbar::layout(committed, s.vw, s.vh, dpi);
@@ -1088,6 +1093,47 @@ unsafe fn apply_dim(dc: HDC, w: i32, h: i32) {
     SelectObject(tmp, old);
     let _ = DeleteObject(HGDIOBJ(bmp.0));
     let _ = DeleteDC(tmp);
+}
+
+/// A small "W × H" pixel-size readout drawn while the region is being dragged, so the
+/// user can gauge the exact size of what they're capturing. The overlay maps 1:1 to the
+/// virtual screen, so `sel`'s width/height ARE the true output pixel dimensions — no DPI
+/// conversion on the numbers (only the chip's own chrome scales). Styled like the hint
+/// strip (dark chip, light text) with a hairline border for legibility over any content;
+/// anchored at the selection's top-left, just above the rect (or just inside it when the
+/// region hugs the top of the screen).
+unsafe fn draw_dim_badge(hdc: HDC, s: &Shot, sel: RECT) {
+    let (w, h) = (sel.right - sel.left, sel.bottom - sel.top);
+    let dpi = dpi_for_sel(sel);
+    let txt = format!("{w} \u{00d7} {h}");
+    SelectObject(hdc, HGDIOBJ(gui_font().0));
+    // Measure the text so the chip hugs it (DT_CALCRECT writes the extent into `calc`).
+    let mut buf = wide(&txt);
+    let n = buf.len().saturating_sub(1);
+    let mut calc = RECT::default();
+    DrawTextW(hdc, &mut buf[..n], &mut calc, DT_CALCRECT | DT_SINGLELINE | DT_LEFT);
+    let padx = crate::win::dpi_scale_dpi(8, dpi);
+    let pady = crate::win::dpi_scale_dpi(3, dpi);
+    let gap = crate::win::dpi_scale_dpi(6, dpi);
+    let bw = (calc.right - calc.left) + padx * 2;
+    let bh = (calc.bottom - calc.top) + pady * 2;
+    let bx = sel.left.min(s.vw - bw).max(0);
+    let by = if sel.top - bh - gap >= 0 {
+        sel.top - bh - gap // just above the selection
+    } else {
+        (sel.top + gap).min(s.vh - bh).max(0) // no room above → just inside the top
+    };
+    let bar = RECT { left: bx, top: by, right: bx + bw, bottom: by + bh };
+    let bg = CreateSolidBrush(rgb(20, 20, 20));
+    FillRect(hdc, &bar, bg);
+    let _ = DeleteObject(bg.into());
+    let border = CreateSolidBrush(rgb(90, 90, 90));
+    FrameRect(hdc, &bar, border);
+    let _ = DeleteObject(border.into());
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, rgb(235, 235, 235));
+    let mut tr = RECT { left: bx + padx, top: by, right: bx + bw, bottom: by + bh };
+    DrawTextW(hdc, &mut buf[..n], &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 }
 
 /// The instructional strip. Pinned to the selection's top-left once a region is

@@ -66,7 +66,7 @@ const GH_PNG: &[u8] = include_bytes!("../../../assets/github_mark.png");
 
 /// Version-pill GitHub icon size (96-dpi design px). Big enough that the octocat reads as
 /// the GitHub mark and not a blob at the pill scale.
-const ICON: i32 = 18;
+const ICON: i32 = 20;
 
 /// The latest update-check outcome, shown by the status pill.
 enum Status {
@@ -109,15 +109,27 @@ pub(crate) unsafe fn show_about(parent: HWND) {
     let exstyle = WS_EX_DLGMODALFRAME;
     let mut rc = RECT { left: 0, top: 0, right: dpi_scale_dpi(CW, dpi), bottom: dpi_scale_dpi(CH, dpi) };
     let _ = AdjustWindowRectExForDpi(&mut rc, style, BOOL(0).into(), exstyle, dpi as u32);
+    let (win_w, win_h) = (rc.right - rc.left, rc.bottom - rc.top);
+
+    // Center over the owner (the Settings window) instead of the OS cascade — CW_USEDEFAULT
+    // on an owned WS_OVERLAPPED popup dropped this box in the top-left corner. Mirrors
+    // `win::run_dialog`'s modal-popup convention; the owner rect is already monitor-correct,
+    // so this also keeps About on whatever monitor Settings is on. No DPI conversion needed
+    // (screen coords are physical).
+    let mut orc = RECT::default();
+    let _ = GetWindowRect(parent, &mut orc);
+    let x = orc.left + ((orc.right - orc.left) - win_w) / 2;
+    let y = orc.top + ((orc.bottom - orc.top) - win_h) / 2;
+
     if let Ok(hwnd) = CreateWindowExW(
         exstyle,
         class,
         w!("About SageThumbs 2K"),
         style,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        rc.right - rc.left,
-        rc.bottom - rc.top,
+        x,
+        y,
+        win_w,
+        win_h,
         Some(parent),
         None,
         Some(hinst),

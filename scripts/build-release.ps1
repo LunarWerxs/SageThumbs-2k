@@ -89,7 +89,9 @@ New-Item -ItemType Directory "$stage\magick" -Force | Out-Null
 # an app-only translated string like the German `about_tagline`, but MUST contain a
 # `menu_*` value — see the script header / build.rs note.)
 Copy-Item "$targetRel\sagethumbs2k.dll" $stage
-Copy-Item "$targetRel\sagethumbs2k-app.exe" $stage
+# The cargo bin target is `sagethumbs2k-app` (avoids a PDB case-collision with the DLL);
+# stage it under the shipped/running name the manifest + spawn code expect.
+Copy-Item "$targetRel\sagethumbs2k-app.exe" (Join-Path $stage 'SageThumbs2K.exe')
 Copy-Item "$targetRel\st2k.exe" $stage  # the command-line / AI-agent tool
 foreach ($doc in 'README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE') {
     if (Test-Path "$root\$doc") { Copy-Item "$root\$doc" $stage }

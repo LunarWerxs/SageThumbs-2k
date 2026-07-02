@@ -149,6 +149,10 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   *(These four were a "Tools ▸" submenu; they're now individual top-level entries —
   show/hide + reorder each like any other menu item.)*
 - **Copy to clipboard** — the image as a bitmap.
+- **Upload (copy link)** — uploads the selected image(s) to a keyless, no-account
+  host (**catbox.moe** by default; overridable via the `ScreenshotUploadUrl` registry
+  value) and copies the resulting link(s) to the clipboard. Multi-select uploads every
+  selected image and copies all the links.
 - **Set as folder icon** — makes the selected image the icon of its containing
   folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
   customized, and refreshes Explorer — the same mechanism as Explorer's own
@@ -201,12 +205,12 @@ long scroll is gone.)
 - **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn
   preset is offered) for the region editor, **plus an optional second "quick-save"
   hotkey** that grabs the whole screen straight to the clipboard + a timestamped PNG
-  with no editor (Off by default). In the editor, **Ctrl+C copies to the clipboard and
-  Ctrl+S saves** (Enter copies too). **Save to a set folder on Ctrl+S** (a toggle): when
-  on, Ctrl+S auto-saves a timestamped PNG to a folder you pick with **Set save folder…**
-  (defaults to your Desktop); when off, Ctrl+S asks where to save each time. **Hide the
-  tray icon** (the hotkey still fires), plus a live status line + Restart button. Quitting
-  from the tray disables the hotkey for good. **Custom action hotkey:** assign ONE global
+  with no editor (Off by default). As you drag out the region, a live **`width × height`
+  pixel readout** follows the selection so you can size a capture precisely. In the editor,
+  **Ctrl+C copies to the clipboard and Ctrl+S saves** (Enter copies too). **Save to a set
+  folder on Ctrl+S** (a toggle): when on, Ctrl+S auto-saves a timestamped PNG to a folder
+  you pick with **Set save folder…** (defaults to your Desktop); when off, Ctrl+S asks where
+  to save each time. **Custom action hotkey:** assign ONE global
   hotkey to any of a curated set of actions — **pick a color** (the screen color picker),
   take a screenshot, Convert…, rotate right, move files into a new folder, strip metadata,
   or open Settings. Screen-wide actions run instantly; the file actions operate on the
@@ -224,14 +228,23 @@ long scroll is gone.)
   SageThumbs for every enabled format when another app has hijacked the thumbnails, then
   clears the thumbnail cache so the fixed types redraw. Plus a **Reset all settings**
   button that restores every option to its factory default.
+- **Hotkey service:** a live status line (Running / Stopped / Off) and a **Restart** button
+  for the small background helper that powers the screenshot & custom-action hotkeys, plus
+  the **Hide tray icon** toggle (the hotkeys still fire when it's hidden). The service now
+  **restarts itself automatically** if it ever stops, and simply opening Settings brings it
+  back if it was down — so your hotkeys don't quietly stop firing. Quitting from the tray
+  icon disables it for good (until you re-enable it here).
 - **Updates:** a **Check for updates** button (plus an *Automatically check for updates*
   toggle) asks GitHub whether a newer release exists. When one is available, SageThumbs can
   **download and install it for you** — a progress bar shows the download, the file is
   integrity-checked, Windows asks once for permission, and the new version installs in the
   background and confirms with a quiet tray notification when it's done. You can still grab
   the installer from the releases page by hand if you prefer.
-- **About:** logo, version, a link, a tagline. The main view also carries a small
-  author credit and an (optionally remote) promo banner.
+- **About:** a compact card — the eye logo, a **version pill that links to the GitHub
+  repo** (with the GitHub mark), and a live **"Up to date" / update-available pill** that
+  re-checks on click, plus the licence, copyright, and the clickable LunarWerx Studios
+  wordmark. Opens **centered over the Settings window**. The Settings main view also carries
+  a small author credit and an (optionally remote) promo banner.
 
 ---
 
@@ -271,9 +284,9 @@ long scroll is gone.)
 
 ## 5. Packaging
 
-- Inno Setup installer (~8.79 MB full — ~1.5 MB lighter since the trimmed ImageMagick's
-  text-shaping stack (glib / harfbuzz / freetype / fribidi / raqm) is stubbed out: we
-  only ever decode raster, never render text), `full` / `compact` / `custom`.
+- Inno Setup installer (`full` / `compact` / `custom`). The full build stays lean because the
+  trimmed ImageMagick's text-shaping stack (glib / harfbuzz / freetype / fribidi / raqm) is
+  stubbed out — we only ever decode raster, never render text.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
   cleanly unregisters on uninstall.
 - App/installer/shortcut icon embedded from the logo.

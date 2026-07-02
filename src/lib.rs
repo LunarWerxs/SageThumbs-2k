@@ -217,7 +217,7 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// File names of the artifacts this crate builds, all installed side-by-side. The
 /// co-located layout is an install contract; keeping the names here means a rename
 /// is one edit and a typo can't silently break a spawn/icon lookup with no error.
-pub(crate) const APP_EXE: &str = "sagethumbs2k-app.exe";
+pub(crate) const APP_EXE: &str = "SageThumbs2K.exe";
 pub(crate) const CLI_EXE: &str = "st2k.exe";
 
 /// Resolve a sibling file next to OUR DLL (whatever directory the install used).

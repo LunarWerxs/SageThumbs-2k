@@ -35,6 +35,7 @@ mod files_to_folder;
 mod hotkey;
 mod image_info;
 mod screenshot;
+mod upload_result;
 mod settings_dlg;
 mod settings_io;
 mod tags_to_folders;
@@ -131,6 +132,13 @@ fn main() {
             crate::screenshot::run_daemon(hinst);
             return;
         }
+        // Screenshot watchdog: `--screenshot-watchdog` runs the tiny supervisor that
+        // restarts the daemon if it ever dies while still wanted. Spawned by the daemon
+        // itself; kept a separate mode so it survives a daemon crash.
+        if args.iter().any(|a| a == "--screenshot-watchdog") {
+            crate::screenshot::run_watchdog(hinst);
+            return;
+        }
         // Custom action hotkey: `--hotkey-action` (spawned by the daemon when the user's
         // assigned chord fires) runs whichever action they bound in Settings ▸ Screenshots —
         // colour picker, screenshot, or a file verb over the Explorer selection / a picker.
@@ -143,6 +151,17 @@ fn main() {
         if let Some(pos) = args.iter().position(|a| a == "--upload") {
             if let Some(path) = args.get(pos + 1) {
                 crate::screenshot::run_upload(path);
+            }
+            return;
+        }
+        // Upload-keep mode: `--upload-keep <listfile>` uploads the USER files listed
+        // (the DLL's right-click "Upload" verb) to the keyless host and copies the
+        // link(s) to the clipboard — WITHOUT deleting the originals (only `--upload`
+        // deletes, since its file is a throwaway capture). Exact-match above means
+        // `--upload` never swallows this longer flag.
+        if let Some(pos) = args.iter().position(|a| a == "--upload-keep") {
+            if let Some(listfile) = args.get(pos + 1) {
+                crate::screenshot::run_upload_keep(listfile);
             }
             return;
         }
@@ -179,6 +198,12 @@ fn main() {
             crate::update::show_updated_toast(ver);
             return;
         }
+
+        // Opening the Settings window is the natural moment to self-heal the hotkey service:
+        // if it's enabled (or a custom hotkey is bound) but not running — e.g. it and its
+        // watchdog were both killed, or a prior logon never brought it up — restart it now so
+        // the user doesn't have to click "Restart". No-op when it's already running / not wanted.
+        crate::screenshot::heal_if_wanted();
 
         let class = w!("SageThumbs2KOptions");
         let wc = WNDCLASSW {

@@ -4,6 +4,7 @@
 
 # Context-menu verbs (nested under the "SageThumbs 2K" submenu)
 menu_copy = "Copy to clipboard"
+menu_upload = "Upload (copy link)"
 menu_convert_into = "Convert into"
 menu_fmt_png = "PNG"
 menu_fmt_jpg = "JPG"

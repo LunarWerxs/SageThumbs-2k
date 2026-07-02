@@ -11,7 +11,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11** — the cle
 [![Windows 11](https://img.shields.io/badge/Windows%2011-0078D6?logo=windows11&logoColor=white)](#-install)
 [![Built with Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=222)](#-how-it-works)
 ![Formats](https://img.shields.io/badge/formats-316-2ea44f)
-[![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?display_name=tag)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
+[![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?sort=semver)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![Installs](https://img.shields.io/endpoint?url=https%3A%2F%2Fst2k.lunarwerx.com%2Fbadge)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
@@ -69,7 +69,7 @@ The original **SageThumbs** was a Windows legend — it made Explorer show thumb
 | 🎨 **Art / CAD / 3D / design** | PSD/PSB, Affinity, Clip Studio, Krita, OpenRaster, Blender, 3MF, FreeCAD, G-code, **SketchUp, Rhino, AutoCAD DWG, 3ds Max, Adobe XD, InDesign, Visio, CorelDRAW, Fusion 360 (.f3d)** — preview pulled straight from inside the file (no host app needed) |
 | 📄 **DjVu** | Pure-Rust, zero-GPL decode via [`djvu-rs`](https://crates.io/crates/djvu-rs) — scanned books show their text |
 | 🔊 **Docs & audio** | PDF first page, Microsoft Office (Word/Excel/PowerPoint) & OpenDocument, and album art for MP3/FLAC/Ogg/Opus/M4A/**WMA**/**DSF (DSD)**/… (WMA/ASF and DSD/.dsf via hand-rolled parsers — `lofty` can't read either) |
-| 🧰 **Right-click toolkit** | Convert (29 targets), resize, shrink-for-email, **lossless** JPEG rotate/flip, combine→PDF/CBZ, batch rename from EXIF/tags, eyedropper, set-as-folder-icon, OCR, strip metadata |
+| 🧰 **Right-click toolkit** | Convert (29 targets), resize, shrink-for-email, **lossless** JPEG rotate/flip, combine→PDF/CBZ, batch rename from EXIF/tags, eyedropper, set-as-folder-icon, OCR, strip metadata, upload-to-catbox (copy link) |
 | ⚡ **Parallel batch** | Multi-file Convert / Resize / Rotate / Strip and Combine-to-PDF fan out across **all CPU cores** (6–15× faster) — a tiny dependency-free scoped thread pool, no rayon bloat in the shell DLL |
 | 🎛️ **Make the menu yours** | The Settings "Menu items" list lets you **drag-reorder** every right-click entry *and* its group dividers — the menu mirrors your layout exactly (WYSIWYG). Tick items off to hide them, or hit **Reset order** for the default |
 | 🤖 **CLI + MCP server** | `st2k.exe` — `thumbnail · convert · batch · rotate · ocr · pdf · …` as a scriptable/AI-agent toolbox (`st2k --mcp`); **`batch`** parallel-processes whole folders in one process. The MCP server adds **`view`** (decode any of the 316 formats to a PNG block so an AI agent can *see* the file) and **`compress`** tools |
@@ -166,7 +166,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 Requires the **MSVC** Rust toolchain, VS Build Tools (Desktop C++), and — for the installer — [Inno Setup](https://jrsoftware.org/isinfo.php).
 
 ```powershell
-cargo build --release            # sagethumbs2k.dll + sagethumbs2k-app.exe + st2k.exe
+cargo build --release            # sagethumbs2k.dll + sagethumbs2k-app.exe (installs as SageThumbs2K.exe) + st2k.exe
 .\scripts\build-release.ps1      # full pipeline → dist\SageThumbs2K-Setup-<ver>.exe
 ```
 

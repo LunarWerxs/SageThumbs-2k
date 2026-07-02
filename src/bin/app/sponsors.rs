@@ -80,12 +80,17 @@ fn manifest_bytes() -> Option<&'static [u8]> {
                 Some(v) => format!("&reinstall=1&prev={v}"),
                 None => String::new(),
             };
+            // A developer's own test box opts out of the analytics tally (HKCU DevMachine=1):
+            // tag the beacon with `&dev=1` so the Worker still serves the manifest but doesn't
+            // count this check-in. Empty (no opt-out) on every real install.
+            let dev = if sagethumbs2k_core::settings::is_dev_machine() { "&dev=1" } else { "" };
             let url = format!(
-                "{BANNER_URL}?v={}&os={}&new={}{}",
+                "{BANNER_URL}?v={}&os={}&new={}{}{}",
                 env!("CARGO_PKG_VERSION"),
                 os_tag(),
                 u8::from(is_new),
                 reinstall,
+                dev,
             );
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {

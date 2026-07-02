@@ -2,6 +2,23 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.7.1
+
+- **See a screenshot's exact size while you drag it.** When you drag out a region to capture, a small
+  `width × height` readout now sits at the corner of the selection, so you can size things precisely (in
+  real pixels).
+- **The screenshot / action hotkeys stay working.** The small background helper that powers the global
+  hotkeys now restarts itself automatically if it ever stops, and just opening Settings brings it back if
+  it was down — so your hotkey won't quietly stop firing. Its live status shows under Settings ▸ Advanced
+  ▸ "Hotkey service".
+- **New: right-click ▸ Upload (copy link).** Right-click an image (or several) and upload straight to a
+  free, no-account host (catbox.moe by default), with the link(s) copied to your clipboard — your original
+  files are left untouched. The resulting links open in a small window you can select and copy from.
+- **About box opens centered, with the proper GitHub icon.** The About window now appears centered over
+  Settings instead of stuck in the top-left corner, and its GitHub badge shows the real GitHub logo.
+- **"Hide tray icon" moved to Advanced.** That toggle now lives under Settings ▸ Advanced ▸ "Hotkey
+  service", next to the Restart button.
+
 ## 0.7.0
 
 - **Redesigned Settings window.** The old single long scroll is gone — Settings now opens with a

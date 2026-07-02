@@ -1,5 +1,5 @@
 //! The "Image info" window — a verbose, copyable metadata dump for the right-click
-//! Tools verb. Launched standalone via `sagethumbs2k-app.exe --image-info <path>`: a
+//! Tools verb. Launched standalone via `SageThumbs2K.exe --image-info <path>`: a
 //! scrollable read-only edit with every file/image/EXIF field, plus a Copy button.
 
 use core::cell::RefCell;

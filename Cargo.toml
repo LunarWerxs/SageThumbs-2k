@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 
 [package]
 name = "sagethumbs2k"
@@ -39,7 +39,13 @@ ignored = ["kamadak-exif", "windows-core"]
 name = "sagethumbs2k_core"
 crate-type = ["rlib"]
 
-# Stub EXE so the sparse package has an Application entry (see src/bin/app/main.rs).
+# The Options / convert-dialog host EXE. The cargo TARGET is `sagethumbs2k-app` — NOT
+# `SageThumbs2K` — on purpose: a target named `SageThumbs2K` case-folds to the same PDB as
+# the `sagethumbs2k.dll` cdylib on Windows' case-insensitive FS, so a combined debug build
+# dies with LNK1201 (the cdylib force-emits its PDB and mspdbsrv holds it across links). The
+# install/package step RENAMES the artifact to `SageThumbs2K.exe` — the shipped/running name
+# Task Manager shows — matching build.rs's VERSIONINFO OriginalFilename, `lib.rs::APP_EXE`,
+# AppxManifest, and install.ps1/build-release.ps1. DON'T rename the target back to SageThumbs2K.
 [[bin]]
 name = "sagethumbs2k-app"
 path = "src/bin/app/main.rs"

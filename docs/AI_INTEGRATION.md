@@ -30,7 +30,7 @@ extension today:
 | **OCR → text** | in-box `Windows.Media.Ocr` | `ocr::recognize_bytes` |
 | **Images → PDF** | hand-rolled `/DCTDecode` | `topdf::combine_to_pdf` |
 
-The companion EXE (`sagethumbs2k-app.exe`) already links the lib and already parses
+The companion EXE (`SageThumbs2K.exe`) already links the lib and already parses
 one argument mode (`--convert <listfile>`). Extending it is the natural home.
 
 ## Approach A — a real CLI — ✅ SHIPPED as `st2k.exe`

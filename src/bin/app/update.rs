@@ -142,7 +142,9 @@ pub(crate) fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
 /// periodic heartbeat check-in (new=0 — the fresh-install marker is owned by the app's
 /// own startup path). Returns the latest tag (e.g. "0.4.9") or None on any failure.
 fn latest_from_worker() -> Option<String> {
-    let url = format!("{BANNER_URL}?v={}&os={}&new=0", env!("CARGO_PKG_VERSION"), os_tag());
+    // Opt this check-in out of the public tally on a developer test box (see `is_dev_machine`).
+    let dev = if sagethumbs2k_core::settings::is_dev_machine() { "&dev=1" } else { "" };
+    let url = format!("{BANNER_URL}?v={}&os={}&new=0{dev}", env!("CARGO_PKG_VERSION"), os_tag());
     let bytes = http_fetch(&url, true)?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let tag = json.get("latest")?.as_str()?.trim();

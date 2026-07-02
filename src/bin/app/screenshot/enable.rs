@@ -50,11 +50,50 @@ fn run_entry_present() -> bool {
         .unwrap_or(false)
 }
 
+/// Should the watchdog keep the daemon alive? Tied to the autostart entry — the canonical
+/// "the daemon is wanted" signal that [`reconcile`]/[`quit`] add and remove. Using the
+/// entry (not `daemon_wanted()` directly) means the watchdog stops cleanly after a tray
+/// "Quit" even while a custom hotkey is still bound (Quit removes the entry).
+pub(crate) fn supervise_wanted() -> bool {
+    run_entry_present()
+}
+
+/// Make sure the [`watchdog`](super::watchdog) supervisor is running (spawns it if its
+/// window isn't found). Single-instance, so a redundant call is a cheap no-op. Called by
+/// the daemon on startup and by [`reconcile`] so a dead watchdog is re-established.
+pub(crate) fn ensure_watchdog() {
+    unsafe {
+        if FindWindowW(super::watchdog::CLASS, PCWSTR::null()).is_err() {
+            super::spawn_self(&["--screenshot-watchdog"]);
+        }
+    }
+}
+
+/// Ask a running watchdog to exit (so it stops respawning the daemon). Used when the
+/// daemon is being torn down for good ([`quit`] / disabling every dependent feature).
+unsafe fn stop_watchdog() {
+    if let Ok(hwnd) = FindWindowW(super::watchdog::CLASS, PCWSTR::null()) {
+        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+}
+
 /// Is the tray daemon actually running right now (its hidden window exists)? The
 /// hotkey only fires while it's alive, so the Settings status line reads this — a
 /// stale autostart entry with no live daemon is the "set it but it doesn't fire" case.
 pub(crate) fn is_daemon_running() -> bool {
     unsafe { FindWindowW(super::daemon::CLASS, PCWSTR::null()).is_ok() }
+}
+
+/// Self-heal on app launch: if the daemon is wanted (screenshots on OR a custom hotkey
+/// bound) but nothing is running, bring it back. Covers the case where BOTH the daemon and
+/// its watchdog are down — e.g. after both were killed, or a logon where the daemon never
+/// came up — which the watchdog alone can't recover (it isn't running either). Merely
+/// opening the app then restarts the service, matching the user's "if it's on, it should be
+/// running" expectation. A no-op when it's already running or not wanted.
+pub(crate) fn heal_if_wanted() {
+    if daemon_wanted() && !is_daemon_running() {
+        reconcile();
+    }
 }
 
 /// Turn the screenshot capture feature on/off, then reconcile the daemon. Safe to call
@@ -82,11 +121,16 @@ pub(crate) fn reconcile() {
         } else {
             super::spawn_self(&["--screenshot-daemon"]); // a fresh one reads them at startup
         }
+        ensure_watchdog(); // (re)establish the supervisor that restarts the daemon if it dies
     } else {
         if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
             let _ = k.remove_value(RUN_NAME);
         }
-        unsafe { stop_daemon() };
+        // Stop the watchdog FIRST so it can't respawn the daemon we're about to close.
+        unsafe {
+            stop_watchdog();
+            stop_daemon();
+        }
     }
 }
 
@@ -99,7 +143,12 @@ pub(crate) fn quit() {
     if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
         let _ = k.remove_value(RUN_NAME);
     }
-    unsafe { stop_daemon() };
+    // Stop the watchdog FIRST (removing the Run entry above already makes it exit on its
+    // next tick, but stop it now so it can't respawn the daemon during the race).
+    unsafe {
+        stop_watchdog();
+        stop_daemon();
+    }
 }
 
 /// Ask a running daemon to close (removes its tray icon + unregisters its hotkeys).
