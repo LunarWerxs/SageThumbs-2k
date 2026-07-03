@@ -38,6 +38,7 @@ pub mod i18n;
 pub mod register;
 pub mod safety;
 pub mod settings;
+pub mod upload_config;
 mod thumbprovider;
 mod verbs;
 mod video;

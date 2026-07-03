@@ -181,6 +181,9 @@ const ID_CUSTOM_ACTION_ENABLE: i32 = 1182;
 const ID_LBL_UPDATES: i32 = 1184;
 const ID_LBL_BACKUP: i32 = 1185;
 const ID_LBL_HOTKEY_SVC: i32 = 1186;
+// "Edit upload hosts…" — opens the user-editable upload-hosts config file
+// (%APPDATA%\SageThumbs2K\upload-hosts.conf) in the default text editor.
+const ID_EDIT_UPLOAD_HOSTS: i32 = 1187;
 
 /// Per-item menu-visibility checkboxes (XnShell-style "Displayed menu items").
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's
@@ -667,6 +670,9 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // persists the pick immediately.
     lc.status(ID_SHOT_DIR);
     lc.button(t("btn_set_save_dir"), 150, ID_SHOT_SET_DIR);
+    // Opens the user-editable upload-hosts config (the "Upload (copy link)" verb +
+    // the capture overlay's Upload button POST through this chain of keyless hosts).
+    lc.button(t("btn_edit_upload_hosts"), 184, ID_EDIT_UPLOAD_HOSTS);
     // Live status of the background hotkey daemon + a Start/Restart button. The
     // hotkey does nothing unless this tray helper is running, so make it visible
     // and recoverable (seeded in load_values + refreshed on Restart).
@@ -928,6 +934,7 @@ fn cat_rows(ci: usize) -> &'static [Row] {
             Pair(ID_LBL_SHOT_HK, ID_SHOT_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
             Status(ID_SHOT_DIR), Btn(ID_SHOT_SET_DIR, 150),
+            Btn(ID_EDIT_UPLOAD_HOSTS, 184),
         ],
         5 => &[
             // Quick action — bind a global hotkey to run a tool.
@@ -2560,6 +2567,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     ID_LANG if notify == CBN_SELCHANGE => on_lang_change(hwnd),
                     ID_ABOUT => show_about(hwnd),
                     ID_OPEN_LOG => open_diagnostics_log(),
+                    ID_EDIT_UPLOAD_HOSTS => crate::screenshot::open_hosts_config(),
                     ID_EXPORT => export_settings_to_file(hwnd),
                     ID_IMPORT => import_settings_from_file(hwnd),
                     ID_REBUILD_CACHE => rebuild_thumbnail_cache(hwnd),

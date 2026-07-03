@@ -286,6 +286,36 @@ pub fn batch(
     Ok(format!("{done}/{} succeeded", files.len()))
 }
 
+/// `st2k upload-hosts [--open]` — show (or open) the user-editable upload-hosts config
+/// file. The right-click "Upload" verb and the screenshot Upload button read this file
+/// to decide which keyless host(s) to POST to; editing it lets you reorder / add hosts
+/// or point at your own server. The documented template is created on first use. Path +
+/// template are shared with the app via [`crate::upload_config`].
+pub fn upload_hosts(open: bool) -> Result<String, String> {
+    let path = crate::upload_config::ensure_config()
+        .ok_or_else(|| "couldn't resolve %APPDATA% for the upload-hosts config path".to_string())?;
+    let p = path.display().to_string();
+    if open {
+        // Open in the default editor (same "ShellExecute open" the Settings button uses).
+        unsafe {
+            use windows::core::{w, PCWSTR};
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+            let file: Vec<u16> = p.encode_utf16().chain(std::iter::once(0)).collect();
+            ShellExecuteW(None, w!("open"), PCWSTR(file.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+        }
+        Ok(format!("Opening upload-hosts config in your default editor:\n{p}"))
+    } else {
+        Ok(format!(
+            "Upload-hosts config file:\n{p}\n\n\
+             Edit it to choose / reorder / add upload hosts \u{2014} one host per line:\n  \
+             <https-url> | <field> | text|json | extra=value ...\n\
+             While every line is commented out, SageThumbs 2K uses its built-in defaults.\n\
+             Run `st2k upload-hosts --open` to open it in your editor."
+        ))
+    }
+}
+
 /// List every supported input extension (with category + description).
 pub fn list_formats(json: bool) -> String {
     if json {

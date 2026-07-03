@@ -28,7 +28,7 @@ pub(crate) use enable::{
     set_enabled, supervise_wanted,
 };
 pub(crate) use overlay::{capture_instant, run_capture};
-pub(crate) use upload::{run_upload, run_upload_keep};
+pub(crate) use upload::{open_hosts_config, run_upload, run_upload_keep};
 pub(crate) use watchdog::run_watchdog;
 
 /// The folder Ctrl+S auto-saves to when the "fixed save folder" option is on: the

@@ -244,6 +244,7 @@ chk_update_auto = "Automatically check for updates"
 # Buttons
 btn_menu_reset = "Reset order"
 btn_set_save_dir = "Set save folder…"
+btn_edit_upload_hosts = "Edit upload hosts…"
 btn_restart_hotkey = "Restart hotkey service"
 btn_open_log = "Open diagnostics log"
 btn_rebuild_cache = "Rebuild thumbnail cache"
