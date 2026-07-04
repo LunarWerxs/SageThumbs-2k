@@ -125,7 +125,10 @@ pub fn ocr(input: &str) -> Result<String, String> {
     // Same shared input cap as `thumbnail` — OCR additionally copies the bytes onto
     // a worker thread, so an uncapped huge file would be ~2x its size in memory.
     let bytes = decode::read_capped(input).map_err(|e| e.to_string())?;
-    ocr::recognize_bytes(&bytes).map_err(|_| "no text found / OCR language pack not installed".to_string())
+    // Propagate the REAL error — "no text", "no language pack", and "decode failed" are
+    // three different, actionable situations (especially for an MCP/AI caller parsing this).
+    ocr::recognize_bytes(&bytes)
+        .map_err(|e| format!("OCR failed: {e} (no text found, or no OCR language pack installed)"))
 }
 
 /// Combine images into one PDF (one page each).
@@ -133,7 +136,10 @@ pub fn pdf(output: &str, inputs: &[String]) -> Result<String, String> {
     if inputs.is_empty() {
         return Err("no input images".to_string());
     }
-    topdf::combine_to_pdf(inputs, Path::new(output), 85).map_err(|_| "pdf build failed".to_string())?;
+    // Same JPEG quality the right-click Combine-to-PDF verb uses (the user's configured
+    // setting) — a hardcoded 85 silently diverged from the menu path for no reason.
+    topdf::combine_to_pdf(inputs, Path::new(output), crate::settings::jpeg_quality())
+        .map_err(|_| "pdf build failed".to_string())?;
     Ok(output.to_string())
 }
 
@@ -283,7 +289,17 @@ pub fn batch(
         }
     });
     let done = results.iter().filter(|&&ok| ok).count();
-    Ok(format!("{done}/{} succeeded", files.len()))
+    let total = files.len();
+    // Total failure must FAIL the command (nonzero exit for scripts/CI/MCP callers) — a
+    // "0/12 succeeded" with exit code 0 was indistinguishable from a good run without
+    // parsing English stdout. Partial success stays Ok but now names the failure count.
+    if done == 0 {
+        return Err(format!("0/{total} succeeded"));
+    }
+    if done < total {
+        return Ok(format!("{done}/{total} succeeded ({} failed)", total - done));
+    }
+    Ok(format!("{done}/{total} succeeded"))
 }
 
 /// `st2k upload-hosts [--open]` — show (or open) the user-editable upload-hosts config
@@ -301,7 +317,7 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
             use windows::core::{w, PCWSTR};
             use windows::Win32::UI::Shell::ShellExecuteW;
             use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-            let file: Vec<u16> = p.encode_utf16().chain(std::iter::once(0)).collect();
+            let file = crate::wide(&p);
             ShellExecuteW(None, w!("open"), PCWSTR(file.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
         }
         Ok(format!("Opening upload-hosts config in your default editor:\n{p}"))

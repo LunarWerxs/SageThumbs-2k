@@ -14,7 +14,9 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
-use crate::win::{ctl, gui_font, run_dialog, set_clipboard_text, wide, BUTTON, EDIT, IDCANCEL, IDOK};
+use crate::win::{
+    ctl, gui_font, run_dialog, set_clipboard_text, t, wide, BUTTON, EDIT, IDCANCEL, IDOK,
+};
 
 const ID_EDIT: i32 = 100;
 const ID_COPY: i32 = 101;
@@ -37,7 +39,7 @@ pub fn show_upload_result(heading: &str, links: &str) {
         run_dialog(
             w!("SageThumbs2KUploadResult"),
             Some(result_wndproc),
-            "SageThumbs 2K — Upload",
+            t("up_caption_file"),
             460,
             300,
             None,
@@ -83,11 +85,11 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // Buttons bottom-right, inside the client (Close rightmost, Copy to its left).
     let close_x = cw - m - btn_w;
     let copy_x = close_x - gap - btn_w;
-    ctl(hwnd, BUTTON, "Copy", WS_TABSTOP, copy_x, btn_y, btn_w, btn_h, ID_COPY, hinst);
+    ctl(hwnd, BUTTON, t("btn_copy"), WS_TABSTOP, copy_x, btn_y, btn_w, btn_h, ID_COPY, hinst);
     ctl(
         hwnd,
         BUTTON,
-        "Close",
+        t("btn_close"),
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
         close_x,
         btn_y,

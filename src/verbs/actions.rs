@@ -427,8 +427,8 @@ impl ActionReport {
             Some(n) => msg.push_str(&format!("\n\n{failed} failed: {n}")),
             None => msg.push_str(&format!("\n\n{failed} item{plural} failed.")),
         }
-        let t: Vec<u16> = msg.encode_utf16().chain(once(0)).collect();
-        let c: Vec<u16> = "SageThumbs 2K".encode_utf16().chain(once(0)).collect();
+        let t = crate::wide(&msg);
+        let c = crate::wide("SageThumbs 2K");
         unsafe {
             MessageBoxW(parent, PCWSTR(t.as_ptr()), PCWSTR(c.as_ptr()), MB_OK | MB_ICONWARNING);
         }
@@ -784,10 +784,16 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
 /// Launch the companion EXE with no arguments → the Options/Settings window.
 /// Resolves the EXE from the DLL's own directory (host-process-safe).
 fn launch_app(args: &[&str]) {
+    // A failed launch used to vanish without a trace — the menu item just "did nothing"
+    // (missing companion EXE on a broken install, or spawn failure). Log it so the
+    // Diagnostics log at least explains a dead menu item.
     let Some(exe) = crate::sibling_of_dll(crate::APP_EXE) else {
+        crate::safety::log("launch_app: companion EXE not found next to the DLL — menu action dropped");
         return;
     };
-    let _ = std::process::Command::new(exe).args(args).spawn();
+    if let Err(e) = std::process::Command::new(exe).args(args).spawn() {
+        crate::safety::log(&format!("launch_app: spawn failed: {e}"));
+    }
 }
 
 /// Launch the companion EXE's Convert… dialog over the selected images. Writes

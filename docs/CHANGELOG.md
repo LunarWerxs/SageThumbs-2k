@@ -2,6 +2,41 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.7.2
+
+- **Hotkeys now survive sleep, lock, and updates.** Windows silently un-registers global hotkeys
+  after sleep/resume, locking your PC, or a remote-desktop reconnect — the background helper now
+  re-registers them the moment those happen (plus a once-a-minute safety net), so your screenshot
+  hotkey keeps working instead of quietly dying until you reopened the app. App updates and
+  reinstalls also restart the helper automatically — previously an update silently killed your
+  hotkeys until the next sign-in.
+- **The tray icon survives Explorer restarts.** When Windows Explorer crashes or restarts it wipes
+  all tray icons; the helper now puts its icon back automatically (and retries at sign-in if the
+  taskbar isn't ready yet).
+- **Copying a screenshot is more reliable.** If another app was momentarily holding the clipboard
+  (clipboard managers and Office do this constantly), your capture's copy could silently do
+  nothing — it now retries briefly instead of giving up.
+- **One capture at a time.** Pressing the screenshot hotkey twice no longer stacks a second frozen
+  overlay on top of the first.
+- **Bind OCR to your custom hotkey.** "Copy text (OCR)" joins the Quick Action list — press your
+  hotkey over the selected image(s) and the recognized text lands straight on the clipboard.
+- **"Sort into folders ▸ By image size" is much faster on big selections.** Reading each file's
+  dimensions now runs in parallel like the other batch actions (exotic RAW/HEIC files used to be
+  probed one at a time).
+- **CLI: `st2k batch` now fails properly.** It exits with an error when every file failed
+  (partial runs report how many failed) so scripts and automations can detect it. Also `st2k pdf`
+  now honors your configured JPEG quality instead of a fixed 85, and OCR errors say what actually
+  went wrong.
+- **The quick-save hotkey now shows it worked.** A split-second screen flash confirms the capture
+  (like Win+Shift+S); if the copy or the PNG save failed, a small notification tells you exactly
+  what went wrong instead of total silence.
+- **See when a hotkey is taken by another app.** If some other program owns your chosen chord,
+  Settings ▸ Screenshots now says so ("hotkey in use by another app") instead of claiming
+  everything is running — and it clears itself within a minute of the other app letting go.
+- **Uploads show an "Uploading…" indicator.** Both the screenshot Upload button and right-click ▸
+  Upload now show a small progress pill while the transfer runs — no more staring at nothing
+  wondering if the click registered.
+
 ## 0.7.1
 
 - **See a screenshot's exact size while you drag it.** When you drag out a region to capture, a small

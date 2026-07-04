@@ -37,12 +37,15 @@ use windows::Win32::Networking::WinInet::{
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, SW_SHOWNORMAL,
+    CreateWindowExW, DestroyWindow, DispatchMessageW, GetSystemMetrics, MessageBoxW,
+    PeekMessageW, SendMessageW, TranslateMessage, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+    MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, WINDOW_STYLE, WM_SETFONT,
+    WS_BORDER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 const HTTPS_PORT: u16 = 443;
 
-use crate::win::{set_clipboard_text, wide};
+use crate::win::{set_clipboard_text, t, wide, SS_CENTER, SS_CENTERIMAGE};
 
 /// A resolved upload endpoint (owned, because it can come from the registry / config).
 struct UploadHost {
@@ -240,9 +243,73 @@ fn parse_hosts_config(text: &str) -> Vec<UploadHost> {
 const MAX_RESP: usize = 64 * 1024; // a URL response is tiny; cap to be safe
 
 /// Caption for the screenshot-upload completion dialogs.
-const SHOT_CAPTION: &str = "SageThumbs 2K — Screenshot";
+fn shot_caption() -> &'static str {
+    t("up_caption_shot")
+}
 /// Caption for the right-click "Upload" verb's completion dialogs.
-const FILE_CAPTION: &str = "SageThumbs 2K — Upload";
+fn file_caption() -> &'static str {
+    t("up_caption_file")
+}
+
+/// A tiny topmost "Uploading…" pill (bottom-center of the primary monitor) shown while
+/// `work` runs on a worker thread — the overlay/menu that launched us is already gone by
+/// then, so without it the user stares at NOTHING for the seconds (and up to three host
+/// retries) an upload takes, and reasonably assumes it silently failed. This thread pumps
+/// messages so the pill actually paints; the pill is non-activating and owns no input.
+unsafe fn with_busy_pill<T: Send + 'static>(
+    text: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    let (w, h) = (300, 40);
+    let txt = wide(text);
+    let pill = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        windows::core::w!("STATIC"),
+        PCWSTR(txt.as_ptr()),
+        WS_POPUP | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(SS_CENTER | SS_CENTERIMAGE),
+        (sw - w) / 2,
+        sh - h - 90, // above the taskbar area, bottom-center
+        w,
+        h,
+        None,
+        None,
+        None,
+        None,
+    )
+    .ok();
+    if let Some(p) = pill {
+        SendMessageW(
+            p,
+            WM_SETFONT,
+            Some(windows::Win32::Foundation::WPARAM(crate::win::gui_font().0 as usize)),
+            Some(windows::Win32::Foundation::LPARAM(1)),
+        );
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    let mut msg = MSG::default();
+    let result = loop {
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(30)) {
+            Ok(v) => break v,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            // Unreachable under panic=abort (a worker panic kills the process), but
+            // don't hang the pill forever if it somehow happens.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => std::process::exit(1),
+        }
+    };
+    if let Some(p) = pill {
+        let _ = DestroyWindow(p);
+    }
+    result
+}
 
 /// Upload `path` (a throwaway capture PNG), copy the resulting URL to the clipboard,
 /// tell the user, then DELETE the temp file. Spawned by the capture overlay's Upload
@@ -254,22 +321,26 @@ pub(crate) unsafe fn run_upload(path: &str) {
         Ok(h) => h,
         Err(msg) => {
             let _ = std::fs::remove_file(path);
-            notify(&msg, SHOT_CAPTION, true);
+            notify(&msg, shot_caption(), true);
             return;
         }
     };
     let bytes = std::fs::read(path);
     let _ = std::fs::remove_file(path);
-    let result = match bytes {
-        Ok(b) => upload_any(&b, "screenshot.png", &hosts),
+    let result = with_busy_pill(t("up_busy_one"), move || match bytes {
+        // SAFETY: upload_any only touches WinInet handles it creates + closes itself,
+        // so running it on the pill's worker thread is fine.
+        Ok(b) => unsafe { upload_any(&b, "screenshot.png", &hosts) },
         Err(e) => Err(format!("couldn't read the capture — {e}")),
-    };
+    });
     match result {
         Ok(u) => {
             let _ = set_clipboard_text(&u);
-            crate::upload_result::show_upload_result("Uploaded — the link is on your clipboard.", &u);
+            crate::upload_result::show_upload_result(t("up_done_one"), &u);
         }
-        Err(reasons) => notify(&upload_failed_msg("the screenshot", &reasons), SHOT_CAPTION, true),
+        Err(reasons) => {
+            notify(&upload_failed_msg(t("up_what_screenshot"), &reasons), shot_caption(), true)
+        }
     }
 }
 
@@ -283,7 +354,7 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str) {
         Ok(h) => h,
         Err(msg) => {
             let _ = std::fs::remove_file(list_path);
-            notify(&msg, FILE_CAPTION, true);
+            notify(&msg, file_caption(), true);
             return;
         }
     };
@@ -302,41 +373,51 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str) {
     let total = files.len();
     // Upload each file under its real name so the host keeps the extension (the
     // returned link then stays viewable in a browser). Remember the last failure
-    // reason so an all-fail run can show WHY (host paused vs. no connection).
-    let mut urls: Vec<String> = Vec::new();
-    let mut last_reason: Option<String> = None;
-    for f in &files {
-        let name = std::path::Path::new(f)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("upload");
-        match std::fs::read(f) {
-            Ok(bytes) => match upload_any(&bytes, name, &hosts) {
-                Ok(u) => urls.push(u),
-                Err(why) => last_reason = Some(why),
-            },
-            Err(e) => last_reason = Some(format!("couldn't read {name} — {e}")),
+    // reason so an all-fail run can show WHY (host paused vs. no connection). The
+    // whole batch runs behind the "Uploading…" pill — multi-file menu uploads can
+    // take a while and previously gave zero sign anything was happening.
+    let busy = if total == 1 {
+        t("up_busy_one").to_string()
+    } else {
+        t("up_busy_many").replace("{n}", &total.to_string())
+    };
+    let (urls, last_reason) = with_busy_pill(&busy, move || {
+        let mut urls: Vec<String> = Vec::new();
+        let mut last_reason: Option<String> = None;
+        for f in &files {
+            let name = std::path::Path::new(f)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("upload");
+            match std::fs::read(f) {
+                // SAFETY: upload_any only touches WinInet handles it creates + closes
+                // itself, so running it on the pill's worker thread is fine.
+                Ok(bytes) => match unsafe { upload_any(&bytes, name, &hosts) } {
+                    Ok(u) => urls.push(u),
+                    Err(why) => last_reason = Some(why),
+                },
+                Err(e) => last_reason = Some(format!("couldn't read {name} — {e}")),
+            }
         }
-    }
+        (urls, last_reason)
+    });
     if urls.is_empty() {
         let reasons = last_reason.unwrap_or_else(|| "no readable files".to_string());
-        let what = if total == 1 { "the file" } else { "any of the files" };
-        notify(&upload_failed_msg(what, &reasons), FILE_CAPTION, true);
+        let what = if total == 1 { t("up_what_file") } else { t("up_what_any_files") };
+        notify(&upload_failed_msg(what, &reasons), file_caption(), true);
         return;
     }
     let joined = urls.join("\r\n");
     let _ = set_clipboard_text(&joined);
     let heading = if total == 1 {
-        "Uploaded — the link is on your clipboard.".to_string()
+        t("up_done_one").to_string()
     } else if urls.len() == total {
-        format!("Uploaded all {total} images — the links are on your clipboard.")
+        t("up_done_all").replace("{total}", &total.to_string())
     } else {
-        format!(
-            "Uploaded {} of {} images ({} failed) — the links are on your clipboard.",
-            urls.len(),
-            total,
-            total - urls.len(),
-        )
+        t("up_done_partial")
+            .replace("{ok}", &urls.len().to_string())
+            .replace("{total}", &total.to_string())
+            .replace("{failed}", &(total - urls.len()).to_string())
     };
     crate::upload_result::show_upload_result(&heading, &joined);
 }
@@ -347,17 +428,13 @@ fn upload_failed_msg(what: &str, reasons: &str) -> String {
     let cfg = sagethumbs2k_core::upload_config::config_path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "%APPDATA%\\SageThumbs2K\\upload-hosts.conf".to_string());
-    format!(
-        "Couldn't upload {what}.\n\nThe upload host(s) responded:\n{reasons}\n\n\
-         If a host says it's paused / down / full, that's the host — not your \
-         connection — so try again later.\n\nTo choose your own upload host(s), edit:\n{cfg}"
-    )
+    t("up_failed").replace("{what}", what).replace("{reasons}", reasons).replace("{cfg}", &cfg)
 }
 
 /// A simple completion message (the upload process has no window of its own).
 unsafe fn notify(msg: &str, caption: &str, error: bool) {
-    let body: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-    let cap: Vec<u16> = caption.encode_utf16().chain(std::iter::once(0)).collect();
+    let body = wide(msg);
+    let cap = wide(caption);
     let icon = if error { MB_ICONWARNING } else { MB_ICONINFORMATION };
     MessageBoxW(None, PCWSTR(body.as_ptr()), PCWSTR(cap.as_ptr()), MB_OK | icon);
 }

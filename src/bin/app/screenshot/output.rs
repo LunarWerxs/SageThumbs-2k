@@ -5,7 +5,10 @@
 use windows::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 
 /// Put a packed CF_DIB (bottom-up BGRA) on the clipboard from top-down BGRA pixels.
-pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32) {
+/// Returns whether the clipboard actually took it — the editor-less instant capture
+/// surfaces a failure (there's no other sign), the overlay's own flows already show
+/// a "Copied" state and keep discarding it.
+pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32) -> bool {
     let header = core::mem::size_of::<BITMAPINFOHEADER>();
     let row = (w * 4) as usize;
     let total = header + row * h as usize;
@@ -27,7 +30,7 @@ pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32)
     }
 
     // The unsafe HGLOBAL ownership dance lives once in the lib's `clipboard` module.
-    let _ = sagethumbs2k_core::clipboard::set_clipboard(sagethumbs2k_core::clipboard::CF_DIB, &dib);
+    sagethumbs2k_core::clipboard::set_clipboard(sagethumbs2k_core::clipboard::CF_DIB, &dib)
 }
 
 /// BGRA (top-down) -> an opaque RGBA image (GDI bitmaps carry no alpha).

@@ -6,7 +6,6 @@
 
 use core::cell::Cell;
 use core::ffi::c_void;
-use std::iter::once;
 
 use windows_implement::implement;
 use windows::core::{Error, Ref, Result, BOOL, GUID, HRESULT, PWSTR};
@@ -21,7 +20,7 @@ use crate::{safety, settings, verbs};
 
 /// Allocate a NUL-terminated wide string with CoTaskMemAlloc; the shell frees it.
 fn alloc_pwstr(s: &str) -> Result<PWSTR> {
-    let wide: Vec<u16> = s.encode_utf16().chain(once(0)).collect();
+    let wide = crate::wide(s);
     // Overflow-safe byte count (len * size_of::<u16>()); can't actually overflow for
     // any real string, but keep the allocation provably sound rather than wrapping.
     let bytes = wide.len().checked_mul(2).ok_or_else(|| Error::from(E_OUTOFMEMORY))?;

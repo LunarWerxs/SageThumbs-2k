@@ -63,6 +63,101 @@ use crate::files_to_folder::run_files_to_folder_dialog;
 use crate::tags_to_folders::run_tags_to_folders_dialog;
 use crate::win::app_icon;
 
+/// Is this process running with an ELEVATED (admin) token? The installer's post-install
+/// [Run] steps carry `runasoriginaluser`, but when Setup itself was launched pre-elevated
+/// — which is exactly how the SELF-UPDATE launches it (`ShellExecuteW("runas")`) — Inno
+/// has no original non-elevated token and falls back to running them ELEVATED. A hotkey
+/// daemon spawned from that context inherits the elevation and is then UIPI-deaf to the
+/// non-elevated Settings window's `WM_RELOAD` forever (hotkey changes silently stop
+/// applying), and every capture helper it spawns runs as admin too.
+unsafe fn is_elevated() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut tok = windows::Win32::Foundation::HANDLE::default();
+    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok).is_err() {
+        return false;
+    }
+    let mut e = TOKEN_ELEVATION::default();
+    let mut len = 0u32;
+    let ok = GetTokenInformation(
+        tok,
+        TokenElevation,
+        Some(&mut e as *mut _ as *mut core::ffi::c_void),
+        core::mem::size_of::<TOKEN_ELEVATION>() as u32,
+        &mut len,
+    )
+    .is_ok();
+    let _ = CloseHandle(tok);
+    ok && e.TokenIsElevated != 0
+}
+
+/// De-elevate the heal through a ONE-SHOT `LIMITED` scheduled task: the task starts
+/// `--heal-hotkeys` with the interactive user's NORMAL token (`/rl LIMITED` strips the
+/// admin half even for an admin account), and that non-elevated instance takes the plain
+/// `heal_if_wanted` path below. A scheduled task needs no running Explorer — which is
+/// down at this exact moment (Restart Manager only restarts it AFTER the [Run] section) —
+/// so the shell-token de-elevation trick would not work here. Best-effort with logging;
+/// on any schtasks failure fall back to healing elevated (worse than a clean heal, but
+/// far better than leaving the hotkeys dead until next logon).
+fn schedule_unelevated_heal() {
+    use std::os::windows::process::CommandExt;
+    const TASK: &str = "SageThumbs2K_HealHotkeys";
+    let Ok(exe) = std::env::current_exe() else {
+        crate::screenshot::heal_if_wanted();
+        return;
+    };
+    let tr = format!("\"{}\" --heal-hotkeys", exe.display());
+    let run = |args: &[&str]| {
+        std::process::Command::new("schtasks.exe")
+            .args(args)
+            .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+            .output()
+    };
+    // `/sc once /st 00:00` only satisfies schtasks' mandatory-schedule syntax — the task
+    // is fired immediately via `/run` and removed right after.
+    #[rustfmt::skip]
+    let created = run(&["/create", "/f", "/tn", TASK, "/sc", "once", "/st", "00:00",
+                        "/rl", "LIMITED", "/tr", &tr]);
+    match created {
+        Ok(o) if o.status.success() => {
+            let _ = run(&["/run", "/tn", TASK]);
+            // Give Task Scheduler a moment to actually start the process before the
+            // task definition disappears out from under it.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let _ = run(&["/delete", "/f", "/tn", TASK]);
+        }
+        Ok(o) => {
+            sagethumbs2k_core::safety::log(&format!(
+                "heal: schtasks create failed ({}): {} — healing elevated instead",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+            crate::screenshot::heal_if_wanted();
+        }
+        Err(e) => {
+            sagethumbs2k_core::safety::log(&format!(
+                "heal: schtasks unavailable ({e}) — healing elevated instead"
+            ));
+            crate::screenshot::heal_if_wanted();
+        }
+    }
+}
+
+/// The install-time heal (`--heal-hotkeys` / `--updated`): restart the hotkey daemon the
+/// installer had to kill — WITHOUT letting it inherit an elevated token (see
+/// [`is_elevated`]). Elevated → reroute through the LIMITED scheduled task; normal → heal
+/// directly. No-op when the feature is off.
+fn heal_after_install() {
+    if unsafe { is_elevated() } {
+        schedule_unelevated_heal();
+    } else {
+        crate::screenshot::heal_if_wanted();
+    }
+}
+
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
     sagethumbs2k_core::safety::install_panic_hook("app");
@@ -194,8 +289,20 @@ fn main() {
         // The installer gates this relaunch on its own /UPDATED marker, so a normal
         // interactive install never triggers it.
         if let Some(pos) = args.iter().position(|a| a == "--updated") {
+            // The installer force-closed the resident hotkey daemon (Restart Manager /
+            // PrepareToInstall) to replace this very EXE — and NOTHING else restarts it
+            // before the next logon. Heal it FIRST, so the hotkeys the toast implicitly
+            // claims are working actually are. No-op when the feature is off.
+            heal_after_install();
             let ver = args.get(pos + 1).map_or(env!("CARGO_PKG_VERSION"), String::as_str);
             crate::update::show_updated_toast(ver);
+            return;
+        }
+        // Silent self-heal: `--heal-hotkeys` (run by the installer after EVERY install —
+        // including manual/silent reinstalls that never pass /UPDATED) restarts the hotkey
+        // daemon if it's wanted but not running. No UI; exits immediately.
+        if args.iter().any(|a| a == "--heal-hotkeys") {
+            heal_after_install();
             return;
         }
 

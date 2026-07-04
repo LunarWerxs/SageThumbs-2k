@@ -9,9 +9,16 @@
 //! A tray icon offers Capture / Settings / Quit. Single-instance (FindWindow).
 
 use core::mem::size_of;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
+};
+use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::RemoteDesktop::{
+    WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
     MOD_SHIFT,
@@ -48,6 +55,30 @@ const UPDATE_TIMER_MS: u32 = 6 * 60 * 60 * 1000;
 /// seconds; single-instance means re-ensuring is a no-op when it's already up.
 const WATCHDOG_TIMER_ID: usize = 10;
 const WATCHDOG_TIMER_MS: u32 = 5000;
+/// Periodic re-assertion of the global hotkey registrations. A `RegisterHotKey` binding can be
+/// silently dropped while THIS process keeps running — most notably across sleep/resume, session
+/// lock/unlock, and RDP reconnect — after which the hotkey just stops firing even though the tray
+/// icon and the watchdog still see a perfectly "healthy" daemon window (the watchdog only checks
+/// the window exists, not that the binding is live). The known triggers re-arm instantly (see the
+/// `WM_POWERBROADCAST` / `WM_WTSSESSION_CHANGE` / `WM_DISPLAYCHANGE` arms); this slow timer is the
+/// catch-all backstop so ANY unforeseen loss self-heals within a minute instead of staying dead
+/// until the user reopens the app. Unregister+Register is cheap and idempotent (the same dance
+/// `WM_RELOAD` already does), so re-running it when nothing was lost is harmless.
+const REARM_TIMER_ID: usize = 11;
+const REARM_TIMER_MS: u32 = 60_000;
+/// Retry cadence for a tray-icon add the shell rejected. `NIM_ADD` fails when the taskbar
+/// isn't up yet — the autostart daemon races Explorer at logon — and a single silent attempt
+/// left the icon permanently missing while the daemon ran fine underneath (the user then
+/// reads "no icon" as "not running"). Bounded churn: the timer dies on the first success.
+const TRAY_RETRY_TIMER_ID: usize = 12;
+const TRAY_RETRY_MS: u32 = 3000;
+
+/// The shell's dynamic "TaskbarCreated" broadcast id (`RegisterWindowMessageW` — it has no
+/// fixed value, so it's resolved at startup and stashed here for the wndproc's match guard).
+/// Explorer broadcasts it whenever the taskbar is (re)created: every crash/restart of
+/// Explorer destroys ALL notify icons, and any tray app that doesn't re-add on this message
+/// loses its icon until the process restarts.
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 /// A newer release was found (lparam = `Box<String>` tag); posted from the check thread.
 const WM_UPDATE_FOUND: u32 = WM_APP + 3;
 /// The user clicked our update toast (Shell tray notification balloon).
@@ -65,7 +96,18 @@ fn spawn(arg: Option<&str>) {
 }
 
 pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
-    // Single instance: if a daemon window already exists, don't start a second.
+    // Single instance, TOCTOU-safe: claim a named mutex FIRST. The FindWindow check alone
+    // races — autostart, the watchdog's tick, and a Settings-open heal can all spawn a
+    // daemon in the same instant, each passing the window check before any has created its
+    // window; both then register hotkeys and one silently loses. The OS arbitrates the
+    // mutex, so exactly one proceeds. Held (leaked) for process life on purpose.
+    let Ok(_lock) = CreateMutexW(None, true, w!("SageThumbs2K.ShotDaemon.Single")) else {
+        return;
+    };
+    if GetLastError() == ERROR_ALREADY_EXISTS {
+        return;
+    }
+    // Belt-and-suspenders (and the check callers use): a daemon window already up = done.
     if FindWindowW(CLASS, PCWSTR::null()).is_ok() {
         return;
     }
@@ -101,9 +143,14 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     // tray menu still works.
     register_configured_hotkey(hwnd);
 
+    // Learn the shell's dynamic "TaskbarCreated" broadcast id BEFORE the tray add, so an
+    // Explorer (re)start from here on always re-adds our icon (see the wndproc arm).
+    TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
+
     // Tray icon is shown unless the user hid it in Settings (the hotkey still works).
+    // `ensure_tray_icon` retries on a timer if the taskbar isn't accepting adds yet.
     if !sagethumbs2k_core::settings::screenshot_hide_tray() {
-        add_tray_icon(hwnd);
+        ensure_tray_icon(hwnd);
     }
 
     // Opt-in periodic update check. ONLY this already-resident process does it — there is
@@ -125,6 +172,13 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
         super::ensure_watchdog();
     }
     let _ = SetTimer(Some(hwnd), WATCHDOG_TIMER_ID, WATCHDOG_TIMER_MS, None);
+
+    // Keep the hotkeys alive across events that silently drop `RegisterHotKey` bindings while
+    // this process stays up. Session notifications (lock/unlock, connect/disconnect, RDP
+    // reconnect) need an explicit opt-in to reach our window; power-resume + display-change
+    // broadcasts arrive automatically. The periodic re-arm timer is the catch-all backstop.
+    let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+    let _ = SetTimer(Some(hwnd), REARM_TIMER_ID, REARM_TIMER_MS, None);
 
     let mut msg = MSG::default();
     loop {
@@ -159,22 +213,44 @@ fn hkf_to_mods(hkf: u32) -> HOT_KEY_MODIFIERS {
 /// from the persisted settings. Best-effort — if a chord is taken the tray menu
 /// still works. The quick hotkey is skipped when its vk is 0 (disabled).
 unsafe fn register_configured_hotkey(hwnd: HWND) {
+    // Registration stays best-effort (a taken chord must not stop the tray/daemon), but
+    // the failures are no longer INVISIBLE: a bitmask of which bindings failed (bit0
+    // capture, bit1 quick-save, bit2 custom action) is persisted so the Settings status
+    // line can say "hotkey in use by another app" instead of a flat "Running". Every
+    // re-arm rewrites it, so releasing the conflicting app self-clears within a minute.
+    let mut failed = 0u32;
     // The capture + quick-save hotkeys belong to the SCREENSHOT feature — register them only
     // while it's enabled, so a daemon kept alive solely for a custom hotkey doesn't also grab
     // Ctrl+PrtScn.
     if super::is_enabled() {
         let (hkf, vk) = sagethumbs2k_core::settings::screenshot_hotkey();
-        let _ = RegisterHotKey(Some(hwnd), HOTKEY_ID, hkf_to_mods(hkf), vk);
+        if RegisterHotKey(Some(hwnd), HOTKEY_ID, hkf_to_mods(hkf), vk).is_err() {
+            failed |= 1;
+        }
         let (qhkf, qvk) = sagethumbs2k_core::settings::screenshot_quick_hotkey();
-        if qvk != 0 {
-            let _ = RegisterHotKey(Some(hwnd), QUICK_HOTKEY_ID, hkf_to_mods(qhkf), qvk);
+        if qvk != 0 && RegisterHotKey(Some(hwnd), QUICK_HOTKEY_ID, hkf_to_mods(qhkf), qvk).is_err()
+        {
+            failed |= 2;
         }
     }
     // The user-assignable custom action hotkey — independent of the screenshot feature.
     let (chkf, cvk) = sagethumbs2k_core::settings::custom_action_hotkey();
-    if cvk != 0 {
-        let _ = RegisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID, hkf_to_mods(chkf), cvk);
+    if cvk != 0 && RegisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID, hkf_to_mods(chkf), cvk).is_err() {
+        failed |= 4;
     }
+    let _ = sagethumbs2k_core::settings::set_dword("HotkeyBindFailed", failed);
+}
+
+/// Drop and re-create every global hotkey registration from the current settings. Called by the
+/// periodic backstop timer, the power/session/display re-arm triggers, and [`WM_RELOAD`] after a
+/// settings change. Unregister-then-register is idempotent: if a binding is still live this is a
+/// harmless no-op churn; if it was silently lost (sleep/resume, unlock, RDP reconnect …) this is
+/// what brings it back — without the user having to reopen the app.
+unsafe fn rearm_hotkeys(hwnd: HWND) {
+    let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
+    let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
+    let _ = UnregisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID);
+    register_configured_hotkey(hwnd);
 }
 
 /// Build a NOTIFYICONDATAW for our tray entry (hWnd + uID identify it for ADD/DELETE).
@@ -210,12 +286,24 @@ fn hotkey_label() -> &'static str {
         .map_or("Ctrl + PrtScn", |&(label, _)| label)
 }
 
-unsafe fn add_tray_icon(hwnd: HWND) {
+/// Add the tray icon, retrying on a short timer until the shell accepts it. `NIM_ADD`
+/// fails when the taskbar doesn't exist yet (autostart at logon racing Explorer) — one
+/// silent attempt left the icon permanently missing. If the add fails because the icon
+/// is ALREADY there (a redundant call), `NIM_MODIFY` succeeds and settles it — so the
+/// retry timer only survives genuine "no taskbar yet" failures.
+unsafe fn ensure_tray_icon(hwnd: HWND) {
     let nid = tray_data(hwnd, true);
-    let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+    if Shell_NotifyIconW(NIM_ADD, &nid).as_bool() || Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool()
+    {
+        let _ = KillTimer(Some(hwnd), TRAY_RETRY_TIMER_ID);
+    } else {
+        let _ = SetTimer(Some(hwnd), TRAY_RETRY_TIMER_ID, TRAY_RETRY_MS, None);
+    }
 }
 
 unsafe fn remove_tray_icon(hwnd: HWND) {
+    // Cancel any pending add-retry too, so a hide can't be undone by a late retry tick.
+    let _ = KillTimer(Some(hwnd), TRAY_RETRY_TIMER_ID);
     let nid = tray_data(hwnd, false);
     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
 }
@@ -299,15 +387,12 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 LRESULT(0)
             }
             WM_RELOAD => {
-                let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
-                let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
-                let _ = UnregisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID);
-                register_configured_hotkey(hwnd);
+                rearm_hotkeys(hwnd);
                 // Reconcile the tray icon with the (possibly just-changed) setting.
                 if sagethumbs2k_core::settings::screenshot_hide_tray() {
                     remove_tray_icon(hwnd);
                 } else {
-                    add_tray_icon(hwnd);
+                    ensure_tray_icon(hwnd);
                 }
                 LRESULT(0)
             }
@@ -329,7 +414,52 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // wanted (a manually-launched daemon with no autostart entry won't — the
                     // guard then falls through to the no-op arm below).
                     WATCHDOG_TIMER_ID if super::supervise_wanted() => super::ensure_watchdog(),
+                    // Catch-all backstop: re-assert the hotkey registrations in case some
+                    // unforeseen event silently dropped them while we kept running.
+                    REARM_TIMER_ID => rearm_hotkeys(hwnd),
+                    // The taskbar rejected our icon earlier (logon race) — try again until
+                    // it takes, unless the user hid the icon meanwhile.
+                    TRAY_RETRY_TIMER_ID => {
+                        if sagethumbs2k_core::settings::screenshot_hide_tray() {
+                            let _ = KillTimer(Some(hwnd), TRAY_RETRY_TIMER_ID);
+                        } else {
+                            ensure_tray_icon(hwnd);
+                        }
+                    }
                     _ => {}
+                }
+                LRESULT(0)
+            }
+            // Sleep/resume, lock/unlock, RDP reconnect and display changes can each silently drop
+            // a live `RegisterHotKey` while this process stays up — so the hotkey quietly dies and
+            // the watchdog (which only sees the window) never notices. Re-assert on each event so
+            // the hotkey comes back the instant the machine does, with no "reopen the app" needed.
+            WM_POWERBROADCAST => {
+                // Only on RESUME — never on suspend, so we never release the chord right before
+                // sleeping (which would leave it unregistered until wake).
+                let ev = wparam.0 as u32;
+                if ev == PBT_APMRESUMEAUTOMATIC || ev == PBT_APMRESUMESUSPEND {
+                    rearm_hotkeys(hwnd);
+                }
+                LRESULT(1) // TRUE — grant the power-state change
+            }
+            WM_WTSSESSION_CHANGE => {
+                // Any session transition (lock/unlock, connect/disconnect) is cheap to re-arm on.
+                rearm_hotkeys(hwnd);
+                LRESULT(0)
+            }
+            WM_DISPLAYCHANGE => {
+                rearm_hotkeys(hwnd);
+                LRESULT(0)
+            }
+            // Explorer was (re)started: the fresh taskbar has NO notify icons — every tray
+            // app must re-add its own on this broadcast or its icon is gone for good while
+            // the process runs on invisibly. Also covers the logon race (daemon up before
+            // the taskbar). Explorer restarts are ROUTINE around this app: its own installer
+            // and dev install script restart Explorer to swap the shell-extension DLL.
+            m if m != 0 && m == TASKBAR_CREATED.load(Ordering::Relaxed) => {
+                if !sagethumbs2k_core::settings::screenshot_hide_tray() {
+                    ensure_tray_icon(hwnd);
                 }
                 LRESULT(0)
             }
@@ -365,6 +495,8 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_DESTROY => {
                 let _ = KillTimer(Some(hwnd), UPDATE_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), WATCHDOG_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), REARM_TIMER_ID);
+                let _ = WTSUnRegisterSessionNotification(hwnd);
                 remove_tray_icon(hwnd);
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);

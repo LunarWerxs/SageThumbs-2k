@@ -406,88 +406,16 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
 
 /// Shown by the installer-spawned `--updated <ver>` relaunch after a silent self-update:
 /// a NON-BLOCKING tray balloon ("You're now on <ver>"), NOT a modal dialog — so the update
-/// stays genuinely silent (nothing to click, it auto-dismisses). Spins up a throwaway hidden
-/// window + tray icon, pops the balloon, pumps briefly so it displays, then removes the icon
-/// and returns (the caller exits). Best-effort: a failed step just means no toast, never a hang.
+/// stays genuinely silent (nothing to click, it auto-dismisses). The throwaway-window +
+/// temp-icon + balloon dance lives once in [`crate::win::notify_toast`] (the instant
+/// capture's failure note shares it).
 pub(crate) fn show_updated_toast(ver: &str) {
-    use windows::core::w;
-    use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::Shell::{
-        Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-        NOTIFYICONDATAW,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW,
-        TranslateMessage, MSG, PM_REMOVE, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPED,
-    };
-
-    unsafe extern "system" fn wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-        DefWindowProcW(h, m, w, l)
-    }
-
     unsafe {
-        let hmod = GetModuleHandleW(None).unwrap_or_default();
-        let hinst = HINSTANCE(hmod.0);
-        let class = w!("SageThumbs2KUpdateToast");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinst,
-            lpszClassName: class,
-            ..Default::default()
-        };
-        RegisterClassW(&wc); // ok if already registered (one-shot process)
-        let Ok(hwnd) = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            class,
-            w!("st2k-update"),
-            WS_OVERLAPPED, // never shown — it only owns the tray icon
-            0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            Some(hinst),
-            None,
-        ) else {
-            return;
-        };
-
-        let mut nid = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: hwnd,
-            uID: 0xA1,
-            uFlags: NIF_ICON,
-            hIcon: crate::win::app_icon().unwrap_or_default(),
-            ..Default::default()
-        };
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
-
-        nid.uFlags = NIF_INFO;
-        nid.dwInfoFlags = NIIF_INFO;
-        let title = crate::win::wide("SageThumbs 2K updated");
-        let info = crate::win::wide(&format!("You're now on version {ver}."));
-        for (d, s) in nid.szInfoTitle.iter_mut().zip(title.iter()) {
-            *d = *s;
-        }
-        for (d, s) in nid.szInfo.iter_mut().zip(info.iter()) {
-            *d = *s;
-        }
-        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
-
-        // Pump briefly so the balloon paints + lingers (~6 s), then remove the icon and exit.
-        // Non-blocking to the user: no window is shown, just the auto-dismissing toast.
-        let start = std::time::Instant::now();
-        let mut msg = MSG::default();
-        while start.elapsed() < std::time::Duration::from_secs(6) {
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+        crate::win::notify_toast(
+            "SageThumbs 2K updated",
+            &format!("You're now on version {ver}."),
+            std::time::Duration::from_secs(6),
+        );
     }
 }
 

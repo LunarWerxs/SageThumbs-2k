@@ -42,7 +42,22 @@ pub unsafe fn set_clipboard(format: u32, bytes: &[u8]) -> bool {
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), base, bytes.len());
     let _ = GlobalUnlock(hmem); // returns Err with NO_ERROR when fully unlocked — ignore
 
-    if OpenClipboard(None).is_err() {
+    // The clipboard is one globally-locked resource: OpenClipboard fails whenever ANY other
+    // app momentarily holds it — and clipboard managers, Office, browsers, and the Win+V
+    // history poller (which re-opens it after every copy) collide constantly. A single
+    // attempt therefore silently loses the user's copy on a millisecond-scale collision
+    // (screenshot Ctrl+C → nothing on the clipboard, no error). Retry briefly, bounded.
+    let mut opened = false;
+    for attempt in 0..10 {
+        if OpenClipboard(None).is_ok() {
+            opened = true;
+            break;
+        }
+        if attempt < 9 {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+    }
+    if !opened {
         let _ = GlobalFree(Some(hmem));
         return false;
     }

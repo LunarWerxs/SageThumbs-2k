@@ -247,7 +247,7 @@ impl PropertyStore_Impl {
 /// its own integer `From` impls; there is no single-string `InitPropVariantFromString` in this
 /// crate version, only the vector form.)
 fn pv_lpwstr(s: &str) -> PROPVARIANT {
-    let wide: Vec<u16> = s.encode_utf16().chain(core::iter::once(0)).collect();
+    let wide = crate::wide(s);
     unsafe {
         let p = CoTaskMemAlloc(wide.len() * 2) as *mut u16;
         if p.is_null() {
@@ -273,7 +273,7 @@ fn pv_lpwstr(s: &str) -> PROPVARIANT {
 /// wrong canonical type for the index — these must be a string vector (one element here, since our
 /// extractors yield a single value). `InitPropVariantFromStringVector` copies the strings.
 fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
-    let wide: Vec<u16> = s.encode_utf16().chain(core::iter::once(0)).collect();
+    let wide = crate::wide(s);
     let arr = [PCWSTR(wide.as_ptr())];
     unsafe { InitPropVariantFromStringVector(Some(&arr)) }.unwrap_or_default()
 }

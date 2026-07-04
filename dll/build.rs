@@ -14,6 +14,19 @@ fn main() {
         Ok(o) => o,
         Err(_) => return,
     };
+
+    // The app EXE's bin target is named `SageThumbs2K` (so `cargo build` emits
+    // `SageThumbs2K.exe` directly). That basename case-folds to THIS cdylib's default
+    // `sagethumbs2k.pdb` on Windows' case-insensitive FS, so a combined debug/test build
+    // used to die with LNK1201 (two concurrent links contending for one PDB file).
+    // Redirect the CDYLIB's PDB (a single artifact — unlike the bin, it has no `--test`
+    // twin) to a distinct name so nothing case-collides. `-cdylib` so it can't touch this
+    // crate's test harness. MSVC-only; harmless in release (no debuginfo → no PDB written).
+    // Fixes both `cargo build` and `cargo test`; see Cargo.toml `[[bin]]` note in the core crate.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-cdylib=/PDB:{out}\\sagethumbs2k_dll.pdb");
+    }
+
     let rc = versioninfo_rc("SageThumbs 2K shell extension", "sagethumbs2k.dll");
     if std::fs::write(format!("{out}/dll_version.rc"), rc).is_err() {
         println!("cargo:warning=DLL VERSIONINFO: couldn't write dll_version.rc; DLL will have no version");

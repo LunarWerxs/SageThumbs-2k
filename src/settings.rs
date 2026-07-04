@@ -20,10 +20,37 @@
 //! instance — so a change in the Options dialog takes effect immediately for
 //! new requests without restarting the surrogate host.
 
+use std::sync::OnceLock;
+
 use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
 
 /// HKCU root for all our settings (and the per-extension subkeys).
 pub const ROOT: &str = r"Software\SageThumbs2K";
+
+/// The HKCU subkey path every settings read/write below opens — normally [`ROOT`], but
+/// redirectable to a scratch subkey via the `ST2K_SETTINGS_ROOT` env var for TEST
+/// ISOLATION. The in-process integration tests (`tests/explorer_command.rs`,
+/// `tests/settings_gate.rs`) load the real DLL, which reads settings from the SAME
+/// `HKCU\Software\SageThumbs2K` the developer's own Explorer uses — so without a redirect
+/// they either observe the user's customization (menu tests fail spuriously) or have to
+/// mutate the live key (the provider gate test). Pointing this at a throwaway subkey makes
+/// both hermetic: a test that never writes it sees pure defaults; one that writes it does so
+/// in a scratch key it can delete, never touching the user's real settings.
+///
+/// Resolved ONCE (an env var can't change within a process's life for our purposes) and
+/// cached, so the per-`GetThumbnail` hot path — `thumb_settings` in a folder of thousands —
+/// pays a single atomic load, not an `env::var` lookup per file. HKLM reads
+/// ([`modern_menu_active`]) are NOT redirected: they're a different hive, machine-wide, and
+/// no test writes them.
+fn hkcu_root() -> &'static str {
+    static ROOT_PATH: OnceLock<String> = OnceLock::new();
+    ROOT_PATH.get_or_init(|| {
+        std::env::var("ST2K_SETTINGS_ROOT")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| ROOT.to_string())
+    })
+}
 
 // Defaults + bounds, matching the legacy SageThumbs.h constants.
 pub const DEFAULT_MAX_FILE_MB: u32 = 100; // FILE_MAX_SIZE
@@ -48,14 +75,14 @@ pub const DEFAULT_MENU_PREVIEW: u32 = 1;
 
 fn get_dword(name: &str, default: u32) -> u32 {
     CURRENT_USER
-        .open(ROOT)
+        .open(hkcu_root())
         .and_then(|k| k.get_u32(name))
         .unwrap_or(default)
 }
 
 /// Write a DWORD setting (creating the root key if needed). Best-effort.
 pub fn set_dword(name: &str, value: u32) -> windows_registry::Result<()> {
-    CURRENT_USER.create(ROOT)?.set_u32(name, value)
+    CURRENT_USER.create(hkcu_root())?.set_u32(name, value)
 }
 
 /// Read a DWORD, distinguishing "absent" (`None`) from a stored value — unlike
@@ -63,7 +90,7 @@ pub fn set_dword(name: &str, value: u32) -> windows_registry::Result<()> {
 /// Used by the screenshot-daemon enable migration to tell a never-set flag from an
 /// explicit `0`.
 pub fn get_dword_opt(name: &str) -> Option<u32> {
-    CURRENT_USER.open(ROOT).and_then(|k| k.get_u32(name)).ok()
+    CURRENT_USER.open(hkcu_root()).and_then(|k| k.get_u32(name)).ok()
 }
 
 /// One-time flag: `false` until the app has reported a fresh install once, then `true`
@@ -98,7 +125,7 @@ pub fn set_dev_machine(on: bool) -> windows_registry::Result<()> {
 /// before — a reinstall, not a first-time user. A plain version string, NOT an identifier.
 pub fn tombstone_version() -> Option<String> {
     CURRENT_USER
-        .open(ROOT)
+        .open(hkcu_root())
         .ok()
         .and_then(|k| k.get_string("Tombstone").ok())
         .map(|s| s.trim().to_string())
@@ -108,7 +135,7 @@ pub fn tombstone_version() -> Option<String> {
 /// Drop the reinstall tombstone once it has been reported, so a reinstall is recognized at
 /// most once (the next fresh report — if any — looks like a first-time install again).
 pub fn clear_tombstone() {
-    if let Ok(k) = CURRENT_USER.open(ROOT) {
+    if let Ok(k) = CURRENT_USER.open(hkcu_root()) {
         let _ = k.remove_value("Tombstone");
     }
 }
@@ -117,7 +144,7 @@ pub fn clear_tombstone() {
 /// UI language. Set by the Options dialog's language picker.
 pub fn lang_override() -> Option<String> {
     CURRENT_USER
-        .open(ROOT)
+        .open(hkcu_root())
         .and_then(|k| k.get_string("Lang"))
         .ok()
         .filter(|s| !s.is_empty())
@@ -125,7 +152,7 @@ pub fn lang_override() -> Option<String> {
 
 /// Persist the language override; an empty string clears it (= follow system).
 pub fn set_lang(code: &str) -> windows_registry::Result<()> {
-    CURRENT_USER.create(ROOT)?.set_string("Lang", code)
+    CURRENT_USER.create(hkcu_root())?.set_string("Lang", code)
 }
 
 // ---- Ebook/comic archive cover-selection (CBZ/CB7/CBR) -------------------
@@ -214,7 +241,7 @@ pub struct ThumbSettings {
 /// back to the same defaults the individual getters use, so the result is identical
 /// to calling them one by one — just without the repeated opens.
 pub fn thumb_settings() -> ThumbSettings {
-    let key = CURRENT_USER.open(ROOT).ok();
+    let key = CURRENT_USER.open(hkcu_root()).ok();
     let g = |name: &str, default: u32| {
         key.as_ref().and_then(|k| k.get_u32(name).ok()).unwrap_or(default)
     };
@@ -465,14 +492,14 @@ pub fn set_screenshot_use_save_dir(on: bool) -> windows_registry::Result<()> {
 /// Desktop). See `crate`'s app `screenshot::effective_save_dir`.
 pub fn screenshot_save_dir() -> String {
     CURRENT_USER
-        .open(ROOT)
+        .open(hkcu_root())
         .and_then(|k| k.get_string("ShotSaveDir"))
         .unwrap_or_default()
 }
 
 /// Persist the chosen save folder (absolute path). Empty restores the Desktop default.
 pub fn set_screenshot_save_dir(dir: &str) -> windows_registry::Result<()> {
-    CURRENT_USER.create(ROOT)?.set_string("ShotSaveDir", dir)
+    CURRENT_USER.create(hkcu_root())?.set_string("ShotSaveDir", dir)
 }
 
 // ---- Diagnostics --------------------------------------------------------
@@ -511,7 +538,7 @@ pub fn set_update_auto_check(on: bool) -> windows_registry::Result<()> {
 /// is an "all users" switch, not a per-user one (there is no per-user gate).
 pub fn format_enabled(ext: &str) -> bool {
     CURRENT_USER
-        .open(format!(r"{ROOT}\{ext}"))
+        .open(format!(r"{}\{ext}", hkcu_root()))
         .and_then(|k| k.get_u32("Enabled"))
         .map(|v| v != 0)
         .unwrap_or(true)
@@ -520,7 +547,7 @@ pub fn format_enabled(ext: &str) -> bool {
 /// Persist a per-extension enable flag (used by the Options dialog).
 pub fn set_format_enabled(ext: &str, enabled: bool) -> windows_registry::Result<()> {
     CURRENT_USER
-        .create(format!(r"{ROOT}\{ext}"))?
+        .create(format!(r"{}\{ext}", hkcu_root()))?
         .set_u32("Enabled", enabled as u32)
 }
 
@@ -531,7 +558,7 @@ pub fn set_format_enabled(ext: &str, enabled: bool) -> windows_registry::Result<
 /// can hide ones the user never uses. Stored under `…\SageThumbs2K\MenuItems\<key>`.
 pub fn menu_item_shown(key: &str) -> bool {
     CURRENT_USER
-        .open(format!(r"{ROOT}\MenuItems"))
+        .open(format!(r"{}\MenuItems", hkcu_root()))
         .and_then(|k| k.get_u32(key))
         .map(|v| v != 0)
         .unwrap_or(true)
@@ -539,7 +566,7 @@ pub fn menu_item_shown(key: &str) -> bool {
 
 /// Persist a top-level menu item's visibility (used by the Options dialog).
 pub fn set_menu_item_shown(key: &str, shown: bool) -> windows_registry::Result<()> {
-    CURRENT_USER.create(format!(r"{ROOT}\MenuItems"))?.set_u32(key, shown as u32)
+    CURRENT_USER.create(format!(r"{}\MenuItems", hkcu_root()))?.set_u32(key, shown as u32)
 }
 
 /// The user's custom top-level menu order — a list of menu-item title keys, top to
@@ -548,7 +575,7 @@ pub fn set_menu_item_shown(key: &str, shown: bool) -> windows_registry::Result<(
 /// comma). The classic menu builder applies it via `verbs::ordered_top_level`.
 pub fn menu_order() -> Vec<String> {
     CURRENT_USER
-        .open(ROOT)
+        .open(hkcu_root())
         .and_then(|k| k.get_string("MenuOrder"))
         .ok()
         .filter(|s| !s.is_empty())
@@ -559,7 +586,7 @@ pub fn menu_order() -> Vec<String> {
 /// Persist the custom menu order (comma-joined keys); an empty slice clears it
 /// (= back to the default tree order).
 pub fn set_menu_order(keys: &[&str]) -> windows_registry::Result<()> {
-    CURRENT_USER.create(ROOT)?.set_string("MenuOrder", keys.join(","))
+    CURRENT_USER.create(hkcu_root())?.set_string("MenuOrder", keys.join(","))
 }
 
 /// A one-shot snapshot of the menu-item visibility subkey. Building the right-click
@@ -574,7 +601,7 @@ pub struct MenuVisibility(Option<windows_registry::Key>);
 /// Open the menu-visibility subkey once for the current menu build. `None` (subkey
 /// absent — nothing ever hidden) makes every [`MenuVisibility::shown`] return true.
 pub fn menu_visibility() -> MenuVisibility {
-    MenuVisibility(CURRENT_USER.open(format!(r"{ROOT}\MenuItems")).ok())
+    MenuVisibility(CURRENT_USER.open(format!(r"{}\MenuItems", hkcu_root())).ok())
 }
 
 impl MenuVisibility {

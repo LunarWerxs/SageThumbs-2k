@@ -25,6 +25,7 @@ pub(crate) const ACTIONS: &[(u32, &str)] = &[
     (6, "Strip image metadata"),
     (7, "Open SageThumbs 2K Settings"),
     (8, "Upload image(s) (copy link)"),
+    (9, "Copy text (OCR)"),
 ];
 
 /// What a bound action does + what input it needs.
@@ -50,6 +51,9 @@ fn kind_for(id: u32) -> Option<Kind> {
         6 => Kind::ImageVerb(VerbAction::StripMetadata),
         7 => Kind::OpenSettings,
         8 => Kind::ImageVerb(VerbAction::Upload),
+        // OCR is headless-safe like StripMetadata: recognized text goes straight to the
+        // clipboard, no window — a natural hotkey target.
+        9 => Kind::ImageVerb(VerbAction::Ocr),
         _ => return None,
     })
 }

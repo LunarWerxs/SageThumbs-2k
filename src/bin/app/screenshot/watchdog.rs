@@ -17,7 +17,10 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+};
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 pub(super) const CLASS: PCWSTR = w!("SageThumbs2KShotWatchdog");
@@ -34,7 +37,16 @@ const CHECK_TIMER_ID: usize = 1;
 static MISSES: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) unsafe fn run_watchdog(hinst: HINSTANCE) {
-    // Single instance — one supervisor is enough.
+    // Single instance, TOCTOU-safe: named mutex first (the daemon's startup ensure and its
+    // 5s re-ensure timer can both spawn a watchdog in the same instant — FindWindow alone
+    // lets both through). Mirrors run_daemon; the handle is held for process life.
+    let Ok(_lock) = CreateMutexW(None, true, w!("SageThumbs2K.ShotWatchdog.Single")) else {
+        return;
+    };
+    if GetLastError() == ERROR_ALREADY_EXISTS {
+        return;
+    }
+    // Belt-and-suspenders — one supervisor is enough.
     if FindWindowW(CLASS, PCWSTR::null()).is_ok() {
         return;
     }

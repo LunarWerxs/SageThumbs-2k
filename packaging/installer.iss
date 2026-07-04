@@ -6,6 +6,12 @@
 #ifndef AppVer
   #define AppVer "0.0.0"
 #endif
+; Live format count, injected by build-release.ps1 from `st2k formats` (never hardcode
+; it — the count is whatever formats.rs FORMATS.len() returns). Count-free fallback so a
+; bare ISCC compile still produces sensible text.
+#ifndef FmtCount
+  #define FmtCount "300+"
+#endif
 
 #define AppName "SageThumbs 2K"
 #define AppExe "SageThumbs2K.exe"
@@ -45,7 +51,7 @@ PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-Name: "full"; Description: "Full - all 316 formats (recommended)"
+Name: "full"; Description: "Full - all {#FmtCount} formats (recommended)"
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
@@ -94,19 +100,35 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 ; Bypass (it only gates script *files*, never the inline cmdlets we pass via -Command)
 ; and NO certutil, so the installer doesn't resemble a script-dropper to AV heuristics.
 ; Runs only when the package was bundled.
+; Remove-first: a leftover DEV registration (unpackaged `Add-AppxPackage -Register`, Dev
+; Mode) blocks the signed package with 0x80073CFB ("already installed an unpackaged
+; version") — and -ForceUpdateFromAnyVersion does NOT clear that. Removing any existing
+; registration first makes the step idempotent for dev boxes and stuck states alike; on a
+; clean end-user upgrade the remove is a harmless no-op-or-quick-swap.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion"""; \
+  Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage -ErrorAction SilentlyContinue; Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion"""; \
   StatusMsg: "Registering the modern context menu..."; Flags: runhidden waituntilterminated; Check: ModernMenuBundled
 ; Launch Settings right after install (checked by default) so the user sees the app.
 ; `skipifsilent` keeps unattended installs quiet.
 Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
   Flags: postinstall nowait skipifsilent
 ; After a SILENT self-update (the running app launched setup with /UPDATED), relaunch the
-; freshly installed app with --updated <ver> so it shows a "you're now on <ver>" note.
-; Gated on /UPDATED via WasSelfUpdate, so a normal interactive install never triggers it
-; (and it runs even though that install was silent - no skipifsilent here, deliberately).
+; freshly installed app with --updated <ver> so it shows a "you're now on <ver>" note (and
+; heals the hotkey daemon the setup had to kill). Gated on /UPDATED via WasSelfUpdate, so a
+; normal interactive install never triggers it (and it runs even though that install was
+; silent - no skipifsilent here, deliberately). runasoriginaluser is LOAD-BEARING: without
+; it this runs in the ELEVATED setup context, and the daemon it heals would inherit that
+; elevation - a non-elevated Settings window is then UIPI-blocked from ever posting
+; WM_RELOAD to it, so later hotkey changes would silently stop applying.
 Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
-  Flags: nowait; Check: WasSelfUpdate
+  Flags: nowait runasoriginaluser; Check: WasSelfUpdate
+; Restart the resident hotkey daemon after EVERY install, silent or not: the setup killed
+; it (PrepareToInstall / Restart Manager) to replace the EXE, and nothing else brings it
+; back until the next logon - a user whose hotkeys are on would otherwise find them dead
+; after any reinstall/upgrade. --heal-hotkeys is a silent, instant no-op when the feature
+; is off or the daemon is already back. Same runasoriginaluser rationale as above.
+Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
+  Flags: nowait runasoriginaluser
 
 [UninstallRun]
 ; Remove the modern-menu package + its trusted cert (best-effort; harmless if the
@@ -116,8 +138,8 @@ Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage; Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -like '*SageThumbs2K*' | Remove-Item -Force"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregAppx"
-; Unregister before files are removed (our DllUnregisterServer also unhooks the
-; 316 formats and fires SHChangeNotify).
+; Unregister before files are removed (our DllUnregisterServer also unhooks every
+; registered format and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregSt2k"
 
@@ -135,6 +157,23 @@ Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 function ModernMenuBundled: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\SageThumbs2K.msix'));
+end;
+
+// Stop the resident hotkey daemon + its watchdog BEFORE any file is copied. They
+// deliberately supervise each other (either respawns the other within seconds), which
+// means Restart Manager's graceful close can RACE a respawn: it closes one, the survivor
+// relaunches it from the old EXE mid-install, and the file copy hits a fresh lock. One
+// taskkill sweep takes both down in the same instant (nothing left standing to respawn);
+// the second sweep mops up anything that slipped through the first pass's window. The
+// [Run] --heal-hotkeys step brings the daemon back from the NEW exe once files are in.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  R: Integer;
+begin
+  Result := '';
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
+  Sleep(400);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
 end;
 
 // True when the running app launched this setup as a SILENT self-update - it passes the

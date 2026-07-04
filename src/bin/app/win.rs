@@ -11,7 +11,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::sync::OnceLock;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DeleteObject, GetDC, GetTextExtentPoint32W, GetStockObject,
     ReleaseDC, SelectObject, DEFAULT_GUI_FONT, HBITMAP, HBRUSH, HFONT, HGDIOBJ,
@@ -566,6 +566,8 @@ pub(crate) const BTN_H: i32 = 28; // standard pushbutton height
 pub(crate) mod winshim {
     // STATIC control styles.
     pub(crate) const SS_CENTER: u32 = 0x0000_0001;
+    /// Vertically center single-line text (the upload "busy pill" uses it).
+    pub(crate) const SS_CENTERIMAGE: u32 = 0x0000_0200;
     pub(crate) const SS_OWNERDRAW: u32 = 0x0000_000D;
     pub(crate) const SS_BITMAP: u32 = 0x0000_000E;
     pub(crate) const SS_NOTIFY: u32 = 0x0000_0100;
@@ -696,6 +698,86 @@ pub(crate) unsafe fn message_box(hwnd: HWND, text: &str, caption: &str) {
     let t = wide(text);
     let c = wide(caption);
     MessageBoxW(Some(hwnd), PCWSTR(t.as_ptr()), PCWSTR(c.as_ptr()), MB_OK | MB_ICONWARNING);
+}
+
+/// One-shot tray balloon from a WINDOWLESS helper process: a throwaway hidden window
+/// hosts a temporary notify icon, pops a `NIF_INFO` balloon, pumps briefly so it paints
+/// and lingers, then removes the icon and returns. This is the feedback channel for
+/// processes with no UI of their own (the instant capture's failure note, the
+/// post-update "you're now on <ver>" toast) — a modal MessageBox would be wrong there.
+/// Best-effort: any failed step just means no toast, never a hang. The `linger` is how
+/// long we keep pumping (the shell auto-dismisses the balloon on its own schedule).
+pub(crate) unsafe fn notify_toast(title: &str, body: &str, linger: std::time::Duration) {
+    use windows::Win32::UI::Shell::{
+        Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+        NOTIFYICONDATAW,
+    };
+
+    unsafe extern "system" fn toast_wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        DefWindowProcW(h, m, w, l)
+    }
+
+    let hmod = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+    let hinst = windows::Win32::Foundation::HINSTANCE(hmod.0);
+    let class = windows::core::w!("SageThumbs2KToast");
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(toast_wndproc),
+        hInstance: hinst,
+        lpszClassName: class,
+        ..Default::default()
+    };
+    RegisterClassW(&wc); // ok if already registered (one-shot process)
+    let Ok(hwnd) = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        class,
+        windows::core::w!("st2k-toast"),
+        WS_OVERLAPPED, // never shown — it only owns the tray icon
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        Some(hinst),
+        None,
+    ) else {
+        return;
+    };
+
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 0xA1,
+        uFlags: NIF_ICON,
+        hIcon: app_icon().unwrap_or_default(),
+        ..Default::default()
+    };
+    let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    let t = wide(title);
+    let i = wide(body);
+    for (d, s) in nid.szInfoTitle.iter_mut().zip(t.iter()) {
+        *d = *s;
+    }
+    for (d, s) in nid.szInfo.iter_mut().zip(i.iter()) {
+        *d = *s;
+    }
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+
+    // Pump so the balloon paints + lingers, then clean up and return to the caller.
+    let start = std::time::Instant::now();
+    let mut msg = MSG::default();
+    while start.elapsed() < linger {
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+    let _ = DestroyWindow(hwnd);
 }
 
 // ---- Small control helpers ---------------------------------------------

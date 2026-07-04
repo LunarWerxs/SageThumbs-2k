@@ -25,7 +25,7 @@ mod mkv;
 mod mp4;
 mod ocr;
 // Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
-// verbs). `pub` so the companion `sagethumbs2k-app` bin can drive it, `doc(hidden)`
+// verbs). `pub` so the companion `SageThumbs2K` app bin can drive it, `doc(hidden)`
 // because it isn't a stable public API — just a shared helper across our own crates.
 #[doc(hidden)]
 pub mod parallel;
@@ -212,8 +212,18 @@ pub fn dll_unregister_server() -> HRESULT {
 /// `CREATE_NO_WINDOW` process-creation flag. Every helper we spawn from a GUI/shell
 /// host (magick, st2k, self) passes it so no console window flashes. Defined here
 /// once — a mistyped copy (`0x0080_0000`) would pop a console inside Explorer. (The
-/// `windows` crate's `Threading` feature that exports this isn't enabled.)
+/// `windows` crate's `Threading` feature IS enabled now — for `CreateMutexW` — but
+/// `std::process::CommandExt::creation_flags` wants a bare `u32` anyway.)
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// NUL-terminated UTF-16 for Win32 `*W` APIs. Was independently re-typed as
+/// `s.encode_utf16().chain(once(0)).collect()` across half a dozen files (command /
+/// contextmenu / propstore / actions / cli / container::select) — one shared helper
+/// means the pattern can't drift and reads as intent at the call site. (The app bin
+/// has its own `win::wide` twin; bins keep using that one.)
+pub fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(core::iter::once(0)).collect()
+}
 
 /// File names of the artifacts this crate builds, all installed side-by-side. The
 /// co-located layout is an install contract; keeping the names here means a rename

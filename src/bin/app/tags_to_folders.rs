@@ -6,8 +6,9 @@
 use std::sync::OnceLock;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
@@ -36,7 +37,7 @@ pub(crate) unsafe fn run_tags_to_folders_dialog(_hinst: HINSTANCE, listfile: &st
         Some(ttf_wndproc),
         t("ttf_title"),
         452,
-        252,
+        270,
         None,
     );
 }
@@ -74,8 +75,16 @@ extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 ctl(hwnd, BUTTON, t("ttf_copy"), WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_TABSTOP, 230, 146, 110, 22, CID_TTF_COPY, hinst);
                 SendMessageW(mv, BM_SETCHECK_MSG, Some(WPARAM(1)), Some(LPARAM(0))); // default: Move
 
-                ctl(hwnd, BUTTON, t("ttf_sort"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 244, 188, 92, 30, IDOK, hinst);
-                ctl(hwnd, BUTTON, t("btn_cancel"), WS_TABSTOP, 342, 188, 88, 30, IDCANCEL, hinst);
+                // Anchor the button row to the REAL client bottom — `run_dialog`'s h is
+                // the TOTAL window height, so a hardcoded y put the row's bottom below
+                // the client edge (clipped). GetClientRect is physical px → back to
+                // 96-DPI design px, because `ctl` re-scales design px to DPI.
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+                let by = rc.bottom * 96 / dpi - 12 - 30;
+                ctl(hwnd, BUTTON, t("ttf_sort"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 244, by, 92, 30, IDOK, hinst);
+                ctl(hwnd, BUTTON, t("btn_cancel"), WS_TABSTOP, 342, by, 88, 30, IDCANCEL, hinst);
                 LRESULT(0)
             }
             WM_COMMAND => {

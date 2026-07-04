@@ -166,7 +166,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 Requires the **MSVC** Rust toolchain, VS Build Tools (Desktop C++), and — for the installer — [Inno Setup](https://jrsoftware.org/isinfo.php).
 
 ```powershell
-cargo build --release            # sagethumbs2k.dll + sagethumbs2k-app.exe (installs as SageThumbs2K.exe) + st2k.exe
+cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.exe
 .\scripts\build-release.ps1      # full pipeline → dist\SageThumbs2K-Setup-<ver>.exe
 ```
 

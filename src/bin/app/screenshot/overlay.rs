@@ -139,6 +139,12 @@ unsafe fn shot_ptr(hwnd: HWND) -> *mut Shot {
 }
 
 pub(crate) unsafe fn run_capture(hinst: HINSTANCE) {
+    // One overlay at a time: each hotkey press spawns a fresh `--screenshot` process, and
+    // MOD_NOREPEAT only suppresses key auto-repeat — a second REAL press would stack another
+    // fullscreen overlay whose frozen snapshot is a picture OF the first (dimmed) overlay.
+    if FindWindowW(w!("SageThumbs2KShot"), PCWSTR::null()).is_ok() {
+        return;
+    }
     let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -305,15 +311,104 @@ pub(crate) unsafe fn capture_instant() {
     if got == 0 {
         return;
     }
-    output::copy_dib_to_clipboard(&buf, vw, vh);
+    let copied = output::copy_dib_to_clipboard(&buf, vw, vh);
     // The editor-less instant capture can't prompt, so it always auto-saves to the
-    // effective save folder (the configured one, or the Desktop by default). It IS on the
-    // clipboard regardless; log a save failure (full/unwritable folder) so it's diagnosable
-    // instead of vanishing silently.
+    // effective save folder (the configured one, or the Desktop by default).
     let dir = super::effective_save_dir();
-    if !output::save_png_to_dir(std::path::Path::new(&dir), &buf, vw, vh) {
-        sagethumbs2k_core::safety::log(&format!("instant capture: PNG save to {dir} failed (it's still on the clipboard)"));
+    let saved = output::save_png_to_dir(std::path::Path::new(&dir), &buf, vw, vh);
+
+    // Feedback — this hotkey used to be TOTALLY silent, so "worked" and "did nothing"
+    // were indistinguishable. Success gets a Win+Shift+S-style split-second flash;
+    // any failure gets a tray toast naming exactly what failed (plus the log line).
+    match (copied, saved) {
+        (true, true) => flash_screen(vx, vy, vw, vh),
+        (true, false) => {
+            sagethumbs2k_core::safety::log(&format!(
+                "instant capture: PNG save to {dir} failed (it's still on the clipboard)"
+            ));
+            crate::win::notify_toast(
+                "SageThumbs 2K",
+                crate::win::t("toast_shot_fail_save").replace("{dir}", &dir).as_str(),
+                std::time::Duration::from_secs(5),
+            );
+        }
+        (false, true) => {
+            sagethumbs2k_core::safety::log("instant capture: clipboard copy failed (PNG saved)");
+            crate::win::notify_toast(
+                "SageThumbs 2K",
+                crate::win::t("toast_shot_fail_clip"),
+                std::time::Duration::from_secs(5),
+            );
+        }
+        (false, false) => {
+            sagethumbs2k_core::safety::log(&format!(
+                "instant capture: BOTH clipboard copy and PNG save to {dir} failed"
+            ));
+            crate::win::notify_toast(
+                "SageThumbs 2K",
+                crate::win::t("toast_shot_fail_all"),
+                std::time::Duration::from_secs(6),
+            );
+        }
     }
+}
+
+/// A split-second white flash over the captured area — the only success cue the
+/// editor-less instant capture gives (same visual language as Win+Shift+S). The window
+/// is layered + click-through + non-activating, so it can't steal focus or eat a click;
+/// three quick alpha steps read as a camera flash without being a strobe.
+unsafe fn flash_screen(vx: i32, vy: i32, vw: i32, vh: i32) {
+    let class = w!("SageThumbs2KShotFlash");
+    let hmod =
+        windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(flash_wndproc),
+        hInstance: HINSTANCE(hmod.0),
+        lpszClassName: class,
+        hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(
+            windows::Win32::Graphics::Gdi::GetStockObject(
+                windows::Win32::Graphics::Gdi::WHITE_BRUSH,
+            )
+            .0,
+        ),
+        ..Default::default()
+    };
+    RegisterClassW(&wc);
+    let Ok(hwnd) = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+        class,
+        PCWSTR::null(),
+        WS_POPUP,
+        vx,
+        vy,
+        vw,
+        vh,
+        None,
+        None,
+        None,
+        None,
+    ) else {
+        return;
+    };
+    for alpha in [80u8, 45, 18] {
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+        if alpha == 80 {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            // This thread never pumps messages, so the queued WM_PAINT would never be
+            // dispatched and the window would be destroyed before it ever painted —
+            // i.e. no flash at all. UpdateWindow delivers WM_PAINT synchronously
+            // (DefWindowProc + the class WHITE_BRUSH do the fill); the later alpha
+            // steps only change DWM blending of the already-rendered surface, so one
+            // forced paint is enough.
+            let _ = windows::Win32::Graphics::Gdi::UpdateWindow(hwnd);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(45));
+    }
+    let _ = DestroyWindow(hwnd);
+}
+
+extern "system" fn flash_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 extern "system" fn shot_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

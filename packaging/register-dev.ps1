@@ -49,9 +49,8 @@ New-Logo (Join-Path $assets 'Square150x150Logo.png') 150 150
 # 2) Build the DLL + stub EXE into the external location.
 Write-Host "Building release binaries..."
 cargo build --release --manifest-path (Join-Path $root 'Cargo.toml')
-# The cargo bin target is `sagethumbs2k-app` (avoids a PDB case-collision with the DLL);
-# register it under the shipped name the manifest's Executable= and the DLL's spawn expect.
-Copy-Item (Join-Path $ExternalLocation 'sagethumbs2k-app.exe') (Join-Path $ExternalLocation 'SageThumbs2K.exe') -Force
+# The cargo bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly —
+# the name the manifest's Executable= and the DLL's spawn code expect. No rename needed.
 $dll = Join-Path $ExternalLocation 'sagethumbs2k.dll'
 $exe = Join-Path $ExternalLocation 'SageThumbs2K.exe'
 if (-not (Test-Path $dll)) { throw "Missing $dll" }

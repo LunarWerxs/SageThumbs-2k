@@ -1346,6 +1346,28 @@ const TOOLTIPS: &[(i32, &str)] = &[
     (ID_SHOT_HOTKEY, "tip_shot_hotkey"),
     (ID_SHOT_QUICK_ENABLE, "tip_instant_screenshot"),
     (ID_SHOT_QUICK_HOTKEY, "tip_shot_quick_hotkey"),
+    (ID_SHOT_USE_DIR, "tip_shot_use_dir"),
+    (ID_SHOT_SET_DIR, "tip_shot_set_dir"),
+    (ID_EDIT_UPLOAD_HOSTS, "tip_edit_upload_hosts"),
+    (ID_SHOT_RESTART, "tip_shot_restart"),
+    (ID_SHOT_HIDE_TRAY, "tip_hide_tray"),
+    (ID_CUSTOM_ACTION_ENABLE, "tip_custom_action_enable"),
+    (ID_SHOT_ACTION, "tip_custom_action"),
+    (ID_SHOT_ACTION_HK, "tip_custom_action_hk"),
+    // Same hints on the combo LABELS, like the Limits fields above.
+    (ID_LBL_SHOT_ACTION, "tip_custom_action"),
+    (ID_LBL_SHOT_ACTION_HK, "tip_custom_action_hk"),
+    (ID_MENU_ITEMS_LIST, "tip_menu_items"),
+    (ID_MENU_RESET, "tip_menu_reset"),
+    (ID_VERBOSE_LOG, "tip_verbose_log"),
+    (ID_OPEN_LOG, "tip_open_log"),
+    (ID_REBUILD_CACHE, "tip_rebuild_cache"),
+    (ID_REPAIR_ASSOC, "tip_repair_assoc"),
+    (ID_UPDATE_AUTO, "tip_update_auto"),
+    (ID_CHECK_UPDATES, "tip_check_updates"),
+    (ID_RESET_ALL, "tip_reset_all"),
+    (ID_IMPORT, "tip_import"),
+    (ID_EXPORT, "tip_export"),
     (ID_SELECT_ALL, "tip_select_all"),
     (ID_CLEAR_ALL, "tip_clear_all"),
     (ID_DEFAULTS, "tip_defaults"),
@@ -1742,10 +1764,32 @@ unsafe fn refresh_shot_status(hwnd: HWND) {
     // Drive off the LIVE "Enable screenshot hotkey" checkbox (not the persisted state),
     // so toggling it updates the status line + Restart button immediately.
     let enabled = checked(hwnd, ID_SHOT_ENABLE);
+    // The daemon reports per-chord RegisterHotKey failures via the HotkeyBindFailed
+    // bitmask (bit0 capture, bit1 quick-save, bit2 custom action) — a chord grabbed by
+    // another app otherwise looked identical to a working one ("Running" while the
+    // hotkey silently never fires). Only trust the flag while the daemon is actually
+    // alive (it rewrites the mask on every re-arm; a dead daemon's value is stale).
+    let bind_failed = if crate::screenshot::is_daemon_running() {
+        settings::get_dword_opt("HotkeyBindFailed").unwrap_or(0)
+    } else {
+        0
+    };
     let txt = if !enabled {
-        "Off"
+        // Screenshot feature off — but a bound CUSTOM action hotkey still runs through
+        // the same daemon, and ITS conflict (bit2) would otherwise be invisible in the
+        // whole UI (this is the only status line).
+        if bind_failed & 4 != 0 {
+            "Off \u{2014} custom hotkey in use by another app (pick a different one)"
+        } else {
+            "Off"
+        }
     } else if crate::screenshot::is_daemon_running() {
-        "Running"
+        // Keep the "Running" prefix: the balloon-nudge logic below string-matches it.
+        if bind_failed != 0 {
+            "Running \u{2014} a hotkey is in use by another app (pick a different one)"
+        } else {
+            "Running"
+        }
     } else {
         "Stopped \u{2014} click Restart"
     };

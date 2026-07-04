@@ -61,6 +61,18 @@ New-Item -ItemType Directory $stage -Force | Out-Null
 Copy-Item (Join-Path $pkgdir 'AppxManifest.xml') $stage -Force
 Copy-Item (Join-Path $pkgdir 'Assets') $stage -Recurse -Force
 
+# Patch the STAGED manifest's Identity Version from Cargo.toml (the single source of
+# truth) so a release can never ship a sparse package still carrying the previous
+# version — this was a manual, forgettable bump before. The checked-in manifest is
+# left untouched; only the packed copy is rewritten.
+$cargoVer = ([regex]::Match((Get-Content (Join-Path $pkgdir '..\Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
+if ($cargoVer) {
+    $mf = Join-Path $stage 'AppxManifest.xml'
+    (Get-Content $mf -Raw) -replace '(<Identity\b[^>]*\bVersion=")[^"]+(")', "`${1}$cargoVer.0`${2}" |
+        Set-Content $mf -Encoding utf8
+    Write-Host "      manifest Identity Version -> $cargoVer.0 (from Cargo.toml)" -ForegroundColor DarkGray
+}
+
 & $makeappx pack /d $stage /p $msix /o /nv
 if ($LASTEXITCODE) { throw "makeappx pack failed ($LASTEXITCODE)" }
 

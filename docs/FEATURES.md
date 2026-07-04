@@ -152,7 +152,8 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Upload (copy link)** — uploads the selected image(s) to a keyless, no-account
   host (**catbox.moe** by default; overridable via the `ScreenshotUploadUrl` registry
   value) and copies the resulting link(s) to the clipboard. Multi-select uploads every
-  selected image and copies all the links.
+  selected image and copies all the links. A small **"Uploading…" indicator** shows
+  while the transfer runs, so a multi-second upload never looks like a dead click.
 - **Set as folder icon** — makes the selected image the icon of its containing
   folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
   customized, and refreshes Explorer — the same mechanism as Explorer's own
@@ -205,7 +206,9 @@ long scroll is gone.)
 - **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn
   preset is offered) for the region editor, **plus an optional second "quick-save"
   hotkey** that grabs the whole screen straight to the clipboard + a timestamped PNG
-  with no editor (Off by default). As you drag out the region, a live **`width × height`
+  with no editor (Off by default) — a **split-second screen flash confirms the capture**
+  (like Win+Shift+S), and if the copy or the save failed, a small notification says
+  exactly what went wrong instead of silence. As you drag out the region, a live **`width × height`
   pixel readout** follows the selection so you can size a capture precisely. In the editor,
   **Ctrl+C copies to the clipboard and Ctrl+S saves** (Enter copies too). **Save to a set
   folder on Ctrl+S** (a toggle): when on, Ctrl+S auto-saves a timestamped PNG to a folder
@@ -213,7 +216,8 @@ long scroll is gone.)
   to save each time. **Custom action hotkey:** assign ONE global
   hotkey to any of a curated set of actions — **pick a color** (the screen color picker),
   take a screenshot, Convert…, rotate right, move files into a new folder, strip metadata,
-  or open Settings. Screen-wide actions run instantly; the file actions operate on the
+  **upload (copy link)**, **copy text (OCR)** straight to the clipboard, or open
+  Settings. Screen-wide actions run instantly; the file actions operate on the
   current **Explorer selection** (or prompt with a file picker when nothing is selected).
   It rides the same opt-in helper, so binding one needs no extra background process.
 - **Supported file types:** the full per-extension checklist (Extension / Category
@@ -230,10 +234,15 @@ long scroll is gone.)
   button that restores every option to its factory default.
 - **Hotkey service:** a live status line (Running / Stopped / Off) and a **Restart** button
   for the small background helper that powers the screenshot & custom-action hotkeys, plus
-  the **Hide tray icon** toggle (the hotkeys still fire when it's hidden). The service now
+  the **Hide tray icon** toggle (the hotkeys still fire when it's hidden). The service
   **restarts itself automatically** if it ever stops, and simply opening Settings brings it
-  back if it was down — so your hotkeys don't quietly stop firing. Quitting from the tray
-  icon disables it for good (until you re-enable it here).
+  back if it was down. The hotkeys also **survive the things Windows silently breaks them
+  with** — sleep/resume, locking your PC, remote-desktop reconnects, Explorer restarts
+  (the tray icon comes back too), and app updates all re-register them automatically. If
+  **another app owns your chosen chord**, the status line says so ("hotkey in use by
+  another app") instead of pretending everything works — and it clears itself within a
+  minute of that app letting go. Quitting from the tray icon disables it for good (until
+  you re-enable it here).
 - **Updates:** a **Check for updates** button (plus an *Automatically check for updates*
   toggle) asks GitHub whether a newer release exists. When one is available, SageThumbs can
   **download and install it for you** — a progress bar shows the download, the file is

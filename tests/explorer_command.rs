@@ -8,6 +8,16 @@
 //!
 //! Run via `scripts/test.ps1` (build before test) so LoadLibrary gets a fresh
 //! cdylib — plain `cargo test` does not refresh target/<profile>/*.dll.
+//!
+//! HERMETIC vs live HKCU: these tests assert the DEFAULT menu tree, but the DLL's
+//! menu build reads the user's live `HKCU\Software\SageThumbs2K` customization
+//! (MenuItems visibility / MenuOrder / MenuAllFileTypes / MenuQuickVerbs) — so on a
+//! box where the user hid or reordered items in Settings they'd fail spuriously.
+//! `create_for` sets `ST2K_SETTINGS_ROOT` (honored by `settings::hkcu_root`) to a
+//! subkey that never exists, so every settings read misses and returns its default —
+//! the DLL (loaded into THIS process, so it inherits our environment) and the test
+//! binary both see a pristine default menu regardless of the real key. The tests never
+//! write settings, so nothing is created and there's nothing to clean up.
 #![cfg(windows)]
 
 use std::ffi::c_void;
@@ -45,7 +55,17 @@ fn dll_path() -> std::path::PathBuf {
     exe.parent().unwrap().parent().unwrap().join("sagethumbs2k.dll")
 }
 
+/// A scratch HKCU subkey that is never created, so every settings read under it misses and
+/// falls back to its default (see the module docs). All tests use this ONE value: the
+/// `settings::hkcu_root` cache resolves the env var once per process, so a single constant
+/// keeps the DLL's copy and the test binary's copy in agreement no matter which thread wins.
+const TEST_SETTINGS_ROOT: &str = r"Software\SageThumbs2K\__test_explorer_command_absent";
+
 unsafe fn create_for(clsid: GUID) -> Result<IExplorerCommand> {
+    // Hermetic menu settings (see the module docs). Every test obtains its command(s)
+    // through here, before any settings read, so the whole file is covered; the var is
+    // only ever SET (never cleared), so parallel test threads can't race it off.
+    std::env::set_var("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT);
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     let path = dll_path();
     assert!(path.exists(), "cdylib not built at {path:?}");
@@ -287,6 +307,9 @@ fn quick_verbs_structure_and_gate() {
 
         let cmd = create_for(CLSID_QUICK_RESIZE).expect("create");
         // Image selection → ECS_ENABLED iff the menu + quick-verbs Options are both on.
+        // Under the absent ST2K_SETTINGS_ROOT (set by create_for above; the test binary's own
+        // `settings` reads it too) this is deterministic: EnableMenu defaults on, MenuQuickVerbs
+        // defaults off → the quick verb must be hidden.
         let want_enabled = settings::menu_enabled() && settings::menu_quick_verbs();
         let png_state = cmd.GetState(&item_array(&png), false).expect("GetState png");
         assert_eq!(

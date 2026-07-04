@@ -216,10 +216,16 @@ pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
     let mut moved = 0usize;
     let mut skipped = 0usize;
     let mut touched: Vec<PathBuf> = Vec::new();
-    for p in paths.iter().filter(|p| is_image(p.as_str())) {
-        let src = Path::new(p);
+    let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
+    // Probe dimensions IN PARALLEL first — `dims()` can fall back to a full decode (up
+    // to an ImageMagick subprocess per exotic RAW/HEIC file), and every other multi-file
+    // verb already fans that out via `parallel::map`. The moves stay serial below: they're
+    // cheap, and two files with equal dims share a target dir (no create/move races).
+    let probed = crate::parallel::map(&images, |_, p| dims(p.as_str()));
+    for (p, d) in images.iter().zip(probed) {
+        let src = Path::new(p.as_str());
         let parent = src.parent().unwrap_or_else(|| Path::new("."));
-        match dims(p) {
+        match d {
             Some((w, h)) => {
                 let dir = parent.join(format!("{w}x{h}"));
                 if std::fs::create_dir_all(&dir).is_ok() && move_into(src, &dir).is_ok() {

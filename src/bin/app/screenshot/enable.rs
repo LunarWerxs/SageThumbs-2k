@@ -50,6 +50,30 @@ fn run_entry_present() -> bool {
         .unwrap_or(false)
 }
 
+/// Does the existing autostart entry point at a live exe that ISN'T `current`? True means
+/// "leave the entry alone" — someone else's healthy install owns it (the usual case: the
+/// machine-wide install under Program Files, while `current` is a dev/portable build). An
+/// absent, unparseable, or dead-target entry returns false, i.e. rewrite freely — this exe
+/// beats a path that no longer launches anything. Comparison is by canonical path, so an
+/// entry that names *this* exe through a different spelling still refreshes normally.
+fn autostart_points_at_other_install(current: &std::path::Path) -> bool {
+    let Ok(k) = windows_registry::CURRENT_USER.open(RUN_KEY) else { return false };
+    let Ok(v) = k.get_string(RUN_NAME) else { return false };
+    // Our own format is `"C:\path\to\exe" --screenshot-daemon` — take the quoted path.
+    let rest = match v.trim().strip_prefix('"') {
+        Some(r) => r,
+        None => return false, // unquoted/foreign format — reclaim it
+    };
+    let Some(end) = rest.find('"') else { return false };
+    let target = std::path::Path::new(&rest[..end]);
+    match (target.canonicalize(), current.canonicalize()) {
+        // Target exists and is genuinely a different file → it's someone's live install.
+        (Ok(t), Ok(c)) => t != c,
+        // Target missing/unreadable → stale, rewrite.
+        _ => false,
+    }
+}
+
 /// Should the watchdog keep the daemon alive? Tied to the autostart entry — the canonical
 /// "the daemon is wanted" signal that [`reconcile`]/[`quit`] add and remove. Using the
 /// entry (not `daemon_wanted()` directly) means the watchdog stops cleanly after a tray
@@ -111,10 +135,18 @@ pub(crate) fn set_enabled(on: bool) {
 /// repeatedly.
 pub(crate) fn reconcile() {
     if daemon_wanted() {
-        if let (Ok(exe), Ok(k)) =
-            (std::env::current_exe(), windows_registry::CURRENT_USER.create(RUN_KEY))
-        {
-            let _ = k.set_string(RUN_NAME, format!("\"{}\" --screenshot-daemon", exe.display()));
+        // Point the autostart entry at THIS exe — unless a healthy entry already points at
+        // a DIFFERENT install. Without that guard, merely opening Settings from a dev/test
+        // build silently repointed logon autostart at a transient build path; when that
+        // path later changed or vanished, the daemon simply never came up at the next boot
+        // (hotkeys dead, no error anywhere) until something opened Settings again.
+        if let Ok(exe) = std::env::current_exe() {
+            if !autostart_points_at_other_install(&exe) {
+                if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
+                    let _ =
+                        k.set_string(RUN_NAME, format!("\"{}\" --screenshot-daemon", exe.display()));
+                }
+            }
         }
         if is_daemon_running() {
             reload_hotkey(); // a live daemon re-reads + re-registers all hotkeys

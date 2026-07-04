@@ -25,7 +25,7 @@ mod menu;
 
 // ---- Public surface (matches each item's ORIGINAL visibility) -----------
 // `#[allow(unused_imports)]`: several of these re-exports are consumed only by the
-// sibling `sagethumbs2k-app` / `st2k` BINARY crates (and the test module), which the
+// sibling `SageThumbs2K` (app) / `st2k` BINARY crates (and the test module), which the
 // lib-only build can't see — so they read as "unused" here despite being load-bearing
 // public API. (Items the lib itself uses — `is_image`, `run_action`, `MENU`,
 // `leaves`, … — don't warn; the attribute just covers the bin-only ones.)

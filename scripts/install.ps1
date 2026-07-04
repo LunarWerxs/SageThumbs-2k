@@ -44,8 +44,8 @@ if ($Uninstall) {
 
 New-Item -ItemType Directory -Path $prog -Force | Out-Null
 Copy-Item "$BuildDir\sagethumbs2k.dll" $prog -Force
-# Build target is `sagethumbs2k-app`; install under the shipped name `SageThumbs2K.exe`.
-Copy-Item "$BuildDir\sagethumbs2k-app.exe" (Join-Path $prog 'SageThumbs2K.exe') -Force
+# The bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly.
+Copy-Item "$BuildDir\SageThumbs2K.exe" $prog -Force
 # The CLI / MCP server (`st2k --mcp`). The dist installer ships it; the dev
 # install used to omit it, leaving a live CLI check running stale code.
 Copy-Item "$BuildDir\st2k.exe" $prog -Force

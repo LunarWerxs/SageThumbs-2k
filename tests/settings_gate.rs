@@ -2,11 +2,17 @@
 //! driven in-process exactly like Explorer (DllGetClassObject → CreateInstance
 //! → Initialize(IStream) → GetThumbnail) against the freshly-built cdylib.
 //!
-//! `#[ignore]`d because it MUTATES the live `HKCU\Software\SageThumbs2K` values
-//! (it saves and restores them), so it must not run concurrently with the rest
-//! of the suite. Run explicitly:
+//! HERMETIC: instead of mutating the developer's live `HKCU\Software\SageThumbs2K`
+//! (the old approach — it save/restored, but a panic mid-test could leak a changed
+//! EnableThumbs/MaxSize onto the box), this redirects the DLL's settings reads to a
+//! THROWAWAY subkey via `ST2K_SETTINGS_ROOT` (honored by `settings::hkcu_root`). The
+//! test writes EnableThumbs/MaxSize into that scratch key and reads the provider's
+//! response; the user's real settings are never touched. The scratch key is wiped at
+//! the start (clean slate) and end. Redirection makes it safe to run in the normal
+//! suite, so it's no longer `#[ignore]`d.
 //!
-//!   cargo test --release --test settings_gate -- --ignored --test-threads=1
+//! Run via `scripts/test.ps1` (build before test) so LoadLibrary gets a fresh cdylib —
+//! plain `cargo test` does not refresh target/<profile>/*.dll.
 #![cfg(windows)]
 
 use std::ffi::c_void;
@@ -23,7 +29,10 @@ use windows::Win32::UI::Shell::{SHCreateMemStream, IThumbnailProvider, WTS_ALPHA
 use windows_registry::CURRENT_USER;
 
 const CLSID_THUMBNAIL_PROVIDER: GUID = GUID::from_u128(0x7B2E6A14_9C3D_4F8A_B1E7_2A5D9F0C6E31);
-const ROOT: &str = r"Software\SageThumbs2K";
+/// Throwaway HKCU subkey the DLL's settings reads are redirected to (via ST2K_SETTINGS_ROOT),
+/// so this test never touches the developer's real `Software\SageThumbs2K` values. A child of
+/// the real root, but isolated: creating/removing it leaves the parent's own values alone.
+const TEST_ROOT: &str = r"Software\SageThumbs2K\__test_gate";
 
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
@@ -85,50 +94,47 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> RgbaImage {
     img
 }
 
-/// Set a DWORD, returning its prior value (None if absent) for restoration.
-fn swap(name: &str, value: u32) -> Option<u32> {
-    let key = CURRENT_USER.create(ROOT).unwrap();
-    let prev = key.get_u32(name).ok();
-    key.set_u32(name, value).unwrap();
-    prev
+/// Write a DWORD into the throwaway settings root the DLL is redirected to. No save/restore:
+/// the whole key is scratch and gets wiped at the end, so we just set what each step needs.
+fn put(name: &str, value: u32) {
+    CURRENT_USER.create(TEST_ROOT).unwrap().set_u32(name, value).unwrap();
 }
-fn restore(name: &str, prev: Option<u32>) {
-    let key = CURRENT_USER.create(ROOT).unwrap();
-    match prev {
-        Some(v) => {
-            let _ = key.set_u32(name, v);
-        }
-        None => {
-            let _ = key.remove_value(name);
-        }
-    }
+
+/// Delete the throwaway settings key (idempotent). The user's real `Software\SageThumbs2K`
+/// values live directly under the parent and are untouched by removing this child subtree.
+fn reset_scratch() {
+    let _ = CURRENT_USER.remove_tree(TEST_ROOT);
 }
 
 #[test]
-#[ignore]
 fn settings_gate_the_provider() {
+    // Redirect the DLL's settings reads to the scratch key BEFORE it's loaded — the first
+    // get_thumbnail LoadLibrary's the cdylib, whose `settings::hkcu_root` caches this env var
+    // once. Only the ROOT PATH is cached; the provider still re-reads the VALUES per
+    // GetThumbnail (see settings::thumb_settings), so flipping them between calls takes effect.
+    std::env::set_var("ST2K_SETTINGS_ROOT", TEST_ROOT);
+    reset_scratch(); // clean slate — no stale values from a prior aborted run
+
     let small = encode(solid(80, 60, [10, 200, 30, 255]), ImageFormat::Png);
     // Uncompressed BMP that is comfortably over 1 MB but under the 100 MB default.
     let big = encode(solid(700, 700, [120, 60, 200, 255]), ImageFormat::Bmp);
     assert!(big.len() > 1024 * 1024, "BMP fixture should exceed 1 MB, got {}", big.len());
 
     // --- EnableThumbs gate ---
-    let prev_en = swap("EnableThumbs", 1);
+    put("EnableThumbs", 1);
     let enabled = unsafe { get_thumbnail(&small, 64) };
-    let _ = swap("EnableThumbs", 0);
+    put("EnableThumbs", 0);
     let disabled = unsafe { get_thumbnail(&small, 64) };
-    restore("EnableThumbs", prev_en);
 
     // --- MaxSize gate (EnableThumbs back on for this part) ---
-    let prev_en2 = swap("EnableThumbs", 1);
-    let prev_max = swap("MaxSize", 100);
+    put("EnableThumbs", 1);
+    put("MaxSize", 100);
     let under_limit = unsafe { get_thumbnail(&big, 64) };
-    let _ = swap("MaxSize", 1);
+    put("MaxSize", 1);
     let over_limit = unsafe { get_thumbnail(&big, 64) };
-    restore("MaxSize", prev_max);
-    restore("EnableThumbs", prev_en2);
 
-    // Assert only after all mutations are restored.
+    reset_scratch(); // drop the throwaway key; the user's real settings were never touched
+
     assert!(enabled.is_ok(), "EnableThumbs=1 should produce a thumbnail");
     assert!(disabled.is_err(), "EnableThumbs=0 should decline (E_FAIL)");
     assert!(under_limit.is_ok(), "a ~1.9 MB file under a 100 MB MaxSize should thumbnail");

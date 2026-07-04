@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 
 [package]
 name = "sagethumbs2k"
@@ -39,15 +39,20 @@ ignored = ["kamadak-exif", "windows-core"]
 name = "sagethumbs2k_core"
 crate-type = ["rlib"]
 
-# The Options / convert-dialog host EXE. The cargo TARGET is `sagethumbs2k-app` — NOT
-# `SageThumbs2K` — on purpose: a target named `SageThumbs2K` case-folds to the same PDB as
-# the `sagethumbs2k.dll` cdylib on Windows' case-insensitive FS, so a combined debug build
-# dies with LNK1201 (the cdylib force-emits its PDB and mspdbsrv holds it across links). The
-# install/package step RENAMES the artifact to `SageThumbs2K.exe` — the shipped/running name
-# Task Manager shows — matching build.rs's VERSIONINFO OriginalFilename, `lib.rs::APP_EXE`,
-# AppxManifest, and install.ps1/build-release.ps1. DON'T rename the target back to SageThumbs2K.
+# The Options / convert-dialog host EXE. The target is `SageThumbs2K` so `cargo build`
+# emits `SageThumbs2K.exe` DIRECTLY — the shipped/running name Task Manager shows, matching
+# build.rs's VERSIONINFO OriginalFilename, `lib.rs::APP_EXE`, and AppxManifest.
+#
+# GOTCHA (handled): this basename case-folds to the same PDB as the `sagethumbs2k.dll`
+# cdylib on Windows' case-insensitive FS, which historically broke combined debug/test
+# builds with LNK1201 (two links contend for one PDB file). The fix lives in
+# **dll/build.rs**, which redirects the CDYLIB's PDB to `sagethumbs2k_dll.pdb` — NOT this
+# bin's. (Redirecting the bin's PDB forces its normal + `--test` compilations onto one
+# fixed path and reintroduces LNK1201 under `cargo test`; the cdylib is a single artifact
+# with no `--test` twin, so redirecting it is safe.) Verified on `cargo build`, `cargo
+# build --release`, and `cargo test`. Don't drop that redirect or rename this target.
 [[bin]]
-name = "sagethumbs2k-app"
+name = "SageThumbs2K"
 path = "src/bin/app/main.rs"
 
 # `st2k` — the command-line / AI-agent tool (console subsystem).
@@ -194,6 +199,9 @@ features = [
     "Win32_Security_Cryptography", # BCryptHash (SHA-256): verify the downloaded installer before the self-update runs it
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation", # GetLocalTime for screenshot filenames
+    "Win32_System_RemoteDesktop", # WTSRegisterSessionNotification: re-arm the screenshot hotkeys on session lock/unlock + RDP reconnect (they get silently dropped otherwise)
+    "Win32_System_Threading", # CreateMutexW: TOCTOU-safe single-instance for the screenshot daemon + watchdog (FindWindow alone races at logon)
+    "Win32_Security", # GetTokenInformation(TokenElevation): the install-time heal must NOT spawn the hotkey daemon elevated (UIPI would deafen it to Settings)
     "Win32_System_Time", # SystemTimeToFileTime: EXIF DateTaken (YYYY:MM:DD…) -> FILETIME for the property handler
     "Win32_System_WindowsProgramming", # MulDiv for the app dialogs' DPI scaling
     "Win32_UI_HiDpi", # GetDpiForWindow + SystemParametersInfoForDpi (PerMonitorV2 layout scaling)

@@ -29,6 +29,10 @@ fn main() {
         // The shell-extension DLL's VERSIONINFO is now emitted by the separate
         // `sagethumbs2k-dll` cdylib crate (dll/build.rs) — THIS crate is rlib-only and
         // no longer produces a cdylib, so `rustc-link-arg-cdylib` would do nothing here.
+        // (The app bin target `SageThumbs2K` case-folds to the DLL's `sagethumbs2k.pdb`;
+        // the collision is avoided by redirecting the *DLL's* PDB in dll/build.rs, NOT the
+        // bin's — redirecting the bin's forces its normal + `--test` builds onto one PDB
+        // path and reintroduces LNK1201 under `cargo test`. See dll/build.rs.)
     }
     // (RAR/CBR is now the pure-Rust `rars` crate — no C, no UnRAR, so the old
     // advapi32 link the `rar` feature needed is gone.)
@@ -57,13 +61,18 @@ const APP_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="y
 </assembly>
 "#;
 
-/// Compile a single windres resource object carrying the manifest (id 1, type
-/// RT_MANIFEST=24) AND `assets/app.ico` (id 1, RT_GROUP_ICON → the Explorer /
-/// Start-menu file icon), linked only into the binary (`-arg-bins`, so the cdylib
-/// is untouched). Everything happens inside OUT_DIR — which `.cargo/config.toml`
-/// redirects to a space-free path — so windres doesn't trip over this project's
-/// spaced directory. Returns false (caller falls back to manifest-only) if the
-/// icon is missing or windres is unavailable.
+/// Compile a PER-EXE windres resource object: the manifest (id 1, type
+/// RT_MANIFEST=24) + `assets/app.ico` (id 1, RT_GROUP_ICON → the Explorer /
+/// Start-menu file icon) + a VERSIONINFO whose `OriginalFilename` matches THAT exe.
+/// One object per bin, linked into ONLY its bin (`-arg-bin=<name>=…`, not `-bins`),
+/// so `SageThumbs2K.exe` and `st2k.exe` each report their OWN filename instead of
+/// sharing one (st2k.exe used to inherit `SageThumbs2K.exe`); the cdylib (no bin) is
+/// untouched. Everything happens inside OUT_DIR — which `.cargo/config.toml` redirects
+/// to a space-free path — so windres doesn't trip over this project's spaced directory.
+/// ALL-OR-NOTHING: if windres is unavailable (or a write fails) it emits NO link args
+/// and returns false, so the caller's manifest-only fallback runs cleanly — a partial
+/// build must never leave one bin with a windres manifest AND get a second from the
+/// fallback (double-embedding is the malformed-`.rsrc` crash the APP_MANIFEST note warns of).
 fn embed_manifest_and_icon() -> bool {
     let out = match std::env::var("OUT_DIR") {
         Ok(o) => o,
@@ -72,31 +81,47 @@ fn embed_manifest_and_icon() -> bool {
     if std::fs::write(format!("{out}/app.manifest"), APP_MANIFEST).is_err() {
         return false;
     }
-    let mut rc = String::from("1 24 \"app.manifest\"\n");
+    // Shared prelude for BOTH exes — the Common-Controls v6 + DPI manifest and the file
+    // icon. Only the VERSIONINFO (appended below) differs per bin, carrying that exe's
+    // own FileDescription + OriginalFilename. (FileVersion / ProductVersion =
+    // CARGO_PKG_VERSION so Explorer's Properties → Details shows a version for each.)
+    let mut prelude = String::from("1 24 \"app.manifest\"\n");
     let has_icon = std::path::Path::new("assets/app.ico").exists()
         && std::fs::copy("assets/app.ico", format!("{out}/app.ico")).is_ok();
     if has_icon {
-        rc.push_str("1 ICON \"app.ico\"\n");
+        prelude.push_str("1 ICON \"app.ico\"\n");
     }
-    // Same single resource object also carries the EXE VERSIONINFO (FileVersion /
-    // ProductVersion = CARGO_PKG_VERSION) so Explorer's Properties -> Details and
-    // dllhost diagnostics show a version for both EXEs.
-    rc.push_str(&versioninfo_rc("SageThumbs 2K (Options / CLI)", "SageThumbs2K.exe"));
-    if std::fs::write(format!("{out}/app.rc"), rc).is_err() {
-        return false;
-    }
-    let obj = format!("{out}/app_res.o");
-    for windres in ["windres", "x86_64-w64-mingw32-windres"] {
-        let status = std::process::Command::new(windres)
-            .args(["-I", &out, &format!("{out}/app.rc"), "-O", "coff", "-o", &obj])
-            .status();
-        if matches!(status, Ok(s) if s.success()) {
-            println!("cargo:rustc-link-arg-bins={obj}");
-            println!("cargo:rerun-if-changed=assets/app.ico");
-            return true;
+    // (cargo bin target, .rc basename, .o basename, FileDescription, OriginalFilename)
+    let bins = [
+        ("SageThumbs2K", "app.rc", "app_res.o", "SageThumbs 2K (Options)", "SageThumbs2K.exe"),
+        ("st2k", "st2k.rc", "st2k_res.o", "SageThumbs 2K (CLI)", "st2k.exe"),
+    ];
+    // Build EVERY per-bin object first; only emit link args once all succeeded.
+    let mut links: Vec<(&str, String)> = Vec::new();
+    for (bin, rc_name, obj_name, desc, orig) in bins {
+        let rc = format!("{prelude}{}", versioninfo_rc(desc, orig));
+        if std::fs::write(format!("{out}/{rc_name}"), rc).is_err() {
+            return false;
         }
+        let obj = format!("{out}/{obj_name}");
+        let built = ["windres", "x86_64-w64-mingw32-windres"].iter().any(|windres| {
+            let status = std::process::Command::new(windres)
+                .args(["-I", &out, &format!("{out}/{rc_name}"), "-O", "coff", "-o", &obj])
+                .status();
+            matches!(status, Ok(s) if s.success())
+        });
+        if !built {
+            return false;
+        }
+        links.push((bin, obj));
     }
-    false
+    for (bin, obj) in links {
+        println!("cargo:rustc-link-arg-bin={bin}={obj}");
+    }
+    if has_icon {
+        println!("cargo:rerun-if-changed=assets/app.ico");
+    }
+    true
 }
 
 /// Build a Windows `VERSIONINFO` resource statement (as `.rc` text) with

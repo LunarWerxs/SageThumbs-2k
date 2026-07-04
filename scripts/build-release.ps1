@@ -89,9 +89,9 @@ New-Item -ItemType Directory "$stage\magick" -Force | Out-Null
 # an app-only translated string like the German `about_tagline`, but MUST contain a
 # `menu_*` value — see the script header / build.rs note.)
 Copy-Item "$targetRel\sagethumbs2k.dll" $stage
-# The cargo bin target is `sagethumbs2k-app` (avoids a PDB case-collision with the DLL);
-# stage it under the shipped/running name the manifest + spawn code expect.
-Copy-Item "$targetRel\sagethumbs2k-app.exe" (Join-Path $stage 'SageThumbs2K.exe')
+# The cargo bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly
+# (build.rs redirects its PDB to avoid the case-collision with the DLL — see Cargo.toml).
+Copy-Item "$targetRel\SageThumbs2K.exe" $stage
 Copy-Item "$targetRel\st2k.exe" $stage  # the command-line / AI-agent tool
 foreach ($doc in 'README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE') {
     if (Test-Path "$root\$doc") { Copy-Item "$root\$doc" $stage }
@@ -259,7 +259,14 @@ if (-not $iscc) {
 if (-not $iscc) { throw "ISCC.exe (Inno Setup) not found. Install with: winget install JRSoftware.InnoSetup" }
 Write-Host "      ISCC: $iscc" -ForegroundColor DarkGray
 New-Item -ItemType Directory "$root\dist" -Force | Out-Null
-& $iscc "/DAppVer=$ver" "$root\packaging\installer.iss"
+# Derive the LIVE format count from the just-built CLI and hand it to the installer
+# (never hardcode the count — it's whatever FORMATS.len() returns; the old literal
+# "316" in installer.iss was a drift bomb waiting for the next format addition).
+$fmtCount = ''
+$fmtLine = & "$targetRel\st2k.exe" formats 2>$null | Select-Object -First 1
+if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
+$isccArgs = @("/DAppVer=$ver"); if ($fmtCount) { $isccArgs += "/DFmtCount=$fmtCount" }
+& $iscc @isccArgs "$root\packaging\installer.iss"
 if ($LASTEXITCODE) { throw "Inno Setup compile failed" }
 
 # 5) Report ------------------------------------------------------------------

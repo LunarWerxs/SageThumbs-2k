@@ -694,7 +694,7 @@ unsafe fn draw_preview(dis: &DRAWITEMSTRUCT, p: &Preview) {
 
 /// Open the file with its default app (the preview item's click action).
 fn open_with_default(path: &str) {
-    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide = crate::wide(path);
     unsafe {
         ShellExecuteW(
             None,
