@@ -20,9 +20,13 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11** — the cle
 
 <br/>
 
-<img src="assets/screenshots/preview4.png" alt="SageThumbs 2K Settings dialog — Win11-style category nav rail, toggle switches, system-following dark mode" width="600" />
+<img src="assets/screenshots/settings.gif" alt="SageThumbs 2K Settings dialog cycling its category tabs — Win11-style nav rail, toggle switches, system-following dark mode" width="600" />
 &nbsp;
 <img src="assets/screenshots/preview2.png" alt="The SageThumbs 2K right-click menu — convert, resize, combine to PDF/CBZ, OCR, set as wallpaper and more" width="200" />
+
+<br/><br/>
+
+<img src="assets/screenshots/convert.png" alt="The SageThumbs 2K Convert dialog — batch convert to JPG/PNG/WebP with resize, quality and output-folder options" width="500" />
 
 </div>
 
