@@ -38,14 +38,17 @@ try {
     $sha = (git rev-parse HEAD).Trim()
     Write-Host "[3/6] push main + wait for CI on $($sha.Substring(0,7))" -ForegroundColor Green
     git push origin main; if ($LASTEXITCODE) { throw "git push failed" }
-    # Find the CI run for THIS exact commit (it can take a few seconds to register).
+    # Find the CI run for THIS exact commit. It usually registers in seconds, but under
+    # Actions load (e.g. a prior push's run still queued) it can lag minutes — so poll for up
+    # to 12 min (the old 6-min window aborted the 0.8.0 release when a prior run was busy).
+    # `--limit 30` guards against the target being pushed past the default page of 20.
     $runId = $null
-    for ($i = 0; $i -lt 60 -and -not $runId; $i++) {
+    for ($i = 0; $i -lt 120 -and -not $runId; $i++) {
         Start-Sleep -Seconds 6
-        $runId = (gh run list --branch main --workflow CI --json headSha, databaseId `
+        $runId = (gh run list --branch main --workflow CI --limit 30 --json headSha, databaseId `
                 --jq "[.[] | select(.headSha==`"$sha`")][0].databaseId" 2>$null)
     }
-    if (-not $runId) { throw "no CI run found for $sha after waiting - check Actions" }
+    if (-not $runId) { throw "no CI run found for $sha after 12 min - check Actions" }
     # POLL the run to completion via `gh run view` (JSON). We deliberately do NOT use
     # `gh run watch`: it needs a live TTY and exits non-zero when run headless (from a
     # background / non-interactive shell), which aborts the release even though CI is fine
