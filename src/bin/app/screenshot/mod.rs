@@ -24,7 +24,7 @@ mod watchdog;
 mod window_shot;
 
 pub(crate) use daemon::run_daemon;
-pub(crate) use window_shot::{capture_hwnd_rgba, capture_hwnd_to_png, downscale_to_width, encode_gif};
+pub(crate) use window_shot::{capture_hwnd_to_png, downscale_to_width, encode_gif};
 pub(crate) use enable::{
     ensure_watchdog, heal_if_wanted, is_daemon_running, is_enabled, quit, reload_hotkey,
     set_enabled, supervise_wanted,

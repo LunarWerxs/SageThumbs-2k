@@ -80,19 +80,6 @@ pub(crate) unsafe fn capture_hwnd_to_png(hwnd: HWND, path: &Path) -> bool {
     }
 }
 
-/// Capture `hwnd` to an opaque `RgbaImage` (for GIF frame assembly). BGRA → RGBA.
-pub(crate) unsafe fn capture_hwnd_rgba(hwnd: HWND) -> Option<RgbaImage> {
-    let (bgra, w, h) = capture_hwnd_bgra(hwnd)?;
-    let mut rgba = vec![0u8; bgra.len()];
-    for (dst, src) in rgba.chunks_exact_mut(4).zip(bgra.chunks_exact(4)) {
-        dst[0] = src[2];
-        dst[1] = src[1];
-        dst[2] = src[0];
-        dst[3] = 255;
-    }
-    RgbaImage::from_raw(w as u32, h as u32, rgba)
-}
-
 /// Downscale `img` to `target_w` wide (preserving aspect, Lanczos3) — keeps the GIF crisp
 /// and small vs. the DPI-scaled native capture. A no-op if already ≤ `target_w`.
 pub(crate) fn downscale_to_width(img: RgbaImage, target_w: u32) -> RgbaImage {

@@ -459,15 +459,20 @@ pub(crate) unsafe fn create_shot_window(
     };
     RegisterClassW(&wc); // idempotent
 
-    let dpi = dpi_for_system();
+    // Position it ON-SCREEN (centered on the cursor monitor), NOT off the virtual desktop: an
+    // off-screen window's DWM redirection surface can be stale/blank when PrintWindow grabs it
+    // (that raced the capture — some frames came out blank or showed the previous tab). DWM keeps
+    // an on-screen window's surface current. `WS_EX_LAYERED` + alpha 0 makes it fully transparent
+    // → invisible to the user, while PrintWindow still captures the real (opaque) content;
+    // SW_SHOWNOACTIVATE + tool-window means it steals no focus and shows no taskbar entry. Sizing
+    // to the cursor monitor's DPI also matches the per-control layout DPI (GetDpiForWindow).
+    let (dpi, work) = cursor_monitor_metrics();
     let (sw, sh) = (dpi_scale_dpi(design_w, dpi), dpi_scale_dpi(design_h, dpi));
-    // Off the LEFT edge of the whole virtual desktop → never visible, but a real window
-    // (PrintWindow renders it fresh regardless of on-screen visibility).
-    let x = GetSystemMetrics(SM_XVIRTUALSCREEN) - sw - 64;
-    let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let x = work.left + ((work.right - work.left) - sw).max(0) / 2;
+    let y = work.top + ((work.bottom - work.top) - sh).max(0) / 2;
     let title_w = wide(title);
     let hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
         class,
         PCWSTR(title_w.as_ptr()),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
@@ -481,6 +486,8 @@ pub(crate) unsafe fn create_shot_window(
         None,
     )
     .ok()?;
+    // Fully transparent (alpha 0) → composited by DWM but invisible on screen.
+    let _ = SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), 0, LWA_ALPHA);
     if dark {
         crate::dark::dark_control(hwnd, w!("DarkMode_Explorer"));
         crate::dark::dark_titlebar(hwnd);
