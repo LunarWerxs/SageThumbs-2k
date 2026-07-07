@@ -100,6 +100,78 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     }
 }
 
+/// Headless capture of the eyedropper overlay (the `--shot --window eyedropper` mode) for
+/// README/site assets. Snapshots the PRIMARY monitor (bounded — the demo doesn't need the
+/// whole multi-monitor virtual screen), parks the loupe at its centre, builds the overlay
+/// OFF-SCREEN (invisible), and renders it to a PNG at `out`.
+///
+/// NOTE: like the live tool, this captures whatever is CURRENTLY on the primary monitor
+/// (frozen), so it's only a clean asset when the desktop is staged — it is NOT part of the
+/// automated README/site pipeline. Returns whether the PNG was written.
+pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
+    let pw = GetSystemMetrics(SM_CXSCREEN);
+    let ph = GetSystemMetrics(SM_CYSCREEN);
+    if pw <= 0 || ph <= 0 {
+        return false;
+    }
+    // Snapshot the primary monitor into a memory DC (same as run_eyedropper, but bounded).
+    let screen = GetDC(None);
+    let mem = CreateCompatibleDC(Some(screen));
+    let bmp = CreateCompatibleBitmap(screen, pw, ph);
+    SelectObject(mem, HGDIOBJ(bmp.0));
+    let _ = BitBlt(mem, 0, 0, pw, ph, Some(screen), 0, 0, SRCCOPY);
+    ReleaseDC(None, screen);
+    let _ = EYE_SHOT.set(mem.0 as usize);
+    let _ = EYE_SHOT_BMP.set(bmp.0 as usize);
+    EYE_VW.store(pw, Ordering::Relaxed);
+    EYE_VH.store(ph, Ordering::Relaxed);
+    // Park the loupe near the centre so it actually draws (WM_PAINT only draws it when a
+    // cursor position is set).
+    EYE_LAST_X.store(pw / 2, Ordering::Relaxed);
+    EYE_LAST_Y.store(ph / 2, Ordering::Relaxed);
+
+    let hinst: HINSTANCE = match windows::Win32::System::LibraryLoader::GetModuleHandleW(None) {
+        Ok(h) => h.into(),
+        Err(_) => return false,
+    };
+    let class = w!("SageThumbs2KEyedropper");
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(eyedropper_wndproc),
+        hInstance: hinst,
+        lpszClassName: class,
+        hIcon: app_icon().unwrap_or_default(),
+        hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
+        ..Default::default()
+    };
+    RegisterClassW(&wc);
+    // Off the left edge of the virtual desktop (NOT topmost) so it never appears on screen.
+    let x = GetSystemMetrics(SM_XVIRTUALSCREEN) - pw - 64;
+    let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let Ok(hwnd) = CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        class,
+        w!("Pick color"),
+        WS_POPUP,
+        x,
+        y,
+        pw,
+        ph,
+        None,
+        None,
+        Some(hinst),
+        None,
+    ) else {
+        return false;
+    };
+    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    crate::win::pump_msgs(10);
+    crate::win::force_repaint(hwnd);
+    crate::win::pump_msgs(6);
+    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
+    let _ = DestroyWindow(hwnd); // WM_DESTROY frees EYE_SHOT / EYE_SHOT_BMP
+    ok
+}
+
 /// Sample the screen-snapshot pixel at (x, y) as (r, g, b) via GetPixel.
 fn eye_sample(x: i32, y: i32) -> (u8, u8, u8) {
     let Some(&dc) = EYE_SHOT.get() else {

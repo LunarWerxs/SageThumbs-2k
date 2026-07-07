@@ -9,13 +9,14 @@
 
 use core::ffi::c_void;
 
-use windows::core::{w, BOOL};
+use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, DrawTextW, Ellipse, FillRect,
+    Arc, BitBlt, CreateCompatibleDC, CreatePen, DeleteDC, DeleteObject, DrawTextW, Ellipse, FillRect,
     GetStockObject, GetTextExtentPoint32W, InvalidateRect, RoundRect, SelectObject, SetBkColor,
     SetBkMode, SetDCBrushColor, SetDCPenColor, SetTextColor, DC_BRUSH, DC_PEN, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBITMAP, HBRUSH, HDC, HGDIOBJ, SRCCOPY, TRANSPARENT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBITMAP, HBRUSH, HDC, HGDIOBJ, PS_SOLID, SRCCOPY,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::DRAWITEMSTRUCT;
@@ -49,6 +50,14 @@ const ID_COPYRIGHT: i32 = 1205;
 /// `LPARAM` = a `Box<String>` (the newer tag) when WPARAM==1 — the handler reclaims it.
 const WM_ABOUT_CHECKED: u32 = WM_APP + 1;
 
+/// Timer id driving the status-pill spinner animation.
+const SPIN_TIMER_ID: usize = 1;
+/// Spinner repaint interval (ms) — ~25 fps: smooth motion, negligible cost.
+const SPIN_INTERVAL_MS: u32 = 40;
+/// Minimum frames the "Checking…" spinner stays up before the result is shown — a
+/// deliberate ≈2 s illusion of work, since the real check is near-instant. 50 × 40 ms ≈ 2 s.
+const MIN_SPIN_FRAMES: u32 = 50;
+
 /// Client size in 96-DPI design pixels (DPI-scaled per control / for the frame).
 const CW: i32 = 440;
 const CH: i32 = 300;
@@ -81,6 +90,10 @@ struct About {
     status: Status,
     /// A network check is in flight — ignore extra status-pill clicks until it lands.
     checking: bool,
+    /// Spinner animation phase; doubles as the elapsed-frame counter for the faux timer.
+    spin_frame: u32,
+    /// A finished check whose result is held back until the faux timer's minimum elapses.
+    pending: Option<Status>,
     /// The GitHub mark, pre-composited on the pill fill so the blit is seamless. Freed
     /// in `WM_NCDESTROY`.
     gh_icon: Option<HBITMAP>,
@@ -288,24 +301,73 @@ unsafe fn invalidate_status(hwnd: HWND) {
     }
 }
 
-/// Status-pill click: open the releases page when an update is waiting, otherwise
-/// re-run the check (unless one is already in flight).
+/// Kick off an update check with the deliberate ≈2 s "Checking…" animation. The real
+/// network probe is near-instant; the spinning ring (and its minimum on-screen time) is the
+/// illusion of work — people want to see something move. Guarded by `checking` so a second
+/// click while it runs is a no-op.
+unsafe fn begin_check(hwnd: HWND) {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return;
+    }
+    (*st).checking = true;
+    (*st).status = Status::Checking;
+    (*st).pending = None;
+    (*st).spin_frame = 0;
+    let _ = SetTimer(Some(hwnd), SPIN_TIMER_ID, SPIN_INTERVAL_MS, None);
+    invalidate_status(hwnd);
+    start_check(hwnd);
+}
+
+/// Commit a finished check to the pill and stop the spinner.
+unsafe fn reveal(hwnd: HWND, result: Status) {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return;
+    }
+    let _ = KillTimer(Some(hwnd), SPIN_TIMER_ID);
+    (*st).checking = false;
+    (*st).pending = None;
+    (*st).status = result;
+    invalidate_status(hwnd);
+}
+
+/// The status pill was clicked while an update is available: offer the same one-click,
+/// in-place update the Settings button used to (download → verify → elevated install),
+/// falling back to the releases page if it can't complete.
+unsafe fn offer_update(hwnd: HWND) {
+    let cap = wide("Update SageThumbs 2K");
+    let prompt = wide(
+        "Download and install the update now? SageThumbs updates itself in the background — Explorer briefly restarts, and you'll get a confirmation when it's done.",
+    );
+    if MessageBoxW(Some(hwnd), PCWSTR(prompt.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONINFORMATION) != IDYES {
+        return;
+    }
+    match update::download_and_install(hwnd) {
+        // Installer launched: it closes us, upgrades in place, and relaunches — so exit.
+        Ok(_) => std::process::exit(0),
+        // A user cancel (progress-dialog Cancel or declining UAC) shouldn't nag.
+        Err(m) if m.contains("cancel") => {}
+        // A real failure: fall back to the manual download page.
+        Err(_) => open_url(update::RELEASES_URL),
+    }
+}
+
+/// Status-pill click: install a waiting update, otherwise re-run the check (unless one is
+/// already in flight).
 unsafe fn on_status_click(hwnd: HWND) {
     let st = about_state(hwnd);
     if st.is_null() {
         return;
     }
     if let Status::Available(_) = (*st).status {
-        open_url(update::RELEASES_URL);
+        offer_update(hwnd);
         return;
     }
     if (*st).checking {
         return;
     }
-    (*st).checking = true;
-    (*st).status = Status::Checking;
-    invalidate_status(hwnd);
-    start_check(hwnd);
+    begin_check(hwnd);
 }
 
 // ---- Owner-draw ---------------------------------------------------------
@@ -394,13 +456,40 @@ unsafe fn status_display(st: *mut About) -> (COLORREF, String) {
     }
 }
 
+/// A rotating 270° arc (a classic loading ring) centered at `(cx,cy)`, radius `r`, oriented
+/// by `frame` so successive repaints appear to spin. The two radial endpoints only pick the
+/// sweep, so the exact angle-sign convention doesn't matter — either direction reads as
+/// "spinning". Uses a DPI-scaled pen freed before returning.
+unsafe fn draw_spinner(hwnd: HWND, hdc: HDC, cx: i32, cy: i32, r: i32, frame: u32, color: COLORREF) {
+    use core::f32::consts::PI;
+    let pen_w = s(hwnd, 2).max(1);
+    let pen = CreatePen(PS_SOLID, pen_w, color);
+    if pen.is_invalid() {
+        return;
+    }
+    let old = SelectObject(hdc, HGDIOBJ(pen.0));
+    let t0 = (frame as f32) * 12.0 * PI / 180.0; // ~12°/frame → a smooth, clearly visible spin
+    let t1 = t0 + 270.0 * PI / 180.0; // a gapped ring, not a closed circle
+    let (rf, cxf, cyf) = (r as f32, cx as f32, cy as f32);
+    let sx = (cxf + rf * t0.cos()).round() as i32;
+    let sy = (cyf - rf * t0.sin()).round() as i32;
+    let ex = (cxf + rf * t1.cos()).round() as i32;
+    let ey = (cyf - rf * t1.sin()).round() as i32;
+    let _ = Arc(hdc, cx - r, cy - r, cx + r, cy + r, sx, sy, ex, ey);
+    SelectObject(hdc, old);
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+}
+
 unsafe fn draw_status_pill(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let hdc = d.hDC;
     let rc = d.rcItem;
     fill_rc(hdc, &rc, DARK_BG());
     pill_frame(hwnd, hdc, &rc);
 
-    let (dot, text) = status_display(about_state(hwnd));
+    let st = about_state(hwnd);
+    let (dot, text) = status_display(st);
+    let checking = !st.is_null() && matches!((*st).status, Status::Checking);
+    let frame = if st.is_null() { 0 } else { (*st).spin_frame };
     let dotd = s(hwnd, 10);
     let gap = s(hwnd, 8);
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
@@ -408,12 +497,18 @@ unsafe fn draw_status_pill(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let group = dotd + gap + tw;
     let gx = rc.left + ((rc.right - rc.left) - group) / 2;
     let dy = rc.top + ((rc.bottom - rc.top) - dotd) / 2;
-    // Status dot.
-    SelectObject(hdc, GetStockObject(DC_BRUSH));
-    SelectObject(hdc, GetStockObject(DC_PEN));
-    SetDCBrushColor(hdc, dot);
-    SetDCPenColor(hdc, dot);
-    let _ = Ellipse(hdc, gx, dy, gx + dotd, dy + dotd);
+    if checking {
+        // Spinning ring in the dot's slot — the moving "faux" activity while we check.
+        let r = (dotd / 2 - s(hwnd, 1)).max(2);
+        draw_spinner(hwnd, hdc, gx + dotd / 2, dy + dotd / 2, r, frame, dot);
+    } else {
+        // Resting status dot.
+        SelectObject(hdc, GetStockObject(DC_BRUSH));
+        SelectObject(hdc, GetStockObject(DC_PEN));
+        SetDCBrushColor(hdc, dot);
+        SetDCPenColor(hdc, dot);
+        let _ = Ellipse(hdc, gx, dy, gx + dotd, dy + dotd);
+    }
     draw_text(hdc, &text, gx + dotd + gap, &rc, DARK_TEXT());
 }
 
@@ -446,10 +541,16 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         match msg {
             WM_CREATE => {
                 let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
-                let state = Box::new(About { status: Status::Checking, checking: true, gh_icon: None });
+                let state = Box::new(About {
+                    status: Status::Checking,
+                    checking: false,
+                    spin_frame: 0,
+                    pending: None,
+                    gh_icon: None,
+                });
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
                 build_about(hwnd, hinst);
-                start_check(hwnd); // check on open
+                begin_check(hwnd); // check on open, with the ≈2 s spinner
                 LRESULT(0)
             }
             WM_DRAWITEM => {
@@ -463,25 +564,46 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             }
             WM_ABOUT_CHECKED => {
                 let st = about_state(hwnd);
-                if !st.is_null() {
-                    (*st).checking = false;
-                    (*st).status = match wparam.0 {
-                        1 => {
-                            let tag = if lparam.0 != 0 {
-                                *Box::from_raw(lparam.0 as *mut String)
-                            } else {
-                                String::new()
-                            };
-                            Status::Available(tag)
-                        }
-                        2 => Status::Failed,
-                        _ => Status::UpToDate,
-                    };
-                } else if lparam.0 != 0 {
-                    // Window torn down between post and dispatch — reclaim the tag.
-                    drop(Box::from_raw(lparam.0 as *mut String));
+                if st.is_null() {
+                    if lparam.0 != 0 {
+                        // Window torn down between post and dispatch — reclaim the tag.
+                        drop(Box::from_raw(lparam.0 as *mut String));
+                    }
+                    return LRESULT(0);
                 }
-                invalidate_status(hwnd);
+                let result = match wparam.0 {
+                    1 => {
+                        let tag = if lparam.0 != 0 {
+                            *Box::from_raw(lparam.0 as *mut String)
+                        } else {
+                            String::new()
+                        };
+                        Status::Available(tag)
+                    }
+                    2 => Status::Failed,
+                    _ => Status::UpToDate,
+                };
+                // Faux timer: if the spinner hasn't run for its minimum yet, hold the result
+                // and let WM_TIMER reveal it once ≈2 s has passed; otherwise show it now.
+                if (*st).spin_frame >= MIN_SPIN_FRAMES {
+                    reveal(hwnd, result);
+                } else {
+                    (*st).pending = Some(result);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == SPIN_TIMER_ID => {
+                let st = about_state(hwnd);
+                if !st.is_null() {
+                    (*st).spin_frame = (*st).spin_frame.saturating_add(1);
+                    if (*st).spin_frame >= MIN_SPIN_FRAMES {
+                        if let Some(result) = (*st).pending.take() {
+                            reveal(hwnd, result); // min time met and result ready → show + stop
+                            return LRESULT(0);
+                        }
+                    }
+                    invalidate_status(hwnd); // advance the spinner one frame
+                }
                 LRESULT(0)
             }
             WM_COMMAND => {
@@ -523,6 +645,7 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             WM_NCDESTROY => {
                 let p = about_state(hwnd);
                 if !p.is_null() {
+                    let _ = KillTimer(Some(hwnd), SPIN_TIMER_ID);
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     let st = Box::from_raw(p);
                     if let Some(icon) = st.gh_icon {

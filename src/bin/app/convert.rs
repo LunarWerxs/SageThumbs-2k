@@ -185,6 +185,42 @@ pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
     );
 }
 
+/// Headless capture of the Convert… dialog (the `--shot --window convert` mode) for
+/// README/site assets: seed a sample selection so the dialog builds with a realistic title,
+/// build it OFF-SCREEN (invisible, steals no focus), and render it to a PNG at `out`. Returns
+/// whether the PNG was written.
+pub(crate) unsafe fn run_shot_convert(out: &str) -> bool {
+    // A sample selection so the dialog builds + its title shows a count (the file is never
+    // read — only the Convert button's worker touches it, and we never click it).
+    if CONVERT_FILES.get().is_none() {
+        let _ = CONVERT_FILES.set(vec!["photo.psd".to_string()]);
+    }
+    QUALITY.store(settings::cv_jpeg_quality() as i32, Ordering::Relaxed);
+    WEBP_QUALITY.store(settings::cv_webp_quality() as i32, Ordering::Relaxed);
+    WEBP_LOSSLESS.store(settings::cv_webp_lossless() as i32, Ordering::Relaxed);
+    PNG_LEVEL.store(settings::cv_png_level() as i32, Ordering::Relaxed);
+    MAGICK_QUALITY.store(settings::cv_magick_quality() as i32, Ordering::Relaxed);
+
+    let hinst: HINSTANCE = match GetModuleHandleW(None) {
+        Ok(h) => h.into(),
+        Err(_) => return false,
+    };
+    let dark = crate::dark::is_dark();
+    let title = t("cv_title").replace("{n}", "1");
+    let Some(hwnd) =
+        crate::win::create_shot_window(hinst, dark, w!("SageThumbs2KConvert"), Some(convert_wndproc), &title, 500, 274)
+    else {
+        return false;
+    };
+    crate::win::pump_msgs(20);
+    crate::win::force_repaint(hwnd);
+    crate::win::pump_msgs(8);
+    crate::win::force_repaint(hwnd);
+    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, Path::new(out));
+    let _ = DestroyWindow(hwnd);
+    ok
+}
+
 unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
     let lbl = WINDOW_STYLE(0);
 

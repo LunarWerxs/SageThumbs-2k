@@ -2,6 +2,25 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 0.8.0
+
+- **Sync your settings across your PCs — new, and completely optional.** Settings has a new
+  **Data & Backup** section with a **"Sync settings…"** button: sign in with a Connections account
+  (it opens your real browser — SageThumbs never sees your password) and your portable preferences
+  follow you to every machine you sign into — thumbnail limits and quality, the right-click menu layout
+  and toggles, hotkeys, language, and ebook/comic options. It's **off by default** (no network happens
+  unless you turn it on), only an allowlist of portable settings syncs — **never your files, folder
+  paths, or passwords, and never your images** — and your settings always stay on your PC too, so
+  everything keeps working fully offline or signed out. Disconnect anytime and the cloud copy is
+  removed. As always, the thumbnail shell extension itself never touches the network — all sign-in and
+  sync code lives in the Settings app only.
+- **Your sign-in is stored securely.** The token that keeps you signed in is encrypted on your machine
+  with Windows' own DPAPI (only your account, on that PC, can read it) and is never part of the synced
+  data — the cloud copy is a plain "settings locker," no secrets.
+
+> Upgrading from 0.7.1? This release also rolls in everything under **0.7.2** below (hotkey resilience,
+> capture/upload feedback, and the CLI fixes).
+
 ## 0.7.2
 
 - **Hotkeys now survive sleep, lock, and updates.** Windows silently un-registers global hotkeys

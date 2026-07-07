@@ -320,7 +320,7 @@ genuinely-outstanding work.)*
 
 ### 6a. AI / agent integration — **CLI + MCP server shipped** (`st2k.exe`)
 
-> Full design record: **[AI_INTEGRATION.md](AI_INTEGRATION.md)**. Phase 1 (the
+> Phase 1 (the
 > `st2k` command-line tool) **and** Phase 2 (`st2k --mcp`, an MCP server) are both
 > built + installed. `st2k` verbs: `thumbnail · convert · batch · rotate · strip · ocr ·
 > pdf · info [--json] · formats [--json]` — the bundled engine as an offline image
@@ -357,3 +357,20 @@ bundle anything new** — only surface existing functions.
 Constraints honored: reuse existing capabilities only; offline by default; file-writing
 verbs require an explicit output argument (`rotate`/`resize` write an `(edited)`/
 `(resized)` sibling; `strip` is in-place).
+
+### 6b. Settings sync — optional Connections account (opt-in)
+
+> **New.** In **Settings ▸ Data & Backup**, a **"Sync settings…"** button lets you sign in
+> with a Connections account and sync your SageThumbs preferences across your PCs. It's
+> **opt-in and off by default** — no network happens unless you click it.
+
+Sign-in opens your real browser (standard OAuth 2.0 + PKCE; SageThumbs never sees your
+password), and from then on your portable settings — thumbnail limits/quality, menu layout
+and toggles, hotkeys, language, container preferences — follow you to any machine you sign
+into. Only an explicit **allowlist** of portable preferences syncs; **never** file paths,
+secrets, or per-machine state, and never your images. Your settings always stay on your PC
+too — the cloud is only a sync layer, so the app works fully offline / signed out; disconnect
+anytime (it removes the cloud copy). **The shell-extension DLL never touches the network** —
+all sign-in/sync code lives in the Settings app only, preserving the crash-isolation guarantee.
+The refresh token is stored encrypted (Windows DPAPI); the store is a settings locker (≤64 KB,
+no secrets).

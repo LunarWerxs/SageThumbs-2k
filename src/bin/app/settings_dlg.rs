@@ -112,6 +112,14 @@ const ID_MENU_ALL_TYPES: i32 = 1119;
 const ID_MENU_CHECKER: i32 = 1120;
 // "Keep original date on saved files" — preserve source mtime on Convert/Resize/Rotate output.
 const ID_PRESERVE_DATE: i32 = 1121;
+
+// Settings-sync (optional Connections account) — the opt-in row. IDs 1200-1202 are free
+// (control IDs stop at 1187; nav IDs start at 1700).
+const ID_LBL_SYNC: i32 = 1200;
+const ID_SYNC_BTN: i32 = 1201;
+// Live "● Synced · up to date" status line beside the sync button (green when signed in,
+// muted when signed out) — replaces baking the raw account id into the button label.
+const ID_SYNC_STATUS: i32 = 1202;
 // Left-column scroll plumbing: a vertical scrollbar + an opaque mask that hides
 // controls scrolled below the viewport (so the left options can grow/scroll
 // without making the window taller).
@@ -700,6 +708,18 @@ unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_update_auto"), cb, 300, ID_UPDATE_AUTO);
     lc.button(t("btn_check_updates"), 184, ID_CHECK_UPDATES);
 
+    // ===== Settings sync (optional, opt-in) =====
+    // Sign in with a Connections account to sync portable preferences across machines.
+    // OFF by default — NO network happens unless the user clicks this. Only the
+    // allowlisted prefs sync (never file paths, secrets, or per-machine state); see
+    // `sync_client::ALLOW`. English-only for now (locale keys are a v1.1 follow-up).
+    lc.header("Settings sync", hdr, ID_LBL_SYNC, false);
+    // A green "● Synced · up to date" badge (or a muted invite when signed out) sits on the
+    // left of the row; the button ("Stop syncing" / "Sync settings…") is right-aligned. Both
+    // are seeded in refresh_sync_ui — NO raw account id ever lands in the button label.
+    lc.status(ID_SYNC_STATUS);
+    lc.button(&sync_button_label(), 300, ID_SYNC_BTN);
+
     // Reset / Import / Export share one row. Reset sets every control to factory
     // defaults (the user clicks Save to persist, like any other change — the top-right
     // "Defaults" only resets the file-type list). Import/Export round-trip the whole
@@ -868,7 +888,7 @@ const PANE_TOP: i32 = 16;
 const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
 const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT (1700..1707)
 const ID_PANE_HEADER: i32 = 1710;
-const NCAT: usize = 7;
+const NCAT: usize = 8;
 /// Localized nav-rail / page-header label for category `ci`. Pulls from `t()` so a
 /// live language switch re-texts it (the nav statics + pane header re-read this).
 fn nav_label(ci: usize) -> &'static str {
@@ -879,7 +899,8 @@ fn nav_label(ci: usize) -> &'static str {
         3 => t("nav_menu"),
         4 => t("nav_screenshots"),
         5 => t("nav_quickaction"),
-        _ => t("nav_advanced"),
+        6 => t("nav_advanced"),
+        _ => t("nav_databackup"),
     }
 }
 
@@ -892,6 +913,7 @@ enum Row {
     Pair(i32, i32, i32, i32),// label, field, field_w, field_h (combo field_h>40)
     Btn(i32, i32),           // button id, width
     BtnStatus(i32, i32, i32),// button (left) + right-aligned status, one row: btn_id, btn_w, status_id
+    StatusBtn(i32, i32, i32),// status (left, fills) + right-aligned button, one row: status_id, btn_id, btn_w
     Status(i32),             // dynamic status line
     Btn3(i32, i32, i32),     // three equal buttons on one row
     Wide(i32),               // a full-width control (search edit)
@@ -942,19 +964,29 @@ fn cat_rows(ci: usize) -> &'static [Row] {
             Pair(ID_LBL_SHOT_ACTION, ID_SHOT_ACTION, 156, 200),
             Pair(ID_LBL_SHOT_ACTION_HK, ID_SHOT_ACTION_HK, 156, 200),
         ],
-        _ => &[
-            // Advanced — clear groups: Diagnostics / Updates / Hotkey service / Backup.
-            // The three diagnostic buttons share one row (like Backup) — the pane is wide,
-            // and this keeps the page compact enough to also hold "Hide tray icon" with no
-            // scrolling / taller window.
+        6 => &[
+            // Advanced — system behaviors only: Diagnostics / Updates / Hotkey service.
+            // (Settings sync + Backup moved to their own "Data & Backup" tab.)
             Head(ID_LBL_DIAG),
-            Switch(ID_VERBOSE_LOG), Btn3(ID_OPEN_LOG, ID_REBUILD_CACHE, ID_REPAIR_ASSOC),
+            Switch(ID_VERBOSE_LOG),
+            Btn(ID_OPEN_LOG, 320),
+            Btn(ID_REBUILD_CACHE, 320),
+            Btn(ID_REPAIR_ASSOC, 320),
             Head(ID_LBL_UPDATES),
             Switch(ID_UPDATE_AUTO), Btn(ID_CHECK_UPDATES, 184),
             Head(ID_LBL_HOTKEY_SVC),
             BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS), Switch(ID_SHOT_HIDE_TRAY),
+        ],
+        _ => &[
+            // Data & Backup — settings portability: optional cloud sync + local backup/restore.
+            // Controls are created in build_controls; listing them here places them into this
+            // pane + registers them for nav show/hide.
+            Head(ID_LBL_SYNC),
+            StatusBtn(ID_SYNC_STATUS, ID_SYNC_BTN, 160),
             Head(ID_LBL_BACKUP),
-            Btn3(ID_RESET_ALL, ID_IMPORT, ID_EXPORT),
+            Btn(ID_RESET_ALL, 320),
+            Btn(ID_IMPORT, 320),
+            Btn(ID_EXPORT, 320),
         ],
     }
 }
@@ -1026,12 +1058,18 @@ unsafe fn draw_cat_icon(hdc: HDC, ci: usize, x: i32, y: i32, sz: i32, color: COL
             // bolt: a lightning shape (Quick action)
             let _ = Polyline(hdc, &[pt(13, 2), pt(7, 13), pt(11, 13), pt(10, 22), pt(18, 10), pt(12, 10), pt(13, 2)]);
         }
-        _ => {
-            // sliders: two lines, each with a knob
+        6 => {
+            // sliders: two lines, each with a knob (Advanced)
             let _ = Polyline(hdc, &[pt(4, 8), pt(20, 8)]);
             let _ = Polyline(hdc, &[pt(4, 16), pt(20, 16)]);
             let _ = Ellipse(hdc, mx(13), my(5), mx(19), my(11));
             let _ = Ellipse(hdc, mx(5), my(13), mx(11), my(19));
+        }
+        _ => {
+            // save/backup: a down-arrow into an open tray (Data & Backup)
+            let _ = Polyline(hdc, &[pt(12, 3), pt(12, 14)]);
+            let _ = Polyline(hdc, &[pt(8, 10), pt(12, 14), pt(16, 10)]);
+            let _ = Polyline(hdc, &[pt(4, 16), pt(4, 21), pt(20, 21), pt(20, 16)]);
         }
     }
     SelectObject(hdc, oldp);
@@ -1047,7 +1085,8 @@ fn cat_blurb(ci: usize) -> &'static str {
         3 => t("blurb_menu"),
         4 => t("blurb_screenshots"),
         5 => t("blurb_quickaction"),
-        _ => t("blurb_advanced"),
+        6 => t("blurb_advanced"),
+        _ => t("blurb_databackup"),
     }
 }
 
@@ -1242,6 +1281,17 @@ unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     // button (non-overlapping, so the static's bg fill can't cover the button).
                     let sx = PANE_X + bw + 12;
                     if let Some(c) = place(sid, sx, y + 4, PANE_W - bw - 12, 18) {
+                        cats[ci].push(c);
+                    }
+                    y += 32;
+                }
+                Row::StatusBtn(sid, bid, bw) => {
+                    // Mirror of BtnStatus: the status badge fills the LEFT, the button is
+                    // right-aligned (the sync row — "● Synced" left, "Stop syncing" right).
+                    if let Some(c) = place(sid, PANE_X, y + 4, PANE_W - bw - 12, 18) {
+                        cats[ci].push(c);
+                    }
+                    if let Some(c) = place(bid, PANE_X + PANE_W - bw, y, bw, 26) {
                         cats[ci].push(c);
                     }
                     y += 32;
@@ -1841,6 +1891,9 @@ unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_SHOT_QUICK_ENABLE, settings::screenshot_quick_hotkey().1 != 0);
     update_quick_enabled(hwnd);
     refresh_shot_status(hwnd);
+    // Seed the Settings-sync row (button label + green "● Synced" badge) from the signed-in
+    // state; the background pull (spawn_sync_pull) later refreshes it via WM_APP_SYNC.
+    refresh_sync_ui(hwnd);
 }
 
 /// Reset every control to the factory defaults (does not write yet).
@@ -2204,60 +2257,6 @@ unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
     );
 }
 
-/// Ask GitHub whether a newer release exists and tell the user. A newer version offers to
-/// open the download page; any failure (offline, repo renamed/moved, no releases yet) warns
-/// and offers to check GitHub manually — so e.g. a renamed repo degrades to a gentle nudge
-/// rather than a silent dead end.
-unsafe fn check_for_updates(hwnd: HWND) {
-    // The check is a bounded network call on this thread; show the wait cursor meanwhile.
-    if let Ok(wait) = LoadCursorW(None, IDC_WAIT) {
-        SetCursor(Some(wait));
-    }
-    let result = crate::update::check();
-    let cap = wide("Check for Updates");
-    let ver = env!("CARGO_PKG_VERSION");
-    match result {
-        crate::update::UpdateCheck::UpToDate => {
-            let text = wide(&format!("You're on the latest version ({ver})."));
-            MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), PCWSTR(cap.as_ptr()), MB_OK | MB_ICONINFORMATION);
-        }
-        crate::update::UpdateCheck::Available(tag) => {
-            let text = wide(&format!(
-                "A newer version is available: {tag}\n(You have {ver}.)\n\nDownload and install it now? SageThumbs updates itself in the background — Explorer briefly restarts, and you'll get a confirmation when it's done."
-            ));
-            if MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONINFORMATION) == IDYES {
-                // Shows a native progress dialog (download → verify → install) on its own
-                // thread, then launches the elevated installer. Blocks this thread meanwhile.
-                match crate::update::download_and_install(hwnd) {
-                    // Installer launched (UAC accepted): it closes us, upgrades in place,
-                    // restarts Explorer, and relaunches with --updated to confirm — so exit.
-                    Ok(_) => std::process::exit(0),
-                    // A user-initiated cancel (the progress dialog's Cancel, or declining the
-                    // UAC prompt) shouldn't nag; only a real failure offers the manual page.
-                    Err(msg) if msg.contains("cancel") => {}
-                    Err(msg) => {
-                        let t = wide(&format!(
-                            "Couldn't complete the update:\n{msg}\n\nOpen the download page instead?"
-                        ));
-                        if MessageBoxW(Some(hwnd), PCWSTR(t.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONWARNING) == IDYES {
-                            open_url(crate::update::RELEASES_URL);
-                        }
-                    }
-                }
-            }
-        }
-        crate::update::UpdateCheck::Failed => {
-            let text = wide(&format!(
-                "Couldn't reach the update server.\n\nOpen the GitHub releases page to check for a new version manually?\n{}",
-                crate::update::RELEASES_URL
-            ));
-            if MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONWARNING) == IDYES {
-                open_url(crate::update::RELEASES_URL);
-            }
-        }
-    }
-}
-
 /// Open the diagnostics log in the user's default text editor (or its folder if the
 /// log doesn't exist yet), so a user can find it and send it in for a bug report.
 unsafe fn open_diagnostics_log() {
@@ -2435,6 +2434,204 @@ unsafe fn on_resize(hwnd: HWND, client_h: i32) {
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 
+// ===== Settings sync (optional Connections account) =====
+
+/// A background sync op finished on a worker thread → posted back with the boxed outcome
+/// (WM_APP + 9; distinct from the update/sponsor app messages at +8/+7).
+const WM_APP_SYNC: u32 = 0x8000 + 9;
+
+/// Outcome of a background sync op, boxed through `WM_APP_SYNC` to the UI thread.
+enum SyncEvent {
+    Connected(Result<String, String>), // Ok(email/sub) or Err(reason)
+    Pulled(Result<bool, String>),       // Ok(applied?) or Err(reason)
+    Disconnected,
+}
+
+enum SyncOp {
+    Connect,
+    Disconnect,
+}
+
+/// The sync button's label: signed out → an invite; signed in → a clean "Stop syncing".
+/// The account identity now lives in the status line (see [`sync_status_text`]) — it is
+/// deliberately NOT baked into the button anymore (a raw account id read as noise).
+fn sync_button_label() -> String {
+    if crate::sync_client::is_signed_in() {
+        "Stop syncing".to_string()
+    } else {
+        "Sync settings…".to_string()
+    }
+}
+
+/// The status line beside the sync button. Signed in → a green "● Synced" badge (the "●…
+/// Synced" prefix is what the WM_CTLCOLORSTATIC handler keys the green tint off) with a
+/// plain-English detail; signed out → a muted invite. Only a real email is surfaced as the
+/// identity — a bare account id (`sub`) is omitted, so the row never shows an ugly UUID.
+fn sync_status_text() -> String {
+    if crate::sync_client::is_signed_in() {
+        match crate::sync_client::signed_in_label() {
+            Some(who) if who.contains('@') => format!("● Synced as {who} · up to date"),
+            _ => "● Synced · already up to date".to_string(),
+        }
+    } else {
+        "Not syncing — sign in to sync your settings across your PCs".to_string()
+    }
+}
+
+/// Set the sync button's text + enabled state (used for the transient "Signing in…" state).
+unsafe fn set_sync_button(hwnd: HWND, text: &str, enabled: bool) {
+    if let Ok(btn) = GetDlgItem(Some(hwnd), ID_SYNC_BTN) {
+        let w = wide(text);
+        let _ = SetWindowTextW(btn, PCWSTR(w.as_ptr()));
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(btn, enabled);
+    }
+}
+
+/// Set the sync status line's text. `None` uses the state-derived default (green when it
+/// reads "Synced"); `Some` sets a transient line (e.g. "Connecting…"). Repaints so the
+/// WM_CTLCOLORSTATIC tint re-evaluates against the new text.
+unsafe fn set_sync_status(hwnd: HWND, text: Option<String>) {
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_SYNC_STATUS) {
+        let t = text.unwrap_or_else(sync_status_text);
+        let w = wide(&t);
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+        let _ = InvalidateRect(Some(h), None, true);
+    }
+}
+
+/// Reconcile the whole sync row (button label + status badge) with the current signed-in
+/// state. Called on load and after every finished sync op.
+unsafe fn refresh_sync_ui(hwnd: HWND) {
+    set_sync_button(hwnd, &sync_button_label(), true);
+    set_sync_status(hwnd, None);
+}
+
+/// The sync button was clicked: sign in (with a plain-English disclosure that doubles as
+/// the privacy notice) or disconnect. The network op itself runs on a worker thread.
+unsafe fn on_sync_click(hwnd: HWND) {
+    if crate::sync_client::is_signed_in() {
+        let warn = wide(
+            "Stop syncing and disconnect this account?\n\nYour settings stay on this PC; the \
+             copy stored in your Connections account is removed.",
+        );
+        let cap = wide("Settings Sync");
+        if MessageBoxW(Some(hwnd), PCWSTR(warn.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONWARNING)
+            != IDYES
+        {
+            return;
+        }
+        set_sync_button(hwnd, "Disconnecting…", false);
+        set_sync_status(hwnd, Some("Disconnecting…".to_string()));
+        spawn_sync(hwnd, SyncOp::Disconnect);
+    } else {
+        let info = wide(
+            "Sign in with a Connections account to sync your SageThumbs 2K preferences across \
+             your PCs.\n\nOnly settings sync — never your files, folder paths, or passwords. \
+             It's optional, and you can disconnect anytime.\n\nA browser window will open for \
+             you to sign in. Continue?",
+        );
+        let cap = wide("Settings Sync");
+        if MessageBoxW(Some(hwnd), PCWSTR(info.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONINFORMATION)
+            != IDYES
+        {
+            return;
+        }
+        set_sync_button(hwnd, "Signing in… (see your browser)", false);
+        set_sync_status(hwnd, Some("Connecting…".to_string()));
+        spawn_sync(hwnd, SyncOp::Connect);
+    }
+}
+
+/// Run a connect/disconnect on a worker thread (they block on the network), posting the
+/// result back via `WM_APP_SYNC` so the UI updates on the message thread.
+fn spawn_sync(hwnd: HWND, op: SyncOp) {
+    let target = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let event = match op {
+            SyncOp::Connect => SyncEvent::Connected(crate::sync_client::connect()),
+            SyncOp::Disconnect => {
+                crate::sync_client::disconnect();
+                SyncEvent::Disconnected
+            }
+        };
+        post_sync(target, event);
+    });
+}
+
+/// On Settings open, if signed in, pull the cloud copy in the background.
+fn spawn_sync_pull(hwnd: HWND) {
+    if !crate::sync_client::is_signed_in() {
+        return;
+    }
+    let target = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        post_sync(target, SyncEvent::Pulled(crate::sync_client::pull_on_open()));
+    });
+}
+
+/// After Save, if signed in, mirror the local settings to the cloud (fire-and-forget).
+fn spawn_sync_push(_hwnd: HWND) {
+    if !crate::sync_client::is_signed_in() {
+        return;
+    }
+    std::thread::spawn(|| {
+        let _ = crate::sync_client::push();
+    });
+}
+
+/// Post a boxed `SyncEvent` to the window; reclaim the box if the window is already gone.
+fn post_sync(target: isize, event: SyncEvent) {
+    let raw = Box::into_raw(Box::new(event));
+    unsafe {
+        let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(HWND(target as *mut core::ffi::c_void)),
+            WM_APP_SYNC,
+            WPARAM(0),
+            LPARAM(raw as isize),
+        );
+        if posted.is_err() {
+            drop(Box::from_raw(raw));
+        }
+    }
+}
+
+/// Apply a finished sync op to the UI (runs on the message thread).
+unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
+    match event {
+        SyncEvent::Connected(Ok(who)) => {
+            refresh_sync_ui(hwnd);
+            msg(
+                hwnd,
+                &format!(
+                    "Signed in as {who}.\n\nYour settings now sync across your PCs. Anything \
+                     synced from another device has been applied — reopen Settings to see it \
+                     reflected here."
+                ),
+                "Settings Sync",
+                MB_ICONINFORMATION,
+            );
+        }
+        SyncEvent::Connected(Err(e)) => {
+            refresh_sync_ui(hwnd);
+            msg(hwnd, &format!("Couldn't sign in: {e}"), "Settings Sync", MB_ICONWARNING);
+        }
+        SyncEvent::Pulled(res) => {
+            // Background pull: settle the row. Applied values are already in HKCU (they take
+            // effect for new thumbnails); we don't force a reopen or nag — just reflect
+            // whether the pull pulled anything new in the status badge.
+            set_sync_button(hwnd, &sync_button_label(), true);
+            match res {
+                Ok(true) => set_sync_status(hwnd, Some("● Synced · updated from another device".to_string())),
+                _ => set_sync_status(hwnd, None), // "● Synced · already up to date"
+            }
+        }
+        SyncEvent::Disconnected => {
+            refresh_sync_ui(hwnd);
+            msg(hwnd, "Sync disconnected. Your settings remain on this PC.", "Settings Sync", MB_ICONINFORMATION);
+        }
+    }
+}
+
 pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         // The Quick-save hotkey label stays ENABLED (a disabled static draws an
@@ -2471,6 +2668,24 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             SetBkMode(hdc, TRANSPARENT);
             return LRESULT(dark_bg_brush().0 as isize);
         }
+        // The Settings-sync status line: green when it reads "● Synced" (signed in), else a
+        // muted grey (the signed-out invite / a transient "Connecting…"). Mirrors the
+        // hotkey-service badge above.
+        if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+            && GetDlgItem(Some(hwnd), ID_SYNC_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+        {
+            let synced = GetDlgItem(Some(hwnd), ID_SYNC_STATUS)
+                .map(|s| String::from_utf16_lossy(&control_text(s)).contains("Synced"))
+                .unwrap_or(false);
+            if synced {
+                let hdc = HDC(wparam.0 as *mut c_void);
+                SetTextColor(hdc, COLORREF(0x0059_C734)); // green
+                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+                SetBkMode(hdc, TRANSPARENT);
+                return LRESULT(dark_bg_brush().0 as isize);
+            }
+            return crate::dark::dark_ctlcolor_dim(wparam);
+        }
         if let Some(r) = dark_ctlcolor(msg, wparam) {
             return r;
         }
@@ -2499,12 +2714,17 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                         drop(Box::from_raw(raw));
                     }
                 });
+                // If already signed in for settings sync, pull the cloud copy in the
+                // background (applies to HKCU; takes effect for new thumbnails). No-op and
+                // zero network when signed out.
+                spawn_sync_pull(hwnd);
                 LRESULT(0)
             }
             crate::update::WM_APP_UPDATE => {
                 // A lazy background check found a newer release. Reclaim the boxed tag and
                 // NON-intrusively relabel the "Check for updates" button into a quiet nudge
-                // (no popup); clicking it still runs check_for_updates → the download prompt.
+                // (no popup); clicking it still opens the About box, whose status pill shows the
+                // update and offers the one-click install.
                 let tag = if lparam.0 != 0 {
                     *Box::from_raw(lparam.0 as *mut String)
                 } else {
@@ -2517,6 +2737,15 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                         wide(&format!("Update to v{tag}"))
                     };
                     let _ = SetWindowTextW(btn, PCWSTR(label.as_ptr()));
+                }
+                LRESULT(0)
+            }
+            WM_APP_SYNC => {
+                // A background sync op (sign-in / pull / disconnect) finished on a worker
+                // thread. Reclaim the boxed event and update the UI on this message thread.
+                if lparam.0 != 0 {
+                    let event = *Box::from_raw(lparam.0 as *mut SyncEvent);
+                    handle_sync_event(hwnd, event);
                 }
                 LRESULT(0)
             }
@@ -2540,7 +2769,10 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                 let id = (wparam.0 & 0xFFFF) as i32;
                 let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
                 match id {
-                    IDOK => apply_settings(hwnd), // Save = apply only, keep the window open
+                    IDOK => {
+                        apply_settings(hwnd); // Save = apply only, keep the window open
+                        spawn_sync_push(hwnd); // if signed in, mirror the change to the cloud
+                    }
                     IDCANCEL => {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -2589,6 +2821,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     ID_SHOT_QUICK_ENABLE => update_quick_enabled(hwnd),
                     ID_CUSTOM_ACTION_ENABLE => update_custom_action_enabled(hwnd),
                     ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
+                    ID_SYNC_BTN => on_sync_click(hwnd),
                     ID_SHOT_SET_DIR => {
                         // Pick the Ctrl+S save folder; persist immediately + refresh the
                         // display. (The toggle next to it is saved with the other settings
@@ -2616,7 +2849,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     ID_IMPORT => import_settings_from_file(hwnd),
                     ID_REBUILD_CACHE => rebuild_thumbnail_cache(hwnd),
                     ID_REPAIR_ASSOC => repair_associations(hwnd),
-                    ID_CHECK_UPDATES => check_for_updates(hwnd),
+                    ID_CHECK_UPDATES => show_about(hwnd),
                     nav if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&nav) && notify == STN_CLICKED => {
                         switch_category(hwnd, (nav - ID_NAV_BASE) as usize);
                     }
@@ -3007,4 +3240,76 @@ unsafe fn is_checked(list: HWND, item: i32) -> bool {
         Some(LPARAM(LVIS_STATEIMAGEMASK.0 as isize)),
     );
     (st.0 as u32 & 0x3000) == CHECKED
+}
+
+// ===== Headless self-capture (verification + README/site assets) =====
+
+/// Build the Settings window OFF-SCREEN (invisible, steals no focus), returning the HWND once
+/// its controls have realized + painted. Shared by `run_shot` (one pane → PNG) and
+/// `run_shot_gif` (all panes → animated GIF).
+unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) -> Option<HWND> {
+    let hwnd = crate::win::create_shot_window(
+        hinst,
+        dark,
+        w!("SageThumbs2KOptions"),
+        Some(wndproc),
+        "SageThumbs 2K — Settings",
+        772,
+        588,
+    )?;
+    // Let the controls — the ListView especially — realize + paint before we drive panes.
+    crate::win::pump_msgs(20);
+    Some(hwnd)
+}
+
+/// Switch to category `tab` and settle it for capture. The shared owner-drawn chrome (nav
+/// rail, pane header, footer buttons) only fully repaints on a *real* category transition —
+/// re-selecting the current tab is a no-op that leaves them blank in a headless grab. So we
+/// PRIME with a switch to a different tab first, making the switch to `tab` a real transition,
+/// then double `RDW_UPDATENOW` around pumps so every control has actually painted.
+unsafe fn settle_pane(hwnd: HWND, tab: usize) {
+    let tab = tab.min(NCAT - 1);
+    let prime = if tab == 0 { NCAT - 1 } else { 0 };
+    switch_category(hwnd, prime);
+    crate::win::pump_msgs(5);
+    switch_category(hwnd, tab);
+    crate::win::force_repaint(hwnd);
+    crate::win::pump_msgs(12);
+    crate::win::force_repaint(hwnd);
+    crate::win::pump_msgs(4);
+}
+
+/// The app's `--shot` mode: build the Settings window off-screen, switch to category `tab`,
+/// render it to a PNG at `out` via `PrintWindow`, then tear it down. Lets a UI change be
+/// screenshotted programmatically — no window ever appears and the desktop is never driven.
+/// Returns whether the PNG was written.
+pub(crate) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, tab: usize) -> bool {
+    let Some(hwnd) = build_settings_shot_window(hinst, dark) else {
+        return false;
+    };
+    settle_pane(hwnd, tab);
+    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
+    let _ = DestroyWindow(hwnd);
+    ok
+}
+
+/// The app's `--shot-gif` mode: build the Settings window off-screen ONCE, walk every category
+/// tab capturing each as a frame, and encode them into an animated (infinite-loop) GIF at
+/// `out` — the regenerable README/site asset that cycles the Settings tabs. Frames are
+/// downscaled to the 96-dpi design width so the GIF stays crisp + small. Returns whether the
+/// GIF was written.
+pub(crate) unsafe fn run_shot_gif(hinst: HINSTANCE, dark: bool, out: &str) -> bool {
+    let Some(hwnd) = build_settings_shot_window(hinst, dark) else {
+        return false;
+    };
+    let mut frames = Vec::with_capacity(NCAT);
+    for tab in 0..NCAT {
+        settle_pane(hwnd, tab);
+        if let Some(img) = crate::screenshot::capture_hwnd_rgba(hwnd) {
+            frames.push(crate::screenshot::downscale_to_width(img, 772));
+        }
+    }
+    let _ = DestroyWindow(hwnd);
+    // ~1.6 s per tab so a reader can take each pane in before it advances.
+    crate::screenshot::encode_gif(&frames, std::path::Path::new(out), 1600)
 }

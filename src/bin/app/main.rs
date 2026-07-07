@@ -28,13 +28,17 @@
 mod about;
 mod sponsors;
 mod convert;
+mod cred_store;
 mod dark;
 mod explorer_selection;
 mod eyedropper;
 mod files_to_folder;
 mod hotkey;
+mod http;
 mod image_info;
+mod oauth;
 mod screenshot;
+mod sync_client;
 mod upload_result;
 mod settings_dlg;
 mod settings_io;
@@ -191,6 +195,45 @@ fn main() {
                 run_convert_dialog(hinst, listfile);
             }
             return;
+        }
+        // Headless GIF asset: `--shot-gif <out.gif>` walks every Settings tab and encodes an
+        // animated (infinite-loop) GIF — the regenerable README/site walkthrough of the
+        // Settings window. Invisible (off-screen); exits 0/1. Checked before `--shot` (exact
+        // match, so the shorter flag never swallows it).
+        if let Some(pos) = args.iter().position(|a| a == "--shot-gif") {
+            let ok = args.get(pos + 1).is_some_and(|out| settings_dlg::run_shot_gif(hinst, dark, out));
+            std::process::exit(i32::from(!ok));
+        }
+        // Headless self-capture (verification + README/site assets):
+        //   `--shot <out.png> [--tab N] [--window settings|convert|eyedropper]`
+        // builds the chosen window INVISIBLY (off-screen), renders it to a PNG, exits 0/1.
+        // `--tab N` (0-based) selects the Settings category (default 0); ignored for the
+        // other windows. No window ever appears and the desktop is never driven.
+        if let Some(pos) = args.iter().position(|a| a == "--shot") {
+            let window = args
+                .iter()
+                .position(|a| a == "--window")
+                .and_then(|p| args.get(p + 1))
+                .map(String::as_str)
+                .unwrap_or("settings");
+            let ok = if let Some(out) = args.get(pos + 1) {
+                match window {
+                    "convert" => crate::convert::run_shot_convert(out),
+                    "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
+                    _ => {
+                        let tab = args
+                            .iter()
+                            .position(|a| a == "--tab")
+                            .and_then(|p| args.get(p + 1))
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        settings_dlg::run_shot(hinst, dark, out, tab)
+                    }
+                }
+            } else {
+                false
+            };
+            std::process::exit(i32::from(!ok));
         }
         // Eyedropper mode: `--eyedropper` (spawned by the DLL verb) opens the
         // system-wide screen color picker.

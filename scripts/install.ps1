@@ -76,6 +76,15 @@ Add-AppxPackage -Register "$prog\AppxManifest.xml" -ExternalLocation $prog -Forc
 # a key that's already correct is harmless.
 try { & reg.exe add 'HKLM\SOFTWARE\SageThumbs2K' /v ModernMenuActive /t REG_DWORD /d 1 /f 2>$null | Out-Null } catch {}
 
+# Flag this box as a DEVELOPER test machine (HKCU DevMachine=1 → settings::is_dev_machine).
+# ONLY the owner ever runs this dev-install script (real users get the Inno installer), so a
+# dev install is exactly the machine whose build/install/test churn must NOT inflate the public
+# analytics: with this set, every startup check-in carries &dev=1 and the analytics Worker drops
+# it from the public counters (tallying it under dims event='dev' for auditability). Without this
+# the owner's own launches were being counted as real users — the reason 0.7.2 showed 17 "installs".
+# Idempotent; stays set across a dev -Uninstall so a rebuild+reinstall never re-pollutes.
+try { & reg.exe add 'HKCU\Software\SageThumbs2K' /v DevMachine /t REG_DWORD /d 1 /f 2>$null | Out-Null } catch {}
+
 # Start Menu shortcut to the Options dialog.
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut($shortcut)

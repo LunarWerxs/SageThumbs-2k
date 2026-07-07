@@ -411,6 +411,84 @@ pub(crate) unsafe fn run_dialog(
     Some(hwnd)
 }
 
+// ===== Headless capture plumbing (the `--shot*` verification/asset modes) =====
+
+/// Drain the message queue `frames` times (tiny sleep between) so async WM_PAINT / timer /
+/// layout work settles before a headless PrintWindow capture. Shared by every `--shot` path.
+pub(crate) unsafe fn pump_msgs(frames: usize) {
+    let mut msg = MSG::default();
+    for _ in 0..frames {
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+}
+
+/// Force a SYNCHRONOUS paint of `hwnd` AND every child (RDW_UPDATENOW). Owner-drawn statics
+/// (nav rail, pane header, toggle switches) only paint on a real WM_PAINT, so without this a
+/// headless capture races them and leaves blank gaps.
+pub(crate) unsafe fn force_repaint(hwnd: HWND) {
+    use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW};
+    let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+
+/// Create a top-level dialog window OFF-SCREEN + non-activated — a real window that never
+/// appears on screen and steals no focus — for headless `PrintWindow` capture. Same class
+/// registration + dark styling as [`run_dialog`], but returns the HWND WITHOUT a message
+/// loop: the caller pumps ([`pump_msgs`]), captures, and `DestroyWindow`s it. `design_w/h`
+/// are 96-dpi design pixels (scaled to the primary DPI here).
+pub(crate) unsafe fn create_shot_window(
+    hinst: HINSTANCE,
+    dark: bool,
+    class: PCWSTR,
+    wndproc: WNDPROC,
+    title: &str,
+    design_w: i32,
+    design_h: i32,
+) -> Option<HWND> {
+    let wc = WNDCLASSW {
+        lpfnWndProc: wndproc,
+        hInstance: hinst,
+        lpszClassName: class,
+        hIcon: app_icon().unwrap_or_default(),
+        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+        hbrBackground: if dark { crate::dark::dark_bg_brush() } else { HBRUSH(16isize as *mut c_void) },
+        ..Default::default()
+    };
+    RegisterClassW(&wc); // idempotent
+
+    let dpi = dpi_for_system();
+    let (sw, sh) = (dpi_scale_dpi(design_w, dpi), dpi_scale_dpi(design_h, dpi));
+    // Off the LEFT edge of the whole virtual desktop → never visible, but a real window
+    // (PrintWindow renders it fresh regardless of on-screen visibility).
+    let x = GetSystemMetrics(SM_XVIRTUALSCREEN) - sw - 64;
+    let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let title_w = wide(title);
+    let hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
+        class,
+        PCWSTR(title_w.as_ptr()),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        x,
+        y,
+        sw,
+        sh,
+        None,
+        None,
+        Some(hinst),
+        None,
+    )
+    .ok()?;
+    if dark {
+        crate::dark::dark_control(hwnd, w!("DarkMode_Explorer"));
+        crate::dark::dark_titlebar(hwnd);
+    }
+    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    Some(hwnd)
+}
+
 /// The primary monitor's effective DPI (for a CW_USEDEFAULT top-level dialog,
 /// which has no HWND yet to query). Falls back to 96.
 pub(crate) fn dpi_for_system() -> i32 {

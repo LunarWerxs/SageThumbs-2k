@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.7.2"
+version = "0.8.0"
 
 [package]
 name = "sagethumbs2k"
@@ -206,6 +206,7 @@ features = [
     "Win32_System_WindowsProgramming", # MulDiv for the app dialogs' DPI scaling
     "Win32_UI_HiDpi", # GetDpiForWindow + SystemParametersInfoForDpi (PerMonitorV2 layout scaling)
     "Win32_Storage_FileSystem", # Get/SetFileAttributesW for the folder-icon verb
+    "Win32_Storage_Xps", # PrintWindow: render the Settings window to a PNG headlessly (the `--shot` verification mode)
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_Storage_EnhancedStorage", # PKEY_* property keys (System.Image.*/Photo.*/Music.*) for the property handler
