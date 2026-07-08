@@ -71,8 +71,59 @@ pub(crate) unsafe fn capture_hwnd_bgra(hwnd: HWND) -> Option<(Vec<u8>, i32, i32)
     }
     // GetWindowRect includes DWM's INVISIBLE resize border (~8px on left/right/bottom) that isn't
     // part of the visible window — PrintWindow renders it near-black, so the capture gets a black
-    // frame. Crop to the TRUE visible bounds (DWMWA_EXTENDED_FRAME_BOUNDS) so the window sits flush.
-    Some(crop_to_extended_frame(hwnd, &r, buf, w, h))
+    // frame. Crop to the TRUE visible bounds (DWMWA_EXTENDED_FRAME_BOUNDS) so the window sits flush,
+    // then shave off the window's own 1px outer border line, which still reads near-black.
+    let (buf, w, h) = crop_to_extended_frame(hwnd, &r, buf, w, h);
+    Some(trim_black_edges(buf, w, h))
+}
+
+/// Trim any fully-(near)black edge rows/columns left after the DWM-bounds crop — the window's
+/// 1px outer border line reads near-black in a PrintWindow grab. Bounded to a few px per side so
+/// it can NEVER eat into real content (content is never a uniformly near-black line), and only an
+/// edge that is entirely near-black is trimmed (so a legitimately dark-but-not-black edge stays).
+fn trim_black_edges(buf: Vec<u8>, w: i32, h: i32) -> (Vec<u8>, i32, i32) {
+    const MAX: usize = 4; // never trim more than this per side
+    // R+G+B <= this = a dark border line. The window's own 1px outer border reads ~30-40; the
+    // darkest real content (the nav well, SURFACE 24,24,24 = 72; the window bg 32,32,32 = 96) is
+    // well above 55, so this catches the border line without ever eating a content column/row.
+    const DARK: u16 = 55;
+    let (wu, hu) = (w as usize, h as usize);
+    if wu == 0 || hu == 0 {
+        return (buf, w, h);
+    }
+    let dark_at = |o: usize| (buf[o] as u16 + buf[o + 1] as u16 + buf[o + 2] as u16) <= DARK;
+    // An edge line is "a border" if a strong MAJORITY of it is dark — NOT all of it: the 1px
+    // border column measures ~95% dark but ~5% title-bar-coloured at the very top, while a real
+    // content column is ~0% dark, so ≥60% cleanly separates the two.
+    let row_black = |y: usize| (0..wu).filter(|&x| dark_at((y * wu + x) * 4)).count() * 100 >= wu * 60;
+    let col_black = |x: usize| (0..hu).filter(|&y| dark_at((y * wu + x) * 4)).count() * 100 >= hu * 60;
+    let mut top = 0;
+    while top < MAX.min(hu) && row_black(top) {
+        top += 1;
+    }
+    let mut bot = 0;
+    while bot < MAX.min(hu.saturating_sub(top)) && row_black(hu - 1 - bot) {
+        bot += 1;
+    }
+    let mut lft = 0;
+    while lft < MAX.min(wu) && col_black(lft) {
+        lft += 1;
+    }
+    let mut rgt = 0;
+    while rgt < MAX.min(wu.saturating_sub(lft)) && col_black(wu - 1 - rgt) {
+        rgt += 1;
+    }
+    let (nw, nh) = (wu - lft - rgt, hu - top - bot);
+    if (top == 0 && bot == 0 && lft == 0 && rgt == 0) || nw == 0 || nh == 0 {
+        return (buf, w, h);
+    }
+    let mut out = vec![0u8; nw * nh * 4];
+    for row in 0..nh {
+        let src = ((top + row) * wu + lft) * 4;
+        let dst = row * nw * 4;
+        out[dst..dst + nw * 4].copy_from_slice(&buf[src..src + nw * 4]);
+    }
+    (out, nw as i32, nh as i32)
 }
 
 /// Crop a top-down BGRA capture (taken at `wr` = the window's `GetWindowRect`) down to the
