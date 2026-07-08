@@ -69,7 +69,44 @@ pub(crate) unsafe fn capture_hwnd_bgra(hwnd: HWND) -> Option<(Vec<u8>, i32, i32)
     if !printed || got == 0 {
         return None;
     }
-    Some((buf, w, h))
+    // GetWindowRect includes DWM's INVISIBLE resize border (~8px on left/right/bottom) that isn't
+    // part of the visible window — PrintWindow renders it near-black, so the capture gets a black
+    // frame. Crop to the TRUE visible bounds (DWMWA_EXTENDED_FRAME_BOUNDS) so the window sits flush.
+    Some(crop_to_extended_frame(hwnd, &r, buf, w, h))
+}
+
+/// Crop a top-down BGRA capture (taken at `wr` = the window's `GetWindowRect`) down to the
+/// window's VISIBLE frame (`DWMWA_EXTENDED_FRAME_BOUNDS`), dropping the invisible DWM resize
+/// border. Falls back to the uncropped buffer if DWM can't report bounds or there's nothing to
+/// trim.
+unsafe fn crop_to_extended_frame(hwnd: HWND, wr: &RECT, buf: Vec<u8>, w: i32, h: i32) -> (Vec<u8>, i32, i32) {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    let mut efb = RECT::default();
+    let ok = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &mut efb as *mut _ as *mut c_void,
+        core::mem::size_of::<RECT>() as u32,
+    )
+    .is_ok();
+    if !ok {
+        return (buf, w, h);
+    }
+    let dx = (efb.left - wr.left).clamp(0, w);
+    let dy = (efb.top - wr.top).clamp(0, h);
+    let cw = (efb.right - efb.left).clamp(1, w - dx);
+    let ch = (efb.bottom - efb.top).clamp(1, h - dy);
+    if dx == 0 && dy == 0 && cw == w && ch == h {
+        return (buf, w, h); // nothing to trim
+    }
+    let (dxu, dyu, cwu, chu, wu) = (dx as usize, dy as usize, cw as usize, ch as usize, w as usize);
+    let mut out = vec![0u8; cwu * chu * 4];
+    for row in 0..chu {
+        let src = ((dyu + row) * wu + dxu) * 4;
+        let dst = row * cwu * 4;
+        out[dst..dst + cwu * 4].copy_from_slice(&buf[src..src + cwu * 4]);
+    }
+    (out, cw, ch)
 }
 
 /// Capture `hwnd` to a PNG at `path`. Returns whether the file was written.
