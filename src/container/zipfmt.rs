@@ -11,11 +11,22 @@ pub(crate) type Zip<'a> = ZipArchive<Cursor<&'a [u8]>>;
 
 /// Stream a comic/image-zip cover from a SEEKABLE reader without buffering the whole
 /// archive — the `zip` crate seeks to the central directory and reads only the chosen
-/// entry. Used for oversized CBZ/ZIP (past the in-memory size cap), where the reader is
-/// the shell's IStream. Only the generic image-pick (no epub/office/project dispatch —
-/// those packages are never that large).
+/// entries. Used for oversized CBZ/ZIP (past the in-memory size cap), where the reader
+/// is the shell's IStream. Project/Office packages CAN be that large (a multi-layer
+/// Krita/ORA painting is oversized precisely because of its `data/layer*.png` entries;
+/// a media-heavy deck likewise), and for those the generic image-pick grabs an
+/// arbitrary layer/media image — ORA's `data/layer*.png` natural-sorts BEFORE the real
+/// composite — so run the same dedicated-preview dispatch as the in-memory `extract`.
 pub(crate) fn cover_from_reader<R: Read + Seek>(reader: R) -> Option<Vec<u8>> {
     let mut zip = ZipArchive::new(reader).ok()?;
+    if let Some(preview) = super::project::extract(&mut zip) {
+        return Some(preview);
+    }
+    if let Some(kind) = super::office::detect(&mut zip) {
+        // An Office doc's thumbnail is the only sensible cover — no fallthrough to
+        // the generic pick (it would grab embedded slide media). Same as `extract`.
+        return super::office::extract(&mut zip, kind);
+    }
     cover_image_only(&mut zip)
 }
 

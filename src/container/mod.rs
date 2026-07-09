@@ -22,6 +22,7 @@ impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
 mod affinity;
 mod audio;
 mod blend;
+mod icns;
 // Cinema 4D (.c4d) — carve the embedded document/scene preview JPEG.
 mod c4d;
 // CorelDRAW (.cdr/.cdt) / Corel Exchange (.cmx) — RIFF DISP preview DIB → BMP.
@@ -114,6 +115,65 @@ pub(crate) fn audio_asf_tags<R: std::io::Read + std::io::Seek>(reader: &mut R) -
     audio::asf_tags(reader)
 }
 
+/// Does `head` open a container whose baked-in preview lives in the FIRST bytes of
+/// the file — so a bounded head prefix is enough to thumbnail it, no matter how big
+/// the file is? Blender writes the `TEST` thumbnail block right after the file
+/// header (offset ~100), and Photoshop's image-resources section (resource 1036,
+/// the baked JPEG preview) sits just past the fixed header — both LONG before the
+/// scene/layer data that makes these files routinely blow past the thumbnail
+/// provider's MaxSize cap. (Compressed .blend has no `BLENDER` magic and correctly
+/// stays excluded.) Used by the provider's oversized-file path and the CLI preview
+/// verbs to rescue exactly these formats from the size skip.
+pub fn has_head_preview(head: &[u8]) -> bool {
+    head.starts_with(b"BLENDER") // .blend / .blend1..32 (TEST block)
+        || head.starts_with(b"8BPS") // PSD + PSB (image resource 1036)
+        // gzip / zstd: a COMPRESSED .blend hides its BLENDER magic behind the
+        // wrapper, but the TEST block still sits at the head of the decompressed
+        // stream (see `blend_compressed_head`). This over-accepts other oversized
+        // gzip/zstd files, but the attempt is bounded (16 MiB prefix + capped
+        // inflate) and a miss lands on the default icon exactly as before.
+        || head.starts_with(&[0x1F, 0x8B])
+        || head.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
+}
+
+/// If `bytes` open a gzip or zstd stream whose DECOMPRESSED head is a Blender file
+/// (the "Compress" save option — gzip historically, zstd since Blender 3.0), return
+/// a bounded decompressed prefix for `blend::extract`. The inner magic is peeked
+/// FIRST (12 bytes) so non-Blender gzip payloads (`.svgz`/`.emz`) skip the big
+/// inflate. Truncation-tolerant: the input may itself be a bounded prefix of an
+/// oversized file, so a mid-stream EOF keeps whatever decompressed so far — the
+/// TEST block lives in the first kilobytes, far inside any such prefix. Output is
+/// capped (decompression-bomb guard) and the caller feeds it straight to
+/// `blend::extract`, never back through `extract_cover` — no recursion.
+fn blend_compressed_head(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    const HEAD_MAX: usize = 16 * 1024 * 1024;
+    let mut reader: Box<dyn Read + '_> = if bytes.starts_with(&[0x1F, 0x8B]) {
+        Box::new(flate2::read::GzDecoder::new(bytes))
+    } else if bytes.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+        Box::new(ruzstd::StreamingDecoder::new(bytes).ok()?)
+    } else {
+        return None;
+    };
+    let mut magic = [0u8; 12];
+    reader.read_exact(&mut magic).ok()?;
+    if !magic.starts_with(b"BLENDER") {
+        return None;
+    }
+    let mut out = magic.to_vec();
+    let mut chunk = vec![0u8; 1 << 16];
+    while out.len() < HEAD_MAX {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            // Truncated input (a bounded prefix of an oversized file): keep what
+            // we have — the thumbnail block is at the head.
+            Err(_) => break,
+        }
+    }
+    Some(out)
+}
+
 /// If `bytes` is a recognized ebook/comic container, return its cover image.
 pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     // ZIP family: EPUB / CBZ / FBZ (and any zip of images).
@@ -148,9 +208,20 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
             return Some(CoverOut::Bytes(tiff));
         }
     }
+    // Apple Icon Image: slice out the largest embedded PNG / JPEG-2000 member.
+    if bytes.starts_with(b"icns") {
+        return icns::extract(bytes).map(CoverOut::Bytes);
+    }
     // Blender: the RGBA thumbnail baked into the TEST file-block.
     if bytes.starts_with(b"BLENDER") {
         return blend::extract(bytes).map(CoverOut::Image);
+    }
+    // COMPRESSED Blender scene (the "Compress" save option): gzip or zstd wrapper
+    // around the same block stream. Bounded head inflate, gated on the inner
+    // BLENDER magic (svgz/emz and other gzip payloads skip the cost and stay with
+    // the decode tiers).
+    if let Some(inner) = blend_compressed_head(bytes) {
+        return blend::extract(&inner).map(CoverOut::Image);
     }
     // Affinity (Photo/Designer/Publisher): an embedded PNG preview.
     if affinity::looks_like_affinity(bytes) {
@@ -226,11 +297,14 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     None
 }
 
-/// Stream a cover from an OVERSIZED archive (past the in-memory size cap) using a
-/// seekable reader — the shell's IStream — so a multi-hundred-MB CBZ/CB7 thumbnails
-/// without ever buffering the whole file. ZIP-family and 7-Zip support seeking; RAR
-/// can't (the `rars` crate needs the full buffer), so a giant CBR still falls through
-/// to the default icon. `head` is the first bytes (already peeked) for the magic sniff.
+/// Stream a cover from an OVERSIZED container (past the in-memory size cap) using a
+/// seekable reader — the shell's IStream — so a multi-hundred-MB file thumbnails
+/// without ever buffering it. ZIP-family and 7-Zip archives seek to the central
+/// directory + one cover entry; Clip Studio `.clip` seeks to the embedded SQLite
+/// database at the file's tail and reads only that (a big canvas's bulk is layer
+/// raster chunks we never touch). RAR can't stream (the `rars` crate needs the full
+/// buffer), so a giant CBR still falls through to the default icon. `head` is the
+/// first bytes (already peeked) for the magic sniff.
 pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(reader: R, head: &[u8]) -> Option<Vec<u8>> {
     // ZIP family: CBZ / ZIP (and any zip of images).
     if is_zip(head) {
@@ -239,6 +313,10 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(reader: R, head: &[u
     // 7-Zip: CB7.
     if is_7z(head) {
         return sevenz::extract_seek(reader);
+    }
+    // Clip Studio Paint: the preview PNG from the tail CHNKSQLi database.
+    if head.starts_with(b"CSFCHUNK") {
+        return clip::extract_seek(reader);
     }
     None
 }
@@ -299,9 +377,34 @@ pub(crate) fn is_image_name(name: &str) -> bool {
     COVER_IMAGE_EXTS.contains(&ext.as_str())
 }
 
+/// Test-only re-export so the `decode` oversized-path tests can build synthetic
+/// `.clip` files without reaching into the private `clip` module.
+#[cfg(test)]
+pub(crate) use clip::testutil as clip_testutil;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The oversized-.clip STREAMING path: the preview comes off a real seekable
+    /// File via the tail-database seek — the walk hops the (stand-in) layer
+    /// chunk instead of buffering it, exactly what rescues a canvas past the
+    /// provider's MaxSize cap.
+    #[test]
+    fn archive_cover_seek_streams_a_clip_tail_db() {
+        use std::io::{Read, Seek};
+        let png = [0x89, b'P', b'N', b'G', 9, 9, 9, 9];
+        let clip = clip_testutil::synthetic_clip(&png, 2 * 1024 * 1024, false);
+        let path = std::env::temp_dir().join(format!("st2k_stream_{}.clip", std::process::id()));
+        std::fs::write(&path, &clip).unwrap();
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut head = [0u8; 8];
+        file.read_exact(&mut head).unwrap();
+        file.rewind().unwrap();
+        let cover = archive_cover_seek(file, &head);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(cover.as_deref(), Some(&png[..]));
+    }
 
     /// The oversized-archive STREAMING path: extract a cover from a real seekable
     /// File handle (not an in-memory `&[u8]`), proving a multi-hundred-MB CBZ can be
@@ -328,6 +431,129 @@ mod tests {
         let cover = archive_cover_seek(file, &head);
         let _ = std::fs::remove_file(&path);
         assert_eq!(cover.as_deref(), Some(&b"\xFF\xD8\xFFcover-bytes"[..]));
+    }
+
+    /// The oversized-file STREAMED zip path must run the same dedicated project-
+    /// preview dispatch as the in-memory path: an OpenRaster archive's real
+    /// composite lives at `Thumbnails/thumbnail.png`, while its per-layer rasters
+    /// (`data/layer*.png`) natural-sort FIRST — the generic image-pick would
+    /// return a wrong (possibly blank) layer instead of the artwork.
+    #[test]
+    fn streamed_zip_path_prefers_project_preview_over_layers() {
+        use std::io::{Read, Seek, Write};
+        let png = |color: u8| {
+            let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([color, 0, 0, 255]));
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+        let (layer, thumb) = (png(10), png(200));
+        let path = std::env::temp_dir().join(format!("st2k_ora_{}.ora", std::process::id()));
+        {
+            let f = std::fs::File::create(&path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("mimetype", opts).unwrap();
+            zw.write_all(b"image/openraster").unwrap();
+            zw.start_file("data/layer0.png", opts).unwrap(); // sorts before Thumbnails/
+            zw.write_all(&layer).unwrap();
+            zw.start_file("Thumbnails/thumbnail.png", opts).unwrap(); // the real preview
+            zw.write_all(&thumb).unwrap();
+            zw.finish().unwrap();
+        }
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut head = [0u8; 8];
+        file.read_exact(&mut head).unwrap();
+        file.rewind().unwrap();
+        let cover = archive_cover_seek(file, &head);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            cover.as_deref(),
+            Some(&thumb[..]),
+            "streamed ORA must return the composite preview, not a layer"
+        );
+    }
+
+    /// Minimal valid legacy .blend (BHead4) with a 4×3 TEST thumbnail, plus an
+    /// arbitrary tail after ENDB (stands in for the scene data of a big file).
+    fn synthetic_blend(tail: &[u8]) -> Vec<u8> {
+        let (w, h) = (4u32, 3u32);
+        let px = vec![200u8; (w * h * 4) as usize];
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BLENDER");
+        b.push(b'_'); // 32-bit pointers
+        b.push(b'v'); // little-endian
+        b.extend_from_slice(b"277");
+        b.extend_from_slice(b"TEST");
+        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
+        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(&px);
+        b.extend_from_slice(b"ENDB");
+        b.extend_from_slice(&[0u8; 16]);
+        b.extend_from_slice(tail);
+        b
+    }
+
+    #[test]
+    fn compressed_blend_covers_extract() {
+        use std::io::Write;
+        let blend = synthetic_blend(&[]);
+
+        // gzip (the "Compress" save option pre-3.0).
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&blend).unwrap();
+        let gz = gz.finish().unwrap();
+        match extract_cover(&gz) {
+            Some(CoverOut::Image(img)) => assert_eq!((img.width(), img.height()), (4, 3)),
+            other => panic!("gzip blend must extract a cover (got some: {})", other.is_some()),
+        }
+
+        // zstd (the "Compress" save option, Blender 3.0+). ruzstd is decode-only,
+        // so hand-build a single raw-block frame: magic, FHD=0 (window descriptor
+        // follows), window 1 KiB, then one last raw block of the payload.
+        let mut z = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00];
+        let bh = ((blend.len() as u32) << 3) | 0x01; // last_block=1, type=raw
+        z.extend_from_slice(&bh.to_le_bytes()[..3]);
+        z.extend_from_slice(&blend);
+        match extract_cover(&z) {
+            Some(CoverOut::Image(img)) => assert_eq!((img.width(), img.height()), (4, 3)),
+            other => panic!("zstd blend must extract a cover (got some: {})", other.is_some()),
+        }
+
+        // gzip of a NON-blend payload is not ours — svgz/emz stay with the decode tiers.
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(b"<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+        assert!(extract_cover(&gz.finish().unwrap()).is_none());
+    }
+
+    #[test]
+    fn compressed_blend_tolerates_truncation() {
+        use std::io::Write;
+        // A big compressed scene arrives as a bounded HEAD PREFIX on the oversized-
+        // file path — i.e. a gzip stream cut mid-way. The TEST block decompresses
+        // long before the cut, so extraction must still succeed. Incompressible
+        // (PRNG) tail so the cut point lands deep inside the tail, deterministically.
+        let mut tail = vec![0u8; 256 * 1024];
+        let mut s: u32 = 0x1234_5678;
+        for b in &mut tail {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            *b = s as u8;
+        }
+        let blend = synthetic_blend(&tail);
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&blend).unwrap();
+        let gz = gz.finish().unwrap();
+        let cut = &gz[..gz.len() / 2];
+        match extract_cover(cut) {
+            Some(CoverOut::Image(img)) => assert_eq!((img.width(), img.height()), (4, 3)),
+            _ => panic!("truncated gzip blend must still extract the head thumbnail"),
+        }
     }
 
     /// Every cover extension must be a real `FORMATS` entry (so we never pick an

@@ -9,35 +9,108 @@
 //! `png` decoder rejects but WIC accepts, so we return the bytes for the normal
 //! decoder tiers, not a trial decode.)
 //!
+//! The database sits at the TAIL of the file, after the per-layer `CHNKExta`
+//! raster chunks that make a multi-layer canvas routinely blow past the
+//! thumbnail provider's MaxSize cap — so [`extract_seek`] reaches it over a
+//! seekable reader (the shell's IStream / a File) without buffering the file:
+//! one targeted seek via the `CHNKHead` pointer (chunk-walk fallback), then a
+//! bounded read of just the database.
+//!
 //! Huge manga/art userbase; no existing Windows thumbnailer.
 
 use super::MAX_COVER;
+use std::io::{Read, Seek, SeekFrom};
 
-/// Extract the preview PNG from a `.clip`, or None.
+/// Hard cap on the embedded SQLite database bytes we'll buffer — the shared
+/// whole-file DoS budget. A rare bigger database is read as a truncated prefix:
+/// the page scan below is truncation-tolerant, so we still find the preview if
+/// it lands inside (canvas metadata — and its preview — precede bulk layer rows).
+const DB_MAX: u64 = crate::decode::limits::MAX_INPUT_BYTES;
+
+/// Extract the preview PNG from an in-memory `.clip`, or None.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
-    if !bytes.starts_with(b"CSFCHUNK") || bytes.len() < 24 {
+    extract_seek(std::io::Cursor::new(bytes))
+}
+
+/// Extract the preview PNG from a seekable `.clip` reader without buffering the
+/// whole file: locate the `CHNKSQLi` chunk and read ONLY the database (bounded
+/// by [`DB_MAX`]). This is what lets a canvas past the thumbnail provider's
+/// MaxSize cap still thumbnail — its preview lives in a few-MB database at the
+/// tail of a file whose bulk is layer raster data we never touch.
+pub fn extract_seek<R: Read + Seek>(mut r: R) -> Option<Vec<u8>> {
+    // File header: "CSFCHUNK" + total size (BE u64) + first-chunk offset (BE u64).
+    let mut hdr = [0u8; 24];
+    r.seek(SeekFrom::Start(0)).ok()?;
+    r.read_exact(&mut hdr).ok()?;
+    if !hdr.starts_with(b"CSFCHUNK") {
         return None;
     }
-    // Walk chunks to the embedded SQLite database. Any malformed field just stops
-    // the walk (must not bail the function early).
-    let mut pos = be64(bytes, 16).unwrap_or(24) as usize;
-    while pos + 16 <= bytes.len() {
-        let Some(name) = bytes.get(pos..pos + 8) else { break };
+    let first = u64::from_be_bytes(hdr[16..24].try_into().ok()?);
+    let (db_off, db_len) = find_sqli(&mut r, first)?;
+
+    // Bounded read of the database. A short read (truncated/lying file) keeps
+    // what arrived — the page scan bounds-checks every access anyway. Cap the
+    // upfront reservation so a lying length can't force a giant allocation.
+    let take = db_len.min(DB_MAX) as usize;
+    if r.seek(SeekFrom::Start(db_off)).is_err() {
+        return None;
+    }
+    let mut db = Vec::with_capacity(take.min(64 << 20));
+    let mut chunk = vec![0u8; 1 << 16];
+    while db.len() < take {
+        let want = chunk.len().min(take - db.len());
+        match r.read(&mut chunk[..want]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => db.extend_from_slice(&chunk[..n.min(want)]),
+        }
+    }
+    read_sqlite_preview(&db)
+}
+
+/// Locate the `CHNKSQLi` chunk: `(data offset, data length)`. `CHNKHead` records
+/// the chunk's file offset at data bytes 8..16 (verified against real CSP files),
+/// so the usual cost is TWO small reads no matter how many hundred `CHNKExta`
+/// layer chunks precede the database. The pointer is validated against the chunk
+/// name at its target; any mismatch falls back to the sequential walk (16 bytes
+/// per hop), so a corrupt header degrades to slower, never to wrong.
+fn find_sqli<R: Read + Seek>(r: &mut R, first: u64) -> Option<(u64, u64)> {
+    if let Some((name, len)) = chunk_header(r, first) {
+        if name == *b"CHNKHead" && len >= 16 {
+            let mut data = [0u8; 16];
+            if r.read_exact(&mut data).is_ok() {
+                if let Ok(ptr) = data[8..16].try_into().map(u64::from_be_bytes) {
+                    if let Some((n, l)) = chunk_header(r, ptr) {
+                        if n == *b"CHNKSQLi" {
+                            return Some((ptr + 16, l));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: hop chunk to chunk. Bounded iterations so a hostile chain of
+    // zero-length chunks can't spin us; EOF/malformed headers end the walk.
+    let mut pos = first;
+    for _ in 0..65_536 {
+        let (name, len) = chunk_header(r, pos)?;
         if !name.starts_with(b"CHNK") {
-            break;
+            return None;
         }
-        let Some(len) = be64(bytes, pos + 8) else { break };
-        let data_start = pos + 16;
-        let Some(data_end) = data_start.checked_add(len as usize) else { break };
-        if data_end > bytes.len() {
-            break;
+        if name == *b"CHNKSQLi" {
+            return Some((pos + 16, len));
         }
-        if name == b"CHNKSQLi" {
-            return read_sqlite_preview(&bytes[data_start..data_end]);
-        }
-        pos = data_end;
+        pos = pos.checked_add(16)?.checked_add(len)?;
     }
     None
+}
+
+/// Read a chunk header at `pos`: 8-byte name + BE u64 data length. Leaves the
+/// reader positioned at the chunk's data.
+fn chunk_header<R: Read + Seek>(r: &mut R, pos: u64) -> Option<([u8; 8], u64)> {
+    r.seek(SeekFrom::Start(pos)).ok()?;
+    let mut h = [0u8; 16];
+    r.read_exact(&mut h).ok()?;
+    Some((h[..8].try_into().ok()?, u64::from_be_bytes(h[8..16].try_into().ok()?)))
 }
 
 /// Find the largest PNG blob in the SQLite database's table-leaf cells.
@@ -177,9 +250,76 @@ fn varint(b: &[u8], off: usize) -> Option<(u64, usize)> {
     Some((result, 9))
 }
 
-fn be64(b: &[u8], o: usize) -> Option<u64> {
-    let s = b.get(o..o + 8)?;
-    Some(u64::from_be_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+/// Test-only builders shared with the `container`/`decode` oversized-path tests:
+/// a minimal one-page SQLite database holding one PNG blob, wrapped in a real
+/// CSFCHUNK chunk layout (Head → padding Exta → SQLi → Foot, like CSP writes).
+#[cfg(test)]
+pub(crate) mod testutil {
+    /// Minimal valid SQLite db: 100-byte header + one table-leaf page whose
+    /// single cell's record carries `png` as a BLOB column.
+    pub fn synthetic_sqlite(png: &[u8]) -> Vec<u8> {
+        // SQLite varint (values < 2^14 suffice here).
+        fn v(n: u64) -> Vec<u8> {
+            assert!(n < (1 << 14));
+            if n < 128 {
+                vec![n as u8]
+            } else {
+                vec![0x80 | (n >> 7) as u8, (n & 0x7F) as u8]
+            }
+        }
+        let page_size = 512usize;
+        let mut db = vec![0u8; page_size];
+        db[..16].copy_from_slice(b"SQLite format 3\0");
+        db[16..18].copy_from_slice(&(page_size as u16).to_be_bytes());
+        // Record: header [hdr_len, serial(BLOB)] + the blob bytes.
+        let serial = v(12 + 2 * png.len() as u64); // even => BLOB
+        let hdr_len = v(1 + serial.len() as u64);
+        let mut record = hdr_len;
+        record.extend_from_slice(&serial);
+        record.extend_from_slice(png);
+        // Cell: [payload_len][rowid] + record, placed at the page tail.
+        let mut cell = v(record.len() as u64);
+        cell.extend_from_slice(&v(1));
+        cell.extend_from_slice(&record);
+        let cell_off = page_size - cell.len();
+        db[cell_off..].copy_from_slice(&cell);
+        // Page 1 b-tree header (after the 100-byte file header): table leaf,
+        // one cell, its pointer in the cell-pointer array.
+        db[100] = 0x0D;
+        db[103..105].copy_from_slice(&1u16.to_be_bytes());
+        db[108..110].copy_from_slice(&(cell_off as u16).to_be_bytes());
+        db
+    }
+
+    /// A structurally real `.clip`: CSFCHUNK header, CHNKHead (with its SQLi
+    /// offset pointer at data bytes 8..16 — poisonable to force the walk
+    /// fallback), one `pad`-byte CHNKExta standing in for layer rasters, then
+    /// CHNKSQLi + CHNKFoot at the tail.
+    pub fn synthetic_clip(png: &[u8], pad: usize, poison_ptr: bool) -> Vec<u8> {
+        let db = synthetic_sqlite(png);
+        let sqli_off = 24 + (16 + 40) + (16 + pad);
+        let total = sqli_off + 16 + db.len() + 16;
+        let mut f = Vec::with_capacity(total);
+        f.extend_from_slice(b"CSFCHUNK");
+        f.extend_from_slice(&(total as u64).to_be_bytes());
+        f.extend_from_slice(&24u64.to_be_bytes());
+        f.extend_from_slice(b"CHNKHead");
+        f.extend_from_slice(&40u64.to_be_bytes());
+        let mut head = [0u8; 40];
+        let ptr = if poison_ptr { u64::MAX / 2 } else { sqli_off as u64 };
+        head[8..16].copy_from_slice(&ptr.to_be_bytes());
+        f.extend_from_slice(&head);
+        f.extend_from_slice(b"CHNKExta");
+        f.extend_from_slice(&(pad as u64).to_be_bytes());
+        f.resize(f.len() + pad, 0);
+        debug_assert_eq!(f.len(), sqli_off);
+        f.extend_from_slice(b"CHNKSQLi");
+        f.extend_from_slice(&(db.len() as u64).to_be_bytes());
+        f.extend_from_slice(&db);
+        f.extend_from_slice(b"CHNKFoot");
+        f.extend_from_slice(&0u64.to_be_bytes());
+        f
+    }
 }
 
 #[cfg(test)]
@@ -206,5 +346,39 @@ mod tests {
         let rec = [3u8, 17, 20, b'h', b'i', 0x89, 0x50, 0x4E, 0x47];
         assert_eq!(find_png_blob(&rec), Some(vec![0x89, 0x50, 0x4E, 0x47]));
         assert!(extract(b"not a clip file at all").is_none());
+    }
+
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 1, 2, 3, 4, 5, 6, 7, 8];
+
+    /// The tail database must be reachable through the CHNKHead pointer (two
+    /// small reads) — the layout every real CSP file uses.
+    #[test]
+    fn seek_extract_reaches_tail_db_via_head_pointer() {
+        let clip = testutil::synthetic_clip(PNG, 4 * 1024 * 1024, false);
+        assert_eq!(extract_seek(std::io::Cursor::new(&clip)).as_deref(), Some(PNG));
+        // The in-memory API is the same code path (Cursor delegation).
+        assert_eq!(extract(&clip).as_deref(), Some(PNG));
+    }
+
+    /// A corrupt CHNKHead pointer must degrade to the sequential chunk walk,
+    /// not to a miss.
+    #[test]
+    fn seek_extract_falls_back_to_chunk_walk_on_bad_pointer() {
+        let clip = testutil::synthetic_clip(PNG, 512 * 1024, true);
+        assert_eq!(extract_seek(std::io::Cursor::new(&clip)).as_deref(), Some(PNG));
+    }
+
+    /// A database cut short (truncated file, or one bigger than the DB_MAX
+    /// budget) still yields the preview when it lands inside the prefix we got.
+    #[test]
+    fn seek_extract_tolerates_truncated_db() {
+        let mut clip = testutil::synthetic_clip(PNG, 1024, false);
+        // Lie: declare the db at twice its real size, then cut the file right
+        // after the one real page — the bounded read comes up short and the
+        // scan must still find the preview in the page it did get.
+        let sqli = clip.windows(8).position(|w| w == b"CHNKSQLi").unwrap();
+        clip[sqli + 8..sqli + 16].copy_from_slice(&1024u64.to_be_bytes());
+        let cut = &clip[..sqli + 16 + 512];
+        assert_eq!(extract_seek(std::io::Cursor::new(cut)).as_deref(), Some(PNG));
     }
 }

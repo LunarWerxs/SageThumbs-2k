@@ -19,11 +19,19 @@
 //! Most have NO existing Windows thumbnailer. Works on compact installs (no
 //! bundled ImageMagick) since the preview is already a raster image.
 
+use std::io::{Read, Seek};
+
+use zip::ZipArchive;
+
 use super::util::{contains_ci, decodable_image};
-use super::zipfmt::{read_named, Zip};
+use super::zipfmt::read_named;
 
 /// Extract a project-file preview, or None if this ZIP isn't one (or has none).
-pub fn extract(zip: &mut Zip) -> Option<Vec<u8>> {
+/// Generic over the reader so the oversized-file STREAMED path (the shell's
+/// IStream) gets the same dedicated preview lookup as the in-memory path — the
+/// generic image-pick would otherwise grab an arbitrary layer image (ORA's
+/// `data/layer*.png` natural-sorts before the real composite).
+pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     // Krita / OpenRaster: keyed off their `mimetype` entry (like ODF).
     if let Some(mt) = read_named(zip, "mimetype") {
         if contains_ci(&mt, b"krita") {
@@ -70,7 +78,7 @@ pub fn extract(zip: &mut Zip) -> Option<Vec<u8>> {
     )
 }
 
-fn try_paths(zip: &mut Zip, paths: &[&str]) -> Option<Vec<u8>> {
+fn try_paths<R: Read + Seek>(zip: &mut ZipArchive<R>, paths: &[&str]) -> Option<Vec<u8>> {
     for p in paths {
         if let Some(data) = read_named(zip, p) {
             if let Some(img) = decodable_image(data) {
@@ -89,9 +97,7 @@ fn try_paths(zip: &mut Zip, paths: &[&str]) -> Option<Vec<u8>> {
 /// a C lib — so we locate the entry via the RAW reader (a zstd member is invisible to the
 /// normal `by_index`) and, when it's zstd, inflate it ourselves with the pure-Rust
 /// `ruzstd`. Store/deflate members go back through the crate's normal decompressing read.
-fn read_suffix(zip: &mut Zip, suffix_lc: &str) -> Option<Vec<u8>> {
-    use std::io::Read;
-
+fn read_suffix<R: Read + Seek>(zip: &mut ZipArchive<R>, suffix_lc: &str) -> Option<Vec<u8>> {
     // Locate the entry via the RAW reader — a zstd member errors out of the normal
     // `by_index`, so it'd otherwise be invisible.
     let mut hit = None;

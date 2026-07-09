@@ -7,16 +7,21 @@
 //!   PowerPoint embeds one; Word/Excel only when the user opts in, so it's
 //!   commonly absent there — we return None and the shell shows the icon.
 
+use std::io::{Read, Seek};
+
+use zip::ZipArchive;
+
 use super::util::{contains_ci, decodable_image};
-use super::zipfmt::{read_named, Zip};
+use super::zipfmt::read_named;
 
 pub enum Kind {
     Odf,
     Ooxml,
 }
 
-/// Identify an Office package by its signature entries, or None.
-pub fn detect(zip: &mut Zip) -> Option<Kind> {
+/// Identify an Office package by its signature entries, or None. Generic over the
+/// reader so the oversized-file streamed path shares it (see `project::extract`).
+pub fn detect<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Kind> {
     // ODF: a `mimetype` entry whose content is an OpenDocument media type.
     if let Some(mt) = read_named(zip, "mimetype") {
         if contains_ci(&mt, b"opendocument") {
@@ -31,14 +36,14 @@ pub fn detect(zip: &mut Zip) -> Option<Kind> {
 }
 
 /// Extract the embedded preview, or None for an Office doc that has none.
-pub fn extract(zip: &mut Zip, kind: Kind) -> Option<Vec<u8>> {
+pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>, kind: Kind) -> Option<Vec<u8>> {
     match kind {
         Kind::Odf => decodable_image(read_named(zip, "Thumbnails/thumbnail.png")?),
         Kind::Ooxml => ooxml_thumbnail(zip),
     }
 }
 
-fn ooxml_thumbnail(zip: &mut Zip) -> Option<Vec<u8>> {
+fn ooxml_thumbnail<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     // Resolve the thumbnail relationship's target from the package-root rels.
     if let Some(rels) = read_named(zip, "_rels/.rels") {
         if let Some(target) = thumbnail_target(&rels) {

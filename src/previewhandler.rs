@@ -4,11 +4,13 @@
 //! Where the thumbnail provider returns a tiny `HBITMAP`, this renders the image
 //! LARGE into Explorer's reading/preview pane. The shell hands us an `IStream`
 //! (via `IInitializeWithStream`), a parent `HWND` + bounds (`SetWindow`), and a
-//! themed background colour (`SetBackgroundColor`); on `DoPreview` we decode the
-//! stream with the SAME tiered decoder the thumbnail path uses
-//! (`decode::decode_preview` — so all registered formats, ebook/comic covers, audio
-//! waveforms, etc. work here too) and paint it, aspect-preserved, into a child
-//! window.
+//! themed background colour (`SetBackgroundColor`); on `DoPreview` we acquire the
+//! stream through the SAME streaming cascade the thumbnail path uses
+//! ([`crate::streamsrc`] — video frame-grab tiers, seek-only album art, streamed
+//! archive covers, the head-preview rescue, the bounded whole-file read) and
+//! decode with the same tiered decoder (`decode::decode_preview` — so all
+//! registered formats, ebook/comic covers, audio waveforms, etc. work here too),
+//! then paint it, aspect-preserved, into a child window.
 //!
 //! Crash isolation: a preview handler is loaded by the shell's OUT-OF-PROCESS
 //! preview host (`prevhost.exe`) via its surrogate `AppID` (set in `register.rs`),
@@ -27,9 +29,7 @@ use windows::Win32::Graphics::Gdi::{
     EndPaint, FillRect, InvalidateRect, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO,
     BITMAPINFOHEADER, DIB_RGB_COLORS, HALFTONE, HBITMAP, PAINTSTRUCT, SRCCOPY,
 };
-use windows::Win32::System::Com::{
-    CoTaskMemFree, IStream, STATFLAG_DEFAULT, STATSTG, STREAM_SEEK_SET,
-};
+use windows::Win32::System::Com::{CoTaskMemFree, IStream, STATFLAG_DEFAULT, STATSTG};
 use windows::Win32::System::Ole::{IObjectWithSite, IObjectWithSite_Impl};
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithStream, IInitializeWithStream_Impl};
 use windows::Win32::UI::Shell::{
@@ -53,10 +53,8 @@ const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 /// would race the UI thread's WM_PAINT (use-after-free of the old RenderData).
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
-use crate::{decode, safety};
-
-/// Whole-stream read ceiling — shared with the thumbnail path's DoS budget.
-const MAX_BYTES: usize = decode::limits::MAX_INPUT_BYTES as usize;
+use crate::streamsrc::{self, StreamSource};
+use crate::{decode, safety, settings};
 
 /// Wall-clock budget for a single preview decode, enforced OFF the host thread (see
 /// [`decode_preview_budgeted`]) so a slow/exotic decode can never freeze prevhost's
@@ -218,24 +216,39 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 return Err(Error::from(E_FAIL));
             }
 
-            // Drain the shell's IStream on THIS thread: a stream marshaled into our
-            // STA apartment can't be touched from a worker thread.
-            let bytes = {
+            // Honor the user's MaxSize cap like the thumbnail path does (the streaming
+            // tiers sidestep it for video/audio/archives, exactly as thumbnails do).
+            // The EnableThumbs master switch is deliberately NOT consulted: the pane
+            // is its own feature, already gated per-format by registration.
+            let cfg = settings::thumb_settings();
+
+            // Acquire the source through the shared cascade on THIS thread: a stream
+            // marshaled into our STA apartment can't be touched from a worker thread.
+            // Video gets a frame-grab (never buffering a multi-GB movie), audio a
+            // seek-only album-art read, oversized archives/.blend/PSD a streamed
+            // cover / head prefix — everything else a bounded whole-file read.
+            let source = {
                 let borrow = self.stream.borrow();
                 let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
                 if let Some(name) = unsafe { stream_name(stream) } {
                     safety::log_debug(&format!("DoPreview: file {name}"));
                 }
-                unsafe { read_stream(stream, MAX_BYTES) }
+                unsafe { streamsrc::stream_source(stream, cfg.max_file_bytes, "DoPreview") }
             };
-            safety::log_debug(&format!(
-                "DoPreview: read {} bytes from stream",
-                bytes.as_ref().map_or(0, |b| b.len())
-            ));
 
-            // Decode OFF the host thread under a wall-clock budget so a slow/exotic decode can't
-            // freeze the preview host's message pump; a failure/timeout leaves the pane empty.
-            let decoded = bytes.and_then(decode_preview_budgeted);
+            // A cascade miss (oversized past every rescue, artless audio, undecodable
+            // video) leaves the pane empty — same terminal state as a failed decode.
+            let decoded = match source {
+                // A video frame arrives already decoded by Media Foundation.
+                Ok(StreamSource::Frame(frame)) => Some(frame),
+                // Decode bytes OFF the host thread under a wall-clock budget so a
+                // slow/exotic decode can't freeze the preview host's message pump.
+                Ok(StreamSource::Bytes(bytes)) => {
+                    safety::log_debug(&format!("DoPreview: read {} bytes from stream", bytes.len()));
+                    decode_preview_budgeted(bytes)
+                }
+                Err(_) => None,
+            };
             match &decoded {
                 Some(img) => {
                     safety::log_debug(&format!("DoPreview: decoded {}x{}", img.width(), img.height()))
@@ -685,30 +698,6 @@ unsafe fn stream_name(stream: &IStream) -> Option<String> {
     let s = stat.pwcsName.to_string().ok();
     CoTaskMemFree(Some(stat.pwcsName.0 as *const c_void));
     s
-}
-
-/// Drain an `IStream` into a `Vec`, bounded by `max`. Rewinds first. `None` on a
-/// transport error or if the stream exceeds `max`.
-unsafe fn read_stream(stream: &IStream, max: usize) -> Option<Vec<u8>> {
-    _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut out: Vec<u8> = Vec::new();
-    let mut chunk = vec![0u8; 1 << 16];
-    loop {
-        let mut got: u32 = 0;
-        let hr = stream.Read(chunk.as_mut_ptr() as *mut c_void, chunk.len() as u32, Some(&mut got));
-        if hr.is_err() {
-            return None;
-        }
-        if got == 0 {
-            break;
-        }
-        let n = (got as usize).min(chunk.len());
-        out.extend_from_slice(&chunk[..n]);
-        if out.len() > max {
-            return None;
-        }
-    }
-    Some(out)
 }
 
 #[cfg(test)]

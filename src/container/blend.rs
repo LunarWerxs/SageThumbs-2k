@@ -92,5 +92,15 @@ mod tests {
         let img = extract(&b).expect("thumbnail");
         assert_eq!((img.width(), img.height()), (4, 3));
         assert!(extract(b"not a blend file").is_none());
+
+        // The oversized-file rescue hands extract() a bounded HEAD PREFIX of a much
+        // larger file. TEST sits near the head, so a prefix that contains it must
+        // still extract; a prefix cut BEFORE/INSIDE the TEST body must return None
+        // (bounds-checked walk), never panic or mis-decode.
+        let mut padded = b.clone();
+        padded.extend_from_slice(&vec![0u8; 4096]); // simulated giant tail
+        let full_end = b.len() - 20; // prefix that still contains all of TEST
+        assert!(extract(&padded[..full_end]).is_some(), "prefix containing TEST extracts");
+        assert!(extract(&padded[..40]).is_none(), "prefix truncating TEST is a clean miss");
     }
 }

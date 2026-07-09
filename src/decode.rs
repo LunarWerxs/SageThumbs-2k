@@ -145,6 +145,58 @@ pub fn read_capped(path: &str) -> std::io::Result<Vec<u8>> {
     std::fs::read(path)
 }
 
+/// Bounded head prefix that's ample for every [`crate::container::has_head_preview`]
+/// format: a Blender `TEST` thumbnail block sits ~100 bytes in, and a Photoshop
+/// image-resources section (baked preview, resource 1036) is at most a few MB past
+/// the fixed header. 16 MiB covers both with wide margin while staying a trivial
+/// read/allocation next to the 100 MB+ files this path exists for.
+pub const HEAD_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
+
+/// PREVIEW-fidelity variant of [`read_capped`] for the thumbnail/view verbs: a file
+/// over the byte limit is still readable when its baked preview lives in the head
+/// (`.blend` / PSD-PSB — see [`crate::container::has_head_preview`]); we then return
+/// only a [`HEAD_PREVIEW_BYTES`] prefix, which the container tier extracts the
+/// preview from (every extractor is bounds-checked, so a truncated tail just means
+/// "no preview found", never a mis-decode). Seek-streamable containers (CBZ/ZIP/CB7,
+/// Clip Studio `.clip`) instead get their cover pulled over the file handle — the
+/// same [`crate::container::archive_cover_seek`] dispatch the thumbnail provider
+/// uses on its oversized IStream path — and the returned COVER bytes flow through
+/// the decode tiers like any image file. Anything else keeps [`read_capped`]'s
+/// hard refusal. NOT for full-fidelity verbs (convert/rotate/strip) — a truncated
+/// read there would corrupt output.
+pub fn read_preview_capped(path: &str) -> std::io::Result<Vec<u8>> {
+    read_preview_capped_at(path, limits::MAX_INPUT_BYTES, HEAD_PREVIEW_BYTES)
+}
+
+/// [`read_preview_capped`] with the caps as parameters so tests can exercise the
+/// oversized branch without staging multi-hundred-MB files.
+fn read_preview_capped_at(path: &str, max: u64, prefix: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let len = std::fs::metadata(path)?.len();
+    if len <= max {
+        return std::fs::read(path);
+    }
+    // Sniff just the magic before committing to a rescue, so a plain oversized
+    // file is rejected without touching more than 8 bytes of it.
+    let mut f = std::fs::File::open(path)?;
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic)?;
+    if crate::container::has_head_preview(&magic) {
+        let mut head = vec![0u8; prefix.min(len as usize)];
+        head[..8].copy_from_slice(&magic);
+        f.read_exact(&mut head[8..])?;
+        return Ok(head);
+    }
+    // The magic sets are disjoint, so this runs only when the head path didn't.
+    if let Some(cover) = crate::container::archive_cover_seek(&mut f, &magic) {
+        return Ok(cover);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("input is {len} bytes, over the {max} byte limit"),
+    ))
+}
+
 /// Session-wide cap on concurrent ImageMagick child processes. Each child can use
 /// up to `MAGICK_MEMORY_LIMIT` (512 MiB) of RAM, so an unbounded fan-out from a
 /// parallel batch — the Convert dialog or a multi-file context-menu verb, which may
@@ -519,10 +571,24 @@ fn tone_map_float(img: &DynamicImage) -> DynamicImage {
         };
         (srgb * 255.0 + 0.5).clamp(0.0, 255.0) as u8
     };
+    let mut any_alpha = false;
     for (o, s) in out.pixels_mut().zip(src.pixels()) {
         let [r, g, b, a] = s.0;
         let alpha = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        any_alpha |= alpha != 0;
         *o = image::Rgba([map(r), map(g), map(b), alpha]);
+    }
+    // VFX render passes (emission/environment/AOV EXRs) legitimately carry RGB with
+    // the ENTIRE alpha channel at 0 — honoring that verbatim hands the caller a
+    // fully-transparent image the `is_fully_transparent` watchdog then rejects, so
+    // the file shows a default icon while every image viewer shows its RGB fine.
+    // When ALL alpha is 0 there is no compositing intent to preserve; show the RGB
+    // opaque instead. Partial alpha stays untouched. (Rgb32F sources convert with
+    // a=1.0, so this only fires on genuinely all-transparent RGBA floats.)
+    if !any_alpha {
+        for px in out.pixels_mut() {
+            px.0[3] = 255;
+        }
     }
     DynamicImage::ImageRgba8(out)
 }
@@ -542,7 +608,21 @@ fn decode_tga(bytes: &[u8]) -> Result<DynamicImage> {
     limits.max_image_height = Some(MAX_DIM);
     limits.max_alloc = Some(MAX_ALLOC);
     reader.limits(limits);
-    reader.decode().map_err(|_| Error::from(E_FAIL))
+    let mut img = reader.decode().map_err(|_| Error::from(E_FAIL))?;
+    // Classic TGA gotcha: a 32-bpp file whose image-descriptor byte declares 0
+    // attribute (alpha) bits carries a meaningless 4th channel — very often all
+    // zero. The `image` crate maps 32-bpp straight to RGBA8 trusting that byte,
+    // which renders such files fully transparent (the blank-thumbnail watchdog
+    // then rejects them, and Convert/View write see-through PNGs). Honor the
+    // header instead: 0 declared alpha bits ⇒ the channel is filler ⇒ opaque.
+    if bytes.len() >= 18 && bytes[16] == 32 && bytes[17] & 0x0F == 0 {
+        if let DynamicImage::ImageRgba8(buf) = &mut img {
+            for px in buf.pixels_mut() {
+                px.0[3] = 255;
+            }
+        }
+    }
+    Ok(img)
 }
 
 /// Heuristic TGA detector (the format carries no signature): the v2 footer is
@@ -572,6 +652,13 @@ fn magick_exe() -> Option<&'static PathBuf> {
 }
 
 fn find_magick() -> Option<PathBuf> {
+    // Test/diagnostic escape hatch: `ST2K_NO_MAGICK=1` makes this process behave
+    // like the compact (no-ImageMagick) install even on a machine that has magick
+    // bundled or in Program Files — so the regression harness can measure exactly
+    // which formats depend on the magick tier without uninstalling anything.
+    if std::env::var_os("ST2K_NO_MAGICK").is_some_and(|v| v == "1") {
+        return None;
+    }
     if let Ok(dll) = crate::module_path() {
         if let Some(dir) = std::path::Path::new(&dll).parent() {
             let p = dir.join("magick.exe");
@@ -643,7 +730,19 @@ fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
     // grind ~5 s to a near-blank frame; everything else keeps the full 20 s budget for
     // heavy raster decodes.
     let timeout = if looks_like_metafile(bytes) { METAFILE_TIMEOUT } else { MAGICK_TIMEOUT };
-    decode_via_magick_spec(bytes, "-", MAGICK_MAX_EDGE, timeout)
+    // DICOM files carry a TIFF-compatible 128-byte preamble that tricks magick's
+    // content-sniffer into treating them as TIFF (which then fails).  Pass an
+    // explicit `dcm:-` format specifier so magick invokes its DICOM coder instead.
+    // CT/MR pixel data also occupies a narrow band of the 16-bit range (the real
+    // contrast lives in the DICOM window/level, which magick does NOT apply), so
+    // a raw linear map collapses to a near-uniform gray — `-auto-level` stretches
+    // it back to the full range for a legible thumbnail. Default `-auto-level`
+    // scales all channels by ONE global min/max (NOT per-channel — that needs
+    // `+channel`), so it's hue-preserving: verified on real RGB DICOM to keep
+    // colours exact, so it stays unconditional here (no MONOCHROME-vs-RGB gating).
+    let (input, pre_ops): (&str, &[&str]) =
+        if looks_like_dicom(bytes) { ("dcm:-", &["-auto-level"]) } else { ("-", &[]) };
+    decode_via_magick_spec(bytes, input, pre_ops, MAGICK_MAX_EDGE, timeout)
 }
 
 /// Is this a Windows metafile (placeable/memory WMF, or EMF)? Picks the shorter
@@ -654,6 +753,16 @@ pub(crate) fn looks_like_metafile(b: &[u8]) -> bool {
     b.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A])                    // placeable WMF
         || b.starts_with(&[0x01, 0x00, 0x09, 0x00, 0x00, 0x03]) // memory WMF METAHEADER
         || (b.len() >= 44 && b[0..4] == [0x01, 0x00, 0x00, 0x00] && &b[40..44] == b" EMF") // EMF
+}
+
+/// DICOM files carry a 128-byte preamble (often zero-filled) followed by the
+/// magic "DICM" at offset 128.  The preamble is TIFF-compatible ("II*\0" at
+/// offset 0 in many real-world samples including pydicom's CT_small.dcm and
+/// MR_small.dcm), so ImageMagick's content-sniffer misidentifies them as TIFF
+/// and fails ("Can not read TIFF directory count").  The explicit `dcm:-`
+/// format hint in [`decode_via_magick`] routes them to the DICOM coder instead.
+fn looks_like_dicom(b: &[u8]) -> bool {
+    b.len() > 132 && &b[128..132] == b"DICM"
 }
 
 /// The PSD/PSB composite at full resolution. Frame `[0]` of a PSD in ImageMagick
@@ -668,14 +777,16 @@ pub(crate) fn looks_like_metafile(b: &[u8]) -> bool {
 /// thumbnail. This PNG is OUR OWN re-encode (its dimensions are already bounded
 /// by the resize spec), so the wider allocation is safe here.
 fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
-    decode_via_magick_spec_alloc(bytes, "-[0]", limits::PSD_COMPOSITE_EDGE, limits::PSD_COMPOSITE_MAX_ALLOC, MAGICK_TIMEOUT)
+    decode_via_magick_spec_alloc(bytes, "-[0]", &[], limits::PSD_COMPOSITE_EDGE, limits::PSD_COMPOSITE_MAX_ALLOC, MAGICK_TIMEOUT)
 }
 
 /// Shared ImageMagick child-process decode: `input` is the stdin spec (`-` for
-/// "all frames", `-[0]` for the first), `max_edge` the `-resize` cap. The PNG
-/// magick returns is re-decoded under the default [`limits::MAX_ALLOC`] budget.
-fn decode_via_magick_spec(bytes: &[u8], input: &str, max_edge: &str, timeout: Duration) -> Result<DynamicImage> {
-    decode_via_magick_spec_alloc(bytes, input, max_edge, MAX_ALLOC, timeout)
+/// "all frames", `-[0]` for the first), `pre_ops` are per-format operators
+/// inserted right after the input (e.g. `-auto-level` for DICOM), `max_edge` the
+/// `-resize` cap. The PNG magick returns is re-decoded under the default
+/// [`limits::MAX_ALLOC`] budget.
+fn decode_via_magick_spec(bytes: &[u8], input: &str, pre_ops: &[&str], max_edge: &str, timeout: Duration) -> Result<DynamicImage> {
+    decode_via_magick_spec_alloc(bytes, input, pre_ops, max_edge, MAX_ALLOC, timeout)
 }
 
 /// As [`decode_via_magick_spec`], but with an explicit re-decode allocation
@@ -684,6 +795,7 @@ fn decode_via_magick_spec(bytes: &[u8], input: &str, max_edge: &str, timeout: Du
 fn decode_via_magick_spec_alloc(
     bytes: &[u8],
     input: &str,
+    pre_ops: &[&str],
     max_edge: &str,
     max_alloc: u64,
     timeout: Duration,
@@ -691,8 +803,12 @@ fn decode_via_magick_spec_alloc(
     let exe = magick_exe().ok_or_else(|| Error::from(E_FAIL))?;
     let mut cmd = Command::new(exe);
     add_magick_limits(&mut cmd);
-    cmd.args([
-        input, // read the image from stdin (format auto-detected)
+    let mut args: Vec<&str> = Vec::with_capacity(6 + pre_ops.len());
+    args.push(input); // read the image from stdin (format auto-detected)
+    // Per-format pre-processing operators (e.g. `-auto-level` for DICOM's narrow
+    // window/level range) run before -strip/-resize.
+    args.extend_from_slice(pre_ops);
+    args.extend_from_slice(&[
         // NO `-auto-orient`: `apply_exif_orientation` in `decode_image` is the
         // single rotation authority across all tiers. `-strip` already drops the
         // EXIF tags, so letting magick auto-orient too would double-rotate (it
@@ -700,7 +816,8 @@ fn decode_via_magick_spec_alloc(
         "-strip",
         "-resize", max_edge,
         "PNG:-", // write a PNG to stdout
-    ])
+    ]);
+    cmd.args(&args)
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
@@ -1177,13 +1294,24 @@ pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Resul
         decode_preview(bytes)?
     };
 
-    let decoded = fit_to_box(img, cx);
-    // Watchdog: a fully-transparent thumbnail is invisible — almost always a decode that
-    // "succeeded" into nothing. Fail it so Explorer shows the file's icon instead of
-    // caching a blank tile the user can't clear without nuking the thumbnail cache.
+    let mut decoded = fit_to_box(img, cx);
+    // Watchdog: a fully-transparent thumbnail is invisible. When the RGB planes are
+    // ALSO empty it's a decode that "succeeded" into nothing — fail it so Explorer
+    // shows the file's icon instead of caching a blank tile the user can't clear
+    // without nuking the thumbnail cache. But when real RGB content IS present
+    // (DDS texture maps, render passes — formats whose alpha channel isn't
+    // transparency), show that content opaque instead: every image viewer renders
+    // these files fine, so a default icon would read as "broken".
     if is_fully_transparent(&decoded.rgba) {
-        crate::safety::log_debug("decode: thumbnail was fully transparent — rejecting as blank");
-        return Err(Error::from(E_FAIL));
+        if decoded.rgba.chunks_exact(4).any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0) {
+            crate::safety::log_debug("decode: all-transparent but has RGB content — forcing opaque");
+            for px in decoded.rgba.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+        } else {
+            crate::safety::log_debug("decode: thumbnail was fully transparent — rejecting as blank");
+            return Err(Error::from(E_FAIL));
+        }
     }
     Ok(decoded)
 }
@@ -2257,5 +2385,95 @@ mod tests {
         let bytes = png_bytes(40, 20, [10, 20, 200, 255]);
         let img = unsafe { wic_decode(&bytes) }.expect("WIC should decode PNG");
         assert_eq!((img.width(), img.height()), (40, 20));
+    }
+
+    #[test]
+    fn read_preview_capped_rescues_head_preview_containers() {
+        // Over the cap + BLENDER magic -> a bounded prefix; over the cap without the
+        // magic -> the hard refusal; under the cap -> the whole file. Caps shrunk via
+        // the `_at` variant so the test doesn't stage multi-hundred-MB files.
+        let dir = std::env::temp_dir().join("st2k_head_preview_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let blend = dir.join("big.blend");
+        let mut data = b"BLENDER-v277".to_vec();
+        data.resize(2048, 0);
+        std::fs::write(&blend, &data).unwrap();
+        let got = read_preview_capped_at(blend.to_str().unwrap(), 1024, 1536).unwrap();
+        assert_eq!(got.len(), 1536, "oversized blend must yield the bounded prefix");
+        assert!(got.starts_with(b"BLENDER"));
+
+        // Prefix cap larger than the file: return everything there is.
+        let got = read_preview_capped_at(blend.to_str().unwrap(), 1024, 8192).unwrap();
+        assert_eq!(got.len(), 2048);
+
+        let plain = dir.join("big.jpg");
+        let mut data = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
+        data.resize(2048, 0);
+        std::fs::write(&plain, &data).unwrap();
+        assert!(
+            read_preview_capped_at(plain.to_str().unwrap(), 1024, 1536).is_err(),
+            "oversized non-head-preview file keeps the hard refusal"
+        );
+
+        // Under the cap: identical to read_capped (whole file, any format).
+        let got = read_preview_capped_at(plain.to_str().unwrap(), 4096, 1536).unwrap();
+        assert_eq!(got.len(), 2048);
+    }
+
+    #[test]
+    fn read_preview_capped_rescues_oversized_clip() {
+        // A .clip past the byte cap must yield its embedded preview PNG via the
+        // tail-database seek (the CLI twin of the provider's IStream rescue) —
+        // not the hard refusal, and not a head prefix (the preview is NOT in
+        // the head; the db sits after the layer-data padding).
+        let dir = std::env::temp_dir().join("st2k_clip_preview_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = [0x89u8, b'P', b'N', b'G', 42, 42, 42, 42];
+        let clip = crate::container::clip_testutil::synthetic_clip(&png, 64 * 1024, false);
+        let path = dir.join("big.clip");
+        std::fs::write(&path, &clip).unwrap();
+        let got = read_preview_capped_at(path.to_str().unwrap(), 1024, 1536).unwrap();
+        assert_eq!(got, &png[..]);
+    }
+
+    #[test]
+    fn tone_map_rescues_all_zero_alpha_float() {
+        // A VFX render pass (emission/AOV EXR) can carry real RGB with the whole
+        // alpha channel at 0. Tone-mapping must surface the RGB opaque instead of
+        // producing a fully-transparent image the blank-thumbnail watchdog rejects.
+        let mut buf = image::Rgba32FImage::new(2, 2);
+        for p in buf.pixels_mut() {
+            *p = image::Rgba([0.5f32, 0.25, 1.5, 0.0]);
+        }
+        let out = tone_map_float(&DynamicImage::ImageRgba32F(buf)).to_rgba8();
+        assert!(out.pixels().all(|p| p.0[3] == 255), "all-zero alpha must be rescued to opaque");
+        assert!(out.pixels().all(|p| p.0[0] > 0), "RGB content must survive");
+
+        // PARTIAL alpha is compositing intent and must be preserved verbatim.
+        let mut buf = image::Rgba32FImage::new(2, 1);
+        buf.put_pixel(0, 0, image::Rgba([1.0f32, 1.0, 1.0, 1.0]));
+        buf.put_pixel(1, 0, image::Rgba([1.0f32, 1.0, 1.0, 0.0]));
+        let out = tone_map_float(&DynamicImage::ImageRgba32F(buf)).to_rgba8();
+        assert_eq!(out.get_pixel(0, 0).0[3], 255);
+        assert_eq!(out.get_pixel(1, 0).0[3], 0, "partial transparency must survive untouched");
+    }
+
+    #[test]
+    fn zero_alpha_exr_thumbnails_end_to_end() {
+        // The full chain for a real all-transparent EXR: image-crate decode ->
+        // Rgba32F -> tone_map_float rescue -> fit_to_box -> the fully-transparent
+        // watchdog must NOT fire (this exact shape showed a default icon before).
+        let mut buf = image::Rgba32FImage::new(8, 8);
+        for p in buf.pixels_mut() {
+            *p = image::Rgba([0.8f32, 0.2, 0.1, 0.0]);
+        }
+        let mut exr = Vec::new();
+        DynamicImage::ImageRgba32F(buf)
+            .write_to(&mut std::io::Cursor::new(&mut exr), image::ImageFormat::OpenExr)
+            .unwrap();
+        let out = decode_thumbnail_opts(&exr, 64, false)
+            .expect("zero-alpha EXR must thumbnail, not be rejected as blank");
+        assert!(out.rgba.chunks_exact(4).any(|px| px[3] != 0));
     }
 }

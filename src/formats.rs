@@ -144,7 +144,11 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("icns", "Apple Icon Image"),
     ("j2c", "JPEG-2000 Code Stream Syntax"),
     ("j2k", "JPEG-2000 Code Stream Syntax"),
-    ("jbig", "Joint Bi-level Image"),
+    // NOTE: `jbig` was REMOVED (2026-07-08) — a registered dead hook. No tier can
+    // decode it: no image-crate/WIC support, no container path, and ImageMagick's
+    // own format table reports JBIG as `---` (the delegate isn't compiled in), so
+    // the hook only ever produced a doomed 20s magick attempt. Don't re-add
+    // without an actual decoder.
     ("jfif", "JPEG/JFIF"),
     ("jng", "JPEG Network Graphics"),
     ("jnx", "Garmin tile format"),

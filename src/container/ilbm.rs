@@ -146,6 +146,7 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
 
     let mut img = RgbaImage::new(w, h);
     let mut idx_row = vec![0u32; w as usize]; // colour index per pixel for this row
+    let mut mask_row = vec![255u8; w as usize]; // per-pixel alpha from the mask plane
 
     for y in 0..h as usize {
         // Build the per-pixel value for this scanline.
@@ -166,6 +167,23 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
                 for x in 0..w as usize {
                     let bit = (plane_bytes[x >> 3] >> (7 - (x & 7))) & 1;
                     idx_row[x] |= (bit as u32) << plane;
+                }
+            }
+            // Masking mode 1 (mskHasMask): an EXTRA bitplane after the colour
+            // planes — bit set = pixel visible, clear = transparent. The row
+            // layout above already skips over it (`planes_per_row`); actually
+            // APPLY it too, or masked/transparent regions render fully opaque.
+            // A truncated/missing mask row degrades to opaque (the old behavior).
+            if bmhd.masking == 1 {
+                for m in mask_row.iter_mut() {
+                    *m = 255;
+                }
+                let mask_off = row_base + planes as usize * row_bytes;
+                if let Some(mask_bytes) = raw.get(mask_off..mask_off + row_bytes) {
+                    for x in 0..w as usize {
+                        let bit = (mask_bytes[x >> 3] >> (7 - (x & 7))) & 1;
+                        mask_row[x] = if bit == 1 { 255 } else { 0 };
+                    }
                 }
             }
         }
@@ -190,7 +208,11 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
             } else {
                 cmap.get(v as usize).copied().unwrap_or([0, 0, 0])
             };
-            let a = if bmhd.masking == 2 && v == bmhd.transparent as u32 { 0 } else { 255 };
+            let a = if bmhd.masking == 2 && v == bmhd.transparent as u32 {
+                0
+            } else {
+                mask_row[x] // 255 unless masking mode 1 cleared this pixel's mask bit
+            };
             img.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, a]));
         }
     }

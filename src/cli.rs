@@ -38,8 +38,9 @@ pub fn devmode(sub: &str) -> Result<String, String> {
 pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, String> {
     // Cap the read at the shared input budget (metadata-checked before allocating)
     // so a scripted/agent/MCP call can't load a multi-GB file wholesale — the same
-    // ceiling Explorer thumbnailing and the path verbs apply.
-    let bytes = decode::read_capped(input).map_err(|e| e.to_string())?;
+    // ceiling Explorer thumbnailing and the path verbs apply. Head-preview
+    // containers (.blend / PSD-PSB) past the cap still render from a bounded prefix.
+    let bytes = decode::read_preview_capped(input).map_err(|e| e.to_string())?;
     // Preview fidelity (embedded/container previews OK) — that's what a
     // thumbnail is; `convert` is the full-fidelity verb.
     let img = decode::decode_preview(&bytes).map_err(|_| format!("cannot decode {input}"))?;
@@ -75,7 +76,7 @@ pub fn rotate(input: &str, by: &str) -> Result<String, String> {
 /// size). Powers the MCP `view` tool — lets an AI agent SEE any of our supported formats
 /// directly (HEIC/RAW/PSD/ebook covers/CAD previews/…), not just convert them to a file.
 pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
-    let bytes = decode::read_capped(input).map_err(|e| e.to_string())?;
+    let bytes = decode::read_preview_capped(input).map_err(|e| e.to_string())?;
     let img = decode::decode_preview(&bytes).map_err(|_| format!("cannot decode {input}"))?;
     let img = if max_dim > 0 { img.thumbnail(max_dim, max_dim) } else { img };
     let mut out = Vec::new();
