@@ -3,6 +3,14 @@
 # files. Most formats are generated from a distinctive base image via the FULL
 # ImageMagick; containers/project files are built synthetically or downloaded.
 #
+# HONESTY RULE (2026-07-08): when magick can't ENCODE a target format it still
+# writes the INPUT's bytes to the output name — a PNG renamed to .arw — with a
+# non-fatal "no encode delegate" warning (read-only coders) or SILENTLY, exit 0
+# (extensions magick doesn't know, e.g. .icns). ~90 formats' samples used to be
+# such fakes, so regression "passed" them by PNG-sniffing. Generation now
+# magic-checks every output and deletes fakes; formats with no real sample are
+# recorded in <corpus>\_no-real-sample.txt so regression reports them UNTESTED.
+#
 #   pwsh scripts\build-corpus.ps1                 # build into ..\test-corpus
 #   pwsh scripts\build-corpus.ps1 -SkipDownloads  # generated/synthetic only
 param(
@@ -46,16 +54,60 @@ if (-not $exts) { Write-Host "  (st2k not built — generating a default format 
 # Formats handled specially below (not a plain `magick base.png out.ext`).
 # eps is special: magick writes PLAIN EPS (readable only with Ghostscript); we
 # synthesize the DOS-EPS-with-TIFF-preview flavor container/eps.rs extracts.
-$special = 'epub','mobi','azw','azw3','fb2','fbz','cbz','cb7','cbr','cbt','kra','ora','3mf','fcstd','gcode','gco','clip','afphoto','afdesign','afpub','af','blend','psd','psb','djvu','djv','pdf','eps','emf','emz','wmf','sketch','procreate','key','pages','numbers','cdr','skp','dwg','3dm','xd','cdt','indd','vsdx','vsdm','max','vsd','pub'
+$special = @(
+    'epub', 'mobi', 'azw', 'azw3', 'fb2', 'fbz', 'cbz', 'cb7', 'cbr', 'cbt', 'kra', 'ora', '3mf', 'fcstd', 'gcode', 'gco', 'clip', 'afphoto', 'afdesign', 'afpub', 'af', 'blend', 'psd', 'psb', 'djvu', 'djv', 'pdf', 'eps', 'emf', 'emz', 'wmf', 'sketch', 'procreate', 'key', 'pages', 'numbers', 'cdr', 'skp', 'dwg', '3dm', 'xd', 'cdt', 'indd', 'vsdx', 'vsdm', 'max', 'vsd', 'pub',
+    # magick can't WRITE these (it faked them as renamed PNGs before 2026-07-08);
+    # real samples come from the synth/download/alias sections below:
+    'dng', 'kdc',                                                # real RAW downloads (the fakes used to pre-empt them)
+    'heic', 'heif', 'heics', 'heifs', 'hif', 'avci',             # HEIF family: real download + content-sniffed aliases
+    'icns', 'dcm', 'xcf',                                        # synthesized icns; DICOM + GIMP downloads
+    'jfif', 'mpo', 'bw',                                         # aliases of the real jpg/sgi samples
+    'odt', 'ods', 'odp', 'odg', 'odf', 'ott', 'ots', 'otp',      # ODF: synthesized zip + Thumbnails/thumbnail.png
+    'docx', 'docm', 'dotx', 'dotm', 'xlsx', 'xlsm', 'xlsb', 'xltx', 'xltm', 'pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm',  # OOXML: synthesized OPC zip + docProps thumbnail
+    'mp3', 'flac', 'ogg', 'oga', 'opus', 'spx', 'm4a', 'm4b', 'ape', 'wv', 'wav', 'aiff', 'aif', 'aifc', 'aac', 'mpc', 'dsf' # audio: real minimal files + embedded covers
+)
 
 # --- 3) Generate every magick-writable supported format from the base ---------
-$gen = 0; $fail = @()
+# See the HONESTY RULE up top: magick "succeeds" on unwritable formats by writing
+# the input PNG's bytes under the target name (warning for read-only coders,
+# SILENT for unknown extensions — verified both). So: write to a temp name, treat
+# a "no encode delegate" warning OR a PNG-signature output under a non-PNG
+# extension as failure, and only then replace the target — a pre-existing real
+# sample (e.g. a hand-added .wma) is never clobbered by a fake.
+function Test-IsPng([string]$path) {
+    $fs = [System.IO.File]::OpenRead($path)
+    $b = New-Object byte[] 4; $n = $fs.Read($b, 0, 4); $fs.Close()
+    ($n -eq 4) -and ($b[0] -eq 0x89) -and ($b[1] -eq 0x50) -and ($b[2] -eq 0x4E) -and ($b[3] -eq 0x47)
+}
+
+# Heal a corpus poisoned by the old behavior FIRST: any leftover sample.<ext>
+# that is really a renamed PNG gets dropped, so the loop's "kept pre-existing"
+# report is honest and the download section (which skips existing files) isn't
+# pre-empted by a stale fake.
+$purged = @()
+Get-ChildItem $OutDir -File -Filter 'sample.*' | Where-Object { $_.Extension -notin '.png', '.apng' } | ForEach-Object {
+    if (Test-IsPng $_.FullName) { Remove-Item $_.FullName -Force; $purged += $_.Extension.TrimStart('.') }
+}
+if ($purged.Count) { Write-Host "[corpus] purged $($purged.Count) stale renamed-PNG fakes: $($purged -join ' ')" }
+
+$gen = 0; $fail = @(); $kept = @()
 foreach ($e in ($exts | Where-Object { $special -notcontains $_ } | Sort-Object -Unique)) {
     $out = "$OutDir\sample.$e"
-    & $magick $base $out 2>$null
-    if ((Test-Path $out) -and (Get-Item $out).Length -gt 0) { $gen++ } else { $fail += $e }
+    $tmp = "$OutDir\_gen.$e"   # _-prefixed: ignored by the harness even if left behind
+    Remove-Item $tmp -Force -EA SilentlyContinue
+    $err = (& $magick $base $tmp 2>&1) -join ' '
+    $fake = ($err -match 'no encode delegate') -or
+            (($e -notin 'png', 'apng') -and (Test-Path $tmp) -and (Test-IsPng $tmp))
+    if (-not $fake -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0) {
+        Move-Item $tmp $out -Force; $gen++
+    }
+    else {
+        Remove-Item $tmp -Force -EA SilentlyContinue
+        if (Test-Path $out) { $kept += $e } else { $fail += $e }
+    }
 }
-Write-Host "[corpus] magick-generated $gen formats; magick can't write: $($fail -join ' ')"
+Write-Host "[corpus] magick-generated $gen formats; magick can't write (no fake emitted): $($fail -join ' ')"
+if ($kept.Count) { Write-Host "[corpus] kept pre-existing real samples magick can't regenerate: $($kept -join ' ')" }
 
 # --- 4) Synthetic containers (zip/text with the preview where we extract it) --
 function New-Zip($path, $entries) {
@@ -116,7 +168,11 @@ New-Zip "$OutDir\sample.epub" @{ 'mimetype' = 'application/epub+zip'; 'META-INF/
 # Design-app project files (ZIP + embedded preview; same trick as kra/ora):
 # Sketch, Procreate, and Apple iWork (Keynote/Pages/Numbers).
 $jpgPrev = "$OutDir\_prev.jpg"; & $magick $base -resize 256x192 $jpgPrev 2>$null
-$jpg = if (Test-Path $jpgPrev) { [System.IO.File]::ReadAllBytes($jpgPrev) } else { $png }
+# NOTE: assign directly, NOT `$jpg = if (...) {...}` — a statement-expression goes
+# through the pipeline and unrolls byte[] to Object[], which New-Zip then writes
+# as decimal TEXT ("255 216 …"), silently corrupting the iWork previews.
+$jpg = $png
+if (Test-Path $jpgPrev) { $jpg = [System.IO.File]::ReadAllBytes($jpgPrev) }
 New-Zip "$OutDir\sample.sketch"    @{ 'document.json' = '{}'; 'previews/preview.png' = $png }
 New-Zip "$OutDir\sample.procreate" @{ 'Document.archive' = [byte[]](1, 2, 3); 'QuickLook/Thumbnail.png' = $png }
 New-Zip "$OutDir\sample.key"       @{ 'Index/Document.iwa' = [byte[]](1); 'preview.jpg' = $jpg; 'QuickLook/Thumbnail.jpg' = $jpg }
@@ -134,6 +190,35 @@ if (Test-Path $bmpPrev) {
 # Adobe XD: ZIP keyed off the "sparkler" mimetype, with a top-level thumbnail.png.
 New-Zip "$OutDir\sample.xd" @{ 'mimetype' = 'application/vnd.adobe.sparkler.project+dcxucf'; 'thumbnail.png' = $png }
 if (Test-Path $jpgPrev) { Remove-Item $jpgPrev -Force -EA SilentlyContinue }
+# Office documents (container/office.rs — magick faked all of these before):
+# ODF detect = a `mimetype` entry containing "opendocument", preview at the
+# spec-mandated Thumbnails/thumbnail.png; OOXML detect = [Content_Types].xml,
+# preview = the docProps thumbnail part resolved via _rels/.rels. The variant
+# extensions share the container byte-for-byte (decode content-sniffs), so the
+# per-app/template/macro flavors are byte-copies of one donor each.
+New-Zip "$OutDir\sample.odt" @{ 'mimetype' = 'application/vnd.oasis.opendocument.text'; 'Thumbnails/thumbnail.png' = $png; 'content.xml' = '<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>' }
+foreach ($v in 'ods', 'odp', 'odg', 'odf', 'ott', 'ots', 'otp') { Copy-Item "$OutDir\sample.odt" "$OutDir\sample.$v" -Force }
+$ooxmlCt = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/></Types>'
+$ooxmlRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail" Target="docProps/thumbnail.png"/></Relationships>'
+foreach ($o in 'pptx', 'docx', 'xlsx') {
+    New-Zip "$OutDir\sample.$o" @{ '[Content_Types].xml' = $ooxmlCt; '_rels/.rels' = $ooxmlRels; 'docProps/thumbnail.png' = $png }
+}
+# Apple .icns — hand-assembled chunk list: "icns" magic + BE total length, then
+# an ic08 member whose payload is a literal 256x256 PNG (exactly the layout
+# container/icns.rs slices; macOS 10.7+ writes large sizes as PNG members).
+$icnsPng = "$OutDir\_icns.png"; & $magick $base -resize '256x256!' $icnsPng 2>$null
+if (Test-Path $icnsPng) {
+    $ip = [System.IO.File]::ReadAllBytes($icnsPng)
+    function BE32([uint32]$v) { $b = [BitConverter]::GetBytes($v); [Array]::Reverse($b); , $b }
+    $icns = New-Object System.Collections.Generic.List[byte]
+    $icns.AddRange([System.Text.Encoding]::ASCII.GetBytes('icns'))
+    $icns.AddRange((BE32 ([uint32](16 + $ip.Length))))
+    $icns.AddRange([System.Text.Encoding]::ASCII.GetBytes('ic08'))
+    $icns.AddRange((BE32 ([uint32](8 + $ip.Length))))
+    $icns.AddRange([byte[]]$ip)
+    [System.IO.File]::WriteAllBytes("$OutDir\sample.icns", $icns.ToArray())
+    Remove-Item $icnsPng -Force -EA SilentlyContinue
+}
 # G-code: a slicer-style base64 PNG thumbnail block
 $b64 = [Convert]::ToBase64String($png)
 $gc = "; generated by test`n; thumbnail begin 512x384 $($png.Length)`n"
@@ -229,7 +314,10 @@ if (-not $SkipDownloads) {
         'sample.blend'    = 'https://raw.githubusercontent.com/mewspring/blend/master/testdata/block.blend'
         'sample.clip'     = 'https://raw.githubusercontent.com/dobrokot/clip_to_psd/master/tests/test_export_all_features.clip'
         # Camera RAW (decode-only — magick can't write it): real small samples.
-        'sample.dng'      = 'https://raw.githubusercontent.com/rawpy/rawpy/v0.18.1/tests/iss115.DNG'
+        # (The old rawpy iss115.DNG URL was ALWAYS 404 — never noticed because a
+        # renamed-PNG fake pre-empted the download until 2026-07-08.)
+        'sample.dng'      = 'https://raw.githubusercontent.com/Exiv2/exiv2/main/test/data/IMG_1361.dng'
+        'sample.kdc'      = 'https://raw.githubusercontent.com/letmaik/rawpy/main/test/RAW_KODAK_DC50_%C3%A9.KDC'
         # Kindle/Mobipocket ebook with an embedded cover (container/mobi.rs).
         'sample.mobi'     = 'https://raw.githubusercontent.com/bfabiszewski/libmobi/public/tests/samples/sample-cp1252.mobi'
         # Comic-book RAR with images (container/rar.rs, pure-Rust `rars` — renders in
@@ -252,10 +340,17 @@ if (-not $SkipDownloads) {
         'sample.vsd'      = 'https://media.githubusercontent.com/media/microchip-ung/mesa/25e97aadd4a1f27190ee08a6c942042ec0673135/mesa/docs/l3/l3.vsd'
         # Publisher (real save, OLE thumbnail = CF_METAFILEPICT/WMF). An empty doc, but a valid preview.
         'sample.pub'      = 'https://archive.org/download/NouveauMicrosoftPublisherDocument/Nouveau%20Microsoft%20Publisher%20Document.pub'
+        # HEIC (magick can't write it here): libheif's own example image -> WIC/magick read tiers.
+        'sample.heic'     = 'https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic'
+        # DICOM (read-only in magick): pydicom's small CT test file -> magick read tier.
+        'sample.dcm'      = 'https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm'
+        # GIMP XCF (read-only in magick): GIMP's own test file -> magick read tier.
+        'sample.xcf'      = 'https://gitlab.gnome.org/GNOME/gimp/-/raw/master/app/tests/files/gimp-2-6-file.xcf'
     }
     foreach ($n in $dls.Keys) {
         if (Test-Path "$OutDir\$n") { continue }
-        try { Invoke-WebRequest $dls[$n] -OutFile "$OutDir\$n" -UseBasicParsing -TimeoutSec 60 } catch { Write-Host "  download failed: $n" }
+        # curl UA: GitLab (the GIMP xcf) 406es PowerShell's default User-Agent.
+        try { Invoke-WebRequest $dls[$n] -OutFile "$OutDir\$n" -UseBasicParsing -TimeoutSec 60 -UserAgent 'curl/8.4.0' } catch { Write-Host "  download failed: $n" }
     }
 }
 
@@ -273,7 +368,7 @@ $aliases = [ordered]@{
     'gcode'    = @('gco')                              # sliced G-code (base64 PNG thumbnail block)
     'docx'     = @('docm', 'dotx', 'dotm')            # Word OOXML (OPC zip, docProps/thumbnail)
     'xlsx'     = @('xlsm', 'xlsb', 'xltx', 'xltm')    # Excel OOXML/OPC zip
-    'pptx'     = @('ppsx', 'ppsm', 'potm')            # PowerPoint OOXML (OPC zip)
+    'pptx'     = @('ppsx', 'ppsm', 'potm', 'pptm', 'potx') # PowerPoint OOXML (OPC zip)
     # Legacy binary Office is OLE compound (\xD0\xCF\x11\xE0); the OLE
     # SummaryInformation thumbnail path (ole.rs) is the same one Publisher uses, so
     # the .pub donor exercises the identical decode for .doc/.ppt/.xls + templates.
@@ -319,6 +414,82 @@ print("ok")
     } catch { Write-Host "  (mpc: $($_.Exception.Message); skipped)" }
 } else { Write-Host "  (mpc: needs python+mutagen; sample.mpc skipped)" }
 
+# --- 7b) Real audio samples with an embedded cover. Magick can't write audio at
+# all — the old loop faked every audio format as a renamed PNG, so regression
+# only ever proved PNG sniffing. Real minimal files from mutagen's test data get
+# the base PNG embedded as a front cover via mutagen (per-container tag flavor:
+# ID3/APIC, FLAC Picture, Vorbis METADATA_BLOCK_PICTURE, MP4 covr, APEv2 binary),
+# exercising the real lofty cover path in container/audio.rs. Best-effort like
+# mpc/dsf: needs python + mutagen + network; skipped (-> untested) otherwise.
+$audioSrc = [ordered]@{
+    mp3  = 'silence-44-s.mp3'
+    flac = 'silence-44-s.flac'
+    ogg  = 'empty.ogg'
+    opus = 'example.opus'
+    spx  = 'empty.spx'
+    m4a  = 'has-tags.m4a'
+    ape  = 'mac-399.ape'
+    wv   = 'silence-44-s.wv'
+    wav  = 'silence-2s-PCM-16000-08-ID3v23.wav'
+    aiff = 'with-id3.aif'
+    aac  = 'empty.aac'
+}
+if ($py -and -not $SkipDownloads) {
+    $tagPy = @'
+import sys, base64
+from mutagen import File
+from mutagen.id3 import ID3, APIC
+from mutagen.flac import FLAC, Picture
+from mutagen.mp4 import MP4, MP4Cover
+from mutagen.apev2 import APEv2, APEValue, BINARY
+from mutagen.oggvorbis import OggVorbis
+from mutagen.oggopus import OggOpus
+from mutagen.oggspeex import OggSpeex
+out, cover = sys.argv[1], sys.argv[2]
+png = open(cover, 'rb').read()
+f = File(out)
+if isinstance(f, FLAC):
+    pic = Picture(); pic.type = 3; pic.mime = 'image/png'; pic.data = png
+    f.add_picture(pic); f.save()
+elif isinstance(f, MP4):
+    f['covr'] = [MP4Cover(png, imageformat=MP4Cover.FORMAT_PNG)]; f.save()
+elif isinstance(f, (OggVorbis, OggOpus, OggSpeex)):
+    pic = Picture(); pic.type = 3; pic.mime = 'image/png'; pic.data = png
+    f['metadata_block_picture'] = [base64.b64encode(pic.write()).decode('ascii')]; f.save()
+else:
+    try:
+        if f is not None and f.tags is None:
+            f.add_tags()
+    except Exception:
+        f = None
+    if f is not None and isinstance(f.tags, APEv2):
+        f.tags['Cover Art (Front)'] = APEValue(b'cover.png\x00' + png, BINARY); f.save()
+    elif f is not None and isinstance(f.tags, ID3):
+        f.tags.add(APIC(encoding=3, mime='image/png', type=3, desc='cover', data=png)); f.save()
+    else:
+        # raw stream mutagen can't tag in place (ADTS AAC): prepend a standalone ID3v2
+        t = ID3(); t.add(APIC(encoding=3, mime='image/png', type=3, desc='cover', data=png))
+        t.save(out, v2_version=3)
+print('ok')
+'@
+    $tagFile = "$OutDir\_tagaudio.py"; [System.IO.File]::WriteAllText($tagFile, $tagPy)
+    $audioOk = @(); $audioSkip = @()
+    foreach ($a in $audioSrc.Keys) {
+        $dst = "$OutDir\sample.$a"
+        try {
+            Invoke-WebRequest "https://raw.githubusercontent.com/quodlibet/mutagen/main/tests/data/$($audioSrc[$a])" -OutFile $dst -UseBasicParsing -TimeoutSec 30
+            $r = (& $py $tagFile $dst $base 2>&1) -join ' '
+            if ($r -match 'ok') { $audioOk += $a } else { Remove-Item $dst -Force -EA SilentlyContinue; $audioSkip += "$a($r)" }
+        } catch { Remove-Item $dst -Force -EA SilentlyContinue; $audioSkip += $a }
+    }
+    Remove-Item $tagFile -Force -EA SilentlyContinue
+    Write-Host "[corpus] real audio + embedded cover: $($audioOk -join ' ')$(if ($audioSkip.Count) { "  (skipped: $($audioSkip -join ' '))" })"
+} else { Write-Host "  (audio samples: need python+mutagen+network; skipped)" }
+# Container-identical audio aliases ride the same bytes (content-sniffed):
+foreach ($p in @(, @('aiff', 'aif')) + @(, @('ogg', 'oga')) + @(, @('m4a', 'm4b'))) {
+    if (Test-Path "$OutDir\sample.$($p[0])") { Copy-Item "$OutDir\sample.$($p[0])" "$OutDir\sample.$($p[1])" -Force }
+}
+
 # --- 8) Alias / variant extensions + video samples (complete the full format set) ----
 # Our decoders CONTENT-SNIFF, so an alias is the same bytes as a base format under a
 # different extension - a valid coverage test that the extension is hooked and decodes.
@@ -326,9 +497,11 @@ $aliasMap = [ordered]@{
     blend    = (1..32 | ForEach-Object { "blend$_" })    # Blender auto-save backups
     psd      = @('pdd', 'psdt')                            # Photoshop bitmap / template
     tga      = @('tpic'); iff = @('ilbm'); jxr = @('wmp')
+    jpg      = @('jfif', 'mpo')                           # JFIF IS JPEG; MPO = JPEG-compatible multi-picture
+    sgi      = @('bw')                                     # B&W flavor of the same SGI container
     jp2      = @('jpf', 'jpx')                             # JPEG-2000 variants
     hdr      = @('hdri', 'rgbe', 'xyze')                  # Radiance HDR variants
-    heic     = @('heics', 'heifs', 'hif')                # HEIF variants
+    heic     = @('heif', 'heics', 'heifs', 'hif', 'avci') # HEIF variants
     skp      = @('skb'); emf = @('emg'); exr = @('cxr'); cdr = @('cmx')
     afpub    = @('aftemplate'); indd = @('indt'); pspimage = @('psp')
     cbz      = @('phz'); pcd = @('ph')
@@ -407,6 +580,17 @@ print("ok")
     } catch { Write-Host "  (dsf: $($_.Exception.Message); skipped)" }
 } elseif (-not (Test-Path "$OutDir\sample.dsf")) { Write-Host "  (dsf: needs python+mutagen+network; sample.dsf skipped)" }
 Write-Host "[corpus] coverage completion: png + aifc + dsf"
+
+# --- 10) Honesty ledger: registered formats with NO real sample ----------------
+# Mostly Camera RAW (real sensor dumps are MBs and vendor-licensed — only dng has
+# a small real download, aliased to pxn) plus the obscure magick-read-only long
+# tail. regression.ps1 reads this file and reports them UNTESTED, so a PASS total
+# is never mistaken for full-format coverage (they used to falsely pass as fakes).
+$have = Get-ChildItem $OutDir -File | Where-Object { $_.Name -notlike '_*' } |
+    ForEach-Object { $_.Extension.TrimStart('.').ToLower() } | Sort-Object -Unique
+$noSample = @($exts | Sort-Object -Unique | Where-Object { $have -notcontains $_ })
+Set-Content -Path "$OutDir\_no-real-sample.txt" -Value ($noSample -join "`n") -Encoding ascii
+Write-Host "[corpus] $($noSample.Count) formats have NO real sample (recorded in _no-real-sample.txt): $($noSample -join ' ')" -ForegroundColor Yellow
 
 $count = (Get-ChildItem $OutDir -File | Where-Object { $_.Name -notlike '_*' }).Count
 Write-Host "[corpus] $count sample files in $OutDir" -ForegroundColor Green

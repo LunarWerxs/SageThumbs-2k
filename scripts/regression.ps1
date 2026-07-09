@@ -8,7 +8,23 @@
   EXIT CODES (so this can fail a pipeline):
     0  no regression  — every extension in the baseline still renders.
     1  REGRESSION     — at least one previously-passing extension NEWLY fails
-                        (its sample is still in the corpus but no longer thumbnails).
+                        (a VALID sample is still in the corpus but no longer
+                        thumbnails, CONFIRMED on a calm sequential retry).
+
+  FALSE-ALARM GUARD: the parallel render can race build-corpus.ps1 while it is
+  (re)writing samples, and a failed network download can leave an HTML error page
+  or a truncated stub in place — either would make a good format look "broken."
+  So before failing, each suspect is vetted: samples that are self-evidently junk
+  (empty / tiny / HTML error page / Git-LFS pointer) are reported as "corpus
+  INCOMPLETE" (re-run build-corpus.ps1), and the rest are re-rendered ONCE more
+  sequentially (the corpus has settled by then). Only a valid sample that STILL
+  fails is a real regression. This keeps a mid-flight corpus from crying wolf.
+
+  UNTESTED FORMATS: build-corpus.ps1 records registered formats it has no REAL
+  sample for in <corpus>\_no-real-sample.txt (before 2026-07-08 those ~90 were
+  renamed-PNG fakes that falsely passed via PNG sniffing — mostly Camera RAW +
+  the obscure magick-read-only tail). They are reported as UNTESTED here, are
+  not in the baseline, and a PASS total does not cover them.
 
   BASELINE: scripts\regression-baseline.txt — the sorted list of extensions that
   are expected to render. It is the source of truth for "what passed before."
@@ -55,7 +71,27 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
     $ext = $f.Extension.TrimStart('.').ToLower()
     $out = Join-Path $using:render ("{0}_{1}.png" -f $f.BaseName, $ext)
     & $using:st2k thumbnail $f.FullName $out --size $using:Size 2>$null | Out-Null
-    [pscustomobject]@{ Ext = $ext; Ok = ((Test-Path $out) -and (Get-Item $out).Length -gt 0) }
+    [pscustomobject]@{ Ext = $ext; In = $f.FullName; Out = $out; Ok = ((Test-Path $out) -and (Get-Item $out).Length -gt 0) }
+}
+
+# Sequential retry of first-pass failures. A metafile (EMF/WMF) render shells out
+# to magick under a deliberately-TIGHT 3 s wall-clock timeout (decode.rs
+# METAFILE_TIMEOUT — a slow vector metafile would otherwise grind ~5 s to a blank
+# frame). On a fully-saturated machine the parallel fan-out (ThrottleLimit =
+# ProcessorCount st2k spawns) can starve that render of CPU so a metafile that
+# renders in ~300 ms unloaded blows past 3 s and spuriously "fails". Re-rendering
+# the failures ONE AT A TIME (no CPU contention) clears such load flakes; a
+# genuinely-unrenderable file (doc/flv/…) just fails again in a few ms. This makes
+# the gate deterministic without touching the production timeout.
+$retry = @($results | Where-Object { -not $_.Ok })
+if ($retry.Count) {
+    Write-Host ("[regression] first pass: {0} failure(s); retrying sequentially to rule out parallel-load flakes..." -f $retry.Count) -ForegroundColor DarkGray
+    foreach ($r in $retry) {
+        & $st2k thumbnail $r.In $r.Out --size $Size 2>$null | Out-Null
+        $r.Ok = (Test-Path $r.Out) -and (Get-Item $r.Out).Length -gt 0
+    }
+    $recovered = @($retry | Where-Object Ok | ForEach-Object Ext | Sort-Object -Unique)
+    if ($recovered.Count) { Write-Host ("[regression] recovered on sequential retry (were parallel-load flakes): {0}" -f ($recovered -join ' ')) -ForegroundColor DarkGray }
 }
 # An extension is "passing" if ANY sample with that extension rendered. Dedup so
 # the baseline is a clean set of extensions.
@@ -66,6 +102,14 @@ $failSet = $fail | Where-Object { $passSet -notcontains $_ } | Sort-Object -Uniq
 
 Write-Host ("[regression] PASS {0}/{1}" -f $pass.Count, $files.Count) -ForegroundColor Green
 if ($failSet.Count) { Write-Host ("[regression] no-thumbnail ({0}): {1}" -f $failSet.Count, ($failSet -join ' ')) -ForegroundColor Yellow }
+
+# Formats the corpus has no real sample for (see header): visible every run so
+# the PASS number is never read as full-format coverage.
+$noSampleFile = "$Corpus\_no-real-sample.txt"
+if (Test-Path $noSampleFile) {
+    $untested = @(Get-Content $noSampleFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($untested.Count) { Write-Host ("[regression] UNTESTED — no real sample ({0}): {1}" -f $untested.Count, ($untested -join ' ')) -ForegroundColor DarkYellow }
+}
 
 # Labelled contact sheet of everything that rendered.
 if ($magick -and $pass.Count) {
@@ -80,6 +124,27 @@ function Write-Baseline {
     param([string[]]$Set)
     # One extension per line, sorted, LF — stable diffs in git.
     Set-Content -Path $baselineFile -Value (($Set | Sort-Object -Unique) -join "`n") -NoNewline -Encoding ascii
+}
+
+# Is this on-disk sample self-evidently NOT a real, complete sample — i.e. the sign
+# of an incomplete/failed corpus build rather than a code regression? Catches an
+# empty/truncated stub (a file mid-(re)write while build-corpus.ps1 runs) and a
+# failed network download left as an HTML error page or a Git-LFS pointer. Kept
+# deliberately narrow so it never mislabels a REAL format: valid SVG/XML starts
+# with `<?xml`/`<svg` (not matched), so a legitimately-failing SVG still counts as
+# a regression. Only ever consulted for a sample that already failed to render.
+function Test-CorpusSampleJunk {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    if ((Get-Item -LiteralPath $Path).Length -lt 64) { return $true } # empty / truncated
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $n = [Math]::Min($bytes.Length, 256)
+    $head = [System.Text.Encoding]::ASCII.GetString($bytes, 0, $n)
+    if ($head -match '(?im)^\s*<!doctype\s+html') { return $true }    # HTML error page
+    if ($head -match '(?im)^\s*<html[\s>]')       { return $true }
+    if ($head -match '404:?\s*Not Found' -or $head -match 'Access Denied' -or $head -match '<Error>') { return $true }
+    if ($head -like 'version https://git-lfs*')   { return $true }    # un-pulled LFS pointer
+    return $false
 }
 
 if ($UpdateBaseline) {
@@ -119,8 +184,57 @@ if ($missingSamples.Count) {
 }
 
 if ($regressed.Count) {
-    Write-Host ("[regression] FAIL — {0} previously-passing extension(s) NEWLY broke: {1}" -f $regressed.Count, ($regressed -join ' ')) -ForegroundColor Red
-    Write-Host "[regression] (a sample is still present but no longer thumbnails — this is a real regression.)" -ForegroundColor Red
+    # A first-pass "regression" can be a FALSE ALARM from a corpus caught mid-flight:
+    # the parallel render can race build-corpus.ps1 (re)writing a sample, or a failed
+    # network download can leave an HTML error page / truncated stub. Vet each suspect
+    # before failing the gate:
+    #   1. skip samples that are self-evidently junk (Test-CorpusSampleJunk) — an
+    #      incomplete/failed corpus, NOT a code regression;
+    #   2. re-render each remaining (valid-looking) suspect SEQUENTIALLY once more —
+    #      the corpus has since settled, so a file that was mid-write now renders.
+    # Only a valid sample that STILL fails on the calm retry is a true regression.
+    $reallyRegressed = @()
+    $corpusIncomplete = @()
+    foreach ($ext in $regressed) {
+        $samples = @($files | Where-Object { $_.Extension.TrimStart('.').ToLower() -eq $ext })
+        $rendered = $false
+        $anyValidSample = $false
+        foreach ($s in $samples) {
+            if (Test-CorpusSampleJunk $s.FullName) { continue }
+            $anyValidSample = $true
+            $out = Join-Path $render ("retry_{0}_{1}.png" -f $s.BaseName, $ext)
+            & $st2k thumbnail $s.FullName $out --size $Size 2>$null | Out-Null
+            if ((Test-Path $out) -and (Get-Item $out).Length -gt 0) { $rendered = $true; break }
+        }
+        if ($rendered) { continue }                              # settled → renders now (false alarm)
+        elseif (-not $anyValidSample) { $corpusIncomplete += $ext } # every sample is junk (corpus problem)
+        else { $reallyRegressed += $ext }                        # valid sample, still fails (real)
+    }
+
+    if ($corpusIncomplete.Count) {
+        Write-Host ("[regression] corpus INCOMPLETE ({0}): {1}" -f $corpusIncomplete.Count, ($corpusIncomplete -join ' ')) -ForegroundColor Yellow
+        Write-Host "[regression] (sample is empty / an HTML error page / a truncated stub — re-run build-corpus.ps1; NOT a code regression, gate not failed.)" -ForegroundColor Yellow
+    }
+    $recovered = @($regressed | Where-Object { ($reallyRegressed -notcontains $_) -and ($corpusIncomplete -notcontains $_) })
+    if ($recovered.Count) {
+        Write-Host ("[regression] transient miss recovered on retry ({0}): {1}" -f $recovered.Count, ($recovered -join ' ')) -ForegroundColor DarkGray
+        Write-Host "[regression] (rendered on a calm sequential retry — the parallel render raced a mid-flight corpus write.)" -ForegroundColor DarkGray
+    }
+
+    if ($reallyRegressed.Count) {
+        Write-Host ("[regression] FAIL — {0} previously-passing extension(s) NEWLY broke: {1}" -f $reallyRegressed.Count, ($reallyRegressed -join ' ')) -ForegroundColor Red
+        Write-Host "[regression] (a VALID sample is still present but no longer thumbnails, confirmed on retry — this is a real regression.)" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# CONTENT guard (beyond render-only): .dcm must decode with the RIGHT colours, not
+# just produce a non-empty thumbnail — the render sweep above can't see a hue or
+# contrast regression. Run isolated (child pwsh) so its `exit` can't short-circuit
+# us; it self-skips (exit 0) when ImageMagick is absent. See check-dicom.ps1.
+& pwsh -NoProfile -File "$PSScriptRoot\check-dicom.ps1" | Out-Host
+if ($LASTEXITCODE) {
+    Write-Host "[regression] FAIL — DICOM content check failed (colour/contrast regressed)." -ForegroundColor Red
     exit 1
 }
 
