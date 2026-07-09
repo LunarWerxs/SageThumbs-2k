@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2021"
 build = "build.rs"
 publish = false
-license-file = "../.github/LICENSE.md"
+license = "PolyForm-Noncommercial-1.0.0"
 description = "SageThumbs 2K shell-extension DLL — a thin cdylib over the sagethumbs2k rlib"
 
 # The shipped shell-extension DLL. `name = "sagethumbs2k"` so the output is

@@ -63,6 +63,17 @@ impl OutSlot {
     pub(crate) fn path(&self) -> &Path {
         &self.0
     }
+
+    /// Consume the slot without running its drop cleanup, returning the reserved
+    /// path. For callers where the placeholder is replaced by something OTHER than
+    /// an encoder write — e.g. `fs::rename`/`fs::copy` landing an existing file on
+    /// top of it — where a legitimately empty source would otherwise trip the
+    /// zero-byte-placeholder heuristic and get deleted right after the move.
+    pub(crate) fn release(self) -> PathBuf {
+        let path = self.0.clone();
+        std::mem::forget(self);
+        path
+    }
 }
 
 impl Drop for OutSlot {

@@ -1,8 +1,8 @@
 [workspace]
 members = ["dll"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
-# `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs
-# (the CLAUDE.md contract; CI + the integration tests rely on the DLL existing).
+# `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
+# CI + the integration tests rely on the DLL existing.
 default-members = [".", "dll"]
 resolver = "2"
 
@@ -17,7 +17,7 @@ name = "sagethumbs2k"
 version.workspace = true
 edition = "2021"
 build = "build/build.rs"
-license-file = ".github/LICENSE.md"
+license = "PolyForm-Noncommercial-1.0.0"
 publish = false                     # a Windows shell-extension app — never goes to crates.io
 description = "Modern Rust thumbnail + context-menu shell extension (SageThumbs 2K)"
 repository = "https://github.com/LunarWerxs/SageThumbs-2k"

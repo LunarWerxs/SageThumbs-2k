@@ -11,6 +11,8 @@
 //! Bounds-checked throughout (runs under `panic = "abort"`): malformed input yields
 //! `None` and the shell shows the default icon.
 
+use super::util::dib_to_bmp;
+
 const DISP: &[u8] = b"DISP";
 
 /// A RIFF CorelDRAW drawing / template / presentation-exchange file.
@@ -47,47 +49,6 @@ fn find_disp_chunk(b: &[u8]) -> Option<&[u8]> {
         p = next + (size & 1); // pad to even
     }
     None
-}
-
-/// Wrap a packed DIB (`BITMAPINFOHEADER` + palette + pixels) in a 14-byte BMP file
-/// header so the `image` crate's BMP decoder can read it. Returns `None` unless the
-/// DIB header looks valid.
-fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
-    if dib.len() < 40 {
-        return None;
-    }
-    let bi_size = u32::from_le_bytes(dib[0..4].try_into().ok()?) as usize;
-    if !matches!(bi_size, 40 | 52 | 56 | 108 | 124) {
-        return None; // not a BITMAPINFOHEADER-family DIB
-    }
-    let bit_count = u16::from_le_bytes(dib[14..16].try_into().ok()?);
-    if !matches!(bit_count, 1 | 4 | 8 | 16 | 24 | 32) {
-        return None;
-    }
-    let compression = u32::from_le_bytes(dib[16..20].try_into().ok()?);
-    let clr_used = u32::from_le_bytes(dib[32..36].try_into().ok()?) as usize;
-    let palette_entries = if clr_used != 0 {
-        clr_used
-    } else if bit_count <= 8 {
-        1usize << bit_count
-    } else {
-        0
-    };
-    // BI_BITFIELDS (3) stores three 4-byte channel masks before the pixels.
-    let mask_bytes = if compression == 3 { 12 } else { 0 };
-    let off_bits = 14usize
-        .checked_add(bi_size)?
-        .checked_add(mask_bytes)?
-        .checked_add(palette_entries.checked_mul(4)?)?;
-    let file_size = 14usize.checked_add(dib.len())?;
-
-    let mut out = Vec::with_capacity(file_size);
-    out.extend_from_slice(b"BM");
-    out.extend_from_slice(&(file_size as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
-    out.extend_from_slice(&(off_bits as u32).to_le_bytes());
-    out.extend_from_slice(dib);
-    (out.len() as u64 <= crate::container::MAX_COVER).then_some(out)
 }
 
 #[cfg(test)]

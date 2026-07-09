@@ -2791,7 +2791,7 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                         if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
                             let text = get_edit_text(hwnd, ID_SEARCH);
                             // EN_CHANGE fires on every keystroke, and populate_list
-                            // deletes + reinserts all 316 rows. Skip that whole rebuild
+                            // deletes + reinserts all FORMATS rows. Skip that whole rebuild
                             // when the NORMALIZED filter hasn't actually changed (a no-op
                             // edit, case-only change, or trailing whitespace).
                             let needle = text.trim().to_lowercase();

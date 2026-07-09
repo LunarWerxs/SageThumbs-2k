@@ -32,6 +32,7 @@ use windows::Win32::Graphics::Imaging::{
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 
+use crate::container::jpeg_span_len;
 // Don't flash a console window when we spawn `magick.exe` from the shell host.
 use crate::CREATE_NO_WINDOW;
 /// Hard wall-clock cap on a single ImageMagick decode (belt-and-suspenders with
@@ -495,62 +496,6 @@ fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8]> {
     }
     let (start, len) = capped.or(overall)?;
     data.get(start..start.checked_add(len)?)
-}
-
-/// Total byte length (SOI..EOI inclusive) of the JPEG starting at `off`, or None if
-/// it isn't well-formed. Skips marker segments by their declared length and scans the
-/// entropy-coded stream with FF-stuffing / restart-marker awareness, so the REAL EOI
-/// is found even when a metadata segment contains stray `FF D9` bytes. Fully
-/// bounds-checked (`?` on every read) — never panics under `panic = "abort"`.
-fn jpeg_span_len(data: &[u8], off: usize) -> Option<usize> {
-    if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
-        return None;
-    }
-    let mut p = off + 2;
-    // A well-formed JPEG has far fewer segments than this; the cap just stops a
-    // crafted run of pseudo-markers from spinning.
-    for _ in 0..4096 {
-        if *data.get(p)? != 0xFF {
-            return None; // expected a marker here
-        }
-        while *data.get(p)? == 0xFF {
-            p = p.checked_add(1)?; // skip 0xFF fill bytes
-        }
-        let marker = *data.get(p)?;
-        p = p.checked_add(1)?;
-        match marker {
-            0xD9 => return Some(p - off), // EOI — done
-            0xDA => {
-                // Start-of-scan: skip its header by length, then the entropy data.
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
-                loop {
-                    if *data.get(p)? == 0xFF {
-                        let n = *data.get(p + 1)?;
-                        if n == 0x00 || (0xD0..=0xD7).contains(&n) {
-                            p = p.checked_add(2)?; // byte-stuffed FF / restart marker
-                            continue;
-                        }
-                        break; // a real marker (EOI, or next scan) — outer loop handles it
-                    }
-                    p = p.checked_add(1)?;
-                }
-            }
-            0x01 | 0xD0..=0xD7 => {} // standalone markers carry no payload
-            _ => {
-                // Length-prefixed segment (APPn, DQT, DHT, SOFn, COM, …).
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
-            }
-        }
-    }
-    None
 }
 
 /// Tone-map a 32-bit linear-float HDR image (EXR/Radiance) to 8-bit sRGB, in pure

@@ -59,8 +59,8 @@ const VIDEO_EXTS: &[&str] = &[
     "mpg", "mpeg", "m2v", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
 ];
 
-/// Extensions SageThumbs hooked in PAST versions but dropped in the 2026-06-11 triage (see
-/// CLAUDE.md §5 — unrenderable). They are NOT in `FORMATS`, so the normal register/unregister
+/// Extensions SageThumbs hooked in PAST versions but dropped in the 2026-06-11 triage
+/// (unrenderable). They are NOT in `FORMATS`, so the normal register/unregister
 /// loops never touch their keys — an upgrade or uninstall would otherwise leave OUR stale
 /// thumbnail/preview `shellex` hooks behind on any machine that ran an older build. `register()`
 /// and `unregister()` sweep this list to clean those orphans. MUST stay disjoint from `FORMATS`
@@ -250,7 +250,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     // --- MysticThumbs-parity aliases (Tier A) ---
     // Extra extensions for formats we ALREADY decode. Decoding is content-sniffed,
     // so each rides the same tier as its cousin — registering the extension is all
-    // that's needed. See TODO-mysticthumbs-parity.md for the per-format rationale.
+    // that's needed.
     ("heics", "HEIF image sequence"),
     ("heifs", "HEIF image sequence"),
     ("hif", "High Efficiency Image Format"),

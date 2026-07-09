@@ -89,7 +89,7 @@ use super::encode::{
     transform_file, with_tmp_suffix, Resize, Target,
 };
 use super::fileops::{
-    combine_to_cbz, combined_path, files_to_folder, sanitize_component, same_path,
+    combine_to_cbz, combined_path, files_to_folder, reserve_dest, sanitize_component,
     sort_by_dimensions,
 };
 use super::menu::{EmailSize, RenamePattern, Transform, VerbAction, WallpaperMode};
@@ -1079,28 +1079,20 @@ pub(crate) fn rename_one(path: &str, pattern: RenamePattern) -> Result<bool> {
 
     let src = Path::new(path);
     let dir = src.parent().unwrap_or_else(|| Path::new("."));
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
-    let with_ext = |stem: &str| if ext.is_empty() { stem.to_string() } else { format!("{stem}.{ext}") };
 
-    // Find a free target. Treat a name that equals the source (case-insensitively,
-    // Windows is case-folding) as "already named" → skip.
-    let mut target = dir.join(with_ext(&base));
-    if same_path(&target, src) {
+    // Reserve a free target atomically (see `reserve_dest` — the same race-prone
+    // `while target.exists()` picker `fileops::move_into`/`copy_into` used to have,
+    // where an external writer landing a file in the gap between the check and the
+    // rename could collide). `None` = the source is already correctly named.
+    let Some(slot) = reserve_dest(src, dir, &base)? else {
         return Ok(false);
-    }
-    let mut n = 2u32;
-    while target.exists() {
-        target = dir.join(with_ext(&format!("{base} ({n})")));
-        if same_path(&target, src) {
-            return Ok(false);
-        }
-        n += 1;
-    }
+    };
 
     // Retry briefly: a freshly-selected file can hold a transient Explorer lock.
-    crate::fsutil::rename_retrying(src, &target)
-        .map(|()| true)
-        .map_err(|e| Error::new(E_FAIL, format!("rename to {}: {e}", target.display())))
+    crate::fsutil::rename_retrying(src, slot.path())
+        .map_err(|e| Error::new(E_FAIL, format!("rename to {}: {e}", slot.path().display())))?;
+    slot.release();
+    Ok(true)
 }
 
 /// The new base name (no extension) for `path` under `pattern`, or None when the

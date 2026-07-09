@@ -30,3 +30,35 @@ Thumbs.db
 # Local env / secrets
 .env
 *.local
+
+# Private planning/notes docs (owner-only) — previously hidden only via the local,
+# unshared .git/info/exclude, which doesn't protect a fresh clone or `git add -A`.
+# Root-anchored so these only match the top-level files, not e.g. docs/ or examples/.
+/CLAUDE.md
+/TODO.md
+/ROADMAP.md
+/CODE-REVIEW-BACKLOG.md
+/NEWDO.md
+/NEWDO-2.md
+/MAINTAINABILITY-AUDIT.md
+/checkme.md
+/VIDEO-THUMBNAIL-FIX.md
+/SEO_AND_OPEN_GRAPH.md
+/BREADCRUMB.md
+/TODO-menu-reorder.md
+/TODO-mysticthumbs-features.md
+/TODO-mysticthumbs-parity.md
+
+# Private admin/sponsor tooling + local scratch corpus tooling (never publish)
+/admin_dashboard.py
+/admin_dashboard.token
+/sponsor_config.json
+/push_sponsors.py
+/push_to_vt.py
+/examples/
+/scripts/fill-audio-real.ps1
+/scripts/build-corpus-real.ps1
+/packaging/analytics/
+
+# Owner's local to-do scratch dir
+/to-do/

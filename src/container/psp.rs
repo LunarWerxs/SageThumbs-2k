@@ -80,8 +80,9 @@ fn composite_bank_range(b: &[u8]) -> Option<(usize, usize)> {
 }
 
 /// Largest valid embedded JPEG (`SOI..EOI` inclusive) in `data`. Each candidate's
-/// true length is measured by walking its marker structure ([`jpeg_span_len`]), so
-/// a stray `FF D9` inside an APPn/EXIF segment can't truncate the pick. Bounded.
+/// true length is measured by walking its marker structure
+/// ([`crate::container::jpeg_span_len`]), so a stray `FF D9` inside an APPn/EXIF
+/// segment can't truncate the pick. Bounded.
 fn largest_jpeg(data: &[u8]) -> Option<&[u8]> {
     let mut best: Option<(usize, usize)> = None;
     let lim = data.len().min(MAX_SCAN);
@@ -89,7 +90,7 @@ fn largest_jpeg(data: &[u8]) -> Option<&[u8]> {
     let mut seen = 0usize;
     while i + 3 <= lim {
         if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
-            if let Some(len) = jpeg_span_len(data, i) {
+            if let Some(len) = crate::container::jpeg_span_len(data, i) {
                 if best.is_none_or(|(_, bl)| len > bl) {
                     best = Some((i, len));
                 }
@@ -105,58 +106,6 @@ fn largest_jpeg(data: &[u8]) -> Option<&[u8]> {
     }
     let (start, len) = best?;
     data.get(start..start.checked_add(len)?)
-}
-
-/// Total byte length (`SOI..EOI` inclusive) of the JPEG at `off`, or `None` if it
-/// isn't well-formed. Skips marker segments by their declared length and scans the
-/// entropy stream with FF-stuffing / restart-marker awareness, so the real EOI is
-/// found even past stray `FF D9` bytes in metadata. Fully bounds-checked — never
-/// panics under `panic = "abort"`. (Mirrors `decode::jpeg_span_len`.)
-fn jpeg_span_len(data: &[u8], off: usize) -> Option<usize> {
-    if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
-        return None;
-    }
-    let mut p = off + 2;
-    for _ in 0..4096 {
-        if *data.get(p)? != 0xFF {
-            return None;
-        }
-        while *data.get(p)? == 0xFF {
-            p = p.checked_add(1)?; // skip 0xFF fill bytes
-        }
-        let marker = *data.get(p)?;
-        p = p.checked_add(1)?;
-        match marker {
-            0xD9 => return Some(p - off), // EOI
-            0xDA => {
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
-                loop {
-                    if *data.get(p)? == 0xFF {
-                        let n = *data.get(p + 1)?;
-                        if n == 0x00 || (0xD0..=0xD7).contains(&n) {
-                            p = p.checked_add(2)?; // stuffed FF / restart marker
-                            continue;
-                        }
-                        break;
-                    }
-                    p = p.checked_add(1)?;
-                }
-            }
-            0x01 | 0xD0..=0xD7 => {} // standalone markers, no payload
-            _ => {
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]

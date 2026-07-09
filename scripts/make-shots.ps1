@@ -6,6 +6,7 @@
 # refresh the README / site assets after a UI change. Re-run after `cargo build --release`.
 #
 #   pwsh scripts\make-shots.ps1
+#   pwsh scripts\make-shots.ps1 -ExePath C:\some\other\target\release\SageThumbs2K.exe
 #
 # Produces (into assets\screenshots and mirrors the GIF into site\img):
 #   settings.gif  — animated walkthrough cycling all 8 Settings category tabs (README + site)
@@ -14,9 +15,27 @@
 # NOTE: the eyedropper (`--shot <png> --window eyedropper`) captures the LIVE primary monitor,
 # so it's intentionally NOT part of this automated pipeline — grab it manually when the desktop
 # is staged.
+param(
+    # Override the built EXE's location. Defaults to Cargo's configured target-dir
+    # (read from `cargo metadata`, which honors .cargo/config.toml's `build.target-dir`)
+    # so this works for any contributor regardless of drive letter/checkout path,
+    # falling back to the workspace-relative `target\release` if metadata can't be
+    # read (e.g. offline/no cargo on PATH).
+    [string]$ExePath
+)
 $ErrorActionPreference = 'Stop'
 $root  = Split-Path -Parent $PSScriptRoot
-$exe   = 'D:\st2k-target\release\SageThumbs2K.exe'
+
+if (-not $ExePath) {
+    $targetDir = $null
+    try {
+        $meta = cargo metadata --no-deps --format-version 1 2>$null | ConvertFrom-Json
+        if ($meta) { $targetDir = $meta.target_directory }
+    } catch { }
+    if (-not $targetDir) { $targetDir = Join-Path $root 'target' }
+    $ExePath = Join-Path $targetDir 'release\SageThumbs2K.exe'
+}
+$exe = $ExePath
 
 if (-not (Test-Path $exe)) {
     Write-Host 'Release EXE missing — building...' -ForegroundColor Yellow

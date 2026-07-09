@@ -384,21 +384,29 @@ mod tests {
     use std::path::Path;
 
     /// The block-caching stream must let Media Foundation decode a representative frame from
-    /// containers we have no bespoke index parser for (AVI, WMV). Runs against downloaded
-    /// samples if present (skips on CI, where they're absent — no fixtures committed).
+    /// containers we have no bespoke index parser for (AVI, WMV). Runs against the corpus
+    /// samples `scripts\build-corpus.ps1` downloads (`sample.avi`/`sample.wmv`); skips
+    /// wherever the corpus isn't present (e.g. CI, or before that script has run).
     #[test]
     fn block_stream_decodes_avi_and_wmv() {
-        let samples = [
-            r"D:\st2k-target\_vidsamples\sample_640x360.avi",
-            r"D:\st2k-target\_vidsamples\sample-avi-file.avi",
-            r"D:\st2k-target\_vidsamples\sample_640x360.wmv",
-        ];
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let dirs: Vec<_> = ["test-corpus-real", "test-corpus"]
+            .into_iter()
+            .map(|d| base.join(d))
+            .filter(|p| p.exists())
+            .collect();
+        let samples: Vec<_> = ["sample.avi", "sample.wmv"]
+            .into_iter()
+            .filter_map(|name| dirs.iter().map(|d| d.join(name)).find(|p| p.is_file()))
+            .collect();
+        if dirs.is_empty() {
+            eprintln!("block_stream_decodes_avi_and_wmv: no test corpus present — skipping");
+            return;
+        }
         let mut tested = 0;
-        for path in samples {
-            if !Path::new(path).is_file() {
-                continue;
-            }
+        for path in &samples {
             tested += 1;
+            let path = path.to_str().expect("corpus path is valid UTF-8");
             let frame = super::frame_from_block_stream_file(path, 0.30)
                 .unwrap_or_else(|| panic!("block stream failed to decode {path}"));
             assert!(frame.width() > 0 && frame.height() > 0);
@@ -409,7 +417,7 @@ mod tests {
             );
         }
         if tested == 0 {
-            eprintln!("block_stream_decodes_avi_and_wmv: no samples present — skipping");
+            eprintln!("block_stream_decodes_avi_and_wmv: no avi/wmv samples in corpus — skipping");
         }
     }
 }

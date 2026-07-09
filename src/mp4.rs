@@ -683,14 +683,17 @@ mod tests {
         assert_eq!(sizes.size_of(3), None);
     }
 
-    /// End-to-end: parse a real MP4 (if one is present on this machine) into a one-keyframe
-    /// mini-MP4 and decode it through Media Foundation. Skipped where no sample is available
-    /// (e.g. CI), so `cargo test` stays green without committing a video fixture.
+    /// End-to-end: parse a real MP4 (the corpus `sample.mp4`, or `ST2K_TEST_VIDEO` if set)
+    /// into a one-keyframe mini-MP4 and decode it through Media Foundation. Skipped where no
+    /// sample is available (e.g. CI), so `cargo test` stays green without committing a video
+    /// fixture.
     #[test]
     fn real_mp4_round_trips_through_mediafoundation() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let candidates = [
             std::env::var("ST2K_TEST_VIDEO").ok(),
-            Some(r"D:\st2k-target\testvid.mp4".to_string()),
+            Some(base.join("test-corpus-real").join("sample.mp4").to_string_lossy().into_owned()),
+            Some(base.join("test-corpus").join("sample.mp4").to_string_lossy().into_owned()),
         ];
         let Some(path) = candidates
             .into_iter()

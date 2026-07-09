@@ -12,7 +12,7 @@ use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR,
 use windows::Win32::Foundation::E_FAIL;
 
 use super::actions::is_image;
-use super::encode::{read_capped, write_atomic};
+use super::encode::{read_capped, write_atomic, reserve, OutSlot};
 use crate::decode;
 
 /// Case-insensitive whole-path comparison (Windows file names are case-folding,
@@ -100,54 +100,64 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<()> {
     })
 }
 
-/// A collision-free destination for `src`'s file name inside `dir` (`name (2).ext`
-/// if taken). Returns the source path unchanged if it's already in `dir`.
-fn collision_free_dest(src: &Path, dir: &Path) -> Result<PathBuf> {
-    let fname = src.file_name().ok_or_else(|| Error::from(E_FAIL))?;
-    let mut dest = dir.join(fname);
-    if same_path(&dest, src) {
-        return Ok(dest); // already in place
+/// Atomically reserve a collision-free destination for `stem[.ext]` (`src`'s
+/// extension) inside `dir` (`name (2).ext` if taken), or `None` if the natural
+/// (uncounted) name is already `src` itself (nothing to reserve — the caller
+/// treats that as "already in place"). Each candidate past the first is claimed
+/// with `create_new` ([`reserve`]) instead of a `while dest.exists()` check, so
+/// an external writer (Explorer, another `st2k`, an AV scan) landing a file in the
+/// gap between the check and the move/copy/rename can never collide with us — the
+/// single race-prone picker this replaces. Shared with
+/// [`super::actions::rename_one`] (in-place rename has the identical race: the
+/// target dir just happens to equal `src`'s own parent).
+pub(crate) fn reserve_dest(src: &Path, dir: &Path, stem: &str) -> Result<Option<OutSlot>> {
+    let ext = src.extension().and_then(|e| e.to_str()).map(str::to_string);
+    let natural = match &ext {
+        Some(e) => dir.join(format!("{stem}.{e}")),
+        None => dir.join(stem),
+    };
+    if same_path(&natural, src) {
+        return Ok(None); // already in place, no rename/move needed
     }
-    if dest.exists() {
-        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        let ext = src.extension().and_then(|e| e.to_str());
-        let mut n = 2u32;
-        loop {
-            let nm = match ext {
-                Some(e) => format!("{stem} ({n}).{e}"),
-                None => format!("{stem} ({n})"),
-            };
-            dest = dir.join(nm);
-            if !dest.exists() {
-                break;
-            }
-            n += 1;
-        }
-    }
-    Ok(dest)
+    let (stem, dir) = (stem.to_string(), dir.to_path_buf());
+    Ok(Some(reserve(move |n| {
+        // n=0 is the plain name; a collision then counts "(2), (3), …" (Explorer's
+        // own duplicate-naming convention — the first colliding copy is "(2)", not
+        // "(1)"), so a collision at n bumps to count n+1.
+        let nm = match (&ext, n) {
+            (Some(e), 0) => format!("{stem}.{e}"),
+            (Some(e), n) => format!("{stem} ({}).{e}", n + 1),
+            (None, 0) => stem.clone(),
+            (None, n) => format!("{stem} ({})", n + 1),
+        };
+        dir.join(nm)
+    })))
 }
 
 /// Move `src` into directory `dir`, dodging name collisions. `dir` must exist.
 /// Retries briefly past a transient Explorer lock. (Same-volume move — a
 /// cross-volume source just fails and is skipped by the caller.)
 fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
-    let dest = collision_free_dest(src, dir)?;
-    if same_path(&dest, src) {
-        return Ok(dest);
-    }
-    crate::fsutil::rename_retrying(src, &dest)
-        .map(|()| dest)
-        .map_err(|_| Error::from(E_FAIL))
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let Some(slot) = reserve_dest(src, dir, stem)? else {
+        return Ok(src.to_path_buf());
+    };
+    // `rename` overwrites the reserved placeholder atomically; only release the slot
+    // from its zero-byte-cleanup drop AFTER that succeeds, so a failed rename still
+    // leaves the empty placeholder to be cleaned up, and a legitimately empty `src`
+    // isn't mistaken for an abandoned reservation and deleted right after landing.
+    crate::fsutil::rename_retrying(src, slot.path()).map_err(|_| Error::from(E_FAIL))?;
+    Ok(slot.release())
 }
 
 /// Copy `src` into directory `dir`, dodging name collisions. `dir` must exist.
 fn copy_into(src: &Path, dir: &Path) -> Result<PathBuf> {
-    let dest = collision_free_dest(src, dir)?;
-    if same_path(&dest, src) {
-        return Ok(dest); // copying onto itself → nothing to do
-    }
-    std::fs::copy(src, &dest).map_err(|_| Error::from(E_FAIL))?;
-    Ok(dest)
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let Some(slot) = reserve_dest(src, dir, stem)? else {
+        return Ok(src.to_path_buf()); // copying onto itself → nothing to do
+    };
+    std::fs::copy(src, slot.path()).map_err(|_| Error::from(E_FAIL))?;
+    Ok(slot.release())
 }
 
 /// Tell the shell to refresh `dir` (so a new subfolder / moved files appear).

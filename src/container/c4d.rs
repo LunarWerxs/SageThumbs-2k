@@ -37,7 +37,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     if w.max(h) < MIN_PREVIEW_EDGE {
         return None; // a material swatch, not the scene preview
     }
-    let len = jpeg_span_len(bytes, soi)?;
+    let len = crate::container::jpeg_span_len(bytes, soi)?;
     let jpeg = bytes.get(soi..soi + len)?;
     (jpeg.len() as u64 <= crate::container::MAX_COVER).then(|| jpeg.to_vec())
 }
@@ -72,55 +72,6 @@ fn jpeg_dims(j: &[u8]) -> Option<(u16, u16)> {
                 return None;
             }
             p += 2 + len;
-        }
-    }
-    None
-}
-
-/// Total `SOI..EOI` byte length of the JPEG at `off` (marker-aware; mirrors
-/// `psp::jpeg_span_len`). Bounds-checked — never panics under `panic = "abort"`.
-fn jpeg_span_len(data: &[u8], off: usize) -> Option<usize> {
-    if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
-        return None;
-    }
-    let mut p = off + 2;
-    for _ in 0..8192 {
-        if *data.get(p)? != 0xFF {
-            return None;
-        }
-        while *data.get(p)? == 0xFF {
-            p = p.checked_add(1)?;
-        }
-        let marker = *data.get(p)?;
-        p = p.checked_add(1)?;
-        match marker {
-            0xD9 => return Some(p - off),
-            0xDA => {
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
-                loop {
-                    if *data.get(p)? == 0xFF {
-                        let n = *data.get(p + 1)?;
-                        if n == 0x00 || (0xD0..=0xD7).contains(&n) {
-                            p = p.checked_add(2)?;
-                            continue;
-                        }
-                        break;
-                    }
-                    p = p.checked_add(1)?;
-                }
-            }
-            0x01 | 0xD0..=0xD7 => {}
-            _ => {
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
-            }
         }
     }
     None
