@@ -54,7 +54,9 @@ codecs, works even on the ImageMagick-free compact install): **Photoshop**
 **FreeCAD** `.fcstd`, **Autodesk Fusion 360** `.f3d`, and 3D-printer **G-code**
 `.gcode`. *No Windows tool
 thumbnails most of these — PSD now works without ImageMagick, and `.clip`'s preview
-is read straight out of its embedded SQLite database (no extra dependency).*
+is read straight out of its embedded SQLite database (no extra dependency) — even for
+canvases past the size limit, where only that small tail database is read, never the
+multi-hundred-MB layer data.*
 
 **Per-type toggle:** the Options dialog lists every format with a checkbox; turn
 any on/off (multi-select with Shift/Ctrl, then Space or right-click → Check/
@@ -71,6 +73,17 @@ tooltip**, and as **sortable / groupable columns** — and the columns are *offe
 even gets its GPS location, which Windows itself leaves blank.) It's **read-only** (it never
 writes back to your files) and **crash-isolated** behind the same panic boundary as the
 thumbnail provider, so a malformed file can't take down Explorer.
+
+**Big preview in the reading pane:** a companion **preview handler** (`IPreviewHandler`)
+renders the image LARGE in Explorer's preview/reading pane (and the file-open dialog's
+preview) for the same 300+ formats — ebook/comic covers, RAW, HEIC, PSD/`.blend`, audio
+album art, a video frame, and the rest. Like the thumbnail, it now handles **large files
+without loading them whole**: it grabs a single frame from a multi-gigabyte video, seeks
+straight to embedded album art in a long audiobook, or pulls the cover out of an oversized
+comic/`.blend`/Photoshop file — so files that used to bog down the preview host or show a
+blank pane now preview instantly, and your size limit is respected. It runs in Windows'
+**out-of-process preview host** (never inside `explorer.exe`) and is crash-isolated behind
+the same panic boundary, so a malformed file yields an empty pane, never a crash.
 
 ---
 
@@ -166,8 +179,13 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 single image and the menu itself shows a small **thumbnail + filename +
 dimensions/size** — at the top of the `SageThumbs 2K ▸` submenu by default, or
 directly on the main menu, or off (Options → "Menu preview:"). Clicking the
-preview opens the image. Works for every format we decode (HEIC, RAW, ebook
-covers, …). Transparent images sit on a **subtle checkerboard** (on by default,
+preview opens the image. Works for every format the fast in-process tiers cover
+(HEIC, RAW, ebook covers, PSD/blend previews, …) — but **not** video, PDF, SVG,
+or the ImageMagick-only long tail (DPX, J2K, PCX, metafiles, …): those tiers are
+deliberately skipped inside the menu (a right-click must never freeze Explorer
+on a slow render), so such files show a caption-only tile with name + size while
+still thumbnailing normally in the Explorer view itself. Transparent images sit
+on a **subtle checkerboard** (on by default,
 toggleable) so see-through areas don't vanish into the menu — it follows the
 light/dark menu theme automatically. *Note: appears in the classic menu ("Show
 more options" on stock Windows 11) — the modern Win11 menu doesn't allow
@@ -265,10 +283,23 @@ long scroll is gone.)
 - **Use the OS, bundle nothing extra, where possible:** PDF rendering and OCR both
   use in-box WinRT APIs (`Windows.Data.Pdf`, `Windows.Media.Ocr`) — zero added
   bytes. PDF *writing* (Combine-to-PDF) is a hand-rolled minimal `/DCTDecode` PDF —
-  no PDF library. HEIC/AVIF decode via WIC.
+  no PDF library. HEIC/AVIF decode via WIC — that means the OS codecs: on machines
+  where they aren't preinstalled, install Microsoft's free **HEIF Image Extensions**
+  (+ **HEVC Video Extensions** for iPhone HEIC) and **AV1 Video Extension** from the
+  Store. There is deliberately NO bundled fallback for these two: the trimmed
+  ImageMagick drops its HEIF stack (a 7 MB delegate DLL — decided 2026-07-08, size
+  over edge-case coverage; revisit only if users actually report missing HEIC
+  thumbnails on codec-less machines).
 - **Trimmed ImageMagick** is bundled for the long tail of formats (RAW, DICOM, PCX,
   J2K, …); the installer's "compact" mode omits it, so nothing must-have depends on
-  it.
+  it. The measured magick-only set (things that DON'T thumbnail on a compact
+  install): the JPEG-2000 family (j2c/j2k/jp2/jpc/jpf/jpm/jpx), film/print scans
+  (cin/dpx/cal/cals/fits/fts/pcd), Windows metafiles (wmf/emf/emz/wmz), Visio
+  (vsd/vsdx/vsdm), legacy-Office OLE previews (max), classic bitmaps
+  (pcx/dcx/dib/ras/sun/sgi/xbm/xpm/xv/wpg/pdb), scientific floats
+  (pfm/phm/fl32/mat/vicar/viff/vips/pgx/ph), miff/mng/tiff64, and **DWAA/DWAB-
+  compressed OpenEXR** (uncompressed/ZIP/PIZ/RLE/B44 EXR decode pure-Rust; the
+  DWA lossy codecs need the bundled magick — the standard install has it).
 - **Colour-managed thumbnails:** images carrying an embedded ICC profile or a
   wide-gamut tag (Display P3 / Adobe RGB) are converted into sRGB before display, so
   they no longer look over-saturated next to ordinary photos. AVIF/HEIC read their

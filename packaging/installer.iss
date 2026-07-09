@@ -57,7 +57,7 @@ Name: "custom"; Description: "Custom"; Flags: iscustom
 
 [Components]
 Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: full compact custom; Flags: fixed
-Name: "magick"; Description: "ImageMagick engine - 100+ extra formats (RAW, DICOM, PSD, PCX, TGA, JPEG-2000, ...)"; Types: full custom
+Name: "magick"; Description: "ImageMagick engine - 100+ extra formats"; Types: full custom
 
 [Files]
 Source: "stage\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
