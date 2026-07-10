@@ -2,7 +2,7 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 0.8.0
 
 - **The preview pane now handles big files like thumbnails do.** Explorer's reading/preview pane
   used to read a file whole before showing it — so a multi-gigabyte video, a long audiobook, or an
@@ -40,9 +40,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   so it isn't just a flat gray square).
 - **`.jbig` removed from the supported-formats list.** It never actually decoded (no shipped
   decoder can read it) — the entry only cost a doomed 20-second attempt per file.
-
-## 0.8.0
-
+- **Release-readiness polish.** Licensing, the supported-format counts quoted across the docs, and
+  some duplicated code were reconciled so everything lines up; file renames during Convert/Resize
+  are now atomic (no half-written output if something goes wrong mid-write).
 - **Sync your settings across your PCs — new, and completely optional.** Settings has a new
   **Data & Backup** section with a **"Sync settings…"** button: sign in with a Connections account
   (it opens your real browser — SageThumbs never sees your password) and your portable preferences

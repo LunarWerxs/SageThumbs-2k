@@ -92,7 +92,7 @@ The original **SageThumbs** was a Windows legend — it made Explorer show thumb
 
 ## ⭐ Like it? Help it grow
 
-Built in the open by one person, free for personal use — no ads, no tracking, no paywall. If SageThumbs 2K earns a spot on your "install on every new PC" list, a few seconds of support goes a *long* way:
+Built in the open by one person, free for personal use — no ads, no paywall. If SageThumbs 2K earns a spot on your "install on every new PC" list, a few seconds of support goes a *long* way:
 
 - ⭐ **[Star the repo](https://github.com/LunarWerxs/SageThumbs-2k)** — the single biggest signal that this is worth maintaining.
 - 📝 **[Leave a review on SourceForge](https://sourceforge.net/projects/sagethumbs-2k/)** — helps people find a thumbnailer they can actually trust.
