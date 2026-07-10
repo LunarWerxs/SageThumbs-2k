@@ -218,15 +218,25 @@ pub(crate) fn is_signed_in() -> bool {
     cred_store::is_signed_in()
 }
 
-/// The email (or `sub`) to show in the "Synced as …" row, if signed in.
+/// The name (or, failing that, the relay email) to show in the "Synced as …" row, if
+/// signed in. The `email` claim is an opaque per-app privacy-relay address
+/// (`<hex>@privaterelay.connections.icu`), never the user's real inbox, so `name` is
+/// preferred whenever we have one. A bare `sub` is never surfaced — `None` if all we have
+/// is an id with no name and no email.
 pub(crate) fn signed_in_label() -> Option<String> {
     let id = cred_store::load_identity()?;
-    Some(if !id.email.is_empty() { id.email } else { id.sub })
+    if !id.name.is_empty() {
+        Some(id.name)
+    } else if !id.email.is_empty() {
+        Some(id.email)
+    } else {
+        None
+    }
 }
 
 /// Interactive sign-in: browser round-trip, securely store the refresh token + identity,
 /// then do the initial pull (or seed the cloud from local if it's empty). Returns the
-/// display label (email/sub) for the UI. Blocking — run on a worker thread.
+/// display label (name/email/sub) for the UI. Blocking — run on a worker thread.
 pub(crate) fn connect() -> Result<String, String> {
     let tokens = oauth::login()?;
     let rt = tokens
@@ -236,8 +246,8 @@ pub(crate) fn connect() -> Result<String, String> {
     if !cred_store::save_refresh_token(&rt) {
         return Err("couldn't securely store your sign-in".to_string());
     }
-    let (sub, email) = oauth::identity_from_tokens(&tokens).unwrap_or_default();
-    cred_store::save_identity(&sub, &email);
+    let (sub, email, name, picture) = oauth::identity_from_tokens(&tokens).unwrap_or_default();
+    cred_store::save_identity(&sub, &email, &name, &picture);
 
     // Initial pull/seed using the access token we already hold (no refresh needed).
     let (version, settings) = store_get(&tokens.access_token)?;
@@ -246,7 +256,13 @@ pub(crate) fn connect() -> Result<String, String> {
     } else {
         push_snapshot(&tokens.access_token)?;
     }
-    Ok(if !email.is_empty() { email } else { sub })
+    Ok(if !name.is_empty() {
+        name
+    } else if !email.is_empty() {
+        email
+    } else {
+        sub
+    })
 }
 
 /// Pull remote settings and apply them locally; seed the cloud if it's empty. Returns

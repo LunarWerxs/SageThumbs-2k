@@ -2465,13 +2465,15 @@ fn sync_button_label() -> String {
 
 /// The status line beside the sync button. Signed in → a green "● Synced" badge (the "●…
 /// Synced" prefix is what the WM_CTLCOLORSTATIC handler keys the green tint off) with a
-/// plain-English detail; signed out → a muted invite. Only a real email is surfaced as the
-/// identity — a bare account id (`sub`) is omitted, so the row never shows an ugly UUID.
+/// plain-English detail; signed out → a muted invite. `signed_in_label` prefers the
+/// account's display name (falling back to its relay email) and never returns a bare
+/// account id (`sub`), so the row never shows an ugly UUID or the opaque privacy-relay
+/// hash when a real name is available.
 fn sync_status_text() -> String {
     if crate::sync_client::is_signed_in() {
         match crate::sync_client::signed_in_label() {
-            Some(who) if who.contains('@') => format!("● Synced as {who} · up to date"),
-            _ => "● Synced · already up to date".to_string(),
+            Some(who) => format!("● Synced as {who} · up to date"),
+            None => "● Synced · already up to date".to_string(),
         }
     } else {
         "Not syncing — sign in to sync your settings across your PCs".to_string()

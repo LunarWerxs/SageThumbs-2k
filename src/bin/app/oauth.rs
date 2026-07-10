@@ -29,7 +29,7 @@ pub(crate) const CLIENT_ID: &str = "c6e85c7caceb03d51c0b389435ed1906";
 
 const AUTHORIZE: &str = "https://accounts.connections.icu/oauth/authorize";
 const TOKEN: &str = "https://accounts.connections.icu/oauth/token";
-const SCOPE: &str = "openid profile email";
+const SCOPE: &str = "openid profile email photo";
 /// How long to wait for the user to finish signing in before giving up.
 const LOGIN_TIMEOUT_SECS: u64 = 180;
 
@@ -128,10 +128,12 @@ pub(crate) fn refresh(refresh_token: &str) -> Result<Tokens, String> {
     token_request(body.as_bytes())
 }
 
-/// Extract `(sub, email)` from the id_token's JWT payload for the "Synced as …" row. We do
-/// NOT verify the signature here — the token came straight from the token endpoint over
-/// TLS and is used only for display; the data-locker verifies tokens server-side.
-pub(crate) fn identity_from_tokens(t: &Tokens) -> Option<(String, String)> {
+/// Extract `(sub, email, name, picture)` from the id_token's JWT payload for the "Synced
+/// as …" row. `name` falls back to `given_name` when absent (empty string if both are
+/// absent); `picture` needs the `photo` scope and is empty if not granted. We do NOT
+/// verify the signature here — the token came straight from the token endpoint over TLS
+/// and is used only for display; the data-locker verifies tokens server-side.
+pub(crate) fn identity_from_tokens(t: &Tokens) -> Option<(String, String, String, String)> {
     let payload_seg = t.id_token.as_ref()?.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload_seg.trim_end_matches('='))
@@ -139,10 +141,17 @@ pub(crate) fn identity_from_tokens(t: &Tokens) -> Option<(String, String)> {
     let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let sub = json.get("sub").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let email = json.get("email").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let name = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .or_else(|| json.get("given_name").and_then(|v| v.as_str()))
+        .unwrap_or_default()
+        .to_string();
+    let picture = json.get("picture").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     if sub.is_empty() {
         return None;
     }
-    Some((sub, email))
+    Some((sub, email, name, picture))
 }
 
 // ---- internals -----------------------------------------------------------
@@ -360,7 +369,7 @@ mod tests {
         // redirect_uri must be percent-encoded (no raw "://" or ":port/").
         assert!(u.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A52100%2Foauth%2Fcallback"));
         // scope space encoded.
-        assert!(u.contains("scope=openid%20profile%20email"));
+        assert!(u.contains("scope=openid%20profile%20email%20photo"));
     }
 
     #[test]
@@ -387,7 +396,8 @@ mod tests {
 
     #[test]
     fn identity_decodes_jwt_payload() {
-        // A JWT with payload {"sub":"user-123","email":"a@b.com"} (base64url, unpadded).
+        // A JWT with payload {"sub":"user-123","email":"a@b.com"} (base64url, unpadded). No
+        // name/picture claims → those come back empty.
         let payload = b64url(br#"{"sub":"user-123","email":"a@b.com"}"#);
         let t = Tokens {
             access_token: "AT".into(),
@@ -395,6 +405,31 @@ mod tests {
             id_token: Some(format!("header.{payload}.sig")),
             expires_in: 0,
         };
-        assert_eq!(identity_from_tokens(&t), Some(("user-123".into(), "a@b.com".into())));
+        assert_eq!(
+            identity_from_tokens(&t),
+            Some(("user-123".into(), "a@b.com".into(), String::new(), String::new()))
+        );
+    }
+
+    #[test]
+    fn identity_decodes_full_profile() {
+        // A JWT with all four scope-gated display claims present — everything round-trips.
+        let payload =
+            b64url(br#"{"sub":"user-123","email":"a@b.com","name":"Ada Lovelace","picture":"https://example.com/p.jpg"}"#);
+        let t = Tokens {
+            access_token: "AT".into(),
+            refresh_token: None,
+            id_token: Some(format!("header.{payload}.sig")),
+            expires_in: 0,
+        };
+        assert_eq!(
+            identity_from_tokens(&t),
+            Some((
+                "user-123".into(),
+                "a@b.com".into(),
+                "Ada Lovelace".into(),
+                "https://example.com/p.jpg".into()
+            ))
+        );
     }
 }

@@ -24,11 +24,24 @@ use windows_registry::CURRENT_USER;
 const V_REFRESH: &str = "RefreshToken";
 const V_SUB: &str = "Sub";
 const V_EMAIL: &str = "Email";
+const V_NAME: &str = "Name";
+const V_PICTURE: &str = "Picture";
 
-/// The signed-in user's identity, for the "Synced as …" UI row. Not a secret.
+/// The signed-in user's identity, for the "Synced as …" UI row. Not a secret. `email` is a
+/// per-app privacy-relay address (`<hex>@privaterelay.connections.icu`), never the user's
+/// real inbox — `name` is preferred for display. `picture` is a profile-picture URL (needs
+/// the `photo` scope); captured for a future avatar but not rendered today.
 pub(crate) struct Identity {
+    /// Kept for completeness (it's the stable account id) though `signed_in_label` never
+    /// surfaces it — a raw `sub` reads as an ugly UUID, so the label prefers name/email.
+    #[allow(dead_code)]
     pub sub: String,
     pub email: String,
+    pub name: String,
+    /// Not rendered yet — no Win32 image fetch/blit wired up (out of scope); persisted so a
+    /// future avatar feature doesn't need a re-sign-in to backfill it.
+    #[allow(dead_code)]
+    pub picture: String,
 }
 
 /// `HKCU\Software\SageThumbs2K\OAuth`. Kept separate from the settings root so a
@@ -86,22 +99,28 @@ pub(crate) fn load_refresh_token() -> Option<String> {
 }
 
 /// Persist the signed-in identity for the UI (plain, non-secret).
-pub(crate) fn save_identity(sub: &str, email: &str) {
+pub(crate) fn save_identity(sub: &str, email: &str, name: &str, picture: &str) {
     if let Ok(k) = CURRENT_USER.create(oauth_key()) {
         let _ = k.set_string(V_SUB, sub);
         let _ = k.set_string(V_EMAIL, email);
+        let _ = k.set_string(V_NAME, name);
+        let _ = k.set_string(V_PICTURE, picture);
     }
 }
 
-/// The stored identity for the "Synced as …" row, if any.
+/// The stored identity for the "Synced as …" row, if any. `Name`/`Picture` are missing on
+/// identities saved before this app captured them — they simply read back empty, so old
+/// stored values keep loading fine.
 pub(crate) fn load_identity() -> Option<Identity> {
     let k = CURRENT_USER.open(oauth_key()).ok()?;
     let sub = k.get_string(V_SUB).unwrap_or_default();
     let email = k.get_string(V_EMAIL).unwrap_or_default();
+    let name = k.get_string(V_NAME).unwrap_or_default();
+    let picture = k.get_string(V_PICTURE).unwrap_or_default();
     if sub.is_empty() && email.is_empty() {
         return None;
     }
-    Some(Identity { sub, email })
+    Some(Identity { sub, email, name, picture })
 }
 
 /// Whether a refresh token is present (a decryptable one — a foreign blob reads as no).
@@ -116,5 +135,7 @@ pub(crate) fn clear() {
         let _ = k.remove_value(V_REFRESH);
         let _ = k.remove_value(V_SUB);
         let _ = k.remove_value(V_EMAIL);
+        let _ = k.remove_value(V_NAME);
+        let _ = k.remove_value(V_PICTURE);
     }
 }
