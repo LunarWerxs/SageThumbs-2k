@@ -138,14 +138,17 @@ lofty = "0.22"
 rars = "0.2"
 # DjVu (.djvu) cover decode — the maintained pure-Rust `djvu-rs` codec (MIT, C-free,
 # fuzzed). Replaced our hand-rolled zp/iw44/jb2/djvu stack (2026-06-14): deletes ~2,400
-# lines of our own arithmetic-coder/wavelet/bilevel code + gains full multipage support,
-# at ~+0.27 MB of DLL. `std` is REQUIRED: its render pipeline needs it at runtime. We
-# tried `default-features=false` (the low-level no_std API) to shed std's export deps —
-# a SECOND `png` + `zip`/`zopfli` + `jpeg-encoder`, ~159 KB used only for PDF/TIFF/EPUB/
-# image EXPORT — and it COMPILED but produced no image (decode silently fails no_std).
-# So keep `std`; decode-only otherwise (no image/tiff/epub/jpeg export, no OCR/async/cli/
-# parallel/serde/mmap).
-djvu-rs = { version = "0.19", default-features = false, features = ["std"] }
+# lines of our own arithmetic-coder/wavelet/bilevel code + gains full multipage support.
+# `std` is REQUIRED: the render pipeline needs it at runtime (a no_std build compiles but
+# silently decodes nothing). Historically `std` ALSO dragged in the writer stack — a 2nd
+# `png` + `zip`/`zopfli` + `jpeg-encoder` (PDF/TIFF/EPUB/image EXPORT we never call) — and
+# because Cargo unifies features, its `zip[deflate]` even forced `zopfli` back into OUR
+# deliberately-zopfli-free `zip` below. Fixed upstream in 0.26.0 (issue #509): `std` is now
+# DECODE-ONLY; the writer deps live under `pdf`/`epub`/`cli`, which we don't enable. So the
+# bump to 0.26 sheds `jpeg-encoder` + `zopfli` (+ its runtime `bumpalo`) from the DLL and
+# restores our C-free/no-zopfli `zip`. Decode-only otherwise (no image/tiff/epub/jpeg
+# export, no OCR/async/cli/parallel/serde/mmap).
+djvu-rs = { version = "0.26", default-features = false, features = ["std"] }
 # JPEG XL (.jxl) decode — the pure-Rust `jxl-oxide` crate (MIT OR Apache-2.0, C-free).
 # jxl is an ADVERTISED format (formats.rs) but neither the `image` crate nor WIC decode
 # it, and build-release.ps1 strips the jxl coder out of the bundled magick — so without
