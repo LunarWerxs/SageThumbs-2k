@@ -2,7 +2,7 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## 0.8.0
+## 0.9.0 (2026-07-09)
 
 - **The preview pane now handles big files like thumbnails do.** Explorer's reading/preview pane
   used to read a file whole before showing it — so a multi-gigabyte video, a long audiobook, or an
@@ -10,12 +10,34 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   blank pane, even though its thumbnail worked fine. The pane now uses the exact same shortcuts the
   thumbnail does: it grabs a single video frame, seeks straight to embedded album art, or pulls the
   cover out of a huge archive without ever loading the whole file, and it respects your size limit.
+- **DICOM `.dcm` medical scans finally thumbnail.** They were listed as supported but never
+  actually rendered — the file's TIFF-like header fooled the decoder into treating it as a broken
+  TIFF. CT/MR slices now show real, legible anatomy (the low-contrast medical data is auto-stretched
+  so it isn't just a flat gray square).
+- **Apple `.icns` icons actually work now.** They were listed as supported but no decoder ever
+  handled them; the embedded PNG (or JPEG-2000) icon is now extracted directly.
+- **If you sync settings, your name shows up instead of a random email.** The "Synced as" row
+  used to show an opaque per-app privacy-relay address; it now shows your actual display name
+  (falling back to the relay address only if no name is available).
+- **Release-readiness polish.** Licensing docs, the supported-format counts quoted across the
+  README/docs, and some duplicated internal code were reconciled so everything lines up; file
+  renames during Convert/Resize are now atomic (no half-written output if something goes wrong
+  mid-write).
+- **Screenshot capture fixes.** A stray 1px window border and the invisible DWM resize border no
+  longer sneak into `--shot`-style captures used for the app's own documentation screenshots.
+- Updated the DjVu decoder dependency to pick up upstream fixes and trim unused transitive deps
+  (no user-facing behavior change).
+- Corrected a README claim: SageThumbs does have a small, anonymous sponsor-banner beacon (no
+  personal data, no files, no images) — it was previously miscategorized as "no tracking."
+
+## 0.8.0
+
+- **Compressed `.blend` files now show thumbnails at all.** Files saved with Blender's
+  "Compress" option (gzip or zstd) previously never got a preview — now they do, at any size.
 - **Big Blender files finally show thumbnails.** `.blend` scenes over the size limit (100 MB by
   default) were silently skipped by Explorer even though the thumbnail sits in the first few
   kilobytes of the file — now we read just that small head slice, so a 2 GB scene thumbnails
   instantly. Same fix for huge Photoshop `.psd`/`.psb` files. (Thanks to GitHub issue #1.)
-- **Compressed `.blend` files now show thumbnails at all.** Files saved with Blender's
-  "Compress" option (gzip or zstd) previously never got a preview — now they do, at any size.
 - **Big Clip Studio Paint canvases show thumbnails too.** A multi-layer `.clip` over the size
   limit was skipped even though its preview lives in a small database at the end of the file —
   we now jump straight to that database and read only it, so a 2 GB manga page thumbnails
@@ -27,22 +49,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Old 32-bit TGA files no longer come out invisible.** Files whose header declares "no alpha"
   but still carry a (meaningless, all-zero) 4th channel used to decode fully transparent — in
   thumbnails, Convert, and the AI `view` tool. They now render opaque, as every image viewer does.
-- **Apple `.icns` icons actually work now.** They were listed as supported but no decoder ever
-  handled them; the embedded PNG (or JPEG-2000) icon is now extracted directly.
 - **Huge Krita/OpenRaster/3MF/FreeCAD files show the right preview.** Oversized project files
   used to get an arbitrary internal layer image as their thumbnail (often blank); they now get
   the real composite preview, same as small ones.
 - **Amiga IFF/ILBM images with a transparency mask render it correctly** (masked areas used to
   come out opaque).
-- **DICOM `.dcm` medical scans finally thumbnail.** They were listed as supported but never
-  actually rendered — the file's TIFF-like header fooled the decoder into treating it as a broken
-  TIFF. CT/MR slices now show real, legible anatomy (the low-contrast medical data is auto-stretched
-  so it isn't just a flat gray square).
 - **`.jbig` removed from the supported-formats list.** It never actually decoded (no shipped
   decoder can read it) — the entry only cost a doomed 20-second attempt per file.
-- **Release-readiness polish.** Licensing, the supported-format counts quoted across the docs, and
-  some duplicated code were reconciled so everything lines up; file renames during Convert/Resize
-  are now atomic (no half-written output if something goes wrong mid-write).
 - **Sync your settings across your PCs — new, and completely optional.** Settings has a new
   **Data & Backup** section with a **"Sync settings…"** button: sign in with a Connections account
   (it opens your real browser — SageThumbs never sees your password) and your portable preferences
