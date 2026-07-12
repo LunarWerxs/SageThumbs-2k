@@ -324,8 +324,8 @@ end;
 
 // Best-effort one-shot HTTPS GET on uninstall, over WinHttp with short timeouts and all
 // errors swallowed so it never blocks or slows the uninstall. Only a real uninstall
-// reaches it - an in-place upgrade does not run the uninstaller. Carries the survey answer
-// (reason bucket + optional note) so the worker can tally WHY, not just how many.
+// reaches it - an in-place upgrade does not run the uninstaller. Carries the optional
+// survey answer (reason bucket + note) from the uninstall prompt.
 procedure NotifyUninstall;
 var
   Http: Variant;
@@ -334,9 +334,8 @@ var
 begin
   try
     Url := 'https://st2k.lunarwerx.com/sponsor?uninstall=1&v={#AppVer}';
-    // A developer's own test box opts out of the analytics tally (HKCU DevMachine=1). The
-    // subtree is still present here (it's deleted AFTER this), so tag the uninstall beacon
-    // with &dev=1 too, so the Worker drops it like the app's check-ins.
+    // The developer's own test box (HKCU DevMachine=1) tags the request with &dev=1. The
+    // subtree is still present here (it's deleted AFTER this), so read it before the delete.
     if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'DevMachine', DevFlag) and (DevFlag = 1) then
       Url := Url + '&dev=1';
     if UninstallReason <> '' then
@@ -357,7 +356,7 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
-    // Ask why first (interactive uninstalls only), then beacon the answer with the tally.
+    // Ask why first (interactive uninstalls only), then send the optional survey answer.
     if not UninstallSilent then
       AskUninstallReason;
     NotifyUninstall;
