@@ -199,7 +199,7 @@ var
   UninstallNote: String;
 
 // Percent-encode a string for safe use as a URL query value. ASCII only - any non-ASCII
-// char is dropped rather than mis-encoded (the note is best-effort analytics, not exact text).
+// char is dropped rather than mis-encoded (the survey note is best-effort, not exact text).
 function UrlEncode(const S: String): String;
 var
   i, Code: Integer;
