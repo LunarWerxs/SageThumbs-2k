@@ -1,7 +1,7 @@
 # cargo-deny configuration for SageThumbs 2K.
 #
-# Run locally with (this config lives in .github/, not the repo root):
-#     cargo deny check --config .github/deny.toml
+# Run locally with:
+#     cargo deny check
 #
 # CI runs this on the DEFAULT feature set via the `deny` job in
 # .github/workflows/ci.yml. SageThumbs 2K's OWN code is PolyForm-Noncommercial-licensed

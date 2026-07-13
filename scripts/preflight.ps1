@@ -43,9 +43,9 @@ if (-not $failed) { Step 'clippy (-D warnings)' { cargo clippy --release --all-t
 if (-not $failed) { Step 'unit tests (--lib)'   { cargo test  --release --lib } }
 if (-not $failed) { Step 'integration tests'    { cargo test  --release --tests } }
 
-# Mirror the `deny` job — only if cargo-deny is installed locally (config lives in .github/).
+# Mirror the `deny` job — only if cargo-deny is installed locally (deny.toml at repo root).
 if (-not $failed -and (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {
-    Step 'cargo-deny' { cargo deny check --config .github/deny.toml }
+    Step 'cargo-deny' { cargo deny check }
 }
 
 Write-Host ""

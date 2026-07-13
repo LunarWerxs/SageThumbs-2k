@@ -96,9 +96,8 @@ jobs:
         with:
           # Checks the committed Cargo.lock (advisories + licenses) against
           # deny.toml's allowlist over the full (now fully-permissive) graph.
+          # deny.toml lives at the repo root (cargo-deny's default location), so
+          # no --config flag is needed — robust across cargo-deny versions
+          # (newer cargo-deny moved --config to a global flag before `check`).
           command: check
           arguments: --locked
-          # deny.toml lives in .github/ (not repo root), so point cargo-deny's
-          # `check` subcommand at it. Goes in command-arguments (AFTER `check`),
-          # not arguments (which the action places BEFORE the subcommand).
-          command-arguments: --config .github/deny.toml
