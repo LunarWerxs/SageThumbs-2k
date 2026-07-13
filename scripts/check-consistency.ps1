@@ -54,7 +54,10 @@ if ($count -lt 250) {
 }
 else {
   $readme = Get-Content (Join-Path $root 'README.md') -Raw
-  if ($readme -notmatch "formats-$count-") { $fail.Add("README shields badge count != FORMATS ($count)") }
+  # The badge may spell out the exact count ("formats-316-") or use the non-numeric
+  # "hundreds" convention (intentionally vague so the badge doesn't need to be bumped
+  # every release) - either is accepted as long as FEATURES.md still has the real number.
+  if ($readme -notmatch "formats-(?:$count-|hundreds-)") { $fail.Add("README shields badge count != FORMATS ($count) and isn't the 'hundreds' convention") }
   $featPath = Join-Path $root 'docs\FEATURES.md'
   if (Test-Path $featPath) {
     $feat = Get-Content $featPath -Raw

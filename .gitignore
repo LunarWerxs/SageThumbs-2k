@@ -58,7 +58,11 @@ Thumbs.db
 /examples/
 /scripts/fill-audio-real.ps1
 /scripts/build-corpus-real.ps1
+/scripts/private/
 /packaging/analytics/
 
 # Owner's local to-do scratch dir
 /to-do/
+
+# AI coding assistant local config/session state — never publish
+/.claude/

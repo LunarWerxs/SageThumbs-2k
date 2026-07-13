@@ -54,3 +54,21 @@ pub fn extract_seek<R: Read + Seek>(source: R) -> Option<Vec<u8>> {
     }
     Some(data)
 }
+
+/// List up to `max` of a 7-Zip archive's entries from metadata only (no block decode, no bomb risk).
+pub fn list(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
+    let reader = SevenZReader::new(Cursor::new(bytes), Password::empty()).ok()?;
+    Some(
+        reader
+            .archive()
+            .files
+            .iter()
+            .take(max)
+            .map(|f| Entry {
+                name: f.name().to_string(),
+                is_dir: f.is_directory(),
+                size: f.size(),
+            })
+            .collect(),
+    )
+}

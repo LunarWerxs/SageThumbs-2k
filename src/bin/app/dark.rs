@@ -66,6 +66,11 @@ fn tc(dark: COLORREF, light: COLORREF) -> COLORREF {
 #[allow(non_snake_case)] pub(crate) fn SEL_BG() -> COLORREF { tc(rgb(38, 48, 64), rgb(204, 228, 250)) } // selected list row (subtle blue)
 #[allow(non_snake_case)] pub(crate) fn HEADER_TEXT() -> COLORREF { tc(rgb(150, 150, 150), rgb(96, 96, 96)) } // muted section/column header
 #[allow(non_snake_case)] pub(crate) fn DISABLED_TEXT() -> COLORREF { tc(rgb(110, 110, 110), rgb(163, 163, 163)) } // greyed text for disabled controls
+// Quick preview code syntax highlighting (VS Code dark+/light+ inspired).
+#[allow(non_snake_case)] pub(crate) fn CODE_KEYWORD() -> COLORREF { tc(rgb(86, 156, 214), rgb(0, 0, 255)) }
+#[allow(non_snake_case)] pub(crate) fn CODE_STRING() -> COLORREF { tc(rgb(206, 145, 120), rgb(163, 21, 21)) }
+#[allow(non_snake_case)] pub(crate) fn CODE_NUMBER() -> COLORREF { tc(rgb(181, 206, 168), rgb(9, 134, 88)) }
+#[allow(non_snake_case)] pub(crate) fn CODE_COMMENT() -> COLORREF { tc(rgb(106, 153, 85), rgb(0, 128, 0)) }
 
 /// True when the (effective) theme is dark. Reads `AppsUseLightTheme == 0`, cached.
 /// `ST2K_THEME=light|dark` overrides the registry — a test/diagnostic hook so both

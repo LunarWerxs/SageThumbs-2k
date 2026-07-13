@@ -66,3 +66,19 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let out = std::mem::take(&mut *buf.borrow_mut());
     (!out.is_empty() && out.len() as u64 <= super::MAX_COVER).then_some(out)
 }
+
+/// List up to `max` of a RAR archive's members from headers only (no decompression).
+pub fn list(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
+    let archive = ArchiveReader::read(bytes).ok()?;
+    Some(
+        archive
+            .members()
+            .take(max)
+            .map(|m| Entry {
+                name: String::from_utf8_lossy(&m.meta.name).into_owned(),
+                is_dir: m.meta.is_directory,
+                size: m.meta.unpacked_size,
+            })
+            .collect(),
+    )
+}

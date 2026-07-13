@@ -8,9 +8,11 @@
 #   pwsh scripts\make-shots.ps1
 #   pwsh scripts\make-shots.ps1 -ExePath C:\some\other\target\release\SageThumbs2K.exe
 #
-# Produces (into assets\screenshots and mirrors the GIF into site\img):
-#   settings.gif  — animated walkthrough cycling all 8 Settings category tabs (README + site)
-#   convert.png   — the Convert… dialog (spare asset)
+# Produces (into assets\screenshots and mirrors into site\img):
+#   settings.gif          — animated walkthrough cycling all 9 Settings category tabs (README + site)
+#   convert.png           — the Convert… dialog (spare asset)
+#   preview-quicklook.png — the Quick preview viewer over a syntax-highlighted source file
+#                           (stable in-repo input: src\bin\app\preview\highlight.rs)
 #
 # NOTE: the eyedropper (`--shot <png> --window eyedropper`) captures the LIVE primary monitor,
 # so it's intentionally NOT part of this automated pipeline — grab it manually when the desktop
@@ -70,5 +72,15 @@ $cvt = Join-Path $assets 'convert.png'
 Shot "--shot `"$cvt`" --window convert" $cvt
 Copy-Item $cvt (Join-Path $siteimg 'convert.png') -Force
 Write-Host "  -> mirrored to site\img\convert.png"
+
+# Quick preview viewer over a real syntax-highlighted source file. Uses an in-repo input so
+# the shot is reproducible on any checkout (no external fixture); `--file` renders that path
+# through the same headless PrintWindow path as every other asset.
+Write-Host 'Generating Quick preview viewer PNG (syntax-highlighted code)...'
+$qv  = Join-Path $assets 'preview-quicklook.png'
+$src = Join-Path $root 'src\bin\app\preview\highlight.rs'
+Shot "--shot `"$qv`" --window preview --file `"$src`"" $qv
+Copy-Item $qv (Join-Path $siteimg 'preview-quicklook.png') -Force
+Write-Host "  -> mirrored to site\img\preview-quicklook.png"
 
 Write-Host 'Done.' -ForegroundColor Green

@@ -108,6 +108,20 @@ pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry
     out
 }
 
+/// Open a ZIP-family archive from bytes and list up to `max` central-directory entries (no
+/// extraction). The `max` bound is applied WHILE collecting, so a crafted archive with millions of
+/// tiny entries can't drive millions of `String` allocations.
+pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
+    let mut out = Vec::new();
+    for i in 0..zip.len().min(max) {
+        if let Ok(f) = zip.by_index(i) {
+            out.push(Entry { name: f.name().to_string(), is_dir: f.is_dir(), size: f.size() });
+        }
+    }
+    Some(out)
+}
+
 pub(crate) fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>, idx: usize) -> Option<Vec<u8>> {
     let f = zip.by_index(idx).ok()?;
     if f.size() > super::MAX_COVER {

@@ -77,6 +77,25 @@ try {
     gh release create $tag $setup.FullName --title "SageThumbs 2K $ver" --target main @notesArg
     if ($LASTEXITCODE) { throw "gh release create failed" }
 
-    Write-Host "[6/6] DONE - $tag released. winget auto-publishes if the package is onboarded." -ForegroundColor Cyan
+    Write-Host "[6/6] DONE - $tag released." -ForegroundColor Cyan
+
+    # 7) One-time winget onboarding reminder. The winget.yml workflow can only UPDATE an
+    # EXISTING winget package; the FIRST submission of LunarWerxs.SageThumbs2K has to be done by
+    # hand with Komac. This check self-clears the moment the package is merged into winget-pkgs,
+    # so it only nags until onboarding is done, then goes quiet forever.
+    gh api "repos/microsoft/winget-pkgs/contents/manifests/l/LunarWerxs/SageThumbs2K" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[winget] onboarded - the Publish-to-winget workflow auto-publishes $tag." -ForegroundColor DarkGray
+    } else {
+        $dl = "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/$tag/$($setup.Name)"
+        Write-Host ""
+        Write-Host "  =========== ACTION NEEDED (one-time): submit to winget ===========" -ForegroundColor Yellow
+        Write-Host "  LunarWerxs.SageThumbs2K is not in winget-pkgs yet, so auto-publish is skipped." -ForegroundColor Yellow
+        Write-Host "  Do the FIRST submission by hand; every release after this auto-publishes:" -ForegroundColor Yellow
+        Write-Host "    1) winget install RussellBanks.Komac" -ForegroundColor Yellow
+        Write-Host "    2) komac new LunarWerxs.SageThumbs2K --version $ver --urls $dl" -ForegroundColor Yellow
+        Write-Host "    3) confirm the WINGET_TOKEN repo secret is set (see .github/workflows/winget.yml)" -ForegroundColor Yellow
+        Write-Host "  ==================================================================" -ForegroundColor Yellow
+    }
 }
 finally { Pop-Location }

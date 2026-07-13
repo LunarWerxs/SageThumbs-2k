@@ -38,9 +38,8 @@ use crate::win::{set_static_bitmap, wide, URL_PRODUCT};
 /// `image` or a list of them — when it's a list, a random one is shown each time
 /// that sponsor comes up.
 ///
-/// The startup fetch appends a small, **non-identifying** query string
-/// (`?v=<app-version>&os=<win-generation-build>&new=<0|1>`) — see [`manifest_bytes`]. No
-/// identifier is sent; `new=1` is a one-shot "fresh install" marker, not a per-machine id.
+/// The startup fetch appends a small query string
+/// (`?v=<app-version>&os=<win-generation-build>&new=<0|1>`); see [`manifest_bytes`].
 pub(crate) const BANNER_URL: &str = "https://st2k.lunarwerx.com/sponsor";
 
 /// Banner default artwork, embedded so the reserved banner area shows *something*
@@ -68,21 +67,19 @@ fn manifest_bytes() -> Option<&'static [u8]> {
     static CACHE: OnceLock<Option<Vec<u8>>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            // Append the (non-identifying) params: app version, OS generation+build, and
-            // a one-shot `new=1` the FIRST time this install ever reports. No identifier,
-            // no IP (the server sees that from the connection itself), nothing per-user.
+            // Append the params: app version, OS generation+build, and a one-shot `new=1`
+            // the FIRST time this install reports.
             let is_new = !sagethumbs2k_core::settings::install_reported();
             // On a fresh report, a leftover "tombstone" version (left by a prior uninstall)
-            // marks this as a reinstall rather than a first-time install — note that plus the
-            // version it came from. Still no identifier; just a one-shot returning-vs-new flag.
+            // marks this as a reinstall rather than a first-time install; note that plus the
+            // version it came from.
             let prev = is_new.then(sagethumbs2k_core::settings::tombstone_version).flatten();
             let reinstall = match &prev {
                 Some(v) => format!("&reinstall=1&prev={v}"),
                 None => String::new(),
             };
-            // A developer's own test box opts out of the analytics tally (HKCU DevMachine=1):
-            // tag the beacon with `&dev=1` so the Worker still serves the manifest but doesn't
-            // count this check-in. Empty (no opt-out) on every real install.
+            // The developer's own test box (HKCU DevMachine=1) tags the request with `&dev=1`.
+            // Empty on every real install.
             let dev = if sagethumbs2k_core::settings::is_dev_machine() { "&dev=1" } else { "" };
             let url = format!(
                 "{BANNER_URL}?v={}&os={}&new={}{}{}",
@@ -95,8 +92,8 @@ fn manifest_bytes() -> Option<&'static [u8]> {
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let res = http_fetch(&url, true);
-                // Burn the one-shot "fresh install" marker — and the reinstall tombstone —
-                // only once the report has actually reached the server (an offline first run
+                // Burn the one-shot "fresh install" marker and the reinstall tombstone only
+                // once the request has actually reached the server (an offline first run
                 // retries next time).
                 if is_new && res.is_some() {
                     sagethumbs2k_core::settings::set_install_reported();
@@ -111,10 +108,8 @@ fn manifest_bytes() -> Option<&'static [u8]> {
         .as_deref()
 }
 
-/// A compact, URL-safe OS tag for the beacon — the Windows generation + build number
-/// (e.g. `win11-22631`), read from `HKLM\…\CurrentVersion`. Describes the OS, not the
-/// user: it carries no identifier and can't single anyone out. Falls back to a `0`
-/// build if the key can't be read.
+/// A compact, URL-safe OS tag: the Windows generation + build number (e.g. `win11-22631`),
+/// read from `HKLM\…\CurrentVersion`. Falls back to a `0` build if the key can't be read.
 pub(crate) fn os_tag() -> String {
     use windows_registry::LOCAL_MACHINE;
     let build: u32 = LOCAL_MACHINE
@@ -263,15 +258,12 @@ fn is_https_url(url: &str) -> bool {
 }
 
 /// Fetch an HTTPS URL into memory over WinINet, capped at [`MAX_REMOTE_BYTES`] and
-/// bounded by per-phase timeouts (so a dead host can't hang us — the manifest fetch
-/// is on the startup path). `reload` bypasses the cache — needed for the sponsor
-/// manifest: the endpoint is a Cloudflare Worker that serves the live manifest AND
-/// records the anonymous check-in, so every run must actually reach origin (a cached
-/// response would serve a stale manifest *and* silently skip the check-in).
-/// `INTERNET_FLAG_RELOAD` forces a fresh origin fetch across the whole chain.
-/// Immutable, versioned
-/// per-sponsor image URLs pass `reload = false` and may be cached. Returns None on a
-/// non-HTTPS URL, any WinINet failure, an empty body, or an over-cap response.
+/// bounded by per-phase timeouts (so a dead host can't hang us; the manifest fetch
+/// is on the startup path). `reload` bypasses the cache, needed for the sponsor
+/// manifest so every run reaches origin for the live feed rather than a stale cached
+/// copy. `INTERNET_FLAG_RELOAD` forces a fresh origin fetch across the whole chain.
+/// Immutable, versioned per-sponsor image URLs pass `reload = false` and may be cached.
+/// Returns None on a non-HTTPS URL, any WinINet failure, an empty body, or an over-cap response.
 pub(crate) fn http_fetch(url: &str, reload: bool) -> Option<Vec<u8>> {
     http_fetch_capped(url, reload, MAX_REMOTE_BYTES, MANIFEST_TIMEOUT_SECS)
 }

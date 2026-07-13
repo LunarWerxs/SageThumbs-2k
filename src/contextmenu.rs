@@ -160,7 +160,8 @@ const MENU_PREVIEW_BUDGET: std::time::Duration = std::time::Duration::from_secs(
 /// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `crate::ModuleRef` and inits
 /// COM (the WIC HEIC/AVIF/RAW tier needs an apartment); on timeout it finishes + exits on its
 /// own and the caller degrades to a caption-only tile. Uses ONLY the cheap in-process tiers
-/// (`decode_menu_preview` — no magick/video/pdf/svg), so the worker is fast and bundled-byte-free.
+/// (`decode_menu_preview` — container covers, the fast image/WIC tiers, and pure-Rust resvg
+/// for SVG; no magick/video/pdf), so the worker is fast and bundled-byte-free.
 fn decode_menu_thumb_budgeted(path: &str) -> Option<MenuThumb> {
     let path = path.to_string();
     let (tx, rx) = std::sync::mpsc::channel();

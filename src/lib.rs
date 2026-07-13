@@ -11,8 +11,10 @@ pub mod app_image;
 pub mod clipboard;
 mod command;
 mod container;
+/// Archive entry listing for the Quick preview viewer (no extraction).
+pub use container::list_archive;
 mod contextmenu;
-mod decode;
+pub mod decode;
 mod dib;
 pub mod cli;
 mod factory;
@@ -29,7 +31,7 @@ mod ocr;
 // because it isn't a stable public API — just a shared helper across our own crates.
 #[doc(hidden)]
 pub mod parallel;
-mod pdf;
+pub mod pdf;
 mod previewhandler;
 mod propstore;
 mod strip;

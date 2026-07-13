@@ -10,7 +10,7 @@ resolver = "2"
 # so a release bump is ONE edit here. build-release.ps1 reads this line; keep it in sync
 # with packaging/AppxManifest.xml's <Identity Version>.
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 
 [package]
 name = "sagethumbs2k"
@@ -83,6 +83,11 @@ kamadak-exif = "0.6"
 # MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from
 # the shell-extension DLL (which never touches the mcp module).
 serde_json = "1"
+# Quick preview: markdown -> block/inline events for the viewer's in-process GDI renderer
+# (VIEWER / EXE-only). Pure-Rust, MIT, small — chosen over a WebView2 host to keep the binary
+# lean + the render `--shot`-verifiable. Referenced ONLY from `src/bin/app/preview/**`, so LTO
+# dead-strips it from the DLL. default-features off drops the `getopts` CLI bits.
+pulldown-cmark = { version = "0.12", default-features = false }
 # Lossless metadata strip (rewrite JPEG segments / PNG chunks, no pixel re-encode).
 # Pure-Rust, MIT OR Apache-2.0. Adds `bytes` as the only new transitive crate.
 img-parts = "0.4"
@@ -106,6 +111,11 @@ windows-implement = "0.60"
 # WinRT async plumbing (IAsyncOperation/IAsyncAction/AsyncStatus) for the OS PDF
 # renderer in pdf.rs. Same version `windows` 0.62 pulls in transitively.
 windows-future = "0.3"
+# WebView2 COM bindings for the Quick preview HTML host — OPTIONAL, gated behind the
+# `html-preview` feature (EXE-only; see [features]). 0.39 uses the same `windows` 0.62
+# the project already has (verified single-crate). Not bundled: the Edge engine ships
+# with Win11; only WebView2Loader.dll (~150 KB) rides alongside the EXE.
+webview2-com = { version = "0.39", optional = true }
 
 # --- Ebook / comic-archive cover extraction (the DarkThumbs port) ---
 # All pure-Rust, MIT/Apache. We only ever READ zip members, so we want inflate
@@ -163,6 +173,14 @@ jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
 [features]
 # (`.cbr`/RAR is now always-on via the pure-Rust `rars` crate — no feature gate.)
 default = []
+# Quick preview's WebView2 HTML host (local .html render + optional .url live preview).
+# EXE-ONLY, off by default: build-release.ps1 enables it for the `-p sagethumbs2k` (EXE)
+# build; the separately-built slim DLL never requests it, so `webview2-com` never links
+# into the shell-extension cdylib. `webview2-com` 0.39 tracks the same `windows` 0.62 the
+# project already uses (single crate). The Evergreen runtime ships with Win11, so nothing
+# heavy is bundled — just the ~150 KB WebView2Loader.dll alongside the EXE. Runtime is
+# ALSO gated behind default-OFF Settings toggles (preview_html / preview_url_live).
+html-preview = ["dep:webview2-com"]
 # Lossy WebP encode via libwebp (C). Off by default → pure-Rust build; the release
 # installer enables it. Without it, lossy-WebP convert falls back to lossless WebP.
 webp-lossy = ["dep:webp"]

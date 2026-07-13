@@ -37,6 +37,7 @@ mod hotkey;
 mod http;
 mod image_info;
 mod oauth;
+mod preview;
 mod screenshot;
 mod sync_client;
 mod upload_result;
@@ -49,9 +50,10 @@ mod win;
 use core::ffi::c_void;
 
 use windows::core::w;
-use windows::Win32::Foundation::HINSTANCE;
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, ICC_LINK_CLASS,
     ICC_STANDARD_CLASSES, ICC_BAR_CLASSES, ICC_PROGRESS_CLASS,
@@ -220,6 +222,26 @@ fn main() {
                 match window {
                     "convert" => crate::convert::run_shot_convert(out),
                     "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
+                    "preview" => {
+                        // `--file <path>` input (synthetic gradient if absent), plus optional
+                        // headless state forcing: `--hot N` (button N hovered), `--pinned`,
+                        // `--pdf-page N`, `--frame N` (animation frame), `--play` (video strip).
+                        let val = |name: &str| {
+                            args.iter().position(|a| a == name).and_then(|p| args.get(p + 1))
+                        };
+                        let opts = crate::preview::ShotOpts {
+                            file: val("--file").cloned(),
+                            hot: val("--hot").and_then(|s| s.parse().ok()),
+                            pinned: args.iter().any(|a| a == "--pinned"),
+                            pdf_page: val("--pdf-page").and_then(|s| s.parse().ok()),
+                            frame: val("--frame").and_then(|s| s.parse().ok()),
+                            play: args.iter().any(|a| a == "--play"),
+                            dpi: val("--dpi").and_then(|s| s.parse().ok()),
+                            scroll: val("--scroll").and_then(|s| s.parse().ok()),
+                            wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
+                        };
+                        crate::preview::run_shot_preview(hinst, dark, out, &opts)
+                    }
                     _ => {
                         let tab = args
                             .iter()
@@ -247,6 +269,14 @@ fn main() {
             if let Some(path) = args.get(pos + 1) {
                 image_info::run_image_info(path);
             }
+            return;
+        }
+        // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
+        // viewer. With no daemon hook yet (Phase 2), it's driven by the path arg + WM_COPYDATA
+        // commands. A second launch forwards its path to the running viewer and exits.
+        if let Some(pos) = args.iter().position(|a| a == "--preview") {
+            let path = args.get(pos + 1).filter(|p| !p.starts_with("--")).map(String::as_str);
+            crate::preview::run_preview(hinst, path);
             return;
         }
         // Instant capture: `--screenshot-instant` grabs the whole screen straight to
@@ -354,6 +384,31 @@ fn main() {
         // watchdog were both killed, or a prior logon never brought it up — restart it now so
         // the user doesn't have to click "Restart". No-op when it's already running / not wanted.
         crate::screenshot::heal_if_wanted();
+
+        // Single instance, TOCTOU-safe: same pattern as the screenshot daemon
+        // (`screenshot::daemon::run_daemon`) — claim a named mutex FIRST, since the
+        // FindWindow check alone races (two Start Menu double-clicks can both pass it
+        // before either has created a window). Held (leaked) for the life of the
+        // Settings window on purpose; dropping it early would let a third launch in.
+        let single_instance = CreateMutexW(None, true, w!("SageThumbs2K.App.Single"));
+        if single_instance.is_ok() && GetLastError() == ERROR_ALREADY_EXISTS {
+            // Another instance is already up (or mid-boot) — activate ITS window
+            // instead of opening a second one. The window may not exist yet if the
+            // other instance is still initializing, so retry briefly before giving up.
+            for _ in 0..50 {
+                if let Ok(existing) = FindWindowW(w!("SageThumbs2KOptions"), None) {
+                    if IsIconic(existing).as_bool() {
+                        let _ = ShowWindow(existing, SW_RESTORE);
+                    }
+                    let _ = SetForegroundWindow(existing);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            // Never appeared — the other instance likely exited between the mutex
+            // check and now. Exit quietly rather than fight over the window class.
+            return;
+        }
 
         let class = w!("SageThumbs2KOptions");
         let wc = WNDCLASSW {

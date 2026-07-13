@@ -35,9 +35,17 @@ fn custom_hotkey_bound() -> bool {
     sagethumbs2k_core::settings::custom_action_hotkey().1 != 0
 }
 
-/// Does the daemon need to be resident? True if screenshots are on OR a custom hotkey is bound.
+/// Is Quick preview enabled? Its Space keyboard hook lives in this same daemon, so the
+/// daemon must be resident whenever the feature is on — independently of screenshots or a
+/// custom hotkey.
+fn preview_wanted() -> bool {
+    sagethumbs2k_core::settings::preview_enabled()
+}
+
+/// Does the daemon need to be resident? True if screenshots are on OR a custom hotkey is
+/// bound OR Quick preview is enabled.
 fn daemon_wanted() -> bool {
-    is_enabled() || custom_hotkey_bound()
+    is_enabled() || custom_hotkey_bound() || preview_wanted()
 }
 
 /// Is the `…\Run` autostart entry present? (The legacy "screenshots enabled" signal, now

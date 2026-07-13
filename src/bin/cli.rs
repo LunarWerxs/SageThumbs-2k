@@ -21,7 +21,7 @@ USAGE:
   st2k info      <in> [--json]                  dimensions + camera/date/GPS
   st2k formats   [--json]                       list supported input formats
   st2k upload-hosts [--open]                     show (or open) the editable upload-hosts config file
-  st2k devmode   [on|off|status]                exclude THIS machine from anonymous usage stats
+  st2k devmode   [on|off|status]                toggle the developer test-box flag
   st2k --mcp                                     run as an MCP server (stdio JSON-RPC, for AI agents)
   st2k --version | -V                            print the version and exit
 ";

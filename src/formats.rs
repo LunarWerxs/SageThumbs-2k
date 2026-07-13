@@ -121,6 +121,9 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("dcx", "ZSoft IBM PC multi-page Paintbrush"),
     ("dds", "Microsoft DirectDraw Surface"),
     ("dib", "Windows DIB"),
+    // `.dicom` is the same content as `.dcm` (decode is content-sniffed on bytes, not the
+    // extension), so this alias rides the existing DICOM path (QuickLook parity, 2026-07-11).
+    ("dicom", "DICOM medical image"),
     ("dpx", "SMPTE 268M-2003"),
     ("dxt1", "Microsoft DirectDraw Surface"),
     ("dxt5", "Microsoft DirectDraw Surface"),
@@ -467,6 +470,43 @@ pub fn is_known(ext: &str) -> bool {
     sorted
         .binary_search_by(|&e| e.bytes().cmp(ext.bytes().map(|b| b.to_ascii_lowercase())))
         .is_ok()
+}
+
+// ---- Quick preview: text/markdown lists (VIEWER-ONLY — Phase 3) --------------------------
+// Consulted ONLY by the Quick preview viewer to decide "render this as markdown / as
+// syntax-highlighted text". DELIBERATELY NOT in FORMATS: adding them there would register
+// thumbnail/property/preview-pane handlers + enable the image verbs on .md/.txt files. So
+// `is_known()` above stays unaffected; only the viewer's content dispatch reads these.
+
+/// Markdown source extensions the viewer renders GitHub-style (gated on `preview_markdown()`).
+pub const PREVIEW_MD_EXTS: &[&str] = &["md", "markdown", "mdown", "mkd", "mdwn", "mdtxt", "mdtext"];
+
+/// Text/code extensions the viewer renders as text (gated on `preview_text()`). A CURATED set,
+/// not "every text file" — the viewer's content sniff catches unknown-but-textual files too.
+/// (`csv` moved to [`PREVIEW_DOC_EXTS`] — it renders as a real table now.)
+pub const PREVIEW_TEXT_EXTS: &[&str] = &[
+    "txt", "log", "json", "yaml", "yml", "toml", "xml", "ini", "cfg", "rs", "py", "js",
+    "ts", "c", "cpp", "h", "cs", "java", "sh", "ps1", "bat", "html", "css", "sql",
+];
+
+/// Structured documents the viewer converts to markdown at load and renders through the
+/// markdown pipeline (gated on `preview_markdown()`): CSV/TSV → a GitHub-grid table view,
+/// Jupyter notebooks → rendered markdown + fenced code cells with outputs.
+pub const PREVIEW_DOC_EXTS: &[&str] = &["csv", "tsv", "ipynb"];
+
+/// Is `ext` (no dot) a convert-to-markdown document? ASCII-case-insensitive.
+pub fn is_preview_doc(ext: &str) -> bool {
+    PREVIEW_DOC_EXTS.iter().any(|&e| e.eq_ignore_ascii_case(ext))
+}
+
+/// Is `ext` (no dot) a markdown source the viewer renders? ASCII-case-insensitive.
+pub fn is_preview_markdown(ext: &str) -> bool {
+    PREVIEW_MD_EXTS.iter().any(|&e| e.eq_ignore_ascii_case(ext))
+}
+
+/// Is `ext` (no dot) a text/code file the viewer renders? ASCII-case-insensitive.
+pub fn is_preview_text(ext: &str) -> bool {
+    PREVIEW_TEXT_EXTS.iter().any(|&e| e.eq_ignore_ascii_case(ext))
 }
 
 #[cfg(test)]

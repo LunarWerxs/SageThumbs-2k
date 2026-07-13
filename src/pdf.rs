@@ -35,6 +35,14 @@ use windows_future::{AsyncStatus, IAsyncAction, IAsyncOperation};
 const PDF_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn render_first_page(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
+    render_page_counted(bytes, 0, max_dim).map(|(png, _count)| png)
+}
+
+/// Render page `page_index` (0-based, clamped to the last page) of a PDF to PNG bytes (long
+/// edge ~`max_dim`), AND return the document's total page count. Loads the document once. This
+/// powers the Quick preview viewer's page navigation; thumbnail/preview-pane callers use the
+/// page-0 [`render_first_page`] wrapper (whose behaviour is UNCHANGED). `None` on any failure.
+pub fn render_page_counted(bytes: &[u8], page_index: u32, max_dim: u32) -> Option<(Vec<u8>, u32)> {
     let owned = bytes.to_vec();
     let (tx, rx) = std::sync::mpsc::channel();
     // Dedicated MTA thread (see module docs). We `recv_timeout` instead of `join()` so a
@@ -45,7 +53,7 @@ pub fn render_first_page(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
         #[allow(clippy::default_constructed_unit_structs)]
         let _module = crate::ModuleRef::default();
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        let out = render(&owned, max_dim).ok();
+        let out = render(&owned, page_index, max_dim).ok();
         if inited {
             unsafe { CoUninitialize() };
         }
@@ -60,7 +68,7 @@ pub fn render_first_page(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
     }
 }
 
-fn render(bytes: &[u8], max_dim: u32) -> Result<Vec<u8>> {
+fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {
     // Copy the PDF into a WinRT in-memory stream.
     let stream = InMemoryRandomAccessStream::new()?;
     {
@@ -72,12 +80,13 @@ fn render(bytes: &[u8], max_dim: u32) -> Result<Vec<u8>> {
     }
     stream.Seek(0)?;
 
-    // Load the document and grab page 0.
+    // Load the document and grab the requested page (clamped into range).
     let doc = block_op(&PdfDocument::LoadFromStreamAsync(&stream)?)?;
-    if doc.PageCount()? == 0 {
+    let count = doc.PageCount()?;
+    if count == 0 {
         return Err(E_FAIL.into());
     }
-    let page = doc.GetPage(0)?;
+    let page = doc.GetPage(page_index.min(count - 1))?;
 
     // Page size is in DIPs (96 dpi). Scale so the long edge is `max_dim`.
     let size = page.Size()?;
@@ -100,7 +109,7 @@ fn render(bytes: &[u8], max_dim: u32) -> Result<Vec<u8>> {
     block_op(&reader.LoadAsync(len)?)?;
     let mut buf = vec![0u8; len as usize];
     reader.ReadBytes(&mut buf)?;
-    Ok(buf)
+    Ok((buf, count))
 }
 
 /// Hard cap on a single async wait so a pathological PDF can't hang the thread.

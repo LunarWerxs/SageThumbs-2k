@@ -2,8 +2,59 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 0.10.0 (2026-07-13)
 
+- **New: press Space to preview a file, QuickLook-style.** Select a file in Explorer (or on the
+  Desktop) and tap **Space** for an instant full-size popup, then Space or Esc to close. It shows
+  any format SageThumbs can decode, and adds a lot a still image can't: **videos and audio play**
+  (with a seek bar, play/pause and volume), **animated GIFs/WebP animate**, **code is
+  syntax-highlighted with line numbers** (editor-style, across the common languages — JSON keys,
+  strings and numbers each get their own colour), **Markdown renders GitHub-style** (with clickable
+  links), **multi-page PDFs
+  page** with the arrow keys or on-screen buttons, **fonts show a specimen** (name + pangram + glyph
+  sheet), and **archives (zip/7z/rar) list their contents** without extracting. Use **←/→** (or
+  PgUp/PgDn) to flip through the folder without closing, and **F11** for full-screen. You can zoom
+  and pan images with the wheel, and the popup never steals focus from Explorer. It's **off by
+  default**: turn it on under **Settings ▸ Quick preview**, where you can also tweak hold-to-peek,
+  close-on-focus-loss, pin-on-top, and which content types are previewed.
+- **New: Markdown preview has a collapsible outline sidebar.** When a Markdown file has headings,
+  the Space-bar preview shows a **Contents** panel on the left that lists them as a clickable,
+  indented outline. Click any heading to jump straight to that section, and the section you are
+  currently reading stays highlighted as you scroll. Toggle the panel with the outline button in the
+  toolbar; your choice is remembered for next time.
+- **New: CSV and TSV files preview as real tables.** Press Space on a `.csv`/`.tsv` and you get a
+  gridded, shaded table view (quoted fields, embedded commas and multi-line cells handled;
+  semicolon-separated exports detected automatically) instead of raw text. Very large files show
+  the first thousand rows with a note.
+- **New: Jupyter notebooks preview rendered.** `.ipynb` files show their markdown cells rendered,
+  code cells syntax-highlighted with line numbers, and text outputs (including cleaned-up error
+  tracebacks) — no Jupyter install needed.
+- **New (optional): download web images in Markdown previews.** Off by default: badges and other
+  web-hosted images show as labeled chips. Turn it on (Settings ▸ Quick preview) and they download
+  (HTTPS only, size-capped, in the background) and display like GitHub shows them.
+- **Outline sidebar polish.** Clicking an entry near the end of a document now visibly selects it
+  even when the page is already scrolled to the bottom, and the panel slides open and closed
+  instead of snapping.
+- **Bare links are clickable now.** A URL typed straight into Markdown (like `https://example.com`
+  or `www.example.com`) turns into a clickable link, the way GitHub does it. You no longer have to
+  wrap it in `[text](url)`. URLs inside code stay plain.
+- **Markdown now renders the way GitHub shows it.** README-style pages come out looking right:
+  the HTML "hero" section at the top (centered banner, title, tagline, badge row) renders instead
+  of disappearing, **pictures stored next to the file display inline** (sized like GitHub sizes
+  them, clickable when they're links), and **tables get real grid lines, shaded alternating rows,
+  and sensible column widths**. Common inline HTML (`<b>`, `<i>`, `<br>`, links, lists, tables,
+  `<details>` blocks) renders too, and the text column is capped and centered like a GitHub page
+  instead of stretching edge-to-edge. Web-hosted images (like status badges) show as small labeled
+  chips rather than being downloaded — previewing a file never touches the network.
+- **Optional: render local HTML files.** With the new **"Render local HTML files"** toggle
+  (Settings ▸ Quick preview, off by default), pressing Space on a `.html` file shows the rendered
+  page in an embedded, **locked-down** viewer — JavaScript is disabled and every network request is
+  blocked, so a page cannot phone home or load remote trackers. A companion **"Live-load .url
+  shortcuts"** toggle (also off by default) can open a `.url`'s real web page in a throwaway session;
+  left off, a `.url` just shows its target address as text.
+- **Animated (CSS-driven) SVGs no longer show up blank.** SVGs that hide their artwork at rest and
+  reveal it through a CSS animation now render their visible state everywhere (thumbnails, the
+  preview pane, and the new Space-bar preview) instead of an empty frame.
 - **SVG images now show a picture in the right-click preview.** Right-clicking an `.svg`
   (or `.svgz`) used to show just the filename and size at the top of the SageThumbs menu, even
   though the file thumbnailed normally everywhere else. It now shows the actual image there too.

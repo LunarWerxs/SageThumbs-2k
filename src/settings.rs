@@ -104,13 +104,10 @@ pub fn set_install_reported() {
     let _ = set_dword("InstallReported", 1);
 }
 
-/// True on a machine flagged as a developer's own test box (HKCU `DevMachine` DWORD = 1).
-/// When set, the app appends `&dev=1` to its anonymous check-in beacons so the analytics
-/// Worker drops them from the public counters — this keeps the owner's own build/install/
-/// test churn from inflating the numbers (each app launch is a check-in). It is a plain
-/// machine-local opt-in flag, NOT an identifier, and is absent (the default) on every real
-/// install. Set it with [`set_dev_machine`] (or `reg add HKCU\Software\SageThumbs2K /v
-/// DevMachine /t REG_DWORD /d 1`).
+/// True on a machine flagged as the developer's own test box (HKCU `DevMachine` DWORD = 1).
+/// When set, the app appends `&dev=1` to its startup manifest request. A plain machine-local
+/// opt-in flag, not an identifier, absent (the default) on every real install. Set it with
+/// [`set_dev_machine`] (or `reg add HKCU\Software\SageThumbs2K /v DevMachine /t REG_DWORD /d 1`).
 pub fn is_dev_machine() -> bool {
     get_dword("DevMachine", 0) != 0
 }
@@ -122,7 +119,7 @@ pub fn set_dev_machine(on: bool) -> windows_registry::Result<()> {
 
 /// The version last installed, left as a single "tombstone" value by the uninstaller after
 /// it wipes the rest of [`ROOT`]. Its presence on a fresh install means this machine had us
-/// before — a reinstall, not a first-time user. A plain version string, NOT an identifier.
+/// before (a reinstall, not a first-time user). A plain version string.
 pub fn tombstone_version() -> Option<String> {
     CURRENT_USER
         .open(hkcu_root())
@@ -525,6 +522,116 @@ pub fn update_auto_check() -> bool {
 /// Persist the auto-update-check toggle.
 pub fn set_update_auto_check(on: bool) -> windows_registry::Result<()> {
     set_dword("UpdateAutoCheck", on as u32)
+}
+
+// ---- Quick preview (QuickLook-style "press Space, see the file") --------
+// The opt-in Space-to-preview popup. All EXE-side; the DLL never reads these.
+// `PreviewEnabled` is the master switch and ALSO drives the resident daemon's
+// residency (the app's `screenshot::enable::daemon_wanted` consults it), so a
+// bound Quick preview keeps that shared tray daemon alive exactly like a bound
+// custom hotkey does. The rest are viewer behavior prefs read by the viewer
+// window. DWORD 0/1; getters default to the plan's §6 defaults.
+
+/// Master switch for Quick preview. OFF by default (nothing hooks the keyboard
+/// until the user opts in); also drives daemon residency.
+pub fn preview_enabled() -> bool {
+    get_dword("PreviewEnabled", 0) != 0
+}
+/// Persist the Quick preview master toggle.
+pub fn set_preview_enabled(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewEnabled", on as u32)
+}
+
+/// Hold Space >= 750 ms then release closes the preview ("peek"). ON by default.
+pub fn preview_hold_peek() -> bool {
+    get_dword("PreviewHoldPeek", 1) != 0
+}
+/// Persist the hold-to-peek toggle.
+pub fn set_preview_hold_peek(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewHoldPeek", on as u32)
+}
+
+/// Close the viewer when it loses focus (and isn't pinned). OFF by default.
+pub fn preview_close_on_focus_loss() -> bool {
+    get_dword("PreviewCloseOnFocusLoss", 0) != 0
+}
+/// Persist the close-on-focus-loss toggle.
+pub fn set_preview_close_on_focus_loss(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewCloseOnFocusLoss", on as u32)
+}
+
+/// Open the viewer pinned on top by default. OFF by default.
+pub fn preview_topmost() -> bool {
+    get_dword("PreviewTopmost", 0) != 0
+}
+/// Persist the open-pinned-on-top toggle.
+pub fn set_preview_topmost(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewTopmost", on as u32)
+}
+
+/// Keep the Markdown outline (table-of-contents) sidebar OPEN. ON by default; the viewer's outline
+/// toggle button persists the user's choice here (so it stays pinned open/closed across previews).
+pub fn preview_toc_open() -> bool {
+    get_dword("PreviewTocOpen", 1) != 0
+}
+/// Persist the Markdown outline-sidebar open/closed state.
+pub fn set_preview_toc_open(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewTocOpen", on as u32)
+}
+
+/// Download web-hosted images referenced by a previewed Markdown file (badges, hotlinked art).
+/// **OFF by default** — fetching an image URL from a previewed document is an outbound request
+/// an attacker-authored README fully controls (classic tracking-pixel shape), so it is strictly
+/// opt-in. When off, remote images render as labeled alt-text chips. HTTPS-only when on.
+pub fn preview_md_remote_img() -> bool {
+    get_dword("PreviewMdRemoteImg", 0) != 0
+}
+/// Persist the remote-markdown-images toggle.
+pub fn set_preview_md_remote_img(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewMdRemoteImg", on as u32)
+}
+
+/// Render local `.html`/`.htm` files as live web pages (WebView2), instead of showing their
+/// source as text. **OFF by default** — a rendered page can load remote resources, so the viewer
+/// locks it down (scripts off + non-`file://` requests blocked) and only renders when this is on.
+pub fn preview_html() -> bool {
+    get_dword("PreviewHtml", 0) != 0
+}
+/// Persist the local-HTML-render toggle.
+pub fn set_preview_html(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewHtml", on as u32)
+}
+
+/// LIVE-load the target of a `.url`/`.webloc` shortcut in an ephemeral WebView2 (no cookie/session
+/// reuse) instead of showing the parsed target URL as text. **OFF by default** — pressing Space on
+/// a `.url` would otherwise fire a silent outbound request to an attacker-controllable domain
+/// (`.url` is a known phishing vector), so live loading is strictly opt-in.
+pub fn preview_url_live() -> bool {
+    get_dword("PreviewUrlLive", 0) != 0
+}
+/// Persist the live-`.url` toggle.
+pub fn set_preview_url_live(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewUrlLive", on as u32)
+}
+
+/// Preview text/code files (Phase 3 — syntax-highlighted via the viewer's WebView2
+/// host). ON by default; only consulted once Phase 3 ships.
+pub fn preview_text() -> bool {
+    get_dword("PreviewText", 1) != 0
+}
+/// Persist the text/code preview toggle.
+pub fn set_preview_text(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewText", on as u32)
+}
+
+/// Render Markdown like GitHub (Phase 3 — via WebView2). ON by default; only
+/// consulted once Phase 3 ships.
+pub fn preview_markdown() -> bool {
+    get_dword("PreviewMarkdown", 1) != 0
+}
+/// Persist the Markdown preview toggle.
+pub fn set_preview_markdown(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewMarkdown", on as u32)
 }
 
 // ---- Per-extension enable (read by registration) ------------------------

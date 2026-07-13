@@ -143,6 +143,10 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     // tray menu still works.
     register_configured_hotkey(hwnd);
 
+    // Quick preview: install the WH_KEYBOARD_LL "press Space to preview" hook if the feature
+    // is enabled (no-op otherwise). Re-armed on the same triggers as the hotkeys (below).
+    super::spacehook::rearm(hwnd);
+
     // Learn the shell's dynamic "TaskbarCreated" broadcast id BEFORE the tray add, so an
     // Explorer (re)start from here on always re-adds our icon (see the wndproc arm).
     TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
@@ -251,6 +255,10 @@ unsafe fn rearm_hotkeys(hwnd: HWND) {
     let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
     let _ = UnregisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID);
     register_configured_hotkey(hwnd);
+    // The Quick preview Space hook rides the SAME recovery discipline: reinstall it (or remove
+    // it if the feature was just turned off in Settings via WM_RELOAD). Windows can silently
+    // drop a slow LL hook across sleep/resume/session-change, exactly like a RegisterHotKey.
+    super::spacehook::rearm(hwnd);
 }
 
 /// Build a NOTIFYICONDATAW for our tray entry (hWnd + uID identify it for ADD/DELETE).
@@ -386,6 +394,16 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
                 LRESULT(0)
             }
+            // Quick preview Space hook (see `spacehook`): the hook callback posts these so the
+            // heavier FindWindow / spawn / WM_COPYDATA work happens OFF the LL-hook callback.
+            m if m == super::spacehook::WM_APP_PREVIEW => {
+                crate::preview::request_toggle();
+                LRESULT(0)
+            }
+            m if m == super::spacehook::WM_APP_PREVIEW_CLOSE => {
+                crate::preview::request_close();
+                LRESULT(0)
+            }
             WM_RELOAD => {
                 rearm_hotkeys(hwnd);
                 // Reconcile the tray icon with the (possibly just-changed) setting.
@@ -497,6 +515,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = KillTimer(Some(hwnd), WATCHDOG_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), REARM_TIMER_ID);
                 let _ = WTSUnRegisterSessionNotification(hwnd);
+                super::spacehook::uninstall(); // drop the Space hook with the daemon
                 remove_tray_icon(hwnd);
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);

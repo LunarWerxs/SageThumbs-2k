@@ -92,6 +92,32 @@ fn is_7z(b: &[u8]) -> bool {
     b.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
 }
 
+/// RAR signature (RAR 1.5–4.x `Rar!\x1a\x07\x00` and RAR5 `Rar!\x1a\x07\x01\x00` share this prefix).
+fn is_rar(b: &[u8]) -> bool {
+    b.starts_with(b"Rar!\x1a\x07")
+}
+
+/// List an archive's entries — `(name, uncompressed_size, is_dir)` — WITHOUT extracting anything
+/// (central-directory / header read only, so no decompression-bomb risk). Dispatches by signature
+/// across ZIP-family, 7-Zip, and RAR. The count is capped so a pathological archive with millions
+/// of tiny entries can't stall the viewer. `None` if `bytes` isn't a recognized archive.
+pub fn list_archive(bytes: &[u8]) -> Option<Vec<(String, u64, bool)>> {
+    const MAX_ENTRIES: usize = 50_000;
+    // The cap is passed INTO each reader so it bounds the collection itself — a crafted archive
+    // with millions of tiny entries never materializes millions of `String`s (which, on the UI
+    // thread in `content::archive_listing`, would freeze the viewer).
+    let entries = if is_zip(bytes) {
+        zipfmt::list_bytes(bytes, MAX_ENTRIES)?
+    } else if is_7z(bytes) {
+        sevenz::list(bytes, MAX_ENTRIES)?
+    } else if is_rar(bytes) {
+        rar::list(bytes, MAX_ENTRIES)?
+    } else {
+        return None;
+    };
+    Some(entries.into_iter().map(|e| (e.name, e.size, e.is_dir)).collect())
+}
+
 /// Does `head` (the first bytes of a file) look like an audio container that may
 /// carry embedded cover art? Lets the thumbnail provider take the memory-light
 /// seek path instead of reading the whole (possibly huge) file.

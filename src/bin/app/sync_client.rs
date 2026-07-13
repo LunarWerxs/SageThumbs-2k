@@ -2,7 +2,7 @@
 //! and the per-user cloud document at `studio.connections.icu/v1/app-data/{appId}`.
 //!
 //! Only an explicit **allowlist** of portable preferences is synced — never machine-local
-//! values (absolute paths, the upload-host config), install telemetry, or secrets. The
+//! values (absolute paths, the upload-host config), local-only flags, or secrets. The
 //! store is the "settings locker": one JSON object, ≤64 KB, optimistic-concurrency writes
 //! (RFC 7386 deep-merge). EXE-only; the DLL never links this.
 //!
@@ -31,7 +31,7 @@ enum Kind {
 }
 
 /// The syncable-key allowlist — portable preferences ONLY. Deliberately excludes
-/// `ShotSaveDir` (absolute path), `Debug` (local diagnostics), the install-telemetry
+/// `ShotSaveDir` (absolute path), `Debug` (local diagnostics), the install-state
 /// flags, `ModernMenuActive` (HKLM installer state), and everything under the `OAuth`
 /// subkey (secrets). The `MenuItems\*` and `<ext>\Enabled` subkeys are deferred to v1.1
 /// (they need subkey enumeration + the elevated re-register path, respectively).

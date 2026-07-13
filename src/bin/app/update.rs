@@ -138,11 +138,10 @@ pub(crate) fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
 
 /// Ask the sponsor Worker for the latest version. The Worker already serves a `latest`
 /// field in its manifest (sourced from GitHub server-side + edge-cached), so the client
-/// never touches GitHub directly and can't be rate-limited. This fetch doubles as the
-/// periodic heartbeat check-in (new=0 — the fresh-install marker is owned by the app's
-/// own startup path). Returns the latest tag (e.g. "0.4.9") or None on any failure.
+/// never touches GitHub directly and can't be rate-limited. Reuses the startup manifest
+/// request with new=0. Returns the latest tag (e.g. "0.4.9") or None on any failure.
 fn latest_from_worker() -> Option<String> {
-    // Opt this check-in out of the public tally on a developer test box (see `is_dev_machine`).
+    // Tag the request with &dev=1 on a developer test box (see `is_dev_machine`).
     let dev = if sagethumbs2k_core::settings::is_dev_machine() { "&dev=1" } else { "" };
     let url = format!("{BANNER_URL}?v={}&os={}&new=0{dev}", env!("CARGO_PKG_VERSION"), os_tag());
     let bytes = http_fetch(&url, true)?;
@@ -164,7 +163,7 @@ pub(crate) fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F)
                 return; // checked recently — don't re-toast within the interval
             }
         }
-        // Worker first (also the heartbeat check-in); GitHub as a fallback.
+        // Worker first; GitHub as a fallback.
         let newer = match latest_from_worker() {
             Some(tag) => {
                 write_cache(now, &tag); // cache whatever the latest is (newer or not)

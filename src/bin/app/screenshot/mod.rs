@@ -17,6 +17,7 @@ mod gdip;
 mod output;
 mod overlay;
 mod prefs;
+mod spacehook; // the WH_KEYBOARD_LL "press Space to preview" hook (Quick preview, Phase 2)
 mod toolbar;
 mod tools;
 mod upload;

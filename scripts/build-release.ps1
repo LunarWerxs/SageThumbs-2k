@@ -59,7 +59,9 @@ if (-not $SkipBuild) {
     # `-p sagethumbs2k`: the rlib + the two EXEs (full 36-language i18n). The DLL is a
     # SEPARATE package (`sagethumbs2k-dll`) built slim below — so we can't `--features`
     # the whole workspace at once (cargo rejects `--features` across >1 package).
-    $feat = @('-p', 'sagethumbs2k', '--features', 'webp-lossy')
+    # `html-preview` links webview2-com into the EXEs only (the slim DLL build never requests it,
+    # so the shell-extension cdylib stays free of it — verify with `cargo tree -p sagethumbs2k-dll`).
+    $feat = @('-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview')
     Write-Host "[1/4] cargo build --release $($feat -join ' ')  (rlib + EXEs)" -ForegroundColor Green
     Push-Location $root
     try { cargo build --release @feat; if ($LASTEXITCODE) { throw "cargo build failed" } } finally { Pop-Location }
@@ -273,3 +275,13 @@ if ($LASTEXITCODE) { throw "Inno Setup compile failed" }
 $setup = Get-ChildItem "$root\dist\SageThumbs2K-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 Write-Host "[4/4] done" -ForegroundColor Green
 Write-Host ("  -> {0}  ({1} MB)" -f $setup.FullName, [math]::Round($setup.Length / 1MB, 1)) -ForegroundColor Cyan
+
+# 6) Refresh the marketing site (site/index.html) from the just-built truth: the format
+# wall + per-category counts from st2k.exe, and the version pills from Cargo.toml, so
+# sagethumbs2k.github.io never drifts. Non-fatal (a site-gen hiccup must not fail a release).
+$genSite = Join-Path $root 'scripts\gen-site.mjs'
+if ((Get-Command node -EA SilentlyContinue) -and (Test-Path $genSite)) {
+    Write-Host "[site] regenerating site\index.html from live formats" -ForegroundColor Green
+    try { & node $genSite "$targetRel\st2k.exe" }
+    catch { Write-Host "  (site regen skipped: $_)" -ForegroundColor DarkYellow }
+}
