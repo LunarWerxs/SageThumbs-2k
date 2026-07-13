@@ -29,7 +29,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 <br/><br/>
 
-<img src="assets/screenshots/preview-quicklook.png" alt="SageThumbs 2K Quick preview: press Space in Explorer for an instant QuickLook-style popup — here a syntax-highlighted source file, with a toolbar to pin, copy, show info, upload, open and close" width="640" />
+<img src="assets/screenshots/preview-collage.png" alt="SageThumbs 2K Quick preview: press Space in Explorer for an instant QuickLook-style popup — shown previewing a photo, rendered Markdown, syntax-highlighted code and a data table" width="840" />
 
 </div>
 
