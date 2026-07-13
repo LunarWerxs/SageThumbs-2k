@@ -14,7 +14,7 @@ jobs:
     name: build · clippy · test (windows-msvc)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc + clippy/rustfmt,
       # which rustup installs on first cargo invocation. No setup action needed.
@@ -71,7 +71,7 @@ jobs:
     name: consistency (assets · counts · version)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: check-consistency
         shell: pwsh
         run: ./scripts/check-consistency.ps1
@@ -84,7 +84,7 @@ jobs:
     name: cargo-deny (licenses · advisories — default features)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc, which rustup can't
       # use on this Linux runner ("target triple in channel name"). cargo-deny only
       # needs `cargo metadata` (toolchain-agnostic; the windows-msvc *target* is set
