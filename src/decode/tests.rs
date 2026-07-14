@@ -342,9 +342,11 @@
         // The in-explorer context-menu tile used to skip SVG (caption-only). It now
         // renders it via resvg (pure-Rust, in-process, time-bounded) — while video /
         // PDF / ImageMagick stay excluded so a right-click can never freeze the shell.
+        // A 40px SVG is below SVG_MIN_DIM (512), so render_svg scales the vector UP to a usable
+        // 512px long edge (crisp — see `svg_small_scales_up_to_min`); the menu path shares that.
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="rgb(10,200,90)"/></svg>"#;
         let img = decode_menu_preview(svg).expect("menu preview should now decode a plain SVG");
-        assert_eq!((img.width(), img.height()), (40, 40));
+        assert_eq!((img.width(), img.height()), (512, 512));
 
         // `.svgz` (gzipped SVG) must inflate + render on the menu path too.
         let mut gz = Vec::new();
@@ -354,7 +356,7 @@
             enc.write_all(svg).unwrap();
         }
         let img = decode_menu_preview(&gz).expect("menu preview should decode gzipped .svgz");
-        assert_eq!((img.width(), img.height()), (40, 40));
+        assert_eq!((img.width(), img.height()), (512, 512));
 
         // A PDF stays deliberately excluded from the in-explorer menu tier — no
         // WinRT rasterizer here — so it must still fail out to a caption-only tile.
@@ -653,4 +655,59 @@
         let out = decode_thumbnail_opts(&exr, 64, false)
             .expect("zero-alpha EXR must thumbnail, not be rejected as blank");
         assert!(out.rgba.chunks_exact(4).any(|px| px[3] != 0));
+    }
+
+    #[test]
+    fn metafile_min_density_bumps_small_emf_only() {
+        // Minimal EMF header: iType=1 (EMR_HEADER), rclBounds(16), rclFrame(16, .01mm), " EMF".
+        let mut emf = vec![0u8; 88];
+        emf[0..4].copy_from_slice(&1i32.to_le_bytes());
+        emf[40..44].copy_from_slice(b" EMF");
+        let set_frame = |b: &mut [u8], w: i32, h: i32| {
+            b[24..28].copy_from_slice(&0i32.to_le_bytes()); // left
+            b[28..32].copy_from_slice(&0i32.to_le_bytes()); // top
+            b[32..36].copy_from_slice(&w.to_le_bytes()); // right
+            b[36..40].copy_from_slice(&h.to_le_bytes()); // bottom
+        };
+        // ~0.67 inch (1693 units of .01 mm) → ~64px at 96 DPI → bump toward a 512px long edge.
+        set_frame(&mut emf, 1693, 1000);
+        let d = metafile_min_density(&emf).expect("small metafile → density bump");
+        assert!((760..=772).contains(&d), "density ~768, got {d}");
+        // A 10-inch frame (~960px at 96 DPI) is already large → no override.
+        set_frame(&mut emf, 25400, 20000);
+        assert_eq!(metafile_min_density(&emf), None, "large metafile untouched");
+        // A tiny declared frame would compute a huge density; it must be CAPPED so magick's reader
+        // can't be handed a value it chokes on (the pre-1.0.1 WMF crash class).
+        set_frame(&mut emf, 100, 80); // ~0.04 in → uncapped would be ~13000
+        assert_eq!(metafile_min_density(&emf), Some(1200), "tiny-frame density is capped");
+        // Placeable WMF is deliberately NOT bumped — its header bbox/Inch can disagree with the
+        // metafile body, which is exactly what made a crafted WMF crash magick.
+        let mut wmf = vec![0u8; 22];
+        wmf[0..4].copy_from_slice(&[0xD7, 0xCD, 0xC6, 0x9A]);
+        wmf[10..12].copy_from_slice(&72i16.to_le_bytes()); // bbox right
+        wmf[12..14].copy_from_slice(&54i16.to_le_bytes()); // bbox bottom
+        wmf[14..16].copy_from_slice(&1440u16.to_le_bytes()); // Inch
+        assert_eq!(metafile_min_density(&wmf), None, "WMF left at intrinsic size");
+        assert_eq!(metafile_min_density(b"not a metafile at all ......"), None);
+    }
+
+    #[test]
+    fn svg_small_scales_up_to_min() {
+        let svg = |w: u32, h: u32| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="rgb(20,120,200)"/></svg>"#
+            )
+            .into_bytes()
+        };
+        // Small icon/logo → vector rendered UP to the 512px long edge (crisp), aspect preserved.
+        let img = render_svg(&svg(24, 24)).expect("small svg renders");
+        assert_eq!((img.width(), img.height()), (512, 512));
+        let img = render_svg(&svg(48, 24)).expect("small wide svg renders");
+        assert_eq!((img.width(), img.height()), (512, 256));
+        // Already-large-enough SVG is left at its intrinsic size.
+        let img = render_svg(&svg(800, 600)).expect("normal svg renders");
+        assert_eq!((img.width(), img.height()), (800, 600));
+        // Oversized SVG still clamps down to the 2048 ceiling.
+        let img = render_svg(&svg(4000, 3000)).expect("huge svg renders");
+        assert_eq!(img.width(), 2048);
     }

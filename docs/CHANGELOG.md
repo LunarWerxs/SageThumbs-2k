@@ -2,6 +2,14 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.0.1 (2026-07-14)
+
+- **Small vector graphics now convert to a usable size.** Right-click **Convert into PNG** on a
+  small SVG icon (or a small `.emf` clip art) used to hand back a tiny image at the file's built-in
+  size (as small as 24 pixels). Since these are vectors with no fixed resolution, SageThumbs now
+  renders them up to a crisp, usable size, so you get a proper image instead of a postage stamp.
+  Larger files are unchanged.
+
 ## 1.0.0 (2026-07-14)
 
 **SageThumbs 2K is out of beta.** This release refines the Quick preview and Settings that arrived

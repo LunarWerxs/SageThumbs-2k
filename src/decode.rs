@@ -674,7 +674,8 @@ fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
     // Metafiles get the tight METAFILE_TIMEOUT — a slow vector WMF would otherwise
     // grind ~5 s to a near-blank frame; everything else keeps the full 20 s budget for
     // heavy raster decodes.
-    let timeout = if looks_like_metafile(bytes) { METAFILE_TIMEOUT } else { MAGICK_TIMEOUT };
+    let is_meta = looks_like_metafile(bytes);
+    let timeout = if is_meta { METAFILE_TIMEOUT } else { MAGICK_TIMEOUT };
     // DICOM files carry a TIFF-compatible 128-byte preamble that tricks magick's
     // content-sniffer into treating them as TIFF (which then fails).  Pass an
     // explicit `dcm:-` format specifier so magick invokes its DICOM coder instead.
@@ -687,7 +688,50 @@ fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
     // colours exact, so it stays unconditional here (no MONOCHROME-vs-RGB gating).
     let (input, pre_ops): (&str, &[&str]) =
         if looks_like_dicom(bytes) { ("dcm:-", &["-auto-level"]) } else { ("-", &[]) };
-    decode_via_magick_spec(bytes, input, pre_ops, MAGICK_MAX_EDGE, timeout)
+    // A small EMF (icon-sized clip art) would rasterize at its tiny intrinsic size — a right-click
+    // Convert then yielded a ~64px image, the same bug SVG had. Render it UP to a usable size by
+    // passing `-density` (which must precede the input). Crisp, since it's a vector; only small EMFs
+    // are bumped (large ones + WMF are left untouched — see `metafile_min_density`).
+    let density = is_meta.then(|| metafile_min_density(bytes)).flatten();
+    let density_str = density.map(|d| d.to_string());
+    let pre_input: Vec<&str> = match density_str.as_deref() {
+        Some(d) => vec!["-density", d],
+        None => Vec::new(),
+    };
+    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, MAGICK_MAX_EDGE, timeout)
+}
+
+/// The `-density` (DPI) that renders an EMF's LONG edge up to [`METAFILE_MIN_PX`] when its natural
+/// (96-DPI) rasterization would be smaller — so a tiny clip-art EMF converts to a usable, crisp
+/// image instead of ~64px. Returns None (magick's default density) when it's already big enough or
+/// the frame is unreadable.
+///
+/// **EMF only, by design.** EMF's `ENHMETAHEADER.rclFrame` is authoritative — magick rasterizes
+/// from it consistently, so the computed density matches the render. A *placeable WMF*'s header
+/// bbox+`Inch` is NOT guaranteed to match the metafile body's own logical extents, so a
+/// mismatched/hostile WMF header would make this compute a density that magick's WMF reader can't
+/// honour (turning a file that decoded fine into a hard failure — caught in pre-1.0.1 review). WMF
+/// is therefore left at its intrinsic size. The result is also capped ([`METAFILE_MAX_DENSITY`]) so
+/// even an implausibly tiny declared EMF frame can't ask magick to build a canvas it chokes on.
+fn metafile_min_density(b: &[u8]) -> Option<u32> {
+    const METAFILE_MIN_PX: f64 = 512.0;
+    const DEFAULT_DPI: f64 = 96.0;
+    const METAFILE_MAX_DENSITY: u32 = 1200;
+    if !(b.len() >= 44 && b[0..4] == [0x01, 0x00, 0x00, 0x00] && &b[40..44] == b" EMF") {
+        return None; // not an EMF (placeable/memory WMF → intrinsic size, see doc above)
+    }
+    // rclFrame (4x i32, units of 0.01 mm; 2540 per inch) at offset 24.
+    let i32_at = |o: usize| -> Option<f64> {
+        Some(i32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as f64)
+    };
+    let w = (i32_at(32)? - i32_at(24)?).abs(); // right - left
+    let h = (i32_at(36)? - i32_at(28)?).abs(); // bottom - top
+    let long_inches = w.max(h) / 2540.0;
+    if !long_inches.is_finite() || long_inches <= 0.0 || long_inches * DEFAULT_DPI >= METAFILE_MIN_PX
+    {
+        return None; // unreadable, or already large enough at the default density
+    }
+    Some(((METAFILE_MIN_PX / long_inches).ceil() as u32).min(METAFILE_MAX_DENSITY))
 }
 
 /// Is this a Windows metafile (placeable/memory WMF, or EMF)? Picks the shorter
@@ -722,7 +766,7 @@ fn looks_like_dicom(b: &[u8]) -> bool {
 /// thumbnail. This PNG is OUR OWN re-encode (its dimensions are already bounded
 /// by the resize spec), so the wider allocation is safe here.
 fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
-    decode_via_magick_spec_alloc(bytes, "-[0]", &[], limits::PSD_COMPOSITE_EDGE, limits::PSD_COMPOSITE_MAX_ALLOC, MAGICK_TIMEOUT)
+    decode_via_magick_spec_alloc(bytes, &[], "-[0]", &[], limits::PSD_COMPOSITE_EDGE, limits::PSD_COMPOSITE_MAX_ALLOC, MAGICK_TIMEOUT)
 }
 
 /// Shared ImageMagick child-process decode: `input` is the stdin spec (`-` for
@@ -730,8 +774,8 @@ fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
 /// inserted right after the input (e.g. `-auto-level` for DICOM), `max_edge` the
 /// `-resize` cap. The PNG magick returns is re-decoded under the default
 /// [`limits::MAX_ALLOC`] budget.
-fn decode_via_magick_spec(bytes: &[u8], input: &str, pre_ops: &[&str], max_edge: &str, timeout: Duration) -> Result<DynamicImage> {
-    decode_via_magick_spec_alloc(bytes, input, pre_ops, max_edge, MAX_ALLOC, timeout)
+fn decode_via_magick_spec(bytes: &[u8], pre_input: &[&str], input: &str, pre_ops: &[&str], max_edge: &str, timeout: Duration) -> Result<DynamicImage> {
+    decode_via_magick_spec_alloc(bytes, pre_input, input, pre_ops, max_edge, MAX_ALLOC, timeout)
 }
 
 /// As [`decode_via_magick_spec`], but with an explicit re-decode allocation
@@ -739,6 +783,7 @@ fn decode_via_magick_spec(bytes: &[u8], input: &str, pre_ops: &[&str], max_edge:
 /// matching `max_alloc` (see [`decode_psd_composite`]).
 fn decode_via_magick_spec_alloc(
     bytes: &[u8],
+    pre_input: &[&str],
     input: &str,
     pre_ops: &[&str],
     max_edge: &str,
@@ -748,7 +793,10 @@ fn decode_via_magick_spec_alloc(
     let exe = magick_exe().ok_or_else(|| Error::from(E_FAIL))?;
     let mut cmd = Command::new(exe);
     add_magick_limits(&mut cmd);
-    let mut args: Vec<&str> = Vec::with_capacity(6 + pre_ops.len());
+    let mut args: Vec<&str> = Vec::with_capacity(6 + pre_input.len() + pre_ops.len());
+    // Pre-INPUT settings (e.g. `-density` for a small vector metafile) must precede the input so
+    // they affect how it is rasterized — unlike `pre_ops`, which operate on the loaded image.
+    args.extend_from_slice(pre_input);
     args.push(input); // read the image from stdin (format auto-detected)
     // Per-format pre-processing operators (e.g. `-auto-level` for DICOM's narrow
     // window/level range) run before -strip/-resize.
@@ -1166,6 +1214,13 @@ fn gunzip_bounded(bytes: &[u8]) -> Option<Vec<u8>> {
 /// reasonable convert, and bounds memory for SVGs that declare huge dimensions.
 const SVG_MAX_DIM: f32 = 2048.0;
 
+/// Floor the SVG raster size: small-viewBox SVGs (24px/48px icons, logos) would otherwise
+/// rasterize at their tiny intrinsic size, so a right-click "Convert into PNG" produced a
+/// 24×24 image. A vector has no native resolution, so rendering it UP to this longest-edge
+/// minimum is free (crisp, no interpolation) and gives a usable convert — and crisper
+/// thumbnails, since the provider downscales a 512px render instead of upscaling a 24px one.
+const SVG_MIN_DIM: f32 = 512.0;
+
 /// Hard wall-clock cap on a single SVG parse+render. resvg runs in-process (no
 /// child to kill), so a pathological/hostile SVG — deeply nested groups, huge
 /// filter chains — could otherwise spin a thumbnail-host thread indefinitely.
@@ -1240,7 +1295,13 @@ fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     if longest <= 0.0 || longest.is_nan() {
         return Err(Error::from(E_FAIL));
     }
-    let scale = if longest > SVG_MAX_DIM { SVG_MAX_DIM / longest } else { 1.0 };
+    let scale = if longest > SVG_MAX_DIM {
+        SVG_MAX_DIM / longest // clamp huge declared sizes down
+    } else if longest < SVG_MIN_DIM {
+        SVG_MIN_DIM / longest // render small icons/logos UP to a usable size (vector = crisp)
+    } else {
+        1.0
+    };
     let w = (size.width() * scale).ceil().max(1.0) as u32;
     let h = (size.height() * scale).ceil().max(1.0) as u32;
 
