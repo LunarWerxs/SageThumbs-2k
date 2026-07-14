@@ -158,6 +158,19 @@ pub(super) enum Block {
     Image(ImgBlock),
 }
 
+/// Per-paint layout cache for the Markdown pane: the measured heights (device px, trailing spacing
+/// included) of the expensive text blocks (headings/paragraphs/list-items/quotes). Lets a repeat
+/// paint while scrolling SKIP re-measuring the off-screen paragraphs instead of re-laying-out the
+/// whole document every frame — the difference between smooth and stuttering on a big Markdown
+/// file. Keyed by (decode gen, pane width, remote-images flag); rebuilt when any changes. Only the
+/// text blocks are cached; code/tables/images are cheap-to-measure or async, so they always re-run.
+#[derive(Default)]
+pub(super) struct MdLayout {
+    ready: bool,
+    key: (u64, i32, bool),
+    heights: Vec<i32>, // per block index; -1 = unmeasured
+}
+
 // GitHub-ish metrics (CSS px @96dpi, DPI-scaled at draw): 16px body, 980px-45px*2 ≈ 880 content
 // column, 6x13 table cell padding, 4px quote bar. Headings 2em/1.5em/1.25em/1em/0.875em/0.85em.
 const BODY_PX: i32 = 16;
@@ -191,6 +204,7 @@ pub(super) unsafe fn render(
     doc_dir: Option<&Path>,
     gen: u64,
     remote_ok: bool,
+    layout: &mut MdLayout,
 ) -> i32 {
     links.clear();
     toc.clear();
@@ -209,19 +223,49 @@ pub(super) unsafe fn render(
     let mut y = top - scroll;
     let mut first = true;
 
-    for block in parse_blocks(md, remote_ok) {
+    // Layout cache: reuse the measured text-block heights unless the document, the pane width, or
+    // the remote-images flag changed. On a repeat paint (scrolling) this lets us skip re-measuring
+    // every off-screen paragraph — the expensive part — instead of re-laying-out the whole file.
+    // Key on the CLAMPED wrap width (full_w), not the raw pane width: the ToC-sidebar slide
+    // animation shrinks the pane a few px per 15ms tick, but full_w stays capped at MAX_COL_W, so
+    // the cache survives the slide instead of fully rebuilding every animation frame.
+    let key = (gen, full_w, remote_ok);
+    let blocks = parse_blocks(md, remote_ok);
+    if !layout.ready || layout.key != key || layout.heights.len() != blocks.len() {
+        layout.heights = vec![-1; blocks.len()];
+        layout.key = key;
+        layout.ready = true;
+    }
+    let bench_t = std::env::var_os("ST2K_MD_BENCH").is_some().then(std::time::Instant::now);
+
+    for (bi, block) in blocks.into_iter().enumerate() {
+        // Outline entry for every heading, BEFORE any skip, so the ToC stays complete even when the
+        // heading is culled off-screen. `+pre` matches the in-arm pre-margin so click targets align.
+        if let Block::Heading(lvl, runs, _) = &block {
+            let pre = if first { 0 } else { sc(8) };
+            toc.push(TocEntry { level: *lvl, text: runs_text(runs), target: (y + pre - top + scroll).max(0) });
+        }
+        // Fast-path: a text block we've already measured that's fully off-screen — skip the
+        // run_block re-measure entirely and just advance by the cached height.
+        let is_text = matches!(&block, Block::Heading(..) | Block::Para(..) | Block::Item(..) | Block::Quote(..));
+        if is_text {
+            let h = layout.heights.get(bi).copied().unwrap_or(-1);
+            if h >= 0 && (y + h <= rc.top || y >= rc.bottom) {
+                y += h;
+                first = false;
+                continue;
+            }
+        }
+        let y_block_start = y;
         match block {
             Block::Heading(level, runs, center) => {
                 if !first {
                     y += sc(8); // extra top margin before a heading (GitHub 24px total)
                 }
                 let px = heading_px(level);
-                // Record the outline entry: `y - top + scroll` is this heading's document offset
-                // (the scroll value that brings it to the top of the pane).
-                toc.push(TocEntry { level, text: runs_text(&runs), target: (y - top + scroll).max(0) });
                 let fonts = Fonts::new(hwnd, px, true, false);
                 let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(hdc, &runs, &fonts, x0, y, full_w, if center { 1 } else { 0 }, false, &ctx, links);
+                let (ny, _) = run_block(hdc, &runs, &fonts, x0, y, full_w, if center { 1 } else { 0 }, y >= rc.bottom, &ctx, links);
                 fonts.free();
                 y = ny;
                 if level <= 2 {
@@ -234,7 +278,7 @@ pub(super) unsafe fn render(
             Block::Para(runs, center) => {
                 let fonts = Fonts::new(hwnd, BODY_PX, false, false);
                 let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(hdc, &runs, &fonts, x0, y, full_w, if center { 1 } else { 0 }, false, &ctx, links);
+                let (ny, _) = run_block(hdc, &runs, &fonts, x0, y, full_w, if center { 1 } else { 0 }, y >= rc.bottom, &ctx, links);
                 fonts.free();
                 if ny > y {
                     y = ny + sc(14);
@@ -251,18 +295,24 @@ pub(super) unsafe fn render(
                 SelectObject(hdc, old);
                 let nlines = text.split('\n').count().max(1) as i32;
                 let h = nlines * line_h + 2 * pad;
-                // GitHub 6px-radius code panel.
-                let cb = CreateSolidBrush(COLORREF(c.code_bg));
-                let cp = CreatePen(PS_SOLID, 1, COLORREF(c.code_bg));
-                let ob = SelectObject(hdc, cb.into());
-                let op = SelectObject(hdc, HGDIOBJ(cp.0));
-                let r6 = sc(6);
-                let _ = RoundRect(hdc, x0, y, x0 + full_w, y + h, r6, r6);
-                SelectObject(hdc, ob);
-                SelectObject(hdc, op);
-                let _ = DeleteObject(cb.into());
-                let _ = DeleteObject(HGDIOBJ(cp.0));
-                highlight::paint_lines(hdc, &text, lang, x0 + pad, y + pad, full_w - 2 * pad, y, y + h, f, c.fg);
+                // Cull: only paint the panel + code when the block overlaps the viewport.
+                // `paint_lines` itself clips to [rc.top, rc.bottom], so a code block taller than the
+                // pane draws only its visible lines. `h` is cheap line-count math, so `y` advances
+                // either way and the scroll height stays correct.
+                if y < rc.bottom && y + h > rc.top {
+                    // GitHub 6px-radius code panel.
+                    let cb = CreateSolidBrush(COLORREF(c.code_bg));
+                    let cp = CreatePen(PS_SOLID, 1, COLORREF(c.code_bg));
+                    let ob = SelectObject(hdc, cb.into());
+                    let op = SelectObject(hdc, HGDIOBJ(cp.0));
+                    let r6 = sc(6);
+                    let _ = RoundRect(hdc, x0, y, x0 + full_w, y + h, r6, r6);
+                    SelectObject(hdc, ob);
+                    SelectObject(hdc, op);
+                    let _ = DeleteObject(cb.into());
+                    let _ = DeleteObject(HGDIOBJ(cp.0));
+                    highlight::paint_lines(hdc, &text, lang, x0 + pad, y + pad, full_w - 2 * pad, rc.top, rc.bottom, f, c.fg);
+                }
                 let _ = DeleteObject(f.into());
                 y += h + sc(14);
             }
@@ -274,7 +324,7 @@ pub(super) unsafe fn render(
                 let _ = DeleteObject(mf.into());
                 let fonts = Fonts::new(hwnd, BODY_PX, false, false);
                 let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(hdc, &runs, &fonts, x0 + indent, y, full_w - indent, 0, false, &ctx, links);
+                let (ny, _) = run_block(hdc, &runs, &fonts, x0 + indent, y, full_w - indent, 0, y >= rc.bottom, &ctx, links);
                 fonts.free();
                 y = ny + sc(4);
             }
@@ -283,7 +333,7 @@ pub(super) unsafe fn render(
                 let y_start = y;
                 let fonts = Fonts::new(hwnd, BODY_PX, false, true);
                 let ctx = ctx_for(hwnd, c, c.muted);
-                let (ny, _) = run_block(hdc, &runs, &fonts, x0 + indent, y, full_w - indent, 0, false, &ctx, links);
+                let (ny, _) = run_block(hdc, &runs, &fonts, x0 + indent, y, full_w - indent, 0, y >= rc.bottom, &ctx, links);
                 fonts.free();
                 y = ny;
                 // GitHub-style gray quote bar spanning the quote's height.
@@ -311,7 +361,16 @@ pub(super) unsafe fn render(
                 y = draw_image(hwnd, hdc, rc, &ib, x0, y, full_w, c, links, imgs, doc_dir, gen);
             }
         }
+        // Cache the text block's just-measured height (spacing included) for the skip fast-path.
+        if is_text {
+            if let Some(slot) = layout.heights.get_mut(bi) {
+                *slot = y - y_block_start;
+            }
+        }
         first = false;
+    }
+    if let Some(t0) = bench_t {
+        eprintln!("[md-bench] {} blocks, scroll {}px: {:?}", layout.heights.len(), scroll, t0.elapsed());
     }
     y + scroll - top + margin // total content height
 }

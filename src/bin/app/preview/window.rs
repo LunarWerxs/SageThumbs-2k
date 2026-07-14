@@ -145,6 +145,9 @@ pub(super) struct ViewerState {
     pub(super) video: RefCell<Option<super::video::VideoPlayer>>,
     pub(super) hinst: HINSTANCE,
     pub(super) pinned: Cell<bool>,
+    /// "Open in front": bring the window to the top of the z-order on first show (without
+    /// stealing focus). Distinct from `pinned` (always-on-top); a front window can be covered.
+    pub(super) open_front: Cell<bool>,
     pub(super) born: Cell<u64>,
     pub(super) shown: Cell<bool>,
     /// Bumped on every (re)load; a `WM_APP_RENDER` with a stale gen is dropped.
@@ -192,6 +195,9 @@ pub(super) struct ViewerState {
     /// (Pending fetch / Failed → alt-text pill / Ready DIB). Cleared on every load;
     /// `RenderData::drop` frees the bitmaps.
     pub(super) md_imgs: RefCell<super::markdown::ImgCache>,
+    /// Markdown layout cache (measured text-block heights) so scrolling a big document skips
+    /// re-measuring off-screen paragraphs each paint. Rebuilt on doc/width/remote change.
+    pub(super) md_layout: RefCell<super::markdown::MdLayout>,
     /// The remote-images toggle, read once at load (like the HTML toggles) so a mid-preview
     /// Settings save can't flip behavior between paints of the same document.
     pub(super) md_remote_ok: Cell<bool>,
@@ -268,10 +274,15 @@ pub(super) unsafe fn create_viewer(
 ) -> Option<HWND> {
     ensure_class(hinst);
 
+    // Live previews open UN-pinned — the toolbar Pin button is the only always-on-top path.
+    // (The `--pinned` shot flag still forces the pinned look for the headless glyph capture.)
     let pinned = match shot {
         Some(o) => o.pinned,
-        None => sagethumbs2k_core::settings::preview_topmost(),
+        None => false,
     };
+    // "Open in front": bring the window to the top of the z-order on first show (never steals
+    // focus, always coverable). Not applicable to the off-screen shot window.
+    let open_front = shot.is_none() && sagethumbs2k_core::settings::preview_open_front();
     let manual = shot.is_none() && !sagethumbs2k_core::settings::preview_enabled();
     let ex = if pinned { WS_EX_TOOLWINDOW | WS_EX_TOPMOST } else { WS_EX_TOOLWINDOW };
     let style = WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN;
@@ -308,6 +319,7 @@ pub(super) unsafe fn create_viewer(
         video: RefCell::new(None),
         hinst,
         pinned: Cell::new(pinned),
+        open_front: Cell::new(open_front),
         born: Cell::new(GetTickCount64()),
         shown: Cell::new(false),
         decode_gen: Cell::new(0),
@@ -329,6 +341,7 @@ pub(super) unsafe fn create_viewer(
         toc_anim: Cell::new(None),
         md_has_headings: Cell::new(false),
         md_imgs: RefCell::new(super::markdown::ImgCache::new()),
+        md_layout: RefCell::new(super::markdown::MdLayout::default()),
         md_remote_ok: Cell::new(false),
         fullscreen: Cell::new(None),
         busy: Cell::new(false),

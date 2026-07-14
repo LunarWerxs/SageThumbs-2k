@@ -560,13 +560,15 @@ pub fn set_preview_close_on_focus_loss(on: bool) -> windows_registry::Result<()>
     set_dword("PreviewCloseOnFocusLoss", on as u32)
 }
 
-/// Open the viewer pinned on top by default. OFF by default.
-pub fn preview_topmost() -> bool {
-    get_dword("PreviewTopmost", 0) != 0
+/// Bring the viewer to the front (foreground) when it opens — it still shows without
+/// stealing focus and can be covered the moment you click another window. This is NOT
+/// always-on-top; the toolbar pin button handles that. **ON by default.**
+pub fn preview_open_front() -> bool {
+    get_dword("PreviewOpenFront", 1) != 0
 }
-/// Persist the open-pinned-on-top toggle.
-pub fn set_preview_topmost(on: bool) -> windows_registry::Result<()> {
-    set_dword("PreviewTopmost", on as u32)
+/// Persist the open-in-front toggle.
+pub fn set_preview_open_front(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewOpenFront", on as u32)
 }
 
 /// Keep the Markdown outline (table-of-contents) sidebar OPEN. ON by default; the viewer's outline
@@ -592,10 +594,10 @@ pub fn set_preview_md_remote_img(on: bool) -> windows_registry::Result<()> {
 }
 
 /// Render local `.html`/`.htm` files as live web pages (WebView2), instead of showing their
-/// source as text. **OFF by default** — a rendered page can load remote resources, so the viewer
-/// locks it down (scripts off + non-`file://` requests blocked) and only renders when this is on.
+/// source as text. **ON by default** — the viewer locks the page down (scripts off + non-`file://`
+/// requests blocked), so a rendered local page can neither run scripts nor reach the network.
 pub fn preview_html() -> bool {
-    get_dword("PreviewHtml", 0) != 0
+    get_dword("PreviewHtml", 1) != 0
 }
 /// Persist the local-HTML-render toggle.
 pub fn set_preview_html(on: bool) -> windows_registry::Result<()> {

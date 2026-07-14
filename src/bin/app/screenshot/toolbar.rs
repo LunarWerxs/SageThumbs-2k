@@ -15,7 +15,7 @@ use windows::Win32::Graphics::Gdi::{
 use crate::dark::rgb;
 use crate::win::{dpi_scale_dpi, gui_font, wide};
 
-use super::gdip;
+use crate::gdip;
 use super::tools::{face_name, Tool};
 
 /// A toolbar item. `Sep` is a non-clickable divider between groups.

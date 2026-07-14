@@ -1,6 +1,7 @@
 //! v3 nav-rail + content-pane layout (extracted from settings_dlg; parent-hub pattern).
 
 use super::*;
+use crate::gdip;
 
 // ===================== v3 layout: nav rail + content pane =====================
 // Geometry (96-dpi design px). The window is nav rail (left) + a content pane that
@@ -157,75 +158,84 @@ pub(super) fn blend(fg: COLORREF, bg: COLORREF, pct: i32) -> COLORREF {
 }
 
 /// Draw a category's line icon (matching the v3 web SVGs) in an `sz`×`sz` box at
-/// `(x, y)`, stroked in `color`. Hollow shapes, ~1.5px stroke — a Fluent line look.
+/// `(x, y)`, stroked in `color`. Hollow shapes, anti-aliased with round caps/joins via
+/// GDI+ (so the diagonals and rounded corners read as clean Fluent line icons instead of
+/// the stair-stepped raw-GDI strokes they used to be).
 pub(super) unsafe fn draw_cat_icon(hdc: HDC, ci: usize, x: i32, y: i32, sz: i32, color: COLORREF) {
-    use windows::Win32::Graphics::Gdi::Ellipse;
-    let pw = (sz / 12).max(1);
-    let pen = CreatePen(PS_SOLID, pw, color);
-    let oldp = SelectObject(hdc, HGDIOBJ(pen.0));
-    let oldb = SelectObject(hdc, GetStockObject(windows::Win32::Graphics::Gdi::NULL_BRUSH));
+    let pw = (sz / 8).max(1);
     // Map the 24-unit SVG space into the box: x-coords via mx, y-coords via my.
     let mx = |v: i32| x + v * sz / 24;
     let my = |v: i32| y + v * sz / 24;
-    let pt = |a: i32, b: i32| POINT { x: mx(a), y: my(b) };
-    match ci {
-        0 => {
-            // image: framed rect + sun + mountain
-            let _ = RoundRect(hdc, mx(3), my(3), mx(21), my(21), sz / 4, sz / 4);
-            let _ = Ellipse(hdc, mx(6), my(6), mx(11), my(11));
-            let _ = Polyline(hdc, &[pt(21, 15), pt(16, 10), pt(5, 21)]);
-        }
-        1 => {
-            // grid: four rounded squares
-            for (gx, gy) in [(3, 3), (13, 3), (3, 13), (13, 13)] {
-                let _ = RoundRect(hdc, mx(gx), my(gy), mx(gx + 8), my(gy + 8), sz / 8, sz / 8);
+    gdip::with_aa(hdc, |g| {
+        let p = gdip::pen_round(color, pw);
+        // rounded-rect outline / ellipse outline / polyline, all in the 24-unit SVG space.
+        let rr = |a: i32, b: i32, c: i32, d: i32, r: i32| {
+            gdip::stroke_round(g, p, mx(a), my(b), mx(c) - mx(a), my(d) - my(b), r);
+        };
+        let el = |a: i32, b: i32, c: i32, d: i32| {
+            gdip::ellipse(g, p, mx(a), my(b), mx(c) - mx(a), my(d) - my(b));
+        };
+        let ln = |pts: &[(i32, i32)]| {
+            let mapped: Vec<(i32, i32)> = pts.iter().map(|&(a, b)| (mx(a), my(b))).collect();
+            gdip::polyline(g, p, &mapped);
+        };
+        match ci {
+            0 => {
+                // image: framed rect + sun + mountain
+                rr(3, 3, 21, 21, sz / 4);
+                el(6, 6, 11, 11);
+                ln(&[(21, 15), (16, 10), (5, 21)]);
+            }
+            1 => {
+                // grid: four rounded squares
+                for (gx, gy) in [(3, 3), (13, 3), (3, 13), (13, 13)] {
+                    rr(gx, gy, gx + 8, gy + 8, sz / 8);
+                }
+            }
+            2 => {
+                // book: cover + spine + page lines (Ebook/comic)
+                rr(5, 4, 19, 20, sz / 8);
+                ln(&[(8, 4), (8, 20)]);
+                ln(&[(11, 9), (16, 9)]);
+                ln(&[(11, 13), (16, 13)]);
+            }
+            3 => {
+                // menu: three lines (last shorter)
+                for (yy, x2) in [(6, 20), (12, 20), (18, 14)] {
+                    ln(&[(4, yy), (x2, yy)]);
+                }
+            }
+            4 => {
+                // camera: body + bump + lens
+                rr(3, 8, 21, 19, sz / 8);
+                ln(&[(8, 8), (9, 6), (15, 6), (16, 8)]);
+                el(9, 10, 15, 16);
+            }
+            5 => {
+                // bolt: a lightning shape (Quick action)
+                ln(&[(13, 2), (7, 13), (11, 13), (10, 22), (18, 10), (12, 10), (13, 2)]);
+            }
+            6 => {
+                // sliders: two lines, each with a knob (Advanced)
+                ln(&[(4, 8), (20, 8)]);
+                ln(&[(4, 16), (20, 16)]);
+                el(13, 5, 19, 11);
+                el(5, 13, 11, 19);
+            }
+            7 => {
+                // eye: a wide almond outline + a round iris (Quick preview)
+                el(3, 8, 21, 16);
+                el(10, 9, 14, 15);
+            }
+            _ => {
+                // save/backup: a down-arrow into an open tray (Data & Backup)
+                ln(&[(12, 3), (12, 14)]);
+                ln(&[(8, 10), (12, 14), (16, 10)]);
+                ln(&[(4, 16), (4, 21), (20, 21), (20, 16)]);
             }
         }
-        2 => {
-            // book: cover + spine + page lines (Ebook/comic)
-            let _ = RoundRect(hdc, mx(5), my(4), mx(19), my(20), sz / 8, sz / 8);
-            let _ = Polyline(hdc, &[pt(8, 4), pt(8, 20)]);
-            let _ = Polyline(hdc, &[pt(11, 9), pt(16, 9)]);
-            let _ = Polyline(hdc, &[pt(11, 13), pt(16, 13)]);
-        }
-        3 => {
-            // menu: three lines (last shorter)
-            for (yy, x2) in [(6, 20), (12, 20), (18, 14)] {
-                let _ = Polyline(hdc, &[pt(4, yy), pt(x2, yy)]);
-            }
-        }
-        4 => {
-            // camera: body + bump + lens
-            let _ = RoundRect(hdc, mx(3), my(8), mx(21), my(19), sz / 8, sz / 8);
-            let _ = Polyline(hdc, &[pt(8, 8), pt(9, 6), pt(15, 6), pt(16, 8)]);
-            let _ = Ellipse(hdc, mx(9), my(10), mx(15), my(16));
-        }
-        5 => {
-            // bolt: a lightning shape (Quick action)
-            let _ = Polyline(hdc, &[pt(13, 2), pt(7, 13), pt(11, 13), pt(10, 22), pt(18, 10), pt(12, 10), pt(13, 2)]);
-        }
-        6 => {
-            // sliders: two lines, each with a knob (Advanced)
-            let _ = Polyline(hdc, &[pt(4, 8), pt(20, 8)]);
-            let _ = Polyline(hdc, &[pt(4, 16), pt(20, 16)]);
-            let _ = Ellipse(hdc, mx(13), my(5), mx(19), my(11));
-            let _ = Ellipse(hdc, mx(5), my(13), mx(11), my(19));
-        }
-        7 => {
-            // eye: a wide almond outline + a round iris (Quick preview)
-            let _ = Ellipse(hdc, mx(3), my(8), mx(21), my(16));
-            let _ = Ellipse(hdc, mx(10), my(9), mx(14), my(15));
-        }
-        _ => {
-            // save/backup: a down-arrow into an open tray (Data & Backup)
-            let _ = Polyline(hdc, &[pt(12, 3), pt(12, 14)]);
-            let _ = Polyline(hdc, &[pt(8, 10), pt(12, 14), pt(16, 10)]);
-            let _ = Polyline(hdc, &[pt(4, 16), pt(4, 21), pt(20, 21), pt(20, 16)]);
-        }
-    }
-    SelectObject(hdc, oldp);
-    SelectObject(hdc, oldb);
-    let _ = DeleteObject(HGDIOBJ(pen.0));
+        gdip::drop_pen(p);
+    });
 }
 
 pub(super) fn cat_blurb(ci: usize) -> &'static str {
@@ -250,20 +260,14 @@ pub(super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool)
     let ci = (d.CtlID as i32 - ID_NAV_BASE) as usize;
     fill(hdc, &rc, DARK_BG());
     if active {
-        SelectObject(hdc, GetStockObject(DC_BRUSH));
-        SelectObject(hdc, GetStockObject(DC_PEN));
         let tint = blend(ACCENT(), DARK_BG(), 16);
-        SetDCBrushColor(hdc, tint);
-        SetDCPenColor(hdc, tint);
-        let _ = RoundRect(
-            hdc,
-            rc.left + dpi_scale(hwnd, 4),
-            rc.top + dpi_scale(hwnd, 3),
-            rc.right - dpi_scale(hwnd, 4),
-            rc.bottom - dpi_scale(hwnd, 3),
-            dpi_scale(hwnd, 8),
-            dpi_scale(hwnd, 8),
-        );
+        let (px, py) = (rc.left + dpi_scale(hwnd, 4), rc.top + dpi_scale(hwnd, 3));
+        let (pw, ph) = ((rc.right - dpi_scale(hwnd, 4)) - px, (rc.bottom - dpi_scale(hwnd, 3)) - py);
+        gdip::with_aa(hdc, |g| {
+            let b = gdip::brush(tint);
+            gdip::fill_round(g, b, px, py, pw, ph, dpi_scale(hwnd, 8));
+            gdip::drop_brush(b);
+        });
         let bar = RECT {
             left: rc.left,
             top: rc.top + dpi_scale(hwnd, 10),
@@ -292,12 +296,12 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     fill(hdc, &rc, DARK_BG());
     let ci = NAV.with(|n| n.borrow().active);
     let chip = dpi_scale(hwnd, 34);
-    SelectObject(hdc, GetStockObject(DC_BRUSH));
-    SelectObject(hdc, GetStockObject(DC_PEN));
     let tint = blend(ACCENT(), DARK_BG(), 16);
-    SetDCBrushColor(hdc, tint);
-    SetDCPenColor(hdc, tint);
-    let _ = RoundRect(hdc, rc.left, rc.top, rc.left + chip, rc.top + chip, dpi_scale(hwnd, 9), dpi_scale(hwnd, 9));
+    gdip::with_aa(hdc, |g| {
+        let b = gdip::brush(tint);
+        gdip::fill_round(g, b, rc.left, rc.top, chip, chip, dpi_scale(hwnd, 9));
+        gdip::drop_brush(b);
+    });
     let isz = dpi_scale(hwnd, 18);
     draw_cat_icon(hdc, ci, rc.left + (chip - isz) / 2, rc.top + (chip - isz) / 2, isz, ACCENT());
     let tx = rc.left + dpi_scale(hwnd, 46);

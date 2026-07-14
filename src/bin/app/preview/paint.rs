@@ -6,10 +6,11 @@ use windows::Win32::Foundation::{
     COLORREF, HWND, RECT,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx, SelectObject, SetBkMode,
-    SetTextColor, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_EXPANDTABS, DT_LEFT, DT_NOPREFIX,
-    DT_RIGHT, DT_SINGLELINE, DT_TOP, DT_VCENTER, DT_WORDBREAK, HDC, HFONT, HGDIOBJ, PAINTSTRUCT,
-    PS_SOLID, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx, SelectObject, SetBkMode,
+    SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PAINTSTRUCT,
+    PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -24,7 +25,30 @@ pub(super) unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
     if !hdc.is_invalid() {
-        paint_into(hwnd, hdc);
+        // Double-buffer: render the whole client into an off-screen bitmap, then blit it once.
+        // Painting straight to the window DC drew the content-bg fill and then the text/lines
+        // separately on-screen, which FLASHED on every scroll notch. One BitBlt = no flash.
+        // (BeginPaint's DC is clipped to the invalid region, so the blit only touches what changed.)
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        let w = (rc.right - rc.left).max(1);
+        let h = (rc.bottom - rc.top).max(1);
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, w, h);
+        if !mem.is_invalid() && !bmp.is_invalid() {
+            let old = SelectObject(mem, bmp.into());
+            paint_into(hwnd, mem);
+            let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
+            SelectObject(mem, old);
+        } else {
+            paint_into(hwnd, hdc); // buffer alloc failed — paint directly (correct, just flickers)
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(bmp.into());
+        }
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
     }
     let _ = EndPaint(hwnd, &ps);
 }
@@ -109,10 +133,12 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                 let mut links = st.md_links.borrow_mut();
                 let mut toc = st.md_toc.borrow_mut();
                 let mut imgs = st.md_imgs.borrow_mut();
+                let mut layout = st.md_layout.borrow_mut();
                 let th = super::markdown::render(
                     hwnd, hdc, &md_rc, t, scroll, &cols, &mut links, &mut toc, &mut imgs,
-                    doc_dir.as_deref(), st.decode_gen.get(), st.md_remote_ok.get(),
+                    doc_dir.as_deref(), st.decode_gen.get(), st.md_remote_ok.get(), &mut layout,
                 );
+                drop(layout);
                 st.text_h.set(th);
                 drop(links);
                 drop(imgs);
@@ -147,6 +173,12 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
             FillRect(hdc, &content_rc, brush);
             let _ = DeleteObject(brush.into());
         }
+    }
+
+    // Scroll-position thumb for the text + markdown panes (they have no OS scrollbar). Drawn on top
+    // of the content, only when it's taller than the viewport, so you can see where you are.
+    if matches!(st.kind.get(), ContentKind::Text | ContentKind::Markdown) {
+        paint_scroll_thumb(hwnd, hdc, &content_rc, st.text_scroll.get(), st.text_h.get());
     }
 
     // Caption strip.
@@ -302,10 +334,12 @@ unsafe fn paint_toc(
     SelectObject(hdc, old);
 }
 
-/// Paint `text` as monospaced, top-anchored content — the plan's text/code fallback path
-/// (rendered GitHub Markdown + syntax highlighting via WebView2/syntect is a later
-/// enhancement). Shows the top of the file, word-wrapped + clipped to `rc`; scrolling is a
-/// Phase 3.1 nicety.
+/// Paint `text` as monospaced, top-anchored content — the text/code fallback path.
+/// Rendered line-per-line with SCROLL CULLING (`highlight::paint_lines`): only the lines inside
+/// the viewport are drawn, so it scrolls smoothly no matter how big the file is. Long lines clip
+/// at the pane edge (editor-style) rather than word-wrapping. This replaced a plain-text branch
+/// that ran Windows' word-wrap layout over the ENTIRE file, twice, on every repaint — which made
+/// big files (e.g. a 45 KB `bun.lock`) jerk when scrolled. Returns the total content height.
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lang: highlight::Lang, bg: u32, fg: u32, scroll: i32) -> i32 {
     let brush = CreateSolidBrush(COLORREF(bg));
@@ -315,25 +349,39 @@ pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lan
     SetBkMode(hdc, TRANSPARENT);
     let font = mono_font(hwnd);
     let width = (rc.right - rc.left - 2 * m).max(1);
-    let text_h = if lang == highlight::Lang::Plain {
-        // Plain text/logs: word-wrap (nicer for prose-ish files), single colour.
-        SetTextColor(hdc, COLORREF(fg));
-        let old = SelectObject(hdc, font.into());
-        let mut w: Vec<u16> = text.encode_utf16().collect();
-        let fmt = DT_LEFT | DT_TOP | DT_NOPREFIX | DT_EXPANDTABS | DT_WORDBREAK;
-        let mut calc = RECT { left: 0, top: 0, right: width, bottom: 0 };
-        DrawTextW(hdc, &mut w, &mut calc, fmt | DT_CALCRECT);
-        let h = calc.bottom - calc.top;
-        let mut tr = RECT { left: rc.left + m, top: rc.top + m - scroll, right: rc.right - m, bottom: rc.bottom };
-        DrawTextW(hdc, &mut w, &mut tr, fmt);
-        SelectObject(hdc, old);
-        h
-    } else {
-        // Code: syntax-highlighted, line-per-line (long lines clip rather than wrap).
-        highlight::paint_lines(hdc, text, lang, rc.left + m, rc.top + m - scroll, width, rc.top, rc.bottom, font, fg)
-    };
+    // Plain text draws every run in `fg` (no keywords), so this covers both plain and code.
+    let text_h = highlight::paint_lines(hdc, text, lang, rc.left + m, rc.top + m - scroll, width, rc.top, rc.bottom, font, fg);
     let _ = DeleteObject(font.into());
     text_h
+}
+
+/// A thin scroll-position indicator on the right edge of `content_rc`. The text/markdown panes
+/// have no OS scrollbar, so without this you can't tell where you are or whether a wheel notch
+/// registered. Sized/positioned from the same (scroll, text_h, visible) math as `scroll_text`, so
+/// it tracks the real position; hidden when everything already fits.
+unsafe fn paint_scroll_thumb(hwnd: HWND, hdc: HDC, content_rc: &RECT, scroll: i32, text_h: i32) {
+    let m = crate::win::dpi_scale(hwnd, 12);
+    let track_h = (content_rc.bottom - content_rc.top).max(1);
+    let visible = (track_h - 2 * m).max(1); // mirrors scroll_text's visible-height math
+    let max_scroll = text_h - visible;
+    if max_scroll <= 0 {
+        return; // content fits — nothing to scroll, so no thumb
+    }
+    let min_thumb = crate::win::dpi_scale(hwnd, 32);
+    let thumb_h = ((visible * track_h) / text_h.max(1)).clamp(min_thumb, track_h);
+    let scroll = scroll.clamp(0, max_scroll);
+    let thumb_y = content_rc.top + (scroll * (track_h - thumb_h)) / max_scroll;
+    let tw = crate::win::dpi_scale(hwnd, 4);
+    let pad = crate::win::dpi_scale(hwnd, 3);
+    let thumb = RECT {
+        left: content_rc.right - pad - tw,
+        top: thumb_y,
+        right: content_rc.right - pad,
+        bottom: thumb_y + thumb_h,
+    };
+    let brush = CreateSolidBrush(COLORREF(crate::dark::BORDER_STRONG().0));
+    FillRect(hdc, &thumb, brush);
+    let _ = DeleteObject(brush.into());
 }
 
 /// A ~13px Consolas monospace font for the text preview (Consolas ships on every Win10/11;

@@ -60,6 +60,19 @@ pub(super) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, opts: &su
             crate::win::pump_msgs(8);
         }
     }
+    if std::env::var_os("ST2K_MD_BENCH").is_some() {
+        // Bench: repaint several times so the Markdown layout cache's cold(1st)-vs-warm(rest)
+        // timings print — each paint_into re-runs markdown::render, which self-times under the
+        // same env var. This is the only way to measure the SCROLL speedup, since one PrintWindow
+        // capture is a single (cold) paint.
+        let dc = GetDC(Some(hwnd));
+        if !dc.is_invalid() {
+            for _ in 0..6 {
+                super::paint::paint_into(hwnd, dc);
+            }
+            ReleaseDC(Some(hwnd), dc);
+        }
+    }
     let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
     let _ = DestroyWindow(hwnd);
     if let Some(t) = &tmp {

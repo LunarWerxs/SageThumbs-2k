@@ -6,6 +6,7 @@
 //! untouched native dialog.
 
 use super::*;
+use crate::gdip;
 
 /// Owner-draw a section header: a muted, uppercase label followed by a hairline
 /// that runs from after the text to the control's right edge.
@@ -75,28 +76,29 @@ unsafe fn draw_check_glyph(
     active: bool,
 ) {
     let y = top + (bottom - top - g) / 2;
-    SelectObject(hdc, GetStockObject(DC_BRUSH));
-    SelectObject(hdc, GetStockObject(DC_PEN));
-    if on {
-        SetDCBrushColor(hdc, ACCENT());
-        SetDCPenColor(hdc, if active { ACCENT_HOT() } else { ACCENT() });
+    let (fill_c, border_c) = if on {
+        (ACCENT(), if active { ACCENT_HOT() } else { ACCENT() })
     } else {
-        SetDCBrushColor(hdc, CHECK_BG());
-        SetDCPenColor(hdc, if active { ACCENT() } else { BORDER_STRONG() });
-    }
-    let _ = RoundRect(hdc, x, y, x + g, y + g, rad, rad);
-    if on {
-        let pen = CreatePen(PS_SOLID, s(hwnd, 2).max(1), ON_ACCENT());
-        let old = SelectObject(hdc, HGDIOBJ(pen.0));
-        let pts = [
-            POINT { x: x + g * 27 / 100, y: y + g * 52 / 100 },
-            POINT { x: x + g * 43 / 100, y: y + g * 68 / 100 },
-            POINT { x: x + g * 73 / 100, y: y + g * 33 / 100 },
-        ];
-        let _ = Polyline(hdc, &pts);
-        SelectObject(hdc, old);
-        let _ = DeleteObject(HGDIOBJ(pen.0));
-    }
+        (CHECK_BG(), if active { ACCENT() } else { BORDER_STRONG() })
+    };
+    let bw = s(hwnd, 1).max(1);
+    gdip::with_aa(hdc, |gg| {
+        let b = gdip::brush(fill_c);
+        gdip::fill_round(gg, b, x, y, g, g, rad);
+        gdip::drop_brush(b);
+        let p = gdip::pen(border_c, bw);
+        gdip::stroke_round(gg, p, x, y, g, g, rad);
+        gdip::drop_pen(p);
+        if on {
+            let cp = gdip::pen_round(ON_ACCENT(), s(hwnd, 2).max(2));
+            gdip::polyline(gg, cp, &[
+                (x + g * 27 / 100, y + g * 52 / 100),
+                (x + g * 43 / 100, y + g * 68 / 100),
+                (x + g * 73 / 100, y + g * 33 / 100),
+            ]);
+            gdip::drop_pen(cp);
+        }
+    });
 }
 
 /// A Win11-style toggle SWITCH (the v3 look): a pill track at the control's RIGHT
@@ -117,26 +119,32 @@ unsafe fn draw_switch_glyph(
     active: bool,
 ) {
     let y = top + (bottom - top - h) / 2;
-    let rad = h; // full-pill rounding (RoundRect ellipse == height)
-    SelectObject(hdc, GetStockObject(DC_BRUSH));
-    SelectObject(hdc, GetStockObject(DC_PEN));
-    if on {
-        SetDCBrushColor(hdc, ACCENT());
-        SetDCPenColor(hdc, if active { ACCENT_HOT() } else { ACCENT() });
+    let (track_fill, track_border) = if on {
+        (ACCENT(), if active { ACCENT_HOT() } else { ACCENT() })
     } else {
-        SetDCBrushColor(hdc, CHECK_BG());
-        SetDCPenColor(hdc, if active { ACCENT() } else { BORDER_STRONG() });
-    }
-    let _ = RoundRect(hdc, x, y, x + w, y + h, rad, rad);
+        (CHECK_BG(), if active { ACCENT() } else { BORDER_STRONG() })
+    };
     // Knob: a filled circle that sits left (off) or right (on).
     let pad = s(hwnd, 3);
     let kd = h - pad * 2;
     let ky = y + pad;
     let kx = if on { x + w - kd - pad } else { x + pad };
     let knob = if on { ON_ACCENT() } else { BORDER_STRONG() };
-    SetDCBrushColor(hdc, knob);
-    SetDCPenColor(hdc, knob);
-    let _ = RoundRect(hdc, kx, ky, kx + kd, ky + kd, kd, kd);
+    let bw = s(hwnd, 1).max(1);
+    gdip::with_aa(hdc, |g| {
+        // Pill track: a rounded-rect fill (radius == half-height → full pill) plus a hairline
+        // border inset by the pen width so the outer edge stays crisp. Anti-aliased, so the
+        // curve no longer stair-steps like the old GDI RoundRect.
+        let b = gdip::brush(track_fill);
+        gdip::fill_round(g, b, x, y, w, h, h / 2);
+        gdip::drop_brush(b);
+        let p = gdip::pen(track_border, bw);
+        gdip::stroke_round(g, p, x, y, w, h, h / 2);
+        gdip::drop_pen(p);
+        let kb = gdip::brush(knob);
+        gdip::fill_ellipse(g, kb, kx, ky, kd, kd);
+        gdip::drop_brush(kb);
+    });
 }
 
 unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
@@ -199,12 +207,18 @@ unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
         (f, if hot || focus { BORDER_STRONG() } else { BORDER() }, DARK_TEXT())
     };
     let rad = s(hwnd, 8);
-    SelectObject(hdc, GetStockObject(DC_BRUSH));
-    SelectObject(hdc, GetStockObject(DC_PEN));
-    SetDCBrushColor(hdc, face);
-    SetDCPenColor(hdc, border);
     let inset = s(hwnd, 1);
-    let _ = RoundRect(hdc, rc.left, rc.top, rc.right - inset, rc.bottom - inset, rad, rad);
+    let bw = s(hwnd, 1).max(1);
+    let (rx, ry) = (rc.left, rc.top);
+    let (rw, rh) = (rc.right - inset - rc.left, rc.bottom - inset - rc.top);
+    gdip::with_aa(hdc, |g| {
+        let b = gdip::brush(face);
+        gdip::fill_round(g, b, rx, ry, rw, rh, rad);
+        gdip::drop_brush(b);
+        let p = gdip::pen(border, bw);
+        gdip::stroke_round(g, p, rx, ry, rw, rh, rad);
+        gdip::drop_pen(p);
+    });
 
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
     SetBkMode(hdc, TRANSPARENT);
@@ -310,11 +324,17 @@ unsafe fn draw_rounded_panel(
     let _ = ScreenToClient(hwnd, &mut br);
     let (ix, iy_top, iy_bottom, e) =
         (s(hwnd, ix), s(hwnd, iy_top), s(hwnd, iy_bottom), s(hwnd, ell));
-    SelectObject(hdc, GetStockObject(DC_BRUSH));
-    SelectObject(hdc, GetStockObject(DC_PEN));
-    SetDCBrushColor(hdc, fill_c);
-    SetDCPenColor(hdc, border_c);
-    let _ = RoundRect(hdc, tl.x - ix, tl.y - iy_top, br.x + ix, br.y + iy_bottom, e, e);
+    let bw = s(hwnd, 1).max(1);
+    let (px, py) = (tl.x - ix, tl.y - iy_top);
+    let (pw, ph) = ((br.x + ix) - px, (br.y + iy_bottom) - py);
+    gdip::with_aa(hdc, |g| {
+        let b = gdip::brush(fill_c);
+        gdip::fill_round(g, b, px, py, pw, ph, e);
+        gdip::drop_brush(b);
+        let p = gdip::pen(border_c, bw);
+        gdip::stroke_round(g, p, px, py, pw, ph, e);
+        gdip::drop_pen(p);
+    });
 }
 
 /// Paint the dialog "chrome": the rounded file-list card + the rounded input /
@@ -420,16 +440,11 @@ unsafe extern "system" fn combo_subclass(
             let cx = rc.right - bw / 2;
             let cy = (rc.top + rc.bottom) / 2;
             let d = s(h, 3);
-            let pen = CreatePen(PS_SOLID, s(h, 2).max(1), chevron_col);
-            let old = SelectObject(hdc, HGDIOBJ(pen.0));
-            let pts = [
-                POINT { x: cx - d, y: cy - d / 2 },
-                POINT { x: cx, y: cy + d / 2 },
-                POINT { x: cx + d, y: cy - d / 2 },
-            ];
-            let _ = Polyline(hdc, &pts);
-            SelectObject(hdc, old);
-            let _ = DeleteObject(HGDIOBJ(pen.0));
+            gdip::with_aa(hdc, |g| {
+                let p = gdip::pen_round(chevron_col, s(h, 2).max(1));
+                gdip::polyline(g, p, &[(cx - d, cy - d / 2), (cx, cy + d / 2), (cx + d, cy - d / 2)]);
+                gdip::drop_pen(p);
+            });
             let _ = EndPaint(h, &ps);
             return LRESULT(0);
         }
@@ -490,12 +505,14 @@ pub(super) unsafe extern "system" fn scrollbar_subclass(
             let pos = si.nPos.clamp(0, max_pos);
             let thumb_y = (pos * (track_h - thumb_h)) / max_pos;
             let pad = s(h, 4); // thinner thumb (~6px) to match the list's native scrollbar
-            SelectObject(hdc, GetStockObject(DC_BRUSH));
-            SelectObject(hdc, GetStockObject(DC_PEN));
-            SetDCBrushColor(hdc, BORDER_STRONG());
-            SetDCPenColor(hdc, BORDER_STRONG());
             let rad = s(h, 4);
-            let _ = RoundRect(hdc, rc.left + pad, rc.top + thumb_y, rc.right - pad, rc.top + thumb_y + thumb_h, rad, rad);
+            let (tx, ty) = (rc.left + pad, rc.top + thumb_y);
+            let (tw, th) = ((rc.right - pad) - tx, thumb_h);
+            gdip::with_aa(hdc, |g| {
+                let b = gdip::brush(BORDER_STRONG());
+                gdip::fill_round(g, b, tx, ty, tw, th, rad);
+                gdip::drop_brush(b);
+            });
             let _ = EndPaint(h, &ps);
             return LRESULT(0);
         }

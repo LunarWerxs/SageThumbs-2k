@@ -2,7 +2,6 @@
 //! module so it stays in one lane rather than spread through the app:
 //!
 //! - [`tools`]   — the `Tool`/`Shape` model + the (GDI+ anti-aliased) rendering
-//! - [`gdip`]    — thin GDI+ wrappers giving the tools anti-aliased lines/shapes
 //! - [`overlay`] — the capture window: freeze screen, region select, annotate
 //! - [`toolbar`] — the owner-drawn floating action bar under the selection
 //! - [`output`]  — finished capture → clipboard (CF_DIB) + timestamped/temp PNG
@@ -13,7 +12,6 @@
 
 mod daemon;
 mod enable;
-mod gdip;
 mod output;
 mod overlay;
 mod prefs;

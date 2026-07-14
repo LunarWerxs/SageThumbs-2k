@@ -490,9 +490,21 @@ pub(super) unsafe fn ensure_shown(hwnd: HWND) {
     } else {
         let _ = KillTimer(Some(hwnd), SHOW_TIMER_ID);
         place(hwnd, cw, ch, center_on_cursor_monitor(cw, ch));
-        let z = if st.pinned.get() { HWND_TOPMOST } else { HWND_TOP };
-        let _ = SetWindowPos(hwnd, Some(z), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE); // never steals focus (plan §3)
+        // Bring the window to the front of the z-order WITHOUT activating it — Explorer stays the
+        // foreground window so its arrow-key selection keeps driving the follow-poll.
+        //   * pinned (toolbar pin): genuinely always-on-top.
+        //   * open-front (default): a plain HWND_TOP from this *background* process does NOT reliably
+        //     beat Explorer's foreground window (it opened BEHIND it), so "bounce" through TOPMOST —
+        //     which forces us above everything even from the background — then immediately drop back
+        //     to non-topmost so the window can still be covered when you click elsewhere.
+        //   * both off: leave it wherever it naturally landed.
+        if st.pinned.get() {
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        } else if st.open_front.get() {
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
         st.shown.set(true);
         // Follow the Explorer selection (arrows / clicks) — daemon mode only. A manual
         // `--preview <path>` shows that exact file and must not be hijacked by the selection.

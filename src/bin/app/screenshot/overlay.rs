@@ -30,7 +30,7 @@ use windows::Win32::System::SystemInformation::GetTickCount64;
 use crate::dark::rgb;
 use crate::win::{app_icon, gui_font, wide};
 
-use super::gdip;
+use crate::gdip;
 use super::output;
 use super::toolbar::{self, Button, Swatch, TextItem};
 use super::tools::{self, Shape, Tool, PALETTE};

@@ -1,7 +1,7 @@
 //! The annotation tool set: the [`Tool`]/[`Shape`] model and the rendering for each.
 //! No window or capture state lives here — `overlay.rs` owns that and calls these to
 //! paint. Outline shapes (rect/ellipse/line/arrow/pen/number ring) draw through GDI+
-//! ([`gdip`](super::gdip)) so they're anti-aliased; the region effects (highlight/
+//! ([`gdip`](crate::gdip)) so they're anti-aliased; the region effects (highlight/
 //! pixelate/invert) and text stay on plain GDI (they're alpha/pixel/text ops, not
 //! outlines). Every draw takes an `(ox, oy)` offset added to all coordinates: it's
 //! `(0, 0)` for the live overlay, and `(-sel.left, -sel.top)` when `overlay::compose`
@@ -22,7 +22,7 @@ use windows::Win32::Graphics::Gdi::{
 use crate::dark::rgb;
 use crate::win::{gui_font, wide};
 
-use super::gdip;
+use crate::gdip;
 
 /// Which annotation the next drag/click creates.
 #[derive(Clone, Copy, PartialEq, Eq)]

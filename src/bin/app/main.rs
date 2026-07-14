@@ -33,6 +33,7 @@ mod dark;
 mod explorer_selection;
 mod eyedropper;
 mod files_to_folder;
+mod gdip;
 mod hotkey;
 mod http;
 mod image_info;

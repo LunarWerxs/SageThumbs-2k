@@ -41,7 +41,7 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_PREVIEW_ENABLED, settings::preview_enabled());
     check(hwnd, ID_PREVIEW_HOLD_PEEK, settings::preview_hold_peek());
     check(hwnd, ID_PREVIEW_CLOSE_FOCUS, settings::preview_close_on_focus_loss());
-    check(hwnd, ID_PREVIEW_TOPMOST, settings::preview_topmost());
+    check(hwnd, ID_PREVIEW_TOPMOST, settings::preview_open_front());
     check(hwnd, ID_PREVIEW_TEXT, settings::preview_text());
     check(hwnd, ID_PREVIEW_MARKDOWN, settings::preview_markdown());
     check(hwnd, ID_PREVIEW_MD_REMOTE, settings::preview_md_remote_img());
@@ -82,13 +82,13 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     // feature the user turned on.
     check(hwnd, ID_PREVIEW_HOLD_PEEK, true);
     check(hwnd, ID_PREVIEW_CLOSE_FOCUS, false);
-    check(hwnd, ID_PREVIEW_TOPMOST, false);
+    check(hwnd, ID_PREVIEW_TOPMOST, true); // "Open in front" — default ON
     check(hwnd, ID_PREVIEW_TEXT, true);
     check(hwnd, ID_PREVIEW_MARKDOWN, true);
     check(hwnd, ID_PREVIEW_MD_REMOTE, false); // outbound fetch from previewed docs → default OFF
     #[cfg(feature = "html-preview")]
     {
-        check(hwnd, ID_PREVIEW_HTML, false); // security-sensitive → default OFF
+        check(hwnd, ID_PREVIEW_HTML, true); // locked-down (scripts off, no network) → default ON
         check(hwnd, ID_PREVIEW_URL_LIVE, false);
     }
     // Menu preview: reset to the SAME first-run default the getter uses
@@ -313,7 +313,7 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     let _ = settings::set_preview_enabled(checked(hwnd, ID_PREVIEW_ENABLED));
     let _ = settings::set_preview_hold_peek(checked(hwnd, ID_PREVIEW_HOLD_PEEK));
     let _ = settings::set_preview_close_on_focus_loss(checked(hwnd, ID_PREVIEW_CLOSE_FOCUS));
-    let _ = settings::set_preview_topmost(checked(hwnd, ID_PREVIEW_TOPMOST));
+    let _ = settings::set_preview_open_front(checked(hwnd, ID_PREVIEW_TOPMOST));
     let _ = settings::set_preview_text(checked(hwnd, ID_PREVIEW_TEXT));
     let _ = settings::set_preview_markdown(checked(hwnd, ID_PREVIEW_MARKDOWN));
     let _ = settings::set_preview_md_remote_img(checked(hwnd, ID_PREVIEW_MD_REMOTE));

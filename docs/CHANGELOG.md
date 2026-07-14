@@ -2,6 +2,25 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.0.0 (2026-07-14)
+
+**SageThumbs 2K is out of beta.** This release refines the Quick preview and Settings that arrived
+in 0.10 and smooths out the rough edges found in real-world use.
+
+- **The preview opens in front, then stays out of your way.** Press Space and the preview jumps to
+  the front of your other windows, then behaves like a normal window you can click past or cover.
+  The old "always on top" behavior (which could sit over things you were trying to click) is gone.
+  You can still pin a preview on top from its toolbar. On by default.
+- **Local HTML files render as pages.** Open an `.html` file and the preview shows the real page
+  instead of its source. It runs locked down (WebView2 with scripts off and no network), so a local
+  page only ever shows its own content. On by default.
+- **Smoother text, code, and log scrolling.** Scrolling a large text file no longer flickers or
+  stutters, even very big files stay smooth, line numbers are shown, and there is now a scroll
+  position indicator on the side.
+- **Smoother Markdown scrolling.** Large Markdown documents scroll cleanly instead of lagging.
+- **A crisper Settings window.** The toggles, icons, and buttons are now smoothly anti-aliased
+  instead of looking jagged.
+
 ## 0.10.0 (2026-07-13)
 
 - **New: press Space to preview a file, QuickLook-style.** Select a file in Explorer (or on the

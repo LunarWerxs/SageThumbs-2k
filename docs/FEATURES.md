@@ -306,9 +306,10 @@ long scroll is gone.)
   current **Explorer selection** (or prompt with a file picker when nothing is selected).
   It rides the same opt-in helper, so binding one needs no extra background process.
 - **Quick preview:** enable the Space-bar previewer (see §3) and tune it: **hold-Space
-  peek**, **close when it loses focus**, **open pinned on top**, and whether to preview
-  **text/code** files and **Markdown** files. Off by default; enabling it starts the same
-  opt-in background helper the hotkeys use.
+  peek**, **close when it loses focus**, **open in front** (bring the preview to the
+  foreground when it opens, without pinning it always-on-top), and whether to preview
+  **text/code** files, **Markdown** files, and **local HTML** pages. Off by default;
+  enabling it starts the same opt-in background helper the hotkeys use.
 - **Supported file types:** the full per-extension checklist (Extension / Category
   / Description columns), with bulk select and a **Defaults** button that re-ticks the
   recommended set; this resets *only* the file-type list (the whole-dialog factory reset

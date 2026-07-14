@@ -12,13 +12,13 @@ use core::ffi::c_void;
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, DeleteDC,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
     DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-    GetStockObject, GetTextExtentPoint32W, InvalidateRect, Polyline, RedrawWindow, ReleaseDC,
-    RoundRect, ScreenToClient, SelectObject, SetBkMode, SetDCBrushColor, SetDCPenColor,
-    SetTextCharacterExtra, SetTextColor, SetViewportOrgEx, DC_BRUSH, DC_PEN, DT_CENTER,
+    GetStockObject, GetTextExtentPoint32W, InvalidateRect, RedrawWindow, ReleaseDC,
+    ScreenToClient, SelectObject, SetBkMode, SetDCBrushColor,
+    SetTextCharacterExtra, SetTextColor, SetViewportOrgEx, DC_BRUSH, DT_CENTER,
     DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HGDIOBJ,
-    PAINTSTRUCT, PS_SOLID, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY, TRANSPARENT,
+    PAINTSTRUCT, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::Controls::{
     CDDS_ITEMPOSTPAINT, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDDS_SUBITEM, CDIS_FOCUS, CDIS_HOT,
@@ -524,6 +524,10 @@ thread_local! {
     /// handler skip an identical rebuild. Cleared on a live language change (rows may
     /// re-localize) so the next search re-filters.
     static LAST_FILTER: core::cell::RefCell<Option<String>> = const { core::cell::RefCell::new(None) };
+    /// GDI+ token for this window's lifetime — started in `WM_CREATE`, shut down in
+    /// `WM_DESTROY`. GDI+ must be live on the thread before the anti-aliased owner-draw
+    /// (toggle switches, checkbox glyphs, nav icons, rounded buttons) can render.
+    static GDIP_TOKEN: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 /// RAII guard: clears POPULATING on scope exit (even on unwind), so the
@@ -789,6 +793,9 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         }
         match msg {
             WM_CREATE => {
+                // Bring up GDI+ for this window's lifetime so the dark-mode owner-draw can
+                // render its toggle switches / icons / rounded buttons anti-aliased.
+                GDIP_TOKEN.with(|t| t.set(crate::gdip::startup()));
                 let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap().into();
                 build_controls(hwnd, hinst);
                 // Keep the hotkey-service status line live (so a self-heal on open, or a
@@ -1255,6 +1262,12 @@ pub(crate) extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     }
                 }
                 scroll::SCROLL.with(|s| *s.borrow_mut() = scroll::ScrollData::default());
+                GDIP_TOKEN.with(|t| {
+                    let tok = t.replace(0);
+                    if tok != 0 {
+                        crate::gdip::shutdown(tok);
+                    }
+                });
                 PostQuitMessage(0);
                 LRESULT(0)
             }
