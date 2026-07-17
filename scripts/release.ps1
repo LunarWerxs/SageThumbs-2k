@@ -42,10 +42,15 @@ try {
     # Actions load (e.g. a prior push's run still queued) it can lag minutes — so poll for up
     # to 12 min (the old 6-min window aborted the 0.8.0 release when a prior run was busy).
     # `--limit 30` guards against the target being pushed past the default page of 20.
+    # CRITICAL: `--json headSha,databaseId` must have NO space after the comma. With a space,
+    # PowerShell splits it into two native args and gh dies with `unknown command "databaseId"`
+    # — which `2>$null` swallows, so every iteration returns empty and this throws a bogus
+    # "no CI run found". That silently broke the 1.1.1 release (commit WAS pushed + CI green,
+    # just never detected); the release had to be finished by hand.
     $runId = $null
     for ($i = 0; $i -lt 120 -and -not $runId; $i++) {
         Start-Sleep -Seconds 6
-        $runId = (gh run list --branch main --workflow CI --limit 30 --json headSha, databaseId `
+        $runId = (gh run list --branch main --workflow CI --limit 30 --json headSha,databaseId `
                 --jq "[.[] | select(.headSha==`"$sha`")][0].databaseId" 2>$null)
     }
     if (-not $runId) { throw "no CI run found for $sha after 12 min - check Actions" }
