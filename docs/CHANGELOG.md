@@ -2,6 +2,11 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.1.1 (2026-07-17)
+
+- **Fixed:** on some Windows 11 systems, uninstalling could stop with a **"Resource TSetupForm
+  not found"** error and refuse to continue. The uninstaller now completes cleanly.
+
 ## 1.1.0 (2026-07-17)
 
 - **You can now select and copy text in the Quick preview.** Drag to select in text, code, log

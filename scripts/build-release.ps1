@@ -243,6 +243,12 @@ if (-not $NoModernMenu) {
 
 # 4) Compile the installer ---------------------------------------------------
 Write-Host "[3/4] compiling installer (Inno Setup)" -ForegroundColor Green
+# Static lint of installer.iss [Code] FIRST: ISCC compiles uninstaller-only runtime bugs
+# happily (they only fire in unins000.exe, a path our dev loop never runs), so a green
+# compile can still ship a broken uninstaller - that's how issue #3 (TSetupForm.Create ->
+# "Resource TSetupForm not found") escaped. Fail the build before wasting a compile on it.
+& "$PSScriptRoot\check-installer.ps1" -IssPath "$root\packaging\installer.iss"
+if ($LASTEXITCODE) { throw "installer.iss [Code] lint failed (see above)" }
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe"

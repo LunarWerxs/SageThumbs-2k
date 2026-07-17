@@ -244,15 +244,19 @@ begin
   Keys[5] := 'confusing';   Texts[5] := 'Too confusing or hard to use';
   Keys[6] := 'other';       Texts[6] := 'Other (please tell us below)';
 
-  F := TSetupForm.Create(nil);
+  // MUST be CreateCustomForm, NOT TSetupForm.Create(nil): the uninstaller binary carries no
+  // TSetupForm DFM resource, so TSetupForm.Create there dies with a fatal "Resource TSetupForm
+  // not found" runtime error and aborts the whole uninstall (issue #3, Win11). CreateCustomForm
+  // builds the form via CreateNew (no resource lookup) and works in Setup AND the uninstaller.
+  // Client size is a construction arg (read-only afterward since Inno 6.6.0); the two True flags
+  // keep both dimensions fixed (no autosize) for this fixed-layout dialog.
+  F := CreateCustomForm(ScaleX(470), ScaleY(350), True, True);
   try
     F.Caption := 'SageThumbs 2K';
-    // Native look: use the modern UI font (TSetupForm.Create(nil) otherwise inherits the
-    // dated default). Set BEFORE creating children so labels/radios/buttons inherit it.
+    // Native look: the modern UI font. CreateCustomForm already inits Setup's dialog font;
+    // pin Segoe UI explicitly. Set BEFORE creating children so labels/radios/buttons inherit it.
     F.Font.Name := 'Segoe UI';
     F.Font.Size := 9;
-    F.ClientWidth := ScaleX(470);
-    F.ClientHeight := ScaleY(350);
     F.Position := poScreenCenter;
     F.BorderStyle := bsDialog;
 
