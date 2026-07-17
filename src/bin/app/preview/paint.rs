@@ -7,19 +7,31 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx, SelectObject, SetBkMode,
-    SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PAINTSTRUCT,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx,
+    SelectObject, SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
+    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PAINTSTRUCT,
     PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self};
+use super::selection::sel_range;
 use super::{highlight, infocard};
 use super::window::{ContentKind, Btn, BTNS, state, CAPTION_H, PAD};
 use super::toolbar::button_rects; use super::transport::{scrub_rect, video_rect, draw_scrub_strip};
 
 // ===== Painting =====
+
+/// `DrawTextW` that no-ops on an EMPTY buffer. windows-rs passes the slice's length as GDI's
+/// `cchText`, and a zero-length (dangling) one faults — which `panic=abort` turns into the whole
+/// viewer dying. Reached for real: a Markdown heading with no text (`# ` alone, or one holding
+/// only an image) yields an empty outline label. Use this for any caller-supplied string.
+pub(super) unsafe fn draw_text(hdc: HDC, text: &mut [u16], rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
+    if text.is_empty() {
+        return;
+    }
+    DrawTextW(hdc, text, rc, fmt);
+}
 
 pub(super) unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
@@ -95,7 +107,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                     .unwrap_or("")
                     .to_ascii_lowercase();
                 let lang = highlight::lang_from_ext(&ext);
-                let th = paint_text(hwnd, hdc, &content_rc, t, lang, content_bg, text, st.text_scroll.get());
+                let th = paint_text(hwnd, hdc, &content_rc, t, lang, content_bg, text, st.text_scroll.get(), sel_range(st));
                 st.text_h.set(th); // remember for the wheel handler's scroll clamp
             } else {
                 paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "");
@@ -110,6 +122,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                     accent: crate::dark::ACCENT_TEXT().0,
                     code_bg: crate::dark::DARK_BG().0,
                     border: crate::dark::BORDER().0,
+                    sel: crate::dark::SEL_BG().0,
                 };
                 // Outline (ToC) sidebar: reserve a left strip and shift the document right when the
                 // sidebar is open AND the document actually has headings (flag cached at load).
@@ -134,10 +147,14 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                 let mut toc = st.md_toc.borrow_mut();
                 let mut imgs = st.md_imgs.borrow_mut();
                 let mut layout = st.md_layout.borrow_mut();
+                let mut hits = st.md_hits.borrow_mut();
+                let mut sel = super::markdown::MdSel { range: sel_range(st), hits: &mut hits };
                 let th = super::markdown::render(
                     hwnd, hdc, &md_rc, t, scroll, &cols, &mut links, &mut toc, &mut imgs,
                     doc_dir.as_deref(), st.decode_gen.get(), st.md_remote_ok.get(), &mut layout,
+                    &mut sel,
                 );
+                drop(hits);
                 drop(layout);
                 st.text_h.set(th);
                 drop(links);
@@ -152,6 +169,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
             } else {
                 st.md_links.borrow_mut().clear();
                 st.toc_hits.borrow_mut().clear();
+                st.md_hits.borrow_mut().clear();
                 paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "");
             }
         }
@@ -222,9 +240,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
         right: title_right - label_w,
         bottom: cap,
     };
-    if !title.is_empty() {
-        DrawTextW(hdc, &mut title, &mut trc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
-    }
+    draw_text(hdc, &mut title, &mut trc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     if let Some(lbl) = pdf_lbl {
         SetTextColor(hdc, COLORREF(subtle));
         let mut w: Vec<u16> = lbl.encode_utf16().collect();
@@ -327,7 +343,7 @@ unsafe fn paint_toc(
         SetTextColor(hdc, COLORREF(color));
         let mut label: Vec<u16> = e.text.encode_utf16().collect();
         let mut r = RECT { left: rc.left + indent, top: y, right: rc.right - sc(8), bottom: y + row_h };
-        DrawTextW(hdc, &mut label, &mut r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER | DT_END_ELLIPSIS);
+        draw_text(hdc, &mut label, &mut r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER | DT_END_ELLIPSIS);
         hits.push((RECT { left: rc.left, top: y, right: rc.right, bottom: y + row_h }, i));
         y += row_h;
     }
@@ -340,8 +356,9 @@ unsafe fn paint_toc(
 /// at the pane edge (editor-style) rather than word-wrapping. This replaced a plain-text branch
 /// that ran Windows' word-wrap layout over the ENTIRE file, twice, on every repaint — which made
 /// big files (e.g. a 45 KB `bun.lock`) jerk when scrolled. Returns the total content height.
+/// `sel` (normalized raw byte range) paints the mouse/Ctrl+A selection highlight.
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lang: highlight::Lang, bg: u32, fg: u32, scroll: i32) -> i32 {
+pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lang: highlight::Lang, bg: u32, fg: u32, scroll: i32, sel: Option<(usize, usize)>) -> i32 {
     let brush = CreateSolidBrush(COLORREF(bg));
     FillRect(hdc, rc, brush);
     let _ = DeleteObject(brush.into());
@@ -350,7 +367,7 @@ pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lan
     let font = mono_font(hwnd);
     let width = (rc.right - rc.left - 2 * m).max(1);
     // Plain text draws every run in `fg` (no keywords), so this covers both plain and code.
-    let text_h = highlight::paint_lines(hdc, text, lang, rc.left + m, rc.top + m - scroll, width, rc.top, rc.bottom, font, fg);
+    let text_h = highlight::paint_lines(hdc, text, lang, rc.left + m, rc.top + m - scroll, width, rc.top, rc.bottom, font, fg, sel, None);
     let _ = DeleteObject(font.into());
     text_h
 }

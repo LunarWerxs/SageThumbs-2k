@@ -30,6 +30,7 @@ mod video;
 mod window;
 mod loader;
 mod paint;
+mod selection;
 mod shot;
 mod toolbar;
 mod transport;
@@ -244,6 +245,9 @@ pub(crate) struct ShotOpts {
     /// Scroll the text/Markdown pane down `N` device px before capturing (`--scroll N`) —
     /// lets a long document's middle/bottom be shot-verified headlessly.
     pub scroll: Option<i32>,
+    /// Force a text-pane selection over the raw byte range `A..B` before capturing
+    /// (`--sel A,B`) — lets the selection highlight be shot-verified headlessly.
+    pub sel: Option<(usize, usize)>,
     /// Pump the message loop for `N` ms before capturing (`--wait-ms N`) — lets async work
     /// (e.g. an opt-in remote markdown image fetch) land in the frame.
     pub wait_ms: Option<u64>,

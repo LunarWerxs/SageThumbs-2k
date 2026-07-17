@@ -2,6 +2,19 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.1.0 (2026-07-17)
+
+- **You can now select and copy text in the Quick preview.** Drag to select in text, code, log
+  **and rendered Markdown** previews — double-click grabs a word, **Shift+arrows** (with
+  Home/End/PgUp/PgDn, and Ctrl for whole words) select from the keyboard, and **Ctrl+A** takes
+  everything. **Ctrl+C** copies the selection, or the whole document if you haven't selected
+  anything. On a Markdown file you get the text as you see it rendered; **Ctrl+Shift+C** copies
+  the original Markdown source instead. Ctrl+C works on the other previews too: an image copies
+  the picture itself (including the exact PDF page or animation frame you're looking at), and
+  the file-info card copies its details. Plain **Home/End** jump to the top/bottom of a document.
+- **Fixed:** a Markdown file with an empty heading could close the preview instantly instead of
+  showing the file.
+
 ## 1.0.1 (2026-07-14)
 
 - **Small vector graphics now convert to a usable size.** Right-click **Convert into PNG** on a

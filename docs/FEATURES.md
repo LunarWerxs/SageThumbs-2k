@@ -247,6 +247,15 @@ plus these viewer-only extras:
   through the document, with a "current / total" indicator in the title bar.
 - **Zoom + pan** on images (wheel to zoom at the cursor, drag to pan, double-click to toggle
   fit/100 %), and wheel-scroll for long text/Markdown.
+- **Select & copy**: drag-select in text/code/log **and rendered Markdown** previews
+  (double-click selects a word; **Shift+arrows**, Shift+Home/End/PgUp/PgDn and the Ctrl
+  word-wise variants select from the keyboard; **Ctrl+A** selects all), then **Ctrl+C** copies
+  the selection — or, with nothing selected, the whole document. Markdown copies as the text you
+  SEE (tables come out tab-separated, so they paste into a spreadsheet as columns); **Ctrl+Shift+C**
+  copies the raw Markdown source instead. Ctrl+C elsewhere copies the content too: the image
+  itself (the exact PDF page / animation frame being shown), or the info card's text. The
+  toolbar's copy button copies the file's path instead. Plain **Home/End** jump to the
+  top/bottom of a text or Markdown document.
 - **Folder browsing + full-screen**: **←/→** (or PgUp/PgDn) flip through the current folder's
   previewable files without closing the popup, QuickLook-style; **F11** toggles borderless
   full-screen (Esc restores).

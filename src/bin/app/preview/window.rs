@@ -16,13 +16,15 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE, VK_DOWN, VK_ESCAPE,
-    VK_F11, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_UP,
+    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+    VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F11, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR,
+    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self, RenderData};
+use super::selection::{self, SelHit};
 use super::{infocard, parse_command, CMD_CLOSE, CMD_SET_PATH, CMD_TOGGLE, VIEWER_CLASS};
 use super::{loader::*, paint::*, toolbar::*, transport::*};
 
@@ -171,6 +173,21 @@ pub(super) struct ViewerState {
     pub(super) text_scroll: Cell<i32>,
     /// Last-measured total text height (device px) — the wheel handler clamps scroll to it.
     pub(super) text_h: Cell<i32>,
+    /// Selection: `(anchor, focus)` RAW byte offsets into the active selection document —
+    /// `text` for the Text pane, the Markdown pane's rendered text (see [`super::selection`]).
+    /// Unordered (the anchor is where the drag started); equal offsets = no selection. Cleared
+    /// on every load. [`sel_range`] normalizes it for painting/copying.
+    pub(super) sel: Cell<Option<(usize, usize)>>,
+    /// A mouse text-selection drag is active (mouse capture held).
+    pub(super) sel_drag: Cell<bool>,
+    /// Byte offset of each line start in `text` (first entry 0). Built lazily by the first
+    /// selection hit-test, cleared on load — so per-mouse-move hit-testing never rescans a
+    /// multi-MB document for line boundaries. Text kind only.
+    pub(super) line_starts: RefCell<Vec<usize>>,
+    /// Every text token the last Markdown paint DREW: its rect + the slice of the rendered
+    /// document it shows. Markdown is a wrapped proportional flow with no line grid, so this is
+    /// what selection hit-tests against (visible tokens only — the document itself is complete).
+    pub(super) md_hits: RefCell<Vec<SelHit>>,
     /// Clickable link rects from the last Markdown paint (client coords, current scroll). Empty
     /// for non-Markdown content; repopulated every paint, consumed by click/hover hit-testing.
     pub(super) md_links: RefCell<Vec<super::markdown::LinkHit>>,
@@ -222,6 +239,7 @@ pub(super) struct ViewerState {
 pub(super) unsafe fn state(hwnd: HWND) -> *const ViewerState {
     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const ViewerState
 }
+
 
 /// Close the viewer, but DEFER the destroy if a WebView2 create is currently pumping the message
 /// loop (destroying now would free `ViewerState` under the still-running create → use-after-free).
@@ -333,6 +351,10 @@ pub(super) unsafe fn create_viewer(
         vol_drag: Cell::new(false),
         text_scroll: Cell::new(0),
         text_h: Cell::new(0),
+        sel: Cell::new(None),
+        sel_drag: Cell::new(false),
+        line_starts: RefCell::new(Vec::new()),
+        md_hits: RefCell::new(Vec::new()),
         md_links: RefCell::new(Vec::new()),
         md_toc: RefCell::new(Vec::new()),
         toc_hits: RefCell::new(Vec::new()),
@@ -598,6 +620,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
                     return LRESULT(0);
                 }
+                // Active text-selection drag: extend to the cursor, auto-scrolling past the
+                // pane edges so a drag can select beyond the viewport. Hit-test BEFORE
+                // scrolling — the offset must match the frame the user is looking at (and the
+                // Markdown rects are from that paint); the next move picks up the new scroll.
+                if st.sel_drag.get() {
+                    if let Some(off) = selection::hit(hwnd, x, y) {
+                        if let Some((a, _)) = st.sel.get() {
+                            st.sel.set(Some((a, off)));
+                        }
+                    }
+                    let c = content_rect(hwnd);
+                    let overshoot = if y < c.top {
+                        y - c.top
+                    } else if y > c.bottom {
+                        y - c.bottom
+                    } else {
+                        0
+                    };
+                    if overshoot != 0 {
+                        let step_cap = crate::win::dpi_scale(hwnd, 40);
+                        selection::scroll_by(hwnd, overshoot.clamp(-step_cap, step_cap));
+                    }
+                    let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+                    return LRESULT(0);
+                }
                 // Active pan drag: move the image with the cursor.
                 if let Some((ax, ay, apx, apy)) = st.drag.get() {
                     st.pan.set((apx + (x - ax), apy + (y - ay)));
@@ -653,6 +700,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         let (px, py) = st.pan.get();
                         st.drag.set(Some((x, y, px, py)));
                         let _ = SetCapture(hwnd);
+                    } else if y >= cap
+                        && selection::selectable(st.kind.get())
+                        && hit_toc(hwnd, x, y).is_none()
+                    {
+                        // In a text/Markdown pane (not the outline sidebar) → begin a selection
+                        // drag, anchored at the hit. A drag starting on a Markdown link is fine:
+                        // the link only opens if the button comes up with nothing selected.
+                        if let Some(off) = selection::hit(hwnd, x, y) {
+                            st.sel.set(Some((off, off)));
+                            st.sel_drag.set(true);
+                            let _ = SetCapture(hwnd);
+                            let cr = content_rect(hwnd);
+                            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
+                        }
                     }
                 }
                 LRESULT(0)
@@ -666,39 +727,37 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 } else if st.drag.get().is_some() {
                     st.drag.set(None);
                     let _ = ReleaseCapture();
-                } else {
-                    // A click (no pan-drag): an outline entry jumps to its heading; a Markdown
-                    // link opens it.
-                    let (x, y) = lparam_xy(lparam);
-                    if let Some(idx) = hit_toc(hwnd, x, y) {
-                        // Jump to the heading AND explicitly select it — bottom sections can't
-                        // scroll to the pane top (max-scroll clamp), so without the selection
-                        // override the click would be visually dead.
-                        let target = st.md_toc.borrow().get(idx).map(|e| e.target);
-                        if let Some(target) = target {
-                            let max = (st.text_h.get() - content_rect(hwnd).bottom + content_rect(hwnd).top).max(0);
-                            st.text_scroll.set(target.min(max));
-                            st.toc_sel.set(Some(idx));
-                            let _ = InvalidateRect(Some(hwnd), None, false);
-                        }
-                    } else if let Some(url) = hit_link(hwnd, x, y) {
-                        open_preview_link(hwnd, &url);
+                } else if st.sel_drag.get() {
+                    st.sel_drag.set(false);
+                    let _ = ReleaseCapture();
+                    // Nothing was dragged out (anchor == focus): that's a plain CLICK — drop any
+                    // old selection and let it act like one (outline jump / link open).
+                    if matches!(st.sel.get(), Some((a, b)) if a == b) {
+                        st.sel.set(None);
+                        let (x, y) = lparam_xy(lparam);
+                        click_content(hwnd, x, y);
+                        let cr = content_rect(hwnd);
+                        let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
                     }
+                } else {
+                    let (x, y) = lparam_xy(lparam);
+                    click_content(hwnd, x, y);
                 }
                 LRESULT(0)
             }
             WM_CAPTURECHANGED => {
                 // Capture stolen mid-drag (alt-tab, another SetCapture) — end every drag so a
-                // buttonless mouse-move can't keep seeking/panning.
+                // buttonless mouse-move can't keep seeking/panning/selecting.
                 let st = &*state(hwnd);
                 st.drag.set(None);
                 st.scrub_drag.set(false);
                 st.vol_drag.set(false);
+                st.sel_drag.set(false);
                 LRESULT(0)
             }
             WM_SETCURSOR => {
-                // Hand cursor over a Markdown link; otherwise default handling so the resize
-                // border + caption keep their sizing/move cursors.
+                // Hand cursor over a Markdown link, I-beam over selectable text; otherwise
+                // default handling so the resize border + caption keep their sizing/move cursors.
                 if (lparam.0 & 0xFFFF) as i32 == HTCLIENT as i32 {
                     let st = &*state(hwnd);
                     if st.kind.get() == ContentKind::Markdown {
@@ -712,6 +771,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             return LRESULT(1);
                         }
                     }
+                    if selection::selectable(st.kind.get()) {
+                        let mut pt = POINT::default();
+                        let _ = GetCursorPos(&mut pt);
+                        let _ = ScreenToClient(hwnd, &mut pt);
+                        if pt.y >= crate::win::dpi_scale(hwnd, CAPTION_H) && hit_toc(hwnd, pt.x, pt.y).is_none() {
+                            if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) {
+                                SetCursor(Some(ibeam));
+                            }
+                            return LRESULT(1);
+                        }
+                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -721,6 +791,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
                 if y >= cap && st.kind.get() == ContentKind::Image && hit_button(hwnd, x, y).is_none() {
                     toggle_fit_100(hwnd); // double-click content → toggle fit / 100%
+                } else if y >= cap && selection::selectable(st.kind.get()) && hit_toc(hwnd, x, y).is_none() {
+                    // Double-click in a text/Markdown pane → select the word under the cursor.
+                    // Claiming the drag (capture + flag) keeps the button-up that follows from
+                    // being read as a click — which would open a double-clicked link.
+                    if let Some((a, b)) = selection::hit(hwnd, x, y).and_then(|o| selection::word_range(hwnd, o)) {
+                        st.sel.set(Some((a, b)));
+                        st.sel_drag.set(true);
+                        let _ = SetCapture(hwnd);
+                        let cr = content_rect(hwnd);
+                        let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
+                    }
                 }
                 LRESULT(0)
             }
@@ -741,6 +822,40 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // F11 toggles borderless full-screen (works in daemon + manual mode).
                 if vk == VK_F11.0 {
                     toggle_fullscreen(hwnd);
+                    return LRESULT(0);
+                }
+                // Ctrl+A / Ctrl+C: select all / copy the CONTENT (the selection, the rendered
+                // text, the info-card text, or the decoded image) — the whole point of a viewer
+                // you can lift text out of. Ctrl+Shift+C copies a Markdown file's raw source.
+                let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+                let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
+                if ctrl && vk == 'A' as u16 {
+                    if let Some(len) = selection::doc_len(hwnd) {
+                        if len > 0 {
+                            st.sel.set(Some((0, len)));
+                            let cr = content_rect(hwnd);
+                            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
+                        }
+                    }
+                    return LRESULT(0);
+                }
+                if ctrl && vk == 'C' as u16 {
+                    copy_content(hwnd, shift);
+                    return LRESULT(0);
+                }
+                // Shift+<nav key> extends the selection (plain arrows stay file navigation).
+                if shift
+                    && matches!(vk, v if v == VK_LEFT.0 || v == VK_RIGHT.0 || v == VK_UP.0
+                        || v == VK_DOWN.0 || v == VK_HOME.0 || v == VK_END.0
+                        || v == VK_PRIOR.0 || v == VK_NEXT.0)
+                    && selection::extend(hwnd, vk, ctrl)
+                {
+                    return LRESULT(0);
+                }
+                // Home / End scroll a text or Markdown document to its ends.
+                if !shift && (vk == VK_HOME.0 || vk == VK_END.0) && selection::selectable(st.kind.get()) {
+                    let to = if vk == VK_HOME.0 { -st.text_scroll.get() } else { st.text_h.get() };
+                    selection::scroll_by(hwnd, to);
                     return LRESULT(0);
                 }
                 if st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1 {
@@ -1003,6 +1118,115 @@ unsafe fn do_action(hwnd: HWND, btn: Btn) {
     }
 }
 
+
+/// A plain click (nothing dragged) in the content area: an outline entry jumps to its heading;
+/// a Markdown link opens it.
+unsafe fn click_content(hwnd: HWND, x: i32, y: i32) {
+    let st = &*state(hwnd);
+    if let Some(idx) = hit_toc(hwnd, x, y) {
+        // Jump to the heading AND explicitly select it — bottom sections can't scroll to the
+        // pane top (max-scroll clamp), so without the selection override the click would be
+        // visually dead.
+        let target = st.md_toc.borrow().get(idx).map(|e| e.target);
+        if let Some(target) = target {
+            let max = (st.text_h.get() - content_rect(hwnd).bottom + content_rect(hwnd).top).max(0);
+            st.text_scroll.set(target.min(max));
+            st.toc_sel.set(Some(idx));
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    } else if let Some(url) = hit_link(hwnd, x, y) {
+        open_preview_link(hwnd, &url);
+    }
+}
+
+/// Ctrl+C: put the viewer's CONTENT on the clipboard — the selected text (else the whole
+/// document) for the text/Markdown panes, the card's text for the info card, and the decoded
+/// pixels (CF_DIB, same packed-DIB path as the context menu's Copy verb) for an image.
+/// `raw` (Ctrl+Shift+C) copies a Markdown file's SOURCE instead of its rendered text.
+/// The toolbar Copy button still copies the file PATH.
+unsafe fn copy_content(hwnd: HWND, raw: bool) {
+    use sagethumbs2k_core::clipboard::{set_clipboard, utf16_nul_bytes, CF_UNICODETEXT};
+    let st = &*state(hwnd);
+    match st.kind.get() {
+        ContentKind::Markdown if raw => {
+            let text = st.text.borrow();
+            if let Some(t) = text.as_ref().filter(|t| !t.is_empty()) {
+                let _ = set_clipboard(CF_UNICODETEXT, &utf16_nul_bytes(t));
+            }
+        }
+        ContentKind::Text | ContentKind::Markdown => {
+            if let Some(s) = selection::copy_text(hwnd) {
+                let _ = set_clipboard(CF_UNICODETEXT, &utf16_nul_bytes(&s));
+            }
+        }
+        ContentKind::InfoCard => {
+            let card = st.card.borrow();
+            if let Some(c) = card.as_ref() {
+                let _ = set_clipboard(CF_UNICODETEXT, &utf16_nul_bytes(&c.copy_text()));
+            }
+        }
+        ContentKind::Image => {
+            // Copy what is DISPLAYED — the navigated-to PDF page / the animation frame on
+            // screen at the keypress — not blindly the file's first page/frame. Decode + pack
+            // off the UI thread (a RAW/HEIC decode isn't instant); the WIC tier needs COM.
+            let Some(p) = st.path.borrow().clone() else { return };
+            let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
+            let anim_frame = {
+                let frames = st.frames.borrow();
+                (frames.len() > 1).then(|| st.cur_frame.get())
+            };
+            std::thread::spawn(move || {
+                use windows::Win32::System::Com::{
+                    CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
+                };
+                let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+                if !copy_shown_image(&p, pdf_page, anim_frame) {
+                    // The viewer has no toast/status surface, so a failed copy is otherwise
+                    // indistinguishable from the keypress not registering — say so in the log.
+                    sagethumbs2k_core::safety::log(&format!("preview: Ctrl+C could not copy {p}"));
+                }
+                if inited {
+                    unsafe { CoUninitialize() };
+                }
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Copy the image the viewer is SHOWING: the given PDF page / animation frame when navigated,
+/// else the file's full-fidelity decode (the context menu's Copy verb path). Falls back to the
+/// static decode when frame extraction fails, so Ctrl+C still yields SOMETHING.
+fn copy_shown_image(path: &str, pdf_page: Option<u32>, anim_frame: Option<usize>) -> bool {
+    if let Some(page) = pdf_page {
+        let png = std::fs::read(path)
+            .ok()
+            .and_then(|b| sagethumbs2k_core::pdf::render_page_counted(&b, page, 1600));
+        if let Some(img) = png.and_then(|(png, _)| image::load_from_memory(&png).ok()) {
+            let rgba = img.to_rgba8();
+            let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+            return sagethumbs2k_core::copy_rgba_to_clipboard(w, h, &rgba.into_raw()).is_ok();
+        }
+        return false; // page N failed to render — copying page 1 instead would be a silent lie
+    }
+    if let Some(frame) = anim_frame {
+        let ext = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let frames = std::fs::read(path)
+            .ok()
+            .and_then(|b| super::anim::decode_animation(&b, &ext));
+        if let Some(frames) = frames {
+            if let Some((d, _)) = frames.get(frame) {
+                return sagethumbs2k_core::copy_rgba_to_clipboard(d.w, d.h, &d.rgba).is_ok();
+            }
+        }
+        // fall through: static decode (first frame) beats copying nothing
+    }
+    sagethumbs2k_core::copy_to_clipboard(path).is_ok()
+}
 
 // ===== Phase 4: zoom / pan / scroll =====
 

@@ -5,9 +5,11 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, SelectObject, SetBkMode, SetTextColor,
+    CreateSolidBrush, DeleteObject, FillRect, SelectObject, SetBkMode, SetTextColor,
     DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HDC, TRANSPARENT,
 };
+
+use super::paint::draw_text;
 use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON};
 
@@ -16,6 +18,13 @@ pub(super) struct InfoCard {
     name: String,
     detail: String,
     icon: Option<HICON>,
+}
+
+impl InfoCard {
+    /// The card's visible text (name + detail line) — what the viewer's Ctrl+C copies.
+    pub(super) fn copy_text(&self) -> String {
+        format!("{}\r\n{}", self.name, self.detail)
+    }
 }
 
 impl Drop for InfoCard {
@@ -90,7 +99,7 @@ pub(super) unsafe fn paint(
     SetTextColor(hdc, COLORREF(text));
     let mut name_rc = RECT { left: tx, top: name_top, right: tx + text_w, bottom: name_top + line_h };
     let mut name_w: Vec<u16> = card.name.encode_utf16().collect();
-    DrawTextW(hdc, &mut name_w, &mut name_rc, fmt);
+    draw_text(hdc, &mut name_w, &mut name_rc, fmt);
 
     let det_font = crate::win::gui_font_sized(hwnd, 12, 400);
     SelectObject(hdc, det_font.into());
@@ -98,7 +107,7 @@ pub(super) unsafe fn paint(
     let mut det_rc =
         RECT { left: tx, top: name_top + line_h, right: tx + text_w, bottom: name_top + line_h * 2 };
     let mut det_w: Vec<u16> = card.detail.encode_utf16().collect();
-    DrawTextW(hdc, &mut det_w, &mut det_rc, fmt);
+    draw_text(hdc, &mut det_w, &mut det_rc, fmt);
 
     SelectObject(hdc, oldf);
 }

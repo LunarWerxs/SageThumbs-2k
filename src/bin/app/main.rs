@@ -239,6 +239,10 @@ fn main() {
                             play: args.iter().any(|a| a == "--play"),
                             dpi: val("--dpi").and_then(|s| s.parse().ok()),
                             scroll: val("--scroll").and_then(|s| s.parse().ok()),
+                            sel: val("--sel").and_then(|s| {
+                                let (a, b) = s.split_once(',')?;
+                                Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+                            }),
                             wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
                         };
                         crate::preview::run_shot_preview(hinst, dark, out, &opts)

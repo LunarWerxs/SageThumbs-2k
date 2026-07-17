@@ -894,10 +894,19 @@ pub fn copy_to_clipboard(path: &str) -> Result<()> {
     let bytes = read_capped(path)?;
     let img = decode::decode_full(&bytes)?.to_rgba8();
     let (w, h) = (img.width() as i32, img.height() as i32);
+    copy_rgba_to_clipboard(w, h, &img.into_raw())
+}
+
+/// Place already-decoded top-down RGBA8 pixels on the clipboard as CF_DIB (32bpp, bottom-up
+/// BGRA). The pixel half of [`copy_to_clipboard`]; also used by the Quick preview viewer's
+/// Ctrl+C so a navigated-to PDF page / animation frame copies what is actually displayed.
+pub fn copy_rgba_to_clipboard(w: i32, h: i32, rgba: &[u8]) -> Result<()> {
     if w <= 0 || h <= 0 {
         return Err(Error::new(E_FAIL, "image has zero or negative dimensions"));
     }
-    let rgba = img.into_raw(); // top row first, RGBA
+    if rgba.len() != (w as usize) * (h as usize) * 4 {
+        return Err(Error::new(E_FAIL, "pixel buffer size mismatch"));
+    }
     let row = (w * 4) as usize;
     let header = size_of::<BITMAPINFOHEADER>();
     let total = header + row * h as usize;

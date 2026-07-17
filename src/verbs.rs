@@ -55,7 +55,8 @@ pub use fileops::{combine_to_cbz, files_to_folder, sort_by_dimensions, tags_to_f
 // Dispatch + the non-encode actions.
 #[allow(unused_imports)]
 pub use actions::{
-    copy_to_clipboard, is_audio, is_image, prepare_wallpaper, prepare_wallpaper_in, run_action,
+    copy_rgba_to_clipboard, copy_to_clipboard, is_audio, is_image, prepare_wallpaper,
+    prepare_wallpaper_in, run_action,
     run_action_detached, set_wallpaper, ActionReport,
 };
 

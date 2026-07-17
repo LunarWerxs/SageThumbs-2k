@@ -40,6 +40,12 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     st.zoom.set(1.0); // reset zoom/pan/scroll for the new file
     st.pan.set((0, 0));
     st.text_scroll.set(0);
+    // Clear the selection but NOT `sel_drag` — like `drag`/`scrub_drag`, the in-progress flag
+    // must survive a mid-drag reload (←/→ nav, daemon push) so WM_LBUTTONUP still releases the
+    // mouse capture. The drag continues harmlessly: with `sel` None it has nothing to extend.
+    st.sel.set(None);
+    st.line_starts.borrow_mut().clear(); // rebuilt lazily on the first hit-test
+    st.md_hits.borrow_mut().clear(); // rebuilt by the next Markdown paint
     st.md_links.borrow_mut().clear(); // no stale link/outline/image state from the previous document
     st.md_toc.borrow_mut().clear();
     st.toc_hits.borrow_mut().clear();

@@ -60,6 +60,15 @@ pub(super) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, opts: &su
             crate::win::pump_msgs(8);
         }
     }
+    if let Some(sel) = opts.sel {
+        // Force a text-pane selection before capture (verifies the highlight headlessly).
+        let stp = super::window::state(hwnd);
+        if !stp.is_null() {
+            (*stp).sel.set(Some(sel));
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
+            crate::win::pump_msgs(8);
+        }
+    }
     if std::env::var_os("ST2K_MD_BENCH").is_some() {
         // Bench: repaint several times so the Markdown layout cache's cold(1st)-vs-warm(rest)
         // timings print — each paint_into re-runs markdown::render, which self-times under the
