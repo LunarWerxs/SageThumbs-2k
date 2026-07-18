@@ -7,6 +7,28 @@
 //! `embed-manifest` emits link args scoped to binaries (`-bins`), so the cdylib
 //! (the shell-extension DLL) is unaffected — it has no UI and inherits the
 //! host's manifest.
+//!
+//! # Locale TOML gotcha: duplicate keys PANIC the build
+//!
+//! `generate_locales()` below parses every `locales/<code>.toml` with
+//! `toml::from_str` into a flat `BTreeMap<String, String>`. The TOML parser
+//! **rejects duplicate keys outright** and this build script does not catch
+//! that error: a duplicate key in any locale file makes the build `panic!`
+//! with `locale locales/<code>.toml: invalid TOML: duplicate key ...`.
+//!
+//! This failure is **latent, not immediate**. Cargo only re-runs this build
+//! script when something under `locales/` changes (see the
+//! `cargo:rerun-if-changed=locales` lines below), so a locale file that
+//! already contains a duplicate key can sit unnoticed through any number of
+//! unrelated builds, then panic out of nowhere the next time someone edits
+//! *any* locale file and forces a rebuild.
+//!
+//! **Any script or tool that writes to `locales/*.toml` must preserve the
+//! existing encoding exactly: UTF-8 with no BOM, and CRLF line endings.**
+//! Tools that do "universal newline" text I/O (e.g. Python's default text
+//! mode) will silently normalize CRLF to LF on read or write, which is an
+//! easy way to corrupt these files without any visible diff in a
+//! CRLF-blind viewer.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
