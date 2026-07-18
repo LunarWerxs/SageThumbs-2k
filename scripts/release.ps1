@@ -75,6 +75,27 @@ try {
     }
     $setup = Get-ChildItem "$root\dist\SageThumbs2K-Setup-$ver.exe" -EA Stop
 
+    # 4b) VirusTotal the EXACT artifact we are about to publish, BEFORE publishing it.
+    # Added 2026-07-18: nothing scanned releases up to and including v1.2.0, so ESET's
+    # generic-ML "Generik.*" verdicts on 1.1.0/1.1.1 were first seen on SourceForge's
+    # listing rather than here. Non-fatal if the scanner is unavailable (missing .env /
+    # no network): a release must not be blocked by tooling absence, only by a real
+    # verdict. push_to_vt.py --gate decides what counts as real - see its TIER1/MAX_TOTAL.
+    # NOTE: push_to_vt.py and .env are BOTH gitignored (the key lives beside the script), so
+    # after a fresh clone neither exists — hence the existence checks rather than assuming.
+    Write-Host "[4b/6] VirusTotal scan (gate)" -ForegroundColor Green
+    $vt = Join-Path $root 'push_to_vt.py'
+    if ((Test-Path $vt) -and (Test-Path "$root\.env") -and (Get-Command python -EA SilentlyContinue)) {
+        python $vt $setup.FullName --gate
+        if ($LASTEXITCODE) {
+            throw "VirusTotal gate FAILED for $($setup.Name) - NOT publishing. Review the permalink above."
+        }
+    } else {
+        Write-Host "      SKIPPED - push_to_vt.py, .env, or python missing (both are gitignored;" -ForegroundColor Yellow
+        Write-Host "      recreate them after a fresh clone). Scan manually before announcing:" -ForegroundColor Yellow
+        Write-Host "        python push_to_vt.py `"$($setup.FullName)`" --gate" -ForegroundColor Yellow
+    }
+
     # 5) create the GitHub release - this creates + pushes the tag, ONLY now that CI is green.
     Write-Host "[5/6] gh release create $tag" -ForegroundColor Green
     $notes = "$root\dist\RELEASE-NOTES-$tag.md"
