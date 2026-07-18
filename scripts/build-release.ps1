@@ -280,14 +280,6 @@ if ($LASTEXITCODE) { throw "Inno Setup compile failed" }
 # 5) Report ------------------------------------------------------------------
 $setup = Get-ChildItem "$root\dist\SageThumbs2K-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 Write-Host "[4/4] done" -ForegroundColor Green
-
-# Portable zip: the same binaries with NO installer stub. Built from the stage dir that is
-# still on disk at this point, so it costs a few seconds and cannot drift from the installer.
-# It exists as the escape hatch for users whose AV blocks the installer - see
-# docs/RELEASE-SECURITY.md; the binaries themselves scan 0/69, only the wrapper draws hits.
-Write-Host "[portable] building no-installer zip" -ForegroundColor Green
-pwsh "$root\scripts\make-portable.ps1" -Version $ver
-if ($LASTEXITCODE) { Write-Host "  (portable zip failed - not fatal)" -ForegroundColor Yellow }
 Write-Host ("  -> {0}  ({1} MB)" -f $setup.FullName, [math]::Round($setup.Length / 1MB, 1)) -ForegroundColor Cyan
 
 # 6) Refresh the marketing site (site/index.html) from the just-built truth: the format

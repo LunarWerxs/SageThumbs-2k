@@ -90,7 +90,7 @@ next week, and 1.1.x may go clean. Re-check a few days after each release.
 | `sagethumbs2k.dll` (the shell extension itself) | **0/69 clean** |
 | `st2k.exe` (the CLI / MCP server) | **0/69 clean** |
 | `SageThumbs2K-Setup-*.exe` (the Inno wrapper) | 2–3 flagged |
-| `SageThumbs2K-*-portable.zip` (no wrapper) | 1 flagged (Bkav) |
+| the same binaries in a plain zip, no wrapper (tested, NOT shipped) | 1 flagged (Bkav) |
 
 **Not one engine objects to any code this project ships.** Detections appear only once the
 binaries are wrapped, and they follow the wrapper, not the contents.
@@ -168,12 +168,9 @@ load an unsigned sparse package at all, so that one is a technical requirement a
 ### What is left
 
 1. **File vendor false-positive reports** (below). Free, and the case here is unusually strong.
-2. **Ship the portable zip** (`scripts/make-portable.ps1`, built automatically by
-   `build-release.ps1`). Same binaries, no installer stub, so the packed-executable detector
-   class has nothing to fire on. Measured: installer 2/70 (APEX + Skyhigh `ObfuscatedPoly`)
-   vs portable zip **1/66** — the packed-stub hits do disappear exactly as predicted, but Bkav
-   (the most false-positive-prone engine on VirusTotal) picks it up instead. So it is an
-   improvement and a genuine escape hatch, **not** a cure.
+2. **Accept and document.** All shipped binaries are 0/69; only the wrapper is flagged, and
+   flagging is a per-build dice roll re-rolled on the vendor's schedule. Pointing users at this
+   document is a legitimate answer, and is the current position.
 
 ### Changing installer format does NOT fix this
 
@@ -186,15 +183,14 @@ Assessed properly before anyone spends days on it:
 | Squirrel / Velopack | No | Long history of `HEUR:Trojan.Win32.Generic` flags |
 | MSIX only | Yes | **Dead end** — requires a trusted signature to install at all |
 | MSI / WiX | Structurally, probably | **Unevidenced.** No before/after case study exists; [Tauri #4749](https://github.com/tauri-apps/tauri/issues/4749) had an unsigned MSI flagged *more* than its EXEs, and [Defender flags MSIs too](https://learn.microsoft.com/en-us/answers/questions/746120/msi-is-detected-as-a-virus-by-windows-defender). SmartScreen documents **no** MSI-vs-EXE distinction. Costs 2–4 days of WiX work, and the MSIX sparse package registers per-user, which fights a per-machine MSI. |
-| Portable zip | **Yes** | The only format with no stub at all. Shipped — see above. |
+| Portable zip (no installer) | **Yes** | The only format with no stub at all — and tested: it drops from 2 detections to 1, trading the packed-stub hits for Bkav instead. Not zero, so **not shipped**; the installer remains the only distribution. |
 
 The conclusion to hold onto: AV false positives are a tax on unsigned distribution, not a
 property of Inno Setup. No format choice removes them.
-3. **Accept and document.** All shipped binaries are 0/69; only the wrapper is flagged, and
-   flagging is a per-build dice roll that re-rolls on the vendor's schedule. Pointing users at
-   this document is a legitimate answer.
 
-**Report the false positives.** Vendors act on these and it is free:
+### Report the false positives
+
+Vendors act on these and it is free:
 
 - ESET: <https://support.eset.com/en/kb141-submit-a-virus-website-or-potential-false-positive-sample-to-eset-lab> (or email `samples@eset.com`, subject prefixed `False positive`)
 - Skyhigh/Trellix: <https://www.trellix.com/support/submit-sample/>
