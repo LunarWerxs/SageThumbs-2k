@@ -4,6 +4,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 1.2.0 (2026-07-18)
 
+- **The rest of the Paint Shop Pro family now gets thumbnails.** Brushes, picture frames,
+  picture tubes, preset shapes, selections and masks (`.PspBrush`, `.PspFrame`, `.PspTube`,
+  `.PspShape`, `.PspSelection`, `.PspMask`) use the same file container as `.pspimage`, so
+  they thumbnail through the same reader. Note that not every one of these files stores a
+  preview picture inside it — where there isn't one, you'll see the normal Windows icon,
+  exactly as before. (Thanks to the community member who spotted this.)
 - **You can now see the source behind a rendered preview.** Anything the Quick preview renders —
   a Markdown file, a CSV/TSV table, a Jupyter notebook, an HTML page, an SVG — has a new **`{ }`**
   button in the preview's toolbar (or press **Ctrl+U**) that swaps the rendered view for the raw

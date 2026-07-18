@@ -160,6 +160,49 @@ mod tests {
         assert!(extract(b"PK\x03\x04 zip not psp").is_none());
     }
 
+    /// The whole PSP family (.pspbrush/.psptube/.pspframe/.pspshape/.pspselection/.pspmask)
+    /// shares this container, and dispatch is by CONTENT (`container::extract_cover` sniffs
+    /// the signature) — so registering those extensions is sufficient and no per-extension
+    /// code exists or is needed. This locks BOTH halves of that claim: the bytes decode
+    /// through the top-level dispatcher, and every extension is actually registered.
+    #[test]
+    fn psp_family_extensions_are_registered_and_content_dispatched() {
+        let psp = fake_psp(&jpeg(40, 24));
+        // Reached via the top-level dispatcher, not psp::extract directly — that is the
+        // path a real thumbnail request takes, and the reason the extension is irrelevant.
+        let cover = crate::container::extract_cover(&psp).expect("dispatched by magic");
+        let bytes = match cover {
+            crate::container::CoverOut::Bytes(b) => b,
+            _ => panic!("expected raw carved bytes"),
+        };
+        let d = image::load_from_memory(&bytes).expect("valid JPEG");
+        assert_eq!((d.width(), d.height()), (40, 24));
+
+        for ext in ["pspimage", "psp", "pspbrush", "pspframe", "psptube", "pspshape",
+                    "pspselection", "pspmask"] {
+            assert!(crate::formats::is_known(ext), "{ext} must be registered");
+            // Mixed case must match too — Explorer hands us whatever case is on disk.
+            assert!(crate::formats::is_known(&ext.to_ascii_uppercase()), "{ext} uppercase");
+        }
+    }
+
+    /// A `.pspmask` is allowed to be a plain Windows BMP rather than a PSP container. That
+    /// needs no special case: the signature check fails and the file falls through to the
+    /// normal image tier. This asserts we FAIL CLEANLY (None, no panic) rather than
+    /// mis-carving, which is what makes the fall-through safe.
+    #[test]
+    fn bmp_flavoured_mask_is_not_mistaken_for_a_psp_container() {
+        let mut bmp = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8))
+            .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+            .unwrap();
+        assert!(bmp.starts_with(b"BM"), "test fixture should be a BMP");
+        assert!(!looks_like_psp(&bmp));
+        assert!(extract(&bmp).is_none());
+        // And it still decodes as an image by the normal tier.
+        assert!(image::load_from_memory(&bmp).is_ok());
+    }
+
     #[test]
     fn picks_largest_jpeg_when_bank_has_thumbnail_and_composite() {
         // A small thumbnail JPEG followed by the larger composite — we want the

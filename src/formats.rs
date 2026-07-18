@@ -192,6 +192,22 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("clip", "Clip Studio Paint document"),
     ("pspimage", "Paint Shop Pro image"),
     ("psp", "Paint Shop Pro image"),
+    // The rest of the Paint Shop Pro family: same "~BK\0" block container as .pspimage,
+    // so `container::psp` reads them unchanged (dispatch is by CONTENT magic — see
+    // `container::extract_cover` — the extension only decides what we hook in Explorer).
+    // A preview is NOT guaranteed in these: PSP writes the Composite Image Bank when it
+    // has a flattened preview to store, and `psp::extract` additionally falls back to a
+    // bounded whole-file JPEG carve. When neither finds one we return None and Explorer
+    // shows its default icon — exactly the pre-registration behaviour, so this is upside-
+    // only. `.pspmask` is the odd one: it can be a plain Windows BMP instead of a PSP
+    // container, which needs no special case — the PSP sniff simply fails and it falls
+    // through to the normal `image`-crate tier that already decodes BMP.
+    ("pspbrush", "Paint Shop Pro brush"),
+    ("pspframe", "Paint Shop Pro picture frame"),
+    ("psptube", "Paint Shop Pro picture tube"),
+    ("pspshape", "Paint Shop Pro preset shape"),
+    ("pspselection", "Paint Shop Pro selection"),
+    ("pspmask", "Paint Shop Pro mask"),
     ("sketch", "Sketch design document"),
     ("procreate", "Procreate document"),
     ("skp", "SketchUp model"),
