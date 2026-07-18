@@ -62,6 +62,26 @@ else {
   if (Test-Path $featPath) {
     $feat = Get-Content $featPath -Raw
     if ($feat -notmatch "\*\*$count registered extensions") { $fail.Add("docs/FEATURES.md 'NNN registered extensions' != FORMATS ($count)") }
+    if ($feat -notmatch "sum to \*\*$count\*\*") { $fail.Add("docs/FEATURES.md 'Counts sum to NNN' != FORMATS ($count)") }
+
+    # PER-CATEGORY counts, e.g. "| **Image** (193) |". Only the TOTAL used to be checked,
+    # so the per-category row drifted silently: it read 186 when the real Image count was
+    # 187, and a +6 change propagated that off-by-one to 192 instead of 193. Nothing caught
+    # it because 322 (the total) was right. The categories must ALSO sum to the total.
+    $catNames = 'Image', 'Camera RAW', 'Ebook & comics', 'Document', 'Audio', 'Video'
+    $catSum = 0
+    $missing = @()
+    foreach ($c in $catNames) {
+      $m = [regex]::Match($feat, "\*\*$([regex]::Escape($c))\*\*\s*\((\d+)\)")
+      if ($m.Success) { $catSum += [int]$m.Groups[1].Value } else { $missing += $c }
+    }
+    if ($missing.Count) {
+      $fail.Add("docs/FEATURES.md missing a per-category count for: $($missing -join ', ')")
+    }
+    elseif ($catSum -ne $count) {
+      $fail.Add("docs/FEATURES.md per-category counts sum to $catSum, but FORMATS has $count " +
+                "(one of the category numbers is stale - `st2k formats` prints the live breakdown)")
+    }
   }
 }
 
