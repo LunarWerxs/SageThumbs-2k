@@ -25,14 +25,16 @@ use std::os::windows::ffi::OsStrExt;
 
 use image::ImageFormat;
 use windows::core::{s, Error, Interface, Result, GUID, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{E_FAIL, HANDLE, HGLOBAL, HMODULE};
+use windows::Win32::Foundation::{E_FAIL, HGLOBAL, HMODULE};
 use windows::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, IClassFactory, COINIT_APARTMENTTHREADED,
 };
-use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard,
+};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::UI::Shell::{
     SHCreateItemFromParsingName, SHCreateShellItemArrayFromShellItem, IExplorerCommand, IShellItem,
     IShellItemArray, ECF_HASSUBCOMMANDS, ECS_ENABLED, ECS_HIDDEN,
@@ -115,6 +117,55 @@ unsafe fn collect_subcommands(cmd: &IExplorerCommand) -> Vec<IExplorerCommand> {
             out.push(c);
         }
     }
+    out
+}
+
+/// Standard clipboard format: a packed device-independent bitmap.
+const CF_DIB: u32 = 8;
+
+/// `OpenClipboard`, retrying while another process holds it, up to `timeout`.
+///
+/// The clipboard is ONE globally-owned resource: `OpenClipboard` fails (typically
+/// `ERROR_ACCESS_DENIED`) whenever any other process has it open, and collisions are
+/// millisecond-scale and constant — clipboard managers, browsers, the Win+V history poller,
+/// and on this machine `SageThumbs2K.exe --screenshot-daemon`/`--screenshot-watchdog`.
+/// `src/clipboard.rs` retries for exactly this reason on the WRITE side; a single-attempt
+/// READ here is what made `clipboard_verb_copies_image_to_clipboard` flake.
+unsafe fn open_clipboard_retrying(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if OpenClipboard(None).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// One attempt at reading the CF_DIB header off the clipboard.
+///
+/// `None` means "nothing readable right now" — clipboard busy, no CF_DIB posted yet, or a
+/// block too small to be a `BITMAPINFOHEADER`. All three are retry conditions, not failures;
+/// the caller decides when to give up. The size check matters because a CF_DIB that another
+/// process posted can be anything, and a valid handle alone doesn't license a 40-byte read.
+unsafe fn try_read_clipboard_dib_header() -> Option<BITMAPINFOHEADER> {
+    if !open_clipboard_retrying(std::time::Duration::from_secs(1)) {
+        return None;
+    }
+    let mut out = None;
+    if let Ok(h) = GetClipboardData(CF_DIB) {
+        let hg = HGLOBAL(h.0);
+        if GlobalSize(hg) >= std::mem::size_of::<BITMAPINFOHEADER>() {
+            let p = GlobalLock(hg) as *const BITMAPINFOHEADER;
+            if !p.is_null() {
+                out = Some(*p);
+                let _ = GlobalUnlock(hg);
+            }
+        }
+    }
+    let _ = CloseClipboard();
     out
 }
 
@@ -226,25 +277,49 @@ fn clipboard_verb_copies_image_to_clipboard() {
             SHCreateItemFromParsingName(PCWSTR(pw.as_ptr()), None).expect("shell item");
         let arr: IShellItemArray = SHCreateShellItemArrayFromShellItem(&item).expect("item array");
 
+        // Clear any CF_DIB already on the clipboard BEFORE invoking. A previous run of this
+        // same test leaves a 24x18 DIB behind, so without this the poll below could match that
+        // leftover and pass even if the verb wrote nothing at all — a false PASS that only
+        // shows up when the suite is run repeatedly, which is exactly how flakes get chased.
+        if open_clipboard_retrying(std::time::Duration::from_secs(5)) {
+            let _ = EmptyClipboard();
+            let _ = CloseClipboard();
+        }
+
         clip.Invoke(&arr, None).expect("Invoke");
 
-        // Read CF_DIB back off the clipboard and check the header. Invoke runs the verb on a
-        // DETACHED worker now, so wait for the clipboard to actually be populated first (the
-        // raw SetClipboardData handle persists after the worker thread exits).
-        const CF_DIB: u32 = 8;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while windows::Win32::System::DataExchange::IsClipboardFormatAvailable(CF_DIB).is_err()
-            && std::time::Instant::now() < deadline
-        {
+        // Read CF_DIB back off the clipboard and check the header. Two things make this racy,
+        // and both are handled by polling rather than by a bare sleep:
+        //
+        //  1. `Invoke` dispatches the verb to a DETACHED worker, so the write lands at some
+        //     unknown later point. There's no handle to join (the raw SetClipboardData handle
+        //     outlives the worker thread), so polling is the only option.
+        //  2. The clipboard is a global single-owner resource. Another process touching it can
+        //     make OpenClipboard fail, or can post its OWN CF_DIB that we'd otherwise read as
+        //     if it were ours.
+        //
+        // So poll until the header we read is the one this verb should have written, tolerating
+        // a busy clipboard throughout. The assertion below is unchanged in strength: a verb that
+        // writes the wrong DIB (or none) still fails, it just fails at the deadline rather than
+        // immediately, and the failure reports the last header actually seen.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut header: Option<BITMAPINFOHEADER> = None;
+        loop {
+            if let Some(bih) = try_read_clipboard_dib_header() {
+                header = Some(bih);
+                if bih.biWidth == 24 && bih.biHeight.abs() == 18 && bih.biBitCount == 32 {
+                    break; // ours
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        OpenClipboard(None).expect("OpenClipboard");
-        let h: HANDLE = GetClipboardData(CF_DIB).expect("GetClipboardData(CF_DIB)");
-        let p = GlobalLock(HGLOBAL(h.0)) as *const BITMAPINFOHEADER;
-        assert!(!p.is_null(), "clipboard DIB lock failed");
-        let bih = *p;
-        let _ = GlobalUnlock(HGLOBAL(h.0));
-        let _ = CloseClipboard();
+        let bih = header.expect(
+            "no readable CF_DIB on the clipboard within the deadline — the Copy-to-clipboard \
+             worker never wrote one (or the clipboard stayed held by another process)",
+        );
 
         assert_eq!(bih.biWidth, 24);
         assert_eq!(bih.biHeight.abs(), 18);
