@@ -256,7 +256,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     let icon = icon_font(hwnd);
     for (b, r) in buttons.iter() {
         let hot = st.hot.get() == BTNS.iter().position(|&bb| bb == *b);
-        draw_button(hwnd, hdc, *b, r, hot, st.pinned.get(), st.toc_open.get(), icon);
+        draw_button(hwnd, hdc, *b, r, hot, st.pinned.get(), st.toc_open.get(), st.src_view.get(), icon);
     }
     let _ = DeleteObject(icon.into());
 }
@@ -448,6 +448,7 @@ pub(super) unsafe fn icon_font(hwnd: HWND) -> HFONT {
 pub(super) fn btn_glyph(btn: Btn, pinned: bool) -> u16 {
     match btn {
         Btn::Toc => 0xE8FD,     // BulletedList (outline)
+        Btn::Source => 0xE943,  // Code (`</>`) — view source
         Btn::PdfPrev => 0xE76B, // ChevronLeft
         Btn::PdfNext => 0xE76C, // ChevronRight
         Btn::Pin if pinned => 0xE840, // Pinned (filled)
@@ -464,7 +465,7 @@ pub(super) fn btn_glyph(btn: Btn, pinned: bool) -> u16 {
 /// Draw one toolbar button: the hover pill, then its Segoe Fluent icon glyph, in the accent
 /// colour when hovered (or when Pin / the outline toggle is active), else the normal text colour.
 #[allow(clippy::too_many_arguments)] // owner-draw helper: many positional draw params by nature
-pub(super) unsafe fn draw_button(hwnd: HWND, hdc: HDC, btn: Btn, r: &RECT, hot: bool, pinned: bool, toc_open: bool, icon: HFONT) {
+pub(super) unsafe fn draw_button(hwnd: HWND, hdc: HDC, btn: Btn, r: &RECT, hot: bool, pinned: bool, toc_open: bool, src_view: bool, icon: HFONT) {
     // Hover background pill.
     if hot {
         let hb = CreateSolidBrush(COLORREF(crate::dark::BTN_FACE_HOT().0));
@@ -473,7 +474,9 @@ pub(super) unsafe fn draw_button(hwnd: HWND, hdc: HDC, btn: Btn, r: &RECT, hot: 
         FillRect(hdc, &pr, hb);
         let _ = DeleteObject(hb.into());
     }
-    let active = (matches!(btn, Btn::Pin) && pinned) || (matches!(btn, Btn::Toc) && toc_open);
+    let active = (matches!(btn, Btn::Pin) && pinned)
+        || (matches!(btn, Btn::Toc) && toc_open)
+        || (matches!(btn, Btn::Source) && src_view);
     let color = if hot || active { crate::dark::ACCENT().0 } else { crate::dark::DARK_TEXT().0 };
     let old = SelectObject(hdc, icon.into());
     SetBkMode(hdc, TRANSPARENT);

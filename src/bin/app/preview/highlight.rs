@@ -83,7 +83,8 @@ pub(super) fn lang_from_ext(ext: &str) -> Lang {
         "sh" | "bash" | "zsh" | "ps1" | "bat" | "cmd" => Lang::Sh,
         "html" | "htm" | "xhtml" => Lang::Html,
         "css" | "scss" | "less" => Lang::Css,
-        "xml" => Lang::Xml,
+        // svg is XML — reachable via the caption's "view source" toggle on a rendered SVG.
+        "xml" | "svg" => Lang::Xml,
         "sql" => Lang::Sql,
         // ini/cfg files share TOML's shape (# / ; comments, key=value, quoted strings).
         "ini" | "cfg" | "conf" | "properties" | "editorconfig" | "gitconfig" => Lang::Toml,

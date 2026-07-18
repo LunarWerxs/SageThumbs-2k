@@ -54,6 +54,15 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     st.toc_sel.set(None);
     st.toc_anim.set(None); // settle any mid-slide sidebar instantly for the new document
     let _ = KillTimer(Some(hwnd), TOC_TIMER_ID);
+    // NOTE: `src_view` is deliberately NOT reset here — it's a sticky viewing mode for the window,
+    // so flipping through a folder of .md files with ←/→ keeps showing source.
+    st.src_capable.set(source_capable(&ext_of(path)));
+
+    // "View source" is on and this file has a rendered view to toggle away from → show the raw
+    // text instead. A failed/binary read falls through to the normal rendered path.
+    if st.src_capable.get() && st.src_view.get() && show_source(hwnd, path) {
+        return;
+    }
 
     // Archives (zip/7z/rar-family with no cover): show a file listing in the text pane. Falls
     // through to normal classification if it isn't actually a recognized archive.
@@ -252,6 +261,15 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
 
 /// Synchronous still decode for the headless shot: image → DIB, text/markdown → read, else card.
 pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind) {
+    // "View source" (`--source`) — same gating as the async `load` path, minus the window ops.
+    st.src_capable.set(source_capable(&ext_of(path)));
+    if st.src_capable.get() && st.src_view.get() {
+        if let Some(text) = content::read_text(path) {
+            *st.text.borrow_mut() = Some(text);
+            st.kind.set(ContentKind::Text);
+            return;
+        }
+    }
     // Archive listing (zip/7z/rar-family) — shown in the text pane, same as the async `load` path.
     if content::is_archive_ext(&ext_of(path)) {
         if let Some(listing) = content::archive_listing(path) {
@@ -406,7 +424,12 @@ unsafe fn create_web(hwnd: HWND, url: &str, mode: super::webview::Mode) -> bool 
         let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
         return true;
     }
-    if let Some(p) = st.pending_path.borrow_mut().take() {
+    // Take into a `let` FIRST: an `if let` scrutinee's `RefMut` lives for the whole block on
+    // edition 2021, and `load` below can re-enter `create_web`, which pumps the message loop —
+    // a switch request arriving during THAT pump writes `pending_path` (see `request_load`) and
+    // would hit a BorrowMutError, which `panic=abort` turns into a dead viewer.
+    let pending = st.pending_path.borrow_mut().take();
+    if let Some(p) = pending {
         drop(host);
         load(hwnd, &p);
         return true;
@@ -460,6 +483,52 @@ fn parse_url_shortcut(path: &str) -> Option<String> {
     };
     let low = url.to_ascii_lowercase();
     (low.starts_with("http://") || low.starts_with("https://")).then_some(url)
+}
+
+/// Whether `ext` names a file the viewer RENDERS from readable source — i.e. one with two
+/// meaningful views, so the caption's `</>` toggle has something to switch between.
+///
+/// This mirrors the render gating in [`content::classify`] / [`try_load_web`] on purpose: with
+/// "Render Markdown" off a `.md` is ALREADY shown as source, so offering a source toggle there
+/// would be a button that visibly does nothing. Formats whose only view is source (`.rs`, `.json`)
+/// and whose only view is rendered (a PNG, a video) are both excluded.
+pub(super) fn source_capable(ext: &str) -> bool {
+    use sagethumbs2k_core::{formats, settings};
+    if formats::is_preview_markdown(ext) {
+        return settings::preview_markdown();
+    }
+    if formats::is_preview_doc(ext) {
+        // Same split `classify` uses: a notebook is a markdown document, CSV/TSV are text files.
+        return if ext.eq_ignore_ascii_case("ipynb") {
+            settings::preview_markdown()
+        } else {
+            settings::preview_text()
+        };
+    }
+    // HTML only renders in the WebView2 build with the toggle on; otherwise it's already source.
+    #[cfg(feature = "html-preview")]
+    if matches!(ext, "html" | "htm" | "xhtml") {
+        return settings::preview_html();
+    }
+    // SVG renders as an image (resvg) but is plain XML underneath.
+    ext == "svg"
+}
+
+/// Show `path` as raw text (the "view source" branch of [`load`]). Returns false if the file
+/// can't be read as text, so the caller can fall through to the rendered path rather than
+/// stranding the viewer on an empty pane.
+pub(super) unsafe fn show_source(hwnd: HWND, path: &str) -> bool {
+    let st = &*state(hwnd);
+    let Some(text) = content::read_text(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(text);
+    st.kind.set(ContentKind::Text);
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    set_title(hwnd);
+    update_tooltips(hwnd, st.tip.get()); // the outline / PDF pager just went away
+    true
 }
 
 /// Lowercase extension of `path` (no dot).

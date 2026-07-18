@@ -2,6 +2,16 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.2.0 (2026-07-18)
+
+- **You can now see the source behind a rendered preview.** Anything the Quick preview renders —
+  a Markdown file, a CSV/TSV table, a Jupyter notebook, an HTML page, an SVG — has a new **`{ }`**
+  button in the preview's toolbar (or press **Ctrl+U**) that swaps the rendered view for the raw
+  file, syntax-highlighted with line numbers and fully selectable. Press it again to go back. The
+  mode stays on while the window is open, so **←/→** keeps showing source as you flip through a
+  folder; opening a fresh preview always starts rendered. The button only shows up on files that
+  actually have both views, so it never appears on a photo or a video.
+
 ## 1.1.1 (2026-07-17)
 
 - **Fixed:** on some Windows 11 systems, uninstalling could stop with a **"Resource TSetupForm

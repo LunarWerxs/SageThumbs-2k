@@ -40,6 +40,7 @@ pub(super) unsafe fn button_rects(hwnd: HWND) -> Vec<(Btn, RECT)> {
 pub(super) fn btn_tip(b: Btn) -> &'static str {
     crate::win::t(match b {
         Btn::Toc => "preview_tip_toc",
+        Btn::Source => "preview_tip_source",
         Btn::PdfPrev => "preview_tip_prev",
         Btn::PdfNext => "preview_tip_next",
         Btn::Pin => "preview_tip_pin",

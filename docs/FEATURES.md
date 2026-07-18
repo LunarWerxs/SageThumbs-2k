@@ -243,6 +243,12 @@ plus these viewer-only extras:
   (Rust, Python, JS/TS, JSON, Java, Go, C/C++, C#, Ruby, PHP, Lua, Kotlin, Swift, shell, HTML/CSS,
   SQL, YAML/TOML/ini and more — comments, strings, numbers, keywords, and JSON/object keys in their
   own colour), a small pure-Rust lexer, in both standalone code files and Markdown code fences.
+- **View source**: anything that RENDERS can be flipped to its raw text and back — a Markdown file,
+  a CSV/TSV table, a Jupyter notebook, a rendered HTML page, an SVG. Hit the toolbar's **`{ }`**
+  button or press **Ctrl+U** and you get the underlying file, syntax-highlighted with line numbers,
+  fully selectable and copyable; press it again to go back. The mode sticks while the window is
+  open, so **←/→** keeps showing source as you flip through a folder, and a fresh preview always
+  opens rendered. The button only appears on files that actually have both views.
 - **Multi-page PDF navigation**: PageUp/PageDown or the arrow keys (or on-screen ◀ ▶ buttons) page
   through the document, with a "current / total" indicator in the title bar.
 - **Zoom + pan** on images (wheel to zoom at the cursor, drag to pan, double-click to toggle

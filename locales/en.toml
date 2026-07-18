@@ -284,6 +284,7 @@ chk_preview_md_remote = "Download web images in Markdown previews"
 tip_preview_md_remote = "Off: images hosted on the web (badges, hotlinked art) show as labeled chips. On: they are downloaded (HTTPS only) and shown — the file's author controls those web addresses, so leave this off if that concerns you."
 # Quick preview toolbar button tooltips
 preview_tip_toc = "Outline"
+preview_tip_source = "View source"
 preview_tip_prev = "Previous page"
 preview_tip_next = "Next page"
 preview_tip_pin = "Keep on top"

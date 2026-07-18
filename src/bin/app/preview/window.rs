@@ -88,6 +88,10 @@ pub(super) enum ContentKind {
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Btn {
     Toc,
+    /// "View source" toggle: swap a RENDERED document (Markdown, a CSV/TSV/notebook table, a
+    /// WebView2 HTML page, an SVG) for its raw text, and back. Only shown when the current file
+    /// actually has both views (see [`btn_visible`] / `loader::source_capable`).
+    Source,
     PdfPrev,
     PdfNext,
     Pin,
@@ -100,8 +104,9 @@ pub(super) enum Btn {
 }
 
 /// All buttons, in left-to-right caption order (rightmost drawn is Close).
-pub(super) const BTNS: [Btn; 10] = [
+pub(super) const BTNS: [Btn; 11] = [
     Btn::Toc,
+    Btn::Source,
     Btn::PdfPrev,
     Btn::PdfNext,
     Btn::Pin,
@@ -114,13 +119,15 @@ pub(super) const BTNS: [Btn; 10] = [
 ];
 
 /// Whether a toolbar button is currently shown (PDF pager only for multi-page PDFs; the outline
-/// toggle only for Markdown that has headings).
+/// toggle only for Markdown that has headings; the source toggle only for files that HAVE a
+/// rendered view to toggle away from).
 pub(super) fn btn_visible(st: &ViewerState, b: Btn) -> bool {
     match b {
         Btn::PdfPrev | Btn::PdfNext => {
             st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1
         }
         Btn::Toc => st.kind.get() == ContentKind::Markdown && st.md_has_headings.get(),
+        Btn::Source => st.src_capable.get(),
         _ => true,
     }
 }
@@ -218,6 +225,14 @@ pub(super) struct ViewerState {
     /// The remote-images toggle, read once at load (like the HTML toggles) so a mid-preview
     /// Settings save can't flip behavior between paints of the same document.
     pub(super) md_remote_ok: Cell<bool>,
+    /// "View source" mode: show the raw file text instead of the rendered document. Sticky for
+    /// the LIFETIME OF THE WINDOW (survives ←/→ nav and daemon file switches, so you can read a
+    /// run of documents as source) but never persisted — a fresh preview always opens rendered.
+    pub(super) src_view: Cell<bool>,
+    /// Whether the current file HAS both a rendered and a source view — computed once per load
+    /// from the extension + the Settings toggles that decide whether it renders at all (see
+    /// `loader::source_capable`). Drives the toolbar toggle's visibility.
+    pub(super) src_capable: Cell<bool>,
     /// Full-screen state: `Some(pre_fullscreen_window_rect)` while borderless-full-screen (F11),
     /// `None` otherwise. Saving the windowed rect lets F11/Esc restore the exact prior geometry.
     pub(super) fullscreen: Cell<Option<RECT>>,
@@ -365,6 +380,9 @@ pub(super) unsafe fn create_viewer(
         md_imgs: RefCell::new(super::markdown::ImgCache::new()),
         md_layout: RefCell::new(super::markdown::MdLayout::default()),
         md_remote_ok: Cell::new(false),
+        // The headless shot can open straight into source view (`--shot --window preview --source`).
+        src_view: Cell::new(shot.map(|o| o.source).unwrap_or(false)),
+        src_capable: Cell::new(false),
         fullscreen: Cell::new(None),
         busy: Cell::new(false),
         pending_close: Cell::new(false),
@@ -843,6 +861,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     copy_content(hwnd, shift);
                     return LRESULT(0);
                 }
+                // Ctrl+U: view source / view rendered — the browser convention, same as the
+                // toolbar's `</>` toggle. Ignored on files that only have one view.
+                if ctrl && vk == 'U' as u16 {
+                    toggle_source(hwnd);
+                    return LRESULT(0);
+                }
                 // Shift+<nav key> extends the selection (plain arrows stay file navigation).
                 if shift
                     && matches!(vk, v if v == VK_LEFT.0 || v == VK_RIGHT.0 || v == VK_UP.0
@@ -1026,8 +1050,9 @@ unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-/// Run a toolbar button's action.
-unsafe fn do_action(hwnd: HWND, btn: Btn) {
+/// Run a toolbar button's action. `pub(super)` so the headless shot harness can drive a real
+/// button press (`--toggle-source`) instead of only pre-setting state.
+pub(super) unsafe fn do_action(hwnd: HWND, btn: Btn) {
     let st = &*state(hwnd);
     let path = st.path.borrow().clone();
     match btn {
@@ -1044,6 +1069,7 @@ unsafe fn do_action(hwnd: HWND, btn: Btn) {
             let _ = InvalidateRect(Some(hwnd), None, false);
             update_tooltips(hwnd, st.tip.get());
         }
+        Btn::Source => toggle_source(hwnd),
         Btn::PdfPrev => goto_pdf_page(hwnd, -1),
         Btn::PdfNext => goto_pdf_page(hwnd, 1),
         Btn::Close => request_close(hwnd),
@@ -1118,6 +1144,31 @@ unsafe fn do_action(hwnd: HWND, btn: Btn) {
     }
 }
 
+
+/// Flip between the RENDERED document and its raw source (toolbar button / Ctrl+U). No-op on a
+/// file that has only one of the two views.
+///
+/// Implemented as a plain reload rather than an in-place content swap: `load` already tears down
+/// whatever the rendered view owns (the WebView2 host, the markdown image cache + layout, the
+/// selection and scroll state) and `request_load` routes it through the `busy` deferral, so a
+/// toggle clicked while a WebView2 create is still pumping is applied after that create returns
+/// instead of yanking state out from under it. The re-read is a capped text read, not a decode.
+pub(super) unsafe fn toggle_source(hwnd: HWND) {
+    let st = &*state(hwnd);
+    if !st.src_capable.get() {
+        return;
+    }
+    st.src_view.set(!st.src_view.get());
+    // Hoist the clone into its own `let` — do NOT inline this as
+    // `if let Some(p) = st.path.borrow().clone()`. On edition 2021 the `Ref` temporary in an
+    // `if let` SCRUTINEE lives to the end of the whole block, so the `*st.path.borrow_mut()`
+    // inside `load` would hit a BorrowMutError — and `panic=abort` turns that into the viewer
+    // process dying on every click of this button. A `let` statement drops the `Ref` at the `;`.
+    let path = st.path.borrow().clone();
+    if let Some(p) = path {
+        request_load(hwnd, &p);
+    }
+}
 
 /// A plain click (nothing dragged) in the content area: an outline entry jumps to its heading;
 /// a Markdown link opens it.

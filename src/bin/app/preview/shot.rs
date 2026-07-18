@@ -60,6 +60,16 @@ pub(super) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, opts: &su
             crate::win::pump_msgs(8);
         }
     }
+    if opts.toggle_source {
+        // Drive the REAL toolbar-click path (`do_action(Btn::Source)`), not the `--source`
+        // preset, so the click-driven reload is headlessly verifiable. This is the only way to
+        // exercise the toggle's reload from a shot: `--source` starts the window ALREADY in
+        // source mode and never runs `toggle_source`, which is exactly how an edition-2021
+        // RefCell borrow bug in it survived a green test run once. Pump afterwards so the
+        // re-load's paint lands before the capture.
+        super::window::do_action(hwnd, super::window::Btn::Source);
+        crate::win::pump_msgs(8);
+    }
     if let Some(sel) = opts.sel {
         // Force a text-pane selection before capture (verifies the highlight headlessly).
         let stp = super::window::state(hwnd);

@@ -226,7 +226,8 @@ fn main() {
                     "preview" => {
                         // `--file <path>` input (synthetic gradient if absent), plus optional
                         // headless state forcing: `--hot N` (button N hovered), `--pinned`,
-                        // `--pdf-page N`, `--frame N` (animation frame), `--play` (video strip).
+                        // `--pdf-page N`, `--frame N` (animation frame), `--play` (video strip),
+                        // `--source` (raw text of a normally-rendered file).
                         let val = |name: &str| {
                             args.iter().position(|a| a == name).and_then(|p| args.get(p + 1))
                         };
@@ -244,6 +245,8 @@ fn main() {
                                 Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
                             }),
                             wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
+                            source: args.iter().any(|a| a == "--source"),
+                            toggle_source: args.iter().any(|a| a == "--toggle-source"),
                         };
                         crate::preview::run_shot_preview(hinst, dark, out, &opts)
                     }

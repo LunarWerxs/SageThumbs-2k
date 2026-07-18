@@ -251,6 +251,13 @@ pub(crate) struct ShotOpts {
     /// Pump the message loop for `N` ms before capturing (`--wait-ms N`) — lets async work
     /// (e.g. an opt-in remote markdown image fetch) land in the frame.
     pub wait_ms: Option<u64>,
+    /// Open in "view source" mode (`--source`) — the raw text of a file that would normally
+    /// RENDER (Markdown, CSV/TSV/notebook, SVG), as the caption's `{ }` toggle shows it.
+    pub source: bool,
+    /// PRESS the view-source toolbar button once after loading (`--toggle-source`), driving the
+    /// real click path (`do_action` → `toggle_source` → reload) rather than presetting the mode
+    /// like `--source` does. Combine with `--source` to verify toggling back to rendered.
+    pub toggle_source: bool,
 }
 
 /// The app's `--shot --window preview` mode: build the viewer OFF-SCREEN per `opts`, render it to
