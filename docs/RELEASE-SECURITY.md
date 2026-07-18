@@ -27,29 +27,51 @@ Full history, every installer still in `dist/`, looked up on VirusTotal by hash:
 | **1.1.1** | 2026-07-17 | 3/69 | **`Generik.MMSQLBT`** | APEX, Skyhigh |
 | 1.2.0 | 2026-07-18 | 2/70 | clean *(so far — see below)* | APEX, Skyhigh |
 
-**Read this table carefully, because it refutes the obvious explanation.** APEX and Skyhigh
-are the CONSTANT baseline — present on every build since 0.8.0. That pair is the
-unsigned/Inno-Setup noise floor, and it has never moved.
+**That table is misleading, and the trap is worth naming.** Those are each build's *stored*
+verdict from whenever VirusTotal last analysed it — mostly the day it was released. Comparing
+them looks like a timeline of our software. It is not; it is a timeline of *when each file
+happened to be scanned*.
 
-ESET is the anomaly: it appeared for the first time at **1.1.0**. The project has *always*
-been unsigned, so "unsigned" cannot explain a change that starts at one specific version. It
-is the standing background risk, not the trigger.
+### The decisive test: re-scan OLD builds with TODAY's engines
 
-SourceForge's scanner is ESET, so its warnings are the ESET column, not an independent opinion.
+| Build | Stored verdict | Re-analysed 2026-07-18 |
+|---|---|---|
+| 1.0.0 | clean (scanned Jul 17) | **`Generik.CBCUAMQ`** — flipped to flagged |
+| 1.0.1 | clean (scanned Jul 14) | clean |
+| 1.1.1 | `Generik.MMSQLBT` | `Generik.MMSQLBT` (unchanged) |
 
-### It is not a transient ESET model glitch
+**1.0.0 predates the 1.1.0 selection feature entirely, was clean yesterday, and flags today on
+identical bytes.** Nothing about the file changed. ESET's model did.
 
-Re-analysed 1.1.1's identical bytes on 2026-07-18 with current engine versions: ESET returned
-**the same `Generik.MMSQLBT` verdict**, and Rising had additionally joined (4 detections). So
-the verdict is stable and reproducible against those bytes, not a bad afternoon for ESET's
-model that has since been corrected.
+That single result disposes of every "what did we change at 1.1.0" theory, including two this
+document previously advanced. Across builds of one product ESET has now issued **four
+different cluster IDs** — `CBCUAMQ`, `NJDPIFC`, `MMSQLBT`, and clean — with no correspondence
+to anything in the source.
 
-### Do not read 1.2.0's clean result as "fixed"
+### What is actually happening
 
-1.2.0 was scanned hours after being built. ESET's verdict on a brand-new file leans on cloud
-reputation that has not matured yet, and 1.2.0 *contains* the 1.1.0 code that correlates with
-the detection. Treat a clean first-day scan as **not yet scored**, not as exonerated, and
-re-check a few days after each release.
+ESET's `Generik.*` is a generic ML/heuristic bucket, not a signature. Malware authors also
+package payloads with Inno Setup, so vendors periodically ship heuristics matching the Inno
+**stub** itself — which is why this catches legitimate vendors and why it fires on some builds
+and not others with no meaningful change. It is a lottery over the compressed installer image,
+re-rolled whenever the vendor updates its model.
+
+Corroborating evidence that this is an industry-wide Inno problem, not ours:
+
+- Inno Setup's own community group carries recurring threads
+  ([1](https://groups.google.com/g/innosetup/c/w2weZ4afFqs),
+  [2](https://groups.google.com/g/innosetup/c/58LUdjrJUUI),
+  [3](https://groups.google.com/g/innosetup/c/lvsb2vWhklk)) — enough that a moderator has a
+  standing "contact your AV vendor, not us" reply.
+- Microsoft's own Q&A: [False Positives using Inno Setup](https://learn.microsoft.com/en-us/answers/questions/2736482/false-positives-using-inno-setup) — Defender flags Inno output too.
+- [node-innosetup-compiler#10](https://github.com/felicienfrancois/node-innosetup-compiler/issues/10):
+  Defender's detection depended on the output **filename** and vanished when renamed, with no
+  code change. Arbitrary to the point of absurdity.
+
+### Do not read a clean scan as "fixed"
+
+A clean result means "not flagged in this roll," not "exonerated." 1.2.0 may well be flagged
+next week, and 1.1.x may go clean. Re-check a few days after each release.
 
 ## Why these are false positives (the specific evidence, not a shrug)
 
@@ -134,18 +156,39 @@ Run it by hand any time:
 python push_to_vt.py dist/SageThumbs2K-Setup-<ver>.exe --gate
 ```
 
+## What does NOT work (so nobody burns a day on it)
+
+Researched against the Inno Setup community group, Microsoft docs, and real test repos. Most
+of the popular advice is cargo-cult:
+
+| Suggested "fix" | Verdict |
+|---|---|
+| Change `Compression=` (lzma2 → zip → none) | **No evidence.** Nothing links Inno's compression choice to heuristic detection. |
+| `SolidCompression=no` | **No evidence.** The only real test data ([teeks99/inno-test](https://github.com/teeks99/inno-test)) measures build time and size, not detections. |
+| Rich `VersionInfo` metadata | **Unverified.** Already set here regardless — it is cheap and sensible. |
+| Avoid the name `Setup.exe` | **No general evidence**, though one documented Defender case turned on filename alone. Ours is already versioned. |
+| Upgrade Inno Setup | **Weakly evidenced.** A specific version's stub can get "poisoned" when malware campaigns use it; moving off it plausibly helps, but it is not immunity. |
+| Wait for it to fade | **Wrong direction for this.** Microsoft documents SmartScreen warnings fading with prevalence, but that is not the same mechanism, and 1.0.0 got *worse* with age. |
+
+The honest summary: apart from signing, there is no lever here that is evidenced to work.
+Changing our code or packaging to appease a dice roll would be chasing noise.
+
 ## Fixing it properly
 
-**Code-sign `Setup.exe`.** This is the real remedy and would likely take detections to zero.
-Options, cheapest first:
+**Code-sign `Setup.exe`.** The only remedy with real evidence behind it. Current (2026) options:
 
-- **Azure Trusted Signing** — roughly $10/month, Microsoft-operated, no hardware token. Requires
-  a verifiable organisation identity (typically 3+ years of history) or an individual identity.
-- **OV certificate** (Sectigo/DigiCert) — roughly $200–400/year, now requires the key on
-  hardware, which complicates automated signing.
-- **EV certificate** — most expensive, but grants immediate SmartScreen reputation.
+| Option | Cost | Catch |
+|---|---|---|
+| **Azure Trusted Signing** (now "Artifact Signing") | **$9.99/mo**, 5 000 signatures | Individual sign-up is **US/Canada residents only** (public preview). Organisations need **3 years** of verifiable business history, and the service covers US/CA/EU/UK only. A new org does not qualify; a US/CA individual does, with no waiting period. |
+| **SignPath.io** | **Free tier for OSS** | Worth pursuing first given this project is source-available on GitHub — no hardware, no monthly cost. |
+| **OV certificate** (Sectigo et al.) | ~$219/yr | Since June 2023 the private key must live on a **FIPS 140-2 L2 hardware token**, which badly complicates automated release signing. |
+| **EV certificate** | Most expensive | No longer grants instant SmartScreen trust — Microsoft states "this behavior no longer exists." |
 
-Signing is an owner decision (it costs money and requires identity verification), so it has not
+Note that signing is not an instant fix either: SmartScreen reputation is per-publisher-identity
+and still accrues over time. It is, however, the only lever that changes the underlying
+situation rather than re-rolling the dice.
+
+Signing costs money and requires identity verification, so it is an owner decision and has not
 been done unilaterally.
 
 **Report the false positives.** Vendors act on these and it is free:
