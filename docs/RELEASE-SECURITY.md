@@ -76,59 +76,39 @@ next week, and 1.1.x may go clean. Re-check a few days after each release.
 ## Why these are false positives (the specific evidence, not a shrug)
 
 - **No engine returns a named malware family.** ESET's `Generik.*` is its generic ML bucket;
-  Skyhigh's `BehavesLike…` prefix is explicitly heuristic; APEX is a pure-ML engine with a
-  well-known false-positive rate on VirusTotal.
-- **ESET assigned two DIFFERENT cluster IDs to consecutive builds of the same program**
-  (`NJDPIFC` → `MMSQLBT`). Signature detections are stable across builds; ML cluster IDs are
-  not. That instability is itself the tell.
-- **`ObfuscatedPoly` describes Inno Setup, not us.** An Inno installer is an LZMA-compressed
-  self-extractor by construction, which is exactly what "packed/obfuscated" heuristics look for.
-- The behaviour profile is inherently malware-shaped: writes to Program Files, `regsvr32`s a
-  DLL, registers an Appx package, adds an autostart entry. That is what a shell extension
-  installer *does*.
-
-## Root cause
-
-Two separate things are going on, and conflating them leads to the wrong fix.
-
-### The baseline (APEX + Skyhigh, every release since 0.8.0)
-
-Unsigned Inno Setup installer, low prevalence, LZMA self-extractor, bundled unsigned
-third-party DLLs. Constant, harmless, and it has never moved. Code-signing would clear this.
-
-### The ESET detection (new at 1.1.0) — an artifact of the INSTALLER, not of our code
-
-The decisive test: scan the shipped binaries individually rather than the installer.
+  Skyhigh's `BehavesLike…` prefix is explicitly heuristic; APEX and Bkav are ML engines with
+  well-known false-positive rates on VirusTotal.
+- **A build flipped clean → flagged with unchanged bytes** (1.0.0, above). Nothing about the
+  file changed, so nothing about the file is what is being detected.
+- **Four different cluster IDs across builds of one product.** Signature detections are stable;
+  ML clusterings are not.
+- **Scan the components and everything is clean:**
 
 | Component | VirusTotal |
 |---|---|
-| `SageThumbs2K.exe` (options dialog + Quick preview — contains ALL the selection/clipboard code) | **0/68 clean** |
+| `SageThumbs2K.exe` (options dialog + Quick preview) | **0/68 clean** |
 | `sagethumbs2k.dll` (the shell extension itself) | **0/69 clean** |
 | `st2k.exe` (the CLI / MCP server) | **0/69 clean** |
-| `SageThumbs2K-Setup-*.exe` (the Inno wrapper around them) | 2–3 flagged |
+| `SageThumbs2K-Setup-*.exe` (the Inno wrapper) | 2–3 flagged |
+| `SageThumbs2K-*-portable.zip` (no wrapper) | 1 flagged (Bkav) |
 
-**Not one engine objects to any code this project ships.** Every detection, ESET's included,
-exists only once the binaries are wrapped in the Inno Setup self-extractor.
+**Not one engine objects to any code this project ships.** Detections appear only once the
+binaries are wrapped, and they follow the wrapper, not the contents.
 
-That kills the intuitive theory, which is worth recording so nobody re-derives it: 1.1.0 was a
-single commit adding text selection, which introduced `GetKeyState`, `SetCapture` and
-`set_clipboard` — *poll keys → capture input → extract displayed text → write to clipboard*,
-which reads like an infostealer. Plausible, and wrong: the binary containing all of that code
-is clean on its own. The feature is not the trigger.
+## Two dead-end theories, recorded so they are not re-derived
 
-What is actually happening: ESET's `Generik.*` bucket is an ML verdict computed over the
-**LZMA-compressed installer image**. Those bytes are re-derived from scratch on every build, so
-their statistical fingerprint shifts unpredictably whenever the payload changes at all. That
-explains every observation:
+Both of these were advanced in earlier drafts of this document and both are wrong. They are
+kept because each is the obvious first guess.
 
-- it appeared at 1.1.0 with no corresponding change in what we bundle (size moved 9.28 → 9.29 MB);
-- consecutive builds landed in **different clusters** (`NJDPIFC` then `MMSQLBT`) — signature
-  matches are stable, ML clusterings are not;
-- re-scanning the same 1.1.1 bytes reproduces the verdict exactly (deterministic *given* the
-  bytes) while a neighbouring build is clean (unpredictable *across* builds).
+**"It is because we are unsigned."** Unsigned is the standing background condition, but it
+cannot explain a detection that appears on some builds and not others — the project has been
+unsigned since day one.
 
-So: a packing artifact on an unsigned self-extractor, not a property of the software. Nothing
-in the codebase needs changing, and changing code to appease it would be chasing noise.
+**"1.1.0 added text selection, which looks like an infostealer."** 1.1.0 was a single commit
+introducing `GetKeyState`, `SetCapture` and `set_clipboard` — *poll keys → capture input →
+extract displayed text → write to clipboard* genuinely does read like a credential stealer.
+Refuted twice over: the binary containing every line of that code scans **0/68**, and 1.0.0,
+which predates the feature entirely, now flags anyway.
 
 ## The gate
 
@@ -170,26 +150,49 @@ of the popular advice is cargo-cult:
 | Upgrade Inno Setup | **Weakly evidenced.** A specific version's stub can get "poisoned" when malware campaigns use it; moving off it plausibly helps, but it is not immunity. |
 | Wait for it to fade | **Wrong direction for this.** Microsoft documents SmartScreen warnings fading with prevalence, but that is not the same mechanism, and 1.0.0 got *worse* with age. |
 
-The honest summary: apart from signing, there is no lever here that is evidenced to work.
-Changing our code or packaging to appease a dice roll would be chasing noise.
+The honest summary: no lever here is evidenced to work. Changing our code or packaging to
+appease a dice roll would be chasing noise.
 
 ## Fixing it properly
 
-**Code-sign `Setup.exe`.** The only remedy with real evidence behind it. Current (2026) options:
+### Code signing is OFF THE TABLE — do not propose it
 
-| Option | Cost | Catch |
+Settled owner decision (2026-07-18), not an open trade-off. Do not raise it, do not list it
+under "next steps," and do not resurrect it in a later session because the context looks new.
+It is recorded here only because it is the first thing anyone researching AV false positives
+will reach for, and re-litigating it wastes everyone's time.
+
+(This does not touch the **self-signed** cert for the MSIX sparse package — Windows will not
+load an unsigned sparse package at all, so that one is a technical requirement and stays.)
+
+### What is left
+
+1. **File vendor false-positive reports** (below). Free, and the case here is unusually strong.
+2. **Ship the portable zip** (`scripts/make-portable.ps1`, built automatically by
+   `build-release.ps1`). Same binaries, no installer stub, so the packed-executable detector
+   class has nothing to fire on. Measured: installer 2/70 (APEX + Skyhigh `ObfuscatedPoly`)
+   vs portable zip **1/66** — the packed-stub hits do disappear exactly as predicted, but Bkav
+   (the most false-positive-prone engine on VirusTotal) picks it up instead. So it is an
+   improvement and a genuine escape hatch, **not** a cure.
+
+### Changing installer format does NOT fix this
+
+Assessed properly before anyone spends days on it:
+
+| Format | Avoids the packed-stub class? | Verdict |
 |---|---|---|
-| **Azure Trusted Signing** (now "Artifact Signing") | **$9.99/mo**, 5 000 signatures | Individual sign-up is **US/Canada residents only** (public preview). Organisations need **3 years** of verifiable business history, and the service covers US/CA/EU/UK only. A new org does not qualify; a US/CA individual does, with no waiting period. |
-| **SignPath.io** | **Free tier for OSS** | Worth pursuing first given this project is source-available on GitHub — no hardware, no monthly cost. |
-| **OV certificate** (Sectigo et al.) | ~$219/yr | Since June 2023 the private key must live on a **FIPS 140-2 L2 hardware token**, which badly complicates automated release signing. |
-| **EV certificate** | Most expensive | No longer grants instant SmartScreen trust — Microsoft states "this behavior no longer exists." |
+| NSIS | No | [NSIS's own docs](https://nsis.sourceforge.io/NSIS_False_Positives) say vendors signature the stub itself |
+| 7-Zip SFX | No | It *is* a decompressing PE stub |
+| Squirrel / Velopack | No | Long history of `HEUR:Trojan.Win32.Generic` flags |
+| MSIX only | Yes | **Dead end** — requires a trusted signature to install at all |
+| MSI / WiX | Structurally, probably | **Unevidenced.** No before/after case study exists; [Tauri #4749](https://github.com/tauri-apps/tauri/issues/4749) had an unsigned MSI flagged *more* than its EXEs, and [Defender flags MSIs too](https://learn.microsoft.com/en-us/answers/questions/746120/msi-is-detected-as-a-virus-by-windows-defender). SmartScreen documents **no** MSI-vs-EXE distinction. Costs 2–4 days of WiX work, and the MSIX sparse package registers per-user, which fights a per-machine MSI. |
+| Portable zip | **Yes** | The only format with no stub at all. Shipped — see above. |
 
-Note that signing is not an instant fix either: SmartScreen reputation is per-publisher-identity
-and still accrues over time. It is, however, the only lever that changes the underlying
-situation rather than re-rolling the dice.
-
-Signing costs money and requires identity verification, so it is an owner decision and has not
-been done unilaterally.
+The conclusion to hold onto: AV false positives are a tax on unsigned distribution, not a
+property of Inno Setup. No format choice removes them.
+3. **Accept and document.** All shipped binaries are 0/69; only the wrapper is flagged, and
+   flagging is a per-build dice roll that re-rolls on the vendor's schedule. Pointing users at
+   this document is a legitimate answer.
 
 **Report the false positives.** Vendors act on these and it is free:
 
