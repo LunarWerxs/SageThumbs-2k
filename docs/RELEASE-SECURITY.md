@@ -2,10 +2,12 @@
 
 ## Short version
 
-SageThumbs 2K installers get flagged by 2–3 of VirusTotal's ~70 engines. Every one of those
-detections is **heuristic or machine-learning**, not a signature match, and the cause is that
-`SageThumbs2K-Setup-*.exe` is **not code-signed**. Roughly 67 engines — including Microsoft,
-Kaspersky, Bitdefender and Sophos — return clean.
+**Every binary SageThumbs 2K ships is clean on VirusTotal — 0 detections out of ~69, all three
+of them.** Only the Inno Setup installer that wraps them is flagged, by 2–3 of ~70 engines, and
+every one of those is a heuristic/ML verdict rather than a signature match.
+
+The detections are an artifact of wrapping unsigned binaries in a compressed self-extractor.
+They are not a property of the software, and no code change is warranted.
 
 Every release is now scanned **before** it is published (see *The gate* below). Releases up to
 and including v1.2.0 were not, which is why ESET's verdict on 1.1.0/1.1.1 first surfaced on
@@ -13,14 +15,41 @@ SourceForge's listing instead of in our own pipeline.
 
 ## What has actually been detected
 
-| Build | VT | Engines |
-|---|---|---|
-| 1.1.0 | 3/69 | APEX `Malicious`, **ESET-NOD32 `Generik.NJDPIFC`**, Skyhigh `BehavesLike.Win32.ObfuscatedPoly.tc` |
-| 1.1.1 | 3/69 | APEX `Malicious`, **ESET-NOD32 `Generik.MMSQLBT`**, Skyhigh `BehavesLike.Win32.ObfuscatedPoly.tc` |
-| 1.2.0 | 2/70 | APEX `Malicious`, Skyhigh `BehavesLike.Win32.ObfuscatedPoly.tc` |
+Full history, every installer still in `dist/`, looked up on VirusTotal by hash:
 
-SourceForge's scanner is ESET, so its warnings are the ESET column above, not an independent
-opinion.
+| Build | Built | VT | ESET | Others |
+|---|---|---|---|---|
+| 0.8.0 | 2026-07-07 | 2/68 | clean | APEX, Skyhigh |
+| 0.10.0 | 2026-07-13 | 2/69 | clean | APEX, Skyhigh |
+| 1.0.0 | 2026-07-14 | 2/70 | clean | APEX, Skyhigh |
+| 1.0.1 | 2026-07-14 | 2/69 | clean | APEX, Skyhigh |
+| **1.1.0** | 2026-07-17 | 3/69 | **`Generik.NJDPIFC`** | APEX, Skyhigh |
+| **1.1.1** | 2026-07-17 | 3/69 | **`Generik.MMSQLBT`** | APEX, Skyhigh |
+| 1.2.0 | 2026-07-18 | 2/70 | clean *(so far — see below)* | APEX, Skyhigh |
+
+**Read this table carefully, because it refutes the obvious explanation.** APEX and Skyhigh
+are the CONSTANT baseline — present on every build since 0.8.0. That pair is the
+unsigned/Inno-Setup noise floor, and it has never moved.
+
+ESET is the anomaly: it appeared for the first time at **1.1.0**. The project has *always*
+been unsigned, so "unsigned" cannot explain a change that starts at one specific version. It
+is the standing background risk, not the trigger.
+
+SourceForge's scanner is ESET, so its warnings are the ESET column, not an independent opinion.
+
+### It is not a transient ESET model glitch
+
+Re-analysed 1.1.1's identical bytes on 2026-07-18 with current engine versions: ESET returned
+**the same `Generik.MMSQLBT` verdict**, and Rising had additionally joined (4 detections). So
+the verdict is stable and reproducible against those bytes, not a bad afternoon for ESET's
+model that has since been corrected.
+
+### Do not read 1.2.0's clean result as "fixed"
+
+1.2.0 was scanned hours after being built. ESET's verdict on a brand-new file leans on cloud
+reputation that has not matured yet, and 1.2.0 *contains* the 1.1.0 code that correlates with
+the detection. Treat a clean first-day scan as **not yet scored**, not as exonerated, and
+re-check a few days after each release.
 
 ## Why these are false positives (the specific evidence, not a shrug)
 
@@ -36,15 +65,48 @@ opinion.
   DLL, registers an Appx package, adds an autostart entry. That is what a shell extension
   installer *does*.
 
-## Root cause, ranked
+## Root cause
 
-1. **The installer is unsigned.** The self-signed certificate covers only the MSIX sparse
-   package (needed for the Windows 11 context menu); `Setup.exe` itself carries no signature.
-   This is the single largest contributor.
-2. **Low prevalence.** Every release is a brand-new binary no engine has seen. Reputation
-   systems weight this heavily, which is why detections tend to fade weeks after a release.
-3. Compressed self-extracting installer (see above).
-4. Bundled third-party binaries (the trimmed ImageMagick DLLs), themselves unsigned.
+Two separate things are going on, and conflating them leads to the wrong fix.
+
+### The baseline (APEX + Skyhigh, every release since 0.8.0)
+
+Unsigned Inno Setup installer, low prevalence, LZMA self-extractor, bundled unsigned
+third-party DLLs. Constant, harmless, and it has never moved. Code-signing would clear this.
+
+### The ESET detection (new at 1.1.0) — an artifact of the INSTALLER, not of our code
+
+The decisive test: scan the shipped binaries individually rather than the installer.
+
+| Component | VirusTotal |
+|---|---|
+| `SageThumbs2K.exe` (options dialog + Quick preview — contains ALL the selection/clipboard code) | **0/68 clean** |
+| `sagethumbs2k.dll` (the shell extension itself) | **0/69 clean** |
+| `st2k.exe` (the CLI / MCP server) | **0/69 clean** |
+| `SageThumbs2K-Setup-*.exe` (the Inno wrapper around them) | 2–3 flagged |
+
+**Not one engine objects to any code this project ships.** Every detection, ESET's included,
+exists only once the binaries are wrapped in the Inno Setup self-extractor.
+
+That kills the intuitive theory, which is worth recording so nobody re-derives it: 1.1.0 was a
+single commit adding text selection, which introduced `GetKeyState`, `SetCapture` and
+`set_clipboard` — *poll keys → capture input → extract displayed text → write to clipboard*,
+which reads like an infostealer. Plausible, and wrong: the binary containing all of that code
+is clean on its own. The feature is not the trigger.
+
+What is actually happening: ESET's `Generik.*` bucket is an ML verdict computed over the
+**LZMA-compressed installer image**. Those bytes are re-derived from scratch on every build, so
+their statistical fingerprint shifts unpredictably whenever the payload changes at all. That
+explains every observation:
+
+- it appeared at 1.1.0 with no corresponding change in what we bundle (size moved 9.28 → 9.29 MB);
+- consecutive builds landed in **different clusters** (`NJDPIFC` then `MMSQLBT`) — signature
+  matches are stable, ML clusterings are not;
+- re-scanning the same 1.1.1 bytes reproduces the verdict exactly (deterministic *given* the
+  bytes) while a neighbouring build is clean (unpredictable *across* builds).
+
+So: a packing artifact on an unsigned self-extractor, not a property of the software. Nothing
+in the codebase needs changing, and changing code to appease it would be chasing noise.
 
 ## The gate
 
