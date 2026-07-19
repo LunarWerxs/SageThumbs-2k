@@ -446,7 +446,11 @@ mod tests {
     ///   * the tube carries an 80x80 JPEG thumbnail AND the real 900x900 LZ77 composite, so
     ///     the JPEG carve "worked" while silently throwing away 99% of the resolution.
     ///
-    /// Skipped (not failed) when the corpus isn't present, so a clone without it still builds.
+    /// SKIPS (does not fail) when the corpus is absent. The corpus is a LOCAL-ONLY sibling
+    /// directory, never committed, so CI clones do not have it — an earlier version of this
+    /// test asserted it had run and broke CI on exactly that. The samples are also
+    /// contributor-supplied files shared for testing; redistributing them in this repo is not
+    /// ours to decide, so they deliberately stay out of tree.
     #[test]
     fn decodes_real_psp_family_samples_via_lz77() {
         let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
@@ -480,7 +484,16 @@ mod tests {
             let dark = rgb.pixels().filter(|p| p.0.iter().all(|&c| c < 64)).count();
             assert!(dark > 1000, "{name}: expected substantial dark artwork, got {dark} px");
         }
-        assert!(ran > 0, "no PSP samples found in {} - corpus missing?", corpus.display());
+        if ran == 0 {
+            // Loud on purpose: a silently-skipping test is one that can rot unnoticed. This
+            // says plainly that it verified NOTHING on this machine, rather than passing green
+            // and implying coverage it does not have.
+            eprintln!(
+                "SKIPPED: no PSP samples under {} — this test verified NOTHING. \
+                 It only has teeth on a machine with the local test corpus.",
+                corpus.display()
+            );
+        }
     }
 
     /// A `.pspmask` is allowed to be a plain Windows BMP rather than a PSP container. That
