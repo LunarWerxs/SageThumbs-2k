@@ -37,6 +37,7 @@ use std::path::Path;
 use embed_manifest::{embed_manifest, new_manifest};
 
 fn main() {
+    delay_load_media_foundation();
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         // Embed the manifest, the icon AND the VERSIONINFO in ONE windres-built
         // resource object for the EXEs. (Two separate resource objects — e.g.
@@ -374,4 +375,32 @@ fn to_upper_snake(key: &str) -> String {
     key.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
         .collect()
+}
+
+/// Delay-load Media Foundation (`mfplat.dll` / `mfreadwrite.dll`).
+///
+/// By default these are STATIC imports, so the Windows loader resolves them before any of
+/// our code runs and REFUSES to load the binary at all if they are missing. They ARE
+/// missing on the "N" and "KN" Windows editions (sold in the EU and Korea without media
+/// features) and on Server core installs. There, the shell extension would fail to load
+/// entirely: no thumbnails for ANY of the 300+ formats, no context menu, no property
+/// handler, and no error message anywhere explaining why. One optional tier (video frame
+/// grabbing) must not be able to take the whole product down.
+///
+/// Delay-loading defers resolution to the first actual CALL, so the video tier degrades to
+/// "unavailable" and everything else keeps working. Every MF call site is gated on
+/// `video::media_foundation_available()`, because a delay-load stub for a DLL that cannot
+/// be found raises a STRUCTURED EXCEPTION, and this crate builds with `panic = "abort"` --
+/// an unguarded call would kill the host process instead of degrading.
+///
+/// (Mirrored in the other package's build script: build scripts cannot share code.)
+fn delay_load_media_foundation() {
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+    for dll in ["mfplat.dll", "mfreadwrite.dll"] {
+        println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
+    }
+    // /DELAYLOAD is inert without the helper that performs the deferred resolution.
+    println!("cargo:rustc-link-arg=delayimp.lib");
 }

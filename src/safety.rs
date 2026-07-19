@@ -155,7 +155,7 @@ fn log_session_header(artifact: &str) {
 
 /// A short Windows version string for the log header, from `HKLM\…\CurrentVersion`.
 /// `ProductName` still says "Windows 10" on 11, so promote by build number.
-fn os_string() -> String {
+pub fn os_string() -> String {
     use windows_registry::LOCAL_MACHINE;
     let k = LOCAL_MACHINE.open(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion").ok();
     let g = |n: &str| k.as_ref().and_then(|k| k.get_string(n).ok()).unwrap_or_default();

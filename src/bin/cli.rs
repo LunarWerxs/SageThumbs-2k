@@ -20,6 +20,7 @@ USAGE:
   st2k pdf       <out.pdf> <in> [in...]         combine images into one PDF
   st2k info      <in> [--json]                  dimensions + camera/date/GPS
   st2k formats   [--json]                       list supported input formats
+  st2k doctor                                   self-check: why are thumbnails not showing?
   st2k upload-hosts [--open]                     show (or open) the editable upload-hosts config file
   st2k devmode   [on|off|status]                toggle the developer test-box flag
   st2k --mcp                                     run as an MCP server (stdio JSON-RPC, for AI agents)
@@ -90,6 +91,9 @@ fn run(args: &[String]) -> Result<String, String> {
         }
         "info" => cli::info(need(&pos, 0)?, has_flag(rest, "--json")),
         "formats" => Ok(cli::list_formats(has_flag(rest, "--json"))),
+        // Read-only; never fails, so it always prints a report rather than an error —
+        // a user running this already has something broken.
+        "doctor" | "diag" => Ok(sagethumbs2k_core::doctor::report()),
         "upload-hosts" | "upload-host" => {
             let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");
             cli::upload_hosts(open)

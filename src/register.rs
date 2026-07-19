@@ -467,3 +467,18 @@ fn remove_if_ours_preview(path: &str) {
 fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
+
+/// Is the thumbnail provider registered *right now*?
+///
+/// Reading back the CLSID is the cheapest true test that `DllRegisterServer` actually
+/// ran: our own registration writes this key and nothing else does. Used by the Settings
+/// "Repair file associations" button to check whether the elevated `regsvr32` it just
+/// launched really succeeded — launching a process tells you nothing about the outcome,
+/// and reporting "repaired" after a silent failure is worse than reporting nothing.
+pub fn is_registered() -> bool {
+    CLASSES_ROOT
+        .open(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}\\InprocServer32"))
+        .ok()
+        .and_then(|k| k.get_string("").ok())
+        .is_some_and(|p| !p.is_empty())
+}

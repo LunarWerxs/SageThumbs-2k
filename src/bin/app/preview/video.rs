@@ -67,6 +67,12 @@ fn ensure_mf() {
 /// with the engine set to render into it. Events post to `viewer` (WM_APP_VIDEO). Autoplay
 /// happens on the CANPLAY event (see [`VideoPlayer::on_event`]).
 pub(super) unsafe fn create(parent: HWND, viewer: HWND, rc: &RECT, hinst: windows::Win32::Foundation::HINSTANCE, path: &str) -> Option<VideoPlayer> {
+    // mfplat is delay-loaded (see the build scripts): on a Windows edition without Media
+    // Foundation, calling MFStartup would raise a structured exception under `panic = "abort"`.
+    // No player here just means the file shows as a card instead of playing.
+    if !sagethumbs2k_core::video::media_foundation_available() {
+        return None;
+    }
     ensure_mf();
     // The child render window (plain STATIC; the engine owns the swap chain on it).
     let child = CreateWindowExW(

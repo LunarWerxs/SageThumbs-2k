@@ -24,6 +24,36 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 /// D3DFMT_X8R8G8B8 — the format id for `MFVideoFormat_RGB32`, for the stride fallback.
 const RGB32_FOURCC: u32 = 22;
 
+/// Is Media Foundation actually present on this machine?
+///
+/// `mfplat.dll` / `mfreadwrite.dll` are **delay-loaded** (see `delay_load_media_foundation`
+/// in both build scripts) precisely so that a Windows edition without Media Foundation can
+/// still LOAD the binary. Those editions are real and shipping: the **"N" and "KN" SKUs**
+/// sold in the EU and Korea, and Server core. As a static import, a missing `mfplat.dll`
+/// makes the loader refuse the entire shell extension — every format loses its thumbnail,
+/// the context menu never appears, and Windows reports nothing at all.
+///
+/// **Every MF call site must be gated on this.** A delay-load stub for a DLL that cannot be
+/// found raises a *structured exception*, and this crate builds `panic = "abort"`, so an
+/// unguarded call would abort the host process rather than degrade. Checking first turns
+/// that into a plain `None` and the file keeps its default icon.
+///
+/// The probe deliberately does **not** `FreeLibrary`: keeping the module pinned for the
+/// process lifetime means the delay-load resolution that follows cannot then fail, and it
+/// costs one handle on a machine that was going to load MF anyway.
+pub fn media_foundation_available() -> bool {
+    use std::sync::OnceLock;
+    use windows::core::PCWSTR;
+    use windows::Win32::System::LibraryLoader::LoadLibraryW;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        ["mfplat.dll\0", "mfreadwrite.dll\0"].iter().all(|name| {
+            let wide: Vec<u16> = name.encode_utf16().collect();
+            unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())).is_ok() }
+        })
+    })
+}
+
 /// Cheap magic sniff: does this byte head look like a video container MF might decode?
 /// Gates the (relatively expensive) MF startup so only actual videos pay for it. The
 /// `ftyp` brands for HEIC/AVIF images are excluded — those are decoded as images, not video.
@@ -104,6 +134,11 @@ const VIDEO_TIMEOUT: Duration = Duration::from_secs(8);
 /// <1 s. The path is `Send`, so it runs on the budgeted worker under [`VIDEO_TIMEOUT`] — a
 /// hostile/odd file fails fast (default icon) instead of pegging the host.
 pub fn frame_from_path(path: &str) -> Option<DynamicImage> {
+    // Media Foundation is delay-loaded; calling into it when absent would raise a
+    // structured exception under `panic = "abort"`. See `media_foundation_available`.
+    if !media_foundation_available() {
+        return None;
+    }
     let owned = path.to_string();
     grab_budgeted(move || unsafe {
         let _session = MfSession::start()?;
@@ -121,6 +156,11 @@ pub fn frame_from_path(path: &str) -> Option<DynamicImage> {
 /// Bounded by [`VIDEO_TIMEOUT`] so a codec that wedges inside `ReadSample` can't hang the
 /// caller's thread.
 pub fn frame_from_bytes(bytes: &[u8]) -> Option<DynamicImage> {
+    // Media Foundation is delay-loaded; calling into it when absent would raise a
+    // structured exception under `panic = "abort"`. See `media_foundation_available`.
+    if !media_foundation_available() {
+        return None;
+    }
     let owned = bytes.to_vec();
     grab_budgeted(move || unsafe {
         let stream = SHCreateMemStream(Some(&owned))?;
@@ -138,6 +178,11 @@ pub fn frame_from_bytes(bytes: &[u8]) -> Option<DynamicImage> {
 /// freely via the container's own index — unlike [`frame_from_bytes`], whose 3 s cap assumes a
 /// bounded head prefix. Used as the CLI/preview fallback for non-MP4/MKV containers.
 pub fn frame_from_bytes_repr(bytes: &[u8]) -> Option<DynamicImage> {
+    // Media Foundation is delay-loaded; calling into it when absent would raise a
+    // structured exception under `panic = "abort"`. See `media_foundation_available`.
+    if !media_foundation_available() {
+        return None;
+    }
     let owned = bytes.to_vec();
     grab_budgeted(move || unsafe {
         let stream = SHCreateMemStream(Some(&owned))?;
@@ -159,6 +204,11 @@ pub fn frame_from_bytes_repr(bytes: &[u8]) -> Option<DynamicImage> {
 /// reads, and the stream's wall-clock [`VIDEO_TIMEOUT`] deadline + byte budget keep it bounded
 /// even without the worker timeout. Returns `None` (→ caller falls back) on any failure.
 pub fn frame_from_block_stream(shell: &IStream, size: u64, frac: f64) -> Option<DynamicImage> {
+    // Media Foundation is delay-loaded; calling into it when absent would raise a
+    // structured exception under `panic = "abort"`. See `media_foundation_available`.
+    if !media_foundation_available() {
+        return None;
+    }
     // S_OK / S_FALSE both add a ref; RPC_E_CHANGED_MODE means COM is already up on this thread.
     let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     let r = unsafe { grab_block_stream(shell.clone(), size, Seek { frac, cap_hns: None }) };
@@ -185,6 +235,11 @@ unsafe fn grab_block_stream(inner: IStream, size: u64, seek: Seek) -> Option<Dyn
 /// on the worker, so no GIT marshaling is needed). Mirrors `frame_from_block_stream`'s decode.
 #[cfg(test)]
 pub fn frame_from_block_stream_file(path: &str, frac: f64) -> Option<DynamicImage> {
+    // Media Foundation is delay-loaded; calling into it when absent would raise a
+    // structured exception under `panic = "abort"`. See `media_foundation_available`.
+    if !media_foundation_available() {
+        return None;
+    }
     use windows::Win32::System::Com::{STATFLAG_NONAME, STATSTG, STGM_READ};
     use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
     let owned = path.to_string();

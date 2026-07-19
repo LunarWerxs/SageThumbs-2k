@@ -351,7 +351,9 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
         for &(ext, want, _) in &changes {
             let _ = settings::set_format_enabled(ext, want);
         }
-        if !reregister_elevated() {
+        // Only Ok counts — any other outcome means the HKCR hooks do NOT match the flags
+        // we just wrote, so roll the flags back rather than leave the UI lying.
+        if !matches!(reregister_elevated(), Reg::Ok) {
             for &(ext, _, old) in &changes {
                 let _ = settings::set_format_enabled(ext, old);
             }
@@ -436,14 +438,9 @@ pub(super) unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
         return;
     }
     // Kill Explorer (releases the cache files' lock), delete thumbcache_*.db, relaunch.
-    let _ = std::process::Command::new("cmd")
-        .args([
-            "/c",
-            "taskkill /f /im explorer.exe >nul 2>&1 & \
-             del /f /q \"%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" >nul 2>&1 & \
-             start \"\" explorer.exe",
-        ])
-        .spawn();
+    // Must go through `shellcmd::cmd_c` — `Command::args` would escape the quotes for
+    // the MSVCRT convention and `cmd` would misread them (see shellcmd, issue #5).
+    let _ = sagethumbs2k_core::shellcmd::cmd_c(sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE);
     msg(
         hwnd,
         "Thumbnail cache cleared and Explorer restarted. Thumbnails will rebuild as you browse.",
@@ -473,29 +470,81 @@ pub(super) unsafe fn open_diagnostics_log() {
     );
 }
 
-/// Re-run `regsvr32` elevated against the installed DLL. `register()` reads the
-/// per-extension flags we just wrote, so this brings the HKCR `shellex` keys in
-/// line with the Options format list. On an admin account with the silent-
-/// elevation policy this raises no prompt.
-pub(super) unsafe fn reregister_elevated() -> bool {
+/// Why a re-registration attempt ended the way it did. The distinction matters to the
+/// user: "you declined the prompt" and "your antivirus ate the DLL" need opposite
+/// actions, and both used to surface as the same cheerful success message.
+pub(super) enum Reg {
+    Ok,
+    /// The DLL is not on disk — the usual cause is security software quarantining it.
+    MissingDll,
+    /// `ShellExecute` could not start `regsvr32` (typically a declined UAC prompt).
+    NotLaunched,
+    /// `regsvr32` ran and reported failure.
+    Failed(u32),
+    /// `regsvr32` reported success but the CLSID still is not there.
+    NotRegistered,
+}
+
+/// Re-run `regsvr32` elevated against the installed DLL, and **verify it worked**.
+/// `register()` reads the per-extension flags we just wrote, so this brings the HKCR
+/// `shellex` keys in line with the Options format list.
+///
+/// The old version returned success as soon as `ShellExecute` *launched* regsvr32 —
+/// which says nothing about whether registration happened. A user whose DLL had been
+/// quarantined got "File associations repaired." and still had no thumbnails. So now we
+/// wait for the process, check its exit code, and then read the CLSID back.
+pub(super) unsafe fn reregister_elevated() -> Reg {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+
     let dll = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("sagethumbs2k.dll")))
         .unwrap_or_default();
+    if !dll.exists() {
+        return Reg::MissingDll;
+    }
+
     let params = wide(&format!("/s \"{}\"", dll.display()));
     let verb = wide("runas");
     let file = wide("regsvr32.exe");
-    let h = ShellExecuteW(
-        Some(HWND::default()),
-        PCWSTR(verb.as_ptr()),
-        PCWSTR(file.as_ptr()),
-        PCWSTR(params.as_ptr()),
-        PCWSTR::null(),
-        SW_HIDE,
-    );
-    // ShellExecuteW returns a value > 32 on success; <= 32 means it failed to
-    // launch (notably SE_ERR_ACCESSDENIED when the user declines the UAC prompt).
-    (h.0 as usize) > 32
+
+    // ShellExecuteExW (not ShellExecuteW) — it is the only variant that hands back a
+    // process handle, which is what lets us wait for an answer instead of assuming one.
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    if ShellExecuteExW(&mut info).is_err() || info.hProcess.is_invalid() {
+        return Reg::NotLaunched;
+    }
+
+    // regsvr32 is a fast, local registry write; 60 s is far past any legitimate run and
+    // still bounded, so a wedged process can't hang the Settings window forever.
+    let outcome = if WaitForSingleObject(info.hProcess, 60_000) == WAIT_OBJECT_0 {
+        let mut code = 0u32;
+        if GetExitCodeProcess(info.hProcess, &mut code).is_ok() && code != 0 {
+            Reg::Failed(code)
+        } else {
+            Reg::Ok
+        }
+    } else {
+        Reg::Failed(u32::MAX) // timed out — treat as failure rather than guess success
+    };
+    let _ = CloseHandle(info.hProcess);
+
+    // Even a zero exit code gets checked against reality: this is the condition that
+    // actually matters, and it is cheap to confirm.
+    match outcome {
+        Reg::Ok if !sagethumbs2k_core::register::is_registered() => Reg::NotRegistered,
+        other => other,
+    }
 }
 
 /// "Repair file associations" — the fix for blank/stuck thumbnails after another program
@@ -513,25 +562,56 @@ pub(super) unsafe fn repair_associations(hwnd: HWND) {
     if MessageBoxW(Some(hwnd), PCWSTR(warn.as_ptr()), PCWSTR(cap.as_ptr()), MB_YESNO | MB_ICONWARNING) != IDYES {
         return;
     }
-    if !reregister_elevated() {
-        msg(
-            hwnd,
-            "Couldn't re-register — the elevation prompt was declined or failed. Nothing was changed.",
-            "Repair File Associations",
-            MB_ICONERROR,
-        );
-        return;
+    // Report what actually happened. Each of these needs a different action from the
+    // user, so collapsing them into one message is what made this button useless as a
+    // diagnostic in the first place.
+    match reregister_elevated() {
+        Reg::Ok => {}
+        Reg::MissingDll => {
+            return msg(
+                hwnd,
+                "sagethumbs2k.dll is missing from the install folder, so there is nothing to \
+                 register.\n\nThis is almost always security software quarantining it. Allow \
+                 the SageThumbs 2K folder in your antivirus, then reinstall.",
+                "Repair File Associations",
+                MB_ICONERROR,
+            )
+        }
+        Reg::NotLaunched => {
+            return msg(
+                hwnd,
+                "Couldn't start regsvr32 — the elevation prompt was declined or failed. \
+                 Nothing was changed.",
+                "Repair File Associations",
+                MB_ICONERROR,
+            )
+        }
+        Reg::Failed(code) => {
+            return msg(
+                hwnd,
+                &format!(
+                    "regsvr32 could not register the shell extension (error {code}). \
+                     Nothing was changed.\n\nRun 'st2k doctor' from the install folder and \
+                     include its output in a bug report."
+                ),
+                "Repair File Associations",
+                MB_ICONERROR,
+            )
+        }
+        Reg::NotRegistered => {
+            return msg(
+                hwnd,
+                "regsvr32 reported success, but the shell extension is still not registered.\
+                 \n\nSomething is undoing the registration — usually security software. Run \
+                 'st2k doctor' from the install folder and include its output in a bug report.",
+                "Repair File Associations",
+                MB_ICONERROR,
+            )
+        }
     }
     // Registration rewrote the hooks; drop the stale cached thumbnails + restart Explorer so
     // the repaired ones render right away. (The cmd sequence gives regsvr32 time to finish.)
-    let _ = std::process::Command::new("cmd")
-        .args([
-            "/c",
-            "taskkill /f /im explorer.exe >nul 2>&1 & \
-             del /f /q \"%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" >nul 2>&1 & \
-             start \"\" explorer.exe",
-        ])
-        .spawn();
+    let _ = sagethumbs2k_core::shellcmd::cmd_c(sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE);
     msg(
         hwnd,
         "File associations repaired. Thumbnails will rebuild as you browse.",

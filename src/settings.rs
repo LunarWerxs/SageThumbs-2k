@@ -368,6 +368,12 @@ pub fn menu_quick_verbs() -> bool {
 /// package absent → classic keeps them (the only source). Read from HKLM (machine-wide; written
 /// under elevation, readable by anyone). Defaults to `false`, so a machine without the package
 /// behaves exactly as before.
+///
+/// The installer sets this **only on Windows 11** (`ModernMenuUsable` in `installer.iss`).
+/// Windows 10 has no modern flyout and bridges nothing, so setting it there made the classic
+/// handler suppress its quick verbs in favour of verbs that never appear — they just vanished
+/// from the right-click menu (issue #5). "Package is bundled" is NOT sufficient; the OS has to
+/// actually surface it.
 pub fn modern_menu_active() -> bool {
     LOCAL_MACHINE
         .open(ROOT)

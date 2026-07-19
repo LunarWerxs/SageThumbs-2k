@@ -15,6 +15,7 @@ mod container;
 pub use container::list_archive;
 mod contextmenu;
 pub mod decode;
+pub mod doctor;
 mod dib;
 pub mod cli;
 mod factory;
@@ -40,11 +41,14 @@ pub mod i18n;
 pub mod register;
 pub mod safety;
 pub mod settings;
+pub mod shellcmd;
 pub mod upload_config;
 mod streamsrc;
 mod thumbprovider;
 mod verbs;
-mod video;
+// `pub` only so the app EXE's preview player can ask `media_foundation_available()`
+// before touching the delay-loaded MF imports; the decode entry points stay internal.
+pub mod video;
 mod vstream;
 
 /// Conversion API surfaced for the companion app's Convert… dialog.

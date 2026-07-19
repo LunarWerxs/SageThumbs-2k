@@ -2,6 +2,37 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.2.2
+
+- **Works on Windows editions without Media Foundation.** On "N" and "KN" editions of Windows
+  (sold in the EU and Korea without media playback components) the shell extension could not
+  load at all, so *nothing* worked: no thumbnails for any format, no right-click menu, no
+  details in Explorer, and no error to explain it. The video component is now loaded only when
+  it is actually needed, so at worst video files lose their thumbnails and everything else
+  works.
+
+- **"Repair file associations" and "Rebuild thumbnail cache" now work.** Both buttons closed
+  File Explorer and then failed to start it again, leaving an error about a network path that
+  could not be found. Nothing was wrong with your network — the commands they ran were being
+  quoted incorrectly, so Windows was handed a nonsense path. Both buttons now do what they say,
+  and no longer flash a black console window while they work.
+- **Setup tells you if registering with Windows fails.** Previously the installer could finish
+  and report success while security software had blocked the part that hooks SageThumbs into
+  Explorer — leaving you with no thumbnails and no explanation. Setup now checks afterwards and
+  says so plainly, with what to do about it.
+- **Windows 10: the Convert / Resize / Rotate shortcuts are back on the right-click menu.** They
+  were being hidden in favour of the modern Windows 11 menu, which does not exist on Windows 10,
+  so they simply disappeared.
+- **New: `st2k doctor`.** Run it from the install folder and it checks the whole chain in one go —
+  whether Windows has thumbnails switched off, whether SageThumbs is registered with Explorer,
+  whether the shell extension can actually load, which of your file types are hooked, and whether
+  the decoder itself works. It prints a plain-text report with a verdict and a fix for anything it
+  finds, ready to paste into a bug report.
+- **"Repair file associations" no longer claims success when it failed.** It used to report
+  "repaired" as soon as it managed to *start* the registration step, without checking whether that
+  step worked. It now waits for the result, verifies it, and tells you what actually went wrong —
+  a declined prompt, a missing file, or something undoing the registration.
+
 ## 1.2.1 (2026-07-18)
 
 - **Paint Shop Pro brushes now actually get thumbnails, and tubes get much sharper ones.**

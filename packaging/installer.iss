@@ -87,7 +87,7 @@ Name: "{group}\Uninstall SageThumbs 2K"; Filename: "{uninstallexe}"
 ; the classic handler omits ITS own copies to avoid double-listing them
 ; (settings::modern_menu_active). Removed on uninstall with the value/key.
 Root: HKLM; Subkey: "Software\SageThumbs2K"; ValueType: dword; ValueName: "ModernMenuActive"; \
-  ValueData: 1; Flags: uninsdeletevalue uninsdeletekeyifempty; Check: ModernMenuBundled
+  ValueData: 1; Flags: uninsdeletevalue uninsdeletekeyifempty; Check: ModernMenuUsable
 
 [Run]
 ; Register the thumbnail provider + classic context-menu handler (HKLM).
@@ -107,7 +107,7 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 ; clean end-user upgrade the remove is a harmless no-op-or-quick-swap.
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage -ErrorAction SilentlyContinue; Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion"""; \
-  StatusMsg: "Registering the modern context menu..."; Flags: runhidden waituntilterminated; Check: ModernMenuBundled
+  StatusMsg: "Registering the modern context menu..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
 ; Launch Settings right after install (checked by default) so the user sees the app.
 ; `skipifsilent` keeps unattended installs quiet.
 Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
@@ -157,6 +157,55 @@ Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 function ModernMenuBundled: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\SageThumbs2K.msix'));
+end;
+
+// The modern flyout is a Windows 11 feature: only Win11's Explorer surfaces a package's
+// IExplorerCommand verbs. Build 22000 is the floor.
+function IsWindows11: Boolean;
+var
+  V: TWindowsVersion;
+begin
+  GetWindowsVersionEx(V);
+  Result := (V.Major > 10) or ((V.Major = 10) and (V.Build >= 22000));
+end;
+
+// Gate BOTH the sparse-package registration and the HKLM marker on the modern menu
+// actually being usable here. The marker tells the classic handler "Windows is bridging
+// our packaged Convert/Resize/Rotate verbs into Show more options, so don't emit your own
+// copies too" (settings::modern_menu_active). On Windows 10 nothing bridges them -- setting
+// it there made the classic handler suppress its quick verbs in favour of verbs that never
+// appear, so those items silently vanished from the right-click menu (issue #5).
+function ModernMenuUsable: Boolean;
+begin
+  Result := ModernMenuBundled and IsWindows11;
+end;
+
+// Post-install sanity check: did regsvr32 actually register us?
+//
+// The regsvr32 [Run] entry is `/s` (silent) and its exit code is not inspected, so before
+// this check the installer would happily report "Setup completed successfully" while the
+// shell extension was not registered at all -- the user then sees nothing working and has
+// no idea why (issue #5). Reading back the thumbnail-provider CLSID is the cheapest true
+// test that DllRegisterServer ran: our own DllRegisterServer writes it, nothing else does.
+//
+// This only REPORTS. It never fails the install -- a false alarm must not block a user
+// whose machine is otherwise fine.
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if not RegKeyExists(HKEY_CLASSES_ROOT,
+         'CLSID\{7B2E6A14-9C3D-4F8A-B1E7-2A5D9F0C6E31}\InprocServer32') then
+      MsgBox('SageThumbs 2K installed its files, but registering the shell extension with'
+        + ' Windows did not succeed, so thumbnails and the right-click menu will not appear.'
+        + #13#10#13#10
+        + 'This is almost always security software blocking or quarantining'
+        + ' sagethumbs2k.dll during setup.'
+        + #13#10#13#10
+        + 'To fix it: allow the install folder in your antivirus, then open SageThumbs 2K'
+        + ' Settings and use Advanced > Repair file associations.',
+        mbError, MB_OK);
+  end;
 end;
 
 // Stop the resident hotkey daemon + its watchdog BEFORE any file is copied. They
