@@ -256,7 +256,11 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Paint Shop Pro (.pspimage/.psp): carve the JPEG preview from the file's
     // Composite Image Bank (present even when the pixel data is RLE/uncompressed).
     if psp::looks_like_psp(bytes) {
-        return psp::extract(bytes).map(CoverOut::Bytes);
+        // Full bank parse first: it finds the LARGEST composite and can decode the LZ77/raw
+        // channel planes that `.PspBrush` uses exclusively and `.PspTube` stores alongside a
+        // much smaller JPEG thumbnail. Falls back to the cheap JPEG carve when the composite
+        // uses a compression we deliberately don't guess at (RLE) or the bank is malformed.
+        return psp::extract_best(bytes).or_else(|| psp::extract(bytes).map(CoverOut::Bytes));
     }
     // Amiga / Deluxe Paint IFF ILBM (and DOS PBM): real planar-bitmap decode to
     // pixels. The `ILBM`/`PBM ` FORM type keeps this off AIFF audio (`FORM…AIFF`).

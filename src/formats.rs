@@ -208,6 +208,9 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("pspshape", "Paint Shop Pro preset shape"),
     ("pspselection", "Paint Shop Pro selection"),
     ("pspmask", "Paint Shop Pro mask"),
+    // Legacy picture tube (pre-PSP 11/12, ~20 years old). Same PSPImage container; confirmed
+    // by the reporter of issue #4. Costs one table row and content dispatch does the rest.
+    ("tub", "Paint Shop Pro picture tube (legacy)"),
     ("sketch", "Sketch design document"),
     ("procreate", "Procreate document"),
     ("skp", "SketchUp model"),

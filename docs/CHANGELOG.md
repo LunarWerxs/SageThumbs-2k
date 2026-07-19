@@ -2,6 +2,17 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+- **Paint Shop Pro brushes now actually get thumbnails, and tubes get much sharper ones.**
+  1.2.0 registered the Paint Shop Pro file family but could only read previews stored as JPEG.
+  It turns out `.PspBrush` files never store one that way, so brushes showed no thumbnail at
+  all, and `.PspTube` files kept a tiny 80x80 thumbnail next to their real full-size picture,
+  so tubes came out blurry. SageThumbs now reads the compressed picture data inside these files
+  directly and always picks the largest one available: brushes work, and a tube shows its whole
+  contents crisply instead of one fuzzy corner. Also added the legacy `.tub` tube extension.
+  (Thanks again to the community member who reported this and supplied test files.)
+
 ## 1.2.0 (2026-07-18)
 
 - **The rest of the Paint Shop Pro family now gets thumbnails.** Brushes, picture frames,
