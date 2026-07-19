@@ -202,7 +202,9 @@ psb
 psd
 psdt
 psp
+pspbrush
 pspimage
+psptube
 ptif
 pxn
 qoi

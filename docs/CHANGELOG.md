@@ -2,7 +2,7 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 1.2.1 (2026-07-18)
 
 - **Paint Shop Pro brushes now actually get thumbnails, and tubes get much sharper ones.**
   1.2.0 registered the Paint Shop Pro file family but could only read previews stored as JPEG.
