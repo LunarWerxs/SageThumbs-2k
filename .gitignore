@@ -55,6 +55,7 @@ Thumbs.db
 /sponsor_config.json
 /push_sponsors.py
 /push_to_vt.py
+/push_to_vt_test.py
 /examples/
 /scripts/fill-audio-real.ps1
 /scripts/build-corpus-real.ps1

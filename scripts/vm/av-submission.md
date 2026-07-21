@@ -24,19 +24,36 @@ A local Windows Defender scan of the shipped installer came back **clean, no thr
 |---|---|
 | Product | SageThumbs 2K (Windows shell extension: thumbnails + right-click image tools) |
 | File name | `SageThumbs2K-Setup-<ver>.exe` |
-| SHA-256 (1.2.2) | `11D60A2FB9674897CF5340B2EE6FB3B855644624B06944A8E206F72F955151F7` (clean on Defender 2026-07-20) |
-| SHA-256 (1.3.0) | `4DDC405E2D0BF4F58EE22AF68FE8CEAAB58C67260A46B00829FEDDB414F25384` (clean on Defender 2026-07-21) |
+| SHA-256 (1.2.2, PUBLISHED) | `11D60A2FB9674897CF5340B2EE6FB3B855644624B06944A8E206F72F955151F7` |
+| SHA-256 (1.3.0, built 2026-07-21) | `8BE7138281198171A273771CC76D54AB7FADA49ED202C78756811E925221EE14` |
 | Publisher | Lunarwerx (unsigned build) |
-| Note | The 1.3.0 hash CHANGED on 2026-07-21 (installer rebuilt to include the Markdown-copy fix). `37CF9D5C…F035` was never published, so nothing was lost — but whatever ships must be the hash above, and the VirusTotal link in the release notes has to be for THAT file. |
 | Category | Installer (Inno Setup) that registers a COM shell extension + an optional updater |
+| Note | The 1.3.0 hash moves on every rebuild. Only the hash that is actually ATTACHED to the GitHub release may be submitted or linked. |
+
+### Detection names (2026-07-21) — this is the field the portal requires
+
+The blank that used to block this submission is now filled. Local Defender scans BOTH files
+clean, so the name had to come from VirusTotal's Microsoft engine (which runs without the
+cloud/reputation context a real Defender install has — that is exactly why the two disagree).
+
+| Build | Microsoft verdict | Total | VirusTotal permalink |
+|---|---|---|---|
+| 1.2.2 (published) | `Program:Win32/Wacapew.C!ml` | 3/69 | https://www.virustotal.com/gui/file/11d60a2fb9674897cf5340b2ee6fb3b855644624b06944a8e206f72f955151f7 |
+| 1.3.0 | `Trojan:Win32/Wacatac.B!ml` | 3/69 | https://www.virustotal.com/gui/file/8be7138281198171a273771cc76d54ab7fada49ed202c78756811e925221ee14 |
+
+Same three engines on both builds (Microsoft, APEX, Skyhigh) — this is the standing baseline
+for an unsigned low-prevalence Inno installer, NOT a regression introduced by 1.3.0. Both
+Microsoft verdicts carry the **`!ml` suffix**, i.e. a machine-learning generic, not a signature
+match. Worth stating plainly in the submission: `Wacatac.B!ml` sounds far more alarming than
+`Wacapew.C!ml` but is the same class of generic ML verdict.
 
 ## Microsoft Defender false-positive portal (only if Defender flags it)
 
 1. Go to **https://www.microsoft.com/en-us/wdsi/filesubmission** and sign in.
 2. Submission type: **Software developer**.
 3. Upload the exact `SageThumbs2K-Setup-<ver>.exe` (the hash above).
-4. Detection name: **<the threat name the user reported>** (required; leave the submission
-   until you have it, since Defender is clean here).
+4. Detection name: **`Trojan:Win32/Wacatac.B!ml`** (for the 1.3.0 hash above), or
+   **`Program:Win32/Wacapew.C!ml`** for 1.2.2. Both come from the VirusTotal table above.
 5. "Do you believe this is incorrectly detected (false positive)?" → **Yes**.
 6. Notes to paste:
    > SageThumbs 2K is an open-source Windows shell extension (thumbnail + context-menu
