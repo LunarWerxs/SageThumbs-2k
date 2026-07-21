@@ -58,6 +58,21 @@ all four coclasses registered *and* `LoadLibrary`-probed OK; 326/326 formats hoo
 self-test passed; a modern GIMP `.xcf` decoded (750x1624) and an image `.zip` produced its
 collage. So issue #5's "no thumbnails on Win10" is not a Win10 registration problem.
 
+### This is a RELEASE-CHECKLIST step, and the repo says so publicly
+
+Run it before shipping a release. issue #5 is closed with a public commitment that a fresh
+Win10 VM install + decode is checked before every release, so keep that true.
+
+Note the twist worth remembering: issue #5's actual bug (modern GIMP `.xcf`) was **not**
+OS-specific at all. It failed identically on Windows 11 — the bundled ImageMagick cannot read
+XCF written by GIMP 2.10/3, and `magick.exe` returns
+`not enough pixel data @ error/xcf.c/ReadXCFImage/1495` on either OS. The reporter's VM was
+Win10 by coincidence, and the genuinely Win10-specific bugs earlier in the same thread (the
+Repair "network path" error, the missing modern-menu entries) made it look like one story.
+The clean-room run stays in the checklist anyway, because what actually went wrong was
+discounting a clean-VM reproduction against "hundreds of installs, no complaints." A 90-second
+automated run removes the temptation to make that argument.
+
 (`new-win10-vm.ps1` is the older interactive variant — creates the VM + boots the ISO for a
 hands-on install. Prefer `run-win10-test.ps1` for the automated end-to-end test.)
 
