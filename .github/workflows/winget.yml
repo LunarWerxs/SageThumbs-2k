@@ -4,10 +4,19 @@
 # pull request to microsoft/winget-pkgs with an updated manifest pointing at the new
 # installer asset. Set up once → zero ongoing work.
 #
-# One-time setup (owner): create a CLASSIC GitHub PAT with `public_repo` scope and add it
-# as a repo secret named WINGET_TOKEN (Settings → Secrets and variables → Actions).
+# One-time setup (owner), BOTH parts are required:
+#   1. A CLASSIC GitHub PAT with `public_repo` scope, added as the repo secret WINGET_TOKEN
+#      (Settings → Secrets and variables → Actions).
+#   2. A FORK of microsoft/winget-pkgs under that token's account. Komac submits by pushing
+#      a branch to your fork and opening a PR from it, so no fork means no submission:
+#         gh repo fork microsoft/winget-pkgs --clone=false
 # The FIRST package submission is done by hand with Komac (the action is for updates);
 # every release after that is automatic via this workflow.
+#
+# 2026-07-21: the fork went missing at some point after 1.1.1 and every release since failed
+# with Komac's unhelpful "Could not resolve to a Repository with the name '<owner>/winget-pkgs'".
+# 1.2.0, 1.2.1 and 1.2.2 never reached winget because of it. The explicit fork check below
+# exists so the next occurrence names the cause and the fix instead of that error.
 name: Publish to winget
 
 on:
@@ -42,6 +51,24 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=winget skipped::LunarWerxs.SageThumbs2K not yet in winget-pkgs (HTTP $code) — auto-publish resumes once the first submission is merged."
           fi
+
+      # Komac needs the fork to push its branch to. Check it up front so a missing fork is
+      # reported as a missing fork, with the command that fixes it.
+      - name: Check the winget-pkgs fork exists
+        if: steps.onboarded.outputs.exists == 'true'
+        shell: bash
+        run: |
+          owner=$(curl -s -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" https://api.github.com/user | jq -r .login)
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$owner/winget-pkgs")
+          if [ "$code" != "200" ]; then
+            echo "::error title=winget-pkgs fork missing::$owner/winget-pkgs does not exist (HTTP $code). Komac pushes its submission branch there. Create it once, as $owner: gh repo fork microsoft/winget-pkgs --clone=false — then re-run this workflow with the release tag."
+            exit 1
+          fi
+          echo "fork ok: $owner/winget-pkgs"
 
       - name: Submit to winget-pkgs
         if: steps.onboarded.outputs.exists == 'true'
