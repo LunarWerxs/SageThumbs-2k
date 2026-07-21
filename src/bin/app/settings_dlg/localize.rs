@@ -72,6 +72,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_C_SORT, "chk_sort"),
         (ID_C_PREFER_COVER, "chk_prefer_cover"),
         (ID_C_SKIP_SCAN, "chk_skip_scanlation"),
+        (ID_C_ARCHIVE_SHEET, "chk_archive_sheet"),
         (ID_LBL_FORMATS, "lbl_formats"),
         (ID_SELECT_ALL, "btn_select_all"),
         (ID_CLEAR_ALL, "btn_clear_all"),

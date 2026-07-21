@@ -68,7 +68,7 @@ else {
     # so the per-category row drifted silently: it read 186 when the real Image count was
     # 187, and a +6 change propagated that off-by-one to 192 instead of 193. Nothing caught
     # it because 322 (the total) was right. The categories must ALSO sum to the total.
-    $catNames = 'Image', 'Camera RAW', 'Ebook & comics', 'Document', 'Audio', 'Video'
+    $catNames = 'Image', 'Camera RAW', 'Ebook & comics', 'Document', 'Audio', 'Video', 'Archive'
     $catSum = 0
     $missing = @()
     foreach ($c in $catNames) {

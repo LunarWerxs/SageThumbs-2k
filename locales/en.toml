@@ -107,6 +107,7 @@ tip_png = "PNG compression for Convert → PNG (0–9). Higher saves space but i
 tip_sort = "Put the archive's inner pages in number order (so page 2 comes before page 10, not after) before picking the cover."
 tip_prefer_cover = "Prefer a page named \"cover\" over the first page when one exists."
 tip_skip_scan = "\"Scanlation\" = a comic/manga that fans scanned and translated themselves. Those usually open with the translation group's logo or a credits page — skip them so the thumbnail is the real cover."
+tip_archive_sheet = "Compose up to 4 images from a ZIP/RAR/7z into one tile, so an archive of photos looks different from a single photo. Off = show only the first image, like the classic CBXShell. Comics and ebooks always show just their cover."
 tip_lang = "Interface language. \"System default\" follows your Windows display language."
 tip_screenshot = "Run a small background helper so a hotkey snaps a screen region you can draw on, copy, save, pin, or upload. Off by default — nothing runs in the background until you enable it."
 tip_shot_hotkey = "The global key combo that starts a capture while the helper is enabled."
@@ -164,6 +165,7 @@ grp_ebook = "Ebook & comic covers"
 chk_sort = "Sort archive pages naturally"
 chk_prefer_cover = "Prefer a \"cover\" image"
 chk_skip_scanlation = "Skip scanlation filler (credits/logos)"
+chk_archive_sheet = "Contact-sheet thumbnails for ZIP/RAR/7z"
 
 # Supported-file-types list group headers
 grp_images = "Images"

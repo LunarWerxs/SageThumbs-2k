@@ -62,6 +62,36 @@ enum Tag {
     Keyword,
 }
 
+/// The canonical fenced-code info string for a language — used when a copied Markdown code
+/// block is written back out as ``` fences, so it still highlights wherever it's pasted.
+/// `None` for `Plain` (emit a bare fence). Lossy on purpose: the parse maps many tags onto one
+/// `Lang` (`powershell`/`bash`/`zsh` all become `Sh`), and `Lang` is all we keep.
+pub(super) fn lang_tag(l: Lang) -> Option<&'static str> {
+    Some(match l {
+        Lang::Rust => "rust",
+        Lang::Py => "python",
+        Lang::Js => "js",
+        Lang::Json => "json",
+        Lang::Yaml => "yaml",
+        Lang::Toml => "toml",
+        Lang::C => "c",
+        Lang::Cs => "csharp",
+        Lang::Java => "java",
+        Lang::Go => "go",
+        Lang::Ruby => "ruby",
+        Lang::Php => "php",
+        Lang::Lua => "lua",
+        Lang::Kotlin => "kotlin",
+        Lang::Swift => "swift",
+        Lang::Sh => "sh",
+        Lang::Html => "html",
+        Lang::Css => "css",
+        Lang::Xml => "xml",
+        Lang::Sql => "sql",
+        Lang::Plain => return None,
+    })
+}
+
 /// Map a file extension (no dot) to a language.
 pub(super) fn lang_from_ext(ext: &str) -> Lang {
     match ext.to_ascii_lowercase().as_str() {

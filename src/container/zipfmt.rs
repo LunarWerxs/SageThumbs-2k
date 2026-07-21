@@ -5,7 +5,7 @@ use std::io::{Cursor, Read, Seek};
 
 use zip::ZipArchive;
 
-use super::select::{pick_cover, Entry};
+use super::select::{pick_covers, Entry};
 
 pub(crate) type Zip<'a> = ZipArchive<Cursor<&'a [u8]>>;
 
@@ -18,23 +18,44 @@ pub(crate) type Zip<'a> = ZipArchive<Cursor<&'a [u8]>>;
 /// arbitrary layer/media image — ORA's `data/layer*.png` natural-sorts BEFORE the real
 /// composite — so run the same dedicated-preview dispatch as the in-memory `extract`.
 pub(crate) fn cover_from_reader<R: Read + Seek>(reader: R) -> Option<Vec<u8>> {
+    covers_from_reader(reader, 1).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
+}
+
+/// Up to `want` cover images from a seekable ZIP-family reader — the multi-image
+/// generalization of [`cover_from_reader`], feeding the generic-archive contact
+/// sheet. Same dedicated-preview dispatch first: a project/Office package yields
+/// its ONE real preview (a collage of layer/media internals is never right), so
+/// only a plain image zip / CBZ ever returns more than one image. Each returned
+/// entry is one bounded read; the archive is never fully decompressed.
+pub(crate) fn covers_from_reader<R: Read + Seek>(reader: R, want: usize) -> Option<Vec<Vec<u8>>> {
     let mut zip = ZipArchive::new(reader).ok()?;
     if let Some(preview) = super::project::extract(&mut zip) {
-        return Some(preview);
+        return Some(vec![preview]);
     }
     if let Some(kind) = super::office::detect(&mut zip) {
         // An Office doc's thumbnail is the only sensible cover — no fallthrough to
         // the generic pick (it would grab embedded slide media). Same as `extract`.
-        return super::office::extract(&mut zip, kind);
+        return super::office::extract(&mut zip, kind).map(|p| vec![p]);
     }
-    cover_image_only(&mut zip)
+    covers_image_only(&mut zip, want)
 }
 
 /// The generic CBZ / image-zip cover: natural-first cover image, one entry read.
 pub(crate) fn cover_image_only<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
+    covers_image_only(zip, 1).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
+}
+
+/// Up to `want` natural-first images (cover-named first), one bounded entry read
+/// each. An entry that fails to read (corrupt / encrypted / unsupported method)
+/// is skipped rather than failing the set — the sheet degrades gracefully.
+pub(crate) fn covers_image_only<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    want: usize,
+) -> Option<Vec<Vec<u8>>> {
     let entries = list_entries(zip);
-    let idx = pick_cover(&entries)?;
-    read_index(zip, idx)
+    let out: Vec<Vec<u8>> =
+        pick_covers(&entries, want).into_iter().filter_map(|idx| read_index(zip, idx)).collect();
+    (!out.is_empty()).then_some(out)
 }
 
 /// Extract the cover bytes from a ZIP-family container.
@@ -95,8 +116,12 @@ fn find_entry_ext(zip: &mut Zip, dot_ext: &str) -> Option<String> {
 }
 
 pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry> {
+    // Bounded like `list_bytes` below: this also runs on every plain .zip Explorer
+    // thumbnails now, so a directory declaring millions of entries must not drive
+    // millions of allocations before pick_covers ever filters (the cover pick then
+    // simply chooses among the first entries, same as the viewer's listing).
     let mut out = Vec::new();
-    for i in 0..zip.len() {
+    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         if let Ok(f) = zip.by_index(i) {
             out.push(Entry {
                 name: f.name().to_string(),

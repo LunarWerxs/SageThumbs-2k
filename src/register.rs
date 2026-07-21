@@ -192,6 +192,9 @@ fn set_perceived_type(ext: &str) {
         crate::formats::Category::Video => "video",
         crate::formats::Category::Ebook | crate::formats::Category::Document => "document",
         crate::formats::Category::Image | crate::formats::Category::Raw => "image",
+        // In practice Windows itself already stamps .zip/.rar/.7z as "compressed",
+        // so the already-present guard above usually skips these anyway.
+        crate::formats::Category::Archive => "compressed",
     };
     if let Ok(k) = CLASSES_ROOT.create(&key) {
         if k.set_string("PerceivedType", pt).is_ok() {

@@ -15,6 +15,15 @@ pub struct Entry {
 
 /// Index of the chosen cover entry among `entries`, or None if none qualify.
 pub fn pick_cover(entries: &[Entry]) -> Option<usize> {
+    pick_covers(entries, 1).into_iter().next()
+}
+
+/// Up to `want` cover entries, best-first — the same filter pipeline as the single
+/// cover: "cover"-named images lead (when that preference is on), the remaining
+/// pages follow, each group in natural-sort order (when sorting is on, else archive
+/// order). `want = 1` reproduces [`pick_cover`] exactly; the contact-sheet thumbnail
+/// asks for 4. Empty when nothing qualifies.
+pub fn pick_covers(entries: &[Entry], want: usize) -> Vec<usize> {
     let candidates: Vec<usize> = (0..entries.len())
         .filter(|&i| {
             let e = &entries[i];
@@ -26,7 +35,7 @@ pub fn pick_cover(entries: &[Entry]) -> Option<usize> {
         })
         .collect();
     if candidates.is_empty() {
-        return None;
+        return Vec::new();
     }
 
     // Skip scanlation junk — credits / logo / recruitment / invite pages that
@@ -53,33 +62,50 @@ pub fn pick_cover(entries: &[Entry]) -> Option<usize> {
         if native.is_empty() { candidates } else { native }
     };
 
-    // Prefer an image whose filename contains "cover" (default on).
-    let pool = if crate::settings::container_prefer_cover() {
-        let covers: Vec<usize> = candidates
-            .iter()
-            .copied()
-            .filter(|&i| filename(&entries[i].name).contains("cover"))
-            .collect();
-        if covers.is_empty() { candidates } else { covers }
+    // Split off images whose filename contains "cover" (default on) — they lead the
+    // result. With `want = 1` a non-empty cover group IS the pool, so behavior
+    // matches the historical single-cover pick; the rest only matter for `want > 1`.
+    let (mut covers, mut rest): (Vec<usize>, Vec<usize>) = if crate::settings::container_prefer_cover()
+    {
+        candidates.into_iter().partition(|&i| filename(&entries[i].name).contains("cover"))
     } else {
-        candidates
+        (Vec::new(), candidates)
     };
 
-    // Natural sort (default on) → first page; else first in archive order.
+    // Natural sort (default on) each group; else keep archive order.
     if crate::settings::container_sort() {
-        // Precompute each candidate's UTF-16 sort key ONCE (demote brackets, then
-        // encode), so the O(n log n) StrCmpLogicalW sort doesn't re-allocate two
-        // wide buffers per comparison (mirrors verbs::fileops::natural_sort_key).
-        // Matters on large comic archives with many image entries.
-        let mut keyed: Vec<(Vec<u16>, usize)> =
-            pool.iter().map(|&i| (wide(&demote_brackets(&entries[i].name)), i)).collect();
-        keyed.sort_by(|a, b| {
-            unsafe { StrCmpLogicalW(PCWSTR(a.0.as_ptr()), PCWSTR(b.0.as_ptr())) }.cmp(&0)
-        });
-        keyed.first().map(|&(_, i)| i)
-    } else {
-        pool.first().copied()
+        natural_sort(&mut covers, entries);
+        natural_sort(&mut rest, entries);
     }
+    covers.extend(rest);
+    covers.truncate(want);
+    covers
+}
+
+/// Natural-sort candidate indices by entry name via `StrCmpLogicalW` (page2 before
+/// page10, matching Explorer). Precomputes each candidate's UTF-16 sort key ONCE
+/// (demote brackets, then encode), so the O(n log n) sort doesn't re-allocate two
+/// wide buffers per comparison (mirrors verbs::fileops::natural_sort_key). Matters
+/// on large comic archives with many image entries.
+fn natural_sort(pool: &mut Vec<usize>, entries: &[Entry]) {
+    let mut keyed: Vec<(Vec<u16>, usize)> =
+        pool.iter().map(|&i| (wide(&demote_brackets(&entries[i].name)), i)).collect();
+    keyed.sort_by(|a, b| {
+        unsafe { StrCmpLogicalW(PCWSTR(a.0.as_ptr()), PCWSTR(b.0.as_ptr())) }.cmp(&0)
+    });
+    *pool = keyed.into_iter().map(|(_, i)| i).collect();
+}
+
+/// Drop picks whose entry NAME duplicates an earlier pick's. Archive formats
+/// allow duplicate member names, and the RAR/7z streaming scans route captured
+/// bytes BY NAME — two same-named picks would collide into one buffer (appending
+/// or overwriting, corrupting the sheet) while another rank stayed empty. Keeping
+/// the first pick per name eliminates the collision; the sheet just shows one
+/// cell fewer in that (pathological, crafted-archive) case. ZIP reads by index
+/// and doesn't need this.
+pub fn dedupe_by_name(picks: Vec<usize>, entries: &[Entry]) -> Vec<usize> {
+    let mut seen = std::collections::HashSet::new();
+    picks.into_iter().filter(|&i| seen.insert(entries[i].name.as_str())).collect()
 }
 
 /// Archive cruft that is never a cover.

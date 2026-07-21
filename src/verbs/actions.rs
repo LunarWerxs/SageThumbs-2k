@@ -343,13 +343,17 @@ fn strip_one(exe: Option<&Path>, p: &str) -> bool {
 /// Does `path` have an extension we can decode? A cheap extension-only gate
 /// shared by both menu surfaces (classic `IContextMenu` + modern
 /// `IExplorerCommand`) so the verbs only appear/act on supported images.
+/// Generic archives (.zip/.rar/.7z) are EXCLUDED even though they're registered
+/// formats: they thumbnail/preview, but the image verbs would act on the
+/// extracted cover, not the archive — Convert on a zip yielding a PNG of its
+/// first photo reads as broken, so archives get no verb menu.
 pub fn is_image(path: &str) -> bool {
     // `is_known` is ASCII-case-insensitive, so no lowercase allocation here (this
     // runs per selected path on every right-click).
     std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
-        .is_some_and(crate::formats::is_known)
+        .is_some_and(|e| crate::formats::is_known(e) && !crate::formats::is_archive(e))
 }
 
 /// Does `path` have an audio extension (one we read tags from)? Gates the

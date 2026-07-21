@@ -1416,6 +1416,25 @@ pub fn thumbnail_from_image(img: DynamicImage, cx: u32) -> Decoded {
     fit_to_box(img, cx.max(1))
 }
 
+/// Compose a generic archive's picked images (.zip/.rar/.7z contact sheet) into one
+/// `cx`-square thumbnail. Each cover decodes through the CHEAP tiers only (`image`
+/// crate → WIC → TGA — archive members are ordinary JPEG/PNG/WebP files; no
+/// subprocess, no video/PDF); one that fails to decode is dropped rather than
+/// failing the sheet. A single survivor degrades to the normal aspect-preserving
+/// single-cover fit, so the tile never shows a mostly-empty grid.
+pub fn thumbnail_from_covers(covers: &[Vec<u8>], cx: u32) -> Result<Decoded> {
+    let mut imgs: Vec<DynamicImage> = covers.iter().filter_map(|b| decode_cheap(b).ok()).collect();
+    match imgs.len() {
+        0 => Err(Error::from(E_FAIL)),
+        1 => Ok(fit_to_box(imgs.remove(0), cx.max(1))),
+        _ => {
+            let sheet = crate::container::collage::compose(&imgs, cx.max(1))
+                .ok_or_else(|| Error::from(E_FAIL))?;
+            Ok(Decoded { width: sheet.width(), height: sheet.height(), rgba: sheet.into_raw() })
+        }
+    }
+}
+
 /// Decode a JPEG's embedded EXIF thumbnail (if any), applying the file's EXIF
 /// orientation so it matches the full image. Best-effort: any malformation or
 /// absence yields None and the caller does a full decode.

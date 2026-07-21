@@ -2,6 +2,7 @@
 3g2
 3gp
 3mf
+7z
 aac
 af
 afdesign
@@ -209,6 +210,7 @@ ptif
 pxn
 qoi
 qt
+rar
 ras
 rgbe
 sgi
@@ -255,3 +257,4 @@ xltx
 xpm
 xv
 xyze
+zip

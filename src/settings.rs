@@ -169,6 +169,14 @@ pub fn container_skip_scanlation() -> bool {
     get_dword("ContainerSkipScanlation", 0) != 0
 }
 
+/// Contact-sheet thumbnails for GENERIC archives (.zip/.rar/.7z): compose up to 4
+/// images into one tile (also what tells a zip of photos apart from a lone photo
+/// in a grid view). Off = classic single first-image cover, CBXShell-style.
+/// Comics/ebooks (cbz/cb7/cbr/epub/…) always keep their single cover regardless.
+pub fn archive_collage() -> bool {
+    get_dword("ArchiveCollage", 1) != 0
+}
+
 // ---- Thumbnail-generation settings (read by the provider/decoder) -------
 
 /// Master switch for the thumbnail provider.

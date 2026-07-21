@@ -247,6 +247,17 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                     safety::log_debug(&format!("DoPreview: read {} bytes from stream", bytes.len()));
                     decode_preview_budgeted(bytes)
                 }
+                // A generic archive's contact sheet: the covers are ordinary
+                // JPEG/PNG members decoded by the CHEAP tiers only (no subprocess,
+                // no video/PDF), so no wall-clock budget is needed. 1024px edge
+                // matches the PDF rasterize target — crisp at any pane size.
+                Ok(StreamSource::Covers(covers)) => {
+                    safety::log_debug(&format!("DoPreview: {} archive covers", covers.len()));
+                    decode::thumbnail_from_covers(&covers, 1024)
+                        .ok()
+                        .and_then(|d| image::RgbaImage::from_raw(d.width, d.height, d.rgba))
+                        .map(image::DynamicImage::ImageRgba8)
+                }
                 Err(_) => None,
             };
             match &decoded {

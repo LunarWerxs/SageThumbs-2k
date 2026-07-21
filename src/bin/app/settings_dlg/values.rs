@@ -15,6 +15,7 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_C_SORT, settings::container_sort());
     check(hwnd, ID_C_PREFER_COVER, settings::container_prefer_cover());
     check(hwnd, ID_C_SKIP_SCAN, settings::container_skip_scanlation());
+    check(hwnd, ID_C_ARCHIVE_SHEET, settings::archive_collage());
     check(hwnd, ID_MENU_QUICK, settings::menu_quick_verbs());
     check(hwnd, ID_MENU_CHECKER, settings::preview_checker());
     check(hwnd, ID_PRESERVE_DATE, settings::preserve_file_date());
@@ -72,6 +73,7 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_C_SORT, true);
     check(hwnd, ID_C_PREFER_COVER, true);
     check(hwnd, ID_C_SKIP_SCAN, false);
+    check(hwnd, ID_C_ARCHIVE_SHEET, true);
     check(hwnd, ID_MENU_QUICK, true);
     check(hwnd, ID_MENU_CHECKER, true);
     check(hwnd, ID_PRESERVE_DATE, false);
@@ -241,6 +243,7 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     let _ = settings::set_dword("ContainerSort", checked(hwnd, ID_C_SORT) as u32);
     let _ = settings::set_dword("ContainerPreferCover", checked(hwnd, ID_C_PREFER_COVER) as u32);
     let _ = settings::set_dword("ContainerSkipScanlation", checked(hwnd, ID_C_SKIP_SCAN) as u32);
+    let _ = settings::set_dword("ArchiveCollage", checked(hwnd, ID_C_ARCHIVE_SHEET) as u32);
 
     let mut ok = Default::default();
     let max_mb = GetDlgItemInt(hwnd, ID_MAXSIZE, Some(&mut ok), false);

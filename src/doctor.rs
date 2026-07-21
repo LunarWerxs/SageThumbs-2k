@@ -367,8 +367,80 @@ fn check_engine(r: &mut Report) {
     }
 }
 
-/// Build the whole report. Read-only; safe to run unelevated, and safe to paste.
-pub fn report() -> String {
+/// Probe ONE specific file end-to-end: is its extension one we hook, is that format
+/// enabled, and — the part the global checks can't tell you — does THIS file actually
+/// DECODE? The global report proves registration is healthy; it stays silent on "we're
+/// registered fine but can't render the one file you care about", which is exactly the
+/// shape of the modern-`.xcf` reports (GIMP 2.10+/3.0 writes an XCF version the bundled
+/// ImageMagick's coder can't read). Read-only: opens + decodes the file, writes nothing.
+fn probe_file(r: &mut Report, path: &str) {
+    r.head("This file");
+    let p = Path::new(path);
+    r.line(S::Info, "Path", path);
+    if !p.is_file() {
+        r.fail_with_fix("File", "does not exist / not a file", "check the path (quote it if it has spaces)");
+        return;
+    }
+
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext.is_empty() {
+        r.line(S::Warn, "Extension", "none — Explorer keys thumbnails off the extension");
+        return;
+    }
+    // Is this extension one SageThumbs hooks at all? If not, THAT is the whole answer —
+    // Explorer never asks us, no matter how healthy registration is.
+    if !crate::formats::is_known(&ext) {
+        r.fail_with_fix(
+            &format!(".{ext}"),
+            "NOT a format SageThumbs handles — Explorer will never ask us for it",
+            "this file type isn't supported; open an issue to request it",
+        );
+        return;
+    }
+    r.line(S::Ok, &format!(".{ext}"), "a supported format");
+    if !crate::settings::format_enabled(&ext) {
+        r.fail_with_fix(
+            "Enabled in settings",
+            "this format is unchecked in Settings > File types",
+            "tick it in Settings > File types (or 'Select all')",
+        );
+    }
+
+    // The decisive step: actually run the thumbnail decoder on THIS file's bytes, the
+    // same preview-fidelity path Explorer's provider uses.
+    match crate::decode::read_preview_capped(path) {
+        Err(e) => r.fail_with_fix(
+            "Read file",
+            &format!("could not read the bytes: {e}"),
+            "check the file isn't locked, truncated, or over the size limit",
+        ),
+        Ok(bytes) => match crate::decode::decode_preview(&bytes) {
+            Ok(img) => r.line(
+                S::Ok,
+                "Decode this file",
+                &format!("OK ({}x{}) — a thumbnail CAN be produced", img.width(), img.height()),
+            ),
+            Err(_) => {
+                // Registered + enabled, but the pixels won't come out. Point at the
+                // likely reason: the long-tail formats decode only through the bundled
+                // ImageMagick, whose coders lag newer file-format versions.
+                let magick = crate::decode::magick_available();
+                let hint = if magick {
+                    "ImageMagick is present but its coder could not decode this file \
+                     (often a newer version of the format than the coder supports)"
+                } else {
+                    "this format decodes only via ImageMagick, which is NOT installed here \
+                     (use the full installer, or install ImageMagick)"
+                };
+                r.fail_with_fix("Decode this file", "FAILED — no thumbnail possible for this file", hint);
+            }
+        },
+    }
+}
+
+/// Build the whole report. Read-only; safe to run unelevated, and safe to paste. When
+/// `file` is given, a per-file probe section is appended (`st2k doctor <path>`).
+pub fn report(file: Option<&str>) -> String {
     let mut r = Report::new();
 
     r.out.push_str("SageThumbs 2K — diagnostic report\n");
@@ -399,6 +471,9 @@ pub fn report() -> String {
     check_extensions(&mut r);
     check_settings(&mut r);
     check_engine(&mut r);
+    if let Some(f) = file {
+        probe_file(&mut r, f);
+    }
 
     r.head("Verdict");
     if r.problems.is_empty() {
@@ -431,7 +506,7 @@ mod tests {
     /// the machine is in — it is the thing we ask users to run when everything is broken.
     #[test]
     fn report_runs_and_reaches_a_verdict() {
-        let out = report();
+        let out = report(None);
         assert!(out.contains("Environment"), "missing environment section");
         assert!(out.contains("COM registration"), "missing registration section");
         assert!(out.contains("Verdict"), "missing verdict");
@@ -442,8 +517,20 @@ mod tests {
     /// so this test just pins that we print no OTHER profile-derived path.
     #[test]
     fn report_is_plain_text() {
-        let out = report();
+        let out = report(None);
         assert!(!out.contains('\u{0}'), "report contains NUL");
         assert!(out.is_ascii() || out.chars().all(|c| !c.is_control() || c == '\n'));
+    }
+
+    /// The per-file probe must run and reach a verdict for any path, including a
+    /// nonexistent one and an unsupported extension — it's a diagnostic, never a crash.
+    #[test]
+    fn report_with_file_probes_and_never_panics() {
+        let missing = report(Some("Z:\\does\\not\\exist.xcf"));
+        assert!(missing.contains("This file"), "missing per-file section");
+        assert!(missing.contains("Verdict"), "missing verdict");
+        // An unsupported extension is reported as the whole answer, not a decode attempt.
+        let unsupported = report(Some("C:\\nope.zzzznotaformat"));
+        assert!(unsupported.contains("This file"));
     }
 }

@@ -126,6 +126,10 @@ impl ThumbnailProvider_Impl {
                 safety::log_debug(&format!("GetThumbnail: cx={cx} bytes={}", bytes.len()));
                 decode::decode_thumbnail_opts(&bytes, cx, cfg.use_embedded)?
             }
+            StreamSource::Covers(covers) => {
+                safety::log_debug(&format!("GetThumbnail: cx={cx} covers={}", covers.len()));
+                decode::thumbnail_from_covers(&covers, cx)?
+            }
         };
         safety::log_debug(&format!("GetThumbnail: decoded {}x{}", img.width, img.height));
         let hbmp =

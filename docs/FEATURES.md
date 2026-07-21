@@ -19,19 +19,20 @@ SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
 decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
 SVG), with embedded-cover/first-page extraction for containers.
 
-**323 registered extensions, in six categories** (also how the Options list is
+**326 registered extensions, in seven categories** (also how the Options list is
 grouped):
 
 | Category | Examples | How |
 |---|---|---|
-| **Image** (194) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, dds, exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (DOS-EPS preview), **f3d** (Autodesk Fusion 360), … | image crate / WIC / ImageMagick / resvg (SVG) |
+| **Image** (194) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, dds, exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (DOS-EPS preview), **f3d** (Autodesk Fusion 360), … | image crate / WIC / ImageMagick / resvg (SVG) |
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI) |
 | **Document** (43) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
 | **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
 | **Video** (22) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (~30 % in, not the intro) via the OS **Media Foundation** codecs (no bundled bytes). MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest 30 % (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. (`.mpg/.mpeg/.flv` need MPEG-1/2 or FLV decoders Windows doesn't ship, so they keep the default icon.) |
+| **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Listed from the zip central directory, so only the picked images are ever read — a multi-gigabyte archive costs a few KB plus those images. No readable image (or encrypted) keeps the stock icon. Comic/ebook archives (cbz/cbr/cb7) stay in **Ebook & comics** and always show their one cover |
 
-*Counts sum to **323** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+*Counts sum to **326** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT, no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
@@ -56,7 +57,22 @@ codecs, works even on the ImageMagick-free compact install): **Photoshop**
 thumbnails most of these: PSD now works without ImageMagick, and `.clip`'s preview
 is read straight out of its embedded SQLite database (no extra dependency), even for
 canvases past the size limit, where only that small tail database is read, never the
-multi-hundred-MB layer data.*
+multi-hundred-MB layer data.* **GIMP** `.xcf` gets the same no-ImageMagick-needed
+treatment by a different route: XCF carries no baked-in preview to extract, so a native
+decoder reads the layers directly and flattens the visible ones into a thumbnail itself,
+handling both older and current GIMP file versions, RGB/grayscale/indexed images, and
+the various bit-depth and compression variants GIMP writes.
+
+**Archives get a peek inside:** plain `.zip`, `.rar`, and `.7z` files thumbnail too, drawing
+either a single cover image or (the default) a contact-sheet collage of up to four images
+pulled from inside, using the same smart pick as comic covers: natural filename sort, an
+image named "cover" preferred, junk like `__MACOSX` and `Thumbs.db` skipped. The file list
+comes straight from the archive's central directory, so a multi-gigabyte zip costs only a
+few KB plus the handful of images actually shown, no size-cap issue; the same picker feeds
+both the Explorer thumbnail and the big reading-pane preview. An archive with no images
+inside, or an encrypted one, keeps the normal icon. Toggle it (or drop back to a single
+cover image) in **Settings ▸ Ebook/comic**. Comic/ebook archives (cbz/cbr/cb7/epub) are
+unaffected: they still always show their one cover.
 
 **Per-type toggle:** the Options dialog lists every format with a checkbox; turn
 any on/off (multi-select with Shift/Ctrl, then Space or right-click → Check/
@@ -90,7 +106,8 @@ the same panic boundary, so a malformed file yields an empty pane, never a crash
 ## 2. Right-click image toolkit (`SageThumbs 2K ▸`)
 
 A nested submenu on both the classic and Windows-11 context menus. Appears only
-when the selection contains a supported image.
+when the selection contains a supported image; archive thumbnails (zip/rar/7z, see §1)
+are deliberately left out of this menu (thumbnail and preview only).
 
 **Multi-file jobs run in parallel.** When the selection has several files, Convert /
 Resize / Rotate / Strip and Combine-to-PDF fan out across every CPU core via a tiny
@@ -302,7 +319,9 @@ long scroll is gone.)
   drop point as you drag, and adjacent/edge dividers tidy themselves). A **Reset order**
   button restores the default. Applies to both the classic and the modern Win11 menus.
 - **Ebook & comic covers:** sort archive pages naturally, prefer a "cover" image,
-  skip scanlation filler (credits/logos).
+  skip scanlation filler (credits/logos). **Contact-sheet thumbnails for ZIP/RAR/7z**:
+  on by default, showing a collage of up to four images pulled from a plain archive;
+  switch it off for a single first-image thumbnail, classic CBXShell-style.
 - **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn
   preset is offered) for the region editor, **plus an optional second "quick-save"
   hotkey** that grabs the whole screen straight to the clipboard + a timestamped PNG

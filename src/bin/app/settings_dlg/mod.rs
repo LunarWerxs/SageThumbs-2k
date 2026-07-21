@@ -359,6 +359,7 @@ const TOOLTIPS: &[(i32, &str)] = &[
     (ID_C_SORT, "tip_sort"),
     (ID_C_PREFER_COVER, "tip_prefer_cover"),
     (ID_C_SKIP_SCAN, "tip_skip_scan"),
+    (ID_C_ARCHIVE_SHEET, "tip_archive_sheet"),
     (ID_LANG, "tip_lang"),
     (ID_SHOT_ENABLE, "tip_screenshot"),
     (ID_SHOT_HOTKEY, "tip_shot_hotkey"),

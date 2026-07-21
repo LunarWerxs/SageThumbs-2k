@@ -2,9 +2,13 @@
 //! selection, and the text Ctrl+C copies.
 //!
 //! Both panes share ONE coordinate space: raw byte offsets into the *selection document* — the
-//! text pane's file text, or the Markdown pane's RENDERED text (built with the block layout in
-//! [`super::markdown`], so what you select and copy is what you SEE, not the source). Offsets
-//! always land on char boundaries.
+//! text pane's file text, or the Markdown pane's document (built with the block layout in
+//! [`super::markdown`], so you select what you SEE, in reading order — not the raw file, whose
+//! byte offsets don't match the rendered flow). Offsets always land on char boundaries.
+//!
+//! That Markdown document is re-emitted AS Markdown (`#` headings, `-` bullets with their nesting
+//! indent, `>` quotes, ``` fences, blank lines between blocks) so a copy pastes with its structure
+//! intact; see `markdown::doc_append`. The structural prefixes are copied but not selectable.
 //!
 //! The two panes hit-test differently because they're laid out differently. The text pane is a
 //! mono grid, so it computes offsets analytically (line index + `col_at`). Markdown is a

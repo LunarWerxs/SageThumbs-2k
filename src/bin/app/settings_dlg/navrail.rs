@@ -70,8 +70,9 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             ListFill(ID_LIST),
         ],
         2 => &[
-            // Ebook/comic — its own tab now.
+            // Ebook/comic — its own tab now (plus the generic-archive contact sheet).
             Switch(ID_C_SORT), Switch(ID_C_PREFER_COVER), Switch(ID_C_SKIP_SCAN),
+            Switch(ID_C_ARCHIVE_SHEET),
         ],
         3 => &[
             Switch(ID_ENABLE_MENU), Switch(ID_MENU_ALL_TYPES), Switch(ID_MENU_QUICK),

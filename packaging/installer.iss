@@ -220,6 +220,13 @@ var
   R: Integer;
 begin
   Result := '';
+  // Only a PRIOR install can have a resident daemon locking our files, and only then is
+  // the kill needed. Gating on the installed EXE existing means a FRESH install never
+  // spawns taskkill at all. That also fixes unattended installs run from a headless
+  // session (e.g. Windows Sandbox's LogonCommand), where spawning a console app like
+  // taskkill from a windowless parent can deadlock and hang setup before any file copy.
+  if not FileExists(ExpandConstant('{app}\{#AppExe}')) then
+    Exit;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
   Sleep(400);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);

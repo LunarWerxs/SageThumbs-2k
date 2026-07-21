@@ -35,6 +35,16 @@ pub fn devmode(sub: &str) -> Result<String, String> {
 /// `max_dim` px on the long edge (`0` = full size). The headline verb: produces
 /// previews for the formats Windows itself can't.
 pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, String> {
+    // Generic archive (.zip/.rar/.7z): the same list-then-extract path Explorer
+    // uses — zip/7z stream off the open file (no size cap, the central directory
+    // plus the picked entries is all that's read), and the contact sheet composes
+    // per the same Setting. Falls through to the normal decode if it isn't really
+    // an archive (renamed file) so the magic-dispatch tiers still get their shot.
+    if let Some(img) = archive_thumbnail(input) {
+        let out = if max_dim > 0 { img.thumbnail(max_dim, max_dim) } else { img };
+        out.save(output).map_err(|e| e.to_string())?;
+        return Ok(output.to_string());
+    }
     // Cap the read at the shared input budget (metadata-checked before allocating)
     // so a scripted/agent/MCP call can't load a multi-GB file wholesale — the same
     // ceiling Explorer thumbnailing and the path verbs apply. Head-preview
@@ -46,6 +56,33 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
     let out = if max_dim > 0 { img.thumbnail(max_dim, max_dim) } else { img };
     out.save(output).map_err(|e| e.to_string())?;
     Ok(output.to_string())
+}
+
+/// The generic-archive cover/contact-sheet for a `.zip`/`.rar`/`.7z` PATH, or None
+/// to take the normal decode route (not an archive extension, unreadable, or no
+/// image entries — the CLI then reports "cannot decode", mirroring the shell's
+/// stock-icon fallback). 1024px edge matches the preview pane's compose target.
+fn archive_thumbnail(input: &str) -> Option<image::DynamicImage> {
+    use std::io::Read;
+    let ext = Path::new(input).extension().and_then(|e| e.to_str()).unwrap_or("");
+    if !crate::formats::is_archive(ext) {
+        return None;
+    }
+    let want = if crate::settings::archive_collage() { 4 } else { 1 };
+    let mut f = std::fs::File::open(input).ok()?;
+    let mut head = [0u8; 8];
+    f.read_exact(&mut head).ok()?;
+    std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).ok()?;
+    let covers = if crate::container::archive_needs_buffer(&head) {
+        // RAR buffers whole (`rars` accepts no reader) — same bounded read as the
+        // normal path, so a multi-GB .rar fails to the normal decode error.
+        let bytes = decode::read_preview_capped(input).ok()?;
+        crate::container::archive_covers(&bytes, want)?
+    } else {
+        crate::container::archive_covers_seek(&mut f, &head, want)?
+    };
+    let d = decode::thumbnail_from_covers(&covers, 1024).ok()?;
+    image::RgbaImage::from_raw(d.width, d.height, d.rgba).map(image::DynamicImage::ImageRgba8)
 }
 
 /// Convert `input` to the exact `output` path at `quality`, optional `resize`.

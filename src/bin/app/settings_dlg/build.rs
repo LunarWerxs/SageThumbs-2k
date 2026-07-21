@@ -35,6 +35,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_sort"), cb, 312, ID_C_SORT);
     lc.checkbox(t("chk_prefer_cover"), cb, 312, ID_C_PREFER_COVER);
     lc.checkbox(t("chk_skip_scanlation"), cb, 312, ID_C_SKIP_SCAN);
+    lc.checkbox(t("chk_archive_sheet"), cb, 312, ID_C_ARCHIVE_SHEET);
 
     // ===== General: right-click menu integration + UI language =====
     // Menu toggles grouped as checkboxes, then the two dropdowns below them.

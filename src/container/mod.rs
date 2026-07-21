@@ -28,6 +28,8 @@ mod c4d;
 // CorelDRAW (.cdr/.cdt) / Corel Exchange (.cmx) — RIFF DISP preview DIB → BMP.
 mod cdr;
 mod clip;
+// Contact-sheet compositor for generic archive thumbnails (2-4 images, one tile).
+pub(crate) mod collage;
 // DjVu (.djvu) cover decode — via the maintained pure-Rust `djvu-rs` crate (see djvu.rs).
 mod djvu;
 mod dwg;
@@ -52,6 +54,8 @@ mod sevenz;
 mod skp;
 mod tarfmt;
 mod util;
+// GIMP XCF (.xcf) — native decoder; ImageMagick can't read the modern v011 format.
+mod xcf;
 // Waveform thumbnails for raw-PCM audio (WAV/AIFF) with no embedded cover art.
 mod waveform;
 mod zipfmt;
@@ -101,8 +105,15 @@ fn is_rar(b: &[u8]) -> bool {
 /// (central-directory / header read only, so no decompression-bomb risk). Dispatches by signature
 /// across ZIP-family, 7-Zip, and RAR. The count is capped so a pathological archive with millions
 /// of tiny entries can't stall the viewer. `None` if `bytes` isn't a recognized archive.
+/// Cap on how many archive entries any listing/selection path will materialize —
+/// a crafted archive whose directory declares millions of entries must never
+/// drive millions of `String` allocations (in the viewer's UI thread OR the
+/// thumbnail host's cover pick). Shared by [`list_archive`] and every
+/// `pick_covers` listing (zip/7z/rar).
+pub(crate) const MAX_LIST_ENTRIES: usize = 50_000;
+
 pub fn list_archive(bytes: &[u8]) -> Option<Vec<(String, u64, bool)>> {
-    const MAX_ENTRIES: usize = 50_000;
+    const MAX_ENTRIES: usize = MAX_LIST_ENTRIES;
     // The cap is passed INTO each reader so it bounds the collection itself — a crafted archive
     // with millions of tiny entries never materializes millions of `String`s (which, on the UI
     // thread in `content::archive_listing`, would freeze the viewer).
@@ -218,6 +229,12 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     // DjVu (IFF85 magic "AT&TFORM").
     if bytes.starts_with(b"AT&TFORM") {
         return djvu::extract(bytes).map(CoverOut::Image);
+    }
+    // GIMP XCF: native flatten-to-thumbnail. Takes priority over the magick tier on
+    // purpose — ImageMagick's coder fails on the modern "gimp xcf v011" (GIMP 2.10/3.0),
+    // and ours needs no ImageMagick at all (works on the compact install).
+    if xcf::looks_like_xcf(bytes) {
+        return xcf::extract(bytes).map(CoverOut::Image);
     }
     // Photoshop PSD/PSB: the baked-in JPEG thumbnail (resource 1036). Works with
     // no ImageMagick; on None we fall through so a full install can still render
@@ -347,6 +364,59 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(reader: R, head: &[u
     // Clip Studio Paint: the preview PNG from the tail CHNKSQLi database.
     if head.starts_with(b"CSFCHUNK") {
         return clip::extract_seek(reader);
+    }
+    None
+}
+
+/// Is `head` the signature of a generic archive we thumbnail (.zip / .7z / .rar)?
+/// The streamsrc archive branch uses this to decide the probe is worth a
+/// `Stat`-name check at all. RAR is included here even though it can't stream —
+/// its caller takes the bounded in-memory path instead.
+pub fn is_generic_archive_magic(head: &[u8]) -> bool {
+    is_zip(head) || is_7z(head) || is_rar(head)
+}
+
+/// Does streaming this archive need the FULL in-memory buffer? Only RAR: `rars`
+/// accepts no `Read + Seek` source, while zip/7z read the entry list and the
+/// picked entries directly off a seekable reader.
+pub fn archive_needs_buffer(head: &[u8]) -> bool {
+    is_rar(head)
+}
+
+/// Up to `want` cover images from a GENERIC archive buffer (.zip/.rar/.7z), for
+/// the contact-sheet thumbnail — cover-named images first, then natural-sorted
+/// pages ([`select::pick_covers`]). Listing is header/central-directory only;
+/// extraction is bounded per entry ([`MAX_COVER`]) and, for solid archives, one
+/// budgeted sequential pass. `None` when the archive holds no readable image —
+/// the caller fails the thumbnail and Explorer shows the stock icon.
+pub fn archive_covers(bytes: &[u8], want: usize) -> Option<Vec<Vec<u8>>> {
+    if is_zip(bytes) {
+        return zipfmt::covers_from_reader(std::io::Cursor::new(bytes), want);
+    }
+    if is_7z(bytes) {
+        return sevenz::extract_seek_n(std::io::Cursor::new(bytes), want);
+    }
+    if is_rar(bytes) {
+        return rar::extract_n(bytes, want);
+    }
+    None
+}
+
+/// Streaming [`archive_covers`] over a seekable reader (the shell's IStream or an
+/// open `File`): the entry LIST comes from the central directory / archive header
+/// (zip stores it at the tail — one seek, a few KB), then only the picked entries
+/// are read. A multi-GB zip of photos costs its directory plus 4 images. ZIP and
+/// 7z only ([`archive_needs_buffer`] — RAR goes through the in-memory variant).
+pub fn archive_covers_seek<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    head: &[u8],
+    want: usize,
+) -> Option<Vec<Vec<u8>>> {
+    if is_zip(head) {
+        return zipfmt::covers_from_reader(reader, want);
+    }
+    if is_7z(head) {
+        return sevenz::extract_seek_n(reader, want);
     }
     None
 }

@@ -24,12 +24,14 @@ use crate::{decode, safety};
 // `decode::limits::MAX_INPUT_BYTES` (one DoS budget, not two copies).
 const MAX_BYTES: usize = decode::limits::MAX_INPUT_BYTES as usize;
 
-/// What [`stream_source`] hands back: either a video frame Media Foundation
-/// already decoded (no bytes to re-decode), or bounded raw bytes for the
-/// caller's tiered byte decoder.
+/// What [`stream_source`] hands back: a video frame Media Foundation already
+/// decoded (no bytes to re-decode), bounded raw bytes for the caller's tiered
+/// byte decoder, or a generic archive's picked cover images for the
+/// contact-sheet compositor (`decode::thumbnail_from_covers`).
 pub enum StreamSource {
     Frame(image::DynamicImage),
     Bytes(Vec<u8>),
+    Covers(Vec<Vec<u8>>),
 }
 
 /// Turn the shell's `IStream` into a decodable source without ever buffering an
@@ -126,6 +128,23 @@ pub unsafe fn stream_source(
             return Err(Error::from(E_FAIL));
         }
         AudioArt::NotAudio => {}
+    }
+
+    // GENERIC archive (a registered .zip/.rar/.7z — NOT the cbz/epub/office/… zips,
+    // which keep their dedicated cover paths): identify the image entries from the
+    // archive's file LIST (central directory / headers — never a full decompress),
+    // then pull only those, sized cap-free for the seekable formats. Gated on the
+    // Stat-recovered file extension so the magic alone can't reroute a comic.
+    match generic_archive(stream, max_file_bytes, who) {
+        ArchiveProbe::NotGeneric => {}
+        ArchiveProbe::NoCover => {
+            // A recognized generic archive with no readable image: fail now so
+            // Explorer shows the stock zip icon — buffering the whole file just to
+            // fail the image tiers on raw archive bytes would prove nothing.
+            safety::log_debug(&format!("{who}: generic archive with no image entries"));
+            return Err(Error::from(E_FAIL));
+        }
+        ArchiveProbe::Found(src) => return Ok(src),
     }
 
     // Not audio, not video: skip oversized files cheaply via the stream length
@@ -393,6 +412,84 @@ unsafe fn mp4_remux_moov(stream: &IStream) -> Option<Vec<u8>> {
 
     head.extend_from_slice(&moov_buf);
     Some(head)
+}
+
+/// Outcome of the generic-archive probe: not a generic archive at all (continue
+/// the normal cascade), a generic archive with no readable image (fail to the
+/// stock icon), or the picked cover image(s).
+enum ArchiveProbe {
+    NotGeneric,
+    NoCover,
+    Found(StreamSource),
+}
+
+/// The generic-archive (.zip/.rar/.7z) branch of [`stream_source`]. Fires only
+/// when BOTH the magic is an archive signature AND the Stat-recovered file name
+/// carries a generic-archive extension — cbz/epub/office/kra packages share the
+/// zip magic and must keep their dedicated single-cover paths, and a stream with
+/// no recoverable name (rare virtual sources) also falls through to those. ZIP
+/// and 7z read the entry list + picked entries over the seekable IStream with NO
+/// size cap (a multi-GB photo zip costs its central directory + 4 images); RAR
+/// buffers in-memory under the caller's cap (`rars` accepts no reader), so an
+/// oversized .rar keeps the stock icon exactly like an oversized .cbr.
+unsafe fn generic_archive(stream: &IStream, max_file_bytes: u64, who: &str) -> ArchiveProbe {
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let mut head = [0u8; 8];
+    let mut got: u32 = 0;
+    let hr = stream.Read(head.as_mut_ptr() as *mut c_void, head.len() as u32, Some(&mut got));
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let got = (got as usize).min(head.len());
+    if hr.is_err() || got < head.len() || !crate::container::is_generic_archive_magic(&head[..got])
+    {
+        return ArchiveProbe::NotGeneric;
+    }
+    let is_generic_ext = stream_path(stream)
+        .map(|p| {
+            let ext = p.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            matches!(ext.as_str(), "zip" | "rar" | "7z")
+        })
+        .unwrap_or(false);
+    if !is_generic_ext {
+        return ArchiveProbe::NotGeneric;
+    }
+
+    // Contact sheet (up to 4 images) or classic single cover, per Settings.
+    let want = if crate::settings::archive_collage() { 4 } else { 1 };
+
+    let covers = if crate::container::archive_needs_buffer(&head) {
+        // RAR: same bounded whole-file read as the normal path, then the one-pass
+        // multi-target extraction over the buffer.
+        let max = max_file_bytes.min(MAX_BYTES as u64);
+        if stream_size(stream).is_some_and(|size| size > max) {
+            safety::log_debug(&format!("{who}: generic .rar over the read cap"));
+            return ArchiveProbe::NoCover;
+        }
+        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+        let Ok(bytes) = read_all(stream, MAX_BYTES, stream_size(stream)) else {
+            return ArchiveProbe::NoCover;
+        };
+        crate::container::archive_covers(&bytes, want)
+    } else {
+        crate::container::archive_covers_seek(
+            IStreamReader { stream: stream.clone() },
+            &head,
+            want,
+        )
+    };
+
+    match covers {
+        None => ArchiveProbe::NoCover,
+        Some(covers) if covers.is_empty() => ArchiveProbe::NoCover,
+        Some(mut covers) if covers.len() == 1 => {
+            // One image: the normal aspect-preserving single-cover pipeline.
+            safety::log_debug(&format!("{who}: generic archive single cover"));
+            ArchiveProbe::Found(StreamSource::Bytes(covers.swap_remove(0)))
+        }
+        Some(covers) => {
+            safety::log_debug(&format!("{who}: generic archive {} covers", covers.len()));
+            ArchiveProbe::Found(StreamSource::Covers(covers))
+        }
+    }
 }
 
 /// For an OVERSIZED file (past the in-memory cap), sniff whether it's a seek-

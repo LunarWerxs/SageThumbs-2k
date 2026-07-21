@@ -2,6 +2,49 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.3.0
+
+- **Copying from a Markdown Quick preview now keeps the document's structure.** Ctrl+C used
+  to flatten everything: nested bullets came out flat at one level, headings and quotes lost
+  their markers, code blocks ran into the surrounding prose, and every paragraph was jammed
+  against the next with no blank line between them. The copied text is now proper Markdown,
+  so it pastes with its headings, list nesting, numbering, quotes, fenced code and paragraph
+  breaks intact, and still reads correctly if you paste it somewhere plain. Task-list items
+  copy as real GFM checkboxes (`- [x]`), and tables still copy tab-separated so they paste
+  straight into a spreadsheet as columns.
+- **Task-list checkboxes render in the Quick preview.** A Markdown checklist (`- [ ]` /
+  `- [x]`) now shows real checkboxes, a filled blue box with a tick for done items and an
+  empty box for the rest, instead of the literal `[ ]` / `[x]` text.
+- **GIMP `.xcf` files now get a thumbnail, including modern GIMP 2.10 / GIMP 3 files.**
+  Older GIMP files worked before, but a file saved by a current GIMP showed nothing at
+  all in Explorer. SageThumbs now reads the XCF file itself and flattens its layers into
+  a thumbnail, so no separate tool is needed and it works on every install, compact
+  included.
+- **New: Explorer thumbnails for ZIP/RAR/7z archives.** A plain archive now shows what's
+  inside it instead of a generic icon: either a single cover image, or by default a
+  contact-sheet collage of up to four images, so a folder of photos zipped up looks
+  obviously different from a single photo. Picked the same smart way as comic covers:
+  natural filename order, an image named "cover" preferred, junk like `__MACOSX` and
+  `Thumbs.db` skipped. Works on huge archives too: the file list comes from the zip's
+  central directory and only the picked images are ever read, so a multi-gigabyte zip
+  costs a few KB plus a handful of images, in the thumbnail and the preview pane alike.
+  Archives with no images, or that are encrypted, keep the normal icon. New toggle in
+  **Settings ▸ Ebook/comic**: "Contact-sheet thumbnails for ZIP/RAR/7z" (on by default;
+  off gives a single first-image thumbnail, classic CBXShell-style). Comic/ebook archives
+  (cbz/cbr/cb7/epub) are unchanged, always showing their one cover.
+- **`st2k doctor` can now probe one specific file.** Run `st2k doctor "C:\path\to\that.file"`
+  and it checks that exact file end to end: whether the type is one SageThumbs handles,
+  whether it's enabled, and crucially whether the file actually *decodes* into a thumbnail.
+  This closes a gap where the general self-check could report a clean bill of health while
+  one particular file still showed no thumbnail, because the file's format simply can't be
+  decoded on this machine. The report now says so, with the reason.
+- **Hardened archive reading** against malformed or hostile `.7z`/`.zip` files (updated the
+  7-Zip reader and bounded how many entries a crafted archive can make us process).
+- **Silent/unattended installs no longer hang on a fresh machine.** A first-time install run
+  with `/VERYSILENT` (or in an automated/sandboxed environment) could stall before copying any
+  files, because setup tried to stop a background component that only exists after a previous
+  install. It now skips that step on a fresh install.
+
 ## 1.2.2
 
 - **Works on Windows editions without Media Foundation.** On "N" and "KN" editions of Windows

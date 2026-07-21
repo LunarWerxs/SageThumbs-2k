@@ -22,6 +22,7 @@ pub enum Category {
     Document = 3,
     Audio = 4,
     Video = 5,
+    Archive = 6,
 }
 
 // The non-Image membership lists, the second copy of the category data that
@@ -58,6 +59,15 @@ const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v",
     "mpg", "mpeg", "m2v", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
 ];
+// Generic archives — thumbnail = the contained images (first image, or the up-to-4
+// contact sheet per Settings). Deliberately ONLY the big three: the zip-in-disguise
+// long tail (jar/apk/appx/…) would mostly surface a random bundled icon as its
+// "cover", which reads as noise, and the Quick preview already lists those. An
+// archive with no readable image keeps its stock icon. Must mirror the Archives
+// block in FORMATS. These also gate the context-menu OFF (`is_archive`): the image
+// verbs (Convert/Rotate/…) would act on the extracted cover, not the archive —
+// surprising, so v1 keeps archives thumbnail-only.
+const ARCHIVE_EXTS: &[&str] = &["7z", "rar", "zip"];
 
 /// Extensions SageThumbs hooked in PAST versions but dropped in the 2026-06-11 triage
 /// (unrenderable). They are NOT in `FORMATS`, so the normal register/unregister
@@ -83,6 +93,8 @@ pub fn category(ext: &str) -> Category {
         Category::Raw
     } else if VIDEO_EXTS.contains(&ext) {
         Category::Video
+    } else if ARCHIVE_EXTS.contains(&ext) {
+        Category::Archive
     } else {
         Category::Image
     }
@@ -97,7 +109,16 @@ pub fn category_label(cat: Category) -> &'static str {
         Category::Document => "Document",
         Category::Audio => "Audio",
         Category::Video => "Video",
+        Category::Archive => "Archive",
     }
+}
+
+/// Is `ext` a generic archive (.zip/.rar/.7z)? ASCII-case-insensitive, no
+/// allocation (the menu gate runs per selected path on every right-click).
+/// Archives are thumbnail/preview-only: `verbs::is_image` excludes them so the
+/// image verbs never offer to Convert/Rotate an archive's extracted cover.
+pub fn is_archive(ext: &str) -> bool {
+    ARCHIVE_EXTS.iter().any(|a| a.eq_ignore_ascii_case(ext))
 }
 
 /// (extension without dot, friendly description), grouped by category.
@@ -467,6 +488,10 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("vob", "DVD Video Object"),
     ("ogv", "Ogg Video"),
     ("divx", "DivX Video"),
+    // --- Archives (thumbnail = the contained images; must mirror ARCHIVE_EXTS) ---
+    ("7z", "7-Zip archive"),
+    ("rar", "RAR archive"),
+    ("zip", "ZIP archive"),
 ];
 
 /// Is `ext` (no dot) one we hook? ASCII-case-insensitive, so callers need not
@@ -539,6 +564,7 @@ mod tests {
     const AUDIO: &[&str] = AUDIO_EXTS;
     const RAW: &[&str] = RAW_EXTS;
     const VIDEO: &[&str] = VIDEO_EXTS;
+    const ARCHIVE: &[&str] = ARCHIVE_EXTS;
 
     fn in_formats(ext: &str) -> bool {
         FORMATS.iter().any(|(e, _)| *e == ext)
@@ -555,6 +581,7 @@ mod tests {
             ("AUDIO", AUDIO),
             ("RAW", RAW),
             ("VIDEO", VIDEO),
+            ("ARCHIVE", ARCHIVE),
         ] {
             for &ext in list {
                 assert!(
@@ -584,6 +611,8 @@ mod tests {
                 Category::Raw
             } else if VIDEO.contains(&ext) {
                 Category::Video
+            } else if ARCHIVE.contains(&ext) {
+                Category::Archive
             } else {
                 Category::Image
             };
@@ -600,7 +629,8 @@ mod tests {
                 || DOCUMENT.contains(&ext)
                 || AUDIO.contains(&ext)
                 || RAW.contains(&ext)
-                || VIDEO.contains(&ext);
+                || VIDEO.contains(&ext)
+                || ARCHIVE.contains(&ext);
             if !claimed {
                 assert!(
                     category(ext) == Category::Image,
@@ -617,7 +647,7 @@ mod tests {
     /// its list length. No magic "179" lives here; it falls out of the table.
     #[test]
     fn category_counts_partition_formats() {
-        let mut n = [0usize; 6];
+        let mut n = [0usize; 7];
         for &(ext, _) in FORMATS {
             n[category(ext) as usize] += 1;
         }
@@ -630,8 +660,10 @@ mod tests {
         assert_eq!(n[Category::Audio as usize], AUDIO.len(), "Audio");
         assert_eq!(n[Category::Raw as usize], RAW.len(), "Camera RAW");
         assert_eq!(n[Category::Video as usize], VIDEO.len(), "Video");
+        assert_eq!(n[Category::Archive as usize], ARCHIVE.len(), "Archive");
         // Image is whatever remains — derived, not asserted to a literal.
-        let non_image = EBOOK.len() + DOCUMENT.len() + AUDIO.len() + RAW.len() + VIDEO.len();
+        let non_image =
+            EBOOK.len() + DOCUMENT.len() + AUDIO.len() + RAW.len() + VIDEO.len() + ARCHIVE.len();
         assert_eq!(
             n[Category::Image as usize],
             FORMATS.len() - non_image,

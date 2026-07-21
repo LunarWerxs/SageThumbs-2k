@@ -154,8 +154,10 @@ pub(super) enum Block {
     Heading(u8, Vec<Run>, bool),
     Para(Vec<Run>, bool),
     Code(String, highlight::Lang),
-    /// (indent depth, bullet/number marker, runs)
-    Item(u8, String, Vec<Run>),
+    /// (indent depth, bullet/number marker, runs, task-checkbox state). `task` is
+    /// `Some(done)` for a GFM task-list item (`- [ ]`/`- [x]`) — the draw side renders a
+    /// checkbox in place of the bullet; `None` for an ordinary list item.
+    Item(u8, String, Vec<Run>, Option<bool>),
     Quote(Vec<Run>),
     Rule,
     /// GFM or raw-HTML table: header cells + body rows + per-column alignment (0 left,
@@ -202,9 +204,50 @@ enum DocBase {
     None,
 }
 
+/// Build the whole selection document (what Ctrl+C copies) plus each block's run offsets in it.
+///
+/// Blocks are separated by a BLANK line. Each block ends in a single `\n`, so without one every
+/// paragraph, heading and code block runs straight into the next on paste — and in Markdown terms
+/// they merge into a single paragraph. Two exceptions: items of the SAME list stay tight (a blank
+/// line between them makes a "loose" list that re-renders with paragraph gaps, and a bullet list
+/// butted straight against an ordered one reads as a single mangled list), and a block that
+/// contributes no text must not leave the separator behind as a stray empty line.
+fn build_doc(blocks: &[Block]) -> (String, Vec<DocBase>) {
+    /// `Some(ordered)` for a list item, `None` for anything else.
+    fn item_kind(b: &Block) -> Option<bool> {
+        match b {
+            Block::Item(_, marker, _, _) => Some(marker.ends_with('.')),
+            _ => None,
+        }
+    }
+    let mut doc = String::new();
+    let mut bases = Vec::with_capacity(blocks.len());
+    let mut prev_kind = None;
+    for b in blocks {
+        let kind = item_kind(b);
+        let mark = doc.len();
+        if !doc.is_empty() && !(kind.is_some() && kind == prev_kind) {
+            doc.push('\n');
+        }
+        let after_sep = doc.len();
+        bases.push(doc_append(&mut doc, b));
+        if doc.len() == after_sep {
+            doc.truncate(mark);
+        }
+        prev_kind = kind;
+    }
+    (doc, bases)
+}
+
 /// Append `block`'s text to the selection document (in reading order) and report where its runs
-/// landed. Runs are the only hit-testable pieces: a list marker is copied (it's part of the line)
-/// but never individually selectable — browsers don't highlight bullets either.
+/// landed. Runs are the only hit-testable pieces: the STRUCTURAL prefixes below (a heading's
+/// `#`s, a list bullet and its indent, a quote's `>`, code fences) are copied but never
+/// individually selectable — browsers don't highlight bullets either.
+///
+/// This text is exactly what Ctrl+C puts on the clipboard, so it emits **Markdown**, not bare
+/// rendered lines. Flattening to bare lines pastes as an unreadable wall: nesting gone, headings
+/// indistinguishable from body text, code runs into prose. Markdown keeps the structure when
+/// pasted anywhere Markdown-aware AND still reads correctly as plain text.
 fn doc_append(doc: &mut String, block: &Block) -> DocBase {
     fn runs(doc: &mut String, runs: &[Run]) -> Vec<usize> {
         let mut v = Vec::with_capacity(runs.len());
@@ -216,16 +259,49 @@ fn doc_append(doc: &mut String, block: &Block) -> DocBase {
         v
     }
     match block {
-        Block::Heading(_, rs, _) | Block::Para(rs, _) | Block::Quote(rs) => DocBase::Runs(runs(doc, rs)),
-        Block::Item(_, marker, rs) => {
-            doc.push_str(marker);
+        Block::Para(rs, _) => DocBase::Runs(runs(doc, rs)),
+        Block::Heading(level, rs, _) => {
+            for _ in 0..(*level).clamp(1, 6) {
+                doc.push('#');
+            }
             doc.push(' ');
             DocBase::Runs(runs(doc, rs))
         }
-        Block::Code(text, _) => {
+        Block::Quote(rs) => {
+            doc.push_str("> ");
+            DocBase::Runs(runs(doc, rs))
+        }
+        Block::Item(depth, marker, rs, task) => {
+            // Two spaces per level. The nesting the pane DRAWS (`sc(22) * (depth + 1)`) has to
+            // survive the copy or every sub-bullet pastes flat at the top level.
+            for _ in 0..*depth {
+                doc.push_str("  ");
+            }
+            // `marker` is the DISPLAY glyph ("•"), which is not a Markdown bullet. An ordered
+            // item's marker is already "N." and carries its number, so that one passes through.
+            doc.push_str(if marker.ends_with('.') { marker.as_str() } else { "-" });
+            // GFM order is marker THEN checkbox ("- [x] done"). Emitting the box INSTEAD of the
+            // bullet gave "[x] done", which is not a task list anywhere it lands.
+            match task {
+                Some(true) => doc.push_str(" [x]"),
+                Some(false) => doc.push_str(" [ ]"),
+                None => {}
+            }
+            doc.push(' ');
+            DocBase::Runs(runs(doc, rs))
+        }
+        Block::Code(text, lang) => {
+            doc.push_str("```");
+            if let Some(t) = highlight::lang_tag(*lang) {
+                doc.push_str(t);
+            }
+            doc.push('\n');
             let b = doc.len();
             doc.push_str(text);
-            doc.push('\n');
+            if !text.ends_with('\n') {
+                doc.push('\n');
+            }
+            doc.push_str("```\n");
             DocBase::Code(b)
         }
         Block::Table { header, rows, .. } => {
@@ -253,7 +329,20 @@ fn doc_append(doc: &mut String, block: &Block) -> DocBase {
             }
             DocBase::Table(out)
         }
-        Block::Rule | Block::Image(_) => DocBase::None,
+        Block::Rule => {
+            doc.push_str("---\n");
+            DocBase::None
+        }
+        Block::Image(ib) => {
+            // Not selectable (there is no text token to hit-test), but it must not paste as a
+            // silent hole in the middle of a document.
+            doc.push_str("![");
+            doc.push_str(&ib.alt);
+            doc.push_str("](");
+            doc.push_str(&ib.src);
+            doc.push_str(")\n");
+            DocBase::None
+        }
     }
 }
 
@@ -321,8 +410,7 @@ pub(super) unsafe fn render(
     let blocks = parse_blocks(md, remote_ok);
     if !layout.ready || layout.key != key || layout.heights.len() != blocks.len() {
         layout.heights = vec![-1; blocks.len()];
-        let mut doc = String::new();
-        let bases = blocks.iter().map(|b| doc_append(&mut doc, b)).collect();
+        let (doc, bases) = build_doc(&blocks);
         layout.doc = doc;
         layout.bases = bases;
         layout.key = key;
@@ -427,12 +515,19 @@ pub(super) unsafe fn render(
                 let _ = DeleteObject(f.into());
                 y += h + sc(14);
             }
-            Block::Item(depth, marker, runs) => {
+            Block::Item(depth, marker, runs, task) => {
                 let indent = sc(22) * (*depth as i32 + 1);
-                // marker (bullet / number) in the muted colour
-                let mf = font(hwnd, BODY_PX, false, false, false);
-                draw_at(hdc, marker, x0 + indent - sc(18), y, mf, c.muted);
-                let _ = DeleteObject(mf.into());
+                let mx = x0 + indent - sc(18);
+                match task {
+                    // GFM task item: a GitHub-style checkbox in place of the bullet.
+                    Some(done) => draw_checkbox(hwnd, hdc, mx, y, *done, c),
+                    // Ordinary bullet / number in the muted colour.
+                    None => {
+                        let mf = font(hwnd, BODY_PX, false, false, false);
+                        draw_at(hdc, marker, mx, y, mf, c.muted);
+                        let _ = DeleteObject(mf.into());
+                    }
+                }
                 let fonts = Fonts::new(hwnd, BODY_PX, false, false);
                 let ctx = ctx_for(hwnd, c, c.fg);
                 let (ny, _) = run_block(hdc, runs, &fonts, x0 + indent, y, full_w - indent, 0, y >= rc.bottom, &ctx, links, Some(&mut rsel));
@@ -1214,6 +1309,38 @@ unsafe fn draw_at(hdc: HDC, text: &str, x: i32, y: i32, font: HFONT, color: u32)
     SelectObject(hdc, old);
 }
 
+/// Draw a GitHub-style task-list checkbox at `(x, y)` (its top-left), in place of a list
+/// bullet. Unchecked = a rounded outline box; checked = an accent-filled box with a white
+/// tick. `(x, y)` is already DPI-scaled; the box sizes itself off the body line.
+unsafe fn draw_checkbox(hwnd: HWND, hdc: HDC, x: i32, y: i32, done: bool, c: &MdColors) {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let sz = sc(14);
+    let (l, t) = (x, y + sc(2)); // nudge down to sit on the 16px text line
+    let (r, b) = (l + sz, t + sz);
+    let rad = sc(4);
+    let pen = CreatePen(PS_SOLID, sc(1).max(1), COLORREF(if done { c.accent } else { c.border }));
+    let brush = CreateSolidBrush(COLORREF(if done { c.accent } else { c.bg }));
+    let op = SelectObject(hdc, HGDIOBJ(pen.0));
+    let ob = SelectObject(hdc, HGDIOBJ(brush.0));
+    let _ = RoundRect(hdc, l, t, r, b, rad, rad);
+    SelectObject(hdc, op);
+    SelectObject(hdc, ob);
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+    if done {
+        // A white tick reads on the accent fill in both light and dark themes.
+        let cw = CreatePen(PS_SOLID, sc(2).max(2), COLORREF(0x00FF_FFFF));
+        let oc = SelectObject(hdc, HGDIOBJ(cw.0));
+        let fx = |f: f32| l + (sz as f32 * f) as i32;
+        let fy = |f: f32| t + (sz as f32 * f) as i32;
+        let _ = MoveToEx(hdc, fx(0.24), fy(0.52), None);
+        let _ = LineTo(hdc, fx(0.42), fy(0.70));
+        let _ = LineTo(hdc, fx(0.76), fy(0.30));
+        SelectObject(hdc, oc);
+        let _ = DeleteObject(HGDIOBJ(cw.0));
+    }
+}
+
 /// Re-create the font a drawn token was measured with (hit-testing; caller frees it).
 pub(super) unsafe fn font_for(hwnd: HWND, s: FontSpec) -> HFONT {
     font(hwnd, s.px, s.bold, s.italic, s.mono)
@@ -1249,6 +1376,10 @@ pub(super) struct Builder {
     in_para: bool,
     in_quote: u32,
     in_item: bool,
+    /// A GFM task-list marker (`- [ ]` / `- [x]`) seen for the item currently open: the
+    /// checkbox replaces the item's bullet. Set by the `TaskListMarker` event, consumed
+    /// when the item flushes.
+    task: Option<bool>,
     lists: Vec<(bool, u64)>,
     strong: u32,
     emph: u32,
@@ -1296,6 +1427,7 @@ impl Builder {
             in_para: false,
             in_quote: 0,
             in_item: false,
+            task: None,
             lists: Vec::new(),
             strong: 0,
             emph: 0,
@@ -1371,11 +1503,12 @@ impl Builder {
             self.out.push(Block::Heading(lvl, taken, center));
         } else if self.in_item {
             let depth = (self.lists.len().saturating_sub(1)) as u8;
+            let task = self.task.take();
             let marker = match self.lists.last() {
                 Some((true, n)) => format!("{n}."),
                 _ => "•".to_string(),
             };
-            self.out.push(Block::Item(depth, marker, taken));
+            self.out.push(Block::Item(depth, marker, taken, task));
         } else if self.in_quote > 0 {
             self.out.push(Block::Quote(taken));
         } else {
@@ -1816,7 +1949,9 @@ fn parse_blocks(md: &str, remote_ok: bool) -> Vec<Block> {
             }
             Event::SoftBreak => b.text(" "),
             Event::HardBreak => b.newline(),
-            Event::TaskListMarker(done) => b.text(if done { "[x] " } else { "[ ] " }),
+            // A GFM task-list checkbox: remember it for the open item (it replaces the
+            // bullet at draw time) instead of dumping literal "[ ]"/"[x]" text.
+            Event::TaskListMarker(done) => b.task = Some(done),
             _ => {}
         }
     }
@@ -1846,6 +1981,56 @@ mod tests {
         let mut runs = Vec::new();
         linkify_into(&mut runs, s, false, false, false);
         runs.into_iter().map(|r| (r.text, r.link)).collect()
+    }
+
+    /// What Ctrl+C would put on the clipboard for `md` (pre-CRLF-normalisation).
+    fn copied(md: &str) -> String {
+        build_doc(&parse_blocks(md, false)).0
+    }
+
+    /// Structured Markdown must survive a copy/paste round trip. Every assertion here is a way
+    /// the old flattening broke it: nesting depth was dropped, blocks were joined with a single
+    /// newline (so paragraphs merged), and headings/quotes/fences lost their markers entirely.
+    #[test]
+    fn copy_preserves_document_structure() {
+        let out = copied(
+            "# Title\n\nIntro para.\n\nAnother para.\n\n\
+             - top\n  - nested\n    - deeper\n- second\n\n\
+             1. one\n2. two\n\n> quoted\n\n```rust\nfn f() {}\n```\n\n---\n",
+        );
+        // Blocks are separated by a BLANK line, so they don't merge into one paragraph.
+        assert!(out.contains("# Title\n\nIntro para.\n\nAnother para.\n\n"), "got:\n{out}");
+        // Nesting survives, with a real Markdown bullet rather than the display glyph.
+        assert!(out.contains("- top\n  - nested\n    - deeper\n- second"), "got:\n{out}");
+        assert!(!out.contains('\u{2022}'), "display bullet leaked into the copy:\n{out}");
+        // Consecutive items stay TIGHT (no blank line) or the list re-renders loose.
+        assert!(!out.contains("- top\n\n"), "list went loose:\n{out}");
+        // Ordered lists keep their numbers; quotes and fences keep their markers.
+        assert!(out.contains("1. one\n2. two"), "got:\n{out}");
+        // A DIFFERENT list still gets its blank line, or the two run together as one mangled list.
+        assert!(out.contains("- second\n\n1. one"), "lists butted together:\n{out}");
+        assert!(out.contains("> quoted"), "got:\n{out}");
+        assert!(out.contains("```rust\nfn f() {}\n```"), "got:\n{out}");
+        assert!(out.contains("---"), "got:\n{out}");
+    }
+
+    /// GFM order is marker THEN checkbox. Emitting the box in place of the bullet produced
+    /// "[x] done", which no Markdown renderer treats as a task list.
+    #[test]
+    fn copy_emits_valid_gfm_task_items() {
+        let out = copied("- [x] done\n- [ ] todo\n");
+        assert!(out.contains("- [x] done"), "got:\n{out}");
+        assert!(out.contains("- [ ] todo"), "got:\n{out}");
+    }
+
+    /// A block that appends nothing must not leave its separator behind as a stray blank line,
+    /// and the document must never start with one.
+    #[test]
+    fn copy_has_no_stray_blank_lines() {
+        let out = copied("para one\n\npara two\n");
+        assert!(!out.starts_with('\n'), "leading blank line:\n{out}");
+        assert!(!out.contains("\n\n\n"), "doubled separator:\n{out}");
+        assert!(out.ends_with('\n'));
     }
 
     #[test]
