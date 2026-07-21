@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn converts_png_to_jpg_alongside_original() {
-        let dir = std::env::temp_dir().join("st2k_convert_test");
+        let dir = std::env::temp_dir().join(format!("st2k_convert_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("sample.png");
 
@@ -120,7 +120,7 @@ mod tests {
         // so the Invoke handlers can reveal it; reveal() must be a safe no-op when
         // suppressed. (No st2k.exe sits next to the test binary, so this runs the
         // in-process path.)
-        let dir = std::env::temp_dir().join("st2k_reveal_out");
+        let dir = std::env::temp_dir().join(format!("st2k_reveal_out_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("r.png");
         image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])))
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn converts_to_modern_formats_and_rotates() {
-        let dir = std::env::temp_dir().join("st2k_fmt_test");
+        let dir = std::env::temp_dir().join(format!("st2k_fmt_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("s.png");
         let mut img = image::RgbaImage::new(40, 24);
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn resize_file_fits_and_keeps_format() {
-        let dir = std::env::temp_dir().join("st2k_resize");
+        let dir = std::env::temp_dir().join(format!("st2k_resize_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("big.png");
         image::DynamicImage::ImageRgba8(image::RgbaImage::new(2000, 1500)).save(&png).unwrap();
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn convert_new_raster_formats() {
-        let dir = std::env::temp_dir().join("st2k_newfmt");
+        let dir = std::env::temp_dir().join(format!("st2k_newfmt_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("s.png");
         let mut img = image::RgbaImage::from_pixel(24, 16, image::Rgba([30, 140, 200, 255]));
@@ -220,7 +220,7 @@ mod tests {
     #[cfg(feature = "webp-lossy")]
     #[test]
     fn lossy_webp_is_smaller_and_keeps_alpha() {
-        let dir = std::env::temp_dir().join("st2k_webp_lossy");
+        let dir = std::env::temp_dir().join(format!("st2k_webp_lossy_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("photo.png");
         // A noisy gradient (photo-like) with a transparent corner.
@@ -258,7 +258,7 @@ mod tests {
     fn oversized_lossy_webp_errors_cleanly() {
         // libwebp's 16383px limit: without the guard, encode() panics and (with
         // panic=abort) would kill this whole test binary. A clean Err = guard works.
-        let dir = std::env::temp_dir().join("st2k_webp_big");
+        let dir = std::env::temp_dir().join(format!("st2k_webp_big_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("wide.png");
         image::DynamicImage::ImageRgba8(image::RgbaImage::new(16384, 1)).save(&png).unwrap();
@@ -282,7 +282,7 @@ mod tests {
         if !std::path::Path::new(src).exists() {
             return; // running outside the crate root
         }
-        let dir = std::env::temp_dir().join("st2k_webp_logo");
+        let dir = std::env::temp_dir().join(format!("st2k_webp_logo_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let opts = ConvertOpts {
             target: Target { format: ImageFormat::WebP, ext: "webp", webp_quality: None },
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn webp_convert_preserves_transparency() {
-        let dir = std::env::temp_dir().join("st2k_webp_alpha");
+        let dir = std::env::temp_dir().join(format!("st2k_webp_alpha_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("t.png");
         let mut img = image::RgbaImage::from_pixel(8, 8, image::Rgba([20, 200, 90, 255]));
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn convert_file_opts_resizes_and_converts() {
-        let dir = std::env::temp_dir().join("st2k_cvopts");
+        let dir = std::env::temp_dir().join(format!("st2k_cvopts_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("big.png");
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2000, 1000, image::Rgb([30, 140, 200])))
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn shrink_for_email_writes_smaller_jpeg() {
-        let dir = std::env::temp_dir().join("st2k_email");
+        let dir = std::env::temp_dir().join(format!("st2k_email_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("big.png");
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2000, 1500, image::Rgb([30, 140, 200])))
@@ -378,7 +378,7 @@ mod tests {
     fn fitup_resize_upscales_explicit_dimensions() {
         // The Convert dialog's "Defined size" must GROW a smaller source (a
         // request); the preset Fit stays shrink-only.
-        let dir = std::env::temp_dir().join("st2k_fitup");
+        let dir = std::env::temp_dir().join(format!("st2k_fitup_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("small.png");
         image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50)).save(&src).unwrap();
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn set_folder_icon_writes_ini_and_ico() {
-        let dir = std::env::temp_dir().join("st2k_foldericon");
+        let dir = std::env::temp_dir().join(format!("st2k_foldericon_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("pic.png");
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn renames_by_exif_date_and_camera() {
-        let dir = std::env::temp_dir().join("st2k_rename");
+        let dir = std::env::temp_dir().join(format!("st2k_rename_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn converts_to_native_pnm() {
-        let dir = std::env::temp_dir().join("st2k_pnm");
+        let dir = std::env::temp_dir().join(format!("st2k_pnm_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("s.png");
@@ -603,7 +603,7 @@ mod tests {
         if !crate::decode::magick_available() {
             return;
         }
-        let dir = std::env::temp_dir().join("st2k_magenc");
+        let dir = std::env::temp_dir().join(format!("st2k_magenc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("s.png");
@@ -644,7 +644,7 @@ mod tests {
         use lofty::config::WriteOptions;
         use lofty::tag::{Accessor, Tag, TagExt, TagType};
 
-        let dir = std::env::temp_dir().join("st2k_tags");
+        let dir = std::env::temp_dir().join(format!("st2k_tags_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("song.wav");
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn combine_to_cbz_zips_pages_in_natural_order() {
-        let dir = std::env::temp_dir().join("st2k_cbz");
+        let dir = std::env::temp_dir().join(format!("st2k_cbz_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Out-of-order names: natural sort must put 2 before 10.
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn sort_by_dimensions_buckets_by_size() {
-        let dir = std::env::temp_dir().join("st2k_dims");
+        let dir = std::env::temp_dir().join(format!("st2k_dims_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut paths = Vec::new();
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn tags_to_folders_moves_and_copies_by_template() {
-        let dir = std::env::temp_dir().join("st2k_ttf");
+        let dir = std::env::temp_dir().join(format!("st2k_ttf_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.wav");
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn prepares_wallpaper_image() {
-        let dir = std::env::temp_dir().join("st2k_wp_prep");
+        let dir = std::env::temp_dir().join(format!("st2k_wp_prep_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("w.png");
         let mut img = image::RgbaImage::new(40, 30);
@@ -867,7 +867,7 @@ mod tests {
         unsafe {
             let original = current_wallpaper();
 
-            let dir = std::env::temp_dir().join("st2k_wp_rt");
+            let dir = std::env::temp_dir().join(format!("st2k_wp_rt_{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let src = dir.join("rt.png");
             let mut img = image::RgbaImage::new(32, 32);

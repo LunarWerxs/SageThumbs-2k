@@ -8,10 +8,11 @@ use core::ffi::c_void;
 use std::path::Path;
 
 use image::RgbaImage;
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+    CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, FillRect,
+    GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    DIB_RGB_COLORS, HGDIOBJ,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -22,10 +23,36 @@ use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 const PW_RENDERFULLCONTENT: PRINT_WINDOW_FLAGS = PRINT_WINDOW_FLAGS(0x0000_0002);
 
 /// Capture the whole window `hwnd` (including its non-client title bar) to a top-down BGRA
-/// buffer via `PrintWindow`. Works on an off-screen window — `PrintWindow` drives a fresh
-/// `WM_PRINT` into our memory DC, so the window need never have been composited on-screen (a
+/// buffer via `PrintWindow`, SETTLED. Works on an off-screen window — `PrintWindow` drives a
+/// fresh render into our memory DC, so the window need never have been composited on-screen (a
 /// plain `BitBlt` from the screen would be blank). Returns `(bgra, width, height)`.
+///
+/// `PW_RENDERFULLCONTENT` is not reliably COMPLETE: under heavy CPU/DWM load `PrintWindow` can
+/// return TRUE having rendered only part of the window, leaving the rest of the capture bitmap
+/// untouched — seen as a white band (uninitialized bitmap memory) across the bottom of a grab,
+/// which broke the byte-comparing view-source tests twice in four full-suite runs (2026-07-21).
+/// So: pre-fill the bitmap with a sentinel colour, grab twice with two DIFFERENT sentinels, and
+/// accept only when both grabs agree byte-for-byte. Any under-rendered region keeps its grab's
+/// own sentinel, so the two grabs can only match once the render actually covered every pixel.
+/// Bounded retries; the normal (settled) case costs exactly one extra grab of a small window.
 pub(crate) unsafe fn capture_hwnd_bgra(hwnd: HWND) -> Option<(Vec<u8>, i32, i32)> {
+    const TRIES: usize = 25;
+    const SENTINELS: [u32; 2] = [0x00FF00FF, 0x00FFFF00]; // magenta / cyan (COLORREF 0x00BBGGRR)
+    let mut prev: Option<(Vec<u8>, i32, i32)> = None;
+    for i in 0..TRIES {
+        let cur = capture_hwnd_bgra_once(hwnd, COLORREF(SENTINELS[i % 2]));
+        if cur.is_some() && cur == prev {
+            return cur;
+        }
+        prev = cur;
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    prev // never settled — the last grab is still the best answer available
+}
+
+/// One raw `PrintWindow` grab of `hwnd` into a bitmap pre-filled with `fill` (the sentinel that
+/// exposes an incomplete render to [`capture_hwnd_bgra`]'s settle loop).
+unsafe fn capture_hwnd_bgra_once(hwnd: HWND, fill: COLORREF) -> Option<(Vec<u8>, i32, i32)> {
     let mut r = RECT::default();
     if GetWindowRect(hwnd, &mut r).is_err() {
         return None;
@@ -43,6 +70,11 @@ pub(crate) unsafe fn capture_hwnd_bgra(hwnd: HWND) -> Option<(Vec<u8>, i32, i32)
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, w, h);
     let old = SelectObject(mem, HGDIOBJ(bmp.0));
+    // A fresh compatible bitmap's contents are UNDEFINED — paint it with the caller's sentinel
+    // so a partial PrintWindow render is detectable instead of showing as arbitrary garbage.
+    let brush = CreateSolidBrush(fill);
+    let _ = FillRect(mem, &RECT { left: 0, top: 0, right: w, bottom: h }, brush);
+    let _ = DeleteObject(HGDIOBJ(brush.0));
     let printed = PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT).as_bool();
 
     // Pull top-down BGRA (negative biHeight) — exactly what `output::to_rgba` wants.

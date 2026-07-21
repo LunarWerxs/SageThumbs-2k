@@ -192,6 +192,58 @@ fn jpeg_also_decodes_through_com() {
     assert!(t.px(0, 0)[1] > 150, "green channel should dominate");
 }
 
+/// A synthetic opaque RGB PSD: header + empty color-mode data + one 1036
+/// image-resource block holding a small red JPEG thumbnail + `tail` zero bytes
+/// of "layer data" (mirrors `container::psd::testutil`, which an external test
+/// crate can't reach).
+fn synthetic_psd_with_thumb(tail: usize) -> Vec<u8> {
+    let jpeg = encode(solid(4, 4, [200, 50, 50, 255]), ImageFormat::Jpeg);
+    let mut data = Vec::new();
+    data.extend_from_slice(&1u32.to_be_bytes()); // format = JPEG
+    data.extend_from_slice(&[0u8; 20]); // w/h/widthbytes/totalsize/sizeafter
+    data.extend_from_slice(&[0, 24]); // bits/pixel
+    data.extend_from_slice(&[0, 1]); // planes
+    data.extend_from_slice(&jpeg);
+
+    let mut res = Vec::new();
+    res.extend_from_slice(b"8BIM");
+    res.extend_from_slice(&1036u16.to_be_bytes());
+    res.extend_from_slice(&[0, 0]); // empty Pascal name + pad
+    res.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    res.extend_from_slice(&data);
+    if data.len() & 1 == 1 {
+        res.push(0);
+    }
+
+    let mut psd = Vec::new();
+    psd.extend_from_slice(b"8BPS");
+    psd.extend_from_slice(&[0, 1]); // version 1 (PSD)
+    psd.extend_from_slice(&[0u8; 6]); // reserved
+    psd.extend_from_slice(&[0, 3]); // channels (opaque RGB)
+    psd.extend_from_slice(&100u32.to_be_bytes()); // height
+    psd.extend_from_slice(&100u32.to_be_bytes()); // width
+    psd.extend_from_slice(&[0, 8]); // depth
+    psd.extend_from_slice(&[0, 3]); // color mode = RGB
+    psd.extend_from_slice(&0u32.to_be_bytes()); // color-mode data length
+    psd.extend_from_slice(&(res.len() as u32).to_be_bytes()); // resources length
+    psd.extend_from_slice(&res);
+    psd.extend_from_slice(&vec![0u8; tail]);
+    psd
+}
+
+#[test]
+fn big_psd_thumbnails_through_com_via_the_head_prefix() {
+    // 8 MB of layer data behind the baked thumbnail: end-to-end through the
+    // real DLL, the head-preview fast path must still produce the red JPEG
+    // thumbnail (the streamsrc unit tests assert the byte-level prefix; this
+    // proves the full shell handshake on the same shape).
+    let psd = synthetic_psd_with_thumb(8 << 20);
+    let t = unsafe { get_thumbnail(&psd, 96) }.unwrap();
+    assert!(t.w > 0 && t.h > 0);
+    let [b, g, r, _a] = t.px(t.w / 2, t.h / 2);
+    assert!(r > 150 && g < 110 && b < 110, "expected the red baked thumbnail, got BGRA {:?}", [b, g, r]);
+}
+
 #[test]
 fn garbage_returns_error_not_crash() {
     // GetThumbnail should return a failure HRESULT (not crash the host) for

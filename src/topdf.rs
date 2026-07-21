@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn combines_two_images_into_a_renderable_pdf() {
-        let dir = std::env::temp_dir().join("st2k_topdf");
+        let dir = std::env::temp_dir().join(format!("st2k_topdf_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let paths: Vec<String> = (0..2)
             .map(|i| {

@@ -428,7 +428,7 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
     let mut out: Vec<(&'static MenuItem, u32)> = Vec::with_capacity(body.len() + 2);
     for p in body {
         if matches!(p.0, MenuItem::Separator)
-            && (out.is_empty() || matches!(out.last().unwrap().0, MenuItem::Separator))
+            && out.last().is_none_or(|last| matches!(last.0, MenuItem::Separator))
         {
             continue;
         }

@@ -2,7 +2,24 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## 1.3.0
+## 1.3.1
+
+- **"Show quick actions in the menu" works again.** Turning it on is meant to put Convert into,
+  Convert…, Resize and Rotate straight on the right-click menu instead of one level deep in the
+  submenu, but on many setups it did nothing. If your right-click menu is the classic full one
+  (a very common Windows 11 choice), the quick actions were being hidden with nothing to replace
+  them. They now show up whenever the option is on.
+- **Menu changes take effect right away.** Toggling a menu option in Settings and hitting Save
+  now refreshes Explorer's menu, so you see the change on your next right-click instead of having
+  to restart Explorer or sign out.
+- **Big files and big folders thumbnail much faster.** Large Photoshop (`.psd`/`.psb`), AutoCAD
+  (`.dwg`) and 3D-printer G-code files used to be read in full just to pull out the small preview
+  buried near the start - so a folder of them filled in slowly, one at a time. SageThumbs now
+  reads only the part of the file that holds the preview, which is a tiny fraction of a large
+  document. Very large AutoCAD files that previously showed no thumbnail at all now get one.
+- **Big EPUB books now show their real cover.** A large e-book could end up showing a random
+  picture from inside it instead of the actual cover; it now picks the cover the same reliable
+  way small books always did.
 
 - **Copying from a Markdown Quick preview now keeps the document's structure.** Ctrl+C used
   to flatten everything: nested bullets came out flat at one level, headings and quotes lost
@@ -56,24 +73,24 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **"Repair file associations" and "Rebuild thumbnail cache" now work.** Both buttons closed
   File Explorer and then failed to start it again, leaving an error about a network path that
-  could not be found. Nothing was wrong with your network — the commands they ran were being
+  could not be found. Nothing was wrong with your network - the commands they ran were being
   quoted incorrectly, so Windows was handed a nonsense path. Both buttons now do what they say,
   and no longer flash a black console window while they work.
 - **Setup tells you if registering with Windows fails.** Previously the installer could finish
   and report success while security software had blocked the part that hooks SageThumbs into
-  Explorer — leaving you with no thumbnails and no explanation. Setup now checks afterwards and
+  Explorer - leaving you with no thumbnails and no explanation. Setup now checks afterwards and
   says so plainly, with what to do about it.
 - **Windows 10: the Convert / Resize / Rotate shortcuts are back on the right-click menu.** They
   were being hidden in favour of the modern Windows 11 menu, which does not exist on Windows 10,
   so they simply disappeared.
-- **New: `st2k doctor`.** Run it from the install folder and it checks the whole chain in one go —
+- **New: `st2k doctor`.** Run it from the install folder and it checks the whole chain in one go -
   whether Windows has thumbnails switched off, whether SageThumbs is registered with Explorer,
   whether the shell extension can actually load, which of your file types are hooked, and whether
   the decoder itself works. It prints a plain-text report with a verdict and a fix for anything it
   finds, ready to paste into a bug report.
 - **"Repair file associations" no longer claims success when it failed.** It used to report
   "repaired" as soon as it managed to *start* the registration step, without checking whether that
-  step worked. It now waits for the result, verifies it, and tells you what actually went wrong —
+  step worked. It now waits for the result, verifies it, and tells you what actually went wrong -
   a declined prompt, a missing file, or something undoing the registration.
 
 ## 1.2.1 (2026-07-18)
@@ -93,10 +110,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   picture tubes, preset shapes, selections and masks (`.PspBrush`, `.PspFrame`, `.PspTube`,
   `.PspShape`, `.PspSelection`, `.PspMask`) use the same file container as `.pspimage`, so
   they thumbnail through the same reader. Note that not every one of these files stores a
-  preview picture inside it — where there isn't one, you'll see the normal Windows icon,
+  preview picture inside it - where there isn't one, you'll see the normal Windows icon,
   exactly as before. (Thanks to the community member who spotted this.)
-- **You can now see the source behind a rendered preview.** Anything the Quick preview renders —
-  a Markdown file, a CSV/TSV table, a Jupyter notebook, an HTML page, an SVG — has a new **`{ }`**
+- **You can now see the source behind a rendered preview.** Anything the Quick preview renders -
+  a Markdown file, a CSV/TSV table, a Jupyter notebook, an HTML page, an SVG - has a new **`{ }`**
   button in the preview's toolbar (or press **Ctrl+U**) that swaps the rendered view for the raw
   file, syntax-highlighted with line numbers and fully selectable. Press it again to go back. The
   mode stays on while the window is open, so **←/→** keeps showing source as you flip through a
@@ -111,7 +128,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 ## 1.1.0 (2026-07-17)
 
 - **You can now select and copy text in the Quick preview.** Drag to select in text, code, log
-  **and rendered Markdown** previews — double-click grabs a word, **Shift+arrows** (with
+  **and rendered Markdown** previews - double-click grabs a word, **Shift+arrows** (with
   Home/End/PgUp/PgDn, and Ctrl for whole words) select from the keyboard, and **Ctrl+A** takes
   everything. **Ctrl+C** copies the selection, or the whole document if you haven't selected
   anything. On a Markdown file you get the text as you see it rendered; **Ctrl+Shift+C** copies
@@ -154,7 +171,7 @@ in 0.10 and smooths out the rough edges found in real-world use.
   Desktop) and tap **Space** for an instant full-size popup, then Space or Esc to close. It shows
   any format SageThumbs can decode, and adds a lot a still image can't: **videos and audio play**
   (with a seek bar, play/pause and volume), **animated GIFs/WebP animate**, **code is
-  syntax-highlighted with line numbers** (editor-style, across the common languages — JSON keys,
+  syntax-highlighted with line numbers** (editor-style, across the common languages - JSON keys,
   strings and numbers each get their own colour), **Markdown renders GitHub-style** (with clickable
   links), **multi-page PDFs
   page** with the arrow keys or on-screen buttons, **fonts show a specimen** (name + pangram + glyph
@@ -174,7 +191,7 @@ in 0.10 and smooths out the rough edges found in real-world use.
   the first thousand rows with a note.
 - **New: Jupyter notebooks preview rendered.** `.ipynb` files show their markdown cells rendered,
   code cells syntax-highlighted with line numbers, and text outputs (including cleaned-up error
-  tracebacks) — no Jupyter install needed.
+  tracebacks) - no Jupyter install needed.
 - **New (optional): download web images in Markdown previews.** Off by default: badges and other
   web-hosted images show as labeled chips. Turn it on (Settings ▸ Quick preview) and they download
   (HTTPS only, size-capped, in the background) and display like GitHub shows them.
@@ -191,10 +208,10 @@ in 0.10 and smooths out the rough edges found in real-world use.
   and sensible column widths**. Common inline HTML (`<b>`, `<i>`, `<br>`, links, lists, tables,
   `<details>` blocks) renders too, and the text column is capped and centered like a GitHub page
   instead of stretching edge-to-edge. Web-hosted images (like status badges) show as small labeled
-  chips rather than being downloaded — previewing a file never touches the network.
+  chips rather than being downloaded - previewing a file never touches the network.
 - **Optional: render local HTML files.** With the new **"Render local HTML files"** toggle
   (Settings ▸ Quick preview, off by default), pressing Space on a `.html` file shows the rendered
-  page in an embedded, **locked-down** viewer — JavaScript is disabled and every network request is
+  page in an embedded, **locked-down** viewer - JavaScript is disabled and every network request is
   blocked, so a page cannot phone home or load remote trackers. A companion **"Live-load .url
   shortcuts"** toggle (also off by default) can open a `.url`'s real web page in a throwaway session;
   left off, a `.url` just shows its target address as text.

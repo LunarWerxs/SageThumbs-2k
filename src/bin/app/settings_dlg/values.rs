@@ -363,6 +363,22 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
             message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
         }
     }
+
+    // Nudge the shell to drop its cached file-association / context-menu state so a
+    // menu toggle (e.g. MenuQuickVerbs, per-item visibility, the reorder) takes
+    // effect on the NEXT right-click instead of silently waiting for an Explorer
+    // restart. The classic IContextMenu handler reads settings live, so this flushes
+    // the shell's association cache around it; the modern packaged verbs re-query
+    // GetState per menu-build, so they pick the change up on the next open too.
+    notify_shell_assoc_changed();
+}
+
+/// `SHChangeNotify(SHCNE_ASSOCCHANGED)` — tells Explorer file-type handlers changed,
+/// so it re-reads context-menu registrations rather than serving a stale cache. The
+/// standard post-settings nudge for a shell extension; cheap and side-effect-free.
+fn notify_shell_assoc_changed() {
+    use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+    unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 
 /// Export the saved settings to a user-chosen `.json` file (Diagnostics ▸ Export).

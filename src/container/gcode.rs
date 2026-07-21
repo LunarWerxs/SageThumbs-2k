@@ -15,7 +15,11 @@
 use base64::Engine;
 
 /// Only scan the head — slicers always put thumbnails in the file's preamble.
-const SCAN_LIMIT: usize = 4 * 1024 * 1024;
+/// [`extract`] already clamps to this, so a caller that reads only this many
+/// leading bytes off disk gets a BYTE-IDENTICAL result to passing the whole file
+/// (see `container::head_preview_len`) — sliced G-code is routinely hundreds of MB
+/// of toolpath text behind a preview that lives in the first few KB.
+pub(crate) const SCAN_LIMIT: usize = 4 * 1024 * 1024;
 
 /// Extract the largest embedded PNG thumbnail from G-code text, or None.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {

@@ -81,13 +81,15 @@ Name: "{group}\SageThumbs 2K"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}
 Name: "{group}\Uninstall SageThumbs 2K"; Filename: "{uninstallexe}"
 
 [Registry]
-; Modern-menu marker (HKLM): set only when the signed package is bundled (and thus the
-; [Run] step below registers it). The classic IContextMenu handler reads this - when the
-; package is active, Windows bridges the packaged quick verbs into "Show more options", so
-; the classic handler omits ITS own copies to avoid double-listing them
-; (settings::modern_menu_active). Removed on uninstall with the value/key.
-Root: HKLM; Subkey: "Software\SageThumbs2K"; ValueType: dword; ValueName: "ModernMenuActive"; \
-  ValueData: 1; Flags: uninsdeletevalue uninsdeletekeyifempty; Check: ModernMenuUsable
+; Clean up the now-inert ModernMenuActive marker (written by <= 1.3.0). It used to gate
+; whether the classic IContextMenu handler emitted ITS OWN quick verbs, on the false belief
+; that Windows bridges the packaged (modern-compact-menu) verbs into "Show more options". It
+; doesn't - packaged verbs live ONLY in the compact flyout - so that suppression just hid the
+; quick verbs on every classic-menu-default machine. The classic handler now always shows its
+; quick verbs (nothing reads this key anymore). Deleted on install so an upgrade from <= 1.3.0
+; doesn't leave a dead value behind; the empty parent key is dropped on uninstall.
+Root: HKLM; Subkey: "Software\SageThumbs2K"; ValueType: none; ValueName: "ModernMenuActive"; \
+  Flags: deletevalue uninsdeletekeyifempty
 
 [Run]
 ; Register the thumbnail provider + classic context-menu handler (HKLM).

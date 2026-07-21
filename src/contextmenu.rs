@@ -822,16 +822,20 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 // The quick verbs are Convert/Resize/Rotate — all image-only, so they're
                 // suppressed for an audio-only selection too (same reason the audio view
                 // drops them from the submenu below).
-                //    SUPPRESSED when the signed sparse package is active: it declares the SAME
-                //    quick verbs as modern IExplorerCommand commands, and Windows bridges those
-                //    DOWN into this legacy "Show more options" menu. Emitting our copies too
-                //    would double-list Convert/Resize/Rotate here, so we defer to the bridged
-                //    packaged verbs (settings::modern_menu_active + packaging/AppxManifest.xml).
-                //    The full "SageThumbs 2K" flyout below is unaffected — still listed once.
+                //
+                // Shown whenever the toggle is on, INCLUDING when the signed sparse package
+                // is installed. An earlier build also gated on `!modern_menu_active()`, on
+                // the theory that Windows bridges the packaged IExplorerCommand quick verbs
+                // DOWN into this legacy "Show more options" menu, so our copies would
+                // double-list. That premise is false: packaged context-menu verbs appear
+                // ONLY in the modern COMPACT flyout, never in the classic menu — so the
+                // suppression just made the quick verbs vanish for every user whose default
+                // IS the classic menu (a very common Win11 setup), the "I enabled Show quick
+                // actions and see nothing" report. Packaged (compact) and classic (this menu)
+                // are separate surfaces; no single menu ever shows both, so nothing doubles.
                 if settings::menu_quick_verbs()
                     && !condensed
                     && !audio_only
-                    && !settings::modern_menu_active()
                 {
                     for item in verbs::quick_items() {
                         // Honor per-item visibility: a hidden top-level item drops

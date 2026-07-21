@@ -67,3 +67,6 @@ Thumbs.db
 
 # AI coding assistant local config/session state — never publish
 /.claude/
+# cargo-mutants scratch (mutation-testing results; regenerated every run)
+/mutants.out/
+/mutants.out.old/

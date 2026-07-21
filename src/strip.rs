@@ -117,6 +117,25 @@ pub fn read_info_bounded(path: &str) -> ImageInfo {
     read_info_impl(path, true)
 }
 
+/// First bytes of `path` (64 — ample for every `container::real_dims` header,
+/// PSD needs 22), for the header-only dimension probe. None on I/O error or a
+/// file too short to hold any such header.
+fn head_prefix(path: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 64];
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match f.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return None,
+        }
+    }
+    buf.truncate(filled);
+    (buf.len() >= 26).then_some(buf)
+}
+
 fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
     use exif::{In, Reader, Tag, Value};
     use image::ImageDecoder;
@@ -138,6 +157,16 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
     // the embedded preview's size. A `bounded` caller caps the read at the 256 MiB
     // input ceiling and skips anything larger (see `read_info_bounded`); the unbounded
     // caller slurps the whole file for the true size of an arbitrarily large document.
+    if info.width == 0 && info.height == 0 {
+        // Header-only dims first: `real_dims` needs the PSD's fixed 26-byte header,
+        // so probing a small head prefix answers a folder-of-big-PSDs Details pane
+        // without the whole-file read below (Explorer runs this per file, serially,
+        // right alongside the thumbnail extraction).
+        if let Some((w, h)) = head_prefix(path).and_then(|head| crate::container::real_dims(&head)) {
+            info.width = w;
+            info.height = h;
+        }
+    }
     if info.width == 0 && info.height == 0 {
         let bytes = if bounded {
             crate::decode::read_capped(path).ok()
@@ -488,7 +517,7 @@ mod tests {
 
     #[test]
     fn strips_jpeg_app1_exif_losslessly() {
-        let dir = std::env::temp_dir().join("st2k_strip_exif");
+        let dir = std::env::temp_dir().join(format!("st2k_strip_exif_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let jpg = dir.join("e.jpg");
 
@@ -531,7 +560,7 @@ mod tests {
 
     #[test]
     fn read_info_returns_dimensions() {
-        let dir = std::env::temp_dir().join("st2k_info");
+        let dir = std::env::temp_dir().join(format!("st2k_info_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("i.png");
         image::DynamicImage::ImageRgb8(image::RgbImage::new(33, 22)).save(&png).unwrap();

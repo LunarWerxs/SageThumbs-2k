@@ -22,7 +22,7 @@
 
 use std::sync::OnceLock;
 
-use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
+use windows_registry::CURRENT_USER;
 
 /// HKCU root for all our settings (and the per-extension subkeys).
 pub const ROOT: &str = r"Software\SageThumbs2K";
@@ -39,9 +39,8 @@ pub const ROOT: &str = r"Software\SageThumbs2K";
 ///
 /// Resolved ONCE (an env var can't change within a process's life for our purposes) and
 /// cached, so the per-`GetThumbnail` hot path — `thumb_settings` in a folder of thousands —
-/// pays a single atomic load, not an `env::var` lookup per file. HKLM reads
-/// ([`modern_menu_active`]) are NOT redirected: they're a different hive, machine-wide, and
-/// no test writes them.
+/// pays a single atomic load, not an `env::var` lookup per file. HKLM reads are NOT
+/// redirected: they're a different hive, machine-wide, and no test writes them.
 fn hkcu_root() -> &'static str {
     static ROOT_PATH: OnceLock<String> = OnceLock::new();
     ROOT_PATH.get_or_init(|| {
@@ -364,31 +363,12 @@ pub fn menu_quick_verbs() -> bool {
     get_dword("MenuQuickVerbs", 0) != 0
 }
 
-/// Whether the SIGNED sparse package — which declares the modern Win11 quick-verb verbs
-/// (Convert into / Convert… / Resize / Rotate) — is installed and active. Written to HKLM by
-/// the installer right after `Add-AppxPackage` succeeds (`ModernMenuActive=1`) and cleared on
-/// uninstall; the dev `install.ps1` writes it only when it registers the package.
-///
-/// The classic `IContextMenu` handler reads this to decide whether to emit ITS OWN top-level
-/// quick-verb copies. When the package is active, Windows BRIDGES the packaged verbs into the
-/// legacy "Show more options" menu — so emitting our copies there too would DOUBLE-LIST the
-/// quick verbs. Package active → classic omits its copies and lets the bridged ones serve;
-/// package absent → classic keeps them (the only source). Read from HKLM (machine-wide; written
-/// under elevation, readable by anyone). Defaults to `false`, so a machine without the package
-/// behaves exactly as before.
-///
-/// The installer sets this **only on Windows 11** (`ModernMenuUsable` in `installer.iss`).
-/// Windows 10 has no modern flyout and bridges nothing, so setting it there made the classic
-/// handler suppress its quick verbs in favour of verbs that never appear — they just vanished
-/// from the right-click menu (issue #5). "Package is bundled" is NOT sufficient; the OS has to
-/// actually surface it.
-pub fn modern_menu_active() -> bool {
-    LOCAL_MACHINE
-        .open(ROOT)
-        .and_then(|k| k.get_u32("ModernMenuActive"))
-        .map(|v| v != 0)
-        .unwrap_or(false)
-}
+// NOTE: the old `modern_menu_active()` (HKLM `ModernMenuActive`) was REMOVED 2026-07-21.
+// It gated whether the classic menu emitted its quick-verb copies, on the false premise
+// that Windows bridges the packaged (modern-compact-menu) verbs into the legacy "Show
+// more options" menu. It doesn't — packaged verbs live only in the compact flyout — so the
+// gate just hid the quick verbs on every classic-menu-default machine (see contextmenu.rs).
+// The installer still writes the now-inert `ModernMenuActive` key; nothing reads it.
 
 /// Draw a subtle checkerboard behind the menu preview's transparent areas, so a
 /// transparent (or white-on-transparent) image doesn't vanish into the flat menu

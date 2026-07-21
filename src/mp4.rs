@@ -211,13 +211,13 @@ fn full_box_body(full: &[u8]) -> &[u8] {
 }
 
 fn g16(s: &[u8], off: usize) -> Option<u16> {
-    s.get(off..off + 2).map(|b| u16::from_be_bytes(b.try_into().unwrap()))
+    Some(u16::from_be_bytes(s.get(off..off + 2)?.try_into().ok()?))
 }
 fn g32(s: &[u8], off: usize) -> Option<u32> {
-    s.get(off..off + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+    Some(u32::from_be_bytes(s.get(off..off + 4)?.try_into().ok()?))
 }
 fn g64(s: &[u8], off: usize) -> Option<u64> {
-    s.get(off..off + 8).map(|b| u64::from_be_bytes(b.try_into().unwrap()))
+    Some(u64::from_be_bytes(s.get(off..off + 8)?.try_into().ok()?))
 }
 
 // ---------------------------------------------------------------------------------------------

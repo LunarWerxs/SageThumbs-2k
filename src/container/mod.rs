@@ -440,6 +440,48 @@ pub fn psd_has_alpha(bytes: &[u8]) -> bool {
     psd::has_alpha(bytes)
 }
 
+/// Head-preview prefix sizing: how many leading bytes are enough to extract
+/// this container's baked preview, or None when there's no bounded-prefix fast
+/// path and the caller should read the whole file. `ext` is the file's lowercase
+/// extension when the caller can recover one (G-code has no magic bytes, so it is
+/// reachable ONLY by extension); magic-identified formats ignore it.
+///
+/// The members, and why each is safe to shorten:
+///   * PSD/PSB — exact: header + Color Mode Data + the Image Resources section
+///     ([`psd::preview_prefix_len`], which also bows out for transparent documents
+///     that need the full file for their composite).
+///   * `.dwg` — exact: the header seeker names the preview section, whose record
+///     table names each payload ([`dwg::preview_prefix_len`]).
+///   * plain `.blend` — the `blanket` cap; its TEST thumbnail sits ~100 bytes in.
+///   * `.gcode`/`.gco` — [`gcode::SCAN_LIMIT`], which [`gcode::extract`] already
+///     clamps to, so the shortened read is byte-identical to the whole-file one.
+///
+/// Deliberately EXCLUDED: the gzip/zstd wrappers that [`has_head_preview`]
+/// over-accepts for the OVERSIZED rescue (under the cap they'd cost every ordinary
+/// .gz/.svgz an extra bounded inflate for nothing), and every format whose preview
+/// needs a tail index, a full scan, or a real pixel decode — a bounded prefix
+/// cannot help those, and guessing one would just add a wasted read.
+pub fn head_preview_len<R: std::io::Read + std::io::Seek>(
+    head: &[u8],
+    ext: Option<&str>,
+    r: &mut R,
+    blanket: u64,
+) -> Option<u64> {
+    if head.starts_with(b"8BPS") {
+        return psd::preview_prefix_len(r);
+    }
+    if head.starts_with(b"BLENDER") {
+        return Some(blanket);
+    }
+    if dwg::looks_like_dwg(head) {
+        return dwg::preview_prefix_len(r);
+    }
+    if matches!(ext, Some("gcode" | "gco")) {
+        return Some(gcode::SCAN_LIMIT as u64);
+    }
+    None
+}
+
 /// Raster-image extensions we accept as an archive cover. A curated subset of the
 /// formats our decoder can read (NOT all of `formats::FORMATS` — most FORMATS
 /// entries, e.g. ebook/audio/document types, are not valid cover images). Mirrors
@@ -481,6 +523,13 @@ pub(crate) fn is_image_name(name: &str) -> bool {
 /// `.clip` files without reaching into the private `clip` module.
 #[cfg(test)]
 pub(crate) use clip::testutil as clip_testutil;
+
+/// Test-only re-exports so the `decode`/`streamsrc` head-preview fast-path tests
+/// can build synthetic PSD/DWG files without reaching into the private modules.
+#[cfg(test)]
+pub(crate) use psd::testutil as psd_testutil;
+#[cfg(test)]
+pub(crate) use dwg::testutil as dwg_testutil;
 
 /// Shared embedded-JPEG span scanner — see [`util::jpeg_span_len`]. Re-exported so
 /// `decode` and the container extractors (PSP, C4D) don't each hand-roll their own.
@@ -577,6 +626,74 @@ mod tests {
             cover.as_deref(),
             Some(&thumb[..]),
             "streamed ORA must return the composite preview, not a layer"
+        );
+    }
+
+    /// An EPUB's declared OPF cover must win on BOTH the in-memory and the STREAMED
+    /// path. The seekable path used to lack the EPUB arm entirely, so a book big
+    /// enough to stream fell through to the generic natural-first image pick and
+    /// returned an arbitrary interior illustration instead of the real cover — a
+    /// large EPUB got a worse thumbnail than a small one. The archive here is built
+    /// so the two answers are visibly different: `Images/aaa-illustration.png`
+    /// natural-sorts FIRST, while the OPF declares `Images/zzz-frontispiece.png`.
+    /// NEITHER name contains "cover" on purpose — `select::pick_covers` promotes
+    /// any "cover"-named file, which would let the generic pick land on the right
+    /// image by accident and make this test pass without the EPUB arm.
+    #[test]
+    fn epub_cover_cascade_runs_on_the_streamed_path_too() {
+        use std::io::{Read, Seek, Write};
+        let png = |color: u8| {
+            let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([color, 0, 0, 255]));
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+        let (illustration, real_cover) = (png(10), png(200));
+        let opf = r#"<?xml version="1.0"?><package><metadata>
+            <meta name="cover" content="cover-img"/></metadata><manifest>
+            <item id="cover-img" href="Images/zzz-frontispiece.png" media-type="image/png"/>
+            </manifest></package>"#;
+        let container = r#"<?xml version="1.0"?><container><rootfiles>
+            <rootfile full-path="OEBPS/content.opf"/></rootfiles></container>"#;
+
+        let path = std::env::temp_dir().join(format!("st2k_epub_{}.epub", std::process::id()));
+        {
+            let f = std::fs::File::create(&path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("mimetype", opts).unwrap();
+            zw.write_all(b"application/epub+zip").unwrap();
+            zw.start_file("META-INF/container.xml", opts).unwrap();
+            zw.write_all(container.as_bytes()).unwrap();
+            zw.start_file("OEBPS/content.opf", opts).unwrap();
+            zw.write_all(opf.as_bytes()).unwrap();
+            // Natural-sorts BEFORE the cover: what the generic pick would grab.
+            zw.start_file("OEBPS/Images/aaa-illustration.png", opts).unwrap();
+            zw.write_all(&illustration).unwrap();
+            zw.start_file("OEBPS/Images/zzz-frontispiece.png", opts).unwrap();
+            zw.write_all(&real_cover).unwrap();
+            zw.finish().unwrap();
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut head = [0u8; 8];
+        file.read_exact(&mut head).unwrap();
+        file.rewind().unwrap();
+        let streamed = archive_cover_seek(file, &head);
+        let in_memory = zipfmt::extract(&bytes);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            in_memory.as_deref(),
+            Some(&real_cover[..]),
+            "in-memory EPUB must resolve the OPF-declared cover"
+        );
+        assert_eq!(
+            streamed.as_deref(),
+            Some(&real_cover[..]),
+            "streamed EPUB must resolve the SAME cover, not the natural-first image"
         );
     }
 

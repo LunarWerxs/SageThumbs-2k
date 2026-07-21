@@ -1239,7 +1239,7 @@ mod tests {
 
     #[test]
     fn reveal_skips_in_place_sibling_only() {
-        let dir = std::env::temp_dir().join("st2k_reveal_noise_test");
+        let dir = std::env::temp_dir().join(format!("st2k_reveal_noise_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("photo.png");

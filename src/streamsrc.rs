@@ -147,6 +147,24 @@ pub unsafe fn stream_source(
         ArchiveProbe::Found(src) => return Ok(src),
     }
 
+    // HEAD-PREVIEW fast path (opaque PSD/PSB, plain .blend): the baked preview
+    // lives in the file's head, so reading the whole (possibly ~100 MB) document
+    // through the marshaled IStream just to slice out a ~160px JPEG is the
+    // dominant per-thumbnail cost in a big PSD folder — Explorer extracts
+    // serially, so every file pays it in turn. Read a bounded prefix (exact
+    // resources-section end for PSD) and commit to it ONLY when the same
+    // extractor the decode tier runs actually finds a preview in it; otherwise
+    // fall through to the normal paths (a PSD with no baked thumbnail still
+    // renders via the full tiers exactly as before). Runs for ANY size — the win
+    // is under-cap files, which used to pay the whole-file read; an oversized
+    // hit just gets the exact prefix instead of the blanket rescue below.
+    // Transparent PSDs skip this (preview_prefix_len bows out) — their composite
+    // needs the full bytes.
+    if let Some(prefix) = head_preview_fast(stream) {
+        safety::log_debug(&format!("{who}: head-preview fast path ({} bytes)", prefix.len()));
+        return Ok(StreamSource::Bytes(prefix));
+    }
+
     // Not audio, not video: skip oversized files cheaply via the stream length
     // before reading into memory. The effective cap is the user's MaxSize but
     // never above the hard MAX_BYTES ceiling ("0 = unlimited" means "up to
@@ -275,6 +293,45 @@ unsafe fn stream_prefix(stream: &IStream, max: usize) -> Option<Vec<u8>> {
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     buf.truncate(filled);
     (filled >= 64).then_some(buf)
+}
+
+/// The head-preview fast path (see the call site in [`stream_source`]): bounded-
+/// prefix read + probe for an opaque PSD/PSB or plain `.blend`, any file size.
+/// Returns the prefix only when it is strictly smaller than the file (no byte
+/// savings otherwise) AND [`crate::container::extract_cover`] — the same extractor
+/// the decode tier will run on it — actually finds a preview inside. Any miss
+/// returns None and the caller proceeds exactly as before this path existed.
+/// Rewinds via `stream_prefix` on the hit path and explicitly on the miss paths.
+unsafe fn head_preview_fast(stream: &IStream) -> Option<Vec<u8>> {
+    let size = stream_size(stream)?;
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let mut head = [0u8; 8];
+    let mut got: u32 = 0;
+    let hr = stream.Read(head.as_mut_ptr() as *mut c_void, head.len() as u32, Some(&mut got));
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    if hr.is_err() || (got as usize) < head.len() {
+        return None;
+    }
+    // G-code carries no magic bytes, so it is reachable only by extension — the
+    // same Stat-recovered name the generic-archive probe uses. A stream with no
+    // recoverable name (rare virtual sources) simply misses that one member.
+    let ext = stream_path(stream).map(|p| p.rsplit('.').next().unwrap_or("").to_ascii_lowercase());
+    let wanted = crate::container::head_preview_len(
+        &head,
+        ext.as_deref(),
+        &mut IStreamReader { stream: stream.clone() },
+        decode::HEAD_PREVIEW_BYTES as u64,
+    );
+    // The length probe seeks the SHARED stream around; park it back at 0 before
+    // any return. Every downstream consumer re-seeks anyway — this is insurance
+    // for future ones that might not.
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let wanted = wanted?.min(decode::HEAD_PREVIEW_BYTES as u64);
+    if wanted >= size {
+        return None; // prefix would be the whole file — the normal read is equivalent
+    }
+    let prefix = stream_prefix(stream, wanted as usize)?;
+    crate::container::extract_cover(&prefix).is_some().then_some(prefix)
 }
 
 /// For an OVERSIZED file (past the in-memory cap): if its magic marks a container
@@ -582,7 +639,9 @@ unsafe fn read_all(stream: &IStream, max: usize, size_hint: Option<u64>) -> Resu
     // the `max` check below still bound the true read.
     let cap = size_hint.map_or(0, |h| (h as usize).min(max).min(64 << 20));
     let mut out: Vec<u8> = Vec::with_capacity(cap);
-    let mut chunk = vec![0u8; 1 << 16];
+    // 1 MiB chunks: the stream is marshaled (often cross-process), so per-Read
+    // overhead is real — 64 KiB chunks cost a 100 MB file ~1,600 round trips.
+    let mut chunk = vec![0u8; 1 << 20];
     loop {
         let mut got: u32 = 0;
         let hr = stream.Read(
@@ -604,4 +663,99 @@ unsafe fn read_all(stream: &IStream, max: usize, size_hint: Option<u64>) -> Resu
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::container::psd_testutil::synthetic_psd;
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+
+    /// Run the full source cascade on `bytes` (100 MB cap, like the default
+    /// MaxSize) and return the byte payload it hands the decode tiers.
+    fn source_bytes(bytes: &[u8]) -> Vec<u8> {
+        let stream = unsafe { SHCreateMemStream(Some(bytes)) }.expect("SHCreateMemStream");
+        match unsafe { stream_source(&stream, 100 << 20, "test") } {
+            Ok(StreamSource::Bytes(b)) => b,
+            other => panic!(
+                "expected StreamSource::Bytes, got {}",
+                match other {
+                    Ok(StreamSource::Frame(_)) => "Frame".into(),
+                    Ok(StreamSource::Covers(_)) => "Covers".into(),
+                    Ok(StreamSource::Bytes(_)) => unreachable!(),
+                    Err(e) => format!("Err({e})"),
+                }
+            ),
+        }
+    }
+
+    #[test]
+    fn under_cap_opaque_psd_reads_only_the_head_prefix() {
+        // 6 MB of layer data behind the resources section: the fast path must
+        // hand the decode tiers the exact head prefix, not the whole file.
+        let (psd, head_len) = synthetic_psd(3, true, 6 << 20);
+        let got = source_bytes(&psd);
+        assert_eq!(got.len(), head_len, "fast path should stop at the resources section");
+        assert_eq!(&got[..], &psd[..head_len]);
+        // And the prefix must actually decode to the baked thumbnail.
+        assert!(crate::container::extract_cover(&got).is_some());
+    }
+
+    #[test]
+    fn psd_without_baked_thumbnail_falls_back_to_the_whole_file() {
+        let (psd, _) = synthetic_psd(3, false, 1 << 20);
+        let got = source_bytes(&psd);
+        assert_eq!(got.len(), psd.len(), "no baked preview -> the pre-fast-path whole read");
+    }
+
+    #[test]
+    fn under_cap_dwg_reads_only_the_preview_section() {
+        // 4 MB of "object database" behind the preview records: the fast path
+        // stops right after the PNG record's payload.
+        let (dwg, head_len) = crate::container::dwg_testutil::synthetic_dwg(true, 4 << 20);
+        let got = source_bytes(&dwg);
+        assert_eq!(got.len(), head_len, "DWG fast path should stop after the record payload");
+        assert!(crate::container::extract_cover(&got).is_some());
+    }
+
+    #[test]
+    fn dwg_without_a_preview_section_falls_back_to_the_whole_file() {
+        // RASTERPREVIEW=0 / pre-R13: no sentinel, so no fast path. The whole-file
+        // read then fails the decode tiers exactly as it did before this path.
+        let (dwg, _) = crate::container::dwg_testutil::synthetic_dwg(false, 1 << 20);
+        let stream = unsafe { SHCreateMemStream(Some(&dwg)) }.expect("SHCreateMemStream");
+        match unsafe { stream_source(&stream, 100 << 20, "test") } {
+            Ok(StreamSource::Bytes(b)) => assert_eq!(b.len(), dwg.len()),
+            Ok(_) => panic!("expected Bytes"),
+            Err(_) => panic!("expected the whole-file read, not a failure"),
+        }
+    }
+
+    /// The fast path sits BEFORE the size-cap branch, so a preview-bearing DWG
+    /// past the user's MaxSize now thumbnails off its exact prefix. Previously it
+    /// fell to the oversized arm, which has no DWG rescue (`has_head_preview`
+    /// covers only blend/PSD/gzip) and returned E_FAIL — the stock icon. This is a
+    /// new capability, not just a speedup.
+    #[test]
+    fn oversized_dwg_now_thumbnails_via_the_exact_prefix() {
+        let (dwg, head_len) = crate::container::dwg_testutil::synthetic_dwg(true, 4 << 20);
+        let stream = unsafe { SHCreateMemStream(Some(&dwg)) }.expect("SHCreateMemStream");
+        // A 1 MiB cap puts this 4 MB+ file firmly over the limit.
+        match unsafe { stream_source(&stream, 1 << 20, "test") } {
+            Ok(StreamSource::Bytes(b)) => {
+                assert_eq!(b.len(), head_len);
+                assert!(crate::container::extract_cover(&b).is_some());
+            }
+            other => panic!("oversized DWG should now yield its preview, got {}", other.is_ok()),
+        }
+    }
+
+    #[test]
+    fn transparent_psd_falls_back_to_the_whole_file() {
+        // 4 channels in RGB mode = alpha: the composite path needs every byte,
+        // so the fast path must bow out even though a baked thumbnail exists.
+        let (psd, _) = synthetic_psd(4, true, 1 << 20);
+        let got = source_bytes(&psd);
+        assert_eq!(got.len(), psd.len());
+    }
 }

@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn cli_thumbnail_and_info_and_formats() {
-        let dir = std::env::temp_dir().join("st2k_cli");
+        let dir = std::env::temp_dir().join(format!("st2k_cli_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("a.png");
         image::DynamicImage::ImageRgba8(image::RgbaImage::new(400, 300)).save(&src).unwrap();

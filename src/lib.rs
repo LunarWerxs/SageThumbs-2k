@@ -6,6 +6,16 @@
 //! (see `decode.rs`). This crate also builds the Options/CLI EXEs.
 
 #![allow(non_snake_case)]
+// This crate compiles INTO the shell-extension DLL (via the `sagethumbs2k-dll`
+// cdylib) and runs in-process inside explorer.exe / dllhost / prevhost under
+// `panic = "abort"`, so a stray `.unwrap()`/`.expect()` on hostile input aborts
+// the user's whole shell. Forbid them on this surface: use `?`, `ok_or`,
+// `unwrap_or`, or a `match` instead. Tests are exempt (clippy.toml
+// `allow-unwrap-in-tests`), where an unwrap is just an assertion. The binary
+// crates (`src/bin/*` — the Options/CLI EXEs) are their OWN crate roots and do
+// NOT inherit this, by design: a panic there crashes only that process, and the
+// gate is reserved for the code that shares the shell's address space.
+#![warn(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod app_image;
 pub mod clipboard;

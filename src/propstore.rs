@@ -128,10 +128,8 @@ impl PropertyStore_Impl {
     /// Run `f` against the (lazily built, cached) property list.
     fn with_props<T>(&self, f: impl FnOnce(&[(PROPERTYKEY, PROPVARIANT)]) -> Result<T>) -> Result<T> {
         let mut slot = self.props.try_borrow_mut().map_err(|_| Error::from(E_FAIL))?;
-        if slot.is_none() {
-            *slot = Some(self.build_props());
-        }
-        f(slot.as_ref().unwrap())
+        let props = slot.get_or_insert_with(|| self.build_props());
+        f(props)
     }
 
     /// Extract the properties from the file. Never fails loudly — returns whatever it could read.

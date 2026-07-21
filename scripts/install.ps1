@@ -63,18 +63,15 @@ regsvr32 /s "$prog\sagethumbs2k.dll"
 # Modern Win11 menu: register the sparse package (Dev Mode, UNSIGNED loose -Register —
 # the signed installer.iss path uses the packed .msix instead) so the packaged QUICK
 # verbs (Convert into / Convert… / Resize / Rotate) appear on the compact Win11 menu.
-# Then set the HKLM marker the classic handler reads (settings::modern_menu_active): with
-# the package active, Windows bridges those quick verbs into "Show more options", so the
-# classic handler omits ITS own quick-verb copies to avoid double-listing them. The full
-# flyout + preview stay on the classic handler. (See packaging\AppxManifest.xml.)
+# NOTE: on a classic-menu-default machine those packaged verbs DON'T appear (packaged verbs
+# live only in the modern compact flyout) — the classic handler shows its OWN quick verbs
+# unconditionally now. (See packaging\AppxManifest.xml.)
 Get-AppxPackage $pkg | Remove-AppxPackage -ErrorAction SilentlyContinue
 Add-AppxPackage -Register "$prog\AppxManifest.xml" -ExternalLocation $prog -ForceUpdateFromAnyVersion
-# Set the modern-menu marker the classic handler reads (settings::modern_menu_active) via
-# reg.exe and tolerate failure: on a machine where this key already exists with a locked-down
-# ACL, `New-Item -Force` throws "Requested registry access is not allowed" (it reopens/replaces
-# the key), which would abort the whole install. The value is idempotent, so a failed write on
-# a key that's already correct is harmless.
-try { & reg.exe add 'HKLM\SOFTWARE\SageThumbs2K' /v ModernMenuActive /t REG_DWORD /d 1 /f 2>$null | Out-Null } catch {}
+# Clean up the now-inert ModernMenuActive marker (<= 1.3.0 wrote it; nothing reads it since the
+# classic handler stopped suppressing its quick verbs). Delete tolerantly so a dev box left with
+# the old value doesn't keep it; a missing value is a harmless no-op.
+try { & reg.exe delete 'HKLM\SOFTWARE\SageThumbs2K' /v ModernMenuActive /f 2>$null | Out-Null } catch {}
 
 # Flag this box as a DEVELOPER test machine (HKCU DevMachine=1 → settings::is_dev_machine).
 # ONLY the owner ever runs this dev-install script (real users get the Inno installer), so this

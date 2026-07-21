@@ -56,6 +56,8 @@ fn empty_heading_does_not_crash_the_viewer() {
             status.code(),
         );
         assert!(out.is_file(), "no PNG written for {case:?} — the shot did not complete");
+        // Passing cases clean their scratch dir; a failure keeps its PNG as evidence.
+        let _ = std::fs::remove_dir_all(out.parent().expect("scratch dir"));
     }
 }
 
@@ -66,4 +68,5 @@ fn heading_with_text_still_renders() {
     let (status, out) = shot_markdown("control", "# heading\n\nbody\n");
     assert!(status.success(), "control render failed: exit {:?}", status.code());
     assert!(out.is_file(), "control wrote no PNG — the shot harness is broken");
+    let _ = std::fs::remove_dir_all(out.parent().expect("scratch dir"));
 }

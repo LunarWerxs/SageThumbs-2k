@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn tools_call_thumbnail_runs_the_verb() {
-        let dir = std::env::temp_dir().join("st2k_mcp");
+        let dir = std::env::temp_dir().join(format!("st2k_mcp_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("in.png");
         image::DynamicImage::ImageRgba8(image::RgbaImage::new(300, 200)).save(&src).unwrap();

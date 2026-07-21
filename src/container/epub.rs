@@ -10,9 +10,16 @@
 //! follow it to the embedded image instead of handing the shell undecodable XHTML
 //! (DarkThumbs issues #9 / #20 / #34). SVG cover *files* flow straight to resvg.
 
-use super::zipfmt::{read_index, read_named, Zip};
+use std::io::{Read, Seek};
 
-pub fn extract(zip: &mut Zip) -> Option<Vec<u8>> {
+use zip::ZipArchive;
+
+use super::zipfmt::{read_index, read_named};
+
+/// Generic over the archive's reader so the SEEKABLE path (an oversized EPUB read
+/// straight off the shell's IStream) runs this same cascade as the in-memory one —
+/// they used to diverge, and a big book got a worse cover than a small one.
+pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     let container = read_named(zip, "META-INF/container.xml")?;
     let container = String::from_utf8_lossy(&container);
     let opf_path = tag_attr_anywhere(&container, "full-path")?;
@@ -59,8 +66,12 @@ fn cover_from_opf(opf: &str, rootdir: &str) -> Option<String> {
     None
 }
 
-fn brute_force_cover(zip: &mut Zip) -> Option<String> {
-    for i in 0..zip.len() {
+fn brute_force_cover<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<String> {
+    // Bounded like every other listing path (`MAX_LIST_ENTRIES`): this allocates a
+    // String per entry, and since the cascade now also runs on the SEEKABLE path,
+    // it meets archives large enough to be streamed. A crafted directory declaring
+    // millions of entries must not drive millions of allocations in the shell host.
+    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         // Skip an unreadable member instead of bailing on the whole archive.
         let Ok(f) = zip.by_index(i) else { continue };
         if f.is_dir() {
@@ -97,7 +108,7 @@ fn guide_cover(opf: &str, rootdir: &str) -> Option<String> {
 /// Read an (x)html cover wrapper and return the image it references: the first
 /// `<img src>` or SVG `<image (xlink:)href>`, resolved relative to the page's own
 /// directory (so `../Images/cover.jpg` works), then fetched from the archive.
-fn resolve_html_cover(zip: &mut Zip, html_path: &str) -> Option<Vec<u8>> {
+fn resolve_html_cover<R: Read + Seek>(zip: &mut ZipArchive<R>, html_path: &str) -> Option<Vec<u8>> {
     let html = read_named_ci(zip, html_path)?;
     let html = String::from_utf8_lossy(&html);
     let src = first_html_image(&html)?;
@@ -217,12 +228,14 @@ fn pct(s: &str) -> String {
 
 /// Read an entry by exact name, falling back to a case-insensitive match (EPUB
 /// hrefs occasionally differ in case from the stored entry).
-fn read_named_ci(zip: &mut Zip, name: &str) -> Option<Vec<u8>> {
+fn read_named_ci<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<Vec<u8>> {
     if let Some(b) = read_named(zip, name) {
         return Some(b);
     }
     let target = name.to_ascii_lowercase();
-    for i in 0..zip.len() {
+    // Same `MAX_LIST_ENTRIES` bound as the other listing scans (see
+    // `brute_force_cover`) — this fallback lowercases every entry name.
+    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         let Ok(f) = zip.by_index(i) else { continue };
         if f.name().to_ascii_lowercase() == target {
             drop(f);

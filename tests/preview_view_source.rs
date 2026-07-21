@@ -13,7 +13,14 @@
 //!    these captures would diverge.
 //!
 //! Byte comparison is safe here because the shot harness is deterministic: same off-screen size,
-//! same content, no timestamps in the frame (the caption shows the file NAME, not a date).
+//! same content, no timestamps in the frame (the caption shows the file NAME, not a date), and
+//! the capture itself is SETTLED — `capture_hwnd_bgra` re-grabs until two sentinel-backed
+//! `PrintWindow` passes agree byte-for-byte, because under full-suite CPU load a single
+//! `PW_RENDERFULLCONTENT` grab can come back PARTIAL (an uninitialized white band where the
+//! render didn't finish; that flaked these tests twice in four full runs on 2026-07-21).
+//!
+//! Scratch dirs are removed only when a test PASSES — a failure leaves its PNG pair on disk
+//! (%TEMP%\st2k_src_shot_<pid>_<case>), which is exactly what makes the flake diagnosable.
 //!
 //! Needs a window station (real GDI + `PrintWindow`), like the other headless shot tooling.
 
@@ -27,6 +34,14 @@ fn sample(case: &str, name: &str, body: &str) -> (PathBuf, PathBuf) {
     let doc = dir.join(name);
     std::fs::write(&doc, body).expect("write sample");
     (dir, doc)
+}
+
+/// Drop `case`'s scratch dir. Call AFTER the asserts — a failing case must keep its PNGs on
+/// disk (they are the evidence), only a passing one cleans up.
+fn cleanup(case: &str) {
+    let _ = std::fs::remove_dir_all(
+        std::env::temp_dir().join(format!("st2k_src_shot_{}_{case}", std::process::id())),
+    );
 }
 
 /// Capture `body` twice: rendered, and with `--source`. Returns the two PNGs' bytes.
@@ -70,6 +85,7 @@ fn source_mode_changes_a_rendered_document() {
              toggle is not taking effect (check loader::source_capable + the src_view branch \
              in loader::load / load_static)",
         );
+        cleanup(case);
     }
 }
 
@@ -89,6 +105,7 @@ fn source_mode_is_a_noop_without_a_rendered_view() {
             "{case}: --source changed a file that has no rendered view — source_capable is \
              too loose, so the toolbar would offer a toggle that does nothing visible",
         );
+        cleanup(case);
     }
 }
 
@@ -111,6 +128,7 @@ fn pressing_the_button_matches_opening_in_source_mode() {
          (the click path goes through do_action -> toggle_source -> request_load; the preset \
          does not, so they diverge if the toggle's reload is broken)",
     );
+    cleanup("press");
 }
 
 /// And pressing it AGAIN must come back to the rendered view — the toggle has to round-trip, not
@@ -124,6 +142,7 @@ fn pressing_the_button_twice_round_trips_to_rendered() {
         rendered, back,
         "toggling out of source mode did not restore the rendered view",
     );
+    cleanup("round");
 }
 
 /// The `--hot N` button indices are positional (`BTNS`), and the source toggle sits at index 1.
@@ -146,4 +165,5 @@ fn hovering_the_source_button_renders() {
         .expect("spawn SageThumbs2K --shot");
     assert!(status.success(), "hover shot failed: exit {:?}", status.code());
     assert!(out.is_file(), "hover shot wrote no PNG");
+    let _ = std::fs::remove_dir_all(&dir);
 }

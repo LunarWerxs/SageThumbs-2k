@@ -8,6 +8,10 @@
 //! ever both crate-types at once, which eliminates the intermittent cargo#6313
 //! cdylib/rlib output-filename collision that flaked CI (LNK2019 unresolved externals).
 #![allow(non_snake_case)]
+// This IS the shell-extension DLL surface (loaded in-process under panic=abort),
+// so hold it to the same no-`unwrap`/`expect` bar as `sagethumbs2k_core` (see its
+// lib.rs). Currently zero such sites; the gate keeps a future shim honest.
+#![warn(clippy::unwrap_used, clippy::expect_used)]
 
 use core::ffi::c_void;
 

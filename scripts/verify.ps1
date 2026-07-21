@@ -7,6 +7,8 @@
 
       pwsh scripts\verify.ps1 -Fast                       # check + lib tests            (~15 s)
       pwsh scripts\verify.ps1                             # + debug build + ALL tests    (~1 min)
+      pwsh scripts\verify.ps1 -Lint                       # + clippy -D warnings, cargo-deny,
+                                                          #   cargo-machete (mirrors CI locally)
       pwsh scripts\verify.ps1 -Samples "archive-*"        # + render matching corpus samples,
                                                           #   asserting _expected-fail.txt
       pwsh scripts\verify.ps1 -Release                    # + the one §6.0 release pair  (~3 min)
@@ -35,7 +37,11 @@ param(
     # The §6.0 release build pair (exactly once, correct order).
     [switch]$Release,
     # Elevated dev install (scripts\install.ps1) + installed==built hash check.
-    [switch]$Install
+    [switch]$Install,
+    # Static analysis, mirroring CI's gates locally (run before any push):
+    # clippy -D warnings (all targets), cargo-deny (advisories/licenses per
+    # deny.toml), cargo-machete (unused deps). ~1 min warm.
+    [switch]$Lint
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,6 +65,30 @@ function Stage([string]$name, [scriptblock]$body) {
 
 # ---- ladder ---------------------------------------------------------------
 Stage 'cargo check' { cargo check --quiet 2>&1 | Where-Object { $_ -match 'error|warning' } | Write-Host }
+
+# ---- static analysis (mirrors CI's clippy/deny gates; catch it BEFORE the push) ----
+if ($Lint) {
+    # CI gates clippy on --release; debug clippy catches the same lints faster and
+    # shares the ladder's debug cache. -D warnings: the tree is kept warning-clean,
+    # intentional exceptions carry a local #[allow] with a reason.
+    Stage 'clippy -D warnings' {
+        cargo clippy --workspace --all-targets --quiet -- -D warnings 2>&1 |
+            Where-Object { $_ -match 'warning|error' } | Write-Host
+    }
+    # Advisories + licenses + bans against deny.toml — same check the `deny` CI job
+    # runs, minus the round-trip to GitHub.
+    Stage 'cargo deny' {
+        cargo deny check --hide-inclusion-graph 2>&1 |
+            Where-Object { $_ -match 'error|warning\[|advisories|licenses|bans|sources' } |
+            Select-Object -First 12 | Write-Host
+    }
+    # Unused dependencies (a dep that compiles in but nothing references).
+    Stage 'cargo machete' {
+        cargo machete 2>&1 | Where-Object { $_ -notmatch '^Analyzing|^Done' } | Write-Host
+        if ($LASTEXITCODE -eq 1) { Write-Host '[verify] unused dependencies found' -ForegroundColor Red }
+        else { $global:LASTEXITCODE = 0 }
+    }
+}
 
 if ($Fast) {
     Stage 'cargo test --lib' { cargo test --lib --quiet 2>&1 | Select-Object -Last 3 | Write-Host }

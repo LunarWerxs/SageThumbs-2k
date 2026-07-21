@@ -1,0 +1,11 @@
+# Clippy configuration.
+#
+# The DLL runs IN-PROCESS inside explorer.exe / dllhost / prevhost under
+# `panic = "abort"` — a stray `.unwrap()`/`.expect()` on hostile input aborts the
+# user's shell, not just this code. So `clippy::unwrap_used` / `expect_used` are
+# enabled (see `[lints]` in Cargo.toml) to keep those off the shell surface.
+#
+# Tests are exempt: an unwrap there is an assertion, and a panic just fails the
+# test — exactly what you want.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

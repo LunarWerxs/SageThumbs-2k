@@ -175,6 +175,15 @@ fn read_preview_capped_at(path: &str, max: u64, prefix: usize) -> std::io::Resul
     use std::io::Read;
     let len = std::fs::metadata(path)?.len();
     if len <= max {
+        // UNDER-CAP head-preview fast path (opaque PSD/PSB, plain .blend): the
+        // baked preview lives in the head, so read a bounded prefix instead of
+        // the whole (possibly ~100 MB) document — the by-path twin of the
+        // thumbnail provider's IStream fast path (`streamsrc::head_preview_fast`).
+        // Committed only when the prefix actually yields a preview; any miss
+        // falls back to the full read below, byte-for-byte as before.
+        if let Some(head) = head_preview_file_fast(path, len, prefix) {
+            return Ok(head);
+        }
         return std::fs::read(path);
     }
     // Sniff just the magic before committing to a rescue, so a plain oversized
@@ -196,6 +205,34 @@ fn read_preview_capped_at(path: &str, max: u64, prefix: usize) -> std::io::Resul
         std::io::ErrorKind::InvalidInput,
         format!("input is {len} bytes, over the {max} byte limit"),
     ))
+}
+
+/// The under-cap fast path of [`read_preview_capped_at`]: bounded-prefix read +
+/// probe for a head-preview container. Returns the prefix only when it is
+/// strictly smaller than the file AND [`crate::container::extract_cover`] — the
+/// same extractor the decode tiers will run — finds a preview inside it. Any
+/// miss (not a head-preview magic, transparent PSD, malformed sections, I/O
+/// error) returns None and the caller does the normal whole-file read.
+fn head_preview_file_fast(path: &str, len: u64, prefix_cap: usize) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic).ok()?;
+    // G-code carries no magic bytes, so it is reachable only by extension.
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let wanted =
+        crate::container::head_preview_len(&magic, ext.as_deref(), &mut f, prefix_cap as u64)?
+            .min(prefix_cap as u64);
+    if wanted >= len {
+        return None; // prefix would be the whole file — the normal read is equivalent
+    }
+    f.seek(SeekFrom::Start(0)).ok()?;
+    let mut buf = vec![0u8; wanted as usize];
+    f.read_exact(&mut buf).ok()?;
+    crate::container::extract_cover(&buf).is_some().then_some(buf)
 }
 
 /// Session-wide cap on concurrent ImageMagick child processes. Each child can use
