@@ -76,7 +76,12 @@ if (!region.includes('fmtwall')) throw new Error('safety: located region does no
 html = html.slice(0, startIdx) + block + html.slice(endIdx);
 
 // version pills + schema softwareVersion (the only scalar kept current; count + size
-// are intentionally vague in the copy so they never drift as the app grows)
+// are intentionally vague in the copy so they never drift as the app grows).
+// NOTE: these are only the build-time FALLBACK. index.html also ships a small script
+// (the `.js-app-version` updater) that fetches the latest GitHub release tag at load
+// and overrides the pills + softwareVersion at runtime, so a new release does NOT need
+// a site redeploy for the version to update. Keep both: this sets the value shown when
+// the API is unreachable/rate-limited; the script sets it when it isn't.
 html = html.replace(/\bv\d+\.\d+\.\d+\b/g, 'v' + VERSION);
 html = html.replace(/("softwareVersion":\s*")\d+\.\d+\.\d+(")/g, `$1${VERSION}$2`);
 
