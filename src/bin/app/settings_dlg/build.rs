@@ -376,9 +376,13 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     ctl(hwnd, BUTTON, t("btn_about"), WS_TABSTOP, MARGIN, layout.foot_y, 96, BTN_H, ID_ABOUT, hinst);
     let credit = format!("{} <a href=\"{URL_PARENT}\">Lunarwerx</a>", t("promo_made_by"));
     ctl(hwnd, SYSLINK, &credit, WS_TABSTOP, 122, layout.credit_y, 240, 20, ID_PROMO_LINK, hinst);
-    // Cancel (secondary) on the left, Save (primary, wider + accent) rightmost —
+    // Close (secondary) on the left, Save (primary, wider + accent) rightmost —
     // a clear prominence/size difference, matching the mockup.
-    ctl(hwnd, BUTTON, t("btn_cancel"), WS_TABSTOP, 508, layout.foot_y, 92, BTN_H, IDCANCEL, hinst);
+    // "Close", not "Cancel": Save applies immediately and leaves the window open, so
+    // this button only dismisses it. Labelling it Cancel implied it would revert.
+    // (`btn_cancel` stays for Convert / Files-to-folder / Tags-to-folders, which do
+    // genuinely cancel an operation.)
+    ctl(hwnd, BUTTON, t("btn_close"), WS_TABSTOP, 508, layout.foot_y, 92, BTN_H, IDCANCEL, hinst);
     ctl(hwnd, BUTTON, t("btn_ok"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 608, layout.foot_y, 104, BTN_H, IDOK, hinst);
 
     // v3 reorg extras (repositioned by apply_v3_layout): the custom-action enable

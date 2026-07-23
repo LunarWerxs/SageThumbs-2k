@@ -368,6 +368,20 @@
     }
 
     #[test]
+    fn contact_sheet_composes_svg_covers() {
+        // A .7z/.zip of SVG logos (every cover an .svg): the contact-sheet compositor
+        // must rasterize each SVG (resvg — safe in the isolated thumbnail/preview host
+        // that calls it) and compose a sheet. Before the cover decoder learned SVG, all
+        // covers failed to decode and the archive fell back to the stock icon.
+        let red = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="rgb(220,30,40)"/></svg>"#.to_vec();
+        let green = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="rgb(10,200,90)"/></svg>"#.to_vec();
+        // Two covers -> the real 2-cell contact sheet (not the single-cover fallback,
+        // and definitely not Err). `.expect` succeeding IS the proof the SVGs decoded.
+        let sheet = thumbnail_from_covers(&[red, green], 128).expect("svg covers compose a sheet");
+        assert_eq!((sheet.width, sheet.height), (128, 128));
+    }
+
+    #[test]
     fn icc_color_management_to_srgb() {
         use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
         // No embedded profile → the image must come back byte-for-byte unchanged.

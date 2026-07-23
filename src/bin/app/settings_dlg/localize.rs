@@ -114,7 +114,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_IMPORT, "btn_import"),
         (ID_EXPORT, "btn_export"),
         (IDOK, "btn_ok"),
-        (IDCANCEL, "btn_cancel"),
+        (IDCANCEL, "btn_close"), // see build.rs: this button closes, it does not revert
     ];
     for &(id, key) in pairs {
         set_dlg_text(hwnd, id, t(key));

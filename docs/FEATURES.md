@@ -30,7 +30,7 @@ grouped):
 | **Document** (43) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
 | **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
 | **Video** (22) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (~30 % in, not the intro) via the OS **Media Foundation** codecs (no bundled bytes). MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest 30 % (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. (`.mpg/.mpeg/.flv` need MPEG-1/2 or FLV decoders Windows doesn't ship, so they keep the default icon.) |
-| **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Listed from the zip central directory, so only the picked images are ever read — a multi-gigabyte archive costs a few KB plus those images. No readable image (or encrypted) keeps the stock icon. Comic/ebook archives (cbz/cbr/cb7) stay in **Ebook & comics** and always show their one cover |
+| **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive, including SVG: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). ZIP/RAR and non-solid 7z read only the picked images. Solid 7z scans only a small bounded prefix and falls back to the stock icon when its images are buried too deeply, rather than decompressing a huge archive for one thumbnail. No readable image (or encrypted) keeps the stock icon. Comic/ebook archives (cbz/cbr/cb7) stay in **Ebook & comics** and always show their one cover |
 
 *Counts sum to **326** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
@@ -67,12 +67,15 @@ the various bit-depth and compression variants GIMP writes.
 either a single cover image or (the default) a contact-sheet collage of up to four images
 pulled from inside, using the same smart pick as comic covers: natural filename sort, an
 image named "cover" preferred, junk like `__MACOSX` and `Thumbs.db` skipped. The file list
-comes straight from the archive's central directory, so a multi-gigabyte zip costs only a
-few KB plus the handful of images actually shown, no size-cap issue; the same picker feeds
-both the Explorer thumbnail and the big reading-pane preview. An archive with no images
-inside, or an encrypted one, keeps the normal icon. Toggle it (or drop back to a single
-cover image) in **Settings ▸ Ebook/comic**. Comic/ebook archives (cbz/cbr/cb7/epub) are
-unaffected: they still always show their one cover.
+comes straight from archive metadata. ZIP/RAR and non-solid 7z read only the handful of
+images actually shown. Solid 7z must decode front-to-back, so SageThumbs uses the first
+eligible images in physical order and enforces a small decompression budget; if the first
+image is buried too deeply, the archive keeps its normal icon instead of making Explorer
+grind through it. Raster images and SVG/SVGZ can both appear in the collage. The same picker
+feeds both the Explorer thumbnail and the big reading-pane preview. An archive with no
+images inside, or an encrypted one, keeps the normal icon. Toggle it (or drop back to a
+single cover image) in **Settings ▸ Ebook/comic**. Comic/ebook archives
+(cbz/cbr/cb7/epub) are unaffected: they still always show their one cover.
 
 **Per-type toggle:** the Options dialog lists every format with a checkbox; turn
 any on/off (multi-select with Shift/Ctrl, then Space or right-click → Check/
@@ -206,9 +209,10 @@ that group: resvg is pure-Rust and in-process, so it renders here too, bounded b
 the same short menu-preview budget.) Transparent images sit
 on a **subtle checkerboard** (on by default,
 toggleable) so see-through areas don't vanish into the menu; it follows the
-light/dark menu theme automatically. *Note: appears in the classic menu ("Show
-more options" on stock Windows 11); the modern Win11 menu doesn't allow
-custom-drawn items.*
+light/dark menu theme automatically. The preview is a native bitmap menu item, so
+it does not disable Windows' dark-menu theming. *Note: it appears in the classic
+menu ("Show more options" on stock Windows 11); the modern Win11 menu does not
+allow custom bitmap items.*
 
 ---
 
@@ -348,7 +352,8 @@ long scroll is gone.)
   / Description columns), with bulk select and a **Defaults** button that re-ticks the
   recommended set; this resets *only* the file-type list (the whole-dialog factory reset
   is the **Reset all settings** button under Diagnostics).
-- **Language:** system default or any of 36 translations.
+- **Language:** system default or any of 36 complete translations. A release check
+  keeps every locale at the same key and placeholder set as English.
 - **Diagnostics:** a **Verbose logging** toggle and an **Open diagnostics log** button:
   the app writes a rotating log (version/OS header + a panic hook that records any crash
   by `file:line` before `panic = abort` aborts) to `%LOCALAPPDATA%\SageThumbs2K.log`, so a

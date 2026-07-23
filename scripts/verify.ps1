@@ -88,6 +88,13 @@ if ($Lint) {
         if ($LASTEXITCODE -eq 1) { Write-Host '[verify] unused dependencies found' -ForegroundColor Red }
         else { $global:LASTEXITCODE = 0 }
     }
+    # Same script the `consistency` CI job runs (and release.ps1 runs before tagging):
+    # untracked referenced assets, format counts, AppxManifest version, and locale key
+    # parity. Cheap (no build) and catches the classes that only surface on a clean
+    # checkout or in another language.
+    Stage 'check-consistency' {
+        & (Join-Path $PSScriptRoot 'check-consistency.ps1')
+    }
 }
 
 if ($Fast) {

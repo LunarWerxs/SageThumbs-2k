@@ -1155,6 +1155,34 @@ fn decode_cheap(bytes: &[u8]) -> Result<DynamicImage> {
     Ok(apply_exif_orientation(decode_any(bytes, RawPreviewOrder::BeforeExternal, false)?, bytes))
 }
 
+/// Decode ONE archive-cover image for the contact sheet ([`thumbnail_from_covers`]).
+/// Like [`decode_cheap`] but ALSO rasterizes SVG/SVGZ. `decode_cheap` deliberately
+/// omits SVG because its caller ([`decode_menu_preview`]) can run in-process on
+/// explorer's UI thread; the cover compositor never does — it runs only in the
+/// ISOLATED thumbnail / preview hosts and the CLI — so resvg (pure-Rust, in-process,
+/// `SVG_TIMEOUT`-bounded) is safe here. Without this, a `.7z`/`.zip` of SVG logos
+/// (every cover an `.svg`) decoded nothing and fell back to the stock icon.
+fn decode_cover(bytes: &[u8]) -> Result<DynamicImage> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        // `.svgz` (gzipped SVG): inflate once (bounded) and try resvg. A non-SVG
+        // gzip (e.g. `.emz`) falls through to the raster tiers unchanged.
+        if let Some(inner) = gunzip_bounded(bytes) {
+            if looks_like_svg(&inner) {
+                if let Ok(img) = decode_svg(&inner) {
+                    return Ok(img);
+                }
+            }
+        }
+    } else if looks_like_svg(bytes) {
+        // A false "looks SVG-ish" match on HTML/XML just fails resvg parse and falls
+        // through to decode_cheap, same as the full preview path.
+        if let Ok(img) = decode_svg(bytes) {
+            return Ok(img);
+        }
+    }
+    decode_cheap(bytes)
+}
+
 fn decode_preview_with_raw_order(bytes: &[u8], raw_preview: RawPreviewOrder) -> Result<DynamicImage> {
     // Video: grab a representative frame via the OS Media Foundation codecs (no bundled
     // bytes). Magic-gated, so only actual videos pay the MF cost (HEIC/AVIF share the
@@ -1460,7 +1488,7 @@ pub fn thumbnail_from_image(img: DynamicImage, cx: u32) -> Decoded {
 /// failing the sheet. A single survivor degrades to the normal aspect-preserving
 /// single-cover fit, so the tile never shows a mostly-empty grid.
 pub fn thumbnail_from_covers(covers: &[Vec<u8>], cx: u32) -> Result<Decoded> {
-    let mut imgs: Vec<DynamicImage> = covers.iter().filter_map(|b| decode_cheap(b).ok()).collect();
+    let mut imgs: Vec<DynamicImage> = covers.iter().filter_map(|b| decode_cover(b).ok()).collect();
     match imgs.len() {
         0 => Err(Error::from(E_FAIL)),
         1 => Ok(fit_to_box(imgs.remove(0), cx.max(1))),

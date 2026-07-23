@@ -2,6 +2,33 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.3.2
+
+- **Clicking a large archive no longer pegs your CPU and disk.** A big `.7z` could send
+  SageThumbs off decompressing a large chunk of the file just to build a thumbnail, because
+  the pictures inside a solid archive can sit a long way into the compressed data and
+  everything before them has to be unpacked to reach them. SageThumbs now works out up front
+  how much it would have to unpack, and if the pictures are buried too deep it just shows the
+  normal archive icon instead of grinding away at the file. Archives whose images sit near the
+  front still get their preview exactly as before.
+- **Archives full of SVG images now get a preview.** A `.zip` or `.7z` containing only `.svg`
+  files fell back to the plain archive icon, because the preview builder could not draw
+  vector images. It now builds the usual multi-image preview tile from them.
+- **The right-click menu is readable again in dark mode.** With the menu preview switched on,
+  every entry in the SageThumbs menu turned black against the dark background and was nearly
+  impossible to read. The preview picture is now drawn in a way that lets Windows carry on
+  theming the rest of the menu, so the text stays light.
+- **The Settings buttons now say what they actually do.** The main button reads **Save** in
+  every language; in a lot of them it said "OK", which normally means "apply and close", so
+  people quite reasonably expected the window to shut and reported it as a bug. The second
+  button now reads **Close** instead of "Cancel", since your changes are already saved by that
+  point and nothing is being undone.
+- **Settings is fully translated again.** 82 pieces of text, including the entire left-hand
+  navigation, every page description, several buttons and a batch of tooltips, were still
+  appearing in English in all 35 non-English languages. They are now translated everywhere,
+  and a new build check keeps any future translation from going missing.
+- Thanks to **Bruno** for reporting the dark-mode menu and the confusing Settings buttons.
+
 ## 1.3.1
 
 - **"Show quick actions in the menu" works again.** Turning it on is meant to put Convert into,
