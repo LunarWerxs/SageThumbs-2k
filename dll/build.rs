@@ -26,6 +26,12 @@ fn main() {
     // Fixes both `cargo build` and `cargo test`; see Cargo.toml `[[bin]]` note in the core crate.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-cdylib=/PDB:{out}\\sagethumbs2k_dll.pdb");
+        // MSVC recommends marking the four standard COM server exports PRIVATE in
+        // a hand-written .def so they stay out of the import library. rustc generates
+        // the cdylib .def for us and offers no per-export PRIVATE control; the exports
+        // are intentionally public to LoadLibrary/GetProcAddress callers. Silence only
+        // that known LNK4104 diagnostic rather than muting linker warnings globally.
+        println!("cargo:rustc-link-arg-cdylib=/IGNORE:4104");
     }
 
     let rc = versioninfo_rc("SageThumbs 2K shell extension", "sagethumbs2k.dll");

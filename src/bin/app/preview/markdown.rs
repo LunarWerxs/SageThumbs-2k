@@ -57,8 +57,8 @@ pub(super) struct Run {
     text: String,
     bold: bool,
     italic: bool,
-    code: bool,   // inline `code` / alt-text pill (mono + shaded background)
-    strike: bool, // ~~strikethrough~~
+    code: bool,           // inline `code` / alt-text pill (mono + shaded background)
+    strike: bool,         // ~~strikethrough~~
     link: Option<String>, // Some(dest URL) => accent colour + underline + clickable
 }
 
@@ -134,9 +134,8 @@ pub(super) fn has_headings(md: &str) -> bool {
 /// Cheap scan for `<h1`..`<h6` (case-insensitive) in a raw-HTML fragment.
 fn html_has_heading(s: &str) -> bool {
     let b = s.as_bytes();
-    b.windows(3).any(|w| {
-        w[0] == b'<' && (w[1] | 0x20) == b'h' && (b'1'..=b'6').contains(&w[2])
-    })
+    b.windows(3)
+        .any(|w| w[0] == b'<' && (w[1] | 0x20) == b'h' && (b'1'..=b'6').contains(&w[2]))
 }
 
 /// Flatten a run list to its plain text (for the outline label).
@@ -279,7 +278,11 @@ fn doc_append(doc: &mut String, block: &Block) -> DocBase {
             }
             // `marker` is the DISPLAY glyph ("•"), which is not a Markdown bullet. An ordered
             // item's marker is already "N." and carries its number, so that one passes through.
-            doc.push_str(if marker.ends_with('.') { marker.as_str() } else { "-" });
+            doc.push_str(if marker.ends_with('.') {
+                marker.as_str()
+            } else {
+                "-"
+            });
             // GFM order is marker THEN checkbox ("- [x] done"). Emitting the box INSTEAD of the
             // bullet gave "[x] done", which is not a task list anywhere it lands.
             match task {
@@ -416,18 +419,27 @@ pub(super) unsafe fn render(
         layout.key = key;
         layout.ready = true;
     }
-    let bench_t = std::env::var_os("ST2K_MD_BENCH").is_some().then(std::time::Instant::now);
+    let bench_t = std::env::var_os("ST2K_MD_BENCH")
+        .is_some()
+        .then(std::time::Instant::now);
 
     for (bi, block) in blocks.iter().enumerate() {
         // Outline entry for every heading, BEFORE any skip, so the ToC stays complete even when the
         // heading is culled off-screen. `+pre` matches the in-arm pre-margin so click targets align.
         if let Block::Heading(lvl, runs, _) = block {
             let pre = if first { 0 } else { sc(8) };
-            toc.push(TocEntry { level: *lvl, text: runs_text(runs), target: (y + pre - top + scroll).max(0) });
+            toc.push(TocEntry {
+                level: *lvl,
+                text: runs_text(runs),
+                target: (y + pre - top + scroll).max(0),
+            });
         }
         // Fast-path: a text block we've already measured that's fully off-screen — skip the
         // run_block re-measure entirely and just advance by the cached height.
-        let is_text = matches!(block, Block::Heading(..) | Block::Para(..) | Block::Item(..) | Block::Quote(..));
+        let is_text = matches!(
+            block,
+            Block::Heading(..) | Block::Para(..) | Block::Item(..) | Block::Quote(..)
+        );
         if is_text {
             let h = layout.heights.get(bi).copied().unwrap_or(-1);
             if h >= 0 && (y + h <= rc.top || y >= rc.bottom) {
@@ -441,7 +453,13 @@ pub(super) unsafe fn render(
             Some(DocBase::Runs(v)) => v,
             _ => &[],
         };
-        let mut rsel = RunSel { range: sel.range, doc: &layout.doc, bases: run_bases, hits: &mut *sel.hits, bg: c.sel };
+        let mut rsel = RunSel {
+            range: sel.range,
+            doc: &layout.doc,
+            bases: run_bases,
+            hits: &mut *sel.hits,
+            bg: c.sel,
+        };
         let y_block_start = y;
         match block {
             Block::Heading(level, runs, center) => {
@@ -451,7 +469,19 @@ pub(super) unsafe fn render(
                 let px = heading_px(*level);
                 let fonts = Fonts::new(hwnd, px, true, false);
                 let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(hdc, runs, &fonts, x0, y, full_w, if *center { 1 } else { 0 }, y >= rc.bottom, &ctx, links, Some(&mut rsel));
+                let (ny, _) = run_block(
+                    hdc,
+                    runs,
+                    &fonts,
+                    x0,
+                    y,
+                    full_w,
+                    if *center { 1 } else { 0 },
+                    y >= rc.bottom,
+                    &ctx,
+                    links,
+                    Some(&mut rsel),
+                );
                 fonts.free();
                 y = ny;
                 if *level <= 2 {
@@ -464,7 +494,19 @@ pub(super) unsafe fn render(
             Block::Para(runs, center) => {
                 let fonts = Fonts::new(hwnd, BODY_PX, false, false);
                 let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(hdc, runs, &fonts, x0, y, full_w, if *center { 1 } else { 0 }, y >= rc.bottom, &ctx, links, Some(&mut rsel));
+                let (ny, _) = run_block(
+                    hdc,
+                    runs,
+                    &fonts,
+                    x0,
+                    y,
+                    full_w,
+                    if *center { 1 } else { 0 },
+                    y >= rc.bottom,
+                    &ctx,
+                    links,
+                    Some(&mut rsel),
+                );
                 fonts.free();
                 if ny > y {
                     y = ny + sc(14);
@@ -504,13 +546,33 @@ pub(super) unsafe fn render(
                         Some(DocBase::Code(b)) => *b,
                         _ => 0,
                     };
-                    let local = sel.range.map(|(s, e)| (s.saturating_sub(base), e.saturating_sub(base)));
+                    let local = sel
+                        .range
+                        .map(|(s, e)| (s.saturating_sub(base), e.saturating_sub(base)));
                     let mut ls = highlight::LineSel {
                         hits: &mut *sel.hits,
                         base,
-                        spec: FontSpec { px: 13, bold: false, italic: false, mono: true },
+                        spec: FontSpec {
+                            px: 13,
+                            bold: false,
+                            italic: false,
+                            mono: true,
+                        },
                     };
-                    highlight::paint_lines(hdc, text, *lang, x0 + pad, y + pad, full_w - 2 * pad, rc.top, rc.bottom, f, c.fg, local, Some(&mut ls));
+                    highlight::paint_lines(
+                        hdc,
+                        text,
+                        *lang,
+                        x0 + pad,
+                        y + pad,
+                        full_w - 2 * pad,
+                        rc.top,
+                        rc.bottom,
+                        f,
+                        c.fg,
+                        local,
+                        Some(&mut ls),
+                    );
                 }
                 let _ = DeleteObject(f.into());
                 y += h + sc(14);
@@ -530,7 +592,19 @@ pub(super) unsafe fn render(
                 }
                 let fonts = Fonts::new(hwnd, BODY_PX, false, false);
                 let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(hdc, runs, &fonts, x0 + indent, y, full_w - indent, 0, y >= rc.bottom, &ctx, links, Some(&mut rsel));
+                let (ny, _) = run_block(
+                    hdc,
+                    runs,
+                    &fonts,
+                    x0 + indent,
+                    y,
+                    full_w - indent,
+                    0,
+                    y >= rc.bottom,
+                    &ctx,
+                    links,
+                    Some(&mut rsel),
+                );
                 fonts.free();
                 y = ny + sc(4);
             }
@@ -539,7 +613,19 @@ pub(super) unsafe fn render(
                 let y_start = y;
                 let fonts = Fonts::new(hwnd, BODY_PX, false, true);
                 let ctx = ctx_for(hwnd, c, c.muted);
-                let (ny, _) = run_block(hdc, runs, &fonts, x0 + indent, y, full_w - indent, 0, y >= rc.bottom, &ctx, links, Some(&mut rsel));
+                let (ny, _) = run_block(
+                    hdc,
+                    runs,
+                    &fonts,
+                    x0 + indent,
+                    y,
+                    full_w - indent,
+                    0,
+                    y >= rc.bottom,
+                    &ctx,
+                    links,
+                    Some(&mut rsel),
+                );
                 fonts.free();
                 y = ny;
                 // GitHub-style gray quote bar spanning the quote's height.
@@ -553,23 +639,42 @@ pub(super) unsafe fn render(
             }
             Block::Rule => {
                 // GitHub hr: a short solid bar, not a hairline.
-                let bar = RECT { left: x0, top: y + sc(8), right: x0 + full_w, bottom: y + sc(8) + sc(3) };
+                let bar = RECT {
+                    left: x0,
+                    top: y + sc(8),
+                    right: x0 + full_w,
+                    bottom: y + sc(8) + sc(3),
+                };
                 let hb = CreateSolidBrush(COLORREF(c.border));
                 FillRect(hdc, &bar, hb);
                 let _ = DeleteObject(hb.into());
                 y += sc(26);
             }
-            Block::Table { header, rows, aligns } => {
+            Block::Table {
+                header,
+                rows,
+                aligns,
+            } => {
                 let tbases: &[Vec<Vec<usize>>] = match layout.bases.get(bi) {
                     Some(DocBase::Table(v)) => v,
                     _ => &[],
                 };
-                let mut tsel = TblSel { range: sel.range, doc: &layout.doc, bases: tbases, hits: &mut *sel.hits, bg: c.sel };
-                y = draw_table(hwnd, hdc, header, rows, aligns, x0, y, full_w, c, links, &mut tsel);
+                let mut tsel = TblSel {
+                    range: sel.range,
+                    doc: &layout.doc,
+                    bases: tbases,
+                    hits: &mut *sel.hits,
+                    bg: c.sel,
+                };
+                y = draw_table(
+                    hwnd, hdc, header, rows, aligns, x0, y, full_w, c, links, &mut tsel,
+                );
                 y += sc(14);
             }
             Block::Image(ib) => {
-                y = draw_image(hwnd, hdc, rc, ib, x0, y, full_w, c, links, imgs, doc_dir, gen);
+                y = draw_image(
+                    hwnd, hdc, rc, ib, x0, y, full_w, c, links, imgs, doc_dir, gen,
+                );
             }
         }
         // Cache the text block's just-measured height (spacing included) for the skip fast-path.
@@ -581,7 +686,12 @@ pub(super) unsafe fn render(
         first = false;
     }
     if let Some(t0) = bench_t {
-        eprintln!("[md-bench] {} blocks, scroll {}px: {:?}", layout.heights.len(), scroll, t0.elapsed());
+        eprintln!(
+            "[md-bench] {} blocks, scroll {}px: {:?}",
+            layout.heights.len(),
+            scroll,
+            t0.elapsed()
+        );
     }
     y + scroll - top + margin // total content height
 }
@@ -632,7 +742,19 @@ unsafe fn draw_table(
     for (row, is_hdr) in &all {
         let f = if *is_hdr { &hfonts } else { &fonts };
         for (ci, cell) in row.iter().enumerate().take(ncols) {
-            let (_, w) = run_block(hdc, cell, f, 0, 0, i32::MAX / 4, 0, true, &ctx, &mut scratch, None);
+            let (_, w) = run_block(
+                hdc,
+                cell,
+                f,
+                0,
+                0,
+                i32::MAX / 4,
+                0,
+                true,
+                &ctx,
+                &mut scratch,
+                None,
+            );
             nat[ci] = nat[ci].max(w + 2 * hpad);
             let (_, mw) = run_block(hdc, cell, f, 0, 0, 1, 0, true, &ctx, &mut scratch, None);
             minw[ci] = minw[ci].max(mw + 2 * hpad);
@@ -690,7 +812,12 @@ unsafe fn draw_table(
         if !is_hdr {
             // GitHub zebra: every 2nd body row gets the subtle fill.
             if body_i % 2 == 1 {
-                let zr = RECT { left: x0, top: y, right: x0 + table_w, bottom: y + h };
+                let zr = RECT {
+                    left: x0,
+                    top: y,
+                    right: x0 + table_w,
+                    bottom: y + h,
+                };
                 let zb = CreateSolidBrush(COLORREF(c.code_bg));
                 FillRect(hdc, &zr, zb);
                 let _ = DeleteObject(zb.into());
@@ -702,11 +829,28 @@ unsafe fn draw_table(
             let mut rsel = RunSel {
                 range: sel.range,
                 doc: sel.doc,
-                bases: sel.bases.get(ri).and_then(|r| r.get(ci)).map(|v| v.as_slice()).unwrap_or(&[]),
+                bases: sel
+                    .bases
+                    .get(ri)
+                    .and_then(|r| r.get(ci))
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]),
                 hits: &mut *sel.hits,
                 bg: sel.bg,
             };
-            let _ = run_block(hdc, cell, f, cell_x(ci) + hpad, y + vpad, w, col_align(ci), false, &ctx, links, Some(&mut rsel));
+            let _ = run_block(
+                hdc,
+                cell,
+                f,
+                cell_x(ci) + hpad,
+                y + vpad,
+                w,
+                col_align(ci),
+                false,
+                &ctx,
+                links,
+                Some(&mut rsel),
+            );
         }
         y += h;
         hline(hdc, x0, x0 + table_w, y, c.border); // row separator
@@ -714,7 +858,11 @@ unsafe fn draw_table(
     // top edge + verticals
     hline(hdc, x0, x0 + table_w, y0, c.border);
     for ci in 0..=ncols {
-        let x = if ci == ncols { x0 + table_w } else { cell_x(ci) };
+        let x = if ci == ncols {
+            x0 + table_w
+        } else {
+            cell_x(ci)
+        };
         let pen = CreatePen(PS_SOLID, 1, COLORREF(c.border));
         let op = SelectObject(hdc, HGDIOBJ(pen.0));
         let _ = MoveToEx(hdc, x, y0, None);
@@ -775,7 +923,11 @@ unsafe fn draw_image(
     };
     dw = dw.clamp(1, full_w);
     let dh = ((dw as i64 * rd.ih as i64) / rd.iw.max(1) as i64).max(1) as i32;
-    let x = if ib.center { x0 + (full_w - dw) / 2 } else { x0 };
+    let x = if ib.center {
+        x0 + (full_w - dw) / 2
+    } else {
+        x0
+    };
     // Blit only when the destination intersects the pane (layout still advances offscreen).
     if y + dh >= clip.top && y <= clip.bottom {
         let memdc = CreateCompatibleDC(Some(hdc));
@@ -787,7 +939,12 @@ unsafe fn draw_image(
     }
     if let Some(url) = &ib.link {
         links.push(LinkHit {
-            rect: RECT { left: x, top: y, right: x + dw, bottom: y + dh },
+            rect: RECT {
+                left: x,
+                top: y,
+                right: x + dw,
+                bottom: y + dh,
+            },
             url: url.clone(),
         });
     }
@@ -807,7 +964,11 @@ unsafe fn pill_fallback(
     links: &mut Vec<LinkHit>,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let label = if ib.alt.trim().is_empty() { "image" } else { ib.alt.trim() };
+    let label = if ib.alt.trim().is_empty() {
+        "image"
+    } else {
+        ib.alt.trim()
+    };
     let label = label.replace(' ', "\u{00A0}"); // one unbroken pill token
     let runs = [Run {
         text: format!("\u{00A0}{label}\u{00A0}"),
@@ -820,7 +981,19 @@ unsafe fn pill_fallback(
     let fonts = Fonts::new(hwnd, 13, false, false);
     let ctx = ctx_for(hwnd, c, c.muted);
     // Synthesized label, not part of the document — no selection wiring.
-    let (ny, _) = run_block(hdc, &runs, &fonts, x0, y, full_w, if ib.center { 1 } else { 0 }, false, &ctx, links, None);
+    let (ny, _) = run_block(
+        hdc,
+        &runs,
+        &fonts,
+        x0,
+        y,
+        full_w,
+        if ib.center { 1 } else { 0 },
+        false,
+        &ctx,
+        links,
+        None,
+    );
     fonts.free();
     ny + sc(8)
 }
@@ -873,7 +1046,11 @@ unsafe fn load_img(src: &str, dir: Option<&Path>, bg: u32) -> Option<RenderData>
     // Remote is NEVER fetched (privacy). This includes UNC paths (`\\server\…` / `//server/…`):
     // fs::read on one opens an SMB connection to an attacker-named host — an outbound network
     // hit (and NTLM handshake) triggered by merely previewing a hostile README.
-    if src.starts_with("\\\\") || src.starts_with("//") || src.contains("://") || src.starts_with("data:") {
+    if src.starts_with("\\\\")
+        || src.starts_with("//")
+        || src.contains("://")
+        || src.starts_with("data:")
+    {
         return None;
     }
     // Notebook `attachment:` refs are served from the pre-seeded cache, never the filesystem —
@@ -962,7 +1139,12 @@ impl Fonts {
     /// hit-testing can re-create it after these handles are freed. MUST mirror `pick`/`new`.
     fn spec(&self, r: &Run) -> FontSpec {
         if r.code {
-            return FontSpec { px: self.px - 1, bold: false, italic: false, mono: true };
+            return FontSpec {
+                px: self.px - 1,
+                bold: false,
+                italic: false,
+                mono: true,
+            };
         }
         FontSpec {
             px: self.px,
@@ -1069,7 +1251,11 @@ unsafe fn run_block(
     for (ri, r) in runs.iter().enumerate() {
         let f = fonts.pick(r);
         let spec = fonts.spec(r);
-        let color = if r.link.is_some() { ctx.accent } else { ctx.base_color };
+        let color = if r.link.is_some() {
+            ctx.accent
+        } else {
+            ctx.base_color
+        };
         let pad = if r.code { ctx.code_pad } else { 0 };
         SelectObject(hdc, f.into());
         let base = sel.as_ref().and_then(|s| s.bases.get(ri).copied());
@@ -1186,7 +1372,19 @@ unsafe fn run_block(
                 line_sel(hdc, &toks, placed, x0 + xoff, cy, line_h, s);
             }
             for (rx, idx) in placed {
-                let Tok::Word { s, w, pad, font, color, code, strike, link, doc, .. } = &toks[*idx] else {
+                let Tok::Word {
+                    s,
+                    w,
+                    pad,
+                    font,
+                    color,
+                    code,
+                    strike,
+                    link,
+                    doc,
+                    ..
+                } = &toks[*idx]
+                else {
                     continue;
                 };
                 let cx = x0 + xoff + rx;
@@ -1198,21 +1396,55 @@ unsafe fn run_block(
                     let hot = sel_rng
                         .zip(*doc)
                         .is_some_and(|((ss, se), (ds, de))| ss < de && se > ds);
-                    let r = RECT { left: cx, top: cy, right: cx + *w, bottom: cy + line_h };
+                    let r = RECT {
+                        left: cx,
+                        top: cy,
+                        right: cx + *w,
+                        bottom: cy + line_h,
+                    };
                     SetBkColor(hdc, COLORREF(if hot { sel_bg } else { ctx.code_bg }));
                     SetBkMode(hdc, OPAQUE);
-                    let _ = ExtTextOutW(hdc, cx + *pad, cy, ETO_OPAQUE, Some(&r as *const RECT), PCWSTR(s.as_ptr()), s.len() as u32, None);
+                    let _ = ExtTextOutW(
+                        hdc,
+                        cx + *pad,
+                        cy,
+                        ETO_OPAQUE,
+                        Some(&r as *const RECT),
+                        PCWSTR(s.as_ptr()),
+                        s.len() as u32,
+                        None,
+                    );
                     SetBkMode(hdc, TRANSPARENT);
                 } else {
-                    let _ = ExtTextOutW(hdc, cx, cy, ETO_OPTIONS(0), None, PCWSTR(s.as_ptr()), s.len() as u32, None);
+                    let _ = ExtTextOutW(
+                        hdc,
+                        cx,
+                        cy,
+                        ETO_OPTIONS(0),
+                        None,
+                        PCWSTR(s.as_ptr()),
+                        s.len() as u32,
+                        None,
+                    );
                 }
                 if *strike {
                     hline(hdc, cx + *pad, cx + *w - *pad, cy + line_h / 2, *color);
                 }
                 if let Some(url) = link {
-                    hline(hdc, cx + *pad, cx + *w - *pad, cy + line_h - ctx.ul_off, *color);
+                    hline(
+                        hdc,
+                        cx + *pad,
+                        cx + *w - *pad,
+                        cy + line_h - ctx.ul_off,
+                        *color,
+                    );
                     links.push(LinkHit {
-                        rect: RECT { left: cx, top: cy, right: cx + *w, bottom: cy + line_h },
+                        rect: RECT {
+                            left: cx,
+                            top: cy,
+                            right: cx + *w,
+                            bottom: cy + line_h,
+                        },
                         url: url.clone(),
                     });
                 }
@@ -1236,14 +1468,30 @@ unsafe fn line_sel(
 ) {
     let mut prev: Option<(usize, i32)> = None; // (doc end, right x) of the previous word
     for (rx, idx) in placed {
-        let Tok::Word { w, pad, font, doc, spec, code, .. } = &toks[*idx] else { continue };
+        let Tok::Word {
+            w,
+            pad,
+            font,
+            doc,
+            spec,
+            code,
+            ..
+        } = &toks[*idx]
+        else {
+            continue;
+        };
         let Some((ds, de)) = *doc else {
             prev = None;
             continue;
         };
         let cx = xbase + rx;
         sel.hits.push(SelHit {
-            rect: RECT { left: cx, top: cy, right: cx + *w, bottom: cy + line_h },
+            rect: RECT {
+                left: cx,
+                top: cy,
+                right: cx + *w,
+                bottom: cy + line_h,
+            },
             start: ds,
             end: de,
             font: *spec,
@@ -1269,7 +1517,10 @@ unsafe fn line_sel(
                     let b = se.min(de) - ds;
                     SelectObject(hdc, (*font).into());
                     let x = cx + *pad;
-                    (x + highlight::disp_extent(hdc, t, a), x + highlight::disp_extent(hdc, t, b))
+                    (
+                        x + highlight::disp_extent(hdc, t, a),
+                        x + highlight::disp_extent(hdc, t, b),
+                    )
                 };
                 fill(hdc, x1, cy, x2, cy + line_h, sel.bg);
             }
@@ -1283,7 +1534,12 @@ unsafe fn fill(hdc: HDC, x1: i32, y1: i32, x2: i32, y2: i32, color: u32) {
     if x2 <= x1 {
         return;
     }
-    let r = RECT { left: x1, top: y1, right: x2, bottom: y2 };
+    let r = RECT {
+        left: x1,
+        top: y1,
+        right: x2,
+        bottom: y2,
+    };
     let b = CreateSolidBrush(COLORREF(color));
     FillRect(hdc, &r, b);
     let _ = DeleteObject(b.into());
@@ -1304,7 +1560,12 @@ unsafe fn draw_at(hdc: HDC, text: &str, x: i32, y: i32, font: HFONT, color: u32)
     let old = SelectObject(hdc, font.into());
     SetTextColor(hdc, COLORREF(color));
     let mut w: Vec<u16> = text.encode_utf16().collect();
-    let mut r = RECT { left: x, top: y, right: x + 400, bottom: y + 100 };
+    let mut r = RECT {
+        left: x,
+        top: y,
+        right: x + 400,
+        bottom: y + 100,
+    };
     DrawTextW(hdc, &mut w, &mut r, DT_LEFT | DT_TOP | DT_NOPREFIX);
     SelectObject(hdc, old);
 }
@@ -1318,7 +1579,11 @@ unsafe fn draw_checkbox(hwnd: HWND, hdc: HDC, x: i32, y: i32, done: bool, c: &Md
     let (l, t) = (x, y + sc(2)); // nudge down to sit on the 16px text line
     let (r, b) = (l + sz, t + sz);
     let rad = sc(4);
-    let pen = CreatePen(PS_SOLID, sc(1).max(1), COLORREF(if done { c.accent } else { c.border }));
+    let pen = CreatePen(
+        PS_SOLID,
+        sc(1).max(1),
+        COLORREF(if done { c.accent } else { c.border }),
+    );
     let brush = CreateSolidBrush(COLORREF(if done { c.accent } else { c.bg }));
     let op = SelectObject(hdc, HGDIOBJ(pen.0));
     let ob = SelectObject(hdc, HGDIOBJ(brush.0));
@@ -1351,10 +1616,14 @@ unsafe fn font(hwnd: HWND, px: i32, bold: bool, italic: bool, mono: bool) -> HFO
     let h = crate::win::dpi_scale(hwnd, px);
     let face = crate::win::wide(if mono { "Consolas" } else { "Segoe UI" });
     CreateFontW(
-        -h, 0, 0, 0,
+        -h,
+        0,
+        0,
+        0,
         if bold { 700 } else { 400 },
         u32::from(italic),
-        0, 0,
+        0,
+        0,
         DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS,
@@ -1364,613 +1633,11 @@ unsafe fn font(hwnd: HWND, px: i32, bold: bool, italic: bool, mono: bool) -> HFO
     )
 }
 
-// ---- markdown -> blocks ------------------------------------------------------------------
-
-/// Shared block-builder state driven by BOTH the pulldown-cmark event loop and the raw-HTML
-/// feeder in [`super::mdhtml`]. Raw HTML toggles the same inline-style counters and emits the
-/// same [`Block`]s, so `<b>`/`<h1>`/`<img>`/`<table>` render identically to their markdown twins.
-pub(super) struct Builder {
-    pub(super) out: Vec<Block>,
-    runs: Vec<Run>,
-    heading: Option<u8>,
-    in_para: bool,
-    in_quote: u32,
-    in_item: bool,
-    /// A GFM task-list marker (`- [ ]` / `- [x]`) seen for the item currently open: the
-    /// checkbox replaces the item's bullet. Set by the `TaskListMarker` event, consumed
-    /// when the item flushes.
-    task: Option<bool>,
-    lists: Vec<(bool, u64)>,
-    strong: u32,
-    emph: u32,
-    strike: u32,
-    code_html: u32, // raw-HTML <code>/<kbd> nesting
-    link: Option<String>,
-    // markdown table state
-    in_cell: bool,
-    cur_cell: Vec<Run>,
-    cur_row: Vec<Vec<Run>>,
-    tbl_header: Vec<Vec<Run>>,
-    tbl_rows: Vec<Vec<Vec<Run>>>,
-    tbl_aligns: Vec<u8>,
-    // markdown image capture (alt text arrives as Text events between Start/End)
-    img: Option<(String, String)>, // (dest url, alt buffer)
-    // raw-HTML state (owned here so it persists across separate HtmlBlock events — a
-    // `<div align="center">` opener and its `</div>` arrive in DIFFERENT blocks)
-    center: u32,
-    html_stack: Vec<(String, bool)>, // (open container tag, contributed-center)
-    html_buf: String,
-    pub(super) skip_tag: Option<&'static str>, // inside <style>/<script>: skip until close
-    pub(super) in_comment: bool,               // inside <!-- ... -->
-    h_tbl: Option<HtmlTbl>,
-    /// The remote-images toggle: when true, http(s) image srcs become [`Block::Image`]s (the
-    /// draw side fetches them asynchronously); when false they stay alt-text pills.
-    remote_ok: bool,
-}
-
-/// Raw-HTML table under construction.
-struct HtmlTbl {
-    header: Vec<Vec<Run>>,
-    rows: Vec<Vec<Vec<Run>>>,
-    cur_row: Vec<Vec<Run>>,
-    cur_cell: Option<Vec<Run>>,
-    row_all_th: bool,
-}
-
-impl Builder {
-    fn new(remote_ok: bool) -> Builder {
-        Builder {
-            remote_ok,
-            out: Vec::new(),
-            runs: Vec::new(),
-            heading: None,
-            in_para: false,
-            in_quote: 0,
-            in_item: false,
-            task: None,
-            lists: Vec::new(),
-            strong: 0,
-            emph: 0,
-            strike: 0,
-            code_html: 0,
-            link: None,
-            in_cell: false,
-            cur_cell: Vec::new(),
-            cur_row: Vec::new(),
-            tbl_header: Vec::new(),
-            tbl_rows: Vec::new(),
-            tbl_aligns: Vec::new(),
-            img: None,
-            center: 0,
-            html_stack: Vec::new(),
-            html_buf: String::new(),
-            skip_tag: None,
-            in_comment: false,
-            h_tbl: None,
-        }
-    }
-
-    /// Append styled text to whatever is currently collecting (image alt / HTML table cell /
-    /// markdown table cell / the current block's runs).
-    pub(super) fn text(&mut self, s: &str) {
-        if let Some((_, alt)) = &mut self.img {
-            alt.push_str(s);
-            return;
-        }
-        let (bold, italic, code, strike, link) =
-            (self.strong > 0, self.emph > 0, self.code_html > 0, self.strike > 0, self.link.clone());
-        // Pick the destination run buffer (HTML table cell / GFM table cell / current block).
-        let target: &mut Vec<Run> = if let Some(t) = &mut self.h_tbl {
-            match &mut t.cur_cell {
-                Some(cell) => cell,
-                None => return, // whitespace between HTML table cells — drop
-            }
-        } else if self.in_cell {
-            &mut self.cur_cell
-        } else {
-            &mut self.runs
-        };
-        // Autolink bare URLs in plain (non-code, not-already-linked) text — GFM extended
-        // autolinking, which pulldown-cmark 0.12 does NOT do on its own.
-        if !code && link.is_none() {
-            linkify_into(target, s, bold, italic, strike);
-        } else {
-            push_run(target, s, code, bold, italic, strike, link);
-        }
-    }
-
-    /// Explicit-code text (markdown `` ` `` spans) — same routing, forced code style.
-    fn code_text(&mut self, s: &str) {
-        self.code_html += 1;
-        self.text(s);
-        self.code_html -= 1;
-    }
-
-    /// A hard line break within the current block.
-    pub(super) fn newline(&mut self) {
-        self.text("\n");
-    }
-
-    /// Close out the currently-accumulated runs as a block (heading > item > quote > para).
-    pub(super) fn flush(&mut self) {
-        let blank = self.runs.iter().all(|r| r.text.trim().is_empty());
-        let taken = core::mem::take(&mut self.runs);
-        if blank && self.heading.is_none() {
-            return;
-        }
-        let center = self.center > 0;
-        if let Some(lvl) = self.heading.take() {
-            self.out.push(Block::Heading(lvl, taken, center));
-        } else if self.in_item {
-            let depth = (self.lists.len().saturating_sub(1)) as u8;
-            let task = self.task.take();
-            let marker = match self.lists.last() {
-                Some((true, n)) => format!("{n}."),
-                _ => "•".to_string(),
-            };
-            self.out.push(Block::Item(depth, marker, taken, task));
-        } else if self.in_quote > 0 {
-            self.out.push(Block::Quote(taken));
-        } else {
-            self.out.push(Block::Para(taken, center));
-        }
-    }
-
-    // ---- semantic ops shared with the HTML feeder ----------------------------------------
-
-    pub(super) fn start_heading(&mut self, level: u8) {
-        self.flush();
-        self.heading = Some(level);
-    }
-    pub(super) fn end_heading(&mut self) {
-        self.flush();
-    }
-    pub(super) fn open_para(&mut self) {
-        self.flush();
-        self.in_para = true;
-    }
-    pub(super) fn close_para(&mut self) {
-        self.flush();
-        self.in_para = false;
-    }
-    pub(super) fn rule(&mut self) {
-        self.flush();
-        self.out.push(Block::Rule);
-    }
-    pub(super) fn bold(&mut self, on: bool) {
-        adj(&mut self.strong, on);
-    }
-    pub(super) fn italic(&mut self, on: bool) {
-        adj(&mut self.emph, on);
-    }
-    pub(super) fn strikethrough(&mut self, on: bool) {
-        adj(&mut self.strike, on);
-    }
-    pub(super) fn code(&mut self, on: bool) {
-        adj(&mut self.code_html, on);
-    }
-    pub(super) fn set_link(&mut self, url: Option<String>) {
-        self.link = url;
-    }
-    pub(super) fn open_container(&mut self, tag: &str, centers: bool) {
-        self.flush();
-        if centers {
-            self.center += 1;
-        }
-        self.html_stack.push((tag.to_string(), centers));
-    }
-    pub(super) fn close_container(&mut self, tag: &str) {
-        self.flush();
-        // pop the nearest matching open tag (HTML in READMEs is flat; be forgiving)
-        if let Some(pos) = self.html_stack.iter().rposition(|(t, _)| t == tag) {
-            let (_, centered) = self.html_stack.remove(pos);
-            if centered {
-                self.center = self.center.saturating_sub(1);
-            }
-        }
-    }
-    pub(super) fn open_quote(&mut self) {
-        self.flush();
-        self.in_quote += 1;
-    }
-    pub(super) fn close_quote(&mut self) {
-        self.flush();
-        self.in_quote = self.in_quote.saturating_sub(1);
-    }
-    pub(super) fn open_list(&mut self, ordered: bool, start: u64) {
-        self.flush();
-        self.lists.push((ordered, start));
-    }
-    pub(super) fn close_list(&mut self) {
-        self.flush();
-        self.lists.pop();
-    }
-    pub(super) fn open_item(&mut self) {
-        self.flush();
-        self.in_item = true;
-    }
-    pub(super) fn close_item(&mut self) {
-        self.flush();
-        self.in_item = false;
-        if let Some((true, n)) = self.lists.last_mut() {
-            *n += 1;
-        }
-    }
-
-    /// An image: local (or remote with the opt-in toggle) src -> its own [`Block::Image`];
-    /// otherwise -> alt-text pill run.
-    pub(super) fn image(&mut self, src: &str, alt: &str, width: ImgW) {
-        let link = self.link.clone();
-        // `//`/`data:` never render. Of the web schemes, only httpS can ever succeed (the fetch
-        // layer is HTTPS-only), so plain `http://` pills up front instead of spawning a worker
-        // that is guaranteed to fail (review finding, 2026-07-13).
-        let fetchable = src.trim_start().to_ascii_lowercase().starts_with("https://");
-        let remote = (is_remote_src(src) && !(self.remote_ok && fetchable))
-            || src.starts_with("//")
-            || src.starts_with("data:");
-        let in_cell = self.in_cell || self.h_tbl.as_ref().is_some_and(|t| t.cur_cell.is_some());
-        // Inside a list item or blockquote a block-level image would SPLIT the block (flush mid-
-        // item duplicates the marker; a quote's bar breaks in two) and escape its indent — degrade
-        // to the inline pill there, same as cells/headings (review finding, 2026-07-13).
-        if remote || in_cell || self.heading.is_some() || self.in_item || self.in_quote > 0 {
-            let label = if alt.trim().is_empty() { "image" } else { alt.trim() };
-            // NBSP-join so the pill lays out as ONE unbroken token (its shaded panel stays whole).
-            let label = label.replace(' ', "\u{00A0}");
-            let text = format!("\u{00A0}{label}\u{00A0}");
-            let (bold, italic) = (self.strong > 0, self.emph > 0);
-            let tgt = if let Some(t) = &mut self.h_tbl {
-                match &mut t.cur_cell {
-                    Some(cell) => cell,
-                    None => return,
-                }
-            } else if self.in_cell {
-                &mut self.cur_cell
-            } else {
-                &mut self.runs
-            };
-            tgt.push(Run { text, bold, italic, code: true, strike: false, link });
-        } else {
-            self.flush();
-            self.out.push(Block::Image(ImgBlock {
-                src: src.to_string(),
-                alt: alt.to_string(),
-                width,
-                center: self.center > 0,
-                link,
-            }));
-        }
-    }
-
-    // ---- raw-HTML table ops ---------------------------------------------------------------
-
-    pub(super) fn html_table_open(&mut self) {
-        self.flush();
-        self.h_tbl = Some(HtmlTbl {
-            header: Vec::new(),
-            rows: Vec::new(),
-            cur_row: Vec::new(),
-            cur_cell: None,
-            row_all_th: true,
-        });
-    }
-    pub(super) fn html_tr_open(&mut self) {
-        if let Some(t) = &mut self.h_tbl {
-            t.cur_row.clear();
-            t.cur_cell = None;
-            t.row_all_th = true;
-        }
-    }
-    pub(super) fn html_cell_open(&mut self, th: bool) {
-        if let Some(t) = &mut self.h_tbl {
-            if let Some(c) = t.cur_cell.take() {
-                t.cur_row.push(c); // unclosed previous cell
-            }
-            t.cur_cell = Some(Vec::new());
-            t.row_all_th &= th;
-        }
-    }
-    pub(super) fn html_cell_close(&mut self) {
-        if let Some(t) = &mut self.h_tbl {
-            if let Some(c) = t.cur_cell.take() {
-                t.cur_row.push(c);
-            }
-        }
-    }
-    pub(super) fn html_tr_close(&mut self) {
-        if let Some(t) = &mut self.h_tbl {
-            if let Some(c) = t.cur_cell.take() {
-                t.cur_row.push(c);
-            }
-            let row = core::mem::take(&mut t.cur_row);
-            if row.is_empty() {
-                return;
-            }
-            if t.row_all_th && t.header.is_empty() && t.rows.is_empty() {
-                t.header = row;
-            } else {
-                t.rows.push(row);
-            }
-        }
-    }
-    pub(super) fn html_table_close(&mut self) {
-        self.html_tr_close(); // forgive an unclosed final row
-        if let Some(t) = self.h_tbl.take() {
-            if !t.header.is_empty() || !t.rows.is_empty() {
-                self.out.push(Block::Table { header: t.header, rows: t.rows, aligns: Vec::new() });
-            }
-        }
-    }
-}
-
-fn adj(v: &mut u32, on: bool) {
-    if on {
-        *v += 1;
-    } else {
-        *v = v.saturating_sub(1);
-    }
-}
-
-/// Append `text` as a run with the given inline style, merging into the previous run when the
-/// style matches (keeps the token stream tight).
-fn push_run(runs: &mut Vec<Run>, text: &str, code: bool, bold: bool, italic: bool, strike: bool, link: Option<String>) {
-    if text.is_empty() {
-        return;
-    }
-    if !code {
-        if let Some(last) = runs.last_mut() {
-            if !last.code && last.bold == bold && last.italic == italic && last.strike == strike && last.link == link {
-                last.text.push_str(text);
-                return;
-            }
-        }
-    }
-    runs.push(Run { text: text.to_string(), bold, italic, code, strike, link });
-}
-
-/// Split `s` into plain-text runs and clickable link runs for any bare URLs it contains — the
-/// GFM "extended autolink" behaviour (`https://…`, `http://…`, `www.…` in running prose become
-/// links) that pulldown-cmark 0.12 does not do itself. Only called for plain text (never inside
-/// code or an existing `[text](url)` link).
-fn linkify_into(runs: &mut Vec<Run>, s: &str, bold: bool, italic: bool, strike: bool) {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let mut plain_start = 0;
-    while i < bytes.len() {
-        // Cheap gate: extended autolinks only ever begin with `h` (http) or `w` (www).
-        if matches!(bytes[i] | 0x20, b'h' | b'w') {
-            if let Some((len, url)) = url_at(s, i) {
-                if plain_start < i {
-                    push_run(runs, &s[plain_start..i], false, bold, italic, strike, None);
-                }
-                push_run(runs, &s[i..i + len], false, bold, italic, strike, Some(url));
-                i += len;
-                plain_start = i;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    if plain_start < s.len() {
-        push_run(runs, &s[plain_start..], false, bold, italic, strike, None);
-    }
-}
-
-/// If a bare URL starts at byte `i` in `s`, return its `(byte length, resolved destination)`.
-/// Follows the GFM extended-autolink rules closely enough for prose: valid left boundary, a
-/// `http(s)://` or `www.` prefix, a host containing a dot, and trailing-punctuation trimming
-/// (with balanced-paren handling so `…/Foo_(bar)` keeps its `)`).
-fn url_at(s: &str, i: usize) -> Option<(usize, String)> {
-    let b = s.as_bytes();
-    // Left boundary: start of run, whitespace, or a common opener — never mid-word (so
-    // `foohttp://x` doesn't match).
-    if i > 0 && !matches!(b[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'(' | b'[' | b'{' | b'<' | b'*' | b'_' | b'~' | b'"' | b'\'') {
-        return None;
-    }
-    let rest = &s[i..];
-    let lower = rest.as_bytes().iter().take(8).map(|c| c.to_ascii_lowercase()).collect::<Vec<u8>>();
-    let (scheme_len, www) = if lower.starts_with(b"https://") {
-        (8, false)
-    } else if lower.starts_with(b"http://") {
-        (7, false)
-    } else if lower.starts_with(b"www.") {
-        (4, true)
-    } else {
-        return None;
-    };
-    // Consume ASCII URL bytes (RFC-3986 unreserved + sub-delims + `:/?#[]@%`). Stopping at the
-    // first non-URL byte ends the link at whitespace, quotes, `<`, backtick, AND any multibyte
-    // (non-ASCII) char — the latter also guarantees every cut lands on a char boundary.
-    let is_url_byte = |c: u8| {
-        c.is_ascii_alphanumeric()
-            || matches!(
-                c,
-                b'-' | b'.' | b'_' | b'~' | b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@'
-                    | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';'
-                    | b'=' | b'%'
-            )
-    };
-    let mut end = 0;
-    for (k, &c) in rest.as_bytes().iter().enumerate() {
-        if !is_url_byte(c) {
-            break;
-        }
-        end = k + 1;
-    }
-    if end <= scheme_len {
-        return None; // nothing after the scheme
-    }
-    // Trim trailing punctuation; keep a `)` only if the URL has more `(` than `)`.
-    let raw = &rest.as_bytes()[..end];
-    let mut e = end;
-    while e > scheme_len {
-        let c = raw[e - 1];
-        if matches!(c, b'.' | b',' | b';' | b':' | b'!' | b'?' | b'\'' | b'"' | b'*' | b'_' | b'~') {
-            e -= 1;
-        } else if c == b')' {
-            let opens = raw[..e].iter().filter(|&&x| x == b'(').count();
-            let closes = raw[..e].iter().filter(|&&x| x == b')').count();
-            if closes > opens {
-                e -= 1;
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    if e <= scheme_len {
-        return None;
-    }
-    let url = &s[i..i + e];
-    // Require a dot in the host portion (rejects `https://localhost`-only noise and bare schemes).
-    if !url[scheme_len..].contains('.') {
-        return None;
-    }
-    let dest = if www { format!("https://{url}") } else { url.to_string() };
-    Some((e, dest))
-}
-
-/// Walk the markdown events into a flat block list with inline styled runs. Raw HTML (block
-/// AND inline) is routed through [`super::mdhtml::feed`] into the same builder.
-fn parse_blocks(md: &str, remote_ok: bool) -> Vec<Block> {
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_TABLES);
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    opts.insert(Options::ENABLE_TASKLISTS);
-
-    let mut b = Builder::new(remote_ok);
-    let mut in_code = false;
-    let mut code_buf = String::new();
-    let mut code_lang = highlight::Lang::Plain;
-
-    for ev in Parser::new_ext(md, opts) {
-        match ev {
-            Event::Start(Tag::Heading { level, .. }) => b.start_heading(heading_num(level)),
-            Event::End(TagEnd::Heading(_)) => b.end_heading(),
-            Event::Start(Tag::Paragraph) => b.open_para(),
-            Event::End(TagEnd::Paragraph) => b.close_para(),
-            Event::Start(Tag::CodeBlock(kind)) => {
-                in_code = true;
-                code_buf.clear();
-                code_lang = match kind {
-                    CodeBlockKind::Fenced(info) => {
-                        highlight::lang_from_fence(info.split_whitespace().next().unwrap_or(""))
-                    }
-                    CodeBlockKind::Indented => highlight::Lang::Plain,
-                };
-            }
-            Event::End(TagEnd::CodeBlock) => {
-                in_code = false;
-                let text = code_buf.trim_end_matches('\n').to_string();
-                code_buf.clear();
-                if !text.is_empty() {
-                    b.flush();
-                    b.out.push(Block::Code(text, code_lang));
-                }
-            }
-            Event::Start(Tag::List(start)) => b.open_list(start.is_some(), start.unwrap_or(1)),
-            Event::End(TagEnd::List(_)) => b.close_list(),
-            Event::Start(Tag::Item) => b.open_item(),
-            Event::End(TagEnd::Item) => b.close_item(),
-            Event::Start(Tag::BlockQuote(_)) => b.open_quote(),
-            Event::End(TagEnd::BlockQuote(_)) => b.close_quote(),
-            Event::Start(Tag::Table(aligns)) => {
-                b.flush();
-                b.tbl_header.clear();
-                b.tbl_rows.clear();
-                b.tbl_aligns = aligns
-                    .iter()
-                    .map(|a| match a {
-                        Alignment::Center => 1,
-                        Alignment::Right => 2,
-                        _ => 0,
-                    })
-                    .collect();
-            }
-            Event::End(TagEnd::Table) => {
-                let header = core::mem::take(&mut b.tbl_header);
-                let rows = core::mem::take(&mut b.tbl_rows);
-                let aligns = core::mem::take(&mut b.tbl_aligns);
-                b.out.push(Block::Table { header, rows, aligns });
-            }
-            Event::Start(Tag::TableHead) => b.cur_row.clear(),
-            Event::End(TagEnd::TableHead) => b.tbl_header = core::mem::take(&mut b.cur_row),
-            Event::Start(Tag::TableRow) => b.cur_row.clear(),
-            Event::End(TagEnd::TableRow) => {
-                let row = core::mem::take(&mut b.cur_row);
-                b.tbl_rows.push(row);
-            }
-            Event::Start(Tag::TableCell) => {
-                b.in_cell = true;
-                b.cur_cell.clear();
-            }
-            Event::End(TagEnd::TableCell) => {
-                b.in_cell = false;
-                let cell = core::mem::take(&mut b.cur_cell);
-                b.cur_row.push(cell);
-            }
-            Event::Start(Tag::Strong) => b.bold(true),
-            Event::End(TagEnd::Strong) => b.bold(false),
-            Event::Start(Tag::Emphasis) => b.italic(true),
-            Event::End(TagEnd::Emphasis) => b.italic(false),
-            Event::Start(Tag::Strikethrough) => b.strikethrough(true),
-            Event::End(TagEnd::Strikethrough) => b.strikethrough(false),
-            Event::Start(Tag::Link { dest_url, .. }) => b.set_link(Some(dest_url.to_string())),
-            Event::End(TagEnd::Link) => b.set_link(None),
-            Event::Start(Tag::Image { dest_url, .. }) => {
-                b.img = Some((dest_url.to_string(), String::new()));
-            }
-            Event::End(TagEnd::Image) => {
-                if let Some((src, alt)) = b.img.take() {
-                    b.image(&src, &alt, ImgW::Natural);
-                }
-            }
-            Event::Start(Tag::HtmlBlock) => b.html_buf.clear(),
-            Event::Html(s) => b.html_buf.push_str(&s),
-            Event::End(TagEnd::HtmlBlock) => {
-                let buf = core::mem::take(&mut b.html_buf);
-                super::mdhtml::feed(&mut b, &buf);
-            }
-            Event::InlineHtml(s) => super::mdhtml::feed(&mut b, &s),
-            Event::Rule => b.rule(),
-            Event::Text(t) => {
-                if in_code {
-                    code_buf.push_str(&t);
-                } else {
-                    b.text(&t);
-                }
-            }
-            Event::Code(t) => {
-                if b.img.is_some() {
-                    b.text(&t); // alt-text fragment
-                } else {
-                    b.code_text(&t);
-                }
-            }
-            Event::SoftBreak => b.text(" "),
-            Event::HardBreak => b.newline(),
-            // A GFM task-list checkbox: remember it for the open item (it replaces the
-            // bullet at draw time) instead of dumping literal "[ ]"/"[x]" text.
-            Event::TaskListMarker(done) => b.task = Some(done),
-            _ => {}
-        }
-    }
-    // trailing text + any half-open raw-HTML structures
-    b.html_table_close();
-    b.flush();
-    b.out
-}
-
-fn heading_num(level: HeadingLevel) -> u8 {
-    match level {
-        HeadingLevel::H1 => 1,
-        HeadingLevel::H2 => 2,
-        HeadingLevel::H3 => 3,
-        HeadingLevel::H4 => 4,
-        HeadingLevel::H5 => 5,
-        HeadingLevel::H6 => 6,
-    }
-}
+mod parse;
+use parse::parse_blocks;
+pub(super) use parse::Builder;
+#[cfg(test)]
+use parse::{linkify_into, url_at};
 
 #[cfg(test)]
 mod tests {
@@ -1999,16 +1666,28 @@ mod tests {
              1. one\n2. two\n\n> quoted\n\n```rust\nfn f() {}\n```\n\n---\n",
         );
         // Blocks are separated by a BLANK line, so they don't merge into one paragraph.
-        assert!(out.contains("# Title\n\nIntro para.\n\nAnother para.\n\n"), "got:\n{out}");
+        assert!(
+            out.contains("# Title\n\nIntro para.\n\nAnother para.\n\n"),
+            "got:\n{out}"
+        );
         // Nesting survives, with a real Markdown bullet rather than the display glyph.
-        assert!(out.contains("- top\n  - nested\n    - deeper\n- second"), "got:\n{out}");
-        assert!(!out.contains('\u{2022}'), "display bullet leaked into the copy:\n{out}");
+        assert!(
+            out.contains("- top\n  - nested\n    - deeper\n- second"),
+            "got:\n{out}"
+        );
+        assert!(
+            !out.contains('\u{2022}'),
+            "display bullet leaked into the copy:\n{out}"
+        );
         // Consecutive items stay TIGHT (no blank line) or the list re-renders loose.
         assert!(!out.contains("- top\n\n"), "list went loose:\n{out}");
         // Ordered lists keep their numbers; quotes and fences keep their markers.
         assert!(out.contains("1. one\n2. two"), "got:\n{out}");
         // A DIFFERENT list still gets its blank line, or the two run together as one mangled list.
-        assert!(out.contains("- second\n\n1. one"), "lists butted together:\n{out}");
+        assert!(
+            out.contains("- second\n\n1. one"),
+            "lists butted together:\n{out}"
+        );
         assert!(out.contains("> quoted"), "got:\n{out}");
         assert!(out.contains("```rust\nfn f() {}\n```"), "got:\n{out}");
         assert!(out.contains("---"), "got:\n{out}");
@@ -2036,24 +1715,42 @@ mod tests {
     #[test]
     fn bare_https_becomes_a_link() {
         let r = linkify("see https://example.com/x now");
-        assert_eq!(r, vec![
-            ("see ".into(), None),
-            ("https://example.com/x".into(), Some("https://example.com/x".into())),
-            (" now".into(), None),
-        ]);
+        assert_eq!(
+            r,
+            vec![
+                ("see ".into(), None),
+                (
+                    "https://example.com/x".into(),
+                    Some("https://example.com/x".into())
+                ),
+                (" now".into(), None),
+            ]
+        );
     }
 
     #[test]
     fn www_gets_https_scheme() {
         let r = linkify("go www.example.com today");
-        assert_eq!(r[1], ("www.example.com".into(), Some("https://www.example.com".into())));
+        assert_eq!(
+            r[1],
+            (
+                "www.example.com".into(),
+                Some("https://www.example.com".into())
+            )
+        );
     }
 
     #[test]
     fn trailing_punctuation_trimmed_but_url_kept() {
         // sentence-ending period is not part of the link
         let r = linkify("visit https://example.com.");
-        assert_eq!(r[1], ("https://example.com".into(), Some("https://example.com".into())));
+        assert_eq!(
+            r[1],
+            (
+                "https://example.com".into(),
+                Some("https://example.com".into())
+            )
+        );
         assert_eq!(r[2].0, ".");
     }
 

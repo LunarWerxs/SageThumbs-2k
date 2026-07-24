@@ -51,7 +51,6 @@ yanked = "deny"
 [licenses]
 # Allowlist covering the actual DEFAULT-feature graph (derived from Cargo.lock):
 #   MIT / Apache-2.0 ........ the overwhelming majority of the tree
-#   Apache-2.0 WITH LLVM-exception ... linux-raw-sys / wasi / r-efi style deps
 #   BSD-2-Clause ............ arrayref
 #   BSD-3-Clause ............ tiny-skia, tiny-skia-path, encoding_rs (AND component)
 #   Zlib .................... foldhash
@@ -61,15 +60,10 @@ yanked = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "Zlib",
     "Unicode-3.0",
-    # jpeg-encoder (pulled by djvu-rs's `std` feature) is "(MIT OR Apache-2.0) AND IJG".
-    # The IJG (Independent JPEG Group) license is FSF Free/Libre + permissive (the classic
-    # libjpeg license), so it fits the permissive-only policy. (2026-06-14)
-    "IJG",
 ]
 # Crates whose SPDX expression is an AND of several IDs (e.g. unicode-ident is
 # "(MIT OR Apache-2.0) AND Unicode-3.0") must have EVERY ANDed term allowed.
@@ -95,7 +89,17 @@ multiple-versions = "warn"
 wildcards = "warn"
 # We don't currently forbid any specific crate or force a single source.
 deny = []
-skip = []
+# djvu-rs 0.26's required `std` feature still pins png 0.17 (and therefore
+# bitflags 1), while the app/image stack uses png 0.18 + bitflags 2. The same
+# pin remains in djvu-rs 0.27, so unifying these requires an upstream feature/
+# dependency change or a local fork. Keep the exceptions exact: cargo-deny will
+# report them as unmatched when upstream moves, while every new duplicate still
+# surfaces normally.
+skip = [
+    { crate = "png@0.17.16", reason = "required by djvu-rs std; upstream 0.27 still pins png 0.17" },
+    { crate = "bitflags@1.3.2", reason = "transitive through djvu-rs's pinned png 0.17" },
+    { crate = "syn@3.0.3", reason = "thiserror 2.0.19 has migrated to syn 3 while the Windows, ZIP, and derive stacks still require syn 2" },
+]
 
 # ----------------------------------------------------------------------------
 [sources]

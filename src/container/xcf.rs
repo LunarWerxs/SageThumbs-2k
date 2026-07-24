@@ -77,7 +77,8 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
             17 => compression = *payload.first()?, // PROP_COMPRESSION
             // PROP_COLORMAP: u32 n, then 3n RGB bytes.
             1 if payload.len() >= 4 => {
-                let n = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+                let n =
+                    u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
                 let rgb = payload.get(4..4 + n.saturating_mul(3))?;
                 colormap = rgb.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
             }
@@ -109,7 +110,9 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
 
     for &lptr in layer_ptrs.iter().rev() {
         // Best-effort per layer: a single corrupt layer shouldn't lose the whole image.
-        if let Some(layer) = decode_layer(bytes, lptr, wide, compression, prec, &colormap, base_type) {
+        if let Some(layer) =
+            decode_layer(bytes, lptr, wide, compression, prec, &colormap, base_type)
+        {
             if layer.visible && layer.opacity > 0.0 {
                 composite(&mut canvas, &layer);
             }
@@ -175,7 +178,8 @@ fn decode_layer(
             }
             33 if payload.len() >= 4 => {
                 // PROP_FLOAT_OPACITY: 0.0..=1.0 (overrides the integer opacity when present)
-                opacity = f32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]).clamp(0.0, 1.0);
+                opacity = f32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]])
+                    .clamp(0.0, 1.0);
             }
             8 if payload.len() >= 4 => {
                 visible = payload[3] != 0; // PROP_VISIBLE
@@ -193,8 +197,25 @@ fn decode_layer(
     let _mask_ptr = r.ptr(wide)?; // layer mask — ignored for the thumbnail
 
     let channels = layer_channels(ltype)?;
-    let px = decode_hierarchy(d, hptr, wide, compression, prec, colormap, ltype, channels, lw, lh)?;
-    Some(Layer { px, ox, oy, opacity, visible })
+    let px = decode_hierarchy(
+        d,
+        hptr,
+        wide,
+        compression,
+        prec,
+        colormap,
+        ltype,
+        channels,
+        lw,
+        lh,
+    )?;
+    Some(Layer {
+        px,
+        ox,
+        oy,
+        opacity,
+        visible,
+    })
 }
 
 /// Channels stored per pixel for a layer type (0 RGB,1 RGBA,2 Gray,3 GrayA,4 Idx,5 IdxA).
@@ -231,10 +252,23 @@ fn decode_hierarchy(
         return None;
     }
     let bps = bpp / channels; // bytes per sample
-    // First level pointer is the full-resolution image; the rest are downscaled mips we
-    // don't need. (The list is 0-terminated but we only read the first entry.)
+                              // First level pointer is the full-resolution image; the rest are downscaled mips we
+                              // don't need. (The list is 0-terminated but we only read the first entry.)
     let level_ptr = r.ptr(wide)? as usize;
-    decode_level(d, level_ptr, wide, compression, prec, colormap, ltype, channels, bpp, bps, lw, lh)
+    decode_level(
+        d,
+        level_ptr,
+        wide,
+        compression,
+        prec,
+        colormap,
+        ltype,
+        channels,
+        bpp,
+        bps,
+        lw,
+        lh,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -280,7 +314,9 @@ fn decode_level(
         let need = (tw * th * bpp) as usize;
         let buf = scratch.get_mut(..need)?;
         decode_tile(d, tptr, compression, bpp, tw, th, buf)?;
-        blit_tile(&mut out, buf, tx, ty, tw, th, bpp, bps, ltype, prec, colormap);
+        blit_tile(
+            &mut out, buf, tx, ty, tw, th, bpp, bps, ltype, prec, colormap,
+        );
     }
     Some(out)
 }
@@ -288,7 +324,15 @@ fn decode_level(
 /// Fill `dest` (tw*th*bpp bytes) with a tile's channel-interleaved, big-endian-sample
 /// pixels, whatever the compression. NONE = raw; RLE = `bpp` byte-planes deinterleaved;
 /// ZLIB = whole-tile zlib of the raw (already-interleaved) bytes.
-fn decode_tile(d: &[u8], off: usize, compression: u8, bpp: u32, tw: u32, th: u32, dest: &mut [u8]) -> Option<()> {
+fn decode_tile(
+    d: &[u8],
+    off: usize,
+    compression: u8,
+    bpp: u32,
+    tw: u32,
+    th: u32,
+    dest: &mut [u8],
+) -> Option<()> {
     let npix = (tw * th) as usize;
     match compression {
         0 => {
@@ -409,7 +453,9 @@ fn blit_tile(
     for row in 0..th {
         for col in 0..tw {
             let pi = (row * tw + col) as usize * bpp;
-            let Some(px) = buf.get(pi..pi + bpp) else { continue };
+            let Some(px) = buf.get(pi..pi + bpp) else {
+                continue;
+            };
             let rgba = sample_to_rgba(px, bps, ltype, prec, colormap);
             out.put_pixel(tx + col, ty + row, image::Rgba(rgba));
         }
@@ -417,11 +463,20 @@ fn blit_tile(
 }
 
 /// One pixel's raw sample bytes → RGBA8, per layer type + precision (+ colormap for indexed).
-fn sample_to_rgba(px: &[u8], bps: usize, ltype: u32, prec: Precision, colormap: &[[u8; 3]]) -> [u8; 4] {
+fn sample_to_rgba(
+    px: &[u8],
+    bps: usize,
+    ltype: u32,
+    prec: Precision,
+    colormap: &[[u8; 3]],
+) -> [u8; 4] {
     // Read the nth channel's sample and normalize to [0,1]; color channels get sRGB applied
     // when the file stores LINEAR light (alpha is always linear, never transformed).
     let chan = |n: usize, is_color: bool| -> f32 {
-        let s = px.get(n * bps..n * bps + bps).map(|b| prec.normalize(b)).unwrap_or(0.0);
+        let s = px
+            .get(n * bps..n * bps + bps)
+            .map(|b| prec.normalize(b))
+            .unwrap_or(0.0);
         if is_color && prec.linear {
             linear_to_srgb(s)
         } else {
@@ -431,8 +486,18 @@ fn sample_to_rgba(px: &[u8], bps: usize, ltype: u32, prec: Precision, colormap: 
     let to8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
 
     match ltype {
-        0 => [to8(chan(0, true)), to8(chan(1, true)), to8(chan(2, true)), 255], // RGB
-        1 => [to8(chan(0, true)), to8(chan(1, true)), to8(chan(2, true)), to8(chan(3, false))], // RGBA
+        0 => [
+            to8(chan(0, true)),
+            to8(chan(1, true)),
+            to8(chan(2, true)),
+            255,
+        ], // RGB
+        1 => [
+            to8(chan(0, true)),
+            to8(chan(1, true)),
+            to8(chan(2, true)),
+            to8(chan(3, false)),
+        ], // RGBA
         2 => {
             let g = to8(chan(0, true));
             [g, g, g, 255]
@@ -445,7 +510,11 @@ fn sample_to_rgba(px: &[u8], bps: usize, ltype: u32, prec: Precision, colormap: 
             // Indexed: sample 0 is a raw palette index (1 byte); IndexedA adds an alpha byte.
             let idx = *px.first().unwrap_or(&0) as usize;
             let [r, g, b] = colormap.get(idx).copied().unwrap_or([0, 0, 0]);
-            let a = if ltype == 5 { *px.get(bps).unwrap_or(&255) } else { 255 };
+            let a = if ltype == 5 {
+                *px.get(bps).unwrap_or(&255)
+            } else {
+                255
+            };
             [r, g, b, a]
         }
         _ => [0, 0, 0, 0],
@@ -487,7 +556,12 @@ fn composite(canvas: &mut RgbaImage, layer: &Layer) {
             canvas.put_pixel(
                 dx as u32,
                 dy as u32,
-                image::Rgba([mix(s[0], d[0]), mix(s[1], d[1]), mix(s[2], d[2]), (oa * 255.0 + 0.5) as u8]),
+                image::Rgba([
+                    mix(s[0], d[0]),
+                    mix(s[1], d[1]),
+                    mix(s[2], d[2]),
+                    (oa * 255.0 + 0.5) as u8,
+                ]),
             );
         }
     }
@@ -506,7 +580,7 @@ impl Precision {
     /// files (or unknown words) are treated as 8-bit perceptual, which is the common case.
     fn from_word(w: u32) -> Self {
         // Linear codes end in 00, perceptual/gamma codes end in 50. Float starts at 500.
-        let linear = (w % 100) == 0 && w >= 100;
+        let linear = w.is_multiple_of(100) && w >= 100;
         let float = w >= 500;
         Precision { float, linear }
     }
@@ -517,7 +591,8 @@ impl Precision {
             match b.len() {
                 2 => half_to_f32(u16::from_be_bytes([b[0], b[1]])).clamp(0.0, 1.0),
                 4 => f32::from_be_bytes([b[0], b[1], b[2], b[3]]).clamp(0.0, 1.0),
-                8 => f64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]).clamp(0.0, 1.0) as f32,
+                8 => f64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+                    .clamp(0.0, 1.0) as f32,
                 _ => 0.0,
             }
         } else {
@@ -581,7 +656,9 @@ impl<'a> Rd<'a> {
         if wide {
             let b = self.d.get(self.p..self.p + 8)?;
             self.p += 8;
-            Some(u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+            Some(u64::from_be_bytes([
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            ]))
         } else {
             Some(self.u32()? as u64)
         }
@@ -611,7 +688,8 @@ mod tests {
         assert!(!Precision::from_word(150).linear && !Precision::from_word(150).float); // 8-bit gamma
         assert!(Precision::from_word(100).linear); // 8-bit linear
         assert!(Precision::from_word(600).float && Precision::from_word(600).linear); // 32-bit linear float
-        assert!(Precision::from_word(650).float && !Precision::from_word(650).linear); // 32-bit gamma float
+        assert!(Precision::from_word(650).float && !Precision::from_word(650).linear);
+        // 32-bit gamma float
     }
 
     #[test]
@@ -662,12 +740,21 @@ mod tests {
     fn linear_precision_srgb_encodes() {
         // A mid-gray linear sample must come out brighter after sRGB encoding than a
         // gamma sample of the same normalized value (the linear→gamma correction).
-        let lin = Precision { float: false, linear: true };
-        let gam = Precision { float: false, linear: false };
+        let lin = Precision {
+            float: false,
+            linear: true,
+        };
+        let gam = Precision {
+            float: false,
+            linear: false,
+        };
         // sample byte 0x80 (~0.5) as the single R channel of an RGB pixel.
         let px = [0x80u8, 0x80, 0x80];
         let rl = super::sample_to_rgba(&px, 1, 0, lin, &[])[0];
         let rg = super::sample_to_rgba(&px, 1, 0, gam, &[])[0];
-        assert!(rl > rg, "linear sRGB-encoded {rl} should exceed gamma passthrough {rg}");
+        assert!(
+            rl > rg,
+            "linear sRGB-encoded {rl} should exceed gamma passthrough {rg}"
+        );
     }
 }

@@ -2,6 +2,24 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.3.3
+
+- **The Quick preview scrollbar now works like a real scrollbar.** In long text, code and
+  rendered Markdown previews, you can grab the thumb and drag it to any point in the document.
+  Clicking the track above or below the thumb moves by one page, and hover/pressed feedback
+  makes the narrow control easier to target. High-resolution mouse wheels and touchpads also
+  keep their partial scroll movement instead of occasionally losing it.
+- **Updates are verified more defensively before Windows runs them.** The built-in updater now
+  accepts installers only from this project's canonical GitHub release path, requires the
+  release's SHA-256 digest, verifies the bytes written to disk, and keeps the temporary
+  installer protected from replacement through the elevation hand-off.
+- **More malformed-input and network-edge cases fail safely.** Bounds and validation were
+  tightened across several image/document readers and screenshot-upload URL handling, including
+  rejecting ambiguous custom endpoints instead of handing them to Windows' networking stack.
+- **Maintenance and build reproducibility.** Compatible locked dependencies were refreshed,
+  the largest preview/decoder modules were split into smaller focused files, the real Rust 1.93
+  minimum is checked in CI, and third-party GitHub Actions are pinned to immutable revisions.
+
 ## 1.3.2
 
 - **Clicking a large archive no longer pegs your CPU and disk.** A big `.7z` could send

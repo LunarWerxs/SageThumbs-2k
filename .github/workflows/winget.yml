@@ -28,6 +28,11 @@ on:
         description: Existing release tag to (re)publish, e.g. v0.4.9
         required: true
 
+# Submission uses the dedicated WINGET_TOKEN; the workflow-scoped GitHub token
+# needs no repository write permission.
+permissions:
+  contents: read
+
 jobs:
   winget:
     runs-on: windows-latest
@@ -72,7 +77,7 @@ jobs:
 
       - name: Submit to winget-pkgs
         if: steps.onboarded.outputs.exists == 'true'
-        uses: vedantmgoyal9/winget-releaser@v2
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
           # winget package identifier: Publisher.Package (PascalCase, no spaces).
           identifier: LunarWerxs.SageThumbs2K

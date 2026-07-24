@@ -39,9 +39,8 @@ if (-not $failed) {
         }
     }
 }
-if (-not $failed) { Step 'clippy (-D warnings)' { cargo clippy --release --all-targets -- -D warnings } }
-if (-not $failed) { Step 'unit tests (--lib)'   { cargo test  --release --lib } }
-if (-not $failed) { Step 'integration tests'    { cargo test  --release --tests } }
+if (-not $failed) { Step 'unit + integration tests' { cargo test --release --tests } }
+if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
 
 # Mirror the `deny` job — only if cargo-deny is installed locally (deny.toml at repo root).
 if (-not $failed -and (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {

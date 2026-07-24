@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Keep immutable Action pins current without returning to mutable version tags.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

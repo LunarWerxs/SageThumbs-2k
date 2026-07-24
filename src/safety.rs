@@ -104,7 +104,11 @@ pub fn log(msg: &str) {
     use std::io::Write;
     let Some(path) = log_file() else { return };
     maybe_rotate(&path);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "[pid {} +{}ms] {msg}", std::process::id(), elapsed_ms());
     }
 }
@@ -132,7 +136,7 @@ pub fn log_file() -> Option<std::path::PathBuf> {
 fn maybe_rotate(path: &std::path::Path) {
     const LOG_CAP_BYTES: u64 = 1 << 20;
     static N: AtomicU64 = AtomicU64::new(0);
-    if N.fetch_add(1, Ordering::Relaxed) % 64 != 0 {
+    if !N.fetch_add(1, Ordering::Relaxed).is_multiple_of(64) {
         return;
     }
     if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > LOG_CAP_BYTES {
@@ -157,10 +161,20 @@ fn log_session_header(artifact: &str) {
 /// `ProductName` still says "Windows 10" on 11, so promote by build number.
 pub fn os_string() -> String {
     use windows_registry::LOCAL_MACHINE;
-    let k = LOCAL_MACHINE.open(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion").ok();
-    let g = |n: &str| k.as_ref().and_then(|k| k.get_string(n).ok()).unwrap_or_default();
+    let k = LOCAL_MACHINE
+        .open(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        .ok();
+    let g = |n: &str| {
+        k.as_ref()
+            .and_then(|k| k.get_string(n).ok())
+            .unwrap_or_default()
+    };
     let build: u32 = g("CurrentBuild").parse().unwrap_or(0);
-    let product = if build >= 22000 { "Windows 11".to_string() } else { g("ProductName") };
+    let product = if build >= 22000 {
+        "Windows 11".to_string()
+    } else {
+        g("ProductName")
+    };
     format!("{product} {} (build {build})", g("DisplayVersion"))
 }
 

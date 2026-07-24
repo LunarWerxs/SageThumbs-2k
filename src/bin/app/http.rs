@@ -29,19 +29,34 @@ pub(crate) struct Resp {
     pub body: Vec<u8>,
 }
 
-/// Split an `https://host[:?]/path?query` URL into `(host, path_with_query)`. Returns
-/// `None` for anything that isn't a clean `https://` URL or that contains control
-/// characters (defense-in-depth against a malformed/hostile base URL). Port pinning is
-/// not supported — the store is always on 443.
-fn split_https(url: &str) -> Option<(String, String)> {
+/// Split an `https://host/path?query` URL into `(host, path_with_query)`. Returns
+/// `None` for anything that isn't a clean HTTPS URL for port 443. Keeping this parser
+/// strict avoids handing WinINet ambiguous authority forms (`userinfo@host`, a hidden
+/// port, backslashes, or a fragment) when future callers accept configurable URLs.
+/// Internationalized hosts must be supplied in their ASCII/Punycode form.
+pub(crate) fn split_https(url: &str) -> Option<(String, String)> {
     let rest = url.strip_prefix("https://")?;
-    if rest.is_empty() || rest.bytes().any(|b| b < 0x20) {
+    if rest.is_empty() || rest.bytes().any(|b| b <= 0x20 || b == 0x7f) || rest.contains(['\\', '#'])
+    {
         return None;
     }
-    match rest.find('/') {
-        Some(i) => Some((rest[..i].to_string(), rest[i..].to_string())),
-        None => Some((rest.to_string(), "/".to_string())),
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let host = &rest[..authority_end];
+    if host.is_empty()
+        || host.contains(['@', ':'])
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    {
+        return None;
     }
+    let path = match rest.as_bytes().get(authority_end) {
+        Some(b'/') => rest[authority_end..].to_string(),
+        Some(b'?') => format!("/{}", &rest[authority_end..]),
+        None => "/".to_string(),
+        _ => return None,
+    };
+    Some((host.to_string(), path))
 }
 
 /// Perform one HTTPS request. `method` is `"GET"` / `"POST"` / `"DELETE"`. `headers` is
@@ -136,8 +151,11 @@ unsafe fn request_raw(
     } else {
         Some(&hdr_w[..hdr_w.len().saturating_sub(1)])
     };
-    let body_ptr: Option<*const c_void> =
-        if body.is_empty() { None } else { Some(body.as_ptr() as *const c_void) };
+    let body_ptr: Option<*const c_void> = if body.is_empty() {
+        None
+    } else {
+        Some(body.as_ptr() as *const c_void)
+    };
 
     let sent = HttpSendRequestW(req, hdr_slice, body_ptr, body.len() as u32).is_ok();
 
@@ -193,13 +211,22 @@ mod tests {
             split_https("https://h.test/p?a=1&b=2"),
             Some(("h.test".into(), "/p?a=1&b=2".into()))
         );
+        assert_eq!(
+            split_https("https://h.test?a=1"),
+            Some(("h.test".into(), "/?a=1".into()))
+        );
     }
 
     #[test]
-    fn split_https_rejects_non_https_and_control_chars() {
+    fn split_https_rejects_non_https_and_ambiguous_authorities() {
         assert_eq!(split_https("http://example.com/"), None);
         assert_eq!(split_https("ftp://example.com/"), None);
         assert_eq!(split_https("https://"), None);
         assert_eq!(split_https("https://bad\nhost/"), None);
+        assert_eq!(split_https("https://user@example.com/"), None);
+        assert_eq!(split_https("https://example.com:8443/"), None);
+        assert_eq!(split_https("https://example.com\\other/"), None);
+        assert_eq!(split_https("https://example.com/path#fragment"), None);
+        assert_eq!(split_https("https://exam ple.com/"), None);
     }
 }

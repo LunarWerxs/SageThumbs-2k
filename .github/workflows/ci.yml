@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# CI only reads the checkout and public dependency metadata.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -14,7 +18,7 @@ jobs:
     name: build · clippy · test (windows-msvc)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc + clippy/rustfmt,
       # which rustup installs on first cargo invocation. No setup action needed.
@@ -27,7 +31,7 @@ jobs:
       # (same key when Cargo.lock is unchanged), which accumulated into an intermittent
       # release-LTO link error ("unresolved external symbol core::panicking::assert_failed").
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # RAR/CBR is the pure-Rust `rars` crate (always on, no feature gate), so this
       # default build already covers it — the whole dependency graph is permissive.
@@ -37,19 +41,20 @@ jobs:
       # Integration tests (tests/) drive the built shell-extension DLL in-process the
       # way Explorer does: the COM thumbnail handshake (com_roundtrip) and the
       # IExplorerCommand verb flyout + invoke (explorer_command). They LoadLibrary the
-      # cdylib from the target dir and `use sagethumbs2k` (link the rlib), and run
-      # headless (no registration, no admin, no Explorer). The registry/desktop tests
-      # (packaged_load, settings_gate) are #[ignore]d and stay out of this run.
+      # cdylib from the target dir and link `sagethumbs2k_core`, and run
+      # headless (no registration, no admin, no Explorer). `settings_gate` redirects
+      # HKCU into a scratch hive and runs here; only the live packaged-registration
+      # test is #[ignore]d.
       #
-      # ORDER MATTERS — this runs RIGHT AFTER the clean Build, BEFORE clippy/lib-test,
-      # so it reuses the pristine cdylib + rlib the Build step just produced WITHOUT a
-      # rebuild. The package is crate-type = ["cdylib", "rlib"]; re-running
-      # `cargo build --release` after clippy's --all-targets check pass intermittently
-      # rebuilt the lib and tripped cargo's cdylib/rlib output-filename collision
-      # (rust-lang/cargo#6313), yielding an rlib full of "unresolved external symbol"
-      # link errors. Reusing the Build step's artifacts (no second build here) sidesteps
-      # it entirely; `cargo test --tests` only compiles the new test binaries.
-      - name: Integration tests
+      # ORDER MATTERS — `cargo test --tests` rebuilds the core rlib and test binaries,
+      # but it does NOT refresh the separate `sagethumbs2k-dll` workspace member whose
+      # canonical DLL these tests load. Run immediately after Build so they never test a
+      # stale shell-extension DLL. (The old combined cdylib+rlib collision was removed
+      # when the thin `dll/` wrapper became its own crate.)
+      # Cargo's `--tests` selector runs every target with test=true in this
+      # workspace: library unit tests, both binary unit-test targets, and tests/.
+      # Keep the single invocation here so all of them share the freshly built DLL.
+      - name: Unit and integration tests
         run: cargo test --release --tests
 
       # Gates on ALL clippy lints across every target (bins, lib, tests): any new
@@ -58,9 +63,18 @@ jobs:
       - name: Clippy
         run: cargo clippy --release --all-targets -- -D warnings
 
-      # Library unit tests.
-      - name: Test
-        run: cargo test --release --lib
+  # Cargo.toml publishes 1.93 as the minimum supported Rust version. The main job
+  # intentionally follows current stable, so exercise the lower bound separately
+  # instead of letting source/API drift make the declared MSRV fictional.
+  msrv:
+    name: MSRV (Rust 1.93)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust 1.93 MSVC
+        run: rustup toolchain install 1.93.0-x86_64-pc-windows-msvc --profile minimal
+      - name: Check workspace at MSRV
+        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked --workspace
 
   # Drift guard (no build needed): every asset referenced by include_bytes!/include_str!
   # or a README/docs <img> must be git-tracked; the README badge + FEATURES format count
@@ -71,7 +85,7 @@ jobs:
     name: consistency (assets · counts · version)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: check-consistency
         shell: pwsh
         run: ./scripts/check-consistency.ps1
@@ -84,7 +98,7 @@ jobs:
     name: cargo-deny (licenses · advisories — default features)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc, which rustup can't
       # use on this Linux runner ("target triple in channel name"). cargo-deny only
       # needs `cargo metadata` (toolchain-agnostic; the windows-msvc *target* is set
@@ -92,7 +106,7 @@ jobs:
       - name: Drop windows-only toolchain pin (Linux runner)
         run: rm -f rust-toolchain.toml
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           # Checks the committed Cargo.lock (advisories + licenses) against
           # deny.toml's allowlist over the full (now fully-permissive) graph.

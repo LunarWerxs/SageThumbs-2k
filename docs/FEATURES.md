@@ -273,7 +273,8 @@ plus these viewer-only extras:
 - **Multi-page PDF navigation**: PageUp/PageDown or the arrow keys (or on-screen ◀ ▶ buttons) page
   through the document, with a "current / total" indicator in the title bar.
 - **Zoom + pan** on images (wheel to zoom at the cursor, drag to pan, double-click to toggle
-  fit/100 %), and wheel-scroll for long text/Markdown.
+  fit/100 %). Long text/code and rendered Markdown have wheel/touchpad scrolling plus a visible
+  scrollbar: drag its thumb to scrub through the document, or click the track to move one page.
 - **Select & copy**: drag-select in text/code/log **and rendered Markdown** previews
   (double-click selects a word; **Shift+arrows**, Shift+Home/End/PgUp/PgDn and the Ctrl
   word-wise variants select from the keyboard; **Ctrl+A** selects all), then **Ctrl+C** copies

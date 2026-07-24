@@ -1,19 +1,21 @@
 //! Loading + decode dispatch, window sizing/placement, follow-selection poll.
 
-
-use windows::Win32::Foundation::{
-    HWND, LPARAM, RECT, WPARAM,
-};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self, RenderData};
 use super::infocard;
-use super::window::{ViewerState, ContentKind, state, is_pdf, image_dims, letterbox_bg, set_title, CAPTION_H, MIN_W, MIN_H, LOADING_W, LOADING_H, CARD_W, CARD_H, TEXT_W, TEXT_H, VIDEO_W, VIDEO_H, SCRUB_H, SHOW_TIMER_ID, SCRUB_TIMER_ID, ANIM_TIMER_ID, TOC_TIMER_ID, WM_APP_SWITCH};
+use super::toolbar::update_tooltips;
+use super::transport::video_rect;
 #[cfg(feature = "html-preview")]
 use super::window::content_rect;
-use super::transport::video_rect; use super::toolbar::update_tooltips;
+use super::window::{
+    image_dims, is_pdf, letterbox_bg, set_title, state, ContentKind, ViewerState, ANIM_TIMER_ID,
+    CAPTION_H, CARD_H, CARD_W, LOADING_H, LOADING_W, MIN_H, MIN_W, SCRUB_H, SCRUB_TIMER_ID,
+    SHOW_TIMER_ID, TEXT_H, TEXT_W, TOC_TIMER_ID, VIDEO_H, VIDEO_W, WM_APP_SWITCH,
+};
 
 /// Switch the viewer to preview `path` (async decode). Resets the open grace window.
 pub(super) unsafe fn load(hwnd: HWND, path: &str) {
@@ -40,9 +42,11 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     st.zoom.set(1.0); // reset zoom/pan/scroll for the new file
     st.pan.set((0, 0));
     st.text_scroll.set(0);
-    // Clear the selection but NOT `sel_drag` — like `drag`/`scrub_drag`, the in-progress flag
-    // must survive a mid-drag reload (←/→ nav, daemon push) so WM_LBUTTONUP still releases the
-    // mouse capture. The drag continues harmlessly: with `sel` None it has nothing to extend.
+    st.scroll_hot.set(false);
+    st.wheel_remainder.set(0);
+    // Clear the selection but NOT any captured-input flag (`sel_drag`, `scroll_drag`,
+    // `scroll_page_press`, etc.). A mid-drag reload (←/→ nav, daemon push) must leave capture
+    // owned until WM_LBUTTONUP; each interaction continues harmlessly while content is unavailable.
     st.sel.set(None);
     st.line_starts.borrow_mut().clear(); // rebuilt lazily on the first hit-test
     st.md_hits.borrow_mut().clear(); // rebuilt by the next Markdown paint
@@ -142,7 +146,8 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
                             seed_md_attachments(st, conv.attachments);
                         }
                         st.md_has_headings.set(super::markdown::has_headings(&t));
-                        st.md_remote_ok.set(sagethumbs2k_core::settings::preview_md_remote_img());
+                        st.md_remote_ok
+                            .set(sagethumbs2k_core::settings::preview_md_remote_img());
                     }
                     *st.text.borrow_mut() = Some(t);
                     st.kind.set(kind);
@@ -203,7 +208,8 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
                 .map(|(img, count)| {
                     let rgba = img.to_rgba8();
                     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    if let Some(hbmp) = content::make_dib(w, h, &rgba.into_raw(), letterbox_bg(st)) {
+                    if let Some(hbmp) = content::make_dib(w, h, &rgba.into_raw(), letterbox_bg(st))
+                    {
                         *st.render.borrow_mut() = Some(RenderData { hbmp, iw: w, ih: h });
                         st.kind.set(ContentKind::Image);
                         st.pdf_page.set(pg.min(count.saturating_sub(1)));
@@ -227,7 +233,11 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
                 let mut rds: Vec<RenderData> = Vec::new();
                 for (d, _) in frames {
                     if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, bg) {
-                        rds.push(RenderData { hbmp, iw: d.w, ih: d.h });
+                        rds.push(RenderData {
+                            hbmp,
+                            iw: d.w,
+                            ih: d.h,
+                        });
                     }
                 }
                 if !rds.is_empty() {
@@ -286,7 +296,11 @@ pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind
         ContentKind::Image => match content::decode_sync(path) {
             Some(d) => {
                 if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, letterbox_bg(st)) {
-                    *st.render.borrow_mut() = Some(RenderData { hbmp, iw: d.w, ih: d.h });
+                    *st.render.borrow_mut() = Some(RenderData {
+                        hbmp,
+                        iw: d.w,
+                        ih: d.h,
+                    });
                     st.kind.set(ContentKind::Image);
                 } else {
                     *st.card.borrow_mut() = Some(infocard::gather(path));
@@ -298,28 +312,31 @@ pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind
                 st.kind.set(ContentKind::InfoCard);
             }
         },
-        ContentKind::Text | ContentKind::Markdown => match if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
-            content::read_doc(path)
-        } else {
-            content::read_text(path)
-        } {
-            Some(mut t) => {
-                if kind == ContentKind::Markdown {
-                    if let Some(conv) = super::docconv::to_markdown(&ext_of(path), &t) {
-                        t = conv.md;
-                        seed_md_attachments(st, conv.attachments);
+        ContentKind::Text | ContentKind::Markdown => {
+            match if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
+                content::read_doc(path)
+            } else {
+                content::read_text(path)
+            } {
+                Some(mut t) => {
+                    if kind == ContentKind::Markdown {
+                        if let Some(conv) = super::docconv::to_markdown(&ext_of(path), &t) {
+                            t = conv.md;
+                            seed_md_attachments(st, conv.attachments);
+                        }
+                        st.md_has_headings.set(super::markdown::has_headings(&t));
+                        st.md_remote_ok
+                            .set(sagethumbs2k_core::settings::preview_md_remote_img());
                     }
-                    st.md_has_headings.set(super::markdown::has_headings(&t));
-                    st.md_remote_ok.set(sagethumbs2k_core::settings::preview_md_remote_img());
+                    *st.text.borrow_mut() = Some(t);
+                    st.kind.set(kind);
                 }
-                *st.text.borrow_mut() = Some(t);
-                st.kind.set(kind);
+                None => {
+                    *st.card.borrow_mut() = Some(infocard::gather(path));
+                    st.kind.set(ContentKind::InfoCard);
+                }
             }
-            None => {
-                *st.card.borrow_mut() = Some(infocard::gather(path));
-                st.kind.set(ContentKind::InfoCard);
-            }
-        },
+        }
         _ => {
             *st.card.borrow_mut() = Some(infocard::gather(path));
             st.kind.set(ContentKind::InfoCard);
@@ -373,7 +390,9 @@ unsafe fn try_load_web(hwnd: HWND, path: &str) -> bool {
             create_web(hwnd, &file_uri(path), super::webview::Mode::Local)
         }
         "url" | "webloc" => {
-            let Some(target) = parse_url_shortcut(path) else { return false };
+            let Some(target) = parse_url_shortcut(path) else {
+                return false;
+            };
             if sagethumbs2k_core::settings::preview_url_live() {
                 return create_web(hwnd, &target, super::webview::Mode::Live);
             }
@@ -454,7 +473,11 @@ unsafe fn create_web(hwnd: HWND, url: &str, mode: super::webview::Mode) -> bool 
 /// Turn a local path into a `file:///` URI (forward slashes, minimal escaping of space/#/?).
 #[cfg(feature = "html-preview")]
 fn file_uri(path: &str) -> String {
-    let esc = path.replace('\\', "/").replace(' ', "%20").replace('#', "%23").replace('?', "%3F");
+    let esc = path
+        .replace('\\', "/")
+        .replace(' ', "%20")
+        .replace('#', "%23")
+        .replace('?', "%3F");
     if esc.starts_with('/') {
         format!("file://{esc}")
     } else {
@@ -566,19 +589,43 @@ pub(super) unsafe fn ensure_shown(hwnd: HWND) {
         let _ = KillTimer(Some(hwnd), SHOW_TIMER_ID);
         place(hwnd, cw, ch, center_on_cursor_monitor(cw, ch));
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE); // never steals focus (plan §3)
-        // Bring the window to the front of the z-order WITHOUT activating it — Explorer stays the
-        // foreground window so its arrow-key selection keeps driving the follow-poll.
-        //   * pinned (toolbar pin): genuinely always-on-top.
-        //   * open-front (default): a plain HWND_TOP from this *background* process does NOT reliably
-        //     beat Explorer's foreground window (it opened BEHIND it), so "bounce" through TOPMOST —
-        //     which forces us above everything even from the background — then immediately drop back
-        //     to non-topmost so the window can still be covered when you click elsewhere.
-        //   * both off: leave it wherever it naturally landed.
+                                                     // Bring the window to the front of the z-order WITHOUT activating it — Explorer stays the
+                                                     // foreground window so its arrow-key selection keeps driving the follow-poll.
+                                                     //   * pinned (toolbar pin): genuinely always-on-top.
+                                                     //   * open-front (default): a plain HWND_TOP from this *background* process does NOT reliably
+                                                     //     beat Explorer's foreground window (it opened BEHIND it), so "bounce" through TOPMOST —
+                                                     //     which forces us above everything even from the background — then immediately drop back
+                                                     //     to non-topmost so the window can still be covered when you click elsewhere.
+                                                     //   * both off: leave it wherever it naturally landed.
         if st.pinned.get() {
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         } else if st.open_front.get() {
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
         st.shown.set(true);
         // Follow the Explorer selection (arrows / clicks) — daemon mode only. A manual
@@ -656,7 +703,12 @@ pub(super) unsafe fn client_size(hwnd: HWND) -> (i32, i32) {
 /// Resize (and optionally move) the window so its CLIENT area is `cw`×`ch`. `pos` = top-left
 /// window position, or `None` to keep the current position.
 pub(super) unsafe fn place(hwnd: HWND, cw: i32, ch: i32, pos: Option<(i32, i32)>) {
-    let mut rc = RECT { left: 0, top: 0, right: cw, bottom: ch };
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: cw,
+        bottom: ch,
+    };
     let style = WINDOW_STYLE(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32);
     let ex = WINDOW_EX_STYLE(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32);
     let _ = AdjustWindowRectEx(&mut rc, style, false, ex);
@@ -666,7 +718,15 @@ pub(super) unsafe fn place(hwnd: HWND, cw: i32, ch: i32, pos: Option<(i32, i32)>
             let _ = SetWindowPos(hwnd, None, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         None => {
-            let _ = SetWindowPos(hwnd, None, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                ww,
+                wh,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
 }

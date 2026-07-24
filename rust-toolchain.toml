@@ -1,9 +1,8 @@
-# Pin the MSVC host toolchain so a fresh checkout builds identically to the dev
-# machine. MSVC was previously enforced only by a machine-global `rustup override`
-# (not committed) — the system default host is ...-gnu, and the repo's build/install
-# scripts plus the .cargo/config.toml custom target-dir assume the MSVC layout.
-# This file travels with the repo so the pin can't silently fall off. Verify with
-# `rustup show`.
+# Pin the MSVC host channel so a fresh checkout cannot silently use the GNU host.
+# The `stable` channel intentionally floats to pick up compiler fixes; Cargo.lock
+# keeps dependencies reproducible and Cargo.toml's `rust-version` records the true
+# minimum compiler. The build/install scripts plus .cargo/config.toml assume the
+# MSVC layout. Verify the resolved version with `rustup show`.
 [toolchain]
 channel = "stable-x86_64-pc-windows-msvc"
 # Travel with the repo so a fresh checkout (and CI) has the lint/format tools.

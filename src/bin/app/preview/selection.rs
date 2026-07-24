@@ -28,7 +28,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 use super::highlight;
 use super::paint::mono_font;
-use super::window::{content_rect, state, ContentKind, ViewerState};
+use super::window::{content_rect, set_text_scroll, state, ContentKind, ViewerState};
 
 /// A drawn, selectable text token: where it landed, which slice of the selection document it
 /// shows, and how to re-create its font so hit-testing can measure INSIDE it (the `HFONT` itself
@@ -57,7 +57,10 @@ pub(super) struct FontSpec {
 /// The selection, normalized to `(start, end)` with `start < end`; `None` when empty. Raw byte
 /// offsets into the active document, always on char boundaries.
 pub(super) fn sel_range(st: &ViewerState) -> Option<(usize, usize)> {
-    st.sel.get().map(|(a, b)| (a.min(b), a.max(b))).filter(|(a, b)| a < b)
+    st.sel
+        .get()
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .filter(|(a, b)| a < b)
 }
 
 /// Does this content kind have a selectable document?
@@ -143,7 +146,12 @@ fn ensure_text_starts(st: &ViewerState) {
     let t = st.text.borrow();
     let Some(t) = t.as_deref() else { return };
     s.push(0);
-    s.extend(t.bytes().enumerate().filter(|(_, b)| *b == b'\n').map(|(i, _)| i + 1));
+    s.extend(
+        t.bytes()
+            .enumerate()
+            .filter(|(_, b)| *b == b'\n')
+            .map(|(i, _)| i + 1),
+    );
 }
 
 /// The line index containing `off`.
@@ -154,7 +162,10 @@ fn line_of(starts: &[usize], off: usize) -> usize {
 /// Line `li`'s text (no trailing `\r`/`\n`).
 fn line_at<'a>(t: &'a str, starts: &[usize], li: usize) -> &'a str {
     let s = starts.get(li).copied().unwrap_or(0);
-    let e = starts.get(li + 1).map(|n| n.saturating_sub(1)).unwrap_or(t.len());
+    let e = starts
+        .get(li + 1)
+        .map(|n| n.saturating_sub(1))
+        .unwrap_or(t.len());
     let line = t.get(s..e).unwrap_or("");
     line.strip_suffix('\r').unwrap_or(line)
 }
@@ -178,7 +189,14 @@ unsafe fn text_hit(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
     }
     let font = mono_font(hwnd);
     let off = highlight::hit_test(
-        hdc, t, &starts, font, rc.left + m, rc.top + m - st.text_scroll.get(), x, y,
+        hdc,
+        t,
+        &starts,
+        font,
+        rc.left + m,
+        rc.top + m - st.text_scroll.get(),
+        x,
+        y,
     );
     let _ = DeleteObject(font.into());
     ReleaseDC(Some(hwnd), hdc);
@@ -229,9 +247,9 @@ unsafe fn md_hit(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
         let hits = st.md_hits.borrow();
         // Prefer the token under the point; else the nearest one — clicking in a margin or
         // between blocks should still land the caret somewhere sensible.
-        let inside = hits.iter().find(|h| {
-            x >= h.rect.left && x < h.rect.right && y >= h.rect.top && y < h.rect.bottom
-        });
+        let inside = hits
+            .iter()
+            .find(|h| x >= h.rect.left && x < h.rect.right && y >= h.rect.top && y < h.rect.bottom);
         match inside {
             Some(h) => *h,
             None => *hits.iter().min_by_key(|h| dist(&h.rect, x, y))?,
@@ -302,17 +320,11 @@ unsafe fn md_caret_x(hwnd: HWND, st: &ViewerState, h: &SelHit, off: usize) -> i3
 /// rects come from the last paint, so they must be refreshed before we hit-test at a new scroll.
 pub(super) unsafe fn scroll_by(hwnd: HWND, dy: i32) {
     let st = &*state(hwnd);
-    let c = content_rect(hwnd);
-    let m = crate::win::dpi_scale(hwnd, 12);
-    let visible = (c.bottom - c.top - 2 * m).max(0);
-    let max = (st.text_h.get() - visible).max(0);
-    let n = (st.text_scroll.get() + dy).clamp(0, max);
-    if n == st.text_scroll.get() {
+    let desired = st.text_scroll.get().saturating_add(dy);
+    if !set_text_scroll(hwnd, desired) {
         return;
     }
-    st.text_scroll.set(n);
     st.toc_sel.set(None); // same rule as a wheel scroll: back to the scroll-derived outline mark
-    let _ = InvalidateRect(Some(hwnd), None, false);
     let _ = UpdateWindow(hwnd);
 }
 
@@ -355,7 +367,10 @@ unsafe fn ensure_visible(hwnd: HWND, off: usize) {
             for _ in 0..8 {
                 let (exact, dir) = {
                     let hits = st.md_hits.borrow();
-                    let exact = hits.iter().find(|h| off >= h.start && off <= h.end).copied();
+                    let exact = hits
+                        .iter()
+                        .find(|h| off >= h.start && off <= h.end)
+                        .copied();
                     let dir = match &exact {
                         Some(_) => 0,
                         None if hits.iter().all(|h| h.start > off) => -1, // it's above us
@@ -391,7 +406,9 @@ pub(super) unsafe fn extend(hwnd: HWND, vk: u16, ctrl: bool) -> bool {
     if !selectable(st.kind.get()) {
         return false;
     }
-    let Some(len) = doc_len(hwnd) else { return false };
+    let Some(len) = doc_len(hwnd) else {
+        return false;
+    };
     let (anchor, focus) = match st.sel.get() {
         Some(p) => p,
         // Nothing selected yet: start from the top of the VIEW, not the document — yanking a
@@ -401,7 +418,9 @@ pub(super) unsafe fn extend(hwnd: HWND, vk: u16, ctrl: bool) -> bool {
             (o, o)
         }
     };
-    let Some(nf) = move_focus(hwnd, vk, ctrl, focus, len) else { return false };
+    let Some(nf) = move_focus(hwnd, vk, ctrl, focus, len) else {
+        return false;
+    };
     st.sel.set(Some((anchor, nf)));
     ensure_visible(hwnd, nf);
     let c = content_rect(hwnd);
@@ -424,7 +443,10 @@ unsafe fn first_visible_off(hwnd: HWND) -> Option<usize> {
         ContentKind::Markdown => {
             let c = content_rect(hwnd);
             let hits = st.md_hits.borrow();
-            hits.iter().filter(|h| h.rect.bottom > c.top).map(|h| h.start).min()
+            hits.iter()
+                .filter(|h| h.rect.bottom > c.top)
+                .map(|h| h.start)
+                .min()
         }
         _ => None,
     }
@@ -489,7 +511,11 @@ unsafe fn text_move(hwnd: HWND, vk: u16, focus: usize) -> Option<usize> {
     let tl = (li as i64 + step).clamp(0, starts.len() as i64 - 1) as usize;
     if tl == li {
         // Already on the first/last line: run to that end rather than doing nothing.
-        return Some(if step < 0 { starts[li] } else { line_end(t, &starts, li) });
+        return Some(if step < 0 {
+            starts[li]
+        } else {
+            line_end(t, &starts, li)
+        });
     }
     let hdc = GetDC(Some(hwnd));
     if hdc.is_invalid() {
@@ -537,7 +563,11 @@ unsafe fn md_move(hwnd: HWND, vk: u16, focus: usize) -> Option<usize> {
     }
     // The target line is off the pane and therefore has no hit rect — scroll it into view (a
     // synchronous repaint records the rects) and hit-test where it landed.
-    let over = if ty < c.top { ty - c.top } else { ty - c.bottom + 1 };
+    let over = if ty < c.top {
+        ty - c.top
+    } else {
+        ty - c.bottom + 1
+    };
     scroll_by(hwnd, over);
     md_hit(hwnd, x, ty - over)
 }
@@ -549,11 +579,17 @@ fn is_word(c: char) -> bool {
 }
 
 fn prev_char(d: &str, off: usize) -> usize {
-    d.get(..off).and_then(|s| s.char_indices().next_back()).map(|(i, _)| i).unwrap_or(0)
+    d.get(..off)
+        .and_then(|s| s.char_indices().next_back())
+        .map(|(i, _)| i)
+        .unwrap_or(0)
 }
 
 fn next_char(d: &str, off: usize) -> usize {
-    d.get(off..).and_then(|s| s.chars().next()).map(|c| off + c.len_utf8()).unwrap_or(off)
+    d.get(off..)
+        .and_then(|s| s.chars().next())
+        .map(|c| off + c.len_utf8())
+        .unwrap_or(off)
 }
 
 /// The char before / at `off` (`None` at the respective end of the document).
@@ -625,11 +661,14 @@ mod tests {
         // forward: over the word, then the spaces/punctuation after it
         assert_eq!(next_word(d, 0), d.find("grüße").unwrap()); // "let" + space
         assert_eq!(next_word(d, d.len()), d.len()); // end of doc is a fixed point
-        // a newline stops a forward hop (so Ctrl+Shift+Right doesn't skip whole lines)
+                                                    // a newline stops a forward hop (so Ctrl+Shift+Right doesn't skip whole lines)
         let nl = d.find('\n').unwrap();
         assert_eq!(next_word(d, d.find("42").unwrap()), nl);
         // backward: over the leading punctuation/space, then the word
-        assert_eq!(prev_word(d, d.find("= vec").unwrap()), d.find("grüße").unwrap());
+        assert_eq!(
+            prev_word(d, d.find("= vec").unwrap()),
+            d.find("grüße").unwrap()
+        );
         assert_eq!(prev_word(d, 0), 0);
         // mid-word backward lands at the word's start (multi-byte chars included)
         let g = d.find("grüße").unwrap();
@@ -642,11 +681,11 @@ mod tests {
     fn word_hops_cross_exactly_one_line_break() {
         let d = "hello world\nfoo bar";
         let nl = d.find('\n').unwrap(); // 11
-        // forward: ... -> line end -> (next press) the next line's first word. Never stuck.
+                                        // forward: ... -> line end -> (next press) the next line's first word. Never stuck.
         assert_eq!(next_word(d, 6), nl); // over "world", stop at the break
         assert_eq!(next_word(d, nl), nl + 1); // ON the break -> start of "foo"
         assert_eq!(next_word(d, nl + 1), d.find("bar").unwrap()); // then normally onward
-        // backward mirrors it: just after the break -> the previous line's end, and no further
+                                                                  // backward mirrors it: just after the break -> the previous line's end, and no further
         assert_eq!(prev_word(d, nl + 1), nl);
         assert_eq!(prev_word(d, nl), d.find("world").unwrap());
         // blank lines are crossed one at a time, not swallowed whole
@@ -659,8 +698,14 @@ mod tests {
             if !d.is_char_boundary(off) {
                 continue;
             }
-            assert!(next_word(d, off) > off || off == d.len(), "next_word stuck at {off}");
-            assert!(prev_word(d, off) < off || off == 0, "prev_word stuck at {off}");
+            assert!(
+                next_word(d, off) > off || off == d.len(),
+                "next_word stuck at {off}"
+            );
+            assert!(
+                prev_word(d, off) < off || off == 0,
+                "prev_word stuck at {off}"
+            );
         }
     }
 }

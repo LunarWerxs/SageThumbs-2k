@@ -67,7 +67,11 @@ fn decode_b64_jpeg(raw: &[u8]) -> Option<Vec<u8>> {
     let mut i = 0;
     while i < raw.len() {
         // Skip the literal XML entities "&#xA;" / "&#xD;" wholesale.
-        if raw[i] == b'&' && raw.get(i..i + 5).is_some_and(|w| w == b"&#xA;" || w == b"&#xD;") {
+        if raw[i] == b'&'
+            && raw
+                .get(i..i + 5)
+                .is_some_and(|w| w == b"&#xA;" || w == b"&#xD;")
+        {
             i += 5;
             continue;
         }
@@ -77,7 +81,7 @@ fn decode_b64_jpeg(raw: &[u8]) -> Option<Vec<u8>> {
         }
         i += 1;
     }
-    while b64.len() % 4 != 0 {
+    while !b64.len().is_multiple_of(4) {
         b64.push(b'=');
     }
     let jpeg = STANDARD.decode(&b64).ok()?;
@@ -91,9 +95,13 @@ mod tests {
 
     fn tiny_jpeg() -> Vec<u8> {
         let mut b = Vec::new();
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([10, 90, 200])))
-            .write_to(&mut Cursor::new(&mut b), image::ImageFormat::Jpeg)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            8,
+            8,
+            image::Rgb([10, 90, 200]),
+        ))
+        .write_to(&mut Cursor::new(&mut b), image::ImageFormat::Jpeg)
+        .unwrap();
         b
     }
 
@@ -126,9 +134,13 @@ mod tests {
         let small = tiny_jpeg();
         let big = {
             let mut b = Vec::new();
-            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([1, 2, 3])))
-                .write_to(&mut Cursor::new(&mut b), image::ImageFormat::Jpeg)
-                .unwrap();
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                64,
+                64,
+                image::Rgb([1, 2, 3]),
+            ))
+            .write_to(&mut Cursor::new(&mut b), image::ImageFormat::Jpeg)
+            .unwrap();
             b
         };
         let doc = format!(

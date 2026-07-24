@@ -5,7 +5,7 @@
   ad-hoc loops. This script encodes the whole ladder ONCE, fail-fast, with per-stage
   timing, so a session runs ONE command instead of improvising five.
 
-      pwsh scripts\verify.ps1 -Fast                       # check + lib tests            (~15 s)
+      pwsh scripts\verify.ps1 -Fast                       # check + lib/app unit tests   (~20 s)
       pwsh scripts\verify.ps1                             # + debug build + ALL tests    (~1 min)
       pwsh scripts\verify.ps1 -Lint                       # + clippy -D warnings, cargo-deny,
                                                           #   cargo-machete (mirrors CI locally)
@@ -30,7 +30,7 @@
 #>
 
 param(
-    # check + `cargo test --lib` only — the inner-loop gate while iterating.
+    # check + library/app unit tests only — the inner-loop gate while iterating.
     [switch]$Fast,
     # Corpus filename wildcard (e.g. "archive-*", "*.psd") to render + assert.
     [string]$Samples,
@@ -98,7 +98,10 @@ if ($Lint) {
 }
 
 if ($Fast) {
-    Stage 'cargo test --lib' { cargo test --lib --quiet 2>&1 | Select-Object -Last 3 | Write-Host }
+    Stage 'cargo test --lib --bin SageThumbs2K' {
+        cargo test --lib --bin SageThumbs2K --quiet 2>&1 |
+            Where-Object { $_ -match 'test result|FAILED|error' } | Write-Host
+    }
 } else {
     # Debug build FIRST: the COM round-trip tests load the debug cdylib from disk.
     Stage 'cargo build (debug)' { cargo build --quiet 2>&1 | Write-Host }

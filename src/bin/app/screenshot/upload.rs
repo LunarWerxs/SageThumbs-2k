@@ -37,10 +37,10 @@ use windows::Win32::Networking::WinInet::{
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, DispatchMessageW, GetSystemMetrics, MessageBoxW,
-    PeekMessageW, SendMessageW, TranslateMessage, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
-    MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, WINDOW_STYLE, WM_SETFONT,
-    WS_BORDER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    CreateWindowExW, DestroyWindow, DispatchMessageW, GetSystemMetrics, MessageBoxW, PeekMessageW,
+    SendMessageW, TranslateMessage, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MSG, PM_REMOVE,
+    SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, WINDOW_STYLE, WM_SETFONT, WS_BORDER, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 const HTTPS_PORT: u16 = 443;
@@ -151,16 +151,13 @@ fn upload_hosts() -> Result<Vec<UploadHost>, String> {
         if let Ok(raw) = key.get_string("ScreenshotUploadUrl") {
             let url = raw.trim().to_string();
             if !url.is_empty() {
-                let Some(rest) = url.strip_prefix("https://") else {
+                let Some((host, path)) = crate::http::split_https(&url) else {
                     return Err(format!(
-                        "Custom screenshot upload host must start with https:// (uploads always use TLS).\n\n\
+                        "Custom screenshot upload host must be a valid https:// URL on port 443 \
+                         (uploads always use TLS).\n\n\
                          Got: {url}\n\nFix it in HKCU\\Software\\SageThumbs2K\\ScreenshotUploadUrl \
                          (or use the upload-hosts config file)."
                     ));
-                };
-                let (host, path) = match rest.find('/') {
-                    Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
-                    None => (rest.to_string(), "/".to_string()),
                 };
                 let field = key
                     .get_string("ScreenshotUploadField")
@@ -171,9 +168,18 @@ fn upload_hosts() -> Result<Vec<UploadHost>, String> {
                     .get_string("ScreenshotUploadExtra")
                     .ok()
                     .filter(|s| !s.is_empty())
-                    .and_then(|kv| kv.split_once('=').map(|(k, v)| vec![(k.to_string(), v.to_string())]))
+                    .and_then(|kv| {
+                        kv.split_once('=')
+                            .map(|(k, v)| vec![(k.to_string(), v.to_string())])
+                    })
                     .unwrap_or_default();
-                return Ok(vec![UploadHost { host, path, field, extra, json: false }]);
+                return Ok(vec![UploadHost {
+                    host,
+                    path,
+                    field,
+                    extra,
+                    json: false,
+                }]);
             }
         }
     }
@@ -187,12 +193,16 @@ fn upload_hosts() -> Result<Vec<UploadHost>, String> {
 /// the shared `sagethumbs2k_core::upload_config` module — the `st2k` CLI opens the
 /// same file.)
 pub(crate) unsafe fn open_hosts_config() {
-    let Some(path) = sagethumbs2k_core::upload_config::ensure_config() else { return };
+    let Some(path) = sagethumbs2k_core::upload_config::ensure_config() else {
+        return;
+    };
     // If we couldn't create the file for some reason, open its folder instead.
     let target = if path.exists() {
         path.display().to_string()
     } else {
-        path.parent().map(|d| d.display().to_string()).unwrap_or_default()
+        path.parent()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default()
     };
     if target.is_empty() {
         return;
@@ -222,20 +232,31 @@ fn parse_hosts_config(text: &str) -> Vec<UploadHost> {
         }
         let mut parts = line.split('|').map(str::trim);
         let Some(url) = parts.next() else { continue };
-        let Some(rest) = url.strip_prefix("https://") else { continue }; // TLS-only
-        let (host, path) = match rest.find('/') {
-            Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
-            None => (rest.to_string(), "/".to_string()),
-        };
-        if host.is_empty() {
+        let Some((host, path)) = crate::http::split_https(url) else {
             continue;
-        }
-        let field = parts.next().filter(|s| !s.is_empty()).unwrap_or("file").to_string();
-        let json = parts.next().map(|s| s.eq_ignore_ascii_case("json")).unwrap_or(false);
+        };
+        let field = parts
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("file")
+            .to_string();
+        let json = parts
+            .next()
+            .map(|s| s.eq_ignore_ascii_case("json"))
+            .unwrap_or(false);
         let extra = parts
-            .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+            .filter_map(|kv| {
+                kv.split_once('=')
+                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            })
             .collect();
-        hosts.push(UploadHost { host, path, field, extra, json });
+        hosts.push(UploadHost {
+            host,
+            path,
+            field,
+            extra,
+            json,
+        });
     }
     hosts
 }
@@ -282,7 +303,9 @@ unsafe fn with_busy_pill<T: Send + 'static>(
         SendMessageW(
             p,
             WM_SETFONT,
-            Some(windows::Win32::Foundation::WPARAM(crate::win::gui_font().0 as usize)),
+            Some(windows::Win32::Foundation::WPARAM(
+                crate::win::gui_font().0 as usize,
+            )),
             Some(windows::Win32::Foundation::LPARAM(1)),
         );
     }
@@ -338,9 +361,11 @@ pub(crate) unsafe fn run_upload(path: &str) {
             let _ = set_clipboard_text(&u);
             crate::upload_result::show_upload_result(t("up_done_one"), &u);
         }
-        Err(reasons) => {
-            notify(&upload_failed_msg(t("up_what_screenshot"), &reasons), shot_caption(), true)
-        }
+        Err(reasons) => notify(
+            &upload_failed_msg(t("up_what_screenshot"), &reasons),
+            shot_caption(),
+            true,
+        ),
     }
 }
 
@@ -403,7 +428,11 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str) {
     });
     if urls.is_empty() {
         let reasons = last_reason.unwrap_or_else(|| "no readable files".to_string());
-        let what = if total == 1 { t("up_what_file") } else { t("up_what_any_files") };
+        let what = if total == 1 {
+            t("up_what_file")
+        } else {
+            t("up_what_any_files")
+        };
         notify(&upload_failed_msg(what, &reasons), file_caption(), true);
         return;
     }
@@ -428,15 +457,27 @@ fn upload_failed_msg(what: &str, reasons: &str) -> String {
     let cfg = sagethumbs2k_core::upload_config::config_path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "%APPDATA%\\SageThumbs2K\\upload-hosts.conf".to_string());
-    t("up_failed").replace("{what}", what).replace("{reasons}", reasons).replace("{cfg}", &cfg)
+    t("up_failed")
+        .replace("{what}", what)
+        .replace("{reasons}", reasons)
+        .replace("{cfg}", &cfg)
 }
 
 /// A simple completion message (the upload process has no window of its own).
 unsafe fn notify(msg: &str, caption: &str, error: bool) {
     let body = wide(msg);
     let cap = wide(caption);
-    let icon = if error { MB_ICONWARNING } else { MB_ICONINFORMATION };
-    MessageBoxW(None, PCWSTR(body.as_ptr()), PCWSTR(cap.as_ptr()), MB_OK | icon);
+    let icon = if error {
+        MB_ICONWARNING
+    } else {
+        MB_ICONINFORMATION
+    };
+    MessageBoxW(
+        None,
+        PCWSTR(body.as_ptr()),
+        PCWSTR(cap.as_ptr()),
+        MB_OK | icon,
+    );
 }
 
 /// Try each host in order; return the first URL, or — if all fail — a multi-line
@@ -462,8 +503,10 @@ unsafe fn upload_one(bytes: &[u8], filename: &str, h: &UploadHost) -> Result<Str
     let mut body: Vec<u8> = Vec::new();
     for (name, val) in &h.extra {
         body.extend_from_slice(
-            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{val}\r\n")
-                .as_bytes(),
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{val}\r\n"
+            )
+            .as_bytes(),
         );
     }
     body.extend_from_slice(
@@ -498,7 +541,7 @@ fn extract_url(body: &str, json: bool) -> Option<String> {
     let t = body.trim();
     if !json {
         // Plain reply: the whole (trimmed) body must BE a single URL token.
-        return (t.starts_with("http") && t.len() < 2048 && !t.contains(char::is_whitespace))
+        return (is_http_url(t) && t.len() < 2048 && !t.contains(char::is_whitespace))
             .then(|| t.to_string());
     }
     // JSON reply: take the first embedded http(s) URL, un-escaping `\/`.
@@ -518,13 +561,21 @@ fn extract_url(body: &str, json: bool) -> Option<String> {
             }
             break;
         }
-        if c == '"' || c == '\'' || c.is_whitespace() || matches!(c, '<' | '>' | ',' | '}' | ']' | ')') {
+        if c == '"'
+            || c == '\''
+            || c.is_whitespace()
+            || matches!(c, '<' | '>' | ',' | '}' | ']' | ')')
+        {
             break;
         }
         url.push(c);
         i += 1;
     }
-    (url.starts_with("http") && url.len() >= 12 && url.len() < 2048).then_some(url)
+    (is_http_url(&url) && url.len() >= 12 && url.len() < 2048).then_some(url)
+}
+
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
 }
 
 /// Condense a host's response into one short line for the failure dialog.
@@ -591,9 +642,53 @@ unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<Vec
 
     // Drain via the shared helper, which caps the body and returns None on over-cap
     // (the old inline loop here returned the TRUNCATED body — a corrupt URL).
-    let out = if sent { crate::win::wininet_drain(req, MAX_RESP) } else { None };
+    let out = if sent {
+        crate::win::wininet_drain(req, MAX_RESP)
+    } else {
+        None
+    };
     let _ = InternetCloseHandle(req);
     let _ = InternetCloseHandle(conn);
     let _ = InternetCloseHandle(session);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_url, parse_hosts_config};
+
+    #[test]
+    fn upload_response_requires_an_exact_web_scheme() {
+        assert_eq!(
+            extract_url("https://files.example.test/a.png", false).as_deref(),
+            Some("https://files.example.test/a.png")
+        );
+        assert_eq!(extract_url("httpx://files.example.test/a.png", false), None);
+        assert_eq!(
+            extract_url("javascript:https://files.example.test/a.png", false),
+            None
+        );
+        assert_eq!(
+            extract_url("https://files.example.test/a b.png", false),
+            None
+        );
+        assert_eq!(
+            extract_url(r#"{"url":"https:\/\/files.example.test\/a.png"}"#, true).as_deref(),
+            Some("https://files.example.test/a.png")
+        );
+    }
+
+    #[test]
+    fn upload_config_rejects_ambiguous_https_authorities() {
+        let text = "\
+https://good.example/upload | file | text
+https://user@bad.example/upload | file | text
+https://bad.example:8443/upload | file | text
+https://bad example/upload | file | text
+";
+        let hosts = parse_hosts_config(text);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].host, "good.example");
+        assert_eq!(hosts[0].path, "/upload");
+    }
 }

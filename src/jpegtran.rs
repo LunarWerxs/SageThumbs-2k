@@ -128,12 +128,20 @@ fn build_dec(bits: &[u8], vals: &[u8]) -> HuffDec {
             maxcode[l] = codes[p - 1];
         }
     }
-    HuffDec { mincode, maxcode, valptr, vals }
+    HuffDec {
+        mincode,
+        maxcode,
+        valptr,
+        vals,
+    }
 }
 
 fn build_enc(bits: &[u8], vals: &[u8]) -> HuffEnc {
     let (sizes, codes) = canonical(bits);
-    let mut enc = HuffEnc { code: [0; 256], len: [0; 256] };
+    let mut enc = HuffEnc {
+        code: [0; 256],
+        len: [0; 256],
+    };
     for i in 0..sizes.len() {
         let sym = vals[i] as usize;
         enc.code[sym] = codes[i] as u32;
@@ -153,7 +161,12 @@ struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     fn new(data: &'a [u8], pos: usize) -> Self {
-        BitReader { data, pos, cur: 0, nbits: 0 }
+        BitReader {
+            data,
+            pos,
+            cur: 0,
+            nbits: 0,
+        }
     }
 
     /// Next bit, or None at a marker / end of data.
@@ -222,14 +235,22 @@ fn decode_huff(br: &mut BitReader, h: &HuffDec) -> Option<u8> {
     for l in 1..=16usize {
         code = (code << 1) | br.bit()? as i32;
         if h.maxcode[l] >= 0 && code <= h.maxcode[l] {
-            return h.vals.get(h.valptr[l] + (code - h.mincode[l]) as usize).copied();
+            return h
+                .vals
+                .get(h.valptr[l] + (code - h.mincode[l]) as usize)
+                .copied();
         }
     }
     None
 }
 
 /// Decode one 8×8 block into NATURAL (row-major) order, updating the DC predictor.
-fn decode_block(br: &mut BitReader, dc: &HuffDec, ac: &HuffDec, pred: &mut i32) -> Option<[i32; 64]> {
+fn decode_block(
+    br: &mut BitReader,
+    dc: &HuffDec,
+    ac: &HuffDec,
+    pred: &mut i32,
+) -> Option<[i32; 64]> {
     let mut blk = [0i32; 64];
     let t = decode_huff(br, dc)? as u32;
     let diff = extend(br.receive(t)?, t);
@@ -267,7 +288,11 @@ struct BitWriter {
 
 impl BitWriter {
     fn new(out: Vec<u8>) -> Self {
-        BitWriter { out, acc: 0, nbits: 0 }
+        BitWriter {
+            out,
+            acc: 0,
+            nbits: 0,
+        }
     }
     fn put(&mut self, code: u32, len: u32) {
         for i in (0..len).rev() {
@@ -310,7 +335,11 @@ fn magnitude(v: i32) -> (u32, u32) {
         s += 1;
         t >>= 1;
     }
-    let m = if v >= 0 { v as u32 } else { (v + (1 << s) - 1) as u32 };
+    let m = if v >= 0 {
+        v as u32
+    } else {
+        (v + (1 << s) - 1) as u32
+    };
     (s, m & ((1u32 << s).wrapping_sub(1)))
 }
 
@@ -318,7 +347,13 @@ fn magnitude(v: i32) -> (u32, u32) {
 /// the standard Huffman table doesn't have (only possible for an extreme DC diff
 /// in a quality-100 JPEG) — the caller then bails to the lossy path rather than
 /// write a corrupt file.
-fn encode_block(bw: &mut BitWriter, blk: &[i32; 64], dc: &HuffEnc, ac: &HuffEnc, pred: &mut i32) -> bool {
+fn encode_block(
+    bw: &mut BitWriter,
+    blk: &[i32; 64],
+    dc: &HuffEnc,
+    ac: &HuffEnc,
+    pred: &mut i32,
+) -> bool {
     let diff = blk[0] - *pred;
     *pred = blk[0];
     let (s, m) = magnitude(diff);
@@ -419,8 +454,8 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
 
     let mut pre_frame: Vec<u8> = Vec::new(); // APPn/COM kept verbatim, before the frame
     let mut dqt: Vec<(u8, [u8; 64])> = Vec::new(); // (table id, 64 zig-zag quant values)
-    // At most 8 Huffman tables: 2 classes (DC=0/AC=1) × 4 ids. A fixed array drops
-    // the HashMap + its hashing for a code-size win in this opt-level="z" cdylib.
+                                                   // At most 8 Huffman tables: 2 classes (DC=0/AC=1) × 4 ids. A fixed array drops
+                                                   // the HashMap + its hashing for a code-size win in this opt-level="z" cdylib.
     let mut huff: [[Option<HuffDec>; 4]; 2] = Default::default();
     let mut restart_interval = 0usize;
     let mut width = 0usize;
@@ -594,7 +629,7 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
         return None;
     }
     // Block-aligned only (no partial edge blocks → no edge smear on rotate).
-    if width % (8 * hmax) != 0 || height % (8 * vmax) != 0 {
+    if !width.is_multiple_of(8 * hmax) || !height.is_multiple_of(8 * vmax) {
         return None;
     }
     let mcus_x = width / (8 * hmax);
@@ -615,14 +650,16 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
     // --- Decode the entropy-coded scan, MCU by MCU. ---
     // Snapshot per-component params so the loop can mutate `comps[ci].blocks`
     // without holding an immutable borrow of `comps`.
-    let cparams: Vec<(u8, u8, usize, usize, usize)> =
-        comps.iter().map(|c| (c.td, c.ta, c.h, c.v, c.grid_w)).collect();
+    let cparams: Vec<(u8, u8, usize, usize, usize)> = comps
+        .iter()
+        .map(|c| (c.td, c.ta, c.h, c.v, c.grid_w))
+        .collect();
     let mut br = BitReader::new(d, scan_start);
     let mut preds = vec![0i32; comps.len()];
     let mut mcu = 0usize;
     for my in 0..mcus_y {
         for mx in 0..mcus_x {
-            if restart_interval > 0 && mcu > 0 && mcu % restart_interval == 0 {
+            if restart_interval > 0 && mcu > 0 && mcu.is_multiple_of(restart_interval) {
                 br.restart()?;
                 preds.iter_mut().for_each(|p| *p = 0);
             }
@@ -661,11 +698,21 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
             std::mem::swap(&mut c.h, &mut c.v);
         }
     }
-    let (out_w, out_h) = if transpose { (height, width) } else { (width, height) };
+    let (out_w, out_h) = if transpose {
+        (height, width)
+    } else {
+        (width, height)
+    };
 
     // --- Re-encode with the standard Huffman tables. ---
-    let enc_dc = [build_enc(&DC_LUMA_BITS, &DC_VALS), build_enc(&DC_CHROMA_BITS, &DC_VALS)];
-    let enc_ac = [build_enc(&AC_LUMA_BITS, &AC_LUMA_VALS), build_enc(&AC_CHROMA_BITS, &AC_CHROMA_VALS)];
+    let enc_dc = [
+        build_enc(&DC_LUMA_BITS, &DC_VALS),
+        build_enc(&DC_CHROMA_BITS, &DC_VALS),
+    ];
+    let enc_ac = [
+        build_enc(&AC_LUMA_BITS, &AC_LUMA_VALS),
+        build_enc(&AC_CHROMA_BITS, &AC_CHROMA_VALS),
+    ];
     // Component 0 uses the luma tables; the rest use chroma.
     let tbl = |ci: usize| if ci == 0 { 0usize } else { 1usize };
 
@@ -684,7 +731,13 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
                         let gx = mx * c.h + bx;
                         let gy = my * c.v + by;
                         let blk = &c.blocks[gy * c.grid_w + gx];
-                        if !encode_block(&mut bw, blk, &enc_dc[tbl(ci)], &enc_ac[tbl(ci)], &mut preds[ci]) {
+                        if !encode_block(
+                            &mut bw,
+                            blk,
+                            &enc_dc[tbl(ci)],
+                            &enc_ac[tbl(ci)],
+                            &mut preds[ci],
+                        ) {
                             return None; // unencodable coefficient → fall back to lossy
                         }
                     }
@@ -763,7 +816,12 @@ fn build_dht() -> Vec<u8> {
 fn build_sof0(w: usize, h: usize, comps: &[Comp]) -> Vec<u8> {
     let len = 8 + comps.len() * 3;
     let mut seg = vec![0xFF, 0xC0, (len >> 8) as u8, (len & 0xff) as u8, 8];
-    seg.extend_from_slice(&[(h >> 8) as u8, (h & 0xff) as u8, (w >> 8) as u8, (w & 0xff) as u8]);
+    seg.extend_from_slice(&[
+        (h >> 8) as u8,
+        (h & 0xff) as u8,
+        (w >> 8) as u8,
+        (w & 0xff) as u8,
+    ]);
     seg.push(comps.len() as u8);
     for c in comps {
         seg.push(c.id);
@@ -775,7 +833,13 @@ fn build_sof0(w: usize, h: usize, comps: &[Comp]) -> Vec<u8> {
 
 fn build_sos(comps: &[Comp]) -> Vec<u8> {
     let len = 6 + comps.len() * 2;
-    let mut seg = vec![0xFF, 0xDA, (len >> 8) as u8, (len & 0xff) as u8, comps.len() as u8];
+    let mut seg = vec![
+        0xFF,
+        0xDA,
+        (len >> 8) as u8,
+        (len & 0xff) as u8,
+        comps.len() as u8,
+    ];
     for (ci, c) in comps.iter().enumerate() {
         let t = if ci == 0 { 0x00 } else { 0x11 }; // (Td<<4)|Ta → luma 0/0, chroma 1/1
         seg.push(c.id);
@@ -809,7 +873,10 @@ mod tests {
         }
         let mut jpeg = Vec::new();
         image::DynamicImage::ImageLuma8(g)
-            .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
             .unwrap();
         jpeg
     }
@@ -833,8 +900,8 @@ mod tests {
             &[0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x03, 0x08], // SOF0 len too small for header
             &[0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x02], // DHT len 2, truncated table
             &[0xFF, 0xD8, 0xFF, 0xDB, 0xFF, 0xFF], // DQT huge len past EOF
-            &[0xFF, 0xD8, 0xFF, 0xDA, 0x00], // SOS, ns byte missing
-            &[0xFF, 0xD8, 0xFF, 0xDD, 0x00], // DRI truncated
+            &[0xFF, 0xD8, 0xFF, 0xDA, 0x00],       // SOS, ns byte missing
+            &[0xFF, 0xD8, 0xFF, 0xDD, 0x00],       // DRI truncated
             &[0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xF0], // APP0 len past EOF
         ];
         for c in cases {
@@ -859,7 +926,10 @@ mod tests {
         let orig = image::load_from_memory(&jpeg).unwrap();
         for op in [Op::FlipH, Op::FlipV, Op::Rot180] {
             let out = transform(&jpeg, op).expect("in scope");
-            let got = image::load_from_memory(&out).expect("decodes").to_luma8().into_raw();
+            let got = image::load_from_memory(&out)
+                .expect("decodes")
+                .to_luma8()
+                .into_raw();
             let want = img_apply(&orig, op).to_luma8().into_raw();
             assert_eq!(got, want, "non-transpose op must be pixel-exact");
         }
@@ -879,8 +949,16 @@ mod tests {
             let want = img_apply(&orig, op);
             assert_eq!(got.dimensions(), want.dimensions());
             let (g, w) = (got.to_luma8().into_raw(), want.to_luma8().into_raw());
-            let maxd = g.iter().zip(&w).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
-            assert!(maxd <= 1, "rot transpose should match a pixel-rotate within 1, got {maxd}");
+            let maxd = g
+                .iter()
+                .zip(&w)
+                .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                .max()
+                .unwrap();
+            assert!(
+                maxd <= 1,
+                "rot transpose should match a pixel-rotate within 1, got {maxd}"
+            );
         }
     }
 
@@ -894,7 +972,10 @@ mod tests {
         for _ in 0..4 {
             cur = transform(&cur, Op::Rot90).expect("in scope");
         }
-        let a = image::load_from_memory(&jpeg).unwrap().to_luma8().into_raw();
+        let a = image::load_from_memory(&jpeg)
+            .unwrap()
+            .to_luma8()
+            .into_raw();
         let b = image::load_from_memory(&cur).unwrap().to_luma8().into_raw();
         assert_eq!(a, b, "rot90×4 must round-trip to the identical image");
     }
@@ -906,11 +987,18 @@ mod tests {
     fn color_transform_is_valid_and_close() {
         let mut c = image::RgbImage::new(32, 32); // 16-aligned (handles 4:2:0)
         for (x, y, p) in c.enumerate_pixels_mut() {
-            *p = image::Rgb([((x * 8) % 256) as u8, ((y * 8) % 256) as u8, (((x + y) * 4) % 256) as u8]);
+            *p = image::Rgb([
+                ((x * 8) % 256) as u8,
+                ((y * 8) % 256) as u8,
+                (((x + y) * 4) % 256) as u8,
+            ]);
         }
         let mut jpeg = Vec::new();
         image::DynamicImage::ImageRgb8(c)
-            .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
             .unwrap();
         let orig = image::load_from_memory(&jpeg).unwrap();
 
@@ -920,9 +1008,16 @@ mod tests {
             let want = img_apply(&orig, op);
             assert_eq!(got.dimensions(), want.dimensions());
             let (g, w) = (got.to_rgb8().into_raw(), want.to_rgb8().into_raw());
-            let mad: f64 = g.iter().zip(&w).map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as f64).sum::<f64>()
+            let mad: f64 = g
+                .iter()
+                .zip(&w)
+                .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as f64)
+                .sum::<f64>()
                 / g.len() as f64;
-            assert!(mad < 3.0, "mean abs diff {mad} too high — not a real rotation");
+            assert!(
+                mad < 3.0,
+                "mean abs diff {mad} too high — not a real rotation"
+            );
         }
     }
 
@@ -947,7 +1042,10 @@ mod tests {
         }
         let a = image::load_from_memory(bytes).unwrap().to_rgb8().into_raw();
         let b = image::load_from_memory(&cur).unwrap().to_rgb8().into_raw();
-        assert_eq!(a, b, "rot90×4 of a real restart-marker JPEG must be identity");
+        assert_eq!(
+            a, b,
+            "rot90×4 of a real restart-marker JPEG must be identity"
+        );
     }
 
     /// Out-of-scope inputs (non-block-aligned dims) return None so the caller
@@ -960,8 +1058,14 @@ mod tests {
         }
         let mut jpeg = Vec::new();
         image::DynamicImage::ImageLuma8(g)
-            .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
             .unwrap();
-        assert!(transform(&jpeg, Op::Rot90).is_none(), "non-aligned dims should bail");
+        assert!(
+            transform(&jpeg, Op::Rot90).is_none(),
+            "non-aligned dims should bail"
+        );
     }
 }

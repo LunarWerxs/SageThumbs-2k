@@ -129,7 +129,9 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
         .map(SampleSizes::Stsz)
         .or_else(|| find(stbl, b"stz2").map(SampleSizes::Stz2))?;
 
-    let media_timescale = find(mdia_body, b"mdhd").and_then(mdhd_timescale).unwrap_or(1000);
+    let media_timescale = find(mdia_body, b"mdhd")
+        .and_then(mdhd_timescale)
+        .unwrap_or(1000);
 
     // --- Map 30 %-of-duration → decoding-order sample → nearest preceding sync sample --------
     let (target_sample, frame_delta) = stts_target(full_box_body(stts), fraction)?;
@@ -350,7 +352,11 @@ impl SampleSizes<'_> {
                     8 => p.get(8 + idx).map(|&b| b as u64),
                     4 => {
                         let byte = *p.get(8 + idx / 2)?;
-                        let nib = if idx % 2 == 0 { byte >> 4 } else { byte & 0x0F };
+                        let nib = if idx.is_multiple_of(2) {
+                            byte >> 4
+                        } else {
+                            byte & 0x0F
+                        };
                         Some(nib as u64)
                     }
                     _ => None,
@@ -453,9 +459,7 @@ fn container(typ: &[u8; 4], children: &[&[u8]]) -> Vec<u8> {
 }
 
 /// The 3×3 video transform matrix (unity), 9 × 16.16 fixed-point as big-endian u32.
-const UNITY_MATRIX: [u32; 9] = [
-    0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000,
-];
+const UNITY_MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
 
 fn matrix_bytes() -> Vec<u8> {
     let mut v = Vec::with_capacity(36);
@@ -661,7 +665,8 @@ mod tests {
         // sample 0 → chunk1 + 0 = 1000; sample1 → 1010; sample2 → chunk2 = 2000; sample3 → 2010
         let cases = [(0u64, 1000u64), (1, 1010), (2, 2000), (3, 2010)];
         for (s, want) in cases {
-            let (off, desc) = sample_location(full_box_body(&stsc), (&stco, false), &sizes, s).unwrap();
+            let (off, desc) =
+                sample_location(full_box_body(&stsc), (&stco, false), &sizes, s).unwrap();
             assert_eq!(off, want, "sample {s}");
             assert_eq!(desc, 1);
         }
@@ -692,8 +697,18 @@ mod tests {
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let candidates = [
             std::env::var("ST2K_TEST_VIDEO").ok(),
-            Some(base.join("test-corpus-real").join("sample.mp4").to_string_lossy().into_owned()),
-            Some(base.join("test-corpus").join("sample.mp4").to_string_lossy().into_owned()),
+            Some(
+                base.join("test-corpus-real")
+                    .join("sample.mp4")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            Some(
+                base.join("test-corpus")
+                    .join("sample.mp4")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         ];
         let Some(path) = candidates
             .into_iter()

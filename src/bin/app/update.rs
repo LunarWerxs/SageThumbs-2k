@@ -4,11 +4,14 @@
 //! (offline, repo renamed/moved, no releases yet, rate-limited) becomes `Failed`, so the
 //! UI can fall back to "couldn't reach the update server — check GitHub manually."
 
+use std::io::{Read, Seek, Write};
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
 use crate::sponsors::{http_fetch, os_tag, BANNER_URL};
 
@@ -73,7 +76,10 @@ pub(crate) fn check() -> UpdateCheck {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// The tiny throttle/cache file ("`<unix_secs>\n<latest_tag>\n`"), next to the diagnostics
@@ -142,8 +148,16 @@ pub(crate) fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
 /// request with new=0. Returns the latest tag (e.g. "0.4.9") or None on any failure.
 fn latest_from_worker() -> Option<String> {
     // Tag the request with &dev=1 on a developer test box (see `is_dev_machine`).
-    let dev = if sagethumbs2k_core::settings::is_dev_machine() { "&dev=1" } else { "" };
-    let url = format!("{BANNER_URL}?v={}&os={}&new=0{dev}", env!("CARGO_PKG_VERSION"), os_tag());
+    let dev = if sagethumbs2k_core::settings::is_dev_machine() {
+        "&dev=1"
+    } else {
+        ""
+    };
+    let url = format!(
+        "{BANNER_URL}?v={}&os={}&new=0{dev}",
+        env!("CARGO_PKG_VERSION"),
+        os_tag()
+    );
     let bytes = http_fetch(&url, true)?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let tag = json.get("latest")?.as_str()?.trim();
@@ -209,7 +223,7 @@ const INSTALL_FLAGS: &str = "/SILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPP
 struct InstallerAsset {
     url: String,
     size: u64,
-    sha256: Option<String>, // lowercase hex, no "sha256:" prefix
+    sha256: String, // lowercase hex, no "sha256:" prefix
 }
 
 /// Pull the Windows installer asset out of GitHub's latest-release JSON — the `.exe` whose
@@ -223,7 +237,9 @@ fn latest_installer_asset() -> Option<(String, InstallerAsset)> {
 /// Pure parse of GitHub's latest-release JSON → (tag, installer asset). Split from the fetch
 /// so it can be unit-tested against a real release body with no network.
 fn installer_asset_from_json(json: &serde_json::Value) -> Option<(String, InstallerAsset)> {
-    let tag = json.get("tag_name")?.as_str()?.trim_start_matches(['v', 'V']).to_string();
+    let raw_tag = json.get("tag_name")?.as_str()?;
+    let (major, minor, patch) = parse_ver(raw_tag)?;
+    let tag = format!("{major}.{minor}.{patch}");
     let asset = json.get("assets")?.as_array()?.iter().find(|a| {
         a.get("name").and_then(|n| n.as_str()).is_some_and(|n| {
             let n = n.to_ascii_lowercase();
@@ -231,12 +247,20 @@ fn installer_asset_from_json(json: &serde_json::Value) -> Option<(String, Instal
         })
     })?;
     let url = asset.get("browser_download_url")?.as_str()?.to_string();
-    let size = asset.get("size").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let (host, path) = crate::http::split_https(&url)?;
+    if host != "github.com" || !path.starts_with("/LunarWerxs/SageThumbs-2k/releases/download/") {
+        return None;
+    }
+    let size = asset
+        .get("size")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let sha256 = asset
         .get("digest")
         .and_then(|d| d.as_str())
         .and_then(|d| d.strip_prefix("sha256:"))
-        .map(str::to_ascii_lowercase);
+        .map(str::to_ascii_lowercase)
+        .filter(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))?;
     Some((tag, InstallerAsset { url, size, sha256 }))
 }
 
@@ -245,7 +269,9 @@ fn sha256_hex(data: &[u8]) -> Option<String> {
     use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
     let mut out = [0u8; 32];
     let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
-    status.is_ok().then(|| out.iter().map(|b| format!("{b:02x}")).collect())
+    status
+        .is_ok()
+        .then(|| out.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Validate downloaded installer bytes before we ever run them elevated: a real PE, the
@@ -259,12 +285,60 @@ fn verify_installer_bytes(bytes: &[u8], asset: &InstallerAsset) -> bool {
     if asset.size != 0 && bytes.len() as u64 != asset.size {
         return false; // truncated / wrong length
     }
-    if let Some(want) = &asset.sha256 {
-        if sha256_hex(bytes).as_deref() != Some(want.as_str()) {
-            return false; // integrity check failed
-        }
+    if sha256_hex(bytes).as_deref() != Some(asset.sha256.as_str()) {
+        return false; // integrity check failed
     }
     true
+}
+
+/// Atomically create the downloaded installer and keep an open handle that permits
+/// readers but denies other writers/deleters. Holding that handle through
+/// `ShellExecuteW("runas")` closes the pathname replacement window between the final
+/// hash check and the elevated process opening the image.
+fn write_locked_installer(
+    tag: &str,
+    bytes: &[u8],
+    asset: &InstallerAsset,
+) -> Result<(PathBuf, std::fs::File), &'static str> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for attempt in 0..16u8 {
+        let path = std::env::temp_dir().join(format!(
+            "SageThumbs2K-Setup-{tag}-{}-{nonce}-{attempt}.exe",
+            std::process::id()
+        ));
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .open(&path);
+        let mut file = match opened {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err("couldn't save the installer"),
+        };
+        if file.write_all(bytes).is_err() || file.sync_all().is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err("couldn't save the installer");
+        }
+        if file.rewind().is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err("couldn't verify the saved installer");
+        }
+        let mut on_disk = Vec::with_capacity(bytes.len());
+        if file.read_to_end(&mut on_disk).is_err() || !verify_installer_bytes(&on_disk, asset) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err("the saved installer failed re-verification");
+        }
+        return Ok((path, file));
+    }
+    Err("couldn't reserve a temporary installer path")
 }
 
 /// Launch the freshly-verified installer SILENTLY + ELEVATED (one UAC prompt). Returns true
@@ -314,7 +388,7 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::UI::Shell::{
-        IProgressDialog, CLSID_ProgressDialog, PROGDLG_AUTOTIME, PROGDLG_NORMAL,
+        CLSID_ProgressDialog, IProgressDialog, PROGDLG_AUTOTIME, PROGDLG_NORMAL,
     };
 
     let (tag, asset) = latest_installer_asset().ok_or("couldn't find the installer on GitHub")?;
@@ -332,7 +406,8 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
     let title = crate::win::wide("Updating SageThumbs 2K");
     unsafe {
         let _ = dlg.SetTitle(PCWSTR(title.as_ptr()));
-        let _ = dlg.StartProgressDialog(Some(parent), None, PROGDLG_NORMAL | PROGDLG_AUTOTIME, None);
+        let _ =
+            dlg.StartProgressDialog(Some(parent), None, PROGDLG_NORMAL | PROGDLG_AUTOTIME, None);
         set_line(&dlg, 1, "Downloading update\u{2026}");
     }
 
@@ -350,7 +425,11 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
             }
             let denom = if total != 0 { total } else { done.max(1) };
             let _ = dlg.SetProgress64(done, denom);
-            set_line(&dlg, 2, &format!("{} of {}", human_mb(done), human_mb(total)));
+            set_line(
+                &dlg,
+                2,
+                &format!("{} of {}", human_mb(done), human_mb(total)),
+            );
             true
         },
     );
@@ -365,31 +444,14 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
         if !verify_installer_bytes(&bytes, &asset) {
             return Err("the download failed its integrity check");
         }
-        if asset.sha256.is_none() {
-            // No per-asset checksum from the release API → only the MZ-header + size checks ran.
-            // Log it so a missing release-workflow digest is visible, not a silent downgrade.
-            sagethumbs2k_core::safety::log(
-                "update: release asset carries no sha256 digest — installer verified by header + size only",
-            );
-        }
-        let mut path = std::env::temp_dir();
-        path.push(format!("SageThumbs2K-Setup-{tag}.exe"));
-        std::fs::write(&path, &bytes).map_err(|_| "couldn't save the installer")?;
-        // Re-verify the ON-DISK bytes right before the elevated launch. `fs::write` then
-        // `ShellExecuteW("runas")` is a TOCTOU window: another process with %TEMP% write access
-        // could swap the file, and the UAC prompt would then elevate the swapped binary. Re-reading
-        // and re-verifying what's actually on disk shrinks that window to near-zero (a swap during
-        // or just after the write is caught). On any mismatch, delete and abort.
-        let on_disk_ok = std::fs::read(&path).map(|d| verify_installer_bytes(&d, &asset)).unwrap_or(false);
-        if !on_disk_ok {
-            let _ = std::fs::remove_file(&path);
-            return Err("the saved installer failed re-verification");
-        }
+        let (path, installer_lock) = write_locked_installer(&tag, &bytes, &asset)?;
         unsafe {
             set_line(&dlg, 1, "Installing update\u{2026}");
             let _ = dlg.SetProgress64(1, 1); // full bar; Inno's silent bar now shows the install
         }
-        if launch_installer_silent(&path) {
+        let launched = launch_installer_silent(&path);
+        drop(installer_lock); // the elevated process has opened the image (or launch failed)
+        if launched {
             Ok(())
         } else {
             let _ = std::fs::remove_file(&path); // UAC-cancel / launch failure → don't leave the .exe in %TEMP%
@@ -458,7 +520,7 @@ mod tests {
             "assets": [
                 { "name": "notes.txt", "browser_download_url": "https://x/notes.txt", "size": 1 },
                 { "name": "SageThumbs2K-Setup-0.6.3.exe",
-                  "browser_download_url": "https://github.com/o/r/releases/download/v0.6.3/SageThumbs2K-Setup-0.6.3.exe",
+                  "browser_download_url": "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v0.6.3/SageThumbs2K-Setup-0.6.3.exe",
                   "size": 9_223_820u64,
                   "digest": "sha256:09D79A0C6589D7DC5AF5472CB8B1B56AAC0DFF51A47003B1146A9409F65C9835" }
             ]
@@ -468,8 +530,48 @@ mod tests {
         assert!(asset.url.ends_with("SageThumbs2K-Setup-0.6.3.exe"));
         assert_eq!(asset.size, 9_223_820);
         assert_eq!(
-            asset.sha256.as_deref(),
-            Some("09d79a0c6589d7dc5af5472cb8b1b56aac0dff51a47003b1146a9409f65c9835")
+            asset.sha256,
+            "09d79a0c6589d7dc5af5472cb8b1b56aac0dff51a47003b1146a9409f65c9835"
         );
+    }
+
+    #[test]
+    fn installer_asset_requires_digest_and_canonical_repo_url() {
+        let base = serde_json::json!({
+            "tag_name": "v1.2.3",
+            "assets": [{
+                "name": "SageThumbs2K-Setup-1.2.3.exe",
+                "browser_download_url":
+                    "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v1.2.3/setup.exe",
+                "size": 123
+            }]
+        });
+        assert!(super::installer_asset_from_json(&base).is_none());
+
+        let mut wrong_host = base;
+        wrong_host["assets"][0]["digest"] = serde_json::json!(
+            "sha256:09d79a0c6589d7dc5af5472cb8b1b56aac0dff51a47003b1146a9409f65c9835"
+        );
+        wrong_host["assets"][0]["browser_download_url"] =
+            serde_json::json!("https://downloads.example.test/setup.exe");
+        assert!(super::installer_asset_from_json(&wrong_host).is_none());
+    }
+
+    #[test]
+    fn installer_file_stays_write_locked_until_launch() {
+        let bytes = b"MZlocked-installer-test";
+        let asset = super::InstallerAsset {
+            url: String::new(),
+            size: bytes.len() as u64,
+            sha256: super::sha256_hex(bytes).expect("SHA-256"),
+        };
+        let (path, lock) =
+            super::write_locked_installer("test", bytes, &asset).expect("create locked installer");
+        assert!(
+            std::fs::OpenOptions::new().write(true).open(&path).is_err(),
+            "a second writer must not be able to replace the verified installer"
+        );
+        drop(lock);
+        std::fs::remove_file(path).expect("remove test installer");
     }
 }

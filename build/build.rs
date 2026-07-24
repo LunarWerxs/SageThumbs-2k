@@ -398,9 +398,16 @@ fn delay_load_media_foundation() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         return;
     }
-    for dll in ["mfplat.dll", "mfreadwrite.dll"] {
-        println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
+    // Only the two shipped executables need these flags. Applying them package-wide
+    // also sends /DELAYLOAD to unit/integration test harnesses whose dead-code
+    // elimination removes every MF import, producing noisy LNK4199 diagnostics.
+    for bin in ["SageThumbs2K", "st2k"] {
+        for dll in ["mfplat.dll", "mfreadwrite.dll"] {
+            println!("cargo:rustc-link-arg-bin={bin}=/DELAYLOAD:{dll}");
+        }
+        println!("cargo:rustc-link-arg-bin={bin}=delayimp.lib");
+        // A bin's `cargo test` harness may also dead-strip every MF call. This is
+        // exactly the benign "delay-load DLL ignored; no imports found" case.
+        println!("cargo:rustc-link-arg-bin={bin}=/IGNORE:4199");
     }
-    // /DELAYLOAD is inert without the helper that performs the deferred resolution.
-    println!("cargo:rustc-link-arg=delayimp.lib");
 }

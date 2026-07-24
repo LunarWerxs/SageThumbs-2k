@@ -1,24 +1,24 @@
 //! All viewer painting: content arms, text/code, toolbar glyphs.
 
-
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{
-    COLORREF, HWND, RECT,
-};
+use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx,
-    SelectObject, SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PAINTSTRUCT,
-    PS_SOLID, SRCCOPY, TRANSPARENT,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx, SelectObject,
+    SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PAINTSTRUCT, PS_SOLID, SRCCOPY,
+    TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self};
 use super::selection::sel_range;
+use super::toolbar::button_rects;
+use super::transport::{draw_scrub_strip, scrub_rect, video_rect};
+use super::window::{
+    clamp_text_scroll, state, text_scrollbar, Btn, ContentKind, BTNS, CAPTION_H, PAD,
+};
 use super::{highlight, infocard};
-use super::window::{ContentKind, Btn, BTNS, state, CAPTION_H, PAD};
-use super::toolbar::button_rects; use super::transport::{scrub_rect, video_rect, draw_scrub_strip};
 
 // ===== Painting =====
 
@@ -70,8 +70,18 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-    let caption_rc = RECT { left: 0, top: 0, right: rc.right, bottom: cap };
-    let content_rc = RECT { left: 0, top: cap, right: rc.right, bottom: rc.bottom };
+    let caption_rc = RECT {
+        left: 0,
+        top: 0,
+        right: rc.right,
+        bottom: cap,
+    };
+    let content_rc = RECT {
+        left: 0,
+        top: cap,
+        right: rc.right,
+        bottom: rc.bottom,
+    };
 
     let content_bg = crate::dark::SURFACE().0;
     let cap_bg = crate::dark::DARK_BG().0;
@@ -83,9 +93,23 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
         ContentKind::Image => {
             let frames = st.frames.borrow();
             if let Some(rd) = frames.get(st.cur_frame.get()) {
-                content::paint_image(hdc, &content_rc, rd, content_bg, st.zoom.get(), st.pan.get());
+                content::paint_image(
+                    hdc,
+                    &content_rc,
+                    rd,
+                    content_bg,
+                    st.zoom.get(),
+                    st.pan.get(),
+                );
             } else if let Some(rd) = st.render.borrow().as_ref() {
-                content::paint_image(hdc, &content_rc, rd, content_bg, st.zoom.get(), st.pan.get());
+                content::paint_image(
+                    hdc,
+                    &content_rc,
+                    rd,
+                    content_bg,
+                    st.zoom.get(),
+                    st.pan.get(),
+                );
             } else {
                 paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "Loading…");
             }
@@ -107,8 +131,19 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                     .unwrap_or("")
                     .to_ascii_lowercase();
                 let lang = highlight::lang_from_ext(&ext);
-                let th = paint_text(hwnd, hdc, &content_rc, t, lang, content_bg, text, st.text_scroll.get(), sel_range(st));
+                let th = paint_text(
+                    hwnd,
+                    hdc,
+                    &content_rc,
+                    t,
+                    lang,
+                    content_bg,
+                    text,
+                    st.text_scroll.get(),
+                    sel_range(st),
+                );
                 st.text_h.set(th); // remember for the wheel handler's scroll clamp
+                let _ = clamp_text_scroll(hwnd);
             } else {
                 paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "");
             }
@@ -135,7 +170,10 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                     0
                 };
                 let show_toc = sidebar_w > 0;
-                let md_rc = RECT { left: content_rc.left + sidebar_w, ..content_rc };
+                let md_rc = RECT {
+                    left: content_rc.left + sidebar_w,
+                    ..content_rc
+                };
                 let scroll = st.text_scroll.get();
                 // The markdown file's folder — local image srcs resolve against it.
                 let doc_dir = st
@@ -148,21 +186,47 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                 let mut imgs = st.md_imgs.borrow_mut();
                 let mut layout = st.md_layout.borrow_mut();
                 let mut hits = st.md_hits.borrow_mut();
-                let mut sel = super::markdown::MdSel { range: sel_range(st), hits: &mut hits };
+                let mut sel = super::markdown::MdSel {
+                    range: sel_range(st),
+                    hits: &mut hits,
+                };
                 let th = super::markdown::render(
-                    hwnd, hdc, &md_rc, t, scroll, &cols, &mut links, &mut toc, &mut imgs,
-                    doc_dir.as_deref(), st.decode_gen.get(), st.md_remote_ok.get(), &mut layout,
+                    hwnd,
+                    hdc,
+                    &md_rc,
+                    t,
+                    scroll,
+                    &cols,
+                    &mut links,
+                    &mut toc,
+                    &mut imgs,
+                    doc_dir.as_deref(),
+                    st.decode_gen.get(),
+                    st.md_remote_ok.get(),
+                    &mut layout,
                     &mut sel,
                 );
                 drop(hits);
                 drop(layout);
                 st.text_h.set(th);
+                let _ = clamp_text_scroll(hwnd);
                 drop(links);
                 drop(imgs);
                 if show_toc {
-                    let side_rc = RECT { right: content_rc.left + sidebar_w, ..content_rc };
+                    let side_rc = RECT {
+                        right: content_rc.left + sidebar_w,
+                        ..content_rc
+                    };
                     let mut hits = st.toc_hits.borrow_mut();
-                    paint_toc(hwnd, hdc, &side_rc, &toc, scroll, st.toc_sel.get(), &mut hits);
+                    paint_toc(
+                        hwnd,
+                        hdc,
+                        &side_rc,
+                        &toc,
+                        scroll,
+                        st.toc_sel.get(),
+                        &mut hits,
+                    );
                 } else {
                     st.toc_hits.borrow_mut().clear();
                 }
@@ -184,7 +248,9 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                 draw_scrub_strip(hwnd, hdc, &scrub_rect(hwnd), v, text, subtle);
             }
         }
-        ContentKind::Loading => paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "Loading…"),
+        ContentKind::Loading => {
+            paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "Loading…")
+        }
         ContentKind::Html => {
             // The WebView2 child window renders over the content area; just fill behind it.
             let brush = CreateSolidBrush(COLORREF(content_bg));
@@ -196,7 +262,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     // Scroll-position thumb for the text + markdown panes (they have no OS scrollbar). Drawn on top
     // of the content, only when it's taller than the viewport, so you can see where you are.
     if matches!(st.kind.get(), ContentKind::Text | ContentKind::Markdown) {
-        paint_scroll_thumb(hwnd, hdc, &content_rc, st.text_scroll.get(), st.text_h.get());
+        paint_scroll_thumb(hwnd, hdc);
     }
 
     // Caption strip.
@@ -213,7 +279,12 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
 
     // Title (file name), left-aligned in the caption.
     let buttons = button_rects(hwnd);
-    let title_right = buttons.iter().map(|(_, r)| r.left).min().unwrap_or(rc.right) - crate::win::dpi_scale(hwnd, PAD);
+    let title_right = buttons
+        .iter()
+        .map(|(_, r)| r.left)
+        .min()
+        .unwrap_or(rc.right)
+        - crate::win::dpi_scale(hwnd, PAD);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, COLORREF(text));
     let tf = crate::win::gui_font_for(hwnd);
@@ -221,16 +292,28 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     // PDF page indicator "N / M", right-aligned before the buttons — same visibility rule as
     // the pager buttons (multi-page PDF showing as an image; not on the InfoCard fallback).
     let pdf_lbl = if st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1 {
-        Some(format!("{} / {}", st.pdf_page.get() + 1, st.pdf_pages.get()))
+        Some(format!(
+            "{} / {}",
+            st.pdf_page.get() + 1,
+            st.pdf_pages.get()
+        ))
     } else {
         None
     };
-    let label_w = if pdf_lbl.is_some() { crate::win::dpi_scale(hwnd, 72) } else { 0 };
+    let label_w = if pdf_lbl.is_some() {
+        crate::win::dpi_scale(hwnd, 72)
+    } else {
+        0
+    };
     let mut title = st
         .path
         .borrow()
         .as_ref()
-        .and_then(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()))
+        .and_then(|p| {
+            std::path::Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
         .unwrap_or_default()
         .encode_utf16()
         .collect::<Vec<u16>>();
@@ -240,12 +323,27 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
         right: title_right - label_w,
         bottom: cap,
     };
-    draw_text(hdc, &mut title, &mut trc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    draw_text(
+        hdc,
+        &mut title,
+        &mut trc,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+    );
     if let Some(lbl) = pdf_lbl {
         SetTextColor(hdc, COLORREF(subtle));
         let mut w: Vec<u16> = lbl.encode_utf16().collect();
-        let mut lr = RECT { left: title_right - label_w, top: 0, right: title_right, bottom: cap };
-        DrawTextW(hdc, &mut w, &mut lr, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        let mut lr = RECT {
+            left: title_right - label_w,
+            top: 0,
+            right: title_right,
+            bottom: cap,
+        };
+        DrawTextW(
+            hdc,
+            &mut w,
+            &mut lr,
+            DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+        );
     }
     SelectObject(hdc, oldf);
 
@@ -256,13 +354,30 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     let icon = icon_font(hwnd);
     for (b, r) in buttons.iter() {
         let hot = st.hot.get() == BTNS.iter().position(|&bb| bb == *b);
-        draw_button(hwnd, hdc, *b, r, hot, st.pinned.get(), st.toc_open.get(), st.src_view.get(), icon);
+        draw_button(
+            hwnd,
+            hdc,
+            *b,
+            r,
+            hot,
+            st.pinned.get(),
+            st.toc_open.get(),
+            st.src_view.get(),
+            icon,
+        );
     }
     let _ = DeleteObject(icon.into());
 }
 
 /// Centered single-line message (e.g. "Loading…") in `rc`.
-pub(super) unsafe fn paint_message(hwnd: HWND, hdc: HDC, rc: &RECT, bg: u32, color: u32, text: &str) {
+pub(super) unsafe fn paint_message(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    bg: u32,
+    color: u32,
+    text: &str,
+) {
     let brush = CreateSolidBrush(COLORREF(bg));
     FillRect(hdc, rc, brush);
     let _ = DeleteObject(brush.into());
@@ -275,7 +390,12 @@ pub(super) unsafe fn paint_message(hwnd: HWND, hdc: HDC, rc: &RECT, bg: u32, col
     let old = SelectObject(hdc, f.into());
     let mut w: Vec<u16> = text.encode_utf16().collect();
     let mut r = *rc;
-    DrawTextW(hdc, &mut w, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    DrawTextW(
+        hdc,
+        &mut w,
+        &mut r,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
     SelectObject(hdc, old);
 }
 
@@ -320,14 +440,26 @@ unsafe fn paint_toc(
 
     SetTextColor(hdc, COLORREF(muted));
     let mut hdr: Vec<u16> = "CONTENTS".encode_utf16().collect();
-    let mut hr = RECT { left: rc.left + pad, top: y, right: rc.right - pad, bottom: y + row_h };
-    DrawTextW(hdc, &mut hdr, &mut hr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    let mut hr = RECT {
+        left: rc.left + pad,
+        top: y,
+        right: rc.right - pad,
+        bottom: y + row_h,
+    };
+    DrawTextW(
+        hdc,
+        &mut hdr,
+        &mut hr,
+        DT_LEFT | DT_SINGLELINE | DT_NOPREFIX,
+    );
     y += row_h + sc(4);
 
     // The "current" section: an explicitly-clicked entry wins (bottom sections can't scroll to
     // the pane top, so the click must still visibly select); otherwise the last heading at or
     // above the scroll position.
-    let cur = sel.filter(|i| *i < toc.len()).or_else(|| toc.iter().rposition(|e| e.target <= scroll + sc(4)));
+    let cur = sel
+        .filter(|i| *i < toc.len())
+        .or_else(|| toc.iter().rposition(|e| e.target <= scroll + sc(4)));
     for (i, e) in toc.iter().enumerate() {
         if y + row_h > rc.bottom {
             break; // clip overflow (no sidebar scroll in v1)
@@ -342,9 +474,27 @@ unsafe fn paint_toc(
         };
         SetTextColor(hdc, COLORREF(color));
         let mut label: Vec<u16> = e.text.encode_utf16().collect();
-        let mut r = RECT { left: rc.left + indent, top: y, right: rc.right - sc(8), bottom: y + row_h };
-        draw_text(hdc, &mut label, &mut r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER | DT_END_ELLIPSIS);
-        hits.push((RECT { left: rc.left, top: y, right: rc.right, bottom: y + row_h }, i));
+        let mut r = RECT {
+            left: rc.left + indent,
+            top: y,
+            right: rc.right - sc(8),
+            bottom: y + row_h,
+        };
+        draw_text(
+            hdc,
+            &mut label,
+            &mut r,
+            DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+        hits.push((
+            RECT {
+                left: rc.left,
+                top: y,
+                right: rc.right,
+                bottom: y + row_h,
+            },
+            i,
+        ));
         y += row_h;
     }
     SelectObject(hdc, old);
@@ -358,7 +508,17 @@ unsafe fn paint_toc(
 /// big files (e.g. a 45 KB `bun.lock`) jerk when scrolled. Returns the total content height.
 /// `sel` (normalized raw byte range) paints the mouse/Ctrl+A selection highlight.
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lang: highlight::Lang, bg: u32, fg: u32, scroll: i32, sel: Option<(usize, usize)>) -> i32 {
+pub(super) unsafe fn paint_text(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    text: &str,
+    lang: highlight::Lang,
+    bg: u32,
+    fg: u32,
+    scroll: i32,
+    sel: Option<(usize, usize)>,
+) -> i32 {
     let brush = CreateSolidBrush(COLORREF(bg));
     FillRect(hdc, rc, brush);
     let _ = DeleteObject(brush.into());
@@ -367,7 +527,20 @@ pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lan
     let font = mono_font(hwnd);
     let width = (rc.right - rc.left - 2 * m).max(1);
     // Plain text draws every run in `fg` (no keywords), so this covers both plain and code.
-    let text_h = highlight::paint_lines(hdc, text, lang, rc.left + m, rc.top + m - scroll, width, rc.top, rc.bottom, font, fg, sel, None);
+    let text_h = highlight::paint_lines(
+        hdc,
+        text,
+        lang,
+        rc.left + m,
+        rc.top + m - scroll,
+        width,
+        rc.top,
+        rc.bottom,
+        font,
+        fg,
+        sel,
+        None,
+    );
     let _ = DeleteObject(font.into());
     text_h
 }
@@ -375,29 +548,22 @@ pub(super) unsafe fn paint_text(hwnd: HWND, hdc: HDC, rc: &RECT, text: &str, lan
 /// A thin scroll-position indicator on the right edge of `content_rc`. The text/markdown panes
 /// have no OS scrollbar, so without this you can't tell where you are or whether a wheel notch
 /// registered. Sized/positioned from the same (scroll, text_h, visible) math as `scroll_text`, so
-/// it tracks the real position; hidden when everything already fits.
-unsafe fn paint_scroll_thumb(hwnd: HWND, hdc: HDC, content_rc: &RECT, scroll: i32, text_h: i32) {
-    let m = crate::win::dpi_scale(hwnd, 12);
-    let track_h = (content_rc.bottom - content_rc.top).max(1);
-    let visible = (track_h - 2 * m).max(1); // mirrors scroll_text's visible-height math
-    let max_scroll = text_h - visible;
-    if max_scroll <= 0 {
-        return; // content fits — nothing to scroll, so no thumb
-    }
-    let min_thumb = crate::win::dpi_scale(hwnd, 32);
-    let thumb_h = ((visible * track_h) / text_h.max(1)).clamp(min_thumb, track_h);
-    let scroll = scroll.clamp(0, max_scroll);
-    let thumb_y = content_rc.top + (scroll * (track_h - thumb_h)) / max_scroll;
-    let tw = crate::win::dpi_scale(hwnd, 4);
-    let pad = crate::win::dpi_scale(hwnd, 3);
-    let thumb = RECT {
-        left: content_rc.right - pad - tw,
-        top: thumb_y,
-        right: content_rc.right - pad,
-        bottom: thumb_y + thumb_h,
+/// it tracks the real position; hidden when everything already fits. The shared geometry helper
+/// is also used by the window's mouse hit-testing, making this painted thumb draggable.
+unsafe fn paint_scroll_thumb(hwnd: HWND, hdc: HDC) {
+    let Some(sb) = text_scrollbar(hwnd) else {
+        return;
     };
-    let brush = CreateSolidBrush(COLORREF(crate::dark::BORDER_STRONG().0));
-    FillRect(hdc, &thumb, brush);
+    let st = &*state(hwnd);
+    let color = if st.scroll_drag.get().is_some() || st.scroll_page_press.get() {
+        crate::dark::ACCENT().0
+    } else if st.scroll_hot.get() {
+        crate::dark::HEADER_TEXT().0
+    } else {
+        crate::dark::BORDER_STRONG().0
+    };
+    let brush = CreateSolidBrush(COLORREF(color));
+    FillRect(hdc, &sb.thumb, brush);
     let _ = DeleteObject(brush.into());
 }
 
@@ -410,9 +576,14 @@ pub(super) unsafe fn mono_font(hwnd: HWND) -> HFONT {
     let h = crate::win::dpi_scale(hwnd, 13);
     let face = crate::win::wide("Consolas");
     CreateFontW(
-        -h, 0, 0, 0,
+        -h,
+        0,
+        0,
+        0,
         400, // FW_NORMAL
-        0, 0, 0,
+        0,
+        0,
+        0,
         DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS,
@@ -447,42 +618,66 @@ pub(super) unsafe fn icon_font(hwnd: HWND) -> HFONT {
 /// The Segoe Fluent Icons codepoint for each toolbar button.
 pub(super) fn btn_glyph(btn: Btn, pinned: bool) -> u16 {
     match btn {
-        Btn::Toc => 0xE8FD,     // BulletedList (outline)
-        Btn::Source => 0xE943,  // Code (`</>`) — view source
-        Btn::PdfPrev => 0xE76B, // ChevronLeft
-        Btn::PdfNext => 0xE76C, // ChevronRight
+        Btn::Toc => 0xE8FD,           // BulletedList (outline)
+        Btn::Source => 0xE943,        // Code (`</>`) — view source
+        Btn::PdfPrev => 0xE76B,       // ChevronLeft
+        Btn::PdfNext => 0xE76C,       // ChevronRight
         Btn::Pin if pinned => 0xE840, // Pinned (filled)
-        Btn::Pin => 0xE718,     // Pin
-        Btn::Copy => 0xE8C8,    // Copy
-        Btn::Info => 0xE946,    // Info
-        Btn::Upload => 0xE898,  // Upload (up-arrow to line)
-        Btn::Open => 0xE8A7,    // OpenInNewWindow
-        Btn::OpenWith => 0xE7AC, // OpenWith
-        Btn::Close => 0xE711,   // Cancel (X)
+        Btn::Pin => 0xE718,           // Pin
+        Btn::Copy => 0xE8C8,          // Copy
+        Btn::Info => 0xE946,          // Info
+        Btn::Upload => 0xE898,        // Upload (up-arrow to line)
+        Btn::Open => 0xE8A7,          // OpenInNewWindow
+        Btn::OpenWith => 0xE7AC,      // OpenWith
+        Btn::Close => 0xE711,         // Cancel (X)
     }
 }
 
 /// Draw one toolbar button: the hover pill, then its Segoe Fluent icon glyph, in the accent
 /// colour when hovered (or when Pin / the outline toggle is active), else the normal text colour.
 #[allow(clippy::too_many_arguments)] // owner-draw helper: many positional draw params by nature
-pub(super) unsafe fn draw_button(hwnd: HWND, hdc: HDC, btn: Btn, r: &RECT, hot: bool, pinned: bool, toc_open: bool, src_view: bool, icon: HFONT) {
+pub(super) unsafe fn draw_button(
+    hwnd: HWND,
+    hdc: HDC,
+    btn: Btn,
+    r: &RECT,
+    hot: bool,
+    pinned: bool,
+    toc_open: bool,
+    src_view: bool,
+    icon: HFONT,
+) {
     // Hover background pill.
     if hot {
         let hb = CreateSolidBrush(COLORREF(crate::dark::BTN_FACE_HOT().0));
         let pad = crate::win::dpi_scale(hwnd, 3);
-        let pr = RECT { left: r.left + pad, top: r.top + pad, right: r.right - pad, bottom: r.bottom - pad };
+        let pr = RECT {
+            left: r.left + pad,
+            top: r.top + pad,
+            right: r.right - pad,
+            bottom: r.bottom - pad,
+        };
         FillRect(hdc, &pr, hb);
         let _ = DeleteObject(hb.into());
     }
     let active = (matches!(btn, Btn::Pin) && pinned)
         || (matches!(btn, Btn::Toc) && toc_open)
         || (matches!(btn, Btn::Source) && src_view);
-    let color = if hot || active { crate::dark::ACCENT().0 } else { crate::dark::DARK_TEXT().0 };
+    let color = if hot || active {
+        crate::dark::ACCENT().0
+    } else {
+        crate::dark::DARK_TEXT().0
+    };
     let old = SelectObject(hdc, icon.into());
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, COLORREF(color));
     let mut buf = [btn_glyph(btn, pinned)];
     let mut rr = *r;
-    DrawTextW(hdc, &mut buf, &mut rr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    DrawTextW(
+        hdc,
+        &mut buf,
+        &mut rr,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
     SelectObject(hdc, old);
 }

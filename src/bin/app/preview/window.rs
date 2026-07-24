@@ -6,9 +6,7 @@
 use std::cell::{Cell, RefCell};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{
-    HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
-};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, InvalidateRect, MonitorFromWindow, ScreenToClient, HDC, MONITORINFO,
     MONITOR_DEFAULTTONEAREST,
@@ -16,9 +14,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
-    VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F11, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR,
-    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
+    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F11, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN,
+    VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -180,6 +178,14 @@ pub(super) struct ViewerState {
     pub(super) text_scroll: Cell<i32>,
     /// Last-measured total text height (device px) — the wheel handler clamps scroll to it.
     pub(super) text_h: Cell<i32>,
+    /// Active custom-scrollbar drag: cursor offset from the top of the thumb at button-down.
+    pub(super) scroll_drag: Cell<Option<i32>>,
+    /// A held click on the scrollbar track (used to swallow the matching button-up).
+    pub(super) scroll_page_press: Cell<bool>,
+    /// Whether the pointer is over the custom scrollbar lane (for hover feedback).
+    pub(super) scroll_hot: Cell<bool>,
+    /// Unconsumed high-resolution wheel delta; a full Windows wheel notch is 120 units.
+    pub(super) wheel_remainder: Cell<i32>,
     /// Selection: `(anchor, focus)` RAW byte offsets into the active selection document —
     /// `text` for the Text pane, the Markdown pane's rendered text (see [`super::selection`]).
     /// Unordered (the anchor is where the drag started); equal offsets = no selection. Cleared
@@ -255,7 +261,6 @@ pub(super) unsafe fn state(hwnd: HWND) -> *const ViewerState {
     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const ViewerState
 }
 
-
 /// Close the viewer, but DEFER the destroy if a WebView2 create is currently pumping the message
 /// loop (destroying now would free `ViewerState` under the still-running create → use-after-free).
 /// The deferred close is applied by `loader::create_web` once the create returns.
@@ -317,7 +322,11 @@ pub(super) unsafe fn create_viewer(
     // focus, always coverable). Not applicable to the off-screen shot window.
     let open_front = shot.is_none() && sagethumbs2k_core::settings::preview_open_front();
     let manual = shot.is_none() && !sagethumbs2k_core::settings::preview_enabled();
-    let ex = if pinned { WS_EX_TOOLWINDOW | WS_EX_TOPMOST } else { WS_EX_TOOLWINDOW };
+    let ex = if pinned {
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST
+    } else {
+        WS_EX_TOOLWINDOW
+    };
     let style = WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN;
 
     let hwnd = CreateWindowExW(
@@ -366,6 +375,10 @@ pub(super) unsafe fn create_viewer(
         vol_drag: Cell::new(false),
         text_scroll: Cell::new(0),
         text_h: Cell::new(0),
+        scroll_drag: Cell::new(None),
+        scroll_page_press: Cell::new(false),
+        scroll_hot: Cell::new(false),
+        wheel_remainder: Cell::new(0),
         sel: Cell::new(None),
         sel_drag: Cell::new(false),
         line_starts: RefCell::new(Vec::new()),
@@ -407,7 +420,6 @@ pub(super) unsafe fn create_viewer(
     Some(hwnd)
 }
 
-
 /// The letterbox / content background as a raw `COLORREF` u32.
 pub(super) fn letterbox_bg(st: &ViewerState) -> u32 {
     let _ = st;
@@ -421,7 +433,11 @@ pub(super) unsafe fn set_title(hwnd: HWND) {
         .path
         .borrow()
         .as_ref()
-        .and_then(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()))
+        .and_then(|p| {
+            std::path::Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| "SageThumbs 2K".to_string());
     let w = crate::win::wide(&name);
     let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
@@ -429,9 +445,11 @@ pub(super) unsafe fn set_title(hwnd: HWND) {
 
 /// (x, y) from a mouse `LPARAM` (signed 16-bit halves).
 pub(super) fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
-    ((lparam.0 & 0xFFFF) as i16 as i32, ((lparam.0 >> 16) & 0xFFFF) as i16 as i32)
+    (
+        (lparam.0 & 0xFFFF) as i16 as i32,
+        ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+    )
 }
-
 
 /// The link URL (if any) under the client-space point, from the last Markdown paint. Only
 /// Markdown content records link rects.
@@ -465,13 +483,22 @@ unsafe fn hit_toc(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
 unsafe fn open_preview_link(hwnd: HWND, url: &str) {
     let u = url.trim();
     let lower = u.to_ascii_lowercase();
-    let ok = (lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:"))
+    let ok = (lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:"))
         && !u.bytes().any(|b| b < 0x20);
     if !ok {
         return;
     }
     let w = crate::win::wide(u);
-    let _ = ShellExecuteW(Some(hwnd), w!("open"), PCWSTR(w.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    let _ = ShellExecuteW(
+        Some(hwnd),
+        w!("open"),
+        PCWSTR(w.as_ptr()),
+        PCWSTR::null(),
+        PCWSTR::null(),
+        SW_SHOWNORMAL,
+    );
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -545,13 +572,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_APP_MDIMG => {
                 // A remote markdown image landed: install it (stale gen / wrong kind → drop).
-                let boxed = Box::from_raw(lparam.0 as *mut (u64, String, Option<super::content::DecodedRgba>));
+                let boxed = Box::from_raw(
+                    lparam.0 as *mut (u64, String, Option<super::content::DecodedRgba>),
+                );
                 let (gen, src, dec) = *boxed;
                 let st = &*state(hwnd);
                 if gen == st.decode_gen.get() && st.kind.get() == ContentKind::Markdown {
                     let slot = match dec.and_then(|d| {
-                        super::content::make_dib(d.w, d.h, &d.rgba, crate::dark::SURFACE().0)
-                            .map(|hbmp| super::content::RenderData { hbmp, iw: d.w, ih: d.h })
+                        super::content::make_dib(d.w, d.h, &d.rgba, crate::dark::SURFACE().0).map(
+                            |hbmp| super::content::RenderData {
+                                hbmp,
+                                iw: d.w,
+                                ih: d.h,
+                            },
+                        )
                     }) {
                         Some(rd) => super::markdown::ImgSlot::Ready(rd),
                         None => super::markdown::ImgSlot::Failed,
@@ -594,6 +628,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(w) = st.webview.borrow().as_ref() {
                     w.place(&content_rect(hwnd)); // webview fills the content area
                 }
+                // The visible height changed. Clamp immediately using the last measured document
+                // height; the next paint clamps once more if Markdown reflow changes that height.
+                let _ = clamp_text_scroll(hwnd);
                 update_tooltips(hwnd, st.tip.get()); // buttons are right-anchored — re-track them
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
@@ -624,6 +661,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_MOUSEMOVE => {
                 let (x, y) = lparam_xy(lparam);
                 let st = &*state(hwnd);
+                // Active drag of the custom text/Markdown scrollbar thumb.
+                if let Some(grab_y) = st.scroll_drag.get() {
+                    drag_text_scroll_thumb(hwnd, y, grab_y);
+                    return LRESULT(0);
+                }
+                // A track click captures until button-up so it cannot turn into a content click
+                // if the pointer moves away. Native auto-repeat is intentionally not emulated.
+                if st.scroll_page_press.get() {
+                    let _ = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
+                    return LRESULT(0);
+                }
                 // Active seek / volume drag on the video strip.
                 if st.scrub_drag.get() || st.vol_drag.get() {
                     let sr = scrub_rect(hwnd);
@@ -675,13 +723,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     return LRESULT(0);
                 }
                 let now = hit_button(hwnd, x, y);
-                if now != st.hot.get() {
+                let button_changed = now != st.hot.get();
+                if button_changed {
                     st.hot.set(now);
                     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
                     r.bottom = cap;
                     let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+                }
+                let scroll_changed = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
+                if button_changed || scroll_changed {
                     let mut tme = TRACKMOUSEEVENT {
                         cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -702,6 +754,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     r.bottom = cap;
                     let _ = InvalidateRect(Some(hwnd), Some(&r), false);
                 }
+                let _ = set_scroll_hot(hwnd, false);
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
@@ -711,9 +764,25 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 } else {
                     let st = &*state(hwnd);
                     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-                    if st.kind.get() == ContentKind::Video {
+                    if let Some(hit) = hit_text_scrollbar(hwnd, x, y) {
+                        let _ = set_scroll_hot(hwnd, true);
+                        match hit {
+                            TextScrollHit::Thumb(grab_y) => {
+                                // The thumb is owner-drawn, so explicitly capture the mouse and
+                                // map subsequent pointer movement back to the document range.
+                                st.scroll_drag.set(Some(grab_y));
+                            }
+                            TextScrollHit::Page(dy) => {
+                                let _ = scroll_text_by(hwnd, dy);
+                                st.scroll_page_press.set(true);
+                            }
+                        }
+                        invalidate_text_scrollbar(hwnd); // pressed feedback
+                        let _ = SetCapture(hwnd);
+                    } else if st.kind.get() == ContentKind::Video {
                         scrub_mouse_down(hwnd, x, y);
-                    } else if y >= cap && st.kind.get() == ContentKind::Image && st.zoom.get() > 1.0 {
+                    } else if y >= cap && st.kind.get() == ContentKind::Image && st.zoom.get() > 1.0
+                    {
                         // In the content area, over a zoomed image → begin a pan drag.
                         let (px, py) = st.pan.get();
                         st.drag.set(Some((x, y, px, py)));
@@ -738,7 +807,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_LBUTTONUP => {
                 let st = &*state(hwnd);
-                if st.scrub_drag.get() || st.vol_drag.get() {
+                if st.scroll_drag.get().is_some() || st.scroll_page_press.get() {
+                    st.scroll_drag.set(None);
+                    st.scroll_page_press.set(false);
+                    let _ = ReleaseCapture();
+                    let (x, y) = lparam_xy(lparam);
+                    let _ = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
+                    invalidate_text_scrollbar(hwnd); // pressed → hover/idle feedback
+                } else if st.scrub_drag.get() || st.vol_drag.get() {
                     st.scrub_drag.set(false);
                     st.vol_drag.set(false);
                     let _ = ReleaseCapture();
@@ -767,10 +843,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // Capture stolen mid-drag (alt-tab, another SetCapture) — end every drag so a
                 // buttonless mouse-move can't keep seeking/panning/selecting.
                 let st = &*state(hwnd);
+                let scrollbar_was_pressed =
+                    st.scroll_drag.get().is_some() || st.scroll_page_press.get();
                 st.drag.set(None);
+                st.scroll_drag.set(None);
+                st.scroll_page_press.set(false);
                 st.scrub_drag.set(false);
                 st.vol_drag.set(false);
                 st.sel_drag.set(false);
+                let _ = set_scroll_hot(hwnd, false);
+                if scrollbar_was_pressed {
+                    invalidate_text_scrollbar(hwnd);
+                }
                 LRESULT(0)
             }
             WM_SETCURSOR => {
@@ -778,27 +862,37 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // default handling so the resize border + caption keep their sizing/move cursors.
                 if (lparam.0 & 0xFFFF) as i32 == HTCLIENT as i32 {
                     let st = &*state(hwnd);
-                    if st.kind.get() == ContentKind::Markdown {
-                        let mut pt = POINT::default();
-                        let _ = GetCursorPos(&mut pt);
-                        let _ = ScreenToClient(hwnd, &mut pt);
-                        if hit_link(hwnd, pt.x, pt.y).is_some() || hit_toc(hwnd, pt.x, pt.y).is_some() {
-                            if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
-                                SetCursor(Some(hand));
-                            }
-                            return LRESULT(1);
+                    let mut pt = POINT::default();
+                    let _ = GetCursorPos(&mut pt);
+                    let _ = ScreenToClient(hwnd, &mut pt);
+                    // Keep the standard arrow over the scrollbar instead of presenting the
+                    // text-selection I-beam, which made the painted thumb look non-interactive.
+                    if st.scroll_drag.get().is_some()
+                        || st.scroll_page_press.get()
+                        || hit_text_scrollbar(hwnd, pt.x, pt.y).is_some()
+                    {
+                        if let Ok(arrow) = LoadCursorW(None, IDC_ARROW) {
+                            SetCursor(Some(arrow));
                         }
+                        return LRESULT(1);
                     }
-                    if selection::selectable(st.kind.get()) {
-                        let mut pt = POINT::default();
-                        let _ = GetCursorPos(&mut pt);
-                        let _ = ScreenToClient(hwnd, &mut pt);
-                        if pt.y >= crate::win::dpi_scale(hwnd, CAPTION_H) && hit_toc(hwnd, pt.x, pt.y).is_none() {
-                            if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) {
-                                SetCursor(Some(ibeam));
-                            }
-                            return LRESULT(1);
+                    if st.kind.get() == ContentKind::Markdown
+                        && (hit_link(hwnd, pt.x, pt.y).is_some()
+                            || hit_toc(hwnd, pt.x, pt.y).is_some())
+                    {
+                        if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
+                            SetCursor(Some(hand));
                         }
+                        return LRESULT(1);
+                    }
+                    if selection::selectable(st.kind.get())
+                        && pt.y >= crate::win::dpi_scale(hwnd, CAPTION_H)
+                        && hit_toc(hwnd, pt.x, pt.y).is_none()
+                    {
+                        if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) {
+                            SetCursor(Some(ibeam));
+                        }
+                        return LRESULT(1);
                     }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -807,13 +901,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let (x, y) = lparam_xy(lparam);
                 let st = &*state(hwnd);
                 let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-                if y >= cap && st.kind.get() == ContentKind::Image && hit_button(hwnd, x, y).is_none() {
+                if hit_text_scrollbar(hwnd, x, y).is_some() {
+                    // A double-click on the scrollbar must not select the document text beneath it.
+                } else if y >= cap
+                    && st.kind.get() == ContentKind::Image
+                    && hit_button(hwnd, x, y).is_none()
+                {
                     toggle_fit_100(hwnd); // double-click content → toggle fit / 100%
-                } else if y >= cap && selection::selectable(st.kind.get()) && hit_toc(hwnd, x, y).is_none() {
+                } else if y >= cap
+                    && selection::selectable(st.kind.get())
+                    && hit_toc(hwnd, x, y).is_none()
+                {
                     // Double-click in a text/Markdown pane → select the word under the cursor.
                     // Claiming the drag (capture + flag) keeps the button-up that follows from
                     // being read as a click — which would open a double-clicked link.
-                    if let Some((a, b)) = selection::hit(hwnd, x, y).and_then(|o| selection::word_range(hwnd, o)) {
+                    if let Some((a, b)) =
+                        selection::hit(hwnd, x, y).and_then(|o| selection::word_range(hwnd, o))
+                    {
                         st.sel.set(Some((a, b)));
                         st.sel_drag.set(true);
                         let _ = SetCapture(hwnd);
@@ -877,8 +981,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     return LRESULT(0);
                 }
                 // Home / End scroll a text or Markdown document to its ends.
-                if !shift && (vk == VK_HOME.0 || vk == VK_END.0) && selection::selectable(st.kind.get()) {
-                    let to = if vk == VK_HOME.0 { -st.text_scroll.get() } else { st.text_h.get() };
+                if !shift
+                    && (vk == VK_HOME.0 || vk == VK_END.0)
+                    && selection::selectable(st.kind.get())
+                {
+                    let to = if vk == VK_HOME.0 {
+                        -st.text_scroll.get()
+                    } else {
+                        st.text_h.get()
+                    };
                     selection::scroll_by(hwnd, to);
                     return LRESULT(0);
                 }
@@ -955,7 +1066,11 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     match decoded {
         Some(d) => match content::make_dib(d.w, d.h, &d.rgba, letterbox_bg(st)) {
             Some(hbmp) => {
-                *st.render.borrow_mut() = Some(RenderData { hbmp, iw: d.w, ih: d.h });
+                *st.render.borrow_mut() = Some(RenderData {
+                    hbmp,
+                    iw: d.w,
+                    ih: d.h,
+                });
                 st.kind.set(ContentKind::Image);
             }
             None => fallback_card(st),
@@ -987,7 +1102,11 @@ unsafe fn on_anim(hwnd: HWND, lparam: LPARAM) {
     let mut delays: Vec<u32> = Vec::with_capacity(frames_in.len());
     for (d, ms) in frames_in {
         if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, bg) {
-            rds.push(RenderData { hbmp, iw: d.w, ih: d.h });
+            rds.push(RenderData {
+                hbmp,
+                iw: d.w,
+                ih: d.h,
+            });
             delays.push(ms);
         }
     }
@@ -1026,7 +1145,9 @@ unsafe fn advance_frame(hwnd: HWND) {
 
 /// Handle a `WM_COPYDATA` command from the daemon (or the single-instance forwarder).
 unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
-    let Some((cmd, path)) = parse_command(lparam) else { return };
+    let Some((cmd, path)) = parse_command(lparam) else {
+        return;
+    };
     let st = &*state(hwnd);
     let in_grace = GetTickCount64().saturating_sub(st.born.get()) < SETTLE_CLOSE_MS;
     match cmd {
@@ -1060,7 +1181,10 @@ pub(super) unsafe fn do_action(hwnd: HWND, btn: Btn) {
             // Slide the panel rather than snapping: freeze the CURRENT width (settled or
             // mid-animation), flip the target, and let TOC_TIMER_ID tween toward it.
             let w_full = crate::win::dpi_scale(hwnd, 220);
-            let from = st.toc_anim.get().unwrap_or(if st.toc_open.get() { w_full } else { 0 });
+            let from = st
+                .toc_anim
+                .get()
+                .unwrap_or(if st.toc_open.get() { w_full } else { 0 });
             let open = !st.toc_open.get();
             st.toc_open.set(open);
             st.toc_anim.set(Some(from));
@@ -1077,7 +1201,15 @@ pub(super) unsafe fn do_action(hwnd: HWND, btn: Btn) {
             let pin = !st.pinned.get();
             st.pinned.set(pin);
             let z = if pin { HWND_TOPMOST } else { HWND_NOTOPMOST };
-            let _ = SetWindowPos(hwnd, Some(z), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                Some(z),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
             let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
             let mut r = RECT::default();
             let _ = GetClientRect(hwnd, &mut r);
@@ -1144,7 +1276,6 @@ pub(super) unsafe fn do_action(hwnd: HWND, btn: Btn) {
     }
 }
 
-
 /// Flip between the RENDERED document and its raw source (toolbar button / Ctrl+U). No-op on a
 /// file that has only one of the two views.
 ///
@@ -1180,8 +1311,7 @@ unsafe fn click_content(hwnd: HWND, x: i32, y: i32) {
         // visually dead.
         let target = st.md_toc.borrow().get(idx).map(|e| e.target);
         if let Some(target) = target {
-            let max = (st.text_h.get() - content_rect(hwnd).bottom + content_rect(hwnd).top).max(0);
-            st.text_scroll.set(target.min(max));
+            let _ = set_text_scroll(hwnd, target);
             st.toc_sel.set(Some(idx));
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
@@ -1220,7 +1350,9 @@ unsafe fn copy_content(hwnd: HWND, raw: bool) {
             // Copy what is DISPLAYED — the navigated-to PDF page / the animation frame on
             // screen at the keypress — not blindly the file's first page/frame. Decode + pack
             // off the UI thread (a RAW/HEIC decode isn't instant); the WIC tier needs COM.
-            let Some(p) = st.path.borrow().clone() else { return };
+            let Some(p) = st.path.borrow().clone() else {
+                return;
+            };
             let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
             let anim_frame = {
                 let frames = st.frames.borrow();
@@ -1328,14 +1460,24 @@ pub(super) unsafe fn content_rect(hwnd: HWND) -> RECT {
     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
     let mut r = RECT::default();
     let _ = GetClientRect(hwnd, &mut r);
-    RECT { left: 0, top: cap, right: r.right, bottom: r.bottom }
+    RECT {
+        left: 0,
+        top: cap,
+        right: r.right,
+        bottom: r.bottom,
+    }
 }
+
+mod scroll;
+pub(super) use scroll::*;
 
 /// Video-only: the render child's rect = content area minus the bottom scrub strip.
 /// Zoom the image in/out by a wheel notch, keeping the image point under the cursor fixed.
 unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: LPARAM) {
     let st = &*state(hwnd);
-    let Some((iw, ih)) = image_dims(st) else { return };
+    let Some((iw, ih)) = image_dims(st) else {
+        return;
+    };
     let c = content_rect(hwnd);
     let (cw, ch) = (c.right - c.left, c.bottom - c.top);
     // WM_MOUSEWHEEL's lparam is in SCREEN coords.
@@ -1355,8 +1497,16 @@ unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: LPARAM) {
     let img_x = (pt.x as f64 - old_dx) / old_scale;
     let img_y = (pt.y as f64 - old_dy) / old_scale;
     let new_scale = fit * new_zoom;
-    let new_px = (pt.x as f64 - img_x * new_scale - c.left as f64 - (cw as f64 - iw as f64 * new_scale) / 2.0).round() as i32;
-    let new_py = (pt.y as f64 - img_y * new_scale - c.top as f64 - (ch as f64 - ih as f64 * new_scale) / 2.0).round() as i32;
+    let new_px = (pt.x as f64
+        - img_x * new_scale
+        - c.left as f64
+        - (cw as f64 - iw as f64 * new_scale) / 2.0)
+        .round() as i32;
+    let new_py = (pt.y as f64
+        - img_y * new_scale
+        - c.top as f64
+        - (ch as f64 - ih as f64 * new_scale) / 2.0)
+        .round() as i32;
     st.zoom.set(new_zoom);
     st.pan.set((new_px, new_py));
     clamp_pan(hwnd);
@@ -1366,7 +1516,9 @@ unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: LPARAM) {
 /// Toggle between aspect-fit and 100% (native pixels), recentering.
 unsafe fn toggle_fit_100(hwnd: HWND) {
     let st = &*state(hwnd);
-    let Some((iw, ih)) = image_dims(st) else { return };
+    let Some((iw, ih)) = image_dims(st) else {
+        return;
+    };
     let c = content_rect(hwnd);
     let fit = content::fit_scale(iw, ih, c.right - c.left, c.bottom - c.top);
     let full = (1.0 / fit).clamp(1.0, 8.0); // 100% == display scale 1.0
@@ -1379,7 +1531,9 @@ unsafe fn toggle_fit_100(hwnd: HWND) {
 /// Keep the (zoomed) image covering the content — clamp pan so no empty margin shows.
 unsafe fn clamp_pan(hwnd: HWND) {
     let st = &*state(hwnd);
-    let Some((iw, ih)) = image_dims(st) else { return };
+    let Some((iw, ih)) = image_dims(st) else {
+        return;
+    };
     let c = content_rect(hwnd);
     let (cw, ch) = (c.right - c.left, c.bottom - c.top);
     let scale = content::fit_scale(iw, ih, cw, ch) * st.zoom.get();
@@ -1390,20 +1544,21 @@ unsafe fn clamp_pan(hwnd: HWND) {
     st.pan.set((px.clamp(-maxx, maxx), py.clamp(-maxy, maxy)));
 }
 
-/// Scroll the text preview by a wheel notch (~3 lines), clamped to the measured text height.
+fn wheel_notches(remainder: i32, delta: i32) -> (i32, i32) {
+    let total = remainder.saturating_add(delta);
+    (total / 120, total % 120)
+}
+
+/// Accumulate precision-wheel deltas, scrolling ~3 lines whenever they reach a full notch.
 unsafe fn scroll_text(hwnd: HWND, delta: i32) {
     let st = &*state(hwnd);
-    let c = content_rect(hwnd);
-    let visible = (c.bottom - c.top - 2 * crate::win::dpi_scale(hwnd, 12)).max(0);
-    let max_scroll = (st.text_h.get() - visible).max(0);
-    let step = crate::win::dpi_scale(hwnd, 40);
-    let cur = st.text_scroll.get();
-    let new = (cur - (delta / 120) * step).clamp(0, max_scroll);
-    if new != cur {
-        st.text_scroll.set(new);
-        st.toc_sel.set(None); // manual scroll → back to the scroll-derived outline highlight
-        let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+    let (notches, remainder) = wheel_notches(st.wheel_remainder.get(), delta);
+    st.wheel_remainder.set(remainder);
+    if notches == 0 {
+        return;
     }
+    let step = crate::win::dpi_scale(hwnd, 40);
+    let _ = scroll_text_by(hwnd, notches.saturating_mul(-step));
 }
 
 /// One outline-sidebar slide frame: move the animated width a third of the remaining distance
@@ -1431,8 +1586,15 @@ unsafe fn toggle_fullscreen(hwnd: HWND) {
     if let Some(prev) = st.fullscreen.get() {
         let style = (GetWindowLongPtrW(hwnd, GWL_STYLE) as u32) | WS_THICKFRAME.0;
         SetWindowLongPtrW(hwnd, GWL_STYLE, style as isize);
-        let _ = SetWindowPos(hwnd, None, prev.left, prev.top, prev.right - prev.left,
-            prev.bottom - prev.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            prev.left,
+            prev.top,
+            prev.right - prev.left,
+            prev.bottom - prev.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
         st.fullscreen.set(None);
     } else {
         let mut wr = RECT::default();
@@ -1440,7 +1602,10 @@ unsafe fn toggle_fullscreen(hwnd: HWND) {
             return;
         }
         let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        let mut mi = MONITORINFO { cbSize: core::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let mut mi = MONITORINFO {
+            cbSize: core::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
         if !GetMonitorInfoW(mon, &mut mi).as_bool() {
             return;
         }
@@ -1448,8 +1613,15 @@ unsafe fn toggle_fullscreen(hwnd: HWND) {
         let style = (GetWindowLongPtrW(hwnd, GWL_STYLE) as u32) & !WS_THICKFRAME.0;
         SetWindowLongPtrW(hwnd, GWL_STYLE, style as isize);
         let r = mi.rcMonitor;
-        let _ = SetWindowPos(hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top,
-            SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
     }
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
@@ -1503,7 +1675,9 @@ unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
         return;
     }
     files.sort_by_key(|p| {
-        p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
     });
     let idx = files.iter().position(|p| p == cur_path).unwrap_or(0) as i32;
     let n = files.len() as i32;
@@ -1514,3 +1688,42 @@ unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        scroll_from_thumb_offset, scroll_thumb_geometry, text_scroll_limits, wheel_notches,
+    };
+
+    #[test]
+    fn every_scroll_path_shares_the_same_limits() {
+        assert_eq!(text_scroll_limits(600, 12, 2400), (576, 1824));
+        assert_eq!(text_scroll_limits(600, 12, 500), (576, 0));
+    }
+
+    #[test]
+    fn scrollbar_geometry_tracks_the_document_range() {
+        let (thumb_h, top) = scroll_thumb_geometry(600, 576, 1824, 0, 32).unwrap();
+        assert_eq!((thumb_h, top), (144, 0));
+
+        let (_, middle) = scroll_thumb_geometry(600, 576, 1824, 912, 32).unwrap();
+        let (_, bottom) = scroll_thumb_geometry(600, 576, 1824, 1824, 32).unwrap();
+        assert_eq!(middle, 228);
+        assert_eq!(bottom, 456);
+    }
+
+    #[test]
+    fn scrollbar_drag_clamps_to_both_ends() {
+        assert_eq!(scroll_from_thumb_offset(-50, 456, 1824), 0);
+        assert_eq!(scroll_from_thumb_offset(228, 456, 1824), 912);
+        assert_eq!(scroll_from_thumb_offset(900, 456, 1824), 1824);
+    }
+
+    #[test]
+    fn precision_wheel_deltas_accumulate_without_being_lost() {
+        assert_eq!(wheel_notches(0, 30), (0, 30));
+        assert_eq!(wheel_notches(30, 90), (1, 0));
+        assert_eq!(wheel_notches(0, -60), (0, -60));
+        assert_eq!(wheel_notches(-60, -60), (-1, 0));
+        assert_eq!(wheel_notches(45, -45), (0, 0));
+    }
+}

@@ -56,8 +56,7 @@ pub use fileops::{combine_to_cbz, files_to_folder, sort_by_dimensions, tags_to_f
 #[allow(unused_imports)]
 pub use actions::{
     copy_rgba_to_clipboard, copy_to_clipboard, is_audio, is_image, prepare_wallpaper,
-    prepare_wallpaper_in, run_action,
-    run_action_detached, set_wallpaper, ActionReport,
+    prepare_wallpaper_in, run_action, run_action_detached, set_wallpaper, ActionReport,
 };
 
 // Crate-internal helpers surfaced ONLY for the in-crate `tests` module below
@@ -75,11 +74,11 @@ pub(crate) use fileops::{combined_path, expand_template, sanitize_component};
 #[cfg(test)]
 use core::ffi::c_void;
 #[cfg(test)]
+use image::ImageFormat;
+#[cfg(test)]
 use std::iter::once;
 #[cfg(test)]
 use std::os::windows::ffi::OsStrExt;
-#[cfg(test)]
-use image::ImageFormat;
 #[cfg(test)]
 use windows::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER,
@@ -103,7 +102,11 @@ mod tests {
             .save_with_format(&png, ImageFormat::Png)
             .unwrap();
 
-        let target = Target { format: ImageFormat::Jpeg, ext: "jpg", webp_quality: None };
+        let target = Target {
+            format: ImageFormat::Jpeg,
+            ext: "jpg",
+            webp_quality: None,
+        };
         let out = convert_file(png.to_str().unwrap(), target).unwrap();
         assert_eq!(out, dir.join("sample.jpg"));
         assert!(out.exists());
@@ -123,14 +126,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st2k_reveal_out_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("r.png");
-        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])))
-            .save_with_format(&png, ImageFormat::Png)
-            .unwrap();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8,
+            8,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .save_with_format(&png, ImageFormat::Png)
+        .unwrap();
 
-        let target = Target { format: ImageFormat::Jpeg, ext: "jpg", webp_quality: None };
-        let report = run_action(VerbAction::Convert(target), &[png.to_str().unwrap().to_string()]);
+        let target = Target {
+            format: ImageFormat::Jpeg,
+            ext: "jpg",
+            webp_quality: None,
+        };
+        let report = run_action(
+            VerbAction::Convert(target),
+            &[png.to_str().unwrap().to_string()],
+        );
         assert_eq!(report.done, 1);
-        let out = report.output.as_ref().expect("convert should record its output path");
+        let out = report
+            .output
+            .as_ref()
+            .expect("convert should record its output path");
         assert_eq!(out, &dir.join("r.jpg"));
         assert!(out.exists(), "the recorded output file should exist");
 
@@ -160,14 +177,25 @@ mod tests {
             (ImageFormat::Tiff, "tiff"),
             (ImageFormat::Ico, "ico"),
         ] {
-            let out = convert_file(p, Target { format, ext, webp_quality: None })
-                .unwrap_or_else(|e| panic!("convert to {ext} failed: {e:?}"));
+            let out = convert_file(
+                p,
+                Target {
+                    format,
+                    ext,
+                    webp_quality: None,
+                },
+            )
+            .unwrap_or_else(|e| panic!("convert to {ext} failed: {e:?}"));
             assert!(out.exists(), "{ext} output should exist");
         }
 
         let rot = transform_file(p, Transform::Right90).unwrap();
         let d = image::open(&rot).unwrap();
-        assert_eq!((d.width(), d.height()), (24, 40), "90° rotation swaps dimensions");
+        assert_eq!(
+            (d.width(), d.height()),
+            (24, 40),
+            "90° rotation swaps dimensions"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -177,19 +205,32 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st2k_resize_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("big.png");
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2000, 1500)).save(&png).unwrap();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2000, 1500))
+            .save(&png)
+            .unwrap();
 
         // Fit within 800×600 → scaled down, aspect kept, still a PNG.
         let out = resize_file(png.to_str().unwrap(), Resize::Fit(800, 600)).unwrap();
         assert_eq!(out.extension().unwrap(), "png");
         let d = image::open(&out).unwrap();
-        assert!(d.width() <= 800 && d.height() <= 600 && d.width() == 800, "got {}x{}", d.width(), d.height());
+        assert!(
+            d.width() <= 800 && d.height() <= 600 && d.width() == 800,
+            "got {}x{}",
+            d.width(),
+            d.height()
+        );
 
         // Never upscales a small image.
         let small = dir.join("small.png");
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(100, 100)).save(&small).unwrap();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(100, 100))
+            .save(&small)
+            .unwrap();
         let out2 = resize_file(small.to_str().unwrap(), Resize::Fit(1920, 1080)).unwrap();
-        assert_eq!(image::open(&out2).unwrap().width(), 100, "should not upscale");
+        assert_eq!(
+            image::open(&out2).unwrap().width(),
+            100,
+            "should not upscale"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -204,7 +245,11 @@ mod tests {
 
         for (format, ext) in [(ImageFormat::Tga, "tga"), (ImageFormat::Qoi, "qoi")] {
             let opts = ConvertOpts {
-                target: Target { format, ext, webp_quality: None },
+                target: Target {
+                    format,
+                    ext,
+                    webp_quality: None,
+                },
                 jpeg_quality: 90,
                 png_level: 6,
                 webp_quality: None,
@@ -212,7 +257,10 @@ mod tests {
             };
             let out = convert_file_opts(png.to_str().unwrap(), opts, &dir)
                 .unwrap_or_else(|e| panic!("convert to {ext} failed: {e:?}"));
-            assert!(out.exists() && image::open(&out).is_ok(), "{ext} should encode + reopen");
+            assert!(
+                out.exists() && image::open(&out).is_ok(),
+                "{ext} should encode + reopen"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -233,23 +281,41 @@ mod tests {
         let p = png.to_str().unwrap();
 
         let base = ConvertOpts {
-            target: Target { format: ImageFormat::WebP, ext: "webp", webp_quality: None },
+            target: Target {
+                format: ImageFormat::WebP,
+                ext: "webp",
+                webp_quality: None,
+            },
             jpeg_quality: 90,
             png_level: 6,
             webp_quality: None,
             resize: Resize::None,
         };
         let lossless = convert_file_opts(p, base, &dir).unwrap();
-        let lossy = convert_file_opts(p, ConvertOpts { webp_quality: Some(60), ..base }, &dir).unwrap();
+        let lossy = convert_file_opts(
+            p,
+            ConvertOpts {
+                webp_quality: Some(60),
+                ..base
+            },
+            &dir,
+        )
+        .unwrap();
 
         // The lossy path actually ran (distinct bytes from the lossless encoder).
         let ls = std::fs::metadata(&lossless).unwrap().len();
         let ly = std::fs::metadata(&lossy).unwrap().len();
-        assert_ne!(ly, ls, "lossy WebP ({ly}) should differ from lossless ({ls})");
+        assert_ne!(
+            ly, ls,
+            "lossy WebP ({ly}) should differ from lossless ({ls})"
+        );
         // Output is a valid WebP and alpha survives (not bit-exact for a lossy
         // codec, but the transparent corner stays mostly transparent).
         let a = image::open(&lossy).unwrap().to_rgba8().get_pixel(0, 0)[3];
-        assert!(a < 128, "transparent pixel should stay mostly transparent, got alpha {a}");
+        assert!(
+            a < 128,
+            "transparent pixel should stay mostly transparent, got alpha {a}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -261,9 +327,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st2k_webp_big_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("wide.png");
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(16384, 1)).save(&png).unwrap();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(16384, 1))
+            .save(&png)
+            .unwrap();
         let opts = ConvertOpts {
-            target: Target { format: ImageFormat::WebP, ext: "webp", webp_quality: None },
+            target: Target {
+                format: ImageFormat::WebP,
+                ext: "webp",
+                webp_quality: None,
+            },
             jpeg_quality: 90,
             png_level: 6,
             webp_quality: Some(75),
@@ -285,7 +357,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st2k_webp_logo_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let opts = ConvertOpts {
-            target: Target { format: ImageFormat::WebP, ext: "webp", webp_quality: None },
+            target: Target {
+                format: ImageFormat::WebP,
+                ext: "webp",
+                webp_quality: None,
+            },
             jpeg_quality: 90,
             png_level: 6,
             webp_quality: None,
@@ -312,7 +388,11 @@ mod tests {
         image::DynamicImage::ImageRgba8(img).save(&png).unwrap();
 
         let opts = ConvertOpts {
-            target: Target { format: ImageFormat::WebP, ext: "webp", webp_quality: None },
+            target: Target {
+                format: ImageFormat::WebP,
+                ext: "webp",
+                webp_quality: None,
+            },
             jpeg_quality: 90,
             png_level: 6,
             webp_quality: None,
@@ -320,7 +400,11 @@ mod tests {
         };
         let out = convert_file_opts(png.to_str().unwrap(), opts, &dir).unwrap();
         let d = image::open(&out).unwrap().to_rgba8();
-        assert_eq!(d.get_pixel(0, 0)[3], 0, "transparent pixel must stay transparent in WebP");
+        assert_eq!(
+            d.get_pixel(0, 0)[3],
+            0,
+            "transparent pixel must stay transparent in WebP"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -329,12 +413,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st2k_cvopts_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("big.png");
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2000, 1000, image::Rgb([30, 140, 200])))
-            .save(&png)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2000,
+            1000,
+            image::Rgb([30, 140, 200]),
+        ))
+        .save(&png)
+        .unwrap();
 
         let opts = ConvertOpts {
-            target: Target { format: ImageFormat::Jpeg, ext: "jpg", webp_quality: None },
+            target: Target {
+                format: ImageFormat::Jpeg,
+                ext: "jpg",
+                webp_quality: None,
+            },
             jpeg_quality: 80,
             png_level: 6,
             webp_quality: None,
@@ -357,20 +449,35 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st2k_email_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("big.png");
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2000, 1500, image::Rgb([30, 140, 200])))
-            .save(&png)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2000,
+            1500,
+            image::Rgb([30, 140, 200]),
+        ))
+        .save(&png)
+        .unwrap();
 
         let out = shrink_for_email(png.to_str().unwrap(), EmailSize::Medium).unwrap();
         assert_eq!(out, dir.join("big (email).jpg"));
         let d = image::open(&out).unwrap();
-        assert!(d.width() <= 1024 && d.height() <= 1024 && d.width() == 1024, "got {}x{}", d.width(), d.height());
+        assert!(
+            d.width() <= 1024 && d.height() <= 1024 && d.width() == 1024,
+            "got {}x{}",
+            d.width(),
+            d.height()
+        );
 
         // Never upscales a tiny source.
         let small = dir.join("small.png");
-        image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 80)).save(&small).unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 80))
+            .save(&small)
+            .unwrap();
         let out2 = shrink_for_email(small.to_str().unwrap(), EmailSize::Large).unwrap();
-        assert_eq!(image::open(&out2).unwrap().width(), 100, "should not upscale");
+        assert_eq!(
+            image::open(&out2).unwrap().width(),
+            100,
+            "should not upscale"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -381,10 +488,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st2k_fitup_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("small.png");
-        image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50)).save(&src).unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50))
+            .save(&src)
+            .unwrap();
 
         let opts = ConvertOpts {
-            target: Target { format: ImageFormat::Png, ext: "png", webp_quality: None },
+            target: Target {
+                format: ImageFormat::Png,
+                ext: "png",
+                webp_quality: None,
+            },
             jpeg_quality: 90,
             png_level: 6,
             webp_quality: None,
@@ -393,13 +506,19 @@ mod tests {
         let out = convert_file_opts(src.to_str().unwrap(), opts, &dir).unwrap();
         // 100×50 grown to fit 400×400, aspect preserved → 400×200.
         assert_eq!(
-            { let i = image::open(&out).unwrap(); (i.width(), i.height()) },
+            {
+                let i = image::open(&out).unwrap();
+                (i.width(), i.height())
+            },
             (400, 200),
             "FitUp should upscale to the requested box"
         );
 
         // Fit (the presets) still never upscales.
-        let kept = apply_resize(image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50)), Resize::Fit(400, 400));
+        let kept = apply_resize(
+            image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50)),
+            Resize::Fit(400, 400),
+        );
         assert_eq!((kept.width(), kept.height()), (100, 50));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -419,9 +538,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("pic.png");
         // A non-square source — the icon should be padded to a square canvas.
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(300, 120, image::Rgb([200, 60, 60])))
-            .save(&png)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            300,
+            120,
+            image::Rgb([200, 60, 60]),
+        ))
+        .save(&png)
+        .unwrap();
 
         set_folder_icon(png.to_str().unwrap()).unwrap();
 
@@ -431,11 +554,21 @@ mod tests {
         assert!(ini.exists(), "desktop.ini should be written");
 
         let icon = image::open(&ico).unwrap();
-        assert_eq!((icon.width(), icon.height()), (256, 256), "icon is a 256² square");
+        assert_eq!(
+            (icon.width(), icon.height()),
+            (256, 256),
+            "icon is a 256² square"
+        );
 
         let ini_text = std::fs::read_to_string(&ini).unwrap();
-        assert!(ini_text.contains("[.ShellClassInfo]"), "ini has the section");
-        assert!(ini_text.contains("IconResource=SageThumbsFolder.ico,0"), "ini points at the icon");
+        assert!(
+            ini_text.contains("[.ShellClassInfo]"),
+            "ini has the section"
+        );
+        assert!(
+            ini_text.contains("IconResource=SageThumbsFolder.ico,0"),
+            "ini points at the icon"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -452,18 +585,29 @@ mod tests {
         // By date taken → "<date>.jpg".
         let renamed = rename_one(jpg.to_str().unwrap(), RenamePattern::DateTaken).unwrap();
         assert!(renamed, "file with EXIF date should be renamed");
-        assert!(dir.join("2023-05-01 14.30.09.jpg").exists(), "renamed to the capture date");
+        assert!(
+            dir.join("2023-05-01 14.30.09.jpg").exists(),
+            "renamed to the capture date"
+        );
         assert!(!jpg.exists(), "original name is gone");
 
         // By camera + date on that same file → "<camera> <date>.jpg".
         let cur = dir.join("2023-05-01 14.30.09.jpg");
         rename_one(cur.to_str().unwrap(), RenamePattern::CameraDate).unwrap();
-        assert!(dir.join("TestCam 2023-05-01 14.30.09.jpg").exists(), "renamed with camera prefix");
+        assert!(
+            dir.join("TestCam 2023-05-01 14.30.09.jpg").exists(),
+            "renamed with camera prefix"
+        );
 
         // A file with no EXIF date is left untouched.
         let plain = dir.join("screenshot.png");
-        image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8)).save(&plain).unwrap();
-        assert!(!rename_one(plain.to_str().unwrap(), RenamePattern::DateTaken).unwrap(), "no date → skip");
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8))
+            .save(&plain)
+            .unwrap();
+        assert!(
+            !rename_one(plain.to_str().unwrap(), RenamePattern::DateTaken).unwrap(),
+            "no date → skip"
+        );
         assert!(plain.exists(), "no-EXIF file keeps its name");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -474,9 +618,16 @@ mod tests {
     /// uses; just enough for `read_capture` to find both fields.
     fn jpeg_with_exif(model: &str, datetime: &str) -> Vec<u8> {
         let mut base = Vec::new();
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(16, 12, image::Rgb([40, 90, 160])))
-            .write_to(&mut std::io::Cursor::new(&mut base), image::ImageFormat::Jpeg)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            16,
+            12,
+            image::Rgb([40, 90, 160]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut base),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
 
         // ASCII values are NUL-terminated.
         let model_v: Vec<u8> = model.bytes().chain(std::iter::once(0)).collect();
@@ -527,7 +678,9 @@ mod tests {
         let items = quick_items();
         assert!(!items.is_empty(), "expected some quick items");
         // Convert… (a leaf) must be present now, not just groups.
-        assert!(items.iter().any(|i| matches!(i, QuickItem::Leaf("menu_convert_dialog", _))));
+        assert!(items
+            .iter()
+            .any(|i| matches!(i, QuickItem::Leaf("menu_convert_dialog", _))));
         fn check(children: &[MenuItem], leaves: &[(&str, VerbAction)], i: &mut usize) {
             for c in children {
                 match c {
@@ -549,7 +702,10 @@ mod tests {
                 }
                 QuickItem::Leaf(title, idx) => {
                     assert!(QUICK_KEYS.contains(&title));
-                    assert_eq!(leaves[idx as usize].0, title, "quick leaf id must map to the verb");
+                    assert_eq!(
+                        leaves[idx as usize].0, title,
+                        "quick leaf id must map to the verb"
+                    );
                 }
             }
         }
@@ -569,9 +725,19 @@ mod tests {
                 })
                 .sum()
         }
-        assert_eq!(leaves().len(), count_verbs(MENU), "separators must not become leaves");
-        assert!(MENU.iter().any(|it| matches!(it, MenuItem::Separator)), "menu should be grouped now");
-        assert!(leaves().iter().all(|(t, _)| !t.is_empty()), "no blank leaf titles");
+        assert_eq!(
+            leaves().len(),
+            count_verbs(MENU),
+            "separators must not become leaves"
+        );
+        assert!(
+            MENU.iter().any(|it| matches!(it, MenuItem::Separator)),
+            "menu should be grouped now"
+        );
+        assert!(
+            leaves().iter().all(|(t, _)| !t.is_empty()),
+            "no blank leaf titles"
+        );
     }
 
     #[test]
@@ -580,18 +746,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("s.png");
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(20, 16, image::Rgb([180, 90, 40])))
-            .save(&png)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            20,
+            16,
+            image::Rgb([180, 90, 40]),
+        ))
+        .save(&png)
+        .unwrap();
         let opts = ConvertOpts {
-            target: Target { format: ImageFormat::Pnm, ext: "ppm", webp_quality: None },
+            target: Target {
+                format: ImageFormat::Pnm,
+                ext: "ppm",
+                webp_quality: None,
+            },
             jpeg_quality: 90,
             png_level: 6,
             webp_quality: None,
             resize: Resize::None,
         };
         let out = convert_file_opts(png.to_str().unwrap(), opts, &dir).expect("PNM should encode");
-        assert!(out.exists() && image::open(&out).is_ok(), "PPM should reopen");
+        assert!(
+            out.exists() && image::open(&out).is_ok(),
+            "PPM should reopen"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -607,14 +784,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("s.png");
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 30, image::Rgb([30, 160, 90])))
-            .save(&png)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            40,
+            30,
+            image::Rgb([30, 160, 90]),
+        ))
+        .save(&png)
+        .unwrap();
         for ext in ["psd", "dds", "pcx", "jp2", "sgi"] {
             let out = dir.join(format!("o.{ext}"));
             convert_to_magick(png.to_str().unwrap(), &out, Resize::None, None)
                 .unwrap_or_else(|e| panic!("magick {ext} failed: {e:?}"));
-            assert!(out.exists() && std::fs::metadata(&out).unwrap().len() > 0, "{ext} should be written");
+            assert!(
+                out.exists() && std::fs::metadata(&out).unwrap().len() > 0,
+                "{ext} should be written"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -629,14 +813,32 @@ mod tests {
             track: Some(3),
             ..Default::default()
         };
-        assert_eq!(tag_base(RenamePattern::ArtistTitle, &full).as_deref(), Some("Daft Punk - Aerodynamic"));
-        assert_eq!(tag_base(RenamePattern::TrackTitle, &full).as_deref(), Some("03 - Aerodynamic")); // zero-padded
+        assert_eq!(
+            tag_base(RenamePattern::ArtistTitle, &full).as_deref(),
+            Some("Daft Punk - Aerodynamic")
+        );
+        assert_eq!(
+            tag_base(RenamePattern::TrackTitle, &full).as_deref(),
+            Some("03 - Aerodynamic")
+        ); // zero-padded
 
         // Missing artist/track → just the title; missing title → skip entirely.
-        let title_only = AudioTags { title: Some("Untitled".into()), ..Default::default() };
-        assert_eq!(tag_base(RenamePattern::ArtistTitle, &title_only).as_deref(), Some("Untitled"));
-        assert_eq!(tag_base(RenamePattern::TrackTitle, &title_only).as_deref(), Some("Untitled"));
-        assert_eq!(tag_base(RenamePattern::ArtistTitle, &AudioTags::default()), None);
+        let title_only = AudioTags {
+            title: Some("Untitled".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            tag_base(RenamePattern::ArtistTitle, &title_only).as_deref(),
+            Some("Untitled")
+        );
+        assert_eq!(
+            tag_base(RenamePattern::TrackTitle, &title_only).as_deref(),
+            Some("Untitled")
+        );
+        assert_eq!(
+            tag_base(RenamePattern::ArtistTitle, &AudioTags::default()),
+            None
+        );
     }
 
     #[test]
@@ -672,7 +874,9 @@ mod tests {
         let mut paths = Vec::new();
         for n in names {
             let p = dir.join(n);
-            image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8)).save(&p).unwrap();
+            image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+                .save(&p)
+                .unwrap();
             paths.push(p.to_str().unwrap().to_string());
         }
 
@@ -684,14 +888,16 @@ mod tests {
         let f = std::fs::File::open(&out).unwrap();
         let mut zip = zip::ZipArchive::new(f).unwrap();
         assert_eq!(zip.len(), 3);
-        let order: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
+        let order: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .collect();
         assert_eq!(order, vec!["001_1.png", "002_2.png", "003_10.png"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn files_to_folder_creates_and_moves() {
-        let dir = std::env::temp_dir().join("st2k_f2f");
+        let dir = std::env::temp_dir().join(format!("st2k_f2f_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut paths = Vec::new();
@@ -703,7 +909,11 @@ mod tests {
 
         let folder = files_to_folder(&paths, "My Group").unwrap();
         assert_eq!(folder, dir.join("My Group"));
-        assert!(folder.join("a.txt").exists() && folder.join("b.txt").exists() && folder.join("c.bin").exists());
+        assert!(
+            folder.join("a.txt").exists()
+                && folder.join("b.txt").exists()
+                && folder.join("c.bin").exists()
+        );
         // Originals moved out of the parent.
         assert!(!dir.join("a.txt").exists());
 
@@ -728,7 +938,9 @@ mod tests {
         let mut paths = Vec::new();
         for (n, w, h) in [("a.png", 100, 100), ("b.png", 100, 100), ("c.png", 64, 48)] {
             let p = dir.join(n);
-            image::DynamicImage::ImageRgba8(image::RgbaImage::new(w, h)).save(&p).unwrap();
+            image::DynamicImage::ImageRgba8(image::RgbaImage::new(w, h))
+                .save(&p)
+                .unwrap();
             paths.push(p.to_str().unwrap().to_string());
         }
 
@@ -752,8 +964,11 @@ mod tests {
         };
         assert_eq!(expand_template("$artist - $album", &t, "X"), "A - B");
         assert_eq!(expand_template("$track $title", &t, "X"), "05 T"); // track zero-padded
-        // A missing tag is replaced by the fallback text.
-        assert_eq!(expand_template("$artist", &AudioTags::default(), "Unknown"), "Unknown");
+                                                                       // A missing tag is replaced by the fallback text.
+        assert_eq!(
+            expand_template("$artist", &AudioTags::default(), "Unknown"),
+            "Unknown"
+        );
     }
 
     #[test]
@@ -768,7 +983,10 @@ mod tests {
         let dest = dir.join("sorted");
 
         // Move: two artists → two folders, originals gone.
-        let files = vec![a.to_str().unwrap().to_string(), b.to_str().unwrap().to_string()];
+        let files = vec![
+            a.to_str().unwrap().to_string(),
+            b.to_str().unwrap().to_string(),
+        ];
         let (done, skipped) = tags_to_folders(&files, &dest, "$artist", "Unknown", true);
         assert_eq!((done, skipped), (2, 0));
         assert!(dest.join("Alpha").join("a.wav").exists());
@@ -778,7 +996,13 @@ mod tests {
         // Copy: original stays put.
         let c = dir.join("c.wav");
         tagged_wav(&c, "Gamma");
-        let (done2, _) = tags_to_folders(&[c.to_str().unwrap().to_string()], &dest, "$artist", "Unknown", false);
+        let (done2, _) = tags_to_folders(
+            &[c.to_str().unwrap().to_string()],
+            &dest,
+            "$artist",
+            "Unknown",
+            false,
+        );
         assert_eq!(done2, 1);
         assert!(c.exists(), "copy should keep the original");
         assert!(dest.join("Gamma").join("c.wav").exists());
@@ -799,7 +1023,9 @@ mod tests {
     /// A tiny but valid 16-bit PCM mono WAV so `lofty` accepts it for tag writing.
     fn minimal_wav() -> Vec<u8> {
         let (rate, channels, bits) = (8000u32, 1u16, 16u16);
-        let data: Vec<u8> = (0..32u16).flat_map(|i| ((i as i16) * 500).to_le_bytes()).collect();
+        let data: Vec<u8> = (0..32u16)
+            .flat_map(|i| ((i as i16) * 500).to_le_bytes())
+            .collect();
         let byte_rate = rate * channels as u32 * (bits / 8) as u32;
         let block_align = channels * (bits / 8);
         let mut w = Vec::new();

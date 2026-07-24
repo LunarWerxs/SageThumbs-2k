@@ -4,8 +4,8 @@ Thanks for your interest! Bug reports, ideas, and pull requests are welcome.
 
 - **Found a bug / have an idea?** Open an issue.
 - **Sending a fix or feature?** Open a pull request. Keep it focused, match the
-  surrounding code style, and make sure `cargo build --release` and
-  `cargo clippy --all-targets -- -D warnings` are clean.
+  surrounding code style, and make sure `pwsh scripts/verify.ps1 -Lint` plus
+  `pwsh scripts/preflight.ps1` are clean.
 
 ---
 
