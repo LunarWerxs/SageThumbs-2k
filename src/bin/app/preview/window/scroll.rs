@@ -146,7 +146,9 @@ pub(in crate::preview) unsafe fn hit_text_scrollbar(
 ) -> Option<TextScrollHit> {
     let sb = text_scrollbar(hwnd)?;
     let lane = RECT {
-        left: sb.thumb.left - crate::win::dpi_scale(hwnd, 6),
+        // Keep the idle visual slim, but give it a native-scrollbar-sized pointer target.
+        // This especially helps touchpads/high-DPI displays without consuming content width.
+        left: sb.thumb.left - crate::win::dpi_scale(hwnd, 10),
         top: sb.track.top,
         right: sb.track.right,
         bottom: sb.track.bottom,

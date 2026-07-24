@@ -249,6 +249,10 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
     std::thread::spawn(move || {
         // Reconstruct the HWND inside the worker (HWND isn't `Send`; the raw pointer is).
         let hwnd = HWND(hwnd_raw as *mut c_void);
+        // One bounded/path-aware read for BOTH the animation probe and static fallback.
+        // This also gives the standalone viewer the core's PSD/PSB/Blender head-preview and
+        // oversized streamed-cover fast paths instead of blindly buffering the whole file.
+        let bytes = sagethumbs2k_core::decode::read_preview_capped(&path).ok();
         // Animated GIF/APNG/animated-WebP → post the whole frame list (WM_APP_ANIM). A static
         // file of the same extension returns None and falls through to the single-frame path.
         let ext = std::path::Path::new(&path)
@@ -257,8 +261,8 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
             .unwrap_or("")
             .to_ascii_lowercase();
         if matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Some(frames) = super::anim::decode_animation(&bytes, &ext) {
+            if let Some(bytes) = bytes.as_deref() {
+                if let Some(frames) = super::anim::decode_animation(bytes, &ext) {
                     let payload: Box<(u64, Vec<(DecodedRgba, u32)>)> = Box::new((gen, frames));
                     let raw = Box::into_raw(payload);
                     if PostMessageW(Some(hwnd), WM_APP_ANIM, WPARAM(gen as usize), LPARAM(raw as isize)).is_err() {
@@ -268,7 +272,7 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
                 }
             }
         }
-        let decoded = read_and_decode(&path);
+        let decoded = bytes.and_then(decode_loaded);
         let payload: Box<(u64, Option<DecodedRgba>)> = Box::new((gen, decoded));
         let raw = Box::into_raw(payload);
         if PostMessageW(Some(hwnd), WM_APP_RENDER, WPARAM(gen as usize), LPARAM(raw as isize)).is_err() {
@@ -323,7 +327,7 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut c_void);
-        let rendered = std::fs::read(&path)
+        let rendered = sagethumbs2k_core::decode::read_capped(&path)
             .ok()
             .and_then(|bytes| sagethumbs2k_core::pdf::render_page_counted(&bytes, page, 1600));
         let (rgba, count) = match rendered {
@@ -354,7 +358,13 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
 
 /// Read the file and run the budgeted decoder, converting the result to tight RGBA8.
 fn read_and_decode(path: &str) -> Option<DecodedRgba> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = sagethumbs2k_core::decode::read_preview_capped(path).ok()?;
+    decode_loaded(bytes)
+}
+
+/// Decode bytes already acquired by the path-aware reader. Keeping this separate lets the
+/// animation probe fall through without issuing a second file read for ordinary PNG/WebP/GIF.
+fn decode_loaded(bytes: Vec<u8>) -> Option<DecodedRgba> {
     let img = decode_preview_budgeted(bytes)?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);

@@ -8,7 +8,8 @@
   (committed, not pushed). Run from anywhere:  pwsh scripts\release.ps1
 
   Flow:  consistency check  ->  clean-main guard  ->  push  ->  WAIT for CI green
-         ->  build signed installer  ->  gh release create (creates the tag)  ->  winget auto-publishes.
+         ->  build installer with signed MSIX  ->  gh release create (creates the tag)
+         ->  winget auto-publishes.
 #>
 [CmdletBinding()]
 param([switch]$SkipBuild)
@@ -68,7 +69,8 @@ try {
     if ($concl -ne 'success') { throw "CI on $($sha.Substring(0,7)) finished '$concl' (not success) - NOT releasing. Fix + re-run." }
     Write-Host "      CI green." -ForegroundColor Green
 
-    # 4) build the shippable signed installer (CI validates code; it doesn't build the installer).
+    # 4) build the shippable installer containing the signed sparse MSIX
+    # (CI validates code; it doesn't build the installer).
     if (-not $SkipBuild) {
         Write-Host "[4/6] build installer" -ForegroundColor Green
         pwsh "$root\scripts\build-release.ps1"; if ($LASTEXITCODE) { throw "installer build failed" }
@@ -96,11 +98,24 @@ try {
         Write-Host "        python push_to_vt.py `"$($setup.FullName)`" --gate" -ForegroundColor Yellow
     }
 
+    # The build must not move HEAD or rewrite tracked inputs after we captured + validated $sha.
+    # build-release.ps1 refreshes the generated marketing site, so this also catches a release
+    # prep that forgot to commit that refresh instead of silently tagging a dirty worktree.
+    $headAfterBuild = (git rev-parse HEAD).Trim()
+    if ($headAfterBuild -ne $sha) {
+        throw "HEAD moved from validated commit $sha to $headAfterBuild during the release - NOT publishing."
+    }
+    if (git status --porcelain) {
+        throw "working tree changed during the release build - commit the generated changes, then re-run."
+    }
+
     # 5) create the GitHub release - this creates + pushes the tag, ONLY now that CI is green.
+    # Target the immutable SHA we actually checked, not the moving `main` ref: another push while
+    # this script waits/builds must never make the release tag point at an unvalidated commit.
     Write-Host "[5/6] gh release create $tag" -ForegroundColor Green
     $notes = "$root\dist\RELEASE-NOTES-$tag.md"
     $notesArg = if (Test-Path $notes) { @('--notes-file', $notes) } else { @('--generate-notes') }
-    gh release create $tag $setup.FullName --title "SageThumbs 2K $ver" --target main @notesArg
+    gh release create $tag $setup.FullName --title "SageThumbs 2K $ver" --target $sha @notesArg
     if ($LASTEXITCODE) { throw "gh release create failed" }
 
     Write-Host "[6/6] DONE - $tag released." -ForegroundColor Cyan

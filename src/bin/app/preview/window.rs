@@ -18,7 +18,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F11, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN,
     VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::Shell::{ShellExecuteW, StrCmpLogicalW};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self, RenderData};
@@ -1382,7 +1382,7 @@ unsafe fn copy_content(hwnd: HWND, raw: bool) {
 /// static decode when frame extraction fails, so Ctrl+C still yields SOMETHING.
 fn copy_shown_image(path: &str, pdf_page: Option<u32>, anim_frame: Option<usize>) -> bool {
     if let Some(page) = pdf_page {
-        let png = std::fs::read(path)
+        let png = sagethumbs2k_core::decode::read_capped(path)
             .ok()
             .and_then(|b| sagethumbs2k_core::pdf::render_page_counted(&b, page, 1600));
         if let Some(img) = png.and_then(|(png, _)| image::load_from_memory(&png).ok()) {
@@ -1398,7 +1398,7 @@ fn copy_shown_image(path: &str, pdf_page: Option<u32>, anim_frame: Option<usize>
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
-        let frames = std::fs::read(path)
+        let frames = sagethumbs2k_core::decode::read_preview_capped(path)
             .ok()
             .and_then(|b| super::anim::decode_animation(&b, &ext));
         if let Some(frames) = frames {
@@ -1639,9 +1639,27 @@ fn is_previewable_ext(ext: &str) -> bool {
         || super::font::is_font_ext(ext)
 }
 
+/// Explorer-style filename order (`image2` before `image10`). Precompute each UTF-16 key once
+/// so a large-folder O(n log n) sort does not allocate inside every comparison.
+fn sort_paths_like_explorer(files: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut keyed: Vec<(Vec<u16>, std::path::PathBuf)> = files
+        .into_iter()
+        .map(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            (crate::win::wide(&name), p)
+        })
+        .collect();
+    keyed.sort_by(|a, b| {
+        unsafe { StrCmpLogicalW(PCWSTR(a.0.as_ptr()), PCWSTR(b.0.as_ptr())) }
+            .cmp(&0)
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    keyed.into_iter().map(|(_, p)| p).collect()
+}
+
 /// Flip to the next/prev previewable file in the current file's folder (QuickLook-style folder
 /// traversal, wrapping at the ends), without closing the popup. Sorted case-insensitively by
-/// name to match Explorer's default order.
+/// Explorer's logical filename order.
 unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
     let st = &*state(hwnd);
     let cur = match st.path.borrow().clone() {
@@ -1655,7 +1673,7 @@ unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut files: Vec<std::path::PathBuf> = rd
+    let files: Vec<std::path::PathBuf> = rd
         .flatten()
         .filter(|e| {
             // Use the DirEntry's cached file_type (no extra per-entry `stat` syscall — a huge
@@ -1674,11 +1692,7 @@ unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
     if files.len() < 2 {
         return;
     }
-    files.sort_by_key(|p| {
-        p.file_name()
-            .map(|n| n.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default()
-    });
+    let files = sort_paths_like_explorer(files);
     let idx = files.iter().position(|p| p == cur_path).unwrap_or(0) as i32;
     let n = files.len() as i32;
     let ni = ((idx + delta) % n + n) % n; // wrap around at both ends
@@ -1691,8 +1705,10 @@ unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        scroll_from_thumb_offset, scroll_thumb_geometry, text_scroll_limits, wheel_notches,
+        scroll_from_thumb_offset, scroll_thumb_geometry, sort_paths_like_explorer,
+        text_scroll_limits, wheel_notches,
     };
+    use std::path::PathBuf;
 
     #[test]
     fn every_scroll_path_shares_the_same_limits() {
@@ -1725,5 +1741,18 @@ mod tests {
         assert_eq!(wheel_notches(0, -60), (0, -60));
         assert_eq!(wheel_notches(-60, -60), (-1, 0));
         assert_eq!(wheel_notches(45, -45), (0, 0));
+    }
+
+    #[test]
+    fn sibling_navigation_uses_explorer_logical_order() {
+        let input = ["image10.png", "image2.png", "image1.png"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let names: Vec<String> = sort_paths_like_explorer(input)
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["image1.png", "image2.png", "image10.png"]);
     }
 }

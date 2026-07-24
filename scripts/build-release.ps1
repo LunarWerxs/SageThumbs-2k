@@ -278,7 +278,9 @@ $isccArgs = @("/DAppVer=$ver"); if ($fmtCount) { $isccArgs += "/DFmtCount=$fmtCo
 if ($LASTEXITCODE) { throw "Inno Setup compile failed" }
 
 # 5) Report ------------------------------------------------------------------
-$setup = Get-ChildItem "$root\dist\SageThumbs2K-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+# Report the artifact for THIS version explicitly. A stale/newer installer left in dist must
+# never be mistaken for the file this invocation just produced.
+$setup = Get-Item "$root\dist\SageThumbs2K-Setup-$ver.exe" -EA Stop
 Write-Host "[4/4] done" -ForegroundColor Green
 Write-Host ("  -> {0}  ({1} MB)" -f $setup.FullName, [math]::Round($setup.Length / 1MB, 1)) -ForegroundColor Cyan
 

@@ -6,8 +6,10 @@ as an isolated subprocess** (`decode.rs` — `magick - … PNG:-`), never linked
 crash/OOM/CVE in magick's C code can't take down Explorer.
 
 The bundle is produced by `scripts/build-release.ps1` from the **official ImageMagick Windows
-install** in `C:\Program Files\ImageMagick*` (an MSVC build). Two things shrink it from the
-stock ~25 MB to ~3 MB:
+install** in `C:\Program Files\ImageMagick*` (an MSVC build). With the current
+ImageMagick 7.1.2-25 Q16-HDRI package, these two steps shrink the installed tree from about
+60.8 MiB to 14.7 MiB raw. The trimmed bundle contributes roughly 3.5 MB to the solid-compressed
+installer; exact sizes vary with the upstream ImageMagick build:
 
 ## 1. Dropped delegates + coders
 We only decode **raster → PNG**, so the GUI/MFC runtime, the HEIF/AVIF/JPEG-XL/EXR/WebP coders

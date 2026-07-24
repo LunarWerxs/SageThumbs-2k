@@ -2,6 +2,19 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.3.4
+
+- **Quick preview opens common images with less disk I/O.** Static GIF, PNG and WebP files now
+  reuse the bytes already read while checking for animation instead of reading the file twice.
+  Large project and archive formats also use the same bounded, preview-aware reader as Explorer
+  thumbnails, avoiding unnecessary whole-file buffering.
+- **Folder navigation follows Explorer's natural filename order.** Moving between nearby files
+  now places `image2` before `image10`, and the slim preview scrollbar has a larger invisible
+  grab area without taking more room from the document.
+- **Release and performance tooling is more trustworthy.** Releases are attached to the exact
+  commit validated by CI, the build reports only the installer for the requested version, and
+  performance runs isolate every output and report failed decodes plus percentile timings.
+
 ## 1.3.3
 
 - **The Quick preview scrollbar now works like a real scrollbar.** In long text, code and

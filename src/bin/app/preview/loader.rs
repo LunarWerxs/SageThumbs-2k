@@ -201,7 +201,7 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
         } else if is_pdf(path) {
             // Render the requested page + the page count so the ◀ ▶ pager + "N / M" show.
             let pg = opts.pdf_page.unwrap_or(0);
-            let done = std::fs::read(path)
+            let done = sagethumbs2k_core::decode::read_capped(path)
                 .ok()
                 .and_then(|b| sagethumbs2k_core::pdf::render_page_counted(&b, pg, 1600))
                 .and_then(|(png, count)| image::load_from_memory(&png).ok().map(|img| (img, count)))
@@ -225,7 +225,7 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
             }
         } else if let (Some(fr), true) = (opts.frame, is_animatable(path)) {
             // Decode the animation and show a specific frame.
-            let frames = std::fs::read(path)
+            let frames = sagethumbs2k_core::decode::read_preview_capped(path)
                 .ok()
                 .and_then(|b| super::anim::decode_animation(&b, &ext_of(path)));
             if let Some(frames) = frames {
