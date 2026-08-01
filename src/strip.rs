@@ -1,5 +1,7 @@
-//! Lossless metadata strip (EXIF / IPTC / XMP / comments) for JPEG & PNG — a
-//! segment/chunk rewrite, NO pixel re-encode (so a photo never loses quality).
+//! Lossless metadata strip for JPEG, PNG and WebP — a segment/chunk rewrite, NO
+//! pixel re-encode (so a photo never loses quality). Removes EXIF / IPTC / XMP /
+//! comments, and **C2PA "Content Credentials"** (see [`jumbf`]), which is neither
+//! of those and therefore survives every EXIF-only scrubber.
 //! Plus `read_info`, an EXIF reader for the "Image info" verb (reuses the
 //! already-present `kamadak-exif` + `image` — no new deps for that part).
 //!
@@ -16,11 +18,24 @@ use windows::Win32::Foundation::E_FAIL;
 
 use crate::verbs::read_capped;
 
+mod ddsinfo;
+mod isobmff;
+mod jumbf;
+mod svgmeta;
+mod webpmeta;
+mod xmpinfo;
+
+pub use isobmff::has_gain_map;
+pub use jumbf::has_content_credentials;
+
 /// JPEG markers we drop: Exif + XMP (both APP1), Photoshop/IPTC (APP13), and the
 /// free-text comment (COM). APP2 (ICC) is intentionally omitted.
+///
+/// APP11 is NOT in this list because it is marker-ambiguous: JPEG XT uses it for
+/// HDR extension layers. It is filtered per-segment instead, in [`jumbf`].
 const STRIP_APP_MARKERS: &[u8] = &[markers::APP1, markers::APP13, markers::COM];
 
-/// Strip metadata from `path` in place (JPEG/PNG only). Re-parses the rewritten
+/// Strip metadata from `path` in place (JPEG / PNG / WebP). Re-parses the rewritten
 /// bytes before swapping, so a malformed rewrite can never clobber the original.
 pub fn strip_metadata(path: &str) -> Result<()> {
     let input = Bytes::from(read_capped(path)?);
@@ -33,8 +48,15 @@ pub fn strip_metadata(path: &str) -> Result<()> {
     let out_bytes: Vec<u8> = match ext.as_str() {
         "jpg" | "jpeg" | "jpe" | "jfif" => {
             let mut jpeg = Jpeg::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
-            jpeg.segments_mut()
-                .retain(|s| !STRIP_APP_MARKERS.contains(&s.marker()));
+            jpeg.segments_mut().retain(|s| {
+                if STRIP_APP_MARKERS.contains(&s.marker()) {
+                    return false;
+                }
+                // C2PA / Content Credentials: a JUMBF box spread over APP11
+                // segments. Only the `jumb` ones go - a JPEG XT HDR layer wears
+                // the same marker and must survive.
+                !(s.marker() == markers::APP11 && jumbf::is_jumbf_app11(s.contents()))
+            });
             let bytes = jpeg.encoder().bytes();
             Jpeg::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?; // sanity re-parse
             bytes.to_vec()
@@ -45,9 +67,17 @@ pub fn strip_metadata(path: &str) -> Result<()> {
             for k in [b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"] {
                 png.remove_chunks_by_type(*k);
             }
+            png.remove_chunks_by_type(jumbf::PNG_C2PA_CHUNK);
             let bytes = png.encoder().bytes();
             Png::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?;
             bytes.to_vec()
+        }
+        "webp" => webpmeta::strip(input)?,
+        "svg" | "svgz" if ext == "svg" => svgmeta::strip(&input)?,
+        // HEIC/AVIF items are rewritten in place (see `isobmff`); `None` means the
+        // layout was not one we can touch without risking the picture.
+        "heic" | "heif" | "hif" | "avif" => {
+            isobmff::strip(&input).ok_or_else(|| Error::from(E_FAIL))?
         }
         _ => return Err(Error::from(E_FAIL)), // unsupported: refuse, never lossy-convert
     };
@@ -218,8 +248,22 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
         exif.get_field(t, In::PRIMARY)
             .map(|f| f.display_value().with_unit(&exif).to_string())
     };
-    info.make = txt(Tag::Make);
-    info.model = txt(Tag::Model);
+    // Make/Model must NOT go through `display_value`: it renders an ASCII field
+    // wrapped in literal double quotes, so Explorer's "Camera maker" column showed
+    // `"Canon"` rather than `Canon`. Read the raw ASCII the way `read_capture`
+    // already does, trimmed of the trailing NUL padding cameras write.
+    let ascii = |t: Tag| -> Option<String> {
+        match &exif.get_field(t, In::PRIMARY)?.value {
+            Value::Ascii(v) => {
+                let s = String::from_utf8_lossy(v.first()?);
+                let s = s.trim().trim_end_matches('\0').trim();
+                (!s.is_empty()).then(|| s.to_string())
+            }
+            _ => None,
+        }
+    };
+    info.make = ascii(Tag::Make);
+    info.model = ascii(Tag::Model);
     // CAPTURE time only — NOT a fallback to Tag::DateTime (the file-modified stamp editors
     // write), because this feeds System.Photo.DateTaken. Showing an edit timestamp as "Date
     // taken" is wrong and inconsistent with Windows' own photo handler (which never falls back).
@@ -370,7 +414,48 @@ pub fn read_info_verbose(path: &str) -> String {
             }
         }
     }
-    if !had_exif {
+    // Facts EXIF has no field for. Each is best-effort: the file is read once,
+    // and anything unrecognised simply contributes no row.
+    let mut extra: Vec<(String, String)> = Vec::new();
+    if let Ok(bytes) = std::fs::read(path) {
+        if has_gain_map(&bytes) {
+            extra.push((
+                "HDR gain map".into(),
+                "present (the tone-map item every iPhone HDR photo carries)".into(),
+            ));
+        }
+        if let Some((mips, fmt)) = ddsinfo::describe(&bytes) {
+            extra.push(("Texture compression".into(), fmt));
+            extra.push((
+                "Mip levels".into(),
+                if mips == 1 {
+                    "1 (no mip chain)".into()
+                } else {
+                    mips.to_string()
+                },
+            ));
+        }
+        if let Some(pkt) = xmpinfo::packet(&bytes) {
+            extra.extend(xmpinfo::facts(&pkt).into_iter().map(|(l, v)| (l.into(), v)));
+        }
+    }
+    if !extra.is_empty() {
+        let _ = writeln!(s);
+        for (label, value) in &extra {
+            let _ = writeln!(s, "{label}: {value}");
+        }
+    }
+
+    // Provenance metadata is neither EXIF nor XMP, so it belongs on its own row.
+    // Presence only - we do not verify the signature or the claim behind it.
+    let credentials = has_content_credentials(path);
+    if credentials {
+        let _ = writeln!(
+            s,
+            "\nContent Credentials (C2PA): present  (removable with Strip metadata)"
+        );
+    }
+    if !had_exif && !credentials && extra.is_empty() {
         let _ = writeln!(s, "(none)");
     }
     s
@@ -532,6 +617,130 @@ fn format_exif_datetime(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minimal little-endian TIFF/EXIF block carrying a single `Make` tag.
+    /// Layout: header(8) | entry count(2) | one 12-byte entry | next-IFD(4) |
+    /// the ASCII value at offset 26.
+    fn tiny_exif(make: &[u8; 6]) -> Vec<u8> {
+        let mut v = b"II*\0".to_vec();
+        v.extend_from_slice(&8u32.to_le_bytes()); // IFD0 offset
+        v.extend_from_slice(&1u16.to_le_bytes()); // one entry
+        v.extend_from_slice(&0x010Fu16.to_le_bytes()); // Make
+        v.extend_from_slice(&2u16.to_le_bytes()); // ASCII
+        v.extend_from_slice(&6u32.to_le_bytes()); // count
+        v.extend_from_slice(&26u32.to_le_bytes()); // value offset
+        v.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+        v.extend_from_slice(make);
+        v
+    }
+
+    /// PNG has carried real EXIF in an `eXIf` chunk since the 2017 spec change,
+    /// and the competitor sweep flagged it as something we might be ignoring.
+    /// We are not: `kamadak-exif` reads the chunk, so `read_info` fills in from a
+    /// PNG exactly as it does from a JPEG. This test is what proves it stays true.
+    #[test]
+    fn reads_exif_from_a_png_exif_chunk() {
+        let dir = std::env::temp_dir().join(format!("st2k_png_exif_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_path = dir.join("e.png");
+
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([9, 9, 9])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut base),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+
+        let mut png = Png::from_bytes(Bytes::from(base)).unwrap();
+        let chunk = img_parts::png::PngChunk::new(*b"eXIf", Bytes::from(tiny_exif(b"SageT\0")));
+        png.chunks_mut().insert(1, chunk);
+        std::fs::write(&png_path, png.encoder().bytes()).unwrap();
+
+        let info = read_info(png_path.to_str().unwrap());
+        assert_eq!(info.width, 4);
+        assert_eq!(
+            info.make.as_deref(),
+            Some("SageT"),
+            "PNG eXIf chunk was not read"
+        );
+
+        // ...and Strip removes it, which the eXIf entry in the PNG arm covers.
+        strip_metadata(png_path.to_str().unwrap()).unwrap();
+        let after = read_info(png_path.to_str().unwrap());
+        assert_eq!(after.make, None, "PNG eXIf survived the strip");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole point of the APP11 work: a C2PA manifest goes, a JPEG XT layer
+    /// wearing the same marker stays, and the pixels are untouched either way.
+    #[test]
+    fn strips_c2pa_app11_but_keeps_a_jpeg_xt_layer() {
+        let dir = std::env::temp_dir().join(format!("st2k_c2pa_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg = dir.join("c.jpg");
+
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            16,
+            12,
+            image::Rgb([10, 20, 30]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut base),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+
+        // `JP` + box instance + packet sequence + LBox + TBox + payload.
+        let app11 = |tbox: &[u8; 4], tail: &[u8]| {
+            let mut v = b"JP".to_vec();
+            v.extend_from_slice(&[0, 1, 0, 0, 0, 1]);
+            v.extend_from_slice(&64u32.to_be_bytes());
+            v.extend_from_slice(tbox);
+            v.extend_from_slice(tail);
+            v
+        };
+        let mut out = base[0..2].to_vec(); // SOI
+        for payload in [
+            app11(b"jumb", b"c2pa-manifest-store"),
+            app11(b"xtld", b"jpegxt-hdr-layer"),
+        ] {
+            out.extend_from_slice(&[0xFF, markers::APP11]);
+            out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            out.extend_from_slice(&payload);
+        }
+        out.extend_from_slice(&base[2..]);
+        std::fs::write(&jpg, &out).unwrap();
+
+        let path = jpg.to_str().unwrap();
+        assert!(
+            has_content_credentials(path),
+            "setup must carry a C2PA manifest"
+        );
+
+        strip_metadata(path).unwrap();
+
+        let after = std::fs::read(&jpg).unwrap();
+        assert!(
+            !after.windows(19).any(|w| w == b"c2pa-manifest-store"),
+            "C2PA manifest survived the strip"
+        );
+        assert!(
+            after.windows(16).any(|w| w == b"jpegxt-hdr-layer"),
+            "the JPEG XT layer was collateral damage"
+        );
+        assert!(!has_content_credentials(path));
+        let d = image::open(&jpg).unwrap();
+        assert_eq!(
+            (d.width(), d.height()),
+            (16, 12),
+            "pixels must be untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn strips_jpeg_app1_exif_losslessly() {

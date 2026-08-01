@@ -226,9 +226,10 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
     Ok((v * mult as f64) as u64)
 }
 
-/// Strip EXIF/IPTC/XMP metadata in place (JPEG/PNG, lossless).
+/// Strip EXIF/IPTC/XMP/C2PA metadata in place (JPEG/PNG/WebP, lossless).
 pub fn strip_meta(input: &str) -> Result<String, String> {
-    strip::strip_metadata(input).map_err(|_| format!("strip failed (JPEG/PNG only): {input}"))?;
+    strip::strip_metadata(input)
+        .map_err(|_| format!("strip failed (JPEG/PNG/WebP only): {input}"))?;
     Ok(format!("stripped {input}"))
 }
 
