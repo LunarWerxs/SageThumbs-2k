@@ -23,7 +23,7 @@ exr = { path = "vendor/exr" }
 # build-release.ps1 reads this line; keep it in sync with
 # packaging/AppxManifest.xml's <Identity Version> when bumping a release.
 [workspace.package]
-version = "1.4.1"
+version = "1.5.0"
 rust-version = "1.93"   # sevenz-rust2 0.21.3 is the highest MSRV in the locked default graph
 
 [package]
@@ -197,6 +197,26 @@ djvu-rs = { version = "0.26", default-features = false, features = ["std"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
 
 [features]
+
+# HDR screenshots (Windows Graphics Capture + D3D11 + DXGI). APP-ONLY on purpose:
+# these windows-rs namespaces add ~900 KB to every binary that links them, and the
+# shell DLL neither takes screenshots nor should ever load a graphics stack inside
+# Explorer. build-release builds the DLL and the app as separate packages, so with
+# the feature off for the DLL build its `windows` dependency is compiled without
+# them. Measured: enabling this for the DLL too blew the Rust payload budget by
+# 681 KB for code that could never run there.
+hdr-capture = [
+    "windows/Win32_Graphics_Dxgi",
+    "windows/Win32_Graphics_Dxgi_Common",
+    "windows/Win32_Graphics_Direct3D",
+    "windows/Win32_Graphics_Direct3D11",
+    "windows/Win32_System_WinRT_Direct3D11",
+    "windows/Win32_System_WinRT_Graphics_Capture",
+    "windows/Graphics_Capture",
+    "windows/Graphics_DirectX",
+    "windows/Graphics_DirectX_Direct3D11",
+]
+
 # (`.cbr`/RAR is now always-on via the pure-Rust `rars` crate — no feature gate.)
 default = []
 # Quick preview's WebView2 HTML host (local .html render + optional .url live preview).

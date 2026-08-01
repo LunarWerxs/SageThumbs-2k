@@ -72,7 +72,7 @@ jobs:
       # This makes the raw payload budget a real PR gate rather than a synthetic
       # unit test of the checker.
       - name: Build production EXEs
-        run: cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview
+        run: cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
       - name: Build production slim DLL
         run: cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
       - name: Production Rust payload size

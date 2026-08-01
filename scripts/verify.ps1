@@ -186,7 +186,7 @@ if ($Samples) {
 # ---- release pair ----------------------------------------------------------
 if ($Release) {
     Stage 'release: DLL + EXEs' { cargo build --release --quiet 2>&1 | Write-Host }
-    Stage 'release: EXE html-preview' { cargo build --release --quiet --bin SageThumbs2K --features html-preview 2>&1 | Write-Host }
+    Stage 'release: EXE html-preview' { cargo build --release --quiet --bin SageThumbs2K --features html-preview,hdr-capture 2>&1 | Write-Host }
 }
 
 # ---- elevated install + installed==built proof -----------------------------

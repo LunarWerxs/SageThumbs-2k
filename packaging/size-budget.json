@@ -1,15 +1,15 @@
 {
   "schemaVersion": 2,
-  "referenceVersion": "1.3.6-rc1",
-  "referenceInstallerBytes": 13118612,
-  "referenceInstallerSha256": "e79e1d90385841073866f6642376a3a0be8adb8a86880d25aea6a73cb6d29cec",
+  "referenceVersion": "1.4.1-hdr",
+  "referenceInstallerBytes": 13371559,
+  "referenceInstallerSha256": "02b29d85ae6d1a6845ad0ba7be92c03b41356cd416b2a32068d2ded9df8635f7",
   "installerGrowthAllowanceBytes": 131072,
-  "maxInstallerBytes": 13249684,
-  "referenceRustPayloadBytes": 22216192,
+  "maxInstallerBytes": 13502631,
+  "referenceRustPayloadBytes": 23138304,
   "rustPayloadGrowthAllowanceBytes": 262144,
-  "maxRustPayloadBytes": 22478336,
+  "maxRustPayloadBytes": 23400448,
   "referenceMagickPayloadBytes": 29827612,
   "magickPayloadGrowthAllowanceBytes": 262144,
   "maxMagickPayloadBytes": 30089756,
-  "rationale": "The measured 1.3.6-rc1 reference is the first baseline validated by the current output-signature and clean-machine dependency gates. Tagged 1.3.2-1.3.5 Full installers omitted load-bearing AVIF and JPEG XL writer files and are not valid no-regression baselines. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
+  "rationale": "Rebaselined 2026-07-31 after the competitor-gap release. The 1.3.6-rc1 reference predates a large batch of shipped capability: metadata strip extended to WebP/SVG/HEIC/AVIF plus C2PA removal, XMP/DDS/gain-map facts in Image info, EXIF-IPTC-XMP carry-through on Convert and Resize, PDF page layouts, ComicInfo.xml in CBZ, pad-to-canvas resize, multi-size batch output, WOFF font previews, the eyedropper stash, and HDR screen capture. That is a deliberate +253 KiB installer / +922 KiB Rust payload, reviewed and accepted, not drift. The HDR capture stack (D3D11/DXGI/WinRT Graphics.Capture) is behind the APP-ONLY `hdr-capture` cargo feature precisely so the shell DLL does not pay for it; verified by `objdump -p`, which shows d3d11.dll and dxgi.dll imported by SageThumbs2K.exe and by NEITHER sagethumbs2k.dll nor st2k.exe. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
 }

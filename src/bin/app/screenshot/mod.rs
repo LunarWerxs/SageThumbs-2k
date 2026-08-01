@@ -12,6 +12,8 @@
 
 mod daemon;
 mod enable;
+#[cfg(feature = "hdr-capture")]
+mod hdr;
 mod output;
 mod overlay;
 mod prefs;
