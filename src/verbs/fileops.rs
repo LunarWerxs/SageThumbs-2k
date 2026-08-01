@@ -80,10 +80,70 @@ fn natural_key_cmp(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
     unsafe { StrCmpLogicalW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr())) }.cmp(&0)
 }
 
+/// Bytes read from the head of a page when probing its dimensions for
+/// `ComicInfo.xml`. Every raster header we care about sits far inside this: the
+/// only one that scans is JPEG (to its SOF marker), and 64 KiB clears a normal
+/// one comfortably. Deliberately NOT a whole-file read - a 300-page CBZ would
+/// otherwise be read twice end to end just to fill in two optional attributes.
+const PAGE_PROBE_BYTES: usize = 64 * 1024;
+
+/// Width/height of a page from its header alone, or `None` if the prefix does not
+/// carry them (the `ImageWidth`/`ImageHeight` attributes are optional, so a page
+/// we can't measure cheaply simply goes without).
+fn page_dims_from_head(path: &str) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).ok()?;
+    let mut head = Vec::new();
+    f.take(PAGE_PROBE_BYTES as u64)
+        .read_to_end(&mut head)
+        .ok()?;
+    image::ImageReader::new(std::io::Cursor::new(&head))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok())
+        .or_else(|| crate::container::real_dims(&head))
+}
+
+/// Build the `ComicInfo.xml` sidecar for a CBZ.
+///
+/// Comic readers - Kavita, Komga, YACReader, ComicRack's descendants - all read
+/// this file for page count and per-page facts; without it they have to guess by
+/// unzipping. `Image` is a **0-based** index into the page order. `Type` is left
+/// off every page but the first, because `Story` is the schema default and
+/// repeating it just makes the file bigger.
+///
+/// Nothing user-supplied reaches this string: only integers and fixed tokens, so
+/// there is no text to XML-escape and no injection surface. Keep it that way if a
+/// future version starts writing a `<Title>` from the file name.
+fn comic_info_xml(dims: &[Option<(u32, u32)>]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<ComicInfo ");
+    s.push_str("xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ");
+    s.push_str("xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\r\n");
+    let _ = writeln!(s, "  <PageCount>{}</PageCount>\r", dims.len());
+    s.push_str("  <Pages>\r\n");
+    for (i, d) in dims.iter().enumerate() {
+        let _ = write!(s, "    <Page Image=\"{i}\"");
+        if i == 0 {
+            s.push_str(" Type=\"FrontCover\"");
+        }
+        if let Some((w, h)) = d {
+            let _ = write!(s, " ImageWidth=\"{w}\" ImageHeight=\"{h}\"");
+        }
+        s.push_str(" />\r\n");
+    }
+    s.push_str("  </Pages>\r\n</ComicInfo>\r\n");
+    s
+}
+
 /// Combine the selected images into one CBZ (a ZIP of images, the standard comic
 /// archive). Pages are natural-sorted by file name and stored **uncompressed**
 /// (images are already compressed; STORE avoids a pointless re-deflate). Written
 /// to a temp file + renamed so a failed write leaves no partial `.cbz`.
+///
+/// A `ComicInfo.xml` goes in as the **first** entry, which is what the community
+/// CBZ RFC asks for so a reader can pull metadata without scanning the whole
+/// central directory. It is the one deflated entry: it is text, and it is small.
 pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<()> {
     use std::io::Write;
 
@@ -94,11 +154,26 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<()> {
     keyed.sort_by(|a, b| natural_key_cmp(&a.0, &b.0));
     let sorted: Vec<&String> = keyed.into_iter().map(|(_, p)| p).collect();
 
+    // Header-only probe, before anything is written: the sidecar has to be the
+    // FIRST zip entry, so the per-page facts must all be known up front.
+    let dims: Vec<Option<(u32, u32)>> = sorted
+        .iter()
+        .map(|p| page_dims_from_head(p.as_str()))
+        .collect();
+
     write_atomic(out, |tmp| {
         let file = std::fs::File::create(tmp).map_err(|_| Error::from(E_FAIL))?;
         let mut zw = zip::ZipWriter::new(file);
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(
+            "ComicInfo.xml",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .map_err(|_| Error::from(E_FAIL))?;
+        zw.write_all(comic_info_xml(&dims).as_bytes())
+            .map_err(|_| Error::from(E_FAIL))?;
         for (i, p) in sorted.iter().enumerate() {
             let bytes = read_capped(p)?;
             let stem = Path::new(p.as_str())
@@ -355,4 +430,85 @@ pub fn tags_to_folders(
         refresh_dir(dest);
     }
     (done, skipped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(dir: &Path, name: &str, w: u32, h: u32) -> String {
+        let p = dir.join(name);
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb([1, 2, 3])))
+            .save(&p)
+            .unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    /// Kavita/Komga/YACReader read `ComicInfo.xml`, and the community CBZ RFC
+    /// wants it FIRST so a reader does not have to scan the archive for it.
+    #[test]
+    fn cbz_leads_with_comicinfo_and_describes_every_page() {
+        let dir = std::env::temp_dir().join(format!("st2k_cbzinfo_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Deliberately out of lexical order: page 2 must land before page 10.
+        let imgs = vec![
+            png(&dir, "page10.png", 30, 40),
+            png(&dir, "page2.png", 10, 20),
+            png(&dir, "page1.png", 50, 60),
+        ];
+        let out = dir.join("book.cbz");
+        combine_to_cbz(&imgs, &out).unwrap();
+
+        let f = std::fs::File::open(&out).unwrap();
+        let mut zip = zip::ZipArchive::new(f).unwrap();
+        assert_eq!(zip.len(), 4, "3 pages + the sidecar");
+        assert_eq!(
+            zip.by_index(0).unwrap().name(),
+            "ComicInfo.xml",
+            "the sidecar must be the first entry"
+        );
+
+        let xml = {
+            use std::io::Read;
+            let mut e = zip.by_index(0).unwrap();
+            let mut s = String::new();
+            e.read_to_string(&mut s).unwrap();
+            s
+        };
+        assert!(xml.contains("<PageCount>3</PageCount>"), "{xml}");
+        assert!(
+            xml.contains(
+                r#"<Page Image="0" Type="FrontCover" ImageWidth="50" ImageHeight="60" />"#
+            ),
+            "page 1 is the cover and carries its real size: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<Page Image="1" ImageWidth="10" ImageHeight="20" />"#),
+            "natural sort must put page2 second: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<Page Image="2" ImageWidth="30" ImageHeight="40" />"#),
+            "page10 sorts last, not second: {xml}"
+        );
+        assert!(
+            !xml.contains("Image=\"3\""),
+            "the sidecar counted itself as a page"
+        );
+
+        assert_eq!(zip.by_index(1).unwrap().name(), "001_page1.png");
+        assert_eq!(zip.by_index(2).unwrap().name(), "002_page2.png");
+        assert_eq!(zip.by_index(3).unwrap().name(), "003_page10.png");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A page we cannot measure from its header prefix still gets a `<Page>` row,
+    /// just without the two optional size attributes.
+    #[test]
+    fn unmeasurable_page_still_gets_a_row() {
+        let xml = comic_info_xml(&[Some((8, 9)), None]);
+        assert!(xml.contains("<PageCount>2</PageCount>"));
+        assert!(xml.contains(r#"<Page Image="1" />"#), "{xml}");
+    }
 }

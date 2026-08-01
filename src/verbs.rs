@@ -42,9 +42,10 @@ pub use menu::{
 // Encode / convert / resize primitives and descriptors.
 #[allow(unused_imports)]
 pub use encode::{
-    compress_to_size, convert_file, convert_file_opts, convert_image_to_pdf_in, convert_to,
-    convert_to_magick, convert_to_magick_in, resize_file, shrink_for_email, transform_file,
-    ConvertOpts, Resize, Target,
+    compress_to_size, convert_file, convert_file_opts, convert_file_opts_named,
+    convert_image_to_pdf_in, convert_to, convert_to_magick, convert_to_magick_in,
+    convert_to_magick_in_named, resize_file, shrink_for_email, transform_file, ConvertOpts, Resize,
+    Target,
 };
 pub(crate) use encode::{flatten_onto_white, read_capped};
 
@@ -931,6 +932,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Pad is the only resize mode that guarantees an exact output size, and the
+    /// gap it leaves has to be filled with the blurred image rather than a flat
+    /// colour — otherwise it is just letterboxing with extra steps.
+    #[test]
+    fn pad_produces_an_exact_canvas_with_a_blurred_fill() {
+        // A wide, brightly coloured source on a square canvas: the fill bars end
+        // up top and bottom.
+        let src = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 50, |x, _| {
+            image::Rgb([(x % 256) as u8, 200, 40])
+        }));
+        let out = apply_resize(src, Resize::Pad(120, 120));
+        assert_eq!(
+            (out.width(), out.height()),
+            (120, 120),
+            "canvas must be exact"
+        );
+
+        let rgba = out.to_rgba8();
+        // Every pixel is opaque: the bars are filled, not left transparent.
+        assert!(
+            rgba.pixels().all(|p| p.0[3] == 255),
+            "the padding is transparent"
+        );
+        // The top bar is not flat: a blurred copy of a gradient still varies.
+        let top: Vec<_> = (0..120).map(|x| rgba.get_pixel(x, 2).0[0]).collect();
+        assert!(
+            top.iter().any(|&v| v != top[0]),
+            "the fill is a flat colour, not a blurred copy of the image"
+        );
+    }
+
+    /// Padding must never crop: a source taller than the canvas is scaled down to
+    /// fit, not centre-cropped.
+    #[test]
+    fn pad_fits_rather_than_crops() {
+        let src = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            50,
+            400,
+            image::Rgb([10, 10, 200]),
+        ));
+        let out = apply_resize(src, Resize::Pad(100, 100));
+        assert_eq!((out.width(), out.height()), (100, 100));
+        // 50x400 fitted into 100x100 is 12x100, so the middle column is the image
+        // and the left edge is fill.
+        let rgba = out.to_rgba8();
+        let mid = rgba.get_pixel(50, 50).0;
+        assert!(mid[2] > mid[0], "the image should be centred, got {mid:?}");
+    }
+
     #[test]
     fn combine_to_cbz_zips_pages_in_natural_order() {
         let dir = std::env::temp_dir().join(format!("st2k_cbz_{}", std::process::id()));
@@ -952,14 +1002,18 @@ mod tests {
         combine_to_cbz(&paths, &out).unwrap();
         assert!(out.exists() && out.extension().unwrap() == "cbz");
 
-        // Reopen the archive: 3 entries, in 1 → 2 → 10 page order.
+        // Reopen the archive: the ComicInfo.xml sidecar first (the CBZ RFC wants it
+        // there), then the 3 pages in 1 → 2 → 10 page order.
         let f = std::fs::File::open(&out).unwrap();
         let mut zip = zip::ZipArchive::new(f).unwrap();
-        assert_eq!(zip.len(), 3);
+        assert_eq!(zip.len(), 4);
         let order: Vec<String> = (0..zip.len())
             .map(|i| zip.by_index(i).unwrap().name().to_string())
             .collect();
-        assert_eq!(order, vec!["001_1.png", "002_2.png", "003_10.png"]);
+        assert_eq!(
+            order,
+            vec!["ComicInfo.xml", "001_1.png", "002_2.png", "003_10.png"]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

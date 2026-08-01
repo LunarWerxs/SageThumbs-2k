@@ -26,9 +26,68 @@ fn image_to_baseline_jpeg(img: &DynamicImage, quality: u8) -> Result<(Vec<u8>, u
     Ok((buf, w, h))
 }
 
-/// Combine the decodable images in `paths` into one PDF at `out` (one per page,
-/// page sized to the image at 72 dpi). Atomic temp+rename. Returns the path.
+/// How each image is placed on its page.
+///
+/// PDF's unit is the point (1/72 inch) and our images go in at 72 dpi, so one
+/// image pixel is one point and the arithmetic below needs no conversion.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum PdfPage {
+    /// Page sized exactly to the image, image filling it. The original behaviour
+    /// and still the default: it is what you want for scans and comics, where a
+    /// border is just wasted paper.
+    #[default]
+    Tight,
+    /// Page sized to the image plus a uniform margin, in points.
+    Margin(f64),
+    /// A fixed sheet. The image is centred and scaled DOWN to fit inside the
+    /// margins, never UP - a small image keeps its own size instead of being
+    /// blown up and blurred, the same rule Resize follows.
+    Sheet { w: f64, h: f64, margin: f64 },
+}
+
+/// A4 and US Letter in points, for [`PdfPage::Sheet`].
+pub const A4_PT: (f64, f64) = (595.276, 841.89);
+pub const LETTER_PT: (f64, f64) = (612.0, 792.0);
+
+impl PdfPage {
+    /// `(page_w, page_h, draw_x, draw_y, draw_w, draw_h)` for a `w` x `h` image.
+    fn place(self, w: f64, h: f64) -> (f64, f64, f64, f64, f64, f64) {
+        match self {
+            PdfPage::Tight => (w, h, 0.0, 0.0, w, h),
+            PdfPage::Margin(m) => {
+                let m = m.max(0.0);
+                (w + 2.0 * m, h + 2.0 * m, m, m, w, h)
+            }
+            PdfPage::Sheet {
+                w: sw,
+                h: sh,
+                margin,
+            } => {
+                let m = margin.max(0.0);
+                let (aw, ah) = ((sw - 2.0 * m).max(1.0), (sh - 2.0 * m).max(1.0));
+                let scale = (aw / w).min(ah / h).min(1.0);
+                let (dw, dh) = (w * scale, h * scale);
+                (sw, sh, (sw - dw) / 2.0, (sh - dh) / 2.0, dw, dh)
+            }
+        }
+    }
+}
+
+/// Combine the decodable images in `paths` into one PDF at `out`, one per page,
+/// laid out per the user's saved page setting. Atomic temp+rename.
 pub fn combine_to_pdf(paths: &[String], out: &Path, quality: u8) -> Result<PathBuf> {
+    combine_to_pdf_paged(paths, out, quality, crate::settings::pdf_page())
+}
+
+/// [`combine_to_pdf`] with the layout passed in rather than read from settings -
+/// the entry point for tests, which must not depend on whatever this machine's
+/// registry happens to say.
+pub fn combine_to_pdf_paged(
+    paths: &[String],
+    out: &Path,
+    quality: u8,
+    page: PdfPage,
+) -> Result<PathBuf> {
     // Decode every page in parallel (the heavy, parallelizable cost), keeping input
     // order so pages stay in order; undecodable inputs drop out (the `flatten`),
     // exactly as the old sequential `filter_map` did. Per-worker COM init + the
@@ -69,13 +128,14 @@ pub fn combine_to_pdf(paths: &[String], out: &Path, quality: u8) -> Result<PathB
 
     for (i, img) in imgs.iter().enumerate() {
         let (jpeg, w, h) = image_to_baseline_jpeg(img, quality)?;
-        let (pw, ph) = (w as f64, h as f64);
+        let (pw, ph, dx, dy, dw, dh) = page.place(w as f64, h as f64);
         let (pg, ct, im) = (3 + i * 3, 4 + i * 3, 5 + i * 3);
 
         off[pg] = pdf.len();
         txt!("{pg} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] /Resources << /XObject << /Im0 {im} 0 R >> >> /Contents {ct} 0 R >>\nendobj\n");
 
-        let content = format!("q\n{pw} 0 0 {ph} 0 0 cm\n/Im0 Do\nQ\n");
+        // The `cm` matrix is scale-x, 0, 0, scale-y, translate-x, translate-y.
+        let content = format!("q\n{dw} 0 0 {dh} {dx} {dy} cm\n/Im0 Do\nQ\n");
         off[ct] = pdf.len();
         txt!("{ct} 0 obj\n<< /Length {} >>\nstream\n", content.len());
         pdf.extend_from_slice(content.as_bytes());
@@ -117,6 +177,67 @@ pub fn combine_to_pdf(paths: &[String], out: &Path, quality: u8) -> Result<PathB
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tight_pages_are_exactly_the_image() {
+        let (pw, ph, dx, dy, dw, dh) = super::PdfPage::Tight.place(800.0, 600.0);
+        assert_eq!(
+            (pw, ph, dx, dy, dw, dh),
+            (800.0, 600.0, 0.0, 0.0, 800.0, 600.0)
+        );
+    }
+
+    #[test]
+    fn a_margin_grows_the_page_and_insets_the_image() {
+        let (pw, ph, dx, dy, dw, dh) = super::PdfPage::Margin(36.0).place(800.0, 600.0);
+        assert_eq!((pw, ph), (872.0, 672.0));
+        assert_eq!((dx, dy), (36.0, 36.0));
+        assert_eq!(
+            (dw, dh),
+            (800.0, 600.0),
+            "the image itself must not be resized"
+        );
+    }
+
+    /// A sheet scales an oversized image down to fit the printable area, and
+    /// centres it. This is the case that would silently crop if the maths were
+    /// wrong, so the assertion checks the image stays fully inside the margins.
+    #[test]
+    fn a_sheet_shrinks_an_oversized_image_and_centres_it() {
+        let page = super::PdfPage::Sheet {
+            w: super::A4_PT.0,
+            h: super::A4_PT.1,
+            margin: 36.0,
+        };
+        let (pw, ph, dx, dy, dw, dh) = page.place(4000.0, 3000.0);
+        assert_eq!((pw, ph), super::A4_PT);
+        assert!(
+            dw <= pw - 72.0 + 0.01 && dh <= ph - 72.0 + 0.01,
+            "{dw}x{dh} overflows the margins"
+        );
+        assert!(
+            dx >= 36.0 - 0.01 && dy >= 36.0 - 0.01,
+            "drawn outside the margin at {dx},{dy}"
+        );
+        assert!(
+            ((dw / dh) - (4000.0 / 3000.0)).abs() < 1e-9,
+            "aspect ratio changed"
+        );
+    }
+
+    /// Never upscale: a business-card-sized image on A4 keeps its own size and
+    /// just sits in the middle, rather than being blown up to fill the sheet.
+    #[test]
+    fn a_sheet_never_enlarges_a_small_image() {
+        let page = super::PdfPage::Sheet {
+            w: super::A4_PT.0,
+            h: super::A4_PT.1,
+            margin: 36.0,
+        };
+        let (_, _, dx, dy, dw, dh) = page.place(100.0, 50.0);
+        assert_eq!((dw, dh), (100.0, 50.0));
+        assert!(dx > 100.0 && dy > 100.0, "not centred: {dx},{dy}");
+    }
+
     use super::*;
 
     #[test]

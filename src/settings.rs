@@ -391,6 +391,48 @@ pub fn preserve_file_date() -> bool {
     get_dword("PreserveFileDate", 0) != 0
 }
 
+/// Page layout for Combine-into-PDF.
+///
+/// `PdfLayout`: 0 = tight (default), 1 = margin, 2 = A4 sheet, 3 = Letter sheet.
+/// `PdfMarginPt` is the margin in points for modes 1-3 (default 36 = half an inch).
+/// Settings exposes only the margin on/off, which is the option PDF24 actually
+/// added; the two sheet modes are engine features reachable by setting
+/// `PdfLayout` directly, and are documented rather than given a four-way combo
+/// nobody asked for.
+pub fn pdf_page() -> crate::topdf::PdfPage {
+    use crate::topdf::{PdfPage, A4_PT, LETTER_PT};
+    let margin = f64::from(get_dword("PdfMarginPt", 36));
+    match get_dword("PdfLayout", 0) {
+        1 => PdfPage::Margin(margin),
+        2 => PdfPage::Sheet {
+            w: A4_PT.0,
+            h: A4_PT.1,
+            margin,
+        },
+        3 => PdfPage::Sheet {
+            w: LETTER_PT.0,
+            h: LETTER_PT.1,
+            margin,
+        },
+        _ => PdfPage::Tight,
+    }
+}
+
+/// Carry EXIF / XMP / IPTC from the source into a converted or resized output.
+///
+/// **On** by default: our pipeline decodes to pixels and re-encodes, so without
+/// this a Convert silently throws away the camera, lens, date and GPS — which is
+/// not what someone converting their own photos expects (XnView bundles ExifTool
+/// precisely to avoid it). Someone who wants the metadata GONE has an explicit
+/// Strip metadata verb; losing it by accident is the worse default.
+///
+/// Deliberately NOT consulted by Shrink for email, which always drops metadata:
+/// that path exists to hand a file to someone else, and mailing your home GPS
+/// coordinates is a bigger harm than losing a camera model.
+pub fn keep_metadata_on_convert() -> bool {
+    get_dword("KeepMetadata", 1) != 0
+}
+
 // ---- Screenshot capture hotkey ------------------------------------------
 // The opt-in screenshot daemon's global hotkey, stored in the native Win32
 // "hotkey control" packing: high byte = HOTKEYF_* modifiers (SHIFT 0x01,

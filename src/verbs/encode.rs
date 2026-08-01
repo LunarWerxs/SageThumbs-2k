@@ -31,6 +31,7 @@ pub struct Target {
 
 /// JPEG quality used by the shrink-for-email presets (a sensible "looks fine in
 /// an email, stays small" middle ground, independent of the saved Options value).
+mod carry;
 mod compress;
 mod samplers;
 mod slots;
@@ -151,6 +152,7 @@ pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
 
     // Honor the target's WebP-quality (lossy for the quick WebP verb), and the
     // saved JPEG/PNG settings — same as `encode_to`, plus the lossy-WebP selector.
+    let carried = carry::read(&bytes, &src_ext(path));
     write_atomic(slot.path(), |tmp| {
         encode_to_opts(
             &img,
@@ -160,10 +162,24 @@ pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
             target.webp_quality,
             target.ext,
             tmp,
-        )
+        )?;
+        if let Some(m) = &carried {
+            carry::apply(m, tmp, target.ext)?;
+        }
+        Ok(())
     })?;
     preserve_src_time(Path::new(path), slot.path());
     Ok(slot.path().to_path_buf())
+}
+
+/// A path's lowercased extension, the key both the decoder tiers and the
+/// metadata carry use to decide what a file actually is.
+fn src_ext(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 /// Apply a [`Transform`] and write the result as a NEW file ("<name> (edited)")
@@ -247,12 +263,17 @@ pub fn resize_file(path: &str, r: Resize) -> Result<PathBuf> {
         Some(native_output_format(out_ext).unwrap_or(ImageFormat::Png))
     };
     let slot = reserve_unique_suffix(src, "resized", out_ext);
+    let carried = carry::read(&bytes, &ext);
     write_atomic(slot.path(), |tmp| {
         if let Some(format) = native_format {
-            encode_to(&img, format, out_ext, tmp)
+            encode_to(&img, format, out_ext, tmp)?;
         } else {
-            decode::encode_via_magick(&img, tmp, out_ext, None)
+            decode::encode_via_magick(&img, tmp, out_ext, None)?;
         }
+        if let Some(m) = &carried {
+            carry::apply(m, tmp, out_ext)?;
+        }
+        Ok(())
     })?;
     preserve_src_time(src, slot.path());
     Ok(slot.path().to_path_buf())
@@ -386,6 +407,14 @@ pub enum Resize {
     FitUp(u32, u32),
     /// Scale by `0`% (1..=1000).
     Percent(u32),
+    /// Fit inside `w`x`h` and then PAD out to exactly that canvas, centred, with
+    /// the gap filled by a blurred, stretched copy of the image itself.
+    ///
+    /// Every other mode returns whatever aspect the source had; this is the only
+    /// one that guarantees an exact output size, which is what you want when the
+    /// results have to line up in a grid, a slideshow, or a store listing. XnView
+    /// calls it "blurred frame".
+    Pad(u32, u32),
 }
 
 /// Convert options chosen in the Convert… dialog.
@@ -418,12 +447,54 @@ pub(crate) fn apply_resize(img: DynamicImage, r: Resize) -> DynamicImage {
             let h = ((img.height() as f64 * s).round() as u32).max(1);
             img.resize_exact(w, h, image::imageops::FilterType::Lanczos3)
         }
+        Resize::Pad(w, h) => pad_to_canvas(img, w.max(1), h.max(1)),
     }
+}
+
+/// Centre `img` on an exact `w` x `h` canvas whose background is a blurred,
+/// stretched copy of the image.
+///
+/// The blur is done at 1/8 scale and then scaled back up rather than run at full
+/// resolution: a Gaussian over a 1920x1080 canvas is slow enough to be felt in a
+/// batch, and after an 8x upscale the two are indistinguishable — a blur is a
+/// low-pass filter, so the detail thrown away by downscaling is detail the blur
+/// was about to destroy anyway.
+fn pad_to_canvas(img: DynamicImage, w: u32, h: u32) -> DynamicImage {
+    use image::imageops::FilterType::{Lanczos3, Triangle};
+
+    let fitted = img.resize(w, h, Lanczos3);
+    let (small_w, small_h) = ((w / 8).max(1), (h / 8).max(1));
+    let mut canvas = img
+        .resize_to_fill(small_w, small_h, Triangle)
+        .blur(((small_w.max(small_h) as f32) / 12.0).max(1.0))
+        .resize_exact(w, h, Triangle)
+        .to_rgba8();
+
+    let x = ((w.saturating_sub(fitted.width())) / 2) as i64;
+    let y = ((h.saturating_sub(fitted.height())) / 2) as i64;
+    image::imageops::overlay(&mut canvas, &fitted.to_rgba8(), x, y);
+    DynamicImage::ImageRgba8(canvas)
 }
 
 /// Convert `path` into `out_dir` per `opts` (the Convert… dialog path). Picks a
 /// non-colliding name, writes atomically. Returns the output path.
 pub fn convert_file_opts(path: &str, opts: ConvertOpts, out_dir: &Path) -> Result<PathBuf> {
+    convert_file_opts_named(path, opts, out_dir, None)
+}
+
+/// [`convert_file_opts`] with an optional name tag inserted before the extension,
+/// e.g. `holiday (1280x720).jpg`.
+///
+/// This exists for the dialog's "write every preset size" mode: without a tag the
+/// three outputs would collide on one name and the collision-free reserver would
+/// silently produce `holiday.jpg`, `holiday (2).jpg`, `holiday (3).jpg` — three
+/// files whose names say nothing about which size is which.
+pub fn convert_file_opts_named(
+    path: &str,
+    opts: ConvertOpts,
+    out_dir: &Path,
+    tag: Option<&str>,
+) -> Result<PathBuf> {
     let bytes = read_capped(path)?;
     let mut img = apply_resize(decode::decode_full(&bytes)?, opts.resize);
     if matches!(opts.target.format, ImageFormat::Jpeg) {
@@ -436,14 +507,18 @@ pub fn convert_file_opts(path: &str, opts: ConvertOpts, out_dir: &Path) -> Resul
         .to_string();
     let ext = opts.target.ext.to_string();
     let dir = out_dir.to_path_buf();
+    let tag = tag.map(|t| format!(" ({t})")).unwrap_or_default();
     let slot = reserve(move |n| {
         let name = if n == 0 {
-            format!("{stem}.{ext}")
+            format!("{stem}{tag}.{ext}")
         } else {
-            format!("{stem} ({n}).{ext}")
+            format!("{stem}{tag} ({n}).{ext}")
         };
         dir.join(name)
     });
+    // Same metadata carry-through the quick Convert verb does — the dialog is the
+    // path people run on a folder of photos, so it is the one that matters most.
+    let carried = carry::read(&bytes, &src_ext(path));
     write_atomic(slot.path(), |tmp| {
         encode_to_opts(
             &img,
@@ -453,7 +528,11 @@ pub fn convert_file_opts(path: &str, opts: ConvertOpts, out_dir: &Path) -> Resul
             opts.webp_quality,
             opts.target.ext,
             tmp,
-        )
+        )?;
+        if let Some(m) = &carried {
+            carry::apply(m, tmp, opts.target.ext)?;
+        }
+        Ok(())
     })?;
     preserve_src_time(Path::new(path), slot.path());
     Ok(slot.path().to_path_buf())
@@ -549,6 +628,23 @@ pub fn convert_to_magick_in(
     resize: Resize,
     quality: Option<u8>,
 ) -> Result<PathBuf> {
+    convert_to_magick_in_named(input, out_dir, ext, resize, quality, None)
+}
+
+/// [`convert_to_magick_in`] with the same name tag [`convert_file_opts_named`]
+/// takes, so the dialog's "write every preset size" mode names its AVIF/JXL/PSD
+/// outputs the same way it names the native ones. Without it three sizes would
+/// land as `photo.avif`, `photo (2).avif`, `photo (3).avif` with nothing to say
+/// which is which.
+#[allow(clippy::too_many_arguments)]
+pub fn convert_to_magick_in_named(
+    input: &str,
+    out_dir: &Path,
+    ext: &str,
+    resize: Resize,
+    quality: Option<u8>,
+    tag: Option<&str>,
+) -> Result<PathBuf> {
     if !decode::magick_output_supported(ext) {
         return Err(Error::from(E_FAIL));
     }
@@ -559,11 +655,12 @@ pub fn convert_to_magick_in(
         .to_string();
     let dir = out_dir.to_path_buf();
     let e = ext.to_string();
+    let tag = tag.map(|t| format!(" ({t})")).unwrap_or_default();
     let slot = reserve(move |n| {
         let name = if n == 0 {
-            format!("{stem}.{e}")
+            format!("{stem}{tag}.{e}")
         } else {
-            format!("{stem} ({n}).{e}")
+            format!("{stem}{tag} ({n}).{e}")
         };
         dir.join(name)
     });
