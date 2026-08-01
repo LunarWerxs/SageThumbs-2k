@@ -34,6 +34,7 @@ mod video;
 #[cfg(feature = "html-preview")]
 mod webview;
 mod window;
+mod woff;
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -46,8 +47,7 @@ use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, FindWindowW, GetMessageW, SendMessageW, SetForegroundWindow,
-    TranslateMessage, MSG, WM_COPYDATA,
+    DispatchMessageW, FindWindowW, GetMessageW, SendMessageW, TranslateMessage, MSG, WM_COPYDATA,
 };
 
 /// Last time we spawned a `--preview` in response to a Space press (ms tick), or 0. Serializes
@@ -88,7 +88,7 @@ pub(crate) unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
                 if let Some(p) = initial_path {
                     send_command(existing, CMD_SET_PATH, Some(p));
                 }
-                let _ = SetForegroundWindow(existing);
+                crate::win::force_foreground(existing);
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(40));

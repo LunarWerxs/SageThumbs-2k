@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow, SetFocus};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -286,11 +286,18 @@ pub(crate) unsafe fn run_dialog(
     match modal {
         None => {
             let _ = ShowWindow(hwnd, SW_SHOW);
+            // These dialogs are launched by the DLL from inside Explorer's context
+            // menu, i.e. by a freshly spawned process that Windows may refuse the
+            // foreground to. Without this, "Convert…" can open BEHIND the Explorer
+            // window that launched it and read as "the menu item did nothing".
+            // Same root cause as the screenshot overlay's dead Esc key.
+            force_foreground(hwnd);
             pump_until_quit(hwnd);
         }
         Some(owner) => {
             let _ = EnableWindow(owner, false);
             let _ = ShowWindow(hwnd, SW_SHOW);
+            force_foreground(hwnd);
             pump_until_closed(hwnd);
             let _ = EnableWindow(owner, true);
         }
@@ -316,6 +323,44 @@ pub(crate) unsafe fn pump_msgs(frames: usize) {
 /// Force a SYNCHRONOUS paint of `hwnd` AND every child (RDW_UPDATENOW). Owner-drawn statics
 /// (nav rail, pane header, toggle switches) only paint on a real WM_PAINT, so without this a
 /// headless capture races them and leaves blank gaps.
+/// Take the foreground and the keyboard focus, even when Windows says no.
+///
+/// Our full-screen overlays (the screenshot capture, the eyedropper) are
+/// `WS_POPUP`/`WS_EX_NOACTIVATE` windows spawned by the background hotkey daemon.
+/// A process that did not itself just receive input is NOT allowed to steal the
+/// foreground, so `SetForegroundWindow` is routinely refused. The window still
+/// appears — it is topmost — and still receives MOUSE messages, so everything
+/// looks fine; but it never gets keyboard focus, and every keystroke goes to
+/// whatever app was in front. The symptom the user sees is "Esc does not close
+/// the screenshot" (owner report, 2026-07-31).
+///
+/// Attaching our input queue to the current foreground thread makes us share its
+/// input state, which is the documented way to be granted the change. We detach
+/// immediately: staying attached would couple our message loop to another app's,
+/// so its hangs would become ours.
+pub(crate) unsafe fn force_foreground(hwnd: HWND) {
+    let _ = SetForegroundWindow(hwnd);
+    let _ = SetActiveWindow(hwnd);
+    let _ = SetFocus(Some(hwnd));
+    if GetForegroundWindow() == hwnd {
+        return;
+    }
+    let fg = GetForegroundWindow();
+    if fg.0.is_null() {
+        return;
+    }
+    let fg_tid = GetWindowThreadProcessId(fg, None);
+    let me = windows::Win32::System::Threading::GetCurrentThreadId();
+    if fg_tid == 0 || fg_tid == me {
+        return;
+    }
+    let _ = windows::Win32::System::Threading::AttachThreadInput(fg_tid, me, true);
+    let _ = SetForegroundWindow(hwnd);
+    let _ = SetActiveWindow(hwnd);
+    let _ = SetFocus(Some(hwnd));
+    let _ = windows::Win32::System::Threading::AttachThreadInput(fg_tid, me, false);
+}
+
 pub(crate) unsafe fn force_repaint(hwnd: HWND) {
     use windows::Win32::Graphics::Gdi::{
         RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW,

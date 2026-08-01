@@ -29,7 +29,7 @@ pub(super) unsafe fn with_modal<F: FnOnce()>(hwnd: HWND, f: F) {
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     );
-    let _ = SetForegroundWindow(hwnd);
+    crate::win::force_foreground(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
 

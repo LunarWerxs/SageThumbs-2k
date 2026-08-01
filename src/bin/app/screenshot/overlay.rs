@@ -27,8 +27,7 @@ use windows::Win32::UI::Controls::Dialogs::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, SetActiveWindow, SetFocus, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_F8, VK_RETURN,
-    VK_SHIFT,
+    GetKeyState, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_F8, VK_RETURN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -182,15 +181,26 @@ unsafe fn shot_dpi_for_sel(s: &Shot, sel: RECT) -> i32 {
     }
 }
 
+/// HDR capture when the feature is compiled in, otherwise "nothing to do".
+///
+/// The `hdr-capture` feature is app-only (see Cargo.toml): it drags in D3D11 and
+/// DXGI, which the shell DLL must never link. This shim keeps the one call site
+/// free of `cfg` noise.
+#[cfg(feature = "hdr-capture")]
+unsafe fn hdr_capture(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) -> bool {
+    super::hdr::capture_into(dst, vx, vy, vw, vh)
+}
+
+#[cfg(not(feature = "hdr-capture"))]
+unsafe fn hdr_capture(_dst: HDC, _vx: i32, _vy: i32, _vw: i32, _vh: i32) -> bool {
+    false
+}
+
 unsafe fn activate_overlay(hwnd: HWND) {
-    // WS_EX_NOACTIVATE keeps this popup out of normal shell chrome, so activation
-    // is always explicit. SetForegroundWindow is normally allowed for the freshly
-    // spawned hotkey child; SetActiveWindow/SetFocus cover the same-thread state.
-    // Repeating this on click also recovers if Windows' foreground lock denied the
-    // initial request from a background daemon.
-    let _ = SetForegroundWindow(hwnd);
-    let _ = SetActiveWindow(hwnd);
-    let _ = SetFocus(Some(hwnd));
+    // Repeated on click too: if Windows denied the initial grab AND the fallback
+    // could not run (no foreground window at spawn time), the first click is the
+    // next chance to become focusable.
+    crate::win::force_foreground(hwnd);
 }
 
 pub(crate) unsafe fn run_capture(hinst: HINSTANCE) {
@@ -256,7 +266,10 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
     SelectObject(mem, HGDIOBJ(bmp.0));
     if automation {
         draw_automation_canvas(mem, vw, vh);
-    } else {
+    } else if !hdr_capture(mem, vx, vy, vw, vh) {
+        // No HDR monitor attached (or a build without the feature): the original
+        // single blit, unchanged. The HDR path only engages when it has something
+        // to fix.
         let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
     }
     // A pre-dimmed copy of the snapshot — paint blits this for the surround (no
@@ -434,6 +447,11 @@ pub(crate) unsafe fn capture_instant() {
     // GetDIBits then overruns. Never reachable on real hardware, but cheap to close.
     let n = vw as i64 * vh as i64 * 4;
     if n <= 0 || n > i32::MAX as i64 {
+        // Mirror the cleanup the success path does a few lines down.
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
         return;
     }
     let mut buf = vec![0u8; n as usize];

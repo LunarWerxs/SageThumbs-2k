@@ -294,6 +294,36 @@ fn main() {
             };
             std::process::exit(i32::from(!ok));
         }
+        // Diagnostic: `--explorer-selection` prints what a global hotkey would act
+        // on right now — one path per line, nothing when there is no selection —
+        // and exits. Read-only, opens no window, and never falls back to the file
+        // picker the interactive path uses.
+        //
+        // This exists because "I pressed the hotkey and nothing happened" is
+        // otherwise unanswerable: it separates "the hotkey never fired" from "the
+        // hotkey fired but Explorer reported no selection". QuickLook has an open
+        // bug of exactly the second kind on Windows 11's Explorer Home page
+        // (their #1800), and this is how we check whether ours behaves the same.
+        if args.iter().any(|a| a == "--explorer-selection") {
+            // `--after-ms N` waits first. Necessary, not a convenience: the
+            // resolver reads the FOREGROUND Explorer window, and launching this
+            // console tool makes the CONSOLE the foreground window — so without a
+            // delay it always reports "nothing" and looks like a bug in the app.
+            // Run it, click the Explorer window you care about, read the answer.
+            let wait = args
+                .iter()
+                .position(|a| a == "--after-ms")
+                .and_then(|p| args.get(p + 1))
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            if wait > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(wait.min(60_000)));
+            }
+            if let Some(p) = explorer_selection::preview_target() {
+                println!("{p}");
+            }
+            return;
+        }
         // Eyedropper mode: `--eyedropper` (spawned by the DLL verb) opens the
         // system-wide screen color picker.
         if args.iter().any(|a| a == "--eyedropper") {
@@ -466,7 +496,10 @@ fn main() {
                     if IsIconic(existing).as_bool() {
                         let _ = ShowWindow(existing, SW_RESTORE);
                     }
-                    let _ = SetForegroundWindow(existing);
+                    // A second launch raising the existing Settings window. If the
+                    // foreground grab is refused the window stays hidden behind
+                    // whatever is in front, and the menu item reads as dead.
+                    crate::win::force_foreground(existing);
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));

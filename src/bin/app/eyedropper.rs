@@ -10,6 +10,7 @@ use core::ffi::c_void;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::OnceLock;
 
+use std::sync::Mutex;
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -18,7 +19,8 @@ use windows::Win32::Graphics::Gdi::{
     ReleaseDC, SelectObject, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, COLORONCOLOR,
     DT_LEFT, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_SPACE};
+
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::rgb;
@@ -27,7 +29,10 @@ use crate::win::{app_icon, gui_font, set_clipboard_text, t, wide};
 const EYE_K: i32 = 7; // half-window: a (2K+1)² block of screen pixels in the loupe
 const EYE_SPAN: i32 = 2 * EYE_K + 1; // 15 px sampled across
 const EYE_MAG: i32 = 150; // magnified loupe size (px) → 10× zoom
-const EYE_LBL: i32 = 46; // loupe label strip (px): hex row + hint row
+const EYE_LBL: i32 = 64; // loupe label strip (px): hex row + stash row + hint row
+/// Stash swatch size and how many fit on the row before the count takes over.
+const EYE_SW: i32 = 12;
+const EYE_SW_MAX: i32 = 11;
 
 /// The frozen screen snapshot: a memory DC (with its bitmap selected) we BitBlt
 /// to display, StretchBlt for the loupe, and GetPixel for sampling.
@@ -38,8 +43,44 @@ static EYE_VH: AtomicI32 = AtomicI32::new(0);
 /// Last cursor client position (drives the loupe; starts off-screen).
 static EYE_LAST_X: AtomicI32 = AtomicI32::new(-10000);
 static EYE_LAST_Y: AtomicI32 = AtomicI32::new(-10000);
+/// Colours collected with Ctrl+click / Ctrl+Space without closing the overlay.
+///
+/// Picking one colour at a time means re-opening the picker for every swatch in a
+/// palette; this keeps the overlay up so a run of colours can be grabbed in one
+/// go, then copied as a list. Cleared on open, so one session never inherits the
+/// last one's leftovers.
+static EYE_STASH: Mutex<Vec<(u8, u8, u8)>> = Mutex::new(Vec::new());
+
+fn hex_of((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+/// Is a modifier held? Ctrl means "add to the list and keep picking".
+unsafe fn ctrl_held() -> bool {
+    GetKeyState(VK_CONTROL.0 as i32) < 0
+}
+
+/// Put the final pick on the clipboard, prepended by anything stashed.
+///
+/// One colour copies as bare hex, exactly as before. Several copy newline-
+/// separated, which is what every editor, stylesheet and spreadsheet expects to
+/// receive as a list.
+unsafe fn eye_finish(pick: Option<(u8, u8, u8)>) {
+    let mut all = EYE_STASH.lock().map(|s| s.clone()).unwrap_or_default();
+    if let Some(c) = pick {
+        all.push(c);
+    }
+    if all.is_empty() {
+        return;
+    }
+    let text: Vec<String> = all.into_iter().map(hex_of).collect();
+    set_clipboard_text(&text.join("\r\n"));
+}
 
 pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
+    if let Ok(mut st) = EYE_STASH.lock() {
+        st.clear();
+    }
     // Snapshot the whole virtual screen into a memory DC.
     let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -87,7 +128,9 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
         None,
     ) {
         let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(hwnd);
+        // Same trap as the capture overlay: without this the picker takes mouse
+        // clicks but no keys, so Space and Esc silently do nothing.
+        crate::win::force_foreground(hwnd);
         let mut msg = MSG::default();
         loop {
             let r = GetMessageW(&mut msg, None, 0, 0).0;
@@ -244,8 +287,15 @@ extern "system" fn eyedropper_wndproc(
             WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
                 let mx = (lparam.0 & 0xffff) as u16 as i16 as i32;
                 let my = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
-                let (r, g, b) = eye_sample(mx, my);
-                set_clipboard_text(&format!("#{r:02X}{g:02X}{b:02X}"));
+                let c = eye_sample(mx, my);
+                if ctrl_held() {
+                    if let Ok(mut st) = EYE_STASH.lock() {
+                        st.push(c);
+                    }
+                    let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(mx, my)), false);
+                    return LRESULT(0);
+                }
+                eye_finish(Some(c));
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
@@ -254,13 +304,22 @@ extern "system" fn eyedropper_wndproc(
             WM_KEYDOWN if wparam.0 == VK_SPACE.0 as usize => {
                 let cx = EYE_LAST_X.load(Ordering::Relaxed);
                 let cy = EYE_LAST_Y.load(Ordering::Relaxed);
-                if cx > -10000 {
-                    let (r, g, b) = eye_sample(cx, cy);
-                    set_clipboard_text(&format!("#{r:02X}{g:02X}{b:02X}"));
+                let pick = (cx > -10000).then(|| eye_sample(cx, cy));
+                if ctrl_held() {
+                    if let Some(c) = pick {
+                        if let Ok(mut st) = EYE_STASH.lock() {
+                            st.push(c);
+                        }
+                        let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(cx, cy)), false);
+                    }
+                    return LRESULT(0);
                 }
+                eye_finish(pick);
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
+            // Esc is cancel, so it deliberately does NOT copy — not even a stash
+            // that was mid-build. Space is the one key that commits.
             WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => {
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
@@ -385,13 +444,61 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
         &mut hr,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE,
     );
-    // Hint (row 2).
+    // Stash row: the colours collected so far, oldest first.
+    let stash = EYE_STASH.lock().map(|s| s.clone()).unwrap_or_default();
+    if !stash.is_empty() {
+        let y = by + EYE_MAG + 24;
+        for (i, &c) in stash
+            .iter()
+            .rev()
+            .take(EYE_SW_MAX as usize)
+            .rev()
+            .enumerate()
+        {
+            let x = bx + 6 + i as i32 * (EYE_SW + 1);
+            let cell = RECT {
+                left: x,
+                top: y,
+                right: x + EYE_SW,
+                bottom: y + EYE_SW,
+            };
+            let br = CreateSolidBrush(rgb(c.0, c.1, c.2));
+            FillRect(hdc, &cell, br);
+            let _ = DeleteObject(br.into());
+        }
+        // More than fits: say how many, rather than silently showing a subset.
+        if stash.len() as i32 > EYE_SW_MAX {
+            SelectObject(hdc, HGDIOBJ(gui_font().0));
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, rgb(200, 200, 200));
+            let mut n = wide(&format!("{}", stash.len()));
+            let nn = n.len().saturating_sub(1);
+            let mut nr = RECT {
+                left: bx + 6 + EYE_SW_MAX * (EYE_SW + 1),
+                top: y - 2,
+                right: bx + EYE_MAG - 4,
+                bottom: y + EYE_SW + 2,
+            };
+            DrawTextW(
+                hdc,
+                &mut n[..nn],
+                &mut nr,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+            );
+        }
+    }
+
+    // Hint (row 3).
     SetTextColor(hdc, rgb(150, 150, 150));
-    let mut hint = wide(t("eye_hint"));
+    let mut hint = wide(t(if stash.is_empty() {
+        "eye_hint"
+    } else {
+        "eye_hint_stash"
+    }));
     let hin = hint.len().saturating_sub(1);
     let mut hir = RECT {
         left: bx + 6,
-        top: by + EYE_MAG + 24,
+        top: by + EYE_MAG + 42,
         right: bx + EYE_MAG,
         bottom: by + EYE_MAG + EYE_LBL,
     };

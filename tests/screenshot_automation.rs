@@ -21,11 +21,11 @@ use windows::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, GWL_EXSTYLE, GW_OWNER,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_CLOSE,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST,
+    FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
+    GWL_EXSTYLE, GW_OWNER, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 const TITLE_PREFIX: &str = "SageThumbs 2K Screenshot Automation";
@@ -181,6 +181,27 @@ fn synthetic_overlay_is_discoverable_by_windows_automation() {
         )
         .expect("query DWM cloak state");
         assert_eq!(cloaked, 0, "automation window must not be DWM-cloaked");
+
+        // The overlay carries WS_EX_NOACTIVATE, so activation is entirely explicit —
+        // and Windows' foreground lock routinely REFUSES SetForegroundWindow from a
+        // process spawned by a background hotkey daemon. When that happens the window
+        // still shows and still takes mouse clicks, but never receives a keystroke, so
+        // Esc does not close the capture and the user is stuck with a full-screen
+        // overlay. Owner-reported, 2026-07-31. `activate_overlay` now falls back to
+        // attaching to the foreground thread's input queue; this asserts the outcome
+        // rather than the mechanism.
+        let mut focused = std::ptr::null_mut();
+        for _ in 0..40 {
+            focused = GetForegroundWindow().0;
+            if focused == hwnd.0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            focused, hwnd.0,
+            "the capture overlay never took the foreground, so it can receive no keys              (Esc will not cancel)"
+        );
 
         let mut actual = RECT::default();
         GetWindowRect(hwnd, &mut actual).expect("query automation window bounds");

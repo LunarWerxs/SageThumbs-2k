@@ -46,6 +46,11 @@ pub(super) unsafe fn compose(s: &Shot) -> Option<(Vec<u8>, i32, i32)> {
     // the i32 product can't overflow into an undersized buffer for GetDIBits.
     let n = w as i64 * h as i64 * 4;
     if n > i32::MAX as i64 {
+        // Free what we already created; the success path below does, and an early
+        // return that does not is a GDI handle leak in a process the user can run
+        // hundreds of times a day.
+        let _ = DeleteDC(comp);
+        let _ = DeleteObject(cbmp.into());
         return None;
     }
     let mut buf = vec![0u8; n as usize];

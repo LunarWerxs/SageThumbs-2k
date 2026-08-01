@@ -317,7 +317,7 @@ unsafe fn show_tray_menu(hwnd: HWND) {
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
     // Required so the menu dismisses when the user clicks elsewhere.
-    let _ = SetForegroundWindow(hwnd);
+    crate::win::force_foreground(hwnd);
     let _ = TrackPopupMenu(
         menu,
         TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,

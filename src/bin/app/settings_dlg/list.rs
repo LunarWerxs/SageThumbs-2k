@@ -87,7 +87,7 @@ pub(super) unsafe fn list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
     }
     // Foreground + WM_NULL bracket: the documented fix for the "menu shows then
     // immediately vanishes" quirk. Owner is the top-level dialog, not the list.
-    let _ = SetForegroundWindow(owner);
+    crate::win::force_foreground(owner);
     let cmd = TrackPopupMenu(
         menu,
         TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
