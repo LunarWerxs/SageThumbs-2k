@@ -66,3 +66,11 @@ try {
 
 if ($passed -ne 9) { throw "Test accounting error: expected 9 passes, got $passed" }
 Write-Host "[magick-freshness-tests] PASS $passed/9" -ForegroundColor Green
+
+# EXPLICIT, and load-bearing. The last thing this suite does is assert the checker exits
+# ONE for a newer upstream release, which leaves $LASTEXITCODE = 1. Run via `pwsh -File`
+# that is harmless, because the process exit code is the script's own. But CI runs these
+# with `shell: pwsh`, which invokes the script IN-SESSION and then does
+# `exit $LASTEXITCODE` - so the leaked 1 became the step's exit code and turned a fully
+# passing suite red. Never end this file on a bare native/script call.
+exit 0
