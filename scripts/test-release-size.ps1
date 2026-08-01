@@ -107,45 +107,77 @@ try {
         & $checker -InstallerPath $installer -PolicyPath $policy -StagePath $stage
     }
 
-    # Measured 1.3.6-rc1 size-policy reference. Unlike the tagged 1.3.2-1.3.5
-    # packages, it includes the clean-machine AVIF/JXL writers and dependencies.
-    # This is a policy reference, not a required digest/byte count for every rebuild.
-    Set-SparseLength $installer 13118612
-    Set-SparseLength (Join-Path $stage 'sagethumbs2k.dll') 6564352
-    Set-SparseLength (Join-Path $stage 'SageThumbs2K.exe') 8899072
-    Set-SparseLength (Join-Path $stage 'st2k.exe') 6752768
-    Set-MagickTotal $stage 29827612
-    Assert-Passes 'measured feature-complete rc1 policy reference' {
+    # ---- the SHIPPING policy ------------------------------------------------
+    # DERIVE these from the policy file; never hardcode a release's bytes here.
+    # Hardcoding rots silently: a reviewed rebaseline raises a ceiling, every
+    # pinned value falls below it, and the "plus one byte" cases stop testing a
+    # boundary at all. The 1.4.1-hdr rebaseline did exactly that to all three,
+    # and INVERTED the duplicated-table case below (it started passing, i.e. the
+    # guard reported green for a payload it was written to reject).
+    $prod = Get-Content -LiteralPath $productionPolicy -Raw | ConvertFrom-Json
+    $prodInstaller = [int64]$prod.referenceInstallerBytes
+    $prodMaxInstaller = [int64]$prod.maxInstallerBytes
+    $prodMaxRust = [int64]$prod.maxRustPayloadBytes
+    $prodMaxMagick = [int64]$prod.maxMagickPayloadBytes
+
+    Set-SparseLength $installer $prodInstaller
+    Set-StageTotal $stage ([int64]$prod.referenceRustPayloadBytes)
+    Set-MagickTotal $stage ([int64]$prod.referenceMagickPayloadBytes)
+    Assert-Passes 'production policy reference sizes' {
         & $checker -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage
     }
 
-    # The pre-patch EXR lookup tables duplicated static data in all three Rust
-    # artifacts. Keep that raw-payload regression rejected even if compression
-    # happens to hide it in the installer.
-    Set-SparseLength $installer 13118612
-    Set-SparseLength (Join-Path $stage 'sagethumbs2k.dll') 6785024
-    Set-SparseLength (Join-Path $stage 'SageThumbs2K.exe') 9118720
-    Set-SparseLength (Join-Path $stage 'st2k.exe') 6974464
-    Assert-Fails 'known duplicated-table Rust payload' {
+    Set-SparseLength $installer $prodMaxInstaller
+    Set-StageTotal $stage $prodMaxRust
+    Set-MagickTotal $stage $prodMaxMagick
+    Assert-Passes 'production ceilings exactly' {
         & $checker -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage
     }
 
-    Set-StageTotal $stage 22216192
-    Set-SparseLength $installer 13249685
+    Set-SparseLength $installer ($prodMaxInstaller + 1)
     Assert-Fails 'production installer ceiling plus one byte' {
         & $checker -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage
     }
 
-    Set-SparseLength $installer 13118612
-    Set-StageTotal $stage 22478337
+    Set-SparseLength $installer $prodInstaller
+    Set-StageTotal $stage ($prodMaxRust + 1)
     Assert-Fails 'production Rust ceiling plus one byte' {
         & $checker -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage
     }
 
-    Set-StageTotal $stage 22216192
-    Set-MagickTotal $stage 30089757
+    Set-StageTotal $stage $prodMaxRust
+    Set-MagickTotal $stage ($prodMaxMagick + 1)
     Assert-Fails 'production ImageMagick ceiling plus one byte' {
         & $checker -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage
+    }
+
+    # The pre-patch EXR lookup tables duplicated static data across all three Rust
+    # artifacts. What this case actually proves is that the RAW payload check
+    # rejects that duplication even though solid compression hides it and the
+    # installer stays under its own ceiling — a property of the CHECKER, not of
+    # whatever the product happens to weigh today. So it runs against a policy
+    # pinned to the 1.3.6-rc1 baseline it was measured against. Run against the
+    # LIVE policy it expires the first time the product legitimately outgrows a
+    # past regression, which it now has.
+    $historic = Join-Path $scratch 'historic-policy.json'
+    Write-TestPolicy $historic `
+        -referenceInstaller 13118612 -installerAllowance 131072 -maxInstaller 13249684 `
+        -referenceRust 22216192 -rustAllowance 262144 -maxRust 22478336 `
+        -referenceMagick 29827612 -magickAllowance 262144 -maxMagick 30089756
+    Set-SparseLength $installer 13118612
+    Set-SparseLength (Join-Path $stage 'sagethumbs2k.dll') 6785024
+    Set-SparseLength (Join-Path $stage 'SageThumbs2K.exe') 9118720
+    Set-SparseLength (Join-Path $stage 'st2k.exe') 6974464
+    Set-MagickTotal $stage 29827612
+    Assert-Fails 'known duplicated-table Rust payload' {
+        & $checker -InstallerPath $installer -PolicyPath $historic -StagePath $stage
+    }
+
+    # ...and the installer check ALONE would have shipped it. This is the whole
+    # reason the staged raw-payload budget exists, so assert it rather than
+    # assuming it: same bytes, no -StagePath, passes.
+    Assert-Passes 'duplicated tables hide under the installer ceiling' {
+        & $checker -InstallerPath $installer -PolicyPath $historic
     }
 
     Assert-Fails 'missing installer' {
