@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
   "identity": {
-    "displayName": "ImageMagick 7.1.2-25 Q16-HDRI (64-bit) (2026-06-04)",
-    "fileVersion": "7.1.2-25",
-    "versionLinePattern": "^Version: ImageMagick 7\\.1\\.2-25 Q16-HDRI x64\\b",
+    "displayName": "ImageMagick 7.1.2-29 Q16-HDRI (64-bit) (2026-07-27)",
+    "fileVersion": "7.1.2-29",
+    "versionLinePattern": "^Version: ImageMagick 7\\.1\\.2-29 Q16-HDRI x64\\b",
     "installDirectoryName": "ImageMagick-7.1.2-Q16-HDRI"
   },
   "inventory": {
     "description": "SHA-256 over UTF-8 lines relative/path|byteLength|lowercaseFileSha256, ordinal-ignore-case sorted, with a final LF. Inputs are magick.exe, root DLL/XML files, License.txt, NOTICE.txt, and every file below modules.",
     "fileCount": 195,
-    "totalBytes": 47615949,
-    "sha256": "e737b15013297f03f2bcef184a1199f5ed86dba517a5e4139d846679484f744b"
+    "totalBytes": 47839954,
+    "sha256": "10496d99be76de06c06c3c32731fbb3af2e4a8a22dc87469bf8bf75b036a1b38"
   },
   "requiredLegalFiles": [
     "License.txt",

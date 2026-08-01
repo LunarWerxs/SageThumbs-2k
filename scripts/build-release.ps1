@@ -37,7 +37,7 @@ Write-Host "SageThumbs 2K release pipeline - version $ver" -ForegroundColor Cyan
 # fresh clone; the machine-local .cargo/config.toml carries the same flag for dev
 # builds. (RUSTFLAGS overrides config [target] rustflags — keep them identical.)
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
-$exeBuildArgs = @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview')
+$exeBuildArgs = @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview,hdr-capture')
 $dllBuildArgs = @('--release', '--locked', '-p', 'sagethumbs2k-dll', '--features', 'webp-lossy,dll-i18n-subset')
 if (-not $SkipBuild) {
     # Version metadata + app manifest + icon are embedded into the binaries via windres
@@ -286,19 +286,24 @@ if ($bundleMagick) {
                 # NOT a hollow metadata-less one — hollow DLLs are heuristic-AV false-positive
                 # bait (verified: a stub WITHOUT this scored 6/64 on VirusTotal, WITH it 1/69).
                 # Same principle the Rust binaries already follow via build.rs/windres.
+                # Version literals come from the PIN, never a hard-coded string: a stub has to
+                # claim the version of the DLL it stands in for, and an ImageMagick bump must
+                # not need an edit here to stay truthful.
+                $stubVersion = [string]$magickPin.identity.fileVersion
+                $stubRcVersion = ($stubVersion -replace '[-.]', ',')
                 $rc = @(
                     '1 VERSIONINFO',
-                    'FILEVERSION 7,1,2,25', 'PRODUCTVERSION 7,1,2,25',
+                    "FILEVERSION $stubRcVersion", "PRODUCTVERSION $stubRcVersion",
                     'FILEFLAGSMASK 0x3fL', 'FILEOS 0x40004L', 'FILETYPE 0x2L',
                     'BEGIN',
                     '  BLOCK "StringFileInfo"', '  BEGIN', '    BLOCK "040904b0"', '    BEGIN',
                     '      VALUE "CompanyName", "SageThumbs 2K"',
                     '      VALUE "FileDescription", "ImageMagick text-shaping shim (no-op; raster-only build)"',
-                    '      VALUE "FileVersion", "7.1.2-25"',
+                    "      VALUE ""FileVersion"", ""$stubVersion""",
                     "      VALUE ""InternalName"", ""CORE_RL_$($t)_""",
                     "      VALUE ""OriginalFilename"", ""$dll""",
                     '      VALUE "ProductName", "SageThumbs 2K"',
-                    '      VALUE "ProductVersion", "7.1.2-25"',
+                    "      VALUE ""ProductVersion"", ""$stubVersion""",
                     '      VALUE "LegalCopyright", "Shipped with SageThumbs 2K"',
                     '    END', '  END',
                     '  BLOCK "VarFileInfo"', '  BEGIN', '    VALUE "Translation", 0x409, 1200', '  END',

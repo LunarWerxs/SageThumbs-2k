@@ -24,6 +24,12 @@ param(
 
     [string]$ConvertSourcePath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'src\bin\app\convert.rs'),
 
+    # The staged engine's expected identity comes from the SAME pin the source check
+    # validates against, so an ImageMagick bump is one edit in one file. It used to be
+    # a version literal here too, which meant a re-pin passed the source gate and then
+    # failed the smoke gate on a string nobody remembered to update.
+    [string]$SourcePinPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\imagemagick-source.json'),
+
     [switch]$SkipSmoke
 )
 
@@ -365,7 +371,8 @@ if (-not $SkipSmoke) {
         [System.IO.File]::WriteAllBytes($input, $bitmap)
 
         $version = Invoke-MagickProbe -Exe $magickExe -Arguments @('-version') -WorkingDirectory $probeRoot -BundleRoot $root
-        if ($version.Stdout -notmatch '(?m)^Version: ImageMagick 7\.1\.2-25 Q16-HDRI x64\b') {
+        $expectedVersion = (Get-Content -LiteralPath $SourcePinPath -Raw | ConvertFrom-Json).identity.versionLinePattern
+        if ($version.Stdout -notmatch "(?m)$expectedVersion") {
             throw "Staged ImageMagick smoke test reported an unexpected identity: $($version.Stdout.Trim())"
         }
 

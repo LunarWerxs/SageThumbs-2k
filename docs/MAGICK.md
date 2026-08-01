@@ -14,9 +14,14 @@ must never hide a missing release dependency.
 
 Production builds accept exactly:
 
-`ImageMagick 7.1.2-25 Q16-HDRI x64 (2026-06-04)`
+`ImageMagick 7.1.2-29 Q16-HDRI x64 (2026-07-27)`
 
-[`imagemagick-source.json`](imagemagick-source.json) pins its runtime identity and a
+Bumped from `7.1.2-25` on 2026-07-31 for the 2026 policy.xml bypass cluster, including
+**CVE-2026-49219** (symlink read of a disallowed file) whose first fix was itself incomplete
+(GHSA-56m6-8q75-f2rw), the PSD/DCM/MNG/APNG/concatenate/script bypasses, and
+**CVE-2025-66628** (integer overflow on unchecked width/height in the PSX TIM coder).
+
+[`imagemagick-source.json`](../packaging/imagemagick-source.json) pins its runtime identity and a
 deterministic SHA-256 inventory of every source file eligible to enter the bundle:
 
 - `magick.exe`
@@ -25,7 +30,7 @@ deterministic SHA-256 inventory of every source file eligible to enter the bundl
 - `License.txt` and `NOTICE.txt`
 
 [`check-magick-source.ps1`](../scripts/check-magick-source.ps1) checks all 195 files,
-47,615,949 bytes, and the aggregate inventory digest before copying anything. Selecting
+47,839,954 bytes, and the aggregate inventory digest before copying anything. Selecting
 the first `C:\Program Files\ImageMagick*` directory is deliberately forbidden.
 
 An ImageMagick upgrade is therefore an explicit source change: review the new upstream
@@ -191,6 +196,32 @@ DLLs. Each generated DLL:
 production bundle. There is no fallback that silently ships the stock text stack and
 changes installer size/hash by build machine.
 
+## Bundled dependency versions
+
+Audited 2026-07-31 against the staged bundle, because a vendored image stack is exactly where
+an ancient library hides: QuickLook shipped a **2017** zlib inside its exiv2 DLL for years
+(their issue #1975). Ours are all current as of the `7.1.2-29` pin:
+
+```text
+brotli      1.2.0   (2025-10-27)     lcms        2.19.1  (2026-05-06)
+bzip2       1.0.8   (2019-07-13)*    lzma        5.8.3   (2026-04-31)
+heif        1.23.1  (2026-06-26)     openjpeg    2.5.4   (2025-09-20)
+jpeg-turbo  3.2.0   (2025-06-30)     png         1.6.58  (2026-04-15)
+jpeg-xl     0.12.0  (2026-07-01)     raw         0.22.2  (2026-07-16)
+tiff        4.7.2   (2026-06-26)     webp        1.6.0   (2025-07-09)
+xml         2.15.3  (2026-04-15)     zip         1.11.4  (2025-05-23)
+zlib        1.3.2   (2026-02-17)     lqr         0.4.2   (2012-12-04)*
+```
+
+`*` bzip2 1.0.8 and liblqr 0.4.2 are the newest upstream releases that exist, not stale pins.
+Regenerate this table after any bump with `Get-ChildItem packaging\stage\magick\CORE_RL_*.dll`
+and its `VersionInfo`. The three text-stack entries are our own no-op stubs and carry the
+ImageMagick version instead, by design.
+
+**Malformed-input spot check** (also 2026-07-31): a zero-dimension farbfeld, SGI and DDS, plus a
+PSX TIM whose `width * height * 2` overflows 32 bits, all exit `1` with a clean error through the
+staged engine. No crash, no access violation. `tim` therefore stays a registered extension.
+
 ## Final release gates
 
 [`check-magick-bundle.ps1`](../scripts/check-magick-bundle.ps1) performs three independent
@@ -208,7 +239,7 @@ checks after every trim:
    binary signature/header. Exit status and a nonempty file are not sufficient.
 
 For the pinned build after reviewed orphan pruning, the gate reports 143 PE files and
-844 import edges. The raw Magick payload is 29,827,612 bytes, including the required
+845 import edges. The raw Magick payload is 30,057,721 bytes, including the required
 writer delegates, upstream legal files, and clean-machine runtimes.
 
 Focused fail-closed tests:
