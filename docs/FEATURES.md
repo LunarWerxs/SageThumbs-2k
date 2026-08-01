@@ -127,7 +127,8 @@ one-at-a-time pass, with no rayon weight added to the in-Explorer DLL. Each work
 initializes COM, which incidentally fixed HEIC/RAW silently failing in the Convert path.
 
 - **Convert into ▸** PNG · JPG · WebP · WebP (lossless) · **AVIF** · BMP · GIF · TIFF ·
-  Icon (.ico); one-click, writes a new file next to the original (never overwrites).
+  Icon (.ico); one-click, writes a new file next to the original (never overwrites). EXIF/XMP/IPTC
+  ride along into JPEG and PNG outputs (see **Saving**, below).
   *HEIC→JPG works here too (a `.heic` decodes via WIC).* *(AVIF is written via the bundled
   ImageMagick; on a compact no-magick install that one verb reports an error (ImageMagick not
   available) rather than silently doing nothing.)*
@@ -141,9 +142,13 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   applies to the whole selection. On completion it offers to **open the output folder**.
   *(The magick-only formats are hidden on the compact install that ships without
   ImageMagick.)*
-- **Combine into PDF**: selected images → one PDF (one image per page).
+- **Combine into PDF**: selected images → one PDF (one image per page, sized to the
+  image). Optionally with a **page margin** (Settings ▸ Saving), and the engine also
+  supports fitting onto A4 or Letter, centred, never enlarging a small image.
 - **Combine into CBZ (comic)**: selected images → one `.cbz` comic archive (a ZIP,
-  stored uncompressed), pages natural-sorted by name (page 2 before page 10).
+  stored uncompressed), pages natural-sorted by name (page 2 before page 10). A
+  **`ComicInfo.xml`** goes in as the first entry with the page count and each page's
+  size, so Kavita, Komga and YACReader read the book's details instead of guessing.
 - **Resize ▸** Fit 1920×1080 · 1280×720 · 800×600 · Scale 50% · 25%: quick
   presets that write a "(resized)" copy and never upscale.
 - **Shrink for email ▸** Small (640 px) · Medium (1024 px) · Large (1600 px):
@@ -174,7 +179,11 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Image info**: a verbose, **copyable** metadata window: file size & type, image
   format, colour depth/channels, dimensions, and **every EXIF tag** the file carries
   (camera, lens, exposure, software, date, GPS with a map link, …), scrollable, far
-  more than a one-line popup.
+  more than a one-line popup. Plus the facts EXIF has no field for: whether the file
+  carries **C2PA Content Credentials**, whether a HEIC has an **HDR gain map**, the
+  **AI-generation tags** (digital source type, prompt, prompt author) newer tools write,
+  the **names on face regions** Lightroom and phone cameras tag, and for a **DDS** the real
+  texture compression (BC1–BC7) and mip-level count.
 - **Pick color (eyedropper)…**: a **system-wide screen color picker**: your
   mouse becomes an eyedropper anywhere on screen, with a 10× magnifier loupe that
   follows the cursor; **press Space (or click)** to copy the pixel's `#RRGGBB` to
@@ -185,7 +194,19 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   "Copied ✓", and sets it as the annotation colour, so you can grab a colour and Esc
   out, or keep drawing in it.
 - **Strip metadata (EXIF/GPS)**: lossless removal of EXIF/IPTC/XMP/comments
-  (keeps the ICC color profile).
+  (keeps the ICC color profile), for **JPEG, PNG, WebP, SVG and HEIC/AVIF**. An SVG loses
+  its `<metadata>`/`<title>`/`<desc>` at the document level (the author, the machine name,
+  the editor history) while a `<title>` *inside* a shape is kept, because that one is what
+  a screen reader reads out. HEIC/AVIF are handled without moving a single byte: the EXIF
+  and XMP items are overwritten in place with valid empty ones of the same length, so no
+  file offset shifts and a photo can never be corrupted by the strip; if the file's layout
+  is anything we do not fully recognise, it refuses instead of half-stripping. It also removes
+  **C2PA "Content Credentials"**, the provenance manifest newer cameras and AI
+  image tools embed: it is neither EXIF nor XMP (a JUMBF box, carried in JPEG
+  APP11 segments or a PNG `caBX` chunk), so ordinary metadata scrubbers leave it
+  in the file. A **JPEG XT** HDR extension layer wears the same APP11 marker and
+  is deliberately left alone. Image info shows whether a file carries Content
+  Credentials before you decide to strip them.
 
   *(These four were a "Tools ▸" submenu; they're now individual top-level entries:
   show/hide + reorder each like any other menu item.)*
@@ -240,8 +261,10 @@ plus these viewer-only extras:
   **click-and-drag seek bar**, and a **mute + volume slider**. Audio files (mp3/flac/ogg/…) play
   through the same transport.
 - **Animated GIF / APNG / animated WebP** play frame-by-frame (respecting each frame's delay).
-- **Font specimens** for `.ttf`/`.otf`/`.ttc`: the font's own name, a pangram at several sizes, and
-  an A–Z / a–z / 0–9 glyph sheet, all rendered in the font itself (via the OS text stack).
+- **Font specimens** for `.ttf`/`.otf`/`.ttc` **and `.woff`**: the font's own name, a pangram at
+  several sizes, and an A–Z / a–z / 0–9 glyph sheet, all rendered in the font itself (via the OS
+  text stack). A `.woff` web font is just an sfnt with compressed tables, so it is unpacked on the
+  fly and previews exactly like a `.ttf`.
 - **Archive listings** for `.zip`/`.7z`/`.rar` (and .jar/.apk/…): a sorted file tree with sizes,
   read from the central directory / headers only; nothing is extracted.
 - **Local HTML rendering** (opt-in, off by default) in an embedded **locked-down** WebView2:
@@ -344,7 +367,14 @@ long scroll is gone.)
 - **Limits & quality:** max file size (MB), max thumbnail size (px), JPEG quality,
   PNG compression.
 - **Saving:** **keep the original file's date/time on Convert / Resize / Rotate /
-  Shrink output** (opt-in; off = "now", like most tools).
+  Shrink output** (opt-in; off = "now", like most tools). Plus **keep EXIF and other
+  metadata when converting** (on by default): Convert and Resize carry the camera, lens,
+  exposure, date, GPS, XMP and IPTC from the source into the new file instead of losing them
+  in the re-encode. The saved orientation is reset to "upright", because the pixels already
+  are, so a phone photo can't come out sideways. **Shrink for email deliberately ignores this
+  and always drops metadata** - that path exists to hand a file to someone else, and mailing
+  your home GPS coordinates is worse than losing a camera model. To remove metadata on
+  purpose, use Strip metadata.
 - **Menu items:** an XnShell-style checklist to **show/hide _and reorder_ each
   SageThumbs 2K right-click entry**. Tick/untick to show or hide an item; **drag the rows
   to reorder them**, and **drag the divider rows** to regroup the menu; the right-click

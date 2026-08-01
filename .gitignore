@@ -73,3 +73,7 @@ Thumbs.db
 # cargo-mutants scratch (mutation-testing results; regenerated every run)
 /mutants.out/
 /mutants.out.old/
+
+# Competitor sweep working notes (owner-only)
+/docs/COMPETITOR-SWEEP-2026-07-31.md
+/docs/TODO-COMPETITOR-GAPS.md

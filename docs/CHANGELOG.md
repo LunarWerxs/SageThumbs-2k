@@ -2,6 +2,60 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.5.0
+
+### Added
+
+- **Screenshots of an HDR display are no longer washed out.** Grabbing the screen the
+  ordinary way gets what Windows has already flattened to standard range, which on an HDR
+  monitor looks pale and grey with the bright parts blown out. SageThumbs now takes the real
+  high-range image and maps it down itself, so the shot looks like the screen did. Only kicks
+  in on a monitor that is actually in HDR mode; everything else captures exactly as before,
+  and if anything goes wrong it quietly falls back rather than failing. On a laptop with an
+  external screen, each display is handled on its own, so a mixed setup comes out right.
+- **Strip metadata now removes Content Credentials (C2PA).** This is the provenance record
+  newer cameras and AI image tools embed, and it is not EXIF or XMP, so ordinary metadata
+  cleaners leave it behind. Image info tells you whether a file carries one before you decide.
+  A JPEG XT high-range layer uses the same marker and is deliberately left alone.
+- **Strip metadata covers more formats:** WebP, SVG and HEIC/AVIF as well as JPEG and PNG. An
+  SVG loses the author, machine name and editor history it was exported with, while a
+  description inside a shape is kept because that is what a screen reader reads out. HEIC and
+  AVIF are cleaned without moving a single byte in the file, so a photo cannot be damaged by
+  it; if the layout is anything unfamiliar it declines instead of guessing.
+- **Converting keeps your photo's details.** Camera, lens, exposure, date, GPS, keywords and
+  captions now survive Convert and Resize instead of being thrown away when the picture is
+  re-saved. On by default, switchable in Settings. Shrink for email still removes everything,
+  on purpose: that one exists to hand a file to someone else.
+- **Convert can write every preset size in one go**, named so you can tell them apart, and can
+  **pad to an exact size** with a soft blurred fill instead of leaving you to crop.
+- **Comic archives get a proper index.** Combine into CBZ now writes the `ComicInfo.xml` that
+  Kavita, Komga and YACReader read, with the page count and each page's size.
+- **Combine into PDF can add a page margin**, and can fit pages to A4 or Letter, centred and
+  never enlarged.
+- **More things preview:** `.woff` web fonts get the same specimen sheet as any other font,
+  and `.srt` / `.vtt` subtitle files open as text.
+- **Image info shows more of what a file is hiding:** whether it has a high-range gain map,
+  the AI-generation tags newer tools write, the names tagged on faces, and for a game texture
+  its real compression format and mip count.
+- **The colour picker can collect a set.** Ctrl+Space (or Ctrl+click) adds the colour under the
+  cursor to a list and keeps picking; Space copies the whole list. Esc still cancels.
+
+### Fixed
+
+- **Esc now cancels a screenshot.** The capture window could end up without keyboard focus, so
+  no key reached it at all: the mouse worked, nothing else did, and you were stuck under a
+  full-screen overlay. The same fault also meant the colour picker ignored Space and Esc, and
+  that right-click windows like Convert could open BEHIND the Explorer window that launched
+  them and look like the menu item had done nothing.
+- **Camera names no longer appear wrapped in quote marks** in Explorer's columns and details.
+- **Files in deeply nested folders get thumbnails again**, including OneDrive-synced ones well
+  past the old path-length limit.
+
+### Security
+
+- **Bundled ImageMagick updated to 7.1.2-29**, picking up a set of 2026 fixes for ways its
+  security policy could be side-stepped, plus hardening across several older image formats.
+
 ## 1.4.1
 
 ### Fixed
