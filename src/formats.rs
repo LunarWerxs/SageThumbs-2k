@@ -527,9 +527,11 @@ pub const PREVIEW_MD_EXTS: &[&str] = &["md", "markdown", "mdown", "mkd", "mdwn",
 /// Text/code extensions the viewer renders as text (gated on `preview_text()`). A CURATED set,
 /// not "every text file" — the viewer's content sniff catches unknown-but-textual files too.
 /// (`csv` moved to [`PREVIEW_DOC_EXTS`] — it renders as a real table now.)
+/// `srt`/`vtt` subtitles are here because they ARE plain text and people do want to glance
+/// at one next to the video, which is the same reason PowerToys' Peek added them.
 pub const PREVIEW_TEXT_EXTS: &[&str] = &[
     "txt", "log", "json", "yaml", "yml", "toml", "xml", "ini", "cfg", "rs", "py", "js", "ts", "c",
-    "cpp", "h", "cs", "java", "sh", "ps1", "bat", "html", "css", "sql",
+    "cpp", "h", "cs", "java", "sh", "ps1", "bat", "html", "css", "sql", "srt", "vtt",
 ];
 
 /// Structured documents the viewer converts to markdown at load and renders through the

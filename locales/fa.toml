@@ -141,6 +141,8 @@ cv_resize_720 = "جا دادن در 1280 × 720"
 cv_resize_600 = "جا دادن در 800 × 600"
 cv_resize_50 = "کوچک‌سازی 50٪"
 cv_resize_25 = "کوچک‌سازی 25٪"
+cv_resize_pad = "پرکردن تا اندازه دقیق"
+cv_resize_all = "ساخت همه اندازه‌های از پیش تعیین‌شده"
 # Per-format Settings… popup
 cv_set_jpeg_title = "تنظیمات JPEG"
 cv_set_webp_title = "تنظیمات WebP"
@@ -169,11 +171,14 @@ ttf_done_moved = "{done} فایل به پوشه‌های برچسب منتقل �
 ttf_done_copied = "{done} فایل در پوشه‌های برچسب کپی شد.\n{skipped} رد شد."
 # Eyedropper (screen color picker) hint
 eye_hint = "برای کپی Space را بزنید (یا کلیک کنید) · Esc"
+eye_hint_stash = "‏Ctrl+Space به فهرست می‌افزاید · Space همه را کپی می‌کند"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "پنهان کردن نماد سینی سیستم"
 grp_menu_items = "موارد منو"
 chk_preserve_date = "حفظ تاریخ اصلی در فایل‌های ذخیره‌شده"
+chk_keep_metadata = "حفظ EXIF و سایر فرادادها هنگام تبدیل"
+chk_pdf_margin = "افزودن حاشیه به PDFهای ترکیبی"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

@@ -141,6 +141,8 @@ cv_resize_720 = "Prilagodi na 1280 × 720"
 cv_resize_600 = "Prilagodi na 800 × 600"
 cv_resize_50 = "Pomanjšaj 50 %"
 cv_resize_25 = "Pomanjšaj 25 %"
+cv_resize_pad = "Zapolni do natančne velikosti"
+cv_resize_all = "Ustvari vse prednastavljene velikosti"
 # Per-format Settings… popup
 cv_set_jpeg_title = "Nastavitve JPEG"
 cv_set_webp_title = "Nastavitve WebP"
@@ -169,11 +171,14 @@ ttf_done_moved = "Premaknjenih {done} datotek v mape po oznakah.\n{skipped} pres
 ttf_done_copied = "Kopiranih {done} datotek v mape po oznakah.\n{skipped} preskočenih."
 # Eyedropper (screen color picker) hint
 eye_hint = "Preslednica (ali klik) za kopiranje · Esc"
+eye_hint_stash = "Ctrl+preslednica doda na seznam · preslednica kopira vse"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Skrij ikono v sistemski vrstici"
 grp_menu_items = "Elementi menija"
 chk_preserve_date = "Ohrani izvirni datum pri shranjenih datotekah"
+chk_keep_metadata = "Ob pretvorbi ohrani EXIF in druge metapodatke"
+chk_pdf_margin = "Dodaj rob združenim PDF-jem"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

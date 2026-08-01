@@ -142,6 +142,8 @@ cv_resize_720 = "ملاءمة ضمن 1280 × 720"
 cv_resize_600 = "ملاءمة ضمن 800 × 600"
 cv_resize_50 = "تصغير إلى 50%"
 cv_resize_25 = "تصغير إلى 25%"
+cv_resize_pad = "ملء حتى الحجم المحدد بالضبط"
+cv_resize_all = "إنشاء كل الأحجام الجاهزة"
 # Per-format Settings… popup
 cv_set_jpeg_title = "إعدادات JPEG"
 cv_set_webp_title = "إعدادات WebP"
@@ -173,11 +175,14 @@ ttf_done_copied = "تم نسخ {done} ملف إلى مجلدات الوسوم.\n
 
 # Eyedropper (screen color picker) hint
 eye_hint = "اضغط المسافة (أو انقر) للنسخ · Esc"
+eye_hint_stash = "‏Ctrl+Space يضيف إلى القائمة · Space ينسخ الكل"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "إخفاء أيقونة شريط النظام"
 grp_menu_items = "عناصر القائمة"
 chk_preserve_date = "الاحتفاظ بالتاريخ الأصلي للملفات المحفوظة"
+chk_keep_metadata = "الاحتفاظ ببيانات EXIF وغيرها عند التحويل"
+chk_pdf_margin = "إضافة هامش إلى ملفات PDF المدمجة"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

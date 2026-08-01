@@ -141,6 +141,8 @@ cv_resize_720 = "1280 × 720 に収める"
 cv_resize_600 = "800 × 600 に収める"
 cv_resize_50 = "50% に縮小"
 cv_resize_25 = "25% に縮小"
+cv_resize_pad = "指定サイズちょうどに余白を追加"
+cv_resize_all = "プリセットのサイズをすべて出力する"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG 設定"
 cv_set_webp_title = "WebP 設定"
@@ -172,11 +174,14 @@ ttf_done_copied = "{done} 個のファイルをタグフォルダーにコピー
 
 # Eyedropper (screen color picker) hint
 eye_hint = "スペース（またはクリック）でコピー · Esc"
+eye_hint_stash = "Ctrl+Space で追加 · Space ですべてコピー"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "トレイアイコンを非表示"
 grp_menu_items = "メニュー項目"
 chk_preserve_date = "保存ファイルに元の日付を保持する"
+chk_keep_metadata = "変換時に EXIF などのメタデータを保持する"
+chk_pdf_margin = "結合した PDF に余白を追加する"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

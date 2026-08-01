@@ -19,6 +19,12 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_MENU_QUICK, settings::menu_quick_verbs());
     check(hwnd, ID_MENU_CHECKER, settings::preview_checker());
     check(hwnd, ID_PRESERVE_DATE, settings::preserve_file_date());
+    check(hwnd, ID_KEEP_METADATA, settings::keep_metadata_on_convert());
+    check(
+        hwnd,
+        ID_PDF_MARGIN,
+        !matches!(settings::pdf_page(), sagethumbs2k_core::PdfPage::Tight),
+    );
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
         // Rows may be in a custom drag-reorder, so seed each ROW from its own key
         // (via lParam), not by a fixed toggle index.
@@ -93,6 +99,8 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_MENU_QUICK, true);
     check(hwnd, ID_MENU_CHECKER, true);
     check(hwnd, ID_PRESERVE_DATE, false);
+    check(hwnd, ID_KEEP_METADATA, true); // losing capture data by accident is the worse default
+    check(hwnd, ID_PDF_MARGIN, false); // tight pages are right for scans and comics
     check(hwnd, ID_VERBOSE_LOG, false);
     check(hwnd, ID_UPDATE_AUTO, true); // background update check defaults ON
                                        // Quick preview: reset the behavior toggles to their defaults, but leave the master
@@ -239,6 +247,16 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     let _ = settings::set_dword("MenuQuickVerbs", checked(hwnd, ID_MENU_QUICK) as u32);
     let _ = settings::set_dword("PreviewChecker", checked(hwnd, ID_MENU_CHECKER) as u32);
     let _ = settings::set_dword("PreserveFileDate", checked(hwnd, ID_PRESERVE_DATE) as u32);
+    let _ = settings::set_dword("KeepMetadata", checked(hwnd, ID_KEEP_METADATA) as u32);
+    // Only ever toggles between tight (0) and margin (1); a registry-chosen sheet mode
+    // (2/3) is left alone unless the user actually unticks the box.
+    if checked(hwnd, ID_PDF_MARGIN) {
+        if settings::pdf_page() == sagethumbs2k_core::PdfPage::Tight {
+            let _ = settings::set_dword("PdfLayout", 1);
+        }
+    } else {
+        let _ = settings::set_dword("PdfLayout", 0);
+    }
     let _ = settings::set_dword("Debug", checked(hwnd, ID_VERBOSE_LOG) as u32);
     let _ = settings::set_update_auto_check(checked(hwnd, ID_UPDATE_AUTO));
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {

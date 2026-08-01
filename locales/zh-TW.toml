@@ -143,6 +143,8 @@ cv_resize_720 = "縮放至 1280 × 720 以內"
 cv_resize_600 = "縮放至 800 × 600 以內"
 cv_resize_50 = "縮放 50%"
 cv_resize_25 = "縮放 25%"
+cv_resize_pad = "填滿至精確尺寸"
+cv_resize_all = "輸出所有預設尺寸"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG 設定"
 cv_set_webp_title = "WebP 設定"
@@ -174,11 +176,14 @@ ttf_done_copied = "已將 {done} 個檔案複製到標籤資料夾。\n略過 {s
 
 # Eyedropper (screen color picker) hint
 eye_hint = "按空白鍵（或按一下）複製 · Esc"
+eye_hint_stash = "Ctrl+空白鍵加入清單 · 空白鍵複製全部"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "隱藏系統匣圖示"
 grp_menu_items = "選單項目"
 chk_preserve_date = "儲存檔案時保留原始日期"
+chk_keep_metadata = "轉換時保留 EXIF 等中繼資料"
+chk_pdf_margin = "為合併的 PDF 加上邊界"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

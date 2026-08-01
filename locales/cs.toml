@@ -142,6 +142,8 @@ cv_resize_720 = "Vměstnat do 1280 × 720"
 cv_resize_600 = "Vměstnat do 800 × 600"
 cv_resize_50 = "Zmenšit na 50 %"
 cv_resize_25 = "Zmenšit na 25 %"
+cv_resize_pad = "Doplnit na přesnou velikost"
+cv_resize_all = "Vytvořit všechny přednastavené velikosti"
 # Per-format Settings… popup
 cv_set_jpeg_title = "Nastavení JPEG"
 cv_set_webp_title = "Nastavení WebP"
@@ -173,11 +175,14 @@ ttf_done_copied = "Zkopírováno {done} souborů do složek podle tagů.\n{skipp
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Stiskněte mezerník (nebo klikněte) pro kopírování · Esc"
+eye_hint_stash = "Ctrl+Space přidá do seznamu · Space zkopíruje vše"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Skrýt ikonu v oznamovací oblasti"
 grp_menu_items = "Položky nabídky"
 chk_preserve_date = "Zachovat původní datum u uložených souborů"
+chk_keep_metadata = "Při převodu zachovat EXIF a další metadata"
+chk_pdf_margin = "Přidat okraj do sloučených PDF"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

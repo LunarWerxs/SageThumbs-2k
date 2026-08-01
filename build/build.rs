@@ -67,6 +67,12 @@ fn main() {
 /// App manifest: Common-Controls v6 (modern themed controls) + per-monitor DPI
 /// awareness — the same settings `embed-manifest` emits, written here so windres
 /// can bundle it with the icon in one resource object.
+///
+/// Also `longPathAware`. Without it every Win32 path API in these processes is
+/// capped at MAX_PATH (260) regardless of the machine's LongPathsEnabled policy,
+/// which is exactly how Icaros ends up with no thumbnail for deeply-nested
+/// OneDrive-synced folders (their issue #232). It costs one line and there is no
+/// downside: the flag only ever *raises* the limit.
 const APP_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity version="1.0.0.0" name="SageThumbs2K.Options" type="win32"/>
@@ -79,6 +85,7 @@ const APP_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="y
     <windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
     </windowsSettings>
   </application>
 </assembly>

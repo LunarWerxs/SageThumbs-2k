@@ -141,6 +141,8 @@ cv_resize_720 = "Paskan ke 1280 × 720"
 cv_resize_600 = "Paskan ke 800 × 600"
 cv_resize_50 = "Skala 50%"
 cv_resize_25 = "Skala 25%"
+cv_resize_pad = "Isi hingga ukuran persis"
+cv_resize_all = "Buat semua ukuran preset"
 # Per-format Settings… popup
 cv_set_jpeg_title = "Pengaturan JPEG"
 cv_set_webp_title = "Pengaturan WebP"
@@ -172,11 +174,14 @@ ttf_done_copied = "Menyalin {done} file ke folder tag.\n{skipped} dilewati."
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Tekan Spasi (atau klik) untuk menyalin · Esc"
+eye_hint_stash = "Ctrl+Spasi menambah ke daftar · Spasi menyalin semua"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Sembunyikan ikon baki"
 grp_menu_items = "Item menu"
 chk_preserve_date = "Pertahankan tanggal asli pada file tersimpan"
+chk_keep_metadata = "Pertahankan EXIF dan metadata lain saat mengonversi"
+chk_pdf_margin = "Tambahkan margin ke PDF gabungan"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

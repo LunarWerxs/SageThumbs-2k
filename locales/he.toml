@@ -142,6 +142,8 @@ cv_resize_720 = "התאמה ל-1280 × 720"
 cv_resize_600 = "התאמה ל-800 × 600"
 cv_resize_50 = "הקטנה ל-50%"
 cv_resize_25 = "הקטנה ל-25%"
+cv_resize_pad = "ריפוד לגודל המדויק"
+cv_resize_all = "יצירת כל הגדלים המוגדרים מראש"
 # Per-format Settings… popup
 cv_set_jpeg_title = "הגדרות JPEG"
 cv_set_webp_title = "הגדרות WebP"
@@ -173,11 +175,14 @@ ttf_done_copied = "‏{done} קבצים הועתקו לתיקיות לפי תג.
 
 # Eyedropper (screen color picker) hint
 eye_hint = "רווח (או לחיצה) להעתקה · Esc"
+eye_hint_stash = "‏Ctrl+Space מוסיף לרשימה · Space מעתיק הכול"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "הסתר סמל מגש"
 grp_menu_items = "פריטי תפריט"
 chk_preserve_date = "שמור על התאריך המקורי בקבצים שנשמרו"
+chk_keep_metadata = "שמירת EXIF ומטא-נתונים אחרים בעת המרה"
+chk_pdf_margin = "הוספת שוליים לקובצי PDF מאוחדים"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

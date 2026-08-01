@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use image::ImageFormat;
 
-use sagethumbs2k_core::{convert_file_opts, settings, ConvertOpts, Resize, Target};
+use sagethumbs2k_core::{settings, ConvertOpts, Resize, Target};
 
 use crate::dark::{dark_ctlcolor, dark_theme_combo};
 use crate::win::{
@@ -43,6 +43,11 @@ const CID_SETTINGS: i32 = 3008;
 const CID_RESIZE_CHK: i32 = 3009;
 const CID_RESIZE_W: i32 = 3010;
 const CID_RESIZE_H: i32 = 3011;
+/// "Pad to the exact size" — turns the chosen fit into a `Resize::Pad`, so every
+/// output is exactly the canvas size with a blurred fill behind it.
+const CID_RESIZE_PAD: i32 = 3012;
+/// "Write every preset size" — one job emits the three Fit presets per source.
+const CID_RESIZE_ALL: i32 = 3013;
 const WM_CONVERT_PROGRESS: u32 = 0x8000 + 30; // WM_APP + 30
 const WM_CONVERT_DONE: u32 = 0x8000 + 31;
 
@@ -189,6 +194,11 @@ enum ResizeMode {
     Fit(u32, u32),
     Pct(u32),
 }
+/// The sizes "write every preset size" emits per source, widest first. These are
+/// the same three fits the dropdown offers, which is the point: the checkbox is
+/// "all of the above at once", not a second, different list to learn.
+const CV_ALL_SIZES: &[(u32, u32)] = &[(1920, 1080), (1280, 720), (800, 600)];
+
 const CV_RESIZE: &[(&str, ResizeMode)] = &[
     ("cv_resize_defined", ResizeMode::Defined),
     ("cv_resize_1080", ResizeMode::Fit(1920, 1080)),
@@ -407,6 +417,33 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
     );
     ctl(hwnd, STATIC, t("cv_px"), lbl, 268, 91, 24, 18, -1, hinst);
 
+    // The two resize modifiers sit in the empty column to the right of rows 2-3,
+    // so nothing below has to move.
+    ctl(
+        hwnd,
+        BUTTON,
+        t("cv_resize_pad"),
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        300,
+        58,
+        172,
+        20,
+        CID_RESIZE_PAD,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        BUTTON,
+        t("cv_resize_all"),
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        300,
+        88,
+        172,
+        20,
+        CID_RESIZE_ALL,
+        hinst,
+    );
+
     // Row 4 — output folder
     ctl(
         hwnd,
@@ -494,13 +531,23 @@ unsafe fn update_settings_enabled(hwnd: HWND) {
 /// when the mode is "Defined size".
 unsafe fn update_resize_enabled(hwnd: HWND) {
     let on = checked(hwnd, CID_RESIZE_CHK);
+    for id in [CID_RESIZE_PAD, CID_RESIZE_ALL] {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = EnableWindow(c, on);
+        }
+    }
+    // "All sizes" drives the size itself, so the single-size controls below it
+    // would be lying about what the job produces. Grey them out rather than let
+    // them sit there looking meaningful.
+    let all = on && checked(hwnd, CID_RESIZE_ALL);
     if let Ok(c) = GetDlgItem(Some(hwnd), CID_RESIZE) {
-        let _ = EnableWindow(c, on);
+        let _ = EnableWindow(c, on && !all);
     }
     let defined = matches!(
         CV_RESIZE.get(combo_sel(hwnd, CID_RESIZE)).map(|r| r.1),
         Some(ResizeMode::Defined)
     );
+    let defined = defined && !all;
     for id in [CID_RESIZE_W, CID_RESIZE_H] {
         if let Ok(e) = GetDlgItem(Some(hwnd), id) {
             let _ = EnableWindow(e, on && defined);
@@ -508,13 +555,40 @@ unsafe fn update_resize_enabled(hwnd: HWND) {
     }
 }
 
+/// Every `(resize, name tag)` this run should produce per source file.
+///
+/// One entry normally; three when "write every preset size" is ticked. The tag
+/// goes into the output name so the results are self-describing instead of
+/// `photo.jpg`, `photo (2).jpg`, `photo (3).jpg`.
+unsafe fn read_resize_jobs(hwnd: HWND) -> Vec<(Resize, Option<String>)> {
+    if checked(hwnd, CID_RESIZE_CHK) && checked(hwnd, CID_RESIZE_ALL) {
+        let pad = checked(hwnd, CID_RESIZE_PAD);
+        return CV_ALL_SIZES
+            .iter()
+            .map(|&(w, h)| {
+                let r = if pad {
+                    Resize::Pad(w, h)
+                } else {
+                    Resize::Fit(w, h)
+                };
+                (r, Some(format!("{w}x{h}")))
+            })
+            .collect();
+    }
+    vec![(read_resize(hwnd), None)]
+}
+
 /// The verbs-crate `Resize` selected in the dialog (None when unchecked).
 unsafe fn read_resize(hwnd: HWND) -> Resize {
     if !checked(hwnd, CID_RESIZE_CHK) {
         return Resize::None;
     }
+    // Padding turns any fit into an exact canvas; a percentage has no canvas to
+    // pad to, so it is left alone.
+    let pad = checked(hwnd, CID_RESIZE_PAD);
+    let wrap = |w: u32, h: u32, fit: Resize| if pad { Resize::Pad(w, h) } else { fit };
     match CV_RESIZE.get(combo_sel(hwnd, CID_RESIZE)).map(|r| r.1) {
-        Some(ResizeMode::Fit(w, h)) => Resize::Fit(w, h),
+        Some(ResizeMode::Fit(w, h)) => wrap(w, h, Resize::Fit(w, h)),
         Some(ResizeMode::Pct(p)) => Resize::Percent(p),
         _ => {
             let w = get_edit_text(hwnd, CID_RESIZE_W)
@@ -528,7 +602,7 @@ unsafe fn read_resize(hwnd: HWND) -> Resize {
             if w > 0 && h > 0 {
                 // Explicitly typed dimensions scale UP too — "make it bigger"
                 // must make it bigger. The presets above stay shrink-only.
-                Resize::FitUp(w, h)
+                wrap(w, h, Resize::FitUp(w, h))
             } else {
                 Resize::None
             }
@@ -556,7 +630,8 @@ unsafe fn start_convert(hwnd: HWND) {
     } else {
         None
     };
-    let resize = read_resize(hwnd);
+    // Normally one job per file; three when "write every preset size" is on.
+    let jobs = read_resize_jobs(hwnd);
     let outdir_text = get_edit_text(hwnd, CID_OUTDIR);
     // The "(same folder as each image)" placeholder means "no explicit outdir".
     // Compare against the localized placeholder (and the legacy `(`-prefixed form)
@@ -607,36 +682,60 @@ unsafe fn start_convert(hwnd: HWND) {
                 let dir = outdir
                     .clone()
                     .or_else(|| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))?;
-                match tgt {
-                    CvTarget::Native(format, ext) => {
-                        let opts = ConvertOpts {
-                            // The dialog supplies WebP quality via `opts.webp_quality`
-                            // (from its per-format Settings), so the Target stays None.
-                            target: Target {
-                                format,
-                                ext,
-                                webp_quality: None,
-                            },
-                            jpeg_quality: quality,
-                            png_level,
-                            webp_quality,
-                            resize,
-                        };
-                        convert_file_opts(f, opts, &dir).ok()
-                    }
-                    // One image → one single-page PDF (reserved name in `dir`).
-                    CvTarget::Pdf => {
-                        sagethumbs2k_core::convert_image_to_pdf_in(f, &dir, quality).ok()
-                    }
-                    // Exotic target written by the bundled ImageMagick (reserved name).
-                    CvTarget::Magick(ext) => {
-                        // AVIF/JXL honor the quality slider; the lossless exotic targets
-                        // (PSD/DDS/…) get magick's default (None).
-                        let q = matches!(ext, "avif" | "jxl")
-                            .then(|| MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8);
-                        sagethumbs2k_core::convert_to_magick_in(f, &dir, ext, resize, q).ok()
+                // Each source runs its whole size list here rather than the list being
+                // flattened into the work items, so one file's outputs stay on one worker
+                // and cannot interleave with another file's. Note the decode still happens
+                // once per OUTPUT, not once per file - each `convert_file_opts_named` reads
+                // and decodes the source itself. Sharing one decode across the sizes would
+                // mean holding a full-resolution image while three encodes run, which is the
+                // trade this deliberately does not make.
+                let mut first: Option<PathBuf> = None;
+                for (resize, tag) in &jobs {
+                    let (resize, tag) = (*resize, tag.as_deref());
+                    let produced = match tgt {
+                        CvTarget::Native(format, ext) => {
+                            let opts = ConvertOpts {
+                                // The dialog supplies WebP quality via `opts.webp_quality`
+                                // (from its per-format Settings), so the Target stays None.
+                                target: Target {
+                                    format,
+                                    ext,
+                                    webp_quality: None,
+                                },
+                                jpeg_quality: quality,
+                                png_level,
+                                webp_quality,
+                                resize,
+                            };
+                            sagethumbs2k_core::convert_file_opts_named(f, opts, &dir, tag).ok()
+                        }
+                        // One image -> one single-page PDF (reserved name in `dir`).
+                        // The PDF writer takes no resize, so running it once per size
+                        // would emit N IDENTICAL PDFs under confusing names. Emit the
+                        // first job only; page geometry is a PDF page-layout setting
+                        // (Settings > Saving), not a pixel resize.
+                        CvTarget::Pdf if first.is_some() => None,
+                        CvTarget::Pdf => {
+                            sagethumbs2k_core::convert_image_to_pdf_in(f, &dir, quality).ok()
+                        }
+                        // Exotic target written by the bundled ImageMagick (reserved name).
+                        CvTarget::Magick(ext) => {
+                            // AVIF/JXL honor the quality slider; the lossless exotic targets
+                            // (PSD/DDS/…) get magick's default (None).
+                            let q = matches!(ext, "avif" | "jxl").then(|| {
+                                MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8
+                            });
+                            sagethumbs2k_core::convert_to_magick_in_named(
+                                f, &dir, ext, resize, q, tag,
+                            )
+                            .ok()
+                        }
+                    };
+                    if first.is_none() {
+                        first = produced;
                     }
                 }
+                first
             },
             || {
                 let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -966,7 +1065,7 @@ extern "system" fn convert_wndproc(
                         run_format_settings(hwnd, hinst, combo_sel(hwnd, CID_FORMAT));
                     }
                     CID_FORMAT if notify == CBN_SELCHANGE => update_settings_enabled(hwnd),
-                    CID_RESIZE_CHK => update_resize_enabled(hwnd),
+                    CID_RESIZE_CHK | CID_RESIZE_ALL => update_resize_enabled(hwnd),
                     CID_RESIZE if notify == CBN_SELCHANGE => update_resize_enabled(hwnd),
                     _ => {}
                 }

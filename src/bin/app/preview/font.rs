@@ -1,8 +1,10 @@
 //! Font specimen preview. Fonts have no thumbnail/decode pipeline, so this is a self-contained
 //! GDI render: parse the sfnt `name` table for a display name, load the file privately with
 //! `AddFontResourceExW`, then draw the name + a pangram at several sizes + a glyph sheet into an
-//! off-screen DIB (returned as RGBA for the Image path). Scoped to sfnt fonts (.ttf/.otf/.ttc);
-//! WOFF/WOFF2 are compressed wrappers and out of scope for v1.
+//! off-screen DIB (returned as RGBA for the Image path). Covers sfnt fonts (.ttf/.otf/.ttc/.otc)
+//! and **.woff**, which is an sfnt with zlib-deflated tables and is unwrapped first (see
+//! [`super::woff`]). WOFF2 is not covered: Brotli plus a `glyf`/`loca` transform is a font
+//! library, not a header read.
 
 use core::ffi::c_void;
 
@@ -17,12 +19,23 @@ use windows::Win32::Graphics::Gdi::{
     TRANSPARENT,
 };
 
+/// Deletes the reconstructed-WOFF temp file however this function exits — including the
+/// several `?` early returns between writing it and finishing the render.
+struct TempFont(Option<std::path::PathBuf>);
+impl Drop for TempFont {
+    fn drop(&mut self) {
+        if let Some(p) = &self.0 {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
 /// `FR_PRIVATE`: the font loads for THIS process only and is removed on `RemoveFontResourceExW`.
 const FR_PRIVATE: FONT_RESOURCE_CHARACTERISTICS = FONT_RESOURCE_CHARACTERISTICS(0x10);
 
 /// Extensions rendered as a font specimen.
 pub(super) fn is_font_ext(ext: &str) -> bool {
-    matches!(ext, "ttf" | "otf" | "ttc" | "otc")
+    matches!(ext, "ttf" | "otf" | "ttc" | "otc" | "woff")
 }
 
 fn be16(b: &[u8], o: usize) -> Option<u16> {
@@ -119,6 +132,28 @@ pub(super) unsafe fn render_specimen(
     fg: COLORREF,
 ) -> Option<(Vec<u8>, i32, i32)> {
     let bytes = std::fs::read(path).ok()?;
+    // A WOFF is an sfnt with deflated tables. Windows' loader only takes a PATH,
+    // so the rebuilt font goes to a temp file that is deleted before we return.
+    let unwrapped = super::woff::is_woff(&bytes).then(|| super::woff::to_sfnt(&bytes));
+    let (bytes, temp) = match unwrapped {
+        Some(Some(sfnt)) => {
+            let tmp = std::env::temp_dir().join(format!(
+                "st2k_woff_{}_{}.ttf",
+                std::process::id(),
+                bytes.len()
+            ));
+            std::fs::write(&tmp, &sfnt).ok()?;
+            (sfnt, Some(tmp))
+        }
+        Some(None) => return None, // a WOFF we could not rebuild — show the info card
+        None => (bytes, None),
+    };
+    let load_path = temp
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string());
+    let _cleanup = TempFont(temp);
+
     let name = display_name(&bytes).unwrap_or_else(|| {
         std::path::Path::new(path)
             .file_stem()
@@ -126,7 +161,7 @@ pub(super) unsafe fn render_specimen(
             .unwrap_or_else(|| "Font".into())
     });
 
-    let wpath = crate::win::wide(path);
+    let wpath = crate::win::wide(&load_path);
     if AddFontResourceExW(PCWSTR(wpath.as_ptr()), FR_PRIVATE, None) == 0 {
         return None;
     }

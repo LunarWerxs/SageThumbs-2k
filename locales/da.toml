@@ -140,6 +140,8 @@ cv_resize_720 = "Tilpas til 1280 × 720"
 cv_resize_600 = "Tilpas til 800 × 600"
 cv_resize_50 = "Skalér 50 %"
 cv_resize_25 = "Skalér 25 %"
+cv_resize_pad = "Udfyld til den præcise størrelse"
+cv_resize_all = "Skriv alle forudindstillede størrelser"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG-indstillinger"
 cv_set_webp_title = "WebP-indstillinger"
@@ -171,11 +173,14 @@ ttf_done_copied = "Kopierede {done} fil(er) til tag-mapper.\n{skipped} sprunget 
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Tryk på mellemrum (eller klik) for at kopiere · Esc"
+eye_hint_stash = "Ctrl+Space føjer til listen · Space kopierer alle"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Skjul ikon i meddelelsesområdet"
 grp_menu_items = "Menupunkter"
 chk_preserve_date = "Behold oprindelig dato på gemte filer"
+chk_keep_metadata = "Bevar EXIF og andre metadata ved konvertering"
+chk_pdf_margin = "Tilføj margen til samlede PDF-filer"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

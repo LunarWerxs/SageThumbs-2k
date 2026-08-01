@@ -141,6 +141,8 @@ cv_resize_720 = "Προσαρμογή σε 1280 × 720"
 cv_resize_600 = "Προσαρμογή σε 800 × 600"
 cv_resize_50 = "Κλιμάκωση 50%"
 cv_resize_25 = "Κλιμάκωση 25%"
+cv_resize_pad = "Συμπλήρωση στο ακριβές μέγεθος"
+cv_resize_all = "Δημιουργία όλων των έτοιμων μεγεθών"
 # Per-format Settings… popup
 cv_set_jpeg_title = "Ρυθμίσεις JPEG"
 cv_set_webp_title = "Ρυθμίσεις WebP"
@@ -169,11 +171,14 @@ ttf_done_moved = "Μετακινήθηκαν {done} αρχείο(-α) σε φα�
 ttf_done_copied = "Αντιγράφηκαν {done} αρχείο(-α) σε φακέλους ετικετών.\n{skipped} παραλείφθηκαν."
 # Eyedropper (screen color picker) hint
 eye_hint = "Πατήστε Space (ή κλικ) για αντιγραφή · Esc"
+eye_hint_stash = "Ctrl+Space προσθέτει στη λίστα · Space αντιγράφει όλα"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Απόκρυψη εικονιδίου περιοχής ειδοποιήσεων"
 grp_menu_items = "Στοιχεία μενού"
 chk_preserve_date = "Διατήρηση αρχικής ημερομηνίας στα αποθηκευμένα αρχεία"
+chk_keep_metadata = "Διατήρηση EXIF και άλλων μεταδεδομένων κατά τη μετατροπή"
+chk_pdf_margin = "Προσθήκη περιθωρίου στα συνδυασμένα PDF"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

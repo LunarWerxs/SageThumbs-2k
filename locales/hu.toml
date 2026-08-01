@@ -142,6 +142,8 @@ cv_resize_720 = "Illesztés 1280 × 720 méretbe"
 cv_resize_600 = "Illesztés 800 × 600 méretbe"
 cv_resize_50 = "Kicsinyítés 50%-ra"
 cv_resize_25 = "Kicsinyítés 25%-ra"
+cv_resize_pad = "Kitöltés a pontos méretre"
+cv_resize_all = "Az összes előre beállított méret létrehozása"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG-beállítások"
 cv_set_webp_title = "WebP-beállítások"
@@ -173,11 +175,14 @@ ttf_done_copied = "{done} fájl másolva a címkemappákba.\n{skipped} kihagyva.
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Szóköz (vagy kattintás) a másoláshoz · Esc"
+eye_hint_stash = "Ctrl+Szóköz hozzáadja a listához · Szóköz mindet másolja"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Tálcaikon elrejtése"
 grp_menu_items = "Menüelemek"
 chk_preserve_date = "Eredeti dátum megtartása a mentett fájlokon"
+chk_keep_metadata = "EXIF és egyéb metaadatok megtartása átalakításkor"
+chk_pdf_margin = "Margó hozzáadása az egyesített PDF-ekhez"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

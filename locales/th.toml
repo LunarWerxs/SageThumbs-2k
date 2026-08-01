@@ -141,6 +141,8 @@ cv_resize_720 = "ย่อให้พอดี 1280 × 720"
 cv_resize_600 = "ย่อให้พอดี 800 × 600"
 cv_resize_50 = "ย่อเหลือ 50%"
 cv_resize_25 = "ย่อเหลือ 25%"
+cv_resize_pad = "เติมให้ได้ขนาดพอดี"
+cv_resize_all = "สร้างทุกขนาดที่ตั้งไว้"
 # Per-format Settings… popup
 cv_set_jpeg_title = "การตั้งค่า JPEG"
 cv_set_webp_title = "การตั้งค่า WebP"
@@ -169,11 +171,14 @@ ttf_done_moved = "ย้ายแล้ว {done} ไฟล์ลงโฟลเ
 ttf_done_copied = "คัดลอกแล้ว {done} ไฟล์ลงโฟลเดอร์ตามแท็ก\nข้าม {skipped} ไฟล์"
 # Eyedropper (screen color picker) hint
 eye_hint = "กด Space (หรือคลิก) เพื่อคัดลอก · Esc"
+eye_hint_stash = "Ctrl+Space เพิ่มลงรายการ · Space คัดลอกทั้งหมด"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "ซ่อนไอคอนถาดระบบ"
 grp_menu_items = "รายการเมนู"
 chk_preserve_date = "คงวันที่เดิมของไฟล์ที่บันทึก"
+chk_keep_metadata = "เก็บ EXIF และข้อมูลเมตาอื่นไว้เมื่อแปลงไฟล์"
+chk_pdf_margin = "เพิ่มระยะขอบให้ PDF ที่รวมกัน"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

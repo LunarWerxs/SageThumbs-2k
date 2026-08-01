@@ -140,6 +140,8 @@ cv_resize_720 = "1280 × 720 में समाएँ"
 cv_resize_600 = "800 × 600 में समाएँ"
 cv_resize_50 = "50% पर लाएँ"
 cv_resize_25 = "25% पर लाएँ"
+cv_resize_pad = "सटीक आकार तक भरें"
+cv_resize_all = "सभी प्रीसेट आकार बनाएँ"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG सेटिंग्स"
 cv_set_webp_title = "WebP सेटिंग्स"
@@ -171,11 +173,14 @@ ttf_done_copied = "{done} फ़ाइल(ें) टैग फ़ोल्ड�
 
 # Eyedropper (screen color picker) hint
 eye_hint = "कॉपी करने के लिए Space (या क्लिक) · Esc"
+eye_hint_stash = "Ctrl+Space सूची में जोड़ें · Space सभी कॉपी करें"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "ट्रे आइकन छिपाएँ"
 grp_menu_items = "मेन्यू आइटम"
 chk_preserve_date = "सहेजी गई फ़ाइलों पर मूल तिथि बनाए रखें"
+chk_keep_metadata = "बदलते समय EXIF और अन्य मेटाडेटा रखें"
+chk_pdf_margin = "संयुक्त PDF में हाशिया जोड़ें"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

@@ -68,6 +68,8 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Head(ID_LBL_GENERAL), // "Language & files"
             Pair(ID_LBL_LANG, ID_LANG, 156, 200),
             Switch(ID_PRESERVE_DATE),
+            Switch(ID_KEEP_METADATA),
+            Switch(ID_PDF_MARGIN),
         ],
         1 => &[
             Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),

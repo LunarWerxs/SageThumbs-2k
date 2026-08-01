@@ -142,6 +142,8 @@ cv_resize_720 = "Auf 1280 × 720 einpassen"
 cv_resize_600 = "Auf 800 × 600 einpassen"
 cv_resize_50 = "Auf 50 % skalieren"
 cv_resize_25 = "Auf 25 % skalieren"
+cv_resize_pad = "Auf die exakte Größe auffüllen"
+cv_resize_all = "Alle voreingestellten Größen schreiben"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG-Einstellungen"
 cv_set_webp_title = "WebP-Einstellungen"
@@ -173,11 +175,14 @@ ttf_done_copied = "{done} Datei(en) in Tag-Ordner kopiert.\n{skipped} übersprun
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Leertaste (oder Klick) zum Kopieren · Esc"
+eye_hint_stash = "Strg+Leertaste fügt zur Liste hinzu · Leertaste kopiert alle"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Infobereich-Symbol ausblenden"
 grp_menu_items = "Menüeinträge"
 chk_preserve_date = "Originaldatum bei gespeicherten Dateien beibehalten"
+chk_keep_metadata = "EXIF und andere Metadaten beim Konvertieren beibehalten"
+chk_pdf_margin = "Rand zu kombinierten PDFs hinzufügen"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

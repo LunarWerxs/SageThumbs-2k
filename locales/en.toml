@@ -194,6 +194,8 @@ cv_resize_720 = "Fit 1280 × 720"
 cv_resize_600 = "Fit 800 × 600"
 cv_resize_50 = "Scale 50%"
 cv_resize_25 = "Scale 25%"
+cv_resize_pad = "Pad to the exact size"
+cv_resize_all = "Write every preset size"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG settings"
 cv_set_webp_title = "WebP settings"
@@ -227,11 +229,14 @@ ttf_done_copied = "Copied {done} file(s) into tag folders.\n{skipped} skipped."
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Press Space (or click) to copy · Esc"
+eye_hint_stash = "Ctrl+Space adds to the list · Space copies all"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Hide tray icon"
 grp_menu_items = "Menu items"
 chk_preserve_date = "Keep original date on saved files"
+chk_keep_metadata = "Keep EXIF and other metadata when converting"
+chk_pdf_margin = "Add a margin to combined PDFs"
 
 # v0.7.0 — redesigned Settings UI (category nav rail + content panes).
 # Category nav-rail / tab labels

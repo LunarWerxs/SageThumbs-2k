@@ -140,6 +140,8 @@ cv_resize_720 = "Побери в 1280 × 720"
 cv_resize_600 = "Побери в 800 × 600"
 cv_resize_50 = "Мащабирай до 50%"
 cv_resize_25 = "Мащабирай до 25%"
+cv_resize_pad = "Допълване до точния размер"
+cv_resize_all = "Създаване на всички готови размери"
 # Per-format Settings… popup
 cv_set_jpeg_title = "Настройки за JPEG"
 cv_set_webp_title = "Настройки за WebP"
@@ -171,11 +173,14 @@ ttf_done_copied = "Копирани са {done} файл(а) в папки по 
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Натиснете интервал (или щракнете) за копиране · Esc"
+eye_hint_stash = "Ctrl+Space добавя към списъка · Space копира всички"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Скриване на иконата в областта за уведомяване"
 grp_menu_items = "Елементи на менюто"
 chk_preserve_date = "Запазване на оригиналната дата на записаните файлове"
+chk_keep_metadata = "Запазване на EXIF и другите метаданни при конвертиране"
+chk_pdf_margin = "Добавяне на поле към обединените PDF файлове"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

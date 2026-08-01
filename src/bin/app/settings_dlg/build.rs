@@ -45,6 +45,8 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_menu_quick"), cb, 312, ID_MENU_QUICK);
     lc.checkbox(t("chk_menu_checker"), cb, 300, ID_MENU_CHECKER);
     lc.checkbox(t("chk_preserve_date"), cb, 312, ID_PRESERVE_DATE);
+    lc.checkbox(t("chk_keep_metadata"), cb, 312, ID_KEEP_METADATA);
+    lc.checkbox(t("chk_pdf_margin"), cb, 312, ID_PDF_MARGIN);
     let prev = lc.combo(t("lbl_menu_preview"), ID_LBL_PREVIEW, 160, ID_MENU_PREVIEW);
     for key in ["prev_off", "prev_submenu", "prev_main"] {
         let w = wide(t(key));

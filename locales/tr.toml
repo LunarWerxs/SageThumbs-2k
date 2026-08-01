@@ -143,6 +143,8 @@ cv_resize_720 = "1280 × 720 içine sığdır"
 cv_resize_600 = "800 × 600 içine sığdır"
 cv_resize_50 = "%50 ölçekle"
 cv_resize_25 = "%25 ölçekle"
+cv_resize_pad = "Tam boyuta doldur"
+cv_resize_all = "Tüm hazır boyutları oluştur"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG ayarları"
 cv_set_webp_title = "WebP ayarları"
@@ -174,11 +176,14 @@ ttf_done_copied = "{done} dosya etiket klasörlerine kopyalandı.\n{skipped} atl
 
 # Eyedropper (screen color picker) hint
 eye_hint = "Kopyalamak için Boşluk (veya tıkla) · Esc"
+eye_hint_stash = "Ctrl+Boşluk listeye ekler · Boşluk tümünü kopyalar"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Tepsi simgesini gizle"
 grp_menu_items = "Menü öğeleri"
 chk_preserve_date = "Kaydedilen dosyalarda özgün tarihi koru"
+chk_keep_metadata = "Dönüştürürken EXIF ve diğer meta verileri koru"
+chk_pdf_margin = "Birleştirilen PDF'lere kenar boşluğu ekle"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

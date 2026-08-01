@@ -141,6 +141,8 @@ cv_resize_720 = "1280 × 720에 맞추기"
 cv_resize_600 = "800 × 600에 맞추기"
 cv_resize_50 = "50%로 축소"
 cv_resize_25 = "25%로 축소"
+cv_resize_pad = "정확한 크기로 여백 채우기"
+cv_resize_all = "모든 사전 설정 크기 생성"
 # Per-format Settings… popup
 cv_set_jpeg_title = "JPEG 설정"
 cv_set_webp_title = "WebP 설정"
@@ -172,11 +174,14 @@ ttf_done_copied = "파일 {done}개를 태그 폴더로 복사했습니다.\n{sk
 
 # Eyedropper (screen color picker) hint
 eye_hint = "스페이스(또는 클릭)로 복사 · Esc"
+eye_hint_stash = "Ctrl+Space로 목록에 추가 · Space로 전체 복사"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "트레이 아이콘 숨기기"
 grp_menu_items = "메뉴 항목"
 chk_preserve_date = "저장한 파일에 원래 날짜 유지"
+chk_keep_metadata = "변환할 때 EXIF 및 기타 메타데이터 유지"
+chk_pdf_margin = "결합된 PDF에 여백 추가"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

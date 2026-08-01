@@ -1,0 +1,103 @@
+//! The Set-as-wallpaper verb: decode any supported format, cap it to the screen,
+//! write it as a PNG under %APPDATA% and hand it to the desktop.
+
+use super::*;
+
+/// %APPDATA%\SageThumbs2K (created on demand) — where the wallpaper image lives.
+fn appdata_dir() -> Result<PathBuf> {
+    let base = std::env::var("APPDATA")
+        .map_err(|e| Error::new(E_FAIL, format!("%APPDATA% not set: {e}")))?;
+    let dir = Path::new(&base).join("SageThumbs2K");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Error::new(E_FAIL, format!("create {}: {e}", dir.display())))?;
+    Ok(dir)
+}
+
+/// Decode `path` (any supported format, incl. ones Windows can't read directly)
+/// and write it as a PNG `dir` can hold. Returns the written image path. Split
+/// out from [`prepare_wallpaper`] so tests can target a temp dir instead of the
+/// real `%APPDATA%` (writing the production wallpaper.png from a test would
+/// pollute the live desktop state).
+pub fn prepare_wallpaper_in(dir: &Path, path: &str) -> Result<PathBuf> {
+    let bytes = read_capped(path)?;
+    // A wallpaper never needs more than screen resolution; downscale large
+    // sources so we don't re-encode (and block the shell thread on) a giant PNG.
+    let img = cap_to_screen(decode::decode_full(&bytes)?);
+    let out = dir.join("wallpaper.png");
+    // Atomic write (temp + rename) so a failed/interrupted encode can never
+    // leave the live, OS-referenced wallpaper file half-written (the desktop
+    // re-reads this exact path at logon). Mirrors `convert_file`.
+    let tmp = {
+        let mut s = out.clone().into_os_string();
+        s.push(".st2ktmp");
+        PathBuf::from(s)
+    };
+    img.save_with_format(&tmp, ImageFormat::Png).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        Error::new(E_FAIL, format!("encode wallpaper PNG: {e}"))
+    })?;
+    std::fs::rename(&tmp, &out).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        Error::new(E_FAIL, format!("rename wallpaper into place: {e}"))
+    })?;
+    Ok(out)
+}
+
+/// Downscale `img` to fit within the virtual-screen bounds, **never upscaling**.
+/// The desktop can't display more than screen resolution, and PNG-re-encoding a
+/// full-size camera image on the shell thread is pure waste. Falls back to an 8K
+/// cap if the metrics are unavailable (e.g. a headless/service context).
+fn cap_to_screen(img: DynamicImage) -> DynamicImage {
+    let (mut cap_w, mut cap_h) = unsafe {
+        (
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    if cap_w <= 0 || cap_h <= 0 {
+        cap_w = 7680;
+        cap_h = 4320;
+    }
+    let (cap_w, cap_h) = (cap_w as u32, cap_h as u32);
+    if img.width() > cap_w || img.height() > cap_h {
+        // resize() preserves aspect and fits within the box.
+        img.resize(cap_w, cap_h, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    }
+}
+
+/// Decode `path` (any supported format, incl. ones Windows can't read directly)
+/// and write it as a PNG the desktop can use. Returns the wallpaper image path.
+pub fn prepare_wallpaper(path: &str) -> Result<PathBuf> {
+    prepare_wallpaper_in(&appdata_dir()?, path)
+}
+
+/// Set the selected image as the desktop wallpaper with the given placement.
+pub fn set_wallpaper(path: &str, mode: WallpaperMode) -> Result<()> {
+    let wp = prepare_wallpaper(path)?;
+
+    // Placement: HKCU\Control Panel\Desktop {WallpaperStyle, TileWallpaper}.
+    let (style, tile) = match mode {
+        WallpaperMode::Stretch => ("2", "0"),
+        WallpaperMode::Tile => ("0", "1"),
+        WallpaperMode::Center => ("0", "0"),
+    };
+    if let Ok(k) = windows_registry::CURRENT_USER.create("Control Panel\\Desktop") {
+        let _ = k.set_string("WallpaperStyle", style);
+        let _ = k.set_string("TileWallpaper", tile);
+    }
+
+    // Apply it (and persist + broadcast the change).
+    let wide: Vec<u16> = wp.as_os_str().encode_wide().chain(once(0)).collect();
+    unsafe {
+        SystemParametersInfoW(
+            SPI_SETDESKWALLPAPER,
+            0,
+            Some(wide.as_ptr() as *mut c_void),
+            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+        )
+        .map_err(|e| Error::new(E_FAIL, format!("SPI_SETDESKWALLPAPER failed: {e}")))?;
+    }
+    Ok(())
+}

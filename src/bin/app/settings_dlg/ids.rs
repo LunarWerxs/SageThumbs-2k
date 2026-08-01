@@ -42,6 +42,12 @@ pub(super) const ID_MENU_ALL_TYPES: i32 = 1119;
 pub(super) const ID_MENU_CHECKER: i32 = 1120;
 // "Keep original date on saved files" — preserve source mtime on Convert/Resize/Rotate output.
 pub(super) const ID_PRESERVE_DATE: i32 = 1121;
+// "Keep EXIF and other metadata in converted files" - carry EXIF/XMP/IPTC through
+// Convert/Resize instead of dropping it in the re-encode.
+pub(super) const ID_KEEP_METADATA: i32 = 1122;
+// "Add a margin to combined PDFs" - PdfLayout 1 vs 0. The A4/Letter sheet modes the
+// engine also supports stay registry-only (see settings::pdf_page).
+pub(super) const ID_PDF_MARGIN: i32 = 1123;
 
 // Settings-sync (optional Connections account) — the opt-in row. IDs 1200-1202 are free
 // (control IDs stop at 1187; nav IDs start at 1700).
