@@ -50,9 +50,101 @@ function Assert-LintFails([string]$Name, [scriptblock]$Body) {
     $script:passed++
 }
 
+function Assert-ReleaseArchitectureContract([string]$Text) {
+    $lines = $Text -split "\r?\n"
+    foreach ($definition in @(
+            '#define Architecture "x64"',
+            '#define StageDir "stage"',
+            '#define CompactOnly "0"',
+            '#define OutputSuffix ""',
+            '#define ArchitectureMatcher "x64compatible and not arm64"',
+            '#define ArchitectureMatcher "arm64"'
+        )) {
+        if (-not $Text.Contains($definition, [StringComparison]::Ordinal)) {
+            throw "missing architecture preprocessor contract: $definition"
+        }
+    }
+    foreach ($entry in @(
+            'AppId={{B0A1C2D3-E4F5-4607-8899-AABBCCDDEEFF}',
+            'DefaultDirName={autopf}\SageThumbs2K',
+            'UsePreviousAppDir=yes',
+            'ArchitecturesAllowed={#ArchitectureMatcher}',
+            'ArchitecturesInstallIn64BitMode={#ArchitectureMatcher}',
+            'SetupIconFile={#StageDir}\app.ico',
+            'OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}{#OutputSuffix}'
+        )) {
+        if (@($lines | Where-Object { $_ -ceq $entry }).Count -ne 1) {
+            throw "expected exactly one architecture-aware installer entry: $entry"
+        }
+    }
+    if ($Text.Contains('SageThumbs2K-arm64', [StringComparison]::Ordinal)) {
+        throw 'release installers must share one application directory; the ARM64 suffix is dev-only'
+    }
+    if ($Text.Contains('UsePreviousAppDir=no', [StringComparison]::Ordinal)) {
+        throw 'release installers must reuse the prior architecture installation directory'
+    }
+    if ($Text.Contains('Source: "stage\', [StringComparison]::Ordinal)) {
+        throw 'installer contains a hard-coded stage source instead of {#StageDir}'
+    }
+    $x64FullGuard = '#if (Architecture == "x64") && (CompactOnly == "0")'
+    if (@([regex]::Matches($Text, [regex]::Escape($x64FullGuard))).Count -ne 4) {
+        throw 'expected the Full type, core type list, ImageMagick component, and source to be x64/full guarded'
+    }
+    if (-not $Text.Contains(
+            'Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: compact custom; Flags: fixed',
+            [StringComparison]::Ordinal
+        )) {
+        throw 'Compact-only architecture must expose no Full install type'
+    }
+}
+
+function Assert-ArchitectureContractFails([string]$Name, [string]$Text) {
+    $failed = $false
+    try {
+        Assert-ReleaseArchitectureContract $Text
+    } catch {
+        $failed = $true
+    }
+    if (-not $failed) {
+        throw "expected architecture contract failure for '$Name'"
+    }
+    Write-Host "  PASS  $Name (failed closed)" -ForegroundColor Green
+    $script:passed++
+}
+
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
     $source = Get-Content -LiteralPath $installer -Raw
+
+    # The architecture variants are preprocessor-only: keep this regression test
+    # dependency-free even on developer boxes without ISCC installed. The release
+    # pipeline compiles the selected variant; these assertions make the variant
+    # contract fail closed before that expensive step.
+    Assert-ReleaseArchitectureContract $source
+    Write-Host '  PASS  architecture-specific installer contract' -ForegroundColor Green
+    $script:passed++
+
+    Assert-ArchitectureContractFails 'architecture-specific AppId' (
+        $source.Replace(
+            'AppId={{B0A1C2D3-E4F5-4607-8899-AABBCCDDEEFF}',
+            'AppId={{A0A1C2D3-E4F5-4607-8899-AABBCCDDEEFF}'
+        )
+    )
+    Assert-ArchitectureContractFails 'ARM-suffixed release directory' (
+        $source.Replace(
+            'DefaultDirName={autopf}\SageThumbs2K',
+            'DefaultDirName={autopf}\SageThumbs2K-arm64'
+        )
+    )
+    Assert-ArchitectureContractFails 'disabled previous-directory reuse' (
+        $source.Replace('UsePreviousAppDir=yes', 'UsePreviousAppDir=no')
+    )
+    Assert-ArchitectureContractFails 'x64 installer allowed on ARM64' (
+        $source.Replace(
+            '#define ArchitectureMatcher "x64compatible and not arm64"',
+            '#define ArchitectureMatcher "x64compatible"'
+        )
+    )
 
     Assert-LintPasses 'real installer exact cleanup allowlist' {
         Invoke-InstallerLint -IssPath $installer
@@ -114,7 +206,7 @@ try {
 
     $missingCorePolicy = Join-Path $scratch 'missing-core-policy.iss'
     $needle =
-        'Source: "stage\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core'
+        'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core'
     $mutated = $source.Replace($needle, '')
     if ($mutated -ceq $source) { throw 'test mutation did not remove core policy mapping' }
     Set-Content -LiteralPath $missingCorePolicy -Value $mutated -Encoding utf8
@@ -124,9 +216,9 @@ try {
 
     $duplicatePolicy = Join-Path $scratch 'duplicate-policy.iss'
     $needle =
-        'Source: "stage\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
     $replacement =
-        'Source: "stage\magick\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
     $mutated = $source.Replace($needle, $replacement)
     if ($mutated -ceq $source) { throw 'test mutation did not remove policy exclusion' }
     Set-Content -LiteralPath $duplicatePolicy -Value $mutated -Encoding utf8

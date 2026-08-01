@@ -11,7 +11,7 @@ maintainer listed there.
 Copyright © 2026 Lunarwerx.
 
 **Contributions:** by opening a pull request you agree to the contribution terms in
-[CONTRIBUTING.md](CONTRIBUTING.md) — you grant the maintainer a perpetual, irrevocable
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) — you grant the maintainer a perpetual, irrevocable
 right to use and **relicense** your contribution (including assignment of copyright
 where the law allows). This lets the project be relicensed in the future without
 chasing down every contributor.

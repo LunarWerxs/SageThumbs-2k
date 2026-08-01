@@ -243,6 +243,43 @@ if (Test-Path "$OutDir\_eps_preview.tif") {
     [System.IO.File]::WriteAllBytes("$OutDir\sample.eps", $ms.ToArray())
     Remove-Item "$OutDir\_eps_preview.tif" -Force -EA SilentlyContinue
 }
+# Plain-text EPSI: an Adobe-standard, hex-encoded greyscale preview. This is
+# intentionally synthesized because ImageMagick emits preview-less EPS here.
+$epsiBitmap = New-Object System.Drawing.Bitmap $base
+try {
+    $epsiWidth = 128; $epsiHeight = 96
+    $epsi = New-Object System.Drawing.Bitmap $epsiWidth, $epsiHeight
+    $graphics = [System.Drawing.Graphics]::FromImage($epsi)
+    $graphics.DrawImage($epsiBitmap, 0, 0, $epsiWidth, $epsiHeight); $graphics.Dispose()
+    $epsiLineBytes = 32
+    $epsiLines = [int][Math]::Ceiling(($epsiWidth * $epsiHeight) / $epsiLineBytes)
+    $epsiText = "%!PS-Adobe-3.0 EPSF-3.0`n%%BoundingBox: 0 0 512 384`n%%BeginPreview: $epsiWidth $epsiHeight 8 $epsiLines`n"
+    $epsiPacked = New-Object byte[] ($epsiWidth * $epsiHeight)
+    for ($y = 0; $y -lt $epsiHeight; $y++) {
+        for ($x = 0; $x -lt $epsiWidth; $x++) {
+            # EPSI rows run bottom-up and its samples are 0=white, 255=black.
+            $pixel = $epsi.GetPixel($x, $epsiHeight - 1 - $y)
+            $grey = [int](0.299 * $pixel.R + 0.587 * $pixel.G + 0.114 * $pixel.B)
+            $epsiPacked[$y * $epsiWidth + $x] = 255 - $grey
+        }
+    }
+    for ($offset = 0; $offset -lt $epsiPacked.Length; $offset += $epsiLineBytes) {
+        $count = [Math]::Min($epsiLineBytes, $epsiPacked.Length - $offset)
+        $row = New-Object System.Text.StringBuilder
+        [void]$row.Append('% ')
+        for ($i = 0; $i -lt $count; $i++) { [void]$row.AppendFormat('{0:X2}', $epsiPacked[$offset + $i]) }
+        $epsiText += $row.ToString() + "`n"
+    }
+    $epsiText += "%%EndPreview`nshowpage`n"
+    [System.IO.File]::WriteAllText("$OutDir\sample-epsi.eps", $epsiText, [System.Text.Encoding]::ASCII)
+    $epsi.Dispose()
+} finally {
+    $epsiBitmap.Dispose()
+}
+
+# ZIP entry names are UTF-8 in modern CBZ files; keep one tiny fixture for the
+# archive parser's non-ASCII-name path (its image payload is the normal base PNG).
+New-Zip "$OutDir\sample-unicode.cbz" @{ 'ページ-01.png' = $png }
 
 # PDF + SVG via magick / text
 & $magick $base "$OutDir\sample.pdf" 2>$null
@@ -342,6 +379,13 @@ if (-not $SkipDownloads) {
         'sample.pub'      = 'https://archive.org/download/NouveauMicrosoftPublisherDocument/Nouveau%20Microsoft%20Publisher%20Document.pub'
         # HEIC (magick can't write it here): libheif's own example image -> WIC/magick read tiers.
         'sample.heic'     = 'https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic'
+        # libheif's pinned auxiliary-alpha fixtures. The HEIC guards our ImageMagick-first
+        # route around WIC's flattened HEVC alpha item; the compact `mini` AVIF guards our
+        # explicit ImageMagick coder hint.
+        # SHA-256: DAC399D3BF1019BAAF5F88EEF8B277087D0643E735DB947C42355237BB9D0221
+        'sample-heic-alpha.heic' = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/with-alpha-512x512.heic'
+        # SHA-256: 6D78AF07FBAD358F4240820331074FFF215AE8559BF4756EC480C6A6BE2A68D9
+        'sample-avif-alpha.avif' = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/simple_osm_tile_alpha.avif'
         # DICOM (read-only in magick): pydicom's small CT test file -> magick read tier.
         'sample.dcm'      = 'https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm'
         # GIMP XCF (read-only in magick): GIMP's own test file -> magick read tier.

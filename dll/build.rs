@@ -39,29 +39,67 @@ fn main() {
         println!("cargo:warning=DLL VERSIONINFO: couldn't write dll_version.rc; DLL will have no version");
         return;
     }
-    let obj = format!("{out}/dll_version.o");
-    for windres in ["windres", "x86_64-w64-mingw32-windres"] {
-        let status = std::process::Command::new(windres)
-            .args([
-                "-I",
-                &out,
-                &format!("{out}/dll_version.rc"),
-                "-O",
-                "coff",
-                "-o",
-                &obj,
-            ])
-            .status();
-        if matches!(status, Ok(s) if s.success()) {
-            // This crate is cdylib-only, so `-arg` reaches the DLL (no bins to confuse).
-            println!("cargo:rustc-link-arg={obj}");
+    let input = format!("{out}/dll_version.rc");
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        let res = format!("{out}/dll_version.res");
+        if compile_with_windows_sdk_rc(&input, &res) {
+            println!("cargo:rustc-link-arg={res}");
             return;
+        }
+        panic!(
+            "ARM64 resource compilation requires Windows SDK rc.exe; refusing a \
+             version-metadata-free shell DLL"
+        );
+    } else {
+        let obj = format!("{out}/dll_version.o");
+        for windres in ["windres", "x86_64-w64-mingw32-windres"] {
+            let status = std::process::Command::new(windres)
+                .args(["-I", &out, &input, "-O", "coff", "-o", &obj])
+                .status();
+            if matches!(status, Ok(s) if s.success()) {
+                // This crate is cdylib-only, so `-arg` reaches the DLL (no bins to confuse).
+                println!("cargo:rustc-link-arg={obj}");
+                return;
+            }
         }
     }
     println!(
         "cargo:warning=DLL VERSIONINFO: windres unavailable; sagethumbs2k.dll will have no \
          file version. Install binutils/llvm-windres to enable it."
     );
+}
+
+fn compile_with_windows_sdk_rc(input: &str, output: &str) -> bool {
+    windows_sdk_rc_candidates().into_iter().any(|rc| {
+        let status = std::process::Command::new(rc)
+            .args(["/nologo", &format!("/fo{output}"), input])
+            .status();
+        matches!(status, Ok(s) if s.success())
+    })
+}
+
+fn windows_sdk_rc_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = vec![std::path::PathBuf::from("rc.exe")];
+    let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") else {
+        return candidates;
+    };
+    let sdk_bin = std::path::PathBuf::from(program_files_x86).join("Windows Kits/10/bin");
+    let Ok(entries) = std::fs::read_dir(sdk_bin) else {
+        return candidates;
+    };
+    let host = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let mut versions: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path().join(host).join("rc.exe"))
+        .filter(|path| path.is_file())
+        .collect();
+    versions.sort_by(|a, b| b.cmp(a));
+    candidates.extend(versions);
+    candidates
 }
 
 /// A Windows `VERSIONINFO` `.rc` with FileVersion / ProductVersion pinned to

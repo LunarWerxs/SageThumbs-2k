@@ -1,15 +1,32 @@
 {
-  "schemaVersion": 2,
-  "referenceVersion": "1.4.1-hdr",
-  "referenceInstallerBytes": 13371559,
-  "referenceInstallerSha256": "02b29d85ae6d1a6845ad0ba7be92c03b41356cd416b2a32068d2ded9df8635f7",
-  "installerGrowthAllowanceBytes": 131072,
-  "maxInstallerBytes": 13502631,
-  "referenceRustPayloadBytes": 23138304,
-  "rustPayloadGrowthAllowanceBytes": 262144,
-  "maxRustPayloadBytes": 23400448,
-  "referenceMagickPayloadBytes": 29827612,
-  "magickPayloadGrowthAllowanceBytes": 262144,
-  "maxMagickPayloadBytes": 30089756,
-  "rationale": "Rebaselined 2026-07-31 after the competitor-gap release. The 1.3.6-rc1 reference predates a large batch of shipped capability: metadata strip extended to WebP/SVG/HEIC/AVIF plus C2PA removal, XMP/DDS/gain-map facts in Image info, EXIF-IPTC-XMP carry-through on Convert and Resize, PDF page layouts, ComicInfo.xml in CBZ, pad-to-canvas resize, multi-size batch output, WOFF font previews, the eyedropper stash, and HDR screen capture. That is a deliberate +253 KiB installer / +922 KiB Rust payload, reviewed and accepted, not drift. The HDR capture stack (D3D11/DXGI/WinRT Graphics.Capture) is behind the APP-ONLY `hdr-capture` cargo feature precisely so the shell DLL does not pay for it; verified by `objdump -p`, which shows d3d11.dll and dxgi.dll imported by SageThumbs2K.exe and by NEITHER sagethumbs2k.dll nor st2k.exe. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
+  "schemaVersion": 3,
+  "architectures": {
+    "x64": {
+      "full": {
+        "referenceVersion": "1.4.1-hdr",
+        "installerReferenceCalibrated": true,
+        "referenceInstallerBytes": 13371559,
+        "referenceInstallerSha256": "02b29d85ae6d1a6845ad0ba7be92c03b41356cd416b2a32068d2ded9df8635f7",
+        "installerGrowthAllowanceBytes": 131072,
+        "maxInstallerBytes": 13502631,
+        "referenceRustPayloadBytes": 23138304,
+        "rustPayloadGrowthAllowanceBytes": 262144,
+        "maxRustPayloadBytes": 23400448,
+        "referenceMagickPayloadBytes": 29827612,
+        "magickPayloadGrowthAllowanceBytes": 262144,
+        "maxMagickPayloadBytes": 30089756,
+        "rationale": "Rebaselined 2026-07-31 after the competitor-gap release. The 1.3.6-rc1 reference predates a large batch of shipped capability: metadata strip extended to WebP/SVG/HEIC/AVIF plus C2PA removal, XMP/DDS/gain-map facts in Image info, EXIF-IPTC-XMP carry-through on Convert and Resize, PDF page layouts, ComicInfo.xml in CBZ, pad-to-canvas resize, multi-size batch output, WOFF font previews, the eyedropper stash, and HDR screen capture. That is a deliberate +253 KiB installer / +922 KiB Rust payload, reviewed and accepted, not drift. The HDR capture stack (D3D11/DXGI/WinRT Graphics.Capture) is behind the APP-ONLY `hdr-capture` cargo feature precisely so the shell DLL does not pay for it; verified by `objdump -p`, which shows d3d11.dll and dxgi.dll imported by SageThumbs2K.exe and by NEITHER sagethumbs2k.dll nor st2k.exe. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
+      }
+    },
+    "arm64": {
+      "compact": {
+        "referenceVersion": "1.5.0-arm64-compact-preinstaller",
+        "installerReferenceCalibrated": false,
+        "referenceRustPayloadBytes": 20234240,
+        "rustPayloadGrowthAllowanceBytes": 262144,
+        "maxRustPayloadBytes": 20496384,
+        "rationale": "Measured from the verified 1.5.0 ARM64 Compact release Rust payload on 2026-08-01: sagethumbs2k.dll 5,949,440 bytes, SageThumbs2K.exe 8,367,104 bytes, and st2k.exe 5,917,696 bytes. ARM64 deliberately ships without ImageMagick, so a staged magick directory is a release failure. No ARM64 installer has been independently verified yet: installerReferenceCalibrated remains false and check-release-size.ps1 must reject publication until the first installer bytes and SHA-256 are recorded in reviewable source. Keep later Compact Rust payloads within 256 KiB unless an explicit reviewed policy change records why."
+      }
+    }
+  }
 }

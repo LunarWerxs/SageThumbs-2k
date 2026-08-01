@@ -12,6 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows::Win32::System::SystemInformation::{
+    GetNativeSystemInfo, PROCESSOR_ARCHITECTURE, PROCESSOR_ARCHITECTURE_AMD64,
+    PROCESSOR_ARCHITECTURE_ARM64, SYSTEM_INFO,
+};
 
 use crate::sponsors::{http_fetch, os_tag, BANNER_URL};
 
@@ -237,10 +241,51 @@ fn latest_installer_asset() -> Option<(String, InstallerAsset)> {
 /// Pure parse of GitHub's latest-release JSON → (tag, installer asset). Split from the fetch
 /// so it can be unit-tested against a real release body with no network.
 fn installer_asset_from_json(json: &serde_json::Value) -> Option<(String, InstallerAsset)> {
+    installer_asset_from_json_for_arch(json, native_installer_arch())
+}
+
+/// Choose the installer for the native Windows architecture, not merely this process.
+/// That distinction matters on ARM64: an older x64 SageThumbs build can run under
+/// emulation, but native Explorer needs the ARM64 shell extension after the update.
+fn native_installer_arch() -> &'static str {
+    let mut info = SYSTEM_INFO::default();
+    unsafe {
+        GetNativeSystemInfo(&mut info);
+        installer_arch_for_native(
+            info.Anonymous.Anonymous.wProcessorArchitecture,
+            std::env::consts::ARCH,
+        )
+    }
+}
+
+/// Pure half of [`native_installer_arch`] so the x64-on-ARM64 migration rule is
+/// covered on any CI host.
+fn installer_arch_for_native(
+    native_arch: PROCESSOR_ARCHITECTURE,
+    process_arch: &'static str,
+) -> &'static str {
+    match native_arch {
+        PROCESSOR_ARCHITECTURE_ARM64 => "aarch64",
+        PROCESSOR_ARCHITECTURE_AMD64 => "x86_64",
+        _ => process_arch,
+    }
+}
+
+/// Architecture-aware half of [`installer_asset_from_json`]. Keeping the target explicit
+/// makes the release-asset contract testable on either development architecture: x64 gets
+/// the established setup name, while ARM64 must never download that x64 installer.
+fn installer_asset_from_json_for_arch(
+    json: &serde_json::Value,
+    arch: &str,
+) -> Option<(String, InstallerAsset)> {
     let raw_tag = json.get("tag_name")?.as_str()?;
     let (major, minor, patch) = parse_ver(raw_tag)?;
     let tag = format!("{major}.{minor}.{patch}");
-    let expected_name = format!("SageThumbs2K-Setup-{tag}.exe");
+    let expected_name = match arch {
+        "x86_64" => format!("SageThumbs2K-Setup-{tag}.exe"),
+        "aarch64" => format!("SageThumbs2K-Setup-{tag}-arm64.exe"),
+        _ => return None, // no published self-update installer for this architecture
+    };
     let asset = json.get("assets")?.as_array()?.iter().find(|a| {
         a.get("name")
             .and_then(|n| n.as_str())
@@ -572,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn picks_setup_exe_and_normalizes_digest() {
+    fn picks_x64_setup_exe_and_normalizes_digest() {
         let json = serde_json::json!({
             "tag_name": "v0.6.3",
             "assets": [
@@ -587,13 +632,73 @@ mod tests {
                   "digest": "sha256:09D79A0C6589D7DC5AF5472CB8B1B56AAC0DFF51A47003B1146A9409F65C9835" }
             ]
         });
-        let (tag, asset) = super::installer_asset_from_json(&json).expect("asset");
+        let (tag, asset) =
+            super::installer_asset_from_json_for_arch(&json, "x86_64").expect("x64 asset");
         assert_eq!(tag, "0.6.3");
         assert!(asset.url.ends_with("SageThumbs2K-Setup-0.6.3.exe"));
         assert_eq!(asset.size, 9_223_820);
         assert_eq!(
             asset.sha256,
             "09d79a0c6589d7dc5af5472cb8b1b56aac0dff51a47003b1146a9409f65c9835"
+        );
+    }
+
+    #[test]
+    fn picks_only_the_matching_arm64_setup_exe() {
+        let json = serde_json::json!({
+            "tag_name": "v0.6.3",
+            "assets": [
+                { "name": "SageThumbs2K-Setup-0.6.3.exe",
+                  "browser_download_url": "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v0.6.3/SageThumbs2K-Setup-0.6.3.exe",
+                  "size": 100u64,
+                  "digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+                { "name": "SageThumbs2K-Setup-0.6.3-arm64.exe",
+                  "browser_download_url": "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v0.6.3/SageThumbs2K-Setup-0.6.3-arm64.exe",
+                  "size": 200u64,
+                  "digest": "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" }
+            ]
+        });
+
+        let (_, x64) =
+            super::installer_asset_from_json_for_arch(&json, "x86_64").expect("x64 asset");
+        assert!(x64.url.ends_with("SageThumbs2K-Setup-0.6.3.exe"));
+        assert_eq!(x64.size, 100);
+
+        let (_, arm64) =
+            super::installer_asset_from_json_for_arch(&json, "aarch64").expect("ARM64 asset");
+        assert!(arm64.url.ends_with("SageThumbs2K-Setup-0.6.3-arm64.exe"));
+        assert_eq!(arm64.size, 200);
+
+        let x64_only = serde_json::json!({
+            "tag_name": "v0.6.3",
+            "assets": [json["assets"][0].clone()]
+        });
+        assert!(
+            super::installer_asset_from_json_for_arch(&x64_only, "aarch64").is_none(),
+            "ARM64 must not accept the x64 installer"
+        );
+        assert!(super::installer_asset_from_json_for_arch(&json, "x86").is_none());
+    }
+
+    #[test]
+    fn native_windows_architecture_controls_cross_arch_update() {
+        use windows::Win32::System::SystemInformation::{
+            PROCESSOR_ARCHITECTURE, PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_ARM64,
+        };
+
+        assert_eq!(
+            super::installer_arch_for_native(PROCESSOR_ARCHITECTURE_ARM64, "x86_64"),
+            "aarch64",
+            "an emulated x64 build on ARM64 must migrate to the native installer"
+        );
+        assert_eq!(
+            super::installer_arch_for_native(PROCESSOR_ARCHITECTURE_AMD64, "x86_64"),
+            "x86_64"
+        );
+        assert_eq!(
+            super::installer_arch_for_native(PROCESSOR_ARCHITECTURE(u16::MAX), "aarch64"),
+            "aarch64",
+            "an unknown Windows architecture must fall back to the process target"
         );
     }
 

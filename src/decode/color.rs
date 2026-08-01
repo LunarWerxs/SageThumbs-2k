@@ -247,6 +247,231 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
     walk(bytes, 0)
 }
 
+/// Does this ISOBMFF image advertise an HEVC auxiliary alpha item?
+///
+/// Microsoft's HEIC WIC codec can decode these files while silently flattening
+/// the auxiliary alpha plane. Decode paths that allow the Full install's external
+/// tier therefore use this cheap predicate to prefer ImageMagick before WIC.
+/// This is deliberately a bounded, association-aware box walk rather than a
+/// byte search: an exact `auxC` property must be assigned to an item by `ipma`,
+/// and that item must be an `auxl` auxiliary of the primary (`pitm`) item.
+pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
+    const HEVC_ALPHA_AUX_TYPE: &[u8] = b"urn:mpeg:hevc:2015:auxid:1";
+    const MAX_BOXES: usize = 512;
+
+    /// Parse a complete box sequence, retaining at most the small, bounded
+    /// metadata tree this predicate needs. A malformed sibling makes the whole
+    /// predicate decline rather than attempting to recover into media payload.
+    fn boxes<'a>(buf: &'a [u8], boxes_left: &mut usize) -> Option<Vec<([u8; 4], &'a [u8])>> {
+        let mut p = 0usize;
+        let mut out = Vec::new();
+        while p != buf.len() {
+            if *boxes_left == 0 || buf.len() - p < 8 {
+                return None;
+            }
+            *boxes_left -= 1;
+
+            let size32 = u32::from_be_bytes(buf.get(p..p + 4)?.try_into().ok()?);
+            let typ = buf.get(p + 4..p + 8)?.try_into().ok()?;
+            let (header_len, size) = match size32 {
+                0 => (8usize, buf.len() - p),
+                1 => {
+                    let raw = buf.get(p + 8..p + 16)?.try_into().ok()?;
+                    let size = usize::try_from(u64::from_be_bytes(raw)).ok()?;
+                    (16usize, size)
+                }
+                size => (8usize, size as usize),
+            };
+            if size < header_len {
+                return None;
+            }
+            let end = p.checked_add(size)?;
+            let body = buf.get(p + header_len..end)?;
+            out.push((typ, body));
+            p = end;
+        }
+        Some(out)
+    }
+
+    fn item_id(body: &[u8], version: u8, p: &mut usize) -> Option<u32> {
+        let id = match version {
+            0 => u16::from_be_bytes(body.get(*p..*p + 2)?.try_into().ok()?) as u32,
+            1 => u32::from_be_bytes(body.get(*p..*p + 4)?.try_into().ok()?),
+            _ => return None,
+        };
+        *p += if version == 0 { 2 } else { 4 };
+        Some(id)
+    }
+
+    fn associated_items(
+        body: &[u8],
+        property_count: usize,
+        alpha_properties: &[usize],
+    ) -> Option<Vec<u32>> {
+        let version = *body.first()?;
+        if version > 1 {
+            return None;
+        }
+        let flags = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]);
+        let large_indices = flags & 1 != 0;
+        let count = u32::from_be_bytes(body.get(4..8)?.try_into().ok()?) as usize;
+        let min_entry_len = if version == 0 { 3 } else { 5 }; // item ID + association count
+        if count > body.len().saturating_sub(8) / min_entry_len {
+            return None;
+        }
+        let mut p = 8usize;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let id = item_id(body, version, &mut p)?;
+            let associations = *body.get(p)? as usize;
+            p += 1;
+            let mut has_alpha_property = false;
+            for _ in 0..associations {
+                let raw = if large_indices {
+                    let raw = u16::from_be_bytes(body.get(p..p + 2)?.try_into().ok()?);
+                    p += 2;
+                    (raw & 0x7FFF) as usize
+                } else {
+                    let raw = *body.get(p)?;
+                    p += 1;
+                    (raw & 0x7F) as usize
+                };
+                // Property index 0 is reserved; a value past ipco is malformed.
+                if raw == 0 || raw > property_count {
+                    return None;
+                }
+                has_alpha_property |= alpha_properties.contains(&raw);
+            }
+            if has_alpha_property {
+                out.push(id);
+            }
+        }
+        (p == body.len()).then_some(out)
+    }
+
+    fn auxl_targets_primary(
+        body: &[u8],
+        alpha_items: &[u32],
+        primary: u32,
+        boxes_left: &mut usize,
+    ) -> Option<bool> {
+        let version = *body.first()?;
+        if version > 1 {
+            return None;
+        }
+        let mut found = false;
+        for (typ, reference) in boxes(body.get(4..)?, boxes_left)? {
+            if typ != *b"auxl" {
+                continue;
+            }
+            let mut p = 0usize;
+            let from = item_id(reference, version, &mut p)?;
+            let count = u16::from_be_bytes(reference.get(p..p + 2)?.try_into().ok()?) as usize;
+            p += 2;
+            for _ in 0..count {
+                let target = item_id(reference, version, &mut p)?;
+                found |= alpha_items.contains(&from) && target == primary;
+            }
+            if p != reference.len() {
+                return None;
+            }
+        }
+        Some(found)
+    }
+
+    // A structurally valid FileTypeBox must lead the file. Its body is major
+    // brand + minor version, followed by zero or more compatible brands.
+    let Some(first_size) = bytes.get(0..4) else {
+        return false;
+    };
+    let Ok(first_size) = first_size.try_into() else {
+        return false;
+    };
+    let first_size = u32::from_be_bytes(first_size) as usize;
+    if bytes.get(4..8) != Some(b"ftyp")
+        || first_size < 16
+        || first_size > bytes.len()
+        || !(first_size - 16).is_multiple_of(4)
+    {
+        return false;
+    }
+
+    let mut boxes_left = MAX_BOXES;
+    let top = match boxes(bytes, &mut boxes_left) {
+        Some(boxes) => boxes,
+        None => return false,
+    };
+    let meta = match top.iter().find(|(typ, _)| typ == b"meta") {
+        Some((_, body)) => *body,
+        None => return false,
+    };
+    let children = match meta.get(4..).and_then(|body| boxes(body, &mut boxes_left)) {
+        Some(boxes) => boxes,
+        None => return false,
+    };
+    let primary = match children.iter().find(|(typ, _)| typ == b"pitm") {
+        Some((_, body)) => {
+            let version = match body.first() {
+                Some(version) if *version <= 1 => *version,
+                _ => return false,
+            };
+            let mut p = 4usize;
+            match item_id(body, version, &mut p) {
+                Some(id) if p == body.len() => id,
+                _ => return false,
+            }
+        }
+        None => return false,
+    };
+    let iprp = match children.iter().find(|(typ, _)| typ == b"iprp") {
+        Some((_, body)) => *body,
+        None => return false,
+    };
+    let properties = match boxes(iprp, &mut boxes_left) {
+        Some(boxes) => boxes,
+        None => return false,
+    };
+    let ipco = match properties.iter().find(|(typ, _)| typ == b"ipco") {
+        Some((_, body)) => *body,
+        None => return false,
+    };
+    let ipco_properties = match boxes(ipco, &mut boxes_left) {
+        Some(boxes) => boxes,
+        None => return false,
+    };
+    let alpha_properties: Vec<usize> = ipco_properties
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (typ, body))| {
+            if typ != b"auxC" {
+                return None;
+            }
+            let aux_type = body.get(4..)?;
+            let nul = aux_type.iter().position(|&byte| byte == 0)?;
+            (&aux_type[..nul] == HEVC_ALPHA_AUX_TYPE).then_some(index + 1)
+        })
+        .collect();
+    if alpha_properties.is_empty() {
+        return false;
+    }
+    let ipma = match properties.iter().find(|(typ, _)| typ == b"ipma") {
+        Some((_, body)) => *body,
+        None => return false,
+    };
+    let alpha_items = match associated_items(ipma, ipco_properties.len(), &alpha_properties) {
+        Some(items) if !items.is_empty() => items,
+        _ => return false,
+    };
+    children
+        .iter()
+        .filter(|(typ, _)| typ == b"iref")
+        .try_fold(false, |found, (_, body)| {
+            auxl_targets_primary(body, &alpha_items, primary, &mut boxes_left)
+                .map(|matches| found || matches)
+        })
+        .unwrap_or(false)
+}
+
 /// One `colr` box body → ICC bytes: a direct embedded profile, or a CICP `nclx` signal
 /// mapped to a built-in profile (Display-P3 / sRGB) encoded as ICC. `None` for signals we
 /// don't translate (leaves the image untouched — never a wrong guess).

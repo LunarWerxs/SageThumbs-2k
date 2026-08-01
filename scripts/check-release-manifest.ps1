@@ -22,6 +22,12 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$ExpectedCommitSha,
 
+    # Keep x64 as the compatibility default for existing manifests and release
+    # callers.  The selected architecture, not an installer filename, determines
+    # the expected installer and Rust target.
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64',
+
     [string]$ManifestPath
 )
 
@@ -50,6 +56,22 @@ if ($null -eq $manifest) {
     throw "release provenance manifest is empty: $ManifestPath"
 }
 
+$targetSpec = switch ($Architecture) {
+    'x64' {
+        [pscustomobject]@{
+            RustTarget = 'x86_64-pc-windows-msvc'
+            InstallerName = "SageThumbs2K-Setup-$ExpectedVersion.exe"
+        }
+    }
+    'arm64' {
+        [pscustomobject]@{
+            RustTarget = 'aarch64-pc-windows-msvc'
+            InstallerName = "SageThumbs2K-Setup-$ExpectedVersion-arm64.exe"
+        }
+    }
+    default { throw "unsupported release architecture: $Architecture" }
+}
+
 $schema = [int64](Get-ReleaseRequiredProperty -Object $manifest -Name 'schemaVersion')
 if ($schema -ne 1) {
     throw "unsupported release manifest schemaVersion $schema (expected 1)"
@@ -59,6 +81,21 @@ if ([string](Get-ReleaseRequiredProperty -Object $manifest -Name 'product') -cne
 }
 if ([string](Get-ReleaseRequiredProperty -Object $manifest -Name 'version') -cne $ExpectedVersion) {
     throw "release manifest version does not match $ExpectedVersion"
+}
+# `architecture` was added after schema v1 shipped. Treat an omitted value as the
+# original x64 contract so existing manifests retain their valid meaning; every new
+# writer invocation records it explicitly.
+$manifestArchitectureProperty = $manifest.PSObject.Properties['architecture']
+$manifestArchitecture = if ($null -eq $manifestArchitectureProperty) {
+    'x64'
+} else {
+    [string]$manifestArchitectureProperty.Value
+}
+if ($manifestArchitecture -notin @('x64', 'arm64')) {
+    throw "release manifest has invalid architecture: '$manifestArchitecture'"
+}
+if ($manifestArchitecture -cne $Architecture) {
+    throw "release manifest architecture '$manifestArchitecture' does not match expected '$Architecture'"
 }
 
 $manifestCommit = ([string](Get-ReleaseRequiredProperty -Object $manifest -Name 'commitSha')).ToLowerInvariant()
@@ -108,17 +145,22 @@ if (@(Get-ReleaseRequiredProperty -Object $manifest -Name 'publishableReasons').
 }
 
 $build = Get-ReleaseRequiredProperty -Object $manifest -Name 'build'
-foreach ($flag in 'rustBuildPerformed', 'imageMagickBundled', 'modernMenuBundled') {
+foreach ($flag in 'rustBuildPerformed', 'modernMenuBundled') {
     $value = Get-ReleaseRequiredProperty -Object $build -Name $flag
     if ($value -isnot [bool] -or -not [bool]$value) {
         throw "release manifest requires full-build flag '$flag'"
     }
 }
+$imageMagickBundled = Get-ReleaseRequiredProperty -Object $build -Name 'imageMagickBundled'
+if ($imageMagickBundled -isnot [bool] -or [bool]$imageMagickBundled -ne ($Architecture -eq 'x64')) {
+    $requiredImageMagick = if ($Architecture -eq 'x64') { 'true (Full)' } else { 'false (Compact)' }
+    throw "release manifest requires ImageMagickBundled=$requiredImageMagick for $Architecture"
+}
 if ((Get-ReleaseRequiredProperty -Object $build -Name 'cargoLocked') -isnot [bool] -or
     -not [bool]$build.cargoLocked) {
     throw 'release manifest was not produced by locked Cargo builds'
 }
-if ([string](Get-ReleaseRequiredProperty -Object $build -Name 'rustTarget') -cne 'x86_64-pc-windows-msvc') {
+if ([string](Get-ReleaseRequiredProperty -Object $build -Name 'rustTarget') -cne $targetSpec.RustTarget) {
     throw "release manifest has wrong Rust target: $($build.rustTarget)"
 }
 if ([string](Get-ReleaseRequiredProperty -Object $build -Name 'rustFlags') -cne '-C target-feature=+crt-static') {
@@ -131,7 +173,7 @@ if ($cargoVersion -notmatch '^cargo\s+\d+\.\d+\.\d+\b') {
 }
 $rustcVerbose = @((Get-ReleaseRequiredProperty -Object $toolchain -Name 'rustcVerbose'))
 if (-not ($rustcVerbose -match '^rustc\s+\d+\.\d+\.\d+') -or
-    -not ($rustcVerbose -contains 'host: x86_64-pc-windows-msvc')) {
+    -not ($rustcVerbose -match '^host:\s*[A-Za-z0-9_-]+(?:-[A-Za-z0-9_-]+){2,}\s*$')) {
     throw 'release manifest has invalid rustc toolchain provenance'
 }
 
@@ -171,11 +213,11 @@ Assert-ExactStringArray `
     -Name 'shell-extension feature set'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $exeBuild -Name 'arguments') `
-    -Expected @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview,hdr-capture') `
+    -Expected @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture') `
     -Name 'executable Cargo arguments'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $dllBuild -Name 'arguments') `
-    -Expected @('--release', '--locked', '-p', 'sagethumbs2k-dll', '--features', 'webp-lossy,dll-i18n-subset') `
+    -Expected @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset') `
     -Name 'shell-extension Cargo arguments'
 
 $head = (& git -C $root rev-parse HEAD)
@@ -221,7 +263,7 @@ foreach ($expectedRecord in $inputs) {
 # upstream/intentional-file provenance fingerprints match.
 & (Join-Path $PSScriptRoot 'check-vendored-exr.ps1')
 
-$expectedInstallerName = "SageThumbs2K-Setup-$ExpectedVersion.exe"
+$expectedInstallerName = $targetSpec.InstallerName
 if ($installer.Name -cne $expectedInstallerName) {
     throw "installer filename mismatch: '$($installer.Name)' (expected '$expectedInstallerName')"
 }
@@ -247,35 +289,42 @@ $rustBytes = [int64]0
 foreach ($name in 'sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe') {
     $path = Join-Path $stage.FullName $name
     Assert-ReleasePeMetadata -Path $path -Version $ExpectedVersion
+    Assert-ReleasePeArchitecture -Path $path -Architecture $Architecture
     $rustBytes += [int64](Get-Item -LiteralPath $path).Length
 }
 if ($rustBytes -ne [int64](Get-ReleaseRequiredProperty -Object $expectedStage -Name 'rustPayloadBytes')) {
     throw 'staged Rust payload total does not match the release manifest'
 }
 
-$magickExe = Join-Path $stage.FullName 'magick\magick.exe'
-Assert-ReleasePeFile -Path $magickExe
 $magickFiles = @($actualFiles | Where-Object { $_.path.StartsWith('magick/', [StringComparison]::OrdinalIgnoreCase) })
-if ($magickFiles.Count -eq 0 -or
-    $magickFiles.Count -ne [int64](Get-ReleaseRequiredProperty -Object $expectedStage -Name 'imageMagickFileCount')) {
-    throw 'full ImageMagick payload is absent or does not match the release manifest'
-}
 $magickBytes = [int64]0
 foreach ($file in $magickFiles) { $magickBytes += [int64]$file.bytes }
-if ($magickBytes -ne [int64](Get-ReleaseRequiredProperty -Object $expectedStage -Name 'imageMagickBytes')) {
+if ($magickFiles.Count -ne [int64](Get-ReleaseRequiredProperty -Object $expectedStage -Name 'imageMagickFileCount') -or
+    $magickBytes -ne [int64](Get-ReleaseRequiredProperty -Object $expectedStage -Name 'imageMagickBytes')) {
     throw 'ImageMagick payload total does not match the release manifest'
+}
+if ($Architecture -eq 'x64') {
+    $magickExe = Join-Path $stage.FullName 'magick\magick.exe'
+    Assert-ReleasePeFile -Path $magickExe
+    if ($magickFiles.Count -eq 0) {
+        throw 'full ImageMagick payload is absent'
+    }
+} elseif ($magickFiles.Count -ne 0 -or (Test-Path -LiteralPath (Join-Path $stage.FullName 'magick'))) {
+    throw 'ARM64 Compact stage must not contain ImageMagick files'
 }
 
 # Re-run the pinned-source identity/inventory gate and the staged dependency-
-# closure + real decode smoke tests. Stage hashes alone prove sameness, while
-# these checks prove that the same bytes remain complete and runnable.
-$magickPinPath = Join-Path $root 'packaging\imagemagick-source.json'
-$magickPin = Get-Content -LiteralPath $magickPinPath -Raw | ConvertFrom-Json
-$sourceDirectoryName = [string](Get-ReleaseRequiredProperty -Object $magickPin.identity -Name 'installDirectoryName')
-$magickSource = Join-Path $env:ProgramFiles $sourceDirectoryName
-& (Join-Path $PSScriptRoot 'check-magick-source.ps1') -SourcePath $magickSource -PinPath $magickPinPath
-& (Join-Path $PSScriptRoot 'check-magick-bundle.ps1') -BundlePath (Join-Path $stage.FullName 'magick')
-& (Join-Path $PSScriptRoot 'test-staged-regression.ps1') -StagePath $stage.FullName
+# closure + real decode smoke tests for the x64 Full payload. ARM64 Compact
+# intentionally has no ImageMagick and cannot execute on this x64 verifier.
+if ($Architecture -eq 'x64') {
+    $magickPinPath = Join-Path $root 'packaging\imagemagick-source.json'
+    $magickPin = Get-Content -LiteralPath $magickPinPath -Raw | ConvertFrom-Json
+    $sourceDirectoryName = [string](Get-ReleaseRequiredProperty -Object $magickPin.identity -Name 'installDirectoryName')
+    $magickSource = Join-Path $env:ProgramFiles $sourceDirectoryName
+    & (Join-Path $PSScriptRoot 'check-magick-source.ps1') -SourcePath $magickSource -PinPath $magickPinPath
+    & (Join-Path $PSScriptRoot 'check-magick-bundle.ps1') -BundlePath (Join-Path $stage.FullName 'magick')
+    & (Join-Path $PSScriptRoot 'test-staged-regression.ps1') -StagePath $stage.FullName
+}
 
 foreach ($required in 'SageThumbs2K.msix', 'SageThumbs2K.cer') {
     $path = Join-Path $stage.FullName $required
@@ -287,9 +336,10 @@ foreach ($required in 'SageThumbs2K.msix', 'SageThumbs2K.cer') {
 Assert-ReleaseMsixPackage `
     -Path (Join-Path $stage.FullName 'SageThumbs2K.msix') `
     -CertificatePath (Join-Path $stage.FullName 'SageThumbs2K.cer') `
-    -Version $ExpectedVersion
+    -Version $ExpectedVersion `
+    -ExpectedProcessorArchitecture $(if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' })
 
 $sizeCheck = Join-Path $PSScriptRoot 'check-release-size.ps1'
-& $sizeCheck -InstallerPath $installer.FullName -StagePath $stage.FullName
+& $sizeCheck -InstallerPath $installer.FullName -StagePath $stage.FullName -Architecture $Architecture
 
 Write-Host '[manifest] release provenance and artifact integrity passed.' -ForegroundColor Green

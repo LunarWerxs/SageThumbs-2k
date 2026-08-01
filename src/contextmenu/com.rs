@@ -21,7 +21,7 @@ impl IShellExtInit_Impl for ContextMenu_Impl {
                 && verbs::is_image(&paths[0])
                 && preview_size_ok(&paths[0]);
             self.preview_eligible.set(eligible);
-            *self.preview_job.borrow_mut() = if eligible && preview_mode == 2 {
+            *self.preview_job.borrow_mut() = if eligible {
                 start_menu_thumb(&paths[0])
             } else {
                 None
@@ -85,15 +85,12 @@ impl IContextMenu_Impl for ContextMenu_Impl {
             // InvokeCommand mapping stays stable even if leaves were clamped).
             self.preview_cmd.set(None);
             *self.preview.borrow_mut() = None;
-            self.preview_submenu.set(HMENU::default());
-            self.preview_submenu_inserted.set(false);
             let mode = settings::menu_preview();
             // For a 1-file selection, `any_image` already == is_image(paths[0]).
             let single = paths.len() == 1 && any_image;
             // Reserve the bitmap preview slot when one is wanted and the file passed
             // the cheap initialization-time metadata gate. Decoding has already
-            // started on a bounded worker for mode 2 (prefetched during Initialize);
-            // mode 1 remains lazy until Explorer opens the SageThumbs flyout.
+            // started on a bounded worker for both placements during Initialize.
             if mode != 0 && single && avail > leaves_n && self.preview_eligible.get() {
                 // The preview occupies the slot just past the last leaf;
                 // id_for(Preview) encapsulates that "== leaves.len()" convention.
@@ -198,12 +195,19 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 // never "off on its own." We ship ONLY this classic handler (no packaged
                 // modern command), so "SageThumbs 2K" is listed exactly once.
                 if let Ok(hsub) = CreatePopupMenu() {
-                    if self.preview_cmd.get().is_some() && mode == 1 {
-                        // The preview is inserted at index 0 when this flyout is
-                        // opened (`WM_INITMENUPOPUP`), not while Explorer is still
-                        // building the parent menu. That keeps a simple right-click
-                        // metadata-only unless the user opens SageThumbs.
-                        self.preview_submenu.set(hsub);
+                    if let Some(cmd) = self.preview_cmd.get() {
+                        if mode == 1 && self.insert_preview(hsub, 0, cmd) {
+                            // Real Explorer does not reliably forward
+                            // WM_INITMENUPOPUP for this child popup, so the row must
+                            // exist before the submenu is handed to the parent.
+                            let _ = InsertMenuW(
+                                hsub,
+                                1,
+                                MF_BYPOSITION | MF_SEPARATOR,
+                                0,
+                                PCWSTR::null(),
+                            );
+                        }
                     }
                     // Build the top-level items in the user's saved order (drag-to-
                     // reorder in Settings). Each item keeps its ORIGINAL leaf-start
@@ -324,8 +328,8 @@ impl IContextMenu_Impl for ContextMenu_Impl {
     }
 }
 
-// Explorer forwards menu lifecycle messages here, including WM_INITMENUPOPUP for
-// the lazy submenu preview. Bitmap items need no owner-draw measure/paint handling.
+// Explorer forwards owner-draw measure/paint messages here. Bitmap items need no
+// message handling; the submenu preview row is inserted during QueryContextMenu.
 impl IContextMenu2_Impl for ContextMenu_Impl {
     fn HandleMenuMsg(&self, umsg: u32, wparam: WPARAM, lparam: LPARAM) -> Result<()> {
         safety::guard(|| {

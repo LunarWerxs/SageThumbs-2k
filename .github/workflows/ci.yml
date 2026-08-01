@@ -91,26 +91,121 @@ jobs:
       #
       # ORDER MATTERS — `cargo test --tests` rebuilds the core rlib and test binaries,
       # but it does NOT refresh the separate `sagethumbs2k-dll` workspace member whose
-      # canonical DLL these tests load. Run immediately after Build so they never test a
-      # stale shell-extension DLL. (The old combined cdylib+rlib collision was removed
-      # when the thin `dll/` wrapper became its own crate.)
+      # canonical debug DLL these tests load. Build the debug workspace immediately
+      # beforehand so they never test a stale shell-extension DLL. (The old combined
+      # cdylib+rlib collision was removed when the thin `dll/` wrapper became its own crate.)
       # Cargo's `--tests` selector runs every target with test=true in this
       # workspace: library unit tests, both binary unit-test targets, and tests/.
       # Keep the single invocation here so all of them share the freshly built DLL.
+      - name: Build debug test DLL
+        run: cargo build --locked
       - name: Unit and integration tests
-        run: cargo test --release --locked --tests
+        run: cargo test --locked --tests
 
-      # Gates on ALL clippy lints across every target (bins, lib, tests): any new
-      # warning is promoted to an error and fails the build. The tree is kept
+      # Gates on ALL debug-profile clippy lints across every target (bins, lib, tests).
+      # Any new warning is promoted to an error and fails the build. The tree is kept
       # warning-clean; intentional exceptions carry a local #[allow] with a reason.
       - name: Clippy
-        run: cargo clippy --release --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # Formatting is the cheapest gate we have (no build, seconds) and it keeps
       # review diffs about the change rather than about whitespace. `cargo fmt --all`
       # fixes anything this reports; `scripts\verify.ps1 -Lint` runs it locally first.
       - name: Rustfmt
         run: cargo fmt --all --check
+
+  # A native ARM64 runner catches architecture-specific Windows/COM/linker drift
+  # that an x64 cross-build cannot. This is deliberately a Compact validation:
+  # it builds only the Rust/OS-codec app (no staged ImageMagick payload and no
+  # installer publishing) and runs the normal debug-profile test suite natively.
+  arm64-compact:
+    name: ARM64 Compact (native debug build · test)
+    runs-on: windows-11-arm
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # rust-toolchain.toml pins the x64 host for the primary job. Select an
+      # explicit ARM64 toolchain here so Cargo neither cross-compiles through
+      # emulation nor silently tests x64 binaries on the ARM runner.
+      - name: Install native ARM64 Rust toolchain
+        run: rustup toolchain install stable-aarch64-pc-windows-msvc --profile minimal
+      - name: Confirm native ARM64 host and toolchain
+        shell: pwsh
+        run: |
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') {
+            throw "Expected a native ARM64 runner; got $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)."
+          }
+          rustup run stable-aarch64-pc-windows-msvc rustc -vV
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # No --release and no ImageMagick staging: this is the Compact runtime
+      # path. The explicit target keeps artifacts separate from x64 and makes
+      # `cargo test` execute the ARM64 test binaries on this native runner.
+      - name: Build Compact ARM64 debug EXEs with shipping features
+        run: cargo +stable-aarch64-pc-windows-msvc build --locked --target aarch64-pc-windows-msvc -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
+      - name: Build Compact ARM64 debug DLL with shipping features
+        run: cargo +stable-aarch64-pc-windows-msvc build --locked --target aarch64-pc-windows-msvc -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
+      - name: Run native ARM64 unit and integration tests
+        run: cargo +stable-aarch64-pc-windows-msvc test --locked --tests --target aarch64-pc-windows-msvc
+      - name: Verify ARM64 PE artifacts and Compact payload
+        shell: pwsh
+        run: |
+          $target = Join-Path (& ./scripts/_targetdir.ps1) 'aarch64-pc-windows-msvc\debug'
+          $artifacts = @(
+            (Join-Path $target 'SageThumbs2K.exe')
+            (Join-Path $target 'st2k.exe')
+            (Join-Path $target 'sagethumbs2k.dll')
+          )
+          foreach ($artifact in $artifacts) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Missing ARM64 artifact: $artifact"
+            }
+            $bytes = [System.IO.File]::ReadAllBytes($artifact)
+            if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+              throw "Not a PE file: $artifact"
+            }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) {
+              throw "Invalid PE header offset: $artifact"
+            }
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0xaa64) {
+              throw ('Expected ARM64 PE machine 0xAA64; {0} is 0x{1:X4}' -f $artifact, $machine)
+            }
+          }
+          if (Get-ChildItem -LiteralPath $target -Filter magick.exe -File -Recurse -ErrorAction SilentlyContinue) {
+            throw 'Compact ARM64 validation must not stage ImageMagick.'
+          }
+          & (Join-Path $target 'st2k.exe') --help
+          if ($LASTEXITCODE -ne 0) { throw 'Native ARM64 st2k smoke test failed.' }
+
+      # The ARM64 release gate used to end in "install it on a real ARM64 device and
+      # right-click something in Explorer", which needs hardware nobody here has: an x64
+      # host cannot run an ARM64 Windows guest, so that gate could never actually be run
+      # on demand and it held the release hostage.
+      #
+      # Most of it does not need a desktop at all. Explorer gets its thumbnail through
+      # IShellItemImageFactory and hosts the preview through IPreviewHandler, and both are
+      # COM calls that work fine in a non-interactive session. So the real question -
+      # "does the registered handler LOAD on this architecture and return a correct
+      # image?" - gets answered here, on native ARM64 silicon, on every push. Hosted
+      # Windows runners are administrators, so regsvr32 works; the script always
+      # unregisters, including on failure.
+      #
+      # Still NOT covered, and deliberately so: the pixels of Explorer's own right-click
+      # flyout, which need an interactive desktop. That is Windows shell chrome driving
+      # architecture-independent Rust, so it is a spot-check, not a release gate.
+      - name: Prove the registered ARM64 shell surfaces (thumbnail + preview)
+        shell: pwsh
+        run: |
+          $target = Join-Path (& ./scripts/_targetdir.ps1) 'aarch64-pc-windows-msvc\debug'
+          & ./scripts/test-installed-shell-surfaces.ps1 `
+              -TargetDir $target `
+              -ArtifactDir (Join-Path $env:RUNNER_TEMP 'arm64-shell-surfaces')
 
   # Cargo.toml publishes 1.93 as the minimum supported Rust version. The main job
   # intentionally follows current stable, so exercise the lower bound separately
@@ -150,6 +245,15 @@ jobs:
       - name: MSIX signature, signer, and identity tests
         shell: pwsh
         run: ./scripts/test-msix-integrity.ps1
+      - name: architecture-specific release and VM helper tests
+        shell: pwsh
+        run: ./scripts/test-architecture-release-contract.ps1
+      - name: architecture-specific developer helper tests
+        shell: pwsh
+        run: ./scripts/test-dev-architecture.ps1
+      - name: ImageMagick dependency freshness parser tests
+        shell: pwsh
+        run: ./scripts/test-magick-dependency-freshness.ps1
       - name: vendored exr provenance and local-resolution check
         shell: pwsh
         run: ./scripts/check-vendored-exr.ps1

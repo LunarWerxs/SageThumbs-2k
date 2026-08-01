@@ -93,8 +93,8 @@ fn first_query_context_menu_is_fast_with_default_preview_enabled() {
         std::env::temp_dir().join(format!("st2k_context_menu_latency_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("large-enough-to-decode.png");
-    // A real but modest image: old eager-preview code performs a decode here, whereas the
-    // expected path only performs extension/metadata/menu construction.
+    // A real but modest image: preview decode starts on a worker during Initialize and menu
+    // construction may wait only for the handler's small fixed budget, never an unbounded decode.
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(4096, 4096))
         .save_with_format(&png, image::ImageFormat::Png)
         .unwrap();
@@ -112,44 +112,18 @@ fn first_query_context_menu_is_fast_with_default_preview_enabled() {
             elapsed.as_millis(), RIGHT_CLICK_BUDGET.as_millis()
         );
 
-        // Product defaults place the preview inside the SageThumbs submenu. QueryContextMenu
-        // must only reserve that slot; Explorer sends WM_INITMENUPOPUP immediately before it
-        // paints the flyout. Drive that exact lifecycle through IContextMenu3 and prove the
-        // preview + separating divider appear once, even if Explorer repeats the notification.
-        //
-        // The budget below is load-bearing on the BITMAP branch specifically: that branch has to
-        // hand over real pixels at insert time, so the bounded decode wait happens right here
-        // rather than in the WM_MEASUREITEM that follows. Same total stall either way, but this
-        // is the message that now carries it, so this is where it has to stay bounded.
+        // Product defaults place the preview inside the SageThumbs submenu. Real Explorer does
+        // not reliably forward WM_INITMENUPOPUP for an extension-created child popup, so the
+        // preview + separating divider must already exist when QueryContextMenu returns.
         let submenu = GetSubMenu(popup, 0);
         assert!(
             !submenu.is_invalid(),
             "first root item must be the SageThumbs submenu under default settings"
         );
-        let before = GetMenuItemCount(Some(submenu));
-        assert!(before > 0, "SageThumbs submenu must contain command items");
-        let menu3: IContextMenu3 = menu.cast().expect("IContextMenu3");
-        let popup_started = Instant::now();
-        menu3
-            .HandleMenuMsg2(
-                WM_INITMENUPOPUP,
-                WPARAM(submenu.0 as usize),
-                LPARAM(0),
-                None,
-            )
-            .expect("first WM_INITMENUPOPUP");
-        let popup_elapsed = popup_started.elapsed();
+        let after_query = GetMenuItemCount(Some(submenu));
         assert!(
-            popup_elapsed < POPUP_INIT_BUDGET,
-            "opening the SageThumbs submenu took {} ms (budget {} ms): preview decode must not stall Explorer",
-            popup_elapsed.as_millis(),
-            POPUP_INIT_BUDGET.as_millis()
-        );
-        let after_first = GetMenuItemCount(Some(submenu));
-        assert_eq!(
-            after_first,
-            before + 2,
-            "opening the SageThumbs flyout must insert exactly preview + separator"
+            after_query >= 3,
+            "QueryContextMenu must synchronously insert preview + separator before command items"
         );
 
         let mut preview = MENUITEMINFOW {
@@ -190,6 +164,10 @@ fn first_query_context_menu_is_fast_with_default_preview_enabled() {
             "preview must be followed by a separator"
         );
 
+        // Explorer may still forward the lifecycle notification. It must remain a fast no-op
+        // and must never duplicate the already-present preview row.
+        let menu3: IContextMenu3 = menu.cast().expect("IContextMenu3");
+        let popup_started = Instant::now();
         menu3
             .HandleMenuMsg2(
                 WM_INITMENUPOPUP,
@@ -197,11 +175,18 @@ fn first_query_context_menu_is_fast_with_default_preview_enabled() {
                 LPARAM(0),
                 None,
             )
-            .expect("repeated WM_INITMENUPOPUP");
+            .expect("WM_INITMENUPOPUP compatibility notification");
+        let popup_elapsed = popup_started.elapsed();
+        assert!(
+            popup_elapsed < POPUP_INIT_BUDGET,
+            "WM_INITMENUPOPUP handling took {} ms (budget {} ms)",
+            popup_elapsed.as_millis(),
+            POPUP_INIT_BUDGET.as_millis()
+        );
         assert_eq!(
             GetMenuItemCount(Some(submenu)),
-            after_first,
-            "repeated submenu initialization must not duplicate the preview"
+            after_query,
+            "submenu initialization must not duplicate the preview"
         );
         let _ = DestroyMenu(popup);
     }

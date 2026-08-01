@@ -61,6 +61,10 @@ struct Shot {
     shot_bmp: HBITMAP,
     dimmed: HDC, // a pre-dimmed copy of the snapshot (so paint blits it, no per-frame alpha)
     dimmed_bmp: HBITMAP,
+    // The overlay's client origin in physical virtual-screen coordinates. All editor
+    // geometry is client-relative, but monitor/DPI APIs require screen coordinates.
+    vx: i32,
+    vy: i32,
     vw: i32,
     vh: i32,
     sel: Option<RECT>, // committed region; None until the first drag completes
@@ -160,6 +164,19 @@ unsafe fn dpi_for_sel(sel: RECT) -> i32 {
     }
 }
 
+/// Convert overlay-client geometry to the physical virtual-screen coordinates used by
+/// monitor APIs. The overlay intentionally paints its backing bitmap at `(0, 0)`, even
+/// when a monitor sits left of or above the primary display, so this translation must
+/// happen only at the OS boundary — never in drawing or hit-testing code.
+fn client_rect_to_screen(rect: RECT, vx: i32, vy: i32) -> RECT {
+    RECT {
+        left: rect.left.saturating_add(vx),
+        top: rect.top.saturating_add(vy),
+        right: rect.right.saturating_add(vx),
+        bottom: rect.bottom.saturating_add(vy),
+    }
+}
+
 unsafe fn shot_ptr(hwnd: HWND) -> *mut Shot {
     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Shot
 }
@@ -177,7 +194,7 @@ unsafe fn shot_dpi_for_sel(s: &Shot, sel: RECT) -> i32 {
     if s.automation.is_some() {
         96
     } else {
-        dpi_for_sel(sel)
+        dpi_for_sel(client_rect_to_screen(sel, s.vx, s.vy))
     }
 }
 
@@ -305,6 +322,8 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
         shot_bmp: bmp,
         dimmed: dim,
         dimmed_bmp: dim_bmp,
+        vx,
+        vy,
         vw,
         vh,
         sel: None,
@@ -611,6 +630,44 @@ mod tests {
         state.forced_shift = true;
         assert!(effective_shift(false, Some(&state)));
         assert!(effective_shift(true, Some(&state)));
+    }
+
+    /// Regression for a 150%-scaled display to the left of a 100% primary. Mouse
+    /// input and the backing bitmap are overlay-client coordinates, while
+    /// `MonitorFromRect` expects physical desktop coordinates. Feeding it the client
+    /// rect used to make a selection on the left display look as though it belonged to
+    /// the primary, so all selection chrome used the wrong DPI.
+    #[test]
+    fn mixed_dpi_selection_maps_client_geometry_to_the_virtual_desktop() {
+        // Virtual desktop: 2560x1440 @ 150% on the left and 120 px above a
+        // 1920x1080 @ 100% primary at (0, 0). The overlay starts at that origin.
+        let selection = RECT {
+            left: 320,
+            top: 240,
+            right: 1120,
+            bottom: 840,
+        };
+        let desktop = client_rect_to_screen(selection, -2560, -120);
+
+        assert_eq!(
+            desktop,
+            RECT {
+                left: -2240,
+                top: 120,
+                right: -1440,
+                bottom: 720,
+            }
+        );
+        // Translation is only for the monitor query: the saved crop/layout stays
+        // pixel-for-pixel in the overlay's client bitmap.
+        assert_eq!(
+            selection.right - selection.left,
+            desktop.right - desktop.left
+        );
+        assert_eq!(
+            selection.bottom - selection.top,
+            desktop.bottom - desktop.top
+        );
     }
 
     #[test]

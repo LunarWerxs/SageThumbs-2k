@@ -143,9 +143,9 @@ if ($filesHeaders.Count -ne 1) {
 # ImageMagick fallback. The bundled Magick row must exclude its duplicate staged
 # copy so Inno has one unambiguous source for the installed policy.
 $corePolicyEntry =
-    'Source: "stage\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core'
+    'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core'
 $magickPayloadEntry =
-    'Source: "stage\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
+    'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
 if (@($actualFileEntries | Where-Object { $_ -ceq $corePolicyEntry }).Count -ne 1) {
     $violations.Add(
         "  installer.iss: hardened policy must be installed exactly once as core: $corePolicyEntry"
@@ -153,7 +153,7 @@ if (@($actualFileEntries | Where-Object { $_ -ceq $corePolicyEntry }).Count -ne 
 }
 $magickRows = @(
     $actualFileEntries |
-        Where-Object { $_.StartsWith('Source: "stage\magick\*"', [StringComparison]::Ordinal) }
+        Where-Object { $_.StartsWith('Source: "{#StageDir}\magick\*"', [StringComparison]::Ordinal) }
 )
 if ($magickRows.Count -ne 1 -or $magickRows[0] -cne $magickPayloadEntry) {
     $violations.Add(

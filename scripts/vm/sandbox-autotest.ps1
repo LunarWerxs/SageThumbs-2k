@@ -1,7 +1,7 @@
 <#
   sandbox-autotest.ps1 — AUTOMATED clean-room test in Windows Sandbox with read-back.
 
-      pwsh scripts\vm\sandbox-autotest.ps1                 # newest dist installer
+      pwsh scripts\vm\sandbox-autotest.ps1                 # current native-arch installer
       pwsh scripts\vm\sandbox-autotest.ps1 -Installer <path>
 
   Unlike test-sandbox.ps1 (interactive), this drives the whole test unattended and
@@ -29,21 +29,37 @@ if (-not (Test-Path "$env:WINDIR\System32\WindowsSandbox.exe")) {
 $root   = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $dist   = Join-Path $root 'dist'
 $corpus = Join-Path (Split-Path $root -Parent) 'test-corpus'
+function Get-NativeReleaseArchitecture {
+    switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+        'X64' { return 'x64' }
+        'Arm64' { return 'arm64' }
+        default { throw "Windows Sandbox host architecture is unsupported: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+    }
+}
+$ver = ([regex]::Match((Get-Content -LiteralPath (Join-Path $root 'Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
+if (-not $ver) { throw 'could not read version from Cargo.toml' }
+$arch = Get-NativeReleaseArchitecture
+$expectedInstallerName = if ($arch -eq 'arm64') {
+    "SageThumbs2K-Setup-$ver-arm64.exe"
+} else {
+    "SageThumbs2K-Setup-$ver.exe"
+}
 if (-not $Installer) {
-    $Installer = Get-ChildItem $dist -Filter 'SageThumbs2K-Setup-*.exe' -EA SilentlyContinue |
-                 Sort-Object LastWriteTime -Descending | Select-Object -First 1 -Exp FullName
+    $Installer = Join-Path $dist $expectedInstallerName
 }
-if (-not $Installer -or -not (Test-Path $Installer)) {
-    Write-Host "No installer found; run scripts\build-release.ps1 first." -ForegroundColor Red; exit 1
+if (-not $Installer -or -not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
+    Write-Host "Missing expected $arch installer: $expectedInstallerName. Run scripts\build-release.ps1 -Architecture $arch first." -ForegroundColor Red; exit 1
 }
-$installerDir  = Split-Path $Installer -Parent
-$installerName = Split-Path $Installer -Leaf
+$Installer = (Get-Item -LiteralPath $Installer -ErrorAction Stop).FullName
+$installerName = Split-Path -Path $Installer -Leaf
+if ($installerName -cne $expectedInstallerName) {
+    throw "installer '$installerName' does not match native $arch artifact '$expectedInstallerName'"
+}
 
 # Fresh host-side scratch: a payload folder (the in-guest test script), a writable
 # results folder the guest writes back into, and an ISOLATED installer folder holding
-# ONLY the chosen installer. Isolation matters: dist\ accumulates old installers, and
-# the in-guest glob would otherwise grab the FIRST by name (an ancient build) — which is
-# exactly what silently made this test hang. One file in, one file globbed.
+# ONLY the chosen installer. Isolation matters: dist\ accumulates old installers;
+# use the exact selected leaf inside the guest too.
 $work    = Join-Path $env:TEMP ("st2k-autotest-" + (Get-Random))
 $payload = Join-Path $work 'payload'
 $results = Join-Path $work 'results'
@@ -53,7 +69,7 @@ Copy-Item $Installer (Join-Path $instDir $installerName) -Force
 
 # The in-guest test. Runs as WDAGUtilityAccount (admin), so the installer's
 # requireAdministrator manifest is satisfied and regsvr32 can write HKLM.
-@'
+$guestTest = @'
 $ErrorActionPreference = "Continue"
 $res = "C:\Users\WDAGUtilityAccount\Desktop\results"
 $cor = "C:\Users\WDAGUtilityAccount\Desktop\corpus"
@@ -61,10 +77,11 @@ $cor = "C:\Users\WDAGUtilityAccount\Desktop\corpus"
 # "a step hung" (marker present). Windows Sandbox occasionally fails to boot when a prior
 # instance is still tearing down; the host side waits for that before launching.
 "booted" | Out-File "$res\stage.txt"
-$inst = Get-ChildItem "C:\Users\WDAGUtilityAccount\Desktop\installer\SageThumbs2K-Setup-*.exe" | Select-Object -First 1
+$inst = Join-Path "C:\Users\WDAGUtilityAccount\Desktop\installer" '__INSTALLER_NAME__'
 try {
     "installing" | Out-File -Append "$res\stage.txt"
-    Start-Process $inst.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+    if (-not (Test-Path -LiteralPath $inst -PathType Leaf)) { throw "mapped installer missing: $inst" }
+    Start-Process -FilePath $inst -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
     "installed" | Out-File -Append "$res\stage.txt"
 } catch { "install-exception: $_" | Out-File "$res\install-error.txt" }
 Start-Sleep -Seconds 6
@@ -82,7 +99,9 @@ if (Test-Path $st2k) {
     "st2k.exe not found - install did not land" | Out-File "$res\install-error.txt"
 }
 "done" | Out-File "$res\DONE.txt"
-'@ | Set-Content (Join-Path $payload 'runtest.ps1') -Encoding UTF8
+'@
+$guestTest.Replace('__INSTALLER_NAME__', $installerName) |
+    Set-Content -LiteralPath (Join-Path $payload 'runtest.ps1') -Encoding UTF8
 
 $maps = @(
     "    <MappedFolder><HostFolder>$instDir</HostFolder><SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\installer</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>"
@@ -165,6 +184,7 @@ Write-Host "`n[autotest] results copied to $keep" -ForegroundColor DarkGray
 
 Write-Host "[autotest] closing Sandbox..." -ForegroundColor Cyan
 Get-Process WindowsSandbox, WindowsSandboxClient, WindowsSandboxRemoteSession -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ("`n[autotest] {0}" -f $(if ($pass) { 'PASS - clean-room install + decode verified' } else { 'FAIL - see above' })) -ForegroundColor $(if ($pass) { 'Green' } else { 'Red' })
 exit $(if ($pass) { 0 } else { 1 })

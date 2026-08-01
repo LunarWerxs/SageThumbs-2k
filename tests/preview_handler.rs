@@ -60,8 +60,8 @@ const PANE_H: i32 = 240;
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
-/// The cdylib sits one dir above the test exe (…/release/sagethumbs2k.dll vs
-/// …/release/deps/<test>.exe).
+/// The cdylib sits one dir above the test exe
+/// (`target/<profile>/sagethumbs2k.dll` vs `target/<profile>/deps/<test>.exe`).
 fn dll_path() -> std::path::PathBuf {
     let exe = std::env::current_exe().unwrap();
     exe.parent()

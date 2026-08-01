@@ -74,7 +74,8 @@ Write-Host @"
 
 Next:
   * Install Windows 10 in the console window (any edition; skip the product key).
-  * To get the built installer INTO the guest: copy dist\SageThumbs2K-Setup-*.exe onto
+  * To get the built installer INTO the guest: copy the exact x64
+    dist\SageThumbs2K-Setup-<version>.exe onto
     a checkpoint-safe path, or use an internal share. Then run the same test as the
     Sandbox (install -> right-click a sample -> 'st2k.exe doctor').
   * Snapshot a clean post-install state:  Checkpoint-VM -Name $Name -SnapshotName clean

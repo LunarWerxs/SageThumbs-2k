@@ -97,7 +97,17 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let res_start = res_len_off + 4;
     let res_end = res_start.checked_add(res_len)?.min(bytes.len());
 
-    let mut o = res_start;
+    thumbnail_from_resources(bytes.get(res_start..res_end)?)
+}
+
+/// Extract the JPEG thumbnail from a Photoshop Image Resources run (`8BIM` blocks).
+///
+/// Photoshop-written EPS files embed this exact run behind `%%BeginPhotoshop`, so
+/// keeping the walker here makes PSD and EPS use the same bounds checks.
+pub(crate) fn thumbnail_from_resources(bytes: &[u8]) -> Option<Vec<u8>> {
+    let res_end = bytes.len();
+
+    let mut o = 0usize;
     while o + 8 <= res_end {
         if bytes.get(o..o + 4)? != b"8BIM" {
             break; // not a well-formed resource run
@@ -111,7 +121,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         let size = be32(bytes, size_off)? as usize;
         let data_off = size_off + 4;
         let data_end = data_off.checked_add(size)?;
-        if data_end > bytes.len() {
+        if data_end > res_end {
             break;
         }
 

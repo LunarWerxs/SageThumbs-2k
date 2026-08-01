@@ -209,7 +209,8 @@ enum RawPreviewOrder {
     AfterExternal,
 }
 
-/// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA.
+/// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA,
+/// except HEIC auxiliary-alpha files may prefer ImageMagick before WIC (see below).
 /// Stops at the first tier that decodes. No resize, no orientation — raw pixels.
 fn decode_any(bytes: &[u8], raw_preview: RawPreviewOrder, external: bool) -> Result<DynamicImage> {
     decode_any_with_wic_target(bytes, raw_preview, external, None)
@@ -223,6 +224,15 @@ fn decode_any_with_wic_target(
     external: bool,
     wic_thumbnail_cx: Option<u32>,
 ) -> Result<DynamicImage> {
+    // EPS is embedded-preview-only. Every ordinary caller tries
+    // `container::extract_cover` before reaching this raster tier; if EPS bytes
+    // still arrive here, no supported TIFF/EPSI/Photoshop preview was present.
+    // Refuse them before image/WIC/ImageMagick/the lenient-JPEG fallback so a
+    // nameless shell stream can never invoke a PostScript delegate or treat an
+    // unrelated JPEG byte run as the file's declared preview.
+    if crate::container::is_eps(bytes) {
+        return Err(Error::from(E_FAIL));
+    }
     // Per-tier breadcrumb: each tier's underlying error Display is logged before
     // we fall through, so a failed decode is diagnosable (`-Debug` on) instead of
     // every tier collapsing to a bare E_FAIL. Logging is gated by `log_debug`.
@@ -264,6 +274,23 @@ fn decode_any_with_wic_target(
             Err(e) => crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}")),
         }
     }
+    // Microsoft's HEIC WIC codec accepts HEVC auxiliary-alpha files but returns
+    // an opaque image. When external decoding is allowed, prefer ImageMagick only
+    // when a checked ISOBMFF `auxC` property carries the exact HEVC alpha identifier.
+    // If magick is unavailable or fails, WIC remains a usable (opaque) fallback.
+    let magick_attempted = external && isobmff_has_hevc_aux_alpha(bytes);
+    let mut preferred_magick_error = None;
+    if magick_attempted {
+        match decode_via_magick(bytes) {
+            Ok(img) => return Ok(img),
+            Err(e) => {
+                crate::safety::log_debug(&format!(
+                    "decode tier `magick (HEIC auxiliary alpha)` failed: {e}"
+                ));
+                preferred_magick_error = Some(e);
+            }
+        }
+    }
     match wic_fallback(bytes, wic_thumbnail_cx) {
         Ok(img) => return Ok(img),
         Err(e) => crate::safety::log_debug(&format!("decode tier `WIC` failed: {e}")),
@@ -280,13 +307,15 @@ fn decode_any_with_wic_target(
     // preview ([`decode_menu_preview`]) runs on explorer.exe's OWN UI thread and cannot
     // afford a subprocess (≤20s) there — it falls back to the cheap embedded-JPEG slice
     // below, or a caption-only tile.
-    let mut last_err = Error::from(E_FAIL);
+    let mut last_err = preferred_magick_error.unwrap_or_else(|| Error::from(E_FAIL));
     if external {
-        match decode_via_magick(bytes) {
-            Ok(img) => return Ok(img),
-            Err(e) => {
-                crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
-                last_err = e;
+        if !magick_attempted {
+            match decode_via_magick(bytes) {
+                Ok(img) => return Ok(img),
+                Err(e) => {
+                    crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
+                    last_err = e;
+                }
             }
         }
         if raw_preview == RawPreviewOrder::AfterExternal {

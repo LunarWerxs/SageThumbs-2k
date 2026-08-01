@@ -167,7 +167,7 @@ pub(super) fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
     let (input, pre_ops): (&str, &[&str]) = if looks_like_dicom(bytes) {
         ("dcm:-", &["-auto-level"])
     } else {
-        ("-", &[])
+        (magick_stdin_spec(bytes), &[])
     };
     // A small EMF (icon-sized clip art) would rasterize at its tiny intrinsic size — a right-click
     // Convert then yielded a ~64px image, the same bug SVG had. Render it UP to a usable size by
@@ -236,6 +236,87 @@ pub(crate) fn looks_like_metafile(b: &[u8]) -> bool {
 /// format hint in [`decode_via_magick`] routes them to the DICOM coder instead.
 fn looks_like_dicom(b: &[u8]) -> bool {
     b.len() > 132 && &b[128..132] == b"DICM"
+}
+
+/// The low-overhead AVIF `mini` box is a valid top-level ISOBMFF image
+/// container, but ImageMagick's stdin auto-sniffer does not recognize it. Its
+/// HEIC coder does decode it when given an explicit AVIF input specifier.
+///
+/// Do not scan for the four bytes `mini`: random input could contain those,
+/// and forcing it through the AVIF decoder would skip ImageMagick's normal
+/// format detection. Require the low-overhead `mif3` structural brand plus its
+/// `avif` codec minor-version signal, then walk only bounded, checked
+/// *top-level* boxes looking for `mini`.
+fn magick_stdin_spec(bytes: &[u8]) -> &'static str {
+    if is_mini_avif(bytes) {
+        "avif:-"
+    } else {
+        "-"
+    }
+}
+
+/// Maximum number of top-level ISOBMFF boxes we inspect. Real AVIFs put `mini`
+/// immediately after `ftyp`; the cap prevents a tiny-box flood from turning
+/// this cheap routing predicate into an unbounded parser.
+const MAX_ISOBMFF_TOP_LEVEL_BOXES: usize = 64;
+
+/// Return a checked top-level box's type, body start, and end offset.
+/// `None` covers truncation, invalid lengths, and sizes that do not fit usize.
+fn isobmff_box_at(bytes: &[u8], offset: usize) -> Option<([u8; 4], usize, usize)> {
+    let header = bytes.get(offset..offset.checked_add(8)?)?;
+    let size32 = u32::from_be_bytes(header[0..4].try_into().ok()?);
+    let typ = header[4..8].try_into().ok()?;
+    let (size, header_len) = match size32 {
+        0 => (bytes.len().checked_sub(offset)?, 8), // extends to EOF
+        1 => {
+            let extended = bytes.get(offset.checked_add(8)?..offset.checked_add(16)?)?;
+            let size = u64::from_be_bytes(extended.try_into().ok()?);
+            (usize::try_from(size).ok()?, 16)
+        }
+        size => (size as usize, 8),
+    };
+    if size < header_len {
+        return None;
+    }
+    let end = offset.checked_add(size)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some((typ, offset + header_len, end))
+}
+
+fn is_mini_avif(bytes: &[u8]) -> bool {
+    let Some((typ, body, mut offset)) = isobmff_box_at(bytes, 0) else {
+        return false;
+    };
+    if typ != *b"ftyp" || !ftyp_describes_mini_avif(&bytes[body..offset]) {
+        return false;
+    }
+
+    for _ in 0..MAX_ISOBMFF_TOP_LEVEL_BOXES {
+        if offset == bytes.len() {
+            return false;
+        }
+        let Some((typ, _, end)) = isobmff_box_at(bytes, offset) else {
+            return false;
+        };
+        if typ == *b"mini" {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+/// A MinimizedImageBox file uses the `mif3` structural brand. For AV1, the
+/// FileTypeBox minor-version word is the codec brand `avif` (ISO BMFF's
+/// low-overhead-image amendment); it deliberately is not a compatible brand.
+fn ftyp_describes_mini_avif(body: &[u8]) -> bool {
+    if body.len() < 8 || !(body.len() - 8).is_multiple_of(4) {
+        return false;
+    }
+    let has_mif3 = body[..4] == *b"mif3" || body[8..].chunks_exact(4).any(|brand| brand == b"mif3");
+    has_mif3 && body[4..8] == *b"avif"
 }
 
 /// The PSD/PSB composite at full resolution. Frame `[0]` of a PSD in ImageMagick
@@ -599,11 +680,93 @@ pub fn encode_via_magick(
 mod tests {
     use super::{
         add_magick_limits, add_metafile_magick_limits, apply_magick_environment,
-        magick_output_supported, output_coder, METAFILE_MAGICK_MAP_LIMIT,
-        METAFILE_MAGICK_MEMORY_LIMIT, METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
+        magick_output_supported, magick_stdin_spec, output_coder, MAX_ISOBMFF_TOP_LEVEL_BOXES,
+        METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT, METAFILE_MAGICK_TIMEOUT,
+        METAFILE_MAGICK_TIME_LIMIT,
     };
     use std::collections::HashMap;
     use std::process::Command;
+
+    fn isobmff_box(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + body.len()).unwrap();
+        [&size.to_be_bytes()[..], &typ[..], body].concat()
+    }
+
+    fn ftyp_with_minor(
+        major_brand: &[u8; 4],
+        minor_version: &[u8; 4],
+        compatible: &[[u8; 4]],
+    ) -> Vec<u8> {
+        let mut body = Vec::from(&major_brand[..]);
+        body.extend_from_slice(minor_version);
+        for brand in compatible {
+            body.extend_from_slice(brand);
+        }
+        isobmff_box(b"ftyp", &body)
+    }
+
+    fn ftyp(major_brand: &[u8; 4], compatible: &[[u8; 4]]) -> Vec<u8> {
+        ftyp_with_minor(major_brand, &[0; 4], compatible)
+    }
+
+    #[test]
+    fn mini_avif_uses_explicit_avif_stdin_spec() {
+        let mut bytes = ftyp_with_minor(b"mif3", b"avif", &[]);
+        bytes.extend(isobmff_box(b"mini", &[0x80, 0x01, 0xFE]));
+        assert_eq!(magick_stdin_spec(&bytes), "avif:-");
+
+        // A derived structural major brand may carry mif3 as compatible.
+        let mut compatible = ftyp_with_minor(b"mif1", b"avif", &[*b"mif3"]);
+        compatible.extend(isobmff_box(b"mini", &[0x80]));
+        assert_eq!(magick_stdin_spec(&compatible), "avif:-");
+    }
+
+    #[test]
+    fn ordinary_avif_keeps_magick_auto_detection() {
+        let mut bytes = ftyp(b"avif", &[*b"mif1"]);
+        bytes.extend(isobmff_box(b"meta", &[0, 0, 0, 0]));
+        assert_eq!(magick_stdin_spec(&bytes), "-");
+    }
+
+    #[test]
+    fn mini_stdin_routing_rejects_malformed_or_hostile_boxes() {
+        // A `mini` byte sequence outside a checked top-level box is not enough.
+        assert_eq!(magick_stdin_spec(b"not an avif mini"), "-");
+
+        // The declared ftyp length extends beyond the buffer.
+        assert_eq!(
+            magick_stdin_spec(&[0, 0, 0, 32, b'f', b't', b'y', b'p', b'a', b'v', b'i', b'f']),
+            "-"
+        );
+
+        // An extended-size box must have its complete 16-byte header and body.
+        let mut truncated_extended = ftyp_with_minor(b"mif3", b"avif", &[]);
+        truncated_extended.extend_from_slice(&[0, 0, 0, 1, b'm', b'i', b'n', b'i']);
+        assert_eq!(magick_stdin_spec(&truncated_extended), "-");
+
+        // Stop before an attacker-controlled run of arbitrarily many tiny boxes.
+        let mut flooded = ftyp_with_minor(b"mif3", b"avif", &[]);
+        for _ in 0..MAX_ISOBMFF_TOP_LEVEL_BOXES {
+            flooded.extend(isobmff_box(b"free", &[]));
+        }
+        flooded.extend(isobmff_box(b"mini", &[0x80]));
+        assert_eq!(magick_stdin_spec(&flooded), "-");
+    }
+
+    #[test]
+    fn non_avif_mini_keeps_magick_auto_detection() {
+        let mut bytes = ftyp_with_minor(b"mif3", &[0; 4], &[]);
+        bytes.extend(isobmff_box(b"mini", &[0x80]));
+        assert_eq!(magick_stdin_spec(&bytes), "-");
+    }
+
+    #[test]
+    fn ftyp_minor_version_cannot_spoof_an_avif_brand() {
+        let mut bytes = ftyp_with_minor(b"mif1", b"avif", &[]);
+        // The AV1 codec signal alone is not enough without the mif3 structure.
+        bytes.extend(isobmff_box(b"mini", &[0x80]));
+        assert_eq!(magick_stdin_spec(&bytes), "-");
+    }
 
     #[test]
     fn every_advertised_magick_output_uses_an_explicit_coder() {

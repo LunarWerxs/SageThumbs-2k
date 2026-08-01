@@ -1,20 +1,34 @@
 //! Encapsulated PostScript (`.eps`) embedded preview.
 //!
-//! Rendering real PostScript needs Ghostscript (not bundled — see the EPS/PS
-//! backlog item), but the common **DOS-EPS binary** flavor (what Adobe/Corel
+//! Rendering real PostScript needs Ghostscript (not bundled by design), but the
+//! common **DOS-EPS binary** flavor (what Adobe/Corel
 //! tools export for Windows) wraps the PostScript in a 30-byte header that
 //! carries offsets to a baked-in **TIFF** (or WMF) screen preview. We slice the
 //! TIFF out and let the normal image tiers decode it — same trick as the PSD
 //! resource-1036 thumbnail, zero new decode code.
 //!
-//! Plain-text EPS (`%!PS-Adobe…` with no binary header) has no raster preview;
-//! it falls through to the ImageMagick tier, which renders it only where
-//! Ghostscript is installed. All reads here are bounds-checked slices.
+//! Plain-text EPS (`%!PS-Adobe…`) may carry an EPSI greyscale preview or a
+//! Photoshop Image Resources run. We decode those embedded previews only; we
+//! never interpret PostScript. All reads here are bounds-checked slices.
 
 /// DOS-EPS binary-header magic.
 const MAGIC: [u8; 4] = [0xC5, 0xD0, 0xD3, 0xC6];
 
-use super::util::le32;
+use image::{DynamicImage, GrayImage};
+
+use super::{psd, util::le32, CoverOut, MAX_COVER};
+
+/// EPS previews conventionally live at the head; never scan an arbitrary huge EPS.
+const ASCII_SCAN_MAX: usize = 1 << 20;
+
+/// True for either DOS-EPS binary framing or plain PostScript/EPS bytes.
+///
+/// The decoder uses this as a terminal safety classification after the embedded
+/// preview extractor has had its chance. A shell stream may be nameless, so the
+/// rule must be content-based rather than relying on a `.eps` extension.
+pub(crate) fn is_eps(bytes: &[u8]) -> bool {
+    bytes.starts_with(&MAGIC) || bytes.starts_with(b"%!PS")
+}
 
 /// Extract the embedded TIFF preview from a DOS-EPS, or None.
 ///
@@ -43,9 +57,204 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Extract an embedded preview from a plain-text EPS, without rendering PostScript.
+pub fn extract_ascii_preview(bytes: &[u8]) -> Option<CoverOut> {
+    if !bytes.starts_with(b"%!PS") {
+        return None;
+    }
+    let head = &bytes[..bytes.len().min(ASCII_SCAN_MAX)];
+    epsi_preview(head)
+        .map(CoverOut::Image)
+        .or_else(|| photoshop_preview(head).map(CoverOut::Bytes))
+}
+
+fn epsi_preview(bytes: &[u8]) -> Option<DynamicImage> {
+    let (header, mut rest) = find_comment(bytes, b"%%BeginPreview:")?;
+    let mut fields = std::str::from_utf8(header).ok()?.split_ascii_whitespace();
+    let width = fields.next()?.parse::<u32>().ok()?;
+    let height = fields.next()?.parse::<u32>().ok()?;
+    let depth = fields.next()?.parse::<u32>().ok()?;
+    let lines = fields.next()?.parse::<u32>().ok()?;
+    if fields.next().is_some()
+        || !matches!(depth, 1 | 2 | 4 | 8)
+        || width == 0
+        || height == 0
+        || lines == 0
+        || width > crate::decode::limits::MAX_DIM
+        || height > crate::decode::limits::MAX_DIM
+    {
+        return None;
+    }
+    let pixels = (width as u64).checked_mul(height as u64)?;
+    if pixels > MAX_COVER {
+        return None;
+    }
+    let row_bytes = ((width as usize).checked_mul(depth as usize)?).checked_add(7)? / 8;
+    let packed_len = row_bytes.checked_mul(height as usize)?;
+    // A legal EPSI payload must fit in the bounded head scan as well.
+    if packed_len > ASCII_SCAN_MAX / 2 {
+        return None;
+    }
+    let mut packed = Vec::with_capacity(packed_len);
+    for _ in 0..lines {
+        let (line, next) = take_line(rest);
+        rest = next;
+        append_hex(comment_payload(line)?, &mut packed, packed_len)?;
+    }
+    if packed.len() != packed_len {
+        return None;
+    }
+    let mut grey = Vec::with_capacity(pixels as usize);
+    // EPSI samples run from the lower-left upward, while image buffers run from
+    // the upper-left downward. Reverse the packed rows as we unpack them.
+    for row in packed.chunks_exact(row_bytes).rev() {
+        unpack_row(row, width as usize, depth, &mut grey)?;
+    }
+    let (end, _) = take_line(rest);
+    if end != b"%%EndPreview" || grey.len() as u64 != pixels {
+        return None;
+    }
+    GrayImage::from_raw(width, height, grey).map(DynamicImage::ImageLuma8)
+}
+
+fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
+    let (header, mut rest) = find_comment(bytes, b"%%BeginPhotoshop:")?;
+    let declared = std::str::from_utf8(header.trim_ascii())
+        .ok()?
+        .parse::<usize>()
+        .ok()?;
+    if declared == 0 || declared as u64 > MAX_COVER || declared > ASCII_SCAN_MAX / 2 {
+        return None;
+    }
+    let mut resource = Vec::with_capacity(declared);
+    while resource.len() < declared {
+        let (line, next) = take_line(rest);
+        rest = next;
+        if line == b"%%EndPhotoshop" {
+            return None;
+        }
+        append_hex(comment_payload(line)?, &mut resource, declared)?;
+    }
+    psd::thumbnail_from_resources(&resource)
+}
+
+fn find_comment<'a>(bytes: &'a [u8], marker: &[u8]) -> Option<(&'a [u8], &'a [u8])> {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let (line, next) = take_line(rest);
+        if let Some(value) = line.strip_prefix(marker) {
+            return Some((value, next));
+        }
+        rest = next;
+    }
+    None
+}
+
+fn take_line(bytes: &[u8]) -> (&[u8], &[u8]) {
+    match bytes.iter().position(|&b| b == b'\n') {
+        Some(i) => (
+            bytes[..i].strip_suffix(b"\r").unwrap_or(&bytes[..i]),
+            &bytes[i + 1..],
+        ),
+        None => (bytes, &[]),
+    }
+}
+
+fn comment_payload(line: &[u8]) -> Option<&[u8]> {
+    let payload = line.strip_prefix(b"%")?;
+    Some(payload.strip_prefix(b" ").unwrap_or(payload))
+}
+
+fn append_hex(line: &[u8], out: &mut Vec<u8>, max_len: usize) -> Option<()> {
+    let mut high = None;
+    for &byte in line {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        let digit = hex_digit(byte)?;
+        if let Some(high) = high.take() {
+            if out.len() == max_len {
+                return None;
+            }
+            out.push((high << 4) | digit);
+        } else {
+            high = Some(digit);
+        }
+    }
+    high.is_none().then_some(())
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn unpack_row(packed: &[u8], width: usize, depth: u32, out: &mut Vec<u8>) -> Option<()> {
+    let max_value = ((1u16 << depth) - 1) as u8;
+    for pixel in 0..width {
+        let bit = pixel.checked_mul(depth as usize)?;
+        let byte = *packed.get(bit / 8)?;
+        let shift = 8usize.checked_sub(depth as usize)?.checked_sub(bit % 8)?;
+        let value = (byte >> shift) & max_value;
+        // EPSI defines sample zero as white and the maximum as black, the
+        // inverse of an ordinary Luma8 buffer.
+        out.push(255 - (value as u16 * 255 / max_value as u16) as u8);
+    }
+    Some(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn epsi(width: u32, height: u32, depth: u32, rows: &[&str]) -> Vec<u8> {
+        let mut out = format!(
+            "%!PS-Adobe-3.0 EPSF-3.0\n%%BeginPreview: {width} {height} {depth} {}\n",
+            rows.len()
+        )
+        .into_bytes();
+        for row in rows {
+            out.extend_from_slice(b"% ");
+            out.extend_from_slice(row.as_bytes());
+            out.push(b'\n');
+        }
+        out.extend_from_slice(b"%%EndPreview\nshowpage\n");
+        out
+    }
+
+    fn photoshop_resource(jpeg: &[u8]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&[0u8; 24]);
+        data.extend_from_slice(jpeg);
+        let mut out = b"8BIM".to_vec();
+        out.extend_from_slice(&1036u16.to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(&data);
+        if data.len() & 1 == 1 {
+            out.push(0);
+        }
+        out
+    }
+
+    fn photoshop_eps(resource: &[u8], declared: usize) -> Vec<u8> {
+        let mut out =
+            format!("%!PS-Adobe-3.0 EPSF-3.0\n%%BeginPhotoshop: {declared}\n").into_bytes();
+        for chunk in resource.chunks(24) {
+            out.extend_from_slice(b"% ");
+            for byte in chunk {
+                out.extend_from_slice(format!("{byte:02X}").as_bytes());
+            }
+            out.push(b'\n');
+        }
+        out.extend_from_slice(b"%%EndPhotoshop\nshowpage\n");
+        out
+    }
 
     fn tiny_tiff() -> Vec<u8> {
         let mut buf = Vec::new();
@@ -57,6 +266,21 @@ mod tests {
         .write_to(
             &mut std::io::Cursor::new(&mut buf),
             image::ImageFormat::Tiff,
+        )
+        .unwrap();
+        buf
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            6,
+            4,
+            image::Rgb([40, 160, 220]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut buf),
+            image::ImageFormat::Jpeg,
         )
         .unwrap();
         buf
@@ -96,6 +320,36 @@ mod tests {
     }
 
     #[test]
+    fn classifies_only_eps_signatures() {
+        assert!(is_eps(b"%!PS-Adobe-3.0 EPSF-3.0\n"));
+        assert!(is_eps(&MAGIC));
+        assert!(!is_eps(b"\x89PNG\r\n\x1A\n"));
+        assert!(!is_eps(b"prefix %!PS-Adobe-3.0"));
+    }
+
+    #[test]
+    fn decoder_accepts_embedded_previews_but_rejects_unscoped_jpeg_bytes() {
+        let tiff = tiny_tiff();
+        let dos = dos_eps(b"%!PS-Adobe-3.0 EPSF-3.0\nshowpage\n", &tiff);
+        assert!(crate::decode::decode_preview(&dos).is_ok());
+
+        let ascii = epsi(3, 1, 8, &["0055AA"]);
+        assert!(crate::decode::decode_preview(&ascii).is_ok());
+
+        let jpeg = tiny_jpeg();
+        let resources = photoshop_resource(&jpeg);
+        let photoshop = photoshop_eps(&resources, resources.len());
+        assert!(crate::decode::decode_preview(&photoshop).is_ok());
+
+        // A random JPEG byte run inside PostScript is not a declared raster
+        // preview. Before the terminal EPS guard, the generic lenient-JPEG tier
+        // accepted this and bypassed the embedded-preview-only policy.
+        let mut previewless = b"%!PS-Adobe-3.0 EPSF-3.0\nshowpage\n".to_vec();
+        previewless.extend_from_slice(&jpeg);
+        assert!(crate::decode::decode_preview(&previewless).is_err());
+    }
+
+    #[test]
     fn rejects_plain_and_malformed_eps() {
         // Plain-text EPS: no binary header, nothing to extract.
         assert!(extract(b"%!PS-Adobe-3.0 EPSF-3.0\nshowpage\n").is_none());
@@ -111,5 +365,66 @@ mod tests {
         bad.extend_from_slice(&0xFFFF_FF00u32.to_le_bytes()); // absurd TIFF length
         bad.extend_from_slice(&[0xFF, 0xFF]);
         assert!(extract(&bad).is_none());
+    }
+
+    #[test]
+    fn decodes_epsi_depths_and_row_padding() {
+        let cases = [
+            (1, vec!["A0"], vec![0, 255, 0]),
+            (2, vec!["1B"], vec![255, 170, 85]),
+            (4, vec!["05A0"], vec![255, 170, 85]),
+            (8, vec!["0055AA"], vec![255, 170, 85]),
+        ];
+        for (depth, rows, expected) in cases {
+            let eps = epsi(3, 1, depth, &rows);
+            let Some(CoverOut::Image(image)) = extract_ascii_preview(&eps) else {
+                panic!("EPSI depth {depth} should decode");
+            };
+            assert_eq!(image.to_luma8().into_raw(), expected);
+        }
+    }
+
+    #[test]
+    fn decodes_epsi_rows_split_across_preview_lines() {
+        let eps = epsi(3, 1, 8, &["00", " 55", "AA"]);
+        let Some(CoverOut::Image(image)) = extract_ascii_preview(&eps) else {
+            panic!("split EPSI row should decode");
+        };
+        assert_eq!(image.to_luma8().into_raw(), vec![255, 170, 85]);
+    }
+
+    #[test]
+    fn decodes_epsi_rows_from_bottom_to_top() {
+        let eps = epsi(2, 2, 8, &["00FF", "55AA"]);
+        let Some(CoverOut::Image(image)) = extract_ascii_preview(&eps) else {
+            panic!("two-row EPSI should decode");
+        };
+        assert_eq!(
+            image.to_luma8().into_raw(),
+            vec![170, 85, 255, 0],
+            "the second encoded row is the displayed top row"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_epsi_previews() {
+        assert!(extract_ascii_preview(&epsi(16, 1, 8, &["00"])).is_none());
+        assert!(extract_ascii_preview(&epsi(3, 1, 8, &["0001"])).is_none());
+        assert!(extract_ascii_preview(&epsi(16_385, 1, 8, &["00"])).is_none());
+        assert!(extract_ascii_preview(b"%!PS-Adobe-3.0 EPSF-3.0\nshowpage\n").is_none());
+    }
+
+    #[test]
+    fn extracts_photoshop_preview_and_rejects_bad_payloads() {
+        let jpeg = b"\xFF\xD8\xFFpreview";
+        let resource = photoshop_resource(jpeg);
+        let good = photoshop_eps(&resource, resource.len());
+        assert!(matches!(
+            extract_ascii_preview(&good),
+            Some(CoverOut::Bytes(bytes)) if bytes == jpeg
+        ));
+        assert!(extract_ascii_preview(&photoshop_eps(&resource, resource.len() - 1)).is_none());
+        assert!(extract_ascii_preview(&photoshop_eps(&resource[..8], resource.len())).is_none());
+        assert!(extract_ascii_preview(b"%!PS\n%%BeginPhotoshop: 33554433\n").is_none());
     }
 }

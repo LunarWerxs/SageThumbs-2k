@@ -66,6 +66,25 @@ recognises as owner-drawn and whose command id it can map back to this handler.
   passed while the preview was a sliver, because they assert what we hand to the menu and
   the menu is what mangles it. Drive Explorer, screenshot the popup, look at it.
 
+### Extension-created submenu rows cannot wait for `WM_INITMENUPOPUP`
+
+Explorer can omit `WM_INITMENUPOPUP` for the child `HMENU` created by a shell extension.
+Deferring the submenu preview row to that notification therefore makes `MenuPreview = 1`
+intermittently produce a flyout with commands but no preview. Insert the preview and its
+separator while `QueryContextMenu` builds the child menu; keep `IContextMenu2`/`IContextMenu3`
+handling only for owner-draw measure and paint. The integration regression must inspect the
+submenu immediately after `QueryContextMenu`, before sending any synthetic lifecycle message.
+
+### Fixed Settings pages must leave footer clearance
+
+The Settings footer is anchored independently from each category's rows. A fixed page can
+therefore grow into Save/Close without any layout error: General once ended exactly at that
+boundary. Keep every fixed category at least 12 design pixels above `footer_y`. File Types is
+the deliberate `ListFill` exception, and Right-click Menu is the deliberate `ListAuto`
+exception whose checklist scrolls internally while Reset order stays visible. The debug
+assertion in `settings_dlg/navrail.rs` guards the fixed pages; verify changed pages through
+the light and dark `--shot --window settings --tab N` captures too.
+
 ### Two different symptoms, two different culprits
 
 The earlier open question is now measured, in a process with no skin injected, forced into

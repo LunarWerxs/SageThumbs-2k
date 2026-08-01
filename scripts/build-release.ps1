@@ -8,12 +8,15 @@
     4. compiles packaging\installer.iss with Inno Setup (ISCC)
     5. prints the resulting SageThumbs2K-Setup-<ver>.exe and its size
 
-  Usage:  pwsh scripts\build-release.ps1            # full build + installer
-          pwsh scripts\build-release.ps1 -NoImageMagick   # Compact-style payload without bundled ImageMagick
-  Output: dist\SageThumbs2K-Setup-<ver>.exe
+  Usage:  pwsh scripts\build-release.ps1                         # x64 Full
+          pwsh scripts\build-release.ps1 -NoImageMagick          # x64 Compact
+          pwsh scripts\build-release.ps1 -Architecture arm64     # ARM64 Compact
+  Output: dist\SageThumbs2K-Setup-<ver>[-arm64].exe
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64',
     [switch]$NoImageMagick,
     [switch]$SkipBuild,
     # Skip the signed sparse package (the Win11 modern context menu). Use only if
@@ -22,12 +25,73 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$targetRel = Join-Path (& "$PSScriptRoot\_targetdir.ps1") 'release'
+. (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
+$targetRoot = & "$PSScriptRoot\_targetdir.ps1"
+$targetTriple = if ($Architecture -eq 'arm64') {
+    'aarch64-pc-windows-msvc'
+} else {
+    'x86_64-pc-windows-msvc'
+}
+$targetRel = if ($Architecture -eq 'arm64') {
+    Join-Path $targetRoot "$targetTriple\release"
+} else {
+    Join-Path $targetRoot 'release'
+}
+$stage = Join-Path $root "packaging\stage\$Architecture"
+$stageRelative = "stage\$Architecture"
+$outputSuffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
+if ($Architecture -eq 'arm64' -and -not $NoImageMagick) {
+    Write-Host '      ARM64 has no approved ImageMagick payload; forcing Compact.' -ForegroundColor Yellow
+    $NoImageMagick = $true
+}
+
+function Import-Arm64BuildEnvironment {
+    $vcvarsCandidates = @()
+    if ($env:VSINSTALLDIR) {
+        $vcvarsCandidates += Join-Path $env:VSINSTALLDIR 'VC\Auxiliary\Build\vcvarsall.bat'
+    }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+        $installPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+            -property installationPath | Select-Object -First 1
+        if ($LASTEXITCODE -eq 0 -and $installPath) {
+            $vcvarsCandidates += Join-Path $installPath 'VC\Auxiliary\Build\vcvarsall.bat'
+        }
+    }
+    $vcvarsCandidates += Join-Path ${env:ProgramFiles(x86)} `
+        'Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
+    $vcvars = $vcvarsCandidates | Where-Object {
+        Test-Path -LiteralPath $_ -PathType Leaf
+    } | Select-Object -First 1
+    if (-not $vcvars) {
+        throw 'Visual Studio with Microsoft.VisualStudio.Component.VC.Tools.ARM64 is required'
+    }
+    $cmdLine = '"{0}" amd64_arm64 >nul && set' -f $vcvars
+    $environment = @(& $env:COMSPEC /d /s /c $cmdLine)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'vcvarsall amd64_arm64 failed; install Microsoft.VisualStudio.Component.VC.Tools.ARM64'
+    }
+    foreach ($line in $environment) {
+        $equals = $line.IndexOf('=')
+        if ($equals -le 0) { continue }
+        $name = $line.Substring(0, $equals)
+        $value = $line.Substring($equals + 1)
+        Set-Item -LiteralPath "Env:$name" -Value $value
+    }
+    $link = Get-Command link.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $link -or $link.Source -notmatch 'Hostx64\\arm64\\link\.exe$' -or
+        $env:LIB -notmatch '\\lib\\arm64(?:;|$)') {
+        throw 'vcvarsall did not expose the Hostx64->ARM64 linker/libraries'
+    }
+    Write-Host "      ARM64 linker: $($link.Source)" -ForegroundColor DarkGray
+}
 
 # 1) Version from Cargo.toml -------------------------------------------------
 $ver = ([regex]::Match((Get-Content "$root\Cargo.toml" -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
 if (-not $ver) { throw "Could not read version from Cargo.toml" }
-Write-Host "SageThumbs 2K release pipeline - version $ver" -ForegroundColor Cyan
+Write-Host "SageThumbs 2K release pipeline - version $ver ($Architecture)" -ForegroundColor Cyan
 
 # 2) Build -------------------------------------------------------------------
 # Statically link the MSVC CRT into the shipped binaries so the DLL has NO external
@@ -37,22 +101,38 @@ Write-Host "SageThumbs 2K release pipeline - version $ver" -ForegroundColor Cyan
 # fresh clone; the machine-local .cargo/config.toml carries the same flag for dev
 # builds. (RUSTFLAGS overrides config [target] rustflags — keep them identical.)
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
-$exeBuildArgs = @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview,hdr-capture')
-$dllBuildArgs = @('--release', '--locked', '-p', 'sagethumbs2k-dll', '--features', 'webp-lossy,dll-i18n-subset')
+$exeBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture')
+$dllBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
 if (-not $SkipBuild) {
     # Version metadata + app manifest + icon are embedded into the binaries via windres
     # in build.rs, which SILENTLY falls back to NO metadata if windres isn't on PATH.
     # Metadata-less / manifest-less binaries are classic heuristic-AV false-positive bait,
     # so FAIL the release build loudly here rather than ship flag-bait (a plain dev
     # `cargo build` stays tolerant — this guard is release-only).
-    $windres = Get-Command windres, x86_64-w64-mingw32-windres, llvm-windres -EA SilentlyContinue | Select-Object -First 1
-    if (-not $windres) {
-        throw "windres not found on PATH. build.rs needs it to embed VERSIONINFO/manifest/icon; " +
-              "without it the release binaries ship with NO version metadata (a common AV " +
-              "false-positive trigger). Install binutils/LLVM (e.g. " +
-              "'winget install BrechtSanders.WinLibs.POSIX.UCRT' or LLVM), then retry."
+    if ($Architecture -eq 'arm64') {
+        Import-Arm64BuildEnvironment
+        $rc = Get-Command rc.exe -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $rc) {
+            $rc = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') `
+                -Filter rc.exe -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object FullName -Match '\\(x64|arm64)\\rc\.exe$' |
+                Sort-Object FullName -Descending | Select-Object -First 1
+        }
+        if (-not $rc) {
+            throw 'Windows SDK rc.exe is required for ARM64 manifest/icon/version resources'
+        }
+        Write-Host "      rc.exe: $($rc.Source ?? $rc.FullName)" -ForegroundColor DarkGray
+    } else {
+        $windres = Get-Command windres, x86_64-w64-mingw32-windres, llvm-windres -EA SilentlyContinue | Select-Object -First 1
+        if (-not $windres) {
+            throw "windres not found on PATH. build.rs needs it to embed VERSIONINFO/manifest/icon; " +
+                  "without it the release binaries ship with NO version metadata (a common AV " +
+                  "false-positive trigger). Install binutils/LLVM (e.g. " +
+                  "'winget install BrechtSanders.WinLibs.POSIX.UCRT' or LLVM), then retry."
+        }
+        Write-Host "      windres: $($windres.Source)" -ForegroundColor DarkGray
     }
-    Write-Host "      windres: $($windres.Source)" -ForegroundColor DarkGray
 
     # CBR/RAR is now the pure-Rust `rars` crate (always on, no feature). `webp-lossy`
     # (libwebp, BSD — the one optional C piece) is enabled for the shipped installer;
@@ -81,9 +161,8 @@ if (-not $SkipBuild) {
 
 # 3) Stage -------------------------------------------------------------------
 Write-Host "[2/4] staging payload" -ForegroundColor Green
-$stage = "$root\packaging\stage"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-New-Item -ItemType Directory "$stage\magick" -Force | Out-Null
+New-Item -ItemType Directory $stage -Force | Out-Null
 # NOTE: the slim `cargo build --lib --features dll-i18n-subset` step above rebuilt
 # sagethumbs2k.dll IN PLACE at $targetRel (overwriting the full-table DLL from the
 # main build), so this copy stages the SLIM (menu_*-only) cdylib. The two EXEs below
@@ -110,6 +189,7 @@ foreach ($asset in 'app.ico','logo.png','banner.png') {
 
 $bundleMagick = -not $NoImageMagick
 if ($bundleMagick) {
+    New-Item -ItemType Directory "$stage\magick" -Force | Out-Null
     # Release input is PINNED. Never package whichever ImageMagick directory happens to
     # sort first: patch releases change imports/exports and can make a previously safe trim
     # silently incomplete. check-magick-source verifies the reported identity plus a
@@ -379,7 +459,7 @@ if ($bundleMagick) {
     $magickSize = [math]::Round((Get-ChildItem "$stage\magick" -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
     Write-Host "      trimmed ImageMagick bundle: $magickSize MB (raw)" -ForegroundColor DarkGray
 } else {
-    Remove-Item "$stage\magick" -Recurse -Force
+    Remove-Item "$stage\magick" -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # 3b) Signed sparse package for the Win11 modern context menu ----------------
@@ -388,7 +468,7 @@ if ($bundleMagick) {
 # Mode needed). Without it the install still works — only the classic menu ships.
 if (-not $NoModernMenu) {
     Write-Host "[2b/4] building signed sparse package (modern menu)" -ForegroundColor Green
-    & "$root\packaging\make-msix.ps1" -OutDir $stage
+    & "$root\packaging\make-msix.ps1" -OutDir $stage -Architecture $Architecture
 } else {
     Write-Host "[2b/4] -NoModernMenu: skipping the signed package (classic menu only)" -ForegroundColor Yellow
 }
@@ -430,10 +510,20 @@ New-Item -ItemType Directory "$root\dist" -Force | Out-Null
 # (never hardcode the count — it's whatever FORMATS.len() returns; the old literal
 # "316" in installer.iss was a drift bomb waiting for the next format addition).
 $fmtCount = ''
-$fmtLine = & "$targetRel\st2k.exe" formats 2>$null | Select-Object -First 1
-if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
-$isccArgs = @("/DAppVer=$ver"); if ($fmtCount) { $isccArgs += "/DFmtCount=$fmtCount" }
-$expectedSetupPath = "$root\dist\SageThumbs2K-Setup-$ver.exe"
+if ($Architecture -eq 'x64') {
+    $fmtLine = & "$targetRel\st2k.exe" formats 2>$null | Select-Object -First 1
+    if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
+}
+$compactOnly = if ($Architecture -eq 'arm64') { '1' } else { '0' }
+$isccArgs = @(
+    "/DAppVer=$ver",
+    "/DArchitecture=$Architecture",
+    "/DStageDir=$stageRelative",
+    "/DCompactOnly=$compactOnly",
+    "/DOutputSuffix=$outputSuffix"
+)
+if ($fmtCount) { $isccArgs += "/DFmtCount=$fmtCount" }
+$expectedSetupPath = "$root\dist\SageThumbs2K-Setup-$ver$outputSuffix.exe"
 # A stale same-version artifact must not survive an odd ISCC "success" and then be
 # mistaken for the installer produced from this stage.
 Remove-Item -LiteralPath $expectedSetupPath -Force -ErrorAction SilentlyContinue
@@ -448,14 +538,14 @@ if (-not (Test-Path -LiteralPath $expectedSetupPath -PathType Leaf)) {
 # never be mistaken for the file this invocation just produced.
 $setup = Get-Item -LiteralPath $expectedSetupPath -EA Stop
 $sizeCheck = Join-Path $PSScriptRoot 'check-release-size.ps1'
-& $sizeCheck -InstallerPath $setup.FullName -StagePath $stage
+& $sizeCheck -InstallerPath $setup.FullName -StagePath $stage -Architecture $Architecture
 if ($LASTEXITCODE) { throw "release size budget check failed" }
 
 # 6) Optionally refresh the local marketing-site checkout from the just-built truth.
 # `site/` is deliberately local/ignored and is not an installer input or release-provenance
 # source. Non-fatal: a missing checkout or site-generation hiccup must not fail a release.
 $genSite = Join-Path $root 'scripts\gen-site.mjs'
-if ((Get-Command node -EA SilentlyContinue) -and
+if ($Architecture -eq 'x64' -and (Get-Command node -EA SilentlyContinue) -and
     (Test-Path -LiteralPath $genSite -PathType Leaf) -and
     (Test-Path -LiteralPath (Join-Path $root 'site\index.html') -PathType Leaf)) {
     Write-Host "[site] regenerating site\index.html from live formats" -ForegroundColor Green
@@ -474,7 +564,8 @@ if ((Get-Command node -EA SilentlyContinue) -and
     -ModernMenuBundled:$(-not $NoModernMenu) `
     -RustBuildPerformed:$(-not $SkipBuild) `
     -ExeCargoArguments $exeBuildArgs `
-    -DllCargoArguments $dllBuildArgs
+    -DllCargoArguments $dllBuildArgs `
+    -Architecture $Architecture
 if ($LASTEXITCODE) { throw "release manifest generation failed" }
 
 Write-Host "[4/4] done" -ForegroundColor Green

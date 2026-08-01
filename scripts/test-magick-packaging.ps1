@@ -3,7 +3,7 @@
   Focused fail-closed tests for the pinned ImageMagick packaging gates.
 
 .EXAMPLE
-  pwsh scripts/test-magick-packaging.ps1 -BundlePath packaging/stage/magick
+  pwsh scripts/test-magick-packaging.ps1 -BundlePath packaging/stage/x64/magick
 #>
 [CmdletBinding()]
 param(

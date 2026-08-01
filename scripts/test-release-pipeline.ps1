@@ -163,6 +163,20 @@ try {
         Assert-ReleasePeFile -Path $corrupt
     }
 
+    $x64Pe = Join-Path $scratch 'x64-machine.exe'
+    $x64PeBytes = [byte[]]::new(128)
+    $x64PeBytes[0] = 0x4D; $x64PeBytes[1] = 0x5A
+    [BitConverter]::GetBytes([int32]64).CopyTo($x64PeBytes, 0x3C)
+    [BitConverter]::GetBytes([uint32]0x00004550).CopyTo($x64PeBytes, 64)
+    [BitConverter]::GetBytes([uint16]0x8664).CopyTo($x64PeBytes, 68)
+    [IO.File]::WriteAllBytes($x64Pe, $x64PeBytes)
+    Assert-Passes 'x64 PE machine is accepted for x64 payloads' {
+        Assert-ReleasePeArchitecture -Path $x64Pe -Architecture x64
+    }
+    Assert-FailsLike 'x64 PE machine is rejected for ARM64 payloads' '*PE machine mismatch*' {
+        Assert-ReleasePeArchitecture -Path $x64Pe -Architecture arm64
+    }
+
     $fakeMsix = Join-Path $scratch 'fake.msix'
     [IO.File]::WriteAllBytes($fakeMsix, [byte[]](0x50, 0x4B, 0x03, 0x06) + [byte[]]::new(32))
     Assert-Fails 'mismatched ZIP signature is not accepted as an MSIX' {
@@ -300,6 +314,38 @@ try {
     }
 
     $currentHead = (& git -C $root rev-parse HEAD).Trim()
+
+    # ARM64 is intentionally Compact: a manifest may not claim an x64
+    # ImageMagick payload merely because it carries a modern-menu package.
+    @{
+        schemaVersion = 1
+        product = 'SageThumbs 2K'
+        version = '9.8.7'
+        createdUtc = [DateTime]::UtcNow.ToString('o')
+        commitSha = $currentHead
+        sourceTreeClean = $true
+        publishable = $true
+        publishableReasons = @()
+        architecture = 'arm64'
+        build = @{
+            rustBuildPerformed = $true
+            cargoLocked = $true
+            rustTarget = 'aarch64-pc-windows-msvc'
+            rustFlags = '-C target-feature=+crt-static'
+            imageMagickBundled = $true
+            modernMenuBundled = $true
+        }
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest -Encoding utf8
+    Assert-FailsLike 'ARM64 manifest rejects an ImageMagick payload' '*ImageMagickBundled=false*' {
+        & (Join-Path $PSScriptRoot 'check-release-manifest.ps1') `
+            -InstallerPath $installer `
+            -StagePath $stage `
+            -ExpectedVersion '9.8.7' `
+            -ExpectedCommitSha $currentHead `
+            -Architecture arm64 `
+            -ManifestPath $manifest
+    }
+
     @{
         schemaVersion = 1
         product = 'SageThumbs 2K'
@@ -327,6 +373,38 @@ try {
             -ManifestPath $manifest
     }
 
+    # The checker must use the explicit expected architecture, rather than allowing
+    # an ARM64-named installer to smuggle an x64 Rust payload through. This reaches
+    # the target gate before it touches the deliberately fake installer/stage.
+    @{
+        schemaVersion = 1
+        product = 'SageThumbs 2K'
+        version = '9.8.7'
+        createdUtc = [DateTime]::UtcNow.ToString('o')
+        commitSha = $currentHead
+        sourceTreeClean = $true
+        publishable = $true
+        publishableReasons = @()
+        architecture = 'arm64'
+        build = @{
+            rustBuildPerformed = $true
+            cargoLocked = $true
+            rustTarget = 'x86_64-pc-windows-msvc'
+            rustFlags = '-C target-feature=+crt-static'
+            imageMagickBundled = $false
+            modernMenuBundled = $true
+        }
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest -Encoding utf8
+    Assert-FailsLike 'ARM64 manifest rejects an x64 Rust target' '*wrong Rust target*' {
+        & (Join-Path $PSScriptRoot 'check-release-manifest.ps1') `
+            -InstallerPath $installer `
+            -StagePath $stage `
+            -ExpectedVersion '9.8.7' `
+            -ExpectedCommitSha $currentHead `
+            -Architecture arm64 `
+            -ManifestPath $manifest
+    }
+
     Assert-Fails 'manifest writer rejects corrupt release binaries' {
         foreach ($name in 'sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe') {
             Copy-Item -LiteralPath $corrupt -Destination (Join-Path $stage $name)
@@ -343,50 +421,35 @@ try {
             -OutputPath $manifest
     }
 
-    # The shipping build recipe is written down in THREE scripts: build-release.ps1 runs
-    # it, write-release-manifest.ps1 pins what it expects to have been run, and
-    # check-release-manifest.ps1 pins what it will accept. That redundancy is deliberate
-    # (the gate must be able to refuse a build that silently gained or lost a feature),
-    # but nothing made the three agree, so they drifted: `hdr-capture` was added to two
-    # of them and the 1.5.0 release died at the publish gate after a full build, ~20
-    # minutes in. Catch it here instead, in milliseconds, before anything is built.
-    Assert-Passes 'the three copies of the build recipe agree' {
-        $recipeFiles = @{
-            'build-release.ps1'         = ''
-            'write-release-manifest.ps1' = ''
-            'check-release-manifest.ps1' = ''
+    Assert-Passes 'manifest scripts pin architecture-specific Cargo targets and installer names' {
+        $writerText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'write-release-manifest.ps1') -Raw
+        $checkerText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'check-release-manifest.ps1') -Raw
+        foreach ($script in @($writerText, $checkerText)) {
+            if ($script -notmatch "ValidateSet\('x64', 'arm64'\)" -or
+                $script -notmatch 'Get-ReleaseCargoBuildArguments' -or
+                $script -notmatch 'SageThumbs2K-Setup-\$Version-arm64\.exe|SageThumbs2K-Setup-\$ExpectedVersion-arm64\.exe') {
+                throw 'release manifest architecture contract is incomplete'
+            }
         }
-        $seen = @{}
-        foreach ($name in @($recipeFiles.Keys)) {
+        if ($checkerText -notmatch '\$sizeCheck\s+-InstallerPath\s+\$installer\.FullName\s+-StagePath\s+\$stage\.FullName\s+-Architecture\s+\$Architecture') {
+            throw 'manifest checker does not forward architecture to the size gate'
+        }
+    }
+
+    Assert-Passes 'build runner and provenance gates share the exact Cargo recipe' {
+        . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
+        $expectedArmExe = @('--release', '--locked', '--target', 'aarch64-pc-windows-msvc', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview,hdr-capture')
+        $expectedArmDll = @('--release', '--locked', '--target', 'aarch64-pc-windows-msvc', '-p', 'sagethumbs2k-dll', '--features', 'webp-lossy,dll-i18n-subset')
+        $actualArmExe = @(Get-ReleaseCargoBuildArguments -Architecture arm64 -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture')
+        $actualArmDll = @(Get-ReleaseCargoBuildArguments -Architecture arm64 -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
+        if (($actualArmExe -join "`0") -cne ($expectedArmExe -join "`0") -or
+            ($actualArmDll -join "`0") -cne ($expectedArmDll -join "`0")) {
+            throw 'canonical ARM Cargo arguments changed or are out of order'
+        }
+        foreach ($name in 'build-release.ps1', 'write-release-manifest.ps1', 'check-release-manifest.ps1') {
             $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot $name) -Raw
-            $recipeFiles[$name] = $text
-            # Matches the '-p', '<package>', '--features', '<features>' run in all three
-            # files, including the multi-line array form in write-release-manifest.ps1
-            # and any `#` comment lines sitting between the two (there is one, explaining
-            # why hdr-capture is on the EXE recipe and not the DLL's).
-            $found = [regex]::Matches($text, "'-p',\s*'([^']+)',(?:\s*#[^\r\n]*)*\s*'--features',\s*'([^']+)'")
-            if ($found.Count -lt 2) {
-                throw "$name declares $($found.Count) package recipes, expected 2 (exe + dll)"
-            }
-            foreach ($m in $found) {
-                $pkg = $m.Groups[1].Value
-                $feat = $m.Groups[2].Value
-                if (-not $seen.ContainsKey($pkg)) { $seen[$pkg] = @{} }
-                $seen[$pkg][$name] = $feat
-            }
-        }
-        foreach ($pkg in $seen.Keys) {
-            $distinct = @($seen[$pkg].Values | Sort-Object -Unique)
-            if ($distinct.Count -ne 1) {
-                $detail = ($seen[$pkg].GetEnumerator() | ForEach-Object { "$($_.Key)='$($_.Value)'" }) -join '; '
-                throw "build recipe for '$pkg' differs between scripts: $detail"
-            }
-            # check-release-manifest.ps1 also pins the feature LIST separately from the
-            # argument line. That second copy is exactly what went stale in 1.5.0, so
-            # assert it matches the argument line it sits beside.
-            $expectedArray = "@('" + (($distinct[0] -split ',') -join "', '") + "')"
-            if ($recipeFiles['check-release-manifest.ps1'] -notlike "*$expectedArray*") {
-                throw "check-release-manifest.ps1 has no feature-list expectation $expectedArray for '$pkg'"
+            if ($text -notmatch 'Get-ReleaseCargoBuildArguments') {
+                throw "$name does not use the canonical Cargo build recipe"
             }
         }
     }

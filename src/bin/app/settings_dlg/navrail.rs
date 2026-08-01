@@ -59,7 +59,6 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // General = the merged Thumbnails + General (Custom action is its own tab now).
             Switch(ID_ENABLE_THUMBS),
             Switch(ID_USE_EMBEDDED),
-            Switch(ID_MENU_CHECKER),
             Head(ID_LBL_LIMITS),
             Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
             Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
@@ -87,6 +86,9 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_ENABLE_MENU),
             Switch(ID_MENU_ALL_TYPES),
             Switch(ID_MENU_QUICK),
+            // This controls the transparency backdrop of the context-menu preview,
+            // so keep it with that surface instead of crowding the General page.
+            Switch(ID_MENU_CHECKER),
             Pair(ID_LBL_PREVIEW, ID_MENU_PREVIEW, 156, 200),
             Head(ID_LBL_MENU_ITEMS),
             ListAuto(ID_MENU_ITEMS_LIST),
@@ -160,6 +162,55 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Btn(ID_IMPORT, 320),
             Btn(ID_EXPORT, 320),
         ],
+    }
+}
+
+/// Advance the design-pixel cursor for rows whose height is independent of the
+/// live window/control geometry. List rows return `None` because their height is
+/// calculated against the footer or measured HWND at runtime.
+fn fixed_row_next_y(row: Row, y: i32, first: bool) -> Option<i32> {
+    match row {
+        Row::Head(_) => Some(y + if first { 24 } else { 38 }),
+        Row::Switch(_) => Some(y + 32),
+        Row::Pair(..) => Some(y + 34),
+        Row::Btn(..) | Row::BtnStatus(..) | Row::StatusBtn(..) => Some(y + 32),
+        Row::Status(_) => Some(y + 22),
+        Row::Btn3(..) => Some(y + 34),
+        Row::Wide(_) => Some(y + 44),
+        Row::ListFill(_) | Row::ListAuto(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_pages_keep_space_above_the_footer() {
+        // The fixed 588px design shell leaves footer_y at least 496px at 96 DPI
+        // after its non-client frame. Test that conservative floor; production
+        // still checks the actual live client rectangle as an additional guard.
+        const MIN_FOOTER_Y: i32 = 496;
+
+        for ci in 0..NCAT {
+            if matches!(ci, 1 | 3) {
+                continue; // File Types and Right-click Menu intentionally scroll.
+            }
+            let mut y = PANE_TOP + PANE_HEAD_H + 8;
+            let mut first = true;
+            for &row in cat_rows(ci) {
+                let Some(next_y) = fixed_row_next_y(row, y, first) else {
+                    panic!("fixed settings category {ci} unexpectedly contains a list row");
+                };
+                y = next_y;
+                first = false;
+            }
+            assert!(
+                y <= MIN_FOOTER_Y - 12,
+                "settings category {ci} reaches the footer ({y} > {})",
+                MIN_FOOTER_Y - 12
+            );
+        }
     }
 }
 
@@ -502,21 +553,18 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
         let mut y = PANE_TOP + PANE_HEAD_H + 8;
         let mut first = true;
         for &row in cat_rows(ci) {
+            let fixed_next_y = fixed_row_next_y(row, y, first);
             match row {
                 Row::Head(id) => {
-                    if !first {
-                        y += 14;
-                    }
-                    if let Some(c) = place(id, PANE_X, y, PANE_W, 18) {
+                    let row_y = y + if first { 0 } else { 14 };
+                    if let Some(c) = place(id, PANE_X, row_y, PANE_W, 18) {
                         cats[ci].push(c);
                     }
-                    y += 24;
                 }
                 Row::Switch(id) => {
                     if let Some(c) = place(id, PANE_X, y, PANE_W, 28) {
                         cats[ci].push(c);
                     }
-                    y += 32;
                 }
                 Row::Pair(lbl, field, fw, fh) => {
                     let lbl_dy = if fh > 40 { 4 } else { 2 };
@@ -526,13 +574,11 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     if let Some(c) = place(field, PANE_X + PANE_W - fw, y, fw, fh) {
                         cats[ci].push(c);
                     }
-                    y += 34;
                 }
                 Row::Btn(id, w) => {
                     if let Some(c) = place(id, PANE_X, y, w, 26) {
                         cats[ci].push(c);
                     }
-                    y += 32;
                 }
                 Row::BtnStatus(bid, bw, sid) => {
                     if let Some(c) = place(bid, PANE_X, y, bw, 26) {
@@ -544,7 +590,6 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     if let Some(c) = place(sid, sx, y + 4, PANE_W - bw - 12, 18) {
                         cats[ci].push(c);
                     }
-                    y += 32;
                 }
                 Row::StatusBtn(sid, bid, bw) => {
                     // Mirror of BtnStatus: the status badge fills the LEFT, the button is
@@ -555,13 +600,11 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     if let Some(c) = place(bid, PANE_X + PANE_W - bw, y, bw, 26) {
                         cats[ci].push(c);
                     }
-                    y += 32;
                 }
                 Row::Status(id) => {
                     if let Some(c) = place(id, PANE_X, y, PANE_W, 18) {
                         cats[ci].push(c);
                     }
-                    y += 22;
                 }
                 Row::Btn3(a, b, c3) => {
                     let gap = 8;
@@ -571,14 +614,12 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                             cats[ci].push(c);
                         }
                     }
-                    y += 34;
                 }
                 Row::Wide(id) => {
-                    y += 8; // extra breathing room above (the search box read squished)
-                    if let Some(c) = place(id, PANE_X, y, PANE_W, 24) {
+                    // Extra breathing room above/below (the search box read squished).
+                    if let Some(c) = place(id, PANE_X, y + 8, PANE_W, 24) {
                         cats[ci].push(c);
                     }
-                    y += 24 + 12; // and below
                 }
                 Row::ListFill(id) => {
                     let h = (footer_y - 8 - y).max(60);
@@ -605,7 +646,20 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     y += cur_h + 6;
                 }
             }
+            if let Some(next_y) = fixed_next_y {
+                y = next_y;
+            }
             first = false;
+        }
+        // File Types fills its list to the footer and Right-click Menu caps an
+        // internally scrolling list above its Reset button. Every fixed page must
+        // retain visible breathing room above the footer.
+        if !matches!(ci, 1 | 3) {
+            debug_assert!(
+                y <= footer_y - 12,
+                "settings category {ci} reaches the footer ({y} > {})",
+                footer_y - 12
+            );
         }
     }
 

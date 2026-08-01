@@ -57,12 +57,12 @@ unsafe fn get_thumbnail(bytes: &[u8], cx: u32) -> Result<()> {
     let path = dll_path();
     // The cdylib is a build artifact that MUST be present for this in-process
     // probe — there is no meaningful "skip" here. If it's missing the harness
-    // built the test but not the DLL (e.g. `cargo test` instead of a full
-    // `cargo build --release`), so PANIC loudly rather than letting a missing
+    // built the test but not the DLL (e.g. `cargo test` without first running
+    // `cargo build` in the same profile), so PANIC loudly rather than letting a missing
     // artifact look like a pass.
     assert!(
         path.exists(),
-        "cdylib not built at {path:?} — run `cargo build --release` first (this is a \
+        "cdylib not built at {path:?} — run `cargo build` in this test profile first (this is a \
          build-artifact precondition, not an environment skip)"
     );
     let wide: Vec<u16> = path

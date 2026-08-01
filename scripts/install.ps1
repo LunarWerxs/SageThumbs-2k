@@ -3,6 +3,7 @@
   (writes to Program Files + HKLM):
 
       .\scripts\install.ps1
+      .\scripts\install.ps1 -Architecture arm64
       .\scripts\install.ps1 -Uninstall
 
   Copies the DLL, stub EXE, manifest and assets into Program Files (self-contained,
@@ -13,17 +14,115 @@
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
-    [string]$BuildDir = (Join-Path (& "$PSScriptRoot\_targetdir.ps1") 'release')
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64',
+    [string]$BuildDir,
+    # Read-only guard for CI/local script tests: validates the chosen artifacts
+    # and exits before Program Files, registry, package, or Explorer changes.
+    [switch]$ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
-$prog = Join-Path $env:ProgramFiles 'SageThumbs2K'
 $root = Split-Path $PSScriptRoot -Parent
 $pkg = 'SageThumbs2K'
 
+function Get-ArchitectureSpec([string]$SelectedArchitecture) {
+    switch ($SelectedArchitecture) {
+        'x64' {
+            # Preserve the original developer build location and installed path.
+            return [pscustomobject]@{
+                Name = 'x64'; RustTarget = 'x86_64-pc-windows-msvc';
+                BuildSubdirectory = 'release'; InstallDirectoryName = 'SageThumbs2K';
+                PeMachine = [uint16]0x8664
+            }
+        }
+        'arm64' {
+            return [pscustomobject]@{
+                Name = 'arm64'; RustTarget = 'aarch64-pc-windows-msvc';
+                BuildSubdirectory = 'aarch64-pc-windows-msvc\release'; InstallDirectoryName = 'SageThumbs2K-arm64';
+                PeMachine = [uint16]0xaa64
+            }
+        }
+        default { throw "Unsupported architecture: $SelectedArchitecture" }
+    }
+}
+
+function Get-PeMachine([string]$Path) {
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -lt 0x40) { throw "Not a PE file (too short): $Path" }
+        $head = [byte[]]::new(0x40)
+        if ($stream.Read($head, 0, $head.Length) -ne $head.Length -or $head[0] -ne 0x4d -or $head[1] -ne 0x5a) {
+            throw "Not a PE file: $Path"
+        }
+        $peOffset = [BitConverter]::ToInt32($head, 0x3c)
+        if ($peOffset -lt 0 -or $peOffset + 6 -gt $stream.Length) { throw "Invalid PE header offset: $Path" }
+        $null = $stream.Seek($peOffset, [IO.SeekOrigin]::Begin)
+        $coff = [byte[]]::new(6)
+        if ($stream.Read($coff, 0, $coff.Length) -ne $coff.Length -or
+            $coff[0] -ne 0x50 -or $coff[1] -ne 0x45 -or $coff[2] -ne 0 -or $coff[3] -ne 0) {
+            throw "Invalid PE signature: $Path"
+        }
+        return [BitConverter]::ToUInt16($coff, 4)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Assert-PeArchitecture([string]$Path, [pscustomobject]$Spec) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing $Path" }
+    $machine = Get-PeMachine $Path
+    if ($machine -ne $Spec.PeMachine) {
+        throw ('Architecture mismatch: expected {0} ({1}), but {2} is PE machine 0x{3:X4}' -f
+            $Spec.Name, $Spec.RustTarget, $Path, $machine)
+    }
+}
+
+function Assert-NativeArm64Host([pscustomobject]$Spec) {
+    if ($Spec.Name -ne 'arm64') { return }
+    if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
+        [System.Runtime.InteropServices.Architecture]::Arm64) {
+        throw 'ARM64 install requires a native ARM64 Windows host; use -ValidateOnly for cross-host artifact checks.'
+    }
+}
+
+function Invoke-Regsvr32([string]$DllPath, [switch]$Unregister) {
+    # regsvr32 is a GUI-subsystem executable. Direct `& regsvr32.exe ...`
+    # invocation can leave $LASTEXITCODE unset even though registration ran,
+    # so wait for the process explicitly and return its real exit code.
+    $arguments = @('/s')
+    if ($Unregister) { $arguments += '/u' }
+    $arguments += "`"$DllPath`""
+    $registrar = Join-Path $env:SystemRoot 'System32\regsvr32.exe'
+    $process = Start-Process -FilePath $registrar -ArgumentList $arguments `
+        -WindowStyle Hidden -Wait -PassThru
+    return $process.ExitCode
+}
+
+$spec = Get-ArchitectureSpec $Architecture
+if (-not $BuildDir) {
+    $BuildDir = Join-Path (& "$PSScriptRoot\_targetdir.ps1") $spec.BuildSubdirectory
+}
+$prog = Join-Path $env:ProgramFiles $spec.InstallDirectoryName
 $shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'SageThumbs 2K.lnk'
 
+if ($ValidateOnly) {
+    foreach ($artifact in @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe')) {
+        Assert-PeArchitecture (Join-Path $BuildDir $artifact) $spec
+    }
+    [pscustomobject]@{ Architecture = $spec.Name; RustTarget = $spec.RustTarget; BuildDir = $BuildDir }
+    return
+}
+
+# An ARM64 COM server cannot be registered into x64 Windows. Reject before any
+# Program Files, registry, package, or Explorer mutation; -ValidateOnly above
+# intentionally remains usable from an x64 cross-build host.
+Assert-NativeArm64Host $spec
+
 if ($Uninstall) {
-    if (Test-Path "$prog\sagethumbs2k.dll") { regsvr32 /s /u "$prog\sagethumbs2k.dll" }
+    if (Test-Path "$prog\sagethumbs2k.dll") {
+        $registrationExit = Invoke-Regsvr32 "$prog\sagethumbs2k.dll" -Unregister
+        if ($registrationExit -ne 0) { throw "regsvr32 unregister failed ($registrationExit): $prog\sagethumbs2k.dll" }
+    }
     Get-AppxPackage $pkg | Remove-AppxPackage -ErrorAction SilentlyContinue
     # Clear the modern-menu marker (see install path below).
     Remove-ItemProperty 'HKLM:\SOFTWARE\SageThumbs2K' -Name 'ModernMenuActive' -ErrorAction SilentlyContinue
@@ -43,6 +142,9 @@ if ($Uninstall) {
 }
 
 New-Item -ItemType Directory -Path $prog -Force | Out-Null
+foreach ($artifact in @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe')) {
+    Assert-PeArchitecture (Join-Path $BuildDir $artifact) $spec
+}
 Copy-Item "$BuildDir\sagethumbs2k.dll" $prog -Force
 # The bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly.
 Copy-Item "$BuildDir\SageThumbs2K.exe" $prog -Force
@@ -51,6 +153,18 @@ Copy-Item "$BuildDir\SageThumbs2K.exe" $prog -Force
 Copy-Item "$BuildDir\st2k.exe" $prog -Force
 Copy-Item "$root\packaging\AppxManifest.xml" $prog -Force
 Copy-Item "$root\packaging\Assets" $prog -Recurse -Force
+# The legacy x64 loose package stays neutral for update compatibility. ARM64
+# Explorer can load only an ARM64 in-process extension, so its dev manifest must
+# declare arm64. Patch the copied manifest, never the tracked template.
+if ($spec.Name -eq 'arm64') {
+    $installedManifest = Join-Path $prog 'AppxManifest.xml'
+    $manifestText = Get-Content -LiteralPath $installedManifest -Raw
+    $manifestText = $manifestText -replace '(<Identity\b[^>]*\bProcessorArchitecture=")[^"]+("[^>]*>)', '${1}arm64${2}'
+    if ($manifestText -notmatch '<Identity\b[^>]*\bProcessorArchitecture="arm64"') {
+        throw "Could not set ARM64 package identity in $installedManifest"
+    }
+    Set-Content -LiteralPath $installedManifest -Value $manifestText -Encoding utf8
+}
 # Our hardened ImageMagick policy.xml next to the binaries. decode.rs points
 # MAGICK_CONFIGURE_PATH here, so the policy applies even when we fall back to a
 # system-installed magick (this dev/compact install bundles none of its own).
@@ -59,7 +173,8 @@ Copy-Item "$root\packaging\imagemagick-policy.xml" "$prog\policy.xml" -Force
 # Thumbnails + classic context menu (machine-wide, HKLM). This classic IContextMenu
 # handler serves the full owner-drawn preview + "SageThumbs 2K" submenu with Settings
 # in "Show more options" (and the whole right-click menu on classic-menu machines).
-regsvr32 /s "$prog\sagethumbs2k.dll"
+$registrationExit = Invoke-Regsvr32 "$prog\sagethumbs2k.dll"
+if ($registrationExit -ne 0) { throw "regsvr32 registration failed ($registrationExit): $prog\sagethumbs2k.dll" }
 # Modern Win11 menu: register the sparse package (Dev Mode, UNSIGNED loose -Register —
 # the signed installer.iss path uses the packed .msix instead) so the packaged QUICK
 # verbs (Convert into / Convert… / Resize / Rotate) appear on the compact Win11 menu.

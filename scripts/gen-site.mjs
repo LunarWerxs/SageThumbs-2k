@@ -45,15 +45,29 @@ if (!VERSION) throw new Error('could not read version from Cargo.toml');
 
 // ---- build the format-wall block (bar + fmtwall) ---------------------------
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// EVERY category `st2k formats --json` can emit must appear here. A category missing
+// from this list is silently dropped from the wall AND from the bar, so the bar stops
+// summing to 100% and the site under-reports what ships (that is exactly what happened
+// to `Archive` between its release and 2026-08-01). The assertion below enforces it.
 const ORDER = [
   ['img', 'Image', 'Image', '#4d9cff'], ['doc', 'Document', 'Document', '#ef8b5a'],
   ['raw', 'Camera RAW', 'Camera RAW', '#b48bff'], ['vid', 'Video', 'Video', '#f06ab0'],
   ['aud', 'Audio', 'Audio', '#38d39f'], ['ebk', 'Ebook', 'Ebook &amp; comics', '#f2c14e'],
+  ['arc', 'Archive', 'Archive', '#7d8ca3'],
 ];
-const ARIA = { img: 'image', doc: 'document', raw: 'camera raw', vid: 'video', aud: 'audio', ebk: 'ebook and comics' };
+const ARIA = { img: 'image', doc: 'document', raw: 'camera raw', vid: 'video', aud: 'audio', ebk: 'ebook and comics', arc: 'archive' };
 const CR = '\r\n';
 const by = {};
 for (const x of formats) (by[x.category] = by[x.category] || []).push(x);
+
+// Fail loudly rather than quietly shipping a wall that omits a whole category.
+const missing = Object.keys(by).filter(c => !ORDER.some(([, cat]) => cat === c));
+if (missing.length) {
+  throw new Error(
+    `gen-site: ${missing.length} format categor${missing.length === 1 ? 'y is' : 'ies are'} ` +
+    `missing from ORDER: ${missing.join(', ')}. Add each one (with a swatch colour and an ` +
+    `ARIA label) plus a matching .fmtgroup[data-cat="..."] rule in site/index.html.`);
+}
 const aria = [], spans = [], groups = [];
 for (const [dc, cat, label, color] of ORDER) {
   const items = (by[cat] || []).slice().sort((a, b) => a.ext.localeCompare(b.ext));

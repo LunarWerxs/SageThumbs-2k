@@ -8,7 +8,9 @@
   (committed, not pushed). Run from anywhere:  pwsh scripts\release.ps1
 
   Flow:  curated-notes + consistency check  ->  clean-main guard  ->  push
-         ->  WAIT for CI green  ->  build + provenance-validate the full installer
+         ->  WAIT for CI green  ->  build + provenance-validate every installer whose
+             size reference is calibrated in packaging\size-budget.json (x64 always;
+             ARM64 only once its first installer has been recorded there)
          ->  create a draft, verify the uploaded digest, publish -> winget.
 
   -SkipBuild is safe only after a full build of this exact clean commit: the
@@ -25,6 +27,75 @@ try {
     if (-not $ver) { throw "could not read version from Cargo.toml" }
     $tag = "v$ver"
     Write-Host "== Releasing $tag ==" -ForegroundColor Cyan
+    # A release ships one artifact per architecture whose installer size reference is
+    # CALIBRATED in packaging\size-budget.json.  Keep the candidate table explicit:
+    # selecting a "newest" setup from dist would let an old or wrong-architecture
+    # installer become a release asset.
+    #
+    # ARM64 is filtered out until its first installer has been built, qualified on native
+    # hardware, and recorded in that policy.  check-release-size.ps1 refuses an
+    # uncalibrated reference by design, so keeping ARM64 in the table unconditionally only
+    # aborts the run at step [4/6] - AFTER main is pushed and CI is already green, leaving
+    # a pushed, CI-green, untagged commit and no published release.  Calibrating the policy
+    # turns this leg back on with no edit here.
+    $candidateArtifacts = @(
+        [pscustomobject]@{
+            Architecture = 'x64'
+            SetupPath    = Join-Path $root "dist\SageThumbs2K-Setup-$ver.exe"
+            ManifestPath = Join-Path $root "dist\SageThumbs2K-Setup-$ver.release.json"
+            StagePath    = Join-Path $root 'packaging\stage\x64'
+            Setup        = $null
+            Manifest     = $null
+        }
+        [pscustomobject]@{
+            Architecture = 'arm64'
+            SetupPath    = Join-Path $root "dist\SageThumbs2K-Setup-$ver-arm64.exe"
+            ManifestPath = Join-Path $root "dist\SageThumbs2K-Setup-$ver-arm64.release.json"
+            StagePath    = Join-Path $root 'packaging\stage\arm64'
+            Setup        = $null
+            Manifest     = $null
+        }
+    )
+
+    $sizePolicyPath = Join-Path $root 'packaging\size-budget.json'
+    try { $sizePolicy = Get-Content -LiteralPath $sizePolicyPath -Raw | ConvertFrom-Json }
+    catch { throw "release size policy is not valid JSON: $sizePolicyPath`n$($_.Exception.Message)" }
+    function Test-InstallerReferenceCalibrated([string]$Architecture) {
+        # Mirrors check-release-size.ps1's profile selection so the two cannot disagree
+        # about which profile a given architecture ships.
+        $profileName = if ($Architecture -eq 'x64') { 'full' } else { 'compact' }
+        $architecturePolicy = $sizePolicy.architectures.PSObject.Properties[$Architecture]
+        if ($null -eq $architecturePolicy -or $null -eq $architecturePolicy.Value) {
+            throw "size policy has no '$Architecture' architecture policy: $sizePolicyPath"
+        }
+        $profilePolicy = $architecturePolicy.Value.PSObject.Properties[$profileName]
+        if ($null -eq $profilePolicy -or $null -eq $profilePolicy.Value) {
+            throw "size policy has no '$Architecture/$profileName' profile: $sizePolicyPath"
+        }
+        $calibrated = $profilePolicy.Value.PSObject.Properties['installerReferenceCalibrated']
+        if ($null -eq $calibrated -or $calibrated.Value -isnot [bool]) {
+            throw "size policy '$Architecture/$profileName' needs a boolean installerReferenceCalibrated"
+        }
+        return [bool]$calibrated.Value
+    }
+
+    $releaseArtifacts = @()
+    $skippedArchitectures = @()
+    foreach ($candidate in $candidateArtifacts) {
+        if (Test-InstallerReferenceCalibrated $candidate.Architecture) {
+            $releaseArtifacts += $candidate
+        } else {
+            $skippedArchitectures += $candidate.Architecture
+        }
+    }
+    # x64 is the established primary installer; a release without it is never correct.
+    if (@($releaseArtifacts | Where-Object Architecture -ceq 'x64').Count -ne 1) {
+        throw "x64 installer size reference is not calibrated in $sizePolicyPath - refusing to release"
+    }
+    Write-Host "   architectures in this release: $($releaseArtifacts.Architecture -join ', ')" -ForegroundColor Cyan
+    foreach ($architecture in $skippedArchitectures) {
+        Write-Host "   NOT in this release: $architecture - its installer size reference is uncalibrated in packaging\size-budget.json." -ForegroundColor Yellow
+    }
 
     # 0) Curated notes + consistency. The release body is derived from this exact
     # tracked changelog section; there is deliberately no generated-notes fallback.
@@ -76,25 +147,37 @@ try {
     if ($concl -ne 'success') { throw "CI on $($sha.Substring(0,7)) finished '$concl' (not success) - NOT releasing. Fix + re-run." }
     Write-Host "      CI green." -ForegroundColor Green
 
-    # 4) build the shippable installer containing the signed sparse MSIX
-    # (CI validates code; it doesn't build the installer).
+    # 4) Build the shippable installers.  CI validates code; it does not
+    # build installers.  The build driver keeps their stages separate.
     if (-not $SkipBuild) {
-        Write-Host "[4/6] build installer" -ForegroundColor Green
-        pwsh "$root\scripts\build-release.ps1"; if ($LASTEXITCODE) { throw "installer build failed" }
+        Write-Host "[4/6] build installers: $($releaseArtifacts.Architecture -join ' + ')" -ForegroundColor Green
+        foreach ($artifact in $releaseArtifacts) {
+            $buildArgs = @('-Architecture', $artifact.Architecture)
+            if ($artifact.Architecture -eq 'arm64') {
+                # The ARM64 artifact is intentionally Compact: the pinned bundled
+                # ImageMagick payload is x64-only and the build driver rejects it.
+                $buildArgs += '-NoImageMagick'
+            }
+            pwsh "$root\scripts\build-release.ps1" @buildArgs
+            if ($LASTEXITCODE) { throw "$($artifact.Architecture) installer build failed" }
+        }
     } else {
-        Write-Host "[4/6] -SkipBuild: require exact full-build provenance" -ForegroundColor Yellow
+        Write-Host "[4/6] -SkipBuild: require exact full-build provenance for $($releaseArtifacts.Architecture -join ' + ')" -ForegroundColor Yellow
     }
-    $setupPath = Join-Path $root "dist\SageThumbs2K-Setup-$ver.exe"
-    $setup = Get-Item -LiteralPath $setupPath -EA Stop
-    $manifest = Join-Path $root "dist\SageThumbs2K-Setup-$ver.release.json"
-    $stage = Join-Path $root 'packaging\stage'
-    pwsh "$root\scripts\check-release-manifest.ps1" `
-        -InstallerPath $setup.FullName `
-        -StagePath $stage `
-        -ManifestPath $manifest `
-        -ExpectedVersion $ver `
-        -ExpectedCommitSha $sha
-    if ($LASTEXITCODE) { throw "release provenance/integrity gate failed - NOT publishing" }
+    foreach ($artifact in $releaseArtifacts) {
+        $artifact.Setup = Get-Item -LiteralPath $artifact.SetupPath -ErrorAction Stop
+        $artifact.Manifest = Get-Item -LiteralPath $artifact.ManifestPath -ErrorAction Stop
+        pwsh "$root\scripts\check-release-manifest.ps1" `
+            -InstallerPath $artifact.Setup.FullName `
+            -StagePath $artifact.StagePath `
+            -ManifestPath $artifact.Manifest.FullName `
+            -ExpectedVersion $ver `
+            -ExpectedCommitSha $sha `
+            -Architecture $artifact.Architecture
+        if ($LASTEXITCODE) {
+            throw "$($artifact.Architecture) release provenance/integrity gate failed - NOT publishing"
+        }
+    }
 
     # 4b) VirusTotal the EXACT artifact we are about to publish, BEFORE publishing it.
     # Added 2026-07-18: nothing scanned releases up to and including v1.2.0, so ESET's
@@ -107,14 +190,18 @@ try {
     Write-Host "[4b/6] VirusTotal scan (gate)" -ForegroundColor Green
     $vt = Join-Path $root 'push_to_vt.py'
     if ((Test-Path $vt) -and (Test-Path "$root\.env") -and (Get-Command python -EA SilentlyContinue)) {
-        python $vt $setup.FullName --gate
-        if ($LASTEXITCODE) {
-            throw "VirusTotal gate FAILED for $($setup.Name) - NOT publishing. Review the permalink above."
+        foreach ($artifact in $releaseArtifacts) {
+            python $vt $artifact.Setup.FullName --gate
+            if ($LASTEXITCODE) {
+                throw "VirusTotal gate FAILED for $($artifact.Setup.Name) - NOT publishing. Review the permalink above."
+            }
         }
     } else {
         Write-Host "      SKIPPED - push_to_vt.py, .env, or python missing (both are gitignored;" -ForegroundColor Yellow
         Write-Host "      recreate them after a fresh clone). Scan manually before announcing:" -ForegroundColor Yellow
-        Write-Host "        python push_to_vt.py `"$($setup.FullName)`" --gate" -ForegroundColor Yellow
+        foreach ($artifact in $releaseArtifacts) {
+            Write-Host "        python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate" -ForegroundColor Yellow
+        }
     }
 
     # The build must not move HEAD or rewrite tracked inputs after we captured + validated $sha.
@@ -129,27 +216,46 @@ try {
     }
 
     # Produce the release body from the reviewed changelog and the now-validated
-    # artifact. This keeps its displayed digest coupled to the uploaded bytes.
+    # x64 is the established primary installer in the exporter; append ARM64's
+    # independently validated digest so the public notes cover both uploads.
     $notes = Join-Path $root "dist\RELEASE-NOTES-$tag.md"
+    $x64Artifact = @($releaseArtifacts | Where-Object Architecture -ceq 'x64')
+    if ($x64Artifact.Count -ne 1) { throw 'release artifact table has no unique x64 installer' }
     pwsh "$root\scripts\export-release-notes.ps1" `
         -Version $ver `
-        -InstallerPath $setup.FullName `
+        -InstallerPath $x64Artifact[0].Setup.FullName `
         -OutputPath $notes
     if ($LASTEXITCODE) { throw "curated release-note export failed - NOT publishing" }
+    $arm64Artifact = @($releaseArtifacts | Where-Object Architecture -ceq 'arm64')
+    if ($arm64Artifact.Count -gt 1) { throw 'release artifact table has more than one ARM64 installer' }
+    if ($arm64Artifact.Count -eq 1) {
+        Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+            '',
+            '- **ARM64 Compact installer:** ``' + $arm64Artifact[0].Setup.Name + '``',
+            '- **ARM64 SHA-256:** ``' + (Get-ReleaseSha256 -Path $arm64Artifact[0].Setup.FullName) + '``'
+        )
+    }
 
     # 5) Create a DRAFT first. Verify GitHub received the exact local bytes before
     # publishing, so an upload anomaly never briefly exposes a corrupt public build.
     # Target the immutable SHA we actually checked, not the moving `main` ref: another push while
     # this script waits/builds must never make the release tag point at an unvalidated commit.
     Write-Host "[5/6] create + verify draft release $tag" -ForegroundColor Green
-    gh release create $tag $setup.FullName $manifest `
+    $releaseAssetPaths = @(
+        foreach ($artifact in $releaseArtifacts) {
+            $artifact.Setup.FullName
+            $artifact.Manifest.FullName
+        }
+    )
+    gh release create $tag @releaseAssetPaths `
         --draft `
         --title "SageThumbs 2K $ver" `
         --target $sha `
         --notes-file $notes
     if ($LASTEXITCODE) { throw "gh draft release create failed" }
 
-    foreach ($asset in @($setup, (Get-Item -LiteralPath $manifest -ErrorAction Stop))) {
+    foreach ($assetPath in $releaseAssetPaths) {
+        $asset = Get-Item -LiteralPath $assetPath -ErrorAction Stop
         $localDigest = 'sha256:' + (Get-ReleaseSha256 -Path $asset.FullName)
         $remoteDigest = gh release view $tag --json assets `
             --jq ".assets[] | select(.name == `"$($asset.Name)`") | .digest"
@@ -174,7 +280,7 @@ try {
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[winget] onboarded - the Publish-to-winget workflow auto-publishes $tag." -ForegroundColor DarkGray
     } else {
-        $dl = "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/$tag/$($setup.Name)"
+        $dl = "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/$tag/$($x64Artifact[0].Setup.Name)"
         Write-Host ""
         Write-Host "  =========== ACTION NEEDED (one-time): submit to winget ===========" -ForegroundColor Yellow
         Write-Host "  LunarWerxs.SageThumbs2K is not in winget-pkgs yet, so auto-publish is skipped." -ForegroundColor Yellow

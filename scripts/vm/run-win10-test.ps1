@@ -25,7 +25,8 @@ param(
     [string]$ResultDir = 'D:\isos\win10-test-results',
     [int]$BootTimeoutMin = 25,
     [switch]$Keep,
-    [switch]$Resume
+    [switch]$Resume,
+    [string]$Installer
 )
 $ErrorActionPreference = 'Stop'
 function Say($m) { Write-Host "[win10] $((Get-Date).ToString('HH:mm:ss')) $m" -ForegroundColor Cyan }
@@ -37,8 +38,19 @@ if (-not (Test-Path $Iso)) { Write-Host "ISO not found: $Iso" -ForegroundColor R
 
 $repo    = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $corpus  = Join-Path (Split-Path $repo -Parent) 'test-corpus'
-$installer = Get-ChildItem (Join-Path $repo 'dist') -Filter 'SageThumbs2K-Setup-*.exe' |
-             Sort-Object LastWriteTime -Descending | Select-Object -First 1 -Exp FullName
+$ver = ([regex]::Match((Get-Content -LiteralPath (Join-Path $repo 'Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
+if (-not $ver) { throw 'could not read version from Cargo.toml' }
+$expectedInstallerName = "SageThumbs2K-Setup-$ver.exe"
+if (-not $Installer) {
+    $Installer = Join-Path $repo "dist\$expectedInstallerName"
+}
+if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
+    Write-Host "missing expected x64 installer: $expectedInstallerName" -ForegroundColor Red; exit 1
+}
+$installer = (Get-Item -LiteralPath $Installer -ErrorAction Stop).FullName
+if ((Split-Path -Path $installer -Leaf) -cne $expectedInstallerName) {
+    throw "run-win10-test requires the exact x64 installer '$expectedInstallerName'"
+}
 $unattend = Join-Path $PSScriptRoot 'autounattend-win10.xml'
 foreach ($p in @($installer, $unattend)) { if (-not (Test-Path $p)) { Write-Host "missing: $p" -ForegroundColor Red; exit 1 } }
 New-Item -ItemType Directory -Force $VmRoot, $ResultDir | Out-Null

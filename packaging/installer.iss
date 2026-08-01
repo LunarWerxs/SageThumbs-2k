@@ -6,6 +6,34 @@
 #ifndef AppVer
   #define AppVer "0.0.0"
 #endif
+#ifndef Architecture
+  #define Architecture "x64"
+#endif
+#ifndef StageDir
+  #define StageDir "stage"
+#endif
+#ifndef CompactOnly
+  #define CompactOnly "0"
+#endif
+#ifndef OutputSuffix
+  #define OutputSuffix ""
+#endif
+
+; Keep the bare-ISCC developer path compatible with the existing x64 release.
+; Release automation supplies these explicitly for each architecture.
+#if (Architecture != "x64") && (Architecture != "arm64")
+  #error Unsupported Architecture: pass /DArchitecture=x64 or /DArchitecture=arm64
+#endif
+#if (CompactOnly != "0") && (CompactOnly != "1")
+  #error CompactOnly must be 0 or 1
+#endif
+#if (Architecture == "x64")
+  ; ARM64 has its own native installer. Do not let the x64 variant install under
+  ; emulation, where Explorer could not load its in-process shell extension.
+  #define ArchitectureMatcher "x64compatible and not arm64"
+#else
+  #define ArchitectureMatcher "arm64"
+#endif
 ; Live format count, injected by build-release.ps1 from `st2k formats` (never hardcode
 ; it — the count is whatever formats.rs FORMATS.len() returns). Count-free fallback so a
 ; bare ISCC compile still produces sensible text.
@@ -19,20 +47,24 @@
 #define Publisher "lunarwerx"
 
 [Setup]
-; Stable upgrade GUID - keep constant across releases so updates replace cleanly.
+; One stable identity and directory cover both release architectures. They share
+; COM CLSIDs and the sparse-package identity, so they cannot safely coexist; on an
+; ARM64 machine the native installer upgrades/replaces any older emulated x64 copy.
+; Keep these values shared so Inno finds and updates the same uninstall record.
 AppId={{B0A1C2D3-E4F5-4607-8899-AABBCCDDEEFF}
 AppName={#AppName}
 AppVersion={#AppVer}
 AppPublisher={#Publisher}
 AppPublisherURL=https://github.com/LunarWerxs/SageThumbs-2k
 DefaultDirName={autopf}\SageThumbs2K
+UsePreviousAppDir=yes
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 UninstallDisplayIcon={app}\app.ico
-SetupIconFile=stage\app.ico
+SetupIconFile={#StageDir}\app.ico
 OutputDir=..\dist
-OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}
+OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}{#OutputSuffix}
 ; The full payload contains three closely related Rust binaries plus a curated
 ; native codec tree. A 64 MiB dictionary keeps those repeated code regions in one
 ; solid window; /max's 8 MiB window evicts them and adds several megabytes without
@@ -50,20 +82,28 @@ VersionInfoCompany={#Publisher}
 VersionInfoProductName={#AppName}
 VersionInfoDescription={#AppName} Setup
 VersionInfoCopyright=SageThumbs 2K
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#ArchitectureMatcher}
+ArchitecturesInstallIn64BitMode={#ArchitectureMatcher}
 ; Shell-extension registration writes HKLM + Program Files -> needs elevation.
 PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
+#if (Architecture == "x64") && (CompactOnly == "0")
 Name: "full"; Description: "Full - all {#FmtCount} formats (recommended)"
+#endif
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
 [Components]
+#if (Architecture == "x64") && (CompactOnly == "0")
 Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: full compact custom; Flags: fixed
+#else
+Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: compact custom; Flags: fixed
+#endif
+#if (Architecture == "x64") && (CompactOnly == "0")
 Name: "magick"; Description: "ImageMagick engine - 100+ extra formats"; Types: full custom
+#endif
 
 [InstallDelete]
 ; ImageMagick is a curated, flattened payload. Inno upgrades in place and does
@@ -96,25 +136,27 @@ Type: files; Name: "{app}\NOTICE.txt"
 ; Keep the DLL and CLI adjacent in the solid stream. Both are mostly the shared
 ; core, so adjacency also helps lower-memory tooling and keeps their repeated
 ; regions close in the solid stream.
-Source: "stage\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
-Source: "stage\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "stage\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
+Source: "{#StageDir}\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
+Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 ; Signed sparse package + its public cert -> the Windows 11 modern context menu.
 ; Built by packaging\make-msix.ps1 (self-signed; skipped with -NoModernMenu).
-Source: "stage\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "stage\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 ; Branding assets: icon (shortcut/uninstall) + swappable logo/banner overrides.
-Source: "stage\app.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "stage\logo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "stage\banner.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "stage\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "stage\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\logo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\banner.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 ; The hardened policy is core: Compact can deliberately fall back to a Program
 ; Files ImageMagick and must constrain it too. The full bundle's duplicate copy
 ; exists for exact staged testing but is excluded from this second installer row.
-Source: "stage\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core
+Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 ; Bundled ImageMagick (magick.exe + DLLs + modules\).
-Source: "stage\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick
+#if (Architecture == "x64") && (CompactOnly == "0")
+Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick
+#endif
 
 [Icons]
 Name: "{group}\SageThumbs 2K"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\app.ico"
@@ -211,12 +253,9 @@ begin
   Result := (V.Major > 10) or ((V.Major = 10) and (V.Build >= 22000));
 end;
 
-// Gate BOTH the sparse-package registration and the HKLM marker on the modern menu
-// actually being usable here. The marker tells the classic handler "Windows is bridging
-// our packaged Convert/Resize/Rotate verbs into Show more options, so don't emit your own
-// copies too" (settings::modern_menu_active). On Windows 10 nothing bridges them -- setting
-// it there made the classic handler suppress its quick verbs in favour of verbs that never
-// appear, so those items silently vanished from the right-click menu (issue #5).
+// Register the sparse package only where Explorer can surface its modern compact-menu
+// commands. The legacy "Show more options" menu is independent: its classic handler
+// always emits its own enabled quick verbs and does not read a package-active marker.
 function ModernMenuUsable: Boolean;
 begin
   Result := ModernMenuBundled and IsWindows11;

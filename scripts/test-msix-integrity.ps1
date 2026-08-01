@@ -102,6 +102,23 @@ try {
             -Version $version
     }
 
+    $arm64Out = Join-Path $scratch 'arm64'
+    & (Join-Path $root 'packaging\make-msix.ps1') -OutDir $arm64Out -Architecture arm64 *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'ARM64 test MSIX build/sign failed' }
+    Assert-Passes 'ARM64 signature, signer certificate, and manifest identity' {
+        Assert-ReleaseMsixPackage `
+            -Path (Join-Path $arm64Out 'SageThumbs2K.msix') `
+            -CertificatePath (Join-Path $arm64Out 'SageThumbs2K.cer') `
+            -Version $version `
+            -ExpectedProcessorArchitecture arm64
+    }
+    Assert-Fails 'ARM64 package does not pass the neutral identity contract' 'ProcessorArchitecture' {
+        Assert-ReleaseMsixPackage `
+            -Path (Join-Path $arm64Out 'SageThumbs2K.msix') `
+            -CertificatePath (Join-Path $arm64Out 'SageThumbs2K.cer') `
+            -Version $version
+    }
+
     $tampered = Join-Path $scratch 'tampered.msix'
     Copy-Item -LiteralPath $msix -Destination $tampered
     $archive = [IO.Compression.ZipFile]::Open(

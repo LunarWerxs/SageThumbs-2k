@@ -8,6 +8,9 @@
 //! The ICC color profile (JPEG APP2 / PNG iCCP) is deliberately KEPT — stripping
 //! it shifts colors on wide-gamut displays.
 
+use core::ffi::c_void;
+use std::iter::once;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use img_parts::jpeg::{markers, Jpeg};
@@ -15,6 +18,7 @@ use img_parts::png::Png;
 use img_parts::Bytes;
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
+use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEITEM, SHCNF_PATHW};
 
 use crate::verbs::read_capped;
 
@@ -88,6 +92,14 @@ pub fn strip_metadata(path: &str) -> Result<()> {
 /// In-place overwrite via a same-volume temp + rename, with a short retry so a
 /// transient Explorer/thumbnail-cache lock (os error 5/32) doesn't fail it.
 fn atomic_overwrite(dst: &Path, data: &[u8]) -> Result<()> {
+    atomic_overwrite_with(dst, data, notify_item_updated)
+}
+
+/// Atomically replace `dst`, then report the changed item to Explorer.
+///
+/// Keeping the notification callback explicit lets the rewrite path be tested
+/// without depending on a running Explorer shell.
+fn atomic_overwrite_with(dst: &Path, data: &[u8], notify: impl FnOnce(&Path)) -> Result<()> {
     let tmp: PathBuf = {
         let mut s = dst.to_path_buf().into_os_string();
         s.push(".st2ktmp");
@@ -100,7 +112,22 @@ fn atomic_overwrite(dst: &Path, data: &[u8]) -> Result<()> {
     crate::fsutil::rename_retrying(&tmp, dst).map_err(|_| {
         let _ = std::fs::remove_file(&tmp);
         Error::from(E_FAIL)
-    })
+    })?;
+    notify(dst);
+    Ok(())
+}
+
+/// Tell Explorer that one existing file was rewritten in place.
+fn notify_item_updated(path: &Path) {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(once(0)).collect();
+    unsafe {
+        SHChangeNotify(
+            SHCNE_UPDATEITEM,
+            SHCNF_PATHW,
+            Some(wide.as_ptr() as *const c_void),
+            None,
+        );
+    }
 }
 
 /// What "Image info" shows. Uses the existing `image` + `kamadak-exif` deps.
@@ -617,6 +644,30 @@ fn format_exif_datetime(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_overwrite_notifies_the_rewritten_item_only_after_success() {
+        let dir = std::env::temp_dir().join(format!("st2k_strip_notify_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rewritten.jpg");
+        std::fs::write(&path, b"old").unwrap();
+
+        let mut notified = None;
+        atomic_overwrite_with(&path, b"new", |updated| {
+            notified = Some(updated.to_path_buf())
+        })
+        .unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(notified.as_deref(), Some(path.as_path()));
+
+        let missing = dir.join("missing").join("never-written.jpg");
+        let mut failed_notify = false;
+        assert!(atomic_overwrite_with(&missing, b"new", |_| failed_notify = true).is_err());
+        assert!(!failed_notify, "a failed rewrite must not notify Explorer");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A minimal little-endian TIFF/EXIF block carrying a single `Make` tag.
     /// Layout: header(8) | entry count(2) | one 12-byte entry | next-IFD(4) |

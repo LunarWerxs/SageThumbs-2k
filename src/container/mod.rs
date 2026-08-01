@@ -34,6 +34,7 @@ pub(crate) mod collage;
 mod djvu;
 mod dwg;
 mod eps;
+pub(crate) use eps::is_eps;
 mod epub;
 mod fb2;
 mod gcode;
@@ -250,10 +251,18 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
         }
     }
     // DOS-EPS: the baked-in TIFF screen preview (real PS rendering would need
-    // Ghostscript). On None (WMF-only/bare PS), fall through to the magick tier.
+    // Ghostscript). A WMF-only/bare file stays terminally unsupported in the
+    // decoder instead of falling through to any PostScript-capable external tier.
     if bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
         if let Some(tiff) = eps::extract(bytes) {
             return Some(CoverOut::Bytes(tiff));
+        }
+    }
+    // Plain EPS: only read an already-embedded EPSI/Photoshop raster preview;
+    // never invoke a PostScript interpreter in the thumbnail host.
+    if bytes.starts_with(b"%!PS") {
+        if let Some(cover) = eps::extract_ascii_preview(bytes) {
+            return Some(cover);
         }
     }
     // Apple Icon Image: slice out the largest embedded PNG / JPEG-2000 member.

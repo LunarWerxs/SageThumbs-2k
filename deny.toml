@@ -23,6 +23,7 @@
 # build for.
 targets = [
     { triple = "x86_64-pc-windows-msvc" },
+    { triple = "aarch64-pc-windows-msvc" },
 ]
 # Evaluate optional deps too, so the scan stays honest about what *could* be
 # compiled in.

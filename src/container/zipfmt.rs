@@ -192,3 +192,33 @@ pub(crate) fn read_named<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) ->
     f.take(super::MAX_COVER).read_to_end(&mut buf).ok()?;
     (!buf.is_empty()).then_some(buf)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn cbz_utf8_entry_name_extracts_and_lists_unchanged() {
+        let name = "第01話/表紙.png";
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([12, 34, 56, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&png).unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+
+        assert_eq!(list_bytes(&bytes, 1).unwrap()[0].name, name);
+        assert_eq!(extract(&bytes).as_deref(), Some(png.as_slice()));
+        assert_eq!(
+            covers_from_reader(Cursor::new(&bytes), 1).unwrap()[0].as_slice(),
+            png.as_slice()
+        );
+    }
+}

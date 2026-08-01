@@ -35,6 +35,12 @@ param(
     [Parameter(Mandatory)]
     [string[]]$DllCargoArguments,
 
+    # Artifact naming and Rust-target provenance are selected deliberately by the
+    # release caller.  Do not infer an architecture from a filename: a stale
+    # same-version installer must never change the target a manifest attests to.
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64',
+
     [string]$OutputPath
 )
 
@@ -51,7 +57,22 @@ if (-not $OutputPath) {
     $OutputPath = Join-Path $installer.DirectoryName "$($installer.BaseName).release.json"
 }
 
-$expectedInstallerName = "SageThumbs2K-Setup-$Version.exe"
+$targetSpec = switch ($Architecture) {
+    'x64' {
+        [pscustomobject]@{
+            RustTarget = 'x86_64-pc-windows-msvc'
+            InstallerName = "SageThumbs2K-Setup-$Version.exe"
+        }
+    }
+    'arm64' {
+        [pscustomobject]@{
+            RustTarget = 'aarch64-pc-windows-msvc'
+            InstallerName = "SageThumbs2K-Setup-$Version-arm64.exe"
+        }
+    }
+    default { throw "unsupported release architecture: $Architecture" }
+}
+$expectedInstallerName = $targetSpec.InstallerName
 if ($installer.Name -cne $expectedInstallerName) {
     throw "installer filename mismatch: '$($installer.Name)' (expected '$expectedInstallerName')"
 }
@@ -62,6 +83,7 @@ $rustBytes = [int64]0
 foreach ($name in $rustNames) {
     $path = Join-Path $stage.FullName $name
     Assert-ReleasePeMetadata -Path $path -Version $Version
+    Assert-ReleasePeArchitecture -Path $path -Architecture $Architecture
     $length = [int64](Get-Item -LiteralPath $path).Length
     if ($rustBytes -gt [int64]::MaxValue - $length) {
         throw 'staged Rust payload byte count overflowed Int64'
@@ -77,6 +99,10 @@ if ($ImageMagickBundled) {
     }
     Assert-ReleasePeFile -Path $magickExe
 }
+$magickDirectory = Join-Path $stage.FullName 'magick'
+if ($Architecture -eq 'arm64' -and ($ImageMagickBundled -or (Test-Path -LiteralPath $magickDirectory))) {
+    throw 'ARM64 Compact releases must not stage an ImageMagick payload'
+}
 
 $msixPath = Join-Path $stage.FullName 'SageThumbs2K.msix'
 $cerPath = Join-Path $stage.FullName 'SageThumbs2K.cer'
@@ -89,7 +115,8 @@ if ($ModernMenuBundled) {
     Assert-ReleaseMsixPackage `
         -Path $msixPath `
         -CertificatePath $cerPath `
-        -Version $Version
+        -Version $Version `
+        -ExpectedProcessorArchitecture $(if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' })
 }
 
 $gitHead = (& git -C $root rev-parse HEAD)
@@ -106,19 +133,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 $sourceTreeClean = $gitStatus.Count -eq 0
 
-$expectedExeArguments = @(
-    '--release', '--locked',
-    '-p', 'sagethumbs2k',
-    # `hdr-capture` is APP-ONLY (see Cargo.toml): it links D3D11/DXGI, which the
-    # shell DLL must never load. The production EXE recipe therefore carries it and
-    # the DLL recipe below deliberately does not.
-    '--features', 'webp-lossy,html-preview,hdr-capture'
-)
-$expectedDllArguments = @(
-    '--release', '--locked',
-    '-p', 'sagethumbs2k-dll',
-    '--features', 'webp-lossy,dll-i18n-subset'
-)
+# `hdr-capture` is APP-ONLY (see Cargo.toml): it links D3D11/DXGI, which the
+# shell DLL must never load. These canonical helpers are shared with the build
+# runner and checker so their exact ARM target ordering cannot drift.
+$expectedExeArguments = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture')
+$expectedDllArguments = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
 function Test-ExactArguments([string[]]$Actual, [string[]]$Expected) {
     if ($Actual.Count -ne $Expected.Count) { return $false }
     for ($i = 0; $i -lt $Expected.Count; $i++) {
@@ -129,8 +148,8 @@ function Test-ExactArguments([string[]]$Actual, [string[]]$Expected) {
 
 # DERIVE the recorded feature list from the recorded argument list. Never write the
 # features out a second time by hand: two hand-maintained copies of one truth drift,
-# and this one did. The 1.5.0 manifest claimed features `webp-lossy,html-preview`
-# while its own argument line said `webp-lossy,html-preview,hdr-capture`, because
+# and one prior manifest did: its recorded features omitted `hdr-capture` even
+# though its own argument line included `webp-lossy,html-preview,hdr-capture`, because
 # only the argument constant was updated when HDR capture was gated behind a feature.
 # The release gate caught the contradiction and refused to publish, which is the
 # system working; this makes the contradiction unrepresentable instead.
@@ -149,14 +168,14 @@ $hostLine = $rustcVerbose | Where-Object { $_ -match '^host:\s*(\S+)\s*$' } | Se
 if (-not $hostLine -or $hostLine -notmatch '^host:\s*(\S+)\s*$') {
     throw 'could not determine rustc host target'
 }
-$rustTarget = $Matches[1]
+$rustHost = $Matches[1]
 $cargoVersion = (& cargo -V)
 if ($LASTEXITCODE -ne 0 -or -not $cargoVersion) {
     throw 'cargo -V failed while recording the release toolchain'
 }
 $cargoVersion = $cargoVersion.Trim()
 $rustFlags = [string]$env:RUSTFLAGS
-$expectedRustTarget = 'x86_64-pc-windows-msvc'
+$expectedRustTarget = $targetSpec.RustTarget
 $expectedRustFlags = '-C target-feature=+crt-static'
 $exeRecipeExact = Test-ExactArguments -Actual $ExeCargoArguments -Expected $expectedExeArguments
 $dllRecipeExact = Test-ExactArguments -Actual $DllCargoArguments -Expected $expectedDllArguments
@@ -182,9 +201,13 @@ if (-not $sourceTreeClean) { $publishableReasons.Add('source tree was dirty at b
 if (-not $RustBuildPerformed) { $publishableReasons.Add('Rust build was skipped') }
 if (-not $exeRecipeExact) { $publishableReasons.Add('EXE Cargo build recipe was not production-exact') }
 if (-not $dllRecipeExact) { $publishableReasons.Add('DLL Cargo build recipe was not production-exact') }
-if ($rustTarget -cne $expectedRustTarget) { $publishableReasons.Add("Rust target was $rustTarget") }
+if ($rustHost -notmatch '^[A-Za-z0-9_-]+(?:-[A-Za-z0-9_-]+){2,}$') {
+    $publishableReasons.Add("rustc host was '$rustHost'")
+}
 if ($rustFlags -cne $expectedRustFlags) { $publishableReasons.Add("RUSTFLAGS was '$rustFlags'") }
-if (-not $ImageMagickBundled -or -not $magickPresent) { $publishableReasons.Add('full ImageMagick payload is absent') }
+if ($Architecture -eq 'x64' -and (-not $ImageMagickBundled -or -not $magickPresent)) {
+    $publishableReasons.Add('full ImageMagick payload is absent')
+}
 if (-not $ModernMenuBundled -or -not $modernPresent) { $publishableReasons.Add('modern-menu package is absent') }
 $publishable = $publishableReasons.Count -eq 0
 
@@ -197,10 +220,14 @@ $manifest = [ordered]@{
     sourceTreeClean = $sourceTreeClean
     publishable = $publishable
     publishableReasons = @($publishableReasons)
+    architecture = $Architecture
     build = [ordered]@{
         rustBuildPerformed = $RustBuildPerformed
         cargoLocked = $ExeCargoArguments -contains '--locked' -and $DllCargoArguments -contains '--locked'
-        rustTarget = $rustTarget
+        # This is the explicit Cargo target attested by the exact argument arrays;
+        # it is intentionally allowed to differ from the machine rustc host.
+        rustTarget = $expectedRustTarget
+        rustHost = $rustHost
         rustFlags = $rustFlags
         toolchain = [ordered]@{
             cargo = $cargoVersion

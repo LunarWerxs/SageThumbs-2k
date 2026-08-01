@@ -80,8 +80,8 @@ if ($Lint) {
         $out | Select-Object -First 40 | Write-Host
         $global:LASTEXITCODE = $code
     }
-    # CI gates clippy on --release; debug clippy catches the same lints faster and
-    # shares the ladder's debug cache. -D warnings: the tree is kept warning-clean,
+    # CI gates clippy in this same debug profile so it shares the test ladder's
+    # cache. -D warnings: the tree is kept warning-clean,
     # intentional exceptions carry a local #[allow] with a reason.
     Stage 'clippy -D warnings' {
         cargo clippy --workspace --all-targets --quiet -- -D warnings 2>&1 |
@@ -112,6 +112,19 @@ if ($Lint) {
     Stage 'check-consistency' {
         & (Join-Path $PSScriptRoot 'check-consistency.ps1')
     }
+    # Cheap offline PowerShell contract suites added alongside the ARM64 and
+    # dependency-maintenance paths. CI runs the same scripts in its consistency
+    # job; keeping them here prevents a local green -Lint from missing script drift.
+    Stage 'architecture + freshness contracts' {
+        foreach ($scriptName in @(
+            'test-architecture-release-contract.ps1',
+            'test-dev-architecture.ps1',
+            'test-magick-dependency-freshness.ps1'
+        )) {
+            & pwsh -NoProfile -File (Join-Path $PSScriptRoot $scriptName)
+            if ($LASTEXITCODE -ne 0) { throw "$scriptName failed" }
+        }
+    }
 }
 
 if ($Fast) {
@@ -135,6 +148,12 @@ if ($Samples) {
         }
         $expectFail = @{}
         $sizeGated  = @{}
+        # These pinned libheif fixtures specifically guard transparency routing,
+        # not merely format recognition. A rendered-but-opaque PNG is a regression.
+        $expectAlpha = @{
+            'sample-heic-alpha.heic' = $true
+            'sample-avif-alpha.avif' = $true
+        }
         $manifest = Join-Path $corpus '_expected-fail.txt'
         if (Test-Path $manifest) {
             Get-Content $manifest | ForEach-Object {
@@ -173,7 +192,27 @@ if ($Samples) {
             & $st2k thumbnail $f.FullName $png 256 *> $null
             $rendered = ($LASTEXITCODE -eq 0) -and (Test-Path $png)
             $wantFail = $expectFail.ContainsKey($f.Name)
-            if ($rendered -and -not $wantFail)      { Write-Host ("  OK        {0}" -f $f.Name) }
+            $alphaOk = $true
+            if ($rendered -and $expectAlpha.ContainsKey($f.Name)) {
+                Add-Type -AssemblyName System.Drawing
+                $bitmap = [System.Drawing.Bitmap]::FromFile($png)
+                try {
+                    $hasTransparent = $false
+                    $hasOpaque = $false
+                    for ($y = 0; $y -lt $bitmap.Height -and -not ($hasTransparent -and $hasOpaque); $y++) {
+                        for ($x = 0; $x -lt $bitmap.Width -and -not ($hasTransparent -and $hasOpaque); $x++) {
+                            $alpha = $bitmap.GetPixel($x, $y).A
+                            if ($alpha -lt 255) { $hasTransparent = $true }
+                            if ($alpha -eq 255) { $hasOpaque = $true }
+                        }
+                    }
+                    $alphaOk = $hasTransparent -and $hasOpaque
+                } finally {
+                    $bitmap.Dispose()
+                }
+            }
+            if ($rendered -and -not $wantFail -and $alphaOk) { Write-Host ("  OK        {0}" -f $f.Name) }
+            elseif ($rendered -and -not $wantFail)  { Write-Host ("  BAD       {0}  rendered but lost its alpha range" -f $f.Name) -ForegroundColor Red; $bad++ }
             elseif (-not $rendered -and $wantFail)  { Write-Host ("  OK (fail) {0}  [expected no thumbnail]" -f $f.Name) }
             elseif ($rendered -and $wantFail)       { Write-Host ("  BAD       {0}  rendered but is expected-fail" -f $f.Name) -ForegroundColor Red; $bad++ }
             else                                    { Write-Host ("  BAD       {0}  failed to render" -f $f.Name) -ForegroundColor Red; $bad++ }

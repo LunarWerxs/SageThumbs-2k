@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use embed_manifest::{embed_manifest, new_manifest};
 
@@ -47,6 +47,12 @@ fn main() {
         // keeps it to one object.) If windres is unavailable, fall back to
         // embed-manifest (no file icon, no version).
         if !embed_manifest_and_icon() {
+            if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+                panic!(
+                    "ARM64 resource compilation requires Windows SDK rc.exe; refusing an \
+                     icon/version/manifest-free binary"
+                );
+            }
             let _ = embed_manifest(new_manifest("SageThumbs2K.Options"));
         }
         // The shell-extension DLL's VERSIONINFO is now emitted by the separate
@@ -145,23 +151,23 @@ fn embed_manifest_and_icon() -> bool {
         if std::fs::write(format!("{out}/{rc_name}"), rc).is_err() {
             return false;
         }
-        let obj = format!("{out}/{obj_name}");
-        let built = ["windres", "x86_64-w64-mingw32-windres"]
-            .iter()
-            .any(|windres| {
-                let status = std::process::Command::new(windres)
-                    .args([
-                        "-I",
-                        &out,
-                        &format!("{out}/{rc_name}"),
-                        "-O",
-                        "coff",
-                        "-o",
-                        &obj,
-                    ])
-                    .status();
-                matches!(status, Ok(s) if s.success())
-            });
+        let rc_path = format!("{out}/{rc_name}");
+        let (obj, built) = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+            let res = format!("{out}/{}.res", obj_name.trim_end_matches(".o"));
+            let built = compile_with_windows_sdk_rc(&rc_path, &res);
+            (res, built)
+        } else {
+            let obj = format!("{out}/{obj_name}");
+            let built = ["windres", "x86_64-w64-mingw32-windres"]
+                .iter()
+                .any(|windres| {
+                    let status = std::process::Command::new(windres)
+                        .args(["-I", &out, &rc_path, "-O", "coff", "-o", &obj])
+                        .status();
+                    matches!(status, Ok(s) if s.success())
+                });
+            (obj, built)
+        };
         if !built {
             return false;
         }
@@ -174,6 +180,42 @@ fn embed_manifest_and_icon() -> bool {
         println!("cargo:rerun-if-changed=assets/app.ico");
     }
     true
+}
+
+/// Compile an architecture-neutral Windows `.res` with the SDK resource compiler.
+/// GNU windres installations on x64 emit x64 COFF objects even for ARM targets;
+/// `link.exe` can instead consume this `.res` while producing the final ARM64 PE.
+fn compile_with_windows_sdk_rc(input: &str, output: &str) -> bool {
+    windows_sdk_rc_candidates().into_iter().any(|rc| {
+        let status = std::process::Command::new(rc)
+            .args(["/nologo", &format!("/fo{output}"), input])
+            .status();
+        matches!(status, Ok(s) if s.success())
+    })
+}
+
+fn windows_sdk_rc_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("rc.exe")];
+    let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") else {
+        return candidates;
+    };
+    let sdk_bin = PathBuf::from(program_files_x86).join("Windows Kits/10/bin");
+    let Ok(entries) = std::fs::read_dir(sdk_bin) else {
+        return candidates;
+    };
+    let host = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let mut versions: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path().join(host).join("rc.exe"))
+        .filter(|path| path.is_file())
+        .collect();
+    versions.sort_by(|a, b| b.cmp(a));
+    candidates.extend(versions);
+    candidates
 }
 
 /// Build a Windows `VERSIONINFO` resource statement (as `.rc` text) with

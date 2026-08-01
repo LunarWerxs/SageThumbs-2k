@@ -2,9 +2,11 @@
 
 SageThumbs 2K uses ImageMagick as its tier-3 long-tail decoder and for the Convert
 dialog's exotic output encoders. It runs out of process with resource limits and a kill
-timeout; ImageMagick is never loaded into Explorer. The installer maps the contents of
-`packaging/stage/magick` directly into the application directory, so that staging
-directory is also the final flattened runtime layout.
+timeout; ImageMagick is never loaded into Explorer. The x64 Full installer maps the
+contents of `packaging/stage/x64/magick` directly into the application directory, so
+that staging directory is also the final flattened runtime layout. ARM64 is deliberately
+Compact-only and must not stage ImageMagick until an independently pinned ARM64 bundle
+exists.
 
 Correctness on a clean Windows installation is more important than shaving a few bytes.
 In particular, an installed developer copy of ImageMagick or the VC++ Redistributable
@@ -35,7 +37,11 @@ the first `C:\Program Files\ImageMagick*` directory is deliberately forbidden.
 
 An ImageMagick upgrade is therefore an explicit source change: review the new upstream
 package, update the pin, regenerate and inspect the stubs, run the full format regression
-corpus, and review the final dependency inventory.
+corpus, review the final dependency inventory, and run
+`pwsh scripts/check-magick-dependency-freshness.ps1 -BundlePath packaging/stage/x64/magick`.
+That last check is an advisory
+maintenance check against the official zlib and libpng pages, not a CI or release-network
+gate: an unavailable upstream site must not make a reproducible build fail.
 
 ## Exact root payload
 
@@ -214,7 +220,8 @@ zlib        1.3.2   (2026-02-17)     lqr         0.4.2   (2012-12-04)*
 ```
 
 `*` bzip2 1.0.8 and liblqr 0.4.2 are the newest upstream releases that exist, not stale pins.
-Regenerate this table after any bump with `Get-ChildItem packaging\stage\magick\CORE_RL_*.dll`
+Regenerate this table after any x64 ImageMagick bump with
+`Get-ChildItem packaging\stage\x64\magick\CORE_RL_*.dll`
 and its `VersionInfo`. The three text-stack entries are our own no-op stubs and carry the
 ImageMagick version instead, by design.
 
@@ -245,8 +252,8 @@ writer delegates, upstream legal files, and clean-machine runtimes.
 Focused fail-closed tests:
 
 ```powershell
-pwsh scripts/test-magick-packaging.ps1 -BundlePath packaging/stage/magick
-pwsh scripts/test-staged-regression.ps1
+pwsh scripts/test-magick-packaging.ps1 -BundlePath packaging/stage/x64/magick
+pwsh scripts/test-staged-regression.ps1 -StagePath packaging/stage/x64
 ```
 
 The tests prove that source-inventory drift, a missing `VCOMP140.dll`, a missing

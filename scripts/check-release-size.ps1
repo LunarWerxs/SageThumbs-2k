@@ -1,22 +1,18 @@
 <#
-  check-release-size.ps1 — fail closed when a release artifact exceeds the
-  tracked installer, raw Rust-payload, or raw ImageMagick-payload budget.
-
-  Usage:
-    pwsh scripts/check-release-size.ps1 -InstallerPath dist/SageThumbs2K-Setup-<version>.exe
-    pwsh scripts/check-release-size.ps1 -InstallerPath ... -StagePath packaging/stage
-
-  The installer limit catches download growth. The optional staged-payload limit
-  catches duplicated static code/data that solid compression can partially hide.
-  There is deliberately no environment-variable or force bypass: an intentional
-  budget increase must change packaging/size-budget.json in reviewable source.
+  Fail closed when a release artifact exceeds the selected architecture's
+  policy. x64 ships the Full profile; ARM64 ships Compact and never bundles
+  ImageMagick. ARM64's installer reference remains deliberately uncalibrated
+  until the first verified installer exists, so an ARM64 installer cannot pass
+  this gate merely because its raw Rust payload is within budget.
 #>
-
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$InstallerPath,
+
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64',
 
     [string]$PolicyPath,
 
@@ -25,172 +21,145 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-if (-not $PolicyPath) {
-    $PolicyPath = Join-Path $root 'packaging\size-budget.json'
-}
+if (-not $PolicyPath) { $PolicyPath = Join-Path $root 'packaging\size-budget.json' }
 
 function Read-RequiredText([object]$object, [string]$name) {
     $property = $object.PSObject.Properties[$name]
-    if ($null -eq $property -or $property.Value -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($property.Value)) {
+    if ($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)) {
         throw "size policy '$PolicyPath' requires a non-empty string '$name'"
     }
     return $property.Value
 }
 
+function Read-RequiredBool([object]$object, [string]$name) {
+    $property = $object.PSObject.Properties[$name]
+    if ($null -eq $property -or $property.Value -isnot [bool]) {
+        throw "size policy '$PolicyPath' requires Boolean '$name'"
+    }
+    return [bool]$property.Value
+}
+
 function Read-RequiredInt64([object]$object, [string]$name) {
     $property = $object.PSObject.Properties[$name]
-    if ($null -eq $property) {
-        throw "size policy '$PolicyPath' is missing '$name'"
-    }
-
+    if ($null -eq $property) { throw "size policy '$PolicyPath' is missing '$name'" }
     $value = $property.Value
     if ($value -is [bool] -or $value -is [string] -or $null -eq $value) {
         throw "size policy '$PolicyPath' requires integer '$name'"
     }
-
     try {
         $integer = [Convert]::ToInt64($value, [Globalization.CultureInfo]::InvariantCulture)
         $decimal = [Convert]::ToDecimal($value, [Globalization.CultureInfo]::InvariantCulture)
-    } catch {
-        throw "size policy '$PolicyPath' has invalid integer '$name': $value"
-    }
-
+    } catch { throw "size policy '$PolicyPath' has invalid integer '$name': $value" }
     if ($integer -lt 0 -or $decimal -ne [decimal]$integer) {
         throw "size policy '$PolicyPath' requires non-negative integer '$name'"
     }
     return [int64]$integer
 }
 
-function Format-Size([int64]$bytes) {
-    return ('{0:N0} bytes ({1:N3} MiB)' -f $bytes, ($bytes / 1MB))
-}
+function Format-Size([int64]$bytes) { return ('{0:N0} bytes ({1:N3} MiB)' -f $bytes, ($bytes / 1MB)) }
 
-if (-not (Test-Path -LiteralPath $PolicyPath -PathType Leaf)) {
-    throw "release size policy not found: $PolicyPath"
-}
-
-try {
-    $policy = Get-Content -LiteralPath $PolicyPath -Raw | ConvertFrom-Json
-} catch {
-    throw "release size policy is not valid JSON: $PolicyPath`n$($_.Exception.Message)"
-}
-if ($null -eq $policy) {
-    throw "release size policy is empty: $PolicyPath"
-}
-
-$schemaVersion = Read-RequiredInt64 $policy 'schemaVersion'
-if ($schemaVersion -ne 2) {
-    throw "unsupported release size policy schemaVersion $schemaVersion (expected 2)"
-}
-
-$referenceVersion = Read-RequiredText $policy 'referenceVersion'
-$referenceSha256 = Read-RequiredText $policy 'referenceInstallerSha256'
-$rationale = Read-RequiredText $policy 'rationale'
-if ($referenceSha256 -notmatch '^[0-9a-fA-F]{64}$') {
-    throw "size policy '$PolicyPath' has invalid referenceInstallerSha256"
-}
-
-$referenceInstaller = Read-RequiredInt64 $policy 'referenceInstallerBytes'
-$installerAllowance = Read-RequiredInt64 $policy 'installerGrowthAllowanceBytes'
-$maxInstaller = Read-RequiredInt64 $policy 'maxInstallerBytes'
-$referenceRust = Read-RequiredInt64 $policy 'referenceRustPayloadBytes'
-$rustAllowance = Read-RequiredInt64 $policy 'rustPayloadGrowthAllowanceBytes'
-$maxRust = Read-RequiredInt64 $policy 'maxRustPayloadBytes'
-$referenceMagick = Read-RequiredInt64 $policy 'referenceMagickPayloadBytes'
-$magickAllowance = Read-RequiredInt64 $policy 'magickPayloadGrowthAllowanceBytes'
-$maxMagick = Read-RequiredInt64 $policy 'maxMagickPayloadBytes'
-
-if ($referenceInstaller -gt [int64]::MaxValue - $installerAllowance -or
-    $maxInstaller -ne $referenceInstaller + $installerAllowance) {
-    throw "size policy installer maximum must equal referenceInstallerBytes + installerGrowthAllowanceBytes"
-}
-if ($referenceRust -gt [int64]::MaxValue - $rustAllowance -or
-    $maxRust -ne $referenceRust + $rustAllowance) {
-    throw "size policy Rust maximum must equal referenceRustPayloadBytes + rustPayloadGrowthAllowanceBytes"
-}
-if ($referenceMagick -gt [int64]::MaxValue - $magickAllowance -or
-    $maxMagick -ne $referenceMagick + $magickAllowance) {
-    throw "size policy ImageMagick maximum must equal referenceMagickPayloadBytes + magickPayloadGrowthAllowanceBytes"
-}
-
-if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
-    throw "release installer not found: $InstallerPath"
-}
-$installer = Get-Item -LiteralPath $InstallerPath
-$installerBytes = [int64]$installer.Length
-$installerDelta = $installerBytes - $referenceInstaller
-$installerHeadroom = $maxInstaller - $installerBytes
-
-Write-Host "[size] policy reference: $referenceVersion ($referenceSha256)" -ForegroundColor DarkGray
-Write-Host "[size] installer: $(Format-Size $installerBytes)" -ForegroundColor Cyan
-Write-Host "[size] installer limit: $(Format-Size $maxInstaller)" -ForegroundColor DarkGray
-
-$violations = @()
-if ($installerHeadroom -lt 0) {
-    $violations += "installer exceeds its limit by $(Format-Size (-$installerHeadroom))"
-    Write-Host "[size] installer OVER by $(Format-Size (-$installerHeadroom))" -ForegroundColor Red
-} else {
-    Write-Host "[size] installer headroom: $(Format-Size $installerHeadroom) (delta from reference: $installerDelta bytes)" -ForegroundColor Green
-}
-
-if ($StagePath) {
-    if (-not (Test-Path -LiteralPath $StagePath -PathType Container)) {
-        throw "release stage directory not found: $StagePath"
+function Get-ArchitecturePolicy([object]$policy, [string]$architecture) {
+    $schema = Read-RequiredInt64 $policy 'schemaVersion'
+    if ($schema -ne 3) { throw "unsupported release size policy schemaVersion $schema (expected 3)" }
+    $architectures = $policy.PSObject.Properties['architectures']
+    if ($null -eq $architectures -or $null -eq $architectures.Value) {
+        throw "size policy '$PolicyPath' requires an 'architectures' object"
     }
+    $architecturePolicy = $architectures.Value.PSObject.Properties[$architecture]
+    if ($null -eq $architecturePolicy -or $null -eq $architecturePolicy.Value) {
+        throw "size policy '$PolicyPath' has no '$architecture' architecture policy"
+    }
+    $profile = if ($architecture -eq 'x64') { 'full' } else { 'compact' }
+    $profilePolicy = $architecturePolicy.Value.PSObject.Properties[$profile]
+    if ($null -eq $profilePolicy -or $null -eq $profilePolicy.Value) {
+        throw "size policy '$PolicyPath' has no '$architecture/$profile' profile"
+    }
+    return [pscustomobject]@{ Name = $profile; Policy = $profilePolicy.Value }
+}
 
-    $rustNames = @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe')
-    $rustBytes = [int64]0
-    foreach ($name in $rustNames) {
-        $path = Join-Path $StagePath $name
+function Test-StageRustPayload([string]$stagePath, [object]$profile) {
+    $total = [int64]0
+    foreach ($name in 'sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe') {
+        $path = Join-Path $stagePath $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "release stage is missing required Rust artifact: $path"
         }
         $length = [int64](Get-Item -LiteralPath $path).Length
-        if ($rustBytes -gt [int64]::MaxValue - $length) {
-            throw 'staged Rust payload byte count overflowed Int64'
-        }
-        $rustBytes += $length
+        if ($total -gt [int64]::MaxValue - $length) { throw 'staged Rust payload byte count overflowed Int64' }
+        $total += $length
         Write-Host ("[size]   {0,-18} {1}" -f $name, (Format-Size $length)) -ForegroundColor DarkGray
     }
-
-    $rustDelta = $rustBytes - $referenceRust
-    $rustHeadroom = $maxRust - $rustBytes
-    Write-Host "[size] Rust payload: $(Format-Size $rustBytes)" -ForegroundColor Cyan
-    Write-Host "[size] Rust payload limit: $(Format-Size $maxRust)" -ForegroundColor DarkGray
-    if ($rustHeadroom -lt 0) {
-        $violations += "Rust payload exceeds its limit by $(Format-Size (-$rustHeadroom))"
-        Write-Host "[size] Rust payload OVER by $(Format-Size (-$rustHeadroom))" -ForegroundColor Red
-    } else {
-        Write-Host "[size] Rust payload headroom: $(Format-Size $rustHeadroom) (delta from reference: $rustDelta bytes)" -ForegroundColor Green
+    $reference = Read-RequiredInt64 $profile 'referenceRustPayloadBytes'
+    $allowance = Read-RequiredInt64 $profile 'rustPayloadGrowthAllowanceBytes'
+    $maximum = Read-RequiredInt64 $profile 'maxRustPayloadBytes'
+    if ($reference -gt [int64]::MaxValue - $allowance -or $maximum -ne $reference + $allowance) {
+        throw 'size policy Rust maximum must equal referenceRustPayloadBytes + rustPayloadGrowthAllowanceBytes'
     }
+    $headroom = $maximum - $total
+    Write-Host "[size] Rust payload: $(Format-Size $total)" -ForegroundColor Cyan
+    Write-Host "[size] Rust payload limit: $(Format-Size $maximum)" -ForegroundColor DarkGray
+    if ($headroom -lt 0) { throw "Rust payload exceeds its limit by $(Format-Size (-$headroom))" }
+    Write-Host "[size] Rust payload headroom: $(Format-Size $headroom) (delta from reference: $($total - $reference) bytes)" -ForegroundColor Green
+}
 
+if (-not (Test-Path -LiteralPath $PolicyPath -PathType Leaf)) { throw "release size policy not found: $PolicyPath" }
+try { $policy = Get-Content -LiteralPath $PolicyPath -Raw | ConvertFrom-Json }
+catch { throw "release size policy is not valid JSON: $PolicyPath`n$($_.Exception.Message)" }
+if ($null -eq $policy) { throw "release size policy is empty: $PolicyPath" }
+$selected = Get-ArchitecturePolicy $policy $Architecture
+$profile = $selected.Policy
+$rationale = Read-RequiredText $profile 'rationale'
+
+if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "release installer not found: $InstallerPath" }
+if ($StagePath) {
+    if (-not (Test-Path -LiteralPath $StagePath -PathType Container)) { throw "release stage directory not found: $StagePath" }
+    if ($Architecture -eq 'arm64' -and (Test-Path -LiteralPath (Join-Path $StagePath 'magick') -PathType Container)) {
+        throw 'ARM64 Compact release stage must not contain ImageMagick'
+    }
+    Test-StageRustPayload $StagePath $profile
+}
+
+$installerCalibrated = Read-RequiredBool $profile 'installerReferenceCalibrated'
+if (-not $installerCalibrated) {
+    throw "release size budget cannot validate $Architecture/$($selected.Name) installer: no calibrated installer reference yet. Build and independently verify the first installer, then record its bytes and SHA-256 in packaging/size-budget.json. Policy rationale: $rationale"
+}
+
+$referenceVersion = Read-RequiredText $profile 'referenceVersion'
+$referenceSha256 = Read-RequiredText $profile 'referenceInstallerSha256'
+if ($referenceSha256 -notmatch '^[0-9a-fA-F]{64}$') { throw "size policy '$PolicyPath' has invalid referenceInstallerSha256" }
+$referenceInstaller = Read-RequiredInt64 $profile 'referenceInstallerBytes'
+$installerAllowance = Read-RequiredInt64 $profile 'installerGrowthAllowanceBytes'
+$maxInstaller = Read-RequiredInt64 $profile 'maxInstallerBytes'
+if ($referenceInstaller -gt [int64]::MaxValue - $installerAllowance -or $maxInstaller -ne $referenceInstaller + $installerAllowance) {
+    throw 'size policy installer maximum must equal referenceInstallerBytes + installerGrowthAllowanceBytes'
+}
+
+$installerBytes = [int64](Get-Item -LiteralPath $InstallerPath).Length
+$headroom = $maxInstaller - $installerBytes
+Write-Host "[size] policy: $Architecture/$($selected.Name), reference $referenceVersion ($referenceSha256)" -ForegroundColor DarkGray
+Write-Host "[size] installer: $(Format-Size $installerBytes)" -ForegroundColor Cyan
+Write-Host "[size] installer limit: $(Format-Size $maxInstaller)" -ForegroundColor DarkGray
+if ($headroom -lt 0) { throw "release size budget FAILED: installer exceeds its limit by $(Format-Size (-$headroom)). Policy rationale: $rationale" }
+Write-Host "[size] installer headroom: $(Format-Size $headroom) (delta from reference: $($installerBytes - $referenceInstaller) bytes)" -ForegroundColor Green
+
+if ($StagePath -and $Architecture -eq 'x64') {
     $magickPath = Join-Path $StagePath 'magick'
     if (Test-Path -LiteralPath $magickPath -PathType Container) {
         $magickBytes = [int64]0
         Get-ChildItem -LiteralPath $magickPath -Recurse -File | ForEach-Object {
-            if ($magickBytes -gt [int64]::MaxValue - $_.Length) {
-                throw 'staged ImageMagick payload byte count overflowed Int64'
-            }
+            if ($magickBytes -gt [int64]::MaxValue - $_.Length) { throw 'staged ImageMagick payload byte count overflowed Int64' }
             $magickBytes += $_.Length
         }
-        $magickDelta = $magickBytes - $referenceMagick
-        $magickHeadroom = $maxMagick - $magickBytes
-        Write-Host "[size] ImageMagick payload: $(Format-Size $magickBytes)" -ForegroundColor Cyan
-        Write-Host "[size] ImageMagick payload limit: $(Format-Size $maxMagick)" -ForegroundColor DarkGray
-        if ($magickHeadroom -lt 0) {
-            $violations += "ImageMagick payload exceeds its limit by $(Format-Size (-$magickHeadroom))"
-            Write-Host "[size] ImageMagick payload OVER by $(Format-Size (-$magickHeadroom))" -ForegroundColor Red
-        } else {
-            Write-Host "[size] ImageMagick payload headroom: $(Format-Size $magickHeadroom) (delta from reference: $magickDelta bytes)" -ForegroundColor Green
+        $referenceMagick = Read-RequiredInt64 $profile 'referenceMagickPayloadBytes'
+        $magickAllowance = Read-RequiredInt64 $profile 'magickPayloadGrowthAllowanceBytes'
+        $maxMagick = Read-RequiredInt64 $profile 'maxMagickPayloadBytes'
+        if ($referenceMagick -gt [int64]::MaxValue - $magickAllowance -or $maxMagick -ne $referenceMagick + $magickAllowance) {
+            throw 'size policy ImageMagick maximum must equal referenceMagickPayloadBytes + magickPayloadGrowthAllowanceBytes'
         }
-    } else {
-        Write-Host '[size] ImageMagick payload: not staged (Compact build)' -ForegroundColor DarkGray
-    }
-}
-
-if ($violations.Count -gt 0) {
-    throw "release size budget FAILED: $($violations -join '; '). Policy rationale: $rationale"
+        $magickHeadroom = $maxMagick - $magickBytes
+        if ($magickHeadroom -lt 0) { throw "release size budget FAILED: ImageMagick payload exceeds its limit by $(Format-Size (-$magickHeadroom)). Policy rationale: $rationale" }
+        Write-Host "[size] ImageMagick payload: $(Format-Size $magickBytes); headroom: $(Format-Size $magickHeadroom)" -ForegroundColor Green
+    } else { Write-Host '[size] ImageMagick payload: not staged (Compact build)' -ForegroundColor DarkGray }
 }
 
 Write-Host '[size] release size budget passed.' -ForegroundColor Green

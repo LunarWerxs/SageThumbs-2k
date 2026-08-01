@@ -1,5 +1,30 @@
 Set-StrictMode -Version Latest
 
+function Get-ReleaseCargoBuildArguments {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('x64', 'arm64')]
+        [string]$Architecture,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('sagethumbs2k', 'sagethumbs2k-dll')]
+        [string]$Package,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Features
+    )
+
+    $target = if ($Architecture -eq 'arm64') {
+        @('--target', 'aarch64-pc-windows-msvc')
+    } else {
+        @()
+    }
+    # Keep this one canonical ordering in the build runner and both provenance
+    # gates. The ARM64 target must be an actual Cargo argument, not host trivia.
+    return @('--release', '--locked') + $target + @('-p', $Package, '--features', $Features)
+}
+
 function Get-ReleaseRequiredInputPaths {
     @(
         '.gitattributes',
@@ -200,6 +225,41 @@ function Assert-ReleasePeFile {
             $stream.Position = $peOffset
             if ($reader.ReadUInt32() -ne 0x00004550) {
                 throw "file does not have a PE signature: $Path"
+            }
+        } finally {
+            $reader.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Assert-ReleasePeArchitecture {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('x64', 'arm64')]
+        [string]$Architecture
+    )
+
+    Assert-ReleasePeFile -Path $Path
+    $expectedMachine = if ($Architecture -eq 'arm64') { [uint16]0xAA64 } else { [uint16]0x8664 }
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $reader = [IO.BinaryReader]::new($stream)
+        try {
+            $stream.Position = 0x3C
+            $peOffset = $reader.ReadInt32()
+            if ($peOffset -lt 64 -or $peOffset -gt $item.Length - 6) {
+                throw "file has an invalid PE/COFF machine offset: $Path"
+            }
+            $stream.Position = $peOffset + 4
+            $machine = $reader.ReadUInt16()
+            if ($machine -ne $expectedMachine) {
+                throw ("PE machine mismatch for '{0}': 0x{1:X4} (expected {2}/0x{3:X4})" -f $Path, $machine, $Architecture, $expectedMachine)
             }
         } finally {
             $reader.Dispose()
@@ -431,7 +491,10 @@ function Assert-ReleaseMsixIdentity {
 
         [string]$ExpectedName = 'SageThumbs2K',
 
-        [string]$ExpectedPublisher = 'CN=SageThumbs2K'
+        [string]$ExpectedPublisher = 'CN=SageThumbs2K',
+
+        [ValidateSet('neutral', 'arm64')]
+        [string]$ExpectedProcessorArchitecture = 'neutral'
     )
 
     $identity = Get-ReleaseMsixIdentity -Path $Path
@@ -445,8 +508,8 @@ function Assert-ReleaseMsixIdentity {
     if ([string]$identity.Version -cne $expectedVersion) {
         throw "MSIX Identity Version is '$($identity.Version)' (expected '$expectedVersion')"
     }
-    if ([string]$identity.ProcessorArchitecture -cne 'neutral') {
-        throw "MSIX Identity ProcessorArchitecture is '$($identity.ProcessorArchitecture)' (expected 'neutral')"
+    if ([string]$identity.ProcessorArchitecture -cne $ExpectedProcessorArchitecture) {
+        throw "MSIX Identity ProcessorArchitecture is '$($identity.ProcessorArchitecture)' (expected '$ExpectedProcessorArchitecture')"
     }
 }
 
@@ -461,6 +524,9 @@ function Assert-ReleaseMsixPackage {
         [Parameter(Mandatory)]
         [ValidatePattern('^\d+\.\d+\.\d+$')]
         [string]$Version,
+
+        [ValidateSet('neutral', 'arm64')]
+        [string]$ExpectedProcessorArchitecture = 'neutral',
 
         [string]$SignToolPath
     )
@@ -538,7 +604,8 @@ function Assert-ReleaseMsixPackage {
         Assert-ReleaseMsixIdentity `
             -Path $Path `
             -Version $Version `
-            -ExpectedPublisher $expectedCertificate.Subject
+            -ExpectedPublisher $expectedCertificate.Subject `
+            -ExpectedProcessorArchitecture $ExpectedProcessorArchitecture
     } finally {
         $trustedPeople.Close()
         if ($addedTemporaryTrust) {

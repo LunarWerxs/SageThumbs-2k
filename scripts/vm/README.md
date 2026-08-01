@@ -10,9 +10,11 @@ behavior (SmartScreen, Defender) without touching your dev box.
 pwsh scripts\vm\test-sandbox.ps1
 ```
 
-Boots a disposable Windows instance in seconds, maps the newest `dist\` installer and
-the `test-corpus` in read-only, opens Explorer so you can install and immediately
-right-click samples. Close it and everything is gone.
+Boots a disposable Windows instance in seconds, maps the exact version-matched installer
+for the host's native architecture (`SageThumbs2K-Setup-<ver>.exe` on x64 or
+`SageThumbs2K-Setup-<ver>-arm64.exe` on ARM64) and the `test-corpus` in read-only, opens
+Explorer so you can install and immediately right-click samples. It rejects a mismatched
+installer rather than picking the newest item in `dist\`. Close it and everything is gone.
 
 **Good for:** first-run install flow, SmartScreen/Defender reaction on a pristine box,
 "does a clean machine get thumbnails at all."
@@ -35,7 +37,8 @@ $u = powershell -ExecutionPolicy Bypass -File D:\isos\Fido.ps1 -Win 10 -Rel 22H2
 Start-BitsTransfer -Source $u -Destination D:\isos\Win10_22H2_x64.iso
 ```
 
-**`run-win10-test.ps1`** — fully automated, elevated. Builds + tests in one shot:
+**`run-win10-test.ps1`** — fully automated, elevated x64-release test. It requires the
+exact x64 installer and cannot qualify the ARM64 shell extension in an x64 Explorer:
 ```powershell
 # elevated PowerShell:
 .\scripts\vm\run-win10-test.ps1 -Iso D:\isos\Win10_22H2_x64.iso
@@ -58,10 +61,12 @@ all four coclasses registered *and* `LoadLibrary`-probed OK; 326/326 formats hoo
 self-test passed; a modern GIMP `.xcf` decoded (750x1624) and an image `.zip` produced its
 collage. So issue #5's "no thumbnails on Win10" is not a Win10 registration problem.
 
-### This is a RELEASE-CHECKLIST step, and the repo says so publicly
+### Optional legacy diagnostic, not a release gate
 
-Run it before shipping a release. issue #5 is closed with a public commitment that a fresh
-Win10 VM install + decode is checked before every release, so keep that true.
+The Win10 clean-room remains useful when investigating an OS-specific report, but it is no
+longer required before release. Qualify the ARM64 Compact installer separately on native
+ARM64 hardware with the architecture-selecting Sandbox/clean-room path; the x64 Win10 VM is
+not an ARM substitute.
 
 Note the twist worth remembering: issue #5's actual bug (modern GIMP `.xcf`) was **not**
 OS-specific at all. It failed identically on Windows 11 — the bundled ImageMagick cannot read

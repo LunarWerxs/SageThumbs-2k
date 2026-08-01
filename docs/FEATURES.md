@@ -6,10 +6,9 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs (Explorer thumbnails for 323 file types plus
+> rebuilds the abandoned SageThumbs (Explorer thumbnails for 326 file types plus
 > a rich right-click image toolkit) and folds in XnShell/XnView-style conversion.
-> Free for personal use (PolyForm Noncommercial 1.0.0). No personal data, no
-> per-user tracking.
+> Free for personal use (PolyForm Noncommercial 1.0.0).
 
 ---
 
@@ -24,7 +23,7 @@ grouped):
 
 | Category | Examples | How |
 |---|---|---|
-| **Image** (194) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, dds, exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (DOS-EPS preview), **f3d** (Autodesk Fusion 360), … | image crate / WIC / ImageMagick / resvg (SVG) |
+| **Image** (194) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, dds, exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), … | image crate / WIC / ImageMagick / resvg (SVG) |
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
 | **Document** (43) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
@@ -36,9 +35,10 @@ grouped):
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT, no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
-including multipage shared-dictionary pages. EPS thumbnails come from the
-DOS-EPS embedded TIFF preview (no Ghostscript needed); plain-text EPS has no preview to
-extract. **Autodesk Fusion 360** `.f3d` thumbnails come from the zstd-compressed preview
+including multipage shared-dictionary pages. EPS thumbnails come only from an embedded
+raster preview: a DOS-EPS TIFF, an EPSI greyscale preview, or a Photoshop JPEG resource.
+SageThumbs never renders PostScript or invokes Ghostscript; a preview-less EPS keeps its
+stock icon. **Autodesk Fusion 360** `.f3d` thumbnails come from the zstd-compressed preview
 inside the archive's ZIP container, inflated by the pure-Rust `ruzstd` decoder (no C dep).
 Photoshop files thumbnail from their embedded preview, and a **transparent** PSD
 (e.g. a removed background) renders the real layered composite so it keeps its
@@ -216,6 +216,9 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   value) and copies the resulting link(s) to the clipboard. Multi-select uploads every
   selected image and copies all the links. A small **"Uploading…" indicator** shows
   while the transfer runs, so a multi-second upload never looks like a dead click.
+  Upload hosts are third-party, best-effort services: availability and retention are not
+  guaranteed, and catbox may reject traffic from datacentres or VPNs. SageThumbs shows the
+  host's failure reason when an upload is refused.
 - **Set as folder icon**: makes the selected image the icon of its containing
   folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
   customized, and refreshes Explorer (the same mechanism as Explorer's own
@@ -358,8 +361,8 @@ Screenshots · Quick action · Quick preview · Advanced · Data & Backup) on th
 Diagnostics / Updates / Backup tuck under **Advanced**. (Fixed-size window; the old single
 long scroll is gone.)
 
-- **Thumbnails:** enable thumbnails, prefer embedded (EXIF) thumbnails, enable the
-  right-click menu, **show the menu on all file types** (so it's there everywhere; an
+- **General:** enable thumbnails and prefer embedded (EXIF) thumbnails.
+- **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders
   / Rename / Pick color), menu-preview placement (off / submenu / main menu), **a subtle
   checkerboard behind transparent previews** (on by default), and **show quick actions
@@ -522,9 +525,6 @@ long scroll is gone.)
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
   cleanly unregisters on uninstall.
 - App/installer/shortcut icon embedded from the logo.
-- **Pre-1.0 launch checklist:** code signing (avoid SmartScreen), multi-machine
-  testing (clean Win10/11, light mode, non-admin, other locales/DPI), README +
-  screenshots.
 
 ---
 
@@ -553,7 +553,7 @@ genuinely-outstanding work.)*
 > **`compress`** (`batch` is CLI-only).
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (323-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (326-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new**; only surface existing functions.
@@ -561,14 +561,14 @@ bundle anything new**; only surface existing functions.
 **Status:**
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
-   (combine), `thumbnail` (render any of the 323 types to PNG), **`batch`** (bulk
+   (combine), `thumbnail` (render any of the 326 types to PNG), **`batch`** (bulk
    thumbnail/convert over many files/folders in ONE process, fanned out across all CPU
    cores), `formats`. All logic lives in the `lib` (`verbs`, `strip`, `ocr`, `topdf`,
    `decode`, `parallel`); the CLI is a thin arg-parser over the same functions the menu
    uses. (Shipped as a separate binary, not a flag on the Options app.)
 2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0): exposes **10** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs plus **`view`** (which decodes any of the 323 formats to a PNG **image
+   core verbs plus **`view`** (which decodes any of the 326 formats to a PNG **image
    block**) so an AI agent can actually *see* the file, and **`compress`**. Newline-
    delimited stdio, spawned on demand by the client (not a daemon); one small dep
    (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an MCP client at

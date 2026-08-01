@@ -1,7 +1,7 @@
 <#
   test-sandbox.ps1 — one-command CLEAN-ROOM test of the installer in Windows Sandbox.
 
-      pwsh scripts\vm\test-sandbox.ps1                 # newest dist installer
+      pwsh scripts\vm\test-sandbox.ps1                 # current native-arch installer
       pwsh scripts\vm\test-sandbox.ps1 -Installer <path\to\Setup.exe>
 
   Windows Sandbox is a disposable, throwaway Windows instance (a feature of Win10/11
@@ -32,20 +32,41 @@ if (-not (Test-Path "$env:WINDIR\System32\WindowsSandbox.exe")) {
 $root   = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent   # project root
 $dist   = Join-Path $root 'dist'
 $corpus = Join-Path (Split-Path $root -Parent) 'test-corpus'
+function Get-NativeReleaseArchitecture {
+    switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+        'X64' { return 'x64' }
+        'Arm64' { return 'arm64' }
+        default { throw "Windows Sandbox host architecture is unsupported: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+    }
+}
+$ver = ([regex]::Match((Get-Content -LiteralPath (Join-Path $root 'Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
+if (-not $ver) { throw 'could not read version from Cargo.toml' }
+$arch = Get-NativeReleaseArchitecture
+$expectedInstallerName = if ($arch -eq 'arm64') {
+    "SageThumbs2K-Setup-$ver-arm64.exe"
+} else {
+    "SageThumbs2K-Setup-$ver.exe"
+}
 
 if (-not $Installer) {
-    $Installer = Get-ChildItem $dist -Filter 'SageThumbs2K-Setup-*.exe' -EA SilentlyContinue |
-                 Sort-Object LastWriteTime -Descending | Select-Object -First 1 -Exp FullName
+    $Installer = Join-Path $dist $expectedInstallerName
 }
-if (-not $Installer -or -not (Test-Path $Installer)) {
-    Write-Host "No installer found. Build one first: pwsh scripts\build-release.ps1" -ForegroundColor Red
+if (-not $Installer -or -not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
+    Write-Host "Missing expected $arch installer: $expectedInstallerName. Run scripts\build-release.ps1 -Architecture $arch first." -ForegroundColor Red
     exit 1
 }
-$installerDir  = Split-Path $Installer -Parent
-$installerName = Split-Path $Installer -Leaf
+$Installer = (Get-Item -LiteralPath $Installer -ErrorAction Stop).FullName
+$installerName = Split-Path -Path $Installer -Leaf
+if ($installerName -cne $expectedInstallerName) {
+    throw "installer '$installerName' does not match native $arch artifact '$expectedInstallerName'"
+}
 
-# Map only folders that exist; Sandbox refuses to start on a missing HostFolder.
-$maps = @("    <MappedFolder><HostFolder>$installerDir</HostFolder><SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\installer</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>")
+# Map an isolated one-file directory. dist\ may hold two architectures and old
+# versions, none of which should be selectable during this test.
+$installerMapRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("st2k-sandbox-installer-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force $installerMapRoot | Out-Null
+Copy-Item -LiteralPath $Installer -Destination (Join-Path $installerMapRoot $installerName) -Force
+$maps = @("    <MappedFolder><HostFolder>$installerMapRoot</HostFolder><SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\installer</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>")
 if (Test-Path $corpus) {
     $maps += "    <MappedFolder><HostFolder>$corpus</HostFolder><SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\test-corpus</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>"
 }
@@ -72,8 +93,15 @@ $mapsXml
 </Configuration>
 "@
 
-$out = Join-Path $env:TEMP 'st2k-sandbox.wsb'
+$out = Join-Path $installerMapRoot 'sandbox.wsb'
 $wsb | Set-Content $out -Encoding UTF8
 Write-Host "Launching Windows Sandbox with $installerName ..." -ForegroundColor Cyan
 Write-Host "(clean Win11 instance; everything is discarded on close)"
-Start-Process "$env:WINDIR\System32\WindowsSandbox.exe" -ArgumentList $out
+try {
+    $sandbox = Start-Process "$env:WINDIR\System32\WindowsSandbox.exe" -ArgumentList $out -PassThru
+    # The isolated map must remain available while the guest is open. Waiting here
+    # lets us remove only this GUID-owned directory after the user closes Sandbox.
+    Wait-Process -Id $sandbox.Id
+} finally {
+    Remove-Item -LiteralPath $installerMapRoot -Recurse -Force -ErrorAction SilentlyContinue
+}

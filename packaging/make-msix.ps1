@@ -20,7 +20,13 @@
 [CmdletBinding()]
 param(
     [string]$OutDir  = "$PSScriptRoot\stage",
-    [string]$Subject = "CN=SageThumbs2K"
+    [string]$Subject = "CN=SageThumbs2K",
+
+    # The x64 release has always used a neutral sparse package. Keep that
+    # identity for seamless updates; ARM64 needs an ARM64 identity because its
+    # in-process shell extension cannot load in an x64 Explorer process.
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64'
 )
 $ErrorActionPreference = 'Stop'
 $pkgdir = $PSScriptRoot   # ...\packaging
@@ -61,18 +67,26 @@ New-Item -ItemType Directory $stage -Force | Out-Null
 Copy-Item (Join-Path $pkgdir 'AppxManifest.xml') $stage -Force
 Copy-Item (Join-Path $pkgdir 'Assets') $stage -Recurse -Force
 
-# Patch the STAGED manifest's Identity Version from Cargo.toml (the single source of
-# truth) so a release can never ship a sparse package still carrying the previous
-# version — this was a manual, forgettable bump before. The checked-in manifest is
-# left untouched; only the packed copy is rewritten.
+# Patch the STAGED manifest's Identity metadata from Cargo.toml and the requested
+# external-binary architecture. The checked-in manifest is a neutral dev template;
+# only the packed copy is rewritten.
 $cargoVer = ([regex]::Match((Get-Content (Join-Path $pkgdir '..\Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
 if ($cargoVer -notmatch '^\d+\.\d+\.\d+$') {
     throw "could not read an MSIX-compatible version from Cargo.toml: '$cargoVer'"
 }
 $mf = Join-Path $stage 'AppxManifest.xml'
-(Get-Content $mf -Raw) -replace '(<Identity\b[^>]*\bVersion=")[^"]+(")', "`${1}$cargoVer.0`${2}" |
-    Set-Content $mf -Encoding utf8
-Write-Host "      manifest Identity Version -> $cargoVer.0 (from Cargo.toml)" -ForegroundColor DarkGray
+$manifestArchitecture = if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' }
+$manifestText = Get-Content -LiteralPath $mf -Raw
+$manifestText = $manifestText -replace '(<Identity\b[^>]*\bVersion=")[^"]+(")', "`${1}$cargoVer.0`${2}"
+$manifestText = $manifestText -replace '(<Identity\b[^>]*\bProcessorArchitecture=")[^"]+(")', "`${1}$manifestArchitecture`${2}"
+if ($manifestText -notmatch [regex]::Escape("Version=`"$cargoVer.0`"")) {
+    throw 'could not patch staged AppxManifest.xml Identity Version'
+}
+if ($manifestText -notmatch [regex]::Escape("ProcessorArchitecture=`"$manifestArchitecture`"")) {
+    throw 'could not patch staged AppxManifest.xml ProcessorArchitecture'
+}
+Set-Content -LiteralPath $mf -Value $manifestText -Encoding utf8
+Write-Host "      manifest Identity -> $cargoVer.0 / $manifestArchitecture ($Architecture payload)" -ForegroundColor DarkGray
 
 & $makeappx pack /d $stage /p $msix /o /nv
 if ($LASTEXITCODE) { throw "makeappx pack failed ($LASTEXITCODE)" }
@@ -81,14 +95,13 @@ if ($LASTEXITCODE) { throw "makeappx pack failed ($LASTEXITCODE)" }
 & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint $msix
 if ($LASTEXITCODE) { throw "signtool sign failed ($LASTEXITCODE)" }
 
-# Fail immediately if signing produced an invalid package, used a different
-# certificate, or packed stale Identity metadata. The same assertion is repeated
-# by the release-manifest writer and publication validator.
 . (Join-Path $pkgdir '..\scripts\release-manifest-lib.ps1')
+$expectedIdentityArchitecture = if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' }
 Assert-ReleaseMsixPackage `
     -Path $msix `
     -CertificatePath $cer `
     -Version $cargoVer `
+    -ExpectedProcessorArchitecture $expectedIdentityArchitecture `
     -SignToolPath $signtool
 
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue

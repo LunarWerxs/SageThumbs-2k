@@ -24,7 +24,10 @@
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5">
 
-  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="1.5.0.0" ProcessorArchitecture="neutral" />
+  <!-- This is the loose-registration template, so it stays neutral. make-msix.ps1
+       patches only its staged copy to arm64 for the ARM64 sparse package; the
+       existing x64 package deliberately remains neutral for update compatibility. -->
+  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="1.6.0.0" ProcessorArchitecture="neutral" />
 
   <Properties>
     <DisplayName>SageThumbs 2K</DisplayName>
@@ -97,13 +100,11 @@
              and vanish when the toggle is off, never cluttering the menu uninvited.
 
              We deliberately do NOT declare a verb for the ROOT "SageThumbs 2K" flyout
-             (D4F1C8A2): a packaged verb is bridged by Windows into the legacy "Show more
-             options" menu, and a root "SageThumbs 2K" there would sit next to our own
-             classic IContextMenu handler's "SageThumbs 2K" — listing it TWICE. The quick
-             verbs are bridged too, but the classic handler detects the package
-             (settings::modern_menu_active, set by the installer) and OMITS its own
-             top-level quick-verb copies, so they're listed exactly once in the legacy
-             menu. The full flyout + owner-drawn preview stay on the classic handler.
+             (D4F1C8A2): the packaged verbs belong only to the modern compact menu, while
+             the classic IContextMenu handler owns the legacy "Show more options" menu.
+             It always emits its own enabled quick verbs there. The full flyout and its
+             owner-drawn preview likewise stay on the classic handler, so neither menu
+             depends on Windows bridging commands between the two surfaces.
 
              Type="*" (all files) keeps the manifest from enumerating 300+ formats; the
              per-verb GetState gate does the real filtering. -->

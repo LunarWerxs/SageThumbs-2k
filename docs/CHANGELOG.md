@@ -2,6 +2,31 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.6.0
+
+### Added
+
+- **EPS files now get thumbnails, without rendering PostScript.** SageThumbs reads the
+  safe raster preview already embedded by DOS-EPS, EPSI, or Photoshop, while files with no
+  embedded preview still keep their stock icon.
+
+### Fixed
+
+- **Submenu menu previews now appear reliably.** The preview row is added while the
+  right-click menu is built instead of depending on Explorer to send a submenu-open
+  notification that it can omit for extension-created child menus.
+- **The General settings page no longer crowds the footer.** The checkerboard option now
+  lives with the Right-click Menu preview controls it affects, leaving comfortable space
+  above Save and Close while the two list-heavy pages keep their intentional scrolling.
+- **Screenshot selections are measured against the right screen on mixed-DPI setups.** With
+  a scaled display placed to the left of, or above, the main one, the capture overlay sized
+  its selection outline, handles and readout for the wrong monitor.
+- **Strip metadata now refreshes the file's thumbnail immediately.** Explorer is notified
+  after the in-place rewrite instead of continuing to show the cached pre-strip image.
+- **HEIC/AVIF edge-case transparency is preserved.** Compact-layout AVIF `mini` containers
+  now reach the bundled decoder, and the Full install's isolated thumbnail/preview handlers
+  route affected HEIC files around the Windows decoder that flattens their auxiliary alpha.
+
 ## 1.5.0
 
 ### Added

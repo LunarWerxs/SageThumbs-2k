@@ -15,7 +15,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
 
-[**⬇ Download**](https://github.com/LunarWerxs/SageThumbs-2k/releases) · [Features](#-features) · [Formats](#-supported-formats) · [Changelog](docs/CHANGELOG.md) · [Build from source](#-build-from-source)
+[**⬇ Download**](https://github.com/LunarWerxs/SageThumbs-2k/releases) · [Features](#-features) · [Formats](#-supported-formats) · [Changelog](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/CHANGELOG.md) · [Build from source](#-build-from-source)
 
 <br/>
 
@@ -49,7 +49,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 - 🔤 **Copy text off your screen**: drag a region and the words land on your clipboard, in an editable window so you can fix a misread. Uses Windows' own recognizer, so it adds nothing to the download.
 - 🎛️ **Make the menu yours**: **drag-reorder** (and show/hide) every right-click entry *and* its dividers; the context menu mirrors your layout exactly.
 - 🎨 **Redesigned Settings**: a Win11-style category nav rail with toggle switches, system-following **dark mode**, **36 languages**.
-- 🦀 100% clean-room **Rust**, **free for personal use** ([PolyForm Noncommercial](#-license)); no GFL, no spyware, no personal data.
+- 🦀 100% clean-room **Rust**, **free for personal use** ([PolyForm Noncommercial](#-license)); no GFL.
 
 > **[Download the installer →](https://github.com/LunarWerxs/SageThumbs-2k/releases)** Two clicks and your File Explorer just... works.
 
@@ -59,7 +59,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 > I'm a huge fan of SageThumbs. There are 4 things I always install on a new build, Chrome, XnShell, Everything and SageThumbs. Having noticed multiple system crashes from SageThumbs recently and no update in almost a decade, I decided it was time to right this injustice...
 >
-> After about a week, and an embarrassing amount of tokens, we now have a ground-up, rust native, alternative that now supports hundreds of formats, has no external dependencies, extensive red teaming, obsessively optimized for speed with carefully audited packaging, dozens of iterations through UI/UX for simplicity, menu editors, a color picker, screenshot tool, etc.
+> After about a week, and an embarrassing amount of tokens, we now have a ground-up, rust native, alternative that now supports hundreds of formats, extensive red teaming, obsessively optimized for speed with carefully audited packaging, dozens of iterations through UI/UX for simplicity, menu editors, a color picker, screenshot tool, etc.
 >
 > Please tell your friends, star the repo and if you find anything broken, please let me know.
 
@@ -123,7 +123,7 @@ There's a checklist of little utilities people reinstall on every new Windows bo
 | A **PDF / CBZ maker** (PDF24, manual 7-Zip) | **Combine into PDF** or **CBZ**, natural-sorted |
 | **ImageMagick** for scripts and AI agents | `st2k.exe`: a full CLI **and an MCP server**, so agents get an image toolbox with zero extra installs |
 
-**That's a dozen-plus tools folded into one tiny download** with zero runtime dependencies and every decoder isolated from Explorer. The thumbnailer runs only when Explorer asks it for a thumbnail; the background helper for the screenshot hotkey and Space-bar preview is opt-in, so a default install has nothing resident at all.
+**That's a dozen-plus tools folded into one tiny download** with no separate codec pack to install and every decoder isolated from Explorer. The thumbnailer runs only when Explorer asks it for a thumbnail; the background helper for the screenshot hotkey and Space-bar preview is opt-in, so a default install has nothing resident at all.
 
 <sub>Fine print, because we'd rather undersell: a few exotic formats lean on codecs already in Windows (WIC) or the bundled ImageMagick engine rather than pure Rust; SageThumbs 2K is what wires all of it into Explorer. And several tools above (PowerToys, Snipping Tool, ShareX) are free too. The point isn't that they cost money, it's that you no longer have to assemble and run a dozen of them side by side.</sub>
 
@@ -146,8 +146,12 @@ Hit a bug, or a format that won't thumbnail? **[Open an issue](https://github.co
 1. **[Download `SageThumbs2K-Setup-<version>.exe`](https://github.com/LunarWerxs/SageThumbs-2k/releases)** and run it.
 2. That's it: open any folder of exotic images.
 
-- **Full** bundles a hardened ImageMagick → **every** supported format.
+- **Full** includes the ImageMagick-backed long-tail formats.
 - **Compact** skips ImageMagick → the pure-Rust + OS-codec formats only.
+- **ARM64 Compact** is in development as a separate
+  `SageThumbs2K-Setup-<ver>-arm64.exe` installer, and will appear in the release it ships
+  with. It will omit ImageMagick, so its ImageMagick-only long tail will be unavailable;
+  the x64 Full build remains unchanged for x64 Windows.
 
 > The installer registers a classic shell extension via `regsvr32` and trusts a self-signed cert for the Win11 modern menu. It's a *classic* extension by design (not an MSIX sandbox) because it spawns ImageMagick as a subprocess.
 
@@ -193,12 +197,12 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 - **Common + modern**: png, jpg, gif, bmp, tiff, webp, heic/heif, avif, jp2, jxl, **jxr/wdp/hdp** (JPEG XR / HD Photo), dds, ico, tga, qoi, svg
 - **Vector & metafile**: svg/svgz, wmf, emf/emz
 - **Ebook & comics**: epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz/cb7/cbr/cbt
-- **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, blend, 3mf, fcstd, gcode, **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange)
+- **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, blend, 3mf, fcstd, gcode, **eps** (embedded raster preview only), **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange)
 - **Icons**: ico, cur, **icns** (Apple)
 - **Docs & audio**: pdf, **doc/docx/docm, xls/xlsx/xlsm/xlsb, ppt/pptx/pptm/ppsx** (MS Office), odt/ods/odp, **key/pages/numbers** (Apple iWork), **indd/indt** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), djvu + mp3/flac/ogg/opus/m4a/wma/**dsf** (DSD)/ape/…
 - **Video**: mkv/webm, mp4/m4v/mov, avi, wmv, flv, mpg/mpeg, 3gp/3g2, ts/m2ts/mts, ogv, divx, …: a representative frame (~30% in) via the OS **Media Foundation** codecs
 
-*(Plain PostScript and font-only ImageMagick coders are excluded for safety; PDF uses the in-box OS renderer. Video frames come from Windows' own Media Foundation codecs; formats Windows has no codec for, e.g. FLV or MPEG-1/2 without the optional pack, keep their default icon.)*
+*(PostScript without an embedded raster preview and font-only ImageMagick coders are excluded for safety; PDF uses the in-box OS renderer. Video frames come from Windows' own Media Foundation codecs; formats Windows has no codec for, e.g. FLV or MPEG-1/2 without the optional pack, keep their default icon.)*
 
 </details>
 
@@ -212,7 +216,12 @@ Requires the **MSVC** Rust toolchain, VS Build Tools (Desktop C++), and (for the
 $env:RUSTFLAGS = '-C target-feature=+crt-static'   # static CRT: see note below
 cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.exe
 .\scripts\build-release.ps1      # full pipeline → dist\SageThumbs2K-Setup-<ver>.exe
+.\scripts\build-release.ps1 -Architecture arm64  # upcoming Compact ARM64 installer
 ```
+
+> ARM64 cross-builds additionally need the ARM64 MSVC C++ tools installed through Visual
+> Studio Build Tools. The ARM64 release path is Compact-only and produces a separately named
+> installer; it is not a replacement for the x64 Full build.
 
 > `scripts\build-release.ps1` always sets `crt-static` itself, so a release build is
 > reproducible from a fresh clone either way, but a **plain `cargo build --release`**
@@ -225,7 +234,7 @@ cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.ex
 
 ## 📜 License
 
-**[PolyForm Noncommercial License 1.0.0](.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license** ([open an issue](https://github.com/LunarWerxs/SageThumbs-2k/issues) to arrange one). © 2026 Lunarwerx.
+**[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license** ([open an issue](https://github.com/LunarWerxs/SageThumbs-2k/issues) to arrange one). © 2026 Lunarwerx.
 
 SageThumbs 2K is a **clean-room rewrite**, **not** a derivative of the GPLv2 C++ original, and it uses **no GFL**. Every decoder is pure-Rust or an OS codec (RAR/CBR comics use the pure-Rust [`rars`](https://crates.io/crates/rars) crate, no proprietary UnRAR), so the project's own code is entirely original and its dependencies are permissively licensed, which is what lets us license it as we choose. The optional bundled ImageMagick (for the exotic long tail) ships under its own permissive license and runs only as a sandboxed subprocess.
 

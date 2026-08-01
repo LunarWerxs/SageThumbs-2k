@@ -68,7 +68,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, HMENU, MENUITEMINFOW, MF_BITMAP, MF_BYPOSITION, MF_OWNERDRAW, MF_POPUP,
     MF_SEPARATOR, MF_STRING, MIIM_BITMAP, NONCLIENTMETRICSW, SM_CXMENUCHECK, SM_CYMENUCHECK,
     SPI_GETNONCLIENTMETRICS, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_DRAWITEM,
-    WM_INITMENUPOPUP, WM_MEASUREITEM,
+    WM_MEASUREITEM,
 };
 use windows_implement::implement;
 
@@ -117,23 +117,15 @@ pub struct ContextMenu {
     _ref: crate::ModuleRef,
     paths: RefCell<Vec<String>>,
     preview: RefCell<Option<Preview>>,
-    /// Direct-main-menu preview decode started from `IShellExtInit::Initialize`.
-    /// The shell can continue querying its other handlers while this worker runs,
-    /// so mode 2 normally arrives with no UI wait. Mode 1 stays fully lazy until
-    /// its submenu opens.
+    /// Preview decode started from `IShellExtInit::Initialize` for either visible
+    /// placement. The shell can continue querying its other handlers while this
+    /// worker runs, so menu construction normally arrives with no UI wait.
     preview_job: RefCell<Option<std::sync::mpsc::Receiver<Option<MenuThumb>>>>,
     /// Snapshot of the cheap single-image/size gate taken during initialization,
     /// avoiding a second filesystem metadata query in `QueryContextMenu`.
     preview_eligible: Cell<bool>,
     /// Absolute menu command id of the preview item (set in QueryContextMenu).
     preview_cmd: Cell<Option<u32>>,
-    /// The SageThumbs flyout which will receive a mode-1 preview when Explorer
-    /// sends `WM_INITMENUPOPUP`. Keeping this lets right-click construction remain
-    /// metadata-only; the file is read only if the user opens the flyout.
-    preview_submenu: Cell<HMENU>,
-    /// Prevent duplicate preview insertion if Explorer forwards more than one
-    /// initialization message for the same flyout.
-    preview_submenu_inserted: Cell<bool>,
     /// The composed tile handed to the menu on the BITMAP branch (unskinned hosts).
     /// A menu never takes ownership of an `MF_BITMAP` handle, so it is owned here and
     /// must outlive the on-screen menu; freed in `Drop` (the shell releases this
@@ -153,8 +145,6 @@ impl Default for ContextMenu {
             preview_job: RefCell::new(None),
             preview_eligible: Cell::new(false),
             preview_cmd: Cell::new(None),
-            preview_submenu: Cell::new(HMENU::default()),
-            preview_submenu_inserted: Cell::new(false),
             tile: Cell::new(HBITMAP::default()),
         }
     }
@@ -212,8 +202,7 @@ fn preview_size_ok(path: &str) -> bool {
 }
 
 /// Decode `path` into the menu-preview payload (thumbnail DIB + caption lines).
-/// Called only when a preview is about to be displayed, never while
-/// `QueryContextMenu` is constructing a mode-1 flyout.
+/// Called only when a preview is about to be inserted or painted.
 fn build_preview(
     path: &str,
     prefetched: Option<std::sync::mpsc::Receiver<Option<MenuThumb>>>,
@@ -480,9 +469,9 @@ unsafe fn build_menu_into(
 }
 
 impl ContextMenu {
-    /// Build the preview on first demand. Direct-placement decode may already be
-    /// running; submenu placement starts here and waits only for the small fixed
-    /// budget. Idempotent: builds at most once, caching into `self.preview`.
+    /// Build the preview on first demand. Both placements normally have a worker
+    /// already running; this waits only for the small fixed budget. Idempotent:
+    /// builds at most once, caching into `self.preview`.
     unsafe fn ensure_preview(&self) -> bool {
         if self.preview.borrow().is_some() {
             return true;
@@ -532,10 +521,8 @@ impl ContextMenu {
     ///
     /// The two branches differ in WHEN they decode. Owner-draw stays lazy until
     /// `WM_MEASUREITEM`; the bitmap branch needs real pixels to hand over, so it
-    /// decodes here. That costs nothing in mode 2 (the decode was prefetched during
-    /// `Initialize`), and in mode 1 this runs from `WM_INITMENUPOPUP` — i.e. only once
-    /// the user actually opens our flyout — so a plain right-click stays metadata-only
-    /// on both branches.
+    /// decodes here. Both placements prefetch during `Initialize`, so the bounded
+    /// wait is normally hidden behind Explorer's own menu construction.
     unsafe fn insert_preview(&self, hmenu: HMENU, pos: u32, cmd: u32) -> bool {
         if menu_skin_loaded() {
             return insert_preview_item(hmenu, pos, cmd);
@@ -556,8 +543,9 @@ impl ContextMenu {
         if mis.CtlType != ODT_MENU || mis.itemID != cmd {
             return false;
         }
-        // The mode-1 flyout decodes here, at first measure. If that fails — the file
-        // vanished or changed between QueryContextMenu and the paint — claim a
+        // A skinned-host flyout may finish its prefetched decode here, at first
+        // measure. If that fails — the file vanished or changed between
+        // QueryContextMenu and the paint — claim a
         // minimal slot so the reserved item has a valid size and just draws blank.
         if !self.ensure_preview() {
             mis.itemWidth = 1;
@@ -600,9 +588,10 @@ impl ContextMenu {
         true
     }
 
-    /// Lazily insert the mode-1 preview when Explorer is about to open our flyout,
-    /// and own the preview item's measurement and painting.
-    unsafe fn menu_msg(&self, umsg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+    /// Own the preview item's measurement and painting. The preview row itself is
+    /// inserted synchronously by `QueryContextMenu`; real Explorer does not
+    /// reliably forward `WM_INITMENUPOPUP` for an extension-created child popup.
+    unsafe fn menu_msg(&self, umsg: u32, _wparam: WPARAM, lparam: LPARAM) -> bool {
         // The shell always passes a valid struct pointer for the owner-draw
         // messages, but guard anyway: a null lparam would make the casts UB.
         if matches!(umsg, WM_MEASUREITEM | WM_DRAWITEM) {
@@ -618,24 +607,7 @@ impl ContextMenu {
                 self.draw_preview_item(cmd, lparam)
             };
         }
-        if umsg != WM_INITMENUPOPUP || self.preview_submenu_inserted.get() {
-            return false;
-        }
-
-        let submenu = self.preview_submenu.get();
-        let Some(cmd) = self.preview_cmd.get() else {
-            return false;
-        };
-        if submenu.is_invalid() || wparam.0 != submenu.0 as usize {
-            return false;
-        }
-
-        self.preview_submenu_inserted.set(true);
-        if !self.insert_preview(submenu, 0, cmd) {
-            return false;
-        }
-        let _ = InsertMenuW(submenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
-        true
+        false
     }
 }
 

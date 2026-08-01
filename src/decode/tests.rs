@@ -509,6 +509,95 @@ fn isobmff_colr_box_walk() {
 }
 
 #[test]
+fn heic_auxiliary_alpha_box_walk() {
+    fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + body.len()).unwrap();
+        [&size.to_be_bytes()[..], &typ[..], body].concat()
+    }
+    fn heic_with_auxc(aux_type: &[u8], associated_item: u16, auxl_target: Option<u16>) -> Vec<u8> {
+        let mut auxc_body = vec![0u8; 4]; // FullBox version + flags
+        auxc_body.extend_from_slice(aux_type);
+        let auxc = bx(b"auxC", &auxc_body);
+        // auxC is property #2. Item 2 is the auxiliary image, and item 1 is
+        // the primary — the same topology as the pinned libheif HEIC fixture.
+        let ipco = bx(b"ipco", &[bx(b"ispe", &[0u8; 12]), auxc].concat());
+        let ipma = bx(
+            b"ipma",
+            &[
+                &[0u8; 4][..], // FullBox version + flags
+                &1u32.to_be_bytes(),
+                &associated_item.to_be_bytes(),
+                &[1, 0x82], // one essential association to property #2
+            ]
+            .concat(),
+        );
+        let iprp = bx(b"iprp", &[ipco, ipma].concat());
+        let pitm = bx(b"pitm", &[&[0u8; 4][..], &1u16.to_be_bytes()].concat());
+        let iref = auxl_target.map(|target| {
+            let auxl = bx(
+                b"auxl",
+                &[
+                    &2u16.to_be_bytes()[..],
+                    &1u16.to_be_bytes(),
+                    &target.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            bx(b"iref", &[&[0u8; 4][..], &auxl].concat())
+        });
+        let mut meta_body = [&[0u8; 4][..], &pitm, &iprp].concat();
+        if let Some(iref) = iref {
+            meta_body.extend(iref);
+        }
+        let meta = bx(b"meta", &meta_body);
+        [bx(b"ftyp", b"heic\0\0\0\0mif1"), meta].concat()
+    }
+
+    let alpha = heic_with_auxc(b"urn:mpeg:hevc:2015:auxid:1\0", 2, Some(1));
+    assert!(
+        isobmff_has_hevc_aux_alpha(&alpha),
+        "an HEVC alpha auxC property associated with an auxl item is detected"
+    );
+    assert!(
+        !isobmff_has_hevc_aux_alpha(&heic_with_auxc(b"urn:mpeg:hevc:2015:auxid:2\0", 2, Some(1))),
+        "a non-alpha HEVC auxiliary type is ignored"
+    );
+    assert!(
+        !isobmff_has_hevc_aux_alpha(&heic_with_auxc(b"urn:mpeg:hevc:2015:auxid:1", 2, Some(1))),
+        "the aux type must be NUL-terminated"
+    );
+    assert!(
+        !isobmff_has_hevc_aux_alpha(&heic_with_auxc(b"urn:mpeg:hevc:2015:auxid:1\0", 1, Some(1))),
+        "an auxC property assigned to the wrong item cannot affect routing"
+    );
+    assert!(
+        !isobmff_has_hevc_aux_alpha(&heic_with_auxc(b"urn:mpeg:hevc:2015:auxid:1\0", 2, None)),
+        "an associated auxC without an auxl relationship cannot affect routing"
+    );
+    assert!(
+        !isobmff_has_hevc_aux_alpha(&heic_with_auxc(b"urn:mpeg:hevc:2015:auxid:1\0", 2, Some(3))),
+        "an auxl relationship to a non-primary item cannot affect routing"
+    );
+
+    let loose = [
+        bx(b"ftyp", b"heic\0\0\0\0mif1"),
+        bx(b"free", b"urn:mpeg:hevc:2015:auxid:1\0"),
+    ]
+    .concat();
+    assert!(
+        !isobmff_has_hevc_aux_alpha(&loose),
+        "the identifier outside meta/iprp/ipco/auxC cannot affect routing"
+    );
+
+    let mut truncated = alpha;
+    truncated.pop();
+    assert!(
+        !isobmff_has_hevc_aux_alpha(&truncated),
+        "truncated declared boxes are rejected"
+    );
+}
+
+#[test]
 fn detects_cmyk_jpeg_by_component_count() {
     // Minimal JPEG: SOI + SOF0 declaring `nf` components + EOI. CMYK/YCCK are 4-component.
     fn jpeg_with_components(nf: u8) -> Vec<u8> {

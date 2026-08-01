@@ -112,8 +112,9 @@ which predates the feature entirely, now flags anyway.
 
 ## The gate
 
-`scripts/release.ps1` step **4b** runs `push_to_vt.py --gate` on the exact artifact about to be
-published, after the installer is built and before `gh release create`.
+`scripts/release.ps1` step **4b** runs `push_to_vt.py --gate` on each exact artifact about to
+be published — the x64 Full installer and ARM64 Compact installer — after they are built and
+before `gh release create`.
 
 It fails the release when:
 
@@ -134,6 +135,7 @@ Run it by hand any time:
 
 ```
 python push_to_vt.py dist/SageThumbs2K-Setup-<ver>.exe --gate
+python push_to_vt.py dist/SageThumbs2K-Setup-<ver>-arm64.exe --gate
 ```
 
 ## What does NOT work (so nobody burns a day on it)
