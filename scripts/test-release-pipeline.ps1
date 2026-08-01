@@ -338,9 +338,57 @@ try {
             -ImageMagickBundled:$true `
             -ModernMenuBundled:$true `
             -RustBuildPerformed:$true `
-            -ExeCargoArguments @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview') `
+            -ExeCargoArguments @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview,hdr-capture') `
             -DllCargoArguments @('--release', '--locked', '-p', 'sagethumbs2k-dll', '--features', 'webp-lossy,dll-i18n-subset') `
             -OutputPath $manifest
+    }
+
+    # The shipping build recipe is written down in THREE scripts: build-release.ps1 runs
+    # it, write-release-manifest.ps1 pins what it expects to have been run, and
+    # check-release-manifest.ps1 pins what it will accept. That redundancy is deliberate
+    # (the gate must be able to refuse a build that silently gained or lost a feature),
+    # but nothing made the three agree, so they drifted: `hdr-capture` was added to two
+    # of them and the 1.5.0 release died at the publish gate after a full build, ~20
+    # minutes in. Catch it here instead, in milliseconds, before anything is built.
+    Assert-Passes 'the three copies of the build recipe agree' {
+        $recipeFiles = @{
+            'build-release.ps1'         = ''
+            'write-release-manifest.ps1' = ''
+            'check-release-manifest.ps1' = ''
+        }
+        $seen = @{}
+        foreach ($name in @($recipeFiles.Keys)) {
+            $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot $name) -Raw
+            $recipeFiles[$name] = $text
+            # Matches the '-p', '<package>', '--features', '<features>' run in all three
+            # files, including the multi-line array form in write-release-manifest.ps1
+            # and any `#` comment lines sitting between the two (there is one, explaining
+            # why hdr-capture is on the EXE recipe and not the DLL's).
+            $found = [regex]::Matches($text, "'-p',\s*'([^']+)',(?:\s*#[^\r\n]*)*\s*'--features',\s*'([^']+)'")
+            if ($found.Count -lt 2) {
+                throw "$name declares $($found.Count) package recipes, expected 2 (exe + dll)"
+            }
+            foreach ($m in $found) {
+                $pkg = $m.Groups[1].Value
+                $feat = $m.Groups[2].Value
+                if (-not $seen.ContainsKey($pkg)) { $seen[$pkg] = @{} }
+                $seen[$pkg][$name] = $feat
+            }
+        }
+        foreach ($pkg in $seen.Keys) {
+            $distinct = @($seen[$pkg].Values | Sort-Object -Unique)
+            if ($distinct.Count -ne 1) {
+                $detail = ($seen[$pkg].GetEnumerator() | ForEach-Object { "$($_.Key)='$($_.Value)'" }) -join '; '
+                throw "build recipe for '$pkg' differs between scripts: $detail"
+            }
+            # check-release-manifest.ps1 also pins the feature LIST separately from the
+            # argument line. That second copy is exactly what went stale in 1.5.0, so
+            # assert it matches the argument line it sits beside.
+            $expectedArray = "@('" + (($distinct[0] -split ',') -join "', '") + "')"
+            if ($recipeFiles['check-release-manifest.ps1'] -notlike "*$expectedArray*") {
+                throw "check-release-manifest.ps1 has no feature-list expectation $expectedArray for '$pkg'"
+            }
+        }
     }
 
     Write-Host "[release-pipeline-test] ALL GREEN ($script:passed cases)" -ForegroundColor Green

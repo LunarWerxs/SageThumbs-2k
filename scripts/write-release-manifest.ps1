@@ -127,6 +127,20 @@ function Test-ExactArguments([string[]]$Actual, [string[]]$Expected) {
     return $true
 }
 
+# DERIVE the recorded feature list from the recorded argument list. Never write the
+# features out a second time by hand: two hand-maintained copies of one truth drift,
+# and this one did. The 1.5.0 manifest claimed features `webp-lossy,html-preview`
+# while its own argument line said `webp-lossy,html-preview,hdr-capture`, because
+# only the argument constant was updated when HDR capture was gated behind a feature.
+# The release gate caught the contradiction and refused to publish, which is the
+# system working; this makes the contradiction unrepresentable instead.
+function Get-CargoFeatureList([string[]]$Arguments) {
+    $i = [Array]::IndexOf($Arguments, '--features')
+    if ($i -lt 0 -or $i + 1 -ge $Arguments.Count) { return @() }
+    $value = [string]$Arguments[$i + 1]
+    return @($value -split ',' | Where-Object { $_ })
+}
+
 $rustcVerbose = @(& rustc -vV)
 if ($LASTEXITCODE -ne 0) {
     throw 'rustc -vV failed while recording the release target'
@@ -195,12 +209,12 @@ $manifest = [ordered]@{
         cargo = [ordered]@{
             executables = [ordered]@{
                 package = 'sagethumbs2k'
-                features = @('webp-lossy', 'html-preview')
+                features = @(Get-CargoFeatureList $ExeCargoArguments)
                 arguments = @($ExeCargoArguments)
             }
             shellExtension = [ordered]@{
                 package = 'sagethumbs2k-dll'
-                features = @('webp-lossy', 'dll-i18n-subset')
+                features = @(Get-CargoFeatureList $DllCargoArguments)
                 arguments = @($DllCargoArguments)
             }
         }

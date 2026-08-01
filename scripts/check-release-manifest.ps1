@@ -156,9 +156,14 @@ if ([string](Get-ReleaseRequiredProperty -Object $exeBuild -Name 'package') -cne
 if ([string](Get-ReleaseRequiredProperty -Object $dllBuild -Name 'package') -cne 'sagethumbs2k-dll') {
     throw 'release manifest has the wrong shell-extension package'
 }
+# These four expectations are DELIBERATELY a second, independent copy of the shipping
+# build recipe: their whole job is to refuse a manifest whose build silently gained or
+# lost a feature. So when the recipe in build-release.ps1 changes, it must be changed
+# HERE and in write-release-manifest.ps1 too. A release that fails at this gate is this
+# working as designed; fix the recipe copies, do not weaken the assertion.
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $exeBuild -Name 'features') `
-    -Expected @('webp-lossy', 'html-preview') `
+    -Expected @('webp-lossy', 'html-preview', 'hdr-capture') `
     -Name 'executable feature set'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $dllBuild -Name 'features') `
@@ -166,7 +171,7 @@ Assert-ExactStringArray `
     -Name 'shell-extension feature set'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $exeBuild -Name 'arguments') `
-    -Expected @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview') `
+    -Expected @('--release', '--locked', '-p', 'sagethumbs2k', '--features', 'webp-lossy,html-preview,hdr-capture') `
     -Name 'executable Cargo arguments'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $dllBuild -Name 'arguments') `
