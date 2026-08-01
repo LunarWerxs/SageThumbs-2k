@@ -109,7 +109,10 @@ $sourceTreeClean = $gitStatus.Count -eq 0
 $expectedExeArguments = @(
     '--release', '--locked',
     '-p', 'sagethumbs2k',
-    '--features', 'webp-lossy,html-preview'
+    # `hdr-capture` is APP-ONLY (see Cargo.toml): it links D3D11/DXGI, which the
+    # shell DLL must never load. The production EXE recipe therefore carries it and
+    # the DLL recipe below deliberately does not.
+    '--features', 'webp-lossy,html-preview,hdr-capture'
 )
 $expectedDllArguments = @(
     '--release', '--locked',
