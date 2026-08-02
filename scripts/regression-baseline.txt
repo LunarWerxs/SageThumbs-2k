@@ -182,6 +182,7 @@ pcx
 pdb
 pdd
 pdf
+pdn
 pfm
 pgm
 pgx
