@@ -86,9 +86,16 @@ function Assert-ReleaseArchitectureContract([string]$Text) {
     if ($Text.Contains('Source: "stage\', [StringComparison]::Ordinal)) {
         throw 'installer contains a hard-coded stage source instead of {#StageDir}'
     }
-    $x64FullGuard = '#if (Architecture == "x64") && (CompactOnly == "0")'
-    if (@([regex]::Matches($Text, [regex]::Escape($x64FullGuard))).Count -ne 4) {
-        throw 'expected the Full type, core type list, ImageMagick component, and source to be x64/full guarded'
+    # Full vs Compact is a PAYLOAD choice on both architectures now that ARM64 bundles
+    # ImageMagick too, so these four blocks are gated on CompactOnly alone. They used to
+    # also require Architecture == "x64", which is what kept ARM64 from ever shipping the
+    # engine. Assert the architecture clause is GONE as well, so it cannot creep back.
+    $fullGuard = '#if CompactOnly == "0"'
+    if (@([regex]::Matches($Text, [regex]::Escape($fullGuard))).Count -ne 4) {
+        throw 'expected the Full type, core type list, ImageMagick component, and source to be Full-guarded'
+    }
+    if ($Text.Contains('(Architecture == "x64") && (CompactOnly', [StringComparison]::Ordinal)) {
+        throw 'ImageMagick staging must not be architecture-gated; ARM64 is a Full build too'
     }
     if (-not $Text.Contains(
             'Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: compact custom; Flags: fixed',
