@@ -3,10 +3,29 @@
 SageThumbs 2K uses ImageMagick as its tier-3 long-tail decoder and for the Convert
 dialog's exotic output encoders. It runs out of process with resource limits and a kill
 timeout; ImageMagick is never loaded into Explorer. The x64 Full installer maps the
-contents of `packaging/stage/x64/magick` directly into the application directory, so
-that staging directory is also the final flattened runtime layout. ARM64 is deliberately
-Compact-only and must not stage ImageMagick until an independently pinned ARM64 bundle
-exists.
+contents of `packaging/stage/<arch>/magick` directly into the application directory, so
+that staging directory is also the final flattened runtime layout.
+
+**ARM64 is Full too, since 2026-08-02.** It has its own pin,
+[`imagemagick-source-arm64.json`](../packaging/imagemagick-source-arm64.json), describing the
+SAME upstream 7.1.2-29 Q16-HDRI release and the same 195-file inventory; only the bundle bytes
+differ. The arm64 asset is an Inno installer rather than something installable on an x64 host,
+so its payload is extracted with `innoextract` into
+`%ProgramFiles%\ImageMagick-7.1.2-Q16-HDRI-arm64`, which keeps the "resolve the pinned
+directory, never glob" rule identical for both architectures.
+
+Two ARM64-specific facts worth knowing before touching this:
+
+- The stubs are built with the **MSVC ARM64** toolchain (`cl` + `link /DEF /IMPLIB`), not
+  MinGW. MinGW emits x86_64 PEs regardless of target, and the first ARM64 Full build silently
+  replaced genuine ARM64 DLLs with x64 stubs an ARM64 loader refuses. `link /IMPLIB` is
+  load-bearing: without it the linker drops `<name>.lib`/`.exp` into the shipped bundle.
+  Export EXTRACTION (`gendef`) is architecture-independent and is shared by both.
+- Checks that EXECUTE a binary cannot run cross-architecture, so on an x64 host the magick
+  runtime identity check and the bundle smoke test are deferred to the native `arm64` CI job.
+  The 195-file SHA-256 inventory, the dependency closure (via `dumpbin` on ARM64, which was
+  verified to agree exactly with `objdump` on x64), and the staged-architecture assertion all
+  still run locally.
 
 Correctness on a clean Windows installation is more important than shaving a few bytes.
 In particular, an installed developer copy of ImageMagick or the VC++ Redistributable

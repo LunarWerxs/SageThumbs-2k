@@ -518,6 +518,9 @@ long scroll is gone.)
 
 ## 6. Packaging
 
+- **Two architectures, both Full.** A separate `SageThumbs2K-Setup-<ver>-arm64.exe` runs
+  natively on Windows on Arm and bundles the same ImageMagick engine as the x64 installer,
+  so format coverage is identical on both; there is no cut-down ARM edition.
 - Inno Setup installer (`full` / `compact` / `custom`). The Full build includes a
   dependency-closed, security-trimmed ImageMagick runtime. Its unused text-shaping stack
   (glib / harfbuzz / freetype / fribidi / raqm) is stubbed because SageThumbs never
