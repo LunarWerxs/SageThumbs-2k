@@ -135,7 +135,11 @@ try {
             Set-SparseLength $installer ([int64]$profile.referenceInstallerBytes)
             Assert-Passes 'production x64 reference sizes' { & $checker -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage }
         } else {
-            Assert-FailsLike 'production ARM64 remains installer-calibration gated' '*no calibrated installer reference*' {
+            # Calibrated 2026-08-01 with the first real ARM64 installer, so this now
+            # asserts the reference PASSES rather than that the profile is still gated.
+            # ARM64 is Compact: no magick payload is staged, by design.
+            Set-SparseLength $installer ([int64]$profile.referenceInstallerBytes)
+            Assert-Passes 'production ARM64 reference sizes' {
                 & $checker -Architecture arm64 -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage
             }
         }

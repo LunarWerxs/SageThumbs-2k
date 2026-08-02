@@ -20,12 +20,16 @@
     },
     "arm64": {
       "compact": {
-        "referenceVersion": "1.5.0-arm64-compact-preinstaller",
-        "installerReferenceCalibrated": false,
+        "referenceVersion": "1.6.0-arm64-compact",
+        "installerReferenceCalibrated": true,
+        "referenceInstallerBytes": 6246270,
+        "referenceInstallerSha256": "003455f896ff6a62d34aedf9c2f647df6f0b2ee649c645d5bd73249578865fff",
+        "installerGrowthAllowanceBytes": 131072,
+        "maxInstallerBytes": 6377342,
         "referenceRustPayloadBytes": 20234240,
         "rustPayloadGrowthAllowanceBytes": 262144,
         "maxRustPayloadBytes": 20496384,
-        "rationale": "Measured from the verified 1.5.0 ARM64 Compact release Rust payload on 2026-08-01: sagethumbs2k.dll 5,949,440 bytes, SageThumbs2K.exe 8,367,104 bytes, and st2k.exe 5,917,696 bytes. ARM64 deliberately ships without ImageMagick, so a staged magick directory is a release failure. No ARM64 installer has been independently verified yet: installerReferenceCalibrated remains false and check-release-size.ps1 must reject publication until the first installer bytes and SHA-256 are recorded in reviewable source. Keep later Compact Rust payloads within 256 KiB unless an explicit reviewed policy change records why."
+        "rationale": "FIRST ARM64 INSTALLER CALIBRATION, 2026-08-01, for the 1.6.0 release. Built by scripts/build-release.ps1 -Architecture arm64 -NoImageMagick on an x64 host cross-compiling to aarch64-pc-windows-msvc: dist/SageThumbs2K-Setup-1.6.0-arm64.exe at 6,246,270 bytes, SHA-256 003455f896ff6a62d34aedf9c2f647df6f0b2ee649c645d5bd73249578865fff. All three staged binaries were confirmed PE machine 0xAA64 (sagethumbs2k.dll 5,951,488, SageThumbs2K.exe 8,370,176, st2k.exe 5,920,256) and the stage contains no magick payload, which is a release failure for ARM64 by design. The Rust payload reference stays at the 1.5.0 measurement: this build lands 7,680 bytes above it, well inside the 256 KiB window, so rebaselining it would only discard headroom. WHAT THIS REFERENCE DOES AND DOES NOT ATTEST: the binaries' shell surfaces ARE verified on native ARM64 silicon, because ci.yml's arm64-compact job registers the freshly built DLL on a windows-11-arm runner and renders both a thumbnail through IShellItemImageFactory and a preview through the registered IPreviewHandler CLSID. The INSTALLER itself has not been executed on ARM64 hardware: no interactive ARM64 device was available, and CI registers the DLL directly rather than running Inno Setup. So the residual risk here is installer/registration behaviour, not decode or shell behaviour. Keep later Compact installers within 128 KiB and Rust payloads within 256 KiB unless an explicit reviewed policy change records why."
       }
     }
   }

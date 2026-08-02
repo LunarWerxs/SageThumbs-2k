@@ -6,6 +6,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **Windows on Arm is supported, with its own installer.** `SageThumbs2K-Setup-<ver>-arm64.exe`
+  runs natively on ARM64 Windows instead of under emulation. It is a **Compact** build: it does
+  not bundle ImageMagick, so the rarer formats that rely on it are unavailable in that edition.
+  Everything handled by the built-in decoders and the Windows codecs, which is the large
+  majority of the list, works exactly as it does on x64. The x64 installer is unchanged.
 - **EPS files now get thumbnails, without rendering PostScript.** SageThumbs reads the
   safe raster preview already embedded by DOS-EPS, EPSI, or Photoshop, while files with no
   embedded preview still keep their stock icon.

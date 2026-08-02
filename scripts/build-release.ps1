@@ -52,10 +52,19 @@ function Import-Arm64BuildEnvironment {
     }
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
-        $installPath = & $vswhere -latest -products * `
+        # Collect the FULL output first, then take the first line. Piping a native
+        # command straight into `Select-Object -First 1` stops the pipeline early, and
+        # PowerShell then never sets $LASTEXITCODE at all — which under the StrictMode
+        # that release-manifest-lib.ps1 turns on is a hard "cannot be retrieved" error,
+        # not a zero. That made the whole ARM64 build path fail on the first native
+        # command of a fresh shell, and appear to work in any session that had already
+        # run one. Capture the code immediately, before anything can truncate it.
+        $vswhereOutput = @(& $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
-            -property installationPath | Select-Object -First 1
-        if ($LASTEXITCODE -eq 0 -and $installPath) {
+            -property installationPath)
+        $vswhereExit = $LASTEXITCODE
+        $installPath = $vswhereOutput | Select-Object -First 1
+        if ($vswhereExit -eq 0 -and $installPath) {
             $vcvarsCandidates += Join-Path $installPath 'VC\Auxiliary\Build\vcvarsall.bat'
         }
     }
@@ -494,10 +503,21 @@ $iscc = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) {
     # Fall back to the registry (Inno can install to a non-standard location).
+    # Most Uninstall keys have NO DisplayName/InstallLocation at all, and
+    # release-manifest-lib.ps1 turns on StrictMode, under which touching a missing
+    # property is a terminating error rather than $null. So probe the property bag
+    # instead of dotting straight into it: the un-guarded version crashed here before
+    # it could ever reach the per-user install this machine actually has, which would
+    # have taken out the x64 release build too, not just ARM64.
     foreach ($r in 'HKLM:\SOFTWARE\WOW6432Node','HKLM:\SOFTWARE','HKCU:\SOFTWARE') {
         $hit = Get-ChildItem "$r\Microsoft\Windows\CurrentVersion\Uninstall" -EA SilentlyContinue |
             ForEach-Object { Get-ItemProperty $_.PSPath -EA SilentlyContinue } |
-            Where-Object { $_.DisplayName -match 'Inno Setup' -and $_.InstallLocation } |
+            Where-Object {
+                $props = $_.PSObject.Properties
+                $props['DisplayName'] -and $props['InstallLocation'] -and
+                    $props['DisplayName'].Value -match 'Inno Setup' -and
+                    $props['InstallLocation'].Value
+            } |
             ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } |
             Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         if ($hit) { $iscc = $hit; break }

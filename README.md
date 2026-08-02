@@ -148,10 +148,10 @@ Hit a bug, or a format that won't thumbnail? **[Open an issue](https://github.co
 
 - **Full** includes the ImageMagick-backed long-tail formats.
 - **Compact** skips ImageMagick → the pure-Rust + OS-codec formats only.
-- **ARM64 Compact** is in development as a separate
-  `SageThumbs2K-Setup-<ver>-arm64.exe` installer, and will appear in the release it ships
-  with. It will omit ImageMagick, so its ImageMagick-only long tail will be unavailable;
-  the x64 Full build remains unchanged for x64 Windows.
+- **ARM64 Compact** ships as a separate `SageThumbs2K-Setup-<ver>-arm64.exe` for Windows on
+  Arm, running natively rather than emulated. It omits ImageMagick, so the
+  ImageMagick-only long tail is unavailable in that edition; the x64 Full build is
+  unchanged for x64 Windows.
 
 > The installer registers a classic shell extension via `regsvr32` and trusts a self-signed cert for the Win11 modern menu. It's a *classic* extension by design (not an MSIX sandbox) because it spawns ImageMagick as a subprocess.
 
