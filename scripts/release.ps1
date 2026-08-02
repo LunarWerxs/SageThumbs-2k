@@ -192,7 +192,16 @@ try {
     if ((Test-Path $vt) -and (Test-Path "$root\.env") -and (Get-Command python -EA SilentlyContinue)) {
         foreach ($artifact in $releaseArtifacts) {
             python $vt $artifact.Setup.FullName --gate
-            if ($LASTEXITCODE) {
+            # 75 = EX_TEMPFAIL: the scan was still queued when the poll window ran out.
+            # That is the scanner being busy, not a verdict about the file, and treating
+            # it as a failure aborted a clean 1.6.0 release after both installers had
+            # already built. Same rule as a missing scanner above: tooling absence must
+            # not block a release, only a real detection. A real detection still exits 1.
+            if ($LASTEXITCODE -eq 75) {
+                Write-Host "      VT analysis did not finish in time for $($artifact.Setup.Name)." -ForegroundColor Yellow
+                Write-Host "      NOT blocking. Re-check the permalink above before announcing:" -ForegroundColor Yellow
+                Write-Host "        python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate" -ForegroundColor Yellow
+            } elseif ($LASTEXITCODE) {
                 throw "VirusTotal gate FAILED for $($artifact.Setup.Name) - NOT publishing. Review the permalink above."
             }
         }
