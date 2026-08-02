@@ -152,9 +152,12 @@ foreach ($flag in 'rustBuildPerformed', 'modernMenuBundled') {
     }
 }
 $imageMagickBundled = Get-ReleaseRequiredProperty -Object $build -Name 'imageMagickBundled'
-if ($imageMagickBundled -isnot [bool] -or [bool]$imageMagickBundled -ne ($Architecture -eq 'x64')) {
-    $requiredImageMagick = if ($Architecture -eq 'x64') { 'true (Full)' } else { 'false (Compact)' }
-    throw "release manifest requires ImageMagickBundled=$requiredImageMagick for $Architecture"
+# Full/Compact is a payload choice on BOTH architectures now, so the manifest must
+# agree with the STAGE, not with the architecture.
+$magickStaged = Test-Path -LiteralPath (Join-Path $stage.FullName 'magick') -PathType Container
+if ($imageMagickBundled -isnot [bool] -or [bool]$imageMagickBundled -ne $magickStaged) {
+    $requiredImageMagick = if ($magickStaged) { 'true (Full)' } else { 'false (Compact)' }
+    throw "release manifest ImageMagickBundled disagrees with the stage: requires ImageMagickBundled=$requiredImageMagick for this $Architecture stage"
 }
 if ((Get-ReleaseRequiredProperty -Object $build -Name 'cargoLocked') -isnot [bool] -or
     -not [bool]$build.cargoLocked) {
@@ -303,14 +306,16 @@ if ($magickFiles.Count -ne [int64](Get-ReleaseRequiredProperty -Object $expected
     $magickBytes -ne [int64](Get-ReleaseRequiredProperty -Object $expectedStage -Name 'imageMagickBytes')) {
     throw 'ImageMagick payload total does not match the release manifest'
 }
-if ($Architecture -eq 'x64') {
+# Both architectures ship Full now, so the payload must be PRESENT for either unless the
+# build was explicitly Compact. Keyed on what the manifest claims, not on the architecture.
+if ($imageMagickBundled) {
     $magickExe = Join-Path $stage.FullName 'magick\magick.exe'
     Assert-ReleasePeFile -Path $magickExe
     if ($magickFiles.Count -eq 0) {
         throw 'full ImageMagick payload is absent'
     }
 } elseif ($magickFiles.Count -ne 0 -or (Test-Path -LiteralPath (Join-Path $stage.FullName 'magick'))) {
-    throw 'ARM64 Compact stage must not contain ImageMagick files'
+    throw 'Compact stage must not contain ImageMagick files'
 }
 
 # Re-run the pinned-source identity/inventory gate and the staged dependency-

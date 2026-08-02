@@ -148,10 +148,9 @@ Hit a bug, or a format that won't thumbnail? **[Open an issue](https://github.co
 
 - **Full** includes the ImageMagick-backed long-tail formats.
 - **Compact** skips ImageMagick → the pure-Rust + OS-codec formats only.
-- **ARM64 Compact** ships as a separate `SageThumbs2K-Setup-<ver>-arm64.exe` for Windows on
-  Arm, running natively rather than emulated. It omits ImageMagick, so the
-  ImageMagick-only long tail is unavailable in that edition; the x64 Full build is
-  unchanged for x64 Windows.
+- **ARM64** ships as a separate `SageThumbs2K-Setup-<ver>-arm64.exe` for Windows on
+  Arm, running natively rather than emulated. It is a full build with the same bundled
+  ImageMagick engine as x64, so format coverage is identical on both.
 
 > The installer registers a classic shell extension via `regsvr32` and trusts a self-signed cert for the Win11 modern menu. It's a *classic* extension by design (not an MSIX sandbox) because it spawns ImageMagick as a subprocess.
 
@@ -216,11 +215,11 @@ Requires the **MSVC** Rust toolchain, VS Build Tools (Desktop C++), and (for the
 $env:RUSTFLAGS = '-C target-feature=+crt-static'   # static CRT: see note below
 cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.exe
 .\scripts\build-release.ps1      # full pipeline → dist\SageThumbs2K-Setup-<ver>.exe
-.\scripts\build-release.ps1 -Architecture arm64  # upcoming Compact ARM64 installer
+.\scripts\build-release.ps1 -Architecture arm64  # ARM64 installer
 ```
 
 > ARM64 cross-builds additionally need the ARM64 MSVC C++ tools installed through Visual
-> Studio Build Tools. The ARM64 release path is Compact-only and produces a separately named
+> Studio Build Tools. The ARM64 release path produces a separately named
 > installer; it is not a replacement for the x64 Full build.
 
 > `scripts\build-release.ps1` always sets `crt-static` itself, so a release build is

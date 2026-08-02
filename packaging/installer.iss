@@ -89,19 +89,19 @@ PrivilegesRequired=admin
 MinVersion=10.0
 
 [Types]
-#if (Architecture == "x64") && (CompactOnly == "0")
+#if CompactOnly == "0"
 Name: "full"; Description: "Full - all {#FmtCount} formats (recommended)"
 #endif
 Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
 [Components]
-#if (Architecture == "x64") && (CompactOnly == "0")
+#if CompactOnly == "0"
 Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: full compact custom; Flags: fixed
 #else
 Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: compact custom; Flags: fixed
 #endif
-#if (Architecture == "x64") && (CompactOnly == "0")
+#if CompactOnly == "0"
 Name: "magick"; Description: "ImageMagick engine - 100+ extra formats"; Types: full custom
 #endif
 
@@ -154,7 +154,7 @@ Source: "{#StageDir}\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion skipifsou
 ; exists for exact staged testing but is excluded from this second installer row.
 Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 ; Bundled ImageMagick (magick.exe + DLLs + modules\).
-#if (Architecture == "x64") && (CompactOnly == "0")
+#if CompactOnly == "0"
 Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick
 #endif
 

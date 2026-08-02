@@ -41,10 +41,36 @@ foreach ($name in $Candidate) {
 $imports = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[string]]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
+# MinGW objdump cannot read an ARM64 PE at all ("file format not recognized"), so an
+# ARM64 bundle is inspected with MSVC's dumpbin, which handles every machine type and
+# ships with the same VS BuildTools the ARM64 toolchain already requires. The two were
+# verified to report IDENTICAL dependency sets across the x64 bundle before this branch
+# was trusted; the parse differs only because the output formats do.
+$usingDumpbin = [System.IO.Path]::GetFileNameWithoutExtension($inspector) -ieq 'dumpbin'
+
 foreach ($pe in $peFiles) {
-    $output = @(& $inspector -p $pe.FullName 2>&1)
+    $output = if ($usingDumpbin) {
+        @(& $inspector /nologo /dependents $pe.FullName 2>&1)
+    } else {
+        @(& $inspector -p $pe.FullName 2>&1)
+    }
     if ($LASTEXITCODE -ne 0) { throw "PE inspection failed for '$($pe.FullName)'" }
+    $inDependencyBlock = $false
     foreach ($line in $output) {
+        if ($usingDumpbin) {
+            # dumpbin lists dependencies as 4-space-indented names under a header, and the
+            # block ends at the Summary section. Anything outside that block is not an import.
+            if ([string]$line -match 'Image has the following dependencies') { $inDependencyBlock = $true; continue }
+            if ([string]$line -match '^\s*Summary') { $inDependencyBlock = $false; continue }
+            if (-not $inDependencyBlock) { continue }
+            if ([string]$line -notmatch '^\s{2,}(\S.*\.dll)\s*$') { continue }
+            $dependency = $Matches[1]
+            if (-not $imports.ContainsKey($dependency)) {
+                $imports[$dependency] = [System.Collections.Generic.List[string]]::new()
+            }
+            $imports[$dependency].Add($pe.FullName)
+            continue
+        }
         if ([string]$line -match '^\s*DLL Name:\s*(\S.*?)\s*$') {
             $dependency = $Matches[1]
             if (-not $imports.ContainsKey($dependency)) {

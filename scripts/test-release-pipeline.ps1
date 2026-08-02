@@ -315,8 +315,9 @@ try {
 
     $currentHead = (& git -C $root rev-parse HEAD).Trim()
 
-    # ARM64 is intentionally Compact: a manifest may not claim an x64
-    # ImageMagick payload merely because it carries a modern-menu package.
+    # A manifest may not claim an ImageMagick payload the STAGE does not have. This used
+    # to be an architecture rule ("ARM64 is Compact"); ARM64 is Full now, so the check is
+    # against the staged reality instead, which catches the same lie on either arch.
     @{
         schemaVersion = 1
         product = 'SageThumbs 2K'
@@ -336,7 +337,7 @@ try {
             modernMenuBundled = $true
         }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest -Encoding utf8
-    Assert-FailsLike 'ARM64 manifest rejects an ImageMagick payload' '*ImageMagickBundled=false*' {
+    Assert-FailsLike 'manifest claiming ImageMagick the stage lacks is rejected' '*disagrees with the stage*' {
         & (Join-Path $PSScriptRoot 'check-release-manifest.ps1') `
             -InstallerPath $installer `
             -StagePath $stage `

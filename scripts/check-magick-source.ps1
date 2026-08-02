@@ -18,6 +18,12 @@ param(
 
     [string]$PinPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\imagemagick-source.json'),
 
+    # Which architecture's bundle this is. Only the runtime `magick.exe -version` check
+    # cares: it can run solely when this matches the host, so a cross-architecture build
+    # defers that one step to CI. Everything else is architecture-agnostic hashing.
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64',
+
     [switch]$PassThru
 )
 
@@ -106,13 +112,25 @@ if ($versionInfo.FileVersion -cne [string]$pin.identity.fileVersion) {
     throw "ImageMagick magick.exe FileVersion mismatch: expected '$($pin.identity.fileVersion)', got '$($versionInfo.FileVersion)'"
 }
 
-$versionOutput = @(& $magickExe -version 2>&1)
-if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -eq 0) {
-    throw "Pinned ImageMagick magick.exe did not run successfully: $magickExe"
-}
-$versionLine = [string]$versionOutput[0]
-if ($versionLine -notmatch [string]$pin.identity.versionLinePattern) {
-    throw "ImageMagick runtime identity mismatch. Expected /$($pin.identity.versionLinePattern)/; got '$versionLine'"
+# The runtime identity check EXECUTES magick.exe, which only works when the pinned bundle
+# matches the host architecture: an x64 machine cannot run an ARM64 binary at all. Rather
+# than drop the check, defer it to the arm64 CI job, which runs on native ARM hardware.
+# What still holds locally is strictly stronger than a printed version string: the PE
+# FileVersion above, plus the 195-file/byte-count/SHA-256 inventory below, which pins the
+# exact upstream bytes. Never "fix" a cross-architecture skip by weakening the inventory.
+$hostArch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+if ($Architecture -cne $hostArch) {
+    $versionLine = "(runtime identity DEFERRED: $Architecture bundle on an $hostArch host; the arm64 CI job runs it natively)"
+    Write-Host "  $versionLine" -ForegroundColor Yellow
+} else {
+    $versionOutput = @(& $magickExe -version 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -eq 0) {
+        throw "Pinned ImageMagick magick.exe did not run successfully: $magickExe"
+    }
+    $versionLine = [string]$versionOutput[0]
+    if ($versionLine -notmatch [string]$pin.identity.versionLinePattern) {
+        throw "ImageMagick runtime identity mismatch. Expected /$($pin.identity.versionLinePattern)/; got '$versionLine'"
+    }
 }
 
 $inventory = Get-ApprovedInventory -Root $resolvedSource

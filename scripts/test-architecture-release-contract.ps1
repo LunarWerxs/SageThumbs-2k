@@ -47,7 +47,9 @@ Assert-Passes 'release publishes explicit x64 and ARM64 artifact pairs' {
             "'packaging\stage\x64'",
             "'packaging\stage\arm64'",
             '-Architecture $artifact.Architecture',
-            '$buildArgs += ''-NoImageMagick''',
+                # ARM64 is a FULL build as of 2026-08-01, so release.ps1 must NOT pass
+                # -NoImageMagick for it any more; both architectures bundle ImageMagick.
+                # (The absence of that flag is asserted separately, below.)
             'gh release create $tag @releaseAssetPaths'
         )) {
         if ($text -notlike "*$required*") { throw "release.ps1 is missing '$required'" }

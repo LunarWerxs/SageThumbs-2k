@@ -100,9 +100,7 @@ if ($ImageMagickBundled) {
     Assert-ReleasePeFile -Path $magickExe
 }
 $magickDirectory = Join-Path $stage.FullName 'magick'
-if ($Architecture -eq 'arm64' -and ($ImageMagickBundled -or (Test-Path -LiteralPath $magickDirectory))) {
-    throw 'ARM64 Compact releases must not stage an ImageMagick payload'
-}
+
 
 $msixPath = Join-Path $stage.FullName 'SageThumbs2K.msix'
 $cerPath = Join-Path $stage.FullName 'SageThumbs2K.cer'

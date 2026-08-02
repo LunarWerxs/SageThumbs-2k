@@ -53,9 +53,26 @@ function Get-PeImports {
         [Parameter(Mandatory)][string]$Inspector
     )
 
-    $output = @(& $Inspector -p $PePath 2>&1)
+    # MinGW objdump cannot read ARM64 PEs, so an ARM64 bundle is inspected with MSVC's
+    # dumpbin. Both were verified to report identical dependency sets on the x64 bundle;
+    # only the output format differs, which is all this branch accounts for.
+    $usingDumpbin = [System.IO.Path]::GetFileNameWithoutExtension($Inspector) -ieq 'dumpbin'
+    $output = if ($usingDumpbin) {
+        @(& $Inspector /nologo /dependents $PePath 2>&1)
+    } else {
+        @(& $Inspector -p $PePath 2>&1)
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "PE inspection failed for '$PePath' using '$Inspector': $($output -join [Environment]::NewLine)"
+    }
+    if ($usingDumpbin) {
+        $inBlock = $false
+        return @($output | ForEach-Object {
+            $line = [string]$_
+            if ($line -match 'Image has the following dependencies') { $inBlock = $true; return }
+            if ($line -match '^\s*Summary') { $inBlock = $false; return }
+            if ($inBlock -and $line -match '^\s{2,}(\S.*\.dll)\s*$') { $Matches[1] }
+        })
     }
     @($output | ForEach-Object {
         if ([string]$_ -match '^\s*DLL Name:\s*(\S.*?)\s*$') {
@@ -255,6 +272,12 @@ foreach ($name in @(
     'combase.dll',
     'comdlg32.dll',
     'crypt32.dll',
+    # Both are inbox on every supported Windows (verified present in System32). They only
+    # appear now because ARM64 ships the GENUINE glib: on x64 glib is stubbed away, so its
+    # networking imports never reached this check. Inbox means no redistributable is
+    # required, which is the only property this allowlist is asserting.
+    'dnsapi.dll',
+    'iphlpapi.dll',
     'gdi32.dll',
     'gdiplus.dll',
     'kernel32.dll',

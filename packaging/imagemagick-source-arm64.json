@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "identity": {
+    "displayName": "ImageMagick 7.1.2-29 Q16-HDRI (ARM64) (2026-07-27)",
+    "fileVersion": "7.1.2-29",
+    "versionLinePattern": "^Version: ImageMagick 7\\.1\\.2-29 Q16-HDRI arm64\\b",
+    "installDirectoryName": "ImageMagick-7.1.2-Q16-HDRI-arm64"
+  },
+  "inventory": {
+    "description": "SHA-256 over UTF-8 lines relative/path|byteLength|lowercaseFileSha256, ordinal-ignore-case sorted, with a final LF. Inputs are magick.exe, root DLL/XML files, License.txt, NOTICE.txt, and every file below modules. Identical algorithm to the x64 pin; only the bundle differs.",
+    "fileCount": 195,
+    "totalBytes": 55541676,
+    "sha256": "f298f380c11fd72eae341fa4ff01fb7d361d4328b28068ca29237aeaf0d9920c"
+  },
+  "requiredLegalFiles": [
+    "License.txt",
+    "NOTICE.txt"
+  ],
+  "provenance": {
+    "upstreamAsset": "ImageMagick-7.1.2-29-Q16-HDRI-arm64-dll.exe",
+    "upstreamUrl": "https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-29/ImageMagick-7.1.2-29-Q16-HDRI-arm64-dll.exe",
+    "upstreamSha256": "3486e3ee2a32a5fe2bf5d9388ed859ef5ab5bbf1b418d6ab8ef4a8a3d892cce9",
+    "obtainedOn": "2026-08-01",
+    "note": "SAME upstream release as the x64 pin (7.1.2-29), so it carries the same 2026 policy.xml bypass fixes including CVE-2026-49219 and CVE-2025-66628. The ARM64 asset is an Inno installer rather than an installable-here package, so the payload was extracted with innoextract and placed at %ProgramFiles%\\ImageMagick-7.1.2-Q16-HDRI-arm64 to match the x64 resolution rule. The extracted tree is the SAME 195-file set as x64, which is why the inventory algorithm is unchanged.",
+    "runtimeIdentityCheck": "DEFERRED TO CI. check-magick-source.ps1 confirms the runtime version line by executing magick.exe, which an x64 host cannot do for an ARM64 binary. The 195-file SHA-256 inventory and the PE FileVersion still pin identity locally, and both are stronger than a printed version string; the executed check runs natively in the arm64 CI job."
+  }
+}

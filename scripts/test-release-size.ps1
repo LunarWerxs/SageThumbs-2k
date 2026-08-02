@@ -19,7 +19,10 @@ function Write-TestPolicy([string]$path, [bool]$armInstallerCalibrated = $false)
         referenceRustPayloadBytes = 1500
         rustPayloadGrowthAllowanceBytes = 100
         maxRustPayloadBytes = 1600
-        rationale = 'ARM64 Compact test policy'
+        referenceMagickPayloadBytes = 3000
+        magickPayloadGrowthAllowanceBytes = 300
+        maxMagickPayloadBytes = 3300
+        rationale = 'ARM64 Full test policy'
     }
     if ($armInstallerCalibrated) {
         $arm.referenceInstallerBytes = 900
@@ -45,7 +48,7 @@ function Write-TestPolicy([string]$path, [bool]$armInstallerCalibrated = $false)
                 maxMagickPayloadBytes = 3300
                 rationale = 'x64 Full test policy'
             }}
-            arm64 = [ordered]@{ compact = $arm }
+            arm64 = [ordered]@{ full = $arm }
         }
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding UTF8
 }
@@ -92,7 +95,11 @@ try {
         & $checker -Architecture arm64 -InstallerPath $installer -PolicyPath $policy -StagePath $stage
     }
     Set-MagickTotal $stage 1
-    Assert-FailsLike 'ARM64 Compact forbids staged ImageMagick' '*must not contain ImageMagick*' {
+    # ARM64 used to REJECT any staged ImageMagick outright. It is Full now, so staging one
+    # must no longer be the REASON it fails: the only remaining objection here is the
+    # uncalibrated installer reference. Asserting the failure reason is what proves the old
+    # architecture-based prohibition is gone.
+    Assert-FailsLike 'ARM64 Full objects only to calibration, not to a staged ImageMagick payload' '*no calibrated installer reference*' {
         & $checker -Architecture arm64 -InstallerPath $installer -PolicyPath $policy -StagePath $stage
     }
 
@@ -115,14 +122,14 @@ try {
     Write-TestPolicy $policy -armInstallerCalibrated $true
     Remove-Item -LiteralPath (Join-Path $stage 'magick') -Recurse -Force -ErrorAction SilentlyContinue
     Set-StageTotal $stage 1600
-    Assert-Passes 'ARM64 calibrated Compact policy accepts its exact ceilings' {
+    Assert-Passes 'ARM64 calibrated Full policy accepts its exact ceilings' {
         & $checker -Architecture arm64 -InstallerPath $installer -PolicyPath $policy -StagePath $stage
     }
 
     $prod = Get-Content -LiteralPath $productionPolicy -Raw | ConvertFrom-Json
     if ([int64]$prod.schemaVersion -ne 3) { throw 'production size policy must use schema v3' }
     foreach ($architecture in 'x64', 'arm64') {
-        $profileName = if ($architecture -eq 'x64') { 'full' } else { 'compact' }
+        $profileName = 'full'
         $profile = $prod.architectures.$architecture.$profileName
         if ($null -eq $profile) { throw "production policy missing $architecture/$profileName" }
         $referenceRust = [int64]$profile.referenceRustPayloadBytes
@@ -137,7 +144,7 @@ try {
         } else {
             # Calibrated 2026-08-01 with the first real ARM64 installer, so this now
             # asserts the reference PASSES rather than that the profile is still gated.
-            # ARM64 is Compact: no magick payload is staged, by design.
+            # ARM64 is Full now: it stages a magick payload exactly like x64.
             Set-SparseLength $installer ([int64]$profile.referenceInstallerBytes)
             Assert-Passes 'production ARM64 reference sizes' {
                 & $checker -Architecture arm64 -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage

@@ -32,8 +32,8 @@ try {
     # selecting a "newest" setup from dist would let an old or wrong-architecture
     # installer become a release asset.
     #
-    # ARM64 is filtered out until its first installer has been built, qualified on native
-    # hardware, and recorded in that policy.  check-release-size.ps1 refuses an
+    # An architecture is filtered out until its first installer has been built and recorded
+    # in that policy (ARM64 was, on 2026-08-01).  check-release-size.ps1 refuses an
     # uncalibrated reference by design, so keeping ARM64 in the table unconditionally only
     # aborts the run at step [4/6] - AFTER main is pushed and CI is already green, leaving
     # a pushed, CI-green, untagged commit and no published release.  Calibrating the policy
@@ -63,7 +63,8 @@ try {
     function Test-InstallerReferenceCalibrated([string]$Architecture) {
         # Mirrors check-release-size.ps1's profile selection so the two cannot disagree
         # about which profile a given architecture ships.
-        $profileName = if ($Architecture -eq 'x64') { 'full' } else { 'compact' }
+        # Both architectures are Full now; keep this identical to check-release-size.ps1.
+        $profileName = 'full'
         $architecturePolicy = $sizePolicy.architectures.PSObject.Properties[$Architecture]
         if ($null -eq $architecturePolicy -or $null -eq $architecturePolicy.Value) {
             throw "size policy has no '$Architecture' architecture policy: $sizePolicyPath"
@@ -154,9 +155,7 @@ try {
         foreach ($artifact in $releaseArtifacts) {
             $buildArgs = @('-Architecture', $artifact.Architecture)
             if ($artifact.Architecture -eq 'arm64') {
-                # The ARM64 artifact is intentionally Compact: the pinned bundled
-                # ImageMagick payload is x64-only and the build driver rejects it.
-                $buildArgs += '-NoImageMagick'
+
             }
             pwsh "$root\scripts\build-release.ps1" @buildArgs
             if ($LASTEXITCODE) { throw "$($artifact.Architecture) installer build failed" }
@@ -240,7 +239,7 @@ try {
     if ($arm64Artifact.Count -eq 1) {
         Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
             '',
-            '- **ARM64 Compact installer:** ``' + $arm64Artifact[0].Setup.Name + '``',
+            '- **ARM64 installer:** ``' + $arm64Artifact[0].Setup.Name + '``',
             '- **ARM64 SHA-256:** ``' + (Get-ReleaseSha256 -Path $arm64Artifact[0].Setup.FullName) + '``'
         )
     }

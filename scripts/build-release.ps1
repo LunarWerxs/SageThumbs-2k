@@ -40,10 +40,9 @@ $targetRel = if ($Architecture -eq 'arm64') {
 $stage = Join-Path $root "packaging\stage\$Architecture"
 $stageRelative = "stage\$Architecture"
 $outputSuffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
-if ($Architecture -eq 'arm64' -and -not $NoImageMagick) {
-    Write-Host '      ARM64 has no approved ImageMagick payload; forcing Compact.' -ForegroundColor Yellow
-    $NoImageMagick = $true
-}
+# ARM64 used to be forced Compact here because there was no approved ImageMagick payload
+# for it. There is now: packaging\imagemagick-source-arm64.json pins the SAME upstream
+# 7.1.2-29 release as x64, so both architectures build Full unless -NoImageMagick is passed.
 
 function Import-Arm64BuildEnvironment {
     $vcvarsCandidates = @()
@@ -203,14 +202,20 @@ if ($bundleMagick) {
     # sort first: patch releases change imports/exports and can make a previously safe trim
     # silently incomplete. check-magick-source verifies the reported identity plus a
     # deterministic inventory hash of all 195 files eligible to enter this bundle.
-    $magickPinPath = Join-Path $root 'packaging\imagemagick-source.json'
+    # One pin PER ARCHITECTURE. Both describe the same upstream 7.1.2-29 release and the
+    # same 195-file set, so only the bundle bytes differ; the inventory algorithm is shared.
+    $magickPinPath = if ($Architecture -eq 'arm64') {
+        Join-Path $root 'packaging\imagemagick-source-arm64.json'
+    } else {
+        Join-Path $root 'packaging\imagemagick-source.json'
+    }
     $magickPin = Get-Content -LiteralPath $magickPinPath -Raw | ConvertFrom-Json
     $imPath = Join-Path $env:ProgramFiles ([string]$magickPin.identity.installDirectoryName)
     if (-not (Test-Path -LiteralPath $imPath -PathType Container)) {
         throw "Pinned ImageMagick '$($magickPin.identity.displayName)' not found at '$imPath'. " +
-              "Install that exact x64 Q16-HDRI build or pass -NoImageMagick."
+              "Provide that exact $Architecture Q16-HDRI build or pass -NoImageMagick."
     }
-    & "$PSScriptRoot\check-magick-source.ps1" -SourcePath $imPath -PinPath $magickPinPath
+    & "$PSScriptRoot\check-magick-source.ps1" -SourcePath $imPath -PinPath $magickPinPath -Architecture $Architecture
     if ($LASTEXITCODE) { throw "Pinned ImageMagick source validation failed" }
     $im = Get-Item -LiteralPath $imPath
     Write-Host "      bundling a TRIMMED, PINNED ImageMagick from $($im.Name)" -ForegroundColor DarkGray
@@ -230,6 +235,25 @@ if ($bundleMagick) {
     $gcc = if ($mingwBin) { Join-Path $mingwBin 'gcc.exe' } else { $null }
     $windresStub = if ($mingwBin) { Join-Path $mingwBin 'windres.exe' } else { $null }
     $objdump = if ($mingwBin) { Join-Path $mingwBin 'objdump.exe' } else { $null }
+    # MinGW objdump only understands x86 PEs. For an ARM64 bundle use MSVC's dumpbin,
+    # which reads every machine type and comes with the same VS BuildTools the ARM64
+    # toolchain already needs. x64 deliberately keeps objdump so its proven path is
+    # untouched; the two were checked to agree exactly on the x64 bundle's dependencies.
+    $peInspector = $objdump
+    if ($Architecture -eq 'arm64') {
+        $peInspector = (Get-Command dumpbin.exe -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1).Source
+        if (-not $peInspector) {
+            $vsRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
+            $peInspector = (Get-ChildItem $vsRoot -Filter dumpbin.exe -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' |
+                Sort-Object FullName -Descending | Select-Object -First 1).FullName
+        }
+        if (-not $peInspector) {
+            throw 'ARM64 bundling needs MSVC dumpbin.exe to inspect ARM64 PE imports (MinGW objdump cannot read them)'
+        }
+        Write-Host "      PE inspector: $peInspector" -ForegroundColor DarkGray
+    }
     $missingStubTools = @(
         @{ Name = 'gendef'; Path = $gendef },
         @{ Name = 'gcc'; Path = $gcc },
@@ -290,7 +314,28 @@ if ($bundleMagick) {
     if (-not $deniedCoderAliases.Contains('PANGO')) {
         throw 'Refusing to prune the PANGO coder: packaging/imagemagick-policy.xml no longer denies PANGO'
     }
-    $advertisedFormats = @(& "$targetRel\st2k.exe" formats 2>&1)
+    # This asks OUR CLI which formats we advertise, purely to prove we are not about to
+    # prune a coder we actually expose. The answer comes from `formats::FORMATS`, which is
+    # the same table in every build, so ANY host-native st2k.exe answers it correctly.
+    # That matters because cross-building ARM64 on an x64 host produces an st2k.exe this
+    # machine cannot execute at all; querying the native one keeps the safety check real
+    # instead of skipping it whenever the architectures differ.
+    $hostArchNow = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+    $formatsProbe = "$targetRel\st2k.exe"
+    if ($Architecture -cne $hostArchNow) {
+        $nativeProbe = @(
+            (Join-Path $targetRoot 'release\st2k.exe')
+            (Join-Path $targetRoot 'debug\st2k.exe')
+        ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if (-not $nativeProbe) {
+            throw "Cross-building $Architecture on an $hostArchNow host: need a host-native " +
+                  "st2k.exe to read the advertised format list before pruning ImageMagick. " +
+                  "Run `cargo build` (or `cargo build --release`) first."
+        }
+        $formatsProbe = $nativeProbe
+        Write-Host "      format list read from the host-native $([System.IO.Path]::GetFileName((Split-Path $formatsProbe -Parent)))\st2k.exe" -ForegroundColor DarkGray
+    }
+    $advertisedFormats = @(& $formatsProbe formats 2>&1)
     if ($LASTEXITCODE -ne 0) { throw 'Could not query st2k formats before ImageMagick pruning' }
     if (($advertisedFormats -join "`n") -match '(?im)^\s*\.pango\s') {
         throw 'Refusing to prune the PANGO coder: .pango is now an advertised SageThumbs input format'
@@ -340,6 +385,16 @@ if ($bundleMagick) {
     # so an IM upgrade adapts automatically after the source pin + regression corpus are
     # deliberately updated. We compare the generated stub's export inventory to upstream
     # before accepting it. See docs/MAGICK.md.
+    # STUBS ARE x86-ONLY. gendef/gcc/dlltool come from MinGW, which emits x86_64 PEs no
+    # matter what we are targeting: the first ARM64 Full build replaced GENUINE ARM64
+    # freetype/glib/raqm with x64 stubs, which an ARM64 process cannot load at all. Until
+    # someone builds these stubs with the ARM64 toolchain, ARM64 ships the real upstream
+    # text-stack DLLs. That costs a few MB and is strictly correct; a broken bundle is not
+    # a trade worth making for size. The staged-architecture assertion below is what caught
+    # this, and it stays regardless.
+    if ($Architecture -cne 'x64') {
+        Write-Host "      text-stack stubbing SKIPPED for $Architecture (MinGW stubs are x86-only); shipping the genuine upstream DLLs" -ForegroundColor Yellow
+    } else {
     $stubWork = Join-Path $stage 'magick\_stubwork'
     New-Item -ItemType Directory $stubWork -Force | Out-Null
     try {
@@ -438,6 +493,7 @@ if ($bundleMagick) {
         Remove-Item $stubWork -Recurse -Force -EA SilentlyContinue
     }
     Write-Host "      stubbed + export-verified the magick text stack (glib/harfbuzz/freetype/fribidi/raqm)" -ForegroundColor DarkGray
+    }
 
     # These pinned-build companions become unreachable after pruning/stubbing above.
     # The helper refuses each deletion unless no staged PE import and no ASCII/UTF-16
@@ -452,7 +508,16 @@ if ($bundleMagick) {
         'CORE_RL_fribidi_.dll',
         'CORE_RL_harfbuzz_.dll'
     )
-    & "$PSScriptRoot\prune-magick-unreferenced.ps1" -BundlePath "$stage\magick" -ObjdumpPath $objdump -Candidate $unreferencedRuntime
+    # This candidate list is only unreferenced BECAUSE stubbing removed the code that
+    # imported it. ARM64 does not stub (MinGW stubs are x86-only), so those DLLs are
+    # genuinely still referenced there and the helper correctly refuses to delete them.
+    # Run the prune only where the precondition it was written for actually holds.
+    if ($Architecture -ceq 'x64') {
+        & "$PSScriptRoot\prune-magick-unreferenced.ps1" -BundlePath "$stage\magick" -ObjdumpPath $peInspector -Candidate $unreferencedRuntime
+    } else {
+        Write-Host "      runtime prune SKIPPED for $Architecture (its candidates stay referenced without stubbing)" -ForegroundColor Yellow
+        $global:LASTEXITCODE = 0
+    }
     if ($LASTEXITCODE) { throw "Mechanically verified ImageMagick runtime pruning failed" }
 
     # Overwrite the stock policy.xml with our hardened one.
@@ -460,10 +525,57 @@ if ($bundleMagick) {
 
     # Authoritative final gate: reject any third-party PE import not present in the
     # bundle, then execute the exact flattened layout with bundle-local modules/config.
-    & "$PSScriptRoot\check-magick-bundle.ps1" -BundlePath "$stage\magick" -ObjdumpPath $objdump
+    # Cross-architecture: inspect with the arch-capable tool, and SKIP only the part that
+# actually executes magick.exe (impossible for an ARM64 binary on an x64 host). The
+# arm64 CI job runs the real smoke test natively on ARM hardware.
+    # x64-ONLY CRT COMPONENT. vcruntime140_1.dll carries the x64 exception-handling
+    # helpers and has no ARM64 counterpart - yet upstream ImageMagick 7.1.2-29 ships an
+    # x64 copy of it inside its ARM64 installer. Staging it puts a foreign-machine DLL in
+    # an ARM64 bundle. Nothing on ARM64 imports it, so it is dropped.
+    if ($Architecture -cne 'x64') {
+        $strayCrt = Join-Path $stage 'magick\vcruntime140_1.dll'
+        if (Test-Path -LiteralPath $strayCrt) {
+            [System.IO.File]::Delete($strayCrt)
+            Write-Host "      dropped x64-only vcruntime140_1.dll from the $Architecture bundle" -ForegroundColor DarkGray
+        }
+    }
+
+    # EVERY staged PE must be the architecture we are building. This guard caught MinGW
+    # emitting x64 stubs into an ARM64 bundle, and upstream's stray x64 CRT; either would
+    # have shipped an installer whose DLLs the loader simply refuses to load.
+    $expectedMachine = if ($Architecture -eq 'arm64') { 0xAA64 } else { 0x8664 }
+    $foreign = @(Get-ChildItem $stage -Recurse -File |
+        Where-Object { $_.Extension -in '.exe', '.dll' } |
+        Where-Object {
+            $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+            if ($bytes.Length -lt 64) { return $false }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { return $true }
+            [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne $expectedMachine
+        })
+    if ($foreign) {
+        throw ("Staged $Architecture payload contains $($foreign.Count) non-$Architecture PE(s): " +
+               (($foreign.Name | Sort-Object) -join ', '))
+    }
+    Write-Host "      every staged PE is $Architecture" -ForegroundColor DarkGray
+
+$bundleCheckArgs = @{ BundlePath = "$stage\magick"; ObjdumpPath = $peInspector }
+if ($Architecture -cne $hostArchNow) { $bundleCheckArgs['SkipSmoke'] = $true }
+& "$PSScriptRoot\check-magick-bundle.ps1" @bundleCheckArgs
     if ($LASTEXITCODE) { throw "Staged ImageMagick dependency/smoke validation failed" }
-    & "$PSScriptRoot\test-staged-regression.ps1" -StagePath $stage
-    if ($LASTEXITCODE) { throw "Exact staged full-corpus regression failed" }
+
+    # The staged regression RUNS the staged st2k.exe over the corpus, so it can only
+    # execute when the staged binaries match the host. Cross-building ARM64 on an x64
+    # host would report all ~260 formats "broken" purely because the process cannot
+    # start. Skipping it here does not drop the gate: the arm64 CI job runs on native
+    # ARM hardware and exercises the same binaries there. Never let this skip apply to
+    # a same-architecture build, which is the case that catches real staging breakage.
+    if ($Architecture -cne $hostArchNow) {
+        Write-Host "      staged corpus regression DEFERRED: $Architecture payload on an $hostArchNow host (runs natively in the arm64 CI job)" -ForegroundColor Yellow
+    } else {
+        & "$PSScriptRoot\test-staged-regression.ps1" -StagePath $stage
+        if ($LASTEXITCODE) { throw "Exact staged full-corpus regression failed" }
+    }
 
     $magickSize = [math]::Round((Get-ChildItem "$stage\magick" -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
     Write-Host "      trimmed ImageMagick bundle: $magickSize MB (raw)" -ForegroundColor DarkGray
@@ -534,7 +646,7 @@ if ($Architecture -eq 'x64') {
     $fmtLine = & "$targetRel\st2k.exe" formats 2>$null | Select-Object -First 1
     if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
 }
-$compactOnly = if ($Architecture -eq 'arm64') { '1' } else { '0' }
+$compactOnly = if ($NoImageMagick) { '1' } else { '0' }
 $isccArgs = @(
     "/DAppVer=$ver",
     "/DArchitecture=$Architecture",

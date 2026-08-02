@@ -19,17 +19,20 @@
       }
     },
     "arm64": {
-      "compact": {
-        "referenceVersion": "1.6.0-arm64-compact",
+      "full": {
+        "referenceVersion": "1.6.0-arm64-full",
         "installerReferenceCalibrated": true,
-        "referenceInstallerBytes": 6246270,
-        "referenceInstallerSha256": "003455f896ff6a62d34aedf9c2f647df6f0b2ee649c645d5bd73249578865fff",
-        "installerGrowthAllowanceBytes": 131072,
-        "maxInstallerBytes": 6377342,
         "referenceRustPayloadBytes": 20234240,
         "rustPayloadGrowthAllowanceBytes": 262144,
         "maxRustPayloadBytes": 20496384,
-        "rationale": "FIRST ARM64 INSTALLER CALIBRATION, 2026-08-01, for the 1.6.0 release. Built by scripts/build-release.ps1 -Architecture arm64 -NoImageMagick on an x64 host cross-compiling to aarch64-pc-windows-msvc: dist/SageThumbs2K-Setup-1.6.0-arm64.exe at 6,246,270 bytes, SHA-256 003455f896ff6a62d34aedf9c2f647df6f0b2ee649c645d5bd73249578865fff. All three staged binaries were confirmed PE machine 0xAA64 (sagethumbs2k.dll 5,951,488, SageThumbs2K.exe 8,370,176, st2k.exe 5,920,256) and the stage contains no magick payload, which is a release failure for ARM64 by design. The Rust payload reference stays at the 1.5.0 measurement: this build lands 7,680 bytes above it, well inside the 256 KiB window, so rebaselining it would only discard headroom. WHAT THIS REFERENCE DOES AND DOES NOT ATTEST: the binaries' shell surfaces ARE verified on native ARM64 silicon, because ci.yml's arm64-compact job registers the freshly built DLL on a windows-11-arm runner and renders both a thumbnail through IShellItemImageFactory and a preview through the registered IPreviewHandler CLSID. The INSTALLER itself has not been executed on ARM64 hardware: no interactive ARM64 device was available, and CI registers the DLL directly rather than running Inno Setup. So the residual risk here is installer/registration behaviour, not decode or shell behaviour. Keep later Compact installers within 128 KiB and Rust payloads within 256 KiB unless an explicit reviewed policy change records why."
+        "referenceMagickPayloadBytes": 35198128,
+        "magickPayloadGrowthAllowanceBytes": 262144,
+        "maxMagickPayloadBytes": 35460272,
+        "rationale": "FIRST ARM64 FULL CALIBRATION, 2026-08-01, for the 1.6.0 release. ARM64 stopped being Compact: packaging/imagemagick-source-arm64.json pins the SAME upstream ImageMagick 7.1.2-29 Q16-HDRI release as x64, extracted from the official arm64 installer, so ARM64 now carries the long-tail format tier too. Measured from scripts/build-release.ps1 -Architecture arm64: installer 13,581,878 bytes (SHA-256 a375abb44345ecd9980be01ead63a3e7a81da01de17db0d2f894355d901e0d33), ImageMagick payload 35,198,128 bytes over 161 files, Rust payload 20,241,920 bytes. Every staged PE was asserted to be machine 0xAA64. WHY THE MAGICK PAYLOAD IS LARGER THAN x64 (35.2 MB vs 29.8 MB): the text-shaping stack (glib/harfbuzz/freetype/fribidi/raqm) is NOT stubbed on ARM64, because the stub generator is MinGW and MinGW emits x86_64 PEs regardless of target - the first attempt silently replaced genuine ARM64 DLLs with x64 stubs, which an ARM64 loader refuses. ARM64 therefore ships the real upstream DLLs, and the runtime prune is skipped with it since its candidates are only unreferenced once stubbing removes their importers. Building those stubs with the MSVC ARM64 toolchain would bring ARM64 back to x64 parity; until then this larger reference is deliberate and correct. WHAT THIS DOES NOT ATTEST: the installer has not been executed on ARM64 hardware, and three gates (magick runtime identity, bundle smoke, staged corpus regression) are deferred to the native arm64 CI job because an x64 host cannot run ARM64 binaries at all.",
+        "referenceInstallerBytes": 13581878,
+        "referenceInstallerSha256": "a375abb44345ecd9980be01ead63a3e7a81da01de17db0d2f894355d901e0d33",
+        "installerGrowthAllowanceBytes": 131072,
+        "maxInstallerBytes": 13712950
       }
     }
   }

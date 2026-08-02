@@ -69,7 +69,9 @@ function Get-ArchitecturePolicy([object]$policy, [string]$architecture) {
     if ($null -eq $architecturePolicy -or $null -eq $architecturePolicy.Value) {
         throw "size policy '$PolicyPath' has no '$architecture' architecture policy"
     }
-    $profile = if ($architecture -eq 'x64') { 'full' } else { 'compact' }
+    # Both architectures now ship Full: ARM64 gained its own pinned ImageMagick bundle
+    # (packaging\imagemagick-source-arm64.json), so 'compact' is no longer an ARM64 fact.
+    $profile = 'full'
     $profilePolicy = $architecturePolicy.Value.PSObject.Properties[$profile]
     if ($null -eq $profilePolicy -or $null -eq $profilePolicy.Value) {
         throw "size policy '$PolicyPath' has no '$architecture/$profile' profile"
@@ -113,9 +115,7 @@ $rationale = Read-RequiredText $profile 'rationale'
 if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "release installer not found: $InstallerPath" }
 if ($StagePath) {
     if (-not (Test-Path -LiteralPath $StagePath -PathType Container)) { throw "release stage directory not found: $StagePath" }
-    if ($Architecture -eq 'arm64' -and (Test-Path -LiteralPath (Join-Path $StagePath 'magick') -PathType Container)) {
-        throw 'ARM64 Compact release stage must not contain ImageMagick'
-    }
+
     Test-StageRustPayload $StagePath $profile
 }
 

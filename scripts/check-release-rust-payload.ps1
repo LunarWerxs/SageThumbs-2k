@@ -77,10 +77,6 @@ catch { throw "release size policy is not valid JSON: $PolicyPath`n$($_.Exceptio
 $selected = Get-ArchitecturePolicy $policy $Architecture
 $maxRust = Read-RequiredInt64 $selected.Policy 'maxRustPayloadBytes'
 
-if ($Architecture -eq 'arm64' -and
-    (Test-Path -LiteralPath (Join-Path $ArtifactDirectory 'magick') -PathType Container)) {
-    throw 'ARM64 Compact release payload must not stage ImageMagick'
-}
 
 $total = [int64]0
 foreach ($name in 'sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe') {
