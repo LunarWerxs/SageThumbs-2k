@@ -350,6 +350,11 @@ if (-not $SkipDownloads) {
         'sample.afdesign' = 'https://raw.githubusercontent.com/NickBeeuwsaert/AFDesignLoad/master/testDesigns/raster_test.afdesign'
         'sample.blend'    = 'https://raw.githubusercontent.com/mewspring/blend/master/testdata/block.blend'
         'sample.clip'     = 'https://raw.githubusercontent.com/dobrokot/clip_to_psd/master/tests/test_export_all_features.clip'
+        # Paint.NET. Two on purpose: the modern one is a normal multi-layer 4.21 save,
+        # and the -pdn35 one was written by Paint.NET 3.510, which proves the embedded
+        # preview is not a modern-only feature. Both must thumbnail.
+        'sample.pdn'      = 'https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/Untitled2.pdn'
+        'sample-pdn35.pdn' = 'https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/oldPDN3510.pdn'
         # Camera RAW (decode-only — magick can't write it): real small samples.
         # (The old rawpy iss115.DNG URL was ALWAYS 404 — never noticed because a
         # renamed-PNG fake pre-empted the download until 2026-07-08.)

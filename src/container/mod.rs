@@ -45,6 +45,7 @@ mod max;
 mod mobi;
 mod office;
 mod ole;
+mod pdn;
 mod project;
 mod psd;
 mod psp;
@@ -241,6 +242,11 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     // and ours needs no ImageMagick at all (works on the compact install).
     if xcf::looks_like_xcf(bytes) {
         return xcf::extract(bytes).map(CoverOut::Image);
+    }
+    // Paint.NET: the base64 PNG preview in the XML preamble. Never touches the
+    // .NET-serialized document after it, so no ImageMagick and no deserializer.
+    if pdn::looks_like_pdn(bytes) {
+        return pdn::extract(bytes).map(CoverOut::Bytes);
     }
     // Photoshop PSD/PSB: the baked-in JPEG thumbnail (resource 1036). Works with
     // no ImageMagick; on None we fall through so a full install can still render

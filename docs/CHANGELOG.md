@@ -9,6 +9,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **EPS files now get thumbnails, without rendering PostScript.** SageThumbs reads the
   safe raster preview already embedded by DOS-EPS, EPSI, or Photoshop, while files with no
   embedded preview still keep their stock icon.
+- **Paint.NET `.pdn` files now get thumbnails.** Paint.NET saves a small flattened preview
+  inside the file, and SageThumbs reads that, so you see the picture rather than a blank
+  icon, with every layer already composited. It works on files from older Paint.NET
+  versions as well as current ones, and nothing about the drawing itself is opened.
 
 ### Fixed
 

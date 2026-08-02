@@ -244,6 +244,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("pcd", "Photo CD"),
     ("pcx", "ZSoft IBM PC Paintbrush"),
     ("pdb", "Palm Database ImageViewer Format"),
+    ("pdn", "Paint.NET image"),
     ("pes", "Embird Embroidery Format"),
     ("pfm", "Portable float format"),
     ("pgm", "Portable graymap format"),
