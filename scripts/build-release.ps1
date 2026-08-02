@@ -130,7 +130,8 @@ if (-not $SkipBuild) {
         if (-not $rc) {
             throw 'Windows SDK rc.exe is required for ARM64 manifest/icon/version resources'
         }
-        Write-Host "      rc.exe: $($rc.Source ?? $rc.FullName)" -ForegroundColor DarkGray
+        $rcExe = $rc.Source ?? $rc.FullName
+        Write-Host "      rc.exe: $rcExe" -ForegroundColor DarkGray
     } else {
         $windres = Get-Command windres, x86_64-w64-mingw32-windres, llvm-windres -EA SilentlyContinue | Select-Object -First 1
         if (-not $windres) {
@@ -392,9 +393,9 @@ if ($bundleMagick) {
     # text-stack DLLs. That costs a few MB and is strictly correct; a broken bundle is not
     # a trade worth making for size. The staged-architecture assertion below is what caught
     # this, and it stays regardless.
-    if ($Architecture -cne 'x64') {
-        Write-Host "      text-stack stubbing SKIPPED for $Architecture (MinGW stubs are x86-only); shipping the genuine upstream DLLs" -ForegroundColor Yellow
-    } else {
+    # Export extraction (gendef) is architecture-independent; only the compile/link half
+    # is toolchain-specific, so ARM64 stubs with MSVC and x64 keeps gcc/windres.
+    if ($true) {
     $stubWork = Join-Path $stage 'magick\_stubwork'
     New-Item -ItemType Directory $stubWork -Force | Out-Null
     try {
@@ -454,16 +455,37 @@ if ($bundleMagick) {
                     'END'
                 )
                 Set-Content 'version.rc' $rc -Encoding ascii
-                & $windresStub 'version.rc' -O coff -o 'version.o' 2>$null
-                if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath 'version.o')) {
-                    throw "windres failed while versioning $dll"
+                if ($Architecture -eq 'arm64') {
+                    & $rcExe /nologo 'version.rc' 2>&1 | Out-Null
+                    if (-not (Test-Path -LiteralPath 'version.res')) { throw "rc failed while versioning $dll" }
+                } else {
+                    & $windresStub 'version.rc' -O coff -o 'version.o' 2>$null
+                    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath 'version.o')) {
+                        throw "windres failed while versioning $dll"
+                    }
                 }
 
                 $stubPath = Join-Path "$stage\magick" $dll
-                $gccArgs = @('-O2', '-shared', '-nostdlib', '-o', $stubPath, 'stub.c', 'build.def', '-e', 'DllMainCRTStartup', 'version.o')
-                & $gcc @gccArgs 2>$null
-                if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $stubPath -PathType Leaf)) {
-                    throw "gcc failed while building $dll"
+                if ($Architecture -eq 'arm64') {
+                    # MSVC ARM64: /NODEFAULTLIB plus an explicit entry keeps the stub as
+                    # hollow as the MinGW one, and /DEF carries the exact export set.
+                    & cl /nologo /c /O2 /GS- 'stub.c' 2>&1 | Out-Null
+                    if (-not (Test-Path -LiteralPath 'stub.obj')) { throw "cl failed while building $dll" }
+                    # /IMPLIB is REQUIRED: link emits <name>.lib and <name>.exp beside /OUT,
+                    # which drops build artifacts straight into the shipped magick bundle.
+                    # The installer lint caught exactly that. Send them to the temp dir.
+                    & link /nologo /DLL /MACHINE:ARM64 /NODEFAULTLIB /ENTRY:DllMainCRTStartup `
+                        /DEF:build.def 'stub.obj' 'version.res' `
+                        "/IMPLIB:$(Join-Path $stubWork ""CORE_RL_$($t)_.lib"")" "/OUT:$stubPath" 2>&1 | Out-Null
+                    if (-not (Test-Path -LiteralPath $stubPath -PathType Leaf)) {
+                        throw "link failed while building $dll"
+                    }
+                } else {
+                    $gccArgs = @('-O2', '-shared', '-nostdlib', '-o', $stubPath, 'stub.c', 'build.def', '-e', 'DllMainCRTStartup', 'version.o')
+                    & $gcc @gccArgs 2>$null
+                    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $stubPath -PathType Leaf)) {
+                        throw "gcc failed while building $dll"
+                    }
                 }
 
                 # Re-extract from the finished stub and compare exact name/DATA shape.
@@ -512,7 +534,7 @@ if ($bundleMagick) {
     # imported it. ARM64 does not stub (MinGW stubs are x86-only), so those DLLs are
     # genuinely still referenced there and the helper correctly refuses to delete them.
     # Run the prune only where the precondition it was written for actually holds.
-    if ($Architecture -ceq 'x64') {
+    if ($true) {
         & "$PSScriptRoot\prune-magick-unreferenced.ps1" -BundlePath "$stage\magick" -ObjdumpPath $peInspector -Candidate $unreferencedRuntime
     } else {
         Write-Host "      runtime prune SKIPPED for $Architecture (its candidates stay referenced without stubbing)" -ForegroundColor Yellow
