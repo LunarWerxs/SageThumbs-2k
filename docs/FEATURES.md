@@ -334,6 +334,14 @@ plus these viewer-only extras:
 - **Folder browsing + full-screen**: **←/→** (or PgUp/PgDn) flip through the current folder's
   previewable files without closing the popup, QuickLook-style; **F11** toggles borderless
   full-screen (Esc restores).
+- **It remembers the size you drag it to.** Out of the box each file opens sized to its own
+  content (a photo at its real pixels, a document at reading width). Resize the window once and
+  that becomes the size, for the next file and for every preview after it, instead of snapping
+  back. **Double-click the title bar** to forget it and go back to fitting each file. The size is
+  stored independently of display scaling, so it looks the same on a second monitor at a
+  different zoom level, and it is clamped to fit whatever screen you open it on.
+- **It remembers the volume.** Turn a clip down (or mute it) and the next video or track starts
+  there, rather than every file blasting at full volume again.
 - A slim caption **toolbar** (Segoe Fluent icons): keep-on-top, copy path, **copy text (OCR)**,
   file info, upload & copy link, open with…, open, close.
 - **Copy text (OCR)** right from the toolbar: click it and the words in the picture you're

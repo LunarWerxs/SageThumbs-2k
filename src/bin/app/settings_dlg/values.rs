@@ -166,6 +166,15 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     let _ = settings::set_screenshot_save_dir("");
     set_shot_dir_label(hwnd);
     update_save_dir_enabled(hwnd);
+    // Remembered Quick preview VIEWER state — the window size you dragged out, the playback
+    // volume/mute, and the Markdown outline sidebar. These have no control here (the viewer
+    // writes them as you use it), so like the save-folder above they are cleared immediately
+    // rather than through the Save-button apply. Without this, "Reset all settings" would leave
+    // the viewer opening at a size the user has no other way to undo from this dialog.
+    let _ = settings::set_preview_window_size(None);
+    let _ = settings::set_preview_volume(100);
+    let _ = settings::set_preview_muted(false);
+    let _ = settings::set_preview_toc_open(true);
     reset_formats(hwnd); // every supported format re-enabled
 }
 

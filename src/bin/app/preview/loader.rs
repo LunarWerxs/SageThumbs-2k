@@ -708,11 +708,49 @@ pub(super) fn start_poll(hwnd: HWND) {
     });
 }
 
+/// Clamp a REMEMBERED client size to something that actually fits: never below the window's
+/// minimum, never larger than the monitor's work area (a size dragged out on a 4K screen must not
+/// open off the edge of a laptop panel). Pure math, so it is unit-testable without a window.
+pub(super) fn clamp_remembered_size(
+    (w, h): (i32, i32),
+    (min_w, min_h): (i32, i32),
+    (work_w, work_h): (i32, i32),
+) -> (i32, i32) {
+    (
+        w.clamp(min_w, work_w.max(min_w)),
+        h.clamp(min_h, work_h.max(min_h)),
+    )
+}
+
 /// Compute the desired CLIENT size (device px) for the current content.
+///
+/// A size the user dragged out beats the per-content default, for every content kind and every
+/// file after it — that IS the "remember it" behaviour (`settings::preview_window_size`); a
+/// caption double-click forgets it again. Two exceptions, in order:
+///   * a resize drag that is still in progress wins over both, so a follow-selection switch
+///     landing mid-drag can't yank the frame out from under the cursor;
+///   * `--shot` ignores the remembered size entirely, so a headless capture never depends on
+///     whatever size the developer happened to leave their own viewer at.
 pub(super) unsafe fn client_size(hwnd: HWND) -> (i32, i32) {
     let st = &*state(hwnd);
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let cap = sc(CAPTION_H);
+    if !st.shot {
+        if st.user_sized.get() {
+            let mut r = RECT::default();
+            if GetClientRect(hwnd, &mut r).is_ok() {
+                return (r.right - r.left, r.bottom - r.top);
+            }
+        }
+        if let Some((w, h)) = sagethumbs2k_core::settings::preview_window_size() {
+            let (_dpi, work) = crate::win::cursor_monitor_metrics();
+            return clamp_remembered_size(
+                (sc(w), sc(h)),
+                (sc(MIN_W), sc(MIN_H)),
+                (work.right - work.left, work.bottom - work.top),
+            );
+        }
+    }
     match st.kind.get() {
         ContentKind::Image => {
             if let Some((rdw, rdh)) = image_dims(st) {
@@ -776,4 +814,70 @@ pub(super) unsafe fn center_on_cursor_monitor(cw: i32, ch: i32) -> Option<(i32, 
     let x = work.left + (work.right - work.left - cw) / 2;
     let y = work.top + (work.bottom - work.top - ch) / 2;
     Some((x.max(work.left), y.max(work.top)))
+}
+
+/// Persist the size the user just dragged the frame to, so the next file — and the next preview —
+/// opens at it. Driven by `WM_EXITSIZEMOVE`, and only when `WM_SIZING` actually fired: that pair
+/// is what separates a RESIZE from a plain window MOVE, which must not pin whatever size the
+/// content happened to pick. Stored in logical px (see `settings::preview_window_size`).
+pub(super) unsafe fn remember_size(hwnd: HWND) {
+    let st = &*state(hwnd);
+    // `replace` consumes the flag either way — a move that follows a resize starts clean.
+    if !st.user_sized.replace(false) || st.shot || st.fullscreen.get().is_some() {
+        return;
+    }
+    let mut r = RECT::default();
+    if GetClientRect(hwnd, &mut r).is_err() {
+        return;
+    }
+    let size = (
+        crate::win::dpi_unscale(hwnd, r.right - r.left),
+        crate::win::dpi_unscale(hwnd, r.bottom - r.top),
+    );
+    let _ = sagethumbs2k_core::settings::set_preview_window_size(Some(size));
+}
+
+/// Forget the remembered size and re-fit the window to the file it is showing — the caption
+/// double-click. The escape hatch for "I dragged it out once and now everything opens that big".
+pub(super) unsafe fn forget_size(hwnd: HWND) {
+    let st = &*state(hwnd);
+    st.user_sized.set(false);
+    let _ = sagethumbs2k_core::settings::set_preview_window_size(None);
+    if st.shot || st.fullscreen.get().is_some() {
+        return;
+    }
+    let (cw, ch) = client_size(hwnd); // with nothing remembered, the content's own size again
+    place(hwnd, cw, ch, None);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_remembered_size;
+
+    #[test]
+    fn a_remembered_size_is_kept_when_it_fits() {
+        let got = clamp_remembered_size((1200, 800), (400, 200), (1920, 1040));
+        assert_eq!(got, (1200, 800));
+    }
+
+    #[test]
+    fn a_remembered_size_from_a_bigger_screen_shrinks_to_this_one() {
+        let got = clamp_remembered_size((3800, 2000), (400, 200), (1920, 1040));
+        assert_eq!(got, (1920, 1040));
+    }
+
+    #[test]
+    fn a_remembered_size_never_drops_below_the_window_minimum() {
+        // Even a work area smaller than the minimum must not produce a sub-minimum size —
+        // `WM_GETMINMAXINFO` would refuse it and the two would disagree every resize.
+        assert_eq!(
+            clamp_remembered_size((50, 50), (400, 200), (1920, 1040)),
+            (400, 200)
+        );
+        assert_eq!(
+            clamp_remembered_size((900, 700), (400, 200), (320, 160)),
+            (400, 200)
+        );
+    }
 }

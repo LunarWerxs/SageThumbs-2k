@@ -262,6 +262,12 @@ pub(super) struct ViewerState {
     /// from the extension + the Settings toggles that decide whether it renders at all (see
     /// `loader::source_capable`). Drives the toolbar toggle's visibility.
     pub(super) src_capable: Cell<bool>,
+    /// A user drag-resize of the frame is in progress (or just finished, pending the save). Set by
+    /// `WM_SIZING` — which fires ONLY for a real frame drag, never for our own `SetWindowPos` —
+    /// and consumed by `WM_EXITSIZEMOVE`, which persists the new size. That pairing is what makes
+    /// "the size I dragged" stick without a plain window MOVE also pinning a size the user never
+    /// chose. While it is set, `loader::client_size` yields to the live drag.
+    pub(super) user_sized: Cell<bool>,
     /// Full-screen state: `Some(pre_fullscreen_window_rect)` while borderless-full-screen (F11),
     /// `None` otherwise. Saving the windowed rect lets F11/Esc restore the exact prior geometry.
     pub(super) fullscreen: Cell<Option<RECT>>,
@@ -420,6 +426,7 @@ pub(super) unsafe fn create_viewer(
         // The headless shot can open straight into source view (`--shot --window preview --source`).
         src_view: Cell::new(shot.map(|o| o.source).unwrap_or(false)),
         src_capable: Cell::new(false),
+        user_sized: Cell::new(false),
         fullscreen: Cell::new(None),
         busy: Cell::new(false),
         pending_close: Cell::new(false),
@@ -664,6 +671,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
+            WM_SIZING => {
+                // A real frame drag (never our own SetWindowPos) — flag it so WM_EXITSIZEMOVE
+                // knows this was a RESIZE and not just a move, and remembers the size.
+                (*state(hwnd)).user_sized.set(true);
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_EXITSIZEMOVE => {
+                remember_size(hwnd);
+                LRESULT(0)
+            }
+            WM_NCLBUTTONDBLCLK => {
+                // Double-click the caption = forget the dragged size and fit this file again.
+                // DefWindowProc would send SC_MAXIMIZE, which this WS_POPUP window can't honour
+                // anyway, so nothing is being taken away.
+                if wparam.0 as u32 == HTCAPTION {
+                    forget_size(hwnd);
+                    return LRESULT(0);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
             WM_APP_SWITCH => {
                 // The follow-selection poll saw a new selection: switch to it (unless it's
                 // already what we're showing).
@@ -844,9 +871,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     let _ = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
                     invalidate_text_scrollbar(hwnd); // pressed → hover/idle feedback
                 } else if st.scrub_drag.get() || st.vol_drag.get() {
+                    let was_vol = st.vol_drag.get();
                     st.scrub_drag.set(false);
                     st.vol_drag.set(false);
                     let _ = ReleaseCapture();
+                    // Slider let go: remember the level ONCE, not on every mouse-move of the drag.
+                    if was_vol {
+                        if let Some(v) = st.video.borrow().as_ref() {
+                            persist_volume(v);
+                        }
+                    }
                 } else if st.drag.get().is_some() {
                     st.drag.set(None);
                     let _ = ReleaseCapture();

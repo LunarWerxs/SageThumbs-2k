@@ -6,6 +6,7 @@
 //! strip (an audio file is a video with no picture), but their render child is created hidden so
 //! the viewer can paint the track's embedded cover art in that space instead.
 
+use core::cell::Cell;
 use core::ffi::c_void;
 
 use windows::core::{implement, Result, BSTR};
@@ -33,6 +34,13 @@ const CLSID_MF_MEDIA_ENGINE_CLASS_FACTORY: windows::core::GUID =
 pub(super) struct VideoPlayer {
     engine: IMFMediaEngine,
     child: HWND,
+    /// The volume / mute the VIEWER wants, mirrored out of the engine. Two reasons it lives here
+    /// rather than being read back with `GetVolume`: the engine can come up at its own default
+    /// once a freshly-set source finishes loading (so [`VideoPlayer::on_event`] re-asserts these
+    /// at CANPLAY), and the transport strip paints from them, which keeps the slider showing what
+    /// the user chose even in the window between `SetSource` and CANPLAY.
+    vol: Cell<f64>,
+    muted: Cell<bool>,
     _notify: IMFMediaEngineNotify,
 }
 
@@ -146,6 +154,14 @@ pub(super) unsafe fn create(
         }
     };
     let _ = engine.SetLoop(true);
+    // Open at the level the transport strip was last left on, instead of the engine's full-volume
+    // default — a player that forgets the volume you set on the previous file is the whole reason
+    // this is persisted (see `settings::preview_volume`). Set BEFORE `SetSource` so the very first
+    // audio frame is already at the right level; re-asserted at CANPLAY (see `on_event`).
+    let vol = (sagethumbs2k_core::settings::preview_volume() as f64 / 100.0).clamp(0.0, 1.0);
+    let muted = sagethumbs2k_core::settings::preview_muted();
+    let _ = engine.SetVolume(vol);
+    let _ = engine.SetMuted(muted);
     let url = BSTR::from(path);
     if engine.SetSource(&url).is_err() {
         let _ = engine.Shutdown();
@@ -155,6 +171,8 @@ pub(super) unsafe fn create(
     Some(VideoPlayer {
         engine,
         child,
+        vol: Cell::new(vol),
+        muted: Cell::new(muted),
         _notify: notify,
     })
 }
@@ -163,6 +181,11 @@ impl VideoPlayer {
     /// Handle an engine event forwarded from the notify callback.
     pub(super) unsafe fn on_event(&self, event: u32) {
         if event == MF_MEDIA_ENGINE_EVENT_CANPLAY.0 as u32 {
+            // Re-assert the wanted level from our own copy, not from `settings`: a source that has
+            // just finished loading can come up at the engine's default, and by the time CANPLAY
+            // arrives the user may already have moved the slider on this very clip.
+            let _ = self.engine.SetVolume(self.vol.get());
+            let _ = self.engine.SetMuted(self.muted.get());
             let _ = self.engine.Play(); // autoplay once buffered
         }
     }
@@ -204,16 +227,21 @@ impl VideoPlayer {
             let _ = self.engine.Pause();
         }
     }
+    /// The wanted volume (0..=1) — our mirror, see the `vol` field.
     pub(super) unsafe fn volume(&self) -> f64 {
-        self.engine.GetVolume()
+        self.vol.get()
     }
     pub(super) unsafe fn set_volume(&self, v: f64) {
-        let _ = self.engine.SetVolume(v.clamp(0.0, 1.0));
+        let v = v.clamp(0.0, 1.0);
+        self.vol.set(v);
+        let _ = self.engine.SetVolume(v);
     }
+    /// The wanted mute state — our mirror, see the `vol` field.
     pub(super) unsafe fn muted(&self) -> bool {
-        self.engine.GetMuted().as_bool()
+        self.muted.get()
     }
     pub(super) unsafe fn set_muted(&self, m: bool) {
+        self.muted.set(m);
         let _ = self.engine.SetMuted(m);
     }
 }

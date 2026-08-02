@@ -29,7 +29,7 @@ pub(crate) use pickers::{
     set_clipboard_text,
 };
 pub(crate) use scaling::{
-    dpi_scale, dpi_scale_dpi, gui_font, gui_font_for, gui_font_header, gui_font_sized,
+    dpi_scale, dpi_scale_dpi, dpi_unscale, gui_font, gui_font_for, gui_font_header, gui_font_sized,
     gui_font_title, set_dpi_override, wm_dpichanged,
 };
 

@@ -627,6 +627,50 @@ pub fn set_preview_toc_open(on: bool) -> windows_registry::Result<()> {
     set_dword("PreviewTocOpen", on as u32)
 }
 
+// The three below are remembered VIEWER STATE, not configuration: the viewer writes them as you
+// use it (exactly like the outline sidebar above), so a level or a size you set on one file is
+// still there on the next one and on the next preview. They deliberately have no Settings
+// control — "Reset all settings" clears them, and the caption double-click clears the size.
+
+/// Quick preview playback volume, 0..=100 (default 100). The transport strip's slider writes here
+/// when you let go of it, so the next clip starts at the level you chose instead of full blast.
+pub fn preview_volume() -> u32 {
+    get_dword("PreviewVolume", 100).min(100)
+}
+
+/// Persist the Quick preview playback volume (clamped to 0..=100).
+pub fn set_preview_volume(v: u32) -> windows_registry::Result<()> {
+    set_dword("PreviewVolume", v.min(100))
+}
+
+/// Whether Quick preview playback starts muted (default false) — the transport's speaker toggle.
+pub fn preview_muted() -> bool {
+    get_dword("PreviewMuted", 0) != 0
+}
+
+/// Persist the Quick preview mute state.
+pub fn set_preview_muted(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewMuted", on as u32)
+}
+
+/// The viewer size the user last dragged the window out to, as a CLIENT size in **96-dpi logical
+/// px** — `None` until they resize one, which is when the viewer goes back to sizing every file to
+/// its own content. Logical rather than device px so a size chosen on a 150% display reopens the
+/// same apparent size on a 100% one. Two DWORDs; either being absent or 0 means "not remembered".
+pub fn preview_window_size() -> Option<(i32, i32)> {
+    let w = get_dword("PreviewWinW", 0).min(i32::MAX as u32) as i32;
+    let h = get_dword("PreviewWinH", 0).min(i32::MAX as u32) as i32;
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// Persist (or, with `None`, forget) the remembered viewer window size. Forgetting restores the
+/// per-content sizing — that is what a double-click on the viewer's caption does.
+pub fn set_preview_window_size(size: Option<(i32, i32)>) -> windows_registry::Result<()> {
+    let (w, h) = size.unwrap_or((0, 0));
+    set_dword("PreviewWinW", w.max(0) as u32)?;
+    set_dword("PreviewWinH", h.max(0) as u32)
+}
+
 /// Download web-hosted images referenced by a previewed Markdown file (badges, hotlinked art).
 /// **OFF by default** — fetching an image URL from a previewed document is an outbound request
 /// an attacker-authored README fully controls (classic tracking-pixel shape), so it is strictly

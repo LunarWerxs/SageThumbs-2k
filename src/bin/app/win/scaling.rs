@@ -75,6 +75,16 @@ pub(crate) fn dpi_scale(hwnd: HWND, v: i32) -> i32 {
     dpi_scale_dpi(v, effective_dpi(hwnd))
 }
 
+/// The inverse of [`dpi_scale`]: a device pixel value on `hwnd`'s monitor back to 96-DPI design
+/// px. Used when PERSISTING a size the user dragged out (the Quick preview window), so the stored
+/// number is scaling-independent and reopens at the same apparent size on another display. Keeps
+/// the same 96-DPI identity property (`MulDiv(v, 96, 96) == v`).
+pub(crate) fn dpi_unscale(hwnd: HWND, v: i32) -> i32 {
+    let dpi = effective_dpi(hwnd);
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    unsafe { MulDiv(v, 96, dpi) }
+}
+
 /// Create a DPI-aware GUI font for `hwnd`: the system message font with its
 /// height scaled to the window's DPI (via SystemParametersInfoForDpi, which
 /// returns the metrics already sized for that DPI). Cached per DPI. Falls back

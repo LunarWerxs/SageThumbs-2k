@@ -82,6 +82,15 @@ pub(super) unsafe fn apply_vol(v: &super::video::VideoPlayer, x: i32, vol: &RECT
     }
 }
 
+/// Write the transport's current volume + mute back to Settings, so the next file — and the next
+/// preview — starts where you left this one. Call it when a slider drag ENDS or the speaker is
+/// clicked, never per mouse-move: each call is a registry write.
+pub(super) unsafe fn persist_volume(v: &super::video::VideoPlayer) {
+    let pct = (v.volume() * 100.0).round().clamp(0.0, 100.0) as u32;
+    let _ = sagethumbs2k_core::settings::set_preview_volume(pct);
+    let _ = sagethumbs2k_core::settings::set_preview_muted(v.muted());
+}
+
 /// Dispatch a mouse-down on the video transport strip (play/pause · mute · seek · volume).
 pub(super) unsafe fn scrub_mouse_down(hwnd: HWND, x: i32, y: i32) {
     let st = &*state(hwnd);
@@ -101,6 +110,7 @@ pub(super) unsafe fn scrub_mouse_down(hwnd: HWND, x: i32, y: i32) {
         let _ = SetCapture(hwnd);
     } else if x >= vol.left - spk && x < vol.left {
         v.set_muted(!v.muted()); // speaker glyph toggles mute
+        persist_volume(v); // a click is the whole gesture — remember it now
     } else if x >= track.left && x <= track.right {
         st.scrub_drag.set(true);
         apply_seek(v, x, &track);

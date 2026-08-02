@@ -2,6 +2,19 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.7.0
+
+### Added
+
+- **Quick preview remembers the size you drag it to.** Previously every file reopened at the
+  size the viewer picked for that file, so a window you had just widened snapped back the moment
+  you arrowed to the next one. Resize it once and that is now the size, for the next file and for
+  every preview after it. Double-click the title bar to forget it and go back to fitting each
+  file to its own content. The size is stored independently of display scaling and is clamped to
+  fit whatever screen you open it on.
+- **Quick preview remembers the volume.** Turning a clip down (or muting it) now carries to the
+  next video or audio track, instead of every file starting at full volume again.
+
 ## 1.6.0
 
 ### Added
