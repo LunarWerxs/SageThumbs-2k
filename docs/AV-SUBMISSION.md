@@ -1,8 +1,23 @@
-# AV false-positive submission — prepared package
+# AV false-positive submission - prepared package
 
 Fill-in-the-blanks kit for reporting the installer as a false positive. The final submit
 needs a signed-in Microsoft account and a file upload, so that last click is yours; every
 piece of information you need is assembled here.
+
+## Before anything: run the check, it decides for you
+
+```powershell
+pwsh scriptsv-defender-check.ps1
+```
+
+It scans every installer in `dist\` with the REAL local Defender engine and prints CLEAN or,
+if one is ever actually flagged, the filled-in portal fields (file, SHA-256, detection name).
+`release.ps1` runs it at step [4c/6] on every release, so this is already answered by the time
+you read the log. Exit 0 = nothing to submit. **A VirusTotal `!ml` hit alone is NOT grounds to
+submit** (see the next section for why).
+
+As of 2026-08-02 it reports CLEAN for every installer this project has published, 1.3.8
+through 1.7.0.
 
 ## Finding first: Microsoft Defender does NOT flag our installer
 
@@ -30,18 +45,20 @@ A local Windows Defender scan of the shipped installer came back **clean, no thr
 | Category | Installer (Inno Setup) that registers a COM shell extension + an optional updater |
 | Note | The 1.3.0 hash moves on every rebuild. Only the hash of the exact architecture-specific artifact ATTACHED to the GitHub release may be submitted or linked. |
 
-### Detection names (2026-07-21) — this is the field the portal requires
+### Detection names (2026-07-21) - this is the field the portal requires
 
 The blank that used to block this submission is now filled. Local Defender scans BOTH files
 clean, so the name had to come from VirusTotal's Microsoft engine (which runs without the
-cloud/reputation context a real Defender install has — that is exactly why the two disagree).
+cloud/reputation context a real Defender install has - that is exactly why the two disagree).
 
 | Build | Microsoft verdict | Total | VirusTotal permalink |
 |---|---|---|---|
 | 1.2.2 (published) | `Program:Win32/Wacapew.C!ml` | 3/69 | https://www.virustotal.com/gui/file/11d60a2fb9674897cf5340b2ee6fb3b855644624b06944a8e206f72f955151f7 |
 | 1.3.0 | `Trojan:Win32/Wacatac.B!ml` | 3/69 | https://www.virustotal.com/gui/file/8be7138281198171a273771cc76d54ab7fada49ed202c78756811e925221ee14 |
+| 1.7.0 x64 (published) | `Trojan:Win32/Wacatac.C!ml` | 4/71 | https://www.virustotal.com/gui/file/20ec7be0886d00d0001e0b8edbc29c0f66a7ddaa0814f7b30e4018cffdf0d1bb |
+| 1.7.0 arm64 (published) | `Trojan:Win32/Wacatac.B!ml` | 3/70 | https://www.virustotal.com/gui/file/5a0cefb984958046fed591573bec02e6d9d83631432dde05fa189b7532a4a738 |
 
-Same three engines on both builds (Microsoft, APEX, Skyhigh) — this is the standing baseline
+Same three engines on both builds (Microsoft, APEX, Skyhigh) - this is the standing baseline
 for an unsigned low-prevalence Inno installer, NOT a regression introduced by 1.3.0. Both
 Microsoft verdicts carry the **`!ml` suffix**, i.e. a machine-learning generic, not a signature
 match. Worth stating plainly in the submission: `Wacatac.B!ml` sounds far more alarming than
@@ -51,8 +68,8 @@ match. Worth stating plainly in the submission: `Wacatac.B!ml` sounds far more a
 
 1. Go to **https://www.microsoft.com/en-us/wdsi/filesubmission** and sign in.
 2. Submission type: **Software developer**.
-3. Upload the exact architecture-specific installer — `SageThumbs2K-Setup-<ver>.exe` for x64 or
-   `SageThumbs2K-Setup-<ver>-arm64.exe` for ARM64 Compact — and use that artifact's hash.
+3. Upload the exact architecture-specific installer - `SageThumbs2K-Setup-<ver>.exe` for x64 or
+   `SageThumbs2K-Setup-<ver>-arm64.exe` for ARM64 Compact - and use that artifact's hash.
 4. Detection name: **`Trojan:Win32/Wacatac.B!ml`** (for the 1.3.0 hash above), or
    **`Program:Win32/Wacapew.C!ml`** for 1.2.2. Both come from the VirusTotal table above.
 5. "Do you believe this is incorrectly detected (false positive)?" → **Yes**.

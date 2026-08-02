@@ -212,6 +212,20 @@ try {
         }
     }
 
+    # Local Defender scan (informational, never blocks). VirusTotal's Microsoft engine runs
+    # WITHOUT the cloud/reputation context a real Defender install has, so it reports an ML
+    # generic on every unsigned low-prevalence Inno installer we ship. docs/AV-SUBMISSION.md's
+    # rule is that a false-positive submission is only meaningful once REAL Defender names a
+    # threat - and the portal requires that name. This answers that question automatically, so
+    # a release no longer ends with a manual "go check Defender" whose answer is always clean.
+    Write-Host "[4c/6] local Defender scan (informational)" -ForegroundColor Green
+    & (Join-Path $PSScriptRoot 'av-defender-check.ps1') -Path ($releaseArtifacts | ForEach-Object { $_.Setup.FullName })
+    if ($LASTEXITCODE) {
+        Write-Host "      Real Defender named a threat - the submission above IS warranted." -ForegroundColor Yellow
+        Write-Host "      NOT blocking the release (the VT gate above is the blocking one)." -ForegroundColor Yellow
+    }
+    $global:LASTEXITCODE = 0
+
     # The build must not move HEAD or rewrite tracked inputs after we captured + validated $sha.
     # The optional local marketing-site refresh is ignored and is deliberately not an
     # installer/provenance input.
