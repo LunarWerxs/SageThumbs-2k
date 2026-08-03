@@ -246,7 +246,7 @@ tip_verbose_log = "Zapisuje w dzienniku również szczegółowe, krok po kroku �
 tip_open_log = "Otwiera dziennik diagnostyczny — zapisywane są tam błędy i awarie. Dołącz go przy zgłaszaniu błędu."
 tip_rebuild_cache = "Czyści pamięć podręczną miniatur Windows i uruchamia ponownie Eksplorator, aby każda miniatura odrysowała się od nowa — rozwiązanie, gdy miniatury wyglądają na nieaktualne po zmianie ustawień."
 tip_repair_assoc = "Rejestruje ponownie SageThumbs dla każdego włączonego formatu, a następnie odbudowuje pamięć podręczną miniatur — rozwiązanie, gdy inna aplikacja przejęła twoje miniatury."
-tip_update_auto = "Od czasu do czasu po cichu sprawdza w GitHub, czy jest nowsza wersja (gdy pomocnik skrótów działa) i informuje o tym. Nic nie instaluje się samo."
+tip_update_auto = "Od czasu do czasu po cichu sprawdza w GitHub, czy jest nowsza wersja i informuje o tym. Nic nie instaluje się samo."
 tip_check_updates = "Sprawdza teraz w GitHub, czy dostępna jest nowsza wersja."
 tip_reset_all = "Przywraca wszystkie opcje w tym oknie do ustawień fabrycznych. Nic nie zostaje zapisane, dopóki nie klikniesz Zapisz."
 tip_import = "Wczytuje ustawienia z wcześniej wyeksportowanego pliku .json i je stosuje."
@@ -338,3 +338,13 @@ fb_need_message = "Najpierw napisz choć jedno-dwa zdania, a potem naciśnij Wy�
 fb_bad_email = "To nie wygląda na adres e-mail. Popraw go albo wyczyść pole, aby wysłać bez adresu do odpowiedzi."
 fb_thanks = "Wysłano — dziękujemy!\n\nJeśli podałeś adres e-mail, możesz otrzymać odpowiedź; tak czy inaczej wiadomość została odebrana."
 fb_failed = "Nie udało się połączyć z serwerem, więc wiadomość nie została wysłana.\n\nTwój tekst został skopiowany do schowka, więc nic nie zginęło. Otworzyć zamiast tego stronę zgłoszenia na GitHubie?"
+
+# First-run welcome window (first_run.rs).
+fr_title = "Witamy w SageThumbs 2K"
+fr_intro = "SageThumbs już dodaje miniatury w Eksploratorze. Dwa dodatki pozostają wyłączone, dopóki się nie zgodzisz:"
+fr_preview = "Włącz szybki podgląd"
+fr_preview_sub = "Zaznacz plik w Eksploratorze i naciśnij spację, aby zobaczyć go w pełnym rozmiarze, bez otwierania aplikacji."
+fr_shot = "Włącz skrót klawiszowy zrzutu ekranu"
+fr_shot_sub = "Naciśnij Ctrl+PrtScn, aby przechwycić, opisać i skopiować dowolny fragment ekranu."
+fr_prtscn = "Używaj samego PrtScn zamiast Ctrl+PrtScn (Print Screen przestanie otwierać Narzędzie Wycinanie systemu Windows)"
+fr_go = "Zaczynajmy"

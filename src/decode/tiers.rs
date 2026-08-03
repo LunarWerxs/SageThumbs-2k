@@ -39,14 +39,23 @@ pub(super) fn decode_jxl(bytes: &[u8]) -> Result<DynamicImage> {
     decoder
         .set_limits(limits)
         .map_err(|_| Error::from(E_FAIL))?;
+    // COLOUR-MANAGE, exactly like the `image` and WIC tiers do (`decode.rs`, `wic.rs`).
+    // Without this, a jxl whose colour encoding is not sRGB — which is most of them once
+    // someone encodes from a wide-gamut source, and the whole point of modular/lossless
+    // workflows — was handed to Explorer as if its numbers WERE sRGB, so the thumbnail came
+    // out visibly shifted while every other viewer showed it correctly (issue #9). Must be
+    // read BEFORE `from_decoder`, which consumes the decoder.
+    let icc = decoder.icc_profile().ok().flatten();
     let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
     if matches!(
         img,
         DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
     ) {
+        // Tone-map first: the float path lands in sRGB, so managing it afterwards would
+        // apply the source profile's transfer curve on top of one already applied.
         return Ok(tone_map_float(&img));
     }
-    Ok(img)
+    Ok(apply_icc_to_srgb(img, icc))
 }
 
 /// Smallest embedded JPEG we'll treat as a real RAW preview. A tiny ~160px EXIF

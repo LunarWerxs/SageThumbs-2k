@@ -245,7 +245,7 @@ tip_verbose_log = "Schreibt zusätzlich detaillierte Schritt-für-Schritt-Protok
 tip_open_log = "Öffnet das Diagnoseprotokoll — Fehler und Abstürze werden dort festgehalten. Beim Melden eines Fehlers mitschicken."
 tip_rebuild_cache = "Leert den Miniaturansichten-Cache von Windows und startet den Explorer neu, damit jede Miniaturansicht neu gezeichnet wird — die Lösung, wenn Miniaturansichten nach einer Einstellungsänderung veraltet aussehen."
 tip_repair_assoc = "Registriert SageThumbs für jedes aktivierte Format neu und baut dann den Miniaturansichten-Cache neu auf — die Lösung, wenn eine andere App Ihre Miniaturansichten übernommen hat."
-tip_update_auto = "Prüft von Zeit zu Zeit still bei GitHub auf eine neuere Version (während der Tastenkombinations-Helfer läuft) und informiert Sie. Es wird nichts von selbst installiert."
+tip_update_auto = "Prüft von Zeit zu Zeit still bei GitHub auf eine neuere Version und informiert Sie. Es wird nichts von selbst installiert."
 tip_check_updates = "Fragt jetzt sofort bei GitHub nach, ob eine neuere Version verfügbar ist."
 tip_reset_all = "Setzt jede Option in diesem Fenster auf die Werkseinstellungen zurück. Nichts wird gespeichert, bis Sie auf Speichern klicken."
 tip_import = "Lädt Einstellungen aus einer zuvor exportierten .json-Datei und wendet sie an."
@@ -337,3 +337,13 @@ fb_need_message = "Schreiben Sie zuerst ein paar Zeilen und drücken Sie dann Se
 fb_bad_email = "Das sieht nicht wie eine E-Mail-Adresse aus. Korrigieren Sie sie, oder leeren Sie das Feld, um ohne Antwortadresse zu senden."
 fb_thanks = "Gesendet — danke!\n\nWenn Sie eine E-Mail-Adresse angegeben haben, erhalten Sie vielleicht eine Antwort; in jedem Fall wurde die Nachricht empfangen."
 fb_failed = "Der Server war nicht erreichbar, daher wurde die Nachricht nicht gesendet.\n\nIhr Text wurde in die Zwischenablage kopiert, damit nichts verloren geht. Stattdessen die GitHub-Issue-Seite öffnen?"
+
+# First-run welcome window (first_run.rs).
+fr_title = "Willkommen bei SageThumbs 2K"
+fr_intro = "SageThumbs fügt dem Explorer bereits Miniaturansichten hinzu. Zwei Extras bleiben aus, bis Sie zustimmen:"
+fr_preview = "Schnellvorschau aktivieren"
+fr_preview_sub = "Datei im Explorer auswählen und Leertaste drücken, um sie in voller Größe zu sehen, ohne eine App zu öffnen."
+fr_shot = "Screenshot-Tastenkürzel aktivieren"
+fr_shot_sub = "Mit Ctrl+PrtScn beliebige Bildschirmbereiche aufnehmen, beschriften und kopieren."
+fr_prtscn = "PrtScn allein statt Ctrl+PrtScn verwenden (Print Screen öffnet dann nicht mehr das Windows-Snipping-Tool)"
+fr_go = "Los geht's"

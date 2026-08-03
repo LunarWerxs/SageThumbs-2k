@@ -192,6 +192,15 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage -ErrorAction SilentlyContinue; Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion"""; \
   StatusMsg: "Registering the modern context menu..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
+; UPGRADE ONLY: suppress the first-run welcome window. Someone who already had SageThumbs
+; installed has long since decided about Quick preview and the capture hotkey, and greeting
+; them as a new user would silently re-offer (and, if they clicked through, re-enable)
+; things they may have deliberately turned off. waituntilterminated, NOT nowait: the
+; postinstall Settings launch below is what would show the window, so the flag has to be
+; written before it starts. runasoriginaluser because the flag lives in the USER's HKCU,
+; and setup itself is elevated.
+Filename: "{app}\{#AppExe}"; Parameters: "--first-run-seen"; \
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: IsUpgrade
 ; Launch Settings right after install (checked by default) so the user sees the app.
 ; `skipifsilent` keeps unattended installs quiet.
 Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
@@ -213,8 +222,26 @@ Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
 ; is off or the daemon is already back. Same runasoriginaluser rationale as above.
 Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
   Flags: nowait runasoriginaluser
+; Register the per-user update-check Scheduled Task ("SageThumbs2K.exe --update-check",
+; daily with a 6h repetition, /rl LIMITED). Before this, the ONLY periodic update check
+; lived inside the OPT-IN resident screenshot helper - so every install where the user
+; never enabled screenshots got zero update checks, forever, while the default-on
+; "Automatically check for updates" setting made it look wired up. The task is not a
+; resident process: it starts, checks (throttled to once a day in code), toasts if there
+; is something newer, and exits. runasoriginaluser is required - a task registered from
+; the ELEVATED setup context would be owned by the wrong principal and could not toast
+; into the user's session.
+Filename: "{app}\{#AppExe}"; Parameters: "--update-task"; \
+  Flags: nowait runasoriginaluser
 
 [UninstallRun]
+; Drop the update-check Scheduled Task first, while our EXE is still on disk. Harmless if
+; it was never created (schtasks /delete /f on a missing task just fails quietly). NOTE:
+; [UninstallRun] does NOT accept runasoriginaluser (ISCC rejects it outright) - but it does
+; not need it either: the task lives in the machine-wide Task Scheduler library, so the
+; elevated uninstaller can delete it regardless of which principal it runs as.
+Filename: "{app}\{#AppExe}"; Parameters: "--update-task remove"; \
+  Flags: runhidden waituntilterminated; RunOnceId: "DelUpdateTask"
 ; Remove the modern-menu package + its trusted cert (best-effort; harmless if the
 ; package was never installed). ONE -NoProfile powershell call with native cmdlets,
 ; no -ExecutionPolicy Bypass / certutil (see the [Run] note) so the uninstaller stays
@@ -234,6 +261,10 @@ Type: files; Name: "{localappdata}\SageThumbs2K.log"
 Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 
 [Code]
+// Set by PrepareToInstall (the last moment it is knowable) and read by IsUpgrade.
+var
+  WasUpgrade: Boolean;
+
 // The signed sparse package is bundled only when build-release.ps1 ran with the
 // Windows SDK present (i.e. not -NoModernMenu). Gate the cert-trust + Appx
 // registration on the .msix actually being there, so a classic-only build's
@@ -271,10 +302,58 @@ end;
 //
 // This only REPORTS. It never fails the install -- a false alarm must not block a user
 // whose machine is otherwise fine.
+// Does the file on disk carry the version this setup ships? False = it was NOT replaced.
+// Compares the numeric VS_FIXEDFILEINFO major.minor.rev, NOT a formatted string: Windows
+// stores four components and Inno renders them as "1.7.1.0", so a string compare against
+// AppVer ("1.7.1") would report a mismatch on every single install.
+function FileIsCurrent(const FileName: String): Boolean;
+var
+  Major, Minor, Rev, Build: Word;
+begin
+  Result := True; // unreadable version info -> say nothing rather than cry wolf
+  if GetVersionComponents(ExpandConstant('{app}\' + FileName), Major, Minor, Rev, Build) then
+    Result := Format('%d.%d.%d', [Major, Minor, Rev]) = '{#AppVer}';
+end;
+
+// Did the files we just installed actually land? Returns the offending file name, or ''.
+//
+// An UPGRADE can "succeed" while replacing nothing: if a file is locked and Restart Manager
+// cannot close the holder, Inno queues the replace for the next reboot, and nobody ever
+// reboots. The user then runs the new setup, watches it finish, and is still on the old
+// version - "version upgrades not working", reported 2026-08-02 by a user still on 1.4.1,
+// with no clue why. Reading the version back off disk is the only way to know.
+//
+// This is the INTERACTIVE channel (a user who downloaded the setup and ran it). The SILENT
+// self-update passes /SUPPRESSMSGBOXES, so its box never shows - that path is covered
+// instead by the --updated relaunch, whose toast already compares the installer's version
+// to the running image and says "restart Windows to finish" on a mismatch.
+function StaleAfterInstall: String;
+begin
+  Result := '';
+  if not FileIsCurrent('{#AppDll}') then
+    Result := '{#AppDll}'
+  else if not FileIsCurrent('{#AppExe}') then
+    Result := '{#AppExe}';
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Stale: String;
 begin
   if CurStep = ssPostInstall then
   begin
+    Stale := StaleAfterInstall;
+    if Stale <> '' then
+      MsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
+        + ' OLD VERSION.'
+        + #13#10#13#10
+        + 'Windows keeps that file open while File Explorer or another app is using it, and'
+        + ' it can only be swapped on the next restart.'
+        + #13#10#13#10
+        + 'To finish the update: restart Windows. If the version still does not change after'
+        + ' a restart, security software is most likely blocking the file - allow the install'
+        + ' folder in your antivirus and run this installer again.',
+        mbError, MB_OK);
     if not RegKeyExists(HKEY_CLASSES_ROOT,
          'CLSID\{7B2E6A14-9C3D-4F8A-B1E7-2A5D9F0C6E31}\InprocServer32') then
       MsgBox('SageThumbs 2K installed its files, but registering the shell extension with'
@@ -299,6 +378,10 @@ var
   R: Integer;
 begin
   Result := '';
+  // Remember whether SageThumbs was ALREADY here, before any file is copied (afterwards the
+  // exe always exists, so this is the only moment the answer is knowable). Drives IsUpgrade,
+  // which suppresses the first-run welcome for someone who has used the app for months.
+  WasUpgrade := FileExists(ExpandConstant('{app}\{#AppExe}'));
   // Only a PRIOR install can have a resident daemon locking our files, and only then is
   // the kill needed. Gating on the installed EXE existing means a FRESH install never
   // spawns taskkill at all. That also fixes unattended installs run from a headless
@@ -309,6 +392,13 @@ begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
   Sleep(400);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
+end;
+
+// Was SageThumbs already installed when this setup started? Set by PrepareToInstall, which
+// is the last moment the answer exists. Gates the --first-run-seen [Run] entry.
+function IsUpgrade: Boolean;
+begin
+  Result := WasUpgrade;
 end;
 
 // True when the running app launched this setup as a SILENT self-update - it passes the

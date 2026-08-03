@@ -458,11 +458,16 @@ long scroll is gone.)
   minute of that app letting go. Quitting from the tray icon disables it for good (until
   you re-enable it here).
 - **Updates:** a **Check for updates** button (plus an *Automatically check for updates*
-  toggle) asks GitHub whether a newer release exists. When one is available, SageThumbs can
-  **download and install it for you**: a progress bar shows the download, the file is
-  integrity-checked, Windows asks once for permission, and the new version installs in the
-  background and confirms with a quiet tray notification when it's done. You can still grab
-  the installer from the releases page by hand if you prefer.
+  toggle) asks GitHub whether a newer release exists. With the toggle on, SageThumbs also
+  checks on a schedule of its own, and again whenever you open it - **no background service
+  and nothing resident**: the check starts, looks once a day at most, tells you if there is
+  something newer, and closes. Switching the toggle off removes the schedule. When an update
+  is available, SageThumbs can **download and install it for you**: a progress bar shows the
+  download, the file is integrity-checked, Windows asks once for permission, and the new
+  version installs in the background and confirms with a quiet tray notification when it's
+  done. If antivirus or a security policy blocks the installer, it **says so** rather than
+  failing quietly, and points you at the releases page. You can still grab the installer from
+  there by hand if you prefer.
 - **About:** a compact card: the eye logo, a **version pill that links to the GitHub
   repo** (with the GitHub mark), a live **"Up to date" / update-available pill** that
   re-checks on click, and a **Send feedback** pill, plus the licence, copyright, and the

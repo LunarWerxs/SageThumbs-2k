@@ -557,10 +557,12 @@ pub fn verbose_logging() -> bool {
 
 // ---- Updates ------------------------------------------------------------
 
-/// Whether the resident screenshot helper periodically checks for a newer release
-/// (throttled to once/day) and pops a tray toast when one exists. ON by default, but
-/// only has any effect while the screenshot helper is actually running — that already-
-/// resident process does the check, so there is NO separate scheduled task or service.
+/// Whether the app periodically checks for a newer release (throttled to once/day) and pops
+/// a tray toast when one exists. ON by default. Three things honor it, none of them a
+/// resident service: the per-user `SageThumbs2K_UpdateCheck` Scheduled Task (registered at
+/// install; runs `--update-check` and exits), the same one-shot spawned opportunistically by
+/// any ordinary app launch, and the opt-in screenshot helper's 6 h timer when it happens to
+/// be running. Turning this off in Settings also removes the Scheduled Task.
 pub fn update_auto_check() -> bool {
     get_dword("UpdateAutoCheck", 1) != 0
 }

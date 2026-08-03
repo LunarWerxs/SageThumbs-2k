@@ -2,6 +2,54 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.7.1
+
+**A word about updates.** Ship nothing for a month and people ask whether the project is dead.
+Ship twice in one day and people ask you to please, for the love of god, stop. There is no
+version of this that everybody likes, so I went with the one where bugs actually get fixed.
+
+More usefully: the automatic update check only ever ran if you had switched on the screenshot
+helper, which almost nobody had. For most people it was never checking at all, which isn't
+"quiet", it's broken. That's fixed here. If your copy still never mentions a new version,
+please tell me through **Send feedback** in the About box. I can't fix what I can't see.
+
+### Added
+
+- **A one-time welcome screen.** SageThumbs has two extras that stay switched off until you
+  ask for them, and most people never found out they existed. On first launch it now offers
+  both in one small window: **Quick preview** (select a file in Explorer, press Space, see it
+  full size) and the **screenshot hotkey** (Ctrl+PrtScn to grab, annotate and copy any part of
+  the screen), with an option to use PrtScn on its own instead. Nothing is turned on unless
+  you say so, it appears once, and upgrading from an older version never shows it.
+
+### Fixed
+
+- **JPEG XL thumbnails had the wrong colours when the file wasn't plain sRGB**
+  ([#9](https://github.com/LunarWerxs/SageThumbs-2k/issues/9)). Every other format already
+  honoured the colour profile inside the file; `.jxl` was decoding correctly and then
+  ignoring it, so anything from a wide-gamut source (Adobe RGB, Display P3, most modular
+  and lossless workflows) came out visibly shifted, while every other viewer showed it
+  right. Now colour-managed like the rest. Ordinary sRGB files are unchanged.
+- **An update that cannot replace its files now says so.** If Windows is holding a file open,
+  the installer can only swap it on the next restart, and until now setup finished looking
+  perfectly successful while the PC stayed on the old version. It now checks afterwards and
+  tells you plainly, with what to do about it.
+
+- **"Automatically check for updates" now actually runs on every install.** The periodic check
+  used to happen only inside the optional screenshot helper, so if you had never switched
+  screenshots on, SageThumbs never checked for a new version, even though the setting looked
+  switched on. It now checks on its own schedule, and again whenever you open SageThumbs. There
+  is still no background service: the check starts, looks once a day at most, tells you if
+  there is something newer, and closes. Turning the setting off removes the schedule.
+- **A blocked update now tells you it was blocked.** Every failure used to be reported as
+  "cancelled at the Windows permission prompt" and then quietly dropped, so if your antivirus
+  or a security policy stopped the installer, you saw nothing at all. Now SageThumbs says what
+  happened, names Smart App Control when it is switched on, and offers the download page. Only
+  an update *you* cancel stays silent.
+- **The Windows permission prompt for an update no longer hides behind the download window.**
+  The progress window closes before the prompt appears, and the prompt now belongs to the
+  SageThumbs window that started the update.
+
 ## 1.7.0
 
 ### Added

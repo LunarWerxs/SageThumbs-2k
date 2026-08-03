@@ -6,11 +6,12 @@
 
 use std::io::{Read, Seek, Write};
 use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{GetLastError, HWND};
 use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows::Win32::System::SystemInformation::{
     GetNativeSystemInfo, PROCESSOR_ARCHITECTURE, PROCESSOR_ARCHITECTURE_AMD64,
@@ -168,41 +169,163 @@ fn latest_from_worker() -> Option<String> {
     (!tag.is_empty()).then(|| tag.to_string())
 }
 
-/// LAZY, THROTTLED background update check routed through the sponsor Worker (the
-/// resident screenshot helper calls this on a timer). Hits the network at most once per
-/// [`CHECK_INTERVAL`] and — unlike [`lazy_check`] — does NOT re-nudge from the cache in
-/// between, so a newer version toasts at most once per interval instead of every tick.
-/// Falls back to the direct GitHub [`check`] if the Worker didn't supply a version.
+/// Has the network-check throttle expired? A cheap disk read, no network — the guard the
+/// piggyback launcher ([`spawn_due_check`]) uses so an ordinary app launch costs one file
+/// read on all but the first launch of the day.
+fn check_due() -> bool {
+    match read_cache() {
+        Some((last, _)) => now_secs().saturating_sub(last) >= CHECK_INTERVAL.as_secs(),
+        None => true,
+    }
+}
+
+/// THROTTLED update check routed through the sponsor Worker, run SYNCHRONOUSLY on the
+/// calling thread. Hits the network at most once per [`CHECK_INTERVAL`] and — unlike
+/// [`lazy_check`] — does NOT re-nudge from the cache in between, so a newer version is
+/// reported at most once per interval instead of on every tick. Falls back to the direct
+/// GitHub [`check`] if the Worker didn't supply a version. `Some(tag)` = newer release.
+fn check_throttled() -> Option<String> {
+    let now = now_secs();
+    if !check_due() {
+        return None; // checked recently — don't re-report within the interval
+    }
+    // Worker first; GitHub as a fallback.
+    match latest_from_worker() {
+        Some(tag) => {
+            write_cache(now, &tag); // cache whatever the latest is (newer or not)
+            is_newer(&tag).then_some(tag)
+        }
+        None => match check() {
+            UpdateCheck::Available(tag) => {
+                write_cache(now, &tag);
+                Some(tag)
+            }
+            UpdateCheck::UpToDate => {
+                write_cache(now, env!("CARGO_PKG_VERSION"));
+                None
+            }
+            UpdateCheck::Failed => None,
+        },
+    }
+}
+
+/// [`check_throttled`] on a background thread — the resident screenshot helper's timer path.
 pub(crate) fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F) {
     std::thread::spawn(move || {
-        let now = now_secs();
-        if let Some((last, _)) = read_cache() {
-            if now.saturating_sub(last) < CHECK_INTERVAL.as_secs() {
-                return; // checked recently — don't re-toast within the interval
-            }
-        }
-        // Worker first; GitHub as a fallback.
-        let newer = match latest_from_worker() {
-            Some(tag) => {
-                write_cache(now, &tag); // cache whatever the latest is (newer or not)
-                is_newer(&tag).then_some(tag)
-            }
-            None => match check() {
-                UpdateCheck::Available(tag) => {
-                    write_cache(now, &tag);
-                    Some(tag)
-                }
-                UpdateCheck::UpToDate => {
-                    write_cache(now, env!("CARGO_PKG_VERSION"));
-                    None
-                }
-                UpdateCheck::Failed => None,
-            },
-        };
-        if let Some(tag) = newer {
+        if let Some(tag) = check_throttled() {
             on_newer(tag);
         }
     });
+}
+
+// ---- Reaching users with no resident helper -------------------------------------------
+//
+// The resident screenshot/tray helper is OPT-IN, so for most installs it never runs and its
+// 6 h update timer never exists. Two paths below cover everyone else, and neither adds a
+// resident process:
+//
+//   * `--update-check` (`run_one_shot_check`) — a one-shot that does the same throttled
+//     check, toasts if newer, and exits. Driven by a per-user Scheduled Task registered at
+//     install time (see `install_update_task`), which is what makes the check periodic on a
+//     machine where nothing of ours is running.
+//   * `spawn_due_check` — fired from any ordinary app launch (context-menu verb, Convert
+//     dialog, Quick preview, Settings). Costs one cached file read when the throttle hasn't
+//     expired; otherwise it spawns the SAME one-shot detached, so the calling process never
+//     waits on the network and never has to outlive the toast. This is the backstop for
+//     machines where the Scheduled Task couldn't be created (locked-down policy).
+
+/// The per-user Scheduled Task that keeps update checks alive with no resident process.
+const UPDATE_TASK: &str = "SageThumbs2K_UpdateCheck";
+
+/// Run `schtasks.exe` with no console flash, returning its output.
+fn schtasks(args: &[&str]) -> std::io::Result<std::process::Output> {
+    std::process::Command::new("schtasks.exe")
+        .args(args)
+        .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+        .output()
+}
+
+/// Register (or refresh) the per-user update-check task: `SageThumbs2K.exe --update-check`,
+/// daily with a 6 h repetition, at the user's NORMAL token (`/rl LIMITED` — the check writes
+/// only `%LOCALAPPDATA%` and pops a tray balloon; it never needs admin). The 6 h cadence
+/// mirrors what the resident helper does; the actual network hit stays throttled to once a
+/// day inside [`check_throttled`], so the extra ticks only cover machines that were asleep.
+/// Returns false if `schtasks` refused (policy, missing binary) — the piggyback path then
+/// carries the feature on its own. Best-effort with logging; never fatal.
+pub(crate) fn install_update_task() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let tr = format!("\"{}\" --update-check", exe.display());
+    #[rustfmt::skip]
+    let created = schtasks(&["/create", "/f", "/tn", UPDATE_TASK, "/sc", "DAILY", "/st", "09:00",
+                             "/ri", "360", "/du", "9999:59", "/rl", "LIMITED", "/tr", &tr]);
+    match created {
+        Ok(o) if o.status.success() => true,
+        Ok(o) => {
+            sagethumbs2k_core::safety::log(&format!(
+                "update: schtasks create failed ({}): {}",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+            false
+        }
+        Err(e) => {
+            sagethumbs2k_core::safety::log(&format!("update: schtasks unavailable ({e})"));
+            false
+        }
+    }
+}
+
+/// Drop the update-check task (the user turned auto-check off, or we're uninstalling).
+/// A missing task is not an error.
+pub(crate) fn remove_update_task() {
+    let _ = schtasks(&["/delete", "/f", "/tn", UPDATE_TASK]);
+}
+
+/// Make the Scheduled Task match the "Automatically check for updates" setting. Called
+/// after every install and whenever the Settings checkbox is applied, so turning the
+/// setting off genuinely removes the task instead of leaving an inert one behind.
+pub(crate) fn sync_update_task() {
+    if sagethumbs2k_core::settings::update_auto_check() {
+        install_update_task();
+    } else {
+        remove_update_task();
+    }
+}
+
+/// `--update-check`: the one-shot the Scheduled Task (and [`spawn_due_check`]) runs. Honors
+/// the user's auto-check setting, does one throttled check, and pops a non-blocking tray
+/// balloon if a newer release exists. Silent when up to date, offline, or throttled.
+pub(crate) fn run_one_shot_check() {
+    if !sagethumbs2k_core::settings::update_auto_check() {
+        return;
+    }
+    if let Some(tag) = check_throttled() {
+        unsafe {
+            crate::win::notify_toast(
+                "SageThumbs 2K update available",
+                &format!("Version {tag} is ready. Open SageThumbs 2K to install it."),
+                Duration::from_secs(8),
+            );
+        }
+    }
+}
+
+/// Piggyback the update check on an ordinary app launch: if the once-a-day throttle has
+/// expired, spawn the detached `--update-check` one-shot and return immediately. The caller
+/// does no network work and can exit whenever it likes — the toast belongs to the child.
+pub(crate) fn spawn_due_check() {
+    if !sagethumbs2k_core::settings::update_auto_check() || !check_due() {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let _ = std::process::Command::new(exe)
+        .arg("--update-check")
+        .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+        .spawn();
 }
 
 // ---- One-click self-update (download → verify → silent install) ----------------------
@@ -386,29 +509,151 @@ fn write_locked_installer(
     Err("couldn't reserve a temporary installer path")
 }
 
-/// Launch the freshly-verified installer SILENTLY + ELEVATED (one UAC prompt). Returns true
-/// once the elevated process actually starts (the user accepted elevation); false if they
-/// declined or the launch failed. On success the caller should exit — the installer closes
-/// this app, upgrades in place, restarts Explorer, and relaunches us with `--updated <ver>`.
-fn launch_installer_silent(path: &Path) -> bool {
+/// Why a one-click update didn't complete. This used to be a bare `String` that every
+/// failure — user cancel, antivirus block, group policy, a dead network — collapsed into
+/// "the update was cancelled at the Windows permission prompt", which the caller then
+/// swallowed on the word "cancel". A user whose antivirus ate the installer saw NOTHING.
+/// Keep these three cases distinct: only [`UpdateError::Cancelled`] may be silent.
+pub(crate) enum UpdateError {
+    /// The user backed out themselves (progress-dialog Cancel, or declining the Windows
+    /// permission prompt). The one case that must not nag.
+    Cancelled,
+    /// Something outside the user's immediate control refused to run the verified installer
+    /// — antivirus, Smart App Control, or an administrator policy. Carries the explanation.
+    Blocked(String),
+    /// Everything else: offline, no matching release asset, a failed integrity check.
+    Failed(String),
+}
+
+impl UpdateError {
+    /// The user-facing sentence for this failure ("" for a plain cancel, which says nothing).
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            UpdateError::Cancelled => "",
+            UpdateError::Blocked(m) | UpdateError::Failed(m) => m,
+        }
+    }
+}
+
+/// Is Smart App Control on and ENFORCING? SAC blocks unsigned executables outright and is
+/// default-on for clean Windows 11 installs, so it is the likeliest silent killer of a
+/// downloaded, unsigned setup. `VerifiedAndReputablePolicyState`: 0 = off, 1 = enforcement,
+/// 2 = evaluation (audits, doesn't block). Read-only; absent key = not enforcing.
+fn smart_app_control_enforcing() -> bool {
+    windows_registry::LOCAL_MACHINE
+        .open(r"SYSTEM\CurrentControlSet\Control\CI\Policy")
+        .and_then(|k| k.get_u32("VerifiedAndReputablePolicyState"))
+        .is_ok_and(|v| v == 1)
+}
+
+/// Turn a failed `ShellExecuteW` into an honest, distinguishable reason. Pure so the whole
+/// mapping is unit-testable without a UAC prompt.
+///
+/// `se_code` is the `<= 32` return value, `last_error` whatever `GetLastError` held right
+/// after it, and `installer_gone` whether the verified setup we just wrote has vanished
+/// from `%TEMP%` — the strongest available signal that antivirus quarantined it, since
+/// nothing else deletes that file between the write and the launch.
+fn classify_launch_failure(
+    se_code: u32,
+    last_error: u32,
+    installer_gone: bool,
+    sac_enforcing: bool,
+) -> UpdateError {
+    const SE_ERR_FNF: u32 = 2;
+    const SE_ERR_PNF: u32 = 3;
+    const SE_ERR_ACCESSDENIED: u32 = 5;
+    const ERROR_VIRUS_INFECTED: u32 = 225;
+    const ERROR_VIRUS_DELETED: u32 = 226;
+    const ERROR_CANCELLED: u32 = 1223;
+
+    let sac_note = if sac_enforcing {
+        " Windows Smart App Control is switched on, and it blocks apps it hasn't seen \
+         signed before — that is the most likely cause here."
+    } else {
+        ""
+    };
+
+    // The setup file disappearing between our own verified write and this launch is not
+    // something Windows or the user does — that is a scanner quarantining it.
+    if installer_gone
+        || matches!(se_code, SE_ERR_FNF | SE_ERR_PNF)
+        || matches!(last_error, ERROR_VIRUS_INFECTED | ERROR_VIRUS_DELETED)
+    {
+        return UpdateError::Blocked(format!(
+            "Your antivirus removed the downloaded installer before it could run.{sac_note} \
+             Download SageThumbs 2K from the releases page instead."
+        ));
+    }
+    if se_code == SE_ERR_ACCESSDENIED {
+        // A declined UAC prompt reports access-denied with ERROR_CANCELLED behind it; a
+        // policy/scanner block reports access-denied with something else (or nothing).
+        if last_error == ERROR_CANCELLED {
+            return UpdateError::Cancelled;
+        }
+        return UpdateError::Blocked(format!(
+            "Windows refused to start the update installer.{sac_note} This is usually \
+             antivirus or an administrator policy. You can download SageThumbs 2K from the \
+             releases page instead."
+        ));
+    }
+    if last_error == ERROR_CANCELLED {
+        return UpdateError::Cancelled;
+    }
+    UpdateError::Failed(format!(
+        "The update installer couldn't be started (Windows error {se_code}). Installing an \
+         update needs an administrator; if you're signed in as a standard user, download \
+         SageThumbs 2K from the releases page instead."
+    ))
+}
+
+/// Launch the freshly-verified installer SILENTLY + ELEVATED (one UAC prompt). `Ok` once the
+/// elevated process actually starts; otherwise a classified reason. On success the caller
+/// should exit — the installer closes this app, upgrades in place, restarts Explorer, and
+/// relaunches us with `--updated <ver>`.
+///
+/// `owner` OWNS the consent prompt. Passing `None` here (as this did until 2026-08-03) leaves
+/// the UAC dialog ownerless, so it can land behind whatever is in front and read to the user
+/// as "the update button does nothing" — invisible on a machine that elevates without a
+/// prompt at all. The caller also tears its progress dialog down BEFORE calling this, so
+/// there is nothing of ours left above the prompt.
+fn launch_installer_silent(path: &Path, owner: HWND) -> Result<(), UpdateError> {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let verb = crate::win::wide("runas"); // elevate: the setup writes HKLM + Program Files
     let file = crate::win::wide(&path.display().to_string());
     let params = crate::win::wide(INSTALL_FLAGS);
-    let ret = unsafe {
-        ShellExecuteW(
-            None,
+    let (ret, last_error) = unsafe {
+        let ret = ShellExecuteW(
+            Some(owner),
             PCWSTR(verb.as_ptr()),
             PCWSTR(file.as_ptr()),
             PCWSTR(params.as_ptr()),
             PCWSTR::null(),
             SW_SHOWNORMAL,
-        )
+        );
+        (ret, GetLastError().0)
     };
-    // ShellExecuteW returns an HINSTANCE-like value > 32 on success; <= 32 is an error code
-    // (e.g. SE_ERR_ACCESSDENIED when the user cancels the UAC prompt).
-    ret.0 as usize > 32
+    // ShellExecuteW returns an HINSTANCE-like value > 32 on success; <= 32 is an error code.
+    let se_code = ret.0 as usize;
+    if se_code > 32 {
+        return Ok(());
+    }
+    let err = classify_launch_failure(
+        se_code as u32,
+        last_error,
+        !path.exists(),
+        smart_app_control_enforcing(),
+    );
+    sagethumbs2k_core::safety::log(&format!(
+        "update: installer launch failed (ShellExecute={se_code}, GetLastError={last_error}, \
+         file_present={}): {}",
+        path.exists(),
+        match &err {
+            UpdateError::Cancelled => "user cancelled",
+            UpdateError::Blocked(m) | UpdateError::Failed(m) => m,
+        }
+    ));
+    Err(err)
 }
 
 /// Set one line (1-based) of the shell progress dialog. Best-effort.
@@ -427,8 +672,9 @@ fn human_mb(bytes: u64) -> String {
 /// bytes), verify it, then launch it silently + elevated. The dialog runs its own message-
 /// pumping thread, so the bar stays smooth while this thread blocks in the download loop.
 /// Returns the new version tag on success (the caller exits so the installer can take over),
-/// or Err(message) so the UI can offer the manual page. `parent` owns the dialog.
-pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
+/// or a classified [`UpdateError`] so the UI can explain itself and offer the manual page.
+/// `parent` owns the progress dialog AND, once that is down, the elevation prompt.
+pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
@@ -436,7 +682,11 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
         CLSID_ProgressDialog, IProgressDialog, PROGDLG_AUTOTIME, PROGDLG_NORMAL,
     };
 
-    let (tag, asset) = latest_installer_asset().ok_or("couldn't find the installer on GitHub")?;
+    let (tag, asset) = latest_installer_asset().ok_or_else(|| {
+        UpdateError::Failed(
+            "Couldn't find the installer for this PC on the GitHub releases page.".into(),
+        )
+    })?;
 
     // The shell progress dialog needs COM on this thread. Leaving it initialized afterward is
     // benign (one extra init on the UI thread); we never run the matching uninit, because the
@@ -445,8 +695,9 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
     let dlg: IProgressDialog =
-        unsafe { CoCreateInstance(&CLSID_ProgressDialog, None, CLSCTX_INPROC_SERVER) }
-            .map_err(|_| "couldn't open the progress dialog".to_string())?;
+        unsafe { CoCreateInstance(&CLSID_ProgressDialog, None, CLSCTX_INPROC_SERVER) }.map_err(
+            |_| UpdateError::Failed("Couldn't open the download progress dialog.".into()),
+        )?;
 
     let title = crate::win::wide("Updating SageThumbs 2K");
     unsafe {
@@ -479,35 +730,52 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, String> {
         },
     );
 
-    let outcome: Result<(), &'static str> = (|| {
-        let bytes = bytes.ok_or(if cancelled {
-            "you cancelled the update"
-        } else {
-            "the download failed"
+    // Everything up to (but NOT including) the elevated launch happens under the dialog.
+    let prepared: Result<(PathBuf, std::fs::File), UpdateError> = (|| {
+        let bytes = bytes.ok_or_else(|| {
+            if cancelled {
+                UpdateError::Cancelled
+            } else {
+                UpdateError::Failed(
+                    "The update download didn't finish. Check your internet connection and \
+                     try again."
+                        .into(),
+                )
+            }
         })?;
         unsafe { set_line(&dlg, 1, "Verifying\u{2026}") };
         if !verify_installer_bytes(&bytes, &asset) {
-            return Err("the download failed its integrity check");
+            return Err(UpdateError::Failed(
+                "The downloaded update failed its integrity check, so it was not run.".into(),
+            ));
         }
-        let (path, installer_lock) = write_locked_installer(&tag, &bytes, &asset)?;
+        let written = write_locked_installer(&tag, &bytes, &asset)
+            .map_err(|m| UpdateError::Failed(format!("The update couldn't be prepared: {m}.")))?;
         unsafe {
             set_line(&dlg, 1, "Installing update\u{2026}");
             let _ = dlg.SetProgress64(1, 1); // full bar; Inno's silent bar now shows the install
         }
-        let launched = launch_installer_silent(&path);
-        drop(installer_lock); // the elevated process has opened the image (or launch failed)
-        if launched {
-            Ok(())
-        } else {
-            let _ = std::fs::remove_file(&path); // UAC-cancel / launch failure → don't leave the .exe in %TEMP%
-            Err("the update was cancelled at the Windows permission prompt")
-        }
+        Ok(written)
     })();
 
+    // Take the progress dialog DOWN before the elevation prompt goes up. It is a topmost
+    // shell dialog, and leaving it in front is one of the ways a UAC consent prompt ends up
+    // behind something — the user sees a taskbar flash, nothing else, and reports that the
+    // updater "does nothing".
     unsafe {
         let _ = dlg.StopProgressDialog();
     }
-    outcome.map(|()| tag).map_err(str::to_string)
+
+    let (path, installer_lock) = prepared?;
+    let launched = launch_installer_silent(&path, parent);
+    drop(installer_lock); // the elevated process has opened the image (or the launch failed)
+    match launched {
+        Ok(()) => Ok(tag),
+        Err(e) => {
+            let _ = std::fs::remove_file(&path); // never leave a setup .exe behind in %TEMP%
+            Err(e)
+        }
+    }
 }
 
 /// Shown by the installer-spawned `--updated <ver>` relaunch after a silent self-update:
@@ -722,6 +990,46 @@ mod tests {
         wrong_host["assets"][0]["browser_download_url"] =
             serde_json::json!("https://downloads.example.test/setup.exe");
         assert!(super::installer_asset_from_json(&wrong_host).is_none());
+    }
+
+    #[test]
+    fn launch_failures_stay_distinguishable() {
+        use super::{classify_launch_failure as classify, UpdateError as E};
+
+        // A declined UAC prompt: access-denied with ERROR_CANCELLED behind it. The ONLY
+        // case the UI is allowed to swallow.
+        assert!(matches!(classify(5, 1223, false, false), E::Cancelled));
+
+        // Same access-denied return, but nothing cancelled — a policy or scanner refusal.
+        // This used to be reported as "cancelled at the Windows permission prompt" and then
+        // silently discarded, which is the bug: the user saw nothing at all.
+        let blocked = classify(5, 0, false, false);
+        assert!(matches!(blocked, E::Blocked(_)));
+        assert!(!blocked.message().is_empty());
+        assert!(
+            !blocked.message().contains("cancel"),
+            "{}",
+            blocked.message()
+        );
+
+        // The verified installer vanishing from %TEMP% between write and launch is a
+        // quarantine, whatever ShellExecute claims.
+        assert!(matches!(classify(5, 1223, true, false), E::Blocked(m) if m.contains("antivirus")));
+        assert!(matches!(classify(2, 0, false, false), E::Blocked(_))); // SE_ERR_FNF
+        assert!(matches!(classify(226, 226, false, false), E::Blocked(_))); // ERROR_VIRUS_DELETED
+
+        // Smart App Control is named only when it is actually enforcing.
+        assert!(classify(5, 0, false, true)
+            .message()
+            .contains("Smart App Control"));
+        assert!(!classify(5, 0, false, false)
+            .message()
+            .contains("Smart App Control"));
+
+        // Anything else is a plain failure, and it still says something out loud.
+        let other = classify(31, 0, false, false);
+        assert!(matches!(other, E::Failed(_)));
+        assert!(other.message().contains("administrator"));
     }
 
     #[test]

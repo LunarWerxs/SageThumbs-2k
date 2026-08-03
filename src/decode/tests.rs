@@ -1074,3 +1074,35 @@ fn svg_small_scales_up_to_min() {
     let img = render_svg(&svg(4000, 3000)).expect("huge svg renders");
     assert_eq!(img.width(), 2048);
 }
+
+/// A JPEG XL whose colour encoding is **AdobeRGB**, encoded with the exact cjxl 0.12
+/// parameters from issue #9 (`-d 1.0 -m 1 -e 9 -p --faster_decoding 2 --brotli_effort 11`).
+/// 256x256, in-gamut patches only, so every correct decoder must agree on the answer and
+/// the assertion below can't be a gamut-mapping coin flip. Regenerate with:
+///   cjxl g_adobe.png adobergb_modular.jxl -d 1.0 -m 1 -e 9 -p --faster_decoding 2 --brotli_effort 11
+const JXL_ADOBERGB: &[u8] = include_bytes!("../../tests/fixtures/jxl/adobergb_modular.jxl");
+
+#[test]
+fn jxl_applies_its_embedded_color_profile() {
+    // Issue #9: the jxl tier decoded correctly but never colour-managed, unlike the `image`
+    // and WIC tiers. A wide-gamut jxl therefore reached Explorer with its raw AdobeRGB
+    // numbers treated as sRGB, which is a visible shift on every saturated colour.
+    let img = super::tiers::decode_jxl(JXL_ADOBERGB).expect("decode the AdobeRGB jxl");
+    let rgb = img.to_rgb8();
+    let px = rgb.get_pixel(16, 16).0;
+
+    // The file's raw stored value. Seeing THIS is the bug: it means no profile was applied.
+    assert_ne!(
+        [px[0], px[1], px[2]],
+        [180, 80, 80],
+        "jxl decoded to its raw AdobeRGB numbers - the embedded profile was ignored"
+    );
+    // AdobeRGB(180,80,80) converted to sRGB. Cross-checked against djxl + LittleCMS, which
+    // land on (206,79,79); allow a small delta for a different CMS's rounding.
+    for (got, want) in px.iter().zip([206u8, 79, 79]) {
+        assert!(
+            (i32::from(*got) - i32::from(want)).abs() <= 4,
+            "colour-managed jxl pixel {px:?} is not close to the expected [206,79,79]"
+        );
+    }
+}

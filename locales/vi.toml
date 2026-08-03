@@ -248,7 +248,7 @@ tip_verbose_log = "Đồng thời ghi vào nhật ký các dấu vết từng b�
 tip_open_log = "Mở nhật ký chẩn đoán — lỗi và sự cố treo được ghi lại ở đó. Gửi kèm nó khi báo cáo lỗi."
 tip_rebuild_cache = "Xóa bộ nhớ đệm hình thu nhỏ của Windows và khởi động lại Explorer để mọi hình thu nhỏ được vẽ lại mới — cách khắc phục khi hình thu nhỏ trông cũ sau khi đổi cài đặt."
 tip_repair_assoc = "Đăng ký lại SageThumbs cho mọi định dạng đang bật, sau đó xây dựng lại bộ nhớ đệm hình thu nhỏ — cách khắc phục khi một ứng dụng khác đã chiếm quyền hiển thị hình thu nhỏ của bạn."
-tip_update_auto = "Thỉnh thoảng âm thầm kiểm tra GitHub xem có phiên bản mới hơn không (trong khi trợ giúp phím tắt đang chạy) và báo cho bạn. Không có gì tự cài đặt."
+tip_update_auto = "Thỉnh thoảng âm thầm kiểm tra GitHub xem có phiên bản mới hơn không và báo cho bạn. Không có gì tự cài đặt."
 tip_check_updates = "Hỏi GitHub ngay bây giờ xem có phiên bản mới hơn không."
 tip_reset_all = "Đặt lại mọi tùy chọn trong cửa sổ này về mặc định gốc. Không có gì được lưu cho đến khi bạn bấm Lưu."
 tip_import = "Tải cài đặt từ một tệp .json đã xuất trước đó và áp dụng chúng."
@@ -340,3 +340,13 @@ fb_need_message = "Hãy viết một hoặc hai dòng trước, sau đó nhấn 
 fb_bad_email = "Đây không giống địa chỉ email. Hãy sửa lại, hoặc xóa trống ô này để gửi mà không cần địa chỉ phản hồi."
 fb_thanks = "Đã gửi — cảm ơn bạn!\n\nNếu bạn để lại địa chỉ email, bạn có thể nhận được phản hồi; dù sao thì tin nhắn cũng đã được nhận."
 fb_failed = "Không thể kết nối đến máy chủ, nên tin nhắn chưa được gửi.\n\nVăn bản của bạn đã được sao chép vào clipboard để không bị mất. Mở trang issue trên GitHub thay thế?"
+
+# First-run welcome window (first_run.rs).
+fr_title = "Chào mừng bạn đến với SageThumbs 2K"
+fr_intro = "SageThumbs đã hiển thị ảnh thu nhỏ trong Explorer. Hai tính năng bổ sung vẫn tắt cho đến khi bạn đồng ý:"
+fr_preview = "Bật xem nhanh"
+fr_preview_sub = "Chọn một tệp trong Explorer rồi nhấn Space để xem ở kích thước đầy đủ, không cần mở ứng dụng nào."
+fr_shot = "Bật phím tắt chụp màn hình"
+fr_shot_sub = "Nhấn Ctrl+PrtScn để chụp, ghi chú và sao chép bất kỳ phần nào của màn hình."
+fr_prtscn = "Chỉ dùng PrtScn thay cho Ctrl+PrtScn (Print Screen sẽ không mở Snipping Tool của Windows nữa)"
+fr_go = "Bắt đầu"

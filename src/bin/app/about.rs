@@ -551,10 +551,22 @@ unsafe fn offer_update(hwnd: HWND) {
             crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
             std::process::exit(0)
         }
-        // A user cancel (progress-dialog Cancel or declining UAC) shouldn't nag.
-        Err(m) if m.contains("cancel") => {}
-        // A real failure: fall back to the manual download page.
-        Err(_) => open_url(update::RELEASES_URL),
+        // The user backed out themselves — the one case that stays silent.
+        Err(update::UpdateError::Cancelled) => {}
+        // Anything else: SAY SO, then fall back to the manual download page. Silently
+        // opening a browser (or, worse, doing nothing at all, which is what a scanner block
+        // used to produce) is why "the auto-updater doesn't work" arrived with no detail.
+        Err(e) => {
+            let cap = wide("SageThumbs 2K update");
+            let body = wide(e.message());
+            MessageBoxW(
+                Some(hwnd),
+                PCWSTR(body.as_ptr()),
+                PCWSTR(cap.as_ptr()),
+                MB_OK | MB_ICONWARNING,
+            );
+            open_url(update::RELEASES_URL);
+        }
     }
 }
 

@@ -241,7 +241,7 @@ tip_verbose_log = "Isulat din nang detalyado, hakbang-hakbang, sa log. I-on kapa
 tip_open_log = "Buksan ang diagnostics log — doon nakatala ang mga error at crash. Isama ito kapag nagre-report ng bug."
 tip_rebuild_cache = "I-clear ang thumbnail cache ng Windows at i-restart ang Explorer para muling gumuhit ang bawat thumbnail — ang ayos kapag lumang tingnan ang mga thumbnail matapos magbago ng setting."
 tip_repair_assoc = "I-register muli ang SageThumbs para sa bawat naka-enable na format, pagkatapos ay muling buuin ang thumbnail cache — ang ayos kapag may ibang app na kumuha ng iyong mga thumbnail."
-tip_update_auto = "Tahimik na sinusuri sa GitHub paminsan-minsan (habang tumatakbo ang hotkey helper) kung may mas bagong bersyon at ipinapaalam sa iyo. Walang awtomatikong nag-i-install."
+tip_update_auto = "Tahimik na sinusuri sa GitHub paminsan-minsan kung may mas bagong bersyon at ipinapaalam sa iyo. Walang awtomatikong nag-i-install."
 tip_check_updates = "Tanungin ngayon din ang GitHub kung may available na mas bagong bersyon."
 tip_reset_all = "Ibalik ang lahat ng opsyon sa window na ito sa factory default. Walang nase-save hangga't hindi mo pinipindot ang I-save."
 tip_import = "I-load ang mga setting mula sa dating na-export na .json file at ilapat ang mga ito."
@@ -333,3 +333,13 @@ fb_need_message = "Sumulat muna ng isa o dalawang linya, pagkatapos ay pindutin 
 fb_bad_email = "Mukhang hindi iyon isang email address. Ayusin ito, o i-clear ang field para magpadala nang walang email address na sasagutan."
 fb_thanks = "Naipadala — salamat!\n\nKung nagbigay ka ng email address, maaari kang makatanggap ng sagot; sa anumang paraan, natanggap na ang mensahe."
 fb_failed = "Hindi maabot ang server, kaya hindi naipadala ang mensahe.\n\nNakopya na ang iyong teksto sa clipboard para walang mawala. Buksan na lang ang GitHub issue page sa halip?"
+
+# First-run welcome window (first_run.rs).
+fr_title = "Maligayang pagdating sa SageThumbs 2K"
+fr_intro = "Naglalagay na ang SageThumbs ng mga thumbnail sa Explorer. May dalawang dagdag na naka-off hanggang pumayag ka:"
+fr_preview = "I-on ang Quick preview"
+fr_preview_sub = "Pumili ng file sa Explorer at pindutin ang Space para makita ito nang buong laki, nang hindi nagbubukas ng app."
+fr_shot = "I-on ang hotkey para sa screenshot"
+fr_shot_sub = "Pindutin ang Ctrl+PrtScn para kuhanan, lagyan ng marka at kopyahin ang kahit anong bahagi ng screen."
+fr_prtscn = "Gamitin ang PrtScn lang sa halip na Ctrl+PrtScn (hindi na bubuksan ng Print Screen ang Snipping Tool ng Windows)"
+fr_go = "Magsimula"

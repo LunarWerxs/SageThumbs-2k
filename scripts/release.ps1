@@ -263,10 +263,14 @@ try {
     # Target the immutable SHA we actually checked, not the moving `main` ref: another push while
     # this script waits/builds must never make the release tag point at an unvalidated commit.
     Write-Host "[5/6] create + verify draft release $tag" -ForegroundColor Green
+    # Installers ONLY. The .release.json build manifest is still generated and still gated on
+    # (step [4/6] runs check-release-manifest.ps1 against it BEFORE anything is uploaded), but
+    # it is LOCAL provenance: nothing downstream reads the published copy - not the in-app
+    # updater (which reads GitHub's own release JSON), not winget, not CI. Publishing it only
+    # put a large, noisy file next to the two things people actually download.
     $releaseAssetPaths = @(
         foreach ($artifact in $releaseArtifacts) {
             $artifact.Setup.FullName
-            $artifact.Manifest.FullName
         }
     )
     gh release create $tag @releaseAssetPaths `

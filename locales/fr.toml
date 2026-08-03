@@ -247,7 +247,7 @@ tip_verbose_log = "Écrit aussi des traces détaillées, étape par étape, dans
 tip_open_log = "Ouvre le journal de diagnostic — les erreurs et plantages y sont consignés. Joignez-le en cas de signalement de bug."
 tip_rebuild_cache = "Vide le cache de miniatures de Windows et redémarre l'Explorateur pour que toutes les miniatures se redessinent — la solution quand les miniatures semblent obsolètes après un changement de paramètre."
 tip_repair_assoc = "Réenregistre SageThumbs pour chaque format activé, puis reconstruit le cache de miniatures — la solution quand une autre application a repris vos miniatures."
-tip_update_auto = "Vérifie discrètement sur GitHub, de temps à autre (pendant que l'assistant de raccourcis tourne), si une version plus récente existe et vous prévient. Rien ne s'installe tout seul."
+tip_update_auto = "Vérifie discrètement sur GitHub, de temps à autre, si une version plus récente existe et vous prévient. Rien ne s'installe tout seul."
 tip_check_updates = "Demande immédiatement à GitHub si une version plus récente est disponible."
 tip_reset_all = "Remet toutes les options de cette fenêtre aux valeurs par défaut. Rien n'est enregistré tant que vous ne cliquez pas sur Enregistrer."
 tip_import = "Charge les paramètres depuis un fichier .json précédemment exporté et les applique."
@@ -339,3 +339,13 @@ fb_need_message = "Écrivez d'abord une ligne ou deux, puis appuyez sur Envoyer.
 fb_bad_email = "Cela ne ressemble pas à une adresse e-mail. Corrigez-la, ou videz le champ pour envoyer sans adresse de réponse."
 fb_thanks = "Envoyé — merci !\n\nSi vous avez laissé une adresse e-mail, vous pourriez recevoir une réponse ; dans tous les cas, le message a bien été reçu."
 fb_failed = "Impossible de joindre le serveur, le message n'a donc pas été envoyé.\n\nVotre texte a été copié dans le presse-papiers pour ne rien perdre. Ouvrir plutôt la page d'issue GitHub ?"
+
+# First-run welcome window (first_run.rs).
+fr_title = "Bienvenue dans SageThumbs 2K"
+fr_intro = "SageThumbs ajoute déjà les miniatures dans l'Explorateur. Deux options restent désactivées tant que vous ne les autorisez pas :"
+fr_preview = "Activer l'aperçu rapide"
+fr_preview_sub = "Sélectionnez un fichier dans l'Explorateur et appuyez sur Espace pour le voir en grand, sans ouvrir d'application."
+fr_shot = "Activer le raccourci de capture d'écran"
+fr_shot_sub = "Appuyez sur Ctrl+PrtScn pour capturer, annoter et copier n'importe quelle partie de l'écran."
+fr_prtscn = "Utiliser PrtScn seul au lieu de Ctrl+PrtScn (Impr. écran n'ouvrira plus l'Outil Capture d'écran de Windows)"
+fr_go = "C'est parti"

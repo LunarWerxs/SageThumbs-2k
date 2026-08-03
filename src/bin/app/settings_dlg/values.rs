@@ -268,6 +268,11 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     }
     let _ = settings::set_dword("Debug", checked(hwnd, ID_VERBOSE_LOG) as u32);
     let _ = settings::set_update_auto_check(checked(hwnd, ID_UPDATE_AUTO));
+    // The periodic check is a per-user Scheduled Task, not a resident process, so the
+    // toggle has to create/remove that task — otherwise turning it OFF would leave the
+    // task running (and turning it back ON after an install where task creation failed
+    // would never bring it back). Best-effort: the launch-time piggyback covers either way.
+    crate::update::sync_update_task();
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
         // Persist BOTH per-item visibility AND the row order (drag-to-reorder), reading
         // each row's lParam so a reordered list — items AND divider rows — saves

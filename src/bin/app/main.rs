@@ -33,6 +33,7 @@ mod explorer_selection;
 mod eyedropper;
 mod feedback;
 mod files_to_folder;
+mod first_run;
 mod gdip;
 mod hotkey;
 mod http;
@@ -167,6 +168,28 @@ fn heal_after_install() {
     }
 }
 
+/// Should this launch opportunistically fire the throttled update check? Everything the
+/// user can reach — Settings, the Convert dialog, Quick preview, the right-click verbs —
+/// says yes. The exclusions are the modes where a spawned child or a tray balloon would be
+/// wrong: the headless `--shot*` captures (must stay deterministic and side-effect free),
+/// the automation route (synthetic pixels only, by contract), the install-time one-shots
+/// (the installer drives its own check), and the resident daemon (it owns a 6 h timer of
+/// its own). `--update-check` itself is excluded so it can never re-spawn itself.
+fn update_piggyback_wanted(args: &[String]) -> bool {
+    const EXCLUDED: &[&str] = &[
+        "--shot",
+        "--shot-gif",
+        "--screenshot-automation",
+        "--screenshot-daemon",
+        "--update-check",
+        "--update-task",
+        "--first-run-seen",
+        "--updated",
+        "--heal-hotkeys",
+    ];
+    !args.iter().any(|a| EXCLUDED.contains(&a.as_str()))
+}
+
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
     sagethumbs2k_core::safety::install_panic_hook("app");
@@ -195,12 +218,47 @@ fn main() {
         // Convert… mode: `--convert <listfile>` (spawned by the DLL verb) shows
         // the batch-convert dialog instead of the Options window.
         let args: Vec<String> = std::env::args().collect();
+
+        // Piggyback the update check on ANY ordinary launch of this app. The periodic check
+        // otherwise lives only in the OPT-IN resident screenshot helper, so an install where
+        // the user never enabled screenshots gets no update checks at all — the reason
+        // "the auto-updater isn't working" reports arrived from people the owner couldn't
+        // reproduce. Costs one cached file read unless the once-a-day throttle has expired,
+        // in which case it spawns the detached `--update-check` one-shot and returns; this
+        // process never waits on the network and needn't outlive the toast.
+        if update_piggyback_wanted(&args) {
+            crate::update::spawn_due_check();
+        }
+
         // Hidden, side-effect-free UI integration route. It takes precedence over
         // every output-capable mode even in a malformed mixed invocation, preserving
         // its privacy/safety contract: synthetic full-screen pixels only, with
         // clipboard, file, dialog, and upload paths fenced inside the overlay.
         if args.iter().any(|a| a == "--screenshot-automation") {
             crate::screenshot::run_capture_automation(hinst);
+            return;
+        }
+        // `--update-check`: the throttled one-shot the Scheduled Task runs (and the
+        // piggyback above spawns). Toasts if a newer release exists, then exits. It never
+        // re-enters the piggyback, which excludes this flag by name.
+        if args.iter().any(|a| a == "--update-check") {
+            crate::update::run_one_shot_check();
+            return;
+        }
+        // `--first-run-seen`: suppress the welcome window. The installer runs this on an
+        // UPGRADE (as the real user), so an existing user is never greeted as a new one.
+        if args.iter().any(|a| a == "--first-run-seen") {
+            crate::first_run::mark_shown();
+            return;
+        }
+        // `--update-task [remove]`: register / drop the per-user update-check Scheduled
+        // Task. Run by the installer (as the real user) and by the uninstaller.
+        if let Some(pos) = args.iter().position(|a| a == "--update-task") {
+            if args.get(pos + 1).map(String::as_str) == Some("remove") {
+                crate::update::remove_update_task();
+            } else {
+                crate::update::sync_update_task();
+            }
             return;
         }
         if let Some(pos) = args.iter().position(|a| a == "--convert") {
@@ -237,6 +295,7 @@ fn main() {
                     "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
                     "feedback" => crate::feedback::run_shot_feedback(out),
                     "about" => crate::about::run_shot_about(out),
+                    "firstrun" => crate::first_run::run_shot_first_run(out),
                     // The OCR result window, over canned text (no recognizer run) — or the
                     // real text of `--file <img>` when you want to see an actual scan.
                     "ocr" => {
@@ -475,6 +534,13 @@ fn main() {
             return;
         }
 
+        // FIRST RUN: offer Quick preview + the screenshot hotkey once, before Settings
+        // appears. This is the launch the installer's postinstall step performs, so it is
+        // the one moment a brand-new user is reliably looking at the app. No-op afterwards.
+        // Placed after every headless/one-shot mode has returned, so only a real, visible
+        // launch can ever raise it.
+        crate::first_run::show_if_first_run();
+
         // Opening the Settings window is the natural moment to self-heal the hotkey service:
         // if it's enabled (or a custom hotkey is bound) but not running — e.g. it was
         // killed, or a prior logon never brought it up — restart it now so
@@ -590,6 +656,56 @@ fn main() {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_piggyback_wanted;
+
+    fn argv(rest: &[&str]) -> Vec<String> {
+        std::iter::once("SageThumbs2K.exe".to_string())
+            .chain(rest.iter().map(|s| (*s).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn piggyback_covers_ordinary_launches_and_spares_the_headless_ones() {
+        // The whole point of the piggyback: an install where the resident helper was never
+        // enabled still gets update checks, from whatever the user actually opens.
+        for ordinary in [
+            vec![],
+            vec!["--convert", "list.txt"],
+            vec!["--preview", "a.png"],
+            vec!["--eyedropper"],
+            vec!["--files-to-folder", "list.txt"],
+        ] {
+            assert!(
+                update_piggyback_wanted(&argv(&ordinary)),
+                "{ordinary:?} should fire the update check"
+            );
+        }
+
+        // Headless captures must stay deterministic and side-effect free, the automation
+        // route has a synthetic-pixels-only contract, the daemon owns its own timer, and the
+        // one-shot must never spawn itself.
+        for excluded in [
+            vec!["--shot", "out.png"],
+            vec!["--shot", "out.png", "--window", "preview"],
+            vec!["--shot-gif", "out.gif"],
+            vec!["--screenshot-automation"],
+            vec!["--screenshot-daemon"],
+            vec!["--update-check"],
+            vec!["--update-task"],
+            vec!["--update-task", "remove"],
+            vec!["--updated", "1.7.0"],
+            vec!["--heal-hotkeys"],
+        ] {
+            assert!(
+                !update_piggyback_wanted(&argv(&excluded)),
+                "{excluded:?} must NOT fire the update check"
+            );
         }
     }
 }

@@ -159,10 +159,12 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
         ensure_tray_icon(hwnd);
     }
 
-    // Opt-in periodic update check. ONLY this already-resident process does it — there is
-    // no scheduled task or service. The actual network hit is throttled to once/day inside
-    // `update::lazy_check_worker`; this 6h timer just re-attempts (covering machines left
-    // on for days). One check fires shortly after startup, then on each timer tick.
+    // Periodic update check from the already-resident process. NOT the only one: because
+    // this helper is opt-in, the check also runs from the per-user `--update-check`
+    // Scheduled Task and from any ordinary app launch (see `update::spawn_due_check`). All
+    // three share the once/day throttle in `update::check_throttled`, so having the helper
+    // running just means the check happens here first. This 6h timer re-attempts (covering
+    // machines left on for days); one check fires shortly after startup.
     if sagethumbs2k_core::settings::update_auto_check() {
         let _ = SetTimer(Some(hwnd), UPDATE_TIMER_ID, UPDATE_TIMER_MS, None);
         kick_update_check(hwnd);
