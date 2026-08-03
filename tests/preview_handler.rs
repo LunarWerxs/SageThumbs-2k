@@ -331,3 +331,28 @@ fn preview_streams_cover_from_oversized_cbz() {
         "oversized CBZ cover never rendered — streamed-cover rescue missing"
     );
 }
+
+/// Issue #11: "preview of jp2 files are not shown, but thumbnails are shown."
+/// jp2 has no `image`-crate and no in-box WIC codec, so it is decoded by the
+/// ImageMagick subprocess tier — the ONLY tier the preview pane reaches through a
+/// spawned child process. This drives the real COM preview handler over an in-memory
+/// stream to prove the pane actually paints, rather than reasoning about it.
+#[test]
+fn preview_renders_a_jp2_from_memory_stream() {
+    let jp2 = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.jp2"),
+    );
+    let Ok(jp2) = jp2 else {
+        eprintln!("skipping: ../test-corpus/sample.jp2 not present");
+        return;
+    };
+    unsafe {
+        let stream: IStream = SHCreateMemStream(Some(&jp2)).expect("SHCreateMemStream");
+        // Any non-background pixel proves the pane painted the image rather than
+        // staying empty; the corpus sample's centre is not the pane background.
+        assert!(
+            preview_renders(&stream, |px| !(px[0] > 240 && px[1] > 240 && px[2] > 240)),
+            "jp2 never rendered in the preview pane (issue #11)"
+        );
+    }
+}

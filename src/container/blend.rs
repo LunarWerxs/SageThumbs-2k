@@ -61,7 +61,14 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
                 if len == 8 + px_bytes {
                     let px = bytes.get(body + 8..body + 8 + px_bytes)?;
                     let img = RgbaImage::from_raw(w, h, px.to_vec())?;
-                    return Some(DynamicImage::ImageRgba8(img));
+                    // Blender stores this buffer BOTTOM-UP (it comes straight off an
+                    // OpenGL-style ImBuf), so the rows have to be reversed or every
+                    // .blend thumbnails upside down (issue #10). Blender's own
+                    // extractor does exactly this: `thumb_data_vertical_flip` in
+                    // source/blender/blendthumb/src/blendthumb_extract.cc.
+                    return Some(DynamicImage::ImageRgba8(image::imageops::flip_vertical(
+                        &img,
+                    )));
                 }
             }
         }
@@ -73,6 +80,48 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a minimal legacy (BHead4) .blend carrying `px` as its TEST thumbnail.
+    fn legacy_blend(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BLENDER");
+        b.push(b'_'); // 32-bit pointers
+        b.push(b'v'); // little-endian
+        b.extend_from_slice(b"277"); // 3 version digits → 12-byte header
+        b.extend_from_slice(b"TEST");
+        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
+        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(px);
+        b.extend_from_slice(b"ENDB");
+        b.extend_from_slice(&[0u8; 16]);
+        b
+    }
+
+    #[test]
+    fn thumbnail_rows_are_flipped_to_top_down() {
+        // Issue #10: Blender's TEST buffer is BOTTOM-UP, so the row stored FIRST is the
+        // one that belongs at the BOTTOM of the picture. Store a red first row and a blue
+        // last row; a correct extract puts blue on top.
+        let (w, h) = (2u32, 2u32);
+        let mut px = Vec::new();
+        px.extend_from_slice(&[255, 0, 0, 255].repeat(w as usize)); // stored first = bottom
+        px.extend_from_slice(&[0, 0, 255, 255].repeat(w as usize)); // stored last  = top
+        let img = extract(&legacy_blend(w, h, &px))
+            .expect("thumbnail")
+            .to_rgba8();
+        assert_eq!(
+            img.get_pixel(0, 0).0,
+            [0, 0, 255, 255],
+            "top row must be blue"
+        );
+        assert_eq!(
+            img.get_pixel(0, 1).0,
+            [255, 0, 0, 255],
+            "bottom row must be red"
+        );
+    }
 
     #[test]
     fn extracts_legacy_test_block_thumbnail() {

@@ -2,6 +2,15 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Fixed
+
+- **Blender `.blend` thumbnails were upside down**
+  ([#10](https://github.com/LunarWerxs/SageThumbs-2k/issues/10)). Blender stores its preview
+  bottom-up, and we were reading the rows straight through, so every `.blend` came out
+  vertically flipped. Now flipped to match, the same way Blender's own thumbnailer does it.
+
 ## 1.7.1
 
 **A word about updates.** Ship nothing for a month and people ask whether the project is dead.
