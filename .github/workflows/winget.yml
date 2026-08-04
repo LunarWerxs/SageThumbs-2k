@@ -17,6 +17,24 @@
 # with Komac's unhelpful "Could not resolve to a Repository with the name '<owner>/winget-pkgs'".
 # 1.2.0, 1.2.1 and 1.2.2 never reached winget because of it. The explicit fork check below
 # exists so the next occurrence names the cause and the fix instead of that error.
+#
+# 2026-08-04: 1.7.3 and 1.7.4 both failed with
+#     "LunarWerxs does not have the correct permissions to execute `CreateRef`"
+# and nothing noticed, because release.ps1 printed "onboarded" without checking the run. It
+# now watches the run and reports the failure (see its winget block).
+#
+# What that error is NOT, all ruled out by hand at the time:
+#   * not the fork: it exists, is public, is not archived, and `master` is present.
+#   * not account permissions: the same `CreateRef` over REST, authenticated as LunarWerxs
+#     with `repo` scope, created and deleted a branch on that fork successfully.
+#   * not expiry: the classic PAT in the account had `public_repo` and no expiration date.
+# So the failure is the VALUE stored in the WINGET_TOKEN secret, not the token sitting in the
+# account. The likeliest cause is that the secret holds a FINE-GRAINED PAT: this action only
+# supports CLASSIC ones and rejects fine-grained with exactly this permissions error. A PAT's
+# value cannot be read back after creation, so the fix is to regenerate the classic token and
+# re-paste it into the secret — comparing the two by eye is not possible. If a freshly pasted
+# classic `public_repo` token still fails, widen it to full `repo`: Komac submits over the
+# GraphQL API, which needs broader scopes than the REST equivalent used in the check above.
 name: Publish to winget
 
 on:

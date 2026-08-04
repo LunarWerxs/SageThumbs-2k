@@ -304,7 +304,38 @@ try {
     # so it only nags until onboarding is done, then goes quiet forever.
     gh api "repos/microsoft/winget-pkgs/contents/manifests/l/LunarWerxs/SageThumbs2K" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "[winget] onboarded - the Publish-to-winget workflow auto-publishes $tag." -ForegroundColor DarkGray
+        # Don't just ASSERT that auto-publish works — watch it. Publishing this release fires
+        # `winget.yml`, and that job has its own way to fail that nothing else here would
+        # notice: it pushes a branch to the winget-pkgs fork using the WINGET_TOKEN secret,
+        # which is a classic PAT that EXPIRES. When it lapsed after 1.7.2, this line happily
+        # printed "onboarded" for 1.7.3 and 1.7.4 while both submissions failed, so winget
+        # users silently stayed two versions behind. The release itself is already published
+        # and correct at this point, so a winget failure is reported, never fatal.
+        Write-Host "[winget] release published - watching the Publish-to-winget run..." -ForegroundColor DarkGray
+        $wgRun = $null
+        foreach ($attempt in 1..20) {
+            Start-Sleep -Seconds 6
+            $wgRun = gh run list --workflow winget.yml --limit 5 `
+                --json databaseId, headBranch, status, conclusion, url 2>$null |
+                ConvertFrom-Json | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
+            if ($wgRun -and $wgRun.status -eq 'completed') { break }
+        }
+        if (-not $wgRun) {
+            Write-Host "[winget] no run found for $tag yet - check Actions before assuming it published." -ForegroundColor Yellow
+        } elseif ($wgRun.conclusion -eq 'success') {
+            Write-Host "[winget] submitted OK - a PR is open against microsoft/winget-pkgs." -ForegroundColor DarkGray
+        } else {
+            Write-Host ""
+            Write-Host "  =========== winget submission FAILED ($($wgRun.conclusion)) ===========" -ForegroundColor Yellow
+            Write-Host "  $tag is released and downloadable; only the winget listing is behind." -ForegroundColor Yellow
+            Write-Host "  Most likely the WINGET_TOKEN secret expired (it is a CLASSIC PAT)." -ForegroundColor Yellow
+            Write-Host "    1) new classic PAT, scope `public_repo`, NO expiration:" -ForegroundColor Yellow
+            Write-Host "       https://github.com/settings/tokens" -ForegroundColor Yellow
+            Write-Host "    2) update the WINGET_TOKEN repo secret" -ForegroundColor Yellow
+            Write-Host "    3) re-run: gh workflow run winget.yml -f tag=$tag" -ForegroundColor Yellow
+            Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
+            Write-Host "  ====================================================================" -ForegroundColor Yellow
+        }
     } else {
         $dl = "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/$tag/$($x64Artifact[0].Setup.Name)"
         Write-Host ""
