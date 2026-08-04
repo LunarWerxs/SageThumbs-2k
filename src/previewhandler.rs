@@ -68,6 +68,10 @@ use crate::{decode, safety, settings};
 /// under the ~20s the host could otherwise be frozen for.
 const PREVIEW_DECODE_BUDGET: core::time::Duration = core::time::Duration::from_secs(12);
 
+/// Longest edge the pane can actually use, and the ceiling handed to the decoders. Matches
+/// the 1024 the stream cascade scales to (see `DoPreview`), so the two cannot drift.
+const PREVIEW_TARGET_EDGE: u32 = 1024;
+
 /// Our child window class name (registered once per process).
 const CLASS_NAME: windows::core::PCWSTR = windows::core::w!("SageThumbs2KPreview");
 
@@ -767,7 +771,11 @@ fn decode_preview_budgeted(bytes: Vec<u8>) -> Option<image::DynamicImage> {
         // only when we actually took a ref (S_OK/S_FALSE); `RPC_E_CHANGED_MODE` did not.
         // Mirrors the per-worker guard in `parallel.rs` / `propstore.rs`.
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        let out = decode::decode_preview(&bytes).ok();
+        // Cap what the decoders render at the pane's own target (the same 1024 the stream
+        // cascade scales to). Without it a 76 MP JPEG 2000 spent 15.6s producing a 4096px
+        // surface we immediately threw away, blew the budget below, and left the pane
+        // blank on a perfectly good file (issue #11).
+        let out = decode::decode_preview_capped(&bytes, PREVIEW_TARGET_EDGE).ok();
         // `out` is a plain `DynamicImage`; all WIC/MF objects are already dropped inside
         // `decode_preview`, so the apartment holds no live COM ref at teardown.
         if inited {

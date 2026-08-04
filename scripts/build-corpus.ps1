@@ -693,6 +693,24 @@ print("ok")
 } elseif (-not (Test-Path "$OutDir\sample.dsf")) { Write-Host "  (dsf: needs python+mutagen+network; sample.dsf skipped)" }
 Write-Host "[corpus] coverage completion: png + aifc + dsf"
 
+# --- 9b) A DELIBERATELY HUGE JPEG 2000 -----------------------------------------
+# Issue #11's second half: a reporter's 9958x7686 (76 MP) archive.org map scan was
+# only ~11 MB on disk but blew the preview pane's 12 s decode budget, so the pane
+# showed nothing on a file that decodes fine. File SIZE is not the trigger, pixel
+# COUNT is, and no ordinary corpus sample is big enough to catch a regression here.
+# JP2 has no pure-Rust or in-box Windows decoder, so this always takes the
+# ImageMagick subprocess: exactly the slow path that has to stay inside the budget.
+if (-not (Test-Path "$OutDir\huge.jp2")) {
+    Write-Host "[corpus] generating huge.jp2 (76 MP - this one takes a moment)"
+    try {
+        & $magick $base -resize '9958x7686!' -quality 40 "$OutDir\huge.jp2" 2>&1 | Out-Null
+        if (Test-Path "$OutDir\huge.jp2") {
+            $mb = [math]::Round((Get-Item "$OutDir\huge.jp2").Length / 1MB, 1)
+            Write-Host "  huge.jp2: $mb MB on disk, 76 MP decoded"
+        }
+    } catch { Write-Host "  (huge.jp2: $($_.Exception.Message); skipped)" }
+}
+
 # --- 10) Honesty ledger: registered formats with NO real sample ----------------
 # Mostly Camera RAW (real sensor dumps are MBs and vendor-licensed — only dng has
 # a small real download, aliased to pxn) plus the obscure magick-read-only long

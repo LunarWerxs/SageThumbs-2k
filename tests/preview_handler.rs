@@ -674,6 +674,55 @@ fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
     );
 }
 
+/// Issue #11 again, after 1.7.3: a file that is huge in PIXELS rather than bytes.
+///
+/// The reporter's follow-up was a 9958x7686 (76 MP) map scan from archive.org that is only
+/// ~11 MB on disk. It still timed out, because the decode did not scale with what the pane
+/// can show: ImageMagick was asked for a fixed 4096 px surface, which was then PNG-encoded
+/// (22 MB) and decoded back, and the whole round trip missed the 12 s budget. The pane gave
+/// up on a file that decodes fine, which is why "too big" looked like a size problem.
+///
+/// Decoding now stops at the pane's own target, so this must render, AND it must land well
+/// inside the budget rather than scraping past it. `../test-corpus/huge.jp2` comes from
+/// `scripts/build-corpus.ps1`; the test skips when the corpus has not been built.
+#[test]
+fn preview_renders_a_76_megapixel_jp2_inside_the_budget() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/huge.jp2");
+    let Ok(huge) = std::fs::read(&path) else {
+        eprintln!("skipping: ../test-corpus/huge.jp2 not present (run scripts/build-corpus.ps1)");
+        return;
+    };
+
+    // Sanity: if the sample ever stops being enormous this test proves nothing, so read
+    // the dimensions out of the JP2 image header box (`ihdr` = height then width, BE u32).
+    let megapixels = huge.windows(4).position(|w| w == b"ihdr").map(|i| {
+        let n = |o: usize| u32::from_be_bytes(huge[i + o..i + o + 4].try_into().unwrap()) as u64;
+        (n(4) * n(8)) / 1_000_000
+    });
+    assert!(
+        megapixels.is_none_or(|mp| mp > 50),
+        "huge.jp2 must be >50 MP to exercise the budget, got {megapixels:?} MP"
+    );
+
+    let start = std::time::Instant::now();
+    let rendered = unsafe {
+        let stream: IStream = SHCreateMemStream(Some(&huge)).expect("SHCreateMemStream");
+        // Any non-background pixel proves it painted rather than timing out to empty.
+        preview_renders(&stream, |px| !(px[0] > 240 && px[1] > 240 && px[2] > 240))
+    };
+    let elapsed = start.elapsed();
+    assert!(
+        rendered,
+        "a 76 MP jp2 never rendered in the preview pane after {elapsed:?} (issue #11)"
+    );
+    // The handler's own budget is 12s. Anything close to that on a warm machine means
+    // a loaded machine (Explorer thumbnailing the neighbours) will still miss it.
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "rendered, but took {elapsed:?} — too close to the 12s budget to survive a busy folder"
+    );
+}
+
 /// Issue #11, the actual failure mode: when a decode MISSES on a reused handler —
 /// undecodable bytes, or (the real-world case) an ImageMagick subprocess that blows the
 /// wall-clock budget because Explorer is running several of them at once for the other

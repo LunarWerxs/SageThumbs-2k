@@ -145,6 +145,41 @@ fn add_metafile_magick_limits(cmd: &mut Command) {
 /// safe `image` tier. Bounded by ImageMagick's own `-limit`s AND an external
 /// kill-timeout so a hostile/looping input can't hang or crash our host.
 pub(super) fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
+    decode_via_magick_capped(bytes, None)
+}
+
+/// [`decode_via_magick`] that asks magick for no more than `max_edge` px on the long side.
+///
+/// The default ceiling is [`MAGICK_MAX_EDGE`] (4096), a MEMORY guard rather than a quality
+/// floor: the result is downscaled to the caller's box straight afterwards. When the caller
+/// already knows it wants a 256 px tile or a 1024 px preview, making magick render 4096 px
+/// is work thrown away twice over, because we then PNG-encode that surface and decode it
+/// back through the `image` tier.
+///
+/// It is not a small effect on big images. A 9958x7686 (76 MP) JPEG 2000 scan, the file from
+/// issue #11, best of three on an idle machine:
+///
+/// | target | magick alone | PNG handed back | whole decode |
+/// |---|---|---|---|
+/// | 4096 (the old fixed cap) | 7.1 s | 22 MB | 9.0 s |
+/// | 1024 (the preview's target) | 4.0 s | 1.8 MB | 5.0 s |
+/// | 256 (an Explorer tile) | 3.6 s | 0.2 MB | 4.4 s |
+///
+/// Under load that 9 s crossed the pane's 12 s budget, so it gave up and showed nothing on a
+/// file that decodes fine. What is left is openjpeg's own wavelet decode of 76 MP (the
+/// "magick alone" column), which this cannot touch: we are now within ~0.5 s of that floor.
+///
+/// NOT usable for the rest: `-define jp2:reduce-factor=N` decodes a single resolution level
+/// and looks like the obvious 17x win (0.29 s). On this file the bundled openjpeg returns the
+/// correct REDUCED DIMENSIONS with the wrong CONTENT — the top-left quadrant rather than the
+/// whole image downscaled — so it silently produces a thumbnail of the wrong thing. Verified
+/// visually, not just by timing. Do not reach for it again without checking the pixels.
+///
+/// `max_edge` is clamped to the 4096 guard, so a caller can only ask for less, never more.
+pub(super) fn decode_via_magick_capped(
+    bytes: &[u8],
+    max_edge: Option<u32>,
+) -> Result<DynamicImage> {
     // Metafiles get a much tighter, format-specific child budget. A slow vector
     // WMF would otherwise grind for seconds to a near-blank frame; everything
     // else keeps the full 20 s budget for heavy raster decodes.
@@ -179,7 +214,12 @@ pub(super) fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
         Some(d) => vec!["-density", d],
         None => Vec::new(),
     };
-    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, MAGICK_MAX_EDGE, timeout)
+    // `>` keeps it shrink-only, so a small image is never blown up to the cap.
+    let capped = max_edge
+        .map(|e| e.clamp(1, MAGICK_MAX_EDGE_PX))
+        .map(|e| format!("{e}x{e}>"));
+    let edge = capped.as_deref().unwrap_or(MAGICK_MAX_EDGE);
+    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, edge, timeout)
 }
 
 /// The `-density` (DPI) that renders an EMF's LONG edge up to [`METAFILE_MIN_PX`] when its natural

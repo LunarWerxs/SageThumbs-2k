@@ -83,7 +83,11 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
         Some(img) => img,
         None => {
             let bytes = decode::read_preview_capped(input).map_err(|e| e.to_string())?;
-            decode::decode_preview(&bytes).map_err(|_| format!("cannot decode {input}"))?
+            // Cap the decode at the edge we're about to shrink to anyway — the streamed
+            // path above already takes `edge`, and rendering ImageMagick's full 4096 first
+            // costs seconds on a big scan for pixels this immediately discards.
+            decode::decode_preview_capped(&bytes, edge)
+                .map_err(|_| format!("cannot decode {input}"))?
         }
     };
     let out = if max_dim > 0 {

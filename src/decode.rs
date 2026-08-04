@@ -47,6 +47,9 @@ const MAGICK_TIMEOUT: Duration = Duration::from_secs(limits::MAGICK_TIME_SECS);
 /// Cap ImageMagick's output so an obscure 200 MP file can't blow up memory; the
 /// thumbnail is downscaled from here anyway. `>` = shrink-only, never upscale.
 const MAGICK_MAX_EDGE: &str = "4096x4096>";
+/// The numeric form of [`MAGICK_MAX_EDGE`], so a caller-supplied cap can be clamped to the
+/// same guard. Pinned equal by `magick_max_edge_forms_agree`.
+const MAGICK_MAX_EDGE_PX: u32 = 4096;
 
 pub struct Decoded {
     pub width: u32,
@@ -357,7 +360,11 @@ fn decode_any_with_wic_target(
     let mut last_err = preferred_magick_error.unwrap_or_else(|| Error::from(E_FAIL));
     if external {
         if !magick_attempted {
-            match decode_via_magick(bytes) {
+            // Ask magick for no more than the caller's target edge. Rendering the fixed
+            // 4096 cap and then throwing most of it away cost 15.6s on a 76 MP JPEG 2000
+            // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
+            // for a file that decodes perfectly well.
+            match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
                 Ok(img) => return Ok(img),
                 Err(e) => {
                     crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
@@ -399,7 +406,7 @@ mod magick;
 pub(crate) use magick::looks_like_metafile;
 #[cfg(test)]
 use magick::metafile_min_density;
-use magick::{decode_psd_composite, decode_via_magick};
+use magick::{decode_psd_composite, decode_via_magick, decode_via_magick_capped};
 pub use magick::{encode_via_magick, magick_available, magick_output_supported};
 mod readers;
 mod svg;
@@ -469,6 +476,17 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, None)
+}
+
+/// [`decode_preview`] that tells the external decoders the biggest image the caller can
+/// actually use, so they don't render (and we don't re-decode) pixels headed for the bin.
+///
+/// The preview pane paints into a pane a few hundred px across and asks the stream cascade
+/// for 1024, but the decode underneath still rendered ImageMagick's fixed 4096 cap. On a
+/// 76 MP JPEG 2000 that was 15.6s against a 12s budget, so the pane gave up and went blank
+/// on a file that decodes fine (issue #11). Same pixels, a third of the work.
+pub fn decode_preview_capped(bytes: &[u8], max_edge: u32) -> Result<DynamicImage> {
+    decode_preview_thumbnail(bytes, max_edge.max(1))
 }
 
 /// CHEAP, in-process-only preview decode for the CLASSIC CONTEXT MENU, whose

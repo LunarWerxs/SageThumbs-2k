@@ -2,6 +2,20 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Fixed
+
+- **Very large images thumbnailed about twice as fast, and huge scans stopped timing out.**
+  A 76-megapixel JPEG 2000 map scan (only 11 MB on disk) took around 9 seconds and, on a busy
+  folder, missed the preview pane's time limit entirely, so the pane showed nothing for a file
+  that was perfectly readable. The problem was not the file's size: whatever you were going to
+  see it at, the decode always rendered a 4096-pixel version first and threw most of it away.
+  It now decodes straight to the size being displayed. That scan is about 4.4 seconds for an
+  Explorer thumbnail and 5 seconds in the preview pane, and detail is slightly *better*,
+  because the picture is no longer resized twice. Most of what remains is the JPEG 2000
+  decoder itself. (issue #11)
+
 ## 1.7.3
 
 ### Fixed
