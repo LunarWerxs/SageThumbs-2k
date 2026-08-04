@@ -23,18 +23,17 @@
 # and nothing noticed, because release.ps1 printed "onboarded" without checking the run. It
 # now watches the run and reports the failure (see its winget block).
 #
-# What that error is NOT, all ruled out by hand at the time:
-#   * not the fork: it exists, is public, is not archived, and `master` is present.
-#   * not account permissions: the same `CreateRef` over REST, authenticated as LunarWerxs
-#     with `repo` scope, created and deleted a branch on that fork successfully.
-#   * not expiry: the classic PAT in the account had `public_repo` and no expiration date.
-# So the failure is the VALUE stored in the WINGET_TOKEN secret, not the token sitting in the
-# account. The likeliest cause is that the secret holds a FINE-GRAINED PAT: this action only
-# supports CLASSIC ones and rejects fine-grained with exactly this permissions error. A PAT's
-# value cannot be read back after creation, so the fix is to regenerate the classic token and
-# re-paste it into the secret — comparing the two by eye is not possible. If a freshly pasted
-# classic `public_repo` token still fails, widen it to full `repo`: Komac submits over the
-# GraphQL API, which needs broader scopes than the REST equivalent used in the check above.
+# ROOT CAUSE, proven by elimination on 2026-08-04: a STALE FORK. Komac creates its
+# submission branch from UPSTREAM's current HEAD; when the fork's `master` has fallen far
+# enough behind microsoft/winget-pkgs (ours was two weeks stale), GitHub refuses the ref
+# create and MISREPORTS it as "<owner> does not have the correct permissions to execute
+# `CreateRef`". It is not a permissions problem at all:
+#   * a fresh classic PAT, verified `public_repo` + owner LunarWerxs via the API, failed
+#     with the identical error — the token was never the issue;
+#   * `gh repo sync LunarWerxs/winget-pkgs --source microsoft/winget-pkgs`, then re-run,
+#     succeeded immediately with that same token.
+# So when this error appears: SYNC THE FORK FIRST. Only chase the token if a fresh sync
+# does not fix it. (Do not trust the error text; it lies about the cause.)
 name: Publish to winget
 
 on:
@@ -92,6 +91,18 @@ jobs:
             exit 1
           fi
           echo "fork ok: $owner/winget-pkgs"
+          # Sync the fork with upstream EVERY run. A fork left to drift eventually makes
+          # Komac's branch creation fail with a misleading "does not have the correct
+          # permissions to execute CreateRef" (see the 2026-08-04 header note): the error
+          # names permissions, the cause is staleness. Syncing is cheap, idempotent, and
+          # works with public_repo scope, so just always do it. Non-fatal on conflict:
+          # Komac may still succeed, and if not, its own error surfaces below.
+          sync=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$owner/winget-pkgs/merge-upstream" \
+            -d '{"branch":"master"}')
+          echo "fork sync with upstream: HTTP $sync (200=synced, 409=conflict/manual)"
 
       - name: Submit to winget-pkgs
         if: steps.onboarded.outputs.exists == 'true'

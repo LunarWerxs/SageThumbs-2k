@@ -328,11 +328,11 @@ try {
             Write-Host ""
             Write-Host "  =========== winget submission FAILED ($($wgRun.conclusion)) ===========" -ForegroundColor Yellow
             Write-Host "  $tag is released and downloadable; only the winget listing is behind." -ForegroundColor Yellow
-            Write-Host "  Most likely the WINGET_TOKEN secret expired (it is a CLASSIC PAT)." -ForegroundColor Yellow
-            Write-Host "    1) new classic PAT, scope `public_repo`, NO expiration:" -ForegroundColor Yellow
-            Write-Host "       https://github.com/settings/tokens" -ForegroundColor Yellow
-            Write-Host "    2) update the WINGET_TOKEN repo secret" -ForegroundColor Yellow
-            Write-Host "    3) re-run: gh workflow run winget.yml -f tag=$tag" -ForegroundColor Yellow
+            Write-Host "  A 'permissions to execute CreateRef' error is usually a STALE FORK," -ForegroundColor Yellow
+            Write-Host "  not permissions (proven 2026-08-04; the workflow now self-syncs). Fix:" -ForegroundColor Yellow
+            Write-Host "    1) gh repo sync LunarWerxs/winget-pkgs --source microsoft/winget-pkgs" -ForegroundColor Yellow
+            Write-Host "    2) re-run: gh workflow run winget.yml -f tag=$tag" -ForegroundColor Yellow
+            Write-Host "    3) only if that fails: check WINGET_TOKEN (classic PAT, public_repo)" -ForegroundColor Yellow
             Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
             Write-Host "  ====================================================================" -ForegroundColor Yellow
         }
