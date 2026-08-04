@@ -446,15 +446,20 @@ pub(super) fn decode_code_block(
         }
 
         pass += 1;
+        // Pass order (D.2): the FIRST coded bitplane gets a cleanup pass on its own, then
+        // every plane below it gets significance / refinement / cleanup. So the plane steps
+        // down when cleanup hands over to significance, NOT when refinement hands over to
+        // cleanup — putting the decrement in the wrong place runs SPP and MRP one plane too
+        // high, which decodes as structurally-correct-but-streaked detail.
         pass_kind = match pass_kind {
-            2 => 0,
-            0 => 1,
-            _ => {
+            2 => {
                 bitplane -= 1;
-                2
+                0
             }
+            0 => 1,
+            _ => 2,
         };
-        if pass_kind == 0 && bitplane < 0 {
+        if bitplane < 0 {
             break;
         }
     }

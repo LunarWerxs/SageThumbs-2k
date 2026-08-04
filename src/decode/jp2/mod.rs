@@ -20,6 +20,31 @@
 //! their lengths but never handed to tier-1, and the inverse wavelet stops early. Each level
 //! skipped removes about three quarters of the remaining coefficients.
 //!
+//! # Where this actually is (2026-08-04)
+//!
+//! Four of the five corpus JPEG 2000 files decode end to end at 256 px in ~41 ms. The output
+//! is STRUCTURALLY correct and NUMERICALLY wrong: on `sample.jp2` the four corner colour
+//! patches land in the right places and the centre triangle is visible, but the image is
+//! heavily streaked, mean channel error 40/255 against ImageMagick.
+//!
+//! That pattern is the useful part of the signal. Correct placement means the container
+//! parse, tile geometry, packet walk, precinct partition, subband sizing, inverse DWT and
+//! component transform are all broadly right — a fault in any of those misplaces or shifts
+//! the image rather than dirtying it. So the remaining error is inside `mq.rs`: the EBCOT
+//! tier-1 coefficient decode, which is exactly the part with the most intricate state.
+//!
+//! `huge.jp2` still fails with `Truncated` in the packet walk. It is the hardest file in the
+//! set (6 tiles, 1529 tile-parts, 30 layers, RPCL, 256x256 precincts), so it should be the
+//! LAST one fixed, not the first. Debugging started on it and that was a mistake: it hid
+//! which stage was at fault on the simple files.
+//!
+//! One trap already paid for: the bitplane sequencing in `mq.rs` was changed to match the
+//! spec (the plane steps down when cleanup hands to significance, not when refinement hands
+//! to cleanup) and the error metric got WORSE, 40 to 60. A spec-correct change that degrades
+//! the output means a second bug is compensating for the first. Do not chase the metric.
+//! The next step is to compare tier-1 state — pass by pass, coefficient by coefficient, on
+//! ONE code-block — against a reference decoder, and fix whatever disagrees first.
+//!
 //! # Scope, deliberately
 //!
 //! Single-tile and multi-tile, 5/3 and 9/7, RCT and ICT, up to 4 components, LRCP/RLCP/RPCL
@@ -609,6 +634,36 @@ mod tests {
 
     /// Decode the corpus's 76 MP scan at a thumbnail size and write it out for comparison.
     /// Skips when the corpus has not been built.
+    /// Try EVERY corpus JPEG 2000 file, simplest first. Reports rather than asserts while
+    /// the pixel path is unverified; the point is a per-file progress signal, because the
+    /// 76 MP scan is the hardest file in the set and starting there hid which stage was at
+    /// fault on the simple ones.
+    #[test]
+    fn decode_every_corpus_jp2() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
+        for name in [
+            "sample.j2k",
+            "sample.jp2",
+            "sample.jpf",
+            "sample.jpx",
+            "huge.jp2",
+        ] {
+            let Ok(bytes) = std::fs::read(dir.join(name)) else {
+                continue;
+            };
+            let t0 = std::time::Instant::now();
+            match decode_reduced(&bytes, 256) {
+                Ok((rgb, w, h)) => {
+                    eprintln!("  {name}: OK {w}x{h} in {:?}", t0.elapsed());
+                    if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
+                        let _ = img.save(std::env::temp_dir().join(format!("st2k_jp2_{name}.png")));
+                    }
+                }
+                Err(e) => eprintln!("  {name}: {e}"),
+            }
+        }
+    }
+
     #[test]
     fn decode_huge_corpus_jp2() {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/huge.jp2");
