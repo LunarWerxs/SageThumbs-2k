@@ -401,6 +401,7 @@ fn decode_any_with_wic_target(
 
 mod color;
 mod dds;
+mod jp2;
 mod exrscale;
 mod magick;
 pub(crate) use magick::looks_like_metafile;
