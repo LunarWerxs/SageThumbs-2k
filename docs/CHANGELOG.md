@@ -6,6 +6,40 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **AVIF thumbnails had shifted colours, and it was Windows, not ImageMagick.** Files written
+  by `avifenc` or `ffmpeg` came out visibly off, while the same files looked right in every
+  other viewer. The cause was Windows' own AV1 codec: we asked it first, and it misreads the
+  colour information libaom writes by default. Measured against two independent decoders, on
+  a saturated test patch out of 255, it was off by 19 on 8-bit files and by 14 on 10-bit ones,
+  where even neutral grey drifted from 128 to 139. Other viewers were fine because they do
+  not use Windows for this.
+
+  AVIF now goes to ImageMagick except in the one case Windows demonstrably gets right
+  (ordinary 8-bit BT.709, which is most web AVIF and stays on the fast path). On the Compact
+  install, which has no ImageMagick, nothing changes: you keep the thumbnail you had.
+  `scripts/repro-avif-color.ps1` reproduces the whole thing from scratch. (issue #9)
+
+- **Wide-gamut 10-bit AVIF and HEIC lost their colour profile.** A separate fault the above
+  uncovered: images decoded through ImageMagick come back at 16 bits per channel, and the
+  colour-management step quietly skipped anything wider than 8-bit. An Adobe RGB AVIF was
+  landing 79/255 out on a saturated patch. Those images are now colour-managed like every
+  other format, which is the same "decoded it right, then threw the profile away" fault that
+  was fixed for JPEG XL in 1.7.1.
+
+- **The preview pane could get stuck on the file you were looking at before.** Click through a
+  folder of files that need a slower decoder (JPEG 2000 `.jp2` is the usual one) and the pane
+  would stop keeping up: it kept showing an earlier file's picture no matter what you selected
+  next. The pane keeps one handler alive and re-drives it per file, and when a decode came back
+  empty nothing replaced what was already on screen. A single file on its own never hit this,
+  which is why it went unnoticed. The pane now always clears first, so a file that fails to
+  decode shows an empty pane instead of quietly leaving the wrong picture up. (issue #11)
+
+- **`st2k doctor` claimed thumbnails were disabled when they were not.** Turning off the Windows
+  thumbnail *cache* (`NoThumbnailCache` / `DisableThumbnailCache`) was reported as four failures
+  saying thumbnails are switched off. Those settings only stop Windows saving thumbnails to disk;
+  thumbnails still work, they are just recomputed each time. They are now reported as a note
+  rather than a problem.
+
 - **Modern game textures (`.dds`) now thumbnail: BC7, BC6H, BC4 and BC5.** Someone left this
   in an uninstall comment, and they were right. SageThumbs handled the 1998 half of DDS
   (DXT1/DXT3/DXT5) and fell over on everything a game has actually shipped for the last decade.

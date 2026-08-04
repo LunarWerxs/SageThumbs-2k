@@ -597,6 +597,103 @@ fn heic_auxiliary_alpha_box_walk() {
     );
 }
 
+/// Issue #9: which AVIFs must bypass WIC because its AV1 codec misreads their colour.
+///
+/// The expectations here are not a guess about the spec — each one is a case measured
+/// against libavif AND ImageMagick, worst-channel error out of 255, by
+/// `scripts/repro-avif-color.ps1`. WIC was correct in only ONE configuration, so this is a
+/// whitelist: anything not proven good is routed to ImageMagick, and anything unparseable
+/// is too, so a future WIC that behaves differently cannot silently reintroduce the shift.
+#[test]
+fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
+    use super::color::avif_wic_misreads_color;
+
+    fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + body.len()).unwrap();
+        [&size.to_be_bytes()[..], &typ[..], body].concat()
+    }
+
+    /// `high_bitdepth` sets the av1C bit that marks 10/12-bit; `matrix` writes an nclx
+    /// `colr` box with that CICP matrix coefficient (None writes no `colr` at all).
+    fn avif(high_bitdepth: bool, matrix: Option<u16>) -> Vec<u8> {
+        // av1C: marker+version, profile/level, then the flags byte whose bit 6 is
+        // high_bitdepth. Trailing byte is the (unused here) config OBU space.
+        let av1c = bx(
+            b"av1C",
+            &[0x81, 0x00, if high_bitdepth { 0x4c } else { 0x0c }, 0x00],
+        );
+        let mut props = vec![bx(b"ispe", &[0u8; 12]), av1c];
+        if let Some(m) = matrix {
+            let mut nclx = b"nclx".to_vec();
+            nclx.extend_from_slice(&1u16.to_be_bytes()); // colour_primaries: BT.709
+            nclx.extend_from_slice(&13u16.to_be_bytes()); // transfer: sRGB
+            nclx.extend_from_slice(&m.to_be_bytes()); // matrix_coefficients
+            nclx.push(0x80); // full_range_flag
+            props.push(bx(b"colr", &nclx));
+        }
+        let iprp = bx(b"iprp", &bx(b"ipco", &props.concat()));
+        let meta = bx(b"meta", &[&[0u8; 4][..], &iprp].concat());
+        [bx(b"ftyp", b"avif\0\0\0\0mif1"), meta].concat()
+    }
+
+    // The ONE measured-correct case, and the only one that keeps the cheap WIC path:
+    // ordinary 8-bit BT.709, which is what Chrome and Squoosh emit. Measured error 1-3.
+    assert!(
+        !avif_wic_misreads_color(&avif(false, Some(1))),
+        "8-bit BT.709 is measurably correct through WIC and must stay on the fast path"
+    );
+    // Identity leaves RGB alone, so there is no conversion for WIC to get wrong.
+    assert!(!avif_wic_misreads_color(&avif(false, Some(0))));
+
+    // avifenc's DEFAULT matrix. Greys hold, saturated colour shifts. Measured error 19.
+    assert!(
+        avif_wic_misreads_color(&avif(false, Some(6))),
+        "8-bit BT.601 (avifenc's default) must route to ImageMagick"
+    );
+    // High bit depth is wrong for EVERY matrix and range: mid grey 128 reads as 139.
+    for matrix in [0u16, 1, 6, 9] {
+        assert!(
+            avif_wic_misreads_color(&avif(true, Some(matrix))),
+            "10/12-bit AVIF must route to ImageMagick regardless of matrix ({matrix})"
+        );
+    }
+    // No colour signalling at all: WIC assumes BT.709 where libaom encoded BT.601.
+    // Measured error 19 at 8-bit, so an absent nclx is NOT a licence to trust WIC.
+    assert!(
+        avif_wic_misreads_color(&avif(false, None)),
+        "an AVIF with no nclx box must route to ImageMagick"
+    );
+
+    // HEIC carries hvcC, not av1C, and is routed by the auxiliary-alpha rule instead.
+    // Give it an nclx with a matrix that WOULD trip the AVIF rule, to prove the av1C gate
+    // is what decides rather than the colour box.
+    let heic = {
+        let mut nclx = b"nclx".to_vec();
+        nclx.extend_from_slice(&1u16.to_be_bytes());
+        nclx.extend_from_slice(&13u16.to_be_bytes());
+        nclx.extend_from_slice(&6u16.to_be_bytes());
+        nclx.push(0x80);
+        let ipco = bx(
+            b"ipco",
+            &[bx(b"hvcC", &[0u8; 4]), bx(b"colr", &nclx)].concat(),
+        );
+        let meta = bx(
+            b"meta",
+            &[&[0u8; 4][..], &bx(b"iprp", &ipco)].concat(),
+        );
+        [bx(b"ftyp", b"heic\0\0\0\0mif1"), meta].concat()
+    };
+    assert!(
+        !avif_wic_misreads_color(&heic),
+        "HEIC is not an AVIF and must not be routed by this rule"
+    );
+    // Not ISOBMFF at all, and a truncated container: decline rather than chew through it.
+    assert!(!avif_wic_misreads_color(b"not an isobmff file at all"));
+    let mut truncated = avif(true, Some(6));
+    truncated.truncate(12);
+    assert!(!avif_wic_misreads_color(&truncated));
+}
+
 #[test]
 fn detects_cmyk_jpeg_by_component_count() {
     // Minimal JPEG: SOI + SOF0 declaring `nf` components + EOI. CMYK/YCCK are 4-component.

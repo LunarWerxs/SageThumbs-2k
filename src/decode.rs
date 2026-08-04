@@ -304,19 +304,36 @@ fn decode_any_with_wic_target(
             Err(e) => crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}")),
         }
     }
-    // Microsoft's HEIC WIC codec accepts HEVC auxiliary-alpha files but returns
-    // an opaque image. When external decoding is allowed, prefer ImageMagick only
-    // when a checked ISOBMFF `auxC` property carries the exact HEVC alpha identifier.
-    // If magick is unavailable or fails, WIC remains a usable (opaque) fallback.
-    let magick_attempted = external && isobmff_has_hevc_aux_alpha(bytes);
+    // Two things Microsoft's WIC codecs get wrong on ISOBMFF images, both of which we can
+    // detect from the container CHEAPLY and route around when the Full install's external
+    // tier is available. In both cases WIC stays the fallback: on the Compact install (no
+    // ImageMagick) a slightly wrong thumbnail still beats no thumbnail at all.
+    //
+    //  * HEIC: the HEVC codec accepts auxiliary-alpha files and returns an opaque image.
+    //    Gated on a checked `auxC` property carrying the exact HEVC alpha identifier.
+    //  * AVIF: the AV1 codec misreads the `nclx` colour box that libaom writes by default,
+    //    shifting colour on exactly the files `avifenc`/`ffmpeg` produce (issue #9).
+    let wic_hevc_alpha = isobmff_has_hevc_aux_alpha(bytes);
+    let wic_avif_color = !wic_hevc_alpha && color::avif_wic_misreads_color(bytes);
+    let magick_attempted = external && (wic_hevc_alpha || wic_avif_color);
     let mut preferred_magick_error = None;
     if magick_attempted {
+        let why = if wic_hevc_alpha {
+            "HEIC auxiliary alpha"
+        } else {
+            "AVIF nclx colour"
+        };
+        crate::safety::log_debug(&format!("decode: routing around WIC ({why})"));
         match decode_via_magick(bytes) {
-            Ok(img) => return Ok(img),
+            // `decode_via_magick` passes `-strip`, so the profile magick would otherwise
+            // have carried into its PNG output is gone by the time we read it back. Apply
+            // it here from the ORIGINAL container instead, exactly as the WIC path does,
+            // or a wide-gamut file routed here would come out in raw Adobe RGB / P3
+            // numbers — the same "decoded right, then threw the profile away" fault that
+            // was fixed for JPEG XL in 1.7.1.
+            Ok(img) => return Ok(apply_icc_to_srgb(img, color::isobmff_color_icc(bytes))),
             Err(e) => {
-                crate::safety::log_debug(&format!(
-                    "decode tier `magick (HEIC auxiliary alpha)` failed: {e}"
-                ));
+                crate::safety::log_debug(&format!("decode tier `magick ({why})` failed: {e}"));
                 preferred_magick_error = Some(e);
             }
         }

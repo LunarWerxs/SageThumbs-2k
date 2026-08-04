@@ -140,10 +140,17 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
 /// then having Explorer cache the wrong colors. Uses the pure-Rust `moxcms` we ALREADY
 /// ship (via `image`/`jxl-oxide`), so this adds no dependency and no size.
 ///
-/// Scope: 8-bit RGB/RGBA with an RGB-space profile. No-profile, CMYK, Lab, gray, and
-/// 16-bit images pass through untouched (CMYK→sRGB needs the raw CMYK samples and is a
-/// separate, harder transform). Best-effort: any parse/transform failure returns the
-/// image unchanged, so color management can never turn a good thumbnail into a blank.
+/// Scope: RGB/RGBA with an RGB-space profile. No-profile, CMYK, Lab and gray images pass
+/// through untouched (CMYK→sRGB needs the raw CMYK samples and is a separate, harder
+/// transform). Best-effort: any parse/transform failure returns the image unchanged, so
+/// color management can never turn a good thumbnail into a blank.
+///
+/// 16-bit RGB/RGBA is narrowed to 8-bit and then transformed. That loses sub-8-bit
+/// precision the thumbnail path discards anyway, and the alternative is what used to
+/// happen: passing 16-bit straight through, silently un-managed. That mattered as soon as
+/// AVIF started routing to ImageMagick (issue #9) — magick hands back a 16-bit PNG for any
+/// 10-bit source, so an Adobe RGB AVIF came out in raw wide-gamut numbers, off by 79/255 on
+/// a saturated patch, while the same file through WIC was correct.
 pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> DynamicImage {
     use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
 
@@ -183,6 +190,25 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
             image::RgbaImage::from_raw(w, h, out)
                 .map(DynamicImage::ImageRgba8)
                 .unwrap_or_else(|| DynamicImage::new_rgba8(w, h))
+        }
+        // Narrow to 8-bit first (see the note above) rather than skip management entirely.
+        img @ (DynamicImage::ImageRgb16(_) | DynamicImage::ImageRgba16(_)) => {
+            let has_alpha = matches!(img, DynamicImage::ImageRgba16(_));
+            if has_alpha {
+                let buf = img.to_rgba8();
+                let (w, h) = buf.dimensions();
+                let out = cms(Layout::Rgba, buf.into_raw());
+                image::RgbaImage::from_raw(w, h, out)
+                    .map(DynamicImage::ImageRgba8)
+                    .unwrap_or_else(|| DynamicImage::new_rgba8(w, h))
+            } else {
+                let buf = img.to_rgb8();
+                let (w, h) = buf.dimensions();
+                let out = cms(Layout::Rgb, buf.into_raw());
+                image::RgbImage::from_raw(w, h, out)
+                    .map(DynamicImage::ImageRgb8)
+                    .unwrap_or_else(|| DynamicImage::new_rgb8(w, h))
+            }
         }
         other => other,
     }
@@ -245,6 +271,110 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
         None
     }
     walk(bytes, 0)
+}
+
+/// Does this AVIF need ImageMagick because Microsoft's AV1 WIC codec gets its colour wrong?
+///
+/// Issue #9. WIC (AV1 Video Extension 2.0.24.0) misreads the colour signalling that libaom
+/// writes, so `avifenc` and `ffmpeg` output decodes with visibly shifted colour while libavif
+/// and ImageMagick read the very same file correctly. That is why the reporter's other viewers
+/// and Icaros were fine: they use libavif, and we were the only one asking Windows.
+///
+/// Measured against libavif AND ImageMagick on a six-patch target, worst channel error of 255:
+///
+/// | file | WIC error |
+/// |---|---|
+/// | `nclx`, 8-bit, `matrix=1` (BT.709) | 1–3, correct |
+/// | `nclx`, 8-bit, `matrix=6` (BT.601, avifenc's default) | 19, greys hold and saturated colour shifts |
+/// | `nclx`, 10-bit, any matrix, any range | 14–15, mid grey reads 128 as 139 |
+/// | no `nclx`, 8-bit | 19, WIC assumes BT.709 where libaom encoded BT.601 |
+/// | no `nclx`, 10/12-bit | 1, correct |
+///
+/// Note the shape of that: WIC is wrong in four of the five cases and the two correct ones do
+/// not share a rule. So this is a WHITELIST, not a blacklist. We keep the cheap WIC path only
+/// for the one case that is both measurably correct AND overwhelmingly common (ordinary 8-bit
+/// BT.709 web AVIF, what Chrome and Squoosh emit), and hand everything else to ImageMagick.
+/// Anything unparseable or unrecognised also goes to ImageMagick, so a WIC version that changes
+/// its behaviour cannot silently reintroduce the bug.
+///
+/// Callers use this exactly like [`isobmff_has_hevc_aux_alpha`]: prefer ImageMagick when the
+/// external tier is available, and fall back to WIC when it is not, so the Compact install
+/// keeps the thumbnail it has today rather than losing it.
+pub(super) fn avif_wic_misreads_color(bytes: &[u8]) -> bool {
+    if bytes.get(4..8) != Some(b"ftyp") {
+        return false;
+    }
+    struct Found {
+        matrix: Option<u16>,
+        high_bitdepth: bool,
+        is_av1: bool,
+    }
+
+    fn walk(buf: &[u8], depth: u8, f: &mut Found) {
+        if depth > 6 {
+            return;
+        }
+        let mut p = 0usize;
+        while p + 8 <= buf.len() {
+            let Ok(raw) = buf[p..p + 4].try_into() else {
+                return;
+            };
+            let size = u32::from_be_bytes(raw) as usize;
+            let typ = &buf[p + 4..p + 8];
+            let (hdr, end) = match size {
+                0 => (8usize, buf.len()),
+                n if n >= 8 => match p.checked_add(n) {
+                    Some(e) => (8usize, e),
+                    None => return,
+                },
+                // 64-bit sizes only ever wrap `mdat` here, which holds no colour metadata.
+                _ => return,
+            };
+            if end > buf.len() || end < p + hdr {
+                return;
+            }
+            let body = &buf[p + hdr..end];
+            match typ {
+                // ColourInformationBox: `nclx` carries CICP as 3 × u16 then a full-range bit.
+                b"colr" if body.get(..4) == Some(b"nclx") => {
+                    if let Some(raw) = body.get(8..10).and_then(|b| b.try_into().ok()) {
+                        f.matrix = Some(u16::from_be_bytes(raw));
+                    }
+                }
+                // AV1CodecConfigurationBox: byte 2 is
+                // seq_tier(1) high_bitdepth(1) twelve_bit(1) monochrome(1) subx(1) suby(1) pos(2).
+                b"av1C" => {
+                    f.is_av1 = true;
+                    if let Some(b) = body.get(2) {
+                        f.high_bitdepth |= (b >> 6) & 1 == 1;
+                    }
+                }
+                // `meta` is a FullBox: 4 bytes of version+flags precede its children.
+                b"meta" => {
+                    if let Some(children) = body.get(4..) {
+                        walk(children, depth + 1, f);
+                    }
+                }
+                b"iprp" | b"ipco" => walk(body, depth + 1, f),
+                _ => {}
+            }
+            p = end;
+        }
+    }
+    let mut found = Found {
+        matrix: None,
+        high_bitdepth: false,
+        is_av1: false,
+    };
+    walk(bytes, 0, &mut found);
+
+    if !found.is_av1 {
+        return false; // HEIC and friends carry `hvcC`, and are not ours to route.
+    }
+    // The single trusted case: an explicit BT.709 (or identity) matrix at 8 bits.
+    let wic_is_trustworthy =
+        !found.high_bitdepth && matches!(found.matrix, Some(0) | Some(1));
+    !wic_is_trustworthy
 }
 
 /// Does this ISOBMFF image advertise an HEVC auxiliary alpha item?
