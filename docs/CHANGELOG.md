@@ -2,6 +2,30 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Fixed
+
+- **Modern game textures (`.dds`) now thumbnail: BC7, BC6H, BC4 and BC5.** Someone left this
+  in an uninstall comment, and they were right. SageThumbs handled the 1998 half of DDS
+  (DXT1/DXT3/DXT5) and fell over on everything a game has actually shipped for the last decade.
+  BC7, the format most modern colour textures use, only worked on the Full install and only by
+  handing the file to ImageMagick. BC6H (HDR), BC4 and BC5 (masks and normal maps) did not work
+  anywhere at all: not through SageThumbs, not through Windows' own DDS support, not through
+  ImageMagick.
+
+  DDS is now decoded natively, so every block format from BC1 to BC7 renders, HDR textures
+  included, on **both** the Full and Compact installs and without shelling out to anything. The
+  uncompressed layouts came along with it: 16- and 32-bit float surfaces, 10-bit and 16-bit
+  channels, the 565/5551/4444 packings, greyscale and alpha-only textures, and the decade-old
+  DirectX 9 files that describe their pixels with bit masks.
+
+- **"Image info" reported nonsense for DDS files.** The header fields were read four bytes off,
+  so the mip-level count showed the writing tool's signature as a number (ImageMagick's files
+  claimed 1,195,461,449 mip levels) and the compression line was garbage. It now reads the real
+  values, tells signed BC4/BC5/BC6H apart from unsigned, and no longer mislabels a BC6H texture
+  as BC7.
+
 ## 1.7.2
 
 ### Fixed

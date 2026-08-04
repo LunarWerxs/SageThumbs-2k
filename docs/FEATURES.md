@@ -23,7 +23,7 @@ grouped):
 
 | Category | Examples | How |
 |---|---|---|
-| **Image** (195) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, dds, exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), … | image crate / WIC / ImageMagick / resvg (SVG) |
+| **Image** (195) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), … | image crate / WIC / ImageMagick / resvg (SVG) |
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
 | **Document** (43) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
@@ -183,7 +183,7 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   carries **C2PA Content Credentials**, whether a HEIC has an **HDR gain map**, the
   **AI-generation tags** (digital source type, prompt, prompt author) newer tools write,
   the **names on face regions** Lightroom and phone cameras tag, and for a **DDS** the real
-  texture compression (BC1–BC7) and mip-level count.
+  texture compression (BC1 to BC7, signed variants named as such) and mip-level count.
 - **Pick color (eyedropper)…**: a **system-wide screen color picker**: your
   mouse becomes an eyedropper anywhere on screen, with a 10× magnifier loupe that
   follows the cursor; **press Space (or click)** to copy the pixel's `#RRGGBB` to

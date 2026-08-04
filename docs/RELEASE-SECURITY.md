@@ -2,7 +2,7 @@
 
 ## Short version
 
-**Every binary SageThumbs 2K ships is clean on VirusTotal — 0 detections out of ~69, all three
+**Every binary SageThumbs 2K ships is clean on VirusTotal - 0 detections out of ~69, all three
 of them.** Only the Inno Setup installer that wraps them is flagged, by 2–3 of ~70 engines, and
 every one of those is a heuristic/ML verdict rather than a signature match.
 
@@ -25,10 +25,10 @@ Full history, every installer still in `dist/`, looked up on VirusTotal by hash:
 | 1.0.1 | 2026-07-14 | 2/69 | clean | APEX, Skyhigh |
 | **1.1.0** | 2026-07-17 | 3/69 | **`Generik.NJDPIFC`** | APEX, Skyhigh |
 | **1.1.1** | 2026-07-17 | 3/69 | **`Generik.MMSQLBT`** | APEX, Skyhigh |
-| 1.2.0 | 2026-07-18 | 2/70 | clean *(so far — see below)* | APEX, Skyhigh |
+| 1.2.0 | 2026-07-18 | 2/70 | clean *(so far - see below)* | APEX, Skyhigh |
 
 **That table is misleading, and the trap is worth naming.** Those are each build's *stored*
-verdict from whenever VirusTotal last analysed it — mostly the day it was released. Comparing
+verdict from whenever VirusTotal last analysed it - mostly the day it was released. Comparing
 them looks like a timeline of our software. It is not; it is a timeline of *when each file
 happened to be scanned*.
 
@@ -36,7 +36,7 @@ happened to be scanned*.
 
 | Build | Stored verdict | Re-analysed 2026-07-18 |
 |---|---|---|
-| 1.0.0 | clean (scanned Jul 17) | **`Generik.CBCUAMQ`** — flipped to flagged |
+| 1.0.0 | clean (scanned Jul 17) | **`Generik.CBCUAMQ`** - flipped to flagged |
 | 1.0.1 | clean (scanned Jul 14) | clean |
 | 1.1.1 | `Generik.MMSQLBT` | `Generik.MMSQLBT` (unchanged) |
 
@@ -45,14 +45,14 @@ identical bytes.** Nothing about the file changed. ESET's model did.
 
 That single result disposes of every "what did we change at 1.1.0" theory, including two this
 document previously advanced. Across builds of one product ESET has now issued **four
-different cluster IDs** — `CBCUAMQ`, `NJDPIFC`, `MMSQLBT`, and clean — with no correspondence
+different cluster IDs** - `CBCUAMQ`, `NJDPIFC`, `MMSQLBT`, and clean - with no correspondence
 to anything in the source.
 
 ### What is actually happening
 
 ESET's `Generik.*` is a generic ML/heuristic bucket, not a signature. Malware authors also
 package payloads with Inno Setup, so vendors periodically ship heuristics matching the Inno
-**stub** itself — which is why this catches legitimate vendors and why it fires on some builds
+**stub** itself - which is why this catches legitimate vendors and why it fires on some builds
 and not others with no meaningful change. It is a lottery over the compressed installer image,
 re-rolled whenever the vendor updates its model.
 
@@ -61,9 +61,9 @@ Corroborating evidence that this is an industry-wide Inno problem, not ours:
 - Inno Setup's own community group carries recurring threads
   ([1](https://groups.google.com/g/innosetup/c/w2weZ4afFqs),
   [2](https://groups.google.com/g/innosetup/c/58LUdjrJUUI),
-  [3](https://groups.google.com/g/innosetup/c/lvsb2vWhklk)) — enough that a moderator has a
+  [3](https://groups.google.com/g/innosetup/c/lvsb2vWhklk)) - enough that a moderator has a
   standing "contact your AV vendor, not us" reply.
-- Microsoft's own Q&A: [False Positives using Inno Setup](https://learn.microsoft.com/en-us/answers/questions/2736482/false-positives-using-inno-setup) — Defender flags Inno output too.
+- Microsoft's own Q&A: [False Positives using Inno Setup](https://learn.microsoft.com/en-us/answers/questions/2736482/false-positives-using-inno-setup) - Defender flags Inno output too.
 - [node-innosetup-compiler#10](https://github.com/felicienfrancois/node-innosetup-compiler/issues/10):
   Defender's detection depended on the output **filename** and vanished when renamed, with no
   code change. Arbitrary to the point of absurdity.
@@ -101,11 +101,11 @@ Both of these were advanced in earlier drafts of this document and both are wron
 kept because each is the obvious first guess.
 
 **"It is because we are unsigned."** Unsigned is the standing background condition, but it
-cannot explain a detection that appears on some builds and not others — the project has been
+cannot explain a detection that appears on some builds and not others - the project has been
 unsigned since day one.
 
 **"1.1.0 added text selection, which looks like an infostealer."** 1.1.0 was a single commit
-introducing `GetKeyState`, `SetCapture` and `set_clipboard` — *poll keys → capture input →
+introducing `GetKeyState`, `SetCapture` and `set_clipboard` - *poll keys → capture input →
 extract displayed text → write to clipboard* genuinely does read like a credential stealer.
 Refuted twice over: the binary containing every line of that code scans **0/68**, and 1.0.0,
 which predates the feature entirely, now flags anyway.
@@ -113,7 +113,7 @@ which predates the feature entirely, now flags anyway.
 ## The gate
 
 `scripts/release.ps1` step **4b** runs `push_to_vt.py --gate` on each exact artifact about to
-be published — the x64 Full installer and ARM64 Compact installer — after they are built and
+be published - the x64 Full installer and ARM64 Compact installer - after they are built and
 before `gh release create`.
 
 It fails the release when:
@@ -125,11 +125,36 @@ It fails the release when:
 
 It deliberately does **not** fail on the routine 2–3 heuristic hits. A gate that fails on every
 release is a gate everyone learns to click past, which is worse than no gate. The threshold
-exists to catch a *change* — a real compromise, or a build change that makes us look far worse
+exists to catch a *change* - a real compromise, or a build change that makes us look far worse
 than baseline.
 
 It is skipped with a warning (not an error) when `.env` or Python is unavailable: tooling
 absence must not block a release, only a real verdict should.
+
+### Exit codes: 1 means a VERDICT and nothing else
+
+`release.ps1` reads a non-zero exit from the gate as "this file is malware", so the script's
+exit codes are a contract, not an implementation detail:
+
+| Code | Meaning | `release.ps1` behaviour |
+|---|---|---|
+| `0` | Scanned, under threshold | Publish |
+| `1` | A real verdict: tier-1 engine flagged it, or total detections exceeded the cap | **Abort the release** |
+| `75` (`EX_TEMPFAIL`) | The scanner could not be reached or never finished. Says nothing about the file | Warn and continue |
+
+Two releases have now been aborted by a *tooling* failure wearing a verdict's clothing: 1.6.0
+(analysis never completed, which produced the `75` path) and 1.7.2 (a `ConnectionResetError`
+mid-TLS-handshake escaped the polling `api()` call as an unhandled traceback, so Python exited
+1). The poll loop now catches network exceptions, retries on the next 15 s tick, and exits `75`
+after 8 consecutive failures. **Any new failure mode added to this script must be classified
+into that table before it ships.**
+
+When a release does abort at step 4b, re-run the gate by hand on the identical bytes before
+believing it. If it passes, resume with `release.ps1 -SkipBuild`: main is already pushed and
+CI-green by that point, the installers are built, and the provenance and digest gates all re-run.
+
+Note this script is **gitignored** (`.gitignore:60`) because it carries the VirusTotal API key
+path, so its hardening lives only on the release box and is not recoverable from the repo.
 
 Run it by hand any time:
 
@@ -147,7 +172,7 @@ of the popular advice is cargo-cult:
 |---|---|
 | Change `Compression=` (lzma2 → zip → none) | **No evidence.** Nothing links Inno's compression choice to heuristic detection. |
 | `SolidCompression=no` | **No evidence.** The only real test data ([teeks99/inno-test](https://github.com/teeks99/inno-test)) measures build time and size, not detections. |
-| Rich `VersionInfo` metadata | **Unverified.** Already set here regardless — it is cheap and sensible. |
+| Rich `VersionInfo` metadata | **Unverified.** Already set here regardless - it is cheap and sensible. |
 | Avoid the name `Setup.exe` | **No general evidence**, though one documented Defender case turned on filename alone. Ours is already versioned. |
 | Upgrade Inno Setup | **Weakly evidenced.** A specific version's stub can get "poisoned" when malware campaigns use it; moving off it plausibly helps, but it is not immunity. |
 | Wait for it to fade | **Wrong direction for this.** Microsoft documents SmartScreen warnings fading with prevalence, but that is not the same mechanism, and 1.0.0 got *worse* with age. |
@@ -157,14 +182,14 @@ appease a dice roll would be chasing noise.
 
 ## Fixing it properly
 
-### Code signing is OFF THE TABLE — do not propose it
+### Code signing is OFF THE TABLE - do not propose it
 
 Settled owner decision (2026-07-18), not an open trade-off. Do not raise it, do not list it
 under "next steps," and do not resurrect it in a later session because the context looks new.
 It is recorded here only because it is the first thing anyone researching AV false positives
 will reach for, and re-litigating it wastes everyone's time.
 
-(This does not touch the **self-signed** cert for the MSIX sparse package — Windows will not
+(This does not touch the **self-signed** cert for the MSIX sparse package - Windows will not
 load an unsigned sparse package at all, so that one is a technical requirement and stays.)
 
 ### What is left
@@ -183,9 +208,9 @@ Assessed properly before anyone spends days on it:
 | NSIS | No | [NSIS's own docs](https://nsis.sourceforge.io/NSIS_False_Positives) say vendors signature the stub itself |
 | 7-Zip SFX | No | It *is* a decompressing PE stub |
 | Squirrel / Velopack | No | Long history of `HEUR:Trojan.Win32.Generic` flags |
-| MSIX only | Yes | **Dead end** — requires a trusted signature to install at all |
+| MSIX only | Yes | **Dead end** - requires a trusted signature to install at all |
 | MSI / WiX | Structurally, probably | **Unevidenced.** No before/after case study exists; [Tauri #4749](https://github.com/tauri-apps/tauri/issues/4749) had an unsigned MSI flagged *more* than its EXEs, and [Defender flags MSIs too](https://learn.microsoft.com/en-us/answers/questions/746120/msi-is-detected-as-a-virus-by-windows-defender). SmartScreen documents **no** MSI-vs-EXE distinction. Costs 2–4 days of WiX work, and the MSIX sparse package registers per-user, which fights a per-machine MSI. |
-| Portable zip (no installer) | **Yes** | The only format with no stub at all — and tested: it drops from 2 detections to 1, trading the packed-stub hits for Bkav instead. Not zero, so **not shipped**; the installer remains the only distribution. |
+| Portable zip (no installer) | **Yes** | The only format with no stub at all - and tested: it drops from 2 detections to 1, trading the packed-stub hits for Bkav instead. Not zero, so **not shipped**; the installer remains the only distribution. |
 
 The conclusion to hold onto: AV false positives are a tax on unsigned distribution, not a
 property of Inno Setup. No format choice removes them.
@@ -196,7 +221,7 @@ Vendors act on these and it is free:
 
 - ESET: <https://support.eset.com/en/kb141-submit-a-virus-website-or-potential-false-positive-sample-to-eset-lab> (or email `samples@eset.com`, subject prefixed `False positive`)
 - Skyhigh/Trellix: <https://www.trellix.com/support/submit-sample/>
-- Microsoft (if it ever flags us — it does not currently): <https://www.microsoft.com/en-us/wdsi/filesubmission>
+- Microsoft (if it ever flags us - it does not currently): <https://www.microsoft.com/en-us/wdsi/filesubmission>
 
 Include the VirusTotal permalink, the download URL, and that the project is open-source at
 <https://github.com/LunarWerxs/SageThumbs-2k>.

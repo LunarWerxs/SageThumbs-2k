@@ -81,6 +81,12 @@ path = "src/bin/cli.rs"
 image = { version = "0.25", default-features = false, features = [
     "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
 ] }
+# DDS block decoding (BC1–BC7, including BC6H HDR). `image`'s own DDS decoder — and
+# Windows' WIC DDS codec — stop at DXT1/3/5, and ImageMagick can't read BC4/BC5-signed/
+# BC6H at all, so modern game textures needed this. MIT, `no_std`, ZERO dependencies,
+# safe Rust, and fuzzed against the original C `bcdec` for identical output. The
+# container half (headers, DXGI dispatch, bomb guards) is ours in `decode/dds.rs`.
+bcdec_rs = "0.2"
 # Direct access to the already-vendored EXR writer lets the Convert path stream
 # f32 tiles from DynamicImage without allocating a second full-size RGBA32F frame.
 # Keep Rayon off: the non-parallel writer has a fixed, bounded working set.

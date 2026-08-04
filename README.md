@@ -193,7 +193,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 - **RAW**: 3fr, arw, cr2/cr3/crw, dng, erf, iiq, mef, mrw, nef/nrw, orf, pef, raf, rw2, sr2/srw, x3f, …
 - **Pro / scientific**: dcm (DICOM), dpx, cin, exr, fits, hdr, pfm
 - **Photoshop / paint**: psd/psb, xcf, **psp/pspimage** (Paint Shop Pro), **iff/ilbm/lbm** (Amiga ILBM / Deluxe Paint), pcx, miff, cut
-- **Common + modern**: png, jpg, gif, bmp, tiff, webp, heic/heif, avif, jp2, jxl, **jxr/wdp/hdp** (JPEG XR / HD Photo), dds, ico, tga, qoi, svg
+- **Common + modern**: png, jpg, gif, bmp, tiff, webp, heic/heif, avif, jp2, jxl, **jxr/wdp/hdp** (JPEG XR / HD Photo), **dds** (game textures: every block format BC1 to BC7, HDR BC6H included, decoded natively), ico, tga, qoi, svg
 - **Vector & metafile**: svg/svgz, wmf, emf/emz
 - **Ebook & comics**: epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz/cb7/cbr/cbt
 - **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, blend, 3mf, fcstd, gcode, **eps** (embedded raster preview only), **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange)

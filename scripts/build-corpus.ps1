@@ -406,6 +406,69 @@ if (-not $SkipDownloads) {
 # Visio .vsdm is structurally identical to .vsdx — reuse the downloaded sample.
 if (Test-Path "$OutDir\sample.vsdx") { Copy-Item "$OutDir\sample.vsdx" "$OutDir\sample.vsdm" -Force }
 
+# --- 5b) MODERN DDS (BC4/BC5/BC6H/BC7 + DX10 headers) ------------------------
+# `magick` only writes DXT1/3/5, so the plain `magick base.png sample.dds` above
+# covers just the 1998 half of the format. The formats that actually ship in games
+# today — BC7 for colour, BC6H for HDR, BC4/BC5 for masks and normal maps — need a
+# real block compressor, so we fetch Microsoft's own `texconv` from the DirectXTex
+# releases (signed by Microsoft; verified before it is run) and generate them.
+# Without these the whole `decode/dds.rs` tier is untested by the corpus, which is
+# how BC7 shipped decodable only on a Full install and BC6H not at all until
+# 2026-08-03. Best-effort: skipped with a note if the download or signature fails.
+if (-not $SkipDownloads) {
+    $texconv = "$OutDir\_texconv.exe"
+    if (-not (Test-Path $texconv)) {
+        try {
+            Invoke-WebRequest 'https://github.com/microsoft/DirectXTex/releases/download/may2026/texconv.exe' `
+                -OutFile $texconv -UseBasicParsing -TimeoutSec 120
+        } catch { Write-Host "  download failed: texconv.exe" }
+    }
+    # Never run an unverified binary: it must be Authenticode-signed by Microsoft.
+    $sig = if (Test-Path $texconv) { Get-AuthenticodeSignature $texconv } else { $null }
+    if ($sig -and $sig.Status -eq 'Valid' -and $sig.SignerCertificate.Subject -match 'O=Microsoft Corporation') {
+        # UNORM and SNORM both, because they are separate decoders: the signed
+        # variants are the ones ImageMagick and WIC refuse outright.
+        $ddsFmts = [ordered]@{
+            'sample-bc4.dds'   = 'BC4_UNORM'
+            'sample-bc4s.dds'  = 'BC4_SNORM'
+            'sample-bc5.dds'   = 'BC5_UNORM'
+            'sample-bc5s.dds'  = 'BC5_SNORM'
+            'sample-bc6h.dds'  = 'BC6H_UF16'
+            'sample-bc7.dds'   = 'BC7_UNORM'
+            'sample-bc7srgb.dds' = 'BC7_UNORM_SRGB'
+            'sample-dds-rgba16f.dds' = 'R16G16B16A16_FLOAT'
+            'sample-dds-bgra8.dds'   = 'B8G8R8A8_UNORM'
+        }
+        foreach ($n in $ddsFmts.Keys) {
+            if (Test-Path "$OutDir\$n") { continue }
+            # texconv names its output after the INPUT file, so generate into a
+            # scratch dir with a per-format suffix and rename.
+            $sfx = "_$($ddsFmts[$n])"
+            & $texconv -f $ddsFmts[$n] -y -m 1 -o $OutDir -sx $sfx $base 2>&1 | Out-Null
+            $made = "$OutDir\_base$sfx.dds"
+            if (Test-Path $made) { Move-Item $made "$OutDir\$n" -Force }
+            else { Write-Host "  dds: texconv could not write $($ddsFmts[$n])" }
+        }
+        Remove-Item $texconv -Force -EA SilentlyContinue
+    } else {
+        Write-Host "  (dds: texconv missing or not Microsoft-signed — BC4/BC5/BC6H/BC7 samples skipped)"
+    }
+    # Two REAL-WORLD textures on top of the texconv matrix, from the reference C
+    # `bcdec` repo (MIT). Every file above came out of one encoder, so they all share
+    # its habits; these were written by different tools and are what proved our
+    # output matches DirectXTex byte-for-byte on real art (and where it differs by
+    # the 1-LSB the D3D spec allows). The BC6H one is SIGNED and a real HDR
+    # panorama, which is the case nothing else in the tree could decode at all.
+    $wild = @{
+        'sample-dds-bc7-real.dds'  = 'https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc7.dds'
+        'sample-dds-bc6hs.dds'     = 'https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/lythwood_room_1k_bc6h_signed.dds'
+    }
+    foreach ($n in $wild.Keys) {
+        if (Test-Path "$OutDir\$n") { continue }
+        try { Invoke-WebRequest $wild[$n] -OutFile "$OutDir\$n" -UseBasicParsing -TimeoutSec 60 } catch { Write-Host "  download failed: $n" }
+    }
+}
+
 # --- 6) Alias extensions that share a backend (and container layout) with an
 #        already-built sample. Decode is content-sniffed (extension-agnostic — see
 #        container/mod.rs::extract_cover), so a byte-copy under the new name renders

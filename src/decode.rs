@@ -1,7 +1,11 @@
 //! Tiered image decode (the GFL/XnView replacement).
 //!
+//! Tier 0: our own magic-gated pure-Rust decoders that OWN their format because no
+//!         general tier reads it properly — JPEG XL, and DDS (`decode/dds.rs`:
+//!         BC1–BC7 incl. BC6H HDR plus the uncompressed layouts; the `image` crate
+//!         and WIC both stop at DXT1/3/5).
 //! Tier 1: the `image` crate (pure Rust) — PNG, JPEG, GIF, BMP, ICO, TIFF,
-//!         WebP, PNM, DDS, TGA, OpenEXR, farbfeld, QOI, HDR.
+//!         WebP, PNM, TGA, OpenEXR, farbfeld, QOI, HDR.
 //! Tier 2: Windows WIC for formats `image` can't read (HEIC/HEIF, AVIF, camera
 //!         RAW, JPEG 2000) via OS codecs the user already has.
 //! Tier 3: ImageMagick, shelled out as a subprocess (`magick - PNG:-`), for the
@@ -247,6 +251,32 @@ fn decode_any_with_wic_target(
             Err(e) => crate::safety::log_debug(&format!("decode tier `jxl` failed: {e}")),
         }
     }
+    // DDS: our own tier, magic-gated, ahead of `image` because it OWNS the format —
+    // BC1–BC7 (incl. BC6H HDR) plus the uncompressed layouts, all pure Rust. The
+    // `image` crate stops at DXT1/3/5, WIC's DDS codec stops at the same three, and
+    // ImageMagick (FULL install only) can't read BC4/BC5-signed/BC6H/float DDS at
+    // all — so before this, BC7 (what every modern game texture uses) needed a
+    // 20 s subprocess and BC6H worked nowhere. Failure falls through to the tiers
+    // below, so no DDS that thumbnailed before can regress. See `dds.rs`.
+    if is_dds(bytes) {
+        match decode_dds(bytes) {
+            // BC6H and the float layouts come back linear-float, tone-mapped here
+            // exactly like the EXR/Radiance results below.
+            Ok(img) => {
+                return Ok(
+                    if matches!(
+                        img,
+                        DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+                    ) {
+                        tone_map_float(&img)
+                    } else {
+                        img
+                    },
+                )
+            }
+            Err(e) => crate::safety::log_debug(&format!("decode tier `dds` failed: {e}")),
+        }
+    }
     match decode_with_image(bytes) {
         Ok(img) => {
             // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
@@ -346,6 +376,7 @@ fn decode_any_with_wic_target(
 }
 
 mod color;
+mod dds;
 mod exrscale;
 mod magick;
 pub(crate) use magick::looks_like_metafile;
@@ -366,6 +397,7 @@ mod wic;
 // it did before the split (a `pub use child::*` would also trip the
 // "does not re-export anything public enough" lint on the `pub(super)` items).
 use color::*;
+use dds::*;
 use svg::*;
 use thumb::*;
 use tiers::*;
