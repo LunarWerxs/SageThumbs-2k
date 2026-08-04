@@ -677,10 +677,7 @@ fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
             b"ipco",
             &[bx(b"hvcC", &[0u8; 4]), bx(b"colr", &nclx)].concat(),
         );
-        let meta = bx(
-            b"meta",
-            &[&[0u8; 4][..], &bx(b"iprp", &ipco)].concat(),
-        );
+        let meta = bx(b"meta", &[&[0u8; 4][..], &bx(b"iprp", &ipco)].concat());
         [bx(b"ftyp", b"heic\0\0\0\0mif1"), meta].concat()
     };
     assert!(

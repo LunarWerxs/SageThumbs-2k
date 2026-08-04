@@ -372,8 +372,7 @@ pub(super) fn avif_wic_misreads_color(bytes: &[u8]) -> bool {
         return false; // HEIC and friends carry `hvcC`, and are not ours to route.
     }
     // The single trusted case: an explicit BT.709 (or identity) matrix at 8 bits.
-    let wic_is_trustworthy =
-        !found.high_bitdepth && matches!(found.matrix, Some(0) | Some(1));
+    let wic_is_trustworthy = !found.high_bitdepth && matches!(found.matrix, Some(0) | Some(1));
     !wic_is_trustworthy
 }
 
