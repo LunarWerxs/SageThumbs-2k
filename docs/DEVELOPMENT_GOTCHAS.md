@@ -225,3 +225,44 @@ Read this before doing either again.
   `cargo test --test screenshot_automation -- --ignored --test-threads=1`; it is ignored during
   ordinary test runs because it intentionally opens an opaque topmost window over the virtual
   desktop.
+
+## Decode the size you are going to SHOW, not the size the file happens to be
+
+Three separate bugs in 1.7.3-1.7.4 were the same mistake: decoding at full size and
+throwing most of it away. If you touch a decode tier, the question to ask is "what is the
+smallest thing that satisfies this request", not "how do I decode this file".
+
+Audited 2026-08-04 by thumbnailing ONE 76 MP image in every major format at 256 px, so the
+numbers are directly comparable. Timings are best-of-three on an idle machine:
+
+| format | time | reduced representation | using it? |
+|---|---|---|---|
+| exr | 0.11 s | scaled streaming read | yes, `exrscale.rs` |
+| psd | 0.53 s | embedded composite preview | yes |
+| tif | 0.95 s | pyramidal sub-IFD overviews | **no** (not urgent at this speed) |
+| png | 1.45 s | none (interlacing is not usable here) | n/a |
+| bmp | 1.65 s | none | n/a |
+| jpg | 3.01 s | DCT scaling (1/2, 1/4, 1/8) | **no**, see below |
+| jp2 | 3.61 s | wavelet resolution levels | **no**, see `decode/jp2` |
+| webp | 4.08 s | none | n/a |
+| dds | — | mipmap chain | yes, since 1.7.4 |
+
+Camera RAW is already fine: it uses the embedded JPEG preview.
+
+**JPEG is the open one, and it is deliberately open.** `zune-jpeg` (what `image` uses, and
+what we ship) exposes no scaled decode. `jpeg-decoder` does, but adding it means shipping a
+SECOND JPEG decoder purely for large files, against installer size budgets. The measured
+pain is mild at real sizes — 0.37 s for a 12 MP phone photo, 0.71 s for a 24 MP camera
+photo, and Explorer caches the result — so this is a size-versus-speed decision for a human,
+not a quiet dependency addition. The 3.0 s figure above is a 76 MP outlier.
+
+The embedded EXIF thumbnail path does NOT cover this: `EMBEDDED_MAX_REQUEST` is 96 px,
+because an EXIF thumbnail is typically 160x120 and would be upscaled into anything larger.
+That gate is correct; it just means requests above 96 px always do real work.
+
+**Never trust a decoder's "reduced" flag without looking at the pixels.** Two independent
+implementations of exactly this feature return correctly-SIZED output containing the WRONG
+IMAGE — ImageMagick's `jp2:reduce-factor` and `oxigdal-jpeg2000`'s
+`decode_region_at_resolution` both hand back a crop instead of a downscale, and both look
+like a spectacular speedup until you render them. Compare against a full decode, visually,
+every time.
