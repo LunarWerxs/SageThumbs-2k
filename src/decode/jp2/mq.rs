@@ -37,7 +37,7 @@ struct Ctx {
 
 pub(super) struct MqDecoder<'a> {
     data: &'a [u8],
-    bp: usize,
+    pub bp: usize,
     c: u32,
     a: u32,
     ct: i32,
@@ -181,7 +181,15 @@ const REFINED: u8 = 1 << 2;
 
 /// Zero-coding context from the 8 neighbours (Table D.1), by subband orientation.
 fn zc_context(band: Band, h: u32, v: u32, d: u32) -> usize {
-    // The LL and LH tables are the same, with H and V swapped for HL.
+    // Which band gets the H/V swap cannot be settled by reading sources — the spec's
+    // Table D.1 and openjpeg's generated LUTs use different h/v labelling conventions, and
+    // OUR neighbour counting (h = west+east) is mirrored relative to openjpeg's, so
+    // matching "swap orient 2" from t1_generate_luts.c lands the swap on the WRONG band
+    // here. It was settled empirically instead: all four variants (swap Hl / swap Lh /
+    // neither / both) were run against the lossless corpus, and ONLY swap-on-Hl decodes
+    // every file bit-exactly. Smooth gradients are swap-INSENSITIVE (their significance
+    // neighbourhoods are symmetric), so only the plasma files distinguish the variants —
+    // a gradient-only test suite would pass all four and hide this.
     let (h, v) = match band {
         Band::Hl => (v, h),
         _ => (h, v),
@@ -248,6 +256,12 @@ fn mr_context(first_refine: bool, neighbours: u32) -> usize {
 /// bits were actually coded (the caller needs it to place the binary point).
 pub(super) struct CodeBlockOut {
     pub coeffs: Vec<i32>,
+    /// Compressed bytes the MQ decoder actually consumed. Diagnostic: a correct lossless
+    /// decode finishes within a couple of flush bytes of its segment end, so a shortfall
+    /// localizes an MQ divergence to the exact code-block (this is how the h/v swap bug
+    /// was found). Read only by the tier-1 trace in `decode_tile`.
+    #[allow(dead_code)]
+    pub consumed: usize,
 }
 
 /// Decode one code-block's compressed bytes into coefficients.
@@ -271,7 +285,10 @@ pub(super) fn decode_code_block(
     let n = w * h;
     let mut coeffs = vec![0i32; n];
     if n == 0 || passes == 0 || max_bitplanes <= zero_bitplanes {
-        return CodeBlockOut { coeffs };
+        return CodeBlockOut {
+            coeffs,
+            consumed: 0,
+        };
     }
 
     // Padded flag grid: one ring of zeros so neighbour reads need no branch.
@@ -476,7 +493,10 @@ pub(super) fn decode_code_block(
             }
         }
     }
-    CodeBlockOut { coeffs }
+    CodeBlockOut {
+        coeffs,
+        consumed: mq.bp,
+    }
 }
 
 /// Horizontal and vertical sign contributions from the immediate neighbours.

@@ -591,6 +591,25 @@ fn decode_preview_with_raw_order(
     raw_preview: RawPreviewOrder,
     wic_thumbnail_cx: Option<u32>,
 ) -> Result<DynamicImage> {
+    // JPEG 2000 with a size cap: our own reduced-resolution decoder, which decodes ONLY
+    // the wavelet levels the target needs. On the 76 MP corpus scan that is ~0.5s against
+    // ~4s for a full ImageMagick decode, and the output is a true resolution level (often
+    // SHARPER than decode-then-downscale). Gated on a cap on purpose: full-fidelity
+    // callers (Convert, Image info) keep the established tiers, and ANY error here — the
+    // declined coding styles, subsampled chroma, malformed data — falls through to those
+    // same tiers, so no JP2 that rendered before can render worse. Correctness evidence:
+    // bit-exact on every lossless corpus file (see decode/jp2 exactness tests), verified
+    // against ImageMagick on the lossy ones.
+    if let Some(cx) = wic_thumbnail_cx {
+        if jp2::is_jp2(bytes) {
+            if let Ok((rgb, w, h)) = jp2::decode_reduced(bytes, cx) {
+                if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
+                    return Ok(DynamicImage::ImageRgb8(img));
+                }
+            }
+            crate::safety::log_debug("decode: jp2 native reduced decode declined, using tiers");
+        }
+    }
     // Video: grab a representative frame via the OS Media Foundation codecs (no bundled
     // bytes). Magic-gated, so only actual videos pay the MF cost (HEIC/AVIF share the
     // `ftyp` box but are excluded). Any decode failure falls through to the image tiers,

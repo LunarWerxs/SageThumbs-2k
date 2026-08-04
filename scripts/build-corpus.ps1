@@ -711,6 +711,30 @@ if (-not (Test-Path "$OutDir\huge.jp2")) {
     } catch { Write-Host "  (huge.jp2: $($_.Exception.Message); skipped)" }
 }
 
+# --- 9c) Tiny LOSSLESS JPEG 2000 exactness fixtures ----------------------------
+# The native reduced-resolution JP2 decoder (src/decode/jp2) is verified by BIT-EXACT
+# comparison against these: reversible 5/3 means a correct decoder must reproduce the
+# source PNG perfectly, so one differing byte is a decoder bug, not noise. Plasma content
+# matters: smooth gradients are insensitive to the zero-coding H/V swap and would pass a
+# broken decoder; the textured files are what distinguish correct from almost-correct.
+foreach ($t in @(
+        @{ n = 'tiny8-gray';    a = '-size 8x8 gradient:black-white -colorspace Gray' },
+        @{ n = 'tiny16-rgb';    a = '-size 16x16 gradient:red-blue' },
+        @{ n = 'tiny16-plasma'; a = '-size 16x16 plasma:fractal' },
+        @{ n = 'tiny16-gplasma'; a = '-size 16x16 plasma:fractal -colorspace Gray' },
+        @{ n = 'tiny32-grad';   a = '-size 32x32 gradient:red-blue' },
+        @{ n = 'tiny32-plasma'; a = '-size 32x32 plasma:fractal' })) {
+    $png = "$OutDir\$($t.n).png"; $jp2 = "$OutDir\$($t.n).jp2"
+    if ((Test-Path $png) -and (Test-Path $jp2)) { continue }
+    # NOTE: plasma is RANDOM per invocation, so the pair must be generated together and
+    # then left alone - regenerating only one of them breaks the exactness contract.
+    Invoke-Expression "& `"$magick`" $($t.a) -depth 8 `"$png`"" 2>$null
+    & $magick $png -define jp2:lossless $jp2 2>$null
+    $ae = & $magick compare -metric AE $png $jp2 null: 2>&1
+    if ("$ae" -notmatch '^0') { Write-Host "  ($($t.n): NOT lossless (AE=$ae) - exactness tests will skip/fail)" -ForegroundColor Yellow }
+}
+Write-Host "[corpus] tiny lossless jp2 exactness fixtures present"
+
 # --- 10) Honesty ledger: registered formats with NO real sample ----------------
 # Mostly Camera RAW (real sensor dumps are MBs and vendor-licensed — only dng has
 # a small real download, aliased to pxn) plus the obscure magick-read-only long

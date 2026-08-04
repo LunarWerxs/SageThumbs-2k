@@ -73,9 +73,16 @@ fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool) {
     let i0i = i0 as isize;
     if n == 1 {
         // A single sample is low-pass if it sits on an even index, else it is a lone
-        // high-pass coefficient and carries half its value (F.3.7).
+        // high-pass coefficient carrying half its value (F.3.7). For the reversible 5/3
+        // path that halving is INTEGER division truncating toward zero (openjpeg's
+        // `OPJ_S(0) /= 2` in opj_dwt_decode_1_); keeping the .5 here broke bit-exactness
+        // on any image small enough to produce 1-sample bands — an 8x8 image with the
+        // encoder's default 5 decomposition levels has several.
         if !i0.is_multiple_of(2) {
             sig[0] /= 2.0;
+            if reversible {
+                sig[0] = sig[0].trunc();
+            }
         }
         return;
     }

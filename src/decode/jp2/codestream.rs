@@ -105,7 +105,10 @@ pub(super) struct Codestream<'a> {
     pub siz: Siz,
     pub cod: Cod,
     pub qcd: Qcd,
-    /// Per-component overrides from COC/QCC, when present.
+    /// Per-component quantization overrides from QCC, when present. (COC coding-style
+    /// overrides are parsed and currently unused: this decoder declines the styles a COC
+    /// could meaningfully change, so the default COD governs every accepted file.)
+    #[allow(dead_code)]
     pub cod_comp: Vec<Option<Cod>>,
     pub qcd_comp: Vec<Option<Qcd>>,
     /// Tile-part payloads, concatenated per tile index (a tile may be split across parts).

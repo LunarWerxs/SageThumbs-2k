@@ -101,13 +101,6 @@ impl TagTree {
         TagTree { w, h, levels }
     }
 
-    pub fn reset(&mut self) {
-        for (_, _, v, f) in &mut self.levels {
-            v.iter_mut().for_each(|x| *x = 0);
-            f.iter_mut().for_each(|x| *x = false);
-        }
-    }
-
     /// Decode the value at (x, y), reading bits until it is known or exceeds `threshold`.
     /// Returns `None` when the value is still known only to be >= threshold.
     pub fn decode(
@@ -156,7 +149,6 @@ pub(super) struct BlockContribution {
     pub len: usize,
     /// Only meaningful the first time a block is included.
     pub zero_bitplanes: u32,
-    pub first_inclusion: bool,
 }
 
 /// Per-code-block state that persists across layers within a precinct.
@@ -198,78 +190,99 @@ fn read_pass_count(br: &mut BitReader) -> Result<u32, Jp2Error> {
     Ok(37 + br.bits(7)?)
 }
 
-/// Parse one packet header for a precinct, returning the contributions it carries.
+/// One precinct's slice of one subband: the code-block grid plus its persistent tag trees
+/// and per-block state. Lives here so [`parse_packet`] can walk all of a packet's bands.
+pub(super) struct PrecBand {
+    pub nbx: usize,
+    pub nby: usize,
+    /// Offset of this precinct's first code-block within the band's own block grid.
+    pub bx0: usize,
+    pub by0: usize,
+    pub incl: TagTree,
+    pub imsb: TagTree,
+    pub blocks: Vec<BlockState>,
+}
+
+/// Parse ONE packet header covering ALL of `bands` (1 band at resolution 0, else 3).
 ///
-/// `incl` and `imsb` are the precinct's persistent inclusion and zero-bitplane tag trees.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn parse_packet_header(
+/// The shape openjpeg's `opj_t2_read_packet_header` makes explicit, and the shape our first
+/// version got wrong by calling a per-band parser three times: a packet has exactly ONE
+/// leading "non-empty" bit and exactly ONE trailing byte-alignment, with every band's
+/// inclusion/length data in a single continuous bit stream in between. Reading the bit and
+/// aligning per band desynchronizes the stream on the first multi-band packet — which is
+/// every packet above resolution 0 — and shows up downstream as bogus truncation errors.
+///
+/// A packet whose bands are all zero-area still owns its "non-empty" bit: the encoder wrote
+/// one, so the decoder must consume one.
+pub(super) fn parse_packet(
     br: &mut BitReader,
     layer: u32,
-    nblocks_x: usize,
-    nblocks_y: usize,
-    incl: &mut TagTree,
-    imsb: &mut TagTree,
-    states: &mut [BlockState],
-) -> Result<Vec<BlockContribution>, Jp2Error> {
+    bands: &mut [PrecBand],
+) -> Result<Vec<(usize, BlockContribution)>, Jp2Error> {
     let mut out = Vec::new();
-    // Zero-length packet bit: 0 means the packet carries nothing.
     if br.bit()? == 0 {
         br.align()?;
         return Ok(out);
     }
-    for by in 0..nblocks_y {
-        for bx in 0..nblocks_x {
-            let si = by * nblocks_x + bx;
-            let st = &mut states[si];
-            let included = if st.included {
-                br.bit()? == 1
-            } else {
-                matches!(incl.decode(br, bx, by, layer + 1)?, Some(v) if v <= layer)
-            };
-            if !included {
-                continue;
-            }
-            let first = !st.included;
-            if first {
-                // Zero bitplanes, coded as a tag tree with an open-ended threshold.
-                let mut t = 1;
-                let zb = loop {
-                    match imsb.decode(br, bx, by, t)? {
-                        Some(v) => break v,
-                        None => {
-                            t += 1;
-                            if t > 74 {
-                                return Err(Jp2Error::Malformed("zero-bitplane run too long"));
+    for (bi, pb) in bands.iter_mut().enumerate() {
+        for by in 0..pb.nby {
+            for bx in 0..pb.nbx {
+                let si = by * pb.nbx + bx;
+                let st = &mut pb.blocks[si];
+                let included = if st.included {
+                    br.bit()? == 1
+                } else {
+                    matches!(pb.incl.decode(br, bx, by, layer + 1)?, Some(v) if v <= layer)
+                };
+                if !included {
+                    continue;
+                }
+                let first = !st.included;
+                if first {
+                    // Zero bitplanes, coded as a tag tree with an open-ended threshold.
+                    let mut t = 1;
+                    let zb = loop {
+                        match pb.imsb.decode(br, bx, by, t)? {
+                            Some(v) => break v,
+                            None => {
+                                t += 1;
+                                if t > 74 {
+                                    return Err(Jp2Error::Malformed("zero-bitplane run too long"));
+                                }
                             }
                         }
-                    }
-                };
-                st.zero_bitplanes = zb;
-                st.included = true;
-            }
-            let passes = read_pass_count(br)?;
-            // Lblock grows by the number of leading 1 bits.
-            while br.bit()? == 1 {
-                st.lblock += 1;
-                if st.lblock > 32 {
-                    return Err(Jp2Error::Malformed("lblock overflow"));
+                    };
+                    st.zero_bitplanes = zb;
+                    st.included = true;
                 }
+                let passes = read_pass_count(br)?;
+                // Lblock grows by the number of leading 1 bits.
+                while br.bit()? == 1 {
+                    st.lblock += 1;
+                    if st.lblock > 32 {
+                        return Err(Jp2Error::Malformed("lblock overflow"));
+                    }
+                }
+                // Segment length: lblock + floor(log2(passes)) bits. Valid for the styles
+                // this decoder accepts (no TERMALL/BYPASS, which split into per-segment
+                // lengths — those styles are declined before we get here).
+                let bits = st.lblock + (32 - passes.leading_zeros()).saturating_sub(1);
+                if bits > 32 {
+                    return Err(Jp2Error::Malformed("segment length too wide"));
+                }
+                let len = br.bits(bits)? as usize;
+                out.push((
+                    bi,
+                    BlockContribution {
+                        cblk_x: bx,
+                        cblk_y: by,
+                        passes,
+                        len,
+                        zero_bitplanes: st.zero_bitplanes,
+                    },
+                ));
+                st.passes_so_far += passes;
             }
-            // Segment length: lblock + floor(log2(passes)) bits.
-            let bits = st.lblock + (32 - passes.leading_zeros()).saturating_sub(1);
-            if bits > 32 {
-                return Err(Jp2Error::Malformed("segment length too wide"));
-            }
-            let len = br.bits(bits)? as usize;
-            out.push(BlockContribution {
-                cblk_x: bx,
-                cblk_y: by,
-                passes,
-                len,
-                zero_bitplanes: st.zero_bitplanes,
-                first_inclusion: first,
-            });
-            st.passes_so_far += passes;
         }
     }
     br.align()?;

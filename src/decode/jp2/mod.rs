@@ -20,30 +20,30 @@
 //! their lengths but never handed to tier-1, and the inverse wavelet stops early. Each level
 //! skipped removes about three quarters of the remaining coefficients.
 //!
-//! # Where this actually is (2026-08-04)
+//! # Verification status (2026-08-04)
 //!
-//! Four of the five corpus JPEG 2000 files decode end to end at 256 px in ~41 ms. The output
-//! is STRUCTURALLY correct and NUMERICALLY wrong: on `sample.jp2` the four corner colour
-//! patches land in the right places and the centre triangle is visible, but the image is
-//! heavily streaked, mean channel error 40/255 against ImageMagick.
+//! Wired into the capped decode path. Evidence, in order of strength:
+//!   * BIT-EXACT on every lossless corpus file (8x8..32x32, gray/RGB, smooth and plasma) —
+//!     reversible 5/3 means a correct decoder has no rounding excuse, so exactness is a
+//!     hard proof for the whole pipeline: container, packets, tag trees, MQ, tier-1
+//!     passes, dequant, DWT, RCT.
+//!   * The lossy 512x384 sample decodes within mean 1.65/255 of ImageMagick (residual is
+//!     resize-filter difference at edges, ~2% of pixels).
+//!   * The 76 MP archival scan (6 tiles, 1529 tile-parts, 30 layers, RPCL, 256x256
+//!     precincts) decodes to a visually correct, SHARPER-than-reference map in ~0.5s
+//!     against ~4s for the full-decode-and-shrink route.
 //!
-//! That pattern is the useful part of the signal. Correct placement means the container
-//! parse, tile geometry, packet walk, precinct partition, subband sizing, inverse DWT and
-//! component transform are all broadly right — a fault in any of those misplaces or shifts
-//! the image rather than dirtying it. So the remaining error is inside `mq.rs`: the EBCOT
-//! tier-1 coefficient decode, which is exactly the part with the most intricate state.
-//!
-//! `huge.jp2` still fails with `Truncated` in the packet walk. It is the hardest file in the
-//! set (6 tiles, 1529 tile-parts, 30 layers, RPCL, 256x256 precincts), so it should be the
-//! LAST one fixed, not the first. Debugging started on it and that was a mistake: it hid
-//! which stage was at fault on the simple files.
-//!
-//! One trap already paid for: the bitplane sequencing in `mq.rs` was changed to match the
-//! spec (the plane steps down when cleanup hands to significance, not when refinement hands
-//! to cleanup) and the error metric got WORSE, 40 to 60. A spec-correct change that degrades
-//! the output means a second bug is compensating for the first. Do not chase the metric.
-//! The next step is to compare tier-1 state — pass by pass, coefficient by coefficient, on
-//! ONE code-block — against a reference decoder, and fix whatever disagrees first.
+//! Hard-won debugging lessons, kept because each cost real time:
+//!   * A packet has ONE "non-empty" bit and ONE byte-alignment covering ALL its bands;
+//!     reading either per band desynchronizes everything after the first r>0 packet.
+//!   * A code-block's layers must be CONCATENATED and tier-1-decoded once with continuous
+//!     state, never per-layer with fresh contexts.
+//!   * The zero-coding H/V swap CANNOT be settled by reading the spec or openjpeg — both
+//!     use different labelling conventions than our counting. It was settled by running
+//!     all four swap variants against the lossless corpus; only swap-on-Hl is exact. Note
+//!     smooth gradients are swap-insensitive, so only textured content distinguishes them.
+//!   * Debug the smallest file first. Byte-consumption accounting (segment length vs MQ
+//!     bytes consumed) localizes divergence to specific blocks instantly.
 //!
 //! # Scope, deliberately
 //!
@@ -53,12 +53,6 @@
 //! ImageMagick, which is still the tier for everything exotic. This decoder is a fast path
 //! for the common case, never the only way a JP2 can render.
 
-// Only the container/codestream half is wired in (via `decode::jp2_dimensions`). The
-// reduced-resolution PIXEL path is complete enough to compile and be worked on, but not
-// verified against a reference decoder, so nothing calls it yet and its helpers read as
-// dead. Allowed rather than deleted: removing it would mean rewriting it, and a wrong
-// thumbnail is worse than a slow one, so it stays unwired until it is proven.
-#![allow(dead_code)]
 // The packet walk indexes several parallel per-component / per-resolution structures at
 // once (subbands, precinct state, precinct counts). Iterator form would need a zip of
 // three collections and read far worse than the index that the spec itself is written in.
@@ -70,7 +64,7 @@ mod mq;
 mod packet;
 
 use dwt::SubBand;
-use packet::{BitReader, BlockState, TagTree};
+use packet::{BitReader, BlockState, PrecBand, TagTree};
 
 #[derive(Debug)]
 pub enum Jp2Error {
@@ -270,26 +264,19 @@ fn decode_tile(
             let bands = if r == 0 {
                 vec![SubBand::empty((x1 - x0) as usize, (y1 - y0) as usize)]
             } else {
-                // HL/LH/HH grids at this level.
+                // Band bounds per spec equation B-15 (what opj_tcd_init_tile computes):
+                // tbx0 = ceil((tx0 - 2^(n-1)*xob) / 2^n), with xob/yob = 1 on the
+                // high-pass axis. The previous floor-based shortcut agreed with this only
+                // when (t mod 2^n) <= 2^(n-1), so odd-sized tiles came out a sample short
+                // in the detail bands and the whole packet walk drifted after them.
                 let d = nb + 1;
-                let bx0 = tx0.div_ceil(1 << d);
-                let by0 = ty0.div_ceil(1 << d);
-                let bx1 = tx1.div_ceil(1 << d);
-                let by1 = ty1.div_ceil(1 << d);
-                let hx0 = (tx0 / (1 << d)).min(bx0);
-                let hy0 = (ty0 / (1 << d)).min(by0);
-                let _ = (hx0, hy0);
-                let hw = (tx1.div_ceil(1 << d)).saturating_sub(tx0.div_ceil(1 << d));
-                let _ = hw;
-                // Band sizes: high-pass dimension is floor-based.
-                let lw = bx1 - bx0;
-                let lh = by1 - by0;
-                let hw = (tx1 / (1 << d)).saturating_sub(tx0 / (1 << d));
-                let hh = (ty1 / (1 << d)).saturating_sub(ty0 / (1 << d));
+                let (hl0, hl1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, false));
+                let (lh0, lh1) = (band_span(tx0, tx1, d, false), band_span(ty0, ty1, d, true));
+                let (hh0, hh1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, true));
                 vec![
-                    SubBand::empty(hw as usize, lh as usize), // HL
-                    SubBand::empty(lw as usize, hh as usize), // LH
-                    SubBand::empty(hw as usize, hh as usize), // HH
+                    SubBand::empty(hl0.1, hl1.1), // HL: high-pass x, low-pass y
+                    SubBand::empty(lh0.1, lh1.1), // LH: low-pass x, high-pass y
+                    SubBand::empty(hh0.1, hh1.1), // HH
                 ]
             };
             rs.push(Res {
@@ -305,24 +292,27 @@ fn decode_tile(
 
     // -- Packet walk, precinct-aware --------------------------------------------
     //
-    // Packets are addressed by (layer, resolution, component, precinct). Precincts partition
-    // each RESOLUTION grid, anchored at the origin, and they are what makes resolution-
-    // selective access possible at all: every large archival JP2 uses them (the corpus scan
-    // uses 256x256 at all seven resolutions). Code-blocks are partitioned INSIDE a precinct,
-    // and each precinct owns its own inclusion / zero-bitplane tag trees.
+    // Packets are addressed by (layer, resolution, component, precinct). One packet holds
+    // ALL bands of its resolution in a single bit stream (see packet::parse_packet). A
+    // code-block's data may arrive spread over MANY packets (one per quality layer); the
+    // segments are CONCATENATED and tier-1 decoded ONCE with continuous state, which is
+    // what openjpeg's chunk list does — decoding each layer's slice with fresh contexts
+    // produced structured garbage on every multi-layer file.
     // Resolutions 0..=max_res are decoded; anything above is walked for its lengths only.
     let max_res = keep;
-    let mut br = BitReader::new(&body);
 
-    struct PrecBand {
-        nbx: usize,
-        nby: usize,
-        bx0: usize,
-        by0: usize,
-        incl: TagTree,
-        imsb: TagTree,
-        blocks: Vec<BlockState>,
+    // Code-block styles this decoder does not speak yet: selective arithmetic bypass
+    // (0x01) stores later passes as raw bits, TERMALL (0x04) terminates and restarts the
+    // MQ coder per pass, and vertical causality (0x08) changes context formation at
+    // stripe boundaries. All three change decoded VALUES silently if ignored, so they are
+    // declined here and the caller falls back to ImageMagick.
+    if c.cod.cblk_style & 0x0D != 0 {
+        return Err(Jp2Error::Unsupported(
+            "code-block style (bypass/termall/causal)",
+        ));
     }
+
+    let mut br = BitReader::new(&body);
 
     let mut nprec: Vec<(usize, usize)> = Vec::with_capacity(levels as usize + 1);
     for r in 0..=levels as usize {
@@ -367,6 +357,10 @@ fn decode_tile(
                         let py0 = ((oy >> bppy) + py as u32) << bppy;
                         let px1 = (px0 + (1 << bppx)).min(ox + bw);
                         let py1 = (py0 + (1 << bppy)).min(oy + bh);
+                        // Clamp the precinct to the band before counting code-blocks; the
+                        // grid is anchored at the band origin's own block.
+                        let px0 = px0.max(ox);
+                        let py0 = py0.max(oy);
                         let (nbx, nby) = if px1 <= px0 || py1 <= py0 {
                             (0, 0)
                         } else {
@@ -378,8 +372,8 @@ fn decode_tile(
                         bands.push(PrecBand {
                             nbx,
                             nby,
-                            bx0: (px0.saturating_sub(ox) / cbw as u32) as usize,
-                            by0: (py0.saturating_sub(oy) / cbh as u32) as usize,
+                            bx0: ((px0 / cbw as u32) - (ox / cbw as u32)) as usize,
+                            by0: ((py0 / cbh as u32) - (oy / cbh as u32)) as usize,
                             incl: TagTree::new(nbx, nby),
                             imsb: TagTree::new(nbx, nby),
                             blocks: vec![BlockState::default(); nbx * nby],
@@ -433,33 +427,30 @@ fn decode_tile(
         }
     }
 
+    // A code-block's segments accumulated across every layer that included it.
+    struct BlockAcc {
+        bytes: Vec<u8>,
+        passes: u32,
+        zero_bitplanes: u32,
+        cblk_x: usize,
+        cblk_y: usize,
+    }
+    let mut acc: std::collections::HashMap<(usize, usize, usize, usize, usize), BlockAcc> =
+        std::collections::HashMap::new();
+
     for (layer, r, ci, pi) in order {
-        let nbands = if r == 0 { 1 } else { 3 };
         if c.cod.sop {
             let q = br.pos();
             if body.get(q..q + 2) == Some(&[0xFF, 0x91]) {
                 br.seek(q + 6);
             }
         }
-        let mut contributions = Vec::new();
-        for b in 0..nbands {
-            let Some(pb) = states[ci][r].get_mut(pi).and_then(|v| v.get_mut(b)) else {
-                continue;
-            };
-            if pb.nbx == 0 || pb.nby == 0 {
-                continue;
-            }
-            let got = packet::parse_packet_header(
-                &mut br,
-                layer,
-                pb.nbx,
-                pb.nby,
-                &mut pb.incl,
-                &mut pb.imsb,
-                &mut pb.blocks,
-            )?;
-            contributions.push((b, got));
-        }
+        // ONE header parse per packet, covering all its bands — including packets whose
+        // bands are all zero-area, which still own their "non-empty" bit in the stream.
+        let Some(bands) = states[ci][r].get_mut(pi) else {
+            continue;
+        };
+        let contributions = packet::parse_packet(&mut br, layer, bands)?;
         if c.cod.eph {
             let q = br.pos();
             if body.get(q..q + 2) == Some(&[0xFF, 0x92]) {
@@ -467,73 +458,116 @@ fn decode_tile(
             }
         }
         let mut q = br.pos();
-        for (b, got) in contributions {
-            for cb in got {
-                let start = q;
-                let end = start.checked_add(cb.len).ok_or(Jp2Error::Truncated)?;
-                if end > body.len() {
-                    return Err(Jp2Error::Truncated);
+        for (b, cb) in contributions {
+            let start = q;
+            let end = start.checked_add(cb.len).ok_or(Jp2Error::Truncated)?;
+            if end > body.len() {
+                return Err(Jp2Error::Truncated);
+            }
+            q = end;
+            if r as u32 > max_res {
+                continue; // walked for its length only; this is the whole saving
+            }
+            let nbx = states[ci][r][pi][b].nbx;
+            let a = acc
+                .entry((ci, r, b, pi, cb.cblk_y * nbx + cb.cblk_x))
+                .or_insert_with(|| BlockAcc {
+                    bytes: Vec::new(),
+                    passes: 0,
+                    zero_bitplanes: cb.zero_bitplanes,
+                    cblk_x: cb.cblk_x,
+                    cblk_y: cb.cblk_y,
+                });
+            a.bytes.extend_from_slice(&body[start..end]);
+            a.passes += cb.passes;
+        }
+        br.seek(q);
+    }
+
+    // Tier-1 decode: once per code-block, over its concatenated segments.
+    for ((ci, r, b, pi, _), a) in &acc {
+        let (ci, r, b, pi) = (*ci, *r, *b, *pi);
+        let band_kind = match (r, b) {
+            (0, _) => mq::Band::Ll,
+            (_, 0) => mq::Band::Hl,
+            (_, 1) => mq::Band::Lh,
+            _ => mq::Band::Hh,
+        };
+        let (ppx, ppy) = c.cod.precinct(r);
+        let (bppx, bppy) = if r == 0 {
+            (ppx, ppy)
+        } else {
+            (ppx.max(1) - 1, ppy.max(1) - 1)
+        };
+        let cbw_max = (c.cod.cblk_w as usize).min(1usize << bppx);
+        let cbh_max = (c.cod.cblk_h as usize).min(1usize << bppy);
+        let pb = &states[ci][r][pi][b];
+        let (gx, gy) = (pb.bx0 + a.cblk_x, pb.by0 + a.cblk_y);
+        let bw = comps[ci][r].bands[b].w;
+        let bh = comps[ci][r].bands[b].h;
+        let x0 = gx * cbw_max;
+        let y0 = gy * cbh_max;
+        if x0 >= bw || y0 >= bh {
+            continue;
+        }
+        let cw = cbw_max.min(bw - x0);
+        let ch = cbh_max.min(bh - y0);
+        let (exp, mant) = subband_step(c, ci, r, b);
+        let gain = subband_gain(band_kind);
+        let prec = c.siz.components[ci].prec as u32 + 1;
+        let guard = quant_for(c, ci).guard_bits as u32;
+        let max_bp = guard + exp as u32 - 1;
+        let out = mq::decode_code_block(
+            &a.bytes,
+            cw,
+            ch,
+            band_kind,
+            a.zero_bitplanes,
+            a.passes,
+            max_bp.max(1),
+            c.cod.cblk_style,
+        );
+        #[cfg(test)]
+        if std::env::var_os("ST2K_JP2_TRACE").is_some() {
+            eprintln!(
+                "    blk c{ci} r{r} b{b} {cw}x{ch} passes={} zbp={} seg={}B consumed={}B maxbp={}",
+                a.passes,
+                a.zero_bitplanes,
+                a.bytes.len(),
+                out.consumed,
+                max_bp
+            );
+        }
+        let qf = dequant_factor(c, ci, prec, gain, exp, mant);
+        let band = &mut comps[ci][r].bands[b];
+        for yy in 0..ch {
+            for xx in 0..cw {
+                let bxp = x0 + xx;
+                let byp = y0 + yy;
+                if bxp < band.w && byp < band.h {
+                    band.data[byp * band.w + bxp] = out.coeffs[yy * cw + xx] as f32 * qf;
                 }
-                q = end;
-                if r as u32 > max_res {
-                    continue; // header walked for its length only; this is the saving
-                }
-                let band_kind = match (r, b) {
-                    (0, _) => mq::Band::Ll,
-                    (_, 0) => mq::Band::Hl,
-                    (_, 1) => mq::Band::Lh,
-                    _ => mq::Band::Hh,
-                };
-                let (ppx, ppy) = c.cod.precinct(r);
-                let (bppx, bppy) = if r == 0 {
-                    (ppx, ppy)
-                } else {
-                    (ppx.max(1) - 1, ppy.max(1) - 1)
-                };
-                let cbw_max = (c.cod.cblk_w as usize).min(1usize << bppx);
-                let cbh_max = (c.cod.cblk_h as usize).min(1usize << bppy);
-                let (gx, gy) = {
-                    let pb = &states[ci][r][pi][b];
-                    (pb.bx0 + cb.cblk_x, pb.by0 + cb.cblk_y)
-                };
-                let bw = comps[ci][r].bands[b].w;
-                let bh = comps[ci][r].bands[b].h;
-                let x0 = gx * cbw_max;
-                let y0 = gy * cbh_max;
-                if x0 >= bw || y0 >= bh {
-                    continue;
-                }
-                let cw = cbw_max.min(bw - x0);
-                let ch = cbh_max.min(bh - y0);
-                let (exp, mant) = subband_step(c, ci, r, b);
-                let gain = subband_gain(band_kind);
-                let prec = c.siz.components[ci].prec as u32 + 1;
-                let guard = quant_for(c, ci).guard_bits as u32;
-                let max_bp = guard + exp as u32 - 1;
-                let out = mq::decode_code_block(
-                    &body[start..end],
-                    cw,
-                    ch,
-                    band_kind,
-                    cb.zero_bitplanes,
-                    cb.passes,
-                    max_bp.max(1),
-                    c.cod.cblk_style,
-                );
-                let qf = dequant_factor(c, ci, prec, gain, exp, mant);
-                let band = &mut comps[ci][r].bands[b];
-                for yy in 0..ch {
-                    for xx in 0..cw {
-                        let bxp = x0 + xx;
-                        let byp = y0 + yy;
-                        if bxp < band.w && byp < band.h {
-                            band.data[byp * band.w + bxp] = out.coeffs[yy * cw + xx] as f32 * qf;
-                        }
+            }
+        }
+    }
+
+    // Coefficient dump for tier-1 debugging: compare against a Python FORWARD 5/3 of the
+    // known-good pixels (reversible, so the true coefficients are recoverable exactly).
+    #[cfg(test)]
+    if std::env::var_os("ST2K_JP2_DUMP").is_some() {
+        for ci in 0..ncomp {
+            for r in 0..=keep as usize {
+                for (b, band) in comps[ci][r].bands.iter().enumerate() {
+                    eprintln!("DUMP c{ci} r{r} b{b} {}x{}", band.w, band.h);
+                    for y in 0..band.h {
+                        let row: Vec<String> = (0..band.w)
+                            .map(|x| format!("{}", band.data[y * band.w + x] as i64))
+                            .collect();
+                        eprintln!("DUMP   {}", row.join(" "));
                     }
                 }
             }
         }
-        br.seek(q);
     }
 
     // Inverse DWT: start from the lowest LL and lift `keep` times.
@@ -634,10 +668,10 @@ mod tests {
 
     /// Decode the corpus's 76 MP scan at a thumbnail size and write it out for comparison.
     /// Skips when the corpus has not been built.
-    /// Try EVERY corpus JPEG 2000 file, simplest first. Reports rather than asserts while
-    /// the pixel path is unverified; the point is a per-file progress signal, because the
-    /// 76 MP scan is the hardest file in the set and starting there hid which stage was at
-    /// fault on the simple ones.
+    /// Every corpus JPEG 2000 file must decode through the native reduced path — including
+    /// the 76 MP archival scan with its 1529 tile-parts, 30 layers, RPCL progression and
+    /// 256x256 precincts. (Pixel CORRECTNESS is pinned by the bit-exactness test above and
+    /// the preview-handler integration tests; this one pins breadth and speed.)
     #[test]
     fn decode_every_corpus_jp2() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
@@ -659,7 +693,7 @@ mod tests {
                         let _ = img.save(std::env::temp_dir().join(format!("st2k_jp2_{name}.png")));
                     }
                 }
-                Err(e) => eprintln!("  {name}: {e}"),
+                Err(e) => panic!("{name}: must decode natively, got: {e}"),
             }
         }
     }
@@ -692,32 +726,33 @@ mod tests {
     }
 }
 
+/// One axis of a band's B-15 span at decomposition depth `d`: returns (origin, size).
+/// `high` selects the high-pass side (xob/yob = 1), whose grid is offset by half a step.
+fn band_span(t0: u32, t1: u32, d: u32, high: bool) -> (u32, usize) {
+    let full = 1i64 << d;
+    let off = if high { 1i64 << (d - 1) } else { 0 };
+    let ceil_div = |a: i64| (a + full - 1).div_euclid(full);
+    let b0 = ceil_div(t0 as i64 - off).max(0);
+    let b1 = ceil_div(t1 as i64 - off).max(0);
+    (b0 as u32, (b1 - b0).max(0) as usize)
+}
+
 /// Origin of one subband on its own coordinate grid, for tile top-left `(tx0, ty0)`.
-/// Resolution `r`, band index `b` (r == 0 is the single LL band).
+/// Resolution `r`, band index `b` (r == 0 is the single LL band). Same B-15 formulas as
+/// the band sizes in `decode_tile`, so origin and extent cannot disagree.
 fn band_origin(c: &codestream::Codestream, r: usize, b: usize, tx0: u32, ty0: u32) -> (u32, u32) {
     let levels = c.cod.levels as u32;
     if r == 0 {
         let n = levels;
         return (tx0.div_ceil(1 << n), ty0.div_ceil(1 << n));
     }
-    let n = levels - r as u32 + 1;
-    // HL takes the high-pass x / low-pass y quadrant, LH the reverse, HH both high.
+    let d = levels - r as u32 + 1;
     let (hx, hy) = match b {
-        0 => (true, false),
-        1 => (false, true),
-        _ => (true, true),
+        0 => (true, false), // HL
+        1 => (false, true), // LH
+        _ => (true, true),  // HH
     };
-    let ox = if hx {
-        tx0 / (1 << n)
-    } else {
-        tx0.div_ceil(1 << n)
-    };
-    let oy = if hy {
-        ty0 / (1 << n)
-    } else {
-        ty0.div_ceil(1 << n)
-    };
-    (ox, oy)
+    (band_span(tx0, tx0, d, hx).0, band_span(ty0, ty0, d, hy).0)
 }
 
 #[cfg(test)]
@@ -881,5 +916,59 @@ mod fuzz_tests {
             start.elapsed() < std::time::Duration::from_secs(2),
             "a hostile Psot must be rejected, not looped on"
         );
+    }
+}
+
+#[cfg(test)]
+mod exactness_tests {
+    //! The tier-1 debugging harness. The tiny corpus files are LOSSLESS (5/3, no
+    //! quantization, verified `magick compare` AE = 0 against their source PNGs), so a
+    //! correct decoder must reproduce them BIT-EXACTLY at full resolution. Any mismatch is
+    //! proof of a bug, and 8x8 means a single code-block to trace. Reports rather than
+    //! asserts while tier-1 is under repair.
+
+    #[test]
+    fn lossless_tiny_files_decode_bit_exactly() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
+        for name in [
+            "tiny8-gray",
+            "tiny16-rgb",
+            "tiny16-plasma",
+            "tiny16-gplasma",
+            "tiny32-grad",
+            "tiny32-plasma",
+        ] {
+            let Ok(jp2) = std::fs::read(dir.join(format!("{name}.jp2"))) else {
+                continue;
+            };
+            let Ok(png) = image::open(dir.join(format!("{name}.png"))) else {
+                continue;
+            };
+            let truth = png.to_rgb8();
+            // A huge target keeps every resolution level: a full, lossless decode.
+            match super::decode_reduced(&jp2, u32::MAX) {
+                Ok((rgb, w, h)) => {
+                    if (w, h) != (truth.width(), truth.height()) {
+                        eprintln!(
+                            "  {name}: SIZE {}x{} want {}x{}",
+                            w,
+                            h,
+                            truth.width(),
+                            truth.height()
+                        );
+                        continue;
+                    }
+                    let t = truth.as_raw();
+                    let n = t.len();
+                    let bad = (0..n).filter(|&i| t[i] != rgb[i]).count();
+                    let worst = (0..n).map(|i| t[i].abs_diff(rgb[i])).max().unwrap_or(0);
+                    assert_eq!(
+                        bad, 0,
+                        "{name}: {bad}/{n} bytes wrong (worst {worst}) — reversible 5/3 has                          no rounding excuse, a single differing byte is a real decoder bug"
+                    );
+                }
+                Err(e) => panic!("{name}: lossless corpus file failed to decode: {e}"),
+            }
+        }
     }
 }

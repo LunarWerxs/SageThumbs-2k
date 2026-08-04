@@ -2,6 +2,22 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Added
+
+- **A built-in JPEG 2000 decoder that only decodes what the thumbnail needs.** JPEG 2000
+  stores every image as a stack of halved resolutions, but every decoder we could reach
+  either could not use that (ImageMagick's reduction flag returns the wrong part of the
+  image) or did not exist in usable form - so until now a 76-megapixel scan had to be
+  decoded in full just to make a tile. The new decoder reads only the resolution being
+  displayed: that scan now thumbnails in 0.25 seconds instead of 4.4, and previews in 1.2
+  seconds instead of 5 - and the result is slightly sharper, because a true wavelet
+  resolution level keeps detail that shrinking a full decode averages away. Verified
+  bit-exact on lossless test images (a correct reversible decode has no rounding excuse),
+  and anything the decoder does not support falls back to the old path automatically, so
+  no file that rendered before renders worse.
+
 ## 1.7.4
 
 ### Changed

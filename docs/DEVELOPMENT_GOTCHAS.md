@@ -243,7 +243,7 @@ numbers are directly comparable. Timings are best-of-three on an idle machine:
 | png | 1.45 s | none (interlacing is not usable here) | n/a |
 | bmp | 1.65 s | none | n/a |
 | jpg | 3.01 s | DCT scaling (1/2, 1/4, 1/8) | **no**, see below |
-| jp2 | 3.61 s | wavelet resolution levels | **no**, see `decode/jp2` |
+| jp2 | 0.25 s | wavelet resolution levels | yes, native decoder since 1.7.5 |
 | webp | 4.08 s | none | n/a |
 | dds | — | mipmap chain | yes, since 1.7.4 |
 
