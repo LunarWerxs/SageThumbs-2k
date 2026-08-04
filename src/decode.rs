@@ -262,7 +262,10 @@ fn decode_any_with_wic_target(
     // 20 s subprocess and BC6H worked nowhere. Failure falls through to the tiers
     // below, so no DDS that thumbnailed before can regress. See `dds.rs`.
     if is_dds(bytes) {
-        match decode_dds(bytes) {
+        // Textures ship their own thumbnail chain; use it. A 16k BC7 texture is 268 MP at
+        // level 0 and has a 256-px mip a few hundred KB in. Full-fidelity callers pass
+        // `None` and keep level 0.
+        match decode_dds(bytes, wic_thumbnail_cx) {
             // BC6H and the float layouts come back linear-float, tone-mapped here
             // exactly like the EXR/Radiance results below.
             Ok(img) => {

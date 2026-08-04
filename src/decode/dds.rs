@@ -18,9 +18,18 @@
 //! parsing — headers, DXGI/D3DFMT dispatch, bit-mask layouts, bomb guards — is
 //! ours, because it is the part that reads untrusted bytes.
 //!
-//! We render the FIRST surface: mip level 0, array element 0, cube face +X, depth
-//! slice 0. That is always the first bytes after the header, so no seeking math is
-//! needed and a truncated mip chain can never matter.
+//! We render array element 0, cube face +X, depth slice 0 — and the SMALLEST MIP that
+//! still covers the requested thumbnail size.
+//!
+//! Mip selection is not a micro-optimisation: a 16384x16384 BC7 texture is 268 megapixels
+//! and 256 MiB of blocks, while the 256-px mip sitting a few hundred KB further into the
+//! same file is 1/4096th of the work for a tile nobody can tell apart. Textures are the one
+//! format that routinely ships its own thumbnail chain, so decoding level 0 to build a
+//! 96-px tile is throwing away the exact thing the format already did for us.
+//!
+//! Face 0's whole mip chain precedes every other face or array slice, so walking levels
+//! stays inside the first surface and needs no cube/array math. A truncated chain simply
+//! stops the walk and we render the last level that is fully present.
 
 use super::*;
 
@@ -165,13 +174,67 @@ fn le32(b: &[u8], off: usize) -> Option<u32> {
 /// Every failure is an `E_FAIL` with a human-readable reason so `-Debug` logging
 /// names the layout we couldn't read, and the caller falls through to the old
 /// tiers — so a file that thumbnailed before still does.
-pub(super) fn decode_dds(bytes: &[u8]) -> Result<DynamicImage> {
-    let s = parse_header(bytes)?;
+/// `target` renders the smallest mip level still at least that many px on its long side,
+/// when the file ships a mip chain. `None` keeps level 0, for callers that want full
+/// fidelity (Convert, Image info).
+pub(super) fn decode_dds(bytes: &[u8], target: Option<u32>) -> Result<DynamicImage> {
+    let mut s = parse_header(bytes)?;
+    if let Some(t) = target {
+        select_mip(bytes, &mut s, t.max(1));
+    }
     if s.layout.is_float() {
         decode_float(bytes, &s)
     } else {
         decode_rgba8(bytes, &s)
     }
+}
+
+/// Walk the mip chain, moving `s` to the smallest level whose long edge still covers
+/// `target`. Best-effort by design: any overflow, a level whose bytes are not fully present
+/// (truncated chain), or a header claiming no mips leaves `s` on whatever level was last
+/// known good — never an error, because the mip chain is an optimisation and level 0 is
+/// always the correct answer.
+fn select_mip(bytes: &[u8], s: &mut Surface, target: u32) {
+    // dwMipMapCount is the 7th dword of DDS_HEADER, i.e. 24 bytes in, past the 4-byte magic.
+    const OFF_MIPMAPCOUNT: usize = 4 + 24;
+    let count = le32(bytes, OFF_MIPMAPCOUNT).unwrap_or(0);
+    if count <= 1 {
+        return;
+    }
+    // A hostile count cannot make us walk forever: the loop also stops when a level runs
+    // past the file or reaches 1x1.
+    let count = count.min(32);
+
+    let (mut w, mut h, mut off) = (s.width, s.height, s.data);
+    for _ in 1..count {
+        if w.max(h) <= target || (w == 1 && h == 1) {
+            break;
+        }
+        let Some(this_level) = surface_bytes(s.layout, w, h) else {
+            break;
+        };
+        let Some(next_off) = off.checked_add(this_level) else {
+            break;
+        };
+        let (nw, nh) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
+        // Only step down when the NEXT level is genuinely there; a file whose chain is
+        // truncated must still render the level we already have.
+        match surface_bytes(s.layout, nw, nh) {
+            Some(n) if next_off.checked_add(n).is_some_and(|e| e <= bytes.len()) => {}
+            _ => break,
+        }
+        // Stepping past the target would give a tile smaller than asked for, which the
+        // caller would have to upscale — worse than decoding one level too big.
+        if nw.max(nh) < target {
+            break;
+        }
+        w = nw;
+        h = nh;
+        off = next_off;
+    }
+    s.width = w;
+    s.height = h;
+    s.data = off;
 }
 
 fn fail(msg: impl AsRef<str>) -> Error {
@@ -1025,7 +1088,7 @@ mod tests {
 
     #[test]
     fn bc7_matches_the_directxtex_reference_decode() {
-        let img = decode_dds(&unhex(BC7_4X4)).unwrap();
+        let img = decode_dds(&unhex(BC7_4X4), None).unwrap();
         assert_eq!(img.dimensions(), (4, 4));
         assert_eq!(rgba(&img, 0, 0), [146, 0, 146, 255]);
         assert_eq!(rgba(&img, 2, 0), [2, 255, 2, 255]);
@@ -1053,7 +1116,7 @@ mod tests {
         // c0 = 0x0000 (black) <= c1 = 0xF800 (red) selects the alpha mode; every
         // index is 3 (0xFF bytes) => the whole block is transparent.
         f.extend_from_slice(&[0x00, 0x00, 0x00, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF]);
-        let img = decode_dds(&f).unwrap();
+        let img = decode_dds(&f, None).unwrap();
         assert_eq!(rgba(&img, 0, 0), [0, 0, 0, 0]);
         assert_eq!(rgba(&img, 3, 3), [0, 0, 0, 0]);
     }
@@ -1096,7 +1159,7 @@ mod tests {
         );
         f.extend_from_slice(&0x8012_3456u32.to_le_bytes());
         assert_eq!(
-            rgba(&decode_dds(&f).unwrap(), 0, 0),
+            rgba(&decode_dds(&f, None).unwrap(), 0, 0),
             [0x12, 0x34, 0x56, 0x80]
         );
 
@@ -1104,7 +1167,10 @@ mod tests {
         // rather than 248 — otherwise a 565 texture never renders true white.
         let mut f = classic(1, 1, DDPF_RGB, &[0; 4], 16, [0xF800, 0x07E0, 0x001F, 0]);
         f.extend_from_slice(&0xFFFFu16.to_le_bytes());
-        assert_eq!(rgba(&decode_dds(&f).unwrap(), 0, 0), [255, 255, 255, 255]);
+        assert_eq!(
+            rgba(&decode_dds(&f, None).unwrap(), 0, 0),
+            [255, 255, 255, 255]
+        );
     }
 
     /// `X8R8G8B8` carries a padding byte, not alpha. Honouring it (it is usually
@@ -1121,7 +1187,7 @@ mod tests {
         );
         f.extend_from_slice(&0x0011_2233u32.to_le_bytes());
         assert_eq!(
-            rgba(&decode_dds(&f).unwrap(), 0, 0),
+            rgba(&decode_dds(&f, None).unwrap(), 0, 0),
             [0x11, 0x22, 0x33, 255]
         );
 
@@ -1135,7 +1201,7 @@ mod tests {
             [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000],
         );
         f.extend_from_slice(&0x0011_2233u32.to_le_bytes());
-        assert_eq!(rgba(&decode_dds(&f).unwrap(), 0, 0)[3], 255);
+        assert_eq!(rgba(&decode_dds(&f, None).unwrap(), 0, 0)[3], 255);
     }
 
     /// `Channel` assumes one contiguous run of bits; a sparse mask must be refused
@@ -1151,7 +1217,7 @@ mod tests {
             [0x00FF_00FF, 0x0000_FF00, 0, 0],
         );
         f.extend_from_slice(&[0u8; 4]);
-        assert!(decode_dds(&f).is_err());
+        assert!(decode_dds(&f, None).is_err());
     }
 
     /// A texture whose edges are not a multiple of 4 still fills exactly its own
@@ -1163,7 +1229,7 @@ mod tests {
         for _ in 0..2 {
             f.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
         }
-        let img = decode_dds(&f).unwrap();
+        let img = decode_dds(&f, None).unwrap();
         assert_eq!(img.dimensions(), (5, 3));
         for (x, y) in [(0, 0), (4, 0), (4, 2), (0, 2)] {
             assert_eq!(rgba(&img, x, y), [255, 255, 255, 255], "at {x},{y}");
@@ -1227,16 +1293,16 @@ mod tests {
     fn refuses_declared_bombs() {
         let mut f = classic(100_000, 100_000, DDPF_FOURCC, b"DXT1", 0, [0; 4]);
         f.extend_from_slice(&[0u8; 64]);
-        assert!(decode_dds(&f).is_err());
+        assert!(decode_dds(&f, None).is_err());
 
         // In-bounds dimensions whose RGBA output still exceeds MAX_ALLOC.
         let mut f = classic(MAX_DIM, MAX_DIM, DDPF_FOURCC, b"DXT1", 0, [0; 4]);
         f.extend_from_slice(&[0u8; 64]);
-        assert!(decode_dds(&f).is_err());
+        assert!(decode_dds(&f, None).is_err());
 
         // A truthful header whose surface data simply is not there.
         let f = classic(1024, 1024, DDPF_FOURCC, b"DXT5", 0, [0; 4]);
-        assert!(decode_dds(&f).is_err());
+        assert!(decode_dds(&f, None).is_err());
     }
 
     /// These bytes arrive from the shell, unvalidated, and the classic context-menu
@@ -1247,7 +1313,7 @@ mod tests {
     fn hostile_input_never_panics() {
         let valid = unhex(BC7_4X4);
         for n in 0..valid.len() {
-            let _ = decode_dds(&valid[..n]);
+            let _ = decode_dds(&valid[..n], None);
         }
         // Walk every 4-byte-aligned header field through a set of nasty values.
         for field in (0..valid.len().min(148)).step_by(4) {
@@ -1263,7 +1329,7 @@ mod tests {
             ] {
                 let mut f = valid.clone();
                 f[field..field + 4].copy_from_slice(&probe.to_le_bytes());
-                let _ = decode_dds(&f);
+                let _ = decode_dds(&f, None);
             }
         }
         // And a cheap deterministic byte-flip fuzz over the same region.
@@ -1277,7 +1343,7 @@ mod tests {
                 let at = (seed >> 33) as usize % f.len();
                 f[at] = (seed >> 11) as u8;
             }
-            let _ = decode_dds(&f);
+            let _ = decode_dds(&f, None);
         }
     }
 
@@ -1286,6 +1352,122 @@ mod tests {
     fn declines_other_formats() {
         assert!(!is_dds(b"\x89PNG\r\n\x1a\n"));
         assert!(!is_dds(b"DDS "));
-        assert!(decode_dds(b"\x89PNG\r\n\x1a\n").is_err());
+        assert!(decode_dds(b"\x89PNG\r\n\x1a\n", None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod mip_tests {
+    use super::*;
+
+    /// Build a BC1 DDS whose mip chain is deliberately DIFFERENT per level: level 0 is red,
+    /// level 1 green, level 2 blue. A decoder that ignores mips returns red; one that picks
+    /// the right level returns the colour that belongs to it. Colour, not size, is the
+    /// assertion — sizes alone would pass even if we read the wrong offset.
+    fn bc1_mip_chain(w: u32, h: u32, colours: &[[u8; 3]]) -> Vec<u8> {
+        fn bc1_block(c: [u8; 3]) -> [u8; 8] {
+            let c565 =
+                (((c[0] as u16 >> 3) << 11) | ((c[1] as u16 >> 2) << 5) | (c[2] as u16 >> 3))
+                    .to_le_bytes();
+            // Both endpoints the same colour, all indices 0 -> a flat block.
+            [c565[0], c565[1], c565[0], c565[1], 0, 0, 0, 0]
+        }
+        let mut v = Vec::new();
+        v.extend_from_slice(b"DDS ");
+        let mut hdr = [0u8; HEADER_LEN];
+        hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes()); // dwSize
+        hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes()); // flags incl. MIPMAPCOUNT
+        hdr[8..12].copy_from_slice(&h.to_le_bytes());
+        hdr[12..16].copy_from_slice(&w.to_le_bytes());
+        hdr[24..28].copy_from_slice(&(colours.len() as u32).to_le_bytes()); // dwMipMapCount
+        hdr[72..76].copy_from_slice(&32u32.to_le_bytes()); // pixel format dwSize
+        hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+        hdr[80..84].copy_from_slice(b"DXT1");
+        v.extend_from_slice(&hdr);
+        let (mut lw, mut lh) = (w, h);
+        for c in colours {
+            let blocks = (lw.div_ceil(4) as usize) * (lh.div_ceil(4) as usize);
+            for _ in 0..blocks {
+                v.extend_from_slice(&bc1_block(*c));
+            }
+            lw = lw.div_ceil(2).max(1);
+            lh = lh.div_ceil(2).max(1);
+        }
+        v
+    }
+
+    fn centre(img: &DynamicImage) -> [u8; 3] {
+        let rgba = img.to_rgba8();
+        let p = rgba.get_pixel(rgba.width() / 2, rgba.height() / 2).0;
+        [p[0], p[1], p[2]]
+    }
+
+    fn near(a: [u8; 3], b: [u8; 3]) -> bool {
+        // BC1 endpoints are 5/6/5, so an exact match is not available.
+        a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 10)
+    }
+
+    #[test]
+    fn picks_the_mip_that_covers_the_target() {
+        let red = [255, 0, 0];
+        let green = [0, 255, 0];
+        let blue = [0, 0, 255];
+        let dds = bc1_mip_chain(64, 64, &[red, green, blue]);
+
+        // No target: level 0, full size, red.
+        let full = decode_dds(&dds, None).expect("level 0");
+        assert_eq!((full.width(), full.height()), (64, 64));
+        assert!(
+            near(centre(&full), red),
+            "untargeted decode must stay on mip 0"
+        );
+
+        // 64 is exactly level 0, so it must NOT step down.
+        let l0 = decode_dds(&dds, Some(64)).expect("target 64");
+        assert_eq!((l0.width(), l0.height()), (64, 64));
+        assert!(near(centre(&l0), red));
+
+        // 32 is level 1 exactly.
+        let l1 = decode_dds(&dds, Some(32)).expect("target 32");
+        assert_eq!((l1.width(), l1.height()), (32, 32));
+        assert!(
+            near(centre(&l1), green),
+            "target 32 must read mip 1, not mip 0"
+        );
+
+        // 16 is level 2, the last one present.
+        let l2 = decode_dds(&dds, Some(16)).expect("target 16");
+        assert_eq!((l2.width(), l2.height()), (16, 16));
+        assert!(near(centre(&l2), blue), "target 16 must read mip 2");
+
+        // Below the chain: stop at the smallest level present rather than overshooting into
+        // data that is not there.
+        let small = decode_dds(&dds, Some(4)).expect("target 4");
+        assert_eq!((small.width(), small.height()), (16, 16));
+        assert!(near(centre(&small), blue));
+    }
+
+    #[test]
+    fn a_truncated_mip_chain_still_renders() {
+        let dds = bc1_mip_chain(64, 64, &[[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
+        // Chop the tail so levels 1 and 2 are no longer fully present.
+        let cut = dds.len() - 8;
+        let truncated = &dds[..cut];
+        let img = decode_dds(truncated, Some(16)).expect("must still decode something");
+        assert!(
+            img.width() >= 16,
+            "a truncated chain must fall back to a level that IS present, got {}x{}",
+            img.width(),
+            img.height()
+        );
+    }
+
+    #[test]
+    fn a_lying_mipmap_count_cannot_walk_off_the_end() {
+        let mut dds = bc1_mip_chain(64, 64, &[[255, 0, 0]]);
+        // Claim 20 mip levels while shipping one.
+        dds[4 + 24..4 + 28].copy_from_slice(&20u32.to_le_bytes());
+        let img = decode_dds(&dds, Some(1)).expect("must not fail on a lying header");
+        assert_eq!((img.width(), img.height()), (64, 64));
     }
 }

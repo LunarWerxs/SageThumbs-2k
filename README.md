@@ -15,6 +15,8 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
 
+<a href="https://sourceforge.net/projects/sagethumbs-2k/"><img src="https://a.fsdn.com/con/app/syndication/badge_img_direct/oss-rising-star/oss-rising-star/?variant_id=sf" alt="SourceForge Rising Star award" width="110" /></a>
+
 [**⬇ Download**](https://github.com/LunarWerxs/SageThumbs-2k/releases) · [Features](#-features) · [Formats](#-supported-formats) · [Changelog](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/CHANGELOG.md) · [Build from source](#-build-from-source)
 
 <br/>

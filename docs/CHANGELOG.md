@@ -4,6 +4,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Changed
+
+- **Game textures with mipmaps thumbnail about 17x faster.** A `.dds` file usually already
+  contains the picture at every halved size down to 1 pixel, because that is what a game
+  engine displays at a distance. We were ignoring all of it and decompressing the full-size
+  image to build a small tile. An 8192 x 8192 texture went from 0.87 seconds to 0.05. The
+  tile now comes from the texture's own smaller copy, so it looks very slightly softer than
+  a full decode would, which is exactly what the game itself shows.
+
 ### Fixed
 
 - **"Image info" reported the wrong size for large JPEG 2000 files.** A 9958 x 7686 map scan
