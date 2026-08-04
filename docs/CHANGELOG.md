@@ -6,6 +6,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **"Image info" reported the wrong size for large JPEG 2000 files.** A 9958 x 7686 map scan
+  confidently described itself as 4096 x 3161. Nothing could read a `.jp2` header directly, so
+  the size was taken from a full decode, and that decode is capped at 4096 pixels for safety.
+  The number you were shown was the cap, not the picture. It now reads the real dimensions
+  straight out of the file in about a third of a second, without decoding anything.
+
 - **Very large images thumbnailed about twice as fast, and huge scans stopped timing out.**
   A 76-megapixel JPEG 2000 map scan (only 11 MB on disk) took around 9 seconds and, on a busy
   folder, missed the preview pane's time limit entirely, so the pane showed nothing for a file

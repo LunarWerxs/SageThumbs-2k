@@ -74,7 +74,7 @@ fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool) {
     if n == 1 {
         // A single sample is low-pass if it sits on an even index, else it is a lone
         // high-pass coefficient and carries half its value (F.3.7).
-        if i0 % 2 != 0 {
+        if !i0.is_multiple_of(2) {
             sig[0] /= 2.0;
         }
         return;
@@ -146,19 +146,19 @@ pub(super) fn reconstruct(
     // odd/odd from HH, indexed relative to each band's own origin.
     for y in 0..h {
         let gy = y0 + y;
-        let by = if gy % 2 == 0 {
+        let by = if gy.is_multiple_of(2) {
             gy / 2 - y0.div_ceil(2)
         } else {
             gy / 2 - y0 / 2
         };
         for x in 0..w {
             let gx = x0 + x;
-            let bx = if gx % 2 == 0 {
+            let bx = if gx.is_multiple_of(2) {
                 gx / 2 - x0.div_ceil(2)
             } else {
                 gx / 2 - x0 / 2
             };
-            let v = match (gx % 2 == 0, gy % 2 == 0) {
+            let v = match (gx.is_multiple_of(2), gy.is_multiple_of(2)) {
                 (true, true) => ll.get(bx, by),
                 (false, true) => hl.get(bx, by),
                 (true, false) => lh.get(bx, by),

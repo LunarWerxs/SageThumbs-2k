@@ -157,7 +157,12 @@ pub(super) fn find_codestream(bytes: &[u8]) -> Result<&[u8], Jp2Error> {
         if guard > 1024 {
             return Err(Jp2Error::Malformed("box chain too long"));
         }
-        let len = u32::from_be_bytes(bytes[p..p + 4].try_into().unwrap()) as u64;
+        // `p + 8 <= bytes.len()` is the loop condition, so both reads are in range; take
+        // them fallibly anyway rather than leaving an `unwrap` in a parser fed by Explorer.
+        let Some(len_be) = bytes.get(p..p + 4).and_then(|b| b.first_chunk::<4>()) else {
+            return Err(Jp2Error::Truncated);
+        };
+        let len = u32::from_be_bytes(*len_be) as u64;
         let typ = &bytes[p + 4..p + 8];
         let (hdr, size) = match len {
             // 0 = "to end of file"
@@ -166,10 +171,9 @@ pub(super) fn find_codestream(bytes: &[u8]) -> Result<&[u8], Jp2Error> {
             1 => {
                 let s = bytes
                     .get(p + 8..p + 16)
-                    .ok_or(Jp2Error::Truncated)?
-                    .try_into()
-                    .unwrap();
-                (16u64, u64::from_be_bytes(s))
+                    .and_then(|b| b.first_chunk::<8>())
+                    .ok_or(Jp2Error::Truncated)?;
+                (16u64, u64::from_be_bytes(*s))
             }
             n if n >= 8 => (8u64, n),
             _ => return Err(Jp2Error::Malformed("box length < 8")),
@@ -266,9 +270,17 @@ pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
                 let _tnsot = r.u8()?;
                 // The tile-part ends `Psot` bytes after the START of the SOT marker.
                 let sot_marker_start = seg_start - 2;
+                // `Psot` must clear the SOT segment itself (2 marker + 10 body = 12), or the
+                // `r.p = part_end` below would move the cursor BACKWARDS and the marker loop
+                // would re-read this SOT forever. A crafted Psot of 1 is a free hang in a
+                // shell host otherwise, so this is a hard reject, not a clamp.
+                const MIN_PSOT: u32 = 12;
                 let part_end = if psot == 0 {
                     cs.len()
                 } else {
+                    if psot < MIN_PSOT {
+                        return Err(Jp2Error::Malformed("Psot shorter than its own SOT segment"));
+                    }
                     sot_marker_start
                         .checked_add(psot as usize)
                         .filter(|e| *e <= cs.len())
@@ -292,11 +304,10 @@ pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
                     if l < 2 {
                         return Err(Jp2Error::Malformed("tile-part marker length < 2"));
                     }
-                    r.p = r
-                        .p
-                        .checked_add(l - 2)
-                        .filter(|e| *e <= part_end)
-                        .ok_or(Jp2Error::Truncated)?;
+                    r.p =
+                        r.p.checked_add(l - 2)
+                            .filter(|e| *e <= part_end)
+                            .ok_or(Jp2Error::Truncated)?;
                 };
                 if !body.is_empty() {
                     tiles
@@ -400,7 +411,11 @@ fn parse_siz(r: &mut Reader) -> Result<Siz, Jp2Error> {
 }
 
 /// Shared tail of COD and COC: the SPcod/SPcoc coding parameters.
-fn parse_coding_params(r: &mut Reader, seg_end: usize, has_precincts: bool) -> Result<Cod, Jp2Error> {
+fn parse_coding_params(
+    r: &mut Reader,
+    seg_end: usize,
+    has_precincts: bool,
+) -> Result<Cod, Jp2Error> {
     let levels = r.u8()?;
     if levels > MAX_DECOMPOSITION_LEVELS {
         return Err(Jp2Error::Unsupported("decomposition levels"));

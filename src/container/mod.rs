@@ -452,6 +452,14 @@ pub fn real_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.starts_with(b"8BPS") {
         return psd::header_dims(bytes);
     }
+    // JPEG 2000 has no `image`-crate probe, so "Image info" used to fall all the way
+    // through to a full decode and then report the DECODED size. That decode is capped at
+    // 4096 px, so a 9958x7686 scan confidently reported itself as 4096x3161 — a wrong
+    // number, not merely a slow one. Reading the codestream's SIZ marker answers it exactly,
+    // from the header, with no decode at all.
+    if let Some(d) = crate::decode::jp2_dimensions(bytes) {
+        return Some(d);
+    }
     None
 }
 

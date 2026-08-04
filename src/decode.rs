@@ -402,6 +402,15 @@ fn decode_any_with_wic_target(
 mod color;
 mod dds;
 mod jp2;
+/// Image dimensions straight from a JPEG 2000 codestream header, with no decode.
+///
+/// Only the container/codestream half of `jp2` is wired in today; the reduced-resolution
+/// pixel path is still being verified and stays dead code until it matches a reference
+/// decoder. Header parsing IS verified, across every JPEG 2000 flavour in the corpus.
+pub fn jp2_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    jp2::is_jp2(bytes).then(|| jp2::dimensions(bytes)).flatten()
+}
+
 mod exrscale;
 mod magick;
 pub(crate) use magick::looks_like_metafile;

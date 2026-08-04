@@ -257,6 +257,7 @@ pub(super) struct CodeBlockOut {
 /// total magnitude bits available for the subband. Truncated or corrupt data yields the
 /// coefficients decoded so far rather than an error: a partially-decoded thumbnail is a
 /// better outcome than none, and this runs on untrusted input.
+#[allow(clippy::too_many_arguments)] // every one is a distinct coding parameter
 pub(super) fn decode_code_block(
     data: &[u8],
     w: usize,
@@ -474,7 +475,14 @@ pub(super) fn decode_code_block(
 }
 
 /// Horizontal and vertical sign contributions from the immediate neighbours.
-fn sign_neighbours(flags: &[u8], neg: &[bool], x: usize, y: usize, sw: usize, w: usize) -> (i32, i32) {
+fn sign_neighbours(
+    flags: &[u8],
+    neg: &[bool],
+    x: usize,
+    y: usize,
+    sw: usize,
+    w: usize,
+) -> (i32, i32) {
     let f = |dx: isize, dy: isize| -> i32 {
         let fx = (x as isize + dx + 1) as usize;
         let fy = (y as isize + dy + 1) as usize;
