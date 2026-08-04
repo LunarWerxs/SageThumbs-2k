@@ -38,7 +38,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream;
-use windows::Win32::UI::Shell::{IPreviewHandler, SHCreateMemStream, SHCreateStreamOnFileEx};
+use windows::Win32::UI::Shell::{
+    IPreviewHandler, IThumbnailProvider, SHCreateMemStream, SHCreateStreamOnFileEx, WTS_ALPHATYPE,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowExW, GetMessageW,
     PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, TranslateMessage, MSG,
@@ -46,6 +48,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const CLSID_PREVIEW_HANDLER: GUID = GUID::from_u128(0x2C8F1A3D_6B4E_4D9C_A1F2_7E3B5C8D0A46);
+/// The thumbnail coclass (`tests/com_roundtrip.rs`) — used to put the pane under the
+/// same load Explorer does when a folder full of jp2 files is on screen.
+const CLSID_THUMBNAIL_PROVIDER: GUID = GUID::from_u128(0x7B2E6A14_9C3D_4F8A_B1E7_2A5D9F0C6E31);
 
 /// The handler's child-window class (previewhandler.rs `CLASS_NAME`).
 const PREVIEW_CLASS: PCWSTR = w!("SageThumbs2KPreview");
@@ -98,6 +103,30 @@ unsafe fn create_handler() -> Result<IInitializeWithStream> {
     )
     .ok()?;
     assert!(!factory_ptr.is_null(), "null class factory");
+    let factory = IClassFactory::from_raw(factory_ptr);
+    factory.CreateInstance(None)
+}
+
+/// Same handshake, for the THUMBNAIL coclass.
+unsafe fn create_thumb_provider() -> Result<IInitializeWithStream> {
+    let path = dll_path();
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let module: HMODULE = LoadLibraryW(PCWSTR(wide.as_ptr()))?;
+    let proc =
+        GetProcAddress(module, s!("DllGetClassObject")).ok_or_else(|| Error::from(E_FAIL))?;
+    let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
+    let mut factory_ptr: *mut c_void = std::ptr::null_mut();
+    dll_get_class_object(
+        &CLSID_THUMBNAIL_PROVIDER,
+        &IClassFactory::IID,
+        &mut factory_ptr,
+    )
+    .ok()?;
+    assert!(!factory_ptr.is_null(), "null thumbnail class factory");
     let factory = IClassFactory::from_raw(factory_ptr);
     factory.CreateInstance(None)
 }
@@ -248,9 +277,13 @@ unsafe fn print_client_center(child: HWND) -> Option<[u8; 4]> {
 }
 
 fn red_png() -> Vec<u8> {
+    solid_png([255, 0, 0, 255])
+}
+
+fn solid_png(rgba: [u8; 4]) -> Vec<u8> {
     let mut img = RgbaImage::new(64, 64);
     for p in img.pixels_mut() {
-        *p = Rgba([255, 0, 0, 255]);
+        *p = Rgba(rgba);
     }
     let mut bytes = Vec::new();
     DynamicImage::ImageRgba8(img)
@@ -353,6 +386,368 @@ fn preview_renders_a_jp2_from_memory_stream() {
         assert!(
             preview_renders(&stream, |px| !(px[0] > 240 && px[1] > 240 && px[2] > 240)),
             "jp2 never rendered in the preview pane (issue #11)"
+        );
+    }
+}
+
+/// BGRA "is clearly blue".
+fn is_blue(px: [u8; 4]) -> bool {
+    px[0] > 180 && px[1] < 80 && px[2] < 80
+}
+
+/// BGRA "is near-black" (the corpus jp2's centre pixel is 0,0,0).
+fn is_black(px: [u8; 4]) -> bool {
+    px[0] < 60 && px[1] < 60 && px[2] < 60
+}
+
+/// Poll the handler's child window until `is_hit` matches, or time out.
+unsafe fn wait_for_pixel(parent: HWND, is_hit: impl Fn([u8; 4]) -> bool, secs: u64) -> [u8; 4] {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut last = [0u8; 4];
+    while std::time::Instant::now() < deadline {
+        let child = FindWindowExW(Some(parent), None, PREVIEW_CLASS, None).unwrap_or_default();
+        if !child.is_invalid() {
+            if let Some(px) = print_client_center(child) {
+                last = px;
+                if is_hit(px) {
+                    return px;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    last
+}
+
+/// Issue #11 follow-up: *"if there are several jp2 files, and you click on different
+/// files, the preview would stop refreshing."*
+///
+/// The single-file test above passes, which is why this was not reproducible. The
+/// difference is REUSE: Explorer's preview pane keeps ONE handler instance alive for a
+/// given CLSID and re-drives it per selection — `Initialize(new stream)` + `DoPreview`,
+/// with no guarantee of an `Unload` in between. This drives that exact sequence over
+/// three files (fast tier -> ImageMagick-subprocess tier -> fast tier) and asserts the
+/// pane actually changes each time, rather than keeping the previous file's pixels.
+#[test]
+fn preview_refreshes_when_one_handler_is_reused_across_files() {
+    let jp2 = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.jp2"),
+    );
+    let Ok(jp2) = jp2 else {
+        eprintln!("skipping: ../test-corpus/sample.jp2 not present");
+        return;
+    };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        ensure_host_class();
+
+        // Pane host on its own pumping thread, exactly as `preview_renders` does.
+        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        let host = std::thread::spawn(move || {
+            let parent = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                HOST_CLASS,
+                w!(""),
+                WS_OVERLAPPED,
+                0,
+                0,
+                PANE_W,
+                PANE_H,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("host parent window");
+            let _ = tx.send(parent.0 as isize);
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        });
+        let parent = HWND(rx.recv().unwrap() as *mut c_void);
+
+        // ONE handler for the whole run — the point of the test.
+        let init = create_handler().expect("create preview handler");
+        let handler: IPreviewHandler = init.cast().expect("QI IPreviewHandler");
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: PANE_W,
+            bottom: PANE_H,
+        };
+        handler.SetWindow(parent, &rect).expect("SetWindow");
+
+        // Selection 1: a red PNG (fast tier) — establishes a known "previous file".
+        let red = red_png();
+        init.Initialize(&SHCreateMemStream(Some(&red)).unwrap(), 0)
+            .expect("Initialize #1");
+        handler.DoPreview().expect("DoPreview #1");
+        let px1 = wait_for_pixel(parent, is_red, 20);
+        assert!(is_red(px1), "first selection never rendered: {px1:?}");
+
+        // Selection 2: the jp2 (ImageMagick-subprocess tier), SAME handler, no Unload.
+        init.Initialize(&SHCreateMemStream(Some(&jp2)).unwrap(), 0)
+            .expect("Initialize #2");
+        handler.DoPreview().expect("DoPreview #2");
+        let px2 = wait_for_pixel(parent, is_black, 20);
+        assert!(
+            !is_red(px2),
+            "pane still shows the PREVIOUS file after switching to the jp2 \
+             (issue #11: 'the preview would stop refreshing'): {px2:?}"
+        );
+        assert!(is_black(px2), "jp2 never rendered on reuse: {px2:?}");
+
+        // Selection 3: back to a fast-tier file — the pane must follow again.
+        let blue = solid_png([0, 0, 255, 255]);
+        init.Initialize(&SHCreateMemStream(Some(&blue)).unwrap(), 0)
+            .expect("Initialize #3");
+        handler.DoPreview().expect("DoPreview #3");
+        let px3 = wait_for_pixel(parent, is_blue, 20);
+        assert!(
+            is_blue(px3),
+            "pane did not refresh on the third selection: {px3:?}"
+        );
+
+        handler.Unload().expect("Unload");
+        drop(handler);
+        drop(init);
+        let _ = PostMessageW(Some(parent), WM_HOST_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = host.join();
+    }
+}
+
+/// Issue #11, the reporter's ACTUAL situation, reproduced locally rather than asked
+/// about: a folder holding several jp2 files, the preview pane being clicked from one to
+/// the next, while Explorer builds thumbnails for the neighbouring files at the same
+/// time. jp2 is decoded by spawning ImageMagick, so every one of those thumbnails is its
+/// own subprocess competing with the pane's — the load the single-file test never had.
+///
+/// Every selection must render. A blank pane here is the bug the reporter is seeing.
+#[test]
+fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
+    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.jp2");
+    let Ok(jp2) = std::fs::read(&corpus) else {
+        eprintln!("skipping: ../test-corpus/sample.jp2 not present");
+        return;
+    };
+
+    // A folder of DISTINCT jp2 files, so nothing can be served from a cache.
+    let dir = std::env::temp_dir().join(format!("st2k_jp2_folder_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    const FILES: usize = 12;
+    let paths: Vec<std::path::PathBuf> = (0..FILES)
+        .map(|i| {
+            let p = dir.join(format!("photo_{i:02}.jp2"));
+            // Append i bytes of trailing slack so each file is byte-distinct.
+            let mut bytes = jp2.clone();
+            bytes.extend(std::iter::repeat_n(0u8, i));
+            std::fs::write(&p, &bytes).unwrap();
+            p
+        })
+        .collect();
+
+    // Explorer's thumbnail pass over the neighbours: keep hammering GetThumbnail on
+    // background threads for as long as the pane test runs.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thumb_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut load = Vec::new();
+    for lane in 0..4 {
+        let stop = stop.clone();
+        let calls = thumb_calls.clone();
+        let paths = paths.clone();
+        load.push(std::thread::spawn(move || unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let mut i = lane;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let bytes = std::fs::read(&paths[i % paths.len()]).unwrap();
+                i += 1;
+                let Ok(init) = create_thumb_provider() else {
+                    continue;
+                };
+                let Ok(stream) = SHCreateMemStream(Some(&bytes)).ok_or(Error::from(E_FAIL)) else {
+                    continue;
+                };
+                if init.Initialize(&stream, 0).is_err() {
+                    continue;
+                }
+                let Ok(provider) = init.cast::<IThumbnailProvider>() else {
+                    continue;
+                };
+                let mut hbmp = windows::Win32::Graphics::Gdi::HBITMAP::default();
+                let mut alpha = WTS_ALPHATYPE::default();
+                if provider.GetThumbnail(256, &mut hbmp, &mut alpha).is_ok() && !hbmp.is_invalid() {
+                    let _ = DeleteObject(hbmp.into());
+                }
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }));
+    }
+
+    // Give the thumbnail storm a moment to actually be running before we click.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let mut blanks: Vec<String> = Vec::new();
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        ensure_host_class();
+
+        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        let host = std::thread::spawn(move || {
+            let parent = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                HOST_CLASS,
+                w!(""),
+                WS_OVERLAPPED,
+                0,
+                0,
+                PANE_W,
+                PANE_H,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("host parent window");
+            let _ = tx.send(parent.0 as isize);
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        });
+        let parent = HWND(rx.recv().unwrap() as *mut c_void);
+
+        // ONE handler, clicked from file to file, exactly as the pane does.
+        let init = create_handler().expect("create preview handler");
+        let handler: IPreviewHandler = init.cast().expect("QI IPreviewHandler");
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: PANE_W,
+            bottom: PANE_H,
+        };
+        handler.SetWindow(parent, &rect).expect("SetWindow");
+
+        for p in &paths {
+            let bytes = std::fs::read(p).unwrap();
+            let stream = SHCreateMemStream(Some(&bytes)).expect("SHCreateMemStream");
+            init.Initialize(&stream, 0).expect("Initialize");
+            handler.DoPreview().expect("DoPreview");
+            // The corpus sample's centre pixel is black; anything else means the pane
+            // did not end up showing THIS file.
+            let px = wait_for_pixel(parent, is_black, 20);
+            if !is_black(px) {
+                blanks.push(format!(
+                    "{} -> {px:?}",
+                    p.file_name().unwrap().to_string_lossy()
+                ));
+            }
+        }
+
+        handler.Unload().expect("Unload");
+        drop(handler);
+        drop(init);
+        let _ = PostMessageW(Some(parent), WM_HOST_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = host.join();
+    }
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for t in load {
+        let _ = t.join();
+    }
+    let calls = thumb_calls.load(std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    eprintln!("competing thumbnail decodes during the run: {calls}");
+    assert!(
+        calls > 0,
+        "the thumbnail load never ran — this test proved nothing"
+    );
+    assert!(
+        blanks.is_empty(),
+        "{}/{FILES} selections did not render under thumbnail load (issue #11): {blanks:?}",
+        blanks.len()
+    );
+}
+
+/// Issue #11, the actual failure mode: when a decode MISSES on a reused handler —
+/// undecodable bytes, or (the real-world case) an ImageMagick subprocess that blows the
+/// wall-clock budget because Explorer is running several of them at once for the other
+/// jp2 files in the folder — the pane must go EMPTY, not keep showing the file you were
+/// looking at before. Leaving the previous pixels up is indistinguishable from "the
+/// preview stopped refreshing".
+#[test]
+fn preview_clears_when_the_next_file_fails_to_decode() {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        ensure_host_class();
+
+        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        let host = std::thread::spawn(move || {
+            let parent = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                HOST_CLASS,
+                w!(""),
+                WS_OVERLAPPED,
+                0,
+                0,
+                PANE_W,
+                PANE_H,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("host parent window");
+            let _ = tx.send(parent.0 as isize);
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        });
+        let parent = HWND(rx.recv().unwrap() as *mut c_void);
+
+        let init = create_handler().expect("create preview handler");
+        let handler: IPreviewHandler = init.cast().expect("QI IPreviewHandler");
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: PANE_W,
+            bottom: PANE_H,
+        };
+        handler.SetWindow(parent, &rect).expect("SetWindow");
+
+        // Selection 1: renders red.
+        let red = red_png();
+        init.Initialize(&SHCreateMemStream(Some(&red)).unwrap(), 0)
+            .expect("Initialize #1");
+        handler.DoPreview().expect("DoPreview #1");
+        let px1 = wait_for_pixel(parent, is_red, 20);
+        assert!(is_red(px1), "first selection never rendered: {px1:?}");
+
+        // Selection 2: bytes no tier can decode — stands in for a budget-expired
+        // ImageMagick decode, which reaches the pane as the same `None`.
+        let junk = vec![0x7Au8; 4096];
+        init.Initialize(&SHCreateMemStream(Some(&junk)).unwrap(), 0)
+            .expect("Initialize #2");
+        handler.DoPreview().expect("DoPreview #2");
+        let px2 = wait_for_pixel(parent, |px| !is_red(px), 20);
+
+        handler.Unload().expect("Unload");
+        drop(handler);
+        drop(init);
+        let _ = PostMessageW(Some(parent), WM_HOST_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = host.join();
+
+        assert!(
+            !is_red(px2),
+            "pane is STILL showing the previous file after the next one failed to \
+             decode (issue #11: 'the preview would stop refreshing'): {px2:?}"
         );
     }
 }

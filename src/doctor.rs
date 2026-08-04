@@ -163,24 +163,44 @@ fn check_windows_switches(r: &mut Report) {
         None => r.line(S::Ok, "IconsOnly", "unset — thumbnails allowed"),
     }
 
-    // Group Policy can kill thumbnails machine-wide or per-user.
+    // Group Policy can kill thumbnails machine-wide or per-user. Only `DisableThumbnails`
+    // actually does that; the two *Cache* values disable the on-disk thumbnail CACHE
+    // (thumbcache_*.db) and nothing else — thumbnails still generate, they are just
+    // recomputed every time. Reporting those as "thumbnails are disabled" sent a reporter
+    // (issue #11) chasing four scary FAILs on an install whose thumbnails worked fine.
     let pol = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
     let mut any_policy = false;
+    let mut cache_off = false;
     for (root, root_name) in [(CURRENT_USER, "HKCU"), (LOCAL_MACHINE, "HKLM")] {
-        for value in [
-            "DisableThumbnails",
-            "NoThumbnailCache",
-            "DisableThumbnailCache",
-        ] {
+        if let Some(1) = root
+            .open(pol)
+            .ok()
+            .and_then(|k| k.get_u32("DisableThumbnails").ok())
+        {
+            any_policy = true;
+            r.fail_with_fix(
+                &format!("{root_name}\\...\\DisableThumbnails"),
+                "1 — policy disables thumbnails",
+                "Set this value to 0 or delete it (Group Policy / registry).",
+            );
+        }
+        for value in ["NoThumbnailCache", "DisableThumbnailCache"] {
             if let Some(1) = root.open(pol).ok().and_then(|k| k.get_u32(value).ok()) {
-                any_policy = true;
-                r.fail_with_fix(
+                cache_off = true;
+                r.line(
+                    S::Info,
                     &format!("{root_name}\\...\\{value}"),
-                    "1 — policy disables thumbnails",
-                    "Set this value to 0 or delete it (Group Policy / registry).",
+                    "1 — thumbnail CACHE off (thumbnails still work, just slower)",
                 );
             }
         }
+    }
+    if cache_off {
+        r.line(
+            S::Info,
+            "Thumbnail cache",
+            "disabled by policy — every thumbnail is recomputed on each visit",
+        );
     }
     if !any_policy {
         r.line(S::Ok, "Thumbnail policies", "no disabling policy found");

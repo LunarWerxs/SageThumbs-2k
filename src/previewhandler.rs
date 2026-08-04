@@ -468,7 +468,13 @@ impl PreviewHandler_Impl {
     /// Hand the cached decoded pixels to the window-OWNING UI thread, which builds the composited
     /// DIB + repaints THERE. The make_dib / RenderData swap MUST happen on the window's own thread:
     /// doing it from the COM thread would race the UI thread's WM_PAINT (use-after-free of the old
-    /// RenderData). No-op until the window exists / there's something to show.
+    /// RenderData). No-op until the window exists.
+    ///
+    /// With NO pixels (decode failed or blew the wall-clock budget) we post a NULL payload, which
+    /// tells the UI thread to drop what it is showing and repaint empty. Returning early here
+    /// instead would leave the PREVIOUS file's image on screen: the host reuses one handler across
+    /// selections (`Initialize` + `DoPreview` again, no `Unload` in between), so a miss on file B
+    /// left file A up and the pane looked frozen (issue #11).
     fn post_render(&self) {
         let hwnd = self.child();
         if hwnd.0.is_null() {
@@ -476,18 +482,20 @@ impl PreviewHandler_Impl {
         }
         // Clone the pixels into a heap payload the UI thread takes ownership of (and frees). Keeping
         // `self.pixels` lets a later SetBackgroundColor re-composite without re-decoding.
-        let payload = match self.pixels.borrow().as_ref() {
-            Some(px) => Box::new((
+        let payload = self.pixels.borrow().as_ref().map(|px| {
+            Box::new((
                 DecodedRgba {
                     w: px.w,
                     h: px.h,
                     rgba: px.rgba.clone(),
                 },
                 self.bg.get(),
-            )),
-            None => return,
+            ))
+        });
+        let raw = match payload {
+            Some(b) => Box::into_raw(b),
+            None => core::ptr::null_mut(),
         };
-        let raw = Box::into_raw(payload);
         unsafe {
             if PostMessageW(
                 Some(hwnd),
@@ -496,6 +504,7 @@ impl PreviewHandler_Impl {
                 LPARAM(raw as isize),
             )
             .is_err()
+                && !raw.is_null()
             {
                 // The window died between the child() check and here — the message will never be
                 // processed (and so never reclaim the Box). Free it now so it doesn't leak.
@@ -596,15 +605,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // Build the composited DIB + swap the RenderData HERE (this thread owns the window), then
         // invalidate — the loop pumps WM_PAINT next, so it actually paints (no cross-thread race).
         WM_PREVIEW_RENDER => {
+            // Drop what we are showing FIRST, unconditionally. A NULL lparam means the new
+            // selection produced no image, and the pane must then go EMPTY: keeping the previous
+            // file's pixels up is exactly what "the preview stopped refreshing" looks like when
+            // the host reuses one handler across selections (issue #11).
+            let old = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderData;
+            if !old.is_null() {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                let rd = Box::from_raw(old);
+                _ = DeleteObject(rd.hbmp.into());
+            }
             let p = lparam.0 as *mut (DecodedRgba, u32);
             if !p.is_null() {
                 let (dec, bg) = *Box::from_raw(p);
-                let old = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderData;
-                if !old.is_null() {
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                    let rd = Box::from_raw(old);
-                    _ = DeleteObject(rd.hbmp.into());
-                }
                 if let Some(hbmp) = make_dib(dec.w as i32, dec.h as i32, &dec.rgba, bg) {
                     let rd = Box::new(RenderData {
                         hbmp,
@@ -614,8 +627,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     });
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(rd) as isize);
                 }
-                _ = InvalidateRect(Some(hwnd), None, true);
             }
+            _ = InvalidateRect(Some(hwnd), None, true);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
