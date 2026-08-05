@@ -58,7 +58,7 @@ foreach ($f in $Path) {
 }
 
 if (-not $flagged) {
-    Write-Host "[av] local Defender reports every installer clean - no false-positive submission is warranted." -ForegroundColor Green
+    Write-Host "[av] local Defender reports every installer clean. NOTE: this does NOT rule out cloud-ML quarantines on end users (block-at-first-sight fires on low-reputation hashes at install time and never reproduces locally - see issue #12 / docs/AV-SUBMISSION.md). An end-user report WITH a Defender threat name is grounds to submit even when this prints CLEAN." -ForegroundColor Green
     Write-Host "[av] a VirusTotal '!ml' hit alone is NOT grounds to submit (docs/AV-SUBMISSION.md)."
     exit 0
 }

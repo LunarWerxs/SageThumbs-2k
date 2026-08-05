@@ -19,6 +19,34 @@ submit** (see the next section for why).
 As of 2026-08-02 it reports CLEAN for every installer this project has published, 1.3.8
 through 1.7.0.
 
+## 2026-08-04: the threshold was crossed — SUBMIT for 1.7.4
+
+Issue #12 (screenshot attached there) shows real Defender on a real machine QUARANTINING the
+1.7.4 x64 installer as **`Trojan:Win32/Wacatac.B!ml`**, severity Severe, during a winget
+(UniGetUI) install and again on a manual download. This is no longer VT-only noise.
+
+**Correction to the doctrine below:** a clean LOCAL scan does not clear us. The end-user hit
+comes from Defender's CLOUD-delivered ML layer ("block at first sight"), which fires on a
+low-reputation hash at download/install time and does not reproduce in a local
+`MpCmdRun -Scan` — our scan of the same bytes with signatures 1.455.499.0 was clean the same
+day users were quarantined. So: an end-user report WITH a Defender threat name IS grounds to
+submit, even when `av-defender-check.ps1` prints CLEAN.
+
+Ready-to-submit fields (portal: https://www.microsoft.com/en-us/wdsi/filesubmission,
+Submission type: Software developer, incorrectly detected = Yes):
+
+| Field | x64 | ARM64 |
+|---|---|---|
+| File | `SageThumbs2K-Setup-1.7.4.exe` | `SageThumbs2K-Setup-1.7.4-arm64.exe` |
+| SHA-256 | `05A16462C44521CE1DA82D6AA9DD0AF9F8D8B09596D80576D25FB05AF0E98590` | `0BC9CAFC417930CD388493A769EB9E3D2B957150AE9DFDFBF6C81C5D0DEAB211` |
+| Detection name | `Trojan:Win32/Wacatac.B!ml` | (submit with the same name) |
+
+The x64 hash is byte-identical to the winget-manifest hash, so one clearance covers both
+channels. The notes paragraph in the portal section below still applies verbatim.
+
+The durable fix is CODE SIGNING: every release is a brand-new unsigned low-prevalence hash,
+so this lottery re-runs each version. An OV certificate (or Azure Trusted Signing) ends it.
+
 ## Finding first: Microsoft Defender does NOT flag our installer
 
 A local Windows Defender scan of the shipped installer came back **clean, no threats**
