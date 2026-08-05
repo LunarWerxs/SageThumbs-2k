@@ -2,9 +2,15 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 1.7.5
 
 ### Fixed
+
+- **Black-and-white scanned pages could render as a solid black square.** Some JPEG 2000
+  scans - the kind archive.org uses for book and map pages - store the picture as numbered
+  colours rather than as brightness, and a blank white page is stored as "colour number 0".
+  Our new decoder was treating that number as a brightness value, so the whitest page came
+  out the darkest. It now reads the colour table the file provides. (issue #11)
 
 - **The preview pane could stop refreshing after it had been sitting idle.** Come back to a
   folder after a while, click a different picture, and the pane sometimes kept showing the
