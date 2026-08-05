@@ -19,6 +19,40 @@ submit** (see the next section for why).
 As of 2026-08-02 it reports CLEAN for every installer this project has published, 1.3.8
 through 1.7.0.
 
+## MEASURED: what actually changes the detections, and what does not (2026-08-05)
+
+Three x64 installers built from the SAME staged payload, all scanned on VirusTotal the same
+day, so the engine set and signatures are constant. This is evidence, not theory — do not
+re-litigate these knobs without new measurements.
+
+| build | VT | engines |
+|---|---|---|
+| shipped 1.7.4, `lzma2/ultra64` + solid | 3/70 | APEX, **Microsoft `Wacatac.B!ml`**, Skyhigh `ObfuscatedPoly` |
+| + COMPLETE VERSIONINFO | 4/70 | APEX, Kaspersky `Dapato`, **Microsoft `Wacapew.C!ml`**, Skyhigh |
+| + `Compression=zip/1`, no solid (24.8 MB) | 3/70 | APEX, Kaspersky `Dapato`, **Microsoft `Wacapew.C!ml`** |
+
+Conclusions:
+
+1. **Completing the installer's VERSIONINFO did NOT reduce detections.** The hypothesis was
+   reasonable — this repo previously moved a payload stub DLL from 6/64 to 1/69 purely by
+   adding a VERSIONINFO resource (see `build-release.ps1`) — but it does NOT replicate for
+   the Inno setup stub. The metadata change is kept anyway because it is simply CORRECT (the
+   installer claimed `lunarwerx` while every payload PE says `LunarWerx`, and
+   OriginalFilename/copyright were blank), not because it buys detections.
+2. **Payload entropy is real but cheap-to-lose.** Dropping to `zip/1` removed Skyhigh's
+   `ObfuscatedPoly` verdict outright — that engine is scoring the entropy-8.0 overlay. It
+   costs 12.8 MB -> 24.8 MB, nearly doubling every download, to silence ONE engine that has
+   never been the thing quarantining users. NOT taken. Revisit only if Skyhigh's verdict
+   starts appearing in user reports.
+3. **Microsoft fires in every single variant.** `Wacatac`/`Wacapew` `!ml` survived both
+   changes. It is not driven by metadata or entropy; it tracks the unsigned + zero-prevalence
+   + installs-a-shell-hook profile. Nothing free changes it. Per-release WDSI submission
+   remains the only lever, and it clears one HASH, never the product.
+
+The free levers that DO exist, in order of value: submit each release to WDSI before
+announcing it; keep publishing through channels that accrue prevalence (GitHub Releases,
+winget); and tell users plainly what they will see and how to verify the hash.
+
 ## 2026-08-04: the threshold was crossed — SUBMIT for 1.7.4
 
 Issue #12 (screenshot attached there) shows real Defender on a real machine QUARANTINING the

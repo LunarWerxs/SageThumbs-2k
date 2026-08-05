@@ -44,7 +44,11 @@
 #define AppName "SageThumbs 2K"
 #define AppExe "SageThumbs2K.exe"
 #define AppDll "sagethumbs2k.dll"
-#define Publisher "lunarwerx"
+; Publisher string must match the VERSIONINFO the Rust binaries carry EXACTLY (build.rs /
+; windres write "LunarWerx"). An installer whose CompanyName disagrees with the binaries it
+; drops is a classic dropper trait and reads as one to ML classifiers; it was "lunarwerx"
+; here against "LunarWerx" in every payload PE.
+#define Publisher "LunarWerx"
 
 [Setup]
 ; One stable identity and directory cover both release architectures. They share
@@ -76,12 +80,20 @@ SolidCompression=yes
 WizardStyle=modern
 ; Rich VERSIONINFO on Setup.exe - a metadata-less installer is heuristic-AV
 ; false-positive bait (same reason the binaries + magick stubs carry it).
+; COMPLETE, truthful VERSIONINFO. This is not cosmetic: a PE with blank OriginalFilename /
+; InternalName and a LegalCopyright that is not a copyright statement is exactly the sparse-
+; metadata shape heuristic engines score toward malware. Measured precedent in this repo:
+; giving a payload stub DLL a real VERSIONINFO moved it from 6/64 to 1/69 on VirusTotal
+; (see build-release.ps1). Setup.exe had none of these filled in.
 VersionInfoVersion={#AppVer}
 VersionInfoProductVersion={#AppVer}
 VersionInfoCompany={#Publisher}
 VersionInfoProductName={#AppName}
 VersionInfoDescription={#AppName} Setup
-VersionInfoCopyright=SageThumbs 2K
+VersionInfoCopyright=(C) 2026 {#Publisher}
+VersionInfoOriginalFileName=SageThumbs2K-Setup-{#AppVer}{#OutputSuffix}.exe
+VersionInfoTextVersion={#AppVer}
+AppCopyright=(C) 2026 {#Publisher}
 ArchitecturesAllowed={#ArchitectureMatcher}
 ArchitecturesInstallIn64BitMode={#ArchitectureMatcher}
 ; Shell-extension registration writes HKLM + Program Files -> needs elevation.
