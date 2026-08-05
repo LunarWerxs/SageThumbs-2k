@@ -306,8 +306,12 @@ mod store {
         #[test]
         fn root_section_renders_first() {
             let mut doc = Doc::new();
-            doc.entry(".psd".into()).or_default().insert("Enabled".into(), "0".into());
-            doc.entry(ROOT_SECTION.into()).or_default().insert("Lang".into(), "de".into());
+            doc.entry(".psd".into())
+                .or_default()
+                .insert("Enabled".into(), "0".into());
+            doc.entry(ROOT_SECTION.into())
+                .or_default()
+                .insert("Lang".into(), "de".into());
             let text = render(&doc);
             assert!(
                 text.find("[Settings]") < text.find("[.psd]"),
@@ -588,7 +592,10 @@ pub fn thumb_settings() -> ThumbSettings {
     };
     let g = |name: &str, default: u32| {
         if let Some(ini) = ini.as_ref() {
-            return ini.get(name).and_then(|v| v.parse().ok()).unwrap_or(default);
+            return ini
+                .get(name)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default);
         }
         key.as_ref()
             .and_then(|k| k.get_u32(name).ok())
@@ -1095,7 +1102,9 @@ pub fn set_preview_markdown(on: bool) -> windows_registry::Result<()> {
 /// is an "all users" switch, not a per-user one (there is no per-user gate).
 pub fn format_enabled(ext: &str) -> bool {
     if store::portable() {
-        return store::get_u32(Some(ext), "Enabled").map(|v| v != 0).unwrap_or(true);
+        return store::get_u32(Some(ext), "Enabled")
+            .map(|v| v != 0)
+            .unwrap_or(true);
     }
     CURRENT_USER
         .open(format!(r"{}\{ext}", hkcu_root()))
@@ -1121,7 +1130,9 @@ pub fn set_format_enabled(ext: &str, enabled: bool) -> windows_registry::Result<
 /// can hide ones the user never uses. Stored under `…\SageThumbs2K\MenuItems\<key>`.
 pub fn menu_item_shown(key: &str) -> bool {
     if store::portable() {
-        return store::get_u32(Some(MENU_ITEMS), key).map(|v| v != 0).unwrap_or(true);
+        return store::get_u32(Some(MENU_ITEMS), key)
+            .map(|v| v != 0)
+            .unwrap_or(true);
     }
     CURRENT_USER
         .open(format!(r"{}\MenuItems", hkcu_root()))
@@ -1190,7 +1201,11 @@ enum MenuVisibilitySource {
 /// (nothing ever hidden) makes every [`MenuVisibility::shown`] return true.
 pub fn menu_visibility() -> MenuVisibility {
     MenuVisibility(if store::portable() {
-        MenuVisibilitySource::Portable(store::section_values(Some(MENU_ITEMS)).into_iter().collect())
+        MenuVisibilitySource::Portable(
+            store::section_values(Some(MENU_ITEMS))
+                .into_iter()
+                .collect(),
+        )
     } else {
         MenuVisibilitySource::Registry(
             CURRENT_USER

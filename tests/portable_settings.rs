@@ -69,7 +69,10 @@ fn portable_mode_uses_the_ini_and_never_touches_the_registry() {
     assert_eq!(settings::max_thumb_size(), settings::DEFAULT_THUMB_SIZE);
     assert_eq!(settings::jpeg_quality(), settings::DEFAULT_JPEG as u8);
     assert_eq!(settings::lang_override(), None);
-    assert!(settings::format_enabled("psd"), "unset format defaults to on");
+    assert!(
+        settings::format_enabled("psd"),
+        "unset format defaults to on"
+    );
     assert!(settings::menu_item_shown("menu_convert_into"));
     assert!(settings::menu_order().is_empty());
 

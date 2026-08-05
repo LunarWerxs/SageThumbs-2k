@@ -41,6 +41,9 @@ if (-not $failed) {
 }
 if (-not $failed) { Step 'unit + integration tests' { cargo test --release --tests } }
 if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
+# Rustfmt was MISSING here until 2026-08-05, so this gate printed "safe to push" on a commit
+# CI then failed on formatting alone. Cheap, and the last step of the job we claim to mirror.
+if (-not $failed) { Step 'rustfmt (--check)'     { cargo fmt --all --check } }
 
 # Mirror the `deny` job — only if cargo-deny is installed locally (deny.toml at repo root).
 if (-not $failed -and (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {
