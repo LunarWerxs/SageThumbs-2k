@@ -19,6 +19,25 @@ submit** (see the next section for why).
 As of 2026-08-02 it reports CLEAN for every installer this project has published, 1.3.8
 through 1.7.0.
 
+## 2026-08-05: Kaspersky joined the generic-verdict list, and the VT gate was taught to read it
+
+Building 1.7.5 tripped the release VirusTotal gate: Kaspersky reported
+`VHO:Trojan-Dropper.Win32.Dapato.gen`, and the gate hard-fails on a tier-1 engine unless the
+verdict looks like a machine-learning / heuristic generic. It is one - the `.gen` suffix is
+Kaspersky's generic-family notation, the same "matched a family pattern, not this sample"
+admission the gate already ignores when spelled "generic". `push_to_vt.py`'s `ML_MARKERS`
+simply did not match the abbreviation.
+
+Why this is a false positive and not a new problem, evidenced before the gate was touched:
+THREE installers built on 2026-08-05 all drew the same Kaspersky verdict - the real 1.7.5
+build, plus two experiments built from 1.7.4's staged payload with different compression and
+different VERSIONINFO. Contents varied, verdict did not. It tracks the Inno-stub installer
+family, not our code, and it appeared the day AFTER 1.7.4's clean-of-Kaspersky report.
+
+Only `.gen` was added to the marker list. The `VHO:` prefix it pairs with is widely described
+as a heuristic/cloud verdict, but Kaspersky does not document it, so it is deliberately NOT
+matched - the gate keeps its teeth for anything we cannot justify.
+
 ## There is no regression to bisect: the Microsoft verdict predates 1.0.0 (2026-08-05)
 
 The obvious theory — "some version started tripping this, find that commit and revert it" —
