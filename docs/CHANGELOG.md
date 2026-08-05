@@ -12,6 +12,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   General. Switching it on or off clears the thumbnail cache for you, because Windows stores
   the picture we drew and would otherwise keep showing the old one. (in-app suggestion)
 
+- **A portable version, no installer.** Extract the zip and run it. Nothing is installed, no
+  administrator rights are needed, and your settings live in `SageThumbs2K.ini` next to the
+  exe rather than in the registry - delete that file and it goes back to storing them the
+  normal way. You get the app and the command line tool, so Settings, Convert and Resize,
+  quick preview, screenshots, OCR, the colour picker and the folder tools all work. It does
+  **not** give you Explorer thumbnails or the right-click menu: Windows only loads a shell
+  extension whose COM class is registered, so no zip can provide those. Install the normal
+  build if you want them. The screenshot tool also runs only while the app is open, since a
+  portable copy can be moved or unplugged at any time. (issue #13)
+
 ### Changed
 
 - The PDF page-margin option moved from General to the Ebook/comic tab, where the other

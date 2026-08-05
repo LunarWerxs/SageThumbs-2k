@@ -266,3 +266,30 @@ IMAGE — ImageMagick's `jp2:reduce-factor` and `oxigdal-jpeg2000`'s
 `decode_region_at_resolution` both hand back a crop instead of a downscale, and both look
 like a spectacular speedup until you render them. Compare against a full decode, visually,
 every time.
+
+## Do not cache the portable settings file on `(mtime, len)`
+
+`settings.rs`'s `store` reads the portable `SageThumbs2K.ini` on every access, and that is
+deliberate. The obvious optimisation is to stat the file and re-parse only when it changed,
+keyed on modification time plus length. That key is broken for exactly the edits people make:
+flipping `1` to `0`, or `512` to `256`, changes neither half. Combine that with a filesystem
+timestamp granularity coarser than the gap between two quick writes and a real edit becomes
+invisible, so the app keeps serving the old value with no way for the user to tell why.
+
+It fails the way bad caches always do. `tests/portable_settings.rs` caught it only under the
+full suite and passed in isolation, because the timing has to line up. That test now pins the
+nasty case on purpose: the replacement is the same byte length as what it replaces and lands
+immediately after the store's own write. If you are tempted to add the cache back, that test
+is why you should not. There is no hot path to protect either: `thumb_settings` and
+`menu_visibility` already take one snapshot per operation rather than reading per item.
+
+## `preflight.ps1` must mirror EVERY step of the CI job it claims to mirror
+
+The pre-push hook exists so a push cannot fail CI on something checkable locally, and it says
+so: "Mirrors the GitHub CI `build-test` + `deny` jobs". On 2026-08-05 it printed
+`PREFLIGHT PASSED - safe to push` on a commit CI then rejected, because it ran build, tests,
+clippy and cargo-deny but not that job's last step, `cargo fmt --all --check`.
+
+A gate that covers most of a job is worse than no gate, because it is trusted. If you add a
+step to `build-test` in `ci.yml`, add it to `scripts/preflight.ps1` in the same position, or
+change the comment to stop claiming a mirror it no longer is.
