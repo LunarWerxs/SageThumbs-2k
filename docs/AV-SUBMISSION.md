@@ -19,6 +19,47 @@ submit** (see the next section for why).
 As of 2026-08-02 it reports CLEAN for every installer this project has published, 1.3.8
 through 1.7.0.
 
+## There is no regression to bisect: the Microsoft verdict predates 1.0.0 (2026-08-05)
+
+The obvious theory — "some version started tripping this, find that commit and revert it" —
+is FALSE, and it was tested rather than argued. Every archived installer in `dist\` was
+looked up on VirusTotal by hash (no re-upload, just its stored verdicts):
+
+| version | Microsoft verdict | total |
+|---|---|---|
+| 0.7.2, 0.9.0 | never scanned (nothing scanned releases before 1.2.0) | - |
+| 1.0.0 | `Trojan:Win32/Wacatac.B!ml` | 4/74 |
+| 1.1.0 | `Trojan:Win32/Wacatac.C!ml` | 5/73 |
+| 1.1.1 | `Trojan:Win32/Wacatac.B!ml` | 5/74 |
+| 1.2.0 | (Google `Detected`) | 6/75 |
+| 1.2.1 | `Trojan:Win32/Wacatac.B!ml` | 4/75 |
+| 1.2.2 | **clean** | 1/75 |
+| 1.3.0 | **clean** (rescanned 2026-08-04) | 2/75 |
+| 1.3.4 | **clean** | 1/74 |
+| 1.3.8 | `Trojan:Win32/Wacatac.B!ml` | 3/74 |
+| 1.5.0 | **clean** | 2/75 |
+| 1.6.0 | `Trojan:Win32/Wacatac.B!ml` | 3/75 |
+| 1.7.2, 1.7.4 | `Trojan:Win32/Wacatac.B!ml` | 3/75 |
+
+Read it carefully, because it settles several things at once:
+
+1. **1.0.0 — the very first release ever scanned — already carried `Wacatac.B!ml`.** There is
+   no "before" to go back to. No commit introduced this.
+2. **It ALTERNATES** (1.3.4 clean, 1.3.8 flagged, 1.5.0 clean, 1.6.0 flagged) across releases
+   whose installer construction is identical. No code change toggles on and off like that.
+3. **The controlled comparison:** 1.3.0 and 1.7.4 were both (re)scanned on 2026-08-04, same
+   engines, same signatures. The OLD file came back clean; the ONE-DAY-OLD file was flagged.
+   The variable is the hash's age and prevalence, not its contents.
+4. **1.2.2 is the cleanest release this project has ever shipped (1/75).** An earlier note in
+   this repo described 1.2.2 as the start of a "standing pattern"; that was the earliest row
+   in the old detection table being mistaken for the beginning of the problem. It was the
+   opposite — a low point, not a starting point.
+
+CONCLUSION: `Wacatac`/`Wacapew` `!ml` here is a low-prevalence-new-file verdict, not a
+reaction to anything in our code. Do not go looking for the offending commit; there isn't
+one. The levers are the ones in the section below, and they are about identity and
+prevalence, not source.
+
 ## MEASURED: what actually changes the detections, and what does not (2026-08-05)
 
 Three x64 installers built from the SAME staged payload, all scanned on VirusTotal the same
