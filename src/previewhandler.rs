@@ -40,10 +40,10 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
-    SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
-    IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT,
-    WM_PRINTCLIENT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+    GetParent, GetWindowLongPtrW, IsWindow, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
+    GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCDESTROY,
+    WM_PAINT, WM_PRINTCLIENT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
 };
 use windows_implement::implement;
 
@@ -379,11 +379,39 @@ impl PreviewHandler_Impl {
         HWND(self.hwnd.get() as *mut c_void)
     }
 
-    /// Create the child window if we have a parent and haven't already. Returns
-    /// whether a usable window now exists.
+    /// Create the child window if we have a parent and don't already have a LIVE one.
+    /// Returns whether a usable window now exists.
+    ///
+    /// "Live" is the load-bearing word. Holding a non-null `hwnd` is not proof the window
+    /// still exists: the host can destroy our child out from under us — it owns the parent,
+    /// and it recycles the pane after the preview sits idle — WITHOUT calling `Unload`.
+    /// Trusting the stale handle meant `post_render` posted to a dead window, `PostMessageW`
+    /// failed, the payload was freed, and the pane silently kept showing the PREVIOUS file:
+    /// "it missed the refresh a couple of times" after half an hour idle (issue #11). The
+    /// same reasoning covers a re-parent: a child of a window we are no longer inside can
+    /// never paint into the visible pane, so it is just as dead for our purposes.
     fn ensure_window(&self) -> bool {
-        if !self.child().0.is_null() {
-            return true;
+        let existing = self.child();
+        if !existing.0.is_null() {
+            let alive = unsafe { IsWindow(Some(existing)) }.as_bool();
+            let same_parent = unsafe { GetParent(existing) }
+                .map(|p| p.0 as isize == self.parent.get())
+                .unwrap_or(false);
+            if alive && same_parent {
+                return true;
+            }
+            // Stale: drop the handle and reap the old UI thread before building a new one,
+            // so we never accumulate threads across host recycles.
+            crate::safety::log_debug(
+                "preview: child window went stale (host recycled the pane) - rebuilding",
+            );
+            self.hwnd.set(0);
+            if alive {
+                unsafe { _ = PostMessageW(Some(existing), WM_PREVIEW_CLOSE, WPARAM(0), LPARAM(0)) };
+            }
+            if let Some(h) = self.ui_thread.borrow_mut().take() {
+                let _ = h.join();
+            }
         }
         let parent_isize = self.parent.get();
         if parent_isize == 0 {

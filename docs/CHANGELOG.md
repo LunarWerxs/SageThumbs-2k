@@ -4,6 +4,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Fixed
+
+- **The preview pane could stop refreshing after it had been sitting idle.** Come back to a
+  folder after a while, click a different picture, and the pane sometimes kept showing the
+  previous one. Windows quietly recycles the preview pane when it has been idle, which
+  destroys the window we draw into; we kept drawing into the window that no longer existed,
+  so the update went nowhere and the stale picture stayed put. We now notice the window has
+  gone and rebuild it. (issue #11)
+
 ### Added
 
 - **A built-in JPEG 2000 decoder that only decodes what the thumbnail needs.** JPEG 2000

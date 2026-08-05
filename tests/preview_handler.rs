@@ -800,3 +800,102 @@ fn preview_clears_when_the_next_file_fails_to_decode() {
         );
     }
 }
+
+/// Issue #11's third report: after the pane sat idle for ~30 minutes, it "missed to refresh
+/// the preview a couple of times".
+///
+/// The host owns the parent and recycles the pane when it has been idle — destroying OUR
+/// child window WITHOUT calling `Unload`. The handler kept the now-dangling `HWND`, so
+/// `ensure_window` reported "already have one", `post_render` posted to a dead window,
+/// `PostMessageW` failed, the payload was dropped, and the pane silently went on showing the
+/// PREVIOUS file. Intermittent and idle-correlated, because that is when the host recycles.
+///
+/// Simulated here by destroying the child between two previews on ONE reused handler — the
+/// same state the handler is left in, without waiting half an hour for Explorer to do it.
+#[test]
+fn preview_recovers_when_the_host_destroys_our_window_without_unloading() {
+    let red = red_png();
+    let blue = solid_png([0, 0, 255, 255]);
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        ensure_host_class();
+
+        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        let host = std::thread::spawn(move || {
+            let parent = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                HOST_CLASS,
+                w!(""),
+                WS_OVERLAPPED,
+                0,
+                0,
+                PANE_W,
+                PANE_H,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("host parent window");
+            let _ = tx.send(parent.0 as isize);
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        });
+        let parent = HWND(rx.recv().unwrap() as *mut c_void);
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: PANE_W,
+            bottom: PANE_H,
+        };
+
+        // ── First file: renders normally.
+        let init = create_handler().expect("create preview handler");
+        let s1: IStream = SHCreateMemStream(Some(&red)).expect("stream");
+        init.Initialize(&s1, 0).expect("Initialize");
+        let handler: IPreviewHandler = init.cast().expect("QI IPreviewHandler");
+        handler.SetWindow(parent, &rect).expect("SetWindow");
+        handler.DoPreview().expect("DoPreview");
+        assert!(
+            is_red(wait_for_pixel(parent, is_red, 20)),
+            "first file never rendered red"
+        );
+
+        // ── The host tears our child down behind our back (no Unload), as it does when it
+        // recycles an idle pane. Destroy it from the child's OWN thread via our close
+        // message, which is exactly what a host-driven teardown looks like to us.
+        let child = FindWindowExW(Some(parent), None, PREVIEW_CLASS, None).unwrap_or_default();
+        assert!(!child.is_invalid(), "expected a child window to destroy");
+        let _ = PostMessageW(Some(child), WM_APP + 1, WPARAM(0), LPARAM(0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline
+            && FindWindowExW(Some(parent), None, PREVIEW_CLASS, None)
+                .unwrap_or_default()
+                .0
+                == child.0
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // ── Second file on the SAME handler: must notice the window is gone and rebuild.
+        let init2: IInitializeWithStream = handler.cast().expect("QI IInitializeWithStream");
+        let s2: IStream = SHCreateMemStream(Some(&blue)).expect("stream");
+        init2.Initialize(&s2, 0).expect("Initialize #2");
+        handler.SetWindow(parent, &rect).expect("SetWindow #2");
+        handler.DoPreview().expect("DoPreview #2");
+        assert!(
+            is_blue(wait_for_pixel(parent, is_blue, 20)),
+            "after the host destroyed our window, the pane never refreshed to the new file \
+             (it silently kept the old one)"
+        );
+
+        handler.Unload().expect("Unload");
+        drop(handler);
+        drop(init);
+        let _ = PostMessageW(Some(parent), WM_HOST_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = host.join();
+    }
+}
