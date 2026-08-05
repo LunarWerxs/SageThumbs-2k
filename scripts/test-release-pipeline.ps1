@@ -157,6 +157,42 @@ try {
         Assert-ReleaseRequiredInputsTracked -Root $root -RelativePaths $manifestInputs
     }
 
+    # The portable zip is an ordinary asset with no provenance manifest and no calibrated size
+    # reference, so NOTHING else in this pipeline would notice if it silently stopped being
+    # built or uploaded - the release would just publish installers and look entirely healthy.
+    # These two pin the parts that have no other alarm.
+    Assert-Passes 'release.ps1 builds and uploads the portable zips' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        if ($releaseText -notmatch '-Portable') {
+            throw 'release.ps1 no longer invokes build-release.ps1 -Portable'
+        }
+        if ($releaseText -notmatch '\$artifact\.Portable\.FullName') {
+            throw 'release.ps1 no longer adds the portable zip to the uploaded release assets'
+        }
+        foreach ($expected in 'SageThumbs2K-Portable-$ver.zip', 'SageThumbs2K-Portable-$ver-arm64.zip') {
+            if ($releaseText -notmatch [regex]::Escape($expected)) {
+                throw "release.ps1 artifact table no longer names the portable zip: $expected"
+            }
+        }
+    }
+
+    Assert-Passes 'portable builds stage outside the installer stage' {
+        # Staging wipes and rebuilds its directory, and the portable pass deliberately omits the
+        # DLL. If the two ever share a directory again, a portable build inside a release gets to
+        # gut the exact stage check-release-manifest.ps1 validates the installer against.
+        $buildText = Get-Content -LiteralPath (Join-Path $root 'scripts\build-release.ps1') -Raw
+        if ($buildText -notmatch 'portable-src-\$Architecture') {
+            throw 'build-release.ps1 -Portable no longer stages into its own portable-src directory'
+        }
+        $stageAssignment = [regex]::Match(
+            $buildText,
+            '(?s)\$stage\s*=\s*if\s*\(\s*\$Portable\s*\)\s*\{.*?\}\s*else\s*\{.*?\}'
+        )
+        if (-not $stageAssignment.Success) {
+            throw 'build-release.ps1 $stage is no longer selected by the -Portable switch'
+        }
+    }
+
     $corrupt = Join-Path $scratch 'corrupt.exe'
     [IO.File]::WriteAllBytes($corrupt, [byte[]](0x4D, 0x5A, 0, 0))
     Assert-Fails 'truncated MZ file is not accepted as a PE' {
