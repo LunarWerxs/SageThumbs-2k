@@ -44,16 +44,20 @@ try {
             SetupPath    = Join-Path $root "dist\SageThumbs2K-Setup-$ver.exe"
             ManifestPath = Join-Path $root "dist\SageThumbs2K-Setup-$ver.release.json"
             StagePath    = Join-Path $root 'packaging\stage\x64'
+            PortablePath = Join-Path $root "dist\SageThumbs2K-Portable-$ver.zip"
             Setup        = $null
             Manifest     = $null
+            Portable     = $null
         }
         [pscustomobject]@{
             Architecture = 'arm64'
             SetupPath    = Join-Path $root "dist\SageThumbs2K-Setup-$ver-arm64.exe"
             ManifestPath = Join-Path $root "dist\SageThumbs2K-Setup-$ver-arm64.release.json"
             StagePath    = Join-Path $root 'packaging\stage\arm64'
+            PortablePath = Join-Path $root "dist\SageThumbs2K-Portable-$ver-arm64.zip"
             Setup        = $null
             Manifest     = $null
+            Portable     = $null
         }
     )
 
@@ -178,6 +182,28 @@ try {
         }
     }
 
+    # 4a) The portable zips, built AFTER the installer provenance gate above has read each
+    # stage. `-Portable` stages into its own directory so it cannot disturb them either way,
+    # but ordering it here means even a future change to that can't invalidate a gate that
+    # already passed. `-SkipBuild` is always safe for this leg: the installer pass immediately
+    # above just built these exact binaries, so this only re-stages and zips.
+    #
+    # NOT provenance- or size-gated, deliberately: there is no .release.json for a zip and no
+    # calibrated size reference, and inventing either would put a brand-new failure mode
+    # AFTER main is already pushed and CI is already green - the exact trap the artifact-table
+    # comment above exists to avoid. It is NOT separately VirusTotal'd either, because the
+    # bytes in it are the same EXEs the scanned installer carries. It IS digest-verified after
+    # upload like every other asset (step 5).
+    Write-Host "[4a/6] build portable zips: $($releaseArtifacts.Architecture -join ' + ')" -ForegroundColor Green
+    foreach ($artifact in $releaseArtifacts) {
+        pwsh "$root\scripts\build-release.ps1" -Portable -SkipBuild -Architecture $artifact.Architecture
+        if ($LASTEXITCODE) { throw "$($artifact.Architecture) portable zip build failed - NOT publishing" }
+        if (-not (Test-Path -LiteralPath $artifact.PortablePath -PathType Leaf)) {
+            throw "portable zip missing after its build: $($artifact.PortablePath)"
+        }
+        $artifact.Portable = Get-Item -LiteralPath $artifact.PortablePath -ErrorAction Stop
+    }
+
     # 4b) VirusTotal the EXACT artifact we are about to publish, BEFORE publishing it.
     # Added 2026-07-18: nothing scanned releases up to and including v1.2.0, so ESET's
     # generic-ML "Generik.*" verdicts on 1.1.0/1.1.1 were first seen on SourceForge's
@@ -258,6 +284,30 @@ try {
         )
     }
 
+    # State the portable scope in the notes rather than letting the filename imply more than
+    # it delivers. Everyone who downloads it will otherwise ask the same question, which is
+    # the one issue #13 already asked. No sizes or counts here - the notes stay evergreen.
+    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+        '',
+        '### Portable (no installer)',
+        '',
+        'Extract and run. Nothing is installed, nothing goes in the registry, no admin needed.',
+        'Settings live in `SageThumbs2K.ini` next to the exe.',
+        '',
+        'It gives you the app and the command line tool: settings, convert and resize, quick',
+        'preview, screenshots, OCR, the colour picker and the folder tools. It does **not**',
+        'give you Explorer thumbnails or the right-click menu, because Windows only loads a',
+        'shell extension whose COM class is registered. Install the normal build for those.'
+    )
+    foreach ($artifact in $releaseArtifacts) {
+        Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+            '',
+            '- **' + $artifact.Architecture + ' portable:** ``' + $artifact.Portable.Name + '``',
+            '- **' + $artifact.Architecture + ' portable SHA-256:** ``' +
+                (Get-ReleaseSha256 -Path $artifact.Portable.FullName) + '``'
+        )
+    }
+
     # 5) Create a DRAFT first. Verify GitHub received the exact local bytes before
     # publishing, so an upload anomaly never briefly exposes a corrupt public build.
     # Target the immutable SHA we actually checked, not the moving `main` ref: another push while
@@ -271,6 +321,7 @@ try {
     $releaseAssetPaths = @(
         foreach ($artifact in $releaseArtifacts) {
             $artifact.Setup.FullName
+            $artifact.Portable.FullName
         }
     )
     gh release create $tag @releaseAssetPaths `

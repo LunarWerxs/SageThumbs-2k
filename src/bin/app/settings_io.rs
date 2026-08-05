@@ -12,7 +12,7 @@
 use serde_json::{Map, Value as Json};
 use windows_registry::{Key, CURRENT_USER};
 
-use sagethumbs2k_core::settings::ROOT;
+use sagethumbs2k_core::settings::{self, ROOT};
 
 /// Read one registry key's values into a JSON object — DWORDs as numbers, strings as
 /// strings; any other value type is skipped (we only ever store those two).
@@ -63,8 +63,52 @@ fn export_tree(root: Option<&Key>) -> String {
     serde_json::to_string_pretty(&Json::Object(doc)).unwrap_or_default()
 }
 
-/// Serialize the entire `HKCU\Software\SageThumbs2K` settings tree to pretty JSON.
+/// One portable-ini section as a JSON object. Everything is text on disk, so a value that
+/// parses as a `u32` is emitted as a JSON number and anything else as a string — giving the
+/// exact same document shape the registry path produces. That's deliberate: a settings file
+/// exported from an installed copy imports cleanly into a portable one and back again.
+fn read_section(sub: Option<&str>) -> Map<String, Json> {
+    settings::portable_values(sub)
+        .into_iter()
+        .map(|(name, text)| {
+            let value = match text.parse::<u32>() {
+                Ok(n) => Json::from(n),
+                Err(_) => Json::String(text),
+            };
+            (name, value)
+        })
+        .collect()
+}
+
+/// Serialize the whole settings tree to pretty JSON — from the portable ini when one is in
+/// play, else from `HKCU\Software\SageThumbs2K`.
 pub(crate) fn export_settings() -> String {
+    if settings::portable() {
+        let mut doc = Map::new();
+        doc.insert(
+            "_about".to_string(),
+            Json::String(
+                "SageThumbs 2K settings. Import via Settings > Diagnostics > Import Settings. \
+                 Numbers are registry DWORDs; quoted values are text. Safe to hand-edit."
+                    .to_string(),
+            ),
+        );
+        doc.insert("values".to_string(), Json::Object(read_section(None)));
+        doc.insert(
+            "subkeys".to_string(),
+            Json::Object(
+                settings::portable_subkeys()
+                    .into_iter()
+                    .map(|name| {
+                        let values = read_section(Some(&name));
+                        (name, Json::Object(values))
+                    })
+                    .filter(|(_, v)| v.as_object().map(|o| !o.is_empty()).unwrap_or(false))
+                    .collect(),
+            ),
+        );
+        return serde_json::to_string_pretty(&Json::Object(doc)).unwrap_or_default();
+    }
     export_tree(CURRENT_USER.open(ROOT).ok().as_ref())
 }
 
@@ -120,10 +164,62 @@ fn import_tree(root: &Key, text: &str) -> Result<usize, String> {
 /// `HKCU\Software\SageThumbs2K`. Returns the number of values written, or a
 /// human-readable error.
 pub(crate) fn import_settings(text: &str) -> Result<usize, String> {
+    if settings::portable() {
+        return import_portable(text);
+    }
     let root = CURRENT_USER
         .create(ROOT)
         .map_err(|e| format!("Couldn't open the settings registry key.\n\n{e}"))?;
     import_tree(&root, text)
+}
+
+/// The portable-ini counterpart of [`import_tree`]: same document, same per-value
+/// best-effort semantics, same "no settings found" rejection. Values are written as text
+/// (a JSON number becomes its decimal form), which is exactly how the ini stores a DWORD.
+fn import_portable(text: &str) -> Result<usize, String> {
+    let doc: Json = serde_json::from_str(text)
+        .map_err(|e| format!("That isn't a valid settings file.\n\n{e}"))?;
+    // A name or value carrying the ini's own syntax would corrupt the file on the next
+    // write, so those are refused rather than escaped — no setting we store contains them.
+    fn ini_safe(s: &str) -> bool {
+        !s.contains(['[', ']', '\r', '\n', '='])
+    }
+    let write = |sub: Option<&str>, obj: &Map<String, Json>| {
+        let mut written = 0;
+        for (name, val) in obj {
+            let text = match val {
+                Json::String(s) => s.clone(),
+                Json::Bool(b) => u32::from(*b).to_string(),
+                Json::Number(num) => num.to_string(),
+                _ => continue, // arrays/objects/null aren't representable here
+            };
+            if !ini_safe(name) || !ini_safe(&text) {
+                continue;
+            }
+            if settings::portable_set(sub, name, &text).is_ok() {
+                written += 1;
+            }
+        }
+        written
+    };
+    let mut n = 0;
+    if let Some(obj) = doc.get("values").and_then(Json::as_object) {
+        n += write(None, obj);
+    }
+    if let Some(subs) = doc.get("subkeys").and_then(Json::as_object) {
+        for (subname, subval) in subs {
+            if !ini_safe(subname) {
+                continue;
+            }
+            if let Some(obj) = subval.as_object() {
+                n += write(Some(subname), obj);
+            }
+        }
+    }
+    if n == 0 {
+        return Err("No settings were found in that file.".into());
+    }
+    Ok(n)
 }
 
 #[cfg(test)]

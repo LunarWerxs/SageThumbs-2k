@@ -28,6 +28,29 @@ use windows_registry::CURRENT_USER;
 /// HKCU root for all our settings (and the per-extension subkeys).
 pub const ROOT: &str = r"Software\SageThumbs2K";
 
+pub use store::{ini_path, portable, INI_NAME};
+
+/// The subkey (registry) / section (portable ini) holding per-menu-item visibility.
+const MENU_ITEMS: &str = "MenuItems";
+
+/// Every value in the portable ini's root section (`sub = None`) or a named subkey section.
+/// Only meaningful when [`portable`] is true — a registry install walks its own key tree.
+/// Exists so the Settings ▸ Diagnostics export/import round-trip works in portable mode
+/// instead of silently exporting an empty document.
+pub fn portable_values(sub: Option<&str>) -> Vec<(String, String)> {
+    store::section_values(sub)
+}
+
+/// The names of every subkey section present in the portable ini. See [`portable_values`].
+pub fn portable_subkeys() -> Vec<String> {
+    store::subkey_names()
+}
+
+/// Write one value into the portable ini. See [`portable_values`].
+pub fn portable_set(sub: Option<&str>, name: &str, value: &str) -> windows_registry::Result<()> {
+    io_result(store::set_string(sub, name, value))
+}
+
 /// The HKCU subkey path every settings read/write below opens — normally [`ROOT`], but
 /// redirectable to a scratch subkey via the `ST2K_SETTINGS_ROOT` env var for TEST
 /// ISOLATION. The in-process integration tests (`tests/explorer_command.rs`,
@@ -52,6 +75,254 @@ fn hkcu_root() -> &'static str {
     })
 }
 
+/// The storage backend every getter/setter in this module goes through.
+///
+/// Normally that's `HKCU\Software\SageThumbs2K` (see [`hkcu_root`]) and nothing here
+/// changes. **Portable mode** is the exception: when a file named [`INI_NAME`] sits next
+/// to the running module (the EXE for `st2k`/`SageThumbs2K`, the DLL in the shell host),
+/// every read and write goes to that file instead and we touch the registry not at all.
+///
+/// The marker IS the config file, so a portable build ships one (empty is fine) and an
+/// installed build simply never has one — meaning the installed product's behaviour is
+/// bit-identical to before this module existed. There is deliberately no setting, flag or
+/// env var that turns portable mode on: the file's presence next to the binary is the
+/// whole switch, which is what makes "extract the zip somewhere else" work with no state.
+///
+/// Layout mirrors the registry tree one-for-one — root values live in `[Settings]`, each
+/// registry subkey becomes its own section:
+///
+/// ```ini
+/// [Settings]
+/// EnableThumbs=1
+/// Lang=fr
+///
+/// [MenuItems]
+/// menu_convert_into=0
+///
+/// [.psd]
+/// Enabled=0
+/// ```
+///
+/// Everything is text on disk; [`get_u32`](store::get_u32) parses and
+/// [`set_u32`](store::set_u32) writes decimal, so a DWORD round-trips exactly. Reads go
+/// straight to the file every time, keeping the module-level promise that an edit takes
+/// effect immediately without restarting anything (see [`load`](store::load) for why the
+/// obvious cache is not merely unnecessary here but incorrect).
+mod store {
+    use std::collections::BTreeMap;
+    use std::io;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    /// The file whose presence next to the running module means "portable".
+    pub const INI_NAME: &str = "SageThumbs2K.ini";
+    /// The section holding what would otherwise be the root key's values.
+    const ROOT_SECTION: &str = "Settings";
+
+    /// section -> (value name -> raw text). `BTreeMap` so a rewritten file has a stable,
+    /// diffable order rather than whatever the hash seed produced this run.
+    type Doc = BTreeMap<String, BTreeMap<String, String>>;
+
+    /// The portable config file, or `None` when we're registry-backed.
+    ///
+    /// Resolved once. `ST2K_PORTABLE_INI` overrides the probe so tests can exercise the
+    /// file backend without planting an ini next to the test binary (and so a developer
+    /// can try portable behaviour against a normal build).
+    pub fn ini_path() -> Option<&'static PathBuf> {
+        static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+        PATH.get_or_init(|| {
+            if let Some(p) = std::env::var_os("ST2K_PORTABLE_INI") {
+                let p = PathBuf::from(p);
+                return (!p.as_os_str().is_empty()).then_some(p);
+            }
+            // `module_path()` is the DLL inside the shell host and the EXE otherwise —
+            // never `current_exe()`, which in the shell host is explorer.exe/dllhost.exe.
+            let module = crate::module_path().ok()?;
+            let beside = PathBuf::from(module).parent()?.join(INI_NAME);
+            beside.is_file().then_some(beside)
+        })
+        .as_ref()
+    }
+
+    /// Whether settings are file-backed (portable) rather than registry-backed.
+    pub fn portable() -> bool {
+        ini_path().is_some()
+    }
+
+    /// Parse an ini. Unknown/blank lines and `;`/`#` comments are skipped; a value before
+    /// any `[section]` header is treated as a root value, which makes a hand-written file
+    /// that omits the `[Settings]` header still work.
+    fn parse(text: &str) -> Doc {
+        let mut doc = Doc::new();
+        let mut section = ROOT_SECTION.to_string();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+                continue;
+            }
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.trim().to_string();
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                doc.entry(section.clone())
+                    .or_default()
+                    .insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+        doc
+    }
+
+    fn render(doc: &Doc) -> String {
+        let mut out = String::from(
+            "; SageThumbs 2K portable settings.\n\
+             ; Delete this file to go back to storing settings in the registry.\n",
+        );
+        // Root values first, then the subkey sections, so the file reads top-down.
+        for section in std::iter::once(ROOT_SECTION).chain(
+            doc.keys()
+                .map(String::as_str)
+                .filter(|s| *s != ROOT_SECTION),
+        ) {
+            let Some(values) = doc.get(section).filter(|v| !v.is_empty()) else {
+                continue;
+            };
+            out.push_str(&format!("\n[{section}]\n"));
+            for (k, v) in values {
+                out.push_str(&format!("{k}={v}\n"));
+            }
+        }
+        out
+    }
+
+    /// The parsed file. A missing file parses as empty (every getter then sees its default),
+    /// which is what makes shipping a zero-byte marker ini a valid "factory defaults" state.
+    ///
+    /// DELIBERATELY UNCACHED, matching the module-level rule that settings reads aren't
+    /// cached so an edit takes effect immediately. A cache keyed on `(mtime, len)` was tried
+    /// and is WRONG: flipping `1` to `0`, or `512` to `256`, changes neither, so a same-length
+    /// edit landing in the same filesystem clock tick as the previous write is invisible —
+    /// `tests/portable_settings.rs` reproduced exactly that. Re-reading costs a warm page-cache
+    /// read of a file measured in hundreds of bytes, and the two callers that would otherwise
+    /// read per-item ([`super::thumb_settings`], [`super::menu_visibility`]) already take one
+    /// snapshot per operation, so there is no hot path this protects.
+    fn load() -> Doc {
+        let Some(path) = ini_path() else {
+            return Doc::new();
+        };
+        std::fs::read_to_string(path)
+            .map(|t| parse(&t))
+            .unwrap_or_default()
+    }
+
+    /// Apply `edit` to the parsed file and write it back. The cache re-`stat`s, so the
+    /// next read picks the new content up without extra bookkeeping here.
+    fn update(edit: impl FnOnce(&mut Doc)) -> io::Result<()> {
+        let path = ini_path().ok_or_else(|| io::Error::other("not in portable mode"))?;
+        let mut doc = load();
+        edit(&mut doc);
+        std::fs::write(path, render(&doc))
+    }
+
+    /// The section a registry subkey maps to. `None` = the root key.
+    fn section(sub: Option<&str>) -> &str {
+        sub.unwrap_or(ROOT_SECTION)
+    }
+
+    pub fn get_string(sub: Option<&str>, name: &str) -> Option<String> {
+        load().get(section(sub))?.get(name).cloned()
+    }
+
+    pub fn get_u32(sub: Option<&str>, name: &str) -> Option<u32> {
+        get_string(sub, name)?.parse().ok()
+    }
+
+    pub fn set_string(sub: Option<&str>, name: &str, value: &str) -> io::Result<()> {
+        let (sec, name) = (section(sub).to_string(), name.to_string());
+        update(|doc| {
+            doc.entry(sec).or_default().insert(name, value.to_string());
+        })
+    }
+
+    pub fn set_u32(sub: Option<&str>, name: &str, value: u32) -> io::Result<()> {
+        set_string(sub, name, &value.to_string())
+    }
+
+    pub fn remove_value(sub: Option<&str>, name: &str) {
+        let (sec, name) = (section(sub).to_string(), name.to_string());
+        let _ = update(|doc| {
+            if let Some(values) = doc.get_mut(&sec) {
+                values.remove(&name);
+            }
+        });
+    }
+
+    /// Every value in one section, for the settings export/import round-trip.
+    pub fn section_values(sub: Option<&str>) -> Vec<(String, String)> {
+        load()
+            .get(section(sub))
+            .map(|v| v.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default()
+    }
+
+    /// The names of every non-root section (i.e. what would be registry subkeys).
+    pub fn subkey_names() -> Vec<String> {
+        load()
+            .keys()
+            .filter(|s| *s != ROOT_SECTION)
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn round_trips_sections_values_and_comments() {
+            let doc = parse(
+                "; a comment\n\
+                 # another\n\
+                 StrayRootValue=7\n\
+                 \n\
+                 [Settings]\n\
+                 EnableThumbs = 1\n\
+                 Lang=fr\n\
+                 [MenuItems]\n\
+                 menu_convert_into=0\n\
+                 [.psd]\n\
+                 Enabled=0\n",
+            );
+            // A value before any header lands in the root section, as documented.
+            assert_eq!(doc[ROOT_SECTION]["StrayRootValue"], "7");
+            assert_eq!(doc[ROOT_SECTION]["EnableThumbs"], "1"); // whitespace trimmed
+            assert_eq!(doc[ROOT_SECTION]["Lang"], "fr");
+            assert_eq!(doc["MenuItems"]["menu_convert_into"], "0");
+            assert_eq!(doc[".psd"]["Enabled"], "0");
+            // Rendering and re-parsing preserves every value.
+            assert_eq!(parse(&render(&doc)), doc);
+        }
+
+        #[test]
+        fn root_section_renders_first() {
+            let mut doc = Doc::new();
+            doc.entry(".psd".into()).or_default().insert("Enabled".into(), "0".into());
+            doc.entry(ROOT_SECTION.into()).or_default().insert("Lang".into(), "de".into());
+            let text = render(&doc);
+            assert!(
+                text.find("[Settings]") < text.find("[.psd]"),
+                "root values must render before the subkey sections:\n{text}"
+            );
+        }
+
+        #[test]
+        fn empty_and_garbage_parse_to_nothing_rather_than_panicking() {
+            assert!(parse("").is_empty());
+            assert!(parse("no equals sign here\n[unclosed\n").is_empty());
+        }
+    }
+}
+
 // Defaults + bounds, matching the legacy SageThumbs.h constants.
 pub const DEFAULT_MAX_FILE_MB: u32 = 100; // FILE_MAX_SIZE
                                           // Raised from the legacy 256/512 (2026-06-22): on Hi-DPI / 4K / large ("jumbo")
@@ -73,7 +344,17 @@ pub const DEFAULT_PNG: u32 = 9; // PNG_DEFAULT
 /// defaulted to 1 while "Defaults" selected 2).
 pub const DEFAULT_MENU_PREVIEW: u32 = 1;
 
+/// A portable write fails as an [`std::io::Error`], but every public setter here promises a
+/// `windows_registry::Result`. Map the file failure onto a generic HRESULT rather than
+/// widening ~40 signatures for a case callers already treat as best-effort.
+fn io_result(r: std::io::Result<()>) -> windows_registry::Result<()> {
+    r.map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))
+}
+
 fn get_dword(name: &str, default: u32) -> u32 {
+    if store::portable() {
+        return store::get_u32(None, name).unwrap_or(default);
+    }
     CURRENT_USER
         .open(hkcu_root())
         .and_then(|k| k.get_u32(name))
@@ -82,7 +363,33 @@ fn get_dword(name: &str, default: u32) -> u32 {
 
 /// Write a DWORD setting (creating the root key if needed). Best-effort.
 pub fn set_dword(name: &str, value: u32) -> windows_registry::Result<()> {
+    if store::portable() {
+        return io_result(store::set_u32(None, name, value));
+    }
     CURRENT_USER.create(hkcu_root())?.set_u32(name, value)
+}
+
+/// Read an arbitrary string value from the root key, or `None` when unset/empty. The typed
+/// accessors below cover everything this module owns; this pair exists for callers that keep
+/// their own value in the same root (the screenshot tool's remembered custom colours), so
+/// they follow the registry/portable split without each re-implementing it.
+pub fn get_string_opt(name: &str) -> Option<String> {
+    if store::portable() {
+        return store::get_string(None, name).filter(|s| !s.is_empty());
+    }
+    CURRENT_USER
+        .open(hkcu_root())
+        .and_then(|k| k.get_string(name))
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Write an arbitrary string value into the root key. See [`get_string_opt`].
+pub fn set_string(name: &str, value: &str) -> windows_registry::Result<()> {
+    if store::portable() {
+        return io_result(store::set_string(None, name, value));
+    }
+    CURRENT_USER.create(hkcu_root())?.set_string(name, value)
 }
 
 /// Read a DWORD, distinguishing "absent" (`None`) from a stored value — unlike
@@ -90,6 +397,9 @@ pub fn set_dword(name: &str, value: u32) -> windows_registry::Result<()> {
 /// Used by the screenshot-daemon enable migration to tell a never-set flag from an
 /// explicit `0`.
 pub fn get_dword_opt(name: &str) -> Option<u32> {
+    if store::portable() {
+        return store::get_u32(None, name);
+    }
     CURRENT_USER
         .open(hkcu_root())
         .and_then(|k| k.get_u32(name))
@@ -124,6 +434,11 @@ pub fn set_dev_machine(on: bool) -> windows_registry::Result<()> {
 /// it wipes the rest of [`ROOT`]. Its presence on a fresh install means this machine had us
 /// before (a reinstall, not a first-time user). A plain version string.
 pub fn tombstone_version() -> Option<String> {
+    if store::portable() {
+        return store::get_string(None, "Tombstone")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+    }
     CURRENT_USER
         .open(hkcu_root())
         .ok()
@@ -135,6 +450,10 @@ pub fn tombstone_version() -> Option<String> {
 /// Drop the reinstall tombstone once it has been reported, so a reinstall is recognized at
 /// most once (the next fresh report — if any — looks like a first-time install again).
 pub fn clear_tombstone() {
+    if store::portable() {
+        store::remove_value(None, "Tombstone");
+        return;
+    }
     if let Ok(k) = CURRENT_USER.open(hkcu_root()) {
         let _ = k.remove_value("Tombstone");
     }
@@ -143,6 +462,9 @@ pub fn clear_tombstone() {
 /// The UI-language override (e.g. "fr", "zh-TW"), or None to follow the system
 /// UI language. Set by the Options dialog's language picker.
 pub fn lang_override() -> Option<String> {
+    if store::portable() {
+        return store::get_string(None, "Lang").filter(|s| !s.is_empty());
+    }
     CURRENT_USER
         .open(hkcu_root())
         .and_then(|k| k.get_string("Lang"))
@@ -152,6 +474,9 @@ pub fn lang_override() -> Option<String> {
 
 /// Persist the language override; an empty string clears it (= follow system).
 pub fn set_lang(code: &str) -> windows_registry::Result<()> {
+    if store::portable() {
+        return io_result(store::set_string(None, "Lang", code));
+    }
     CURRENT_USER.create(hkcu_root())?.set_string("Lang", code)
 }
 
@@ -252,8 +577,19 @@ pub struct ThumbSettings {
 /// back to the same defaults the individual getters use, so the result is identical
 /// to calling them one by one — just without the repeated opens.
 pub fn thumb_settings() -> ThumbSettings {
-    let key = CURRENT_USER.open(hkcu_root()).ok();
+    // ONE snapshot of whichever backing store is live, then every value is read out of it.
+    // Collapsing N opens into one is the entire point of this function, so the portable
+    // path takes the same shape: one section snapshot, not one file read per value.
+    let ini: Option<std::collections::HashMap<String, String>> =
+        store::portable().then(|| store::section_values(None).into_iter().collect());
+    let key = match ini {
+        Some(_) => None,
+        None => CURRENT_USER.open(hkcu_root()).ok(),
+    };
     let g = |name: &str, default: u32| {
+        if let Some(ini) = ini.as_ref() {
+            return ini.get(name).and_then(|v| v.parse().ok()).unwrap_or(default);
+        }
         key.as_ref()
             .and_then(|k| k.get_u32(name).ok())
             .unwrap_or(default)
@@ -546,6 +882,9 @@ pub fn set_screenshot_use_save_dir(on: bool) -> windows_registry::Result<()> {
 /// time (so we never bake an absolute path here, and it follows the user's real
 /// Desktop). See `crate`'s app `screenshot::effective_save_dir`.
 pub fn screenshot_save_dir() -> String {
+    if store::portable() {
+        return store::get_string(None, "ShotSaveDir").unwrap_or_default();
+    }
     CURRENT_USER
         .open(hkcu_root())
         .and_then(|k| k.get_string("ShotSaveDir"))
@@ -554,6 +893,9 @@ pub fn screenshot_save_dir() -> String {
 
 /// Persist the chosen save folder (absolute path). Empty restores the Desktop default.
 pub fn set_screenshot_save_dir(dir: &str) -> windows_registry::Result<()> {
+    if store::portable() {
+        return io_result(store::set_string(None, "ShotSaveDir", dir));
+    }
     CURRENT_USER
         .create(hkcu_root())?
         .set_string("ShotSaveDir", dir)
@@ -752,6 +1094,9 @@ pub fn set_preview_markdown(on: bool) -> windows_registry::Result<()> {
 /// a format here enables/disables that format's thumbnails for ALL users — it
 /// is an "all users" switch, not a per-user one (there is no per-user gate).
 pub fn format_enabled(ext: &str) -> bool {
+    if store::portable() {
+        return store::get_u32(Some(ext), "Enabled").map(|v| v != 0).unwrap_or(true);
+    }
     CURRENT_USER
         .open(format!(r"{}\{ext}", hkcu_root()))
         .and_then(|k| k.get_u32("Enabled"))
@@ -761,6 +1106,9 @@ pub fn format_enabled(ext: &str) -> bool {
 
 /// Persist a per-extension enable flag (used by the Options dialog).
 pub fn set_format_enabled(ext: &str, enabled: bool) -> windows_registry::Result<()> {
+    if store::portable() {
+        return io_result(store::set_u32(Some(ext), "Enabled", enabled as u32));
+    }
     CURRENT_USER
         .create(format!(r"{}\{ext}", hkcu_root()))?
         .set_u32("Enabled", enabled as u32)
@@ -772,6 +1120,9 @@ pub fn set_format_enabled(ext: &str, enabled: bool) -> windows_registry::Result<
 /// `menu_convert_into`) is shown. All shown by default; the Settings checklist
 /// can hide ones the user never uses. Stored under `…\SageThumbs2K\MenuItems\<key>`.
 pub fn menu_item_shown(key: &str) -> bool {
+    if store::portable() {
+        return store::get_u32(Some(MENU_ITEMS), key).map(|v| v != 0).unwrap_or(true);
+    }
     CURRENT_USER
         .open(format!(r"{}\MenuItems", hkcu_root()))
         .and_then(|k| k.get_u32(key))
@@ -781,6 +1132,9 @@ pub fn menu_item_shown(key: &str) -> bool {
 
 /// Persist a top-level menu item's visibility (used by the Options dialog).
 pub fn set_menu_item_shown(key: &str, shown: bool) -> windows_registry::Result<()> {
+    if store::portable() {
+        return io_result(store::set_u32(Some(MENU_ITEMS), key, shown as u32));
+    }
     CURRENT_USER
         .create(format!(r"{}\MenuItems", hkcu_root()))?
         .set_u32(key, shown as u32)
@@ -791,10 +1145,15 @@ pub fn set_menu_item_shown(key: &str, shown: bool) -> windows_registry::Result<(
 /// `…\SageThumbs2K\MenuOrder` (the keys are `menu_*` identifiers, never contain a
 /// comma). The classic menu builder applies it via `verbs::ordered_top_level`.
 pub fn menu_order() -> Vec<String> {
-    CURRENT_USER
-        .open(hkcu_root())
-        .and_then(|k| k.get_string("MenuOrder"))
-        .ok()
+    let stored = if store::portable() {
+        store::get_string(None, "MenuOrder")
+    } else {
+        CURRENT_USER
+            .open(hkcu_root())
+            .and_then(|k| k.get_string("MenuOrder"))
+            .ok()
+    };
+    stored
         .filter(|s| !s.is_empty())
         .map(|s| s.split(',').map(str::to_string).collect())
         .unwrap_or_default()
@@ -803,6 +1162,9 @@ pub fn menu_order() -> Vec<String> {
 /// Persist the custom menu order (comma-joined keys); an empty slice clears it
 /// (= back to the default tree order).
 pub fn set_menu_order(keys: &[&str]) -> windows_registry::Result<()> {
+    if store::portable() {
+        return io_result(store::set_string(None, "MenuOrder", &keys.join(",")));
+    }
     CURRENT_USER
         .create(hkcu_root())?
         .set_string("MenuOrder", keys.join(","))
@@ -815,25 +1177,43 @@ pub fn set_menu_order(keys: &[&str]) -> windows_registry::Result<()> {
 /// [`MenuVisibility::shown`] per item instead — same semantics, ~N opens collapse
 /// to one. A fresh snapshot per menu build keeps the live-toggle contract (§ module
 /// docs) intact — we don't cache across builds.
-pub struct MenuVisibility(Option<windows_registry::Key>);
+pub struct MenuVisibility(MenuVisibilitySource);
 
-/// Open the menu-visibility subkey once for the current menu build. `None` (subkey
-/// absent — nothing ever hidden) makes every [`MenuVisibility::shown`] return true.
+/// Which backing store the snapshot came from. The portable arm holds the parsed section
+/// outright — same "read once per menu build" contract, no file touched per item.
+enum MenuVisibilitySource {
+    Registry(Option<windows_registry::Key>),
+    Portable(std::collections::HashMap<String, String>),
+}
+
+/// Open the menu-visibility subkey once for the current menu build. An absent subkey
+/// (nothing ever hidden) makes every [`MenuVisibility::shown`] return true.
 pub fn menu_visibility() -> MenuVisibility {
-    MenuVisibility(
-        CURRENT_USER
-            .open(format!(r"{}\MenuItems", hkcu_root()))
-            .ok(),
-    )
+    MenuVisibility(if store::portable() {
+        MenuVisibilitySource::Portable(store::section_values(Some(MENU_ITEMS)).into_iter().collect())
+    } else {
+        MenuVisibilitySource::Registry(
+            CURRENT_USER
+                .open(format!(r"{}\MenuItems", hkcu_root()))
+                .ok(),
+        )
+    })
 }
 
 impl MenuVisibility {
     /// Whether `key` (a top-level menu item title) is shown — default true unless an
-    /// explicit `0` is stored. Identical to [`menu_item_shown`], reusing the open key.
+    /// explicit `0` is stored. Identical to [`menu_item_shown`], reusing the snapshot.
     pub fn shown(&self, key: &str) -> bool {
         // Shown by default; hidden only when an explicit `0` is stored. (`matches!`
         // keeps this MSRV-1.80-safe — `is_none_or` would need 1.82.)
-        !matches!(self.0.as_ref().and_then(|k| k.get_u32(key).ok()), Some(0))
+        match &self.0 {
+            MenuVisibilitySource::Registry(k) => {
+                !matches!(k.as_ref().and_then(|k| k.get_u32(key).ok()), Some(0))
+            }
+            MenuVisibilitySource::Portable(m) => {
+                !matches!(m.get(key).map(String::as_str), Some("0"))
+            }
+        }
     }
 }
 

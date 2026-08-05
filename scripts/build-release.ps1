@@ -11,7 +11,9 @@
   Usage:  pwsh scripts\build-release.ps1                         # x64 Full
           pwsh scripts\build-release.ps1 -NoImageMagick          # x64 Compact
           pwsh scripts\build-release.ps1 -Architecture arm64     # ARM64 Compact
+          pwsh scripts\build-release.ps1 -Portable               # x64 portable zip
   Output: dist\SageThumbs2K-Setup-<ver>[-arm64].exe
+          dist\SageThumbs2K-Portable-<ver>[-arm64].zip   (with -Portable)
 #>
 [CmdletBinding()]
 param(
@@ -21,7 +23,13 @@ param(
     [switch]$SkipBuild,
     # Skip the signed sparse package (the Win11 modern context menu). Use only if
     # the Windows SDK isn't installed; the classic menu still ships either way.
-    [switch]$NoModernMenu
+    [switch]$NoModernMenu,
+    # Produce the no-install zip instead of the installer. Ships the two EXEs, the same
+    # curated ImageMagick payload, and a marker `SageThumbs2K.ini` that switches settings
+    # storage from HKCU to that file. Deliberately does NOT ship the shell extension: a
+    # thumbnail/context-menu handler only loads if its COM class is registered, so there is
+    # no such thing as a portable one. See PORTABLE.txt (written below) for the full scope.
+    [switch]$Portable
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -37,7 +45,16 @@ $targetRel = if ($Architecture -eq 'arm64') {
 } else {
     Join-Path $targetRoot 'release'
 }
-$stage = Join-Path $root "packaging\stage\$Architecture"
+# -Portable stages into its OWN directory. It runs the same staging code over the same inputs,
+# so the two payloads still cannot drift; what it must never do is share the DIRECTORY, because
+# staging wipes and rebuilds it and the portable pass deliberately omits the DLL. Sharing would
+# let a portable build run inside a release silently gut the stage that
+# check-release-manifest.ps1 validates the installer against.
+$stage = if ($Portable) {
+    Join-Path $root "packaging\stage\portable-src-$Architecture"
+} else {
+    Join-Path $root "packaging\stage\$Architecture"
+}
 $stageRelative = "stage\$Architecture"
 $outputSuffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
 # ARM64 used to be forced Compact here because there was no approved ImageMagick payload
@@ -163,9 +180,16 @@ if (-not $SkipBuild) {
     # (built above, full 36-language table) are a DIFFERENT package, so there's no
     # feature-unification clash — the two `-p` builds key their core-crate artifacts by
     # feature set independently. Same `webp-lossy` so the slim DLL is otherwise identical.
-    Write-Host "[1b/4] cargo build $($dllBuildArgs -join ' ')  (slim DLL)" -ForegroundColor Green
-    Push-Location $root
-    try { cargo build @dllBuildArgs; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
+    # A portable drop ships no DLL (nothing registers it), so this whole ~90 s pass is dead
+    # weight there — and worse, it would overwrite the target dir's DLL with the slim
+    # menu_*-only build as a side effect of producing a zip that doesn't contain one.
+    if ($Portable) {
+        Write-Host "[1b/4] -Portable: skipping the slim DLL build (the zip ships no DLL)" -ForegroundColor Yellow
+    } else {
+        Write-Host "[1b/4] cargo build $($dllBuildArgs -join ' ')  (slim DLL)" -ForegroundColor Green
+        Push-Location $root
+        try { cargo build @dllBuildArgs; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
+    }
 }
 
 # 3) Stage -------------------------------------------------------------------
@@ -178,7 +202,10 @@ New-Item -ItemType Directory $stage -Force | Out-Null
 # still come from the full-table main build. (Verify: the slim DLL must NOT contain
 # an app-only translated string like the German `about_tagline`, but MUST contain a
 # `menu_*` value — see the script header / build.rs note.)
-Copy-Item "$targetRel\sagethumbs2k.dll" $stage
+# (-Portable skips this: the slim DLL build was skipped too, so whatever sits at $targetRel
+# is some earlier build's leftover — staging it would put a stale, unasked-for DLL in the
+# tree even though the zip filters it out again below.)
+if (-not $Portable) { Copy-Item "$targetRel\sagethumbs2k.dll" $stage }
 # The cargo bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly
 # (build.rs redirects its PDB to avoid the case-collision with the DLL — see Cargo.toml).
 Copy-Item "$targetRel\SageThumbs2K.exe" $stage
@@ -603,6 +630,118 @@ if ($Architecture -cne $hostArchNow) { $bundleCheckArgs['SkipSmoke'] = $true }
     Write-Host "      trimmed ImageMagick bundle: $magickSize MB (raw)" -ForegroundColor DarkGray
 } else {
     Remove-Item "$stage\magick" -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# 3a-portable) The no-install zip -------------------------------------------
+# Reuses the stage verbatim, so the portable drop and the installer are built from the
+# SAME binaries and the SAME curated/pruned ImageMagick — there is no second payload
+# recipe to drift. Everything below is assembly: flatten, add the marker ini, zip, exit.
+if ($Portable) {
+    Write-Host "[2c/3] assembling portable zip" -ForegroundColor Green
+    $portableStage = Join-Path $root "packaging\stage\portable-$Architecture"
+    if (Test-Path $portableStage) { Remove-Item $portableStage -Recurse -Force }
+    New-Item -ItemType Directory $portableStage -Force | Out-Null
+
+    # The shell extension and its sideloading apparatus are install-only by nature and must
+    # not travel in a zip: a DLL nothing registered is dead weight, and the .msix/.cer pair
+    # only means anything to an installer that trusts the cert and calls Add-AppxPackage.
+    $installOnly = 'sagethumbs2k.dll', 'SageThumbs2K.msix', 'SageThumbs2K.cer', 'AppxManifest.xml'
+    Get-ChildItem $stage -File |
+        Where-Object { $installOnly -notcontains $_.Name } |
+        Copy-Item -Destination $portableStage
+    # magick lives beside the EXEs, not in a subfolder: the lookup in decode/magick.rs probes
+    # the running module's OWN directory, which is what makes the bundle travel at all.
+    if (Test-Path "$stage\magick") {
+        Copy-Item "$stage\magick\*" $portableStage -Recurse -Force
+    }
+
+    # The marker IS the config file. Its presence next to the EXE is the entire portable
+    # switch (src/settings.rs `store`), so an empty one means "factory defaults, stored here".
+    #
+    # That also makes the filename load-bearing across two languages, and getting it wrong
+    # fails SILENTLY: the app finds no marker, quietly uses HKCU, and the zip looks fine while
+    # doing the one thing it promised not to. So take the name from the Rust const rather than
+    # trusting a literal here to stay in sync with it.
+    $iniConst = [regex]::Match(
+        (Get-Content "$root\src\settings.rs" -Raw),
+        '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"'
+    )
+    if (-not $iniConst.Success) {
+        throw "couldn't read INI_NAME out of src\settings.rs - the portable marker name is " +
+              "defined there and must not be duplicated as a literal in this script"
+    }
+    $iniName = $iniConst.Groups[1].Value
+    Write-Host "      portable marker: $iniName (from settings.rs)" -ForegroundColor DarkGray
+    Set-Content -LiteralPath "$portableStage\$iniName" -Encoding utf8 -Value @(
+        '; SageThumbs 2K portable settings.'
+        '; Delete this file to go back to storing settings in the registry.'
+    )
+
+    Set-Content -LiteralPath "$portableStage\PORTABLE.txt" -Encoding utf8 -Value @(
+        "SageThumbs 2K $ver - portable"
+        ''
+        'Extract anywhere and run SageThumbs2K.exe. Nothing is installed, nothing is'
+        'written to the registry, and no administrator rights are needed. Settings live'
+        'in SageThumbs2K.ini next to the exe; delete that file and the app goes back to'
+        'storing them in the registry like the installed build does.'
+        ''
+        'WHAT YOU GET'
+        '  SageThumbs2K.exe   settings, convert/resize, quick preview, screenshots, OCR,'
+        '                     the colour picker, and the folder tools'
+        '  st2k.exe           the command line tool and MCP server (run: st2k --help)'
+        ''
+        'WHAT YOU DO NOT GET'
+        '  Explorer thumbnails and the right-click menu. Windows only loads a shell'
+        '  extension whose COM class is registered, so those cannot work from a zip by'
+        '  definition - not a limitation we chose. Install the normal build for those.'
+        ''
+        'The screenshot tool runs while the app is open but does not add itself to logon'
+        'startup, since this copy can be moved or unplugged at any time.'
+        ''
+        'ONE EXCEPTION TO THE NO-REGISTRY RULE'
+        '  If you sign in to settings sync, the sign-in it saves is stored by Windows for'
+        '  your user account rather than in the ini. It has to be: Windows ties it to the'
+        '  account so it could not be read on another machine anyway. Do not sign in if you'
+        '  want this copy to leave nothing at all behind. Everything else stays in the ini.'
+    )
+
+    New-Item -ItemType Directory "$root\dist" -Force | Out-Null
+    $zipPath = "$root\dist\SageThumbs2K-Portable-$ver$outputSuffix.zip"
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    Compress-Archive -Path "$portableStage\*" -DestinationPath $zipPath -CompressionLevel Optimal
+    if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+        throw "portable zip was not produced: $zipPath"
+    }
+
+    # Prove the drop actually runs before calling it an artifact. `st2k formats` exercises
+    # the real binary from its final location; a payload missing a VC runtime or a CORE_RL
+    # DLL fails here rather than in a user's hands.
+    #
+    # Only when the host can actually execute it. An x64 box cannot run ARM64 binaries at
+    # all (the emulation goes the other way), so cross-building the ARM64 zip would fail this
+    # check for a reason that says nothing about the payload. Skipping is the honest outcome,
+    # but say so loudly: an unsmoked zip is exactly the one to hand to an ARM64 machine first.
+    $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    if ($hostArch -eq $Architecture) {
+        $smoke = & "$portableStage\st2k.exe" formats 2>&1 | Select-Object -First 1
+        if ($LASTEXITCODE -or $smoke -notmatch '^\d+\s') {
+            throw "portable payload failed its smoke test (st2k formats): $smoke"
+        }
+        Write-Host "      smoke test: $smoke" -ForegroundColor DarkGray
+    } else {
+        Write-Host "      SMOKE TEST SKIPPED - $Architecture payload can't run on this $hostArch host." `
+            -ForegroundColor Yellow
+        Write-Host "      Run 'st2k.exe formats' from the extracted zip on a real $Architecture machine before shipping it." `
+            -ForegroundColor Yellow
+    }
+
+    $zip = Get-Item -LiteralPath $zipPath
+    Write-Host "[3/3] done" -ForegroundColor Green
+    Write-Host ("  -> {0}  ({1} MB zipped, {2} MB extracted)" -f $zip.FullName,
+        [math]::Round($zip.Length / 1MB, 1),
+        [math]::Round((Get-ChildItem $portableStage -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
+    ) -ForegroundColor Cyan
+    return
 }
 
 # 3b) Signed sparse package for the Win11 modern context menu ----------------

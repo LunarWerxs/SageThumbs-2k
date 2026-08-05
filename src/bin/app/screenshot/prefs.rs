@@ -1,11 +1,12 @@
-//! Tiny persisted prefs for the screenshot tool (HKCU `Software\SageThumbs2K`,
-//! the same root the rest of the app uses — see `settings.rs`). Currently just the
-//! user's recent custom annotation colours, stored as one small `RRGGBB,RRGGBB,…`
-//! string so the palette flyout can offer them across captures. No new file, no bloat.
+//! Tiny persisted prefs for the screenshot tool. Stored in the same root the rest of the
+//! app uses — see `settings.rs`, which is also what decides whether that root is HKCU or the
+//! portable ini. Currently just the user's recent custom annotation colours, kept as one
+//! small `RRGGBB,RRGGBB,…` string so the palette flyout can offer them across captures.
 
 use windows::Win32::Foundation::COLORREF;
 
-const KEY: &str = sagethumbs2k_core::settings::ROOT;
+use sagethumbs2k_core::settings;
+
 const VAL: &str = "ScreenshotCustomColors";
 const MAX: usize = 4;
 
@@ -29,17 +30,14 @@ fn from_hex(s: &str) -> Option<COLORREF> {
 
 /// The remembered custom colours (newest first, up to 4).
 pub(super) fn load_custom_colors() -> Vec<COLORREF> {
-    let Ok(k) = windows_registry::CURRENT_USER.open(KEY) else {
-        return Vec::new();
-    };
-    let Ok(s) = k.get_string(VAL) else {
+    let Some(s) = settings::get_string_opt(VAL) else {
         return Vec::new();
     };
     s.split(',').filter_map(from_hex).take(MAX).collect()
 }
 
 /// Remember `c` as the most-recent custom colour (move-to-front, dedup, cap 4).
-/// Best-effort — a registry failure just means it isn't remembered.
+/// Best-effort — a write failure just means it isn't remembered.
 pub(super) fn remember_custom_color(c: COLORREF) {
     let mut list = load_custom_colors();
     list.retain(|x| x.0 != c.0);
@@ -50,7 +48,5 @@ pub(super) fn remember_custom_color(c: COLORREF) {
         .map(|&c| to_hex(c))
         .collect::<Vec<_>>()
         .join(",");
-    if let Ok(k) = windows_registry::CURRENT_USER.create(KEY) {
-        let _ = k.set_string(VAL, &joined);
-    }
+    let _ = settings::set_string(VAL, &joined);
 }

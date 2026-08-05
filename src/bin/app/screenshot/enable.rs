@@ -48,6 +48,18 @@ fn daemon_wanted() -> bool {
     is_enabled() || custom_hotkey_bound() || preview_wanted()
 }
 
+/// Whether we may touch logon autostart at all.
+///
+/// A portable copy never does. Its exe lives wherever the user unzipped it, so a `…\Run`
+/// entry would be persistent machine state from a build whose entire promise is that it
+/// leaves none — and it would point at a path that dies the moment the folder is moved,
+/// renamed, or unplugged, which is precisely the stale-autostart failure the guard in
+/// [`autostart_points_at_other_install`] exists to clean up after. The daemon still runs
+/// for the current session when something wants it; it just doesn't survive a logoff.
+fn autostart_allowed() -> bool {
+    !sagethumbs2k_core::settings::portable()
+}
+
 /// Is the `…\Run` autostart entry present? (The legacy "screenshots enabled" signal, now
 /// just "the daemon should autostart".)
 fn run_entry_present() -> bool {
@@ -126,13 +138,15 @@ pub(crate) fn reconcile() {
         // build silently repointed logon autostart at a transient build path; when that
         // path later changed or vanished, the daemon simply never came up at the next boot
         // (hotkeys dead, no error anywhere) until something opened Settings again.
-        if let Ok(exe) = std::env::current_exe() {
-            if !autostart_points_at_other_install(&exe) {
-                if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-                    let _ = k.set_string(
-                        RUN_NAME,
-                        format!("\"{}\" --screenshot-daemon", exe.display()),
-                    );
+        if autostart_allowed() {
+            if let Ok(exe) = std::env::current_exe() {
+                if !autostart_points_at_other_install(&exe) {
+                    if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
+                        let _ = k.set_string(
+                            RUN_NAME,
+                            format!("\"{}\" --screenshot-daemon", exe.display()),
+                        );
+                    }
                 }
             }
         }
@@ -142,8 +156,10 @@ pub(crate) fn reconcile() {
             super::spawn_self(&["--screenshot-daemon"]); // a fresh one reads them at startup
         }
     } else {
-        if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-            let _ = k.remove_value(RUN_NAME);
+        if autostart_allowed() {
+            if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
+                let _ = k.remove_value(RUN_NAME);
+            }
         }
         unsafe { stop_daemon() };
     }
@@ -155,8 +171,10 @@ pub(crate) fn reconcile() {
 /// [`reconcile`] and brings the daemon back).
 pub(crate) fn quit() {
     let _ = sagethumbs2k_core::settings::set_dword("ScreenshotEnabled", 0);
-    if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-        let _ = k.remove_value(RUN_NAME);
+    if autostart_allowed() {
+        if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
+            let _ = k.remove_value(RUN_NAME);
+        }
     }
     unsafe { stop_daemon() };
 }

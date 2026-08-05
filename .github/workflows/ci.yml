@@ -183,6 +183,57 @@ jobs:
           & (Join-Path $target 'st2k.exe') --help
           if ($LASTEXITCODE -ne 0) { throw 'Native ARM64 st2k smoke test failed.' }
 
+      # The portable zip itself can't be assembled here (it is a Release, ImageMagick-bundled
+      # payload and this job is deliberately Compact), and `build-release.ps1 -Portable` skips
+      # its own smoke test when cross-building because an x64 box cannot execute ARM64 code at
+      # all. That leaves exactly one thing needing native ARM64 silicon, and it is smaller than
+      # a zip: does the built exe run from a folder it was never installed to, and does the
+      # marker ini beside it genuinely replace HKCU on this architecture?
+      #
+      # `st2k doctor` is the lever - it prints the settings it resolved, so distinctive values
+      # in the ini make the answer observable with no desktop, no ImageMagick, and no
+      # registered shell extension. The negative control is the load-bearing half: without it,
+      # a build that ignored settings entirely would sail through the positive assertions.
+      - name: Prove portable mode on native ARM64
+        shell: pwsh
+        run: |
+          $target = Join-Path (& ./scripts/_targetdir.ps1) 'aarch64-pc-windows-msvc\debug'
+          $drop = Join-Path $env:RUNNER_TEMP 'arm64-portable'
+          Remove-Item $drop -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $drop | Out-Null
+          Copy-Item (Join-Path $target 'st2k.exe') $drop
+          Copy-Item (Join-Path $target 'SageThumbs2K.exe') $drop
+          # Take the marker filename from the Rust const; a literal here could drift, and the
+          # failure mode is silent (no marker found means it quietly uses HKCU and passes).
+          $iniName = [regex]::Match((Get-Content ./src/settings.rs -Raw),
+            '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"').Groups[1].Value
+          if (-not $iniName) { throw 'Could not read INI_NAME from src/settings.rs' }
+          # Values no default would ever produce, so a match cannot be a coincidence.
+          Set-Content (Join-Path $drop $iniName) -Value @('[Settings]', 'Width=137', 'Height=137', 'MaxSize=42')
+
+          $before = Get-ItemProperty 'HKCU:\Software\SageThumbs2K' -EA SilentlyContinue
+          $report = & (Join-Path $drop 'st2k.exe') doctor 2>&1 | Out-String
+          if ($report -notmatch 'Max thumbnail size\s+137 px') {
+            Write-Host $report
+            throw 'ARM64 portable: doctor did not report the ini thumbnail size (137 px).'
+          }
+          if ($report -notmatch 'Max file size\s+42 MB') {
+            Write-Host $report
+            throw 'ARM64 portable: doctor did not report the ini max file size (42 MB).'
+          }
+          $after = Get-ItemProperty 'HKCU:\Software\SageThumbs2K' -EA SilentlyContinue
+          if ($after.Width -eq 137 -or $after.MaxSize -eq 42 -or
+              (($null -eq $before) -ne ($null -eq $after))) {
+            throw 'ARM64 portable wrote to HKCU. That is the one thing it must never do.'
+          }
+
+          Remove-Item (Join-Path $drop $iniName)
+          $plain = & (Join-Path $drop 'st2k.exe') doctor 2>&1 | Out-String
+          if ($plain -match 'Max thumbnail size\s+137 px') {
+            throw 'ARM64 negative control failed: still reading the ini after deleting it.'
+          }
+          Write-Host 'ARM64 portable: ini honored, HKCU untouched, falls back without the marker.'
+
       # The ARM64 release gate used to end in "install it on a real ARM64 device and
       # right-click something in Explorer", which needs hardware nobody here has: an x64
       # host cannot run an ARM64 Windows guest, so that gate could never actually be run
