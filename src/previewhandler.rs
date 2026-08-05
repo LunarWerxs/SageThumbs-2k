@@ -30,7 +30,7 @@ use windows::Win32::Graphics::Gdi::{
     EndPaint, FillRect, InvalidateRect, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO,
     BITMAPINFOHEADER, DIB_RGB_COLORS, HALFTONE, HBITMAP, PAINTSTRUCT, SRCCOPY,
 };
-use windows::Win32::System::Com::{CoTaskMemFree, IStream, STATFLAG_DEFAULT, STATSTG};
+use windows::Win32::System::Com::IStream;
 use windows::Win32::System::Ole::{IObjectWithSite, IObjectWithSite_Impl};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithStream, IInitializeWithStream_Impl,
@@ -57,7 +57,7 @@ const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
 use crate::streamsrc::{self, StreamSource};
-use crate::{decode, safety, settings};
+use crate::{decode, safety, settings, stream_name};
 
 /// Wall-clock budget for a single preview decode, enforced OFF the host thread (see
 /// [`decode_preview_budgeted`]) so a slow/exotic decode can never freeze prevhost's
@@ -812,20 +812,6 @@ fn decode_preview_budgeted(bytes: Vec<u8>) -> Option<image::DynamicImage> {
         let _ = tx.send(out);
     });
     rx.recv_timeout(PREVIEW_DECODE_BUDGET).ok().flatten()
-}
-
-/// Best-effort backing file name/path of the shell's preview `IStream` (via `IStream::Stat`,
-/// `STATFLAG_DEFAULT` fills `pwcsName`). Logged so a "white preview" report names the exact
-/// file. `pwcsName` is a CoTaskMem allocation we own and must free.
-unsafe fn stream_name(stream: &IStream) -> Option<String> {
-    let mut stat = STATSTG::default();
-    stream.Stat(&mut stat, STATFLAG_DEFAULT).ok()?;
-    if stat.pwcsName.is_null() {
-        return None;
-    }
-    let s = stat.pwcsName.to_string().ok();
-    CoTaskMemFree(Some(stat.pwcsName.0 as *const c_void));
-    s
 }
 
 #[cfg(test)]

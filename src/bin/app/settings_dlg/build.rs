@@ -20,6 +20,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.header(t("grp_thumbnails"), hdr, ID_LBL_THUMBS, true);
     lc.checkbox(t("chk_enable_thumbs"), cb, 300, ID_ENABLE_THUMBS);
     lc.checkbox(t("chk_prefer_embedded"), cb, 300, ID_USE_EMBEDDED);
+    lc.checkbox(t("chk_format_badge"), cb, 300, ID_FORMAT_BADGE);
 
     // Limits & quality — numeric label+edit rows. Single-line edits top-align +
     // ignore EM_SETRECT, so they're kept snug; the rounded field panel behind them

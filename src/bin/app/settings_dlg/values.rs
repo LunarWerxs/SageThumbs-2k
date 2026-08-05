@@ -5,6 +5,7 @@ use super::*;
 pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, settings::thumbnails_enabled());
     check(hwnd, ID_USE_EMBEDDED, settings::use_embedded());
+    check(hwnd, ID_FORMAT_BADGE, settings::format_badge());
     check(hwnd, ID_ENABLE_MENU, settings::menu_enabled());
     check(hwnd, ID_MENU_ALL_TYPES, settings::menu_all_file_types());
     let mb = (settings::max_file_size_bytes() / (1024 * 1024)).min(u32::MAX as u64) as u32;
@@ -86,6 +87,7 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
 pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, true);
     check(hwnd, ID_USE_EMBEDDED, true); // ON by default — see settings::use_embedded
+    check(hwnd, ID_FORMAT_BADGE, false); // OFF by default — it alters the picture
     check(hwnd, ID_ENABLE_MENU, true);
     check(hwnd, ID_MENU_ALL_TYPES, false);
     let _ = SetDlgItemInt(hwnd, ID_MAXSIZE, settings::DEFAULT_MAX_FILE_MB, false);
@@ -251,6 +253,13 @@ pub(super) unsafe fn banner_rotator(hwnd: HWND) -> Option<(HWND, *mut SponsorRot
 pub(super) unsafe fn apply_settings(hwnd: HWND) {
     let _ = settings::set_dword("EnableThumbs", checked(hwnd, ID_ENABLE_THUMBS) as u32);
     let _ = settings::set_dword("UseEmbedded", checked(hwnd, ID_USE_EMBEDDED) as u32);
+    // The format badge is baked INTO the bitmap the shell caches, so flipping it changes
+    // nothing the user can see until the thumbnail cache is discarded. Detect the change
+    // here and purge, otherwise the first thing every user reports is "I ticked it and
+    // nothing happened". Only on an actual change — never make Apply nuke the cache.
+    let badge_now = checked(hwnd, ID_FORMAT_BADGE);
+    let badge_changed = badge_now != settings::format_badge();
+    let _ = settings::set_format_badge(badge_now);
     let _ = settings::set_dword("EnableMenu", checked(hwnd, ID_ENABLE_MENU) as u32);
     let _ = settings::set_dword("MenuAllFileTypes", checked(hwnd, ID_MENU_ALL_TYPES) as u32);
     let _ = settings::set_dword("MenuQuickVerbs", checked(hwnd, ID_MENU_QUICK) as u32);
@@ -462,6 +471,15 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // the shell's association cache around it; the modern packaged verbs re-query
     // GetState per menu-build, so they pick the change up on the next open too.
     notify_shell_assoc_changed();
+
+    // The badge lives INSIDE the cached bitmap, so a toggle is invisible until the shell's
+    // thumbnail cache is discarded. Do it for the user, and only when the value actually
+    // changed — an unrelated Apply must never blow away everyone's cached tiles.
+    if badge_changed {
+        let _ = sagethumbs2k_core::shellcmd::cmd_c(
+            sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE,
+        );
+    }
 }
 
 /// `SHChangeNotify(SHCNE_ASSOCCHANGED)` — tells Explorer file-type handlers changed,

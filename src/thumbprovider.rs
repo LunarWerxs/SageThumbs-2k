@@ -140,6 +140,26 @@ impl ThumbnailProvider_Impl {
             "GetThumbnail: decoded {}x{}",
             img.width, img.height
         ));
+
+        // Optional format badge (`FormatBadge`, off by default). Stamped HERE, on the
+        // finished tile, so it is the last thing applied and every decode tier gets it for
+        // free. Note the shell CACHES what we return, so a toggle only shows up on tiles
+        // rendered after it — the Settings dialog clears the thumbnail cache when the
+        // option changes, otherwise turning it on looks like it did nothing.
+        let mut img = img;
+        if cfg.format_badge {
+            let label = {
+                let borrow = self.stream.borrow();
+                borrow
+                    .as_ref()
+                    .and_then(|s| unsafe { crate::stream_name(s) })
+                    .and_then(|n| crate::badge::label_for(&n))
+            };
+            if let Some(label) = label {
+                crate::badge::stamp(&mut img.rgba, img.width, img.height, &label);
+            }
+        }
+
         let hbmp = unsafe {
             dib::create_premultiplied_dib(img.width as i32, img.height as i32, &img.rgba)?
         };

@@ -146,6 +146,7 @@ pub(super) const ID_PREVIEW_HTML: i32 = 1209;
 pub(super) const ID_PREVIEW_URL_LIVE: i32 = 1210;
 // Generic-archive (.zip/.rar/.7z) contact-sheet thumbnails (Ebook/comic tab).
 pub(super) const ID_C_ARCHIVE_SHEET: i32 = 1212;
+pub(super) const ID_FORMAT_BADGE: i32 = 1213;
 
 /// Per-item menu-visibility checkboxes (XnShell-style "Displayed menu items").
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's

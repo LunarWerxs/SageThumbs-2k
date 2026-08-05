@@ -2,6 +2,21 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Added
+
+- **Optional format badge on thumbnails.** Turn it on and every thumbnail gets a small label
+  in its corner saying what the file actually is - PSD, JXL, AVIF, JP2 - so you can tell
+  formats apart in a folder where the pictures look alike. Off by default, in Settings ->
+  General. Switching it on or off clears the thumbnail cache for you, because Windows stores
+  the picture we drew and would otherwise keep showing the old one. (requested via SourceForge)
+
+### Changed
+
+- The PDF page-margin option moved from General to the Ebook/comic tab, where the other
+  document settings already live.
+
 ## 1.7.5
 
 ### Fixed

@@ -293,3 +293,123 @@ fn garbage_returns_error_not_crash() {
         "garbage input should yield a failed GetThumbnail"
     );
 }
+
+/// The optional format badge (`FormatBadge`, off by default) must reach a REAL thumbnail
+/// through the shell's own COM path. The unit tests in `badge.rs` prove the drawing; this
+/// proves the WIRING — that the provider recovers the file's extension from the stream the
+/// shell marshals in, and stamps the finished tile.
+///
+/// Uses a FILE-backed stream on purpose. The badge needs a file name, and a memory stream
+/// has none (`IStream::Stat` leaves `pwcsName` null), so the whole feature is invisible to
+/// the `SHCreateMemStream` helper the other tests use — a test built on that would have
+/// passed while proving nothing. Explorer always hands us a named, file-backed stream.
+///
+/// Restores the previous registry value on the way out, including if the assertions fail,
+/// so a test run cannot leave badges silently switched on for the developer.
+#[test]
+fn format_badge_stamps_a_real_thumbnail_when_enabled() {
+    use windows::Win32::System::Com::{STGM_READ, STGM_SHARE_DENY_NONE};
+    use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
+    use windows_registry::CURRENT_USER;
+
+    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.png");
+    if !corpus.exists() {
+        eprintln!("skipping: no ../test-corpus/sample.png");
+        return;
+    }
+
+    unsafe fn tile(path: &std::path::Path, cx: u32) -> Vec<u8> {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let stream: IStream = SHCreateStreamOnFileEx(
+            PCWSTR(wide.as_ptr()),
+            STGM_READ.0 | STGM_SHARE_DENY_NONE.0,
+            0,
+            false,
+            None,
+        )
+        .expect("file stream");
+
+        let path_dll = dll_path();
+        let wide_dll: Vec<u16> = path_dll
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let module: HMODULE = LoadLibraryW(PCWSTR(wide_dll.as_ptr())).expect("LoadLibrary");
+        let proc = GetProcAddress(module, s!("DllGetClassObject")).expect("DllGetClassObject");
+        let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
+        let mut factory_ptr: *mut c_void = std::ptr::null_mut();
+        dll_get_class_object(
+            &CLSID_THUMBNAIL_PROVIDER,
+            &IClassFactory::IID,
+            &mut factory_ptr,
+        )
+        .ok()
+        .expect("class object");
+        let factory = IClassFactory::from_raw(factory_ptr);
+        let init: IInitializeWithStream = factory.CreateInstance(None).expect("create");
+        init.Initialize(&stream, 0).expect("Initialize");
+        let provider: IThumbnailProvider = init.cast().expect("QI");
+        let mut hbmp = HBITMAP::default();
+        let mut alpha: WTS_ALPHATYPE = WTSAT_UNKNOWN;
+        provider
+            .GetThumbnail(cx, &mut hbmp, &mut alpha)
+            .expect("GetThumbnail");
+
+        let mut bm = BITMAP::default();
+        GetObjectW(
+            hbmp.into(),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut _ as *mut c_void),
+        );
+        let (w, h, stride) = (
+            bm.bmWidth as usize,
+            bm.bmHeight as usize,
+            bm.bmWidthBytes as usize,
+        );
+        let src = std::slice::from_raw_parts(bm.bmBits as *const u8, stride * h);
+        let mut out = vec![0u8; w * 4 * h];
+        for y in 0..h {
+            out[y * w * 4..(y + 1) * w * 4].copy_from_slice(&src[y * stride..y * stride + w * 4]);
+        }
+        let _ = DeleteObject(hbmp.into());
+        out
+    }
+
+    let key = CURRENT_USER
+        .create(r"Software\SageThumbs2K")
+        .expect("settings key");
+    let prev = key.get_u32("FormatBadge").ok();
+    let _ = key.set_u32("FormatBadge", 0);
+    let off = unsafe { tile(&corpus, 256) };
+    let _ = key.set_u32("FormatBadge", 1);
+    let on = unsafe { tile(&corpus, 256) };
+    match prev {
+        Some(v) => {
+            let _ = key.set_u32("FormatBadge", v);
+        }
+        None => {
+            let _ = key.remove_value("FormatBadge");
+        }
+    }
+
+    assert_eq!(
+        off.len(),
+        on.len(),
+        "the badge must not change the tile size"
+    );
+    assert_ne!(
+        off, on,
+        "FormatBadge=1 produced a byte-identical tile - the badge never reached the provider"
+    );
+
+    // Confined to the bottom-right: the top-left eighth is the picture the user asked for.
+    let w = 256usize;
+    let clean =
+        (0..32).all(|y| (0..32).all(|x| off[(y * w + x) * 4..][..4] == on[(y * w + x) * 4..][..4]));
+    assert!(clean, "the badge bled into the top-left of the thumbnail");
+}

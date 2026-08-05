@@ -431,6 +431,7 @@ pub(super) unsafe fn menu_row_param(list: HWND, row: i32) -> isize {
 const TOOLTIPS: &[(i32, &str)] = &[
     (ID_ENABLE_THUMBS, "tip_enable_thumbs"),
     (ID_USE_EMBEDDED, "tip_prefer_embedded"),
+    (ID_FORMAT_BADGE, "tip_format_badge"),
     (ID_ENABLE_MENU, "tip_enable_menu"),
     (ID_MENU_PREVIEW, "tip_menu_preview"),
     (ID_MENU_QUICK, "tip_menu_quick"),

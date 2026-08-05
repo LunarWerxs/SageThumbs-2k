@@ -59,6 +59,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // General = the merged Thumbnails + General (Custom action is its own tab now).
             Switch(ID_ENABLE_THUMBS),
             Switch(ID_USE_EMBEDDED),
+            Switch(ID_FORMAT_BADGE),
             Head(ID_LBL_LIMITS),
             Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
             Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
@@ -68,7 +69,6 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Pair(ID_LBL_LANG, ID_LANG, 156, 200),
             Switch(ID_PRESERVE_DATE),
             Switch(ID_KEEP_METADATA),
-            Switch(ID_PDF_MARGIN),
         ],
         1 => &[
             Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),
@@ -81,6 +81,10 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_C_PREFER_COVER),
             Switch(ID_C_SKIP_SCAN),
             Switch(ID_C_ARCHIVE_SHEET),
+            // PDF page margin moved here from General (2026-08-05, when the format badge
+            // needed General's last row). It is a DOCUMENT rendering option and had been
+            // filed under "Language & files", so this reads better than where it was.
+            Switch(ID_PDF_MARGIN),
         ],
         3 => &[
             Switch(ID_ENABLE_MENU),

@@ -8,6 +8,7 @@
 //!   - EnableThumbs  (1)   master on/off for the thumbnail provider
 //!   - MaxSize       (100) skip files larger than this many MB
 //!   - Width/Height  (1024) max generated thumbnail edge, clamped to [32, 1024]
+//!   - FormatBadge   (0)   stamp the format (PSD/JXL/...) in the thumbnail corner
 //!   - UseEmbedded   (0)   prefer the image's embedded (EXIF) thumbnail for
 //!     small requests — faster, lower quality
 //!   - JPEG          (90)  "Convert to JPG" quality (0–100)
@@ -242,6 +243,9 @@ pub struct ThumbSettings {
     pub max_thumb: u32,
     /// `UseEmbedded` — prefer the embedded thumbnail for small requests.
     pub use_embedded: bool,
+    /// `FormatBadge` — stamp the file's format in the thumbnail's corner. OFF by default:
+    /// it alters the picture the user asked to see, so it is opt-in decoration.
+    pub format_badge: bool,
 }
 
 /// Read the per-`GetThumbnail` settings in one HKCU key open. Missing values fall
@@ -263,7 +267,17 @@ pub fn thumb_settings() -> ThumbSettings {
             g("Height", DEFAULT_THUMB_SIZE),
         ),
         use_embedded: g("UseEmbedded", 1) != 0,
+        format_badge: g("FormatBadge", 0) != 0,
     }
+}
+
+/// `FormatBadge` — corner format badge on thumbnails. Default OFF.
+pub fn format_badge() -> bool {
+    get_dword("FormatBadge", 0) != 0
+}
+
+pub fn set_format_badge(on: bool) -> windows_registry::Result<()> {
+    set_dword("FormatBadge", u32::from(on))
 }
 
 // ---- Convert-verb quality settings --------------------------------------

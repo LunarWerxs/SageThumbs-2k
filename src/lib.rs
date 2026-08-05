@@ -18,6 +18,7 @@
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod app_image;
+mod badge;
 pub mod clipboard;
 mod command;
 mod container;
@@ -298,6 +299,24 @@ pub(crate) fn module_path() -> windows::core::Result<String> {
             buf.resize((buf.len() * 2).min(32_768), 0);
         }
     }
+}
+
+/// Best-effort backing file name/path of a shell-supplied `IStream` (via `IStream::Stat`,
+/// which fills `pwcsName` under `STATFLAG_DEFAULT`).
+///
+/// Shared by the preview handler (which logs it, so a "white preview" report names the exact
+/// file) and the thumbnail provider (which needs the extension for the optional format
+/// badge). `pwcsName` is a CoTaskMem allocation we own and must free.
+pub(crate) unsafe fn stream_name(stream: &windows::Win32::System::Com::IStream) -> Option<String> {
+    use windows::Win32::System::Com::{STATFLAG_DEFAULT, STATSTG};
+    let mut stat = STATSTG::default();
+    stream.Stat(&mut stat, STATFLAG_DEFAULT).ok()?;
+    if stat.pwcsName.is_null() {
+        return None;
+    }
+    let s = stat.pwcsName.to_string().ok();
+    windows::Win32::System::Com::CoTaskMemFree(Some(stat.pwcsName.0 as *const core::ffi::c_void));
+    s
 }
 
 #[cfg(test)]

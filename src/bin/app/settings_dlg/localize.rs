@@ -58,6 +58,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_THUMBS, "grp_thumbnails"),
         (ID_ENABLE_THUMBS, "chk_enable_thumbs"),
         (ID_USE_EMBEDDED, "chk_prefer_embedded"),
+        (ID_FORMAT_BADGE, "chk_format_badge"),
         (ID_ENABLE_MENU, "chk_enable_menu"),
         (ID_LBL_PREVIEW, "lbl_menu_preview"),
         (ID_MENU_QUICK, "chk_menu_quick"),
