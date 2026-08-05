@@ -10,7 +10,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   in its corner saying what the file actually is - PSD, JXL, AVIF, JP2 - so you can tell
   formats apart in a folder where the pictures look alike. Off by default, in Settings ->
   General. Switching it on or off clears the thumbnail cache for you, because Windows stores
-  the picture we drew and would otherwise keep showing the old one. (user request)
+  the picture we drew and would otherwise keep showing the old one. (in-app suggestion)
 
 ### Changed
 
