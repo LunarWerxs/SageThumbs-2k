@@ -3,19 +3,19 @@
   "architectures": {
     "x64": {
       "full": {
-        "referenceVersion": "1.4.1-hdr",
+        "referenceVersion": "1.7.5",
         "installerReferenceCalibrated": true,
         "referenceInstallerBytes": 13371559,
         "referenceInstallerSha256": "02b29d85ae6d1a6845ad0ba7be92c03b41356cd416b2a32068d2ded9df8635f7",
         "installerGrowthAllowanceBytes": 131072,
         "maxInstallerBytes": 13502631,
-        "referenceRustPayloadBytes": 23138304,
+        "referenceRustPayloadBytes": 23407104,
         "rustPayloadGrowthAllowanceBytes": 262144,
-        "maxRustPayloadBytes": 23400448,
+        "maxRustPayloadBytes": 23669248,
         "referenceMagickPayloadBytes": 29827612,
         "magickPayloadGrowthAllowanceBytes": 262144,
         "maxMagickPayloadBytes": 30089756,
-        "rationale": "Rebaselined 2026-07-31 after the competitor-gap release. The 1.3.6-rc1 reference predates a large batch of shipped capability: metadata strip extended to WebP/SVG/HEIC/AVIF plus C2PA removal, XMP/DDS/gain-map facts in Image info, EXIF-IPTC-XMP carry-through on Convert and Resize, PDF page layouts, ComicInfo.xml in CBZ, pad-to-canvas resize, multi-size batch output, WOFF font previews, the eyedropper stash, and HDR screen capture. That is a deliberate +253 KiB installer / +922 KiB Rust payload, reviewed and accepted, not drift. The HDR capture stack (D3D11/DXGI/WinRT Graphics.Capture) is behind the APP-ONLY `hdr-capture` cargo feature precisely so the shell DLL does not pay for it; verified by `objdump -p`, which shows d3d11.dll and dxgi.dll imported by SageThumbs2K.exe and by NEITHER sagethumbs2k.dll nor st2k.exe. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
+        "rationale": "Rust payload rebaselined 2026-08-05 for 1.7.5: +268,800 bytes over the 1.4.1-hdr reference, which overran the previous 256 KiB allowance by 6,656 bytes. The growth is one reviewed feature - a from-scratch JPEG 2000 reduced-resolution decoder (src/decode/jp2: codestream/packet/MQ+EBCOT/DWT) that replaces a full ImageMagick decode for thumbnails and previews. ~262 KiB of Rust for a complete wavelet codec is a good trade: it makes a 76 MP scan thumbnail in 0.25s instead of 4.4s, and it is the reason the DLL grew at all this release. Installer and magick budgets are UNCHANGED and were not the thing that tripped. The prior rationale (2026-07-31 competitor-gap rebaseline, hdr-capture kept app-only behind a cargo feature so the shell DLL does not pay for it) still holds and is why the installer figure did not move. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
       }
     },
     "arm64": {
