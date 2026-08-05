@@ -146,13 +146,111 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Find the raw codestream inside a JP2 container, or return the input when it already IS
-/// a bare J2K codestream (`.j2k`, and what `jp2c` wraps).
-pub(super) fn find_codestream(bytes: &[u8]) -> Result<&[u8], Jp2Error> {
-    if bytes.starts_with(&[0xFF, 0x4F, 0xFF, 0x51]) {
-        return Ok(bytes);
+/// A `pclr`+`cmap` palette, pre-expanded to 8-bit RGB per index.
+///
+/// Bilevel and paletted JPEG 2000 is COMMON in the wild — archive.org's scanned-page
+/// files are 1-bit images whose palette maps index 0 to WHITE — so rendering raw indices
+/// without this paints a blank white page solid black (found via exactly such a file on
+/// issue #11). Only the shapes that occur in practice are accepted: a single codestream
+/// component mapped through 1 (gray) or 3 (RGB) palette columns; anything else returns
+/// `Unsupported` and the caller falls back to ImageMagick.
+pub(super) struct Palette {
+    pub entries: Vec<[u8; 3]>,
+}
+
+/// Parse `jp2h`'s `pclr` and `cmap` boxes into a ready LUT. `Ok(None)` = no palette at
+/// all; `Err(Unsupported)` = a palette exists but in a shape we refuse to guess at.
+fn parse_palette(jp2h: &[u8]) -> Result<Option<Palette>, Jp2Error> {
+    let mut pclr: Option<&[u8]> = None;
+    let mut cmap: Option<&[u8]> = None;
+    let mut p = 0usize;
+    while p + 8 <= jp2h.len() {
+        let Some(len_be) = jp2h.get(p..p + 4).and_then(|b| b.first_chunk::<4>()) else {
+            break;
+        };
+        let len = u32::from_be_bytes(*len_be) as usize;
+        if len < 8 || p + len > jp2h.len() {
+            break;
+        }
+        match &jp2h[p + 4..p + 8] {
+            b"pclr" => pclr = Some(&jp2h[p + 8..p + len]),
+            b"cmap" => cmap = Some(&jp2h[p + 8..p + len]),
+            _ => {}
+        }
+        p += len;
     }
-    // JP2 family: a box chain. Walk only the top level looking for `jp2c`.
+    let Some(pc) = pclr else { return Ok(None) };
+
+    // pclr: NE (u16), NPC (u8), NPC x Bi, then NE rows of NPC entries.
+    if pc.len() < 3 {
+        return Err(Jp2Error::Malformed("pclr too short"));
+    }
+    let ne = u16::from_be_bytes([pc[0], pc[1]]) as usize;
+    let npc = pc[2] as usize;
+    if ne == 0 || ne > 1024 || !(npc == 1 || npc == 3) {
+        return Err(Jp2Error::Unsupported("palette shape"));
+    }
+    let bi = pc
+        .get(3..3 + npc)
+        .ok_or(Jp2Error::Malformed("pclr depths"))?;
+    if bi.iter().any(|&b| b & 0x80 != 0 || (b & 0x7F) + 1 > 16) {
+        return Err(Jp2Error::Unsupported("palette entry depth"));
+    }
+    let widths: Vec<usize> = bi
+        .iter()
+        .map(|&b| ((b & 0x7F) as usize + 1).div_ceil(8))
+        .collect();
+    let maxes: Vec<u32> = bi.iter().map(|&b| (1u32 << ((b & 0x7F) + 1)) - 1).collect();
+    let mut off = 3 + npc;
+    let mut entries = Vec::with_capacity(ne);
+    for _ in 0..ne {
+        let mut rgb = [0u8; 3];
+        for c in 0..npc {
+            let w = widths[c];
+            let raw = pc
+                .get(off..off + w)
+                .ok_or(Jp2Error::Malformed("pclr entries"))?;
+            let mut v = 0u32;
+            for &b in raw {
+                v = (v << 8) | b as u32;
+            }
+            let v8 = ((v * 255) / maxes[c].max(1)) as u8;
+            if npc == 1 {
+                rgb = [v8, v8, v8];
+            } else {
+                rgb[c] = v8;
+            }
+            off += w;
+        }
+        entries.push(rgb);
+    }
+
+    // cmap: (CMP u16, MTYP u8, PCOL u8) per output channel. Accept only "component 0
+    // through palette columns in order" — the shape real encoders write.
+    if let Some(cm) = cmap {
+        if cm.len() % 4 != 0 || cm.is_empty() {
+            return Err(Jp2Error::Malformed("cmap length"));
+        }
+        for (i, ch) in cm.chunks_exact(4).enumerate() {
+            let cmp = u16::from_be_bytes([ch[0], ch[1]]);
+            let (mtyp, pcol) = (ch[2], ch[3]);
+            if cmp != 0 || mtyp != 1 || pcol as usize != (if npc == 1 { 0 } else { i }) {
+                return Err(Jp2Error::Unsupported("cmap shape"));
+            }
+        }
+    }
+    Ok(Some(Palette { entries }))
+}
+
+/// Find the raw codestream inside a JP2 container, plus its palette when one is declared.
+/// A bare J2K codestream (`.j2k`) has no box structure and therefore no palette.
+pub(super) fn find_codestream_and_palette(
+    bytes: &[u8],
+) -> Result<(&[u8], Option<Palette>), Jp2Error> {
+    if bytes.starts_with(&[0xFF, 0x4F, 0xFF, 0x51]) {
+        return Ok((bytes, None));
+    }
+    let mut palette = None;
     let mut p = 0usize;
     let mut guard = 0;
     while p + 8 <= bytes.len() {
@@ -160,17 +258,13 @@ pub(super) fn find_codestream(bytes: &[u8]) -> Result<&[u8], Jp2Error> {
         if guard > 1024 {
             return Err(Jp2Error::Malformed("box chain too long"));
         }
-        // `p + 8 <= bytes.len()` is the loop condition, so both reads are in range; take
-        // them fallibly anyway rather than leaving an `unwrap` in a parser fed by Explorer.
         let Some(len_be) = bytes.get(p..p + 4).and_then(|b| b.first_chunk::<4>()) else {
             return Err(Jp2Error::Truncated);
         };
         let len = u32::from_be_bytes(*len_be) as u64;
         let typ = &bytes[p + 4..p + 8];
         let (hdr, size) = match len {
-            // 0 = "to end of file"
             0 => (8u64, (bytes.len() - p) as u64),
-            // 1 = 64-bit length follows
             1 => {
                 let s = bytes
                     .get(p + 8..p + 16)
@@ -191,12 +285,24 @@ pub(super) fn find_codestream(bytes: &[u8]) -> Result<&[u8], Jp2Error> {
         if end > bytes.len() {
             return Err(Jp2Error::Truncated);
         }
-        if typ == b"jp2c" {
-            return bytes.get(body_start..end).ok_or(Jp2Error::Truncated);
+        match typ {
+            b"jp2h" => palette = parse_palette(&bytes[body_start..end])?,
+            b"jp2c" => {
+                return Ok((
+                    bytes.get(body_start..end).ok_or(Jp2Error::Truncated)?,
+                    palette,
+                ));
+            }
+            _ => {}
         }
         p = end;
     }
     Err(Jp2Error::Malformed("no jp2c box"))
+}
+
+/// Back-compat shim for callers that only need the codestream.
+pub(super) fn find_codestream(bytes: &[u8]) -> Result<&[u8], Jp2Error> {
+    find_codestream_and_palette(bytes).map(|(cs, _)| cs)
 }
 
 /// Parse the main header and index every tile-part payload. Does NOT decode any pixels.

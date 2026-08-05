@@ -103,8 +103,13 @@ pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 /// Returns the pixels plus the decoded dimensions, which will be >= the target and are the
 /// caller's to resize down precisely.
 pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u32), Jp2Error> {
-    let cs = codestream::find_codestream(bytes)?;
+    let (cs, palette) = codestream::find_codestream_and_palette(bytes)?;
     let c = codestream::parse(cs)?;
+    // A palette maps SINGLE-component indices; anything else is a shape we refuse to
+    // guess at (the parser already declines the exotic ones).
+    if palette.is_some() && c.siz.components.len() != 1 {
+        return Err(Jp2Error::Unsupported("palette with multiple components"));
+    }
 
     let ncomp = c.siz.components.len();
     if ncomp == 0 || ncomp > 4 {
@@ -176,6 +181,18 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
     } else {
         (1u64 << (8 - prec)) as f32
     };
+
+    // Palette-indexed image: the decoded samples are LOOKUP INDICES, not intensities.
+    // Rendering them as gray paints an archive.org blank scanned page (palette 0=white)
+    // solid black — the exact failure the corpus bilevel fixture pins.
+    if let Some(pal) = palette {
+        let last = pal.entries.len() - 1;
+        for i in 0..n {
+            let idx = ((planes[0][i] + shift).round().max(0.0) as usize).min(last);
+            rgb[i * 3..i * 3 + 3].copy_from_slice(&pal.entries[idx]);
+        }
+        return Ok((rgb, out_w, out_h));
+    }
 
     let mct = c.cod.mct && ncomp >= 3;
     for i in 0..n {
@@ -696,6 +713,26 @@ mod tests {
                 Err(e) => panic!("{name}: must decode natively, got: {e}"),
             }
         }
+    }
+
+    /// A 341-byte, 1-bit, PALETTED blank page from a real archive.org user (issue #11).
+    /// Its `pclr` box maps index 0 -> WHITE; a decoder that renders raw indices paints it
+    /// solid black. Every sample must come out white — not "mostly", every one, because
+    /// the image is genuinely blank and the palette is genuinely two-entry.
+    #[test]
+    fn bilevel_paletted_page_renders_white() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../test-corpus/tiny-bilevel.jp2");
+        let Ok(bytes) = std::fs::read(&p) else {
+            eprintln!("skipping: no tiny-bilevel.jp2");
+            return;
+        };
+        let (rgb, w, h) = decode_reduced(&bytes, 256).expect("bilevel paletted decode");
+        assert!(w > 0 && h > 0);
+        assert!(
+            rgb.iter().all(|&v| v == 255),
+            "blank white paletted page decoded non-white (palette ignored?)"
+        );
     }
 
     #[test]

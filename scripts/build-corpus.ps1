@@ -734,6 +734,11 @@ foreach ($t in @(
     if ("$ae" -notmatch '^0') { Write-Host "  ($($t.n): NOT lossless (AE=$ae) - exactness tests will skip/fail)" -ForegroundColor Yellow }
 }
 Write-Host "[corpus] tiny lossless jp2 exactness fixtures present"
+# tiny-bilevel.jp2 (341 bytes) is a REAL user file from issue #11: 1-bit, PALETTED
+# (pclr maps index 0 -> white), 2550x3301. It pins the palette path - a decoder that
+# renders raw indices paints this blank white page solid black. It is checked in-tree
+# by hand; nothing regenerates it (and nothing should - its exact box layout is the fixture).
+if (-not (Test-Path "$OutDir	iny-bilevel.jp2")) { Write-Host "  (tiny-bilevel.jp2 missing - restore it from the repo/issue #11 attachment)" -ForegroundColor Yellow }
 
 # --- 10) Honesty ledger: registered formats with NO real sample ----------------
 # Mostly Camera RAW (real sensor dumps are MBs and vendor-licensed — only dng has
