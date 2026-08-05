@@ -13,6 +13,9 @@
       is a hand-written literal that has silently drifted before).
     4. LOCALES - every translation must have the same keys and placeholders as en.toml, with
       no duplicate keys or UTF-8 BOM.
+    5. LIVE RELABEL - every Settings control built with translated text in settings_dlg/build.rs
+      must have a matching (ID, key) row in settings_dlg/localize.rs, or it keeps its build-time
+      language when the user switches language in the dialog (apply_labels only walks that table).
 
   Exit 1 (with the offending items) on any mismatch; exit 0 when clean. Runs fast (no build) -
   wired into CI and called by release.ps1 before tagging. Run it locally before you push.
@@ -151,10 +154,57 @@ foreach ($f in (Get-ChildItem $localeDir -Filter *.toml | Sort-Object Name)) {
   }
 }
 
+# --- 5) Settings dialog: translated control -> localize table row ---------------
+# Sibling of check 4, and the same failure shape: nothing crashes, nothing warns. A control
+# built with t("...") but absent from localize.rs's `pairs` table keeps its BUILD-TIME text
+# forever - apply_labels (which on_lang_change calls) only re-texts ids listed in that table,
+# so a live language switch leaves the control in the old language until Settings is closed
+# and reopened. Seven of them had drifted this way (ID_PDF_MARGIN, ID_KEEP_METADATA,
+# ID_PREVIEW_MD_REMOTE, ID_EDIT_UPLOAD_HOSTS, the two html-preview toggles) before this check.
+$dlgDir   = Join-Path $root 'src\bin\app\settings_dlg'
+$buildSrc = Get-Content (Join-Path $dlgDir 'build.rs') -Raw
+$locSrc   = Get-Content (Join-Path $dlgDir 'localize.rs') -Raw
+
+# Which id owns the visible translated string:
+#   checkbox/button/header - the control's own id (their text IS the translation)
+#   combo/edit             - the FIRST id, i.e. the separate ID_LBL_* static; the control
+#                            itself holds user data, not a label, so it must NOT be relabeled.
+$built = @{}
+foreach ($m in [regex]::Matches($buildSrc, 'lc\.(checkbox|button|header|combo|edit|radio|link)\(\s*t\("([a-z0-9_]+)"\)(.*?)\)\s*;', 'Singleline')) {
+  $kind = $m.Groups[1].Value
+  $ids  = @([regex]::Matches($m.Groups[3].Value, '\b(ID_[A-Z0-9_]+|IDOK|IDCANCEL)\b') | ForEach-Object { $_.Groups[1].Value })
+  if (-not $ids.Count) { continue }
+  $built[$(if ($kind -in 'combo', 'edit') { $ids[0] } else { $ids[-1] })] = $m.Groups[2].Value
+}
+# button_row(&[(t("k"), ID), ...]) - the shared footer row.
+foreach ($row in [regex]::Matches($buildSrc, 'lc\.button_row\(&\[(.*?)\]\s*\)', 'Singleline')) {
+  foreach ($p in [regex]::Matches($row.Groups[1].Value, 't\("([a-z0-9_]+)"\)\s*,\s*(ID_[A-Z0-9_]+|IDOK|IDCANCEL)')) {
+    $built[$p.Groups[2].Value] = $p.Groups[1].Value
+  }
+}
+# Both the main `pairs` table and the #[cfg(feature = "html-preview")] slice beside it.
+$locTable = @{}
+foreach ($m in [regex]::Matches($locSrc, '\(\s*(ID_[A-Z0-9_]+|IDOK|IDCANCEL)\s*,\s*"([a-z0-9_]+)"\s*\)')) {
+  $locTable[$m.Groups[1].Value] = $m.Groups[2].Value
+}
+if ($built.Count -lt 45 -or $locTable.Count -lt 45) {
+  $fail.Add("settings_dlg parse looks wrong (built=$($built.Count), table=$($locTable.Count)) - the regex in this script needs fixing")
+}
+else {
+  foreach ($id in ($built.Keys | Sort-Object)) {
+    if (-not $locTable.ContainsKey($id)) {
+      $fail.Add("settings_dlg: $id is built with t(`"$($built[$id])`") but has no row in localize.rs - it won't retranslate on a live language switch")
+    }
+    elseif ($locTable[$id] -ne $built[$id]) {
+      $fail.Add("settings_dlg: $id key mismatch - build.rs uses '$($built[$id])', localize.rs uses '$($locTable[$id])'")
+    }
+  }
+}
+
 # --- report -------------------------------------------------------------------
 if ($fail.Count) {
   Write-Host "[consistency] FAILED ($($fail.Count)):" -ForegroundColor Red
   $fail | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
   exit 1
 }
-Write-Host "[consistency] OK - assets tracked, format count = $count, version $ver consistent, $localeCount locales at $($en.Map.Count)-key parity." -ForegroundColor Green
+Write-Host "[consistency] OK - assets tracked, format count = $count, version $ver consistent, $localeCount locales at $($en.Map.Count)-key parity, $($built.Count) Settings controls relabel live." -ForegroundColor Green

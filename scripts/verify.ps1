@@ -125,6 +125,13 @@ if ($Lint) {
             if ($LASTEXITCODE -ne 0) { throw "$scriptName failed" }
         }
     }
+    # The reply-address rule is implemented once per runtime (Pascal / Rust / JS); this runs
+    # each against the one shared table so they cannot drift apart unnoticed. Locally ISCC is
+    # usually present, so unlike CI this covers the Pascal leg too.
+    Stage 'email-rule agreement' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-email-rule.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'check-email-rule.ps1 failed' }
+    }
 }
 
 if ($Fast) {

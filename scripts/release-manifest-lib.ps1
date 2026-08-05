@@ -41,6 +41,7 @@ function Get-ReleaseRequiredInputPaths {
         'scripts/_targetdir.ps1',
         'scripts/check-consistency.ps1',
         'scripts/check-dicom.ps1',
+        'scripts/check-email-rule.ps1',
         'scripts/check-installer.ps1',
         'scripts/check-magick-bundle.ps1',
         'scripts/check-magick-source.ps1',

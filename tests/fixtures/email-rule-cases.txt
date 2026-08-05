@@ -1,0 +1,46 @@
+# The email rule's contract, shared by all THREE implementations of it:
+#
+#   packaging/installer.iss          LooksLikeEmail   (uninstall survey, Pascal Script)
+#   src/bin/app/feedback.rs          looks_like_email (in-app Send feedback box, Rust)
+#   packaging/analytics/worker.js    looksLikeEmail   (server-side intake gate, JS)
+#
+# Three runtimes means three implementations; this file is what stops them drifting. Each one
+# is run against these exact cases - Rust in `feedback::tests::email_rule_matches_shared_table`,
+# the other two by `scripts/check-email-rule.ps1`.
+#
+# Format: <1|0>|<value>, where 1 = must be accepted. Everything after the FIRST '|' is the
+# value verbatim, so a case may contain '|'. Blank lines and #-comments are ignored; a case
+# whose value is empty is written as the bare prefix, and is covered by the length floor.
+#
+# The `0` cases are not hypothetical - prose, "n/a" and bare handles are the shapes that were
+# actually arriving in the contact column before the field was made email-only (2026-08-05).
+1|a@b.co
+1|me@example.com
+1|first.last@sub.domain.co.uk
+1|x+tag@gmail.com
+1|user_name-1@ex-ample.io
+1|Me@Example.COM
+1|user@example.museum
+1|a.b.c@d.ef
+0|
+0|very slow thumbnails generation
+0|n/a
+0|nope
+0|me@localhost
+0|me@1
+0|@example.com
+0|me@
+0|a@b.c
+0|me@@example.com
+0|me@example..com
+0|me@.example.com
+0|me@example.com.
+0|me@-example.com
+0|me@example.com-
+0|me there@x.com
+0|me@example.c0m
+0|me@exam ple.com
+0|discord: someguy#1234
+0|https://example.com
+0|+1 555 0100
+0|me@example.com extra

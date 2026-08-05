@@ -27,6 +27,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - The PDF page-margin option moved from General to the Ebook/comic tab, where the other
   document settings already live.
 
+- **The reply field on the feedback form is an email address now.** It used to say "email or
+  other contact" and accept anything, so people typed their actual message into it and we had
+  no way to write back. It is still optional - leave it empty and your feedback is sent
+  anyway - but if you do fill it in, it has to be an address that could receive a reply.
+
 ## 1.7.5
 
 ### Fixed

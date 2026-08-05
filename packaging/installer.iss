@@ -458,6 +458,82 @@ begin
   end;
 end;
 
+// Is this a plausible single email address? The reply field used to accept "email or other
+// contact", and in practice people typed their COMPLAINT into it instead of an address, so
+// the field produced unreachable rows and lost the text (it is not shown as the message).
+// It is email-only now, and this is the gate. Deliberately structural rather than RFC-exact:
+// it rejects the junk that actually shows up (prose, "n/a", bare handles) without bouncing
+// an address a real person owns. Empty is still fine - the whole field stays optional.
+function LooksLikeEmail(const S: String): Boolean;
+var
+  i, At, Dot, L: Integer;
+  C: Char;
+begin
+  Result := False;
+  L := Length(S);
+  // a@b.co is the shortest thing worth accepting; 120 matches the field's MaxLength.
+  if (L < 6) or (L > 120) then Exit;
+  At := 0;
+  for i := 1 to L do begin
+    C := S[i];
+    if C = '@' then begin
+      if At <> 0 then Exit;                     // a second '@' - not one address
+      At := i;
+    end
+    // Anything outside printable ASCII (spaces and control chars included) means this is
+    // prose or a handle, not an address. Listed out rather than using Pos with a Char so
+    // no implicit Char->String conversion is relied on.
+    else if (C <= ' ') or (C > #126) then Exit
+    else if (C = '(') or (C = ')') or (C = '[') or (C = ']') or (C = '{') or (C = '}') or
+            (C = ',') or (C = ';') or (C = ':') or (C = '"') or (C = '<') or (C = '>') or
+            (C = '\') or (C = '/') then Exit;
+  end;
+  if (At < 2) or (At = L) then Exit;            // needs a local part AND a domain
+  if At - 1 > 64 then Exit;                     // local part cap (RFC 5321)
+  if S[At + 1] = '-' then Exit;                 // domain can't start with '-'
+  if S[L] = '-' then Exit;                      // ...or end with one
+  // The domain needs a dot that is neither first nor last, no empty labels, and a TLD of
+  // two or more letters - which is what rules out "me@localhost" and "me@1".
+  Dot := 0;
+  for i := At + 1 to L do
+    if S[i] = '.' then begin
+      if i = At + 1 then Exit;                  // domain starts with '.'
+      if (Dot > 0) and (i = Dot + 1) then Exit; // '..'
+      Dot := i;
+    end;
+  if (Dot = 0) or (Dot = L) then Exit;
+  if L - Dot < 2 then Exit;
+  for i := Dot + 1 to L do begin
+    C := S[i];
+    if not (((C >= 'A') and (C <= 'Z')) or ((C >= 'a') and (C <= 'z'))) then Exit;
+  end;
+  Result := True;
+end;
+
+// The survey's reply field, its inline warning, and the Send button, at script scope ONLY so
+// the OnChange handler below can reach them (Pascal Script has no closures).
+var
+  SurveyContact: TNewEdit;
+  SurveyWarn: TNewStaticText;
+  SurveySend: TNewButton;
+
+// Live validation, re-run on every keystroke in the email box: a malformed address disables
+// Send and shows an inline reason, and clearing the box re-enables it. This shape was chosen
+// over vetoing the close (TSetupForm.ModalResult and TWinControl.SetFocus are BOTH absent from
+// Pascal Script - ISCC rejects them, verified) and over re-showing the modal, because it needs
+// no assumption about VCL's button/close ordering, which an uninstaller-only dialog gives no
+// way to test. SKIP is deliberately never disabled, so this can never wedge an uninstall.
+procedure SurveyContactChange(Sender: TObject);
+var
+  Bad: Boolean;
+  C: String;
+begin
+  C := Trim(SurveyContact.Text);
+  Bad := (C <> '') and not LooksLikeEmail(C);
+  SurveyWarn.Visible := Bad;
+  SurveySend.Enabled := not Bad;
+end;
+
 // A small, skippable "why are you uninstalling?" survey shown right before removal.
 // Pure-Win32 modal (no browser); fills UninstallReason/UninstallNote/UninstallContact.
 // Either button lets the uninstall proceed - Skip just leaves them empty. Never shown on a
@@ -509,7 +585,7 @@ begin
     Lbl.WordWrap := True;
     Lbl.Height := ScaleY(38);
     Lbl.Caption := 'Sorry to see you go! Mind telling us why you''re uninstalling?' + #13#10 +
-      'It''s optional. Add contact details only if you''d like us to reply.';
+      'It''s optional. Add your email only if you''d like us to reply.';
 
     y := ScaleY(58);
     for i := 0 to 6 do begin
@@ -546,7 +622,7 @@ begin
     ContactLbl.Parent := F;
     ContactLbl.Left := ScaleX(16);
     ContactLbl.Top := y + ScaleY(76);
-    ContactLbl.Caption := 'Email or other contact (optional, if you''d like a reply)';
+    ContactLbl.Caption := 'Your email (optional - only if you''d like a reply)';
 
     Contact := TNewEdit.Create(F);
     Contact.Parent := F;
@@ -554,6 +630,22 @@ begin
     Contact.Top := y + ScaleY(94);
     Contact.Width := F.ClientWidth - ScaleX(32);
     Contact.MaxLength := 120;
+
+    // Inline reason for a disabled Send button. Hidden until the address is actually bad, so
+    // the dialog looks unchanged for the (large) majority who leave the field empty. It sits
+    // in the gap between the email box and the button row - no layout reflow needed.
+    SurveyWarn := TNewStaticText.Create(F);
+    SurveyWarn.Parent := F;
+    SurveyWarn.Left := ScaleX(16);
+    SurveyWarn.Top := y + ScaleY(118);
+    SurveyWarn.Width := F.ClientWidth - ScaleX(32);
+    SurveyWarn.AutoSize := False;
+    SurveyWarn.WordWrap := True;
+    SurveyWarn.Height := ScaleY(30);
+    SurveyWarn.Caption := 'That is not a valid email address. Fix it, or clear the box to send' + #13#10 +
+      'without one - put your message in the box above instead.';
+    SurveyWarn.Font.Color := clRed;
+    SurveyWarn.Visible := False;
 
     BtnSend := TNewButton.Create(F);
     BtnSend.Parent := F;
@@ -564,6 +656,12 @@ begin
     BtnSend.Caption := 'Send feedback';
     BtnSend.ModalResult := mrOk;
     BtnSend.Default := True;
+
+    // Wire live email validation only once BOTH the warning label and Send exist - OnChange
+    // touches both, and TNewEdit fires it on the first keystroke, not before.
+    SurveyContact := Contact;
+    SurveySend := BtnSend;
+    Contact.OnChange := @SurveyContactChange;
 
     BtnSkip := TNewButton.Create(F);
     BtnSkip.Parent := F;
@@ -581,6 +679,11 @@ begin
           UninstallReason := Keys[i];
       UninstallNote := Trim(Note.Text);
       UninstallContact := Trim(Contact.Text);
+      // Belt and braces. Send is already disabled while this is invalid, so reaching here with
+      // junk would take a VCL quirk - but the guarantee that ships is "the contact field holds
+      // an email or nothing", and that must not depend on a button's Enabled state.
+      if (UninstallContact <> '') and not LooksLikeEmail(UninstallContact) then
+        UninstallContact := '';
     end;
   finally
     F.Free;

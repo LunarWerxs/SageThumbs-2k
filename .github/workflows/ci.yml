@@ -308,6 +308,12 @@ jobs:
       - name: vendored exr provenance and local-resolution check
         shell: pwsh
         run: ./scripts/check-vendored-exr.ps1
+      # The reply-address rule exists three times (Pascal / Rust / JS) because it runs in three
+      # runtimes; this holds them to one shared table. The Pascal leg needs ISCC, which this
+      # runner does not have, so it reports SKIP here and is covered by the release pipeline.
+      - name: email-rule agreement across runtimes
+        shell: pwsh
+        run: ./scripts/check-email-rule.ps1
 
   # The patched dependency is excluded from the application workspace, so its
   # own tests do not run under `cargo test --workspace`. Keep the focused,

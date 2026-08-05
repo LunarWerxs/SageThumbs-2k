@@ -328,6 +328,57 @@ fn build_body(cat: &str, msg: &str, contact: &str) -> String {
     )
 }
 
+/// Is this a plausible single email address?
+///
+/// The reply field is email-only. It used to accept "email or other contact" and take
+/// anything with an `@` in it, and what actually arrived was people's *complaints* typed
+/// into the reply box — rows that can't be replied to and whose text isn't shown as the
+/// message. Deliberately structural rather than RFC-exact: it rejects the junk that
+/// really shows up (prose, `n/a`, bare handles) without bouncing an address someone owns.
+/// Empty is still fine — the field stays optional.
+///
+/// Kept byte-for-byte in step with `LooksLikeEmail` in `packaging/installer.iss` (the
+/// uninstall survey) and `looksLikeEmail` in `packaging/analytics/worker.js` (the server
+/// gate); `tests::email_rule_matches_shared_table` locks the shared cases.
+fn looks_like_email(s: &str) -> bool {
+    // a@b.co is the shortest thing worth accepting; the upper bound matches the survey's
+    // 120-char field, and MAX_CONTACT already caps what can be posted.
+    if s.len() < 6 || s.len() > 120 {
+        return false;
+    }
+    // One '@', and nothing outside printable ASCII or the delimiters that mean this is
+    // prose/a URL rather than an address.
+    let bad = |c: char| {
+        c <= ' '
+            || c > '~'
+            || matches!(
+                c,
+                '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':' | '"' | '<' | '>' | '\\' | '/'
+            )
+    };
+    if s.chars().any(bad) {
+        return false;
+    }
+    let Some((local, domain)) = s.split_once('@') else {
+        return false;
+    };
+    if domain.contains('@') || local.is_empty() || local.len() > 64 || domain.is_empty() {
+        return false;
+    }
+    if domain.starts_with('-') || domain.ends_with('-') {
+        return false;
+    }
+    // The domain needs a dot that is neither first nor last, no empty labels, and a TLD of
+    // two or more letters — which is what rules out `me@localhost` and `me@1`.
+    let Some((host, tld)) = domain.rsplit_once('.') else {
+        return false;
+    };
+    if host.is_empty() || host.starts_with('.') || host.contains("..") || host.ends_with('.') {
+        return false;
+    }
+    tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
+}
+
 /// A short complaint about the form, focused back on the offending field.
 unsafe fn nag(hwnd: HWND, message: &str, focus_id: i32) {
     let body = wide(message);
@@ -353,10 +404,10 @@ unsafe fn on_send(hwnd: HWND) {
         nag(hwnd, t("fb_need_message"), ID_MSG);
         return;
     }
-    // Only a sanity check, not RFC validation: a typo'd address just means no reply,
-    // but "n/a" in this field is worth catching before it becomes a dead end.
+    // Email-only, and checked properly — a bare `contains('@')` let "discord: me#1234"
+    // and whole sentences through, which is exactly what the field was filling up with.
     let contact = get_edit_text(hwnd, ID_EMAIL).trim().to_string();
-    if !contact.is_empty() && !contact.contains('@') {
+    if !contact.is_empty() && !looks_like_email(&contact) {
         nag(hwnd, t("fb_bad_email"), ID_EMAIL);
         return;
     }
@@ -525,6 +576,66 @@ mod tests {
         assert!(body.contains(&format!("msg={}", "x".repeat(MAX_MSG))));
         assert!(!body.contains(&"x".repeat(MAX_MSG + 1)));
         assert!(body.contains("&contact=&"));
+    }
+
+    /// The one table all three implementations of the email rule are held to — this one,
+    /// `LooksLikeEmail` in `packaging/installer.iss`, and `looksLikeEmail` in
+    /// `packaging/analytics/worker.js`. It is READ from the shared fixture rather than
+    /// duplicated here, so the three can't drift apart by someone editing a private copy;
+    /// `scripts/check-email-rule.ps1` runs the other two against this same file.
+    ///
+    /// Path is relative to THIS source file (`src/bin/app/`) — moving this module to a
+    /// different depth breaks it at compile time, which is the intended failure.
+    const EMAIL_CASES_RAW: &str = include_str!("../../../tests/fixtures/email-rule-cases.txt");
+
+    /// `(expected, value)` per case line; `#` comments and blank lines dropped.
+    fn email_cases() -> Vec<(bool, &'static str)> {
+        EMAIL_CASES_RAW
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let (want, value) = l
+                    .split_once('|')
+                    .unwrap_or_else(|| panic!("case line has no '|': {l:?}"));
+                (want == "1", value)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn email_rule_matches_shared_table() {
+        let cases = email_cases();
+        // Guards the fixture itself: a truncated or unparsed file would otherwise make this
+        // test pass by checking nothing at all.
+        assert!(
+            cases.len() >= 25,
+            "shared fixture looks truncated: {} cases parsed",
+            cases.len()
+        );
+        assert!(cases.iter().any(|&(want, _)| want));
+        assert!(cases.iter().any(|&(want, _)| !want));
+        for (want, input) in cases {
+            assert_eq!(
+                looks_like_email(input),
+                want,
+                "looks_like_email({input:?}) should be {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn email_rule_is_bounded_and_never_panics_on_odd_input() {
+        // Length bounds, and the multi-byte input a char/byte mix-up would panic on.
+        assert!(!looks_like_email(&format!(
+            "{}@example.com",
+            "x".repeat(65)
+        )));
+        assert!(!looks_like_email(&format!("me@{}.com", "x".repeat(200))));
+        assert!(!looks_like_email("日本語@example.com"));
+        assert!(!looks_like_email("me@例え.com"));
+        assert!(!looks_like_email("\u{0}@example.com"));
+        assert!(!looks_like_email("me@example.com\n"));
     }
 
     #[test]

@@ -770,6 +770,11 @@ if ($bundleMagick) {
 }
 & "$PSScriptRoot\check-installer.ps1" @installerCheckArgs
 if ($LASTEXITCODE) { throw "installer.iss [Code] lint failed (see above)" }
+# The uninstall survey's email rule is one of THREE copies of the same rule (Pascal here, Rust
+# in the app, JS on the server). This is the only place with ISCC, so it is the only place the
+# Pascal copy can actually be EXECUTED against the shared table - CI reports that leg as SKIP.
+& "$PSScriptRoot\check-email-rule.ps1"
+if ($LASTEXITCODE) { throw "email-rule implementations disagree (see above)" }
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe"

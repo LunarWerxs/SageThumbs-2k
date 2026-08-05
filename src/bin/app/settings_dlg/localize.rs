@@ -86,11 +86,14 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_SHOT_QUICK_ENABLE, "chk_instant_screenshot"),
         (ID_LBL_SHOT_QUICK_HK, "lbl_shot_quick_hotkey"),
         (ID_PRESERVE_DATE, "chk_preserve_date"),
+        (ID_KEEP_METADATA, "chk_keep_metadata"),
+        (ID_PDF_MARGIN, "chk_pdf_margin"),
         (ID_LBL_MENU_ITEMS, "grp_menu_items"),
         (ID_MENU_ALL_TYPES, "chk_menu_all_types"),
         (ID_MENU_RESET, "btn_menu_reset"),
         (ID_SHOT_USE_DIR, "chk_shot_use_dir"),
         (ID_SHOT_SET_DIR, "btn_set_save_dir"),
+        (ID_EDIT_UPLOAD_HOSTS, "btn_edit_upload_hosts"),
         (ID_SHOT_RESTART, "btn_restart_hotkey"),
         (ID_LBL_SHOT_ACTION, "lbl_custom_action"),
         (ID_LBL_SHOT_ACTION_HK, "lbl_custom_action_hk"),
@@ -101,6 +104,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_PREVIEW_TOPMOST, "chk_preview_topmost"),
         (ID_PREVIEW_TEXT, "chk_preview_text"),
         (ID_PREVIEW_MARKDOWN, "chk_preview_markdown"),
+        (ID_PREVIEW_MD_REMOTE, "chk_preview_md_remote"),
         (ID_LBL_DIAG, "grp_diagnostics"),
         (ID_VERBOSE_LOG, "chk_verbose_log"),
         (ID_OPEN_LOG, "btn_open_log"),
@@ -117,7 +121,17 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (IDOK, "btn_ok"),
         (IDCANCEL, "btn_close"), // see build.rs: this button closes, it does not revert
     ];
-    for &(id, key) in pairs {
+    // The two WebView2 toggles only exist when `html-preview` is compiled in (build.rs
+    // gates their creation, and ids.rs gates the constants) — same cfg here, or the
+    // default feature-less build fails on unknown ids.
+    #[cfg(feature = "html-preview")]
+    let gated: &[(i32, &str)] = &[
+        (ID_PREVIEW_HTML, "chk_preview_html"),
+        (ID_PREVIEW_URL_LIVE, "chk_preview_url_live"),
+    ];
+    #[cfg(not(feature = "html-preview"))]
+    let gated: &[(i32, &str)] = &[];
+    for &(id, key) in pairs.iter().chain(gated) {
         set_dlg_text(hwnd, id, t(key));
     }
     // Re-text + repaint the owner-draw nav rail and the page header (they read their
