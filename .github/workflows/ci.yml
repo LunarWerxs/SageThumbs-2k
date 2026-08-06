@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual trigger. During the 2026-08-06 Actions incident GitHub throttled webhook
+  # delivery, so pushes silently produced no run at all and there was no way to start
+  # one by hand — a release with a CI-green gate simply could not proceed. A dispatch
+  # is an API call, not a webhook, so it still works when that path is degraded.
+  workflow_dispatch:
 
 # CI only reads the checkout and public dependency metadata.
 permissions:
