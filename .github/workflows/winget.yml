@@ -91,10 +91,17 @@ jobs:
             -H "Accept: application/vnd.github+json" https://api.github.com/user \
             | tr -d '\r' | grep -i '^x-oauth-scopes:' | cut -d' ' -f2-)
           echo "WINGET_TOKEN scopes: ${scopes:-(none reported - fine-grained token)}"
-          case "$scopes" in
-            *workflow*) echo "  workflow scope: present" ;;
-            *) echo "::warning title=WINGET_TOKEN missing 'workflow' scope::Fork sync will likely fail with HTTP 422. Add the scope at https://github.com/settings/tokens and update the WINGET_TOKEN secret." ;;
-          esac
+          # Fine-grained tokens send no scopes header at all; their permissions are checked
+          # functionally by the sync below, so only classic tokens get the scope warning.
+          # Since 2026-08-06 the secret holds a fine-grained token with Contents, Workflows,
+          # and Pull requests read-write on all LunarWerxs repos - verified against both
+          # merge-upstream and CreateRef on the fork before it was swapped in.
+          if [ -n "$scopes" ]; then
+            case "$scopes" in
+              *workflow*) echo "  workflow scope: present" ;;
+              *) echo "::warning title=WINGET_TOKEN missing 'workflow' scope::Fork sync will likely fail with HTTP 422. Add the scope at https://github.com/settings/tokens and update the WINGET_TOKEN secret." ;;
+            esac
+          fi
           owner=$(curl -s -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
             -H "Accept: application/vnd.github+json" https://api.github.com/user | jq -r .login)
           code=$(curl -s -o /dev/null -w '%{http_code}' \
