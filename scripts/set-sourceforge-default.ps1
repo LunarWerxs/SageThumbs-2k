@@ -26,7 +26,11 @@
 param(
     [string]$Version,
     [string]$Project = 'sagethumbs-2k',
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    # Re-assert the default even when it already reads correctly. Exists to prove the API key
+    # works WITHOUT waiting for a release to be wrong: re-setting the file that is already the
+    # Windows default is a genuine authenticated write that changes nothing observable.
+    [switch]$Force
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -61,9 +65,12 @@ $current = Get-WindowsDefault
 Write-Host "  windows default is currently: $(if ($current) { $current } else { '(unknown)' })"
 Write-Host "  it should be:                 $wanted"
 
-if ($current -eq $wanted) {
+if ($current -eq $wanted -and -not $Force) {
     Write-Host "  already correct - nothing to do." -ForegroundColor Green
     exit 0
+}
+if ($current -eq $wanted) {
+    Write-Host "  already correct, but -Force given: re-asserting to exercise the API key." -ForegroundColor DarkGray
 }
 if ($CheckOnly) {
     Write-Host "  WRONG (check-only, not changing it)" -ForegroundColor Red
@@ -93,11 +100,26 @@ if (-not $key) {
 $target = "https://sourceforge.net/projects/$Project/files/$folder/$wanted"
 Write-Host "  PUT default=windows -> $target" -ForegroundColor DarkGray
 try {
-    Invoke-RestMethod -Method Put -Uri $target -Headers @{ Accept = 'application/json' } `
-        -Body @{ default = 'windows'; api_key = $key } -TimeoutSec 60 | Out-Null
+    # Send a PRE-ENCODED form body with an explicit content type. Handing Invoke-RestMethod a
+    # hashtable here looks equivalent and is not: on a PUT it does not produce the
+    # `application/x-www-form-urlencoded` payload SourceForge's release API expects, and the
+    # server answers "You are not authorized for this operation" - an auth error for what is
+    # actually a malformed request, which sends you hunting a perfectly good key. Verified
+    # 2026-08-06: identical key, identical URL, this shape returns 200 and the hashtable
+    # shape returns that lie.
+    $body = "default=windows&api_key=$([uri]::EscapeDataString($key))"
+    $response = Invoke-RestMethod -Method Put -Uri $target `
+        -Headers @{ Accept = 'application/json' } `
+        -ContentType 'application/x-www-form-urlencoded' `
+        -Body $body -TimeoutSec 60
+    # The response echoes the file's stored flags, so confirm the write landed on the platform
+    # we asked for rather than trusting the status code alone.
+    $applied = $response.result.x_sf.default
+    if ($applied) { Write-Host "  API reports default = $applied" -ForegroundColor DarkGray }
 } catch {
     Write-Host "  the API call failed: $_" -ForegroundColor Red
-    Write-Host '  (a 403/401 here means the key is wrong or lacks release permission)' -ForegroundColor DarkYellow
+    Write-Host '  (a 401/403 here means the key is wrong, belongs to an account without release' -ForegroundColor DarkYellow
+    Write-Host '   permission on this project, or was sent in a body SourceForge could not read)' -ForegroundColor DarkYellow
     exit 1
 }
 
