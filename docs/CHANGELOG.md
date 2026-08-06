@@ -22,6 +22,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   build if you want them. The screenshot tool also runs only while the app is open, since a
   portable copy can be moved or unplugged at any time. (issue #13)
 
+- **A "Check for problems" button in Settings, under Advanced.** SageThumbs has had a thorough
+  self-check for a while, but only from a command prompt, so in practice nobody ever saw it. It
+  now opens in a window you can read and copy, and it tells you in plain words what is wrong and
+  how to fix it, whether that is a Windows setting, our registration, or the file itself.
+
 - **`st2k doctor` now catches four more reasons thumbnails go missing**, all of them things
   that look like the app is broken when it isn't. It spots when Windows' "Adjust for best
   performance" setting is on, which switches thumbnails off and quietly turns them back off

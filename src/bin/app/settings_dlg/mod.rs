@@ -478,6 +478,7 @@ const TOOLTIPS: &[(i32, &str)] = &[
     (ID_OPEN_LOG, "tip_open_log"),
     (ID_REBUILD_CACHE, "tip_rebuild_cache"),
     (ID_REPAIR_ASSOC, "tip_repair_assoc"),
+    (ID_RUN_DOCTOR, "tip_run_doctor"),
     (ID_UPDATE_AUTO, "tip_update_auto"),
     (ID_CHECK_UPDATES, "tip_check_updates"),
     (ID_RESET_ALL, "tip_reset_all"),
@@ -1122,6 +1123,8 @@ pub(crate) extern "system" fn wndproc(
                     ID_IMPORT => import_settings_from_file(hwnd),
                     ID_REBUILD_CACHE => rebuild_thumbnail_cache(hwnd),
                     ID_REPAIR_ASSOC => repair_associations(hwnd),
+                    // Owned modal, like the feedback box: Settings stays open behind it.
+                    ID_RUN_DOCTOR => crate::doctor_report::run_doctor_report(Some(hwnd)),
                     ID_CHECK_UPDATES => show_about(hwnd),
                     nav if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&nav)
                         && notify == STN_CLICKED =>

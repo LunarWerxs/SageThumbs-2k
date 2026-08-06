@@ -263,6 +263,9 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.button(t("btn_open_log"), 184, ID_OPEN_LOG);
     lc.button(t("btn_rebuild_cache"), 184, ID_REBUILD_CACHE);
     lc.button(t("btn_repair_assoc"), 184, ID_REPAIR_ASSOC);
+    // The self-check. Listed last in Diagnostics because it is the one you reach for FIRST
+    // when something is wrong: it tells you which of the others (if any) is worth pressing.
+    lc.button(t("btn_run_doctor"), 184, ID_RUN_DOCTOR);
     // Background update check (default ON; only acts while the resident hotkey helper
     // runs — no separate scheduled task). The manual button below works regardless.
     lc.checkbox(t("chk_update_auto"), cb, 300, ID_UPDATE_AUTO);

@@ -29,6 +29,7 @@ mod about;
 mod convert;
 mod cred_store;
 mod dark;
+mod doctor_report;
 mod explorer_selection;
 mod eyedropper;
 mod feedback;
@@ -298,6 +299,7 @@ fn main() {
                     "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
                     "feedback" => crate::feedback::run_shot_feedback(out),
                     "about" => crate::about::run_shot_about(out),
+                    "doctor" => crate::doctor_report::run_shot_doctor(out),
                     "firstrun" => crate::first_run::run_shot_first_run(out),
                     // The OCR result window, over canned text (no recognizer run) — or the
                     // real text of `--file <img>` when you want to see an actual scan.

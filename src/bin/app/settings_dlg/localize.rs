@@ -110,6 +110,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_OPEN_LOG, "btn_open_log"),
         (ID_REBUILD_CACHE, "btn_rebuild_cache"),
         (ID_REPAIR_ASSOC, "btn_repair_assoc"),
+        (ID_RUN_DOCTOR, "btn_run_doctor"),
         (ID_UPDATE_AUTO, "chk_update_auto"),
         (ID_CHECK_UPDATES, "btn_check_updates"),
         (ID_LBL_UPDATES, "grp_updates"),

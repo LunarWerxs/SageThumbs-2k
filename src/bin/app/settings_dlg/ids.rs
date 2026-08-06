@@ -122,6 +122,12 @@ pub(super) const ID_SHOT_ACTION_HK: i32 = 1181;
 // v3 reorg: an explicit enable toggle for the custom action (gates the two combos),
 // plus group sub-headers for the reorganized General / Advanced pages.
 pub(super) const ID_CUSTOM_ACTION_ENABLE: i32 = 1182;
+/// "Check for problems" - opens the doctor report (see `doctor_report.rs`).
+/// 1183 because it was the one free slot left in this block. A first attempt reused 1177,
+/// which is `ID_UPDATE_AUTO`: Win32 identifies a control by its id, so that did not error,
+/// it silently REPLACED the "Automatically check for updates" switch on the Advanced page.
+/// The duplicate-id test at the bottom of this file exists so the next one fails loudly.
+pub(super) const ID_RUN_DOCTOR: i32 = 1183;
 pub(super) const ID_LBL_UPDATES: i32 = 1184;
 pub(super) const ID_LBL_BACKUP: i32 = 1185;
 pub(super) const ID_LBL_HOTKEY_SVC: i32 = 1186;
@@ -199,3 +205,55 @@ pub(super) const QUICK_DEFAULT_LABEL: &str = "Ctrl + Shift + S";
 pub(super) const LEFT_VIEW_TOP: i32 = 6;
 pub(super) const LEFT_VIEW_BOTTOM: i32 = 442;
 pub(super) const LEFT_RIGHT_EDGE: i32 = 340; // x past which a control is "right column" (not scrolled)
+
+#[cfg(test)]
+mod tests {
+    /// Every control id in this file must be unique.
+    ///
+    /// Win32 identifies a control by its id, so a duplicate is not a compile error and not a
+    /// runtime error either: the second control simply takes the first one's place, and the
+    /// first quietly disappears from its page. That is exactly what happened on 2026-08-06,
+    /// when `ID_RUN_DOCTOR` was given 1177 (`ID_UPDATE_AUTO`) and the "Automatically check for
+    /// updates" switch vanished from Advanced. It was caught by rendering the page and noticing
+    /// a control missing, which is not a thing to rely on.
+    ///
+    /// Parses THIS FILE rather than listing the constants, so a new id is covered the moment it
+    /// is added and nobody has to remember to extend a list.
+    #[test]
+    fn control_ids_are_unique() {
+        let src = include_str!("ids.rs");
+        let mut seen: Vec<(&str, i64)> = Vec::new();
+        for line in src.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("pub(super) const ") else {
+                continue;
+            };
+            let Some((name, tail)) = rest.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            if !name.starts_with("ID_") {
+                continue; // geometry constants share values legitimately
+            }
+            let Some((_, value)) = tail.split_once('=') else {
+                continue;
+            };
+            // Skip anything computed from another constant; only plain literals are comparable.
+            let Ok(value) = value.trim().trim_end_matches(';').trim().parse::<i64>() else {
+                continue;
+            };
+            if let Some((other, _)) = seen.iter().find(|(_, v)| *v == value) {
+                panic!(
+                    "duplicate control id {value}: {name} collides with {other}. \
+                     Win32 will silently replace one control with the other; pick a free id."
+                );
+            }
+            seen.push((name, value));
+        }
+        assert!(
+            seen.len() > 50,
+            "only parsed {} ids - the parser stopped matching this file's style",
+            seen.len()
+        );
+    }
+}

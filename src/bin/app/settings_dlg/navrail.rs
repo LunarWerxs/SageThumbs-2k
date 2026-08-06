@@ -131,6 +131,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Btn(ID_OPEN_LOG, 320),
             Btn(ID_REBUILD_CACHE, 320),
             Btn(ID_REPAIR_ASSOC, 320),
+            Btn(ID_RUN_DOCTOR, 320),
             Head(ID_LBL_UPDATES),
             Switch(ID_UPDATE_AUTO),
             Btn(ID_CHECK_UPDATES, 184),
