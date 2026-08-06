@@ -347,6 +347,21 @@ try {
     gh release edit $tag --draft=false
     if ($LASTEXITCODE) { throw "draft verified but publication failed; $tag remains a draft" }
 
+    # SourceForge's green Download button. The default lives on the FILE, so every release
+    # starts with none and SourceForge guesses - and on v1.7.5 it guessed the ARM64 installer
+    # and served it to every Windows visitor. Run it here so it is never a thing to remember.
+    #
+    # NON-FATAL by design, and it must stay that way: the GitHub release is already public by
+    # this point, so throwing would report a failed release that actually succeeded. It is also
+    # expected to be a no-op-with-a-note whenever the files have not been uploaded to
+    # SourceForge yet, which is normal - that upload is manual and happens on its own schedule.
+    Write-Host "[6/6] SourceForge default download" -ForegroundColor Green
+    & pwsh -NoProfile -File "$root\scripts\set-sourceforge-default.ps1" -Version $ver
+    if ($LASTEXITCODE) {
+        Write-Host "  NOT set - the green Download button on SourceForge may point at the wrong" -ForegroundColor Yellow
+        Write-Host "  installer. Re-run after uploading:  pwsh scripts\set-sourceforge-default.ps1" -ForegroundColor Yellow
+    }
+
     Write-Host "[6/6] DONE - $tag released." -ForegroundColor Cyan
 
     # 7) One-time winget onboarding reminder. The winget.yml workflow can only UPDATE an
