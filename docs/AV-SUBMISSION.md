@@ -42,6 +42,29 @@ is wrong; the SHAPE is what matches.
   detection surface. Thumbnails and the context menu never touch autostart, so that workaround
   costs the user only the feature they were not using.
 
+### MEASURED 2026-08-06, and it reframes the whole thing: we are essentially clean
+
+Scanned the same day the report came in:
+
+| file | VirusTotal |
+|---|---|
+| `SageThumbs2K.exe` (the app, the file he reported) | **0/75.** Nobody. Kaspersky included |
+| `SageThumbs2K-Setup-1.7.5.exe` (the installer) | **1/75**, APEX alone. Kaspersky and Microsoft now clean |
+
+So there is **no static signature to work around**. Kaspersky's own engine, running the full
+signature set on VirusTotal, passes our binary. Two things follow:
+
+1. **His detection is Kaspersky's LOCAL behavioural engine, not its signature database.** File
+   Anti-Virus watching an autostart key being written is a different mechanism from the scanner
+   VirusTotal runs, and only the latter is what "0/75" measures.
+2. **His MD5 does not match any binary here**, so he may simply be on an older build. Asked.
+
+**This is why the Run-key change below cannot be evidence-driven the way the entropy and
+VERSIONINFO knobs were.** VirusTotal is a STATIC scan. It cannot see a behavioural rule firing,
+so building a Scheduled Task variant and scanning it would produce 0/75 either way and prove
+nothing. Measuring it honestly needs a real machine with Kaspersky installed, doing a real
+install, twice. Do not mistake a clean VT result on a rebuilt variant for a fix.
+
 **Candidate fix, NOT implemented and NOT measured: move the daemon's autostart from the Run key
 to a logon Scheduled Task.** We already create a per-user scheduled task for update checks
 (`--update-task`), so the machinery exists and the pattern is proven in this codebase. A logon
