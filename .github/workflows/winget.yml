@@ -87,9 +87,11 @@ jobs:
           # Print the token's SCOPES (never its value). `workflow` is the one that is easy to
           # leave off and hard to diagnose: without it the fork sync below fails, because
           # fast-forwarding master carries winget-pkgs' own .github/workflows changes.
+          # `|| true` because fine-grained tokens send no scopes header, grep then exits 1,
+          # and the runner shell's `-e -o pipefail` would kill the whole step over it.
           scopes=$(curl -s -D - -o /dev/null -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
             -H "Accept: application/vnd.github+json" https://api.github.com/user \
-            | tr -d '\r' | grep -i '^x-oauth-scopes:' | cut -d' ' -f2-)
+            | tr -d '\r' | grep -i '^x-oauth-scopes:' | cut -d' ' -f2- || true)
           echo "WINGET_TOKEN scopes: ${scopes:-(none reported - fine-grained token)}"
           # Fine-grained tokens send no scopes header at all; their permissions are checked
           # functionally by the sync below, so only classic tokens get the scope warning.
