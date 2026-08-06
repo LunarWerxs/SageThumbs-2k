@@ -113,6 +113,25 @@ function Import-Arm64BuildEnvironment {
     Write-Host "      ARM64 linker: $($link.Source)" -ForegroundColor DarkGray
 }
 
+function Resolve-RcExe {
+    # Windows SDK rc.exe. Needed by STAGING as well as by compiling (the magick bundling step
+    # re-versions stubbed DLLs with it), so both the build path and the -SkipBuild path resolve
+    # it through here. It used to be resolved only while building, which left `-SkipBuild`
+    # reaching that staging code with $rcExe undefined.
+    $rc = Get-Command rc.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $rc) {
+        $rc = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') `
+            -Filter rc.exe -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object FullName -Match '\\(x64|arm64)\\rc\.exe$' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+    }
+    if (-not $rc) {
+        throw 'Windows SDK rc.exe is required for ARM64 manifest/icon/version resources'
+    }
+    $rc.Source ?? $rc.FullName
+}
+
 # 1) Version from Cargo.toml -------------------------------------------------
 $ver = ([regex]::Match((Get-Content "$root\Cargo.toml" -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
 if (-not $ver) { throw "Could not read version from Cargo.toml" }
@@ -128,6 +147,18 @@ Write-Host "SageThumbs 2K release pipeline - version $ver ($Architecture)" -Fore
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 $exeBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture')
 $dllBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
+# The ARM64 toolchain environment is needed by STAGING, not just by compiling: the magick
+# bundling step inspects ARM64 PEs with MSVC `dumpbin` and re-versions stub DLLs with `rc.exe`,
+# and both arrive via vcvars. It used to be set up only inside the `-not $SkipBuild` block
+# below, so `-SkipBuild` reached that staging code with neither tool resolved and died on
+# whichever one it touched first. That is precisely the invocation release.ps1 makes at [4a/6]
+# for the ARM64 portable zip, so it would have failed a release after main was pushed and CI
+# was green. Hoisted here, before the branch, and idempotent.
+if ($Architecture -eq 'arm64' -and $SkipBuild) {
+    Write-Host "[1/4] -SkipBuild: importing the ARM64 toolchain anyway (staging needs rc/dumpbin)" -ForegroundColor DarkGray
+    Import-Arm64BuildEnvironment
+    $rcExe = Resolve-RcExe
+}
 if (-not $SkipBuild) {
     # Version metadata + app manifest + icon are embedded into the binaries via windres
     # in build.rs, which SILENTLY falls back to NO metadata if windres isn't on PATH.
@@ -136,18 +167,7 @@ if (-not $SkipBuild) {
     # `cargo build` stays tolerant — this guard is release-only).
     if ($Architecture -eq 'arm64') {
         Import-Arm64BuildEnvironment
-        $rc = Get-Command rc.exe -CommandType Application -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if (-not $rc) {
-            $rc = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') `
-                -Filter rc.exe -File -Recurse -ErrorAction SilentlyContinue |
-                Where-Object FullName -Match '\\(x64|arm64)\\rc\.exe$' |
-                Sort-Object FullName -Descending | Select-Object -First 1
-        }
-        if (-not $rc) {
-            throw 'Windows SDK rc.exe is required for ARM64 manifest/icon/version resources'
-        }
-        $rcExe = $rc.Source ?? $rc.FullName
+        $rcExe = Resolve-RcExe
         Write-Host "      rc.exe: $rcExe" -ForegroundColor DarkGray
     } else {
         $windres = Get-Command windres, x86_64-w64-mingw32-windres, llvm-windres -EA SilentlyContinue | Select-Object -First 1
@@ -269,8 +289,15 @@ if ($bundleMagick) {
     # untouched; the two were checked to agree exactly on the x64 bundle's dependencies.
     $peInspector = $objdump
     if ($Architecture -eq 'arm64') {
-        $peInspector = (Get-Command dumpbin.exe -CommandType Application -ErrorAction SilentlyContinue |
-            Select-Object -First 1).Source
+        # `-ExpandProperty`, NOT `(...).Source`: when Get-Command finds nothing the pipeline is
+        # EMPTY, and dotting a property off an empty result is a terminating error under the
+        # StrictMode release-manifest-lib.ps1 turns on. That error fired before the filesystem
+        # fallback below could run - so the fallback written for exactly this case was
+        # unreachable. It only shows with `-SkipBuild`, which skips Import-Arm64BuildEnvironment
+        # and therefore never puts dumpbin on PATH; that is the invocation release.ps1 makes at
+        # [4a/6] for the ARM64 portable zip.
+        $peInspector = Get-Command dumpbin.exe -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty Source -ErrorAction SilentlyContinue
         if (-not $peInspector) {
             $vsRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
             $peInspector = (Get-ChildItem $vsRoot -Filter dumpbin.exe -File -Recurse -ErrorAction SilentlyContinue |

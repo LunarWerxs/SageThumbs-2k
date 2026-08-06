@@ -154,3 +154,20 @@ if ($PassThru) {
         Inventory = $inventory
     }
 }
+
+# Set the exit code EXPLICITLY on the success path.
+#
+# This script fails by throwing, so reaching here means it passed - but a PowerShell script
+# that never runs a native command also never sets $LASTEXITCODE. Callers written as
+#     & check-magick-source.ps1 ...
+#     if ($LASTEXITCODE) { throw ... }
+# then read a variable that may not exist, and release-manifest-lib.ps1 turns on StrictMode,
+# under which that is a terminating error rather than a zero.
+#
+# It only bit in one combination, which is why it survived: normally `cargo build` has run
+# first and left a 0 behind. With `-SkipBuild` nothing native runs beforehand, and on ARM64
+# the identity check takes its DEFERRED branch and returns without an exit either - so
+# `build-release.ps1 -Portable -SkipBuild -Architecture arm64` died here. That is exactly the
+# invocation release.ps1 makes at [4a/6], so it would have failed a release, after main was
+# pushed and CI was green.
+exit 0
