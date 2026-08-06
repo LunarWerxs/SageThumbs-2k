@@ -137,7 +137,27 @@ try {
         $runId = (gh run list --branch main --workflow CI --limit 30 --json headSha,databaseId `
                 --jq "[.[] | select(.headSha==`"$sha`")][0].databaseId" 2>$null)
     }
-    if (-not $runId) { throw "no CI run found for $sha after 12 min - check Actions" }
+    if (-not $runId) {
+        # "check Actions" reads like the repo did something wrong, and on 2026-08-06 it did not:
+        # GitHub Actions was in a MAJOR OUTAGE, so no run was ever created for the commit and
+        # three earlier runs sat queued for an hour. Their status API answers that in one
+        # request, so ask before blaming the push. Best-effort: if the status page is
+        # unreachable too, fall back to the original wording rather than hiding the real error.
+        $actions = try {
+            (Invoke-RestMethod -Uri 'https://www.githubstatus.com/api/v2/components.json' `
+                -TimeoutSec 15).components |
+                Where-Object name -eq 'Actions' | Select-Object -ExpandProperty status -First 1
+        } catch { $null }
+        if ($actions -and $actions -ne 'operational') {
+            throw "no CI run found for $sha after 12 min, because GitHub Actions is '$actions' " +
+                  "(https://www.githubstatus.com). NOT a problem with this commit or this repo - " +
+                  "main is pushed, nothing is tagged or published. Re-run this script once " +
+                  "Actions is operational and it will start over cleanly."
+        }
+        throw "no CI run found for $sha after 12 min - check Actions (GitHub reports Actions " +
+              "'$(if ($actions) { $actions } else { 'status unknown' })', so this is more likely " +
+              "the push not triggering the workflow than an outage)"
+    }
     # POLL the run to completion via `gh run view` (JSON). We deliberately do NOT use
     # `gh run watch`: it needs a live TTY and exits non-zero when run headless (from a
     # background / non-interactive shell), which aborts the release even though CI is fine
