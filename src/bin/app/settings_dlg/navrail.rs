@@ -99,12 +99,20 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Btn(ID_MENU_RESET, 110),
         ],
         4 => &[
-            // Screenshots — custom action moved to General; hotkey service + "Hide tray icon" to Advanced.
+            // Screenshots — custom action lives on General; "Hide tray icon" on Advanced.
             Switch(ID_SHOT_ENABLE),
             Switch(ID_SHOT_QUICK_ENABLE),
             Switch(ID_SHOT_USE_DIR),
             Pair(ID_LBL_SHOT_HK, ID_SHOT_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
+            // Service state + Restart, moved back here from Advanced 2026-08-06. A hotkey only
+            // fires while the helper is resident, so "is it running / put it back" is part of
+            // this feature, not a system setting. Being on Advanced made it unfindable by the
+            // one person who needs it: issue #14's reporter had the entry deleted by antivirus,
+            // and the page reporting the hotkey as ON offered no way to see or fix that. It is
+            // also what makes the row directly above it honest, since that switch can read ON
+            // while nothing is actually listening.
+            BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS),
             Status(ID_SHOT_DIR),
             Btn(ID_SHOT_SET_DIR, 150),
             Btn(ID_EDIT_UPLOAD_HOSTS, 184),
@@ -126,8 +134,9 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Head(ID_LBL_UPDATES),
             Switch(ID_UPDATE_AUTO),
             Btn(ID_CHECK_UPDATES, 184),
+            // The service's state + Restart moved to the Screenshots page (see category 4);
+            // what stays here is the one genuinely system-level preference it owns.
             Head(ID_LBL_HOTKEY_SVC),
-            BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS),
             Switch(ID_SHOT_HIDE_TRAY),
         ],
         // Quick preview — QuickLook-style "press Space, see the file". The master toggle drives

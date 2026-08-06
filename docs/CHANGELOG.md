@@ -38,6 +38,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   back. It closes any open Explorer windows, so it is a choice rather than something setup
   does behind your back.
 
+- **"Restart hotkey service" now sits on the Screenshots page**, next to the hotkey it belongs
+  to, with a green or red badge saying whether the helper is actually running. It used to be
+  buried under Advanced, which is not where you look when your hotkey has stopped working.
+
 - **The screenshot hotkey now repairs itself if something deletes its startup entry.** Some
   antivirus tools remove it, because a program adding itself to Windows startup looks like
   something malware does, and until now that left the hotkey quietly dead at your next sign-in.
