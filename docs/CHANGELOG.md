@@ -41,7 +41,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   files you had browsed before could keep showing plain icons and make a perfectly good
   install look like it did nothing. Ticking the box clears that and brings Explorer straight
   back. It closes any open Explorer windows, so it is a choice rather than something setup
-  does behind your back.
+  does behind your back. Wherever SageThumbs restarts Explorer, it now waits and checks it
+  actually came back, and starts it again itself if it didn't, so you can never be left
+  looking at an empty desktop.
 
 - **"Restart hotkey service" now sits on the Screenshots page**, next to the hotkey it belongs
   to, with a green or red badge saying whether the helper is actually running. It used to be

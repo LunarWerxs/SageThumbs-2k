@@ -476,9 +476,7 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // thumbnail cache is discarded. Do it for the user, and only when the value actually
     // changed — an unrelated Apply must never blow away everyone's cached tiles.
     if badge_changed {
-        let _ = sagethumbs2k_core::shellcmd::cmd_c(
-            sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE,
-        );
+        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
     }
 }
 
@@ -607,9 +605,7 @@ pub(super) unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
     // Kill Explorer (releases the cache files' lock), delete thumbcache_*.db, relaunch.
     // Must go through `shellcmd::cmd_c` — `Command::args` would escape the quotes for
     // the MSVCRT convention and `cmd` would misread them (see shellcmd, issue #5).
-    let _ = sagethumbs2k_core::shellcmd::cmd_c(
-        sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE,
-    );
+    let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
     msg(
         hwnd,
         "Thumbnail cache cleared and Explorer restarted. Thumbnails will rebuild as you browse.",
@@ -786,9 +782,7 @@ pub(super) unsafe fn repair_associations(hwnd: HWND) {
     }
     // Registration rewrote the hooks; drop the stale cached thumbnails + restart Explorer so
     // the repaired ones render right away. (The cmd sequence gives regsvr32 time to finish.)
-    let _ = sagethumbs2k_core::shellcmd::cmd_c(
-        sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE,
-    );
+    let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
     msg(
         hwnd,
         "File associations repaired. Thumbnails will rebuild as you browse.",

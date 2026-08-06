@@ -553,9 +553,7 @@ fn main() {
         // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
         // shell). Never silent-by-default: setup only runs this if the box is ticked.
         if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
-            let _ = sagethumbs2k_core::shellcmd::cmd_c(
-                sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE,
-            );
+            let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
             return;
         }
 

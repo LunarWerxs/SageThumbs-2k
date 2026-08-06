@@ -40,6 +40,69 @@ pub const RESTART_EXPLORER_CLEARING_CACHE: &str = "taskkill /f /im explorer.exe 
      del /f /q \"%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" >nul 2>&1 & \
      start \"\" explorer.exe";
 
+/// Restart Explorer + clear the thumbnail cache, then CHECK THE SHELL CAME BACK.
+///
+/// The one-liner above is fire-and-forget: it kills Explorer, deletes the cache, and asks
+/// `start` to relaunch. If that last step does not take, the user is staring at an empty
+/// desktop with no taskbar and no idea why - which is exactly what issue #5 did to somebody,
+/// via a quoting bug that made `start` open a UNC root instead of the shell. That specific
+/// bug is fixed and locked by tests, but "we killed your shell and something went wrong on the
+/// way back" is severe enough to be worth confirming rather than assuming, especially now that
+/// setup offers this to every user at the end of an install.
+///
+/// So: issue it, wait for the taskbar window to exist again, and if it does not, relaunch
+/// Explorer directly (no `cmd`, no quoting to get wrong) and check once more. Windows'
+/// `AutoRestartShell` is a third net beneath both, but it is a registry value a machine can
+/// have turned off, so it is not something to rely on.
+///
+/// Returns whether the shell is confirmed back. Callers treat it as best-effort: there is
+/// nothing useful left to do about `false` except not claim success.
+pub fn restart_explorer_clearing_cache() -> bool {
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    // `Shell_TrayWnd` is the taskbar. Checking for the WINDOW rather than an `explorer.exe`
+    // process matters: a process exists the instant it starts, while the window only appears
+    // once the shell is actually up and serving, which is what the user cares about. It also
+    // stays correct when Explorer is running merely as a file-browser window.
+    let shell_is_up = || unsafe { FindWindowW(w!("Shell_TrayWnd"), None).is_ok() };
+
+    let _ = cmd_c(RESTART_EXPLORER_CLEARING_CACHE);
+
+    // SETTLE FIRST. `cmd_c` only spawns the interpreter; taskkill has not necessarily run when
+    // it returns. Polling immediately finds the OLD taskbar and reports a verified restart
+    // having verified nothing - the first two versions of this function both did exactly that,
+    // returning "success" in 0.8s while Explorer actually went down and came back seconds
+    // later. Trying to catch the down-transition instead is just a smaller race.
+    //
+    // So do not chase the transition at all. Wait long enough that the kill has certainly been
+    // attempted, then assert the thing that actually matters: the shell is up at the end.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // ~15s for `start` to bring it back; a cold shell on a busy machine takes a few seconds.
+    for _ in 0..75 {
+        if shell_is_up() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    // Not back. Relaunch WITHOUT cmd, so no quoting can be misread this time (issue #5 was a
+    // quoting bug in exactly this spot, and it left someone with no shell).
+    crate::safety::log("explorer did not return after the cache rebuild - relaunching directly");
+    let _ = std::process::Command::new("explorer.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+    for _ in 0..75 {
+        if shell_is_up() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    crate::safety::log("explorer STILL not back after a direct relaunch");
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
