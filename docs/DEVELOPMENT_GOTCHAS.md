@@ -293,3 +293,50 @@ clippy and cargo-deny but not that job's last step, `cargo fmt --all --check`.
 A gate that covers most of a job is worse than no gate, because it is trusted. If you add a
 step to `build-test` in `ci.yml`, add it to `scripts/preflight.ps1` in the same position, or
 change the comment to stop claiming a mirror it no longer is.
+
+## Explorer's own settings lie to the registry, and the performance profile lies twice
+
+Two traps that cost hours on a real machine (2026-08-05), both of which make a registry read
+say "fine" while Explorer behaves as though it were not.
+
+**Explorer keeps its own copy of `IconsOnly` in memory and writes it back on exit.** So the
+obvious repair sequence silently fails: write `IconsOnly = 0`, restart Explorer, and the dying
+process overwrites your `0` with its in-memory `1` before the new one starts and reads it back.
+Every check you run afterwards reads `0` and looks correct. For Explorer's own view settings the
+UI checkbox is the source of truth, not the key. Change it in Folder Options, or write the value
+with Explorer stopped. The same write-back applies to shell bags (per-folder view state).
+
+**"Adjust for best performance" owns that switch and keeps re-applying it.** Performance Options
+turns off the "Show thumbnails instead of icons" visual effect, which IS `IconsOnly`. A machine
+in that profile reverts the setting behind you, so the contradiction persists no matter how many
+times it is "fixed". `doctor` reports `VisualFXSetting == 2` for this reason, and reports it even
+when `IconsOnly` currently reads `0`, because that combination is the confusing one.
+
+**Do NOT report on `VisualEffects\ThumbnailsOrIcon\DefaultApplied`.** It reads `1` on healthy
+machines where thumbnails work fine; it means "this effect is at its profile default", not
+"off". Flagging it would fail every working install, which is the same false-alarm mistake
+issue #11 already cost us with `DisableThumbnailCache`.
+
+Two more things `doctor` cannot see, so it prints them as guidance instead: a folder in Details,
+List or Small icons view never draws thumbnails at all (Windows auto-classifies a folder of
+documents that way), and the thumbnail cache keeps serving "this file has no thumbnail" for
+every file it saw while the switch was off, so it needs clearing after any of these fixes.
+
+## Cloud placeholders: the file is there, the bytes are not
+
+A OneDrive Files-On-Demand placeholder has local metadata and no local content. The first read
+pulls the whole file over the network, and for a thumbnail that read happens inside Explorer's
+thumbnail host, where slow is indistinguishable from broken.
+
+How bad it is depends entirely on how much of the file we need. Formats whose preview is baked
+into the first bytes stay cheap, because `stream_source` reads a bounded prefix or seeks to a
+cover. Formats with no embedded preview fall through to the whole-file read, so the entire image
+has to come down before anything can be drawn. `.xcf` is the sharp edge and the one that got
+reported: GIMP writes no embedded thumbnail, so there is nothing to read but the whole file.
+
+`doctor <file>` reports the placeholder via `FILE_ATTRIBUTE_OFFLINE` /
+`FILE_ATTRIBUTE_RECALL_ON_*` and points at "Always keep on this device". It deliberately does
+NOT sniff the header to decide whether this particular format could be served from a prefix:
+reading even the first bytes of a placeholder triggers the recall the check exists to warn
+about. Behaviour is unchanged on purpose too: refusing to hydrate would take thumbnails away
+from everyone whose cloud files are downloaded and working today.

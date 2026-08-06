@@ -22,6 +22,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   build if you want them. The screenshot tool also runs only while the app is open, since a
   portable copy can be moved or unplugged at any time. (issue #13)
 
+- **`st2k doctor` now catches four more reasons thumbnails go missing**, all of them things
+  that look like the app is broken when it isn't. It spots when Windows' "Adjust for best
+  performance" setting is on, which switches thumbnails off and quietly turns them back off
+  every time you fix it. It tells you when a file lives in OneDrive and hasn't been downloaded
+  yet, so there is nothing on your PC to make a picture from. It warns if an old pre-2017
+  SageThumbs is still installed, because running *its* uninstaller can strip the registrations
+  this one needs. And it reminds you that a folder set to Details, List or Small icons never
+  shows thumbnails at all, whatever software you have. Each one comes with the fix.
+
 ### Changed
 
 - The PDF page-margin option moved from General to the Ebook/comic tab, where the other

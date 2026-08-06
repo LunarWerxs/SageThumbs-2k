@@ -155,14 +155,72 @@ fn check_windows_switches(r: &mut Report) {
         Some(1) => r.fail_with_fix(
             "IconsOnly",
             "1 — Windows is set to 'Always show icons, never thumbnails'",
-            "File Explorer -> View -> Options -> View tab -> UNCHECK \
-             'Always show icons, never thumbnails'. (Also set by Performance Options -> \
-             'Adjust for best performance', which is common on a fresh VM.)",
+            "UNCHECK it in the real dialog: File Explorer -> ... -> Options -> View tab -> \
+             'Always show icons, never thumbnails'. Use the CHECKBOX, not the registry — \
+             Explorer keeps its own copy of this value and writes it back over yours when it \
+             exits, so a registry edit + restart silently reverts. Afterwards clear the \
+             thumbnail cache (Disk Cleanup, or delete \
+             %LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db with Explorer \
+             closed): while the switch was on, Explorer recorded 'no thumbnail' for every \
+             file it saw and keeps serving those stale answers.",
         ),
         Some(v) => r.line(S::Ok, "IconsOnly", &format!("{v} — thumbnails allowed")),
         None => r.line(S::Ok, "IconsOnly", "unset — thumbnails allowed"),
     }
 
+    // Performance Options -> "Adjust for best performance" switches OFF the "Show thumbnails
+    // instead of icons" visual effect, which IS IconsOnly. Worth its own check because of how
+    // it presents: the profile re-applies its own value, so IconsOnly can READ 0 while Explorer
+    // keeps behaving as though it were 1, and every registry-level check says everything is
+    // fine. That contradiction cost hours on a real machine (2026-08-05).
+    //
+    // Keyed ONLY on VisualFXSetting == 2. The per-effect `ThumbnailsOrIcon\DefaultApplied`
+    // reads 1 on perfectly healthy machines (it means "this effect is at its profile default",
+    // not "off"), so reporting on it would fail every install that works — the same false-alarm
+    // mistake the DisableThumbnailCache note above records from issue #11.
+    let visual_fx = CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects")
+        .ok()
+        .and_then(|k| k.get_u32("VisualFXSetting").ok());
+    if let Some(detail) = performance_profile_detail(visual_fx, icons_only) {
+        r.fail_with_fix(
+            "Performance profile",
+            detail,
+            "System Properties -> Advanced -> Performance -> Settings -> pick 'Custom' (or \
+             'Adjust for best appearance') and TICK 'Show thumbnails instead of icons', then \
+             Apply. Fixing IconsOnly alone will not hold while this profile is set.",
+        );
+    }
+
+    check_thumbnail_policies(r);
+}
+
+/// The verdict on the performance profile, split out so it can be tested against every
+/// combination without a live registry (and without setting "best performance" on a real
+/// machine to see what happens, which would switch that machine's own thumbnails off).
+///
+/// `None` means say nothing. Only `VisualFXSetting == 2` is worth reporting; see the call
+/// site for why the per-effect `DefaultApplied` value must NOT be used for this.
+fn performance_profile_detail(
+    visual_fx: Option<u32>,
+    icons_only: Option<u32>,
+) -> Option<&'static str> {
+    if visual_fx != Some(2) {
+        return None;
+    }
+    Some(match icons_only {
+        // The nasty shape, and the reason this check exists: the switch reads as allowed, so
+        // every registry-level check passes, while the profile keeps turning it back off.
+        Some(0) | None => {
+            "2 — 'Adjust for best performance' is on. It owns the thumbnail switch and will \
+             keep turning it back off, even though IconsOnly currently reads as allowed"
+        }
+        _ => "2 — 'Adjust for best performance' is on, which is what turned thumbnails off",
+    })
+}
+
+/// Group Policy's thumbnail switches, split from the per-user ones above purely for length.
+fn check_thumbnail_policies(r: &mut Report) {
     // Group Policy can kill thumbnails machine-wide or per-user. Only `DisableThumbnails`
     // actually does that; the two *Cache* values disable the on-disk thumbnail CACHE
     // (thumbcache_*.db) and nothing else — thumbnails still generate, they are just
@@ -207,9 +265,53 @@ fn check_windows_switches(r: &mut Report) {
     }
 }
 
+/// The decade-old original SageThumbs, if it is still on disk.
+///
+/// Inert by itself — nothing in the registry points at it once we are installed — so this is
+/// NOT reported as a failure. It is reported because of a specific footgun: running that
+/// install's `unins000.exe` unregisters the shell-extension entries by CLSID and file
+/// association, and the overlap with ours is enough to leave a working SageThumbs 2K with no
+/// thumbnails and no obvious reason why. Someone tidying up their Program Files would have no
+/// way to know that, which is exactly when they would run it.
+fn check_legacy_install(r: &mut Report) {
+    let legacy: Vec<PathBuf> = ["ProgramFiles(x86)", "ProgramFiles"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .map(|base| Path::new(&base).join("SageThumbs"))
+        .filter(|p| p.is_dir())
+        .collect();
+    for dir in legacy {
+        let uninstaller = dir.join("unins000.exe");
+        if uninstaller.is_file() {
+            r.line(
+                S::Warn,
+                "Old SageThumbs install",
+                &format!(
+                    "{} — harmless where it sits, but do NOT run its unins000.exe",
+                    dir.display()
+                ),
+            );
+            r.line(
+                S::Info,
+                "  why",
+                "that uninstaller strips shell-extension registrations by CLSID and file type, \
+                 and would take SageThumbs 2K's with it. Delete the FOLDER instead if you want \
+                 it gone.",
+            );
+        } else {
+            r.line(
+                S::Info,
+                "Old SageThumbs install",
+                &format!("{} — leftover files, no uninstaller, inert", dir.display()),
+            );
+        }
+    }
+}
+
 /// The COM half: is each coclass registered, does its DLL exist, and will it load.
 fn check_registration(r: &mut Report) -> bool {
     r.head("COM registration");
+    check_legacy_install(r);
 
     let mut thumb_ok = true;
     let handlers = [
@@ -449,6 +551,61 @@ fn check_engine(r: &mut Report) {
 /// registered fine but can't render the one file you care about", which is exactly the
 /// shape of the modern-`.xcf` reports (GIMP 2.10+/3.0 writes an XCF version the bundled
 /// ImageMagick's coder can't read). Read-only: opens + decodes the file, writes nothing.
+/// OneDrive (and any Files-On-Demand provider) leaves a *placeholder* on disk: the metadata is
+/// local, the bytes are not, and the first read pulls the whole file down over the network.
+///
+/// That matters here because of HOW MUCH we have to read. Formats with a baked-in preview are
+/// cheap even on a placeholder: `stream_source` reads a bounded prefix or seeks straight to a
+/// cover, so only a slice is ever recalled. The formats with NO such shortcut fall through to
+/// the whole-file read, and on a cloud-only file that means downloading it in full inside
+/// Explorer's thumbnail host, which is slow enough to be indistinguishable from broken and
+/// leaves a cached failure behind. `.xcf` is the sharp edge (a report, 2026-08-05): GIMP writes
+/// no embedded thumbnail, so there is nothing to read but the entire image.
+///
+/// Reported, never "fixed" silently: refusing to hydrate would take thumbnails away from people
+/// whose files ARE downloaded and working today. `std::fs::metadata` reads attributes without
+/// triggering recall, so this check itself never pulls anything down.
+fn cloud_placeholder_note(r: &mut Report, p: &Path, ext: &str) {
+    use std::os::windows::fs::MetadataExt;
+
+    // Win32 file attributes: OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS.
+    const OFFLINE: u32 = 0x0000_1000;
+    const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+
+    let Ok(meta) = std::fs::metadata(p) else {
+        return;
+    };
+    let attrs = meta.file_attributes();
+    if attrs & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) == 0 {
+        return; // fully local: nothing to say
+    }
+
+    // Deliberately NOT sniffing the header to say whether this format could be served from a
+    // prefix: reading even the first bytes of a placeholder is what triggers the recall this
+    // check exists to warn about. The advice is the same either way.
+    let len = meta.len();
+    let size = if len >= 1024 * 1024 {
+        format!("{} MB", len / (1024 * 1024))
+    } else {
+        format!("{} KB", len.div_ceil(1024))
+    };
+    // Says what is true in general without claiming anything about THIS file's internals,
+    // which would need the header read this check exists to avoid.
+    r.fail_with_fix(
+        "Cloud file (OneDrive)",
+        &format!(
+            "the bytes are not on this PC yet ({size}). Fetching them happens inside Explorer's \
+             thumbnail host, slow enough to look like nothing is happening, and a format with \
+             no embedded preview (.xcf is one) needs the WHOLE file, not a slice — this one \
+             is .{ext}"
+        ),
+        "Right-click the file or its folder -> 'Always keep on this device'. Once the bytes are \
+         local the thumbnail appears normally. If it stays blank after downloading, Explorer \
+         cached the earlier failure: clear thumbcache_*.db (see the IconsOnly fix above).",
+    );
+}
+
 fn probe_file(r: &mut Report, path: &str) {
     r.head("This file");
     let p = Path::new(path);
@@ -486,6 +643,7 @@ fn probe_file(r: &mut Report, path: &str) {
         return;
     }
     r.line(S::Ok, &format!(".{ext}"), "a supported format");
+    cloud_placeholder_note(r, p, &ext);
     if !crate::settings::format_enabled(&ext) {
         r.fail_with_fix(
             "Enabled in settings",
@@ -503,15 +661,29 @@ fn probe_file(r: &mut Report, path: &str) {
             "check the file isn't locked, truncated, or over the size limit",
         ),
         Ok(bytes) => match crate::decode::decode_preview(&bytes) {
-            Ok(img) => r.line(
-                S::Ok,
-                "Decode this file",
-                &format!(
-                    "OK ({}x{}) — a thumbnail CAN be produced",
-                    img.width(),
-                    img.height()
-                ),
-            ),
+            Ok(img) => {
+                r.line(
+                    S::Ok,
+                    "Decode this file",
+                    &format!(
+                        "OK ({}x{}) — a thumbnail CAN be produced",
+                        img.width(),
+                        img.height()
+                    ),
+                );
+                // Reaching here means the decoder is fine and the file is fine, yet the user
+                // is running `doctor` on it — so what is left is almost always the shell, and
+                // this is the one the report cannot see. Explorer remembers a view PER FOLDER,
+                // and Details / List / Small icons never draw thumbnails at all, by design; a
+                // folder Windows auto-classified as "Documents" opens in Details. Only said on
+                // success, where it is the likely remaining answer rather than noise.
+                r.line(
+                    S::Info,
+                    "  if it still looks wrong",
+                    "check this file's FOLDER view: Details, List and Small icons never show \
+                     thumbnails. Set Medium icons or larger (View menu, or Ctrl+Shift+2..4).",
+                );
+            }
             Err(_) => {
                 // Registered + enabled, but the pixels won't come out. Point at the
                 // likely reason: the long-tail formats decode only through the bundled
@@ -609,6 +781,106 @@ pub fn report(file: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The performance-profile verdict, over every combination that matters.
+    ///
+    /// Testing this through the real registry would mean setting "Adjust for best performance"
+    /// on the machine running the tests, which switches that machine's own thumbnails off —
+    /// hence the pure helper.
+    #[test]
+    fn performance_profile_only_fires_on_best_performance() {
+        // Not the performance profile: silent, whatever IconsOnly says. `None` covers the
+        // common case of the value never having been written.
+        for fx in [None, Some(0), Some(1), Some(3)] {
+            for icons in [None, Some(0), Some(1)] {
+                assert_eq!(
+                    performance_profile_detail(fx, icons),
+                    None,
+                    "VisualFXSetting={fx:?} IconsOnly={icons:?} should not be reported"
+                );
+            }
+        }
+        // "Best performance" always reports, INCLUDING when IconsOnly reads fine — that
+        // combination is the whole reason the check exists, so pin its wording.
+        let looks_fine = performance_profile_detail(Some(2), Some(0))
+            .expect("best-performance + IconsOnly=0 must be reported");
+        assert!(
+            looks_fine.contains("keep turning it back off"),
+            "the IconsOnly-looks-fine case must explain the contradiction: {looks_fine}"
+        );
+        assert_eq!(
+            performance_profile_detail(Some(2), None),
+            performance_profile_detail(Some(2), Some(0)),
+            "an unset IconsOnly is the same 'looks allowed' case as an explicit 0"
+        );
+        let already_off = performance_profile_detail(Some(2), Some(1))
+            .expect("best-performance + IconsOnly=1 must be reported");
+        assert!(
+            already_off.contains("turned thumbnails off"),
+            "{already_off}"
+        );
+    }
+
+    /// A file whose bytes are not local (OneDrive placeholder) must be called out, and a
+    /// normal local file must NOT be — a false "your file is in the cloud" on every ordinary
+    /// probe would be worse than saying nothing.
+    #[test]
+    fn cloud_placeholder_is_reported_only_when_offline() {
+        let dir = std::env::temp_dir().join(format!("st2k-doctor-cloud-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("probe.xcf");
+        std::fs::write(&file, b"gimp xcf file\0").unwrap();
+
+        let mut local = Report::new();
+        cloud_placeholder_note(&mut local, &file, "xcf");
+        assert!(
+            local.out.is_empty(),
+            "a fully local file must produce no cloud note, got: {}",
+            local.out
+        );
+
+        // FILE_ATTRIBUTE_OFFLINE is exactly what a Files-On-Demand placeholder carries, and
+        // it is settable here, so this exercises the real attribute check rather than a mock.
+        set_offline(&file);
+        let mut cloud = Report::new();
+        cloud_placeholder_note(&mut cloud, &file, "xcf");
+        assert!(
+            cloud.out.contains("not on this PC yet"),
+            "offline file should be reported: {}",
+            cloud.out
+        );
+        // `fail_with_fix` prints the symptom inline and files the fix under Verdict, so the
+        // fix lives in `problems` rather than in `out`.
+        assert!(
+            cloud
+                .problems
+                .iter()
+                .any(|p| p.contains("Always keep on this device")),
+            "the report must carry the actual fix: {:?}",
+            cloud.problems
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Set FILE_ATTRIBUTE_OFFLINE, preserving whatever else is set.
+    fn set_offline(path: &Path) {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::fs::MetadataExt;
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let attrs = std::fs::metadata(path).unwrap().file_attributes() | 0x0000_1000;
+        let ok = unsafe {
+            windows::Win32::Storage::FileSystem::SetFileAttributesW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(attrs),
+            )
+        };
+        ok.expect("SetFileAttributesW(OFFLINE) should succeed on a temp file");
+    }
 
     /// The report must never panic and must always reach the verdict, whatever state
     /// the machine is in — it is the thing we ask users to run when everything is broken.
