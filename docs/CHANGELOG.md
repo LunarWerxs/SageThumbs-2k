@@ -38,6 +38,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   back. It closes any open Explorer windows, so it is a choice rather than something setup
   does behind your back.
 
+- **The screenshot hotkey now repairs itself if something deletes its startup entry.** Some
+  antivirus tools remove it, because a program adding itself to Windows startup looks like
+  something malware does, and until now that left the hotkey quietly dead at your next sign-in.
+  Opening Settings puts it back.
+
 ### Changed
 
 - The PDF page-margin option moved from General to the Ebook/comic tab, where the other

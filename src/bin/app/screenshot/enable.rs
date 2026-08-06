@@ -113,7 +113,18 @@ pub(crate) fn is_daemon_running() -> bool {
 /// the user's "if it's on, it should be running" expectation. A no-op when already
 /// running or not wanted.
 pub(crate) fn heal_if_wanted() {
-    if daemon_wanted() && !is_daemon_running() {
+    if !daemon_wanted() {
+        return;
+    }
+    // Two separate broken states, and checking only the first one missed a real case.
+    //
+    //   1. daemon not running  -> crash, kill, or a logon where it never came up.
+    //   2. autostart entry gone while the daemon is STILL ALIVE. Antivirus does exactly this:
+    //      Kaspersky deleted our `...\Run` value as "Trojan-Dropper" persistence (issue #14)
+    //      and left the process untouched. Nothing looked wrong until the next sign-in, when
+    //      the hotkey simply never came back, and the old `!is_daemon_running()` guard meant
+    //      opening Settings could not repair it either.
+    if !is_daemon_running() || (autostart_allowed() && !run_entry_present()) {
         reconcile();
     }
 }
