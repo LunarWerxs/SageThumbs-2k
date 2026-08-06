@@ -19,6 +19,37 @@ submit** (see the next section for why).
 As of 2026-08-02 it reports CLEAN for every installer this project has published, 1.3.8
 through 1.7.0.
 
+## 2026-08-06: the SECOND detection surface is the app EXE + our Run key (issue #14)
+
+Everything above is about the INSTALLER. Issue #14 is not: Kaspersky Free flagged
+`SageThumbs2K.exe` itself as `Trojan-Dropper.Win32.Dapato.skmi`, on a real user's machine, and
+the log names the trigger outright. The deleted object was the value **`SageThumbs2KScreenshot`**
+under `HKCU\...\CurrentVersion\Run` - ours, written by `screenshot/enable.rs` when the
+screenshot hotkey is enabled, because a global hotkey needs a resident daemon.
+
+Read that the way a heuristic does: an unsigned executable with near-zero prevalence writing
+itself into an autostart key. That is also the textbook description of a dropper installing
+persistence, which is precisely what the `Dapato` family pattern encodes. Nothing about our code
+is wrong; the SHAPE is what matches.
+
+- The reported MD5 `3C0D2839B13E6872E1FB001E49557E41` **has never been submitted to VirusTotal**
+  (API returns 404). Zero prevalence is an input to these verdicts, and the one we can only fix
+  with downloads and time.
+- Kaspersky **deleted** the Run value rather than merely flagging it, so the user's hotkey stops
+  working at next logon and does not come back by itself. Anyone reporting "the screenshot hotkey
+  died" after an AV alert needs Settings -> Screenshots -> Restart.
+- Turning **"Enable screenshot hotkey"** off removes the Run entry entirely, which removes this
+  detection surface. Thumbnails and the context menu never touch autostart, so that workaround
+  costs the user only the feature they were not using.
+
+**Candidate fix, NOT implemented and NOT measured: move the daemon's autostart from the Run key
+to a logon Scheduled Task.** We already create a per-user scheduled task for update checks
+(`--update-task`), so the machinery exists and the pattern is proven in this codebase. A logon
+task is markedly less heuristically loaded than an `HKCU\...\Run` self-reference. Before doing
+it, MEASURE, the way the entropy and VERSIONINFO knobs above were measured, rather than assuming:
+build one variant that registers a task instead of a Run value and scan both. The table above is
+a standing reminder that a reasonable-sounding AV hypothesis can simply fail to replicate.
+
 ## 2026-08-05: Kaspersky joined the generic-verdict list, and the VT gate was taught to read it
 
 Building 1.7.5 tripped the release VirusTotal gate: Kaspersky reported
