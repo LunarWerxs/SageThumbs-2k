@@ -44,6 +44,10 @@ on:
       tag:
         description: Existing release tag to (re)publish, e.g. v0.4.9
         required: true
+      check_only:
+        description: Verify the token and fork sync, then stop without submitting anything
+        type: boolean
+        default: false
 
 # Submission uses the dedicated WINGET_TOKEN; the workflow-scoped GitHub token
 # needs no repository write permission.
@@ -80,6 +84,17 @@ jobs:
         if: steps.onboarded.outputs.exists == 'true'
         shell: bash
         run: |
+          # Print the token's SCOPES (never its value). `workflow` is the one that is easy to
+          # leave off and hard to diagnose: without it the fork sync below fails, because
+          # fast-forwarding master carries winget-pkgs' own .github/workflows changes.
+          scopes=$(curl -s -D - -o /dev/null -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" https://api.github.com/user \
+            | tr -d '\r' | grep -i '^x-oauth-scopes:' | cut -d' ' -f2-)
+          echo "WINGET_TOKEN scopes: ${scopes:-(none reported - fine-grained token)}"
+          case "$scopes" in
+            *workflow*) echo "  workflow scope: present" ;;
+            *) echo "::warning title=WINGET_TOKEN missing 'workflow' scope::Fork sync will likely fail with HTTP 422. Add the scope at https://github.com/settings/tokens and update the WINGET_TOKEN secret." ;;
+          esac
           owner=$(curl -s -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
             -H "Accept: application/vnd.github+json" https://api.github.com/user | jq -r .login)
           code=$(curl -s -o /dev/null -w '%{http_code}' \
@@ -114,7 +129,7 @@ jobs:
           fi
 
       - name: Submit to winget-pkgs
-        if: steps.onboarded.outputs.exists == 'true'
+        if: steps.onboarded.outputs.exists == 'true' && inputs.check_only != true
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
           # winget package identifier: Publisher.Package (PascalCase, no spaces).
