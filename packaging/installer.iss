@@ -213,6 +213,19 @@ Filename: "powershell.exe"; \
 ; and setup itself is elevated.
 Filename: "{app}\{#AppExe}"; Parameters: "--first-run-seen"; \
   Flags: runhidden waituntilterminated runasoriginaluser; Check: IsUpgrade
+; Restart Explorer and drop thumbcache_*.db, so thumbnails appear for files the user has
+; ALREADY browsed. Registering the provider does not invalidate anything Explorer cached,
+; and for every one of our formats it has cached the generic icon it drew before we existed
+; - so without this, a fresh install can look like it did nothing, which is exactly how it
+; looked on a real machine (2026-08-05). Listed BEFORE the Settings launch so the shell is
+; back up by the time the window appears.
+;
+; A checkbox, ticked by default, never silent: it closes the user's open Explorer windows,
+; which is not something setup should do behind their back. `runasoriginaluser` because the
+; thumbnail cache lives in the USER's LOCALAPPDATA, not the elevated installer's.
+Filename: "{app}\{#AppExe}"; Parameters: "--rebuild-thumbnail-cache"; \
+  Description: "Restart File Explorer to show thumbnails now (closes open Explorer windows)"; \
+  Flags: postinstall nowait skipifsilent runasoriginaluser
 ; Launch Settings right after install (checked by default) so the user sees the app.
 ; `skipifsilent` keeps unattended installs quiet.
 Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \

@@ -74,3 +74,30 @@ This is normal, not a broken pipeline. Before assuming a release didn't publish 
 check for an open PR against `microsoft/winget-pkgs` titled
 `New version: LunarWerxs.SageThumbs2K version <ver>`. If it's there and unmerged, the
 workflow did its job and the rest is just waiting on Microsoft's validation.
+
+---
+
+## 5. SourceForge: the green Download button must be pointed at x64, every release
+
+SourceForge picks its own "default download" per platform. Left alone it picks wrong, and the
+way it is wrong is the expensive way: on 2026-08-05 the Windows default for v1.7.5 was
+`SageThumbs2K-Setup-1.7.5-arm64.exe`. That is the file the big green button hands to every
+visitor, and it will not run on the x64 machines that are nearly all of them. Confirmed
+straight from the horse's mouth:
+
+```
+https://sourceforge.net/projects/sagethumbs-2k/best_release.json
+  -> platform_releases.windows.filename
+```
+
+**Fix, and it has to be redone on every release:** SourceForge File Manager -> open the release
+folder -> click the ⓘ (info) button on `SageThumbs2K-Setup-<ver>.exe` -> under **Default
+Download For**, tick **Windows**. Then do the same on the `-arm64.exe` and make sure Windows is
+**un**ticked there. The setting lives on the FILE, not on the project, so a new release starts
+with a fresh set of files and no default carried over. That is why this recurs rather than
+staying fixed.
+
+Check it after every upload with the `best_release.json` URL above: it is one request and it
+reports exactly what a visitor would be given. Do not check it by eye on the project page,
+because SourceForge tailors that button to the visitor's own platform, so an x64 maintainer can
+be shown the correct x64 file while everyone else is being handed ARM64.

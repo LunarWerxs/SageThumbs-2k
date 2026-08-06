@@ -186,6 +186,9 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         "--first-run-seen",
         "--updated",
         "--heal-hotkeys",
+        // Restarts Explorer and exits; piggybacking an update check onto that would leave a
+        // network call running out of a process whose whole job was one `cmd` line.
+        "--rebuild-thumbnail-cache",
     ];
     !args.iter().any(|a| EXCLUDED.contains(&a.as_str()))
 }
@@ -533,6 +536,26 @@ fn main() {
             heal_after_install();
             return;
         }
+        // Optional postinstall step (a checkbox on setup's last page): restart Explorer and
+        // drop thumbcache_*.db.
+        //
+        // A fresh install genuinely needs this, which is not obvious. Registering the provider
+        // does not invalidate anything Explorer already cached, and for every one of our
+        // formats it HAS cached something: the generic icon it drew before we existed. Those
+        // entries keep being served, so the user installs a thumbnailer, sees no thumbnails,
+        // and concludes it is broken. Same mechanism the FormatBadge toggle already clears the
+        // cache for.
+        //
+        // Reuses the exact string the "Rebuild thumbnail cache" / "Repair file associations"
+        // buttons use, through `cmd_c`, so the kill-then-relaunch stays one `cmd` line and
+        // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
+        // shell). Never silent-by-default: setup only runs this if the box is ticked.
+        if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
+            let _ = sagethumbs2k_core::shellcmd::cmd_c(
+                sagethumbs2k_core::shellcmd::RESTART_EXPLORER_CLEARING_CACHE,
+            );
+            return;
+        }
 
         // FIRST RUN: offer Quick preview + the screenshot hotkey once, before Settings
         // appears. This is the launch the installer's postinstall step performs, so it is
@@ -701,6 +724,7 @@ mod tests {
             vec!["--update-task", "remove"],
             vec!["--updated", "1.7.0"],
             vec!["--heal-hotkeys"],
+            vec!["--rebuild-thumbnail-cache"],
         ] {
             assert!(
                 !update_piggyback_wanted(&argv(&excluded)),

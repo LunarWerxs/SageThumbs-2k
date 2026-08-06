@@ -31,6 +31,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   this one needs. And it reminds you that a folder set to Details, List or Small icons never
   shows thumbnails at all, whatever software you have. Each one comes with the fix.
 
+- **Setup can now restart File Explorer for you at the end**, as a tick box on the last page.
+  Installing a thumbnail handler doesn't clear the pictures Windows already remembered, so
+  files you had browsed before could keep showing plain icons and make a perfectly good
+  install look like it did nothing. Ticking the box clears that and brings Explorer straight
+  back. It closes any open Explorer windows, so it is a choice rather than something setup
+  does behind your back.
+
 ### Changed
 
 - The PDF page-margin option moved from General to the Ebook/comic tab, where the other
