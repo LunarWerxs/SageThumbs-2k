@@ -103,6 +103,15 @@ jobs:
             "https://api.github.com/repos/$owner/winget-pkgs/merge-upstream" \
             -d '{"branch":"master"}')
           echo "fork sync with upstream: HTTP $sync (200=synced, 409=conflict/manual)"
+          # Say so LOUDLY when the sync did not happen. On 1.8.0 this printed 422 and the run
+          # carried on to fail in Komac with the "does not have the correct permissions to
+          # execute CreateRef" lie, which sends you after the token instead of the fork. The
+          # same merge-upstream call from a token with `workflow` scope fast-forwarded
+          # immediately, so a 422 here most likely means WINGET_TOKEN cannot fast-forward a
+          # branch whose diff touches winget-pkgs' own .github/workflows files.
+          if [ "$sync" != "200" ]; then
+            echo "::warning title=winget-pkgs fork NOT synced::merge-upstream returned HTTP $sync. If the submission below fails with a CreateRef permissions error, the fork is stale, NOT the token. Fix: add the 'workflow' scope to WINGET_TOKEN, or sync by hand with 'gh api -X POST repos/$owner/winget-pkgs/merge-upstream -f branch=master' and re-run this workflow."
+          fi
 
       - name: Submit to winget-pkgs
         if: steps.onboarded.outputs.exists == 'true'

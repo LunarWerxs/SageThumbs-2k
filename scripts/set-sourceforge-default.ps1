@@ -30,7 +30,10 @@ param(
     # Re-assert the default even when it already reads correctly. Exists to prove the API key
     # works WITHOUT waiting for a release to be wrong: re-setting the file that is already the
     # Windows default is a genuine authenticated write that changes nothing observable.
-    [switch]$Force
+    [switch]$Force,
+    # How long to keep retrying while SourceForge has not registered the upload yet (see the
+    # loop below). 0 makes it a single attempt.
+    [int]$WaitMinutes = 20
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -99,29 +102,54 @@ if (-not $key) {
 
 $target = "https://sourceforge.net/projects/$Project/files/$folder/$wanted"
 Write-Host "  PUT default=windows -> $target" -ForegroundColor DarkGray
-try {
-    # Send a PRE-ENCODED form body with an explicit content type. Handing Invoke-RestMethod a
-    # hashtable here looks equivalent and is not: on a PUT it does not produce the
-    # `application/x-www-form-urlencoded` payload SourceForge's release API expects, and the
-    # server answers "You are not authorized for this operation" - an auth error for what is
-    # actually a malformed request, which sends you hunting a perfectly good key. Verified
-    # 2026-08-06: identical key, identical URL, this shape returns 200 and the hashtable
-    # shape returns that lie.
-    $body = "default=windows&api_key=$([uri]::EscapeDataString($key))"
-    $response = Invoke-RestMethod -Method Put -Uri $target `
-        -Headers @{ Accept = 'application/json' } `
-        -ContentType 'application/x-www-form-urlencoded' `
-        -Body $body -TimeoutSec 60
-    # The response echoes the file's stored flags, so confirm the write landed on the platform
-    # we asked for rather than trusting the status code alone.
-    $applied = $response.result.x_sf.default
-    if ($applied) { Write-Host "  API reports default = $applied" -ForegroundColor DarkGray }
-} catch {
-    Write-Host "  the API call failed: $_" -ForegroundColor Red
+# Send a PRE-ENCODED form body with an explicit content type. Handing Invoke-RestMethod a
+# hashtable here looks equivalent and is not: on a PUT it does not produce the
+# `application/x-www-form-urlencoded` payload SourceForge's release API expects, and the
+# server answers "You are not authorized for this operation" - an auth error for what is
+# actually a malformed request, which sends you hunting a perfectly good key. Verified
+# 2026-08-06: identical key, identical URL, this shape returns 200 and the hashtable
+# shape returns that lie.
+$body = "default=windows&api_key=$([uri]::EscapeDataString($key))"
+
+# RETRY, because SourceForge does not have the files at the moment the GitHub release goes
+# public - that upload runs on its own schedule. On v1.8.0 the installer registered about six
+# minutes after release.ps1 reached this step, and a PUT against a file SourceForge does not
+# know about yet is rejected with "Value for arg failed verification regex" - which reads like
+# a malformed request and is really just "too early". Without this wait the release ends with
+# the button still pointing at the previous version until someone re-runs the script by hand,
+# and removing that manual step is the entire reason this script exists.
+$deadline = (Get-Date).AddMinutes($WaitMinutes)
+$applied = $null
+$failure = $null
+for ($attempt = 1; ; $attempt++) {
+    try {
+        $response = Invoke-RestMethod -Method Put -Uri $target `
+            -Headers @{ Accept = 'application/json' } `
+            -ContentType 'application/x-www-form-urlencoded' `
+            -Body $body -TimeoutSec 60
+        # The response echoes the file's stored flags, so confirm the write landed on the
+        # platform we asked for rather than trusting the status code alone.
+        $applied = $response.result.x_sf.default
+        break
+    } catch {
+        $failure = $_
+        $code = try { [int]$_.Exception.Response.StatusCode } catch { 0 }
+        # A rejected key will not start working in ten minutes, so don't sit here waiting on
+        # one. Only the "not there yet" class is worth retrying.
+        if ($code -eq 401 -or $code -eq 403) { break }
+        if ((Get-Date) -ge $deadline) { break }
+        Write-Host "  attempt ${attempt}: rejected, waiting for SourceForge to register the upload" -ForegroundColor DarkGray
+        Start-Sleep -Seconds 30
+    }
+}
+if (-not $applied) {
+    Write-Host "  the API call failed: $failure" -ForegroundColor Red
     Write-Host '  (a 401/403 here means the key is wrong, belongs to an account without release' -ForegroundColor DarkYellow
-    Write-Host '   permission on this project, or was sent in a body SourceForge could not read)' -ForegroundColor DarkYellow
+    Write-Host '   permission on this project, or was sent in a body SourceForge could not read;' -ForegroundColor DarkYellow
+    Write-Host "   anything else after $WaitMinutes min means the upload never showed up)" -ForegroundColor DarkYellow
     exit 1
 }
+Write-Host "  API reports default = $applied" -ForegroundColor DarkGray
 
 # Prove it. SourceForge can take a moment to reflect the change, so give it a few tries rather
 # than declaring success off the back of a 200 that may not have applied to the platform map.

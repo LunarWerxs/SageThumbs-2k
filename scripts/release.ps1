@@ -372,9 +372,12 @@ try {
     # and served it to every Windows visitor. Run it here so it is never a thing to remember.
     #
     # NON-FATAL by design, and it must stay that way: the GitHub release is already public by
-    # this point, so throwing would report a failed release that actually succeeded. It is also
-    # expected to be a no-op-with-a-note whenever the files have not been uploaded to
-    # SourceForge yet, which is normal - that upload is manual and happens on its own schedule.
+    # this point, so throwing would report a failed release that actually succeeded.
+    #
+    # SourceForge does not have the files yet when we get here - that upload runs on its own
+    # schedule and on 1.8.0 landed about six minutes later - so the script RETRIES for up to
+    # 20 minutes rather than returning a note telling you to come back and run it yourself.
+    # That means this step can sit here for a few minutes; everything else is already done.
     Write-Host "[6/6] SourceForge default download" -ForegroundColor Green
     & pwsh -NoProfile -File "$root\scripts\set-sourceforge-default.ps1" -Version $ver
     if ($LASTEXITCODE) {
