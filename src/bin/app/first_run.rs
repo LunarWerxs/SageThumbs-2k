@@ -47,9 +47,28 @@ const ID_PREVIEW_SUB: i32 = 102;
 const ID_SHOT: i32 = 103;
 const ID_SHOT_SUB: i32 = 104;
 const ID_PRTSCN: i32 = 105;
+const ID_THUMBS: i32 = 106;
+const ID_THUMBS_SUB: i32 = 107;
 
 const DLG_W: i32 = 460;
 const DLG_H: i32 = 340;
+/// Extra height the portable-only thumbnails row needs (checkbox + its two-line caption).
+const THUMBS_ROW_H: i32 = 68;
+
+/// Does this copy get the thumbnails row? Only a portable one: an installed build registered
+/// the handler machine-wide at setup, so offering it again would be a switch that does nothing.
+fn offers_thumbnails() -> bool {
+    sagethumbs2k_core::settings::portable()
+}
+
+/// Window height — the portable build carries one extra row.
+fn dlg_h() -> i32 {
+    if offers_thumbnails() {
+        DLG_H + THUMBS_ROW_H
+    } else {
+        DLG_H
+    }
+}
 
 /// Has the welcome window already been shown on this account?
 pub(crate) fn already_shown() -> bool {
@@ -79,7 +98,7 @@ pub(crate) unsafe fn show_if_first_run() {
         Some(first_run_wndproc),
         t("fr_title"),
         DLG_W,
-        DLG_H,
+        dlg_h(),
         None,
     );
 }
@@ -108,10 +127,18 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     let w = cw - m * 2;
     let mut y = 16;
 
+    // The stock intro says thumbnails are ALREADY working, which is true of an installed copy
+    // and flatly false of a portable one — nothing is registered until the row below is ticked.
+    // A portable user who read the installed wording would reasonably conclude the app is broken.
+    let portable = offers_thumbnails();
     ctl(
         hwnd,
         STATIC,
-        t("fr_intro"),
+        t(if portable {
+            "fr_intro_portable"
+        } else {
+            "fr_intro"
+        }),
         WINDOW_STYLE(0),
         m,
         y,
@@ -121,6 +148,35 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         hinst,
     );
     y += 46;
+
+    if portable {
+        ctl(
+            hwnd,
+            BUTTON,
+            t("fr_thumbs"),
+            WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+            m,
+            y,
+            w,
+            20,
+            ID_THUMBS,
+            hinst,
+        );
+        y += 22;
+        ctl(
+            hwnd,
+            STATIC,
+            t("fr_thumbs_sub"),
+            WINDOW_STYLE(0),
+            m + 20,
+            y,
+            w - 20,
+            32,
+            ID_THUMBS_SUB,
+            hinst,
+        );
+        y += 46;
+    }
 
     ctl(
         hwnd,
@@ -193,6 +249,13 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // it overrides a Windows shortcut, so it stays an opt-in inside an opt-in.
     check(hwnd, ID_PREVIEW, true);
     check(hwnd, ID_SHOT, true);
+    // Ticked for the same reason as the other two, and unlike PrtScn it takes nothing away from
+    // the user: it adds a handler under their own account and Settings undoes it. Leaving it
+    // clear would reproduce the exact failure this row exists to stop — a portable copy whose
+    // headline feature silently does nothing.
+    if portable {
+        check(hwnd, ID_THUMBS, true);
+    }
     sync_prtscn(hwnd);
 
     let bw = 130;
@@ -214,6 +277,15 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
 /// Apply the ticked choices. Only called from the button — dismissing with the X changes
 /// nothing, which is the honest reading of "close without answering".
 unsafe fn apply(hwnd: HWND) {
+    // Portable only, and best-effort: a refused registry write must not stop the other choices
+    // from being applied. The Settings ▸ Advanced row reports the real state and retries.
+    if offers_thumbnails() && checked(hwnd, ID_THUMBS) {
+        if let Some(dll) = sagethumbs2k_core::register::dll_beside_exe() {
+            if dll.exists() {
+                let _ = sagethumbs2k_core::register::register_user(&dll.to_string_lossy());
+            }
+        }
+    }
     if checked(hwnd, ID_PREVIEW) {
         let _ = sagethumbs2k_core::settings::set_preview_enabled(true);
     }
@@ -253,7 +325,7 @@ extern "system" fn first_run_wndproc(
         // the generic static coloring claims them.
         if msg == WM_CTLCOLORSTATIC {
             let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
-            if id == ID_HEAD || id == ID_PREVIEW_SUB || id == ID_SHOT_SUB {
+            if id == ID_HEAD || id == ID_PREVIEW_SUB || id == ID_SHOT_SUB || id == ID_THUMBS_SUB {
                 return dark_ctlcolor_dim(wparam);
             }
         }
@@ -313,7 +385,7 @@ pub(crate) unsafe fn run_shot_first_run(out: &str) -> bool {
         Some(first_run_wndproc),
         t("fr_title"),
         DLG_W,
-        DLG_H,
+        dlg_h(),
     ) else {
         return false;
     };

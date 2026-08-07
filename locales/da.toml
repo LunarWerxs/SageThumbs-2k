@@ -343,6 +343,9 @@ fb_failed = "Kunne ikke få forbindelse til serveren, så beskeden blev ikke sen
 # First-run welcome window (first_run.rs).
 fr_title = "Velkommen til SageThumbs 2K"
 fr_intro = "SageThumbs tilføjer allerede miniaturer i Stifinder. To ekstrafunktioner er slået fra, indtil du siger til:"
+fr_intro_portable = "Dette er den bærbare udgave, så intet er slået til endnu. Vælg, hvad du vil have:"
+fr_thumbs = "Vis miniaturer i Stifinder"
+fr_thumbs_sub = "Tilføjer filtyperne kun til din egen brugerkonto. Ingen administratorrettigheder, intet der gælder hele maskinen, og du kan slå det fra igen under Indstillinger."
 fr_preview = "Slå Hurtig visning til"
 fr_preview_sub = "Vælg en fil i Stifinder og tryk på mellemrum for at se den i fuld størrelse uden at åbne et program."
 fr_shot = "Slå genvejstasten til skærmbilleder til"

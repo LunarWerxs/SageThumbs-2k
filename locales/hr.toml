@@ -345,6 +345,9 @@ fb_failed = "Nije bilo moguće doći do poslužitelja, pa poruka nije poslana.\n
 # First-run welcome window (first_run.rs).
 fr_title = "Dobro došli u SageThumbs 2K"
 fr_intro = "SageThumbs već dodaje sličice u Explorer. Dva dodatka ostaju isključena dok ih ne dopustite:"
+fr_intro_portable = "Ovo je prijenosna kopija, stoga još ništa nije uključeno. Odaberite što želite:"
+fr_thumbs = "Prikaži sličice u Exploreru"
+fr_thumbs_sub = "Dodaje vrste datoteka samo na vaš korisnički račun. Bez administratorskih prava, ništa na razini cijelog računala, a Postavke to mogu ponovno isključiti."
 fr_preview = "Uključi brzi pregled"
 fr_preview_sub = "Odaberite datoteku u Exploreru i pritisnite razmaknicu da je vidite u punoj veličini, bez otvaranja aplikacije."
 fr_shot = "Uključi tipkovni prečac za snimku zaslona"

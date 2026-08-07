@@ -346,6 +346,9 @@ fb_failed = "Tidak dapat terhubung ke server, sehingga pesan tidak terkirim.\n\n
 # First-run welcome window (first_run.rs).
 fr_title = "Selamat datang di SageThumbs 2K"
 fr_intro = "SageThumbs sudah menambahkan gambar mini di Explorer. Dua fitur tambahan tetap mati sampai Anda mengizinkannya:"
+fr_intro_portable = "Ini salinan portabel, jadi belum ada yang diaktifkan. Pilih yang Anda inginkan:"
+fr_thumbs = "Tampilkan gambar mini di Explorer"
+fr_thumbs_sub = "Menambahkan jenis berkas hanya ke akun pengguna Anda sendiri. Tanpa hak administrator, tidak ada yang berlaku untuk seluruh komputer, dan Pengaturan dapat mematikannya lagi."
 fr_preview = "Aktifkan Pratinjau cepat"
 fr_preview_sub = "Pilih berkas di Explorer lalu tekan Spasi untuk melihatnya dalam ukuran penuh, tanpa membuka aplikasi."
 fr_shot = "Aktifkan pintasan tangkapan layar"

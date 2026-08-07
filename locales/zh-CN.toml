@@ -348,6 +348,9 @@ fb_failed = "无法连接到服务器，消息未能发送。\n\n你的文本已
 # First-run welcome window (first_run.rs).
 fr_title = "欢迎使用 SageThumbs 2K"
 fr_intro = "SageThumbs 已经在资源管理器中显示缩略图了。还有两项功能在你同意之前保持关闭:"
+fr_intro_portable = "这是便携版，目前还没有启用任何功能。请选择你需要的:"
+fr_thumbs = "在资源管理器中显示缩略图"
+fr_thumbs_sub = "仅为你的用户账户添加这些文件类型。无需管理员权限，不影响整个系统，随时可在设置中关闭。"
 fr_preview = "开启快速预览"
 fr_preview_sub = "在资源管理器中选中文件并按空格键,即可原尺寸查看,无需打开任何应用。"
 fr_shot = "开启截图快捷键"

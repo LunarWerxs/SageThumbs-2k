@@ -343,6 +343,9 @@ fb_failed = "Strežnika ni bilo mogoče doseči, zato sporočilo ni bilo poslano
 # First-run welcome window (first_run.rs).
 fr_title = "Dobrodošli v SageThumbs 2K"
 fr_intro = "SageThumbs že dodaja sličice v Raziskovalcu. Dve dodatni funkciji ostaneta izklopljeni, dokler ju ne dovolite:"
+fr_intro_portable = "To je prenosna različica, zato zaenkrat še nič ni vklopljeno. Izberite, kaj želite:"
+fr_thumbs = "Prikaži sličice v Raziskovalcu"
+fr_thumbs_sub = "Doda vrste datotek samo v vaš uporabniški račun. Brez skrbniških pravic, nič na ravni celotnega sistema, v Nastavitvah pa to lahko znova izklopite."
 fr_preview = "Vklopi hitri predogled"
 fr_preview_sub = "Izberite datoteko v Raziskovalcu in pritisnite preslednico, da jo vidite v polni velikosti, brez odpiranja aplikacije."
 fr_shot = "Vklopi bližnjico za zaslonsko sliko"

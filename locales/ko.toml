@@ -346,6 +346,9 @@ fb_failed = "서버에 연결할 수 없어 메시지가 전송되지 않았습�
 # First-run welcome window (first_run.rs).
 fr_title = "SageThumbs 2K에 오신 것을 환영합니다"
 fr_intro = "SageThumbs는 이미 탐색기에 미리 보기를 표시하고 있습니다. 두 가지 추가 기능은 허용하실 때까지 꺼져 있습니다:"
+fr_intro_portable = "이것은 휴대용 버전이라 아직 아무것도 켜져 있지 않습니다. 원하는 것을 선택하세요:"
+fr_thumbs = "탐색기에 썸네일 표시"
+fr_thumbs_sub = "사용자 계정에만 파일 형식을 추가합니다. 관리자 권한이 필요 없고 컴퓨터 전체에 영향을 주지 않으며, 설정에서 언제든 다시 끌 수 있습니다."
 fr_preview = "빠른 미리 보기 켜기"
 fr_preview_sub = "탐색기에서 파일을 선택하고 Space를 누르면 앱을 열지 않고 원본 크기로 볼 수 있습니다."
 fr_shot = "스크린샷 단축키 켜기"

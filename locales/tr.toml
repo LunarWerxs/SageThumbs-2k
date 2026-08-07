@@ -348,6 +348,9 @@ fb_failed = "Sunucuya ulaşılamadığı için mesaj gönderilemedi.\n\nHiçbir 
 # First-run welcome window (first_run.rs).
 fr_title = "SageThumbs 2K'ya hoş geldiniz"
 fr_intro = "SageThumbs zaten Dosya Gezgini'ne küçük resimler ekliyor. İki ek özellik siz izin verene kadar kapalı kalır:"
+fr_intro_portable = "Bu taşınabilir sürüm, bu yüzden henüz hiçbir şey açık değil. Ne istediğinizi seçin:"
+fr_thumbs = "Dosya Gezgini'nde küçük resimleri göster"
+fr_thumbs_sub = "Dosya türlerini yalnızca kendi kullanıcı hesabınıza ekler. Yönetici hakları gerekmez, sistem genelinde hiçbir şey değişmez ve Ayarlar'dan tekrar kapatabilirsiniz."
 fr_preview = "Hızlı önizlemeyi aç"
 fr_preview_sub = "Dosya Gezgini'nde bir dosya seçip Space tuşuna basın, uygulama açmadan tam boyutta görün."
 fr_shot = "Ekran görüntüsü kısayolunu aç"

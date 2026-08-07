@@ -675,3 +675,33 @@ pub fn user_registration_path() -> Option<String> {
         .ok()
         .filter(|p| !p.is_empty())
 }
+
+/// The shell-extension DLL a portable copy registers: the one sitting beside the running exe.
+///
+/// The caller still has to check it EXISTS. A partially-unpacked (or pruned) zip is exactly the
+/// case worth naming in an error message rather than reporting as a generic failure.
+pub fn dll_beside_exe() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("sagethumbs2k.dll"))
+}
+
+/// Is the per-user registration pointing at THIS copy's DLL?
+///
+/// Compares the PATH, not mere presence: a registration left behind by a copy that has since
+/// been moved or deleted reads as "on" while drawing no thumbnails at all, which is the single
+/// most confusing state a portable user can land in.
+pub fn user_registration_is_here() -> bool {
+    let (Some(registered), Some(here)) = (user_registration_path(), dll_beside_exe()) else {
+        return false;
+    };
+    // The keys can outlive the file they name — antivirus quarantine, a half-deleted unzip, a
+    // manual cleanup that left the exes. The path still matches in that case, so a pure string
+    // compare would report "on" for a handler Windows cannot load and no thumbnail will ever
+    // come from. Requiring the DLL to actually BE there makes the answer mean what it says.
+    if !here.is_file() {
+        return false;
+    }
+    // Case-insensitive: the registry keeps whatever case was written and Windows paths are not
+    // case-sensitive, so a pure case difference is the same file.
+    registered.eq_ignore_ascii_case(&here.to_string_lossy())
+}

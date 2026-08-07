@@ -346,6 +346,9 @@ fb_failed = "Kon geen verbinding maken met de server, dus het bericht is niet ve
 # First-run welcome window (first_run.rs).
 fr_title = "Welkom bij SageThumbs 2K"
 fr_intro = "SageThumbs voegt al miniaturen toe in Verkenner. Twee extra's blijven uit totdat u ze toestaat:"
+fr_intro_portable = "Dit is de portable versie, dus er staat nog niets aan. Kies wat u wilt:"
+fr_thumbs = "Miniaturen tonen in Verkenner"
+fr_thumbs_sub = "Voegt de bestandstypen alleen toe aan uw eigen gebruikersaccount. Geen beheerdersrechten, niets systeembreed, en Instellingen zet het weer uit."
 fr_preview = "Snelle weergave inschakelen"
 fr_preview_sub = "Selecteer een bestand in Verkenner en druk op de spatiebalk om het op volledige grootte te zien, zonder een app te openen."
 fr_shot = "Sneltoets voor schermafbeeldingen inschakelen"

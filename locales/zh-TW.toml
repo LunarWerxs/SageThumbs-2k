@@ -348,6 +348,9 @@ fb_failed = "無法連上伺服器，訊息因此未能送出。\n\n您的文字
 # First-run welcome window (first_run.rs).
 fr_title = "歡迎使用 SageThumbs 2K"
 fr_intro = "SageThumbs 已經在檔案總管中顯示縮圖了。還有兩項功能在您同意之前保持關閉:"
+fr_intro_portable = "這是可攜式版本，目前尚未啟用任何功能。請選擇您需要的:"
+fr_thumbs = "在檔案總管中顯示縮圖"
+fr_thumbs_sub = "僅為您的使用者帳戶新增這些檔案類型。不需要系統管理員權限，不會影響整台電腦，隨時可在設定中關閉。"
 fr_preview = "開啟快速預覽"
 fr_preview_sub = "在檔案總管中選取檔案並按空白鍵,即可以原尺寸檢視,不必開啟任何應用程式。"
 fr_shot = "開啟螢幕擷取快速鍵"

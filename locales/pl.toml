@@ -346,6 +346,9 @@ fb_failed = "Nie udało się połączyć z serwerem, więc wiadomość nie zosta
 # First-run welcome window (first_run.rs).
 fr_title = "Witamy w SageThumbs 2K"
 fr_intro = "SageThumbs już dodaje miniatury w Eksploratorze. Dwa dodatki pozostają wyłączone, dopóki się nie zgodzisz:"
+fr_intro_portable = "To jest wersja przenośna, więc nic nie jest jeszcze włączone. Wybierz, czego chcesz:"
+fr_thumbs = "Pokazuj miniatury w Eksploratorze"
+fr_thumbs_sub = "Dodaje typy plików tylko do Twojego konta użytkownika. Bez uprawnień administratora, nic w skali całego komputera, a Ustawienia mogą to ponownie wyłączyć."
 fr_preview = "Włącz szybki podgląd"
 fr_preview_sub = "Zaznacz plik w Eksploratorze i naciśnij spację, aby zobaczyć go w pełnym rozmiarze, bez otwierania aplikacji."
 fr_shot = "Włącz skrót klawiszowy zrzutu ekranu"

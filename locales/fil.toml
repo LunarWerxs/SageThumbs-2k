@@ -341,6 +341,9 @@ fb_failed = "Hindi maabot ang server, kaya hindi naipadala ang mensahe.\n\nNakop
 # First-run welcome window (first_run.rs).
 fr_title = "Maligayang pagdating sa SageThumbs 2K"
 fr_intro = "Naglalagay na ang SageThumbs ng mga thumbnail sa Explorer. May dalawang dagdag na naka-off hanggang pumayag ka:"
+fr_intro_portable = "Ito ang portable na kopya, kaya wala pang naka-on. Piliin ang gusto mo:"
+fr_thumbs = "Ipakita ang mga thumbnail sa Explorer"
+fr_thumbs_sub = "Idinaragdag lang ang mga uri ng file sa sarili mong user account. Walang kailangang admin rights, walang babaguhin sa buong makina, at sa Mga Setting mo ito maaaring i-off ulit."
 fr_preview = "I-on ang Quick preview"
 fr_preview_sub = "Pumili ng file sa Explorer at pindutin ang Space para makita ito nang buong laki, nang hindi nagbubukas ng app."
 fr_shot = "I-on ang hotkey para sa screenshot"

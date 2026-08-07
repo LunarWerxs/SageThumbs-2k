@@ -377,6 +377,9 @@ fb_failed = "Couldn't reach the server, so the message wasn't sent.\n\nYour text
 # First-run welcome window (first_run.rs) - shown once, offers the two opt-in features.
 fr_title = "Welcome to SageThumbs 2K"
 fr_intro = "SageThumbs is already adding thumbnails to Explorer. Two extras are switched off until you say so:"
+fr_intro_portable = "This is the portable copy, so nothing is switched on yet. Pick what you want:"
+fr_thumbs = "Show thumbnails in Explorer"
+fr_thumbs_sub = "Adds the file types to your own user account only. No administrator rights, nothing machine-wide, and Settings turns it back off."
 fr_preview = "Turn on Quick preview"
 fr_preview_sub = "Select a file in Explorer and press Space to see it full size, without opening an app."
 fr_shot = "Turn on the screenshot hotkey"

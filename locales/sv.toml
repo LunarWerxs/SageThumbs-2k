@@ -343,6 +343,9 @@ fb_failed = "Kunde inte nå servern, så meddelandet skickades inte.\n\nDin text
 # First-run welcome window (first_run.rs).
 fr_title = "Välkommen till SageThumbs 2K"
 fr_intro = "SageThumbs lägger redan till miniatyrer i Utforskaren. Två extrafunktioner är avstängda tills du säger till:"
+fr_intro_portable = "Det här är den portabla kopian, så inget är aktiverat än. Välj vad du vill ha:"
+fr_thumbs = "Visa miniatyrer i Utforskaren"
+fr_thumbs_sub = "Lägger till filtyperna enbart för ditt eget användarkonto. Inga administratörsrättigheter, inget systemomfattande, och i Inställningar kan du stänga av det igen."
 fr_preview = "Slå på snabbgranskning"
 fr_preview_sub = "Markera en fil i Utforskaren och tryck på mellanslag för att se den i full storlek, utan att öppna något program."
 fr_shot = "Slå på kortkommandot för skärmbild"

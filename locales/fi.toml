@@ -341,6 +341,9 @@ fb_failed = "Palvelimeen ei saatu yhteyttä, joten viestiä ei lähetetty.\n\nTe
 # First-run welcome window (first_run.rs).
 fr_title = "Tervetuloa, tämä on SageThumbs 2K"
 fr_intro = "SageThumbs lisää jo pikkukuvat Resurssienhallintaan. Kaksi lisäominaisuutta on pois päältä, kunnes sallit ne:"
+fr_intro_portable = "Tämä on kannettava versio, joten mikään ei ole vielä käytössä. Valitse, mitä haluat:"
+fr_thumbs = "Näytä pikkukuvat Resurssienhallinnassa"
+fr_thumbs_sub = "Lisää tiedostotyypit vain omalle käyttäjätilillesi. Ei vaadi valvojan oikeuksia, ei muutoksia koko koneelle, ja Asetuksista voit kytkeä sen taas pois."
 fr_preview = "Ota pikaesikatselu käyttöön"
 fr_preview_sub = "Valitse tiedosto Resurssienhallinnassa ja paina välilyöntiä nähdäksesi sen täysikokoisena ilman sovelluksen avaamista."
 fr_shot = "Ota kuvakaappauksen pikanäppäin käyttöön"

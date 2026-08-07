@@ -345,6 +345,9 @@ fb_failed = "Der Server war nicht erreichbar, daher wurde die Nachricht nicht ge
 # First-run welcome window (first_run.rs).
 fr_title = "Willkommen bei SageThumbs 2K"
 fr_intro = "SageThumbs fügt dem Explorer bereits Miniaturansichten hinzu. Zwei Extras bleiben aus, bis Sie zustimmen:"
+fr_intro_portable = "Dies ist die portable Version, daher ist noch nichts aktiviert. Wählen Sie, was Sie möchten:"
+fr_thumbs = "Miniaturansichten im Explorer anzeigen"
+fr_thumbs_sub = "Fügt die Dateitypen nur zu Ihrem eigenen Benutzerkonto hinzu. Keine Administratorrechte, nichts systemweit, und in den Einstellungen schalten Sie es wieder aus."
 fr_preview = "Schnellvorschau aktivieren"
 fr_preview_sub = "Datei im Explorer auswählen und Leertaste drücken, um sie in voller Größe zu sehen, ohne eine App zu öffnen."
 fr_shot = "Screenshot-Tastenkürzel aktivieren"

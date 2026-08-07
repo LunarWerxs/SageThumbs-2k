@@ -347,6 +347,9 @@ fb_failed = "Nem sikerült elérni a szervert, ezért az üzenet nem lett elkül
 # First-run welcome window (first_run.rs).
 fr_title = "Üdvözöljük a SageThumbs 2K-ban"
 fr_intro = "A SageThumbs már készíti a bélyegképeket az Intézőben. Két extra kikapcsolva marad, amíg nem engedélyezi:"
+fr_intro_portable = "Ez a hordozható verzió, ezért még semmi sincs bekapcsolva. Válassza ki, mit szeretne:"
+fr_thumbs = "Bélyegképek megjelenítése az Intézőben"
+fr_thumbs_sub = "A fájltípusokat csak az Ön felhasználói fiókjához adja hozzá. Nincs szükség rendszergazdai jogosultságra, semmi sem gépszintű, és a Beállításokban bármikor kikapcsolhatja."
 fr_preview = "Gyors előnézet bekapcsolása"
 fr_preview_sub = "Jelöljön ki egy fájlt az Intézőben, és nyomja meg a szóközt, hogy teljes méretben lássa, alkalmazás megnyitása nélkül."
 fr_shot = "Képernyőkép gyorsbillentyű bekapcsolása"

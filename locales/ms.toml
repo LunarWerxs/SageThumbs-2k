@@ -344,6 +344,9 @@ fb_failed = "Tidak dapat menghubungi pelayan, jadi mesej tidak dihantar.\n\nTeks
 # First-run welcome window (first_run.rs).
 fr_title = "Selamat datang ke SageThumbs 2K"
 fr_intro = "SageThumbs sudah pun menambah lakaran kenit dalam Explorer. Dua tambahan kekal dimatikan sehingga anda benarkan:"
+fr_intro_portable = "Ini salinan mudah alih, jadi belum ada apa-apa yang dihidupkan. Pilih apa yang anda mahu:"
+fr_thumbs = "Papar lakaran kenit dalam Explorer"
+fr_thumbs_sub = "Menambah jenis fail ke akaun pengguna anda sahaja. Tiada hak pentadbir, tiada apa-apa di seluruh mesin, dan Tetapan boleh matikannya semula."
 fr_preview = "Hidupkan Pratonton pantas"
 fr_preview_sub = "Pilih fail dalam Explorer dan tekan Space untuk melihatnya bersaiz penuh, tanpa membuka apa-apa aplikasi."
 fr_shot = "Hidupkan kekunci pintas tangkapan skrin"

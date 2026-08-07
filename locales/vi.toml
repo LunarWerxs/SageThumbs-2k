@@ -348,6 +348,9 @@ fb_failed = "Không thể kết nối đến máy chủ, nên tin nhắn chưa �
 # First-run welcome window (first_run.rs).
 fr_title = "Chào mừng bạn đến với SageThumbs 2K"
 fr_intro = "SageThumbs đã hiển thị ảnh thu nhỏ trong Explorer. Hai tính năng bổ sung vẫn tắt cho đến khi bạn đồng ý:"
+fr_intro_portable = "Đây là bản di động, nên chưa có gì được bật. Hãy chọn những gì bạn muốn:"
+fr_thumbs = "Hiển thị ảnh thu nhỏ trong Explorer"
+fr_thumbs_sub = "Chỉ thêm các loại tệp cho tài khoản người dùng của bạn. Không cần quyền quản trị, không thay đổi gì trên toàn hệ thống, và bạn có thể tắt lại trong Cài đặt."
 fr_preview = "Bật xem nhanh"
 fr_preview_sub = "Chọn một tệp trong Explorer rồi nhấn Space để xem ở kích thước đầy đủ, không cần mở ứng dụng nào."
 fr_shot = "Bật phím tắt chụp màn hình"

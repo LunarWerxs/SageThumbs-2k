@@ -341,6 +341,9 @@ fb_failed = "Server sa nepodarilo kontaktovať, správa preto nebola odoslaná.\
 # First-run welcome window (first_run.rs).
 fr_title = "Vitajte v SageThumbs 2K"
 fr_intro = "SageThumbs už pridáva miniatúry v Prieskumníkovi. Dve doplnkové funkcie zostávajú vypnuté, kým ich nepovolíte:"
+fr_intro_portable = "Toto je prenosná verzia, takže zatiaľ nič nie je zapnuté. Vyberte, čo chcete:"
+fr_thumbs = "Zobrazovať miniatúry v Prieskumníkovi"
+fr_thumbs_sub = "Pridá typy súborov len pre váš používateľský účet. Bez práv správcu, nič v rámci celého systému, a v Nastaveniach to môžete znova vypnúť."
 fr_preview = "Zapnúť rýchly náhľad"
 fr_preview_sub = "Vyberte súbor v Prieskumníkovi a stlačte medzerník, uvidíte ho v plnej veľkosti bez otvárania aplikácie."
 fr_shot = "Zapnúť klávesovú skratku na snímku obrazovky"

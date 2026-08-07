@@ -344,6 +344,9 @@ fb_failed = "Nu s-a putut contacta serverul, așa că mesajul nu a fost trimis.\
 # First-run welcome window (first_run.rs).
 fr_title = "Bine ați venit în SageThumbs 2K"
 fr_intro = "SageThumbs adaugă deja miniaturi în Explorer. Două funcții suplimentare rămân oprite până când le permiteți:"
+fr_intro_portable = "Aceasta este copia portabilă, așa că nimic nu este activat încă. Alegeți ce doriți:"
+fr_thumbs = "Afișează miniaturi în Explorer"
+fr_thumbs_sub = "Adaugă tipurile de fișiere doar în contul dvs. de utilizator. Fără drepturi de administrator, nimic la nivel de sistem, iar din Setări o puteți opri oricând."
 fr_preview = "Activează previzualizarea rapidă"
 fr_preview_sub = "Selectați un fișier în Explorer și apăsați Space pentru a-l vedea la dimensiune completă, fără să deschideți o aplicație."
 fr_shot = "Activează scurtătura pentru capturi de ecran"

@@ -341,6 +341,9 @@ fb_failed = "No se pudo conectar con el servidor, así que el mensaje no se envi
 # First-run welcome window (first_run.rs).
 fr_title = "Te damos la bienvenida a SageThumbs 2K"
 fr_intro = "SageThumbs ya está añadiendo miniaturas al Explorador. Hay dos extras desactivados hasta que tú decidas:"
+fr_intro_portable = "Esta es la copia portátil, así que todavía no hay nada activado. Elige lo que quieras:"
+fr_thumbs = "Mostrar miniaturas en el Explorador"
+fr_thumbs_sub = "Añade los tipos de archivo solo a tu cuenta de usuario. Sin permisos de administrador, sin cambios para todo el equipo, y puedes desactivarlo de nuevo desde Configuración."
 fr_preview = "Activar la vista rápida"
 fr_preview_sub = "Selecciona un archivo en el Explorador y pulsa Espacio para verlo a tamaño completo, sin abrir ninguna aplicación."
 fr_shot = "Activar el atajo de captura de pantalla"

@@ -725,21 +725,9 @@ pub(super) unsafe fn set_shot_status(hwnd: HWND, txt: &str) {
 }
 
 /// Is this portable copy's per-user thumbnail registration pointing at the DLL sitting next
-/// to THIS exe? A registration aimed at a different (or deleted) copy reads as "on" while
-/// doing nothing, so the comparison is against the path, not mere presence.
+/// to THIS exe? Shared with the first-run welcome, which offers the same switch.
 fn portable_registered_here() -> bool {
-    let Some(registered) = sagethumbs2k_core::register::user_registration_path() else {
-        return false;
-    };
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let Some(dir) = exe.parent() else {
-        return false;
-    };
-    // Case-insensitive: the registry stores whatever case was written, Windows paths are not
-    // case-sensitive, and a mismatch here would show "off" for a working registration.
-    registered.eq_ignore_ascii_case(&dir.join("sagethumbs2k.dll").to_string_lossy())
+    sagethumbs2k_core::register::user_registration_is_here()
 }
 
 /// Refresh the portable registration button + its status word to match reality.
@@ -766,10 +754,7 @@ unsafe fn toggle_portable_registration(hwnd: HWND) {
     let result = if on {
         sagethumbs2k_core::register::unregister_user().map(|_| ())
     } else {
-        match std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(|d| d.join("sagethumbs2k.dll")))
-        {
+        match sagethumbs2k_core::register::dll_beside_exe() {
             Some(dll) if dll.exists() => {
                 sagethumbs2k_core::register::register_user(&dll.to_string_lossy())
             }
