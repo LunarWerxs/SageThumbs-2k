@@ -185,10 +185,13 @@ pub(super) unsafe fn scrub_parts(hwnd: HWND, sr: &RECT) -> Parts {
         right: arrows.left,
         bottom: sr.bottom,
     };
+    // The slider's round thumb overhangs `vol.right` by its ~5px radius, so the gap to the repeat
+    // glyph must be wide enough for the thumb AT FULL VOLUME plus visible air (owner note,
+    // 2026-08-07: at sc(4) the thumb sat nearly touching the repeat icon).
     let vol = RECT {
-        left: loopb.left - sc(4) - vol_w,
+        left: loopb.left - sc(14) - vol_w,
         top: midy - th / 2,
-        right: loopb.left - sc(4),
+        right: loopb.left - sc(14),
         bottom: midy + th / 2,
     };
     let mute = RECT {
