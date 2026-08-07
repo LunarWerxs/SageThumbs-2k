@@ -112,6 +112,12 @@ if ($Lint) {
     Stage 'check-consistency' {
         & (Join-Path $PSScriptRoot 'check-consistency.ps1')
     }
+    # Dedicated locale key-parity gate: a locale missing keys vs en.toml (or carrying
+    # keys en.toml doesn't have) compiles fine and just falls back to English at
+    # runtime, so nothing else in the build catches it.
+    Stage 'check-locale-keys' {
+        & (Join-Path $PSScriptRoot 'check-locale-keys.ps1')
+    }
     # Cheap offline PowerShell contract suites added alongside the ARM64 and
     # dependency-maintenance paths. CI runs the same scripts in its consistency
     # job; keeping them here prevents a local green -Lint from missing script drift.

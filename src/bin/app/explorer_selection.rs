@@ -45,11 +45,34 @@ impl Drop for ComGuard {
 /// verbs that only make sense on images). Returns an empty Vec if the user cancels.
 pub(crate) unsafe fn selection_or_pick(images_only: bool) -> Vec<String> {
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
-    let sel = foreground_explorer_selection();
+    let sel = settled_explorer_selection();
     if !sel.is_empty() {
         return sel;
     }
     pick_files(images_only).unwrap_or_default()
+}
+
+/// How long to wait before the ONE retry in [`settled_explorer_selection`]. Short enough that a
+/// genuinely empty selection still feels instant, long enough to cover the foreground handover.
+const SETTLE_MS: u64 = 40;
+
+/// The foreground Explorer selection, retried ONCE after a short pause if the first read comes back
+/// empty.
+///
+/// A hotkey fires the instant the key goes down, which can be mid-handover: right after an Alt-Tab
+/// (or after the Explorer search box gives focus back) `GetForegroundWindow` and the shell's own
+/// `IShellWindows` view briefly disagree, and the read returns nothing. The caller reads that as
+/// "no selection" and pops a file picker, which looks like the hotkey did the wrong thing.
+///
+/// Only the EMPTY result is retried, so the overwhelmingly common case (a real selection, found
+/// first try) costs nothing at all.
+unsafe fn settled_explorer_selection() -> Vec<String> {
+    let sel = foreground_explorer_selection();
+    if !sel.is_empty() {
+        return sel;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
+    foreground_explorer_selection()
 }
 
 /// The single file the Quick preview hotkey should show: the FIRST item selected in the
@@ -59,7 +82,7 @@ pub(crate) unsafe fn selection_or_pick(images_only: bool) -> Vec<String> {
 /// from the viewer process's own thread).
 pub(crate) unsafe fn preview_target() -> Option<String> {
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
-    let raw = foreground_explorer_selection()
+    let raw = settled_explorer_selection()
         .into_iter()
         .next()
         .or_else(|| foreground_desktop_selection().into_iter().next())?;

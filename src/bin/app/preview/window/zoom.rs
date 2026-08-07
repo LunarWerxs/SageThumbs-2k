@@ -4,6 +4,28 @@
 
 use super::*;
 
+/// Wheel-zoom snap tolerance, as a fraction of the anchor value: a step landing within this
+/// band of aspect-fit or true 100% snaps exactly onto it instead of stepping past by a
+/// fraction (QuickLook-style magnetism at those two levels).
+const ZOOM_SNAP_TOLERANCE: f64 = 0.03;
+
+/// If the step from `old` to `new` crosses `anchor` (the anchor, widened by `tolerance`, falls
+/// inside the `[old, new]` interval), return `anchor` exactly. Does nothing when `old` already
+/// sits on the anchor, so a user parked there keeps moving past it on the next notch instead of
+/// sticking.
+pub(in crate::preview) fn snap_zoom_step(old: f64, new: f64, anchor: f64, tolerance: f64) -> f64 {
+    let band = anchor * tolerance;
+    if (old - anchor).abs() <= band {
+        return new;
+    }
+    let (lo, hi) = if old < new { (old, new) } else { (new, old) };
+    if lo <= anchor + band && hi >= anchor - band {
+        anchor
+    } else {
+        new
+    }
+}
+
 /// Video-only: the render child's rect = content area minus the bottom scrub strip.
 /// Zoom the image in/out by a wheel notch, keeping the image point under the cursor fixed.
 pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: LPARAM) {
@@ -19,7 +41,15 @@ pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: 
     let _ = ScreenToClient(hwnd, &mut pt);
     let fit = content::fit_scale(iw, ih, cw, ch);
     let old_zoom = st.zoom.get();
-    let new_zoom = (old_zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 }).clamp(1.0, 8.0);
+    let raw_zoom = old_zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 };
+    let full = (1.0 / fit).clamp(1.0, 8.0); // true 100% (display scale 1.0), same as toggle_fit_100
+    let fit_snap = snap_zoom_step(old_zoom, raw_zoom, 1.0, ZOOM_SNAP_TOLERANCE);
+    let snapped = if (fit_snap - raw_zoom).abs() > f64::EPSILON {
+        fit_snap
+    } else {
+        snap_zoom_step(old_zoom, raw_zoom, full, ZOOM_SNAP_TOLERANCE)
+    };
+    let new_zoom = snapped.clamp(1.0, 8.0);
     if (new_zoom - old_zoom).abs() < 1e-6 {
         return;
     }
@@ -157,4 +187,33 @@ pub(in crate::preview) unsafe fn toggle_fullscreen(hwnd: HWND) {
         );
     }
     let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snap_zoom_step_crossing_up_lands_on_anchor() {
+        // Step from below the anchor to past it: expect an exact landing, not the overshoot.
+        assert_eq!(snap_zoom_step(1.8, 2.16, 2.0, ZOOM_SNAP_TOLERANCE), 2.0);
+    }
+
+    #[test]
+    fn snap_zoom_step_crossing_down_lands_on_anchor() {
+        // Step from above the anchor to below it (zooming out): same magnetism in reverse.
+        assert_eq!(snap_zoom_step(2.3, 1.9, 2.0, ZOOM_SNAP_TOLERANCE), 2.0);
+    }
+
+    #[test]
+    fn snap_zoom_step_already_at_anchor_moves_past() {
+        // Already sitting on the anchor: this notch must NOT stick, or scrolling would freeze.
+        assert_eq!(snap_zoom_step(2.0, 2.4, 2.0, ZOOM_SNAP_TOLERANCE), 2.4);
+    }
+
+    #[test]
+    fn snap_zoom_step_far_away_is_unaffected() {
+        // Neither endpoint is near the anchor: the step passes through untouched.
+        assert_eq!(snap_zoom_step(1.05, 1.26, 2.0, ZOOM_SNAP_TOLERANCE), 1.26);
+    }
 }

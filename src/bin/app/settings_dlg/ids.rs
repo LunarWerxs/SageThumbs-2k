@@ -144,8 +144,6 @@ pub(super) const ID_PREVIEW_TOPMOST: i32 = 1206;
 // Phase 3: preview text/code + render markdown.
 pub(super) const ID_PREVIEW_TEXT: i32 = 1207;
 pub(super) const ID_PREVIEW_MARKDOWN: i32 = 1208;
-// Markdown remote-image fetch (opt-in; not feature-gated — markdown always ships).
-pub(super) const ID_PREVIEW_MD_REMOTE: i32 = 1211;
 #[cfg(feature = "html-preview")]
 pub(super) const ID_PREVIEW_HTML: i32 = 1209;
 #[cfg(feature = "html-preview")]

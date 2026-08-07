@@ -104,7 +104,6 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_PREVIEW_TOPMOST, "chk_preview_topmost"),
         (ID_PREVIEW_TEXT, "chk_preview_text"),
         (ID_PREVIEW_MARKDOWN, "chk_preview_markdown"),
-        (ID_PREVIEW_MD_REMOTE, "chk_preview_md_remote"),
         (ID_LBL_DIAG, "grp_diagnostics"),
         (ID_VERBOSE_LOG, "chk_verbose_log"),
         (ID_OPEN_LOG, "btn_open_log"),

@@ -8,6 +8,7 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use super::transport::TBTNS;
 use super::window::{btn_visible, state, Btn, BTNS, BTN_W, CAPTION_H, PAD};
 
 /// Toolbar button rects (device px, in client coords), right-aligned in the caption. Hidden
@@ -42,6 +43,9 @@ pub(super) unsafe fn button_rects(hwnd: HWND) -> Vec<(Btn, RECT)> {
 pub(super) fn btn_tip(b: Btn) -> &'static str {
     crate::win::t(match b {
         Btn::Toc => "preview_tip_toc",
+        // Reuses the string the Settings checkbox used before this moved into the
+        // window, so all 36 translations carried straight over.
+        Btn::MdImages => "tip_preview_md_remote",
         Btn::Source => "preview_tip_source",
         Btn::PdfPrev => "preview_tip_prev",
         Btn::PdfNext => "preview_tip_next",
@@ -77,8 +81,9 @@ pub(super) unsafe fn create_tooltips(hwnd: HWND, hinst: HINSTANCE) -> HWND {
         return HWND::default();
     };
     SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(320)));
-    // One tool per BTNS entry (uId = BTNS index). Hidden buttons get an EMPTY rect so their
-    // tip can never trigger; update_tooltips re-points every rect when visibility changes.
+    // One tool per BTNS entry (uId = BTNS index), then one per transport control (uId continues
+    // past BTNS.len()). Hidden buttons and a hidden strip get an EMPTY rect so their tip can never
+    // trigger; update_tooltips re-points every rect when visibility changes.
     let rects = button_rects(hwnd);
     for (idx, &b) in BTNS.iter().enumerate() {
         let r = rects
@@ -86,25 +91,41 @@ pub(super) unsafe fn create_tooltips(hwnd: HWND, hinst: HINSTANCE) -> HWND {
             .find(|(bb, _)| *bb == b)
             .map(|(_, r)| *r)
             .unwrap_or_default();
-        // comctl32 copies the text on add, so this temporary is fine.
-        let text = crate::win::wide(btn_tip(b));
-        let mut ti = TTTOOLINFOW {
-            cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
-            uFlags: TTF_SUBCLASS,
-            hwnd,
-            uId: idx,
-            rect: r,
-            lpszText: PWSTR(text.as_ptr() as *mut u16),
-            ..Default::default()
-        };
-        SendMessageW(
+        add_tool(tip, hwnd, idx, r, btn_tip(b));
+    }
+    for (i, (_, r)) in super::transport::transport_rects(hwnd)
+        .into_iter()
+        .enumerate()
+    {
+        add_tool(
             tip,
-            TTM_ADDTOOLW,
-            Some(WPARAM(0)),
-            Some(LPARAM(&mut ti as *mut _ as isize)),
+            hwnd,
+            BTNS.len() + i,
+            r,
+            super::transport::tbtn_tip(TBTNS[i]),
         );
     }
     tip
+}
+
+/// Register one rect tool. comctl32 copies the text on add, so the wide temporary is fine.
+unsafe fn add_tool(tip: HWND, hwnd: HWND, id: usize, rect: RECT, text: &str) {
+    let text = crate::win::wide(text);
+    let mut ti = TTTOOLINFOW {
+        cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_SUBCLASS,
+        hwnd,
+        uId: id,
+        rect,
+        lpszText: PWSTR(text.as_ptr() as *mut u16),
+        ..Default::default()
+    };
+    SendMessageW(
+        tip,
+        TTM_ADDTOOLW,
+        Some(WPARAM(0)),
+        Some(LPARAM(&mut ti as *mut _ as isize)),
+    );
 }
 
 /// Re-point each tooltip tool at its button's current rect (buttons are right-anchored, so a
@@ -121,21 +142,34 @@ pub(super) unsafe fn update_tooltips(hwnd: HWND, tip: HWND) {
             .find(|(bb, _)| *bb == b)
             .map(|(_, r)| *r)
             .unwrap_or_default();
-        let mut ti = TTTOOLINFOW {
-            cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
-            uFlags: TTF_SUBCLASS,
-            hwnd,
-            uId: idx,
-            rect: r,
-            ..Default::default()
-        };
-        SendMessageW(
-            tip,
-            TTM_NEWTOOLRECTW,
-            Some(WPARAM(0)),
-            Some(LPARAM(&mut ti as *mut _ as isize)),
-        );
+        move_tool(tip, hwnd, idx, r);
     }
+    // The transport strip appears and disappears with the content, so its rects have to be
+    // re-pointed on the same schedule as the caption's.
+    for (i, (_, r)) in super::transport::transport_rects(hwnd)
+        .into_iter()
+        .enumerate()
+    {
+        move_tool(tip, hwnd, BTNS.len() + i, r);
+    }
+}
+
+/// Re-point one registered tool at a new rect.
+unsafe fn move_tool(tip: HWND, hwnd: HWND, id: usize, rect: RECT) {
+    let mut ti = TTTOOLINFOW {
+        cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_SUBCLASS,
+        hwnd,
+        uId: id,
+        rect,
+        ..Default::default()
+    };
+    SendMessageW(
+        tip,
+        TTM_NEWTOOLRECTW,
+        Some(WPARAM(0)),
+        Some(LPARAM(&mut ti as *mut _ as isize)),
+    );
 }
 
 /// Which button (if any) contains the client-space point.

@@ -1018,6 +1018,44 @@ pub fn set_preview_muted(on: bool) -> windows_registry::Result<()> {
     set_dword("PreviewMuted", on as u32)
 }
 
+/// Whether Quick preview media repeats when it reaches the end (default true, which is what the
+/// viewer did unconditionally before the transport gained a loop button). Off means the clip stops
+/// on its last frame, which is what you want when you are checking whether a render finished.
+pub fn preview_loop() -> bool {
+    get_dword("PreviewLoop", 1) != 0
+}
+
+/// Persist the Quick preview loop state.
+pub fn set_preview_loop(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewLoop", on as u32)
+}
+
+/// What ←/→ do while a video or track is playing in the Quick preview. Default false = SEEK, which
+/// is what those keys mean in every media player. True = move to the previous/next file in the
+/// folder, for someone flipping through a folder of clips rather than watching one.
+///
+/// Either way the transport's own ⏮/⏭ buttons always switch files, and PgUp/PgDn always do too, so
+/// neither behaviour is ever unreachable.
+pub fn preview_arrow_nav() -> bool {
+    get_dword("PreviewArrowNav", 0) != 0
+}
+
+/// Persist the ←/→ meaning for video playback.
+pub fn set_preview_arrow_nav(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewArrowNav", on as u32)
+}
+
+/// Quick preview playback speed in PERCENT (50..=200, default 100). Percent rather than a float
+/// because the settings store is DWORD-only, and the transport only ever offers fixed steps.
+pub fn preview_speed() -> u32 {
+    get_dword("PreviewSpeed", 100).clamp(25, 400)
+}
+
+/// Persist the Quick preview playback speed (percent, clamped to the offered range).
+pub fn set_preview_speed(pct: u32) -> windows_registry::Result<()> {
+    set_dword("PreviewSpeed", pct.clamp(25, 400))
+}
+
 /// The viewer size the user last dragged the window out to, as a CLIENT size in **96-dpi logical
 /// px** — `None` until they resize one, which is when the viewer goes back to sizing every file to
 /// its own content. Logical rather than device px so a size chosen on a 150% display reopens the

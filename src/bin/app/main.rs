@@ -333,6 +333,7 @@ fn main() {
                                 let (a, b) = s.split_once(',')?;
                                 Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
                             }),
+                            find: val("--find").cloned(),
                             wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
                             source: args.iter().any(|a| a == "--source"),
                             toggle_source: args.iter().any(|a| a == "--toggle-source"),

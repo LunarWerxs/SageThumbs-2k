@@ -412,9 +412,63 @@ pub(super) fn word_at(text: &str, off: usize) -> (usize, usize) {
     }
 }
 
+/// Name/shebang fallback used only when [`lang_from_ext`] came back [`Lang::Plain`] (an
+/// extensionless or specially-named file); QuickLook has an equivalent detector tier behind its
+/// own extension lookup. Tries the exact file name first (case-insensitive; `keywords::NAME_LANG`
+/// covers build files with no extension at all, e.g. Makefile and Dockerfile, plus dotfiles whose
+/// whole name IS what `Path::extension()` calls "no extension", like `.gitignore`), then a `#!`
+/// shebang on `leading_text`'s first line. Every match lands on a `Lang` variant `lex` already
+/// lexes; no new variant, no lexer/keyword-table change.
+pub(super) fn lang_from_name_or_shebang(name: &str, leading_text: &str) -> Lang {
+    let lower = name.to_ascii_lowercase();
+    if let Some(entry) = keywords::NAME_LANG.iter().find(|e| e.0 == lower.as_str()) {
+        return lang_from_ext(entry.1);
+    }
+    lang_from_shebang(leading_text)
+}
+
+/// Reads a `#!` interpreter line (first line only) and maps it to a `Lang`. Matches by prefix so
+/// versioned interpreters (`python3`, `ruby2.7`) still hit; `env`'s own argument is unwrapped
+/// first (`#!/usr/bin/env python3` names `env`, not `python3`, as the literal program). Perl has
+/// no `Lang` variant to land on, so it (and anything else unrecognised) falls through to `Plain`.
+fn lang_from_shebang(leading_text: &str) -> Lang {
+    let first = leading_text.lines().next().unwrap_or("");
+    let Some(rest) = first.strip_prefix("#!") else {
+        return Lang::Plain;
+    };
+    let interp = rest
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut words = interp.split_whitespace();
+    let mut prog = words.next().unwrap_or("");
+    if prog == "env" {
+        prog = words.next().unwrap_or("");
+    }
+    let is_shell = prog == "sh"
+        || prog.starts_with("bash")
+        || prog.starts_with("zsh")
+        || prog.starts_with("dash");
+    if is_shell {
+        Lang::Sh
+    } else if prog.starts_with("python") {
+        Lang::Py
+    } else if prog.starts_with("node") {
+        Lang::Js
+    } else if prog.starts_with("ruby") {
+        Lang::Ruby
+    } else if prog.starts_with("php") {
+        Lang::Php
+    } else {
+        Lang::Plain
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{col_at, disp_extent, word_at};
+    use super::{col_at, disp_extent, lang_from_name_or_shebang, lang_from_shebang, word_at, Lang};
 
     /// Every raw char boundary must round-trip: measure its x with `disp_extent` (the paint
     /// side, `GetTextExtentPoint32W`), feed that x back through `col_at` (the hit-test side,
@@ -474,5 +528,73 @@ mod tests {
         assert_eq!(word_at(t, t.len()), (t.len(), t.len())); // end of doc
         let num = t.find("42").unwrap();
         assert_eq!(word_at(t, num + 1), (num, num + 2)); // digits group like a word
+    }
+
+    #[test]
+    fn name_fallback_maps_known_files_case_insensitively() {
+        assert!(matches!(
+            lang_from_name_or_shebang("Makefile", ""),
+            Lang::Sh
+        ));
+        assert!(matches!(
+            lang_from_name_or_shebang("DOCKERFILE", ""),
+            Lang::Sh
+        ));
+        assert!(matches!(
+            lang_from_name_or_shebang("Jenkinsfile", ""),
+            Lang::Java
+        ));
+        assert!(matches!(
+            lang_from_name_or_shebang("Vagrantfile", ""),
+            Lang::Ruby
+        ));
+        assert!(matches!(
+            lang_from_name_or_shebang(".GitIgnore", ""),
+            Lang::Toml
+        ));
+        assert!(matches!(lang_from_name_or_shebang("go.mod", ""), Lang::Go));
+        assert!(matches!(
+            lang_from_name_or_shebang("Cargo.lock", ""),
+            Lang::Toml
+        ));
+        // an unlisted name with no shebang falls all the way through to Plain.
+        assert!(matches!(
+            lang_from_name_or_shebang("readme", "just text"),
+            Lang::Plain
+        ));
+    }
+
+    #[test]
+    fn shebang_fallback_maps_known_interpreters() {
+        assert!(matches!(
+            lang_from_shebang("#!/bin/bash\necho hi"),
+            Lang::Sh
+        ));
+        assert!(matches!(
+            lang_from_shebang("#!/usr/bin/env python3\nprint(1)"),
+            Lang::Py
+        ));
+        assert!(matches!(
+            lang_from_shebang("#!/usr/bin/env node\nconsole.log(1)"),
+            Lang::Js
+        ));
+        assert!(matches!(
+            lang_from_shebang("#!/usr/bin/ruby\nputs 1"),
+            Lang::Ruby
+        ));
+        assert!(matches!(
+            lang_from_shebang("#!/usr/bin/php\n<?php"),
+            Lang::Php
+        ));
+        // perl has no Lang variant to land on.
+        assert!(matches!(
+            lang_from_shebang("#!/usr/bin/perl\nprint 1;"),
+            Lang::Plain
+        ));
+        // the first line isn't a shebang at all (one appears later, which must not count).
+        assert!(matches!(
+            lang_from_shebang("just some text\n#!/bin/bash"),
+            Lang::Plain
+        ));
     }
 }

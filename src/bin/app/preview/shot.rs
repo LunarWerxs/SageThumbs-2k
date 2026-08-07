@@ -102,6 +102,17 @@ pub(super) unsafe fn run_shot(
             crate::win::pump_msgs(8);
         }
     }
+    if let Some(q) = opts.find.as_deref() {
+        // Open the find bar on `q` and land on its first match. Driven through the REAL key path
+        // (Ctrl+F then a WM_CHAR per character) rather than by poking the state, so the shot proves
+        // the whole chain: the bar opening, the pane shrinking around it, and the match highlight.
+        super::find::toggle(hwnd);
+        for c in q.chars() {
+            super::find::on_char(hwnd, c as u32);
+        }
+        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
+        crate::win::pump_msgs(8);
+    }
     if std::env::var_os("ST2K_MD_BENCH").is_some() {
         // Bench: repaint several times so the Markdown layout cache's cold(1st)-vs-warm(rest)
         // timings print — each paint_into re-runs markdown::render, which self-times under the

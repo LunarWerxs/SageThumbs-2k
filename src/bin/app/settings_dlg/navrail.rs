@@ -170,7 +170,6 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_TOPMOST),
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),
-            Switch(ID_PREVIEW_MD_REMOTE),
             Switch(ID_PREVIEW_HTML),
             Switch(ID_PREVIEW_URL_LIVE),
         ],
@@ -182,7 +181,6 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_TOPMOST),
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),
-            Switch(ID_PREVIEW_MD_REMOTE),
         ],
         _ => &[
             // Data & Backup — settings portability: optional cloud sync + local backup/restore.

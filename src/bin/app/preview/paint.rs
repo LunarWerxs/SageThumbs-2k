@@ -76,12 +76,9 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
         right: rc.right,
         bottom: cap,
     };
-    let content_rc = RECT {
-        left: 0,
-        top: cap,
-        right: rc.right,
-        bottom: rc.bottom,
-    };
+    // Same rect `content_rect` computes, kept in step with it: the find bar, when open, takes a
+    // strip off the top and everything below lays out inside what is left.
+    let content_rc = super::window::content_rect(hwnd);
 
     let content_bg = crate::dark::SURFACE().0;
     let cap_bg = crate::dark::DARK_BG().0;
@@ -91,6 +88,12 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     // Content.
     match st.kind.get() {
         ContentKind::Image => {
+            // Checkerboard behind a transparent image, from the SAME setting the classic menu tile
+            // uses, so a white-on-transparent logo doesn't read as an empty pane. `paint_image`
+            // ignores it for an opaque bitmap, so this is a no-op for photos. The cell is
+            // DPI-scaled and larger than the menu tile's, because this pane is full size.
+            let checker = sagethumbs2k_core::settings::preview_checker()
+                .then(|| crate::win::dpi_scale(hwnd, 12));
             let frames = st.frames.borrow();
             if let Some(rd) = frames.get(st.cur_frame.get()) {
                 content::paint_image(
@@ -100,6 +103,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                     content_bg,
                     st.zoom.get(),
                     st.pan.get(),
+                    checker,
                 );
             } else if let Some(rd) = st.render.borrow().as_ref() {
                 content::paint_image(
@@ -109,6 +113,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                     content_bg,
                     st.zoom.get(),
                     st.pan.get(),
+                    checker,
                 );
             } else {
                 paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "Loading…");
@@ -130,7 +135,25 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                     .and_then(|p| std::path::Path::new(p).extension().and_then(|e| e.to_str()))
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                let lang = highlight::lang_from_ext(&ext);
+                let mut lang = highlight::lang_from_ext(&ext);
+                if matches!(lang, highlight::Lang::Plain) {
+                    // No usable extension (Makefile, Dockerfile, .bashrc, a bare shebang script):
+                    // fall back to the file NAME and the first line's `#!` before giving up on
+                    // colouring it. Only reached when the extension told us nothing, so a real
+                    // `.txt` is never second-guessed.
+                    let name = st
+                        .path
+                        .borrow()
+                        .as_deref()
+                        .and_then(|p| {
+                            std::path::Path::new(p)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(str::to_owned)
+                        })
+                        .unwrap_or_default();
+                    lang = highlight::lang_from_name_or_shebang(&name, t);
+                }
                 let th = paint_text(
                     hwnd,
                     hdc,
@@ -245,7 +268,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
             // transport strip draws in the bottom band.
             let vr = video_rect(hwnd);
             match st.art.borrow().as_ref() {
-                Some(art) => content::paint_image(hdc, &vr, art, 0x0000_0000, 1.0, (0, 0)),
+                Some(art) => content::paint_image(hdc, &vr, art, 0x0000_0000, 1.0, (0, 0), None),
                 None => {
                     let brush = CreateSolidBrush(COLORREF(0x0000_0000));
                     FillRect(hdc, &vr, brush);
@@ -272,6 +295,9 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     if matches!(st.kind.get(), ContentKind::Text | ContentKind::Markdown) {
         paint_scroll_thumb(hwnd, hdc);
     }
+
+    // Find bar, between the caption and the content (a no-op when closed).
+    super::find::paint(hwnd, hdc, text, subtle);
 
     // Caption strip.
     let brush = CreateSolidBrush(COLORREF(cap_bg));
@@ -627,6 +653,7 @@ pub(super) unsafe fn icon_font(hwnd: HWND) -> HFONT {
 pub(super) fn btn_glyph(btn: Btn, pinned: bool) -> u16 {
     match btn {
         Btn::Toc => 0xE8FD,           // BulletedList (outline)
+        Btn::MdImages => 0xEB9F,      // Picture (web images on/off)
         Btn::Source => 0xE943,        // Code (`</>`) — view source
         Btn::PdfPrev => 0xE76B,       // ChevronLeft
         Btn::PdfNext => 0xE76C,       // ChevronRight

@@ -558,6 +558,37 @@ pub(in crate::preview) const KOTLIN_KW: &[&str] = &[
     "Map",
 ];
 
+// Exact file-name -> canonical extension for the highlighter's name-based fallback tier
+// (`highlight::lang_from_name_or_shebang`), used only when the real extension lookup misses.
+// Keys are matched case-insensitively against the whole file name; values are extensions
+// `lex::lang_from_ext` already understands, so this table never needs a `Lang` of its own.
+// Covers build files with no extension at all (Makefile, Dockerfile, ...) and dotfiles whose
+// entire name IS what `Path::extension()` calls "no extension" (`.gitignore`, `.editorconfig`, ...).
+pub(in crate::preview) const NAME_LANG: &[(&str, &str)] = &[
+    ("makefile", "sh"),
+    ("gnumakefile", "sh"),
+    ("dockerfile", "sh"),
+    ("containerfile", "sh"),
+    ("jenkinsfile", "java"),
+    ("vagrantfile", "rb"),
+    ("cmakelists.txt", "sh"),
+    (".gitignore", "toml"),
+    (".gitattributes", "toml"),
+    (".editorconfig", "toml"),
+    (".env", "sh"),
+    (".bashrc", "sh"),
+    (".zshrc", "sh"),
+    (".profile", "sh"),
+    (".bash_profile", "sh"),
+    (".vimrc", "sh"),
+    (".npmrc", "toml"),
+    (".prettierrc", "toml"),
+    (".eslintrc", "toml"),
+    ("go.mod", "go"),
+    ("go.sum", "go"),
+    ("cargo.lock", "toml"),
+];
+
 pub(in crate::preview) const SWIFT_KW: &[&str] = &[
     "actor",
     "as",

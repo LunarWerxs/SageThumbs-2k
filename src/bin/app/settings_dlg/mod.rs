@@ -466,7 +466,6 @@ const TOOLTIPS: &[(i32, &str)] = &[
     (ID_PREVIEW_TOPMOST, "tip_preview_topmost"),
     (ID_PREVIEW_TEXT, "tip_preview_text"),
     (ID_PREVIEW_MARKDOWN, "tip_preview_markdown"),
-    (ID_PREVIEW_MD_REMOTE, "tip_preview_md_remote"),
     (ID_SHOT_ACTION, "tip_custom_action"),
     (ID_SHOT_ACTION_HK, "tip_custom_action_hk"),
     // Same hints on the combo LABELS, like the Limits fields above.

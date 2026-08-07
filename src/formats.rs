@@ -536,9 +536,9 @@ pub const PREVIEW_TEXT_EXTS: &[&str] = &[
 ];
 
 /// Structured documents the viewer converts to markdown at load and renders through the
-/// markdown pipeline (gated on `preview_markdown()`): CSV/TSV → a GitHub-grid table view,
+/// markdown pipeline (gated on `preview_markdown()`): CSV/TSV/PSV → a GitHub-grid table view,
 /// Jupyter notebooks → rendered markdown + fenced code cells with outputs.
-pub const PREVIEW_DOC_EXTS: &[&str] = &["csv", "tsv", "ipynb"];
+pub const PREVIEW_DOC_EXTS: &[&str] = &["csv", "tsv", "psv", "ipynb"];
 
 /// Is `ext` (no dot) a convert-to-markdown document? ASCII-case-insensitive.
 pub fn is_preview_doc(ext: &str) -> bool {

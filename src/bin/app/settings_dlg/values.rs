@@ -60,11 +60,6 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_PREVIEW_TOPMOST, settings::preview_open_front());
     check(hwnd, ID_PREVIEW_TEXT, settings::preview_text());
     check(hwnd, ID_PREVIEW_MARKDOWN, settings::preview_markdown());
-    check(
-        hwnd,
-        ID_PREVIEW_MD_REMOTE,
-        settings::preview_md_remote_img(),
-    );
     #[cfg(feature = "html-preview")]
     check(hwnd, ID_PREVIEW_HTML, settings::preview_html());
     #[cfg(feature = "html-preview")]
@@ -116,7 +111,6 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_PREVIEW_TOPMOST, true); // "Open in front" — default ON
     check(hwnd, ID_PREVIEW_TEXT, true);
     check(hwnd, ID_PREVIEW_MARKDOWN, true);
-    check(hwnd, ID_PREVIEW_MD_REMOTE, false); // outbound fetch from previewed docs → default OFF
     #[cfg(feature = "html-preview")]
     {
         check(hwnd, ID_PREVIEW_HTML, true); // locked-down (scripts off, no network) → default ON
@@ -419,7 +413,6 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     let _ = settings::set_preview_open_front(checked(hwnd, ID_PREVIEW_TOPMOST));
     let _ = settings::set_preview_text(checked(hwnd, ID_PREVIEW_TEXT));
     let _ = settings::set_preview_markdown(checked(hwnd, ID_PREVIEW_MARKDOWN));
-    let _ = settings::set_preview_md_remote_img(checked(hwnd, ID_PREVIEW_MD_REMOTE));
     #[cfg(feature = "html-preview")]
     {
         let _ = settings::set_preview_html(checked(hwnd, ID_PREVIEW_HTML));

@@ -259,10 +259,18 @@ Explorer follows the selection. A selected **`.lnk` shortcut** resolves to its t
 It previews **everything the thumbnailer can decode** (all the image/RAW/ebook/office/… formats),
 plus these viewer-only extras:
 
-- **Video and audio playback** via Media Foundation (the OS codecs, zero bundled bytes): the clip
-  plays and loops with a transport strip: **play/pause**, an **`m:ss / m:ss`** time readout, a
-  **click-and-drag seek bar**, and a **mute + volume slider**. Audio files (mp3/flac/ogg/…) play
-  through the same transport.
+- **Video and audio playback** via Media Foundation (the OS codecs, zero bundled bytes), in a
+  window sized to the clip's real shape (a phone video shot in portrait opens portrait). The
+  transport strip has **⏮ / ⏭ previous-and-next-file buttons**, **play/pause**, an
+  **`m:ss / m:ss`** time readout, a **click-and-drag seek bar**, a **mute + volume slider**, a
+  **repeat toggle** and a **speed button** (0.5x · 1x · 1.25x · 1.5x · 2x); repeat, speed and
+  volume are all remembered. It is fully keyboard-driven too: **←/→** seek (with **Ctrl** for 30 s
+  and **Shift** for 1 s), **↑/↓** volume, **M** mute, **L** repeat, **K** or **P** pause,
+  **Home/End** jump to the ends, **Page Up / Page Down** move to the next file in the folder.
+  A **button on the strip itself** flips **←/→** to switch files instead of seeking, for anyone
+  flipping through a folder of clips rather than watching one. Every control on the strip names
+  itself on hover. Audio files (mp3/flac/ogg/…) play through the same transport, with the track's
+  embedded cover art as the backdrop.
 - **Animated GIF / APNG / animated WebP** play frame-by-frame (respecting each frame's delay).
 - **Font specimens** for `.ttf`/`.otf`/`.ttc` **and `.woff`**: the font's own name, a pangram at
   several sizes, and an A–Z / a–z / 0–9 glyph sheet, all rendered in the font itself (via the OS
@@ -283,14 +291,20 @@ plus these viewer-only extras:
   **images stored alongside the file display inline** (GitHub-style sizing, clickable when linked),
   and **tables draw the full grid with shaded alternating rows and auto-fitted columns**. The text
   column is capped and centered like a GitHub page. Web-hosted images (status badges and the like)
-  show as labeled chips by default; an optional **"Download web images"** toggle (Settings ▸ Quick
-  preview, off by default) fetches and displays them (HTTPS only, size-capped, in the background).
+  show as labeled chips by default; a **"Load web images"** button appears on the title bar
+  whenever the open document actually references any, and fetches and displays them (HTTPS only,
+  size-capped, in the background). Off by default, and your choice is remembered.
   Markdown with headings also gets a **collapsible outline sidebar** (a "Contents" panel): a
   clickable, indented list of the headings that jumps to a section on click (and selects it even
   when the page is already at the bottom) and highlights the one you are reading as you scroll.
   The panel slides open/closed via the outline button on the toolbar; the choice is remembered.
-- **CSV/TSV column view**: spreadsheets-ish files render as a real gridded table (quoted fields,
-  embedded commas/newlines, `;`-separated exports auto-detected), capped with a note for huge files.
+- **CSV/TSV/PSV column view**: spreadsheets-ish files render as a real gridded table (quoted
+  fields, embedded commas/newlines, `;`-separated exports auto-detected, tab for `.tsv` and pipe
+  for `.psv`), with a row-number column so you can keep your place, capped with a note for huge
+  files.
+- **Find in the document with Ctrl+F**, in text, code, Markdown and CSV tables alike: a bar with a
+  live match count, **Enter/F3** for the next hit and **Shift** for the previous, **Esc** to close.
+  F3 reopens the last search without retyping it.
 - **SQLite databases** (`.db`/`.sqlite`/`.sqlite3`/…): a look inside without opening a database
   tool. You get the size and page layout, then a section per table with its real column names and
   the first rows in a gridded table, and the full `CREATE` statements at the end in a
@@ -306,6 +320,16 @@ plus these viewer-only extras:
   (Rust, Python, JS/TS, JSON, Java, Go, C/C++, C#, Ruby, PHP, Lua, Kotlin, Swift, shell, HTML/CSS,
   SQL, YAML/TOML/ini and more: comments, strings, numbers, keywords, and JSON/object keys in their
   own colour), a small pure-Rust lexer, in both standalone code files and Markdown code fences.
+  Files with no extension are covered too: the well-known names (`Makefile`, `Dockerfile`,
+  `.gitignore`, `.bashrc`, `go.mod` and friends) are recognised by name, and a script starting
+  with a `#!` line is recognised by its interpreter.
+- **Transparent images sit on a checkerboard** rather than vanishing into the background, the
+  same one the right-click preview uses and governed by the same setting. They are also
+  area-averaged when shown smaller than life size, so thin lines and fine texture stay clean
+  instead of breaking up.
+- **Files saved without an extension still preview.** If the content is recognisably a picture
+  (PNG, JPEG, GIF, BMP, WebP, TIFF, AVIF/HEIF, QOI), it is shown as one instead of falling back
+  to a plain info card.
 - **View source**: anything that RENDERS can be flipped to its raw text and back: a Markdown file,
   a CSV/TSV table, a Jupyter notebook, a rendered HTML page, an SVG. Hit the toolbar's **`{ }`**
   button or press **Ctrl+U** and you get the underlying file, syntax-highlighted with line numbers,

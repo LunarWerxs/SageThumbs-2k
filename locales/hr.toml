@@ -120,7 +120,7 @@ msg_admin_required = "Za promjenu vrsta datoteka koje dobivaju minijature potreb
 
 # --- Added 2026-06-12: Settings checkbox, Convert / Files-to-folder / Tags-to-folders dialogs, eyedropper hint ---
 chk_menu_checker = "Šahovnica iza prozirnih pretpregleda"
-tip_menu_checker = "Iscrtava suptilnu šahovnicu iza prozirnih područja pretpregleda u izborniku, kako se prozirne slike ne bi stopile s pozadinom."
+tip_menu_checker = "Iscrtava suptilnu šahovnicu iza prozirnih područja pretpregleda, kako se prozirne slike ne bi stopile s pozadinom. Odnosi se i na pretpregled u izborniku desnog klika i na prozor brzog pregleda."
 
 # Generic "OK" button (used by the small popups)
 btn_ok_short = "U redu"
@@ -208,8 +208,14 @@ chk_preview_close_focus = "Zatvori kad pregled izgubi fokus"
 chk_preview_topmost = "Otvori u prvom planu"
 chk_preview_text = "Pregledaj tekstualne i kôd datoteke"
 chk_preview_markdown = "Pregledaj Markdown datoteke"
-chk_preview_md_remote = "Preuzmi web-slike u Markdown pregledima"
 tip_preview_md_remote = "Isključeno: slike s weba (značke, povezana grafika) prikazuju se kao označeni čipovi. Uključeno: preuzimaju se (samo HTTPS) i prikazuju — autor datoteke kontrolira te adrese, pa ostavite isključeno ako vas to brine."
+tip_preview_arrow_nav = "Isključeno: dok se video ili zapis reproducira, strelice lijevo/desno premotavaju unutar njega. Uključeno: umjesto toga prelaze na prethodnu/sljedeću datoteku. U oba slučaja, gumbi ⏮ ⏭ samog reproduktora i Page Up/Page Down uvijek mijenjaju datoteke."
+preview_tip_prevfile = "Prethodna datoteka"
+preview_tip_nextfile = "Sljedeća datoteka"
+preview_tip_playpause = "Reprodukcija / pauza"
+preview_tip_mute = "Utišaj"
+preview_tip_loop = "Ponavljanje"
+preview_tip_speed = "Brzina reprodukcije"
 chk_preview_html = "Prikaz lokalnih HTML datoteka (WebView2, bez skripti, bez mreže)"
 chk_preview_url_live = "Izravno učitavanje .url prečaca (otvara stvarnu web-stranicu)"
 tip_preview_enabled = "Pritisnite razmaknicu u Exploreru ili na radnoj površini da se prikaže skočni pregled odabrane datoteke, a zatim Esc ili razmaknicu za zatvaranje. Zadano isključeno. Uključivanjem se pokreće mali pomoćni program u pozadini (isti koji koriste prečaci)."

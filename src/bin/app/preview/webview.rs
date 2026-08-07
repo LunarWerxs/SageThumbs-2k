@@ -10,15 +10,18 @@ use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2Controller, ICoreWebView2Environment,
-    ICoreWebView2WebResourceRequestedEventArgs, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+    ICoreWebView2NavigationStartingEventArgs, ICoreWebView2WebResourceRequestedEventArgs,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
 };
 use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    WebResourceRequestedEventHandler,
+    NavigationStartingEventHandler, WebResourceRequestedEventHandler,
 };
 use windows::core::{w, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 /// Local file (sandboxed: scripts off + no network) vs live remote (`.url`, ephemeral profile).
 #[derive(Clone, Copy, PartialEq)]
@@ -155,6 +158,47 @@ pub(super) unsafe fn create(
         ));
         let mut token: i64 = 0;
         let _ = webview.add_WebResourceRequested(&handler, &mut token);
+
+        // The resource filter above blocks a clicked link's own navigation too (Document is one
+        // of its ALL contexts), which just swaps in a blank 403, i.e. "does nothing" from the
+        // user's seat. Intercept the navigation itself instead: file:// (the loaded page, or an
+        // in-page anchor) passes unchanged; http(s) is canceled and handed to the OS default
+        // browser via ShellExecuteW, same allow-and-launch shape as the Markdown link path in
+        // `window.rs::open_preview_link`; anything else is canceled and dropped outright, since
+        // an untrusted local HTML file must not launch an arbitrary protocol handler from a click.
+        let nav_handler = NavigationStartingEventHandler::create(Box::new(
+            move |_wv, args: Option<ICoreWebView2NavigationStartingEventArgs>| {
+                if let Some(args) = args {
+                    let mut uri_p = PWSTR::null();
+                    let uri = if args.Uri(&mut uri_p).is_ok() && !uri_p.is_null() {
+                        let s = uri_p.to_string().unwrap_or_default();
+                        CoTaskMemFree(Some(uri_p.as_ptr() as *const _));
+                        s
+                    } else {
+                        String::new()
+                    };
+                    if uri.starts_with("file:") {
+                        return Ok(()); // the page load itself, or a same-file anchor: unchanged
+                    }
+                    let _ = args.SetCancel(true);
+                    let lower = uri.to_ascii_lowercase();
+                    if lower.starts_with("http://") || lower.starts_with("https://") {
+                        let w = HSTRING::from(uri.as_str());
+                        let _ = ShellExecuteW(
+                            Some(parent),
+                            w!("open"),
+                            PCWSTR(w.as_ptr()),
+                            PCWSTR::null(),
+                            PCWSTR::null(),
+                            SW_SHOWNORMAL,
+                        );
+                    }
+                }
+                Ok(())
+            },
+        ));
+        let mut nav_token: i64 = 0;
+        let _ = webview.add_NavigationStarting(&nav_handler, &mut nav_token);
     }
 
     let url_h = HSTRING::from(url);

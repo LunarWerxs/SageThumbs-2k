@@ -314,7 +314,6 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_preview_topmost"), cb, 312, ID_PREVIEW_TOPMOST);
     lc.checkbox(t("chk_preview_text"), cb, 312, ID_PREVIEW_TEXT);
     lc.checkbox(t("chk_preview_markdown"), cb, 312, ID_PREVIEW_MARKDOWN);
-    lc.checkbox(t("chk_preview_md_remote"), cb, 312, ID_PREVIEW_MD_REMOTE);
     #[cfg(feature = "html-preview")]
     lc.checkbox(t("chk_preview_html"), cb, 312, ID_PREVIEW_HTML);
     #[cfg(feature = "html-preview")]

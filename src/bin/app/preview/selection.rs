@@ -319,8 +319,8 @@ pub(super) unsafe fn scroll_by(hwnd: HWND, dy: i32) {
     let _ = UpdateWindow(hwnd);
 }
 
-/// Scroll so the caret at `off` is on screen (after a keyboard selection move).
-unsafe fn ensure_visible(hwnd: HWND, off: usize) {
+/// Scroll so the caret at `off` is on screen (after a keyboard selection move, or a find hit).
+pub(in crate::preview) unsafe fn ensure_visible(hwnd: HWND, off: usize) {
     let st = &*state(hwnd);
     let c = content_rect(hwnd);
     let m = crate::win::dpi_scale(hwnd, 12);

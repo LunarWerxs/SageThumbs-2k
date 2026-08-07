@@ -20,6 +20,7 @@ mod anim;
 mod content;
 mod dbdoc;
 mod docconv;
+mod find;
 mod font;
 mod highlight;
 mod infocard;
@@ -264,6 +265,9 @@ pub(crate) struct ShotOpts {
     /// Force a text-pane selection over the raw byte range `A..B` before capturing
     /// (`--sel A,B`) — lets the selection highlight be shot-verified headlessly.
     pub sel: Option<(usize, usize)>,
+    /// Open the find bar on this query and jump to its first match (`--find <text>`), so the bar,
+    /// the pane shrinking around it and the match highlight are all shot-verifiable.
+    pub find: Option<String>,
     /// Pump the message loop for `N` ms before capturing (`--wait-ms N`) — lets async work
     /// (e.g. an opt-in remote markdown image fetch) land in the frame.
     pub wait_ms: Option<u64>,

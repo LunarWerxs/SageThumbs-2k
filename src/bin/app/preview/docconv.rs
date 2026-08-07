@@ -1,6 +1,6 @@
 //! Load-time document→markdown converters for the Quick preview viewer.
 //!
-//! CSV/TSV and Jupyter notebooks render THROUGH the existing markdown pipeline: the loader
+//! CSV/TSV/PSV and Jupyter notebooks render THROUGH the existing markdown pipeline: the loader
 //! converts them to synthesized markdown once (per load), and the viewer gets the GitHub-grid
 //! table / rendered-cells view for free — outline sidebar, links, code highlighting included.
 //! Conversion is bounded (row/cell caps with a truncation note), read-only, and lossy by
@@ -26,14 +26,21 @@ pub(super) fn to_markdown(ext: &str, text: &str) -> Option<Converted> {
             md: delimited_table(text, b'\t'),
             attachments: Vec::new(),
         }),
+        // A pipe delimiter collides with GFM pipe-table syntax, but that's exactly what
+        // `md_cell` (below) exists to neutralise on every cell, so forcing it here is safe.
+        "psv" => Some(Converted {
+            md: delimited_table(text, b'|'),
+            attachments: Vec::new(),
+        }),
         "ipynb" => Some(ipynb_md(text)),
         _ => None,
     }
 }
 
-// ---- CSV / TSV ----------------------------------------------------------------------------
+// ---- CSV / TSV / PSV -----------------------------------------------------------------------
 
-const MAX_ROWS: usize = 1000;
+// QuickLook's CSV/TSV table view caps at 10,000 rows; match it (was 1,000).
+const MAX_ROWS: usize = 10_000;
 const MAX_COLS: usize = 64;
 
 /// Pick the delimiter a `.csv` actually uses (comma, but European Excel exports use `;` and
@@ -59,7 +66,9 @@ fn sniff_delim(text: &str) -> u8 {
 }
 
 /// RFC-4180-ish parse (quoted fields, `""` escapes, embedded delimiters/newlines) into a GFM
-/// pipe table: first record = header row, capped rows/cols with a truncation note.
+/// pipe table: first record = header row, capped rows/cols with a truncation note. A synthetic
+/// leading `#` column carries the 1-based data-row number (QuickLook parity: it lets a user
+/// cross-reference a row in a large file), and runs through `md_cell` like every other cell.
 fn delimited_table(text: &str, delim: u8) -> String {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
@@ -136,6 +145,16 @@ fn delimited_table(text: &str, delim: u8) -> String {
     let mut out = String::with_capacity(text.len() + rows.len() * 4);
     for (ri, r) in rows.iter().enumerate() {
         out.push('|');
+        out.push(' ');
+        // The row-number column: "#" for the header, the 1-based data-row number otherwise
+        // (ri == 0 is the header, so ri itself is already the 1-based data-row index).
+        let num = if ri == 0 {
+            "#".to_string()
+        } else {
+            ri.to_string()
+        };
+        out.push_str(&md_cell(&num));
+        out.push_str(" |");
         for ci in 0..ncols {
             out.push(' ');
             out.push_str(&md_cell(r.get(ci).map(String::as_str).unwrap_or("")));
@@ -143,7 +162,7 @@ fn delimited_table(text: &str, delim: u8) -> String {
         }
         out.push('\n');
         if ri == 0 {
-            out.push('|');
+            out.push_str("| --- |");
             for _ in 0..ncols {
                 out.push_str(" --- |");
             }
@@ -404,6 +423,25 @@ mod tests {
     fn csv_sniffs_semicolon() {
         assert_eq!(sniff_delim("a;b;c\n1;2;3"), b';');
         assert_eq!(sniff_delim("a,b\n"), b',');
+    }
+
+    #[test]
+    fn row_number_column_leads_header_and_data() {
+        let md = delimited_table("a,b\n1,2\n3,4\n", b',');
+        assert!(md.contains("| # | a | b |"));
+        assert!(md.contains("| --- | --- | --- |"));
+        assert!(md.contains("| 1 | 1 | 2 |"));
+        assert!(md.contains("| 2 | 3 | 4 |"));
+    }
+
+    #[test]
+    fn psv_forces_pipe_delimiter_and_escapes_literal_pipes() {
+        let conv = to_markdown("psv", "a|b\n1|\"say|hi\"\n").unwrap();
+        // the delimiter split happened on the unescaped `|`, so the header parsed as two cols
+        assert!(conv.md.contains("| # | a | b |"));
+        // a quoted field's literal `|` survives the split but must still be escaped by
+        // `md_cell` so it can't be mistaken for another table-cell boundary.
+        assert!(conv.md.contains("say\\|hi"));
     }
 
     #[test]

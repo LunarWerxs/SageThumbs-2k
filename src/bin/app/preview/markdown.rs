@@ -133,6 +133,35 @@ pub(super) fn has_headings(md: &str) -> bool {
 }
 
 /// Cheap scan for `<h1`..`<h6` (case-insensitive) in a raw-HTML fragment.
+/// Whether the document references any WEB-HOSTED image, i.e. whether the "load web images"
+/// toolbar button has anything to act on. Same streaming parse as [`has_headings`] (no layout, no
+/// allocation of the rendered document), run once per load.
+///
+/// Raw `<img src="http…">` counts too, because README hero blocks are written in HTML and their
+/// badges are exactly the case this button exists for.
+pub(super) fn has_remote_images(md: &str) -> bool {
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    Parser::new_ext(md, opts).any(|ev| match ev {
+        Event::Start(Tag::Image { dest_url, .. }) => is_remote_src(&dest_url),
+        Event::Html(s) | Event::InlineHtml(s) => html_has_remote_img(&s),
+        _ => false,
+    })
+}
+
+/// `<img …src="http…">` in a raw-HTML chunk. Deliberately loose (it does not parse attributes,
+/// it just looks for an `src` pointing at a web scheme in a chunk that contains an `<img`), which
+/// is the right trade for a button-visibility check.
+fn html_has_remote_img(s: &str) -> bool {
+    let low = s.to_ascii_lowercase();
+    if !low.contains("<img") {
+        return false;
+    }
+    low.contains("src=\"http") || low.contains("src='http") || low.contains("src=http")
+}
+
 fn html_has_heading(s: &str) -> bool {
     let b = s.as_bytes();
     b.windows(3)

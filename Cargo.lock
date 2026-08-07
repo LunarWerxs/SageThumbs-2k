@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "base64",
  "bcdec_rs",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k-dll"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "sagethumbs2k",
  "windows-core",

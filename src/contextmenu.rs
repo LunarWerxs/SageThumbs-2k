@@ -75,7 +75,7 @@ use windows_implement::implement;
 use crate::{safety, settings, verbs};
 
 mod com;
-mod paint;
+pub(crate) mod paint;
 mod thumb;
 pub(crate) use paint::*;
 pub(crate) use thumb::*;

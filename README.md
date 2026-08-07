@@ -158,6 +158,21 @@ Hit a bug, or a format that won't thumbnail? **[Open an issue](https://github.co
 
 > **First run / SmartScreen:** SageThumbs 2K is source-available indie software, and the installer isn't signed with a (paid) certificate, so Windows may show a blue **"Windows protected your PC"** screen. That's expected for unsigned indie apps: click **More info → Run anyway**. Every line of the code is right here for you to inspect.
 
+### Installer vs. portable zip
+
+Prefer nothing touching the registry outside your own account, or can't run an installer at all? Grab the **portable zip** from the same [releases page](https://github.com/LunarWerxs/SageThumbs-2k/releases) instead. It covers most of the app, but not quite everything:
+
+| | Installer | Portable zip |
+|---|---|---|
+| Explorer thumbnails | ✅ | ✅ (per-user, no admin) |
+| Classic right-click menu | ✅ | ✅ (per-user, no admin) |
+| Settings, Convert/Resize, Quick preview, screenshots, OCR, eyedropper, CLI | ✅ | ✅ |
+| Explorer **preview pane** | ✅ | ❌ |
+| **Details pane** (columns, EXIF/tags) | ✅ | ❌ |
+| Modern Windows 11 right-click menu | ✅ | ❌ |
+
+The three ❌ rows all need machine-wide registration, which is exactly what the portable zip is built to avoid. If you want those too, use the installer.
+
 ---
 
 ## 🦀 How it works

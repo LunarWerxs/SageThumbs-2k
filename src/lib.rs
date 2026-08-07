@@ -42,6 +42,14 @@ mod mp4;
 // it isn't a stable public API — same arrangement as `parallel` below.
 #[doc(hidden)]
 pub mod ocr;
+// The transparency checkerboard, re-exported from the classic menu tile's painter so the app bin's
+// Quick preview draws the SAME backdrop, from the SAME `settings::preview_checker()` toggle. One
+// implementation, so the two surfaces cannot drift apart. `doc(hidden)` for the same reason as the
+// rest of these: an internal surface, not a stable public API.
+#[doc(hidden)]
+pub mod checker {
+    pub use crate::contextmenu::paint::{checker_shades, fill_checker};
+}
 // Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
 // verbs). `pub` so the companion `SageThumbs2K` app bin can drive it, `doc(hidden)`
 // because it isn't a stable public API — just a shared helper across our own crates.

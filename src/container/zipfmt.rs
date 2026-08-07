@@ -146,7 +146,7 @@ pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry
     for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         if let Ok(f) = zip.by_index(i) {
             out.push(Entry {
-                name: f.name().to_string(),
+                name: entry_display_name(&f),
                 is_dir: f.is_dir(),
                 size: f.size(),
             });
@@ -164,13 +164,37 @@ pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
     for i in 0..zip.len().min(max) {
         if let Ok(f) = zip.by_index(i) {
             out.push(Entry {
-                name: f.name().to_string(),
+                name: entry_display_name(&f),
                 is_dir: f.is_dir(),
                 size: f.size(),
             });
         }
     }
     Some(out)
+}
+
+/// The listing DISPLAY name for an entry. `zip` already applies the spec's own rule when it
+/// parses the central directory (general-purpose bit 11 set -> UTF-8, unset -> CP437, via its
+/// own embedded table), so a correctly-flagged archive already comes back right (see
+/// `zip::types::CentralDirectoryHeader::from_le`). The gap this closes: some real-world writers
+/// (older Info-ZIP on Linux, some 7-Zip configurations) store raw UTF-8 bytes but never set the
+/// flag, so those names get CP437-decoded into mojibake even though the crate followed the flag
+/// correctly. `read_named`/`by_name` lookups must keep using `f.name()` verbatim (it's the
+/// crate's own index key); this override is for display/selection only.
+fn entry_display_name(f: &zip::read::ZipFile<'_>) -> String {
+    prefer_utf8(f.name_raw(), f.name())
+}
+
+/// If `raw` decodes cleanly as UTF-8, prefer that over `decoded` (whatever the crate already
+/// produced for the bit-11 branch it took). A genuine CP437 name contains at least one byte
+/// `>= 0x80` that, standing alone or paired with its neighbours, essentially never forms valid
+/// UTF-8 by chance, so this only ever fires for the unflagged-UTF-8 case it targets, and a real
+/// CP437/plain-ASCII name passes through `decoded` unchanged.
+fn prefer_utf8(raw: &[u8], decoded: &str) -> String {
+    match std::str::from_utf8(raw) {
+        Ok(s) => s.to_string(),
+        Err(_) => decoded.to_string(),
+    }
 }
 
 pub(crate) fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>, idx: usize) -> Option<Vec<u8>> {
@@ -220,5 +244,34 @@ mod tests {
             covers_from_reader(Cursor::new(&bytes), 1).unwrap()[0].as_slice(),
             png.as_slice()
         );
+    }
+
+    /// Bit-11-unset writers that stored raw UTF-8 anyway (real-world Linux zip/7-Zip output)
+    /// must NOT come back mojibake: valid multi-byte UTF-8 wins over whatever CP437 fallback
+    /// the crate produced for the unflagged branch.
+    #[test]
+    fn prefer_utf8_overrides_an_unflagged_utf8_name() {
+        let raw = "第01話/表紙.png".as_bytes();
+        // Stand-in for the crate's CP437 decode of those same bytes when bit 11 is clear;
+        // deliberately a different string, so a pass here proves the override actually ran
+        // rather than merely returning its second argument.
+        assert_eq!(prefer_utf8(raw, "cp437-mojibake"), "第01話/表紙.png");
+    }
+
+    /// A genuine CP437 name (accented Western-European bytes with the high bit set, no UTF-8
+    /// flag) is NOT valid UTF-8 on its own, so the override must leave the crate's already-
+    /// correct CP437 decode alone instead of corrupting it.
+    #[test]
+    fn prefer_utf8_keeps_the_cp437_fallback_for_non_utf8_bytes() {
+        // 0x82 is a lone UTF-8 continuation byte (invalid standing alone), and is CP437's 'é'.
+        let raw = [b'r', 0x82, b's', b'u', b'm', 0x82, b'.', b't', b'x', b't'];
+        let cp437_decoded = "r\u{e9}sum\u{e9}.txt";
+        assert_eq!(prefer_utf8(&raw, cp437_decoded), cp437_decoded);
+    }
+
+    /// Plain ASCII must pass through unchanged regardless of which branch the crate took.
+    #[test]
+    fn prefer_utf8_is_a_no_op_for_ascii() {
+        assert_eq!(prefer_utf8(b"readme.txt", "readme.txt"), "readme.txt");
     }
 }

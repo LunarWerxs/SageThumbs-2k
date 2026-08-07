@@ -1,6 +1,7 @@
 //! Markdown and raw-HTML event parsing into renderer blocks.
 
 use super::*;
+use std::borrow::Cow;
 
 // ---- markdown -> blocks ------------------------------------------------------------------
 
@@ -558,9 +559,68 @@ pub(super) fn url_at(s: &str, i: usize) -> Option<(usize, String)> {
     Some((e, dest))
 }
 
+/// If `md` opens with YAML front matter (offset 0: a line of exactly `---`, then a run of
+/// fields, then a closing `---`), re-fence it as a ```yaml code block so it renders as
+/// preformatted text, the way QuickLook does, instead of the fields flowing in as a stray
+/// paragraph between two thematic breaks (SSG READMEs and Obsidian/Jekyll notes all open this
+/// way). Goes through the normal fenced-code-block path on purpose (a bespoke `Block` here
+/// would give the fields no entry in the selection document). Leaves `md` completely untouched
+/// when no closing fence exists — a document that just starts with a rule must keep rendering
+/// as one — and is only ever checked at the very start of the document.
+fn fence_front_matter(md: &str) -> Cow<'_, str> {
+    let mut lines = md.split_inclusive('\n');
+    let Some(open) = lines.next() else {
+        return Cow::Borrowed(md);
+    };
+    if open.trim_end() != "---" {
+        return Cow::Borrowed(md);
+    }
+    let mut body_end = open.len();
+    let mut close_end = None;
+    for line in lines {
+        if line.trim_end() == "---" {
+            close_end = Some(body_end + line.len());
+            break;
+        }
+        body_end += line.len();
+    }
+    let Some(close_end) = close_end else {
+        return Cow::Borrowed(md); // unterminated: change nothing, keep it a lone rule
+    };
+    let body = &md[open.len()..body_end];
+    // A fence exactly 3 backticks wide could be closed early by a field value that itself
+    // contains a code fence; widen it past the longest backtick run already inside `body`.
+    let fence = "`".repeat(fence_len(body));
+    let mut out = String::with_capacity(md.len() + fence.len() * 2 + 8);
+    out.push_str(&fence);
+    out.push_str("yaml\n");
+    out.push_str(body);
+    if !body.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&fence);
+    out.push('\n');
+    out.push_str(&md[close_end..]);
+    Cow::Owned(out)
+}
+
+/// Backtick count for [`fence_front_matter`]'s wrapper: 3, or one more than the longest
+/// all-backtick line already inside `body` (CommonMark fences match on run length).
+fn fence_len(body: &str) -> usize {
+    let longest = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.bytes().all(|b| b == b'`'))
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    (longest + 1).max(3)
+}
+
 /// Walk the markdown events into a flat block list with inline styled runs. Raw HTML (block
 /// AND inline) is routed through [`super::super::mdhtml::feed`] into the same builder.
 pub(super) fn parse_blocks(md: &str, remote_ok: bool) -> Vec<Block> {
+    let md = fence_front_matter(md);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -571,7 +631,7 @@ pub(super) fn parse_blocks(md: &str, remote_ok: bool) -> Vec<Block> {
     let mut code_buf = String::new();
     let mut code_lang = highlight::Lang::Plain;
 
-    for ev in Parser::new_ext(md, opts) {
+    for ev in Parser::new_ext(&md, opts) {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => b.start_heading(heading_num(level)),
             Event::End(TagEnd::Heading(_)) => b.end_heading(),
@@ -701,5 +761,47 @@ fn heading_num(level: HeadingLevel) -> u8 {
         HeadingLevel::H4 => 4,
         HeadingLevel::H5 => 5,
         HeadingLevel::H6 => 6,
+    }
+}
+
+#[cfg(test)]
+mod front_matter_tests {
+    use super::*;
+
+    /// Front matter with a closing fence becomes ONE preformatted Yaml code block ahead of the
+    /// document body, going through the same `Block::Code` path a fenced ```yaml block would.
+    #[test]
+    fn front_matter_present_becomes_a_code_block() {
+        let blocks = parse_blocks("---\ntitle: Test\ndraft: false\n---\n\n# Body\n", false);
+        match &blocks[0] {
+            Block::Code(text, lang) => {
+                assert_eq!(text, "title: Test\ndraft: false");
+                assert!(matches!(lang, highlight::Lang::Yaml));
+            }
+            _ => panic!("expected a front-matter code block first"),
+        }
+        assert!(
+            matches!(&blocks[1], Block::Heading(1, ..)),
+            "body must follow the fenced-off front matter"
+        );
+    }
+
+    /// No closing `---` means it is NOT front matter (maybe just forgotten, maybe the file was
+    /// never meant to have any) — the pre-pass must change nothing, so it renders exactly as it
+    /// did before: a rule, then the "fields" as a stray paragraph.
+    #[test]
+    fn unterminated_front_matter_is_left_alone() {
+        let blocks = parse_blocks("---\ntitle: Test\ndraft: false\n\nBody text.\n", false);
+        assert!(matches!(&blocks[0], Block::Rule));
+        assert!(matches!(&blocks[1], Block::Para(..)));
+    }
+
+    /// A document that legitimately opens with a thematic break must keep rendering as one —
+    /// there is no closing `---` here either, so the leading rule is untouched.
+    #[test]
+    fn leading_rule_followed_by_paragraph_stays_a_rule() {
+        let blocks = parse_blocks("---\n\nJust a normal paragraph.\n", false);
+        assert!(matches!(&blocks[0], Block::Rule));
+        assert!(matches!(&blocks[1], Block::Para(..)));
     }
 }

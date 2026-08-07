@@ -14,8 +14,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFMediaEngine, IMFMediaEngineClassFactory, IMFMediaEngineNotify,
     IMFMediaEngineNotify_Impl, MFCreateAttributes, MFStartup, MFSTARTUP_LITE,
-    MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_EVENT_CANPLAY, MF_MEDIA_ENGINE_PLAYBACK_HWND,
-    MF_VERSION,
+    MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_EVENT_CANPLAY, MF_MEDIA_ENGINE_EVENT_ERROR,
+    MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA, MF_MEDIA_ENGINE_PLAYBACK_HWND, MF_VERSION,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -30,6 +30,22 @@ pub(super) const WM_APP_VIDEO: u32 = WM_APP + 6;
 const CLSID_MF_MEDIA_ENGINE_CLASS_FACTORY: windows::core::GUID =
     windows::core::GUID::from_u128(0xb44392da_499b_446b_a4cb_005fead0e6d5);
 
+/// What the viewer must DO about an engine event. The wndproc holds `st.video.borrow()` while it
+/// dispatches, so the player can never tear itself down or resize the window from inside
+/// [`VideoPlayer::on_event`]; it reports what happened and the caller acts once the borrow is gone.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum VideoEvent {
+    /// Nothing the viewer needs to do (the common case: buffering, timeupdate, seeked, ...).
+    None,
+    /// Metadata is loaded, so [`VideoPlayer::native_size`] now answers. The viewer re-sizes itself
+    /// to the clip's REAL aspect at this point; until now it only had a placeholder 16:9 shell.
+    Metadata,
+    /// The engine failed AFTER opening the source (a codec it could not actually decode, a
+    /// truncated file). Nothing will ever render, so the viewer must drop the player and fall back
+    /// to the still-frame decode path rather than sit on a permanently blank surface.
+    Error,
+}
+
 /// A live video player: the engine + its child render window + the kept-alive callback.
 pub(super) struct VideoPlayer {
     engine: IMFMediaEngine,
@@ -41,6 +57,12 @@ pub(super) struct VideoPlayer {
     /// the user chose even in the window between `SetSource` and CANPLAY.
     vol: Cell<f64>,
     muted: Cell<bool>,
+    /// Loop + speed, mirrored here for the same reason as `vol`: the transport strip paints from
+    /// them, and a freshly-loaded source resets the engine's own rate, so both are re-asserted at
+    /// CANPLAY.
+    looping: Cell<bool>,
+    /// Playback rate as a multiplier (1.0 = normal). Persisted as a percent, see `settings`.
+    speed: Cell<f64>,
     _notify: IMFMediaEngineNotify,
 }
 
@@ -153,7 +175,10 @@ pub(super) unsafe fn create(
             return None;
         }
     };
-    let _ = engine.SetLoop(true);
+    let looping = sagethumbs2k_core::settings::preview_loop();
+    let speed = (sagethumbs2k_core::settings::preview_speed() as f64 / 100.0).clamp(0.25, 4.0);
+    let _ = engine.SetLoop(looping);
+    let _ = engine.SetPlaybackRate(speed);
     // Open at the level the transport strip was last left on, instead of the engine's full-volume
     // default — a player that forgets the volume you set on the previous file is the whole reason
     // this is persisted (see `settings::preview_volume`). Set BEFORE `SetSource` so the very first
@@ -173,21 +198,51 @@ pub(super) unsafe fn create(
         child,
         vol: Cell::new(vol),
         muted: Cell::new(muted),
+        looping: Cell::new(looping),
+        speed: Cell::new(speed),
         _notify: notify,
     })
 }
 
 impl VideoPlayer {
-    /// Handle an engine event forwarded from the notify callback.
-    pub(super) unsafe fn on_event(&self, event: u32) {
+    /// Handle an engine event forwarded from the notify callback, reporting what the VIEWER must
+    /// do about it (see [`VideoEvent`] for why this returns rather than acts).
+    pub(super) unsafe fn on_event(&self, event: u32) -> VideoEvent {
         if event == MF_MEDIA_ENGINE_EVENT_CANPLAY.0 as u32 {
             // Re-assert the wanted level from our own copy, not from `settings`: a source that has
             // just finished loading can come up at the engine's default, and by the time CANPLAY
             // arrives the user may already have moved the slider on this very clip.
             let _ = self.engine.SetVolume(self.vol.get());
             let _ = self.engine.SetMuted(self.muted.get());
+            let _ = self.engine.SetLoop(self.looping.get());
+            let _ = self.engine.SetPlaybackRate(self.speed.get());
             let _ = self.engine.Play(); // autoplay once buffered
+            return VideoEvent::None;
         }
+        if event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA.0 as u32 {
+            return VideoEvent::Metadata;
+        }
+        if event == MF_MEDIA_ENGINE_EVENT_ERROR.0 as u32 {
+            return VideoEvent::Error;
+        }
+        VideoEvent::None
+    }
+
+    /// The clip's real presentation size in pixels, once metadata has loaded. `None` for an audio
+    /// track (no video stream, so the engine reports 0x0) and before LOADEDMETADATA arrives.
+    ///
+    /// This is the DISPLAY size, so a phone clip carrying a 90-degree rotation flag reports its
+    /// rotated (portrait) dimensions and the viewer sizes itself portrait. That is the whole point:
+    /// without it every clip opened into the same 16:9 shell and portrait video sat letterboxed.
+    pub(super) unsafe fn native_size(&self) -> Option<(i32, i32)> {
+        let (mut cx, mut cy) = (0u32, 0u32);
+        self.engine
+            .GetNativeVideoSize(Some(&mut cx), Some(&mut cy))
+            .ok()?;
+        if cx == 0 || cy == 0 {
+            return None;
+        }
+        Some((cx as i32, cy as i32))
     }
 
     /// Reposition/resize the render window to `rc` (the engine follows the HWND in windowed mode).
@@ -243,6 +298,52 @@ impl VideoPlayer {
     pub(super) unsafe fn set_muted(&self, m: bool) {
         self.muted.set(m);
         let _ = self.engine.SetMuted(m);
+    }
+
+    /// Whether the clip repeats at the end (our mirror, see the `looping` field).
+    pub(super) fn looping(&self) -> bool {
+        self.looping.get()
+    }
+
+    /// Flip repeat on/off. With loop OFF the engine simply stops on the last frame.
+    pub(super) unsafe fn set_looping(&self, on: bool) {
+        self.looping.set(on);
+        let _ = self.engine.SetLoop(on);
+    }
+
+    /// Playback rate as a multiplier (our mirror, see the `speed` field).
+    pub(super) fn speed(&self) -> f64 {
+        self.speed.get()
+    }
+
+    /// Set the playback rate. Media Foundation clamps what it will actually honour per codec, so a
+    /// refused rate leaves playback at the previous speed rather than failing the clip.
+    pub(super) unsafe fn set_speed(&self, mult: f64) {
+        let m = mult.clamp(0.25, 4.0);
+        self.speed.set(m);
+        let _ = self.engine.SetPlaybackRate(m);
+    }
+
+    /// Nudge the position by `secs` (negative rewinds), clamped inside the clip. No-op until the
+    /// duration is known, which is also what stops a keyboard seek from working on a live stream.
+    pub(super) unsafe fn seek_by(&self, secs: f64) {
+        let dur = self.duration();
+        if !dur.is_finite() || dur <= 0.0 {
+            return;
+        }
+        let cur = self.current_time();
+        let cur = if cur.is_finite() { cur } else { 0.0 };
+        self.seek((cur + secs).clamp(0.0, dur));
+    }
+
+    /// Nudge the volume by `delta` (0..=1 scale), un-muting on the way up so the key does what it
+    /// looks like it does rather than silently raising a muted level.
+    pub(super) unsafe fn nudge_volume(&self, delta: f64) {
+        let v = (self.vol.get() + delta).clamp(0.0, 1.0);
+        self.set_volume(v);
+        if v > 0.0 {
+            self.set_muted(false);
+        }
     }
 }
 

@@ -123,7 +123,7 @@ grp_ebooks_comics = "Ebook & truyện tranh"
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Checkerboard checkbox + tooltip (Settings)
 chk_menu_checker = "Vẽ nền ô cờ phía sau ảnh xem trước trong suốt"
-tip_menu_checker = "Vẽ một lớp ô cờ mờ phía sau vùng trong suốt của ảnh xem trước trên menu, để ảnh trong suốt không lẫn vào nền."
+tip_menu_checker = "Vẽ một lớp ô cờ mờ phía sau vùng trong suốt của ảnh xem trước, để ảnh trong suốt không lẫn vào nền. Áp dụng cho cả ảnh xem trước trên menu chuột phải và cửa sổ Xem trước nhanh."
 
 # Generic "OK" button (used by the small popups)
 btn_ok_short = "OK"
@@ -211,8 +211,14 @@ chk_preview_close_focus = "Đóng khi cửa sổ xem trước mất tiêu điể
 chk_preview_topmost = "Mở lên trên cùng"
 chk_preview_text = "Xem trước tệp văn bản và mã nguồn"
 chk_preview_markdown = "Xem trước tệp Markdown"
-chk_preview_md_remote = "Tải hình ảnh web trong bản xem trước Markdown"
 tip_preview_md_remote = "Tắt: hình ảnh lưu trên web (huy hiệu, ảnh liên kết) hiển thị dưới dạng thẻ có nhãn. Bật: chúng được tải xuống (chỉ HTTPS) và hiển thị — tác giả tệp kiểm soát các địa chỉ đó, hãy để tắt nếu bạn lo ngại."
+tip_preview_arrow_nav = "Tắt: khi video hoặc bản nhạc đang phát, mũi tên Trái/Phải tua trong tệp đó. Bật: chúng sẽ chuyển sang tệp trước/sau thay vào đó. Dù chọn cách nào, các nút ⏮ ⏭ riêng của trình phát và Page Up/Page Down luôn chuyển tệp."
+preview_tip_prevfile = "Tệp trước"
+preview_tip_nextfile = "Tệp sau"
+preview_tip_playpause = "Phát / tạm dừng"
+preview_tip_mute = "Tắt tiếng"
+preview_tip_loop = "Lặp lại"
+preview_tip_speed = "Tốc độ phát"
 chk_preview_html = "Hiển thị tệp HTML cục bộ (WebView2, tắt script, không mạng)"
 chk_preview_url_live = "Tải trực tiếp lối tắt .url (mở trang web thực)"
 tip_preview_enabled = "Nhấn phím cách trong Explorer hoặc trên Desktop để bật cửa sổ xem trước tệp đã chọn, rồi nhấn Esc hoặc phím cách để đóng. Mặc định tắt. Bật lên sẽ chạy một trợ giúp nền nhỏ (giống trợ giúp mà các phím tắt khác dùng)."

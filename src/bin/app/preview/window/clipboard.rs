@@ -167,9 +167,17 @@ pub(in crate::preview) unsafe fn content_rect(hwnd: HWND) -> RECT {
     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
     let mut r = RECT::default();
     let _ = GetClientRect(hwnd, &mut r);
+    // The find bar, when open, eats the top of the content area. Taking it off HERE is the entire
+    // integration: paint, scroll clamping, selection hit-testing and the video/webview child rects
+    // all derive from this one rect, so none of them need to know the bar exists.
+    let find_h = if (*state(hwnd)).find.borrow().open {
+        crate::win::dpi_scale(hwnd, crate::preview::find::FIND_H)
+    } else {
+        0
+    };
     RECT {
         left: 0,
-        top: cap,
+        top: cap + find_h,
         right: r.right,
         bottom: r.bottom,
     }

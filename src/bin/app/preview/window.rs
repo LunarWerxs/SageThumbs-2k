@@ -86,6 +86,12 @@ pub(super) enum ContentKind {
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Btn {
     Toc,
+    /// Load the web-hosted images this Markdown document references, instead of showing them as
+    /// labelled chips. Only appears when the document ACTUALLY references some (see
+    /// [`btn_visible`]), which is the only moment the choice means anything: you are looking at
+    /// the chips and wondering whether you can see the real thing. It used to be a checkbox in
+    /// Settings, where nobody thought to look for it.
+    MdImages,
     /// "View source" toggle: swap a RENDERED document (Markdown, a CSV/TSV/notebook table, a
     /// WebView2 HTML page, an SVG) for its raw text, and back. Only shown when the current file
     /// actually has both views (see [`btn_visible`] / `loader::source_capable`).
@@ -106,8 +112,9 @@ pub(super) enum Btn {
 }
 
 /// All buttons, in left-to-right caption order (rightmost drawn is Close).
-pub(super) const BTNS: [Btn; 12] = [
+pub(super) const BTNS: [Btn; 13] = [
     Btn::Toc,
+    Btn::MdImages,
     Btn::Source,
     Btn::PdfPrev,
     Btn::PdfNext,
@@ -139,6 +146,7 @@ pub(super) fn btn_visible(st: &ViewerState, b: Btn) -> bool {
             st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1
         }
         Btn::Toc => st.kind.get() == ContentKind::Markdown && st.md_has_headings.get(),
+        Btn::MdImages => st.kind.get() == ContentKind::Markdown && st.md_has_remote.get(),
         Btn::Source => st.src_capable.get(),
         // OCR needs pixels to read. A text/Markdown/HTML pane already has selectable words
         // (Ctrl+C), and an InfoCard is our own chrome, so the button would be a no-op there.
@@ -173,6 +181,13 @@ pub(super) struct ViewerState {
     pub(super) card: RefCell<Option<infocard::InfoCard>>,
     pub(super) text: RefCell<Option<String>>,
     pub(super) video: RefCell<Option<super::video::VideoPlayer>>,
+    /// The playing clip's REAL pixel size (rotation applied), once Media Foundation has read its
+    /// metadata; `None` before that and for audio. `loader::client_size` sizes the window from it,
+    /// so a portrait clip gets a portrait window instead of the placeholder 16:9 shell.
+    pub(super) video_dims: Cell<Option<(i32, i32)>>,
+    /// `settings::preview_arrow_nav`, read once per load like the other behaviour toggles so a
+    /// mid-preview Settings save cannot change what a key does between two presses.
+    pub(super) arrow_nav: Cell<bool>,
     pub(super) hinst: HINSTANCE,
     pub(super) pinned: Cell<bool>,
     /// "Open in front": bring the window to the top of the z-order on first show (without
@@ -244,6 +259,10 @@ pub(super) struct ViewerState {
     /// parse), so the toolbar toggle and the sidebar don't re-parse per paint or go stale on
     /// file switches.
     pub(super) md_has_headings: Cell<bool>,
+    /// Whether the current Markdown document references any web-hosted image. Computed ONCE at
+    /// load (same streaming parse as `md_has_headings`), and the only thing that decides whether
+    /// the web-images toolbar button appears at all.
+    pub(super) md_has_remote: Cell<bool>,
     /// Per-document inline-image cache (markdown `![]()` / raw `<img>`): src -> slot
     /// (Pending fetch / Failed → alt-text pill / Ready DIB). Cleared on every load;
     /// `RenderData::drop` frees the bitmaps.
@@ -280,6 +299,9 @@ pub(super) struct ViewerState {
     pub(super) pending_close: Cell<bool>,
     /// A file-switch requested while `busy` — applied (last-wins) after the create returns.
     pub(super) pending_path: RefCell<Option<String>>,
+    /// In-document find (Ctrl+F). The query outlives both closing the bar and switching files, so
+    /// the same search can be carried through a folder with ←/→ (see [`super::find`]).
+    pub(super) find: RefCell<super::find::FindState>,
     /// The live WebView2 host for `ContentKind::Html` (feature `html-preview`); `None` otherwise.
     #[cfg(feature = "html-preview")]
     pub(super) webview: RefCell<Option<super::webview::WebViewHost>>,
@@ -389,6 +411,9 @@ pub(super) unsafe fn create_viewer(
         card: RefCell::new(None),
         text: RefCell::new(None),
         video: RefCell::new(None),
+        video_dims: Cell::new(None),
+        arrow_nav: Cell::new(sagethumbs2k_core::settings::preview_arrow_nav()),
+        find: super::find::new_state(),
         hinst,
         pinned: Cell::new(pinned),
         open_front: Cell::new(open_front),
@@ -420,6 +445,7 @@ pub(super) unsafe fn create_viewer(
         toc_sel: Cell::new(None),
         toc_anim: Cell::new(None),
         md_has_headings: Cell::new(false),
+        md_has_remote: Cell::new(false),
         md_imgs: RefCell::new(super::markdown::ImgCache::new()),
         md_layout: RefCell::new(super::markdown::MdLayout::default()),
         md_remote_ok: Cell::new(false),
@@ -615,13 +641,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let st = &*state(hwnd);
                 if gen == st.decode_gen.get() && st.kind.get() == ContentKind::Markdown {
                     let slot = match dec.and_then(|d| {
-                        super::content::make_dib(d.w, d.h, &d.rgba, crate::dark::SURFACE().0).map(
-                            |hbmp| super::content::RenderData {
-                                hbmp,
-                                iw: d.w,
-                                ih: d.h,
-                            },
-                        )
+                        super::content::make_dib(d.w, d.h, &d.rgba, crate::dark::SURFACE().0)
+                            .map(|hbmp| super::content::RenderData::opaque(hbmp, d.w, d.h))
                     }) {
                         Some(rd) => super::markdown::ImgSlot::Ready(rd),
                         None => super::markdown::ImgSlot::Failed,
@@ -649,10 +670,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             m if m == super::video::WM_APP_VIDEO => {
-                let st = &*state(hwnd);
-                if let Some(p) = st.video.borrow().as_ref() {
-                    p.on_event(wparam.0 as u32); // CANPLAY -> autoplay, etc.
-                }
+                on_video_event(hwnd, wparam.0 as u32);
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -731,12 +749,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // Active seek / volume drag on the video strip.
                 if st.scrub_drag.get() || st.vol_drag.get() {
                     let sr = scrub_rect(hwnd);
-                    let (_, track, vol) = scrub_parts(hwnd, &sr);
+                    let p = scrub_parts(hwnd, &sr);
                     if let Some(v) = st.video.borrow().as_ref() {
                         if st.scrub_drag.get() {
-                            apply_seek(v, x, &track);
+                            apply_seek(v, x, &p.track);
                         } else {
-                            apply_vol(v, x, &vol);
+                            apply_vol(v, x, &p.vol);
                         }
                     }
                     let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
@@ -1043,6 +1061,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 {
                     return LRESULT(0);
                 }
+                // Ctrl+F opens the find bar (or steps to the next match if it is already open).
+                if ctrl && vk == 'F' as u16 {
+                    super::find::toggle(hwnd);
+                    return LRESULT(0);
+                }
+                // While the bar is up it owns Esc / Enter / F3. F3 also works with it closed, so a
+                // search survives Esc and can be resumed without retyping it.
+                if super::find::on_key(hwnd, vk, shift) {
+                    return LRESULT(0);
+                }
+                // A playing clip owns the transport keys (seek / volume / pause / mute / loop)
+                // BEFORE the generic Home/End and arrow handling below, which would otherwise
+                // scroll or flip files while you are trying to scrub.
+                if video_key(hwnd, vk, ctrl, shift) {
+                    return LRESULT(0);
+                }
                 // Home / End scroll a text or Markdown document to its ends.
                 if !shift
                     && (vk == VK_HOME.0 || vk == VK_END.0)
@@ -1090,6 +1124,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
+            WM_CHAR => {
+                // Only the find bar consumes typed characters; everything else falls through so
+                // nothing else in the viewer changes behaviour.
+                if super::find::on_char(hwnd, wparam.0 as u32) {
+                    return LRESULT(0);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
             WM_COPYDATA => {
                 on_command(hwnd, lparam);
                 LRESULT(1)
@@ -1120,6 +1162,117 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     }
 }
 
+/// React to a Media Foundation engine event. The player itself only ever REPORTS (it is borrowed
+/// while it runs), so the two events that need the viewer to act are handled here.
+unsafe fn on_video_event(hwnd: HWND, event: u32) {
+    let st = &*state(hwnd);
+    let (what, dims) = {
+        let vb = st.video.borrow();
+        match vb.as_ref() {
+            Some(p) => {
+                let what = p.on_event(event); // CANPLAY -> autoplay, etc.
+                let dims = if what == super::video::VideoEvent::Metadata {
+                    p.native_size()
+                } else {
+                    None
+                };
+                (what, dims)
+            }
+            None => return,
+        }
+    };
+    match what {
+        super::video::VideoEvent::Metadata => {
+            // The clip's REAL size (rotation applied) is finally known. Until now the window was a
+            // placeholder 16:9 shell, so a portrait phone clip sat letterboxed inside it. Re-size to
+            // the true aspect, but never when the user has already dragged their own size or gone
+            // full-screen: `client_size` honours both, so simply re-running it is the whole check.
+            if dims.is_none() || st.fullscreen.get().is_some() {
+                return;
+            }
+            st.video_dims.set(dims);
+            let (cw, ch) = client_size(hwnd);
+            place(hwnd, cw, ch, None);
+        }
+        super::video::VideoEvent::Error => {
+            // The source opened but cannot actually be decoded, so nothing will ever appear on the
+            // render child. Drop the engine (its Drop destroys the child window) and fall back to
+            // the still-frame path, which is the same fallback `loader::load` uses when the engine
+            // refuses the file outright.
+            let _ = KillTimer(Some(hwnd), SCRUB_TIMER_ID);
+            *st.video.borrow_mut() = None;
+            st.video_dims.set(None);
+            if let Some(p) = st.path.borrow().as_ref().cloned() {
+                st.kind.set(ContentKind::Loading);
+                content::spawn_decode(hwnd, p, st.decode_gen.get());
+            }
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        super::video::VideoEvent::None => {}
+    }
+}
+
+/// Keyboard control for a playing video or audio track, matching what every media player does.
+/// Returns whether the key was consumed.
+///
+/// `←/→` are the seek keys here rather than folder navigation: while a clip is playing that is what
+/// the key means everywhere else, and PgUp/PgDn still flip through the folder, so nothing is lost.
+unsafe fn video_key(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) -> bool {
+    let st = &*state(hwnd);
+    if st.kind.get() != ContentKind::Video {
+        return false;
+    }
+    let vb = st.video.borrow();
+    let Some(v) = vb.as_ref() else { return false };
+    // Coarse with Ctrl, fine with Shift, 5 s otherwise.
+    let step = if ctrl {
+        30.0
+    } else if shift {
+        1.0
+    } else {
+        5.0
+    };
+    // With "arrows switch files" on, ←/→ are NOT ours: fall through to the folder navigation
+    // below. Everything else on this map still applies, and the strip's ⏮/⏭ buttons plus
+    // PgUp/PgDn mean neither behaviour is ever unreachable.
+    if st.arrow_nav.get() && matches!(vk, k if k == VK_LEFT.0 || k == VK_RIGHT.0) {
+        return false;
+    }
+    match vk {
+        k if k == VK_LEFT.0 => v.seek_by(-step),
+        k if k == VK_RIGHT.0 => v.seek_by(step),
+        k if k == VK_UP.0 => v.nudge_volume(0.05),
+        k if k == VK_DOWN.0 => v.nudge_volume(-0.05),
+        k if k == VK_HOME.0 => v.seek(0.0),
+        k if k == VK_END.0 => {
+            let d = v.duration();
+            if d.is_finite() && d > 0.0 {
+                v.seek((d - 0.1).max(0.0));
+            }
+        }
+        // K and P both pause, because muscle memory splits between YouTube and desktop players.
+        // Space is deliberately NOT bound: it belongs to the preview's own open/close lifecycle.
+        k if k == 'K' as u16 || k == 'P' as u16 => v.toggle_play(),
+        k if k == 'M' as u16 => {
+            v.set_muted(!v.muted());
+            persist_volume(v);
+        }
+        k if k == 'L' as u16 => {
+            let on = !v.looping();
+            v.set_looping(on);
+            let _ = sagethumbs2k_core::settings::set_preview_loop(on);
+        }
+        _ => return false,
+    }
+    // Volume and seek are held in the player, so only the strip needs repainting.
+    if matches!(vk, k if k == VK_UP.0 || k == VK_DOWN.0) {
+        persist_volume(v);
+    }
+    let sr = scrub_rect(hwnd);
+    let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
+    true
+}
+
 /// Handle a decode result: install the image (or fall back to an InfoCard on failure), then
 /// size + show / resize.
 unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
@@ -1137,24 +1290,16 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     if st.kind.get() == ContentKind::Video {
         if let Some(d) = decoded {
             if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, letterbox_bg(st)) {
-                *st.art.borrow_mut() = Some(RenderData {
-                    hbmp,
-                    iw: d.w,
-                    ih: d.h,
-                });
+                *st.art.borrow_mut() = Some(RenderData::opaque(hbmp, d.w, d.h));
             }
         }
         let _ = InvalidateRect(Some(hwnd), None, false);
         return;
     }
     match decoded {
-        Some(d) => match content::make_dib(d.w, d.h, &d.rgba, letterbox_bg(st)) {
-            Some(hbmp) => {
-                *st.render.borrow_mut() = Some(RenderData {
-                    hbmp,
-                    iw: d.w,
-                    ih: d.h,
-                });
+        Some(d) => match content::make_render(d.w, d.h, &d.rgba, letterbox_bg(st)) {
+            Some(rd) => {
+                *st.render.borrow_mut() = Some(rd);
                 st.kind.set(ContentKind::Image);
             }
             None => fallback_card(st),
@@ -1185,12 +1330,8 @@ unsafe fn on_anim(hwnd: HWND, lparam: LPARAM) {
     let mut rds: Vec<RenderData> = Vec::with_capacity(frames_in.len());
     let mut delays: Vec<u32> = Vec::with_capacity(frames_in.len());
     for (d, ms) in frames_in {
-        if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, bg) {
-            rds.push(RenderData {
-                hbmp,
-                iw: d.w,
-                ih: d.h,
-            });
+        if let Some(rd) = content::make_render(d.w, d.h, &d.rgba, bg) {
+            rds.push(rd);
             delays.push(ms);
         }
     }

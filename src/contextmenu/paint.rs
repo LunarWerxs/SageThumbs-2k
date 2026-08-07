@@ -194,7 +194,7 @@ pub(crate) unsafe fn menu_theme_colors() -> (u32, u32) {
 /// doesn't shift) and they sit only ~16 levels apart — enough to read as
 /// "transparency here" without competing with the menu. Follows light/dark/accent
 /// automatically since it's derived from whatever `bg` is passed.
-pub(crate) fn checker_shades(bg: u32) -> (u32, u32) {
+pub fn checker_shades(bg: u32) -> (u32, u32) {
     let ch = |shift: u32| (bg >> shift) & 0xFF; // COLORREF is 0x00BBGGRR
     let (r, g, b) = (ch(0), ch(8), ch(16));
     let darker = |c: u32| c.saturating_sub(8);
@@ -206,19 +206,27 @@ pub(crate) fn checker_shades(bg: u32) -> (u32, u32) {
     )
 }
 
-/// Fill the rect `(left,top)`–`(left+w,top+h)` with an 8px two-tone checkerboard
-/// — the backdrop the preview thumbnail is alpha-blended onto, so transparent
-/// pixels reveal the pattern instead of disappearing into the flat menu colour.
-pub(crate) unsafe fn fill_checker(
+/// Fill `rc` with a two-tone checkerboard of `cell`-px squares — the backdrop a thumbnail is
+/// alpha-blended onto, so transparent pixels reveal the pattern instead of disappearing into the
+/// flat background colour.
+///
+/// `cell` is a caller choice because the two surfaces that use this are different sizes: the menu
+/// tile is a ~72px thumbnail where 8px reads as texture, while the Quick preview window is
+/// full-size and wants a DPI-scaled, visibly larger square.
+///
+/// # Safety
+///
+/// `hdc` must be a valid device context that stays alive for the call. Nothing is retained.
+pub unsafe fn fill_checker(
     hdc: windows::Win32::Graphics::Gdi::HDC,
-    left: i32,
-    top: i32,
-    w: i32,
-    h: i32,
+    rc: &RECT,
     c0: u32,
     c1: u32,
+    cell: i32,
 ) {
-    const CELL: i32 = 8;
+    let (left, top) = (rc.left, rc.top);
+    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+    let cell = cell.max(2);
     let b0 = CreateSolidBrush(COLORREF(c0));
     let b1 = CreateSolidBrush(COLORREF(c1));
     FillRect(
@@ -235,18 +243,18 @@ pub(crate) unsafe fn fill_checker(
     while y < h {
         let mut x = 0;
         while x < w {
-            if ((x / CELL) + (y / CELL)) & 1 == 1 {
+            if ((x / cell) + (y / cell)) & 1 == 1 {
                 let r = RECT {
                     left: left + x,
                     top: top + y,
-                    right: left + (x + CELL).min(w),
-                    bottom: top + (y + CELL).min(h),
+                    right: left + (x + cell).min(w),
+                    bottom: top + (y + cell).min(h),
                 };
                 FillRect(hdc, &r, b1);
             }
-            x += CELL;
+            x += cell;
         }
-        y += CELL;
+        y += cell;
     }
     let _ = DeleteObject(b0.into());
     let _ = DeleteObject(b1.into());
@@ -270,7 +278,13 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
         // against the flat menu colour (default on; toggleable in Settings).
         if settings::preview_checker() {
             let (c0, c1) = checker_shades(bg);
-            fill_checker(hdc, bx, by, p.w, p.h, c0, c1);
+            let cr = RECT {
+                left: bx,
+                top: by,
+                right: bx + p.w,
+                bottom: by + p.h,
+            };
+            fill_checker(hdc, &cr, c0, c1, 8);
         }
         let mem = CreateCompatibleDC(Some(hdc));
         let old = SelectObject(mem, p.hbm.into());

@@ -54,6 +54,18 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
             let _ = InvalidateRect(Some(hwnd), None, false);
             update_tooltips(hwnd, st.tip.get());
         }
+        Btn::MdImages => {
+            // Flip whether web-hosted images are fetched, remember it, and re-render this document
+            // so the change is visible immediately (the chips become pictures, or back). Reloading
+            // rather than patching state in place is the same discipline `toggle_source` uses: the
+            // load path already tears down the image cache and re-parses.
+            let on = !st.md_remote_ok.get();
+            let _ = sagethumbs2k_core::settings::set_preview_md_remote_img(on);
+            st.md_remote_ok.set(on);
+            if let Some(p) = path.clone() {
+                request_load(hwnd, &p);
+            }
+        }
         Btn::Source => toggle_source(hwnd),
         Btn::PdfPrev => goto_pdf_page(hwnd, -1),
         Btn::PdfNext => goto_pdf_page(hwnd, 1),

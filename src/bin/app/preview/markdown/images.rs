@@ -223,7 +223,7 @@ pub(crate) unsafe fn decode_bytes_to_dib(bytes: &[u8], bg: u32) -> Option<Render
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
     let hbmp = crate::preview::content::make_dib(w, h, rgba.as_raw(), bg)?;
-    Some(RenderData { hbmp, iw: w, ih: h })
+    Some(RenderData::opaque(hbmp, w, h))
 }
 
 // ---- inline run layout -------------------------------------------------------------------

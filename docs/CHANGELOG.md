@@ -2,6 +2,84 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.8.3
+
+### Added
+
+- **Video and music you can actually drive from the keyboard.** The Quick preview could only
+  ever be poked with the mouse while something was playing. Now the arrow keys seek (hold Ctrl
+  for a thirty-second jump, Shift for a one-second nudge), up and down set the volume, `M`
+  mutes, `L` toggles repeat, and `K` or `P` pauses. Page Up and Page Down still flip to the
+  next file in the folder, so nothing you already do has changed.
+
+- **Previous / next file buttons on the playback bar**, so you can walk through a folder of clips
+  without touching the keyboard.
+
+- **A repeat button and a speed button on the playback bar.** Clips used to loop forever with
+  no way to stop them, which is the wrong behaviour when you are checking whether a render
+  finished. Repeat is now a button you can turn off, and it remembers your choice. Next to it,
+  a speed button cycles 0.5x, 1x, 1.25x, 1.5x and 2x for skimming a long recording.
+
+- **A button on the playback bar for what Left/Right do.** Off, which is the default, they seek
+  inside the clip. On, they move to the previous and next file instead. Either way the bar's own
+  ⏮ ⏭ buttons and Page Up / Page Down always switch files, so nothing is ever out of reach.
+
+- **Every button on the playback bar now names itself when you hover it**, the way the buttons in
+  the title bar always have.
+
+- **"Load web images" is now a button in the preview itself**, on the title bar, and it only shows
+  up on documents that actually reference web-hosted images. It used to be a checkbox in Settings,
+  which is not where anyone looks when they are staring at a page full of grey placeholder chips
+  and wondering whether the real pictures can be shown.
+
+- **Find in a document with Ctrl+F.** Works in text files, code, Markdown, and CSV tables. Type
+  and it jumps to the first match with a running count of how many there are; Enter or F3 walks
+  through them, Shift goes back, and Escape closes the bar. F3 reopens the last search without
+  retyping it.
+
+- **Links in a previewed web page now open in your browser.** Clicking a link in a local
+  `.html` file used to do nothing at all. Ordinary web links now hand off to your default
+  browser; the preview itself still runs with scripts off and no network access of its own.
+
+### Changed
+
+- **Videos open at their real shape.** Every clip used to open into the same wide window, so
+  anything filmed on a phone sat as a small strip in the middle of a lot of empty space. The
+  window now takes the video's actual dimensions, rotation included.
+
+- **Transparent images sit on a checkerboard.** A white logo on a transparent background looked
+  like an empty pane. It now gets the same subtle checkerboard the right-click preview has
+  always used, controlled by the same setting. Transparent images are also resized more carefully
+  than before, so fine detail no longer breaks up when one is shown smaller than its real size.
+
+- **Files with no extension are recognised by their content.** A picture saved without a file
+  extension used to show only an icon; the preview now looks at the file itself. Files with no
+  extension but a well-known name (`Makefile`, `Dockerfile`, `.bashrc`, or anything starting
+  with a `#!` line) also get syntax colouring now.
+
+- **CSV previews show ten times more rows** (10,000 instead of 1,000) and gained a row-number
+  column, so you can find your place in a long file. Pipe-separated `.psv` files are now shown
+  as a table too.
+
+### Fixed
+
+- **A video that opens but cannot be decoded no longer shows a permanently blank pane.** It now
+  falls back to a still frame, the same as a file the player refuses outright.
+
+- **Archive listings no longer show mojibake for names written by older tools.** Entry names
+  that are really UTF-8 but not flagged as such are now read correctly.
+
+- **The preview hotkey no longer occasionally pops a file picker** when pressed immediately
+  after switching windows, instead of previewing what you had selected.
+
+- Markdown files that begin with a YAML block (the `---` header used by static site generators
+  and note-taking apps) show that block as a tidy code block instead of scrambling it.
+
+- Text files saved as UTF-32 are now decoded properly instead of appearing as gibberish.
+
+- Zooming an image now lands exactly on "fit to window" and "100%" instead of skipping past
+  them by a fraction.
+
 ## 1.8.2
 
 ### Added

@@ -29,6 +29,9 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     *st.card.borrow_mut() = None;
     *st.text.borrow_mut() = None;
     *st.video.borrow_mut() = None; // stop + tear down any previous video player
+    st.video_dims.set(None); // the next clip re-reports its own size at LOADEDMETADATA
+    st.arrow_nav
+        .set(sagethumbs2k_core::settings::preview_arrow_nav());
     #[cfg(feature = "html-preview")]
     {
         *st.webview.borrow_mut() = None; // close any previous WebView2 host
@@ -49,6 +52,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     // `scroll_page_press`, etc.). A mid-drag reload (←/→ nav, daemon push) must leave capture
     // owned until WM_LBUTTONUP; each interaction continues harmlessly while content is unavailable.
     st.sel.set(None);
+    super::find::on_document_changed(hwnd); // drop the cached search haystack + hits
     st.line_starts.borrow_mut().clear(); // rebuilt lazily on the first hit-test
     st.md_hits.borrow_mut().clear(); // rebuilt by the next Markdown paint
     st.md_links.borrow_mut().clear(); // no stale link/outline/image state from the previous document
@@ -56,6 +60,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     st.toc_hits.borrow_mut().clear();
     st.md_imgs.borrow_mut().clear(); // frees the previous document's image DIBs
     st.md_has_headings.set(false);
+    st.md_has_remote.set(false);
     st.toc_sel.set(None);
     st.toc_anim.set(None); // settle any mid-slide sidebar instantly for the new document
     let _ = KillTimer(Some(hwnd), TOC_TIMER_ID);
@@ -79,6 +84,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
             let _ = InvalidateRect(Some(hwnd), None, false);
             set_title(hwnd);
             update_tooltips(hwnd, st.tip.get());
+            super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
             return;
         }
     }
@@ -94,6 +100,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
         let _ = InvalidateRect(Some(hwnd), None, false);
         set_title(hwnd);
         update_tooltips(hwnd, st.tip.get());
+        super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
         return;
     }
     // Font files: render a specimen (name + pangram + glyph sheet) as an image.
@@ -102,6 +109,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
         let _ = InvalidateRect(Some(hwnd), None, false);
         set_title(hwnd);
         update_tooltips(hwnd, st.tip.get());
+        super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
         return;
     }
     // HTML / .url: WebView2-hosted render (feature `html-preview`, gated behind Settings toggles).
@@ -169,6 +177,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
                             seed_md_attachments(st, conv.attachments);
                         }
                         st.md_has_headings.set(super::markdown::has_headings(&t));
+                        st.md_has_remote.set(super::markdown::has_remote_images(&t));
                         st.md_remote_ok
                             .set(sagethumbs2k_core::settings::preview_md_remote_img());
                     }
@@ -195,6 +204,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     // The PDF pager may have just vanished (pdf_pages reset above), re-packing the buttons —
     // re-point the tooltip rects so they can't linger over the wrong button.
     update_tooltips(hwnd, st.tip.get());
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
 }
 
 /// Synchronous load for the headless shot: decode on this thread, size, place off-screen,
@@ -228,11 +238,7 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
                 if is_audio(path) {
                     if let Some(d) = content::decode_sync(path) {
                         if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, 0x0000_0000) {
-                            *st.art.borrow_mut() = Some(RenderData {
-                                hbmp,
-                                iw: d.w,
-                                ih: d.h,
-                            });
+                            *st.art.borrow_mut() = Some(RenderData::opaque(hbmp, d.w, d.h));
                         }
                     }
                 }
@@ -252,9 +258,9 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
                 .map(|(img, count)| {
                     let rgba = img.to_rgba8();
                     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    if let Some(hbmp) = content::make_dib(w, h, &rgba.into_raw(), letterbox_bg(st))
+                    if let Some(rd) = content::make_render(w, h, &rgba.into_raw(), letterbox_bg(st))
                     {
-                        *st.render.borrow_mut() = Some(RenderData { hbmp, iw: w, ih: h });
+                        *st.render.borrow_mut() = Some(rd);
                         st.kind.set(ContentKind::Image);
                         st.pdf_page.set(pg.min(count.saturating_sub(1)));
                         st.pdf_pages.set(count.min(1_000_000));
@@ -276,12 +282,8 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
                 let bg = letterbox_bg(st);
                 let mut rds: Vec<RenderData> = Vec::new();
                 for (d, _) in frames {
-                    if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, bg) {
-                        rds.push(RenderData {
-                            hbmp,
-                            iw: d.w,
-                            ih: d.h,
-                        });
+                    if let Some(rd) = content::make_render(d.w, d.h, &d.rgba, bg) {
+                        rds.push(rd);
                     }
                 }
                 if !rds.is_empty() {
@@ -347,12 +349,8 @@ pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind
     match kind {
         ContentKind::Image => match content::decode_sync(path) {
             Some(d) => {
-                if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, letterbox_bg(st)) {
-                    *st.render.borrow_mut() = Some(RenderData {
-                        hbmp,
-                        iw: d.w,
-                        ih: d.h,
-                    });
+                if let Some(rd) = content::make_render(d.w, d.h, &d.rgba, letterbox_bg(st)) {
+                    *st.render.borrow_mut() = Some(rd);
                     st.kind.set(ContentKind::Image);
                 } else {
                     *st.card.borrow_mut() = Some(infocard::gather(path));
@@ -377,6 +375,7 @@ pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind
                             seed_md_attachments(st, conv.attachments);
                         }
                         st.md_has_headings.set(super::markdown::has_headings(&t));
+                        st.md_has_remote.set(super::markdown::has_remote_images(&t));
                         st.md_remote_ok
                             .set(sagethumbs2k_core::settings::preview_md_remote_img());
                     }
@@ -420,7 +419,9 @@ unsafe fn render_font_to_state(st: &ViewerState, path: &str) -> bool {
     let fg = crate::dark::DARK_TEXT();
     if let Some((rgba, w, h)) = super::font::render_specimen(path, bg, fg) {
         if let Some(hbmp) = content::make_dib(w, h, &rgba, letterbox_bg(st)) {
-            *st.render.borrow_mut() = Some(RenderData { hbmp, iw: w, ih: h });
+            // The font specimen is rendered onto the pane colour already, so it is opaque by
+            // construction and wants the plain blit (and no checkerboard behind it).
+            *st.render.borrow_mut() = Some(RenderData::opaque(hbmp, w, h));
             st.kind.set(ContentKind::Image);
             return true;
         }
@@ -457,6 +458,7 @@ unsafe fn try_load_web(hwnd: HWND, path: &str) -> bool {
             let _ = InvalidateRect(Some(hwnd), None, false);
             set_title(hwnd);
             update_tooltips(hwnd, st.tip.get());
+            super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
             true
         }
         _ => false,
@@ -510,6 +512,7 @@ unsafe fn create_web(hwnd: HWND, url: &str, mode: super::webview::Mode) -> bool 
             *st.webview.borrow_mut() = Some(h);
             set_title(hwnd);
             update_tooltips(hwnd, st.tip.get());
+            super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
         }
         None => {
             // Runtime missing / async failed → fall back to a calm card.
@@ -602,7 +605,8 @@ pub(super) unsafe fn show_source(hwnd: HWND, path: &str) -> bool {
     ensure_shown(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
     set_title(hwnd);
-    update_tooltips(hwnd, st.tip.get()); // the outline / PDF pager just went away
+    update_tooltips(hwnd, st.tip.get());
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
     true
 }
 
@@ -802,7 +806,26 @@ pub(super) unsafe fn client_size(hwnd: HWND) -> (i32, i32) {
         }
         ContentKind::InfoCard => (sc(CARD_W), sc(CARD_H) + cap),
         ContentKind::Text | ContentKind::Markdown => (sc(TEXT_W), sc(TEXT_H)),
-        ContentKind::Video => (sc(VIDEO_W), sc(VIDEO_H) + cap + sc(SCRUB_H)),
+        ContentKind::Video => match st.video_dims.get() {
+            // Real clip dimensions (rotation applied), known once MF has read the metadata. Fit
+            // them the same way an image is fitted, then add the chrome. Without this every clip
+            // opened into the same 16:9 shell and portrait phone video sat letterboxed inside it.
+            Some((vw, vh)) if vw > 0 && vh > 0 => {
+                let (_dpi, work) = crate::win::cursor_monitor_metrics();
+                let chrome = cap + sc(SCRUB_H);
+                let cap_w = (work.right - work.left) * 80 / 100;
+                let cap_h = (work.bottom - work.top) * 80 / 100 - chrome;
+                let mut scale = f64::min(cap_w as f64 / vw as f64, cap_h as f64 / vh as f64);
+                if scale > 1.0 {
+                    scale = 1.0; // never upscale a small clip past 100%
+                }
+                let w = ((vw as f64 * scale).round() as i32).max(1);
+                let h = ((vh as f64 * scale).round() as i32).max(1);
+                (w.max(sc(MIN_W)), (h + chrome).max(sc(MIN_H)))
+            }
+            // Audio, or metadata not in yet: the placeholder shell.
+            _ => (sc(VIDEO_W), sc(VIDEO_H) + cap + sc(SCRUB_H)),
+        },
         ContentKind::Html => (sc(VIDEO_W), sc(VIDEO_H) + cap), // browser-ish default
 
         ContentKind::Loading => (sc(LOADING_W), sc(LOADING_H)),
