@@ -10,6 +10,19 @@
 #   2. A FORK of microsoft/winget-pkgs under that token's account. Komac submits by pushing
 #      a branch to your fork and opening a PR from it, so no fork means no submission:
 #         gh repo fork microsoft/winget-pkgs --clone=false
+#
+# TWO SECRETS, because the two halves of this job need different powers (2026-08-07):
+#   WINGET_TOKEN     - used for the fork checks and the upstream sync. A FINE-GRAINED token is
+#                      fine here: those act on repositories YOU own, and the fork is yours.
+#   WINGET_PR_TOKEN  - used for the submission. OPTIONAL; falls back to WINGET_TOKEN when
+#                      unset. This one must be CLASSIC (`public_repo`), because the final step
+#                      opens a pull request on microsoft/winget-pkgs, a repo the account does
+#                      NOT own, and a fine-grained token cannot be granted permission on
+#                      somebody else's repository at all.
+# That distinction cost the 1.8.1 release: a fine-grained token passed the fork sync and the
+# branch push, then failed with "Resource not accessible by personal access token / failed to
+# create pull request", and the PR had to be opened by hand. Splitting the secrets means a
+# fine-grained token can stay in place for the parts it genuinely covers.
 # The FIRST package submission is done by hand with Komac (the action is for updates);
 # every release after that is automatic via this workflow.
 #
@@ -146,4 +159,25 @@ jobs:
           # Match the installer asset on the release (SageThumbs2K-Setup-<ver>.exe).
           installers-regex: 'SageThumbs2K-Setup-.*\.exe$'
           release-tag: ${{ github.event.inputs.tag || github.event.release.tag_name }}
-          token: ${{ secrets.WINGET_TOKEN }}
+          # Prefer the classic PR token; fall back so an existing single-secret setup still works.
+          token: ${{ secrets.WINGET_PR_TOKEN || secrets.WINGET_TOKEN }}
+
+      # Komac pushes its branch BEFORE it opens the PR, so a token that can write to the fork
+      # but not open a PR upstream leaves the manifests sitting there, complete and correct,
+      # with nothing pointing at them. That is recoverable in one command instead of a rerun —
+      # say so here rather than leaving the next person to work it out from the raw error.
+      - name: Explain how to finish a failed submission
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          owner=$(gh api user --jq .login 2>/dev/null || echo LunarWerxs)
+          branch=$(gh api "repos/$owner/winget-pkgs/branches" --jq \
+            '[.[] | select(.name | test("SageThumbs2K"))] | last | .name' 2>/dev/null || true)
+          if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+            echo "::warning title=Manifests are already pushed::Komac's branch exists on $owner/winget-pkgs; only the pull request is missing. Open it with: gh pr create --repo microsoft/winget-pkgs --base master --head $owner:$branch --title \"New version: LunarWerxs.SageThumbs2K version ${TAG#v}\" --body \"Pull request created with WinGet Releaser\""
+          else
+            echo "::warning title=No submission branch::Komac did not get as far as pushing manifests, so there is nothing to open a PR from. Re-run this workflow once the token can write to the fork."
+          fi
