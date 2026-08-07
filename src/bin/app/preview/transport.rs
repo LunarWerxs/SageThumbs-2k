@@ -1,10 +1,10 @@
 //! Video/audio transport strip: seek track + volume slider + time.
 
-use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
+use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, FillRect, InvalidateRect,
-    LineTo, MoveToEx, Polygon, Polyline, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PS_SOLID, TRANSPARENT,
+    LineTo, MoveToEx, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_LEFT, DT_NOPREFIX,
+    DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetCapture;
 
@@ -354,8 +354,11 @@ pub(super) unsafe fn draw_slider(hdc: HDC, rc: &RECT, frac: f64, accent: u32, gr
     let _ = DeleteObject(ab.into());
 }
 
-/// Paint the video transport strip: bg band + hairline, play/pause glyph, `m:ss / m:ss`, seek
-/// track + thumb, speaker glyph + volume slider. All GDI + existing `dark.rs` colours.
+/// Paint the video transport strip: bg band + hairline, then the controls. Every ICON is a
+/// **Segoe Fluent Icons** glyph via [`super::paint::icon_font`], the same font the caption toolbar
+/// uses, so the two rows of buttons read as one family (the strip used to hand-draw its glyphs
+/// with GDI polygons, which looked home-made next to the caption; owner call, 2026-08-07).
+/// The two sliders stay drawn geometry, because they are sliders, not icons.
 pub(super) unsafe fn draw_scrub_strip(
     hwnd: HWND,
     hdc: HDC,
@@ -380,7 +383,7 @@ pub(super) unsafe fn draw_scrub_strip(
         next,
         play,
         track,
-        mute: _,
+        mute,
         vol,
         loopb,
         arrows,
@@ -388,54 +391,21 @@ pub(super) unsafe fn draw_scrub_strip(
     } = scrub_parts(hwnd, sr);
     let accent = crate::dark::ACCENT().0;
     let border = crate::dark::BORDER().0;
-    let midy = (sr.top + sr.bottom) / 2;
-    let cx = (play.left + play.right) / 2;
 
-    // prev / next file (skip-to-end glyphs, drawn in `subtle` so the play button stays dominant)
-    draw_skip_glyph(hwnd, hdc, &prev, subtle, false);
-    draw_skip_glyph(hwnd, hdc, &next, subtle, true);
+    // One icon font for the whole strip (owned here, freed at the end).
+    let icon = super::paint::icon_font(hwnd);
 
-    // play / pause glyph (filled, in the text colour)
-    let fill = CreateSolidBrush(COLORREF(text));
-    let obr = SelectObject(hdc, fill.into());
-    let gpen = CreatePen(PS_SOLID, 1, COLORREF(text));
-    let gob = SelectObject(hdc, HGDIOBJ(gpen.0));
-    if v.is_paused() {
-        let s = sc(6);
-        let tri = [
-            POINT {
-                x: cx - s / 2,
-                y: midy - s,
-            },
-            POINT {
-                x: cx - s / 2,
-                y: midy + s,
-            },
-            POINT { x: cx + s, y: midy },
-        ];
-        let _ = Polygon(hdc, &tri);
+    // prev / next file, `subtle` so play/pause stays the dominant control.
+    glyph(hdc, icon, &prev, GLYPH_PREVIOUS, subtle);
+    glyph(hdc, icon, &next, GLYPH_NEXT, subtle);
+
+    // play / pause, in the text colour.
+    let pp = if v.is_paused() {
+        GLYPH_PLAY
     } else {
-        let s = sc(5);
-        let b = sc(3);
-        let l = RECT {
-            left: cx - s,
-            top: midy - s - 1,
-            right: cx - s + b,
-            bottom: midy + s + 1,
-        };
-        let r = RECT {
-            left: cx + s - b,
-            top: midy - s - 1,
-            right: cx + s,
-            bottom: midy + s + 1,
-        };
-        FillRect(hdc, &l, fill);
-        FillRect(hdc, &r, fill);
-    }
-    SelectObject(hdc, gob);
-    let _ = DeleteObject(HGDIOBJ(gpen.0));
-    SelectObject(hdc, obr);
-    let _ = DeleteObject(fill.into());
+        GLYPH_PAUSE
+    };
+    glyph(hdc, icon, &play, pp, text);
 
     // time label
     let dur = v.duration();
@@ -447,8 +417,7 @@ pub(super) unsafe fn draw_scrub_strip(
     SetTextColor(hdc, COLORREF(subtle));
     let mut w: Vec<u16> = label.encode_utf16().collect();
     let mut tr = RECT {
-        // After the LAST button of the left cluster (⏭), not after play/pause, or the label runs
-        // underneath the next-file glyph.
+        // After the LAST button of the left cluster (next-file), or the label runs under it.
         left: next.right + sc(6),
         top: sr.top,
         right: track.left - sc(6),
@@ -470,48 +439,17 @@ pub(super) unsafe fn draw_scrub_strip(
     };
     draw_slider(hdc, &track, frac, accent, border);
 
-    // speaker glyph (outline) + volume slider
-    let spk = sc(22);
-    let sx = vol.left - spk + sc(3);
-    let spen = CreatePen(
-        PS_SOLID,
-        sc(2),
-        COLORREF(if v.muted() { subtle } else { text }),
-    );
-    let sob = SelectObject(hdc, HGDIOBJ(spen.0));
-    let cone = [
-        POINT {
-            x: sx,
-            y: midy - sc(2),
-        },
-        POINT {
-            x: sx + sc(4),
-            y: midy - sc(2),
-        },
-        POINT {
-            x: sx + sc(8),
-            y: midy - sc(5),
-        },
-        POINT {
-            x: sx + sc(8),
-            y: midy + sc(5),
-        },
-        POINT {
-            x: sx + sc(4),
-            y: midy + sc(2),
-        },
-        POINT {
-            x: sx,
-            y: midy + sc(2),
-        },
-        POINT {
-            x: sx,
-            y: midy - sc(2),
-        },
-    ];
-    let _ = Polyline(hdc, &cone);
-    SelectObject(hdc, sob);
-    let _ = DeleteObject(HGDIOBJ(spen.0));
+    // speaker (muted swaps to the crossed-out glyph, in `subtle`) + volume slider
+    let full = RECT {
+        top: sr.top,
+        bottom: sr.bottom,
+        ..mute
+    };
+    if v.muted() {
+        glyph(hdc, icon, &full, GLYPH_MUTE, subtle);
+    } else {
+        glyph(hdc, icon, &full, GLYPH_VOLUME, text);
+    }
     let vfrac = if v.muted() {
         0.0
     } else {
@@ -519,16 +457,28 @@ pub(super) unsafe fn draw_scrub_strip(
     };
     draw_slider(hdc, &vol, vfrac, accent, border);
 
-    // repeat toggle: a rounded arrow loop, ACCENT when on and `subtle` when off, so the state is
-    // readable at a glance without a second glyph to learn.
-    draw_loop_glyph(hwnd, hdc, &loopb, if v.looping() { accent } else { subtle });
+    // repeat toggle: ACCENT when on, `subtle` when off, so the state reads at a glance.
+    glyph(
+        hdc,
+        icon,
+        &loopb,
+        GLYPH_REPEAT,
+        if v.looping() { accent } else { subtle },
+    );
 
-    // ←/→ meaning. Same accent-when-on convention as the repeat toggle.
+    // ←/→ meaning (two opposing arrows). Same accent-when-on convention as repeat.
     let nav_on = (*state(hwnd)).arrow_nav.get();
-    draw_arrows_glyph(hwnd, hdc, &arrows, if nav_on { accent } else { subtle });
+    glyph(
+        hdc,
+        icon,
+        &arrows,
+        GLYPH_SWITCH,
+        if nav_on { accent } else { subtle },
+    );
 
-    // playback speed, drawn as its own multiplier text (clicking cycles it). Normal speed is drawn
-    // `subtle` so the strip stays quiet until you actually change it.
+    // playback speed, drawn as its own multiplier text (clicking cycles it). Text, not an icon:
+    // the VALUE is the whole point of the control. Normal speed stays `subtle` so the strip is
+    // quiet until you actually change it.
     let sp = v.speed();
     let f2 = crate::win::gui_font_for(hwnd);
     let oldf2 = SelectObject(hdc, f2.into());
@@ -550,140 +500,34 @@ pub(super) unsafe fn draw_scrub_strip(
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
     SelectObject(hdc, oldf2);
+    let _ = DeleteObject(icon.into());
 }
 
-/// The ←/→ mode glyph: two triangles pointing outward from a centre gap, i.e. "these keys move
-/// sideways". Accent when they move between FILES, subtle when they seek inside the clip.
-unsafe fn draw_arrows_glyph(hwnd: HWND, hdc: HDC, rc: &RECT, colour: u32) {
-    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let cx = (rc.left + rc.right) / 2;
-    let cy = (rc.top + rc.bottom) / 2;
-    let h = sc(5);
-    let gap = sc(2);
-    let w = sc(6);
-    let fill = CreateSolidBrush(COLORREF(colour));
-    let obr = SelectObject(hdc, fill.into());
-    let pen = CreatePen(PS_SOLID, 1, COLORREF(colour));
-    let op = SelectObject(hdc, HGDIOBJ(pen.0));
-    for dir in [-1i32, 1] {
-        let tip = cx + dir * (gap + w);
-        let base = cx + dir * gap;
-        let tri = [
-            POINT { x: tip, y: cy },
-            POINT { x: base, y: cy - h },
-            POINT { x: base, y: cy + h },
-        ];
-        let _ = Polygon(hdc, &tri);
-    }
-    SelectObject(hdc, op);
-    let _ = DeleteObject(HGDIOBJ(pen.0));
-    SelectObject(hdc, obr);
-    let _ = DeleteObject(fill.into());
-}
+// Segoe Fluent Icons codepoints for the transport (same family as `paint::btn_glyph`).
+const GLYPH_PLAY: u16 = 0xE768;
+const GLYPH_PAUSE: u16 = 0xE769;
+const GLYPH_PREVIOUS: u16 = 0xE892;
+const GLYPH_NEXT: u16 = 0xE893;
+const GLYPH_VOLUME: u16 = 0xE767;
+const GLYPH_MUTE: u16 = 0xE74F;
+const GLYPH_REPEAT: u16 = 0xE8EE; // RepeatAll
+const GLYPH_SWITCH: u16 = 0xE8AB; // Switch (two opposing horizontal arrows)
 
-/// A skip-to-previous / skip-to-next glyph: a filled triangle against a bar, the shape every
-/// player uses. `forward` points it right and puts the bar on the right.
-unsafe fn draw_skip_glyph(hwnd: HWND, hdc: HDC, rc: &RECT, colour: u32, forward: bool) {
-    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let cx = (rc.left + rc.right) / 2;
-    let cy = (rc.top + rc.bottom) / 2;
-    let w = sc(5); // triangle half-width
-    let h = sc(6); // triangle half-height
-    let d: i32 = if forward { 1 } else { -1 };
-    let fill = CreateSolidBrush(COLORREF(colour));
-    let obr = SelectObject(hdc, fill.into());
-    let pen = CreatePen(PS_SOLID, 1, COLORREF(colour));
-    let op = SelectObject(hdc, HGDIOBJ(pen.0));
-    let tri = [
-        POINT {
-            x: cx - d * w,
-            y: cy - h,
-        },
-        POINT {
-            x: cx - d * w,
-            y: cy + h,
-        },
-        POINT {
-            x: cx + d * w,
-            y: cy,
-        },
-    ];
-    let _ = Polygon(hdc, &tri);
-    SelectObject(hdc, op);
-    let _ = DeleteObject(HGDIOBJ(pen.0));
-    // The bar the triangle runs into.
-    let bar = RECT {
-        left: cx + d * w,
-        top: cy - h,
-        right: cx + d * (w + sc(2)),
-        bottom: cy + h,
-    };
-    let bar = RECT {
-        left: bar.left.min(bar.right),
-        top: bar.top,
-        right: bar.left.max(bar.right),
-        bottom: bar.bottom,
-    };
-    FillRect(hdc, &bar, fill);
-    SelectObject(hdc, obr);
-    let _ = DeleteObject(fill.into());
-}
-
-/// The repeat glyph: a rectangular arrow loop drawn with a 2px pen, sized to `rc`. Vector rather
-/// than a font glyph for the same reason the rest of this strip is: it must scale cleanly with DPI
-/// and follow the theme colour, and it must not depend on a symbol font being installed.
-unsafe fn draw_loop_glyph(hwnd: HWND, hdc: HDC, rc: &RECT, colour: u32) {
-    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let cx = (rc.left + rc.right) / 2;
-    let cy = (rc.top + rc.bottom) / 2;
-    let w = sc(7); // half-width of the loop
-    let h = sc(4); // half-height
-    let pen = CreatePen(PS_SOLID, sc(2).max(1), COLORREF(colour));
-    let old = SelectObject(hdc, HGDIOBJ(pen.0));
-    // Open rectangle: full top edge, both sides, and a bottom edge with a gap on the right where
-    // the arrow head sits.
-    let path = [
-        POINT {
-            x: cx + w - sc(3),
-            y: cy + h,
-        },
-        POINT {
-            x: cx - w,
-            y: cy + h,
-        },
-        POINT {
-            x: cx - w,
-            y: cy - h,
-        },
-        POINT {
-            x: cx + w,
-            y: cy - h,
-        },
-        POINT { x: cx + w, y: cy },
-    ];
-    let _ = Polyline(hdc, &path);
+/// Draw one icon-font glyph centered in `rc` — the strip's counterpart of the caption's
+/// `draw_button` tail, minus the hover pill (the strip has no hover state).
+unsafe fn glyph(hdc: HDC, font: HFONT, rc: &RECT, code: u16, colour: u32) {
+    let old = SelectObject(hdc, font.into());
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, COLORREF(colour));
+    let mut buf = [code];
+    let mut rr = *rc;
+    DrawTextW(
+        hdc,
+        &mut buf,
+        &mut rr,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
     SelectObject(hdc, old);
-    let _ = DeleteObject(HGDIOBJ(pen.0));
-    // Arrow head on the descending right-hand side, pointing down into the loop.
-    let fill = CreateSolidBrush(COLORREF(colour));
-    let obr = SelectObject(hdc, fill.into());
-    let head = [
-        POINT {
-            x: cx + w - sc(3),
-            y: cy,
-        },
-        POINT {
-            x: cx + w + sc(3),
-            y: cy,
-        },
-        POINT {
-            x: cx + w,
-            y: cy + sc(4),
-        },
-    ];
-    let _ = Polygon(hdc, &head);
-    SelectObject(hdc, obr);
-    let _ = DeleteObject(fill.into());
 }
 
 #[cfg(test)]

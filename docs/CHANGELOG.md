@@ -2,6 +2,15 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Changed
+
+- **The playback bar's icons are now the system's own icon set.** The previous/next, play/pause,
+  speaker, repeat and arrow buttons were drawn by hand and looked it, especially next to the title
+  bar's buttons. They now come from the same Windows icon font as everything else, so the two rows
+  finally look like one family. Muting also swaps the speaker for the proper crossed-out glyph.
+
 ## 1.8.3
 
 ### Added
