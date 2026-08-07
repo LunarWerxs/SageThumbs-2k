@@ -1,9 +1,10 @@
 //! GFM table layout and drawing.
 //!
-//! Column widths come from a two-pass measure: pass one takes each column's natural
-//! (unwrapped) width AND its minimum (the widest single word, found by a width=1 dry
-//! run), pass two wraps every cell at the width finally chosen. That is what lets a wide
-//! table shrink gracefully instead of either overflowing or breaking mid-word.
+//! Column widths come from a three-step measure: step one takes each column's natural
+//! (unwrapped) width, step two picks the cell padding the table can actually afford, step
+//! three shares the pane out [max-min fair][fair_widths]. Every cell then wraps at the width
+//! it was given and paints inside a clip of its own column, so a wide table shrinks
+//! gracefully instead of overflowing.
 
 use super::*;
 
@@ -28,7 +29,6 @@ pub(super) unsafe fn draw_table(
         .len()
         .max(rows.iter().map(|r| r.len()).max().unwrap_or(0))
         .max(1);
-    let hpad = sc(13);
     let vpad = sc(6);
     let fonts = Fonts::new(hwnd, BODY_PX, false, false);
     let hfonts = Fonts::new(hwnd, BODY_PX, true, false);
@@ -45,10 +45,9 @@ pub(super) unsafe fn draw_table(
         v
     };
 
-    // Pass 1: per-column natural (unwrapped) and minimum (widest single word) widths — the
-    // width=1 dry pass forces a wrap at every word, so its widest line IS the widest word.
-    let mut nat = vec![sc(24); ncols];
-    let mut minw = vec![sc(24); ncols];
+    // Step 1: each column's natural (unwrapped) TEXT width. Padding is deliberately NOT folded
+    // in yet — how much padding the table can afford depends on this total.
+    let mut nat_text = vec![0i32; ncols];
     let mut scratch: Vec<LinkHit> = Vec::new();
     for (row, is_hdr) in &all {
         let f = if *is_hdr { &hfonts } else { &fonts };
@@ -66,35 +65,42 @@ pub(super) unsafe fn draw_table(
                 &mut scratch,
                 None,
             );
-            nat[ci] = nat[ci].max(w + 2 * hpad);
-            let (_, mw) = run_block(hdc, cell, f, 0, 0, 1, 0, true, &ctx, &mut scratch, None);
-            minw[ci] = minw[ci].max(mw + 2 * hpad);
+            nat_text[ci] = nat_text[ci].max(w);
         }
     }
-    // Browser-style auto layout: everything at natural width if it fits; otherwise every column
-    // keeps at least its min-content width and the slack is distributed in proportion to how
-    // much each column WANTS to grow (nat - min). Only when even the minimums overflow do we
-    // shrink below min (proportionally, clipped at the pane edge).
+
+    // Step 2: GitHub's roomy 13px side padding is most of a column once a CSV export brings
+    // nine of them (26px of every ~107px slice). When the table cannot fit at natural width the
+    // padding tightens instead of spending the text's share on whitespace.
+    let sum_text: i64 = nat_text.iter().map(|w| *w as i64).sum();
+    let hpad = if sum_text + ncols as i64 * 2 * sc(13) as i64 <= avail as i64 {
+        sc(13)
+    } else {
+        sc(6)
+    };
+    // A floor keeps a squeezed column readable — but only as far as the pane can pay for it, so
+    // a table with more columns than fit degrades to even slivers rather than overrunning.
+    let min_col = (2 * hpad + sc(16)).min(avail / ncols as i32).max(1);
+    let nat: Vec<i32> = nat_text
+        .iter()
+        .map(|w| (w + 2 * hpad).max(min_col))
+        .collect();
     let sum_nat: i64 = nat.iter().map(|w| *w as i64).sum();
-    let sum_min: i64 = minw.iter().map(|w| *w as i64).sum();
+
+    // Step 3: natural widths when the whole table fits (a short table stays narrow, GitHub-style),
+    // otherwise a max-min fair share of the pane.
     let colw: Vec<i32> = if sum_nat <= avail as i64 {
         nat
-    } else if sum_min >= avail as i64 {
-        minw.iter()
-            .map(|w| ((*w as i64 * avail as i64 / sum_min.max(1)) as i32).max(sc(40)))
-            .collect()
     } else {
-        let slack = avail as i64 - sum_min;
-        let want: i64 = sum_nat - sum_min;
-        nat.iter()
-            .zip(&minw)
-            .map(|(n, m)| (*m as i64 + (*n - *m) as i64 * slack / want.max(1)) as i32)
-            .collect()
+        fair_widths(&nat, avail)
     };
-    let table_w: i32 = colw.iter().sum::<i32>().min(avail);
+    let table_w: i32 = colw.iter().sum();
     let cell_x = |ci: usize| x0 + colw[..ci].iter().sum::<i32>();
+    // The text a cell may use. `colw` is floored at `min_col` above, so the guard only bites in
+    // the more-columns-than-fit case — where the per-cell clip is what keeps things tidy.
+    let cell_w = |ci: usize| (colw[ci] - 2 * hpad).max(sc(8));
 
-    // Pass 2: row heights (wrap each cell at its column width).
+    // Step 4: row heights (wrap each cell at its column width).
     let line_h_probe = {
         let old = SelectObject(hdc, fonts.reg.into());
         let mut tm = TEXTMETRICW::default();
@@ -107,14 +113,25 @@ pub(super) unsafe fn draw_table(
         let f = if *is_hdr { &hfonts } else { &fonts };
         let mut h = line_h_probe;
         for (ci, cell) in row.iter().enumerate().take(ncols) {
-            let w = (colw[ci] - 2 * hpad).max(sc(24));
-            let (ny, _) = run_block(hdc, cell, f, 0, 0, w, 0, true, &ctx, &mut scratch, None);
+            let (ny, _) = run_block(
+                hdc,
+                cell,
+                f,
+                0,
+                0,
+                cell_w(ci),
+                0,
+                true,
+                &ctx,
+                &mut scratch,
+                None,
+            );
             h = h.max(ny);
         }
         row_h.push(h + 2 * vpad);
     }
 
-    // Pass 3: draw. Zebra fill first, then text, then the grid on top.
+    // Step 5: draw. Zebra fill first, then text, then the grid on top.
     let mut y = y0;
     let mut body_i = 0usize;
     for (ri, (row, is_hdr)) in all.iter().enumerate() {
@@ -136,7 +153,6 @@ pub(super) unsafe fn draw_table(
             body_i += 1;
         }
         for (ci, cell) in row.iter().enumerate().take(ncols) {
-            let w = (colw[ci] - 2 * hpad).max(sc(24));
             let mut rsel = RunSel {
                 range: sel.range,
                 doc: sel.doc,
@@ -149,19 +165,25 @@ pub(super) unsafe fn draw_table(
                 hits: &mut *sel.hits,
                 bg: sel.bg,
             };
+            // Hard containment, independent of what the measure decided: a cell may not paint
+            // outside its own column. Without it an over-long value bled into its neighbour's
+            // text (the CSV header row read "usernamepassword") and on past the pane edge.
+            let saved = SaveDC(hdc);
+            let _ = IntersectClipRect(hdc, cell_x(ci), y, cell_x(ci) + colw[ci], y + h);
             let _ = run_block(
                 hdc,
                 cell,
                 f,
                 cell_x(ci) + hpad,
                 y + vpad,
-                w,
+                cell_w(ci),
                 col_align(ci),
                 false,
                 &ctx,
                 links,
                 Some(&mut rsel),
             );
+            let _ = RestoreDC(hdc, saved);
         }
         y += h;
         hline(hdc, x0, x0 + table_w, y, c.border); // row separator
@@ -186,6 +208,67 @@ pub(super) unsafe fn draw_table(
     y
 }
 
+/// Share `avail` px among columns wanting `nat` px each, max-min fair.
+///
+/// Hand every column an equal slice; any column whose natural width fits inside that slice
+/// takes only what it needs, and its surplus is re-split among the columns still asking for
+/// more — repeating until a round satisfies nobody, at which point the rest split what's left
+/// evenly. This is what stops one 90-character API-key column from crushing its neighbours:
+/// narrow columns keep their FULL natural width (so a `username` header can never collide with
+/// the next one), and only the genuinely wide columns share the remainder.
+///
+/// The result always sums to exactly `avail`, which is load-bearing rather than tidy: the grid
+/// lines, the zebra fill and the cell origins are all derived from these widths, so when they
+/// summed past the pane the verticals stopped at its edge while the text marched on past it.
+fn fair_widths(nat: &[i32], avail: i32) -> Vec<i32> {
+    let n = nat.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![-1i32; n];
+    let mut remaining = avail;
+    let mut hungry = n;
+    while hungry > 0 {
+        let share = remaining / hungry as i32;
+        let mut settled = 0usize;
+        for ci in 0..n {
+            if out[ci] < 0 && nat[ci] <= share {
+                out[ci] = nat[ci];
+                remaining -= nat[ci];
+                settled += 1;
+            }
+        }
+        if settled == 0 {
+            // Nobody left fits an equal slice — split the remainder evenly and stop.
+            for w in out.iter_mut().filter(|w| **w < 0) {
+                *w = share;
+            }
+            break;
+        }
+        hungry -= settled;
+    }
+    // Integer division leaves crumbs either way; settle them on the widest column so the row
+    // spans exactly `avail`.
+    let mut sum: i32 = out.iter().sum();
+    while sum > avail {
+        let Some(i) = (0..n).max_by_key(|i| out[*i]) else {
+            break;
+        };
+        if out[i] <= 1 {
+            break;
+        }
+        let cut = (sum - avail).min(out[i] - 1);
+        out[i] -= cut;
+        sum -= cut;
+    }
+    if sum < avail {
+        if let Some(i) = (0..n).max_by_key(|i| out[*i]) {
+            out[i] += avail - sum;
+        }
+    }
+    out
+}
+
 /// Selection wiring for one [`draw_table`] call (per-cell [`RunSel`]s are built from it).
 pub(super) struct TblSel<'a> {
     pub(super) range: Option<(usize, usize)>,
@@ -193,4 +276,80 @@ pub(super) struct TblSel<'a> {
     pub(super) bases: &'a [Vec<Vec<usize>>],
     pub(super) hits: &'a mut Vec<SelHit>,
     pub(super) bg: u32,
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::fair_widths;
+
+    /// The invariant the whole CSV overflow bug came down to: the widths the grid is drawn from
+    /// must span exactly the space the table was given — never a pixel more.
+    #[test]
+    fn always_sums_to_exactly_avail() {
+        for nat in [
+            vec![100, 700, 90, 90, 75, 85, 200, 110, 140],
+            vec![5000],
+            vec![10, 10, 10],
+            vec![333; 7],
+            vec![1, 999999, 1, 1],
+        ] {
+            for avail in [61, 300, 964, 1000, 1237] {
+                let out = fair_widths(&nat, avail);
+                assert_eq!(
+                    out.iter().sum::<i32>(),
+                    avail,
+                    "nat={nat:?} avail={avail} -> {out:?}"
+                );
+                assert_eq!(out.len(), nat.len());
+            }
+        }
+    }
+
+    /// The collision fix: a column that fits inside its equal slice keeps its FULL natural
+    /// width, so a narrow header is never crushed by a giant neighbour. This is the exact
+    /// shape of the reported CSV — one 90-character API key beside eight ordinary columns.
+    #[test]
+    fn narrow_columns_keep_their_natural_width() {
+        // name, api_key, username, password, service, entry_type, base_url, source_ip, notes
+        let nat = vec![100, 700, 90, 90, 75, 85, 200, 110, 140];
+        let out = fair_widths(&nat, 964);
+        for (i, (got, want)) in out.iter().zip(&nat).enumerate() {
+            if *want <= 964 / 9 {
+                assert_eq!(
+                    got, want,
+                    "column {i} should be untouched at its natural width"
+                );
+            }
+        }
+        // ...and the one greedy column is capped rather than allowed to eat the pane.
+        assert!(out[1] < 700, "api_key should have been trimmed: {out:?}");
+        assert!(
+            out[1] > out[0],
+            "api_key should still be the widest: {out:?}"
+        );
+    }
+
+    /// More columns than the pane can pay for still produces a usable, exactly-fitting row
+    /// rather than an overrun — the per-cell clip handles legibility from there.
+    #[test]
+    fn degrades_evenly_when_nothing_fits() {
+        let out = fair_widths(&[400; 64], 900);
+        assert_eq!(out.iter().sum::<i32>(), 900);
+        assert!(out.iter().all(|w| *w >= 0), "no negative widths: {out:?}");
+        assert!(
+            out.iter().max().unwrap() - out.iter().min().unwrap() <= 900,
+            "spread should stay bounded: {out:?}"
+        );
+    }
+
+    /// A table that already fits is handed straight through by the caller, but calling the
+    /// allocator with slack must still be stable (it only ever grows the widest column).
+    #[test]
+    fn slack_lands_on_the_widest_column() {
+        let out = fair_widths(&[50, 80, 30], 400);
+        assert_eq!(out.iter().sum::<i32>(), 400);
+        assert_eq!(out[0], 50);
+        assert_eq!(out[2], 30);
+        assert_eq!(out[1], 320);
+    }
 }

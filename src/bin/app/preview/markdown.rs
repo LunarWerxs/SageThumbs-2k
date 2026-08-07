@@ -25,8 +25,9 @@ use super::selection::{FontSpec, SelHit};
 use windows::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, ExtTextOutW, FillRect, GetTextExtentPoint32W, GetTextMetricsW, LineTo, MoveToEx,
-    RoundRect, SelectObject, SetBkColor, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt,
+    DrawTextW, ExtTextOutW, FillRect, GetTextExtentExPointW, GetTextExtentPoint32W,
+    GetTextMetricsW, IntersectClipRect, LineTo, MoveToEx, RestoreDC, RoundRect, SaveDC,
+    SelectObject, SetBkColor, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DT_LEFT, DT_NOPREFIX, DT_TOP,
     ETO_OPAQUE, ETO_OPTIONS, HALFTONE, HDC, HFONT, HGDIOBJ, OPAQUE, OUT_DEFAULT_PRECIS, PS_SOLID,
     SRCCOPY, TEXTMETRICW, TRANSPARENT,
