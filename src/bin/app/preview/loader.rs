@@ -82,6 +82,20 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
             return;
         }
     }
+    // SQLite databases: schema + the first rows of each table, through the markdown pipeline.
+    // Gated on the TEXT toggle (it's a data view, like the CSV table — see `classify`). A `.db`
+    // that isn't SQLite (Thumbs.db, an SQL Server file) returns None and falls through.
+    if let Some(md) = db_markdown(path) {
+        *st.text.borrow_mut() = Some(md);
+        st.md_has_headings.set(true);
+        st.md_remote_ok.set(false); // generated content, nothing remote to fetch
+        st.kind.set(ContentKind::Markdown);
+        ensure_shown(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+        set_title(hwnd);
+        update_tooltips(hwnd, st.tip.get());
+        return;
+    }
     // Font files: render a specimen (name + pangram + glyph sheet) as an image.
     if super::font::is_font_ext(&ext_of(path)) && render_font_to_state(&*state(hwnd), path) {
         ensure_shown(hwnd);
@@ -317,6 +331,14 @@ pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind
             st.kind.set(ContentKind::Text);
             return;
         }
+    }
+    // Database view (same render as the async `load` path).
+    if let Some(md) = db_markdown(path) {
+        *st.text.borrow_mut() = Some(md);
+        st.md_has_headings.set(true);
+        st.md_remote_ok.set(false);
+        st.kind.set(ContentKind::Markdown);
+        return;
     }
     // Font specimen (same render as the async `load` path).
     if super::font::is_font_ext(&ext_of(path)) && render_font_to_state(st, path) {
@@ -582,6 +604,16 @@ pub(super) unsafe fn show_source(hwnd: HWND, path: &str) -> bool {
     set_title(hwnd);
     update_tooltips(hwnd, st.tip.get()); // the outline / PDF pager just went away
     true
+}
+
+/// The database view for `path`, or `None` if it isn't a database file we preview (wrong
+/// extension, the Text toggle is off, or the bytes aren't SQLite). One helper because both the
+/// async `load` and the headless `load_static` must gate identically.
+fn db_markdown(path: &str) -> Option<String> {
+    if !super::dbdoc::is_db_ext(&ext_of(path)) || !sagethumbs2k_core::settings::preview_text() {
+        return None;
+    }
+    super::dbdoc::to_markdown(path)
 }
 
 /// Lowercase extension of `path` (no dot).

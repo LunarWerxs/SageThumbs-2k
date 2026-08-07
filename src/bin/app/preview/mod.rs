@@ -18,6 +18,7 @@
 
 mod anim;
 mod content;
+mod dbdoc;
 mod docconv;
 mod font;
 mod highlight;

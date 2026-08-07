@@ -190,7 +190,7 @@ pub(super) fn archive_listing(path: &str) -> Option<String> {
 }
 
 /// Human-readable byte size (B/KB/MB/GB/TB, one decimal above bytes).
-fn human_size(b: u64) -> String {
+pub(super) fn human_size(b: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let (mut v, mut i) = (b as f64, 0usize);
     while v >= 1024.0 && i < U.len() - 1 {

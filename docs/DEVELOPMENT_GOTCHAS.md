@@ -245,15 +245,15 @@ numbers are directly comparable. Timings are best-of-three on an idle machine:
 | jpg | 3.01 s | DCT scaling (1/2, 1/4, 1/8) | **no**, see below |
 | jp2 | 0.25 s | wavelet resolution levels | yes, native decoder since 1.7.5 |
 | webp | 4.08 s | none | n/a |
-| dds | — | mipmap chain | yes, since 1.7.4 |
+| dds | n/a | mipmap chain | yes, since 1.7.4 |
 
 Camera RAW is already fine: it uses the embedded JPEG preview.
 
 **JPEG is the open one, and it is deliberately open.** `zune-jpeg` (what `image` uses, and
 what we ship) exposes no scaled decode. `jpeg-decoder` does, but adding it means shipping a
 SECOND JPEG decoder purely for large files, against installer size budgets. The measured
-pain is mild at real sizes — 0.37 s for a 12 MP phone photo, 0.71 s for a 24 MP camera
-photo, and Explorer caches the result — so this is a size-versus-speed decision for a human,
+pain is mild at real sizes: 0.37 s for a 12 MP phone photo, 0.71 s for a 24 MP camera
+photo, and Explorer caches the result, so this is a size-versus-speed decision for a human,
 not a quiet dependency addition. The 3.0 s figure above is a 76 MP outlier.
 
 The embedded EXIF thumbnail path does NOT cover this: `EMBEDDED_MAX_REQUEST` is 96 px,
@@ -262,10 +262,59 @@ That gate is correct; it just means requests above 96 px always do real work.
 
 **Never trust a decoder's "reduced" flag without looking at the pixels.** Two independent
 implementations of exactly this feature return correctly-SIZED output containing the WRONG
-IMAGE — ImageMagick's `jp2:reduce-factor` and `oxigdal-jpeg2000`'s
+IMAGE. ImageMagick's `jp2:reduce-factor` and `oxigdal-jpeg2000`'s
 `decode_region_at_resolution` both hand back a crop instead of a downscale, and both look
 like a spectacular speedup until you render them. Compare against a full decode, visually,
 every time.
+
+## A WIC component may not return the pixel format you gave it
+
+The direct cost of the optimisation above, and it shipped in 1.3.6 and was not caught until
+2026-08-07. `wic.rs` converted the frame to `32bppRGBA`, then put an `IWICBitmapScaler` on the
+end of that chain. `IWICBitmapScaler` makes no promise to preserve its source's pixel format,
+and with `WICBitmapInterpolationModeFant` it does not: it hands back WIC's native **BGRA**.
+Those bytes went straight into `RgbaImage::from_raw`, so **every scaled WIC decode had red and
+blue transposed**: HEIC, AVIF, JPEG XR, which is to say every Explorer tile smaller than its
+source. Nothing failed, nothing logged; skies just came out orange.
+
+Two properties made it survive:
+
+- **Only the thumbnail path took the scaler.** Full-fidelity callers pass `thumbnail_cx = None`,
+  so Convert, Resize, image info and the preview pane were always right. "The folder view is
+  wrong but everything else is fine" is the signature of a thumbnail-only branch.
+- **The corpus regression could not see it.** The baseline was captured after the regression
+  landed, so the swapped tiles WERE the baseline. A contact sheet proves "still renders", never
+  "renders correctly". Colour needs a reference decoder, which is why the DICOM content checks
+  exist and why `wic_thumbnail_scaling_keeps_rgba_channel_order` asserts exact channel values.
+
+The rule: **re-assert the pixel format on whatever the chain actually produced**, do not infer it
+from what you fed in. `ensure_rgba32` does this and is a no-op when the format is already right.
+The same caution applies to any WIC component you bolt on later (rotator, clipper, colour
+transform), not just the scaler.
+
+Finding it took a boundary, not a stare: render one source at `--size 359` and `--size 360`
+against a 360 px-wide file. Below the source size it swapped, at or above it did not. When a bug
+appears "sometimes", look for the branch it correlates with before looking for a race.
+
+## The magick watchdog must charge CPU time, not wall clock
+
+Same investigation. The ImageMagick child had a 20 s **elapsed** kill-timeout, which quietly
+conflates "this file will never finish" with "this machine is busy". Measured: an AVIF that
+needs **0.34 s of CPU** was being killed at 20 s of wall clock while a batch AV1 encode kept it
+unscheduled, a 60x margin. The log said `decode timed out (status Some(ExitStatus(0)))`, exit
+code **0**, the child had already succeeded and we discarded its output, then fell through to
+the next tier, which for AVIF is the WIC codec we deliberately route around.
+
+So the budget is CPU time (`GetProcessTimes`, kernel + user) with a generous elapsed backstop for
+a child that hangs without burning any. This is stricter, not looser: a looping child reaches
+20 s of CPU sooner than it ever reached 20 s of wall clock. ImageMagick's own `-limit time` is
+elapsed seconds, so it has to track the **backstop**; pinning it to the CPU budget lets magick
+self-abort a starved decode from inside the child and the fix does nothing.
+
+If you benchmark this, note that the obvious saturator lies: `ffmpeg -c:v libaom-av1 -cpu-used 0`
+holds **1.4 GB per encoder**, so one per core exhausts a 63 GB machine and ImageMagick then fails
+with `Memory allocation error @ error/heic.c`, which looks exactly like a decode regression and is
+not one. Saturate with something memory-light.
 
 ## Do not cache the portable settings file on `(mtime, len)`
 

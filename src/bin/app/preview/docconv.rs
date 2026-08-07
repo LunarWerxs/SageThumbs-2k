@@ -133,30 +133,12 @@ fn delimited_table(text: &str, delim: u8) -> String {
     }
 
     let ncols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
-    let cell = |s: &str| {
-        // Escape the pipe-table structural chars AND markdown inline syntax: a CSV cell is DATA,
-        // not authored markdown — without this, a hostile spreadsheet cell like
-        // `[click me](https://evil)` renders as a live styled link (spoofing; review finding,
-        // 2026-07-13). Backslash-escapes are consumed by the parser, so normal text is unchanged.
-        let mut e = String::with_capacity(s.len());
-        for ch in s.chars() {
-            match ch {
-                '\\' | '|' | '[' | ']' | '`' | '*' | '_' | '!' | '<' => {
-                    e.push('\\');
-                    e.push(ch);
-                }
-                '\r' | '\n' => e.push(' '),
-                _ => e.push(ch),
-            }
-        }
-        e
-    };
     let mut out = String::with_capacity(text.len() + rows.len() * 4);
     for (ri, r) in rows.iter().enumerate() {
         out.push('|');
         for ci in 0..ncols {
             out.push(' ');
-            out.push_str(&cell(r.get(ci).map(String::as_str).unwrap_or("")));
+            out.push_str(&md_cell(r.get(ci).map(String::as_str).unwrap_or("")));
             out.push_str(" |");
         }
         out.push('\n');
@@ -177,6 +159,27 @@ fn delimited_table(text: &str, delim: u8) -> String {
         ));
     }
     out
+}
+
+/// Escape one GFM table cell. Shared with the database view (`dbdoc`), which has the same
+/// problem: the pipe-table structural chars AND markdown inline syntax must be neutralised
+/// because the cell is DATA, not authored markdown — without this a hostile spreadsheet (or
+/// database row) cell like `[click me](https://evil)` renders as a live styled link (spoofing;
+/// review finding, 2026-07-13). Backslash-escapes are consumed by the parser, so normal text is
+/// unchanged. Newlines become spaces so a multi-line value can't break the row.
+pub(super) fn md_cell(s: &str) -> String {
+    let mut e = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' | '|' | '[' | ']' | '`' | '*' | '_' | '!' | '<' => {
+                e.push('\\');
+                e.push(ch);
+            }
+            '\r' | '\n' => e.push(' '),
+            _ => e.push(ch),
+        }
+    }
+    e
 }
 
 /// Byte-length of the UTF-8 char starting with `b` (1 for ASCII/continuation garbage).
