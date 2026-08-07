@@ -93,6 +93,18 @@ pub(super) unsafe fn wic_decode_frame(
     } else {
         converter.cast()?
     };
+    // `IWICBitmapScaler` does NOT promise to preserve its source's pixel format, and with
+    // Fant it does not: it hands back WIC's own native 32bpp BGRA order. The buffer below
+    // is handed straight to `RgbaImage::from_raw`, so those bytes are then read as RGBA and
+    // every SCALED WIC thumbnail comes out with red and blue swapped — HEIC, AVIF, JPEG XR,
+    // any Explorer tile smaller than its source. Unscaled decodes were unaffected (no
+    // scaler in the chain), which is exactly why it survived: the full-fidelity paths pass
+    // `thumbnail_cx = None` and stayed correct while the thumbnail path did not.
+    //
+    // Re-assert the format on whatever we actually ended up with instead of trusting the
+    // scaler's contract. On the already-scaled image this second conversion is cheap, and
+    // it is a no-op (same object) whenever the source is already 32bppRGBA.
+    let source = ensure_rgba32(factory, source)?;
     source.GetSize(&mut w, &mut h)?;
     let stride = w.checked_mul(4).ok_or_else(|| Error::from(E_FAIL))?;
     let mut buf = vec![0u8; (stride as usize) * (h as usize)];
@@ -108,6 +120,33 @@ pub(super) unsafe fn wic_decode_frame(
     // fall back to a WIC color context for the other WIC formats (RAW/JXR).
     let icc = isobmff_color_icc(container_bytes).or_else(|| wic_icc(factory, frame));
     Ok(apply_icc_to_srgb(DynamicImage::ImageRgba8(img), icc))
+}
+
+/// Guarantee `source` really is 32bppRGBA, converting it if it is not.
+///
+/// The one caller is the tail of [`wic_decode_frame`], which copies raw bytes out and hands
+/// them to `RgbaImage::from_raw` — a step that silently mis-orders channels for any other
+/// 32bpp layout. WIC components are free to return a different pixel format than the one
+/// they were given (the Fant scaler returns BGRA), so the format is checked here rather
+/// than assumed from whatever produced `source`.
+unsafe fn ensure_rgba32(
+    factory: &IWICImagingFactory,
+    source: IWICBitmapSource,
+) -> Result<IWICBitmapSource> {
+    if source.GetPixelFormat()? == GUID_WICPixelFormat32bppRGBA {
+        return Ok(source);
+    }
+    crate::safety::log_debug("decode: WIC source was not 32bppRGBA — converting");
+    let converter = factory.CreateFormatConverter()?;
+    converter.Initialize(
+        &source,
+        &GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone,
+        None,
+        0.0,
+        WICBitmapPaletteTypeCustom,
+    )?;
+    converter.cast()
 }
 
 /// The embedded ICC profile from a WIC frame's first PROFILE-type color context (where

@@ -11,12 +11,16 @@
   directory (next to magick.exe in the install dir).
 -->
 <policymap>
-  <!-- Resource ceilings (belt-and-suspenders with the 20 s subprocess timeout). -->
+  <!-- Resource ceilings (belt-and-suspenders with the subprocess watchdog).
+       `time` is ImageMagick's ELAPSED-time limit, so it tracks the watchdog's wall-clock
+       backstop rather than its 20 s CPU budget: a lower value here would abort a decode
+       that is merely waiting for a busy machine to schedule it, which is the bug the CPU
+       budget exists to prevent. Runaway work is still caught by the CPU budget first. -->
   <policy domain="resource" name="memory" value="512MiB"/>
   <policy domain="resource" name="map" value="1GiB"/>
   <policy domain="resource" name="area" value="512MP"/>
   <policy domain="resource" name="disk" value="2GiB"/>
-  <policy domain="resource" name="time" value="20"/>
+  <policy domain="resource" name="time" value="120"/>
   <policy domain="resource" name="list-length" value="256"/>
 
   <!-- Document / PostScript / vector coders: never needed, historically the

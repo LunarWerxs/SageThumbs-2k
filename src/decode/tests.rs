@@ -86,18 +86,26 @@ fn gunzip_bounded_rejects_non_gzip() {
 
 #[test]
 fn magick_time_limits_agree() {
-    // The `-limit time` string arg, its numeric secs, and the external kill
-    // watchdog must all encode the same number — bump one, the test catches the
-    // others (the silent "watchdog waits 30s but magick still kills at 20s" trap).
+    // ImageMagick's own `-limit time` is ELAPSED seconds, so it has to track the external
+    // watchdog's WALL backstop, not its CPU budget — pinning it to the CPU number would let
+    // magick self-abort a merely-starved decode and reintroduce issue #9 from inside the
+    // child. Bump one, this test catches the others (the silent "watchdog waits 120s but
+    // magick still kills at 20s" trap).
     assert_eq!(
         limits::MAGICK_TIME_LIMIT.parse::<u64>().unwrap(),
-        limits::MAGICK_TIME_SECS,
-        "MAGICK_TIME_LIMIT string must equal MAGICK_TIME_SECS",
+        limits::MAGICK_WALL_SECS,
+        "MAGICK_TIME_LIMIT string must equal MAGICK_WALL_SECS",
     );
     assert_eq!(
         MAGICK_TIMEOUT,
-        std::time::Duration::from_secs(limits::MAGICK_TIME_SECS)
+        std::time::Duration::from_secs(limits::MAGICK_WALL_SECS)
     );
+    assert_eq!(
+        MAGICK_CPU_BUDGET,
+        std::time::Duration::from_secs(limits::MAGICK_CPU_SECS)
+    );
+    // That the CPU budget is tighter than the wall backstop is pinned at compile time,
+    // by the `const _: () = assert!(...)` beside the constants in decode.rs.
 }
 
 #[test]
@@ -860,6 +868,42 @@ fn wic_path_decodes() {
     let bytes = png_bytes(40, 20, [10, 20, 200, 255]);
     let img = unsafe { wic_decode(&bytes) }.expect("WIC should decode PNG");
     assert_eq!((img.width(), img.height()), (40, 20));
+}
+
+#[test]
+fn wic_thumbnail_scaling_keeps_rgba_channel_order() {
+    // A SCALED WIC decode must come back in the same channel order as an unscaled one.
+    // `IWICBitmapScaler` returns WIC's native BGRA rather than the 32bppRGBA it was fed,
+    // so the raw bytes used to reach `RgbaImage::from_raw` transposed: every Explorer tile
+    // smaller than its source (HEIC/AVIF/JPEG XR) rendered with red and blue swapped, while
+    // the full-fidelity paths — which pass no target edge, hence no scaler — stayed correct.
+    // The colour is deliberately asymmetric in R vs B so a swap cannot pass.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
+    const RGBA: [u8; 4] = [10, 20, 200, 255];
+    let bytes = png_bytes(64, 64, RGBA);
+
+    let unscaled = unsafe { wic_decode_with_thumbnail(&bytes, Some(64)) }
+        .expect("WIC should decode PNG without scaling");
+    assert_eq!((unscaled.width(), unscaled.height()), (64, 64));
+    assert_eq!(
+        unscaled.to_rgba8().get_pixel(32, 32).0,
+        RGBA,
+        "the no-scaler path must return the source colour"
+    );
+
+    let scaled = unsafe { wic_decode_with_thumbnail(&bytes, Some(16)) }
+        .expect("WIC should decode PNG with scaling");
+    assert_eq!((scaled.width(), scaled.height()), (16, 16));
+    assert_eq!(
+        scaled.to_rgba8().get_pixel(8, 8).0,
+        RGBA,
+        "a scaled WIC decode must keep RGBA order (a swap here reads [200, 20, 10, 255])"
+    );
 }
 
 #[test]

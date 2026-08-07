@@ -39,11 +39,19 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 use crate::container::jpeg_span_len;
 // Don't flash a console window when we spawn `magick.exe` from the shell host.
 use crate::CREATE_NO_WINDOW;
-/// Hard wall-clock cap on a single ImageMagick decode (belt-and-suspenders with
-/// its own `-limit time`): a hung child is killed and the decode fails cleanly.
-/// Derived from [`limits::MAGICK_TIME_SECS`] so the external watchdog and magick's
-/// own `-limit time` can't drift apart.
-const MAGICK_TIMEOUT: Duration = Duration::from_secs(limits::MAGICK_TIME_SECS);
+/// Hard WALL-CLOCK backstop on a single ImageMagick child (belt-and-suspenders with its
+/// own `-limit time`): a child hung past this is killed and the decode fails cleanly.
+/// Derived from [`limits::MAGICK_WALL_SECS`] so the external watchdog and magick's own
+/// `-limit time` can't drift apart.
+const MAGICK_TIMEOUT: Duration = Duration::from_secs(limits::MAGICK_WALL_SECS);
+/// The CPU-time budget the watchdog actually enforces — see [`limits::MAGICK_CPU_SECS`]
+/// for why the containment number is CPU rather than elapsed time.
+const MAGICK_CPU_BUDGET: Duration = Duration::from_secs(limits::MAGICK_CPU_SECS);
+// The CPU budget is what must bite first for a child that is genuinely working; the wall
+// backstop only exists for one that hangs without burning any CPU. Inverting them would
+// silently restore the pure wall-clock watchdog this pair replaced, so pin the ordering at
+// compile time rather than in a test.
+const _: () = assert!(limits::MAGICK_CPU_SECS < limits::MAGICK_WALL_SECS);
 /// Cap ImageMagick's output so an obscure 200 MP file can't blow up memory; the
 /// thumbnail is downscaled from here anyway. `>` = shrink-only, never upscale.
 const MAGICK_MAX_EDGE: &str = "4096x4096>";
@@ -119,10 +127,31 @@ pub(crate) mod limits {
     /// child's `-limit` CLI flags, the external kill-timeout ([`super::MAGICK_TIMEOUT`]),
     /// and the shipped `packaging/imagemagick-policy.xml` (pinned by the
     /// `magick_limits_agree*` tests). Tune here and all three stay in agreement.
-    pub const MAGICK_TIME_SECS: u64 = 20;
-    /// String form of [`MAGICK_TIME_SECS`] for the `-limit time` arg / policy.xml.
-    /// Asserted equal to `MAGICK_TIME_SECS` by `magick_time_limits_agree`.
-    pub const MAGICK_TIME_LIMIT: &str = "20";
+    /// CPU-TIME budget for one ImageMagick child — the real containment number. A decoder
+    /// stuck in a loop or grinding a decompression bomb burns CPU and is killed here.
+    ///
+    /// This used to be a WALL-CLOCK budget, which conflated "this file will never finish"
+    /// with "this machine is busy". Measured on issue #9: the reporter's AVIF needs 0.34 s
+    /// of CPU, but while a batch AV1 encode saturated every core the same decode was still
+    /// unscheduled at 20 s of wall clock and got killed — dropping AVIF onto the WIC codec
+    /// we deliberately route around, so a busy machine produced wrong-coloured thumbnails
+    /// for some files and not others. Charging the budget to CPU keeps the guard strict for
+    /// hostile input (a spinning child hits 20 s of CPU sooner than it hits any wall clock)
+    /// while a starved-but-healthy child is left alone.
+    pub const MAGICK_CPU_SECS: u64 = 20;
+    /// Absolute WALL-CLOCK backstop, for a child that hangs without consuming CPU (blocked
+    /// on I/O rather than looping) — which [`MAGICK_CPU_SECS`] alone would never catch.
+    /// Deliberately generous: nothing legitimate approaches it, and every path that reaches
+    /// it is isolated in a throwaway host with its own caller-side budget on top.
+    pub const MAGICK_WALL_SECS: u64 = 120;
+    /// String form of [`MAGICK_WALL_SECS`] for the `-limit time` arg / policy.xml.
+    ///
+    /// It tracks the WALL backstop rather than the CPU budget, which is the safe choice under
+    /// either reading of ImageMagick's limit: documented as elapsed seconds, pinning it lower
+    /// would let magick self-abort a merely-starved decode and reintroduce the bug from inside
+    /// the child; read as CPU, our own 20 s CPU budget bites first anyway, so nothing is
+    /// loosened. Asserted equal to `MAGICK_WALL_SECS` by `magick_time_limits_agree`.
+    pub const MAGICK_TIME_LIMIT: &str = "120";
     pub const MAGICK_MEMORY_LIMIT: &str = "512MiB";
     pub const MAGICK_MAP_LIMIT: &str = "1GiB";
 }
@@ -345,7 +374,20 @@ fn decode_any_with_wic_target(
         }
     }
     match wic_fallback(bytes, wic_thumbnail_cx) {
-        Ok(img) => return Ok(img),
+        Ok(img) => {
+            // Reaching WIC after we deliberately tried to avoid it means the thumbnail is
+            // about to be produced by the codec we KNOW misreads this file, so say so
+            // rather than returning a quietly wrong picture. A wrong-coloured tile still
+            // beats no tile (it is what the Compact install shows anyway), but it must be
+            // diagnosable — the alternative is issue #9's "some files are just wrong
+            // sometimes", with nothing in the log to point at.
+            if magick_attempted {
+                crate::safety::log_debug(
+                    "decode: fell back to WIC after routing around it — colours may be off",
+                );
+            }
+            return Ok(img);
+        }
         Err(e) => crate::safety::log_debug(&format!("decode tier `WIC` failed: {e}")),
     }
     // TGA has no magic bytes, so the `image` guesser + magick-via-stdin both miss

@@ -123,8 +123,35 @@ pub(super) fn add_magick_limits(cmd: &mut Command) {
 /// invocation and do not weaken the broader Magick policy or raster/PSD support.
 const METAFILE_MAGICK_MEMORY_LIMIT: &str = "96MiB";
 const METAFILE_MAGICK_MAP_LIMIT: &str = "96MiB";
-const METAFILE_MAGICK_TIME_LIMIT: &str = "3";
-const METAFILE_MAGICK_TIMEOUT: Duration = Duration::from_secs(3);
+/// Metafile CPU budget, and the elapsed-time backstop that goes with it. Same split as the
+/// general-purpose pair (see [`limits::MAGICK_CPU_SECS`]): 3 s of CPU still kills a complex
+/// or malformed WMF/EMF exactly as before, while the wider elapsed allowance keeps a busy
+/// machine from failing a metafile that only needed a fraction of a second of real work.
+const METAFILE_MAGICK_TIME_LIMIT: &str = "18";
+const METAFILE_MAGICK_TIMEOUT: Duration = Duration::from_secs(18);
+const METAFILE_MAGICK_CPU_BUDGET: Duration = Duration::from_secs(3);
+
+/// How often the watchdog wakes to re-check the child while waiting for its output.
+const WATCHDOG_SLICE: Duration = Duration::from_millis(250);
+
+/// The two limits one magick child runs under: CPU time is the real budget, elapsed time
+/// only the backstop for a child that hangs without burning any.
+#[derive(Clone, Copy)]
+struct MagickBudget {
+    cpu: Duration,
+    wall: Duration,
+}
+
+/// Ordinary raster decodes.
+const RASTER_BUDGET: MagickBudget = MagickBudget {
+    cpu: MAGICK_CPU_BUDGET,
+    wall: MAGICK_TIMEOUT,
+};
+/// Metafiles, which get a much tighter CPU budget (see [`add_metafile_magick_limits`]).
+const METAFILE_BUDGET: MagickBudget = MagickBudget {
+    cpu: METAFILE_MAGICK_CPU_BUDGET,
+    wall: METAFILE_MAGICK_TIMEOUT,
+};
 
 fn add_metafile_magick_limits(cmd: &mut Command) {
     cmd.args([
@@ -184,10 +211,10 @@ pub(super) fn decode_via_magick_capped(
     // WMF would otherwise grind for seconds to a near-blank frame; everything
     // else keeps the full 20 s budget for heavy raster decodes.
     let is_meta = looks_like_metafile(bytes);
-    let timeout = if is_meta {
-        METAFILE_MAGICK_TIMEOUT
+    let budget = if is_meta {
+        METAFILE_BUDGET
     } else {
-        MAGICK_TIMEOUT
+        RASTER_BUDGET
     };
     // DICOM files carry a TIFF-compatible 128-byte preamble that tricks magick's
     // content-sniffer into treating them as TIFF (which then fails).  Pass an
@@ -219,7 +246,7 @@ pub(super) fn decode_via_magick_capped(
         .map(|e| e.clamp(1, MAGICK_MAX_EDGE_PX))
         .map(|e| format!("{e}x{e}>"));
     let edge = capped.as_deref().unwrap_or(MAGICK_MAX_EDGE);
-    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, edge, timeout)
+    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, edge, budget)
 }
 
 /// The `-density` (DPI) that renders an EMF's LONG edge up to [`METAFILE_MIN_PX`] when its natural
@@ -378,7 +405,7 @@ pub(super) fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
         &[],
         limits::PSD_COMPOSITE_EDGE,
         limits::PSD_COMPOSITE_MAX_ALLOC,
-        MAGICK_TIMEOUT,
+        RASTER_BUDGET,
     )
 }
 
@@ -393,10 +420,10 @@ fn decode_via_magick_spec(
     input: &str,
     pre_ops: &[&str],
     max_edge: &str,
-    timeout: Duration,
+    budget: MagickBudget,
 ) -> Result<DynamicImage> {
     decode_via_magick_spec_alloc(
-        bytes, pre_input, input, pre_ops, max_edge, MAX_ALLOC, timeout,
+        bytes, pre_input, input, pre_ops, max_edge, MAX_ALLOC, budget,
     )
 }
 
@@ -410,9 +437,12 @@ fn decode_via_magick_spec_alloc(
     pre_ops: &[&str],
     max_edge: &str,
     max_alloc: u64,
-    timeout: Duration,
+    budget: MagickBudget,
 ) -> Result<DynamicImage> {
-    let exe = magick_exe().ok_or_else(|| Error::from(E_FAIL))?;
+    let Some(exe) = magick_exe() else {
+        crate::safety::log_debug("magick decode: ImageMagick not available");
+        return Err(Error::from(E_FAIL));
+    };
     let mut cmd = Command::new(exe);
     add_magick_limits(&mut cmd);
     if looks_like_metafile(bytes) {
@@ -444,18 +474,37 @@ fn decode_via_magick_spec_alloc(
     // Bound concurrent magick children (memory) across in-process + st2k fan-out.
     // Held until this function returns (after the child is reaped).
     let _permit = magick_gate::acquire();
-    let mut child = cmd.spawn().map_err(|_| Error::from(E_FAIL))?;
+    // Every failure below is LOGGED, not just returned. This tier is the one we route AVIF
+    // to precisely because the fallback (WIC) gets those files wrong, so a silent Err here
+    // reappears as a wrong-coloured thumbnail with nothing in the log to explain it — which
+    // is how issue #9 stayed invisible. Process creation really can fail on a machine that
+    // is out of resources, so it needs a breadcrumb like every other tier has.
+    let mut child = cmd.spawn().map_err(|e| {
+        crate::safety::log_debug(&format!("magick decode: could not start the child: {e}"));
+        Error::from(E_FAIL)
+    })?;
 
     // Feed stdin on its own thread so a full stdout pipe can't deadlock us.
-    let mut stdin = child.stdin.take().ok_or_else(|| Error::from(E_FAIL))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        crate::safety::log_debug("magick decode: child has no stdin pipe");
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::from(E_FAIL));
+    };
     let input = bytes.to_vec();
     let writer = std::thread::spawn(move || {
         let _ = stdin.write_all(&input);
         // drop(stdin) here closes the pipe so ImageMagick sees EOF
     });
 
-    // Read stdout on its own thread; the main thread enforces the timeout.
-    let mut stdout = child.stdout.take().ok_or_else(|| Error::from(E_FAIL))?;
+    // Read stdout on its own thread; the main thread enforces the budget.
+    let Some(mut stdout) = child.stdout.take() else {
+        crate::safety::log_debug("magick decode: child has no stdout pipe");
+        let _ = child.kill();
+        let _ = writer.join();
+        let _ = child.wait();
+        return Err(Error::from(E_FAIL));
+    };
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -468,16 +517,16 @@ fn decode_via_magick_spec_alloc(
     let stderr = child.stderr.take();
     let errdrain = stderr.map(|s| std::thread::spawn(move || drain_capped(s)));
 
-    let png = match rx.recv_timeout(timeout) {
+    let png = match await_magick_output(&mut child, &rx, budget.cpu, budget.wall) {
         Ok(buf) => buf,
-        Err(_) => {
-            // Hung past the deadline: kill, drain the threads, reap, fail.
+        Err(why) => {
+            // Over budget: kill, drain the threads, reap, fail.
             let _ = child.kill();
             let _ = writer.join();
             let _ = reader.join();
             let err = errdrain.and_then(|h| h.join().ok()).unwrap_or_default();
             let status = child.wait().ok();
-            log_magick_failure("decode timed out", status, &err);
+            log_magick_failure(why, status, &err);
             return Err(Error::from(E_FAIL));
         }
     };
@@ -498,7 +547,95 @@ fn decode_via_magick_spec_alloc(
     // Validate by decoding rather than by exit status (which is unreliable now —
     // we may have killed a child that had already produced a complete PNG).
     // image::Limits bound this safe-tier decode.
-    decode_with_image_alloc(&png, max_alloc)
+    decode_with_image_alloc(&png, max_alloc).inspect_err(|e| {
+        crate::safety::log_debug(&format!(
+            "magick decode: could not re-decode the {} byte PNG it returned: {e}",
+            png.len()
+        ));
+    })
+}
+
+// `GetProcessTimes` lives in kernel32, which is always linked. Declared here rather than
+// switching on the `windows` crate's `Win32_System_Threading` feature for one call — the
+// same approach `decode::magick_gate` already takes for the semaphore.
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetProcessTimes(
+        process: *mut std::ffi::c_void,
+        creation: *mut u32,
+        exit: *mut u32,
+        kernel: *mut u32,
+        user: *mut u32,
+    ) -> i32;
+}
+
+/// Total CPU time (kernel + user) this child has consumed so far.
+///
+/// `None` when the OS won't say — the caller then falls back to the wall-clock backstop
+/// alone, i.e. exactly the behaviour that predates the CPU budget.
+fn child_cpu_time(child: &std::process::Child) -> Option<Duration> {
+    use std::os::windows::io::AsRawHandle;
+    // FILETIME is two 32-bit halves and is only 4-byte aligned, so take it as a pair of
+    // u32 and recombine rather than letting the OS write a u64 into a maybe-underaligned
+    // slot.
+    let (mut creation, mut exit, mut kernel, mut user) =
+        ([0u32; 2], [0u32; 2], [0u32; 2], [0u32; 2]);
+    let ok = unsafe {
+        GetProcessTimes(
+            child.as_raw_handle().cast(),
+            creation.as_mut_ptr(),
+            exit.as_mut_ptr(),
+            kernel.as_mut_ptr(),
+            user.as_mut_ptr(),
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let ticks = |v: [u32; 2]| (u64::from(v[1]) << 32) | u64::from(v[0]);
+    // FILETIME counts 100-nanosecond intervals.
+    Some(Duration::from_nanos(
+        ticks(kernel)
+            .saturating_add(ticks(user))
+            .saturating_mul(100),
+    ))
+}
+
+/// Wait for the child's PNG on `rx`, enforcing a CPU budget with a wall-clock backstop.
+///
+/// `Err` is the message to log; the caller kills and reaps. Two cases are deliberately NOT
+/// failures, and both are why this is a loop instead of one `recv_timeout`:
+///
+///  * the child is alive but starved — it has burned almost no CPU, so it keeps its budget
+///    however long the machine makes it wait;
+///  * the child has already EXITED — its stdout is closed, so the pending `read_to_end`
+///    returns as soon as that thread is scheduled, and killing at that point would throw
+///    away a decode that already succeeded (issue #9 logged this as
+///    `decode timed out (status Some(ExitStatus(0)))`).
+fn await_magick_output(
+    child: &mut std::process::Child,
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    cpu_budget: Duration,
+    wall_ceiling: Duration,
+) -> std::result::Result<Vec<u8>, &'static str> {
+    use std::sync::mpsc::RecvTimeoutError;
+    let start = std::time::Instant::now();
+    loop {
+        match rx.recv_timeout(WATCHDOG_SLICE) {
+            Ok(buf) => return Ok(buf),
+            // The reader thread went away without sending: nothing more is coming. Report
+            // it as empty output so the caller's existing `png.is_empty()` check handles it.
+            Err(RecvTimeoutError::Disconnected) => return Ok(Vec::new()),
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        let still_running = !matches!(child.try_wait(), Ok(Some(_)));
+        if still_running && child_cpu_time(child).is_some_and(|cpu| cpu > cpu_budget) {
+            return Err("decode exceeded its CPU budget");
+        }
+        if start.elapsed() > wall_ceiling {
+            return Err("decode timed out");
+        }
+    }
 }
 
 /// Read a child pipe to EOF but keep at most ~4 KiB so a flood of magick warnings
@@ -721,8 +858,8 @@ mod tests {
     use super::{
         add_magick_limits, add_metafile_magick_limits, apply_magick_environment,
         magick_output_supported, magick_stdin_spec, output_coder, MAX_ISOBMFF_TOP_LEVEL_BOXES,
-        METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT, METAFILE_MAGICK_TIMEOUT,
-        METAFILE_MAGICK_TIME_LIMIT,
+        METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT,
+        METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
     };
     use std::collections::HashMap;
     use std::process::Command;
@@ -863,7 +1000,7 @@ mod tests {
                 "1GiB",
                 "-limit",
                 "time",
-                "20",
+                "120",
                 "-limit",
                 "memory",
                 METAFILE_MAGICK_MEMORY_LIMIT,
@@ -875,7 +1012,18 @@ mod tests {
                 METAFILE_MAGICK_TIME_LIMIT,
             ]
         );
-        assert_eq!(METAFILE_MAGICK_TIMEOUT, std::time::Duration::from_secs(3));
+        // Metafiles keep their much tighter CPU budget; only the elapsed-time backstop is
+        // widened, so a busy machine cannot fail a metafile that needed 0.1 s of real work.
+        assert_eq!(
+            METAFILE_MAGICK_CPU_BUDGET,
+            std::time::Duration::from_secs(3)
+        );
+        assert_eq!(METAFILE_MAGICK_TIMEOUT, std::time::Duration::from_secs(18));
+        assert_eq!(
+            METAFILE_MAGICK_TIME_LIMIT.parse::<u64>().unwrap(),
+            METAFILE_MAGICK_TIMEOUT.as_secs(),
+            "magick's own elapsed limit must match the metafile wall backstop",
+        );
     }
 
     #[test]
