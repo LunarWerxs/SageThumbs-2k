@@ -2,6 +2,70 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.8.2
+
+### Added
+
+- **Press Space on a database file and you can see what's in it.** SQLite files (`.db`,
+  `.sqlite`, `.sqlite3` and the rest of that family) now open in the Quick preview like any
+  other document: the size and page layout at the top, then a section for each table with its
+  real column names and the first rows laid out in a grid, and the full `CREATE` statements at
+  the end, syntax-highlighted. The Contents sidebar lists the tables, so a database with thirty
+  of them is still one click per table. It stays instant on large files because it reads only
+  the pages it needs instead of loading the whole thing, and a long table is cut off with a
+  note saying how many rows there really are. Nothing is ever written and no SQL is run against
+  your database; the file is read directly, the way the thumbnailer reads a JPEG. Because `.db`
+  is such a generic extension, anything that turns out not to be a SQLite file at all (Windows'
+  own `Thumbs.db`, for example) previews exactly as it did before.
+
+- **The portable version now offers to switch thumbnails on the first time you run it.**
+  1.8.1 made Explorer thumbnails possible without installing anything, but you had to know to
+  go and find the switch, and the welcome window still opened with a line saying thumbnails
+  were already being added, which is true of the installed build and not of a zip you just
+  unpacked. Anyone who took it at its word saw no thumbnails and reasonably concluded the
+  thing was broken. The welcome window now says what is actually true of a portable copy and
+  offers thumbnails as the first choice on it, alongside Quick preview and the screenshot
+  hotkey. It still only ever writes to your own user account, needs no administrator rights,
+  and Settings ▸ Advanced turns it back off. Installed builds are unchanged.
+
+### Fixed
+
+- **Wide tables in the Quick preview ran into each other and off the edge of the window.**
+  A CSV export with a lot of columns was the worst case: headings printed on top of one
+  another, so `username` and `password` came out as one unreadable word, and the values kept
+  going past the right-hand edge of the table with no grid around them. Resizing the window
+  made it worse rather than better. Three things were wrong at once. A value with no spaces in
+  it, like a long API key, could not be wrapped anywhere, so it was drawn at full length
+  straight through whatever was next to it. The column widths were allowed to add up to more
+  than the window, so the grid lines stopped at the edge while the text carried on past them.
+  And nothing stopped a cell from painting outside its own column in the first place. Columns
+  are now shared out the way a browser does it, so a narrow column keeps its full width and
+  only the genuinely wide ones give way; anything too long to fit wraps onto the next line
+  inside its own cell; and every cell is clipped to its column no matter what. Tables in
+  Markdown files, in the new database view and in READMEs get the same fix, and a very long
+  unbroken word in ordinary text now wraps instead of disappearing off the side.
+
+- **Worth updating for if you keep HEIC or AVIF photos: their thumbnail colours have been
+  wrong since 1.3.6, for everybody, not only the person who reported it.** Details below.
+
+- **HEIC, AVIF and JPEG XR thumbnails had their red and blue channels swapped.** Skies came
+  out orange, skin came out blue. It only happened when the thumbnail was smaller than the
+  picture, which is to say almost always, so if you have iPhone photos in a folder this is
+  the bug you were looking at. It has been there since 1.3.6. The resizing step handed the
+  pixels back in a different channel order than the one it was given, and we took them at
+  their word. Full-size operations were never affected, which is why Convert, Resize and the
+  preview pane always looked right while the folder view did not. (issue #9)
+
+- **AVIF colours no longer go wrong when your PC is busy.** Converting a batch of files, or
+  anything else that pins your processor, could make the odd thumbnail come out with shifted
+  colours while the rest were fine. Reading an AVIF correctly takes us about a third of a
+  second of actual work, but we were giving up on it after 20 seconds of waiting, and on a
+  fully loaded machine a job that small can sit in the queue for longer than that. We then
+  quietly fell back to the Windows decoder, which is the one that gets these files wrong. The
+  time limit now counts work done rather than time passed, so a busy machine no longer
+  changes the result, while a genuinely stuck file is still stopped as quickly as before.
+  (issue #9)
+
 ## 1.8.1
 
 ### Added

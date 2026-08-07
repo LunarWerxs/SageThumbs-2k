@@ -291,6 +291,14 @@ plus these viewer-only extras:
   The panel slides open/closed via the outline button on the toolbar; the choice is remembered.
 - **CSV/TSV column view**: spreadsheets-ish files render as a real gridded table (quoted fields,
   embedded commas/newlines, `;`-separated exports auto-detected), capped with a note for huge files.
+- **SQLite databases** (`.db`/`.sqlite`/`.sqlite3`/…): a look inside without opening a database
+  tool. You get the size and page layout, then a section per table with its real column names and
+  the first rows in a gridded table, and the full `CREATE` statements at the end in a
+  syntax-highlighted block. Big files stay instant because it reads only the pages it needs rather
+  than loading the file, and long tables are capped with a "first N of M rows" note. Strictly
+  read-only: the file format is parsed directly, so no SQL is ever run against your database.
+  `.db` is a generic extension, so anything that turns out not to be a SQLite file (`Thumbs.db`,
+  for one) previews exactly as it did before.
 - **Jupyter notebooks** (`.ipynb`): markdown cells render, code cells show syntax-highlighted with
   line numbers in the notebook's language, and text outputs (stream, results, cleaned error
   tracebacks) display beneath their cells.
@@ -540,6 +548,16 @@ long scroll is gone.)
   invokes ImageMagick's text, caption or font-rendering surfaces.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
   cleanly unregisters on uninstall.
+- **Portable zip**, both architectures, no installer and no administrator rights. Unpack it
+  anywhere and settings live in an ini beside the exe instead of the registry. Everything that
+  is already an app works straight away: Settings, Convert/Resize, Quick preview, screenshots,
+  OCR, the colour picker, the folder tools and the `st2k` CLI/MCP server. **Explorer thumbnails
+  and the classic right-click menu work too**, opt-in: the welcome window offers them on first
+  run, and `st2k register` / Settings ▸ Advanced toggle them any time. That registration is
+  per-user, needs no elevation and is undone with `st2k register --off`; do it before moving the
+  folder, since the keys record where the DLL currently sits. The Explorer *preview pane*, the
+  Details-pane columns and the Windows 11 right-click menu are registered machine-wide by
+  design, so those still need the installer.
 - App/installer/shortcut icon embedded from the logo.
 
 ---
