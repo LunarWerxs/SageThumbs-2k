@@ -29,8 +29,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **"Load web images" is now a button in the preview itself**, on the title bar, and it only shows
   up on documents that actually reference web-hosted images. It used to be a checkbox in Settings,
-  which is not where anyone looks when they are staring at a page full of grey placeholder chips
-  and wondering whether the real pictures can be shown.
+  which is not where anyone looks when they are staring at a page full of grey labelled chips and
+  wondering whether the real pictures can be shown.
 
 - **Find in a document with Ctrl+F.** Works in text files, code, Markdown, and CSV tables. Type
   and it jumps to the first match with a running count of how many there are; Enter or F3 walks
