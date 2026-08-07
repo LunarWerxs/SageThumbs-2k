@@ -414,16 +414,40 @@ try {
         } elseif ($wgRun.conclusion -eq 'success') {
             Write-Host "[winget] submitted OK - a PR is open against microsoft/winget-pkgs." -ForegroundColor DarkGray
         } else {
-            Write-Host ""
-            Write-Host "  =========== winget submission FAILED ($($wgRun.conclusion)) ===========" -ForegroundColor Yellow
-            Write-Host "  $tag is released and downloadable; only the winget listing is behind." -ForegroundColor Yellow
-            Write-Host "  A 'permissions to execute CreateRef' error is usually a STALE FORK," -ForegroundColor Yellow
-            Write-Host "  not permissions (proven 2026-08-04; the workflow now self-syncs). Fix:" -ForegroundColor Yellow
-            Write-Host "    1) gh repo sync LunarWerxs/winget-pkgs --source microsoft/winget-pkgs" -ForegroundColor Yellow
-            Write-Host "    2) re-run: gh workflow run winget.yml -f tag=$tag" -ForegroundColor Yellow
-            Write-Host "    3) only if that fails: check WINGET_TOKEN (classic PAT, public_repo)" -ForegroundColor Yellow
-            Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
-            Write-Host "  ====================================================================" -ForegroundColor Yellow
+            # The usual failure is now the LAST step only: Komac pushes its manifest branch to
+            # the fork fine, then cannot open the pull request. That is not a fixable permission
+            # — a fine-grained PAT can only hold permissions on repositories the account OWNS,
+            # and microsoft/winget-pkgs is permanently read-only to one (measured 2026-08-07:
+            # `permissions` reads pull=true and nothing else, and POST /pulls answers 403, not
+            # the 422 an already-existing PR would give). A classic PAT is the only token that
+            # can do it, and we are not using classic PATs.
+            #
+            # So finish it from HERE instead, with the local `gh`, whose OAuth login already
+            # carries the scope the PAT cannot. That needs no secret at all and makes the split
+            # coherent: CI does the half a fine-grained token can do, this does the other half.
+            Write-Host "[winget] submission run failed - finishing the pull request locally" -ForegroundColor Yellow
+            $branch = gh api "repos/LunarWerxs/winget-pkgs/branches" --paginate `
+                --jq "[.[] | select(.name | startswith(`"LunarWerxs.SageThumbs2K-$ver-`"))] | last | .name" 2>$null
+            $existing = gh pr list --repo microsoft/winget-pkgs --state open --limit 50 `
+                --json headRefName --jq "[.[] | select(.headRefName == `"$branch`")] | length" 2>$null
+            if (-not $branch) {
+                Write-Host "  no manifest branch for $ver on the fork - Komac failed EARLIER than the PR step." -ForegroundColor Yellow
+                Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
+            } elseif ($existing -and [int]$existing -gt 0) {
+                Write-Host "  a PR from $branch is already open - nothing to do." -ForegroundColor DarkGray
+            } else {
+                $prUrl = gh pr create --repo microsoft/winget-pkgs --base master `
+                    --head "LunarWerxs:$branch" `
+                    --title "New version: LunarWerxs.SageThumbs2K version $ver" `
+                    --body "### Pull request has been created with [WinGet Releaser](https://github.com/vedantmgoyal9/winget-releaser) :rocket:" 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "  winget PR opened: $prUrl" -ForegroundColor Green
+                } else {
+                    Write-Host "  could not open the PR: $prUrl" -ForegroundColor Yellow
+                    Write-Host "  the manifests ARE pushed; open it by hand from $branch." -ForegroundColor Yellow
+                    Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
+                }
+            }
         }
     } else {
         $dl = "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/$tag/$($x64Artifact[0].Setup.Name)"

@@ -11,18 +11,20 @@
 #      a branch to your fork and opening a PR from it, so no fork means no submission:
 #         gh repo fork microsoft/winget-pkgs --clone=false
 #
-# TWO SECRETS, because the two halves of this job need different powers (2026-08-07):
-#   WINGET_TOKEN     - used for the fork checks and the upstream sync. A FINE-GRAINED token is
-#                      fine here: those act on repositories YOU own, and the fork is yours.
-#   WINGET_PR_TOKEN  - used for the submission. OPTIONAL; falls back to WINGET_TOKEN when
-#                      unset. This one must be CLASSIC (`public_repo`), because the final step
-#                      opens a pull request on microsoft/winget-pkgs, a repo the account does
-#                      NOT own, and a fine-grained token cannot be granted permission on
-#                      somebody else's repository at all.
-# That distinction cost the 1.8.1 release: a fine-grained token passed the fork sync and the
-# branch push, then failed with "Resource not accessible by personal access token / failed to
-# create pull request", and the PR had to be opened by hand. Splitting the secrets means a
-# fine-grained token can stay in place for the parts it genuinely covers.
+# THE PULL-REQUEST STEP CANNOT WORK FROM A FINE-GRAINED TOKEN, and no permission setting
+# changes that (measured 2026-08-07, not inferred): a fine-grained PAT only carries permissions
+# on repositories the account OWNS, so its access to microsoft/winget-pkgs reads
+# `{pull: true, push: false, ...}` and `POST /repos/microsoft/winget-pkgs/pulls` answers 403 —
+# not the 422 an already-existing PR would return, which is how we know it is the permission
+# and not the request. Only a classic PAT can do it, and this project does not use those.
+#
+# So the work is SPLIT, and the failure below is expected and handled:
+#   * this workflow does what a fine-grained WINGET_TOKEN genuinely can - check the fork, sync
+#     it with upstream, and let Komac push the manifest branch;
+#   * `scripts/release.ps1` then opens the pull request from that branch using the maintainer's
+#     LOCAL `gh`, whose OAuth login already carries the scope the PAT cannot hold.
+# Net effect: winget still publishes on every release, with no classic token anywhere.
+# WINGET_PR_TOKEN is honoured if it ever exists, but nothing depends on it.
 # The FIRST package submission is done by hand with Komac (the action is for updates);
 # every release after that is automatic via this workflow.
 #
