@@ -33,8 +33,24 @@ pub fn register_portable(off: bool, status: bool) -> Result<String, String> {
         return Ok("Explorer thumbnails turned OFF for this user.".into());
     }
 
-    // The DLL has to sit next to us. An installed build has it in Program Files and is
-    // already registered machine-wide, so saying which file is missing beats "failed".
+    // PORTABLE ONLY, and "the DLL is beside us" is NOT a good enough test for that: an installed
+    // build has sagethumbs2k.dll right next to st2k.exe in Program Files, so the exists-check
+    // below passes there too. Registering from an installed copy writes OUR CLSID into
+    // HKCU\Software\Classes, which the shell merges AHEAD of the machine-wide view — and the
+    // uninstaller only removes HKCU\Software\SageThumbs2K (the settings), never these class keys.
+    // The result is a per-user handler that outlives the uninstall, still pointing at a deleted
+    // Program Files DLL, silently killing thumbnails for that user with nothing to blame.
+    if !settings::portable() {
+        return Err(
+            "this is an installed copy, which already registers thumbnails machine-wide.\n\
+             `st2k register` is for the portable zip only — using it here would leave a per-user \
+             registration behind that survives uninstall and blocks thumbnails.\n\
+             Use Settings ▸ Diagnostics ▸ Repair file associations instead.\n\
+             (If a previous run already did this, `st2k register --off` clears it.)"
+                .into(),
+        );
+    }
+
     let exe = std::env::current_exe().map_err(|e| format!("could not locate this exe: {e}"))?;
     let dll = exe
         .parent()
