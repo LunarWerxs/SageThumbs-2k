@@ -267,18 +267,24 @@ exit `$code
 "@ | Set-Content $payload -Encoding UTF8
         $p = Start-Process pwsh -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile', '-File', $payload)
         Start-Process explorer.exe   # unelevated shell restart
-        # Restart the screenshot-hotkey daemon we killed, UNELEVATED (an elevated
-        # daemon is deaf to Settings per UIPI) and only if its autostart entry exists.
-        $run = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue
-        if ($run -and $run.SageThumbs2KScreenshot) {
-            # Launch our known Run entry directly. `cmd /c <resident process>` keeps
-            # cmd.exe alive for the daemon's entire lifetime, which misleadingly
-            # creates a second background executable after verification.
-            $daemonCommand = [string]$run.SageThumbs2KScreenshot
-            if ($daemonCommand -notmatch '^\s*"([^"]+)"\s+--screenshot-daemon\s*$') {
-                throw "Unexpected SageThumbs2KScreenshot Run entry: $daemonCommand"
-            }
-            Start-Process -FilePath $Matches[1] -ArgumentList '--screenshot-daemon' -WindowStyle Hidden
+        # Bring the resident helper back, exactly as installer.iss does after a real setup
+        # (its `--heal-hotkeys` [Run] entry). The install killed it to replace the EXE, and
+        # nothing else restarts it until the next logon.
+        #
+        # UNELEVATED on purpose: a daemon that inherits this script's elevation is UIPI-deaf
+        # to a normal Settings window, so later hotkey changes silently stop applying. Same
+        # reason installer.iss marks its entry runasoriginaluser.
+        #
+        # This used to be gated on the SageThumbs2KScreenshot autostart entry, which only
+        # exists when the screenshot HOTKEY is on — but the daemon also owns the Space hook
+        # that Quick preview needs (`daemon_wanted` = screenshots OR custom hotkey OR
+        # preview). Anyone running Quick preview with the hotkey off therefore got no daemon
+        # at all after a dev reinstall, and Space stayed dead until they opened Settings,
+        # which calls heal_if_wanted itself. Letting the app decide covers every case and is
+        # a silent no-op when nothing wants it.
+        $appExe = 'C:\Program Files\SageThumbs2K\SageThumbs2K.exe'
+        if (Test-Path $appExe) {
+            Start-Process -FilePath $appExe -ArgumentList '--heal-hotkeys' -WindowStyle Hidden
         }
         if ($p.ExitCode -ne 0) {
             Write-Host "[verify] elevated install exited $($p.ExitCode) — log:" -ForegroundColor Red
