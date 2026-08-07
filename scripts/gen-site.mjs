@@ -96,7 +96,16 @@ html = html.slice(0, startIdx) + block + html.slice(endIdx);
 // and overrides the pills + softwareVersion at runtime, so a new release does NOT need
 // a site redeploy for the version to update. Keep both: this sets the value shown when
 // the API is unreachable/rate-limited; the script sets it when it isn't.
-html = html.replace(/\bv\d+\.\d+\.\d+\b/g, 'v' + VERSION);
+// Scoped to the pills ON PURPOSE. This used to be a blanket /\bv\d+\.\d+\.\d+\b/g,
+// which rewrote EVERY version-shaped string in the file - including the illustrative
+// `// "v1.2.3" -> "1.2.3"` comment in the updater script below, whose left half kept
+// getting stamped with the release of the day while the right half (no `v` prefix)
+// did not, leaving a comment that contradicted itself. Any "since vX.Y.Z" note, alt
+// text or versioned URL added later would have been silently rewritten the same way.
+const pillRe = /(class="js-app-version">)v\d+\.\d+\.\d+(<)/g;
+const pills = (html.match(pillRe) || []).length;
+if (pills < 2) throw new Error(`expected at least 2 .js-app-version pills, found ${pills} - did the markup change?`);
+html = html.replace(pillRe, `$1v${VERSION}$2`);
 html = html.replace(/("softwareVersion":\s*")\d+\.\d+\.\d+(")/g, `$1${VERSION}$2`);
 
 fs.writeFileSync(SITE, html);
