@@ -111,6 +111,11 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_REBUILD_CACHE, "btn_rebuild_cache"),
         (ID_REPAIR_ASSOC, "btn_repair_assoc"),
         (ID_RUN_DOCTOR, "btn_run_doctor"),
+        // Seeds the OFF-state caption; the call at the end of this function immediately
+        // corrects it to the on/off variant that matches the live registration. Listing it
+        // here is what makes it retranslate at all — `on_lang_change` only calls
+        // `apply_labels`, it does not re-run `load_values`.
+        (ID_PORTABLE_REG, "btn_portable_register"),
         (ID_UPDATE_AUTO, "chk_update_auto"),
         (ID_CHECK_UPDATES, "btn_check_updates"),
         (ID_LBL_UPDATES, "grp_updates"),
@@ -178,6 +183,10 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     }
     // The hover hints were also baked in the old language — re-text them.
     refresh_tooltips(hwnd);
+    // The portable registration button's caption and its status word are state-dependent, so
+    // the table above can only seed one of the two variants. Re-derive them in the new
+    // language now that everything else has been re-texted.
+    set_portable_reg_state(hwnd);
 }
 
 pub(super) unsafe fn set_dlg_text(hwnd: HWND, id: i32, s: &str) {

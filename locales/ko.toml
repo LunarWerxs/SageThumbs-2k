@@ -352,3 +352,12 @@ fr_shot = "스크린샷 단축키 켜기"
 fr_shot_sub = "Ctrl+PrtScn을 누르면 화면의 어느 부분이든 캡처하고 표시하고 복사할 수 있습니다."
 fr_prtscn = "Ctrl+PrtScn 대신 PrtScn만 사용 (Print Screen으로 Windows 캡처 도구가 열리지 않습니다)"
 fr_go = "시작하기"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "썸네일 처리기를 사용자 계정에만 등록하여 탐색기가 이 폴더의 썸네일을 표시할 수 있도록 합니다. 관리자 권한이 필요 없고 컴퓨터 전체에 영향을 주지 않습니다. 이 폴더를 이동하거나 삭제하기 전에 꺼 두세요."
+btn_portable_register = "탐색기 썸네일 켜기"
+btn_portable_unregister = "탐색기 썸네일 끄기"
+state_on = "켜짐"
+state_off = "꺼짐"
+msg_portable_dll_missing = "이 폴더에 sagethumbs2k.dll이 없습니다. 휴대용 다운로드 전체의 압축을 풀고 다시 시도하세요."
+msg_portable_reg_failed = "Windows에서 사용자 계정에 대한 등록을 기록하지 못했습니다."

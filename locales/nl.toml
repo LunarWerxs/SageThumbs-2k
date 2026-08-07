@@ -352,3 +352,12 @@ fr_shot = "Sneltoets voor schermafbeeldingen inschakelen"
 fr_shot_sub = "Druk op Ctrl+PrtScn om elk deel van het scherm vast te leggen, te markeren en te kopiëren."
 fr_prtscn = "Alleen PrtScn gebruiken in plaats van Ctrl+PrtScn (Print Screen opent dan niet meer het Windows Knipprogramma)"
 fr_go = "Aan de slag"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Registreert de miniaturenhandler alleen voor uw gebruikersaccount, zodat Verkenner miniaturen uit deze map kan tonen. Geen beheerdersrechten, niets systeembreed. Zet dit uit voordat u deze map verplaatst of verwijdert."
+btn_portable_register = "Verkenner-miniaturen aan"
+btn_portable_unregister = "Verkenner-miniaturen uit"
+state_on = "Aan"
+state_off = "Uit"
+msg_portable_dll_missing = "sagethumbs2k.dll staat niet in deze map. Pak de volledige portable download uit en probeer het opnieuw."
+msg_portable_reg_failed = "Windows liet ons de registratie voor uw gebruikersaccount niet schrijven."

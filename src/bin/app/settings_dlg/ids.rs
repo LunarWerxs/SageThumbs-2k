@@ -153,6 +153,11 @@ pub(super) const ID_PREVIEW_URL_LIVE: i32 = 1210;
 // Generic-archive (.zip/.rar/.7z) contact-sheet thumbnails (Ebook/comic tab).
 pub(super) const ID_C_ARCHIVE_SHEET: i32 = 1212;
 pub(super) const ID_FORMAT_BADGE: i32 = 1213;
+/// Portable build only: turn the per-user Explorer thumbnail registration on/off, plus the
+/// status line that says which it currently is. Hidden entirely on an installed build, where
+/// the machine-wide registration already covers it and a second switch would only confuse.
+pub(super) const ID_PORTABLE_REG: i32 = 1214;
+pub(super) const ID_PORTABLE_REG_STATUS: i32 = 1215;
 
 /// Per-item menu-visibility checkboxes (XnShell-style "Displayed menu items").
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's

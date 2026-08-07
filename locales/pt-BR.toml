@@ -352,3 +352,12 @@ fr_shot = "Ativar o atalho de captura de tela"
 fr_shot_sub = "Pressione Ctrl+PrtScn para capturar, anotar e copiar qualquer parte da tela."
 fr_prtscn = "Usar só PrtScn em vez de Ctrl+PrtScn (o Print Screen deixa de abrir a Ferramenta de Captura do Windows)"
 fr_go = "Começar"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Registra o manipulador de miniaturas apenas para sua conta de usuário, para que o Explorador possa desenhar miniaturas desta pasta. Sem direitos de administrador, nada em todo o computador. Desative isso antes de mover ou excluir esta pasta."
+btn_portable_register = "Ligar miniaturas Explorador"
+btn_portable_unregister = "Desligar miniaturas Explorador"
+state_on = "Ativado"
+state_off = "Desativado"
+msg_portable_dll_missing = "O sagethumbs2k.dll não está nesta pasta. Descompacte todo o download portátil e tente novamente."
+msg_portable_reg_failed = "O Windows não nos permitiu gravar o registro para sua conta de usuário."

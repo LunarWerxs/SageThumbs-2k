@@ -21,6 +21,7 @@ USAGE:
   st2k info      <in> [--json]                  dimensions + camera/date/GPS
   st2k formats   [--json]                       list supported input formats
   st2k doctor    [file]                         self-check: why are thumbnails not showing? (add a file to probe it)
+  st2k register  [--off|--status]               portable build: turn Explorer thumbnails on for this user
   st2k upload-hosts [--open]                     show (or open) the editable upload-hosts config file
   st2k devmode   [on|off|status]                toggle the developer test-box flag
   st2k --mcp                                     run as an MCP server (stdio JSON-RPC, for AI agents)
@@ -115,6 +116,16 @@ fn run(args: &[String]) -> Result<String, String> {
         "doctor" | "diag" => Ok(sagethumbs2k_core::doctor::report(
             pos.first().map(|s| s.as_str()),
         )),
+        "register" | "unregister" => {
+            // One verb, because "register --off" and "unregister" are the same action and
+            // having both spellings fail differently would be its own bug report.
+            let off = verb == "unregister"
+                || has_flag(rest, "--off")
+                || pos.first().is_some_and(|p| p.as_str() == "off");
+            let status =
+                has_flag(rest, "--status") || pos.first().is_some_and(|p| p.as_str() == "status");
+            cli::register_portable(off, status)
+        }
         "upload-hosts" | "upload-host" => {
             let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");
             cli::upload_hosts(open)

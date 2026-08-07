@@ -13,6 +13,49 @@ use crate::{decode, formats, ocr, settings, strip, topdf, verbs};
 /// `st2k devmode on|off|status`: toggle the developer-test-box flag (the HKCU `DevMachine`
 /// value). When ON, this machine's startup manifest request carries `&dev=1`. A plain
 /// machine-local flag, not an identifier; OFF on every real install.
+/// Turn Explorer thumbnails on/off for THIS USER, pointing at the DLL shipped beside this
+/// exe. This is what makes the portable zip more than a bag of tools: the handler is COM, so
+/// it has to be registered somewhere, and `HKCU\Software\Classes` is the somewhere that needs
+/// no installer and no admin. See `register::register_user` for what a per-user registration
+/// can and cannot cover.
+pub fn register_portable(off: bool, status: bool) -> Result<String, String> {
+    let current = crate::register::user_registration_path();
+
+    if status {
+        return Ok(match current {
+            Some(p) => format!("Explorer thumbnails: ON for this user\n  handler: {p}"),
+            None => "Explorer thumbnails: OFF for this user".into(),
+        });
+    }
+
+    if off {
+        crate::register::unregister_user().map_err(|e| format!("could not unregister: {e}"))?;
+        return Ok("Explorer thumbnails turned OFF for this user.".into());
+    }
+
+    // The DLL has to sit next to us. An installed build has it in Program Files and is
+    // already registered machine-wide, so saying which file is missing beats "failed".
+    let exe = std::env::current_exe().map_err(|e| format!("could not locate this exe: {e}"))?;
+    let dll = exe
+        .parent()
+        .ok_or("this exe has no parent directory")?
+        .join("sagethumbs2k.dll");
+    if !dll.exists() {
+        return Err(format!(
+            "{} is not here.\nThis verb is for the portable zip, which ships that DLL beside the exes.",
+            dll.display()
+        ));
+    }
+    let dll = dll.to_string_lossy().into_owned();
+
+    crate::register::register_user(&dll).map_err(|e| format!("could not register: {e}"))?;
+    let mut out = format!("Explorer thumbnails turned ON for this user.\n  handler: {dll}");
+    // Moving the folder later leaves the keys aimed at a path that no longer exists, and the
+    // symptom is thumbnails quietly not drawing, so say it once here where it is cheap.
+    out.push_str("\n\nIf you move or delete this folder, run `st2k register --off` first.");
+    Ok(out)
+}
+
 pub fn devmode(sub: &str) -> Result<String, String> {
     match sub {
         "on" | "enable" | "1" => {

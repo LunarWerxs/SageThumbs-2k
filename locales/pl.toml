@@ -352,3 +352,12 @@ fr_shot = "Włącz skrót klawiszowy zrzutu ekranu"
 fr_shot_sub = "Naciśnij Ctrl+PrtScn, aby przechwycić, opisać i skopiować dowolny fragment ekranu."
 fr_prtscn = "Używaj samego PrtScn zamiast Ctrl+PrtScn (Print Screen przestanie otwierać Narzędzie Wycinanie systemu Windows)"
 fr_go = "Zaczynajmy"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Rejestruje obsługę miniatur tylko dla Twojego konta użytkownika, aby Eksplorator mógł wyświetlać miniatury z tego folderu. Bez uprawnień administratora, nic w skali całego komputera. Wyłącz to przed przeniesieniem lub usunięciem tego folderu."
+btn_portable_register = "Włącz miniatury Eksploratora"
+btn_portable_unregister = "Wyłącz miniatury Eksploratora"
+state_on = "Włączone"
+state_off = "Wyłączone"
+msg_portable_dll_missing = "Pliku sagethumbs2k.dll nie ma w tym folderze. Rozpakuj cały przenośny plik pobierania i spróbuj ponownie."
+msg_portable_reg_failed = "Windows nie pozwolił nam zapisać rejestracji dla Twojego konta użytkownika."

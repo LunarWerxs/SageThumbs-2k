@@ -17,7 +17,7 @@
 
 use windows::core::Result;
 use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
-use windows_registry::{CLASSES_ROOT, LOCAL_MACHINE};
+use windows_registry::{Key, CLASSES_ROOT, CURRENT_USER, LOCAL_MACHINE};
 
 use crate::guids::{
     CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
@@ -519,4 +519,159 @@ pub fn is_registered() -> bool {
         .ok()
         .and_then(|k| k.get_string("").ok())
         .is_some_and(|p| !p.is_empty())
+}
+
+// ── per-user registration (the portable build) ────────────────────────────────
+//
+// Everything above writes HKCR/HKLM and therefore needs elevation. This section is the
+// same idea rooted at `HKCU\Software\Classes`, which the shell merges into HKCR ahead of
+// the machine-wide view, so a user who cannot install anything still gets thumbnails from
+// a DLL sitting in a folder they unzipped.
+//
+// PROVEN, not assumed (2026-08-06): with only these keys written, a DLL outside Program
+// Files, and no elevation, `IShellItemImageFactory::GetImage` with SIIGBF_THUMBNAILONLY
+// returned a real 256x192 32bpp bitmap for a hooked extension, and failed with
+// 0x8004B200 for an unhooked control extension.
+//
+// WHAT IS DELIBERATELY ABSENT, because HKCU cannot express it:
+//   * the Approved list (HKLM). Only enforced under the EnforceShellExtensionSecurity
+//     policy, which is off by default; on a machine that enforces it, per-user handlers
+//     are meant to be refused, and quietly failing there is the correct behaviour.
+//   * the preview handler: `PreviewHandlers` is an HKLM list, so the Explorer PREVIEW PANE
+//     stays installer-only.
+//   * the property handler: `PropertySystem\PropertyHandlers` is likewise HKLM, so the
+//     Details pane stays installer-only.
+//   * the modern Win11 flyout, which needs the signed package in a machine store.
+// Thumbnails and the classic right-click menu are what a zip can actually deliver.
+
+/// `HKCU\Software\Classes` — the per-user half of `HKEY_CLASSES_ROOT`.
+fn user_classes() -> Result<Key> {
+    CURRENT_USER.create(r"Software\Classes")
+}
+
+/// Register the thumbnail provider + classic context menu for THIS USER ONLY, pointing at
+/// `dll_path`. No elevation, and it never touches the machine-wide hive, so it cannot
+/// disturb an installed copy.
+pub fn register_user(dll_path: &str) -> Result<()> {
+    let classes = user_classes()?;
+    for (clsid, name) in [
+        (CLSID_THUMBNAIL_PROVIDER_STR, NAME),
+        (CLSID_CONTEXT_MENU_STR, CM_NAME),
+    ] {
+        let base = format!("CLSID\\{clsid}");
+        classes.create(&base)?.set_string("", name)?;
+        let inproc = classes.create(format!("{base}\\InprocServer32"))?;
+        inproc.set_string("", dll_path)?;
+        inproc.set_string("ThreadingModel", "Apartment")?;
+    }
+
+    // Same per-extension layout as the machine-wide path, so precedence behaves identically.
+    // Best-effort per extension: one locked-down key must not abort the rest.
+    for (ext, _) in crate::formats::FORMATS {
+        if settings::format_enabled(ext) {
+            for path in thumb_keys(ext) {
+                if let Ok(k) = classes.create(&path) {
+                    let _ = k.set_string("", CLSID_THUMBNAIL_PROVIDER_STR);
+                }
+            }
+        } else {
+            remove_user_if_ours(&classes, ext);
+        }
+    }
+
+    if let Ok(k) = classes.create("*\\shellex\\ContextMenuHandlers\\SageThumbs2K") {
+        let _ = k.set_string("", CLSID_CONTEXT_MENU_STR);
+    }
+
+    notify_shell();
+    Ok(())
+}
+
+/// Undo [`register_user`]. Removes only keys whose value is OUR CLSID, so a handler another
+/// product owns is never collateral damage, and leaves the machine-wide hive alone.
+pub fn unregister_user() -> Result<()> {
+    let classes = user_classes()?;
+    for (ext, _) in crate::formats::FORMATS {
+        remove_user_if_ours(&classes, ext);
+    }
+    for ext in crate::formats::REMOVED_EXTENSIONS {
+        remove_user_if_ours(&classes, ext);
+    }
+    if let Ok(k) = classes.open("*\\shellex\\ContextMenuHandlers\\SageThumbs2K") {
+        if k.get_string("").ok().as_deref() == Some(CLSID_CONTEXT_MENU_STR) {
+            let _ = classes.remove_tree("*\\shellex\\ContextMenuHandlers\\SageThumbs2K");
+        }
+    }
+    let _ = classes.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
+    let _ = classes.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
+    notify_shell();
+    Ok(())
+}
+
+/// Drop one extension's per-user thumbnail hooks, ours only, and prune the containers we
+/// created on the way in. Without the prune, turning the feature off leaves an empty
+/// `.<ext>\shellex` behind for every one of the 300+ formats — litter in the user's own hive
+/// that looks like a half-removed handler to anyone who goes looking.
+fn remove_user_if_ours(classes: &Key, ext: &str) {
+    for path in thumb_keys(ext) {
+        let ours = classes
+            .open(&path)
+            .ok()
+            .and_then(|k| k.get_string("").ok())
+            .as_deref()
+            == Some(CLSID_THUMBNAIL_PROVIDER_STR);
+        if !ours {
+            continue;
+        }
+        let _ = classes.remove_tree(&path);
+        // Walk back up: `<assoc>\shellex`, then `<assoc>`. Stop at the first parent that
+        // still holds something, so a foreign handler or a populated key is never collateral.
+        let Some(shellex) = path.rsplit_once('\\').map(|(parent, _)| parent) else {
+            continue;
+        };
+        if !user_key_is_empty(classes, shellex) {
+            continue;
+        }
+        let _ = classes.remove_tree(shellex);
+        if let Some(assoc) = shellex.rsplit_once('\\').map(|(parent, _)| parent) {
+            if user_key_is_empty(classes, assoc) {
+                let _ = classes.remove_tree(assoc);
+            }
+        }
+    }
+}
+
+/// No subkeys and no values. Missing counts as NOT empty so a failed open never licenses a
+/// delete (mirrors `is_empty_key`, which guards the machine-wide path the same way).
+fn user_key_is_empty(classes: &Key, path: &str) -> bool {
+    let Ok(key) = classes.open(path) else {
+        return false;
+    };
+    let no_subkeys = key
+        .keys()
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false);
+    let no_values = key
+        .values()
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false);
+    no_subkeys && no_values
+}
+
+/// The DLL path currently registered for THIS USER, if any.
+///
+/// Returns the path rather than a bool because the portable build has to answer a question a
+/// bool cannot: whether the registration points at *this* copy. A user who unzips a second
+/// copy, or moves the folder, leaves keys aimed at a DLL that is no longer there, and the
+/// symptom is thumbnails silently not appearing.
+pub fn user_registration_path() -> Option<String> {
+    user_classes()
+        .ok()?
+        .open(format!(
+            "CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}\\InprocServer32"
+        ))
+        .ok()?
+        .get_string("")
+        .ok()
+        .filter(|p| !p.is_empty())
 }

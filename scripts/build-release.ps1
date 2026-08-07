@@ -200,16 +200,11 @@ if (-not $SkipBuild) {
     # (built above, full 36-language table) are a DIFFERENT package, so there's no
     # feature-unification clash — the two `-p` builds key their core-crate artifacts by
     # feature set independently. Same `webp-lossy` so the slim DLL is otherwise identical.
-    # A portable drop ships no DLL (nothing registers it), so this whole ~90 s pass is dead
-    # weight there — and worse, it would overwrite the target dir's DLL with the slim
-    # menu_*-only build as a side effect of producing a zip that doesn't contain one.
-    if ($Portable) {
-        Write-Host "[1b/4] -Portable: skipping the slim DLL build (the zip ships no DLL)" -ForegroundColor Yellow
-    } else {
-        Write-Host "[1b/4] cargo build $($dllBuildArgs -join ' ')  (slim DLL)" -ForegroundColor Green
-        Push-Location $root
-        try { cargo build @dllBuildArgs; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
-    }
+    # The portable zip ships this DLL too (see the staging note below), so it is built here
+    # like any other configuration. It was skipped while the zip contained no DLL.
+    Write-Host "[1b/4] cargo build $($dllBuildArgs -join ' ')  (slim DLL)" -ForegroundColor Green
+    Push-Location $root
+    try { cargo build @dllBuildArgs; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
 }
 
 # 3) Stage -------------------------------------------------------------------
@@ -222,10 +217,10 @@ New-Item -ItemType Directory $stage -Force | Out-Null
 # still come from the full-table main build. (Verify: the slim DLL must NOT contain
 # an app-only translated string like the German `about_tagline`, but MUST contain a
 # `menu_*` value — see the script header / build.rs note.)
-# (-Portable skips this: the slim DLL build was skipped too, so whatever sits at $targetRel
-# is some earlier build's leftover — staging it would put a stale, unasked-for DLL in the
-# tree even though the zip filters it out again below.)
-if (-not $Portable) { Copy-Item "$targetRel\sagethumbs2k.dll" $stage }
+# The portable zip carries the same slim DLL: `st2k register` points HKCU at it, which is how
+# a no-install copy gets Explorer thumbnails at all. Under -SkipBuild this is whatever the
+# preceding installer pass built for this architecture, which is exactly what we want.
+Copy-Item "$targetRel\sagethumbs2k.dll" $stage
 # The cargo bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly
 # (build.rs redirects its PDB to avoid the case-collision with the DLL — see Cargo.toml).
 Copy-Item "$targetRel\SageThumbs2K.exe" $stage
@@ -669,10 +664,16 @@ if ($Portable) {
     if (Test-Path $portableStage) { Remove-Item $portableStage -Recurse -Force }
     New-Item -ItemType Directory $portableStage -Force | Out-Null
 
-    # The shell extension and its sideloading apparatus are install-only by nature and must
-    # not travel in a zip: a DLL nothing registered is dead weight, and the .msix/.cer pair
-    # only means anything to an installer that trusts the cert and calls Add-AppxPackage.
-    $installOnly = 'sagethumbs2k.dll', 'SageThumbs2K.msix', 'SageThumbs2K.cer', 'AppxManifest.xml'
+    # The .msix/.cer pair stays install-only: it only means anything to an installer that
+    # trusts the cert into a machine store and calls Add-AppxPackage, which is admin work.
+    #
+    # The DLL, however, DOES travel now (changed 2026-08-06). It used to be excluded on the
+    # reasoning that a DLL nothing registered is dead weight - true, but the premise was
+    # wrong: `st2k register` writes HKCU\Software\Classes and the shell honours a per-user
+    # thumbnail handler with no elevation at all (measured: a real 256x192 bitmap out of
+    # IShellItemImageFactory from a DLL outside Program Files). Without it the zip could
+    # never show an Explorer thumbnail, which is the thing SageThumbs is FOR.
+    $installOnly = 'SageThumbs2K.msix', 'SageThumbs2K.cer', 'AppxManifest.xml'
     Get-ChildItem $stage -File |
         Where-Object { $installOnly -notcontains $_.Name } |
         Copy-Item -Destination $portableStage
@@ -707,20 +708,36 @@ if ($Portable) {
     Set-Content -LiteralPath "$portableStage\PORTABLE.txt" -Encoding utf8 -Value @(
         "SageThumbs 2K $ver - portable"
         ''
-        'Extract anywhere and run SageThumbs2K.exe. Nothing is installed, nothing is'
-        'written to the registry, and no administrator rights are needed. Settings live'
-        'in SageThumbs2K.ini next to the exe; delete that file and the app goes back to'
-        'storing them in the registry like the installed build does.'
+        'Extract anywhere and run SageThumbs2K.exe. Nothing is installed and no'
+        'administrator rights are needed. Settings live in SageThumbs2K.ini next to the'
+        'exe; delete that file and the app goes back to storing them in the registry like'
+        'the installed build does.'
         ''
         'WHAT YOU GET'
         '  SageThumbs2K.exe   settings, convert/resize, quick preview, screenshots, OCR,'
         '                     the colour picker, and the folder tools'
         '  st2k.exe           the command line tool and MCP server (run: st2k --help)'
         ''
-        'WHAT YOU DO NOT GET'
-        '  Explorer thumbnails and the right-click menu. Windows only loads a shell'
-        '  extension whose COM class is registered, so those cannot work from a zip by'
-        '  definition - not a limitation we chose. Install the normal build for those.'
+        'EXPLORER THUMBNAILS (opt-in)'
+        '  Off until you ask for them, because they are the one part that has to write to'
+        '  the registry. Windows only draws a thumbnail for a handler whose COM class is'
+        '  registered, so there is no way around that. Turn them on with:'
+        ''
+        '      st2k register'
+        ''
+        '  or the button in Settings. It writes to your own user account only, needs no'
+        '  administrator rights, and touches nothing machine-wide. Undo it with:'
+        ''
+        '      st2k register --off'
+        ''
+        '  Run that BEFORE you move or delete this folder, otherwise the keys are left'
+        '  pointing at a file that is gone and thumbnails just quietly stop appearing.'
+        '  The classic right-click menu comes with it.'
+        ''
+        'WHAT STILL NEEDS THE INSTALLER'
+        '  The Explorer preview pane, the Details pane columns, and the Windows 11'
+        '  right-click menu. Those are registered machine-wide by design, so they need'
+        '  administrator rights and a real install.'
         ''
         'The screenshot tool runs while the app is open but does not add itself to logon'
         'startup, since this copy can be moved or unplugged at any time.'

@@ -352,3 +352,12 @@ fr_shot = "Attiva la scorciatoia per gli screenshot"
 fr_shot_sub = "Premi Ctrl+PrtScn per catturare, annotare e copiare qualsiasi parte dello schermo."
 fr_prtscn = "Usa solo PrtScn invece di Ctrl+PrtScn (Stamp non aprirà più lo Strumento di cattura di Windows)"
 fr_go = "Iniziamo"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Registra il gestore delle miniature solo per il tuo account utente, così Esplora file può disegnare le miniature da questa cartella. Nessun diritto da amministratore, niente a livello di sistema. Disattivalo prima di spostare o eliminare questa cartella."
+btn_portable_register = "Attiva miniature Esplora file"
+btn_portable_unregister = "Spegni miniature Esplora file"
+state_on = "Attivo"
+state_off = "Disattivo"
+msg_portable_dll_missing = "sagethumbs2k.dll non è in questa cartella. Estrai l'intero download portatile e riprova."
+msg_portable_reg_failed = "Windows non ci ha permesso di scrivere la registrazione per il tuo account utente."

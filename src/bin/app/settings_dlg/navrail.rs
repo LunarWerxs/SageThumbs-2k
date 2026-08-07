@@ -52,24 +52,53 @@ pub(super) enum Row {
 
 // Category order: General (Thumbnails+General merged) · File types · Ebook/comic ·
 // Right-click menu · Screenshots · Advanced.
+/// General = the merged Thumbnails + General (Custom action is its own tab now).
+const GENERAL: [Row; 12] = {
+    use Row::*;
+    [
+        Switch(ID_ENABLE_THUMBS),
+        Switch(ID_USE_EMBEDDED),
+        Switch(ID_FORMAT_BADGE),
+        Head(ID_LBL_LIMITS),
+        Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
+        Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
+        Pair(ID_LBL_JPEG, ID_JPEG, 84, 18),
+        Pair(ID_LBL_PNG, ID_PNG, 84, 18),
+        Head(ID_LBL_GENERAL), // "Language & files"
+        Pair(ID_LBL_LANG, ID_LANG, 156, 200),
+        Switch(ID_PRESERVE_DATE),
+        Switch(ID_KEEP_METADATA),
+    ]
+};
+
+/// Advanced — system behaviors only: Diagnostics / Updates / Hotkey service.
+/// (Settings sync + Backup moved to their own "Data & Backup" tab.)
+/// Index 0 is the portable-only registration row; an installed build takes `ADVANCED[1..]`,
+/// so there is one list here rather than two that could drift apart.
+const ADVANCED: [Row; 12] = {
+    use Row::*;
+    [
+        BtnStatus(ID_PORTABLE_REG, 240, ID_PORTABLE_REG_STATUS),
+        Head(ID_LBL_DIAG),
+        Switch(ID_VERBOSE_LOG),
+        Btn(ID_OPEN_LOG, 320),
+        Btn(ID_REBUILD_CACHE, 320),
+        Btn(ID_REPAIR_ASSOC, 320),
+        Btn(ID_RUN_DOCTOR, 320),
+        Head(ID_LBL_UPDATES),
+        Switch(ID_UPDATE_AUTO),
+        Btn(ID_CHECK_UPDATES, 184),
+        // The service's state + Restart moved to the Screenshots page (see category 4);
+        // what stays here is the one genuinely system-level preference it owns.
+        Head(ID_LBL_HOTKEY_SVC),
+        Switch(ID_SHOT_HIDE_TRAY),
+    ]
+};
+
 pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
     use Row::*;
     match ci {
-        0 => &[
-            // General = the merged Thumbnails + General (Custom action is its own tab now).
-            Switch(ID_ENABLE_THUMBS),
-            Switch(ID_USE_EMBEDDED),
-            Switch(ID_FORMAT_BADGE),
-            Head(ID_LBL_LIMITS),
-            Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
-            Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
-            Pair(ID_LBL_JPEG, ID_JPEG, 84, 18),
-            Pair(ID_LBL_PNG, ID_PNG, 84, 18),
-            Head(ID_LBL_GENERAL), // "Language & files"
-            Pair(ID_LBL_LANG, ID_LANG, 156, 200),
-            Switch(ID_PRESERVE_DATE),
-            Switch(ID_KEEP_METADATA),
-        ],
+        0 => &GENERAL,
         1 => &[
             Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),
             Wide(ID_SEARCH),
@@ -123,23 +152,13 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Pair(ID_LBL_SHOT_ACTION, ID_SHOT_ACTION, 156, 200),
             Pair(ID_LBL_SHOT_ACTION_HK, ID_SHOT_ACTION_HK, 156, 200),
         ],
-        6 => &[
-            // Advanced — system behaviors only: Diagnostics / Updates / Hotkey service.
-            // (Settings sync + Backup moved to their own "Data & Backup" tab.)
-            Head(ID_LBL_DIAG),
-            Switch(ID_VERBOSE_LOG),
-            Btn(ID_OPEN_LOG, 320),
-            Btn(ID_REBUILD_CACHE, 320),
-            Btn(ID_REPAIR_ASSOC, 320),
-            Btn(ID_RUN_DOCTOR, 320),
-            Head(ID_LBL_UPDATES),
-            Switch(ID_UPDATE_AUTO),
-            Btn(ID_CHECK_UPDATES, 184),
-            // The service's state + Restart moved to the Screenshots page (see category 4);
-            // what stays here is the one genuinely system-level preference it owns.
-            Head(ID_LBL_HOTKEY_SVC),
-            Switch(ID_SHOT_HIDE_TRAY),
-        ],
+        // Portable copies get one extra row (see ADVANCED). It lives here rather than on
+        // General, where it belongs by topic, purely because General is already 28px from
+        // the footer at 96 DPI and a fixed page cannot grow — `fixed_pages_keep_space_above_
+        // the_footer` catches that. Next to "Repair file associations" is the honest second
+        // choice: same family of "fix how Explorer sees us" actions.
+        6 if sagethumbs2k_core::settings::portable() => &ADVANCED,
+        6 => &ADVANCED[1..],
         // Quick preview — QuickLook-style "press Space, see the file". The master toggle drives
         // daemon residency (like Screenshots); the rest are viewer prefs. The HTML/.url rows only
         // exist when the `html-preview` feature is compiled in.
@@ -206,25 +225,43 @@ mod layout_tests {
         // still checks the actual live client rectangle as an additional guard.
         const MIN_FOOTER_Y: i32 = 496;
 
-        for ci in 0..NCAT {
-            if matches!(ci, 1 | 3) {
-                continue; // File Types and Right-click Menu intentionally scroll.
-            }
+        fn bottom_of(rows: &[Row], label: &str) -> i32 {
             let mut y = PANE_TOP + PANE_HEAD_H + 8;
             let mut first = true;
-            for &row in cat_rows(ci) {
+            for &row in rows {
                 let Some(next_y) = fixed_row_next_y(row, y, first) else {
-                    panic!("fixed settings category {ci} unexpectedly contains a list row");
+                    panic!("fixed settings page {label} unexpectedly contains a list row");
                 };
                 y = next_y;
                 first = false;
             }
+            y
+        }
+
+        for ci in 0..NCAT {
+            if matches!(ci, 1 | 3) {
+                continue; // File Types and Right-click Menu intentionally scroll.
+            }
+            let label = ci.to_string();
+            let y = bottom_of(cat_rows(ci), &label);
             assert!(
                 y <= MIN_FOOTER_Y - 12,
                 "settings category {ci} reaches the footer ({y} > {})",
                 MIN_FOOTER_Y - 12
             );
         }
+
+        // `cat_rows(6)` returns whichever Advanced variant matches THIS process, and a test
+        // run is never portable — so the taller portable page (the extra registration row)
+        // would otherwise never be measured, and would overflow only on a user's machine.
+        // This assertion is why that row is on Advanced at all: it caught General, which is
+        // already within 28px of the footer, being unable to take it.
+        let y = bottom_of(&ADVANCED, "Advanced (portable)");
+        assert!(
+            y <= MIN_FOOTER_Y - 12,
+            "the portable Advanced page reaches the footer ({y} > {})",
+            MIN_FOOTER_Y - 12
+        );
     }
 }
 

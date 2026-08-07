@@ -351,3 +351,12 @@ fr_shot = "Uključi tipkovni prečac za snimku zaslona"
 fr_shot_sub = "Pritisnite Ctrl+PrtScn za snimanje, označavanje i kopiranje bilo kojeg dijela zaslona."
 fr_prtscn = "Koristi samo PrtScn umjesto Ctrl+PrtScn (Print Screen više neće otvarati Windows alat za izrezivanje)"
 fr_go = "Krenimo"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Registrira rukovatelj sličicama samo za vaš korisnički račun, tako da Explorer može prikazivati sličice iz ove mape. Bez administratorskih prava, ništa na razini cijelog računala. Isključite ovo prije nego premjestite ili izbrišete ovu mapu."
+btn_portable_register = "Uključi sličice u Exploreru"
+btn_portable_unregister = "Isključi sličice u Exploreru"
+state_on = "Uključeno"
+state_off = "Isključeno"
+msg_portable_dll_missing = "sagethumbs2k.dll nije u ovoj mapi. Raspakirajte cijelo prijenosno preuzimanje i pokušajte ponovno."
+msg_portable_reg_failed = "Windows nam nije dopustio zapisati registraciju za vaš korisnički račun."

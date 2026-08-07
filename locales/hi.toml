@@ -351,3 +351,12 @@ fr_shot = "स्क्रीनशॉट हॉटकी चालू करे
 fr_shot_sub = "स्क्रीन का कोई भी हिस्सा कैप्चर करने, उस पर निशान लगाने और कॉपी करने के लिए Ctrl+PrtScn दबाएँ।"
 fr_prtscn = "Ctrl+PrtScn के बजाय अकेले PrtScn का उपयोग करें (Print Screen से Windows स्निपिंग टूल नहीं खुलेगा)"
 fr_go = "शुरू करें"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "यह थंबनेल हैंडलर को केवल आपके यूज़र खाते के लिए रजिस्टर करता है, ताकि Explorer इस फ़ोल्डर से थंबनेल दिखा सके। कोई एडमिनिस्ट्रेटर अधिकार नहीं, कुछ भी सिस्टम-व्यापी नहीं। इस फ़ोल्डर को हटाने या ले जाने से पहले इसे बंद कर दें।"
+btn_portable_register = "Explorer थंबनेल चालू करें"
+btn_portable_unregister = "Explorer थंबनेल बंद करें"
+state_on = "चालू"
+state_off = "बंद"
+msg_portable_dll_missing = "sagethumbs2k.dll इस फ़ोल्डर में नहीं है। पूरा पोर्टेबल डाउनलोड अनज़िप करें और फिर से कोशिश करें।"
+msg_portable_reg_failed = "Windows ने हमें आपके यूज़र खाते के लिए रजिस्ट्रेशन लिखने नहीं दिया।"

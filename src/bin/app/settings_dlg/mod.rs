@@ -479,6 +479,7 @@ const TOOLTIPS: &[(i32, &str)] = &[
     (ID_REBUILD_CACHE, "tip_rebuild_cache"),
     (ID_REPAIR_ASSOC, "tip_repair_assoc"),
     (ID_RUN_DOCTOR, "tip_run_doctor"),
+    (ID_PORTABLE_REG, "tip_portable_register"),
     (ID_UPDATE_AUTO, "tip_update_auto"),
     (ID_CHECK_UPDATES, "tip_check_updates"),
     (ID_RESET_ALL, "tip_reset_all"),
@@ -721,6 +722,77 @@ pub(super) unsafe fn set_shot_status(hwnd: HWND, txt: &str) {
         let w = wide(txt);
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
     }
+}
+
+/// Is this portable copy's per-user thumbnail registration pointing at the DLL sitting next
+/// to THIS exe? A registration aimed at a different (or deleted) copy reads as "on" while
+/// doing nothing, so the comparison is against the path, not mere presence.
+fn portable_registered_here() -> bool {
+    let Some(registered) = sagethumbs2k_core::register::user_registration_path() else {
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(dir) = exe.parent() else {
+        return false;
+    };
+    // Case-insensitive: the registry stores whatever case was written, Windows paths are not
+    // case-sensitive, and a mismatch here would show "off" for a working registration.
+    registered.eq_ignore_ascii_case(&dir.join("sagethumbs2k.dll").to_string_lossy())
+}
+
+/// Refresh the portable registration button + its status word to match reality.
+pub(super) unsafe fn set_portable_reg_state(hwnd: HWND) {
+    let on = portable_registered_here();
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_PORTABLE_REG_STATUS) {
+        let w = wide(t(if on { "state_on" } else { "state_off" }));
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+    }
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_PORTABLE_REG) {
+        let w = wide(t(if on {
+            "btn_portable_unregister"
+        } else {
+            "btn_portable_register"
+        }));
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+    }
+}
+
+/// Turn the per-user Explorer registration on or off, then re-read the real state rather
+/// than assuming the write landed.
+unsafe fn toggle_portable_registration(hwnd: HWND) {
+    let on = portable_registered_here();
+    let result = if on {
+        sagethumbs2k_core::register::unregister_user().map(|_| ())
+    } else {
+        match std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("sagethumbs2k.dll")))
+        {
+            Some(dll) if dll.exists() => {
+                sagethumbs2k_core::register::register_user(&dll.to_string_lossy())
+            }
+            // The DLL travels in the portable zip; if it is missing the copy was unpacked
+            // partially or pruned, and saying which file beats a bare "failed".
+            _ => {
+                crate::win::message_box(
+                    hwnd,
+                    t("msg_portable_dll_missing"),
+                    t("btn_portable_register"),
+                );
+                return;
+            }
+        }
+    };
+    if result.is_err() {
+        crate::win::message_box(
+            hwnd,
+            t("msg_portable_reg_failed"),
+            t("btn_portable_register"),
+        );
+    }
+    set_portable_reg_state(hwnd);
 }
 
 /// Update the save-folder display (ID_SHOT_DIR) to the effective folder (the configured
@@ -1125,6 +1197,7 @@ pub(crate) extern "system" fn wndproc(
                     ID_REPAIR_ASSOC => repair_associations(hwnd),
                     // Owned modal, like the feedback box: Settings stays open behind it.
                     ID_RUN_DOCTOR => crate::doctor_report::run_doctor_report(Some(hwnd)),
+                    ID_PORTABLE_REG => toggle_portable_registration(hwnd),
                     ID_CHECK_UPDATES => show_about(hwnd),
                     nav if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&nav)
                         && notify == STN_CLICKED =>

@@ -352,3 +352,12 @@ fr_shot = "Aktifkan pintasan tangkapan layar"
 fr_shot_sub = "Tekan Ctrl+PrtScn untuk menangkap, menandai, dan menyalin bagian mana pun dari layar."
 fr_prtscn = "Gunakan PrtScn saja alih-alih Ctrl+PrtScn (Print Screen tidak lagi membuka Snipping Tool Windows)"
 fr_go = "Mulai"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Mendaftarkan penangan gambar mini hanya untuk akun pengguna Anda, agar Explorer dapat menampilkan gambar mini dari folder ini. Tanpa hak administrator, tidak ada yang berlaku untuk seluruh komputer. Matikan ini sebelum memindahkan atau menghapus folder ini."
+btn_portable_register = "Aktifkan gambar mini Explorer"
+btn_portable_unregister = "Matikan gambar mini Explorer"
+state_on = "Aktif"
+state_off = "Nonaktif"
+msg_portable_dll_missing = "sagethumbs2k.dll tidak ada di folder ini. Ekstrak seluruh unduhan portabel dan coba lagi."
+msg_portable_reg_failed = "Windows tidak mengizinkan kami menulis pendaftaran untuk akun pengguna Anda."

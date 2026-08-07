@@ -350,3 +350,12 @@ fr_shot = "Hidupkan kekunci pintas tangkapan skrin"
 fr_shot_sub = "Tekan Ctrl+PrtScn untuk menangkap, menanda dan menyalin mana-mana bahagian skrin."
 fr_prtscn = "Guna PrtScn sahaja dan bukan Ctrl+PrtScn (Print Screen tidak lagi membuka Snipping Tool Windows)"
 fr_go = "Mula"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Mendaftarkan pengendali lakaran kenit untuk akaun pengguna anda sahaja, supaya Explorer boleh melukis lakaran kenit daripada folder ini. Tiada hak pentadbir, tiada apa-apa di seluruh mesin. Matikannya sebelum anda memindah atau memadam folder ini."
+btn_portable_register = "Hidupkan lakaran kenit Explorer"
+btn_portable_unregister = "Matikan lakaran kenit Explorer"
+state_on = "Hidup"
+state_off = "Mati"
+msg_portable_dll_missing = "sagethumbs2k.dll tiada dalam folder ini. Nyahzip keseluruhan muat turun mudah alih dan cuba lagi."
+msg_portable_reg_failed = "Windows tidak membenarkan kami menulis pendaftaran untuk akaun pengguna anda."

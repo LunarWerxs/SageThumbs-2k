@@ -353,3 +353,12 @@ fr_shot = "Képernyőkép gyorsbillentyű bekapcsolása"
 fr_shot_sub = "A Ctrl+PrtScn lenyomásával a képernyő bármely részét rögzítheti, elláthatja jelölésekkel és másolhatja."
 fr_prtscn = "Csak a PrtScn használata a Ctrl+PrtScn helyett (a Print Screen így nem nyitja meg a Windows Képmetszőt)"
 fr_go = "Kezdjük"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Csak az Ön felhasználói fiókjához regisztrálja a bélyegkép-kezelőt, hogy az Intéző meg tudja jeleníteni ebből a mappából a bélyegképeket. Nincs szükség rendszergazdai jogosultságra, semmi sem gépszintű. Kapcsolja ki, mielőtt áthelyezi vagy törli ezt a mappát."
+btn_portable_register = "Intéző-bélyegképek be"
+btn_portable_unregister = "Intéző-bélyegképek ki"
+state_on = "Be"
+state_off = "Ki"
+msg_portable_dll_missing = "A sagethumbs2k.dll nincs ebben a mappában. Csomagolja ki a teljes hordozható letöltést, és próbálja újra."
+msg_portable_reg_failed = "A Windows nem engedte megírni a regisztrációt az Ön felhasználói fiókjához."

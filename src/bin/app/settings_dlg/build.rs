@@ -18,6 +18,16 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     let mut lc = LeftCol::new(hwnd, hinst);
 
     lc.header(t("grp_thumbnails"), hdr, ID_LBL_THUMBS, true);
+    // Portable build only: the per-user Explorer registration. Created unconditionally (the
+    // control set is static; `cat_rows` is what decides whether the row is laid out at all),
+    // so on an installed build these two simply never get positioned or shown.
+    lc.status(ID_PORTABLE_REG_STATUS);
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_PORTABLE_REG_STATUS) {
+        const SS_RIGHT: u32 = 0x0002;
+        let st = GetWindowLongW(h, GWL_STYLE) as u32 | SS_RIGHT;
+        SetWindowLongW(h, GWL_STYLE, st as i32);
+    }
+    lc.button(t("btn_portable_register"), 240, ID_PORTABLE_REG);
     lc.checkbox(t("chk_enable_thumbs"), cb, 300, ID_ENABLE_THUMBS);
     lc.checkbox(t("chk_prefer_embedded"), cb, 300, ID_USE_EMBEDDED);
     lc.checkbox(t("chk_format_badge"), cb, 300, ID_FORMAT_BADGE);

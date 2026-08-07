@@ -352,3 +352,12 @@ fr_shot = "スクリーンショットのホットキーを有効にする"
 fr_shot_sub = "Ctrl+PrtScn で画面の任意の範囲を取り込み、書き込み、コピーできます。"
 fr_prtscn = "Ctrl+PrtScn ではなく PrtScn 単独を使う (Print Screen で Windows の Snipping Tool が開かなくなります)"
 fr_go = "はじめる"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "サムネイル ハンドラーをあなたのユーザー アカウントのみに登録し、エクスプローラーがこのフォルダーからサムネイルを表示できるようにします。管理者権限は不要で、マシン全体には影響しません。このフォルダーを移動または削除する前にオフにしてください。"
+btn_portable_register = "エクスプローラーのサムネイルをオンにする"
+btn_portable_unregister = "エクスプローラーのサムネイルをオフにする"
+state_on = "オン"
+state_off = "オフ"
+msg_portable_dll_missing = "このフォルダーに sagethumbs2k.dll がありません。ポータブル版をすべて解凍してからもう一度お試しください。"
+msg_portable_reg_failed = "Windows がユーザー アカウントへの登録の書き込みを許可しませんでした。"

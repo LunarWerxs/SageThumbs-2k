@@ -78,6 +78,9 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     );
     update_quick_enabled(hwnd);
     refresh_shot_status(hwnd);
+    // Portable copies only lay this row out, but seeding it unconditionally is harmless and
+    // keeps the "what does load_values touch" list free of a special case.
+    set_portable_reg_state(hwnd);
     // Seed the Settings-sync row (button label + green "● Synced" badge) from the signed-in
     // state; the background pull (spawn_sync_pull) later refreshes it via WM_APP_SYNC.
     refresh_sync_ui(hwnd);

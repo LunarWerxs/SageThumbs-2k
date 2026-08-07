@@ -352,3 +352,12 @@ fr_shot = "Slå på hurtigtasten for skjermbilde"
 fr_shot_sub = "Trykk Ctrl+PrtScn for å ta, merke opp og kopiere hvilken som helst del av skjermen."
 fr_prtscn = "Bruk PrtScn alene i stedet for Ctrl+PrtScn (Print Screen åpner da ikke Windows Utklippsverktøy)"
 fr_go = "Kom i gang"
+
+# Portable mode (register/unregister Explorer thumbnails)
+tip_portable_register = "Registrerer miniatyrbehandleren kun for din brukerkonto, slik at Utforsker kan tegne miniatyrbilder fra denne mappen. Ingen administratorrettigheter, ingenting maskinbredt. Slå det av før du flytter eller sletter denne mappen."
+btn_portable_register = "Slå på miniatyrer i Utforsker"
+btn_portable_unregister = "Slå av miniatyrer i Utforsker"
+state_on = "På"
+state_off = "Av"
+msg_portable_dll_missing = "sagethumbs2k.dll finnes ikke i denne mappen. Pakk ut hele den bærbare nedlastingen, og prøv igjen."
+msg_portable_reg_failed = "Windows lot oss ikke skrive registreringen for brukerkontoen din."

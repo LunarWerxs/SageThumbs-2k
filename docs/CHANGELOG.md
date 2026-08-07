@@ -2,6 +2,20 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.8.1
+
+### Added
+
+- **The portable version can now do Explorer thumbnails after all.** 1.8.0 said it couldn't.
+  That was wrong, and this fixes it. The zip now includes the thumbnail handler, and
+  `st2k register` (or the button in Settings -> Advanced) switches it on for your user
+  account only - no installer, no administrator rights, nothing written machine-wide. The
+  classic right-click menu comes with it. `st2k register --off` undoes it, and you should run
+  that before moving or deleting the folder, otherwise Windows is left pointing at a file that
+  is no longer there. The Explorer preview pane, the Details pane columns and the Windows 11
+  right-click menu still need the installer, because Windows only accepts those registered for
+  the whole machine. (issue #13)
+
 ## 1.8.0
 
 ### Added
@@ -17,10 +31,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   exe rather than in the registry - delete that file and it goes back to storing them the
   normal way. You get the app and the command line tool, so Settings, Convert and Resize,
   quick preview, screenshots, OCR, the colour picker and the folder tools all work. It does
-  **not** give you Explorer thumbnails or the right-click menu: Windows only loads a shell
-  extension whose COM class is registered, so no zip can provide those. Install the normal
-  build if you want them. The screenshot tool also runs only while the app is open, since a
-  portable copy can be moved or unplugged at any time. (issue #13)
+  **not** give you Explorer thumbnails or the right-click menu. (Superseded in 1.8.1, which
+  adds both.) The screenshot tool also runs only while the app is open, since a portable copy
+  can be moved or unplugged at any time. (issue #13)
 
 - **A "Check for problems" button in Settings, under Advanced.** SageThumbs has had a thorough
   self-check for a while, but only from a command prompt, so in practice nobody ever saw it. It
