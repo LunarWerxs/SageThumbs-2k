@@ -78,8 +78,10 @@ divx
 djv
 djvu
 dng
+doc
 docm
 docx
+dot
 dotm
 dotx
 dpx
@@ -191,11 +193,14 @@ phm
 phz
 png
 pnm
+pot
 potm
 potx
 ppm
+pps
 ppsm
 ppsx
+ppt
 pptm
 pptx
 prc
@@ -208,6 +213,7 @@ pspbrush
 pspimage
 psptube
 ptif
+pub
 pxn
 qoi
 qt
@@ -250,9 +256,11 @@ wv
 xbm
 xcf
 xd
+xls
 xlsb
 xlsm
 xlsx
+xlt
 xltm
 xltx
 xpm
