@@ -651,9 +651,7 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP};
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
-    };
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::Shell::{
         IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_THUMBNAILONLY,
     };
@@ -712,12 +710,14 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
 /// OneDrive", and it is invisible from the file itself, so name it here rather than leaving
 /// the user to guess. Purely a registry read; nothing is hydrated and nothing is written.
 fn cloud_sync_root_note(r: &mut Report, p: &Path) {
-    const SYNC_ROOTS: &str =
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
+    const SYNC_ROOTS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
     let Ok(file) = p.canonicalize() else {
         return;
     };
-    let file = file.to_string_lossy().trim_start_matches(r"\\?\").to_lowercase();
+    let file = file
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_lowercase();
 
     let Ok(roots) = LOCAL_MACHINE.open(SYNC_ROOTS) else {
         return;
@@ -743,8 +743,8 @@ fn cloud_sync_root_note(r: &mut Report, p: &Path) {
         if !hit {
             continue;
         }
-        let has_provider = root.open("ThumbnailProvider").is_ok()
-            || root.get_string("ThumbnailProvider").is_ok();
+        let has_provider =
+            root.open("ThumbnailProvider").is_ok() || root.get_string("ThumbnailProvider").is_ok();
         // The provider id is `<Provider>!<SID>!<account>`; the first field is the readable bit.
         let provider = name.split('!').next().unwrap_or(&name).to_string();
         if has_provider {

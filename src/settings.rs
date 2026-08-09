@@ -618,7 +618,10 @@ pub fn thumb_settings() -> ThumbSettings {
         ),
         use_embedded: g("UseEmbedded", 1) != 0,
         format_badge: g("FormatBadge", 0) != 0,
-        badge_style: crate::badge::BadgeStyle::from_dword(g("FormatBadgeStyle", DEFAULT_BADGE_STYLE)),
+        badge_style: crate::badge::BadgeStyle::from_dword(g(
+            "FormatBadgeStyle",
+            DEFAULT_BADGE_STYLE,
+        )),
         thumb_checker: g("ThumbChecker", 0) != 0,
     }
 }

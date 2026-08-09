@@ -59,13 +59,13 @@ impl BadgeStyle {
 fn category_rgb(ext: &str) -> (u8, u8, u8) {
     use crate::formats::Category;
     match crate::formats::category(ext) {
-        Category::Image => (36, 116, 208),    // blue
-        Category::Raw => (124, 77, 200),      // violet
-        Category::Ebook => (32, 140, 84),     // green
-        Category::Document => (196, 60, 52),  // red
-        Category::Audio => (0, 138, 148),     // teal
-        Category::Video => (176, 52, 132),    // magenta
-        Category::Archive => (90, 96, 110),   // slate
+        Category::Image => (36, 116, 208),   // blue
+        Category::Raw => (124, 77, 200),     // violet
+        Category::Ebook => (32, 140, 84),    // green
+        Category::Document => (196, 60, 52), // red
+        Category::Audio => (0, 138, 148),    // teal
+        Category::Video => (176, 52, 132),   // magenta
+        Category::Archive => (90, 96, 110),  // slate
     }
 }
 
@@ -177,7 +177,11 @@ pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle) {
     let text_w = n * gw + (n.saturating_sub(1)) * gap;
     // The icon style reserves an extra column on the right for the dog-ear, so the flap
     // never lands on the last glyph. Everything else about the box is identical.
-    let fold = if style == BadgeStyle::Icon { 3 * scale } else { 0 };
+    let fold = if style == BadgeStyle::Icon {
+        3 * scale
+    } else {
+        0
+    };
     let chip_w = text_w + pad * 2 + fold;
     let chip_h = gh + pad * 2;
     // Inset from the corner by the same padding, so the chip does not touch the edge.

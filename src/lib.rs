@@ -51,10 +51,10 @@ pub mod ocr;
 // rest of these: an internal surface, not a stable public API.
 #[doc(hidden)]
 pub mod checker {
-    pub use crate::contextmenu::paint::{checker_shades, fill_checker};
     /// The pixel-space twin, for the one surface that has no device context to draw on:
     /// the Explorer thumbnail bitmap. See [`crate::checkerpx`].
     pub use crate::checkerpx::compose_under;
+    pub use crate::contextmenu::paint::{checker_shades, fill_checker};
 }
 mod checkerpx;
 // Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
@@ -74,9 +74,9 @@ mod streamsrc;
 mod strip;
 mod thumbprovider;
 // Explorer's own file-type icon overlay, and how to make it stop covering our badge.
+mod topdf;
 #[doc(hidden)]
 pub mod typeoverlay;
-mod topdf;
 pub mod upload_config;
 mod verbs;
 // `pub` only so the app EXE's preview player can ask `media_foundation_available()`

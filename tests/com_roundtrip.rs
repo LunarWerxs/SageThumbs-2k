@@ -489,7 +489,11 @@ fn thumb_checker_fills_transparency_and_leaves_an_opaque_tile() {
     let mut img = RgbaImage::new(80, 80);
     for y in 0..80u32 {
         for x in 0..80u32 {
-            let px = if x < 40 { [0, 0, 0, 0] } else { [200, 0, 0, 255] };
+            let px = if x < 40 {
+                [0, 0, 0, 0]
+            } else {
+                [200, 0, 0, 255]
+            };
             img.put_pixel(x, y, Rgba(px));
         }
     }
@@ -497,7 +501,11 @@ fn thumb_checker_fills_transparency_and_leaves_an_opaque_tile() {
 
     let _ = key.set_u32("ThumbChecker", 0);
     let plain = unsafe { get_thumbnail(&png, 64) }.expect("thumbnail");
-    assert_eq!(plain.px(2, 2)[3], 0, "transparent stays transparent when off");
+    assert_eq!(
+        plain.px(2, 2)[3],
+        0,
+        "transparent stays transparent when off"
+    );
 
     let _ = key.set_u32("ThumbChecker", 1);
     let checked = unsafe { get_thumbnail(&png, 64) }.expect("thumbnail");

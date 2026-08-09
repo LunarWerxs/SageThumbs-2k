@@ -81,7 +81,10 @@ mod tests {
         assert_eq!(at(0, 0), (LIGHT.0, LIGHT.1, LIGHT.2, 255));
         assert_eq!(at(cell, 0), (DARK.0, DARK.1, DARK.2, 255));
         assert_eq!(at(cell, cell), (LIGHT.0, LIGHT.1, LIGHT.2, 255));
-        assert!(px.iter().skip(3).step_by(4).all(|&a| a == 255), "opaque out");
+        assert!(
+            px.iter().skip(3).step_by(4).all(|&a| a == 255),
+            "opaque out"
+        );
     }
 
     /// The early-out is a promise, not just a speed-up: an opaque thumbnail must come back

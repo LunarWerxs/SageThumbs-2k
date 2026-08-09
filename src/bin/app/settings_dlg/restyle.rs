@@ -207,7 +207,14 @@ unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     };
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, if disabled { DISABLED_TEXT() } else { DARK_TEXT() });
+    SetTextColor(
+        hdc,
+        if disabled {
+            DISABLED_TEXT()
+        } else {
+            DARK_TEXT()
+        },
+    );
     let mut label = control_text(from);
     let n = label.len().saturating_sub(1);
     DrawTextW(

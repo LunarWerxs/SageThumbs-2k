@@ -68,9 +68,8 @@ fn progids_for(ext: &str) -> Vec<String> {
         }
     };
 
-    let user_choice = format!(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}\UserChoice"
-    );
+    let user_choice =
+        format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}\UserChoice");
     push(
         CURRENT_USER
             .open(&user_choice)
@@ -276,11 +275,16 @@ mod tests {
             Ok("shell32.dll,-16826"),
             "their value must survive apply"
         );
-        assert!(k.get_string(MARK).is_err(), "and must not be marked as ours");
+        assert!(
+            k.get_string(MARK).is_err(),
+            "and must not be marked as ours"
+        );
         drop(k);
 
         remove_progid(&classes, "Other.Progid");
-        let k = classes.open("Other.Progid").expect("still there after remove");
+        let k = classes
+            .open("Other.Progid")
+            .expect("still there after remove");
         assert_eq!(k.get_string(VALUE).as_deref(), Ok("shell32.dll,-16826"));
     }
 
@@ -290,7 +294,8 @@ mod tests {
     fn a_progid_with_other_values_keeps_its_key_after_removal() {
         let (_guard, classes) = Scratch::new("shared");
         let k = classes.create("Shared.Progid").expect("create");
-        k.set_string("FriendlyTypeName", "Something Else").expect("set");
+        k.set_string("FriendlyTypeName", "Something Else")
+            .expect("set");
         drop(k);
 
         apply_progid(&classes, "Shared.Progid");
