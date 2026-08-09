@@ -16,7 +16,7 @@
 
 use core::cell::RefCell;
 use core::mem::ManuallyDrop;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use windows::core::{Error, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
@@ -54,7 +54,55 @@ const PROBE_BUDGET: core::time::Duration = core::time::Duration::from_millis(250
 /// Timed-out metadata reads cannot be cancelled safely. Keep a slow remote/provider file from
 /// leaving an unbounded trail of detached workers while Explorer enumerates a directory.
 const MAX_ACTIVE_PROBES: usize = 2;
-static ACTIVE_PROBES: AtomicUsize = AtomicUsize::new(0);
+
+/// How long one detached worker may hold its slot before the slot is reclaimed for a new
+/// probe. This is the difference between a bounded trail and a permanent outage.
+///
+/// The slots used to be a plain counter decremented by the worker's own `Drop`. A worker
+/// blocked forever — a OneDrive online-only placeholder, a dropped SMB share — never runs
+/// that `Drop`, so it held its slot for the life of the process. Two such files (one folder
+/// of cloud placeholders will do it) permanently exhausted both slots, and from then on
+/// EVERY property query in that `dllhost.exe`/`SearchIndexer.exe` returned no properties at
+/// all: the Details pane went blank for healthy local files too, with no error and no
+/// recovery short of the host being recycled.
+///
+/// A lease keeps the original guarantee — at most [`MAX_ACTIVE_PROBES`] workers started in
+/// any lease window — while making the failure self-healing rather than terminal. It is
+/// generous on purpose: it bounds the damage from a hung read without cutting short a slow
+/// one that would have succeeded.
+const PROBE_LEASE_MS: u64 = 30_000;
+
+/// Lease expiry per slot, in [`safety::elapsed_ms`] units. `0` = free. A worker that
+/// finishes normally releases its slot immediately; one that hangs loses it at expiry.
+static PROBE_SLOTS: [AtomicU64; MAX_ACTIVE_PROBES] =
+    [const { AtomicU64::new(0) }; MAX_ACTIVE_PROBES];
+
+/// Claim a probe slot, returning its index. `None` when every slot holds an unexpired lease.
+/// Pure in `now_ms` so the policy is unit-testable without sleeping.
+fn acquire_probe_slot(now_ms: u64) -> Option<usize> {
+    let expiry = now_ms.saturating_add(PROBE_LEASE_MS);
+    for (i, slot) in PROBE_SLOTS.iter().enumerate() {
+        let held = slot.load(Ordering::Acquire);
+        // Free, or the previous holder's lease has run out and we may take it over.
+        if (held == 0 || held <= now_ms)
+            && slot
+                .compare_exchange(held, expiry, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Release a slot claimed by [`acquire_probe_slot`], unless the lease already expired and
+/// another probe took it over (in which case `expiry` no longer matches and we must not
+/// clear someone else's claim).
+fn release_probe_slot(index: usize, expiry: u64) {
+    if let Some(slot) = PROBE_SLOTS.get(index) {
+        let _ = slot.compare_exchange(expiry, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
 
 #[implement(IPropertyStore, IInitializeWithFile)]
 pub struct PropertyStore {
@@ -347,19 +395,14 @@ fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
 /// invokes WIC, WinRT, ImageMagick, or a pixel decode. `ImageInfo`/`AudioTags` are plain `Send`
 /// data; no COM object crosses the channel.
 fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip::AudioTags)> {
-    if ACTIVE_PROBES
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-            (active < MAX_ACTIVE_PROBES).then_some(active + 1)
-        })
-        .is_err()
-    {
-        return None;
-    }
+    let now = safety::elapsed_ms();
+    let slot = acquire_probe_slot(now)?;
+    let lease = now.saturating_add(PROBE_LEASE_MS);
 
-    struct ActiveProbe;
+    struct ActiveProbe(usize, u64);
     impl Drop for ActiveProbe {
         fn drop(&mut self) {
-            ACTIVE_PROBES.fetch_sub(1, Ordering::Release);
+            release_probe_slot(self.0, self.1);
         }
     }
 
@@ -367,7 +410,7 @@ fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip
     let worker = std::thread::Builder::new()
         .name("st2k-property-probe".into())
         .spawn(move || {
-            let _active = ActiveProbe;
+            let _active = ActiveProbe(slot, lease);
             // Pin the DLL for this detached worker's whole lifetime. On timeout we return but
             // leave this thread running, and `DllCanUnloadNow` does NOT count it — so when the
             // host (e.g. a file-open dialog in Chrome) releases the property object on CLOSE, the
@@ -389,7 +432,7 @@ fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip
             let _ = tx.send(probed);
         });
     if worker.is_err() {
-        ACTIVE_PROBES.fetch_sub(1, Ordering::Release);
+        release_probe_slot(slot, lease);
         return None;
     }
     rx.recv_timeout(PROBE_BUDGET).ok()
@@ -405,12 +448,69 @@ fn property_path_is_audio(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::property_path_is_audio;
+    use super::*;
 
     #[test]
     fn expensive_audio_probe_is_extension_gated() {
         assert!(property_path_is_audio(r"C:\media\track.FLAC"));
         assert!(!property_path_is_audio(r"C:\photos\image.jpg"));
         assert!(!property_path_is_audio(r"C:\photos\extensionless"));
+    }
+
+    /// The probe slots must be a LEASE, not a permanent claim. Two files whose reads hang
+    /// forever (cloud placeholders, a dropped share) used to hold both slots for the life
+    /// of the process, after which every property query in that host returned nothing —
+    /// blank Details pane for healthy local files, no error, no recovery.
+    ///
+    /// Drives the pure slot policy directly with an injected clock, so it asserts the
+    /// real behaviour without sleeping or spawning a thread.
+    #[test]
+    fn hung_probes_release_their_slot_when_the_lease_expires() {
+        // Start from a clean slate — other tests in this binary don't touch the slots,
+        // but be explicit so ordering can never matter.
+        for slot in PROBE_SLOTS.iter() {
+            slot.store(0, Ordering::Release);
+        }
+        let t0 = 1_000_000u64;
+
+        // Fill every slot, then confirm the cap actually holds.
+        let claimed: Vec<usize> = (0..MAX_ACTIVE_PROBES)
+            .map(|_| acquire_probe_slot(t0).expect("slot available"))
+            .collect();
+        assert_eq!(claimed.len(), MAX_ACTIVE_PROBES);
+        assert_eq!(
+            acquire_probe_slot(t0),
+            None,
+            "the concurrency cap must still bound live probes"
+        );
+
+        // Still held part-way through the lease: a slow-but-progressing read keeps its slot.
+        assert_eq!(acquire_probe_slot(t0 + PROBE_LEASE_MS - 1), None);
+
+        // Past the lease, the slots are reclaimable even though the workers never finished.
+        for _ in 0..MAX_ACTIVE_PROBES {
+            assert!(
+                acquire_probe_slot(t0 + PROBE_LEASE_MS + 1).is_some(),
+                "an expired lease must be reclaimable, or the outage is permanent"
+            );
+        }
+
+        // A late worker from the FIRST generation must not free the slot its successor
+        // now owns; release is keyed to the exact lease it claimed.
+        let successor = PROBE_SLOTS[claimed[0]].load(Ordering::Acquire);
+        release_probe_slot(claimed[0], t0.saturating_add(PROBE_LEASE_MS));
+        assert_eq!(
+            PROBE_SLOTS[claimed[0]].load(Ordering::Acquire),
+            successor,
+            "a stale release must not steal the current holder's slot"
+        );
+
+        // A worker that finishes normally frees its slot immediately.
+        release_probe_slot(claimed[0], successor);
+        assert_eq!(PROBE_SLOTS[claimed[0]].load(Ordering::Acquire), 0);
+
+        for slot in PROBE_SLOTS.iter() {
+            slot.store(0, Ordering::Release);
+        }
     }
 }

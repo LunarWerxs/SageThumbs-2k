@@ -208,7 +208,7 @@ pub fn install_panic_hook(artifact: &'static str) {
 /// Milliseconds since the first logging call in this process — a cheap, monotonic
 /// tick that lets lines from one process be ordered without pulling in wall-clock
 /// formatting. Saturates to `u64` (decades), so the `<< 1` packing above is safe.
-fn elapsed_ms() -> u64 {
+pub(crate) fn elapsed_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
