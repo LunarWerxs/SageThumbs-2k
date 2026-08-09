@@ -389,3 +389,36 @@ NOT sniff the header to decide whether this particular format could be served fr
 reading even the first bytes of a placeholder triggers the recall the check exists to warn
 about. Behaviour is unchanged on purpose too: refusing to hydrate would take thumbnails away
 from everyone whose cloud files are downloaded and working today.
+
+## The release gate reads your changelog prose, and rejects four ordinary words
+
+`Get-ReleaseChangelogSection` (scripts/release-manifest-lib.ps1) refuses to release when the
+section for this version matches `TODO|TBD|PLACEHOLDER|CHANGEME`, case-insensitive, anywhere in
+its text. The intent is to catch an unfinished section; the check cannot tell an unfinished
+section from an ordinary sentence that happens to use one of those words.
+
+1.8.5 tripped it describing an mp4 "placeholder track", which is simply what that kind of track
+is called. The failure arrives at step [1/6], before anything is pushed or built, so it costs a
+re-run and nothing worse. Reword the prose rather than loosening the guard: the guard is right
+far more often than it is wrong, and every synonym is free.
+
+## A size reference must name the artifact that SHIPPED, and each architecture drifts alone
+
+Two separate traps in `packaging/size-budget.json`.
+
+**Installers are not byte-reproducible.** Inno Setup output varies between builds of identical
+source, so the reference recorded from a local build will not match the asset the release
+pipeline uploads. 1.8.5's arm64 installer came out 14,793 bytes smaller on the release rebuild
+than on the local one, with a different SHA-256, which left the policy naming a build nobody
+could download. Record the PUBLISHED asset (download it and hash it), not your local `dist/`
+copy. The Rust payload figure does not have this problem: it is reproducible, and both builds
+reported it byte-identical.
+
+**References drift per architecture.** x64 and arm64 are rebaselined independently, so one can
+be several releases stale while the other is current. When 1.8.5 failed the arm64 installer gate
+by 6,340 bytes, arm64 was still calibrated to 1.8.0 and x64 to 1.8.4: five releases of
+already-reviewed growth measured against a stale point, not a fat release. The diagnostic that
+settles it: check what the CURRENT-reference architecture did in the same release. x64 grew
+5,150 bytes of installer and passed with 125,922 to spare, which is what proved the release was
+innocent. Rebaseline the payload in the same edit when it is also near its allowance, or the
+next release inherits a failure that has nothing to do with it either.
