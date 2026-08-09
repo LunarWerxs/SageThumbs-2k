@@ -2,6 +2,54 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.8.5
+
+### Added
+
+- **`st2k doctor` now tells you which video codec a file uses, and whether Windows can actually
+  decode it.** This is the answer to "my mkv has no thumbnail" when everything else looks fine,
+  and it usually does look fine, because nothing is broken on our side. Windows does not include
+  every decoder: HEVC and AV1 are separate Microsoft Store downloads. Without one, no frame can
+  be produced no matter how healthy the file, the container or our registration are. The report
+  now names the codec, says whether a decoder is installed, and names the exact Store package to
+  get. It also reports Media Foundation being missing altogether, which is what an "N" or "KN"
+  edition of Windows looks like.
+
+- **Video files with cover art now use it when no frame can be decoded.** Matroska files can
+  carry a poster image, and many library rips do. If the codec is one Windows cannot read, that
+  poster is still a true picture of the film, so it becomes the thumbnail instead of a blank tile.
+
+### Fixed
+
+- **Some MP4/MOV files reported "no video track" when they plainly had one.** If the first track
+  in the file was an odd one (a subtitle, hint or placeholder track that editing software leaves
+  behind), the search gave up there instead of moving on to the next track. Those files fell back
+  to a lower-quality early frame, and `doctor` claimed their codec was unidentifiable.
+
+- **Explorer's Details pane could stop showing file information entirely, until it was
+  restarted.** Two files whose reads never return, typically OneDrive "online-only"
+  placeholders or a network share that dropped, permanently used up both metadata slots. From
+  then on, every other file in that Explorer process showed no dimensions, no camera info and no
+  audio tags, including perfectly ordinary local files, with nothing to indicate why. The slots
+  now expire, so a stuck file costs a short pause instead of the feature.
+
+- **Word, Excel and PowerPoint documents could show the wrong picture as their thumbnail.** An
+  unrelated image inside the document could be mistaken for the document's official preview,
+  which also meant the real preview was never looked for.
+
+- **A comic archive could lose its cover page** and show the plain zip icon, if it happened to
+  contain a file with a name Office documents use.
+
+- **`st2k doctor` no longer reports things that are not true.** Given a file path relative to the
+  current folder, it accused Explorer of refusing to produce a thumbnail when Explorer had simply
+  never been asked. It suggested ImageMagick as the cause of video failures, which ImageMagick is
+  never involved in. And with the size limit set to "no limit", it reported a cap of roughly
+  seventeen million megabytes rather than saying "Unlimited".
+
+- **Some Matroska files were read incorrectly.** Files whose internal size fields use the longest
+  encoding, which is what ffmpeg writes for nearly every file it produces, were parsed with a
+  malformed bit mask, giving nonsensical sizes.
+
 ## 1.8.4
 
 ### Added

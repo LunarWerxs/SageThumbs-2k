@@ -27,7 +27,7 @@
   <!-- This is the loose-registration template, so it stays neutral. make-msix.ps1
        patches only its staged copy to arm64 for the ARM64 sparse package; the
        existing x64 package deliberately remains neutral for update compatibility. -->
-  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="1.8.4.0" ProcessorArchitecture="neutral" />
+  <Identity Name="SageThumbs2K" Publisher="CN=SageThumbs2K" Version="1.8.5.0" ProcessorArchitecture="neutral" />
 
   <Properties>
     <DisplayName>SageThumbs 2K</DisplayName>

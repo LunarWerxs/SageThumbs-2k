@@ -23,7 +23,7 @@ exr = { path = "vendor/exr" }
 # build-release.ps1 reads this line; keep it in sync with
 # packaging/AppxManifest.xml's <Identity Version> when bumping a release.
 [workspace.package]
-version = "1.8.4"
+version = "1.8.5"
 rust-version = "1.93"   # sevenz-rust2 0.21.3 is the highest MSRV in the locked default graph
 
 [package]
