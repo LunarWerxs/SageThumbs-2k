@@ -657,6 +657,14 @@ fn decode_preview_with_raw_order(
     // `ftyp` box but are excluded). Any decode failure falls through to the image tiers,
     // which then fail to the file's default icon — never worse than before.
     if crate::video::is_video_magic(bytes) {
+        // OPTION (`VideoCoverArt`, off by default): show the embedded poster instead of a
+        // frame. Checked before the decode tiers so it costs nothing when a cover exists,
+        // and falls straight through when one doesn't. Mirrors the provider in `streamsrc`.
+        if crate::settings::prefer_cover_art() {
+            if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
+                return decode_image_with_raw_order(&cover, raw_preview, wic_thumbnail_cx);
+            }
+        }
         // Prefer the smart targeted read for a representative ~30% keyframe built from the
         // container's own index — MP4/MOV via the `moov` (`crate::mp4`), Matroska/WebM via the
         // Cues (`crate::mkv`). Each self-gates to its container and returns None otherwise (or
@@ -671,10 +679,11 @@ fn decode_preview_with_raw_order(
             return Ok(frame);
         }
         // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
-        // A Matroska attached cover (the poster many library rips carry) is still a
-        // faithful picture of the file, and unlike a frame it needs no codec at all.
-        // Mirrors the provider's fallback in `streamsrc`, so CLI/doctor and Explorer agree.
-        if let Some(cover) = crate::mkv::attached_cover(&mut std::io::Cursor::new(bytes)) {
+        // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library
+        // rips and media managers routinely write) is still a faithful picture of the file,
+        // and unlike a frame it needs no codec at all. Mirrors the provider's fallback in
+        // `streamsrc`, so the CLI, the preview and Explorer all agree.
+        if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
             return decode_image_with_raw_order(&cover, raw_preview, wic_thumbnail_cx);
         }
     }

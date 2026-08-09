@@ -373,7 +373,9 @@ msg_portable_reg_failed = "Windows nam nije dopustio zapisati registraciju za va
 # --- Added 2026-08-08: coloured icon badge / thumbnail checkerboard / hide type overlay ---
 chk_badge_icon = "Koristi obojenu ikonu kao oznaku"
 chk_thumb_checker = "Šahovnica iza prozirnih minijatura"
+chk_video_cover_art = "Koristi naslovnicu videa umjesto kadra"
 chk_hide_type_overlay = "Sakrij Windows ikonu vrste datoteke na minijaturama"
 tip_badge_icon = "Iscrtava oznaku kao malu obojenu naljepnicu datoteke - jedna boja po vrsti datoteke (slike, RAW fotoaparata, e-knjige, dokumenti, zvuk, video, arhive) - umjesto obična teksta. Lakše je uočiti na prvi pogled. Isključite za oznaku s običnim tekstom."
 tip_thumb_checker = "Iscrtava svijetlu šahovnicu iza prozirnih dijelova minijature, tako da prozirna slika ne nestane u pozadini mape. Odnosi se samo na minijature u Exploreru; prozori pretpregleda imaju vlastiti prekidač. Promjena ovoga briše predmemoriju minijatura."
+tip_video_cover_art = "Kada je unutar videa spremljena naslovnica, prikazuje nju umjesto kadra iz snimke. Najbolje za zbirku filmova; ostavite isključeno za kućne snimke i snimke zaslona, gdje pravi kadar govori više. Naslovnica se svejedno koristi kada kadar nije moguće dekodirati, bez obzira na ovu postavku. Promjena ovoga briše predmemoriju minijatura."
 tip_hide_type_overlay = "Windows utiskuje ikonu povezanog programa u kut minijature, preko oznake formata - a kad je taj program deinstaliran, umjesto toga iscrtava praznu stranicu. Ova postavka traži od sustava Windows da je ne iscrtava za vrste datoteka koje SageThumbs podržava. Reverzibilno: isključivanjem oznake vraća se natrag."

@@ -105,6 +105,12 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // Advanced could not take it (`fixed_pages_keep_space_above_the_footer` fails by
             // 24px on the portable variant) and General is full.
             Switch(ID_HIDE_TYPE_OVERLAY),
+            // Same trade, same reason (2026-08-09): a video's embedded poster versus a frame
+            // is a thumbnail-appearance switch and belongs on General by topic, but General
+            // is FIXED and adding a 13th row puts it 28px INTO the footer —
+            // `fixed_pages_keep_space_above_the_footer` catches it. This page scrolls, and it
+            // already hosts the other exiled "what the tile looks like" row above.
+            Switch(ID_VIDEO_COVER_ART),
             Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),
             Wide(ID_SEARCH),
             ListFill(ID_LIST),

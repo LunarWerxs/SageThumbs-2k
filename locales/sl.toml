@@ -369,7 +369,9 @@ msg_portable_reg_failed = "Windows nam ni dovolil zapisati registracije za vaš 
 # --- Added 2026-08-08: coloured badge / thumbnail checkerboard / hide type overlay ---
 chk_badge_icon = "Uporabi barvno značko ikone"
 chk_thumb_checker = "Šahovnica za prosojnimi sličicami"
+chk_video_cover_art = "Uporabi naslovnico videa namesto kadra"
 chk_hide_type_overlay = "Skrij Windows ikono vrste datoteke na sličicah"
 tip_badge_icon = "Značko izriše kot majhno barvno oznako datoteke - ena barva za vsako vrsto datoteke (slike, RAW fotoaparata, e-knjige, dokumenti, zvok, video, arhivi) - namesto navadnega besedila. Lažje jo opazite na prvi pogled. Odznačite za različico z navadno besedilno oznako."
 tip_thumb_checker = "Za prosojnimi deli sličice izriše svetlo šahovnico, da prosojna slika ne izgine v ozadju mape. Velja samo za sličice v Raziskovalcu; okna za predogled imajo lastno stikalo. Sprememba te nastavitve počisti predpomnilnik sličic."
+tip_video_cover_art = "Kadar je v videu shranjena naslovnica, jo prikaže namesto kadra iz posnetka. Najboljše za zbirko filmov; pustite izklopljeno za domače posnetke in posnetke zaslona, kjer več pove pravi kader. Naslovnica se uporabi tudi, kadar kadra ni mogoče dekodirati, ne glede na nastavitev. Sprememba te nastavitve počisti predpomnilnik sličic."
 tip_hide_type_overlay = "Windows v kot sličice vtisne ikono povezanega programa, čez značko formata - če je bil ta program odstranjen, namesto tega izriše prazno stran. Ta nastavitev prosi Windows, naj je ne izriše za vrste datotek, ki jih obravnava SageThumbs. Povratno: če odznačite, se vrne nazaj."

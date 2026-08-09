@@ -582,6 +582,13 @@ pub struct ThumbSettings {
     /// see-through pixels. OFF by default; correct alpha is the better default, this is for
     /// people who want the original SageThumbs' look back.
     pub thumb_checker: bool,
+    /// `VideoCoverArt` — for a video that carries embedded poster art, show the poster
+    /// instead of a frame from the film. OFF by default: a real frame is the more useful
+    /// tile for the videos most people have (phone clips, screen recordings, camera
+    /// footage), and a poster there is often a generic stand-in. For a ripped-film library
+    /// the reverse is true, which is what this is for. Cover art is used as a FALLBACK
+    /// whatever this says, since a file whose codec Windows lacks has no frame to show.
+    pub prefer_cover_art: bool,
 }
 
 /// Read the per-`GetThumbnail` settings in one HKCU key open. Missing values fall
@@ -623,6 +630,7 @@ pub fn thumb_settings() -> ThumbSettings {
             DEFAULT_BADGE_STYLE,
         )),
         thumb_checker: g("ThumbChecker", 0) != 0,
+        prefer_cover_art: g("VideoCoverArt", 0) != 0,
     }
 }
 
@@ -658,6 +666,17 @@ pub fn thumb_checker() -> bool {
 
 pub fn set_thumb_checker(on: bool) -> windows_registry::Result<()> {
     set_dword("ThumbChecker", u32::from(on))
+}
+
+/// `VideoCoverArt` — prefer a video's embedded poster over a frame from the film itself.
+/// Default OFF: see [`ThumbSettings::prefer_cover_art`] for why a frame is the better
+/// default and a poster the better option.
+pub fn prefer_cover_art() -> bool {
+    get_dword("VideoCoverArt", 0) != 0
+}
+
+pub fn set_prefer_cover_art(on: bool) -> windows_registry::Result<()> {
+    set_dword("VideoCoverArt", u32::from(on))
 }
 
 /// `HideTypeOverlay` — suppress Explorer's own file-type icon on the thumbnails of the

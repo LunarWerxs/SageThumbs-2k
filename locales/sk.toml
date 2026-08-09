@@ -367,7 +367,9 @@ msg_portable_reg_failed = "Windows nám nedovolil zapísať registráciu pre vá
 # --- Added 2026-08-08: coloured badge / thumbnail checkerboard / hide type overlay ---
 chk_badge_icon = "Použiť farebný odznak ikony"
 chk_thumb_checker = "Šachovnica za priehľadnými miniatúrami"
+chk_video_cover_art = "Uprednostniť obálku videa pred snímkou"
 chk_hide_type_overlay = "Skryť ikonu typu súboru Windows na miniatúrach"
 tip_badge_icon = "Vykreslí odznak ako malú farebnú značku súboru - jedna farba pre každý druh súboru (obrázky, RAW z fotoaparátu, e-knihy, dokumenty, audio, video, archívy) - namiesto obyčajného textu. Ľahšie sa rozpozná na prvý pohľad. Zrušte začiarknutie pre variant s obyčajným textovým štítkom."
 tip_thumb_checker = "Vykreslí jemnú šachovnicu za priehľadnými časťami miniatúry, aby priehľadný obrázok nezmizol v pozadí priečinka. Platí iba pre miniatúry v Prieskumníkovi; okná náhľadu majú vlastný prepínač. Zmena tejto voľby vymaže vyrovnávaciu pamäť miniatúr."
+tip_video_cover_art = "Ak video obsahuje uloženú obálku (plagátový obrázok), zobrazí ju namiesto snímky z videa. Najlepšie pre knižnicu filmov; nechajte vypnuté pre domáce videá a záznamy obrazovky, kde viac napovie skutočná snímka. Obálka sa použije aj tak, keď sa nedá dekódovať žiadna snímka, nech je toto nastavené akokoľvek. Zmena tejto voľby vymaže vyrovnávaciu pamäť miniatúr."
 tip_hide_type_overlay = "Windows vtlačí ikonu priradeného programu do rohu miniatúry, navrch odznaku formátu - a keď je tento program odinštalovaný, namiesto toho vykreslí prázdnu stránku. Táto voľba požiada Windows, aby ju nevykresľoval pre typy súborov, ktoré SageThumbs spracúva. Vratné: zrušením začiarknutia sa vráti späť."

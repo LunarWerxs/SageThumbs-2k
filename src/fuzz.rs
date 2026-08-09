@@ -81,6 +81,12 @@ fn header_targets() -> Vec<Target> {
         ("mp4::video_codec_fourcc", |b| {
             let _ = crate::mp4::video_codec_fourcc(&mut Cursor::new(b));
         }),
+        ("mp4::cover_art", |b| {
+            let _ = crate::mp4::cover_art(&mut Cursor::new(b));
+        }),
+        ("vcodec::cover_art", |b| {
+            let _ = crate::vcodec::cover_art(&mut Cursor::new(b));
+        }),
         ("vcodec::identify", |b| {
             let _ = crate::vcodec::identify(&mut Cursor::new(b));
         }),

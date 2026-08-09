@@ -160,6 +160,10 @@ pub(super) const ID_BADGE_ICON: i32 = 1216;
 pub(super) const ID_THUMB_CHECKER: i32 = 1217;
 /// Stop Explorer stamping the associated program's icon over our thumbnails (issue #18).
 pub(super) const ID_HIDE_TYPE_OVERLAY: i32 = 1218;
+/// Show a video's embedded poster instead of a frame from the film. Cover art is used as a
+/// FALLBACK regardless of this switch (a file whose codec Windows lacks has no frame at all);
+/// this makes it the PREFERENCE, which is what a ripped-film library wants.
+pub(super) const ID_VIDEO_COVER_ART: i32 = 1219;
 /// Portable build only: turn the per-user Explorer thumbnail registration on/off, plus the
 /// status line that says which it currently is. Hidden entirely on an installed build, where
 /// the machine-wide registration already covers it and a second switch would only confuse.

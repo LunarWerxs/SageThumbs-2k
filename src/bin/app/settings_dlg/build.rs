@@ -39,6 +39,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_format_badge"), cb, 300, ID_FORMAT_BADGE);
     lc.checkbox(t("chk_badge_icon"), cb, 300, ID_BADGE_ICON);
     lc.checkbox(t("chk_thumb_checker"), cb, 300, ID_THUMB_CHECKER);
+    lc.checkbox(t("chk_video_cover_art"), cb, 300, ID_VIDEO_COVER_ART);
     // Created here with the other thumbnail switches; `navrail::cat_rows` is what decides
     // which PAGE it lands on (File types), so creation order carries no meaning.
     lc.checkbox(t("chk_hide_type_overlay"), cb, 320, ID_HIDE_TYPE_OVERLAY);

@@ -61,6 +61,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_FORMAT_BADGE, "chk_format_badge"),
         (ID_BADGE_ICON, "chk_badge_icon"),
         (ID_THUMB_CHECKER, "chk_thumb_checker"),
+        (ID_VIDEO_COVER_ART, "chk_video_cover_art"),
         (ID_HIDE_TYPE_OVERLAY, "chk_hide_type_overlay"),
         (ID_ENABLE_MENU, "chk_enable_menu"),
         (ID_LBL_PREVIEW, "lbl_menu_preview"),

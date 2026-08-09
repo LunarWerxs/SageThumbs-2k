@@ -180,6 +180,47 @@ fn video_mdia(moov_body: &[u8]) -> Option<&[u8]> {
     None
 }
 
+/// Sanity cap on an embedded cover image. Poster art is tens to hundreds of KB; a larger
+/// `covr` payload means a corrupt or hostile atom, so bail instead of allocating it.
+const COVER_MAX: usize = 32 * 1024 * 1024;
+
+/// The iTunes-style cover artwork of an MP4/MOV, i.e. the `covr` item every media manager
+/// (iTunes, Plex, Jellyfin, MusicBrainz taggers) writes. The Matroska twin is
+/// [`crate::mkv::attached_cover`]; [`crate::vcodec::cover_art`] tries both.
+///
+/// Path: `moov` ▸ `udta` ▸ `meta` ▸ `ilst` ▸ `covr` ▸ `data`. The `data` payload is preceded
+/// by an 8-byte header (a 4-byte type indicator, 13 = JPEG and 14 = PNG, then a 4-byte
+/// locale), which is stripped here so the caller receives plain image bytes.
+pub fn cover_art<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
+    let (_, _, moov) = scan_top_level(r)?;
+    let udta = find(box_body(&moov), b"udta")?;
+    let meta = find(box_body(udta), b"meta")?;
+    // `meta` is a FULL box in the iTunes/ISO layout (4 bytes of version+flags before its
+    // children) but a plain box in some QuickTime writers' output. Try the full-box reading
+    // first and fall back, rather than assuming and silently finding nothing.
+    let ilst = find(full_box_body(meta), b"ilst").or_else(|| find(box_body(meta), b"ilst"))?;
+    let covr = find(box_body(ilst), b"covr")?;
+    let data = find(box_body(covr), b"data")?;
+    // data: version+flags(4) locale(4) then the image bytes.
+    let payload = box_body(data).get(8..)?;
+    if payload.is_empty() || payload.len() > COVER_MAX || !looks_like_cover_image(payload) {
+        return None;
+    }
+    Some(payload.to_vec())
+}
+
+/// Does this payload actually start like an image we can decode? The `data` type indicator
+/// claims JPEG or PNG, but it is metadata a writer can get wrong, so trust the bytes: a
+/// mislabelled or empty blob should fall through to the normal tiers rather than be handed
+/// on as "the cover" and fail there.
+fn looks_like_cover_image(b: &[u8]) -> bool {
+    b.starts_with(&[0xFF, 0xD8, 0xFF])                          // JPEG
+        || b.starts_with(&[0x89, b'P', b'N', b'G'])             // PNG
+        || b.starts_with(b"GIF8")                               // GIF
+        || b.starts_with(b"BM")                                 // BMP
+        || (b.len() >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP")
+}
+
 /// The sample-entry fourcc of the video track's first `stsd` entry (`avc1`, `hvc1`, `av01`,
 /// …), for the doctor's codec diagnosis. Reads the `ftyp` gate + `moov` only; `None` for
 /// non-ISO-BMFF sources or video-less files.
@@ -695,6 +736,65 @@ mod tests {
             video_mdia(box_body(&moov)).is_some(),
             "the video trak after an mdia-less trak must still be found"
         );
+    }
+
+    /// iTunes-style cover art: moov ▸ udta ▸ meta ▸ ilst ▸ covr ▸ data, with the 8-byte
+    /// type-indicator/locale header stripped. `meta` is a FULL box here.
+    #[test]
+    fn cover_art_read_from_the_covr_atom() {
+        const JPEG: &[u8] = b"\xFF\xD8\xFFrest-of-the-jpeg";
+        let mut data_body = vec![0u8; 8]; // type indicator (13 = JPEG) + locale
+        data_body[3] = 13;
+        data_body.extend_from_slice(JPEG);
+        let data = bx(b"data", &data_body);
+        let covr = container(b"covr", &[&data]);
+        let ilst = container(b"ilst", &[&covr]);
+        // meta as a full box: version+flags then children.
+        let meta = fbx(b"meta", 0, 0, &ilst);
+        let udta = container(b"udta", &[&meta]);
+        let moov = container(b"moov", &[&udta]);
+        let mut file = bx(b"ftyp", b"isomisom");
+        file.extend_from_slice(&moov);
+
+        assert_eq!(
+            cover_art(&mut Cursor::new(&file)).as_deref(),
+            Some(JPEG),
+            "the covr payload past the 8-byte data header"
+        );
+
+        // A QuickTime-style `meta` with NO version/flags must still resolve.
+        let meta_plain = container(b"meta", &[&ilst]);
+        let udta2 = container(b"udta", &[&meta_plain]);
+        let moov2 = container(b"moov", &[&udta2]);
+        let mut file2 = bx(b"ftyp", b"isomisom");
+        file2.extend_from_slice(&moov2);
+        assert_eq!(cover_art(&mut Cursor::new(&file2)).as_deref(), Some(JPEG));
+    }
+
+    /// A `covr` whose payload is not actually an image must be declined, so the caller
+    /// falls through to the real decode tiers instead of being handed junk as "the cover".
+    #[test]
+    fn cover_art_declines_a_non_image_payload() {
+        let mut data_body = vec![0u8; 8];
+        data_body.extend_from_slice(b"this is not an image at all");
+        let file = {
+            let data = bx(b"data", &data_body);
+            let covr = container(b"covr", &[&data]);
+            let ilst = container(b"ilst", &[&covr]);
+            let meta = fbx(b"meta", 0, 0, &ilst);
+            let moov = container(b"moov", &[&container(b"udta", &[&meta])]);
+            let mut f = bx(b"ftyp", b"isomisom");
+            f.extend_from_slice(&moov);
+            f
+        };
+        assert_eq!(cover_art(&mut Cursor::new(&file)), None);
+        // And a file with no udta at all is simply None, not a panic.
+        let bare = {
+            let mut f = bx(b"ftyp", b"isomisom");
+            f.extend_from_slice(&container(b"moov", &[&bx(b"mvhd", &[0u8; 32])]));
+            f
+        };
+        assert_eq!(cover_art(&mut Cursor::new(&bare)), None);
     }
 
     /// 30 % of a uniform-cadence track should land on the sample nearest that time.

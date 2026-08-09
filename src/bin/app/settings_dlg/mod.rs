@@ -434,6 +434,7 @@ const TOOLTIPS: &[(i32, &str)] = &[
     (ID_FORMAT_BADGE, "tip_format_badge"),
     (ID_BADGE_ICON, "tip_badge_icon"),
     (ID_THUMB_CHECKER, "tip_thumb_checker"),
+    (ID_VIDEO_COVER_ART, "tip_video_cover_art"),
     (ID_HIDE_TYPE_OVERLAY, "tip_hide_type_overlay"),
     (ID_ENABLE_MENU, "tip_enable_menu"),
     (ID_MENU_PREVIEW, "tip_menu_preview"),

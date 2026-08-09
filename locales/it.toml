@@ -374,7 +374,9 @@ msg_portable_reg_failed = "Windows non ci ha permesso di scrivere la registrazio
 # --- Added 2026-08-08: colour badge icon / thumbnail checkerboard / hide file-type overlay ---
 chk_badge_icon = "Usa un badge a icona colorata"
 chk_thumb_checker = "Scacchiera dietro le miniature trasparenti"
+chk_video_cover_art = "Usa la copertina del video anziché un fotogramma"
 chk_hide_type_overlay = "Nascondi l'icona del tipo di file di Windows sulle miniature"
 tip_badge_icon = "Disegna il badge come un piccolo contrassegno colorato per tipo di file - un colore per ogni categoria (immagini, RAW fotocamera, ebook, documenti, audio, video, archivi) - anziché come testo semplice. Più facile da individuare a colpo d'occhio. Deseleziona per il badge testuale semplice."
 tip_thumb_checker = "Disegna una leggera scacchiera dietro le parti trasparenti di una miniatura, così un'immagine trasparente non scompare nello sfondo della cartella. Solo per le miniature di Esplora file; le finestre di anteprima hanno un interruttore separato. Modificarlo svuota la cache delle miniature."
+tip_video_cover_art = "Quando un video ha un'immagine di copertina salvata al suo interno, mostra quella al posto di un fotogramma tratto dal video. Ideale per una videoteca di film; lascialo disattivato per i video personali e le registrazioni dello schermo, dove un vero fotogramma è più informativo. La copertina viene comunque usata quando non è possibile decodificare alcun fotogramma, indipendentemente da questa impostazione. Modificarlo svuota la cache delle miniature."
 tip_hide_type_overlay = "Windows imprime l'icona del programma associato nell'angolo di una miniatura, sopra il badge del formato - e se quel programma è stato disinstallato disegna invece una pagina vuota. Questa opzione chiede a Windows di non disegnarla per i tipi di file gestiti da SageThumbs. Reversibile: deselezionando torna come prima."

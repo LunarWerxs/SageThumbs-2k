@@ -374,7 +374,9 @@ msg_portable_reg_failed = "Windows tidak mengizinkan kami menulis pendaftaran un
 # --- Added 2026-08-08: coloured icon badge / thumbnail checkerboard / hide type overlay ---
 chk_badge_icon = "Gunakan lencana ikon berwarna"
 chk_thumb_checker = "Kotak-kotak di belakang thumbnail transparan"
+chk_video_cover_art = "Gunakan cover video, bukan bingkai"
 chk_hide_type_overlay = "Sembunyikan ikon jenis file Windows pada thumbnail"
 tip_badge_icon = "Menggambar lencana sebagai tanda file kecil berwarna - satu warna untuk tiap jenis file (gambar, RAW kamera, ebook, dokumen, audio, video, arsip) - bukan teks biasa. Lebih mudah dikenali sekilas. Hapus centang untuk chip teks biasa."
 tip_thumb_checker = "Menggambar kotak-kotak terang di belakang bagian tembus pandang pada thumbnail, agar gambar transparan tidak hilang menyatu dengan latar folder. Hanya berlaku untuk thumbnail Explorer; jendela pratinjau punya sakelarnya sendiri. Mengubah ini akan menghapus cache thumbnail."
+tip_video_cover_art = "Bila video punya gambar cover yang tersimpan di dalamnya, tampilkan itu, bukan bingkai dari videonya. Paling cocok untuk koleksi film; matikan untuk video pribadi dan rekaman layar, karena bingkai asli memberi info lebih jelas. Gambar cover tetap dipakai bila tidak ada bingkai yang bisa didekode, apa pun pengaturan ini. Mengubah ini akan menghapus cache thumbnail."
 tip_hide_type_overlay = "Windows mencantumkan ikon program terkait di sudut thumbnail, di atas lencana format - dan saat program itu sudah dicopot, ia malah menggambar halaman kosong. Ini meminta Windows untuk tidak menggambarnya pada jenis file yang ditangani SageThumbs. Bisa dibalik: hapus centang mengembalikannya."

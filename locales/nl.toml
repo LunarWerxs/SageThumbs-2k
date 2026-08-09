@@ -374,7 +374,9 @@ msg_portable_reg_failed = "Windows liet ons de registratie voor uw gebruikersacc
 # --- Added 2026-08-08: coloured badge icon / thumbnail checkerboard / hide file-type overlay ---
 chk_badge_icon = "Gekleurde pictogrambadge gebruiken"
 chk_thumb_checker = "Dambordpatroon achter transparante miniaturen"
+chk_video_cover_art = "Videocover in plaats van een beeld"
 chk_hide_type_overlay = "Bestandstype-pictogram van Windows op miniaturen verbergen"
 tip_badge_icon = "Teken de badge als een klein gekleurd bestandsmerkteken - één kleur per bestandstype (afbeeldingen, camera-RAW, e-books, documenten, audio, video, archieven) - in plaats van platte tekst. Gemakkelijker te herkennen in één oogopslag. Vink uit voor de platte-tekst-chip."
 tip_thumb_checker = "Tekent een licht dambordpatroon achter doorzichtige delen van een miniatuur, zodat een transparante afbeelding niet wegvalt tegen de mapachtergrond. Alleen voor miniaturen in Verkenner; de voorbeeldvensters hebben hun eigen schakelaar. Wijzigen wist de miniaturencache."
+tip_video_cover_art = "Als een video een poster-afbeelding (cover) heeft opgeslagen, wordt die getoond in plaats van een beeld uit de video. Het beste voor een verzameling films; laat dit uit voor privévideo's en schermopnames, waar een echt beeld meer laat zien. De cover wordt sowieso gebruikt als er geen beeld kan worden gedecodeerd, ongeacht deze instelling. Wijzigen wist de miniaturencache."
 tip_hide_type_overlay = "Windows drukt het pictogram van het gekoppelde programma in de hoek van een miniatuur, boven op de formaatbadge - en als dat programma is verwijderd, tekent het in plaats daarvan een leeg blad. Dit vraagt Windows om dit niet te tekenen voor de bestandstypen die SageThumbs verwerkt. Omkeerbaar: uitvinken zet het terug."

@@ -87,6 +87,21 @@ pub unsafe fn stream_source(
     who: &str,
 ) -> Result<StreamSource> {
     if peek_is_video(stream) {
+        // OPTION: prefer the embedded poster over a frame from the film (`VideoCoverArt`,
+        // off by default). Read BEFORE the frame tiers so a film library shows its covers
+        // without paying for a decode first; a file with no cover falls straight through to
+        // the normal cascade, having cost one bounded metadata read.
+        if crate::settings::prefer_cover_art() {
+            if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
+                stream: stream.clone(),
+            }) {
+                safety::log_debug(&format!(
+                    "{who}: cover art preferred over a frame ({} bytes)",
+                    cover.len()
+                ));
+                return Ok(StreamSource::Bytes(cover));
+            }
+        }
         // Decode by FILE PATH when we can recover it: Media Foundation reading a
         // multi-GB movie through the shell's IStream is catastrophically slow
         // (30 s+, a pegged core, past Explorer's timeout), while opening the file
@@ -155,7 +170,7 @@ pub unsafe fn stream_source(
         // routinely attach a poster, so show the film instead of a blank tile. Bounded:
         // the attachment element is read via the container's own index, never the stream.
         if !peek_is_ogg(stream) {
-            if let Some(cover) = crate::mkv::attached_cover(&mut IStreamReader {
+            if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
                 stream: stream.clone(),
             }) {
                 safety::log_debug(&format!(

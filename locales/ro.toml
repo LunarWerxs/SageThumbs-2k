@@ -370,7 +370,9 @@ msg_portable_reg_failed = "Windows nu ne-a permis să scriem înregistrarea pent
 # --- Added 2026-08-08: coloured badge icon / thumbnail checkerboard / hide file-type overlay ---
 chk_badge_icon = "Folosește o etichetă colorată cu pictogramă"
 chk_thumb_checker = "Tablă de șah în spatele miniaturilor transparente"
+chk_video_cover_art = "Folosește coperta videoclipului în loc de un cadru"
 chk_hide_type_overlay = "Ascunde pictograma de tip fișier a Windows pe miniaturi"
 tip_badge_icon = "Desenează eticheta ca un mic marcaj colorat de fișier - o culoare pentru fiecare tip de fișier (imagini, RAW de cameră, ebook-uri, documente, audio, video, arhive) - în loc de text simplu. Mai ușor de recunoscut dintr-o privire. Debifați pentru eticheta cu text simplu."
 tip_thumb_checker = "Pictează o tablă de șah discretă în spatele părților transparente ale unei miniaturi, ca o imagine transparentă să nu se piardă în fundalul dosarului. Doar pentru miniaturile din Explorer; ferestrele de previzualizare au propriul comutator. Modificarea acestei opțiuni golește memoria cache a miniaturilor."
+tip_video_cover_art = "Când un videoclip are o imagine de copertă salvată în el, arată aceasta în loc de un cadru din videoclip. Cel mai bine pentru o bibliotecă de filme, dezactivați pentru videoclipuri de familie și înregistrări de ecran, unde un cadru real arată mai mult. Coperta este folosită oricum când niciun cadru nu poate fi decodat, indiferent de această setare. Modificarea acestei opțiuni golește memoria cache a miniaturilor."
 tip_hide_type_overlay = "Windows imprimă pictograma programului asociat în colțul unei miniaturi, peste eticheta de format - iar când acel program a fost dezinstalat, desenează în schimb o pagină goală. Aceasta îi cere Windows să nu o deseneze pentru tipurile de fișiere gestionate de SageThumbs. Reversibil: debifarea o readuce la loc."

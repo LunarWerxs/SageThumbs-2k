@@ -8,6 +8,7 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_FORMAT_BADGE, settings::format_badge());
     check(hwnd, ID_BADGE_ICON, settings::format_badge_icon());
     check(hwnd, ID_THUMB_CHECKER, settings::thumb_checker());
+    check(hwnd, ID_VIDEO_COVER_ART, settings::prefer_cover_art());
     check(hwnd, ID_HIDE_TYPE_OVERLAY, settings::hide_type_overlay());
     update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, settings::menu_enabled());
@@ -275,15 +276,21 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     let badge_now = checked(hwnd, ID_FORMAT_BADGE);
     let icon_now = checked(hwnd, ID_BADGE_ICON);
     let checker_now = checked(hwnd, ID_THUMB_CHECKER);
-    // Every one of these is baked into the cached bitmap, so all three share the badge's
+    // Cover-art-versus-frame decides WHICH PICTURE the tile is, so it belongs to this set
+    // too: without the purge, ticking it looks like it did nothing until the cache happens
+    // to turn over.
+    let cover_now = checked(hwnd, ID_VIDEO_COVER_ART);
+    // Every one of these is baked into the cached bitmap, so they share the badge's
     // purge-on-change rule. Compute the OR before writing, or the comparison reads back
     // the value we just stored and never fires.
     let badge_changed = badge_now != settings::format_badge()
         || icon_now != settings::format_badge_icon()
-        || checker_now != settings::thumb_checker();
+        || checker_now != settings::thumb_checker()
+        || cover_now != settings::prefer_cover_art();
     let _ = settings::set_format_badge(badge_now);
     let _ = settings::set_format_badge_icon(icon_now);
     let _ = settings::set_thumb_checker(checker_now);
+    let _ = settings::set_prefer_cover_art(cover_now);
     // Not a bitmap change (Explorer draws the overlay itself, on top of what it cached),
     // so this one needs no purge — but it DOES need the registry written and the shell
     // told, which `typeoverlay::sync` does for every hooked format.

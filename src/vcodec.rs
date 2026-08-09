@@ -63,6 +63,19 @@ pub fn identify<R: Read + Seek>(r: &mut R) -> Option<CodecInfo> {
     None
 }
 
+/// The embedded cover image of a video file, whichever container it is: a Matroska
+/// attachment ([`crate::mkv::attached_cover`]) or an MP4/MOV `covr` item
+/// ([`crate::mp4::cover_art`]). `None` when there is none, or for a container with no
+/// cover concept (AVI, WMV, MPEG-TS).
+///
+/// Why this matters beyond convenience: it is the only thumbnail a file can have when the
+/// OS lacks its codec, which for HEVC means "unless the user buys the Store extension".
+/// A poster is also frequently a BETTER tile than a frame for a film, which is why it is
+/// offered as a preference (`settings::prefer_cover_art`) and not only as a fallback.
+pub fn cover_art<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
+    crate::mkv::attached_cover(r).or_else(|| crate::mp4::cover_art(r))
+}
+
 /// Map a Matroska CodecID to a display name + MF subtype + install hint.
 fn from_mkv_codec_id(id: &str) -> CodecInfo {
     let (name, subtype, hint): (&str, Option<GUID>, Option<&'static str>) = match id {

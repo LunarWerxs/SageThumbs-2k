@@ -940,13 +940,17 @@ fn video_codec_note(r: &mut Report, path: &str) {
             &format!("{label} — an id we don't recognize, so we can't check for a decoder"),
         ),
     }
-    // A Matroska attachment poster means a thumbnail exists even with no codec: say so.
-    if crate::mkv::attached_cover(&mut file).is_some() {
-        r.line(
-            S::Ok,
-            "Attached cover art",
-            "present — used as the thumbnail when no frame can be decoded",
-        );
+    // An embedded poster (a Matroska attachment or an MP4 `covr` item) means a thumbnail
+    // exists even with no codec at all, which is the whole answer for an HEVC library on a
+    // machine without the Store extension. Say so, and say which rule is currently in force.
+    if crate::vcodec::cover_art(&mut file).is_some() {
+        let detail = if crate::settings::prefer_cover_art() {
+            "present, and Settings prefers it, so this is the thumbnail you get"
+        } else {
+            "present - used when no frame can be decoded. Settings > General > 'Use a \
+             video's cover art instead of a frame' makes it the first choice"
+        };
+        r.line(S::Ok, "Embedded cover art", detail);
     }
 }
 
