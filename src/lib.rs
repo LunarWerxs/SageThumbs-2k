@@ -35,6 +35,9 @@ pub mod doctor;
 mod factory;
 pub mod formats;
 mod fsutil;
+// Structure-aware mutation fuzzing of the pure-Rust parsers, compiled only for tests.
+#[cfg(test)]
+mod fuzz;
 mod guids;
 mod jpegtran;
 pub mod mcp;
