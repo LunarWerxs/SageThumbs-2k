@@ -363,3 +363,11 @@ state_on = "Zapnuté"
 state_off = "Vypnuté"
 msg_portable_dll_missing = "Súbor sagethumbs2k.dll sa v tomto priečinku nenachádza. Rozbaľte celý prenosný balík a skúste to znova."
 msg_portable_reg_failed = "Windows nám nedovolil zapísať registráciu pre váš používateľský účet."
+
+# --- Added 2026-08-08: coloured badge / thumbnail checkerboard / hide type overlay ---
+chk_badge_icon = "Použiť farebný odznak ikony"
+chk_thumb_checker = "Šachovnica za priehľadnými miniatúrami"
+chk_hide_type_overlay = "Skryť ikonu typu súboru Windows na miniatúrach"
+tip_badge_icon = "Vykreslí odznak ako malú farebnú značku súboru - jedna farba pre každý druh súboru (obrázky, RAW z fotoaparátu, e-knihy, dokumenty, audio, video, archívy) - namiesto obyčajného textu. Ľahšie sa rozpozná na prvý pohľad. Zrušte začiarknutie pre variant s obyčajným textovým štítkom."
+tip_thumb_checker = "Vykreslí jemnú šachovnicu za priehľadnými časťami miniatúry, aby priehľadný obrázok nezmizol v pozadí priečinka. Platí iba pre miniatúry v Prieskumníkovi; okná náhľadu majú vlastný prepínač. Zmena tejto voľby vymaže vyrovnávaciu pamäť miniatúr."
+tip_hide_type_overlay = "Windows vtlačí ikonu priradeného programu do rohu miniatúry, navrch odznaku formátu - a keď je tento program odinštalovaný, namiesto toho vykreslí prázdnu stránku. Táto voľba požiada Windows, aby ju nevykresľoval pre typy súborov, ktoré SageThumbs spracúva. Vratné: zrušením začiarknutia sa vráti späť."

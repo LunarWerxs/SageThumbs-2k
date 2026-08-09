@@ -6,6 +6,10 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, settings::thumbnails_enabled());
     check(hwnd, ID_USE_EMBEDDED, settings::use_embedded());
     check(hwnd, ID_FORMAT_BADGE, settings::format_badge());
+    check(hwnd, ID_BADGE_ICON, settings::format_badge_icon());
+    check(hwnd, ID_THUMB_CHECKER, settings::thumb_checker());
+    check(hwnd, ID_HIDE_TYPE_OVERLAY, settings::hide_type_overlay());
+    update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, settings::menu_enabled());
     check(hwnd, ID_MENU_ALL_TYPES, settings::menu_all_file_types());
     let mb = (settings::max_file_size_bytes() / (1024 * 1024)).min(u32::MAX as u64) as u32;
@@ -86,6 +90,10 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, true);
     check(hwnd, ID_USE_EMBEDDED, true); // ON by default — see settings::use_embedded
     check(hwnd, ID_FORMAT_BADGE, false); // OFF by default — it alters the picture
+    check(hwnd, ID_BADGE_ICON, true); // ...but when it IS on, colour beats three letters
+    check(hwnd, ID_THUMB_CHECKER, false); // real alpha is the better default
+    check(hwnd, ID_HIDE_TYPE_OVERLAY, false); // writes into other programs' ProgID keys
+    update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, true);
     check(hwnd, ID_MENU_ALL_TYPES, false);
     let _ = SetDlgItemInt(hwnd, ID_MAXSIZE, settings::DEFAULT_MAX_FILE_MB, false);
@@ -239,6 +247,16 @@ pub(super) unsafe fn update_save_dir_enabled(hwnd: HWND) {
     }
 }
 
+/// Grey out the badge STYLE row while the badge itself is off — the house rule for a
+/// dependent control, and here it also stops the row reading as a second, separate feature.
+pub(super) unsafe fn update_badge_style_enabled(hwnd: HWND) {
+    let on = checked(hwnd, ID_FORMAT_BADGE);
+    if let Ok(b) = GetDlgItem(Some(hwnd), ID_BADGE_ICON) {
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(b, on);
+        let _ = InvalidateRect(Some(b), None, true);
+    }
+}
+
 pub(super) unsafe fn banner_rotator(hwnd: HWND) -> Option<(HWND, *mut SponsorRotator)> {
     let banner = GetDlgItem(Some(hwnd), ID_BANNER).ok()?;
     let rot = GetWindowLongPtrW(banner, GWLP_USERDATA) as *mut SponsorRotator;
@@ -255,8 +273,25 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // here and purge, otherwise the first thing every user reports is "I ticked it and
     // nothing happened". Only on an actual change — never make Apply nuke the cache.
     let badge_now = checked(hwnd, ID_FORMAT_BADGE);
-    let badge_changed = badge_now != settings::format_badge();
+    let icon_now = checked(hwnd, ID_BADGE_ICON);
+    let checker_now = checked(hwnd, ID_THUMB_CHECKER);
+    // Every one of these is baked into the cached bitmap, so all three share the badge's
+    // purge-on-change rule. Compute the OR before writing, or the comparison reads back
+    // the value we just stored and never fires.
+    let badge_changed = badge_now != settings::format_badge()
+        || icon_now != settings::format_badge_icon()
+        || checker_now != settings::thumb_checker();
     let _ = settings::set_format_badge(badge_now);
+    let _ = settings::set_format_badge_icon(icon_now);
+    let _ = settings::set_thumb_checker(checker_now);
+    // Not a bitmap change (Explorer draws the overlay itself, on top of what it cached),
+    // so this one needs no purge — but it DOES need the registry written and the shell
+    // told, which `typeoverlay::sync` does for every hooked format.
+    let overlay_now = checked(hwnd, ID_HIDE_TYPE_OVERLAY);
+    if overlay_now != settings::hide_type_overlay() {
+        let _ = settings::set_hide_type_overlay(overlay_now);
+        sagethumbs2k_core::typeoverlay::sync(overlay_now);
+    }
     let _ = settings::set_dword("EnableMenu", checked(hwnd, ID_ENABLE_MENU) as u32);
     let _ = settings::set_dword("MenuAllFileTypes", checked(hwnd, ID_MENU_ALL_TYPES) as u32);
     let _ = settings::set_dword("MenuQuickVerbs", checked(hwnd, ID_MENU_QUICK) as u32);
@@ -776,6 +811,10 @@ pub(super) unsafe fn repair_associations(hwnd: HWND) {
             )
         }
     }
+    // Re-registering can change which ProgID owns a type, and the type-overlay suppression
+    // is written per ProgID — so re-point it at whatever owns the types NOW, or the repair
+    // would silently leave the icon back on top of the badge.
+    sagethumbs2k_core::typeoverlay::sync(sagethumbs2k_core::settings::hide_type_overlay());
     // Registration rewrote the hooks; drop the stale cached thumbnails + restart Explorer so
     // the repaired ones render right away. (The cmd sequence gives regsvr32 time to finish.)
     let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();

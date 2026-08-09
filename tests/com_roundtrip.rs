@@ -66,7 +66,45 @@ impl Thumb {
     }
 }
 
+/// Throwaway HKCU subkey the DLL's settings reads are redirected to, so this test measures
+/// the CODE and not whatever the developer running it happens to have ticked.
+///
+/// It used to read the real `HKCU\Software\SageThumbs2K`, which made it quietly
+/// machine-dependent: turning on "Checkerboard behind transparent thumbnails" composites the
+/// tile onto an opaque backdrop, and `alpha_is_premultiplied` then fails with A=255 on a
+/// machine where nothing is wrong. Same shape for `FormatBadge`. The sibling COM tests
+/// (`settings_gate`, `explorer_command`, `context_menu_latency`) already redirect this way.
+const TEST_SETTINGS_ROOT: &str = r"Software\SageThumbs2K-test\com_roundtrip";
+
+/// Point settings at the throwaway root before the DLL's `OnceLock` resolves it. Must run
+/// before the first settings read of the process, which is why it lives in the one helper
+/// every test in this file goes through.
+fn isolate_settings() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: set before any thread but this one has touched the environment, and the
+        // value is only read (once) by `settings::hkcu_root`.
+        unsafe { std::env::set_var("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT) };
+    });
+}
+
+/// Serializes every test in this file.
+///
+/// They all share ONE settings root (the DLL resolves `ST2K_SETTINGS_ROOT` once per process),
+/// so a test that flips `FormatBadge` or `ThumbChecker` is flipping it for whatever else is
+/// running at that moment — which is how `alpha_is_premultiplied` started failing against a
+/// checkerboard it never asked for. These tests take under a second in total, so serializing
+/// them costs nothing worth having.
+fn settings_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A poisoned lock means some other test panicked; that is its failure to report, not a
+    // reason to fail this one too.
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 unsafe fn get_thumbnail(bytes: &[u8], cx: u32) -> Result<Thumb> {
+    isolate_settings();
     // Returns a Result (not catch_unwind) so the harness behaves identically
     // whether the DLL is built with panic=unwind (debug) or panic=abort (release).
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -164,6 +202,7 @@ fn encode(img: RgbaImage, fmt: ImageFormat) -> Vec<u8> {
 
 #[test]
 fn png_fits_box_preserves_aspect_and_color() {
+    let _settings = settings_lock();
     let png = encode(solid(200, 100, [255, 0, 0, 255]), ImageFormat::Png);
     let t = unsafe { get_thumbnail(&png, 96) }.unwrap();
     assert_eq!((t.w, t.h), (96, 48), "200x100 should fit 96-box as 96x48");
@@ -178,6 +217,7 @@ fn png_fits_box_preserves_aspect_and_color() {
 
 #[test]
 fn dib_is_top_down() {
+    let _settings = settings_lock();
     // Red top half, blue bottom half. A top-down DIB keeps red at row 0.
     let mut img = RgbaImage::new(200, 100);
     for y in 0..100u32 {
@@ -206,6 +246,7 @@ fn dib_is_top_down() {
 
 #[test]
 fn alpha_is_premultiplied() {
+    let _settings = settings_lock();
     // Straight R=200, A=128 -> premultiplied R ≈ 200*128/255 ≈ 100.
     let png = encode(solid(80, 80, [200, 0, 0, 128]), ImageFormat::Png);
     let t = unsafe { get_thumbnail(&png, 64) }.unwrap();
@@ -221,6 +262,7 @@ fn alpha_is_premultiplied() {
 
 #[test]
 fn jpeg_also_decodes_through_com() {
+    let _settings = settings_lock();
     let jpg = encode(solid(120, 90, [0, 200, 0, 255]), ImageFormat::Jpeg);
     let t = unsafe { get_thumbnail(&jpg, 96) }.unwrap();
     assert_eq!((t.w, t.h), (96, 72), "120x90 should fit 96-box as 96x72");
@@ -268,6 +310,7 @@ fn synthetic_psd_with_thumb(tail: usize) -> Vec<u8> {
 
 #[test]
 fn big_psd_thumbnails_through_com_via_the_head_prefix() {
+    let _settings = settings_lock();
     // 8 MB of layer data behind the baked thumbnail: end-to-end through the
     // real DLL, the head-preview fast path must still produce the red JPEG
     // thumbnail (the streamsrc unit tests assert the byte-level prefix; this
@@ -285,6 +328,7 @@ fn big_psd_thumbnails_through_com_via_the_head_prefix() {
 
 #[test]
 fn garbage_returns_error_not_crash() {
+    let _settings = settings_lock();
     // GetThumbnail should return a failure HRESULT (not crash the host) for
     // undecodable input.
     let result = unsafe { get_thumbnail(&[0, 1, 2, 3, 4, 5, 6, 7], 96) };
@@ -308,6 +352,7 @@ fn garbage_returns_error_not_crash() {
 /// so a test run cannot leave badges silently switched on for the developer.
 #[test]
 fn format_badge_stamps_a_real_thumbnail_when_enabled() {
+    let _settings = settings_lock();
     use windows::Win32::System::Com::{STGM_READ, STGM_SHARE_DENY_NONE};
     use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
     use windows_registry::CURRENT_USER;
@@ -380,22 +425,18 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
         out
     }
 
+    // The THROWAWAY root, not the developer's real one. Flipping the live key worked, but it
+    // meant a test run reached into the settings of whoever ran it and put them back by hand
+    // afterwards — which is only correct while nothing panics in between.
+    isolate_settings();
     let key = CURRENT_USER
-        .create(r"Software\SageThumbs2K")
+        .create(TEST_SETTINGS_ROOT)
         .expect("settings key");
-    let prev = key.get_u32("FormatBadge").ok();
     let _ = key.set_u32("FormatBadge", 0);
     let off = unsafe { tile(&corpus, 256) };
     let _ = key.set_u32("FormatBadge", 1);
     let on = unsafe { tile(&corpus, 256) };
-    match prev {
-        Some(v) => {
-            let _ = key.set_u32("FormatBadge", v);
-        }
-        None => {
-            let _ = key.remove_value("FormatBadge");
-        }
-    }
+    let _ = key.remove_value("FormatBadge");
 
     assert_eq!(
         off.len(),
@@ -412,4 +453,69 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
     let clean =
         (0..32).all(|y| (0..32).all(|x| off[(y * w + x) * 4..][..4] == on[(y * w + x) * 4..][..4]));
     assert!(clean, "the badge bled into the top-left of the thumbnail");
+
+    // `FormatBadgeStyle` must reach the provider as well. Text and icon draw different
+    // pixels, so a knob that never arrived shows up as two identical tiles.
+    let _ = key.set_u32("FormatBadge", 1);
+    let _ = key.set_u32("FormatBadgeStyle", 1);
+    let icon = unsafe { tile(&corpus, 256) };
+    let _ = key.set_u32("FormatBadgeStyle", 0);
+    let text = unsafe { tile(&corpus, 256) };
+    let _ = key.remove_value("FormatBadge");
+    let _ = key.remove_value("FormatBadgeStyle");
+    assert_ne!(
+        icon, text,
+        "FormatBadgeStyle produced a byte-identical tile - the style never reached the provider"
+    );
+}
+
+/// `ThumbChecker` is the other setting that rewrites the finished bitmap, and it has a
+/// property worth pinning: it must make the tile OPAQUE. A half-transparent thumbnail that
+/// still reports `WTSAT_ARGB` with real alpha would mean the checkerboard was drawn on top
+/// of the picture rather than under it.
+#[test]
+fn thumb_checker_fills_transparency_and_leaves_an_opaque_tile() {
+    let _settings = settings_lock();
+    use windows_registry::CURRENT_USER;
+
+    isolate_settings();
+    let key = CURRENT_USER
+        .create(TEST_SETTINGS_ROOT)
+        .expect("settings key");
+
+    // Half transparent, half opaque. NOT a fully transparent image: `decode/thumb.rs`
+    // deliberately forces one of those opaque (DDS texture maps and render passes use alpha
+    // for something other than transparency), so it would prove nothing here.
+    let mut img = RgbaImage::new(80, 80);
+    for y in 0..80u32 {
+        for x in 0..80u32 {
+            let px = if x < 40 { [0, 0, 0, 0] } else { [200, 0, 0, 255] };
+            img.put_pixel(x, y, Rgba(px));
+        }
+    }
+    let png = encode(img, ImageFormat::Png);
+
+    let _ = key.set_u32("ThumbChecker", 0);
+    let plain = unsafe { get_thumbnail(&png, 64) }.expect("thumbnail");
+    assert_eq!(plain.px(2, 2)[3], 0, "transparent stays transparent when off");
+
+    let _ = key.set_u32("ThumbChecker", 1);
+    let checked = unsafe { get_thumbnail(&png, 64) }.expect("thumbnail");
+    let _ = key.remove_value("ThumbChecker");
+
+    let [b, g, r, a] = checked.px(2, 2);
+    assert_eq!(a, 255, "the checkerboard must leave the tile opaque");
+    assert!(
+        b > 190 && g > 190 && r > 190,
+        "the see-through half should now be checkerboard grey, got BGRA {:?}",
+        [b, g, r, a]
+    );
+    // ...and the opaque half must be untouched by it.
+    let [rb, rg, rr, ra] = checked.px(checked.w - 3, 2);
+    assert_eq!(ra, 255);
+    assert!(
+        rr > 180 && rg < 60 && rb < 60,
+        "the opaque half must still be the picture, got BGRA {:?}",
+        [rb, rg, rr, ra]
+    );
 }

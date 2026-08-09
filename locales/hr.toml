@@ -369,3 +369,11 @@ state_on = "Uključeno"
 state_off = "Isključeno"
 msg_portable_dll_missing = "sagethumbs2k.dll nije u ovoj mapi. Raspakirajte cijelo prijenosno preuzimanje i pokušajte ponovno."
 msg_portable_reg_failed = "Windows nam nije dopustio zapisati registraciju za vaš korisnički račun."
+
+# --- Added 2026-08-08: coloured icon badge / thumbnail checkerboard / hide type overlay ---
+chk_badge_icon = "Koristi obojenu ikonu kao oznaku"
+chk_thumb_checker = "Šahovnica iza prozirnih minijatura"
+chk_hide_type_overlay = "Sakrij Windows ikonu vrste datoteke na minijaturama"
+tip_badge_icon = "Iscrtava oznaku kao malu obojenu naljepnicu datoteke - jedna boja po vrsti datoteke (slike, RAW fotoaparata, e-knjige, dokumenti, zvuk, video, arhive) - umjesto obična teksta. Lakše je uočiti na prvi pogled. Isključite za oznaku s običnim tekstom."
+tip_thumb_checker = "Iscrtava svijetlu šahovnicu iza prozirnih dijelova minijature, tako da prozirna slika ne nestane u pozadini mape. Odnosi se samo na minijature u Exploreru; prozori pretpregleda imaju vlastiti prekidač. Promjena ovoga briše predmemoriju minijatura."
+tip_hide_type_overlay = "Windows utiskuje ikonu povezanog programa u kut minijature, preko oznake formata - a kad je taj program deinstaliran, umjesto toga iscrtava praznu stranicu. Ova postavka traži od sustava Windows da je ne iscrtava za vrste datoteka koje SageThumbs podržava. Reverzibilno: isključivanjem oznake vraća se natrag."

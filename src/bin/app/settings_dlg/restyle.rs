@@ -131,9 +131,20 @@ unsafe fn draw_switch_glyph(
     h: i32,
     on: bool,
     active: bool,
+    disabled: bool,
 ) {
     let y = top + (bottom - top - h) / 2;
-    let (track_fill, track_border) = if on {
+    // Disabled: the pill keeps its SHAPE and knob position (you can still read what the
+    // setting is set to) but loses the accent, so it stops inviting a click. Until the badge
+    // style row landed no switch on this dialog was ever a dependent, which is why this had
+    // never been drawn — a disabled switch was simply indistinguishable from a live one.
+    let (track_fill, track_border) = if disabled {
+        if on {
+            (BORDER_STRONG(), BORDER_STRONG())
+        } else {
+            (CHECK_BG(), BORDER())
+        }
+    } else if on {
         (ACCENT(), if active { ACCENT_HOT() } else { ACCENT() })
     } else {
         (CHECK_BG(), if active { ACCENT() } else { BORDER_STRONG() })
@@ -143,7 +154,17 @@ unsafe fn draw_switch_glyph(
     let kd = h - pad * 2;
     let ky = y + pad;
     let kx = if on { x + w - kd - pad } else { x + pad };
-    let knob = if on { ON_ACCENT() } else { BORDER_STRONG() };
+    let knob = if disabled {
+        if on {
+            BTN_FACE()
+        } else {
+            BORDER()
+        }
+    } else if on {
+        ON_ACCENT()
+    } else {
+        BORDER_STRONG()
+    };
     let bw = s(hwnd, 1).max(1);
     gdip::with_aa(hdc, |g| {
         // Pill track: a rounded-rect fill (radius == half-height → full pill) plus a hairline
@@ -168,6 +189,9 @@ unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     let rc = cd.rc;
     let active = (cd.uItemState.0 & (CDIS_HOT.0 | CDIS_FOCUS.0)) != 0;
     let on = checked(hwnd, GetDlgCtrlID(from));
+    // Read the window's own enabled state rather than CDIS_DISABLED: it is the thing
+    // `EnableWindow` actually sets, so it cannot disagree with whether the click works.
+    let disabled = !windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(from).as_bool();
 
     fill(hdc, &rc, DARK_BG());
 
@@ -183,7 +207,7 @@ unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     };
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, DARK_TEXT());
+    SetTextColor(hdc, if disabled { DISABLED_TEXT() } else { DARK_TEXT() });
     let mut label = control_text(from);
     let n = label.len().saturating_sub(1);
     DrawTextW(
@@ -204,6 +228,7 @@ unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
         sw_h,
         on,
         active,
+        disabled,
     );
     CDRF_SKIPDEFAULT as isize
 }

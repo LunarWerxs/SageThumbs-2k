@@ -365,3 +365,11 @@ state_on = "På"
 state_off = "Av"
 msg_portable_dll_missing = "sagethumbs2k.dll finns inte i den här mappen. Packa upp hela den portabla nedladdningen och försök igen."
 msg_portable_reg_failed = "Windows tillät oss inte att skriva registreringen för ditt användarkonto."
+
+# --- Added 2026-08-08: coloured badge / thumbnail checkerboard / hide type overlay ---
+chk_badge_icon = "Använd ett färgat ikonmärke"
+chk_thumb_checker = "Schackrutmönster bakom genomskinliga miniatyrer"
+chk_hide_type_overlay = "Dölj Windows filtypsikon på miniatyrer"
+tip_badge_icon = "Ritar märket som en liten färgad filmarkering - en färg per filtyp (bilder, kamera-RAW, e-böcker, dokument, ljud, video, arkiv) - i stället för vanlig text. Lättare att upptäcka med en blick. Avmarkera för chip-varianten med vanlig text."
+tip_thumb_checker = "Målar ett ljust schackrutmönster bakom genomskinliga delar av en miniatyr, så att en genomskinlig bild inte försvinner i mappens bakgrund. Gäller endast miniatyrer i Utforskaren; förhandsgranskningsfönstren har sin egen brytare. Att ändra detta rensar miniatyrcachen."
+tip_hide_type_overlay = "Windows stämplar det tillhörande programmets ikon i hörnet av en miniatyr, ovanpå formatmärket - och när det programmet har avinstallerats ritas en tom sida i stället. Det här ber Windows att inte rita den för de filtyper SageThumbs hanterar. Reversibelt: avmarkera för att återställa det."

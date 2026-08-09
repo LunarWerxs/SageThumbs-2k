@@ -370,3 +370,11 @@ state_on = "Włączone"
 state_off = "Wyłączone"
 msg_portable_dll_missing = "Pliku sagethumbs2k.dll nie ma w tym folderze. Rozpakuj cały przenośny plik pobierania i spróbuj ponownie."
 msg_portable_reg_failed = "Windows nie pozwolił nam zapisać rejestracji dla Twojego konta użytkownika."
+
+# --- Added 2026-08-08: coloured badge icon / thumbnail checkerboard / hide file-type overlay ---
+chk_badge_icon = "Używaj kolorowej plakietki z ikoną"
+chk_thumb_checker = "Szachownica pod przezroczystymi miniaturami"
+chk_hide_type_overlay = "Ukryj ikonę typu pliku Windows na miniaturach"
+tip_badge_icon = "Rysuje plakietkę jako mały kolorowy znacznik pliku - jeden kolor na rodzaj pliku (obrazy, RAW z aparatu, e-booki, dokumenty, audio, wideo, archiwa) - zamiast zwykłego tekstu. Łatwiej dostrzec na pierwszy rzut oka. Odznacz, aby zobaczyć zwykłą plakietkę tekstową."
+tip_thumb_checker = "Maluje jasną szachownicę pod przezroczystymi fragmentami miniatury, aby przezroczysty obraz nie zlewał się z tłem folderu. Dotyczy tylko miniatur w Eksploratorze; okna podglądu mają własny przełącznik. Zmiana tego czyści pamięć podręczną miniatur."
+tip_hide_type_overlay = "Windows umieszcza ikonę powiązanego programu w rogu miniatury, na plakietce formatu - a gdy ten program został odinstalowany, rysuje zamiast tego pustą stronę. Ta opcja prosi Windows, aby tego nie robił dla typów plików obsługiwanych przez SageThumbs. Odwracalne: odznaczenie przywraca poprzedni stan."

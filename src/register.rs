@@ -409,6 +409,10 @@ fn remove_if_ours(path: &str) {
 }
 
 pub fn unregister() -> Result<()> {
+    // Written per ProgID under HKCU by the opt-in "hide Windows' file-type icon" setting.
+    // Nothing else would ever clean these up, and a leftover empty `TypeOverlay` would keep
+    // suppressing another program's icon long after we are gone.
+    crate::typeoverlay::remove_all();
     // Order matters: remove the property-store VALUES on `SystemFileAssociations\.<ext>` FIRST,
     // so the subsequent thumbnail/preview `*_and_prune` calls find that key empty and prune it —
     // otherwise the lingering InfoTip/FullDetails/… values keep the key alive as orphan litter.

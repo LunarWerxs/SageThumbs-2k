@@ -370,3 +370,11 @@ state_on = "Aan"
 state_off = "Uit"
 msg_portable_dll_missing = "sagethumbs2k.dll staat niet in deze map. Pak de volledige portable download uit en probeer het opnieuw."
 msg_portable_reg_failed = "Windows liet ons de registratie voor uw gebruikersaccount niet schrijven."
+
+# --- Added 2026-08-08: coloured badge icon / thumbnail checkerboard / hide file-type overlay ---
+chk_badge_icon = "Gekleurde pictogrambadge gebruiken"
+chk_thumb_checker = "Dambordpatroon achter transparante miniaturen"
+chk_hide_type_overlay = "Bestandstype-pictogram van Windows op miniaturen verbergen"
+tip_badge_icon = "Teken de badge als een klein gekleurd bestandsmerkteken - één kleur per bestandstype (afbeeldingen, camera-RAW, e-books, documenten, audio, video, archieven) - in plaats van platte tekst. Gemakkelijker te herkennen in één oogopslag. Vink uit voor de platte-tekst-chip."
+tip_thumb_checker = "Tekent een licht dambordpatroon achter doorzichtige delen van een miniatuur, zodat een transparante afbeelding niet wegvalt tegen de mapachtergrond. Alleen voor miniaturen in Verkenner; de voorbeeldvensters hebben hun eigen schakelaar. Wijzigen wist de miniaturencache."
+tip_hide_type_overlay = "Windows drukt het pictogram van het gekoppelde programma in de hoek van een miniatuur, boven op de formaatbadge - en als dat programma is verwijderd, tekent het in plaats daarvan een leeg blad. Dit vraagt Windows om dit niet te tekenen voor de bestandstypen die SageThumbs verwerkt. Omkeerbaar: uitvinken zet het terug."

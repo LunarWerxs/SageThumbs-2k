@@ -575,6 +575,13 @@ pub struct ThumbSettings {
     /// `FormatBadge` — stamp the file's format in the thumbnail's corner. OFF by default:
     /// it alters the picture the user asked to see, so it is opt-in decoration.
     pub format_badge: bool,
+    /// `FormatBadgeStyle` — how that badge is drawn once it IS on. Only read when
+    /// `format_badge` is true.
+    pub badge_style: crate::badge::BadgeStyle,
+    /// `ThumbChecker` — burn a transparency checkerboard into the thumbnail behind
+    /// see-through pixels. OFF by default; correct alpha is the better default, this is for
+    /// people who want the original SageThumbs' look back.
+    pub thumb_checker: bool,
 }
 
 /// Read the per-`GetThumbnail` settings in one HKCU key open. Missing values fall
@@ -611,8 +618,15 @@ pub fn thumb_settings() -> ThumbSettings {
         ),
         use_embedded: g("UseEmbedded", 1) != 0,
         format_badge: g("FormatBadge", 0) != 0,
+        badge_style: crate::badge::BadgeStyle::from_dword(g("FormatBadgeStyle", DEFAULT_BADGE_STYLE)),
+        thumb_checker: g("ThumbChecker", 0) != 0,
     }
 }
+
+/// `FormatBadgeStyle` default: the category-coloured icon. The badge itself is opt-in, so
+/// anyone who turns it on has asked to be able to tell formats apart at a glance — and a
+/// colour does that faster than three letters. `0` selects the older plain text chip.
+const DEFAULT_BADGE_STYLE: u32 = 1;
 
 /// `FormatBadge` — corner format badge on thumbnails. Default OFF.
 pub fn format_badge() -> bool {
@@ -621,6 +635,37 @@ pub fn format_badge() -> bool {
 
 pub fn set_format_badge(on: bool) -> windows_registry::Result<()> {
     set_dword("FormatBadge", u32::from(on))
+}
+
+/// `FormatBadgeStyle` — icon (default) or plain text for that badge.
+pub fn format_badge_icon() -> bool {
+    get_dword("FormatBadgeStyle", DEFAULT_BADGE_STYLE) != 0
+}
+
+pub fn set_format_badge_icon(on: bool) -> windows_registry::Result<()> {
+    set_dword("FormatBadgeStyle", u32::from(on))
+}
+
+/// `ThumbChecker` — burn the transparency checkerboard into Explorer thumbnails. Default OFF
+/// (the shell composites real alpha over the folder background, which is normally what you
+/// want); see [`crate::checkerpx`] for why this is a separate switch from `PreviewChecker`.
+pub fn thumb_checker() -> bool {
+    get_dword("ThumbChecker", 0) != 0
+}
+
+pub fn set_thumb_checker(on: bool) -> windows_registry::Result<()> {
+    set_dword("ThumbChecker", u32::from(on))
+}
+
+/// `HideTypeOverlay` — suppress Explorer's own file-type icon on the thumbnails of the
+/// formats we hook. Default OFF, because it writes into other programs' ProgID keys (see
+/// [`crate::typeoverlay`]) and that should never happen without being asked for.
+pub fn hide_type_overlay() -> bool {
+    get_dword("HideTypeOverlay", 0) != 0
+}
+
+pub fn set_hide_type_overlay(on: bool) -> windows_registry::Result<()> {
+    set_dword("HideTypeOverlay", u32::from(on))
 }
 
 // ---- Convert-verb quality settings --------------------------------------

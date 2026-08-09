@@ -141,12 +141,19 @@ impl ThumbnailProvider_Impl {
             img.width, img.height
         ));
 
+        // Optional transparency checkerboard (`ThumbChecker`, off by default). Runs BEFORE
+        // the badge: the badge is an overlay on the finished picture, and a checkerboard
+        // composited over it would sit on top of the label. This makes the tile opaque.
+        let mut img = img;
+        if cfg.thumb_checker {
+            crate::checkerpx::compose_under(&mut img.rgba, img.width, img.height);
+        }
+
         // Optional format badge (`FormatBadge`, off by default). Stamped HERE, on the
         // finished tile, so it is the last thing applied and every decode tier gets it for
         // free. Note the shell CACHES what we return, so a toggle only shows up on tiles
         // rendered after it — the Settings dialog clears the thumbnail cache when the
         // option changes, otherwise turning it on looks like it did nothing.
-        let mut img = img;
         if cfg.format_badge {
             let label = {
                 let borrow = self.stream.borrow();
@@ -156,7 +163,13 @@ impl ThumbnailProvider_Impl {
                     .and_then(|n| crate::badge::label_for(&n))
             };
             if let Some(label) = label {
-                crate::badge::stamp(&mut img.rgba, img.width, img.height, &label);
+                crate::badge::stamp(
+                    &mut img.rgba,
+                    img.width,
+                    img.height,
+                    &label,
+                    cfg.badge_style,
+                );
             }
         }
 

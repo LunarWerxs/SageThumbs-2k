@@ -151,6 +151,15 @@ pub(super) const ID_PREVIEW_URL_LIVE: i32 = 1210;
 // Generic-archive (.zip/.rar/.7z) contact-sheet thumbnails (Ebook/comic tab).
 pub(super) const ID_C_ARCHIVE_SHEET: i32 = 1212;
 pub(super) const ID_FORMAT_BADGE: i32 = 1213;
+/// Badge STYLE: ticked = the category-coloured icon, unticked = the older plain text chip.
+/// Only meaningful while `ID_FORMAT_BADGE` is ticked, and greyed out when it isn't.
+pub(super) const ID_BADGE_ICON: i32 = 1216;
+/// Burn the transparency checkerboard into Explorer thumbnails. Separate from
+/// `ID_MENU_CHECKER`, which is the same idea for the two PREVIEW surfaces — different
+/// surfaces, different mechanisms, so one switch could not honestly drive both.
+pub(super) const ID_THUMB_CHECKER: i32 = 1217;
+/// Stop Explorer stamping the associated program's icon over our thumbnails (issue #18).
+pub(super) const ID_HIDE_TYPE_OVERLAY: i32 = 1218;
 /// Portable build only: turn the per-user Explorer thumbnail registration on/off, plus the
 /// status line that says which it currently is. Hidden entirely on an installed build, where
 /// the machine-wide registration already covers it and a second switch would only confuse.

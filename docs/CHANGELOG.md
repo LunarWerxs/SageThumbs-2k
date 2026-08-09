@@ -4,6 +4,32 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **The format badge can now be a coloured mark instead of plain letters.** Reading three small
+  letters is slower than seeing a colour, so the badge is now a small tinted file mark with the
+  format written inside it, and the tint says what KIND of file it is: images, camera RAW,
+  ebooks, documents, audio, video and archives each get their own. Ticking "Show format badge on
+  thumbnails" gets you the coloured version; untick "Use a coloured icon badge" next to it for
+  the old plain text chip.
+
+- **A checkerboard behind transparent thumbnails**, if you want one. Explorer normally shows the
+  folder background through a see-through PNG, which is correct but can make a mostly-transparent
+  logo hard to see. The new switch on the General page paints the familiar light checkerboard
+  behind it instead. Off by default, and separate from the preview windows' own checkerboard,
+  because they are genuinely different surfaces.
+
+- **A switch to stop Windows drawing its own file-type icon on top of your thumbnails**
+  (Settings ▸ File types). Windows stamps the associated program's icon into the bottom-right
+  corner of a thumbnail, exactly where the format badge goes, and when that program has been
+  uninstalled it draws a blank page instead. This asks Windows not to draw it for the file types
+  SageThumbs handles. Reversible: unticking puts it back.
+
+- **`st2k doctor` now asks the shell for the thumbnail itself**, instead of only proving our own
+  decoder works. Those two answers can disagree, and when they do the disagreement IS the
+  diagnosis. It also names the folder's cloud-sync provider when the file lives in one, and calls
+  out file types whose leftover associations are stamping an icon over the badge.
+
 ### Changed
 
 - **The playback bar's icons are now the system's own icon set.** The previous/next, play/pause,

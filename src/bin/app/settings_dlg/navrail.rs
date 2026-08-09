@@ -59,6 +59,8 @@ const GENERAL: [Row; 12] = {
         Switch(ID_ENABLE_THUMBS),
         Switch(ID_USE_EMBEDDED),
         Switch(ID_FORMAT_BADGE),
+        Switch(ID_BADGE_ICON),
+        Switch(ID_THUMB_CHECKER),
         Head(ID_LBL_LIMITS),
         Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
         Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
@@ -66,8 +68,6 @@ const GENERAL: [Row; 12] = {
         Pair(ID_LBL_PNG, ID_PNG, 84, 18),
         Head(ID_LBL_GENERAL), // "Language & files"
         Pair(ID_LBL_LANG, ID_LANG, 156, 200),
-        Switch(ID_PRESERVE_DATE),
-        Switch(ID_KEEP_METADATA),
     ]
 };
 
@@ -100,6 +100,11 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
     match ci {
         0 => &GENERAL,
         1 => &[
+            // What Windows itself draws on top of these types' thumbnails. It belongs with
+            // the per-file-type page by topic, and this page is one of the two that SCROLL —
+            // Advanced could not take it (`fixed_pages_keep_space_above_the_footer` fails by
+            // 24px on the portable variant) and General is full.
+            Switch(ID_HIDE_TYPE_OVERLAY),
             Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),
             Wide(ID_SEARCH),
             ListFill(ID_LIST),
@@ -122,6 +127,13 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // This controls the transparency backdrop of the context-menu preview,
             // so keep it with that surface instead of crowding the General page.
             Switch(ID_MENU_CHECKER),
+            // Moved off General 2026-08-08, when the badge-style and thumbnail-checkerboard
+            // rows needed its last two slots (General is a FIXED page and was already 28px
+            // from the footer). Both of these govern what the right-click Convert/Resize
+            // verbs do to a file, so this page is the better home anyway — the same trade
+            // the PDF-margin row made in 2026-08-05.
+            Switch(ID_PRESERVE_DATE),
+            Switch(ID_KEEP_METADATA),
             Pair(ID_LBL_PREVIEW, ID_MENU_PREVIEW, 156, 200),
             Head(ID_LBL_MENU_ITEMS),
             ListAuto(ID_MENU_ITEMS_LIST),

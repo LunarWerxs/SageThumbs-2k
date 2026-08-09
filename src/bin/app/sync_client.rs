@@ -76,6 +76,12 @@ const ALLOW: &[(&str, Kind)] = &[
     ("MenuPreview", Kind::Dword),
     ("MenuQuickVerbs", Kind::Dword),
     ("PreviewChecker", Kind::Dword),
+    ("FormatBadge", Kind::Dword),
+    ("FormatBadgeStyle", Kind::Dword),
+    ("ThumbChecker", Kind::Dword),
+    // NOT synced: HideTypeOverlay. It is not just a value - flipping it rewrites
+    // per-ProgID registry keys on THIS machine, and the ProgIDs differ per machine, so a
+    // synced 1 would record a suppression that was never actually applied here.
     ("PreserveFileDate", Kind::Dword),
     ("ContainerSort", Kind::Dword),
     ("ContainerPreferCover", Kind::Dword),

@@ -18,7 +18,10 @@
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod app_image;
-mod badge;
+// `pub` only because `settings::ThumbSettings` carries a `badge::BadgeStyle` field; the
+// module is an internal drawing detail, not a stable API.
+#[doc(hidden)]
+pub mod badge;
 pub mod clipboard;
 mod command;
 mod container;
@@ -49,7 +52,11 @@ pub mod ocr;
 #[doc(hidden)]
 pub mod checker {
     pub use crate::contextmenu::paint::{checker_shades, fill_checker};
+    /// The pixel-space twin, for the one surface that has no device context to draw on:
+    /// the Explorer thumbnail bitmap. See [`crate::checkerpx`].
+    pub use crate::checkerpx::compose_under;
 }
+mod checkerpx;
 // Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
 // verbs). `pub` so the companion `SageThumbs2K` app bin can drive it, `doc(hidden)`
 // because it isn't a stable public API — just a shared helper across our own crates.
@@ -66,6 +73,9 @@ pub mod shellcmd;
 mod streamsrc;
 mod strip;
 mod thumbprovider;
+// Explorer's own file-type icon overlay, and how to make it stop covering our badge.
+#[doc(hidden)]
+pub mod typeoverlay;
 mod topdf;
 pub mod upload_config;
 mod verbs;

@@ -370,3 +370,11 @@ state_on = "Açık"
 state_off = "Kapalı"
 msg_portable_dll_missing = "sagethumbs2k.dll bu klasörde yok. Taşınabilir indirmenin tamamını çıkarıp tekrar deneyin."
 msg_portable_reg_failed = "Windows, kullanıcı hesabınız için kaydı yazmamıza izin vermedi."
+
+# --- Added 2026-08-08: coloured badge / thumbnail checkerboard / hide type overlay ---
+chk_badge_icon = "Renkli simge rozeti kullan"
+chk_thumb_checker = "Saydam küçük resimlerin arkasında dama deseni"
+chk_hide_type_overlay = "Küçük resimlerde Windows'un dosya türü simgesini gizle"
+tip_badge_icon = "Rozeti düz metin yerine küçük renkli bir dosya işareti olarak çizer - her dosya türü için bir renk (görüntüler, kamera RAW, e-kitaplar, belgeler, ses, video, arşivler). Bir bakışta fark etmek daha kolaydır. Düz metin çip biçimi için işareti kaldırın."
+tip_thumb_checker = "Saydam bir görüntü klasör arka planında kaybolmasın diye, küçük resmin saydam kısımlarının arkasına hafif bir dama deseni çizer. Yalnızca Gezgin küçük resimleri için geçerlidir; önizleme pencerelerinin kendi anahtarı vardır. Bunu değiştirmek küçük resim önbelleğini temizler."
+tip_hide_type_overlay = "Windows, ilişkili programın simgesini küçük resmin köşesine, biçim rozetinin üzerine basar - ve o program kaldırılmışsa bunun yerine boş bir sayfa çizer. Bu, SageThumbs'ın işlediği dosya türleri için Windows'tan bunu çizmemesini ister. Geri alınabilir: işareti kaldırmak eski haline döndürür."

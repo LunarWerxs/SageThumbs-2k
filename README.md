@@ -96,7 +96,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 | 🌗 **Native Win11 UI** | Redesigned **Settings**: a Win11-style category nav rail (General · File types · Ebook/comic · Right-click menu · Screenshots · Quick action · Quick preview · Advanced · Data & Backup) with toggle switches, Common-Controls v6, **system-following dark mode**, 36 languages |
 | 🔤 **Screen OCR** | **Copy text (OCR)** wherever you need it: a button in the screenshot editor (or **Ctrl+T**), a button on the Quick preview toolbar, a one-click tray item, or a global hotkey that goes straight to drag-a-region-get-the-text. The words land on your clipboard *and* in an editable window, so a misread character is fixable before you paste. Small on-screen type is enlarged before it's read, which is what the in-box recognizer needs to see it at all |
 | 💬 **Send feedback** | A box in the About card mails a suggestion, bug report or format request straight to the developer: no GitHub account, no email address required (leave one only if you want a reply). A failed send puts your text on the clipboard so nothing is lost |
-| 🔍 **True transparency** | Real premultiplied-ARGB alpha: no more gray checkerboard behind transparent PNGs |
+| 🔍 **True transparency** | Real premultiplied-ARGB alpha, so Explorer shows the folder background through a transparent PNG instead of a baked-in grey grid. Prefer the classic look? One switch puts the checkerboard back |
 
 <div align="center">
 <img src="assets/screenshots/preview1.png" alt="Windows Explorer showing real thumbnails for camera RAW, PSD, AVIF, OpenEXR, JPEG-XL, comics and more" width="840" />

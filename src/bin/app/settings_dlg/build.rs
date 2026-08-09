@@ -37,6 +37,11 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_enable_thumbs"), cb, 300, ID_ENABLE_THUMBS);
     lc.checkbox(t("chk_prefer_embedded"), cb, 300, ID_USE_EMBEDDED);
     lc.checkbox(t("chk_format_badge"), cb, 300, ID_FORMAT_BADGE);
+    lc.checkbox(t("chk_badge_icon"), cb, 300, ID_BADGE_ICON);
+    lc.checkbox(t("chk_thumb_checker"), cb, 300, ID_THUMB_CHECKER);
+    // Created here with the other thumbnail switches; `navrail::cat_rows` is what decides
+    // which PAGE it lands on (File types), so creation order carries no meaning.
+    lc.checkbox(t("chk_hide_type_overlay"), cb, 320, ID_HIDE_TYPE_OVERLAY);
 
     // Limits & quality — numeric label+edit rows. Single-line edits top-align +
     // ignore EM_SETRECT, so they're kept snug; the rounded field panel behind them

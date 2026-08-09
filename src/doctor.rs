@@ -507,6 +507,26 @@ fn check_settings(r: &mut Report) {
             "no"
         },
     );
+    if crate::settings::format_badge() {
+        r.line(
+            S::Info,
+            "Format badge",
+            if crate::settings::format_badge_icon() {
+                "on (icon)"
+            } else {
+                "on (text)"
+            },
+        );
+        // Only relevant when there IS a badge for Windows' icon to sit on top of.
+        type_overlay_note(r);
+    }
+    if crate::settings::thumb_checker() {
+        r.line(
+            S::Info,
+            "Transparency checkerboard",
+            "burned into thumbnails (ThumbChecker) — thumbnails are opaque",
+        );
+    }
 }
 
 /// Prove the decoder itself works, end to end, without touching the disk or the shell.
@@ -606,6 +626,187 @@ fn cloud_placeholder_note(r: &mut Report, p: &Path, ext: &str) {
     );
 }
 
+/// Ask the SHELL for this file's thumbnail, the same way Explorer does, and report what
+/// comes back.
+///
+/// This is the check every other check in this report is a proxy for. Everything above
+/// proves *our half* works: registration is healthy, the DLL loads, the decoder renders
+/// these bytes. None of it can see the one thing that actually decides what you look at —
+/// whether Explorer, on this path, in this folder, calls us at all and keeps the result.
+///
+/// It matters because those two answers really do come apart. Issue #16 is the shape:
+/// registration perfect, decode of the exact file perfect, thumbnail still missing — for a
+/// file inside a OneDrive sync root, where the shell can route thumbnails through the sync
+/// provider instead of the per-extension handler. Without this line the report says "no
+/// blocking problem found" and the user is told, wrongly, that it must be their cache.
+///
+/// `SIIGBF_THUMBNAILONLY` is what makes the answer meaningful: it tells the shell to FAIL
+/// rather than quietly substitute the file's icon, so "no thumbnail" is reported as no
+/// thumbnail instead of arriving as a 256px picture of a document.
+///
+/// Read-only in the sense that matters (it writes nothing of the user's), with one honest
+/// caveat: extracting a thumbnail lets Windows populate its own thumbnail cache for this
+/// item — exactly what browsing to the folder would have done.
+fn shell_roundtrip(r: &mut Report, path: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP};
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_THUMBNAILONLY,
+    };
+
+    // The shell objects need an apartment. Uninitialise only if WE initialised, so this
+    // never tears down an apartment a caller (the MCP server, a future GUI host) owns.
+    let inited = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let result: Result<(i32, i32), windows::core::Error> = (|| unsafe {
+        let item: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(path), None)?;
+        let hbmp = item.GetImage(SIZE { cx: 256, cy: 256 }, SIIGBF_THUMBNAILONLY)?;
+        let mut bm = BITMAP::default();
+        let got = GetObjectW(
+            hbmp.into(),
+            core::mem::size_of::<BITMAP>() as i32,
+            Some(core::ptr::addr_of_mut!(bm).cast()),
+        );
+        let _ = DeleteObject(hbmp.into());
+        if got == 0 {
+            return Err(windows::core::Error::from_thread());
+        }
+        Ok((bm.bmWidth, bm.bmHeight.abs()))
+    })();
+    if inited {
+        unsafe { CoUninitialize() };
+    }
+
+    match result {
+        Ok((w, h)) => r.line(
+            S::Ok,
+            "Explorer's own thumbnail",
+            &format!("the shell returned a {w}x{h} thumbnail for this path"),
+        ),
+        Err(e) => r.fail_with_fix(
+            "Explorer's own thumbnail",
+            &format!(
+                "the shell returned NO thumbnail for this path ({:#010x}) — even though our \
+                 decoder can render this file",
+                e.code().0
+            ),
+            "our half is working, so something between us and Explorer is dropping it. In \
+             order: rebuild the thumbnail cache (Settings > Advanced), then check the note \
+             about this file's folder below — a cloud-synced folder can serve thumbnails \
+             from the sync provider instead of from us. Copying the file to a plain local \
+             folder and re-running this command tells the two apart in one step.",
+        ),
+    }
+}
+
+/// Is this file inside a cloud sync root (OneDrive and friends), and does that provider
+/// register its own thumbnail source?
+///
+/// A sync engine built on the Cloud Files API may declare a `ThumbnailProvider` under its
+/// `SyncRootManager` entry, which applies to EVERYTHING under that root rather than to one
+/// file type — so it can pre-empt a per-extension handler like ours for every file in the
+/// folder. That is the leading explanation for "works in a normal folder, generic icon in
+/// OneDrive", and it is invisible from the file itself, so name it here rather than leaving
+/// the user to guess. Purely a registry read; nothing is hydrated and nothing is written.
+fn cloud_sync_root_note(r: &mut Report, p: &Path) {
+    const SYNC_ROOTS: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
+    let Ok(file) = p.canonicalize() else {
+        return;
+    };
+    let file = file.to_string_lossy().trim_start_matches(r"\\?\").to_lowercase();
+
+    let Ok(roots) = LOCAL_MACHINE.open(SYNC_ROOTS) else {
+        return;
+    };
+    let Ok(names) = roots.keys() else {
+        return;
+    };
+    for name in names {
+        let Ok(root) = roots.open(&name) else {
+            continue;
+        };
+        // Each provider lists its on-disk roots under UserSyncRoots\<user SID>.
+        let Ok(user_roots) = root.open("UserSyncRoots") else {
+            continue;
+        };
+        let Ok(values) = user_roots.values() else {
+            continue;
+        };
+        let hit = values.into_iter().any(|(_, v)| {
+            let path = String::try_from(v).unwrap_or_default().to_lowercase();
+            !path.is_empty() && file.starts_with(path.trim_end_matches('\\'))
+        });
+        if !hit {
+            continue;
+        }
+        let has_provider = root.open("ThumbnailProvider").is_ok()
+            || root.get_string("ThumbnailProvider").is_ok();
+        // The provider id is `<Provider>!<SID>!<account>`; the first field is the readable bit.
+        let provider = name.split('!').next().unwrap_or(&name).to_string();
+        if has_provider {
+            r.fail_with_fix(
+                "Cloud-synced folder",
+                &format!(
+                    "this file is inside a {provider} sync root, and {provider} registers its \
+                     OWN thumbnail source for everything under it — which can take precedence \
+                     over ours for every file in the folder"
+                ),
+                "not something we can override from here. To confirm it is the cause, copy \
+                 the file to a folder outside the sync root and look again: if the thumbnail \
+                 appears there, this is why it does not appear here.",
+            );
+        } else {
+            r.line(
+                S::Warn,
+                "Cloud-synced folder",
+                &format!(
+                    "this file is inside a {provider} sync root. {provider} does not register \
+                     its own thumbnail source, so ours should be used — but a sync root is \
+                     still the first thing to rule out by copying the file elsewhere"
+                ),
+            );
+        }
+        return;
+    }
+}
+
+/// Hooked formats whose ProgID declares a `TypeOverlay` icon — the thing Explorer stamps
+/// over the bottom-right of a thumbnail, on top of our format badge (issue #18).
+///
+/// Worth naming because the usual culprit is a program that was UNINSTALLED: the
+/// association survives, the icon it points at does not, and what lands on the picture is a
+/// blank generic page.
+fn type_overlay_note(r: &mut Report) {
+    let foreign = crate::typeoverlay::foreign_overlays();
+    if foreign.is_empty() {
+        return;
+    }
+    let sample: Vec<String> = foreign
+        .iter()
+        .take(3)
+        .map(|(progid, ext)| format!("{ext} -> {progid}"))
+        .collect();
+    r.line(
+        S::Warn,
+        "Windows draws its own icon",
+        &format!(
+            "{} of your file types stamp a program icon over the thumbnail corner  e.g. {}",
+            foreign.len(),
+            sample.join(", ")
+        ),
+    );
+    r.line(
+        S::Info,
+        "  to hide it",
+        "Settings > File types > 'Hide Windows' file-type icon on thumbnails' (this is also \
+         what covers the format badge, and it often points at a program you uninstalled)",
+    );
+}
+
 fn probe_file(r: &mut Report, path: &str) {
     r.head("This file");
     let p = Path::new(path);
@@ -644,6 +845,7 @@ fn probe_file(r: &mut Report, path: &str) {
     }
     r.line(S::Ok, &format!(".{ext}"), "a supported format");
     cloud_placeholder_note(r, p, &ext);
+    cloud_sync_root_note(r, p);
     if !crate::settings::format_enabled(&ext) {
         r.fail_with_fix(
             "Enabled in settings",
@@ -671,6 +873,10 @@ fn probe_file(r: &mut Report, path: &str) {
                         img.height()
                     ),
                 );
+                // Our half is proven good, so now ask the shell the same question and see
+                // whether the two answers agree. When they don't, that disagreement IS the
+                // diagnosis, and it is the only line in this report that can produce it.
+                shell_roundtrip(r, path);
                 // Reaching here means the decoder is fine and the file is fine, yet the user
                 // is running `doctor` on it — so what is left is almost always the shell, and
                 // this is the one the report cannot see. Explorer remembers a view PER FOLDER,

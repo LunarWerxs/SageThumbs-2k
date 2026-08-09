@@ -401,7 +401,13 @@ Screenshots · Quick action · Quick preview · Advanced · Data & Backup) on th
 Diagnostics / Updates / Backup tuck under **Advanced**. (Fixed-size window; the old single
 long scroll is gone.)
 
-- **General:** enable thumbnails and prefer embedded (EXIF) thumbnails.
+- **General:** enable thumbnails, prefer embedded (EXIF) thumbnails, **stamp the format in the
+  thumbnail's corner** (as a colour-coded file mark, one colour per kind of file, or as plain
+  text), and **paint a checkerboard behind transparent thumbnails** (off by default; Explorer
+  normally shows the folder background through them).
+- **File types:** the per-format list, plus **hide Windows' own file-type icon on thumbnails**.
+  Windows stamps the associated program's icon into the thumbnail's bottom-right corner, on top
+  of the format badge, and draws a blank page there when that program has been uninstalled.
 - **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders
   / Rename / Pick color), menu-preview placement (off / submenu / main menu), **a subtle

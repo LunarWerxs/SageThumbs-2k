@@ -432,6 +432,9 @@ const TOOLTIPS: &[(i32, &str)] = &[
     (ID_ENABLE_THUMBS, "tip_enable_thumbs"),
     (ID_USE_EMBEDDED, "tip_prefer_embedded"),
     (ID_FORMAT_BADGE, "tip_format_badge"),
+    (ID_BADGE_ICON, "tip_badge_icon"),
+    (ID_THUMB_CHECKER, "tip_thumb_checker"),
+    (ID_HIDE_TYPE_OVERLAY, "tip_hide_type_overlay"),
     (ID_ENABLE_MENU, "tip_enable_menu"),
     (ID_MENU_PREVIEW, "tip_menu_preview"),
     (ID_MENU_QUICK, "tip_menu_quick"),
@@ -1151,6 +1154,7 @@ pub(crate) extern "system" fn wndproc(
                     ID_SHOT_QUICK_ENABLE => update_quick_enabled(hwnd),
                     ID_CUSTOM_ACTION_ENABLE => update_custom_action_enabled(hwnd),
                     ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
+                    ID_FORMAT_BADGE => update_badge_style_enabled(hwnd),
                     ID_SYNC_BTN => on_sync_click(hwnd),
                     ID_SHOT_SET_DIR => {
                         // Pick the Ctrl+S save folder; persist immediately + refresh the

@@ -23,6 +23,66 @@ const MAX_LABEL: usize = 5;
 /// meaningful share of the image and be unreadable anyway. Explorer's smallest tile is 16px.
 const MIN_BADGED_EDGE: u32 = 64;
 
+/// How the corner badge is drawn.
+///
+/// `Text` is the original: a near-black chip with light letters, deliberately colourless so
+/// it never competes with the picture. `Icon` is the one people actually asked for — a
+/// dog-eared page tinted by the format's CATEGORY, so a folder of mixed files is scannable
+/// by colour at a glance and only needs reading when two categories sit side by side.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BadgeStyle {
+    /// Neutral dark chip, light text.
+    Text,
+    /// Category-coloured page mark with the label inside.
+    #[default]
+    Icon,
+}
+
+impl BadgeStyle {
+    /// `FormatBadgeStyle`: 0 = text, anything else = icon. Unknown values fall to the
+    /// default rather than to "no badge" — a badge was still asked for.
+    pub fn from_dword(v: u32) -> Self {
+        if v == 0 {
+            Self::Text
+        } else {
+            Self::Icon
+        }
+    }
+}
+
+/// The category tint for an extension, as (r, g, b).
+///
+/// Seven hues, one per [`crate::formats::Category`], picked to stay apart from each other at
+/// badge size (roughly 20 px across on a 256 px tile) and to read on both light and dark
+/// thumbnails. They are NOT theme-aware on purpose: the badge is burned into the bitmap the
+/// shell caches, so it cannot follow a theme the user changes later.
+fn category_rgb(ext: &str) -> (u8, u8, u8) {
+    use crate::formats::Category;
+    match crate::formats::category(ext) {
+        Category::Image => (36, 116, 208),    // blue
+        Category::Raw => (124, 77, 200),      // violet
+        Category::Ebook => (32, 140, 84),     // green
+        Category::Document => (196, 60, 52),  // red
+        Category::Audio => (0, 138, 148),     // teal
+        Category::Video => (176, 52, 132),    // magenta
+        Category::Archive => (90, 96, 110),   // slate
+    }
+}
+
+/// Scale each channel by `n/255`, for the darker rim of a tint (`n` < 255).
+fn shade(rgb: (u8, u8, u8), n: u32) -> (u8, u8, u8) {
+    let f = |c: u8| ((c as u32 * n) / 255).min(255) as u8;
+    (f(rgb.0), f(rgb.1), f(rgb.2))
+}
+
+/// Mix `rgb` toward white by `n/255`. Used for the dog-ear flap: multiplying a tint UP
+/// saturates the already-large channel and shifts the hue, while mixing toward white keeps
+/// the hue and just lightens it, which is what "the back of the sheet" should look like.
+fn blend_to_white(rgb: (u8, u8, u8), n: u32) -> (u8, u8, u8) {
+    let f = |c: u8| (c as u32 + (255 - c as u32) * n / 255).min(255) as u8;
+    (f(rgb.0), f(rgb.1), f(rgb.2))
+}
+
 /// 5x7 uppercase glyphs, one `u8` per row (bit 4 = leftmost pixel). Only the characters a
 /// format label can contain.
 #[rustfmt::skip]
@@ -93,8 +153,12 @@ pub fn label_for(file_name: &str) -> Option<String> {
 /// alpha-blended rather than overwritten so it reads as an overlay, and it is sized from the
 /// image edge so it looks the same relative size on a 96 px tile and a 1024 px one.
 ///
+/// [`BadgeStyle::Icon`] keeps all of that and adds the category tint + dog-eared page
+/// silhouette; the geometry below is shared so the two styles can never drift apart in size
+/// or position.
+///
 /// No-ops on images too small to badge legibly, or when the label does not fit.
-pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str) {
+pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle) {
     let edge = w.min(h);
     if edge < MIN_BADGED_EDGE || label.is_empty() {
         return;
@@ -111,7 +175,10 @@ pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str) {
 
     let n = label.len() as u32;
     let text_w = n * gw + (n.saturating_sub(1)) * gap;
-    let chip_w = text_w + pad * 2;
+    // The icon style reserves an extra column on the right for the dog-ear, so the flap
+    // never lands on the last glyph. Everything else about the box is identical.
+    let fold = if style == BadgeStyle::Icon { 3 * scale } else { 0 };
+    let chip_w = text_w + pad * 2 + fold;
     let chip_h = gh + pad * 2;
     // Inset from the corner by the same padding, so the chip does not touch the edge.
     let margin = pad;
@@ -139,16 +206,40 @@ pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str) {
         px[3] = px[3].max(a as u8);
     };
 
-    // Chip: near-black at ~72% so the underlying image still shows through slightly.
+    // The label's own category decides the tint. `label` is the uppercased extension, and
+    // `formats::category` matches lowercase tables, so fold the case back down here.
+    let tint = category_rgb(&label.to_ascii_lowercase());
+
     for y in y0..y0 + chip_h {
         for x in x0..x0 + chip_w {
-            // Clip the four corner pixels for a softened (not sharply rectangular) look.
+            // Distance from the TOP-RIGHT corner, which is where the page is dog-eared.
+            let dx = x0 + chip_w - 1 - x;
+            let dy = y - y0;
+            // Clip the plain corner pixels for a softened (not sharply rectangular) look.
+            // The top-right one is skipped when a fold already reshapes that corner.
             let cx = x == x0 || x == x0 + chip_w - 1;
             let cy = y == y0 || y == y0 + chip_h - 1;
-            if cx && cy {
+            if cx && cy && !(fold > 0 && dx + dy < fold) {
                 continue;
             }
-            put(rgba, x, y, (16, 16, 16), 184);
+            match style {
+                // Near-black at ~72% so the underlying image still shows through slightly.
+                BadgeStyle::Text => put(rgba, x, y, (16, 16, 16), 184),
+                BadgeStyle::Icon => {
+                    let on_fold_edge = fold > 0 && dx + dy == fold;
+                    let outline = cx || cy || on_fold_edge;
+                    let (rgb, a) = if fold > 0 && dx + dy < fold {
+                        // The folded-back flap: lighter, so it reads as the sheet's underside.
+                        (blend_to_white(tint, 150), 245)
+                    } else if outline {
+                        // A darker rim keeps the mark legible on a same-coloured picture.
+                        (shade(tint, 150), 255)
+                    } else {
+                        (tint, 235)
+                    };
+                    put(rgba, x, y, rgb, a);
+                }
+            }
         }
     }
     // Glyphs, near-white and fully opaque for maximum contrast against the chip.
@@ -205,7 +296,7 @@ mod tests {
     fn stamps_only_the_bottom_right_corner() {
         let (w, h) = (256u32, 256u32);
         let mut px = vec![0u8; (w * h * 4) as usize];
-        stamp(&mut px, w, h, "PSD");
+        stamp(&mut px, w, h, "PSD", BadgeStyle::Text);
         let at = |x: u32, y: u32| px[((y * w + x) * 4) as usize..][..4].to_vec();
         assert_eq!(at(4, 4), vec![0, 0, 0, 0], "top-left must be untouched");
         assert_eq!(at(4, h - 4), vec![0, 0, 0, 0], "bottom-left untouched");
@@ -219,7 +310,7 @@ mod tests {
     fn tiny_thumbnails_are_left_alone() {
         let (w, h) = (48u32, 48u32);
         let mut px = vec![7u8; (w * h * 4) as usize];
-        stamp(&mut px, w, h, "PSD");
+        stamp(&mut px, w, h, "PSD", BadgeStyle::Icon);
         assert!(
             px.iter().all(|&v| v == 7),
             "a 48px tile is too small to badge legibly and must be untouched"
@@ -231,7 +322,7 @@ mod tests {
     fn refuses_when_the_chip_would_dominate() {
         let (w, h) = (64u32, 64u32);
         let mut px = vec![7u8; (w * h * 4) as usize];
-        stamp(&mut px, w, h, "WEBP2");
+        stamp(&mut px, w, h, "WEBP2", BadgeStyle::Icon);
         let drawn = px.iter().any(|&v| v != 7);
         // Either it fits comfortably or it drew nothing — never a chip wider than the tile.
         if drawn {
@@ -243,7 +334,7 @@ mod tests {
     #[test]
     fn does_not_panic_on_a_truncated_buffer() {
         let mut px = vec![0u8; 10];
-        stamp(&mut px, 256, 256, "PSD"); // buffer far too small for the claimed size
+        stamp(&mut px, 256, 256, "PSD", BadgeStyle::Icon); // buffer far too small for the claimed size
     }
 }
 
@@ -259,7 +350,7 @@ mod visual {
             eprintln!("skipping: no ../test-corpus/sample.png");
             return;
         };
-        let mut sheet = image::RgbaImage::new(96 + 8 + 256 + 8 + 512, 512);
+        let mut sheet = image::RgbaImage::new(96 + 8 + 256 + 8 + 512, 512 + 8 + 160);
         for p in sheet.pixels_mut() {
             *p = image::Rgba([32, 32, 40, 255]);
         }
@@ -268,9 +359,20 @@ mod visual {
             let t = img.resize_to_fill(cx, cx, image::imageops::FilterType::Lanczos3);
             let mut rgba = t.to_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
-            super::stamp(&mut rgba, w, h, label);
+            super::stamp(&mut rgba, w, h, label, super::BadgeStyle::Text);
             image::imageops::overlay(&mut sheet, &rgba, x as i64, 0);
             x += cx + 8;
+        }
+        // Second row: the icon style, one label per category, so the seven tints can be
+        // compared side by side at the size Explorer's medium view actually uses.
+        let mut x = 0u32;
+        for label in ["PNG", "CR2", "EPUB", "PDF", "MP3", "MP4", "ZIP"] {
+            let t = img.resize_to_fill(160, 160, image::imageops::FilterType::Lanczos3);
+            let mut rgba = t.to_rgba8();
+            let (w, h) = (rgba.width(), rgba.height());
+            super::stamp(&mut rgba, w, h, label, super::BadgeStyle::Icon);
+            image::imageops::overlay(&mut sheet, &rgba, x as i64, 520);
+            x += 168;
         }
         let out = std::env::temp_dir().join("st2k_badge_sheet.png");
         sheet.save(&out).expect("save");

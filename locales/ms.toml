@@ -368,3 +368,11 @@ state_on = "Hidup"
 state_off = "Mati"
 msg_portable_dll_missing = "sagethumbs2k.dll tiada dalam folder ini. Nyahzip keseluruhan muat turun mudah alih dan cuba lagi."
 msg_portable_reg_failed = "Windows tidak membenarkan kami menulis pendaftaran untuk akaun pengguna anda."
+
+# --- Added 2026-08-08: colour badge icon / thumbnail checkerboard / hide file-type overlay ---
+chk_badge_icon = "Gunakan lencana ikon berwarna"
+chk_thumb_checker = "Papan dam di belakang imej kecil lutsinar"
+chk_hide_type_overlay = "Sembunyikan ikon jenis fail Windows pada imej kecil"
+tip_badge_icon = "Lukis lencana sebagai tanda fail kecil berwarna - satu warna bagi setiap jenis fail (imej, RAW kamera, ebook, dokumen, audio, video, arkib) - dan bukannya teks biasa. Lebih mudah dikesan sekali pandang. Nyahtanda untuk lencana teks biasa."
+tip_thumb_checker = "Lukis papan dam nipis di belakang bahagian lutsinar sesuatu imej kecil, supaya imej lutsinar tidak hilang ke dalam latar belakang folder. Hanya untuk imej kecil Explorer; tetingkap pratonton mempunyai suisnya sendiri. Menukar ini akan mengosongkan cache imej kecil."
+tip_hide_type_overlay = "Windows menerakan ikon program yang berkaitan di sudut imej kecil, di atas lencana format - dan apabila program itu telah dinyahpasang ia melukis halaman kosong sebaliknya. Ini meminta Windows supaya tidak melukisnya untuk jenis fail yang dikendalikan SageThumbs. Boleh diterbalikkan: menyahtanda mengembalikannya semula."
