@@ -101,9 +101,10 @@ pub fn is_video_magic(head: &[u8]) -> bool {
 }
 
 /// Balances `MFStartup` with `MFShutdown` (both are ref-counted, so per-call is safe).
-struct MfSession;
+/// `pub(crate)` for `vcodec`'s decoder probe, which is the only other MF call site.
+pub(crate) struct MfSession;
 impl MfSession {
-    unsafe fn start() -> Option<Self> {
+    pub(crate) unsafe fn start() -> Option<Self> {
         MFStartup(MF_VERSION, MFSTARTUP_LITE).ok()?;
         Some(MfSession)
     }

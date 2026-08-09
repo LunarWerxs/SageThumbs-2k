@@ -39,12 +39,68 @@ const FTYP_MAX: u64 = 1024;
 /// mini-MP4 bytes for [`crate::video::frame_from_bytes`], or `None` if the source isn't a
 /// parseable ISO-BMFF with an indexed video track (caller falls back to the prefix path).
 pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>> {
+    let (total, ftyp, moov) = scan_top_level(r)?;
+
+    // --- Locate the video track's sample tables inside the moov ------------------------------
+    let mdia_body = video_mdia(box_body(&moov))?;
+    let minf = find(mdia_body, b"minf")?;
+    let stbl = box_body(find(box_body(minf), b"stbl")?);
+
+    let stsd = find(stbl, b"stsd")?; // copied verbatim — carries avcC/hvcC codec config
+    let stts = find(stbl, b"stts")?;
+    let stsc = find(stbl, b"stsc")?;
+    let stss = find(stbl, b"stss"); // optional: absent ⇒ every sample is a sync sample
+    let chunks = find(stbl, b"stco")
+        .map(|b| (b, false))
+        .or_else(|| find(stbl, b"co64").map(|b| (b, true)))?;
+    let sizes = find(stbl, b"stsz")
+        .map(SampleSizes::Stsz)
+        .or_else(|| find(stbl, b"stz2").map(SampleSizes::Stz2))?;
+
+    let media_timescale = find(mdia_body, b"mdhd")
+        .and_then(mdhd_timescale)
+        .unwrap_or(1000);
+
+    // --- Map 30 %-of-duration → decoding-order sample → nearest preceding sync sample --------
+    let (target_sample, frame_delta) = stts_target(full_box_body(stts), fraction)?;
+    let kf_sample0 = nearest_sync(stss, target_sample + 1)?.saturating_sub(1); // back to 0-based
+
+    let kf_size = sizes.size_of(kf_sample0)?;
+    if kf_size == 0 || kf_size > KEYFRAME_MAX {
+        return None;
+    }
+    let (kf_offset, desc_index) = sample_location(full_box_body(stsc), chunks, &sizes, kf_sample0)?;
+
+    // --- Read just that keyframe's bytes -----------------------------------------------------
+    if kf_offset.checked_add(kf_size)? > total {
+        return None;
+    }
+    let mut keyframe = vec![0u8; kf_size as usize];
+    read_exact_at(r, kf_offset, &mut keyframe)?;
+
+    // --- Coded dimensions from the visual sample entry (display hints for tkhd/mvhd) ---------
+    let (width, height) = visual_dims(stsd).unwrap_or((1920, 1080));
+
+    Some(build_mini_mp4(
+        ftyp.as_deref(),
+        stsd,
+        desc_index,
+        frame_delta.max(1),
+        media_timescale,
+        width,
+        height,
+        &keyframe,
+    ))
+}
+
+/// Walk the top-level boxes: the `ftyp` gate (rejecting non-ISO-BMFF cheaply), the verbatim
+/// `ftyp` copy when it is sanely sized, and the whole `moov` read into RAM (capped).
+/// Returns `(total_size, ftyp, moov)`.
+fn scan_top_level<R: Read + Seek>(r: &mut R) -> Option<(u64, Option<Vec<u8>>, Vec<u8>)> {
     let total = r.seek(SeekFrom::End(0)).ok()?;
     if total < 16 {
         return None;
     }
-
-    // --- Walk top-level boxes for ftyp (copied verbatim) and moov (the index) ---------------
     let mut pos: u64 = 0;
     let mut ftyp: Option<Vec<u8>> = None;
     let mut moov_range: Option<(u64, u64)> = None;
@@ -94,15 +150,23 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
     }
     let mut moov = vec![0u8; moov_size as usize];
     read_exact_at(r, moov_off, &mut moov)?;
+    Some((total, ftyp, moov))
+}
 
-    // --- Locate the video track's sample tables inside the moov ------------------------------
-    let moov_body = box_body(&moov);
-    let mut video = None;
+/// The `mdia` body of the video track (the trak whose `hdlr` handler_type is 'vide').
+fn video_mdia(moov_body: &[u8]) -> Option<&[u8]> {
     for (typ, trak) in boxes(moov_body) {
         if &typ != b"trak" {
             continue;
         }
-        let mdia = find(box_body(trak), b"mdia")?;
+        // `continue`, not `?`: a trak with no `mdia` is one BAD track, not the end of the
+        // search. Propagating None here abandoned the whole moov on the first oddball trak
+        // (editors emit hint/metadata/placeholder traks), so a file whose video track came
+        // second reported "no video track" — the smart index tier silently downgraded, and
+        // doctor told the user the codec was unidentifiable in a file that plainly has one.
+        let Some(mdia) = find(box_body(trak), b"mdia") else {
+            continue;
+        };
         let mdia_body = box_body(mdia);
         let hdlr = match find(mdia_body, b"hdlr") {
             Some(h) => full_box_body(h),
@@ -110,59 +174,24 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
         };
         // hdlr: pre_defined(4) handler_type(4) … — 'vide' marks the video track.
         if hdlr.get(4..8) == Some(b"vide") {
-            video = Some(mdia_body);
-            break;
+            return Some(mdia_body);
         }
     }
-    let mdia_body = video?;
+    None
+}
+
+/// The sample-entry fourcc of the video track's first `stsd` entry (`avc1`, `hvc1`, `av01`,
+/// …), for the doctor's codec diagnosis. Reads the `ftyp` gate + `moov` only; `None` for
+/// non-ISO-BMFF sources or video-less files.
+pub fn video_codec_fourcc<R: Read + Seek>(r: &mut R) -> Option<[u8; 4]> {
+    let (_, _, moov) = scan_top_level(r)?;
+    let mdia_body = video_mdia(box_body(&moov))?;
     let minf = find(mdia_body, b"minf")?;
     let stbl = box_body(find(box_body(minf), b"stbl")?);
-
-    let stsd = find(stbl, b"stsd")?; // copied verbatim — carries avcC/hvcC codec config
-    let stts = find(stbl, b"stts")?;
-    let stsc = find(stbl, b"stsc")?;
-    let stss = find(stbl, b"stss"); // optional: absent ⇒ every sample is a sync sample
-    let chunks = find(stbl, b"stco")
-        .map(|b| (b, false))
-        .or_else(|| find(stbl, b"co64").map(|b| (b, true)))?;
-    let sizes = find(stbl, b"stsz")
-        .map(SampleSizes::Stsz)
-        .or_else(|| find(stbl, b"stz2").map(SampleSizes::Stz2))?;
-
-    let media_timescale = find(mdia_body, b"mdhd")
-        .and_then(mdhd_timescale)
-        .unwrap_or(1000);
-
-    // --- Map 30 %-of-duration → decoding-order sample → nearest preceding sync sample --------
-    let (target_sample, frame_delta) = stts_target(full_box_body(stts), fraction)?;
-    let kf_sample0 = nearest_sync(stss, target_sample + 1)?.saturating_sub(1); // back to 0-based
-
-    let kf_size = sizes.size_of(kf_sample0)?;
-    if kf_size == 0 || kf_size > KEYFRAME_MAX {
-        return None;
-    }
-    let (kf_offset, desc_index) = sample_location(full_box_body(stsc), chunks, &sizes, kf_sample0)?;
-
-    // --- Read just that keyframe's bytes -----------------------------------------------------
-    if kf_offset.checked_add(kf_size)? > total {
-        return None;
-    }
-    let mut keyframe = vec![0u8; kf_size as usize];
-    read_exact_at(r, kf_offset, &mut keyframe)?;
-
-    // --- Coded dimensions from the visual sample entry (display hints for tkhd/mvhd) ---------
-    let (width, height) = visual_dims(stsd).unwrap_or((1920, 1080));
-
-    Some(build_mini_mp4(
-        ftyp.as_deref(),
-        stsd,
-        desc_index,
-        frame_delta.max(1),
-        media_timescale,
-        width,
-        height,
-        &keyframe,
-    ))
+    let stsd = find(stbl, b"stsd")?;
+    // stsd: header(8) version+flags(4) entry_count(4) | entry: size(4) type(4) …
+    let t = stsd.get(20..24)?;
+    Some([t[0], t[1], t[2], t[3]])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -643,6 +672,29 @@ mod tests {
         // full_box_body skips ver/flags → entry_count then the sample number.
         assert_eq!(g32(full_box_body(found_stss), 0), Some(1));
         assert_eq!(g32(full_box_body(found_stss), 4), Some(7));
+    }
+
+    /// A trak with no `mdia` is one bad track, not the end of the moov. Editors emit
+    /// hint/metadata/placeholder traks; when one led the file, the `?` here abandoned the
+    /// whole search and a perfectly good video track that came second was reported absent
+    /// (silent index-tier downgrade, plus doctor claiming the codec was unidentifiable).
+    #[test]
+    fn video_track_found_after_a_trak_with_no_mdia() {
+        let mut hdlr_body = vec![0u8; 4]; // version+flags
+        hdlr_body.extend_from_slice(&[0u8; 4]); // pre_defined
+        hdlr_body.extend_from_slice(b"vide"); // handler_type
+        hdlr_body.extend_from_slice(&[0u8; 12]);
+        let hdlr = bx(b"hdlr", &hdlr_body);
+        let mdia = container(b"mdia", &[&hdlr]);
+        let good = container(b"trak", &[&mdia]);
+        // A leading trak carrying only a tkhd — no mdia at all.
+        let broken = container(b"trak", &[&bx(b"tkhd", &[0u8; 12])]);
+        let moov = container(b"moov", &[&broken, &good]);
+
+        assert!(
+            video_mdia(box_body(&moov)).is_some(),
+            "the video trak after an mdia-less trak must still be found"
+        );
     }
 
     /// 30 % of a uniform-cadence track should land on the sample nearest that time.

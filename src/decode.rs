@@ -670,6 +670,13 @@ fn decode_preview_with_raw_order(
         if let Some(frame) = frame {
             return Ok(frame);
         }
+        // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
+        // A Matroska attached cover (the poster many library rips carry) is still a
+        // faithful picture of the file, and unlike a frame it needs no codec at all.
+        // Mirrors the provider's fallback in `streamsrc`, so CLI/doctor and Explorer agree.
+        if let Some(cover) = crate::mkv::attached_cover(&mut std::io::Cursor::new(bytes)) {
+            return decode_image_with_raw_order(&cover, raw_preview, wic_thumbnail_cx);
+        }
     }
     // Ebook / comic-archive cover extraction (EPUB, CBZ, MOBI, FB2, CB7, CBR,
     // DjVu…). If this is a container, pull the cover and decode THAT. The cover

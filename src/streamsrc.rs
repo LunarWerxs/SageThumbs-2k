@@ -149,8 +149,21 @@ pub unsafe fn stream_source(
         }
         // No decodable frame. OggS is ambiguous — an audio-only .ogg/.opus matches
         // the video magic too, so fall THROUGH to the album-art path below instead of
-        // failing. A genuine video container the OS can't decode stops here.
+        // failing. A genuine video container the OS can't decode stops here — after one
+        // last rescue: Matroska attached cover art. The usual reason NO tier decoded is
+        // a missing OS codec (HEVC/AV1 are Store add-ons, not inbox), and library rips
+        // routinely attach a poster, so show the film instead of a blank tile. Bounded:
+        // the attachment element is read via the container's own index, never the stream.
         if !peek_is_ogg(stream) {
+            if let Some(cover) = crate::mkv::attached_cover(&mut IStreamReader {
+                stream: stream.clone(),
+            }) {
+                safety::log_debug(&format!(
+                    "{who}: video frame undecodable — using attached cover art ({} bytes)",
+                    cover.len()
+                ));
+                return Ok(StreamSource::Bytes(cover));
+            }
             safety::log_debug(&format!("{who}: video with no decodable frame"));
             return Err(Error::from(E_FAIL));
         }

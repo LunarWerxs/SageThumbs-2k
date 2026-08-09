@@ -42,6 +42,12 @@ const ID_CUE_TRACK: u64 = 0xF7;
 const ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
 const ID_CLUSTER: u64 = 0x1F43_B675;
 const ID_CLUSTER_TIMECODE: u64 = 0xE7;
+const ID_CODEC_ID: u64 = 0x86;
+const ID_ATTACHMENTS: u64 = 0x1941_A469;
+const ID_ATTACHED_FILE: u64 = 0x61A7;
+const ID_FILE_NAME: u64 = 0x466E;
+const ID_FILE_MIME: u64 = 0x4660;
+const ID_FILE_DATA: u64 = 0x465C;
 
 const TRACK_TYPE_VIDEO: u64 = 1;
 
@@ -49,11 +55,27 @@ const TRACK_TYPE_VIDEO: u64 = 1;
 const META_MAX: u64 = 8 * 1024 * 1024; // EBML header / Info / Tracks
 const CUES_MAX: u64 = 32 * 1024 * 1024; // the index
 const CLUSTER_MAX: u64 = 96 * 1024 * 1024; // one cluster (≤ a few seconds of 4K)
+const ATTACH_MAX: u64 = 64 * 1024 * 1024; // all attachments (cover art + subtitle fonts)
 
-/// Build a one-cluster mini-MKV for the keyframe nearest `fraction` of the running time, for
-/// [`crate::video::frame_from_bytes`]. `None` if the source isn't a Cues-indexed Matroska/WebM
-/// (caller falls back to the bounded head-prefix tier).
-pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>> {
+/// Where a Matroska file's Segment metadata sits: the verbatim EBML header plus absolute
+/// positions of the top-level children the readers below need — resolved by the
+/// front-of-segment walk with the SeekHead filling in whatever sits past the first Cluster
+/// (Cues and, sometimes, Attachments live at the file's end).
+struct SegmentMap {
+    ebml: Vec<u8>,
+    /// Absolute file size (bounds checks) and Segment data start (Positions are relative to it).
+    total: u64,
+    seg_data: u64,
+    info: Option<u64>,
+    tracks: Option<u64>,
+    cues: Option<u64>,
+    attachments: Option<u64>,
+}
+
+/// Parse the EBML + Segment headers and locate the metadata children. `None` if `r` isn't
+/// Matroska/WebM at all — every public reader in this module gates through this, so each
+/// self-rejects other containers cheaply.
+fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
     let total = r.seek(SeekFrom::End(0)).ok()?;
 
     // EBML header (copied verbatim) must be the first element.
@@ -80,12 +102,13 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
         (seg_data + ssize).min(total)
     };
 
-    // Front-of-segment walk: capture SeekHead/Info/Tracks (and Cues if it happens to be up
-    // front), stopping at the first Cluster — we never scan the cluster body.
+    // Front-of-segment walk: capture SeekHead/Info/Tracks (and Cues/Attachments if they
+    // happen to be up front), stopping at the first Cluster — we never scan the cluster body.
     let mut seekhead: Option<Vec<u8>> = None;
     let mut info_pos = None;
     let mut tracks_pos = None;
     let mut cues_pos = None;
+    let mut attach_pos = None;
     let mut p = seg_data;
     for _ in 0..64 {
         if p + 2 > seg_end {
@@ -97,6 +120,7 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
             ID_INFO => info_pos = Some(p),
             ID_TRACKS => tracks_pos = Some(p),
             ID_CUES => cues_pos = Some(p),
+            ID_ATTACHMENTS => attach_pos = Some(p),
             ID_CLUSTER => break,
             _ => {}
         }
@@ -104,9 +128,10 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
             break; // can't skip an unknown-size element
         }
         p = p.checked_add(ehlen + esize)?;
-        if info_pos.is_some() && tracks_pos.is_some() && cues_pos.is_some() {
-            break;
-        }
+        // No early exit on "found everything": Attachments routinely sit AFTER Cues in a
+        // cues-up-front layout, and a file without a (complete) SeekHead would then lose
+        // its cover art to the shortcut. The walk stops at the first Cluster anyway, so
+        // finishing it costs a handful of header reads, bounded by the iteration cap.
     }
 
     // Resolve anything still missing via the SeekHead (Cues are typically at the file's end).
@@ -120,11 +145,32 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
         if tracks_pos.is_none() {
             tracks_pos = seek_lookup(sh, ID_TRACKS).map(|rel| seg_data + rel);
         }
+        if attach_pos.is_none() {
+            attach_pos = seek_lookup(sh, ID_ATTACHMENTS).map(|rel| seg_data + rel);
+        }
     }
 
-    let (_, info_hlen, mut info) = read_element_full(r, info_pos?, META_MAX, ID_INFO)?;
-    let (_, tracks_hlen, tracks) = read_element_full(r, tracks_pos?, META_MAX, ID_TRACKS)?;
-    let (_, cues_hlen, cues) = read_element_full(r, cues_pos?, CUES_MAX, ID_CUES)?;
+    Some(SegmentMap {
+        ebml,
+        total,
+        seg_data,
+        info: info_pos,
+        tracks: tracks_pos,
+        cues: cues_pos,
+        attachments: attach_pos,
+    })
+}
+
+/// Build a one-cluster mini-MKV for the keyframe nearest `fraction` of the running time, for
+/// [`crate::video::frame_from_bytes`]. `None` if the source isn't a Cues-indexed Matroska/WebM
+/// (caller falls back to the bounded head-prefix tier).
+pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>> {
+    let map = segment_map(r)?;
+    let (total, seg_data, ebml) = (map.total, map.seg_data, map.ebml);
+
+    let (_, info_hlen, mut info) = read_element_full(r, map.info?, META_MAX, ID_INFO)?;
+    let (_, tracks_hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
+    let (_, cues_hlen, cues) = read_element_full(r, map.cues?, CUES_MAX, ID_CUES)?;
 
     // Pick the cluster: video track number, the Cue list, then the cue nearest `fraction`.
     let video_track = video_track_number(&tracks[tracks_hlen..]);
@@ -165,6 +211,29 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
     zero_child(&mut info, info_hlen, ID_DURATION);
 
     Some(build_mini_mkv(&ebml, &info, &tracks, &cluster))
+}
+
+/// The CodecID of the first video track ("V_MPEGH/ISO/HEVC", "V_AV1", …), for the doctor's
+/// codec diagnosis. Cheap: reads the EBML head plus the Tracks element only — a few KB —
+/// and `None` for non-Matroska sources or video-less files.
+pub fn video_codec_id<R: Read + Seek>(r: &mut R) -> Option<String> {
+    let map = segment_map(r)?;
+    let (_, hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
+    video_track_codec(&tracks[hlen..])
+}
+
+/// The attached cover image of a Matroska file: `cover.*` (the name the Matroska spec
+/// blesses for exactly this), else the first `image/*` attachment. Library rips routinely
+/// carry a poster this way, so when no frame can be decoded (usually a missing OS codec —
+/// HEVC/AV1 ship as Store add-ons) the tile can still show the film instead of nothing.
+pub fn attached_cover<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
+    let map = segment_map(r)?;
+    let attach_pos = map.attachments?;
+    if attach_pos >= map.total {
+        return None;
+    }
+    let (_, hlen, att) = read_element_full(r, attach_pos, ATTACH_MAX, ID_ATTACHMENTS)?;
+    pick_cover(&att[hlen..])
 }
 
 /// Assemble: copied EBML header + a definite-size Segment wrapping the copied Info, Tracks, and
@@ -214,7 +283,11 @@ fn header_at<R: Read + Seek>(r: &mut R, pos: u64) -> Option<(u64, u64, u64, bool
     if sz_len > 8 {
         return None;
     }
-    let mask = 0xFFu8 >> sz_len;
+    // Widen before shifting: an 8-byte size vint (first byte 0x01 — ffmpeg writes the
+    // Segment size this way routinely) needs `0xFF >> 8`, which overflows a u8 shift.
+    // The u8 version panicked in debug and, worse, silently produced mask 0xFF in release —
+    // a phantom 2^56 in every 8-byte size and unknown-size never detected.
+    let mask = (0xFFu16 >> sz_len) as u8;
     let mut size = (b[0] & mask) as u64;
     let mut all_ones = (b[0] & mask) == mask;
     for _ in 1..sz_len {
@@ -320,7 +393,9 @@ fn vint_size(buf: &[u8], pos: usize) -> Option<(u64, usize, bool)> {
     if len > 8 || pos + len > buf.len() {
         return None;
     }
-    let mask = 0xFFu8 >> len;
+    // Widened for the same reason as `header_at`: len == 8 must yield mask 0, not a panic
+    // (debug) / 0xFF (release).
+    let mask = (0xFFu16 >> len) as u8;
     let mut v = (first & mask) as u64;
     let mut all_ones = (first & mask) == mask;
     for i in 1..len {
@@ -369,6 +444,74 @@ fn video_track_number(tracks_data: &[u8]) -> Option<u64> {
         }
     }
     None
+}
+
+/// CodecID string of the first video TrackEntry (TrackType == 1), or `None`.
+fn video_track_codec(tracks_data: &[u8]) -> Option<String> {
+    for (id, _, entry) in children(tracks_data) {
+        if id != ID_TRACK_ENTRY {
+            continue;
+        }
+        let mut ttype = None;
+        let mut codec = None;
+        for (cid, _, cd) in children(entry) {
+            match cid {
+                ID_TRACK_TYPE => ttype = Some(ebml_uint(cd)),
+                ID_CODEC_ID => {
+                    codec = Some(
+                        String::from_utf8_lossy(cd)
+                            .trim_end_matches('\0')
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if ttype == Some(TRACK_TYPE_VIDEO) {
+            return codec;
+        }
+    }
+    None
+}
+
+/// Pick the cover image out of an Attachments body: an AttachedFile named `cover.*` wins
+/// outright (the spec's convention for the poster), else the first attachment that is an
+/// image by mime type or file name. Fonts and other non-image attachments are skipped.
+fn pick_cover(att_data: &[u8]) -> Option<Vec<u8>> {
+    let mut fallback: Option<&[u8]> = None;
+    for (id, _, af) in children(att_data) {
+        if id != ID_ATTACHED_FILE {
+            continue;
+        }
+        let mut name = None;
+        let mut mime = None;
+        let mut data: Option<&[u8]> = None;
+        for (cid, _, cd) in children(af) {
+            match cid {
+                ID_FILE_NAME => name = Some(String::from_utf8_lossy(cd).to_lowercase()),
+                ID_FILE_MIME => mime = Some(String::from_utf8_lossy(cd).to_lowercase()),
+                ID_FILE_DATA => data = Some(cd),
+                _ => {}
+            }
+        }
+        let Some(d) = data.filter(|d| !d.is_empty()) else {
+            continue;
+        };
+        let is_image = mime.as_deref().is_some_and(|m| m.starts_with("image/"))
+            || name.as_deref().is_some_and(|n| {
+                [".jpg", ".jpeg", ".png", ".webp"]
+                    .iter()
+                    .any(|e| n.ends_with(e))
+            });
+        if !is_image {
+            continue;
+        }
+        if name.as_deref().is_some_and(|n| n.starts_with("cover")) {
+            return Some(d.to_vec());
+        }
+        fallback.get_or_insert(d);
+    }
+    fallback.map(<[u8]>::to_vec)
 }
 
 /// `(Duration, TimecodeScale)` from an Info body. Duration is in TimecodeScale units — the same
@@ -555,6 +698,195 @@ mod tests {
         }
         let list = cue_points(&cues, Some(1));
         assert_eq!(list, vec![(0, 100), (5000, 9000)]); // video-track positions, sorted
+    }
+
+    /// Emit one EBML element: id bytes (as stored in the `ID_*` constants) + size vint + data.
+    fn elem(id: u64, data: &[u8]) -> Vec<u8> {
+        let id_bytes = id.to_be_bytes();
+        let start = id_bytes.iter().position(|&b| b != 0).unwrap();
+        let mut out = Vec::new();
+        out.extend_from_slice(&id_bytes[start..]);
+        out.extend_from_slice(&encode_vint(data.len() as u64));
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// The 8-byte size vint (first byte 0x01) is what ffmpeg writes for the Segment size in
+    /// every muxed file. The u8 `0xFF >> 8` mask panicked in debug and mis-parsed in release
+    /// (phantom 2^56 in the size, unknown-size never detected) — keep both shapes covered.
+    #[test]
+    fn eight_byte_size_vints_parse() {
+        let known = [0x01u8, 0, 0, 0, 0, 0, 0, 0x2A];
+        assert_eq!(vint_size(&known, 0), Some((42, 8, false)));
+        let unknown = [0x01u8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            vint_size(&unknown, 0),
+            Some((0x00FF_FFFF_FFFF_FFFF, 8, true))
+        );
+
+        // End-to-end through `header_at`: a Segment whose size is 8-byte encoded, the way
+        // ffmpeg writes it, must still yield the Tracks walk (this panicked before the fix).
+        let track = elem(
+            ID_TRACK_ENTRY,
+            &[
+                elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                elem(ID_CODEC_ID, b"V_MPEG4/ISO/AVC"),
+            ]
+            .concat(),
+        );
+        let body = elem(ID_TRACKS, &track);
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&ID_SEGMENT.to_be_bytes()[4..]);
+        file.push(0x01); // 8-byte size vint, value = body length
+        file.extend_from_slice(&(body.len() as u64).to_be_bytes()[1..]);
+        file.extend_from_slice(&body);
+        assert_eq!(
+            video_codec_id(&mut Cursor::new(&file)).as_deref(),
+            Some("V_MPEG4/ISO/AVC")
+        );
+    }
+
+    #[test]
+    fn codec_id_and_attached_cover_from_synthetic_mkv() {
+        let track_entry = [
+            elem(ID_TRACK_NUMBER, &[1]),
+            elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+            elem(ID_CODEC_ID, b"V_MPEGH/ISO/HEVC"),
+        ]
+        .concat();
+        let tracks = elem(ID_TRACKS, &elem(ID_TRACK_ENTRY, &track_entry));
+        // A font attachment FIRST — the cover must still win (fonts are the common company).
+        let font = [
+            elem(ID_FILE_NAME, b"subs.ttf"),
+            elem(ID_FILE_MIME, b"application/x-truetype-font"),
+            elem(ID_FILE_DATA, &[0xAA; 8]),
+        ]
+        .concat();
+        let cover = [
+            elem(ID_FILE_NAME, b"Cover.jpg"),
+            elem(ID_FILE_MIME, b"image/jpeg"),
+            elem(ID_FILE_DATA, b"JPEGDATA"),
+        ]
+        .concat();
+        let attachments = elem(
+            ID_ATTACHMENTS,
+            &[
+                elem(ID_ATTACHED_FILE, &font),
+                elem(ID_ATTACHED_FILE, &cover),
+            ]
+            .concat(),
+        );
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &[tracks, attachments].concat()));
+
+        let mut cur = Cursor::new(&file);
+        assert_eq!(
+            video_codec_id(&mut cur).as_deref(),
+            Some("V_MPEGH/ISO/HEVC")
+        );
+        assert_eq!(
+            attached_cover(&mut cur).as_deref(),
+            Some(b"JPEGDATA".as_slice())
+        );
+    }
+
+    /// Cues-up-front layout with NO SeekHead: Info, Tracks, Cues, Attachments, Cluster.
+    /// The walk used to break as soon as info+tracks+cues were all found, skipping the
+    /// Attachments element sitting right after Cues — losing the cover art of any file
+    /// whose SeekHead is absent or doesn't list Attachments (mkvpropedit-appended covers).
+    #[test]
+    fn attachments_after_cues_survive_without_a_seekhead() {
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_MPEGH/ISO/HEVC"),
+                ]
+                .concat(),
+            ),
+        );
+        let info = elem(ID_INFO, &elem(ID_TIMECODE_SCALE, &[0x0F, 0x42, 0x40]));
+        let cues = elem(ID_CUES, &[]);
+        let attachments = elem(
+            ID_ATTACHMENTS,
+            &elem(
+                ID_ATTACHED_FILE,
+                &[
+                    elem(ID_FILE_NAME, b"cover.jpg"),
+                    elem(ID_FILE_MIME, b"image/jpeg"),
+                    elem(ID_FILE_DATA, b"JPEGDATA"),
+                ]
+                .concat(),
+            ),
+        );
+        let cluster = elem(ID_CLUSTER, &elem(ID_CLUSTER_TIMECODE, &[0]));
+        let body = [info, tracks, cues, attachments, cluster].concat();
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+
+        let mut cur = Cursor::new(&file);
+        assert_eq!(
+            attached_cover(&mut cur).as_deref(),
+            Some(b"JPEGDATA".as_slice())
+        );
+    }
+
+    #[test]
+    fn attachments_behind_a_cluster_resolve_via_seekhead() {
+        // Layout: SeekHead, Tracks, Cluster, Attachments — the front walk stops at the
+        // Cluster, so only the SeekHead can reveal where the Attachments sit.
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_AV1"),
+                ]
+                .concat(),
+            ),
+        );
+        let cluster = elem(ID_CLUSTER, &elem(ID_CLUSTER_TIMECODE, &[0]));
+        let attachments = elem(
+            ID_ATTACHMENTS,
+            &elem(
+                ID_ATTACHED_FILE,
+                &[
+                    elem(ID_FILE_NAME, b"poster.png"),
+                    elem(ID_FILE_MIME, b"image/png"),
+                    elem(ID_FILE_DATA, b"PNGDATA"),
+                ]
+                .concat(),
+            ),
+        );
+        // SeekPosition is Segment-relative; a fixed 2-byte encoding keeps the SeekHead's own
+        // length independent of the value, so one dummy pass sizes it and the second is real.
+        let seekhead_for = |pos: u16| {
+            elem(
+                ID_SEEKHEAD,
+                &elem(
+                    ID_SEEK,
+                    &[
+                        elem(ID_SEEK_ID, &[0x19, 0x41, 0xA4, 0x69]),
+                        elem(ID_SEEK_POSITION, &pos.to_be_bytes()),
+                    ]
+                    .concat(),
+                ),
+            )
+        };
+        let attach_pos = (seekhead_for(0).len() + tracks.len() + cluster.len()) as u16;
+        let body = [seekhead_for(attach_pos), tracks, cluster, attachments].concat();
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+
+        let mut cur = Cursor::new(&file);
+        assert_eq!(video_codec_id(&mut cur).as_deref(), Some("V_AV1"));
+        assert_eq!(
+            attached_cover(&mut cur).as_deref(),
+            Some(b"PNGDATA".as_slice())
+        );
     }
 
     /// End-to-end: parse a real MKV (path in `ST2K_TEST_MKV`) into a one-cluster mini-MKV and

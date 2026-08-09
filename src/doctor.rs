@@ -487,11 +487,10 @@ fn check_settings(r: &mut Report) {
             "Settings -> General -> tick 'Show thumbnails'.",
         );
     }
-    let mb = crate::settings::max_file_size_bytes() / (1024 * 1024);
     r.line(
         S::Info,
         "Max file size",
-        &format!("{mb} MB (larger files are skipped)"),
+        &max_file_size_detail(crate::settings::max_file_size_bytes()),
     );
     r.line(
         S::Info,
@@ -532,6 +531,24 @@ fn check_settings(r: &mut Report) {
 /// Prove the decoder itself works, end to end, without touching the disk or the shell.
 /// Separating this from the COM checks is the whole diagnostic value: "engine fine,
 /// shell never asked" and "engine broken" look identical to a user and need opposite fixes.
+/// Render the MaxSize setting for the report.
+///
+/// `MaxSize = 0` means "no user limit", which [`crate::settings::max_file_size_bytes`]
+/// represents as `u64::MAX`. Dividing that by a megabyte and printing it told the user
+/// their cap was 17,592,186,044,415 MB — a fabricated number in the one tool whose whole
+/// value is that its statements can be trusted. Pure so the sentinel case is testable
+/// without writing to the machine's own registry.
+fn max_file_size_detail(bytes: u64) -> String {
+    if bytes == u64::MAX {
+        format!(
+            "Unlimited (the provider still caps a single read at {} MB)",
+            crate::decode::limits::MAX_INPUT_BYTES / (1024 * 1024)
+        )
+    } else {
+        format!("{} MB (larger files are skipped)", bytes / (1024 * 1024))
+    }
+}
+
 fn check_engine(r: &mut Report) {
     r.head("Decode engine");
     let png: &[u8] = &{
@@ -562,6 +579,23 @@ fn check_engine(r: &mut Report) {
             "Decode self-test",
             &format!("FAILED on a generated PNG: {e}"),
         ),
+    }
+    // Video thumbnails ride the OS Media Foundation codecs; the "N"/"KN" editions ship
+    // without MF entirely, and then every video keeps its default icon while everything
+    // above reports healthy. One line so that shape is visible in every pasted report.
+    if crate::video::media_foundation_available() {
+        r.line(
+            S::Ok,
+            "Media Foundation",
+            "present — video thumbnails available (frames decode via the OS codecs)",
+        );
+    } else {
+        r.line(
+            S::Warn,
+            "Media Foundation",
+            "MISSING (a Windows \"N\"/\"KN\" edition without the Media Feature Pack?) — \
+             video files keep their default icon",
+        );
     }
 }
 
@@ -655,6 +689,28 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
     use windows::Win32::UI::Shell::{
         IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_THUMBNAILONLY,
     };
+
+    // The shell wants an absolute path — handed a relative one (`st2k doctor file.mkv` from
+    // the file's own folder), SHCreateItemFromParsingName fails with FILE_NOT_FOUND and this
+    // check would report a spurious "shell returned NO thumbnail". Canonicalize first, and
+    // undo the extended-length prefix canonicalize adds (the parsing name grammar rejects
+    // it): `\\?\C:\…` -> `C:\…`, and the UNC form `\\?\UNC\server\share\…` -> the plain
+    // `\\server\share\…` (stripping just `\\?\` there would leave `UNC\…`, which no API
+    // resolves — a network-share doctor run would then fail this check falsely).
+    let abs = Path::new(path)
+        .canonicalize()
+        .map(|p| {
+            let s = p.to_string_lossy().into_owned();
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{rest}")
+            } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+                rest.to_string()
+            } else {
+                s
+            }
+        })
+        .unwrap_or_else(|_| path.to_string());
+    let path = abs.as_str();
 
     // The shell objects need an apartment. Uninitialise only if WE initialised, so this
     // never tears down an apartment a caller (the MCP server, a future GUI host) owns.
@@ -807,6 +863,93 @@ fn type_overlay_note(r: &mut Report) {
     );
 }
 
+/// For a video file: name the codec inside it and say whether THIS Windows can decode it.
+///
+/// Frames come from the OS Media Foundation codecs, and Windows does not ship them all —
+/// HEVC and AV1 are Microsoft Store add-ons, not inbox — so "registration healthy, file
+/// healthy, still no thumbnail" is routinely a codec gap rather than a bug in anything.
+/// Without this line that failure is invisible: the decode check below just says FAILED,
+/// and the old hint blamed ImageMagick, which never touches video. (Born of an uninstall
+/// feedback that said, in full, "mkv thumbnail not showing" — this is the report that
+/// would have answered it.)
+fn video_codec_note(r: &mut Report, path: &str) {
+    // Without Media Foundation there are no video thumbnails at all, whatever the codec.
+    // check_engine already prints the global warning; this is the per-file FAIL with a fix.
+    if !crate::video::media_foundation_available() {
+        r.fail_with_fix(
+            "Media Foundation",
+            "NOT present on this Windows (\"N\"/\"KN\" editions omit it) — video thumbnails \
+             decode through its codecs",
+            "install the 'Media Feature Pack' (Settings > Apps > Optional features), then \
+             sign out and back in",
+        );
+        return;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return; // the Read-file check below reports this with its own message
+    };
+    let mut file = std::io::BufReader::new(file);
+    let Some(info) = crate::vcodec::identify(&mut file) else {
+        r.line(
+            S::Info,
+            "Video codec",
+            "not identifiable from the container header (only Matroska/WebM and MP4/MOV \
+             carry one we parse) — the decode check below is the real test",
+        );
+        return;
+    };
+    let label = format!("{} ({})", info.name, info.raw);
+    match info.subtype.map(crate::vcodec::decoder_installed) {
+        Some(Some(true)) => r.line(
+            S::Ok,
+            "Video codec",
+            &format!("{label} — a Windows decoder is installed"),
+        ),
+        Some(Some(false)) => r.fail_with_fix(
+            "Video codec",
+            &format!(
+                "{label} — NO Windows decoder for this codec is installed, so no frame \
+                 can be decoded (this is the usual cause of a missing video thumbnail)"
+            ),
+            // Careful wording: this branch fires with MF PRESENT but an inbox decoder
+            // missing — a Server / stripped-down edition, where "install the Media
+            // Feature Pack" is a setting that does not exist. Name both possibilities
+            // instead of sending the user hunting for a control their edition lacks.
+            info.install_hint.unwrap_or(
+                "this decoder normally ships with consumer Windows; a Server or \
+                 stripped-down edition may simply not include it (on an \"N\"/\"KN\" \
+                 edition, the Media Feature Pack under Settings > Apps > Optional \
+                 features restores it)",
+            ),
+        ),
+        // MF vanished between the gate above and the probe — report it, don't guess.
+        Some(None) => r.line(
+            S::Warn,
+            "Video codec",
+            &format!("{label} — could not query Media Foundation for a decoder"),
+        ),
+        None if info.known => r.fail_with_fix(
+            "Video codec",
+            &format!("{label} — Windows has no decoder for this codec"),
+            "none exists to install; re-encode the file (H.264 plays everywhere), or rely \
+             on attached cover art, which we show when no frame can be decoded",
+        ),
+        None => r.line(
+            S::Warn,
+            "Video codec",
+            &format!("{label} — an id we don't recognize, so we can't check for a decoder"),
+        ),
+    }
+    // A Matroska attachment poster means a thumbnail exists even with no codec: say so.
+    if crate::mkv::attached_cover(&mut file).is_some() {
+        r.line(
+            S::Ok,
+            "Attached cover art",
+            "present — used as the thumbnail when no frame can be decoded",
+        );
+    }
+}
+
 fn probe_file(r: &mut Report, path: &str) {
     r.head("This file");
     let p = Path::new(path);
@@ -853,6 +996,13 @@ fn probe_file(r: &mut Report, path: &str) {
             "tick it in Settings > File types (or 'Select all')",
         );
     }
+    let is_video = matches!(
+        crate::formats::category(&ext),
+        crate::formats::Category::Video
+    );
+    if is_video {
+        video_codec_note(r, path);
+    }
 
     // The decisive step: actually run the thumbnail decoder on THIS file's bytes, the
     // same preview-fidelity path Explorer's provider uses.
@@ -888,6 +1038,18 @@ fn probe_file(r: &mut Report, path: &str) {
                     "  if it still looks wrong",
                     "check this file's FOLDER view: Details, List and Small icons never show \
                      thumbnails. Set Medium icons or larger (View menu, or Ctrl+Shift+2..4).",
+                );
+            }
+            Err(_) if is_video => {
+                // Video never touches ImageMagick — the frame comes from the OS Media
+                // Foundation codecs, so point at the codec finding instead of the
+                // (irrelevant, and previously misleading) ImageMagick hint.
+                r.fail_with_fix(
+                    "Decode this file",
+                    "FAILED — no frame could be decoded from this video",
+                    "see the 'Video codec' line above: a missing OS decoder is the usual \
+                     cause. If a decoder IS installed, an unusual profile (10-bit, Dolby \
+                     Vision) or a truncated file are the next suspects",
                 );
             }
             Err(_) => {
@@ -1121,5 +1283,27 @@ mod tests {
         // An unsupported extension is reported as the whole answer, not a decode attempt.
         let unsupported = report(Some("C:\\nope.zzzznotaformat"));
         assert!(unsupported.contains("This file"));
+    }
+
+    /// `MaxSize = 0` ("no limit") reaches here as `u64::MAX`, and dividing that by a
+    /// megabyte printed a 17-terabyte cap that does not exist. Driven through the pure
+    /// helper on purpose: the value comes from HKCU, so a report-level assertion would
+    /// silently pass on any machine whose MaxSize happens not to be 0.
+    #[test]
+    fn max_file_size_reports_the_unlimited_sentinel_as_unlimited() {
+        let unlimited = max_file_size_detail(u64::MAX);
+        assert!(
+            unlimited.contains("Unlimited"),
+            "u64::MAX must read as Unlimited, got: {unlimited}"
+        );
+        assert!(
+            !unlimited.contains("17592186044415"),
+            "the sentinel leaked as a number: {unlimited}"
+        );
+        // An ordinary cap still renders as plain megabytes.
+        assert_eq!(
+            max_file_size_detail(500 * 1024 * 1024),
+            "500 MB (larger files are skipped)"
+        );
     }
 }
