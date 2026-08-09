@@ -22,7 +22,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 ### Fixed
 
 - **Some MP4/MOV files reported "no video track" when they plainly had one.** If the first track
-  in the file was an odd one (a subtitle, hint or placeholder track that editing software leaves
+  in the file was an odd one (a subtitle, hint or empty track that editing software leaves
   behind), the search gave up there instead of moving on to the next track. Those files fell back
   to a lower-quality early frame, and `doctor` claimed their codec was unidentifiable.
 
