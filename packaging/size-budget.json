@@ -3,19 +3,19 @@
   "architectures": {
     "x64": {
       "full": {
-        "referenceVersion": "1.7.5",
+        "referenceVersion": "1.8.4",
         "installerReferenceCalibrated": true,
-        "referenceInstallerBytes": 13371559,
-        "referenceInstallerSha256": "02b29d85ae6d1a6845ad0ba7be92c03b41356cd416b2a32068d2ded9df8635f7",
+        "referenceInstallerBytes": 13504269,
+        "referenceInstallerSha256": "8e6330321236e86846acefabc8dc60d837e70e4906f513286d7a4213624e219f",
         "installerGrowthAllowanceBytes": 131072,
-        "maxInstallerBytes": 13502631,
-        "referenceRustPayloadBytes": 23407104,
+        "maxInstallerBytes": 13635341,
+        "referenceRustPayloadBytes": 23694848,
         "rustPayloadGrowthAllowanceBytes": 262144,
-        "maxRustPayloadBytes": 23669248,
+        "maxRustPayloadBytes": 23956992,
         "referenceMagickPayloadBytes": 29827612,
         "magickPayloadGrowthAllowanceBytes": 262144,
         "maxMagickPayloadBytes": 30089756,
-        "rationale": "Rust payload rebaselined 2026-08-05 for 1.7.5: +268,800 bytes over the 1.4.1-hdr reference, which overran the previous 256 KiB allowance by 6,656 bytes. The growth is one reviewed feature - a from-scratch JPEG 2000 reduced-resolution decoder (src/decode/jp2: codestream/packet/MQ+EBCOT/DWT) that replaces a full ImageMagick decode for thumbnails and previews. ~262 KiB of Rust for a complete wavelet codec is a good trade: it makes a 76 MP scan thumbnail in 0.25s instead of 4.4s, and it is the reason the DLL grew at all this release. Installer and magick budgets are UNCHANGED and were not the thing that tripped. The prior rationale (2026-07-31 competitor-gap rebaseline, hdr-capture kept app-only behind a cargo feature so the shell DLL does not pay for it) still holds and is why the installer figure did not move. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
+        "rationale": "Rust payload rebaselined 2026-08-08 for 1.8.4: +287,744 bytes over the 1.7.5 reference, which overran the previous 256 KiB allowance by 25,600 bytes. The growth is the 1.8.x work measured against a 1.7.5 baseline, not one release's worth: the QuickLook-parity preview batch and its transport strip, the SQLite database view, the portable registration path, and 1.8.4's own additions - the icon-style format badge (src/badge.rs: a seven-tint category palette and the dog-eared page silhouette), src/checkerpx.rs, src/typeoverlay.rs, and three new doctor checks including the shell round-trip that finally distinguishes 'our decoder works but Explorer drops it' (issue #16). The INSTALLER reference moved with it, to 1.8.4: the compressed setup grew 132,710 bytes over the 1.7.5 reference and overran the 128 KiB allowance by 1,638 bytes, which is the same Rust growth after compression and not a new payload. The magick budget is UNCHANGED and was not what tripped. The 1.7.5 rationale (the from-scratch JPEG 2000 reduced-resolution decoder in src/decode/jp2) still holds and is still in this payload. Keep later releases within 128 KiB compressed and 256 KiB for each raw payload unless an explicit reviewed policy change records why."
       }
     },
     "arm64": {
