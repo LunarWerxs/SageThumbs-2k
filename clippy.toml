@@ -4,7 +4,7 @@
 # `panic = "abort"` — a stray `.unwrap()`/`.expect()` on hostile input aborts the
 # user's shell, not just this code. So `clippy::unwrap_used` / `expect_used` are
 # enabled via `#![warn(...)]` on the two shell crate roots, `src/lib.rs` and
-# `dll/src/lib.rs`. (Deliberately NOT a Cargo `[lints]` table — that applies
+# `crates/dll/src/lib.rs`. (Deliberately NOT a Cargo `[lints]` table — that applies
 # workspace-wide and would drag in the `src/bin/*` EXEs, where a panic costs one
 # process, not the shell.)
 #

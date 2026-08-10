@@ -61,11 +61,11 @@ function Get-ReleaseRequiredInputPaths {
         'scripts/test-msix-integrity.ps1',
         'scripts/test-staged-regression.ps1',
         'scripts/write-release-manifest.ps1',
-        'vendor/exr/Cargo.toml',
-        'vendor/exr/Cargo.toml.orig',
-        'vendor/exr/SAGETHUMBS-PATCH.md',
-        'vendor/exr/src/lib.rs',
-        'vendor/exr/src/compression/dwa/lossy_dct/transfer_curve.rs'
+        'crates/vendor/exr/Cargo.toml',
+        'crates/vendor/exr/Cargo.toml.orig',
+        'crates/vendor/exr/SAGETHUMBS-PATCH.md',
+        'crates/vendor/exr/src/lib.rs',
+        'crates/vendor/exr/src/compression/dwa/lossy_dct/transfer_curve.rs'
     )
 }
 

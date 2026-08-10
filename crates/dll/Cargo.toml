@@ -20,7 +20,7 @@ crate-type = ["cdylib"]
 # The core rlib (package `sagethumbs2k`, lib `sagethumbs2k_core`). Aliased to
 # `st2k_core` so the dependency name doesn't collide with THIS crate's lib name
 # (`sagethumbs2k`), which cargo would reject.
-st2k_core = { package = "sagethumbs2k", path = ".." }
+st2k_core = { package = "sagethumbs2k", path = "../.." }
 # Only for the COM entry-point signatures (GUID / HRESULT). No Win32 features needed —
 # DllMain takes the HMODULE as a raw isize so this stays a featherweight dep.
 windows-core = "0.62"

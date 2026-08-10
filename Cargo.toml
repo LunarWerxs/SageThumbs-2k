@@ -1,12 +1,12 @@
 [workspace]
-members = ["dll", "dlghook"]
-exclude = ["vendor/exr"]
+members = ["crates/dll", "crates/dlghook"]
+exclude = ["crates/vendor/exr"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
 # `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
 # CI + the integration tests rely on the DLL existing. `dlghook` is the third artifact
 # (st2k_dlghook.dll): the Open/Save-dialog selection reader, which is a SEPARATE tiny
-# cdylib because it gets loaded into other applications — see dlghook/Cargo.toml.
-default-members = [".", "dll", "dlghook"]
+# cdylib because it gets loaded into other applications — see crates/dlghook/Cargo.toml.
+default-members = [".", "crates/dll", "crates/dlghook"]
 resolver = "2"
 
 # exr 1.74.2 added DWAA/DWAB encode/decode support, but stores two lazily-filled
@@ -17,9 +17,9 @@ resolver = "2"
 # Keep the new DWA support while moving only the table storage to loader-zeroed
 # module memory, so it remains leak-free when Explorer unloads the shell extension.
 # The vendored crate is the exact crates.io 1.74.2 source plus the documented patch
-# in vendor/exr/SAGETHUMBS-PATCH.md. Remove this override after upstream ships the fix.
+# in crates/vendor/exr/SAGETHUMBS-PATCH.md. Remove this override after upstream ships the fix.
 [patch.crates-io]
-exr = { path = "vendor/exr" }
+exr = { path = "crates/vendor/exr" }
 
 # Shared version for the rlib (`sagethumbs2k`) + the cdylib wrapper (`sagethumbs2k-dll`),
 # build-release.ps1 reads this line; keep it in sync with
@@ -48,7 +48,7 @@ ignored = ["kamadak-exif", "windows-core"]
 
 [lib]
 # Renamed `sagethumbs2k` -> `sagethumbs2k_core`: the shipped DLL is now a SEPARATE
-# `sagethumbs2k` cdylib crate (see `dll/`) that wraps this rlib's COM entry points. No
+# `sagethumbs2k` cdylib crate (see `crates/dll/`) that wraps this rlib's COM entry points. No
 # crate is both cdylib AND rlib anymore, which eliminates the intermittent cargo#6313
 # link collision that broke CI. This crate is rlib-only — linked by the two bins and
 # the integration tests; the bins/tests now `use sagethumbs2k_core`.
@@ -62,7 +62,7 @@ crate-type = ["rlib"]
 # GOTCHA (handled): this basename case-folds to the same PDB as the `sagethumbs2k.dll`
 # cdylib on Windows' case-insensitive FS, which historically broke combined debug/test
 # builds with LNK1201 (two links contend for one PDB file). The fix lives in
-# **dll/build.rs**, which redirects the CDYLIB's PDB to `sagethumbs2k_dll.pdb` — NOT this
+# **crates/dll/build.rs**, which redirects the CDYLIB's PDB to `sagethumbs2k_dll.pdb` — NOT this
 # bin's. (Redirecting the bin's PDB forces its normal + `--test` compilations onto one
 # fixed path and reintroduces LNK1201 under `cargo test`; the cdylib is a single artifact
 # with no `--test` twin, so redirecting it is safe.) Verified on `cargo build`, `cargo

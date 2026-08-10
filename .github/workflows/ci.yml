@@ -335,9 +335,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: DWA library tests
-        run: 'cargo test --manifest-path vendor/exr/Cargo.toml --no-default-features --lib compression::dwa::'
+        run: 'cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --lib compression::dwa::'
       - name: DWAA and DWAB roundtrips
-        run: cargo test --manifest-path vendor/exr/Cargo.toml --no-default-features --test roundtrip roundtrip_dwa
+        run: cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --test roundtrip roundtrip_dwa
 
   # License + advisory + source/ban audit. The whole dependency graph is now
   # 100% permissive (RAR/CBR via the pure-Rust `rars` crate — no proprietary

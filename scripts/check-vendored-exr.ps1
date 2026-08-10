@@ -12,7 +12,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$vendor = Join-Path $root 'vendor\exr'
+$vendor = Join-Path $root 'crates\vendor\exr'
 $expectedVersion = '1.74.2'
 $expectedRegistryChecksum = '711fe42c9964295e01ee3fba3f9fe0e1d24b98886950d68efe81b1c76e21adf3'
 $expectedVcsCommit = '719d14e57bc6be8db98d8ebdc0b0872bec3cfea7'
@@ -89,7 +89,7 @@ if ([string]$exr.version -cne $expectedVersion) {
     throw "resolved exr version is $($exr.version), expected $expectedVersion"
 }
 if ($null -ne $exr.source) {
-    throw "exr resolved from a registry/git source instead of vendor/exr: $($exr.source)"
+    throw "exr resolved from a registry/git source instead of crates/vendor/exr: $($exr.source)"
 }
 $expectedManifest = [IO.Path]::GetFullPath((Join-Path $vendor 'Cargo.toml'))
 $actualManifest = [IO.Path]::GetFullPath([string]$exr.manifest_path)

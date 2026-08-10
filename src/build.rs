@@ -56,12 +56,12 @@ fn main() {
             let _ = embed_manifest(new_manifest("SageThumbs2K.Options"));
         }
         // The shell-extension DLL's VERSIONINFO is now emitted by the separate
-        // `sagethumbs2k-dll` cdylib crate (dll/build.rs) — THIS crate is rlib-only and
+        // `sagethumbs2k-dll` cdylib crate (crates/dll/build.rs) — THIS crate is rlib-only and
         // no longer produces a cdylib, so `rustc-link-arg-cdylib` would do nothing here.
         // (The app bin target `SageThumbs2K` case-folds to the DLL's `sagethumbs2k.pdb`;
-        // the collision is avoided by redirecting the *DLL's* PDB in dll/build.rs, NOT the
+        // the collision is avoided by redirecting the *DLL's* PDB in crates/dll/build.rs, NOT the
         // bin's — redirecting the bin's forces its normal + `--test` builds onto one PDB
-        // path and reintroduces LNK1201 under `cargo test`. See dll/build.rs.)
+        // path and reintroduces LNK1201 under `cargo test`. See crates/dll/build.rs.)
     }
     // (RAR/CBR is now the pure-Rust `rars` crate — no C, no UnRAR, so the old
     // advapi32 link the `rar` feature needed is gone.)
