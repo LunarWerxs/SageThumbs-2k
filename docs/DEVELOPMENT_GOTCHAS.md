@@ -448,3 +448,28 @@ call. `cargo test` builds test binaries; it does not build the cdylib, so on a f
 after `cargo clean`, or after a version bump invalidates the artifact, all eight fail at once
 with `cdylib not built` (or `LoadLibrary: 0x8007007E`). Run `cargo build` first. The suite is
 green immediately afterwards, with no source change in between.
+
+## Do not touch the working tree while `release.ps1` is running
+
+The release builds its installers from the LOCAL working tree and records a provenance
+manifest of what went into them. `check-release-manifest.ps1` then refuses to publish if that
+manifest says the tree was dirty at build time, which is correct: an artifact built from
+files that were being edited underneath it is not the commit it claims to be.
+
+The clean-main guard runs at step [1/6], so a tree that is clean when the release STARTS
+passes it, and then any edit during the ten-plus minutes of building both architectures
+turns the artifacts unpublishable. 1.9.0's first attempt died exactly this way, at the
+provenance gate, after both installers had already been built and size-checked.
+
+Nothing is left half-done when it fails, which is the saving grace: no tag, no draft, no
+release, because the gate sits BEFORE the draft is created. The cost is only the rebuild.
+Start the release, then leave the tree alone until it prints `DONE`.
+
+## SourceForge's default-download API lies about having taken effect
+
+`set-sourceforge-default.ps1` PUTs the default installer for the green Download button, and
+the API returns success while `best_release.json` keeps serving the PREVIOUS version for a
+few minutes. The release script retries, reports "API reported success but best_release.json
+still says …", and tells you to set it by hand. It usually does not need setting by hand:
+re-run the script a few minutes later and it reports "already correct". Believe the second
+reading, not the first.
