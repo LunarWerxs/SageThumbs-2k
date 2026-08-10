@@ -84,6 +84,10 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     // Seed the Settings-sync row (button label + green "● Synced" badge) from the signed-in
     // state; the background pull (spawn_sync_pull) later refreshes it via WM_APP_SYNC.
     refresh_sync_ui(hwnd);
+    // LAST, after every parent checkbox has its real value: grey (or un-grey) the dependent
+    // rows. The earlier `update_badge_style_enabled` call runs before the menu/preview
+    // masters are loaded and would leave their children greyed under an enabled parent.
+    sync_dependent_switches(hwnd);
 }
 
 /// Reset every control to the factory defaults (does not write yet).
@@ -184,6 +188,8 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     let _ = settings::set_preview_muted(false);
     let _ = settings::set_preview_toc_open(true);
     reset_formats(hwnd); // every supported format re-enabled
+    // Same rule as load_values: dependents are greyed against the FINAL checkbox states.
+    sync_dependent_switches(hwnd);
 }
 
 /// Reset ONLY the supported-file-types list to its default (every format enabled).
@@ -248,14 +254,71 @@ pub(super) unsafe fn update_save_dir_enabled(hwnd: HWND) {
     }
 }
 
+/// Every switch whose meaning depends on another switch being ON, as (parent, children)
+/// pairs. Children are drawn indented (see `apply_v3_layout`) and greyed while the parent
+/// is off — the pattern first-run already uses for the PrtScn row. This is what turns a
+/// wall of equal-looking checkboxes back into the 3-4 real decisions each page contains:
+/// a page shows its hierarchy instead of asking the user to infer it from the tooltips.
+pub(super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
+    (ID_FORMAT_BADGE, &[ID_BADGE_ICON]),
+    (
+        ID_ENABLE_MENU,
+        &[ID_MENU_ALL_TYPES, ID_MENU_QUICK, ID_MENU_CHECKER],
+    ),
+    (ID_SHOT_ENABLE, &[ID_SHOT_QUICK_ENABLE, ID_SHOT_USE_DIR]),
+    #[cfg(feature = "html-preview")]
+    (
+        ID_PREVIEW_ENABLED,
+        &[
+            ID_PREVIEW_HOLD_PEEK,
+            ID_PREVIEW_CLOSE_FOCUS,
+            ID_PREVIEW_TOPMOST,
+            ID_PREVIEW_TEXT,
+            ID_PREVIEW_MARKDOWN,
+            ID_PREVIEW_HTML,
+            ID_PREVIEW_URL_LIVE,
+        ],
+    ),
+    #[cfg(not(feature = "html-preview"))]
+    (
+        ID_PREVIEW_ENABLED,
+        &[
+            ID_PREVIEW_HOLD_PEEK,
+            ID_PREVIEW_CLOSE_FOCUS,
+            ID_PREVIEW_TOPMOST,
+            ID_PREVIEW_TEXT,
+            ID_PREVIEW_MARKDOWN,
+        ],
+    ),
+];
+
+/// Is `id` a dependent (child) switch? The layout indents these.
+pub(super) fn is_dependent_switch(id: i32) -> bool {
+    DEPENDENT_SWITCHES
+        .iter()
+        .any(|(_, kids)| kids.contains(&id))
+}
+
+/// Grey every dependent switch whose parent is off (and un-grey when it comes back on).
+/// Runs on load and whenever a parent switch is clicked. Greying is DISPLAY only — the
+/// stored setting keeps its value, so toggling a parent off and on loses nothing.
+pub(super) unsafe fn sync_dependent_switches(hwnd: HWND) {
+    for &(parent, kids) in DEPENDENT_SWITCHES {
+        let on = checked(hwnd, parent);
+        for &kid in kids {
+            if let Ok(c) = GetDlgItem(Some(hwnd), kid) {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(c, on);
+                let _ = InvalidateRect(Some(c), None, true);
+            }
+        }
+    }
+}
+
 /// Grey out the badge STYLE row while the badge itself is off — the house rule for a
 /// dependent control, and here it also stops the row reading as a second, separate feature.
+/// Kept as the badge-specific entry point; it now rides the general dependents table.
 pub(super) unsafe fn update_badge_style_enabled(hwnd: HWND) {
-    let on = checked(hwnd, ID_FORMAT_BADGE);
-    if let Ok(b) = GetDlgItem(Some(hwnd), ID_BADGE_ICON) {
-        let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(b, on);
-        let _ = InvalidateRect(Some(b), None, true);
-    }
+    sync_dependent_switches(hwnd);
 }
 
 pub(super) unsafe fn banner_rotator(hwnd: HWND) -> Option<(HWND, *mut SponsorRotator)> {

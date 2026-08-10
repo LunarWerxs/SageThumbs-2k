@@ -43,6 +43,12 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // Created here with the other thumbnail switches; `navrail::cat_rows` is what decides
     // which PAGE it lands on (File types), so creation order carries no meaning.
     lc.checkbox(t("chk_hide_type_overlay"), cb, 320, ID_HIDE_TYPE_OVERLAY);
+    // Headers the v3 layout places, not this legacy column: File types' two sections,
+    // the menu page's verb-behavior split, and Quick preview's content-type split.
+    lc.header(t("grp_tile_look"), hdr, ID_LBL_TILE_LOOK, false);
+    lc.header(t("grp_formats_pick"), hdr, ID_LBL_FORMATS_PICK, false);
+    lc.header(t("grp_convert_verbs"), hdr, ID_LBL_CONVERT_VERBS, false);
+    lc.header(t("grp_preview_kinds"), hdr, ID_LBL_PREVIEW_KINDS, false);
 
     // Limits & quality — numeric label+edit rows. Single-line edits top-align +
     // ignore EM_SETRECT, so they're kept snug; the rounded field panel behind them

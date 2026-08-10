@@ -301,6 +301,7 @@ fn main() {
                     "about" => crate::about::run_shot_about(out),
                     "doctor" => crate::doctor_report::run_shot_doctor(out),
                     "firstrun" => crate::first_run::run_shot_first_run(out),
+                    "firstrun2" => crate::first_run::run_shot_first_run2(out),
                     // The OCR result window, over canned text (no recognizer run) — or the
                     // real text of `--file <img>` when you want to see an actual scan.
                     "ocr" => {
@@ -351,7 +352,18 @@ fn main() {
                             .and_then(|p| args.get(p + 1))
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(0);
-                        settings_dlg::run_shot(hinst, dark, out, tab)
+                        // `--search <needle>` drives the settings-wide search headlessly
+                        // (append `!` to also pick the first hit) — the functional proof
+                        // shot, not just the layout one.
+                        if let Some(needle) = args
+                            .iter()
+                            .position(|a| a == "--search")
+                            .and_then(|p| args.get(p + 1))
+                        {
+                            settings_dlg::run_shot_search(hinst, dark, out, needle)
+                        } else {
+                            settings_dlg::run_shot(hinst, dark, out, tab)
+                        }
                     }
                 }
             } else {

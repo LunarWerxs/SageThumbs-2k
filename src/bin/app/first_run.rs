@@ -49,6 +49,20 @@ const ID_SHOT_SUB: i32 = 104;
 const ID_PRTSCN: i32 = 105;
 const ID_THUMBS: i32 = 106;
 const ID_THUMBS_SUB: i32 = 107;
+// Page 2 — the one segmenting question. Radios, not toggles: it reads as a single choice,
+// the default answer changes nothing, and each other answer seeds EXISTING settings only.
+const ID_P2_HEAD: i32 = 110;
+const ID_P_GENERAL: i32 = 111;
+const ID_P_PHOTOS: i32 = 112;
+const ID_P_COMICS: i32 = 113;
+const ID_P_MOVIES: i32 = 114;
+const ID_P2_SUB: i32 = 115;
+
+// Which page the single window is showing. One window that swaps content, not two modal
+// boxes in a row — the module doc's "reads as nagging" rule is why.
+thread_local! {
+    static ON_PAGE_2: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 const DLG_W: i32 = 460;
 const DLG_H: i32 = 340;
@@ -112,6 +126,112 @@ unsafe fn sync_prtscn(hwnd: HWND) {
     }
     if !on {
         check(hwnd, ID_PRTSCN, false);
+    }
+}
+
+/// Build page 2: the folder-content question. Created lazily when Next is clicked, so the
+/// common path (someone racing through) pays for it only if they get there.
+unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    let cw = (rc.right - rc.left) * 100 / unit;
+    let m = 20;
+    let w = cw - m * 2;
+    let mut y = 16;
+
+    ctl(
+        hwnd,
+        STATIC,
+        t("fr2_q"),
+        WINDOW_STYLE(0),
+        m,
+        y,
+        w,
+        34,
+        ID_P2_HEAD,
+        hinst,
+    );
+    y += 44;
+    let radios = [
+        (ID_P_GENERAL, "fr2_general", true),
+        (ID_P_PHOTOS, "fr2_photos", false),
+        (ID_P_COMICS, "fr2_comics", false),
+        (ID_P_MOVIES, "fr2_movies", false),
+    ];
+    for (id, key, first) in radios {
+        let group = if first { WS_GROUP } else { WINDOW_STYLE(0) };
+        ctl(
+            hwnd,
+            BUTTON,
+            t(key),
+            WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_TABSTOP | group,
+            m,
+            y,
+            w,
+            20,
+            id,
+            hinst,
+        );
+        y += 28;
+    }
+    check(hwnd, ID_P_GENERAL, true);
+    y += 8;
+    ctl(
+        hwnd,
+        STATIC,
+        t("fr2_sub"),
+        WINDOW_STYLE(0),
+        m,
+        y,
+        w,
+        32,
+        ID_P2_SUB,
+        hinst,
+    );
+}
+
+/// Swap page 1 out for page 2 and relabel the button from Next to Get started.
+unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
+    for id in [
+        ID_HEAD,
+        ID_PREVIEW,
+        ID_PREVIEW_SUB,
+        ID_SHOT,
+        ID_SHOT_SUB,
+        ID_PRTSCN,
+        ID_THUMBS,
+        ID_THUMBS_SUB,
+    ] {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = ShowWindow(c, SW_HIDE);
+        }
+    }
+    build_page2(hwnd, hinst);
+    if let Ok(b) = GetDlgItem(Some(hwnd), IDOK) {
+        let txt = crate::win::wide(t("fr_go"));
+        let _ = SetWindowTextW(b, windows::core::PCWSTR(txt.as_ptr()));
+    }
+    ON_PAGE_2.with(|p| p.set(true));
+}
+
+/// Seed EXISTING settings from the page-2 answer. Radios only ever pre-tune toggles the
+/// Settings dialog exposes, so nothing here is unreachable or irreversible afterwards.
+unsafe fn apply_persona(hwnd: HWND) {
+    use sagethumbs2k_core::settings as s;
+    if checked(hwnd, ID_P_MOVIES) {
+        // A film library wants the poster, not a frame from 30% in — the exact audience
+        // Settings > File types > "Use a video's cover art" exists for.
+        let _ = s::set_prefer_cover_art(true);
+    } else if checked(hwnd, ID_P_COMICS) {
+        // Scanlation credit pages routinely lead the archive; skipping them makes the
+        // cover the actual cover. The switch lives on the Ebook/comic page.
+        let _ = s::set_dword("ContainerSkipScanlation", 1);
+    } else if checked(hwnd, ID_P_PHOTOS) {
+        // Embedded (EXIF) previews are the fast path for big photo/RAW folders. Default
+        // is already on; asserting it here keeps the answer meaningful if that default
+        // ever changes.
+        let _ = s::set_dword("UseEmbedded", 1);
     }
 }
 
@@ -263,7 +383,7 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     ctl(
         hwnd,
         BUTTON,
-        t("fr_go"),
+        t("fr_next"),
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
         cw - m - bw,
         (rc.bottom - rc.top) * 100 / unit - bh - 16,
@@ -274,9 +394,18 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     );
 }
 
+thread_local! {
+    static APPLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Apply the ticked choices. Only called from the button — dismissing with the X changes
-/// nothing, which is the honest reading of "close without answering".
+/// nothing, which is the honest reading of "close without answering". Runs once: the
+/// button hits this on BOTH pages (page 1 applies before the flip, so closing the window
+/// mid-question still honors confirmed choices), and the daemon start is not free.
 unsafe fn apply(hwnd: HWND) {
+    if APPLIED.with(|a| a.replace(true)) {
+        return;
+    }
     // Portable only, and best-effort: a refused registry write must not stop the other choices
     // from being applied. The Settings ▸ Advanced row reports the real state and retries.
     if offers_thumbnails() && checked(hwnd, ID_THUMBS) {
@@ -325,7 +454,13 @@ extern "system" fn first_run_wndproc(
         // the generic static coloring claims them.
         if msg == WM_CTLCOLORSTATIC {
             let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
-            if id == ID_HEAD || id == ID_PREVIEW_SUB || id == ID_SHOT_SUB || id == ID_THUMBS_SUB {
+            if id == ID_HEAD
+                || id == ID_PREVIEW_SUB
+                || id == ID_SHOT_SUB
+                || id == ID_THUMBS_SUB
+                || id == ID_P2_HEAD
+                || id == ID_P2_SUB
+            {
                 return dark_ctlcolor_dim(wparam);
             }
         }
@@ -345,8 +480,19 @@ extern "system" fn first_run_wndproc(
                 match (wparam.0 & 0xFFFF) as i32 {
                     ID_SHOT => sync_prtscn(hwnd),
                     IDOK => {
-                        apply(hwnd);
-                        let _ = DestroyWindow(hwnd);
+                        if ON_PAGE_2.with(|p| p.get()) {
+                            apply(hwnd);
+                            apply_persona(hwnd);
+                            let _ = DestroyWindow(hwnd);
+                        } else {
+                            // Apply page 1 NOW, then ask the one page-2 question. Applying
+                            // per-page means closing the window mid-question still honors
+                            // the choices already confirmed.
+                            apply(hwnd);
+                            if let Ok(h) = GetModuleHandleW(None) {
+                                flip_to_page2(hwnd, h.into());
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -369,6 +515,35 @@ extern "system" fn first_run_wndproc(
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+/// Headless capture of PAGE 2 (`--window firstrun2`). Flips the freshly built window
+/// before capturing; page-1 choices are NOT applied (the flip path that applies them is
+/// the button handler, deliberately not exercised here).
+pub(crate) unsafe fn run_shot_first_run2(out: &str) -> bool {
+    let hinst: HINSTANCE = match GetModuleHandleW(None) {
+        Ok(h) => h.into(),
+        Err(_) => return false,
+    };
+    let Some(hwnd) = crate::win::create_shot_window(
+        hinst,
+        crate::dark::is_dark(),
+        w!("SageThumbs2KFirstRunShot2"),
+        Some(first_run_wndproc),
+        t("fr_title"),
+        DLG_W,
+        dlg_h(),
+    ) else {
+        return false;
+    };
+    flip_to_page2(hwnd, hinst);
+    crate::win::pump_msgs(20);
+    crate::win::force_repaint(hwnd);
+    crate::win::pump_msgs(8);
+    crate::win::force_repaint(hwnd);
+    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
+    let _ = DestroyWindow(hwnd);
+    ok
 }
 
 /// Headless capture (`--shot <out.png> --window firstrun`) so the layout is verifiable

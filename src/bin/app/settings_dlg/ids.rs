@@ -169,6 +169,18 @@ pub(super) const ID_VIDEO_COVER_ART: i32 = 1219;
 /// the machine-wide registration already covers it and a second switch would only confuse.
 pub(super) const ID_PORTABLE_REG: i32 = 1214;
 pub(super) const ID_PORTABLE_REG_STATUS: i32 = 1215;
+/// "Thumbnail appearance" header above File types' two exiled what-the-tile-looks-like rows.
+pub(super) const ID_LBL_TILE_LOOK: i32 = 1220;
+/// "Choose the formats" header between those rows and the Select all/format list below.
+pub(super) const ID_LBL_FORMATS_PICK: i32 = 1221;
+/// "Converting & resizing" header splitting menu-appearance switches from verb behavior.
+pub(super) const ID_LBL_CONVERT_VERBS: i32 = 1222;
+/// "Also preview" header splitting Quick preview's behavior switches from content opt-ins.
+pub(super) const ID_LBL_PREVIEW_KINDS: i32 = 1223;
+/// Settings-wide search: the always-visible edit at the top-right of the pane header…
+pub(super) const ID_SEARCH_GLOBAL: i32 = 1224;
+/// …and the results list that drops down under it (hidden until there are matches).
+pub(super) const ID_SEARCH_RESULTS: i32 = 1225;
 
 /// Per-item menu-visibility checkboxes (XnShell-style "Displayed menu items").
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's

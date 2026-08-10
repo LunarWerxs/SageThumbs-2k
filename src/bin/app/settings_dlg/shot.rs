@@ -53,6 +53,48 @@ pub(crate) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, tab: usiz
     ok
 }
 
+/// `--shot … --search <needle>[!]` : drive the settings-wide search headlessly and capture
+/// the result — proof the feature works, not just that the box renders. Types `needle`
+/// into the search box (EN_CHANGE fires synchronously, populating the dropdown) and
+/// captures with the dropdown open; with a trailing `!` it then PICKS the first hit and
+/// captures the landing page instead, focus ring and all.
+pub(crate) unsafe fn run_shot_search(hinst: HINSTANCE, dark: bool, out: &str, arg: &str) -> bool {
+    let Some(hwnd) = build_settings_shot_window(hinst, dark) else {
+        return false;
+    };
+    settle_pane(hwnd, 0);
+    let (needle, pick) = match arg.strip_suffix('!') {
+        Some(n) => (n, true),
+        None => (arg, false),
+    };
+    if let Ok(edit) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
+        let w = crate::win::wide(needle);
+        SendMessageW(edit, WM_SETTEXT, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    crate::win::pump_msgs(8);
+    if pick {
+        if let Ok(list) = GetDlgItem(Some(hwnd), ID_SEARCH_RESULTS) {
+            SendMessageW(list, LB_SETCURSEL, Some(WPARAM(0)), None);
+            // LB_SETCURSEL doesn't notify; deliver the pick the way a click would.
+            SendMessageW(
+                hwnd,
+                WM_COMMAND,
+                Some(WPARAM(
+                    (ID_SEARCH_RESULTS as usize) | ((LBN_SELCHANGE as usize) << 16),
+                )),
+                Some(LPARAM(list.0 as isize)),
+            );
+        }
+        crate::win::force_repaint(hwnd);
+        crate::win::pump_msgs(8);
+    }
+    crate::win::force_repaint(hwnd);
+    crate::win::pump_msgs(4);
+    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
+    let _ = DestroyWindow(hwnd);
+    ok
+}
+
 /// The app's `--shot-gif` mode: build the Settings window off-screen ONCE, walk every category
 /// tab capturing each as a frame, and encode them into an animated (infinite-loop) GIF at
 /// `out` — the regenerable README/site asset that cycles the Settings tabs. Frames are

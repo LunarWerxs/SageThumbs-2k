@@ -100,6 +100,11 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
     match ci {
         0 => &GENERAL,
         1 => &[
+            // "Thumbnail appearance": the two rows below are exiles from General (it is
+            // FIXED and full — see the comments that moved them), and without a header they
+            // read as strays floating above the format list. The header names the seam the
+            // code comments used to explain only to the maintainer.
+            Head(ID_LBL_TILE_LOOK),
             // What Windows itself draws on top of these types' thumbnails. It belongs with
             // the per-file-type page by topic, and this page is one of the two that SCROLL —
             // Advanced could not take it (`fixed_pages_keep_space_above_the_footer` fails by
@@ -111,6 +116,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // `fixed_pages_keep_space_above_the_footer` catches it. This page scrolls, and it
             // already hosts the other exiled "what the tile looks like" row above.
             Switch(ID_VIDEO_COVER_ART),
+            Head(ID_LBL_FORMATS_PICK),
             Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),
             Wide(ID_SEARCH),
             ListFill(ID_LIST),
@@ -133,11 +139,11 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // This controls the transparency backdrop of the context-menu preview,
             // so keep it with that surface instead of crowding the General page.
             Switch(ID_MENU_CHECKER),
-            // Moved off General 2026-08-08, when the badge-style and thumbnail-checkerboard
-            // rows needed its last two slots (General is a FIXED page and was already 28px
-            // from the footer). Both of these govern what the right-click Convert/Resize
-            // verbs do to a file, so this page is the better home anyway — the same trade
-            // the PDF-margin row made in 2026-08-05.
+            // "Converting & resizing": the two rows below were relocated from General for
+            // space (2026-08-08) and govern what the Convert/Resize VERBS do to a file, not
+            // what the menu looks like — the header makes that seam visible instead of
+            // leaving four menu switches running straight into two file-behavior ones.
+            Head(ID_LBL_CONVERT_VERBS),
             Switch(ID_PRESERVE_DATE),
             Switch(ID_KEEP_METADATA),
             Pair(ID_LBL_PREVIEW, ID_MENU_PREVIEW, 156, 200),
@@ -186,6 +192,10 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_HOLD_PEEK),
             Switch(ID_PREVIEW_CLOSE_FOCUS),
             Switch(ID_PREVIEW_TOPMOST),
+            // "Also preview": behavior above, content-type opt-ins below — the split
+            // matches how the decision is actually made ("turn it on" vs "and also my
+            // markdown files"), instead of eight equal-looking rows.
+            Head(ID_LBL_PREVIEW_KINDS),
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),
             Switch(ID_PREVIEW_HTML),
@@ -197,6 +207,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_HOLD_PEEK),
             Switch(ID_PREVIEW_CLOSE_FOCUS),
             Switch(ID_PREVIEW_TOPMOST),
+            Head(ID_LBL_PREVIEW_KINDS),
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),
         ],
@@ -403,6 +414,52 @@ pub(super) fn cat_blurb(ci: usize) -> &'static str {
     }
 }
 
+/// Does this settings page hold any value the user has CHANGED from its default?
+/// Drives the little dot on the nav rail — the answer to "where did I change something"
+/// across nine pages, without opening each one. Reads the live settings (cheap registry /
+/// portable-ini reads; runs only when a rail item repaints, not per frame).
+///
+/// Deliberately coarse: it names the pages that DIFFER, it does not promise the reverse
+/// (a page with no dot may still have sub-state we don't track, e.g. list orderings).
+pub(super) fn page_has_non_defaults(ci: usize) -> bool {
+    use sagethumbs2k_core::settings as s;
+    match ci {
+        // General: master switch, embedded pref, badge trio, checkerboard + the numbers.
+        0 => {
+            !s::thumbnails_enabled()
+                || !s::use_embedded()
+                || s::format_badge()
+                || !s::format_badge_icon()
+                || s::thumb_checker()
+                || s::max_file_size_bytes() != u64::from(s::DEFAULT_MAX_FILE_MB) * 1024 * 1024
+                || s::max_thumb_size() != s::DEFAULT_THUMB_SIZE
+        }
+        // File types: the two appearance rows; the format tick-list itself is deliberately
+        // not scanned (327 formats per repaint would be real work for a hint).
+        1 => s::hide_type_overlay() || s::prefer_cover_art(),
+        2 => {
+            !s::container_sort()
+                || !s::container_prefer_cover()
+                || s::container_skip_scanlation()
+                || !s::archive_collage()
+        }
+        3 => {
+            !s::menu_enabled()
+                || s::menu_all_file_types()
+                || s::menu_quick_verbs()
+                || !s::preview_checker()
+                || s::preserve_file_date()
+                || !s::keep_metadata_on_convert()
+        }
+        // Screenshots / Quick action / Quick preview: their daemon-backed master switches
+        // are OFF by default (first-run offers them), so ON is the changed state.
+        4 => crate::screenshot::is_enabled(),
+        7 => s::preview_enabled(),
+        6 => !s::update_auto_check() || s::screenshot_hide_tray(),
+        _ => false,
+    }
+}
+
 /// Owner-draw a nav-rail item: an accent-tinted pill + accent icon + bar when
 /// active; a muted icon + plain text otherwise.
 pub(super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool) {
@@ -440,6 +497,19 @@ pub(super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool)
         isz,
         if active { ACCENT() } else { HEADER_TEXT() },
     );
+    // "You changed something here": a small accent dot on the rail row. Answers "where
+    // did I change a setting" across nine pages without opening each one. Painted for
+    // active and inactive rows alike, so it never reads as part of the selection pill.
+    if page_has_non_defaults(ci) {
+        let r = dpi_scale(hwnd, 2);
+        let dx = rc.right - dpi_scale(hwnd, 14);
+        let dy = rc.top + (rc.bottom - rc.top) / 2 - r;
+        gdip::with_aa(hdc, |g| {
+            let b = gdip::brush(ACCENT());
+            gdip::fill_round(g, b, dx, dy, r * 2, r * 2, r);
+            gdip::drop_brush(b);
+        });
+    }
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, DARK_TEXT());
@@ -486,10 +556,13 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     SetTextColor(hdc, DARK_TEXT());
     let mut title = wide(nav_label(ci));
     let tn = title.len().saturating_sub(1);
+    // Reserve the right edge for the settings-wide search box that floats over this
+    // header — otherwise a long title/blurb runs underneath it.
+    let text_right = rc.right - dpi_scale(hwnd, 186);
     let mut tr = RECT {
         left: tx,
         top: rc.top - dpi_scale(hwnd, 2),
-        right: rc.right,
+        right: text_right,
         bottom: rc.top + dpi_scale(hwnd, 24),
     };
     DrawTextW(
@@ -505,7 +578,7 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let mut br = RECT {
         left: tx,
         top: rc.top + dpi_scale(hwnd, 26),
-        right: rc.right,
+        right: text_right,
         bottom: rc.bottom,
     };
     DrawTextW(
@@ -629,7 +702,15 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     }
                 }
                 Row::Switch(id) => {
-                    if let Some(c) = place(id, PANE_X, y, PANE_W, 28) {
+                    // Dependent switches sit indented under their parent, the same visual
+                    // nesting first-run gives the PrtScn row — the indent plus the greying
+                    // (`sync_dependent_switches`) is what makes the hierarchy legible.
+                    let indent = if super::values::is_dependent_switch(id) {
+                        18
+                    } else {
+                        0
+                    };
+                    if let Some(c) = place(id, PANE_X + indent, y, PANE_W - indent, 28) {
                         cats[ci].push(c);
                     }
                 }
@@ -746,6 +827,9 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
         n.active = 0;
         n.cats = cats;
     });
+    // The settings-wide search lives OUTSIDE the per-category lists on purpose: it must
+    // stay visible whatever page is active, or it could not take you to another page.
+    super::search::build_search(hwnd, hinst);
     switch_category(hwnd, 0);
 }
 // =================== end v3 layout ===================

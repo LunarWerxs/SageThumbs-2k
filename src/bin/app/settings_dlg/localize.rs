@@ -48,6 +48,9 @@ pub(super) unsafe fn on_lang_change(hwnd: HWND) {
     // The search cache keys on the (now stale-language) needle; clear it so the next
     // EN_CHANGE re-filters instead of short-circuiting on an identical needle.
     LAST_FILTER.with(|f| *f.borrow_mut() = None);
+    // The settings-wide search indexes label/tooltip TEXT, which just changed language.
+    super::search::invalidate();
+    super::search::refresh_cue(hwnd);
 }
 
 /// Re-apply every translatable label in the active language (used after a live
@@ -68,6 +71,10 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_MENU_QUICK, "chk_menu_quick"),
         (ID_MENU_CHECKER, "chk_menu_checker"),
         (ID_LBL_LIMITS, "grp_limits"),
+        (ID_LBL_TILE_LOOK, "grp_tile_look"),
+        (ID_LBL_FORMATS_PICK, "grp_formats_pick"),
+        (ID_LBL_CONVERT_VERBS, "grp_convert_verbs"),
+        (ID_LBL_PREVIEW_KINDS, "grp_preview_kinds"),
         (ID_LBL_MAXFILE, "lbl_max_file"),
         (ID_LBL_MAXTHUMB, "lbl_max_thumb"),
         (ID_LBL_JPEG, "lbl_jpeg"),

@@ -79,13 +79,14 @@ use build::*;
 mod helpers;
 mod localize;
 mod navrail;
+mod search;
 mod shot;
 mod sync;
 mod values;
 use helpers::*;
 use localize::*;
 use navrail::*;
-pub(crate) use shot::{run_shot, run_shot_gif};
+pub(crate) use shot::{run_shot, run_shot_gif, run_shot_search};
 use sync::*;
 use values::*;
 // Win32 message consts the `windows` crate omits (local so they shadow the `WindowsAndMessaging::*` glob).
@@ -425,10 +426,12 @@ pub(super) unsafe fn menu_row_param(list: HWND, row: i32) -> isize {
 }
 
 /// (control id, hint locale key) for every tooltip. Shared by `add_tooltips`
-/// (initial install) and `refresh_tooltips` (re-translate on a live language
-/// change). The banner's hint is dynamic (rotates with the ad) so it's excluded
+/// (initial install), `refresh_tooltips` (re-translate on a live language
+/// change), and the settings-wide search, which matches against tooltip text so
+/// "poster" finds the cover-art switch even though its label says "cover art".
+/// The banner's hint is dynamic (rotates with the ad) so it's excluded
 /// here and pulled via a TTN_GETDISPINFO callback instead.
-const TOOLTIPS: &[(i32, &str)] = &[
+pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_ENABLE_THUMBS, "tip_enable_thumbs"),
     (ID_USE_EMBEDDED, "tip_prefer_embedded"),
     (ID_FORMAT_BADGE, "tip_format_badge"),
@@ -1121,6 +1124,9 @@ pub(crate) extern "system" fn wndproc(
                             }
                         }
                     }
+                    // Settings-wide search: filter on every keystroke, jump on pick.
+                    ID_SEARCH_GLOBAL if notify == EN_CHANGE => search::on_change(hwnd),
+                    ID_SEARCH_RESULTS if notify == LBN_SELCHANGE => search::on_pick(hwnd),
                     ID_SEARCH if notify == EN_CHANGE => {
                         if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
                             let text = get_edit_text(hwnd, ID_SEARCH);
@@ -1150,12 +1156,21 @@ pub(crate) extern "system" fn wndproc(
                             list::reset_menu_order(mlist);
                         }
                     }
-                    // Instant-screenshot checkbox: enable/disable its hotkey picker live.
-                    ID_SHOT_ENABLE => refresh_shot_status(hwnd),
+                    // Instant-screenshot checkbox: enable/disable its hotkey picker live —
+                    // and re-grey its dependent rows (Quick screenshot / save-folder toggle).
+                    ID_SHOT_ENABLE => {
+                        refresh_shot_status(hwnd);
+                        sync_dependent_switches(hwnd);
+                    }
                     ID_SHOT_QUICK_ENABLE => update_quick_enabled(hwnd),
                     ID_CUSTOM_ACTION_ENABLE => update_custom_action_enabled(hwnd),
                     ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
-                    ID_FORMAT_BADGE => update_badge_style_enabled(hwnd),
+                    // Parent switches with greyed dependents (badge style, the menu rows,
+                    // the Quick-preview rows): one table drives them all — see
+                    // `DEPENDENT_SWITCHES`.
+                    ID_FORMAT_BADGE | ID_ENABLE_MENU | ID_PREVIEW_ENABLED => {
+                        sync_dependent_switches(hwnd)
+                    }
                     ID_SYNC_BTN => on_sync_click(hwnd),
                     ID_SHOT_SET_DIR => {
                         // Pick the Ctrl+S save folder; persist immediately + refresh the
