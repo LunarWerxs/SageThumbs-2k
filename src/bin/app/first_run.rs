@@ -49,13 +49,15 @@ const ID_SHOT_SUB: i32 = 104;
 const ID_PRTSCN: i32 = 105;
 const ID_THUMBS: i32 = 106;
 const ID_THUMBS_SUB: i32 = 107;
-// Page 2 — the one segmenting question. Radios, not toggles: it reads as a single choice,
-// the default answer changes nothing, and each other answer seeds EXISTING settings only.
+// Page 2 — two more opt-ins, the SAME shape as page 1: a switch that names the behavior,
+// a muted line saying what it does. (An earlier draft asked "what do you keep in your
+// folders" with persona radios; review verdict: nobody can answer that. Ask the direct
+// question instead.)
 const ID_P2_HEAD: i32 = 110;
-const ID_P_GENERAL: i32 = 111;
-const ID_P_PHOTOS: i32 = 112;
-const ID_P_COMICS: i32 = 113;
-const ID_P_MOVIES: i32 = 114;
+const ID_P_COVERS: i32 = 111;
+const ID_P_COVERS_SUB: i32 = 112;
+const ID_P_SCANLATION: i32 = 113;
+const ID_P_SCANLATION_SUB: i32 = 114;
 const ID_P2_SUB: i32 = 115;
 
 // Which page the single window is showing. One window that swaps content, not two modal
@@ -129,8 +131,7 @@ unsafe fn sync_prtscn(hwnd: HWND) {
     }
 }
 
-/// Build page 2: the folder-content question. Created lazily when Next is clicked, so the
-/// common path (someone racing through) pays for it only if they get there.
+/// Build page 2: two more opt-ins, page-1 style. Created lazily when Next is clicked.
 unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
@@ -143,29 +144,30 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
     ctl(
         hwnd,
         STATIC,
-        t("fr2_q"),
+        t("fr2_head"),
         WINDOW_STYLE(0),
         m,
         y,
         w,
-        34,
+        20,
         ID_P2_HEAD,
         hinst,
     );
-    y += 44;
-    let radios = [
-        (ID_P_GENERAL, "fr2_general", true),
-        (ID_P_PHOTOS, "fr2_photos", false),
-        (ID_P_COMICS, "fr2_comics", false),
-        (ID_P_MOVIES, "fr2_movies", false),
-    ];
-    for (id, key, first) in radios {
-        let group = if first { WS_GROUP } else { WINDOW_STYLE(0) };
-        let radio = ctl(
+    y += 32;
+    for (id, sub_id, key, sub_key) in [
+        (ID_P_COVERS, ID_P_COVERS_SUB, "fr2_covers", "fr2_covers_sub"),
+        (
+            ID_P_SCANLATION,
+            ID_P_SCANLATION_SUB,
+            "fr2_scanlation",
+            "fr2_scanlation_sub",
+        ),
+    ] {
+        ctl(
             hwnd,
             BUTTON,
             t(key),
-            WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_TABSTOP | group,
+            WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
             m,
             y,
             w,
@@ -173,15 +175,22 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
             id,
             hinst,
         );
-        // The DarkMode_Explorer theme paints CHECKBOX captions light but leaves RADIO
-        // captions at the theme's black — invisible on this window (the beta's one real
-        // black-on-black report). Stripping the theme makes the radio honor
-        // WM_CTLCOLORSTATIC like every static here; the classic glyph is fine in dark.
-        let _ = windows::Win32::UI::Controls::SetWindowTheme(radio, w!(""), w!(""));
-        y += 30;
+        y += 22;
+        ctl(
+            hwnd,
+            STATIC,
+            t(sub_key),
+            WINDOW_STYLE(0),
+            m + 20,
+            y,
+            w - 20,
+            32,
+            sub_id,
+            hinst,
+        );
+        y += 46;
     }
-    check(hwnd, ID_P_GENERAL, true);
-    y += 8;
+    y += 4;
     ctl(
         hwnd,
         STATIC,
@@ -190,7 +199,7 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
         m,
         y,
         w,
-        50,
+        20,
         ID_P2_SUB,
         hinst,
     );
@@ -220,23 +229,14 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
     ON_PAGE_2.with(|p| p.set(true));
 }
 
-/// Seed EXISTING settings from the page-2 answer. Radios only ever pre-tune toggles the
-/// Settings dialog exposes, so nothing here is unreachable or irreversible afterwards.
+/// Apply the two page-2 switches. Each maps 1:1 to the Settings row that owns it.
 unsafe fn apply_persona(hwnd: HWND) {
     use sagethumbs2k_core::settings as s;
-    if checked(hwnd, ID_P_MOVIES) {
-        // A film library wants the poster, not a frame from 30% in — the exact audience
-        // Settings > File types > "Use a video's cover art" exists for.
+    if checked(hwnd, ID_P_COVERS) {
         let _ = s::set_prefer_cover_art(true);
-    } else if checked(hwnd, ID_P_COMICS) {
-        // Scanlation credit pages routinely lead the archive; skipping them makes the
-        // cover the actual cover. The switch lives on the Ebook/comic page.
+    }
+    if checked(hwnd, ID_P_SCANLATION) {
         let _ = s::set_dword("ContainerSkipScanlation", 1);
-    } else if checked(hwnd, ID_P_PHOTOS) {
-        // Embedded (EXIF) previews are the fast path for big photo/RAW folders. Default
-        // is already on; asserting it here keeps the answer meaningful if that default
-        // ever changes.
-        let _ = s::set_dword("UseEmbedded", 1);
     }
 }
 
@@ -463,7 +463,8 @@ extern "system" fn first_run_wndproc(
                 || id == ID_PREVIEW_SUB
                 || id == ID_SHOT_SUB
                 || id == ID_THUMBS_SUB
-                || id == ID_P2_HEAD
+                || id == ID_P_COVERS_SUB
+                || id == ID_P_SCANLATION_SUB
                 || id == ID_P2_SUB
             {
                 return dark_ctlcolor_dim(wparam);
