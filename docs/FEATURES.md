@@ -256,6 +256,12 @@ selected file at full size, without stealing focus from Explorer; tap Space agai
 close, or hold Space and release to "peek". While it's open, arrow-clicking a different file in
 Explorer follows the selection. A selected **`.lnk` shortcut** resolves to its target.
 
+**It works in [Everything](https://www.voidtools.com/) search results too** (voidtools' file
+finder, v1.5 and up, installed or portable, under any instance name). Click a result and tap
+Space; the preview follows as you arrow through the hits, exactly as it does in a folder. While
+the caret is in Everything's search box, Space stays a space: the preview is only ever offered
+to the result list.
+
 It previews **everything the thumbnailer can decode** (all the image/RAW/ebook/office/… formats),
 plus these viewer-only extras:
 

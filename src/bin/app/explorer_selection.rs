@@ -5,6 +5,10 @@
 //! (`IShellWindows` → `IWebBrowser2` → `IShellFolderViewDual` → `FolderItems`). If that
 //! yields nothing (no Explorer focused, or an empty selection), we fall back to a
 //! multi-select file picker so the action still works (the owner's chosen behaviour).
+//!
+//! One foreground window is NOT a shell view and is still answered: **Everything**
+//! (voidtools). It is not reachable through `IShellWindows` at all — it publishes the focused
+//! result itself, through a hidden child window, which is what [`everything_selection`] reads.
 
 use core::ffi::c_void;
 
@@ -24,7 +28,8 @@ use windows::Win32::UI::Shell::{
     SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, GetClassNameW, GetForegroundWindow, IsWindowVisible,
+    FindWindowExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextLengthW,
+    GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GUITHREADINFO,
 };
 
 use crate::win::wide;
@@ -45,6 +50,11 @@ impl Drop for ComGuard {
 /// verbs that only make sense on images). Returns an empty Vec if the user cancels.
 pub(crate) unsafe fn selection_or_pick(images_only: bool) -> Vec<String> {
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    // Everything is a real answer, not a "no selection" — without this the picker would open
+    // over a window that is already pointing at the exact file the user meant.
+    if let Some(p) = everything_selection() {
+        return vec![p];
+    }
     let sel = settled_explorer_selection();
     if !sel.is_empty() {
         return sel;
@@ -76,16 +86,23 @@ unsafe fn settled_explorer_selection() -> Vec<String> {
 }
 
 /// The single file the Quick preview hotkey should show: the FIRST item selected in the
-/// foreground Explorer window — or, when the foreground is the DESKTOP, the first item selected
-/// there — or `None` when nothing is selected. A selected `.lnk` shortcut resolves to its target
-/// so Space previews the pointed-at file, not the shortcut stub. Inits COM STA itself (called
-/// from the viewer process's own thread).
+/// foreground Explorer window — or the result focused in a foreground **Everything** window, or,
+/// when the foreground is the DESKTOP, the first item selected there — or `None` when nothing is
+/// selected. A selected `.lnk` shortcut resolves to its target so Space previews the pointed-at
+/// file, not the shortcut stub. Inits COM STA itself (called from the viewer process's own
+/// thread).
+///
+/// Everything is asked FIRST because it is cheap and unambiguous: the shell automation below can
+/// only ever say "I have never heard of that window", and it would spend [`SETTLE_MS`] proving it.
 pub(crate) unsafe fn preview_target() -> Option<String> {
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
-    let raw = settled_explorer_selection()
-        .into_iter()
-        .next()
-        .or_else(|| foreground_desktop_selection().into_iter().next())?;
+    let raw = match everything_selection() {
+        Some(p) => p,
+        None => settled_explorer_selection()
+            .into_iter()
+            .next()
+            .or_else(|| foreground_desktop_selection().into_iter().next())?,
+    };
     Some(resolve_lnk(&raw))
 }
 
@@ -222,6 +239,78 @@ unsafe fn foreground_desktop_selection() -> Vec<String> {
     paths_from_view(&sfvd)
 }
 
+/// Everything's hidden "what is the result list focused on" child window. Its window TEXT is the
+/// FULL path of that result — always the full path, whatever the result list's own column
+/// settings show — and Everything keeps it current as the focus moves.
+const EVERYTHING_FOCUS_CLASS: PCWSTR = w!("EVERYTHING_RESULT_LIST_FOCUS");
+
+/// Whether a window class belongs to an Everything search window.
+///
+/// Everything names its window class after the RUNNING INSTANCE: `EVERYTHING` for the default
+/// one (1.4, and 1.5 from beta on), `EVERYTHING_(1.5a)` while the 1.5 alpha's `alpha_instance`
+/// setting was on, `EVERYTHING_(<name>)` for `-instance <name>` — which portable copies use to
+/// run beside an installed one. So the STEM is the only stable part of the name; match that, as
+/// QuickLook does, and every instance counts without the user editing an Everything setting.
+///
+/// This deliberately also matches Everything's hidden `EVERYTHING_TASKBAR_NOTIFICATION` window.
+/// That one is never foreground and has no focus child, so both callers reject it anyway, and a
+/// narrower rule would just be a second thing to keep in step with voidtools' naming.
+pub(crate) fn is_everything_class(cls: &str) -> bool {
+    cls.starts_with("EVERYTHING")
+}
+
+/// The [`EVERYTHING_FOCUS_CLASS`] child of an Everything window, if it publishes one.
+///
+/// Its presence is the CAPABILITY GATE for the whole feature: Everything 1.5 added this window
+/// so an external previewer could read the focused result (it is how QuickLook and Seer do it),
+/// and a build that doesn't publish it simply never qualifies — Space stays a space there rather
+/// than being answered by guesswork or by clobbering the clipboard to ask.
+pub(crate) unsafe fn everything_focus_window(fg: HWND) -> Option<HWND> {
+    let h = FindWindowExW(Some(fg), None, EVERYTHING_FOCUS_CLASS, PCWSTR::null()).ok()?;
+    (!h.0.is_null()).then_some(h)
+}
+
+/// The file Everything currently has focused in its result list, or `None` when the foreground
+/// isn't an Everything window, when that build publishes no focus window, or when the user is
+/// TYPING in the search box.
+///
+/// The typing check is load-bearing, not belt-and-braces: the focus window KEEPS its last value
+/// after the result list loses focus, so without it a stale path would be handed out while the
+/// caret sits in the search box (and the hotkey path has no other guard). Everything's search box
+/// is a real `Edit`, so a focused one reports a caret through `GetGUIThreadInfo`; the result list
+/// is a `SysListView32` and reports none — measured against Everything 1.5.0.1420b.
+unsafe fn everything_selection() -> Option<String> {
+    let fg = GetForegroundWindow();
+    if fg.0.is_null() || !is_everything_class(&class_name(fg)) {
+        return None;
+    }
+    let hidden = everything_focus_window(fg)?;
+    if caret_active(fg) {
+        return None;
+    }
+    let n = GetWindowTextLengthW(hidden);
+    if n <= 0 {
+        return None;
+    }
+    // Cross-process, `GetWindowTextLengthW` may over-report; the copy's return value is exact.
+    let mut buf = vec![0u16; n as usize + 1];
+    let got = GetWindowTextW(hidden, &mut buf);
+    if got <= 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..got as usize]))
+}
+
+/// Whether the thread owning `hwnd` has a live text caret — i.e. the user is typing in it.
+unsafe fn caret_active(hwnd: HWND) -> bool {
+    let tid = GetWindowThreadProcessId(hwnd, None);
+    let mut gti = GUITHREADINFO {
+        cbSize: core::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    GetGUIThreadInfo(tid, &mut gti).is_ok() && !gti.hwndCaret.0.is_null()
+}
+
 /// Extract the filesystem paths of the SELECTED items from a shell folder view. Virtual items
 /// (Recycle Bin, This PC, …) have no `Path()` and are skipped.
 unsafe fn paths_from_view(view: &IShellFolderViewDual) -> Vec<String> {
@@ -250,13 +339,20 @@ unsafe fn is_desktop_foreground() -> bool {
     if fg.0.is_null() {
         return false;
     }
-    let mut buf = [0u16; 64];
-    let n = GetClassNameW(fg, &mut buf);
-    if n <= 0 {
-        return false;
-    }
-    let cls = String::from_utf16_lossy(&buf[..n as usize]);
+    let cls = class_name(fg);
     cls == "Progman" || cls == "WorkerW"
+}
+
+/// A window's class name (best-effort; empty string on failure). Shared with the Space hook,
+/// which classifies the same foreground window one layer up.
+pub(crate) unsafe fn class_name(hwnd: HWND) -> String {
+    let mut buf = [0u16; 128];
+    let n = GetClassNameW(hwnd, &mut buf);
+    if n <= 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
 }
 
 /// Resolve a `.lnk` shortcut to its filesystem target (so Space previews the pointed-at file, not
@@ -320,4 +416,28 @@ unsafe fn pick_files(images_only: bool) -> Option<Vec<String>> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_everything_class;
+
+    /// Everything's class name carries the INSTANCE name, so the stem is all we can match on.
+    /// These are the four real shapes it takes in the wild.
+    #[test]
+    fn everything_class_matches_every_instance_name() {
+        assert!(is_everything_class("EVERYTHING")); // 1.4, and 1.5 from beta on
+        assert!(is_everything_class("EVERYTHING_(1.5a)")); // 1.5 alpha, alpha_instance on
+        assert!(is_everything_class("EVERYTHING_(portable)")); // -instance portable
+        assert!(is_everything_class("EVERYTHING_TASKBAR_NOTIFICATION")); // never foreground
+    }
+
+    #[test]
+    fn everything_class_does_not_match_the_shell_or_a_lookalike() {
+        assert!(!is_everything_class("CabinetWClass"));
+        assert!(!is_everything_class("Progman"));
+        assert!(!is_everything_class("SageThumbs2KViewer"));
+        assert!(!is_everything_class("Everything")); // window classes are case-sensitive
+        assert!(!is_everything_class(""));
+    }
 }

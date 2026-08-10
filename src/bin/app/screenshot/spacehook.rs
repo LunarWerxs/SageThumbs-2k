@@ -32,9 +32,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, FindWindowExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
-    GetWindowThreadProcessId, PostMessageW, SetWindowsHookExW, UnhookWindowsHookEx, GUITHREADINFO,
-    HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_SYSKEYDOWN,
+    CallNextHookEx, FindWindowExW, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
+    PostMessageW, SetWindowsHookExW, UnhookWindowsHookEx, GUITHREADINFO, HHOOK, KBDLLHOOKSTRUCT,
+    WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_SYSKEYDOWN,
 };
 
 /// Posted to the daemon window on a qualifying Space press (toggle the preview).
@@ -155,14 +155,22 @@ unsafe fn qualifies() -> bool {
     true
 }
 
-/// The foreground window class must be an Explorer view, the Desktop, or our viewer. Same
-/// dispatch QuickLook uses (`Shell32.cpp::GetFocusedWindowType`).
+/// The foreground window class must be an Explorer view, the Desktop, an Everything search
+/// window, or our viewer. Same dispatch QuickLook uses (`Shell32.cpp::GetFocusedWindowType`).
 unsafe fn foreground_qualifies(fg: HWND) -> bool {
-    match class_name(fg).as_str() {
+    let cls = crate::explorer_selection::class_name(fg);
+    match cls.as_str() {
         "CabinetWClass" | "ExploreWClass" => true, // an Explorer folder window
         "SageThumbs2KViewer" => true,              // our own viewer (so Space closes it)
         "Progman" | "WorkerW" => has_defview(fg),  // the Desktop (has a SHELLDLL_DefView child)
-        _ => false,
+        // Everything (voidtools). BOTH gates, and in this order: the class stem is the only
+        // stable part of its name, and only a build that publishes the focused result can
+        // answer the Space we are about to act on. Anything else and Space stays a space.
+        // (`is_typing` below still holds the search box — its `Edit` reports a caret.)
+        _ => {
+            crate::explorer_selection::is_everything_class(&cls)
+                && crate::explorer_selection::everything_focus_window(fg).is_some()
+        }
     }
 }
 
@@ -199,20 +207,11 @@ unsafe fn is_typing(fg: HWND) -> bool {
             return true;
         }
         // The Explorer search box is a UWP CoreWindow with no classic caret.
-        if !gti.hwndFocus.0.is_null() && class_name(gti.hwndFocus) == "Windows.UI.Core.CoreWindow" {
+        if !gti.hwndFocus.0.is_null()
+            && crate::explorer_selection::class_name(gti.hwndFocus) == "Windows.UI.Core.CoreWindow"
+        {
             return true;
         }
     }
     false
-}
-
-/// The window class name (best-effort; empty on failure).
-unsafe fn class_name(hwnd: HWND) -> String {
-    let mut buf = [0u16; 128];
-    let n = GetClassNameW(hwnd, &mut buf);
-    if n <= 0 {
-        String::new()
-    } else {
-        String::from_utf16_lossy(&buf[..n as usize])
-    }
 }
