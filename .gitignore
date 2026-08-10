@@ -73,3 +73,7 @@ Thumbs.db
 # cargo-mutants scratch (mutation-testing results; regenerated every run)
 /mutants.out/
 /mutants.out.old/
+
+# Chocolatey package draft: stale (0.5.0) and carries claims that must not ship.
+# Kept on disk, deliberately untracked.
+/scripts/packaging/chocolatey/
