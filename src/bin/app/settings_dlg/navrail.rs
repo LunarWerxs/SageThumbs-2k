@@ -16,19 +16,20 @@ pub(super) const PANE_TOP: i32 = 16;
 pub(super) const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
 pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT (1700..1708)
 pub(super) const ID_PANE_HEADER: i32 = 1710;
-pub(super) const NCAT: usize = 9;
+pub(super) const NCAT: usize = 10;
 /// Localized nav-rail / page-header label for category `ci`. Pulls from `t()` so a
 /// live language switch re-texts it (the nav statics + pane header re-read this).
 pub(super) fn nav_label(ci: usize) -> &'static str {
     match ci {
         0 => t("nav_general"),
-        1 => t("nav_filetypes"),
-        2 => t("nav_ebook"),
-        3 => t("nav_menu"),
-        4 => t("nav_screenshots"),
-        5 => t("nav_quickaction"),
-        6 => t("nav_advanced"),
-        7 => t("nav_quickpreview"),
+        1 => t("nav_appearance"),
+        2 => t("nav_filetypes"),
+        3 => t("nav_ebook"),
+        4 => t("nav_menu"),
+        5 => t("nav_screenshots"),
+        6 => t("nav_quickaction"),
+        7 => t("nav_advanced"),
+        8 => t("nav_quickpreview"),
         _ => t("nav_databackup"),
     }
 }
@@ -47,20 +48,25 @@ pub(super) enum Row {
     Btn3(i32, i32, i32),      // three equal buttons on one row
     Wide(i32),                // a full-width control (search edit)
     ListFill(i32),            // a list that fills down to the footer
-    ListAuto(i32),            // a list that keeps its measured height
 }
 
 // Category order: General (Thumbnails+General merged) · File types · Ebook/comic ·
 // Right-click menu · Screenshots · Advanced.
 /// General = the merged Thumbnails + General (Custom action is its own tab now).
-const GENERAL: [Row; 12] = {
+const GENERAL: [Row; 11] = {
     use Row::*;
     [
+        // Portable copies only (installed builds take GENERAL[1..]): the per-user
+        // Explorer registration, HOME AT LAST. Its Advanced-page comment always said it
+        // belonged here by topic and only lived there for space — the badge switches
+        // moving to the Appearance page is what finally made the room. First row on
+        // purpose: on a portable copy this is the switch everything else depends on.
+        BtnStatus(ID_PORTABLE_REG, 240, ID_PORTABLE_REG_STATUS),
+        // Every page opens with a header now (uniformity was the ask): this one re-uses
+        // the old left-column "Thumbnails" label the v3 layout used to hide.
+        Head(ID_LBL_THUMBS),
         Switch(ID_ENABLE_THUMBS),
         Switch(ID_USE_EMBEDDED),
-        Switch(ID_FORMAT_BADGE),
-        Switch(ID_BADGE_ICON),
-        Switch(ID_THUMB_CHECKER),
         Head(ID_LBL_LIMITS),
         Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
         Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
@@ -75,10 +81,9 @@ const GENERAL: [Row; 12] = {
 /// (Settings sync + Backup moved to their own "Data & Backup" tab.)
 /// Index 0 is the portable-only registration row; an installed build takes `ADVANCED[1..]`,
 /// so there is one list here rather than two that could drift apart.
-const ADVANCED: [Row; 12] = {
+const ADVANCED: [Row; 11] = {
     use Row::*;
     [
-        BtnStatus(ID_PORTABLE_REG, 240, ID_PORTABLE_REG_STATUS),
         Head(ID_LBL_DIAG),
         Switch(ID_VERBOSE_LOG),
         Btn(ID_OPEN_LOG, 320),
@@ -98,31 +103,30 @@ const ADVANCED: [Row; 12] = {
 pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
     use Row::*;
     match ci {
-        0 => &GENERAL,
+        0 if sagethumbs2k_core::settings::portable() => &GENERAL,
+        0 => &GENERAL[1..],
         1 => &[
-            // "Thumbnail appearance": the two rows below are exiles from General (it is
-            // FIXED and full — see the comments that moved them), and without a header they
-            // read as strays floating above the format list. The header names the seam the
-            // code comments used to explain only to the maintainer.
+            // Appearance: every "what does the tile look like" switch in ONE place.
+            // These used to be scattered — the badge trio on General (FIXED and full),
+            // the overlay + video-cover rows exiled to File types. One page ends the
+            // scavenger hunt and frees both donors.
             Head(ID_LBL_TILE_LOOK),
-            // What Windows itself draws on top of these types' thumbnails. It belongs with
-            // the per-file-type page by topic, and this page is one of the two that SCROLL —
-            // Advanced could not take it (`fixed_pages_keep_space_above_the_footer` fails by
-            // 24px on the portable variant) and General is full.
+            Switch(ID_FORMAT_BADGE),
+            Switch(ID_BADGE_ICON),
+            Switch(ID_THUMB_CHECKER),
             Switch(ID_HIDE_TYPE_OVERLAY),
-            // Same trade, same reason (2026-08-09): a video's embedded poster versus a frame
-            // is a thumbnail-appearance switch and belongs on General by topic, but General
-            // is FIXED and adding a 13th row puts it 28px INTO the footer —
-            // `fixed_pages_keep_space_above_the_footer` catches it. This page scrolls, and it
-            // already hosts the other exiled "what the tile looks like" row above.
             Switch(ID_VIDEO_COVER_ART),
+        ],
+        2 => &[
+            // File types: purely "which formats", with the appearance strays gone.
             Head(ID_LBL_FORMATS_PICK),
             Btn3(ID_SELECT_ALL, ID_CLEAR_ALL, ID_DEFAULTS),
             Wide(ID_SEARCH),
             ListFill(ID_LIST),
         ],
-        2 => &[
-            // Ebook/comic — its own tab now (plus the generic-archive contact sheet).
+        3 => &[
+            // Ebook/comic (plus the generic-archive contact sheet).
+            Head(ID_LBL_EBOOK),
             Switch(ID_C_SORT),
             Switch(ID_C_PREFER_COVER),
             Switch(ID_C_SKIP_SCAN),
@@ -132,27 +136,30 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // filed under "Language & files", so this reads better than where it was.
             Switch(ID_PDF_MARGIN),
         ],
-        3 => &[
+        4 => &[
+            Head(ID_LBL_MENU_LOOK),
             Switch(ID_ENABLE_MENU),
             Switch(ID_MENU_ALL_TYPES),
             Switch(ID_MENU_QUICK),
             // This controls the transparency backdrop of the context-menu preview,
             // so keep it with that surface instead of crowding the General page.
             Switch(ID_MENU_CHECKER),
-            // "Converting & resizing": the two rows below were relocated from General for
-            // space (2026-08-08) and govern what the Convert/Resize VERBS do to a file, not
-            // what the menu looks like — the header makes that seam visible instead of
-            // leaving four menu switches running straight into two file-behavior ones.
+            // "Converting & resizing": these two govern what the Convert/Resize VERBS do
+            // to a file, not what the menu looks like — the header makes that seam
+            // visible instead of leaving four menu switches running into two file rows.
             Head(ID_LBL_CONVERT_VERBS),
             Switch(ID_PRESERVE_DATE),
             Switch(ID_KEEP_METADATA),
             Pair(ID_LBL_PREVIEW, ID_MENU_PREVIEW, 156, 200),
+            // The menu-items checklist lives in its own popup editor now (see
+            // `menuitems.rs`): on-page it was what kept this page cramped, and a
+            // drag-to-reorder list competes badly with a page that also has sections.
             Head(ID_LBL_MENU_ITEMS),
-            ListAuto(ID_MENU_ITEMS_LIST),
-            Btn(ID_MENU_RESET, 110),
+            Btn(ID_MENU_ITEMS_EDIT, 200),
         ],
-        4 => &[
-            // Screenshots — custom action lives on General; "Hide tray icon" on Advanced.
+        5 => &[
+            // Screenshots — custom action lives on its own tab; "Hide tray icon" on Advanced.
+            Head(ID_LBL_SHOT),
             Switch(ID_SHOT_ENABLE),
             Switch(ID_SHOT_QUICK_ENABLE),
             Switch(ID_SHOT_USE_DIR),
@@ -170,24 +177,20 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Btn(ID_SHOT_SET_DIR, 150),
             Btn(ID_EDIT_UPLOAD_HOSTS, 184),
         ],
-        5 => &[
+        6 => &[
             // Quick action — bind a global hotkey to run a tool.
+            Head(ID_LBL_QUICKACTION),
             Switch(ID_CUSTOM_ACTION_ENABLE),
             Pair(ID_LBL_SHOT_ACTION, ID_SHOT_ACTION, 156, 200),
             Pair(ID_LBL_SHOT_ACTION_HK, ID_SHOT_ACTION_HK, 156, 200),
         ],
-        // Portable copies get one extra row (see ADVANCED). It lives here rather than on
-        // General, where it belongs by topic, purely because General is already 28px from
-        // the footer at 96 DPI and a fixed page cannot grow — `fixed_pages_keep_space_above_
-        // the_footer` catches that. Next to "Repair file associations" is the honest second
-        // choice: same family of "fix how Explorer sees us" actions.
-        6 if sagethumbs2k_core::settings::portable() => &ADVANCED,
-        6 => &ADVANCED[1..],
+        7 => &ADVANCED,
         // Quick preview — QuickLook-style "press Space, see the file". The master toggle drives
         // daemon residency (like Screenshots); the rest are viewer prefs. The HTML/.url rows only
         // exist when the `html-preview` feature is compiled in.
         #[cfg(feature = "html-preview")]
-        7 => &[
+        8 => &[
+            Head(ID_LBL_PREVIEW_BEHAVIOR),
             Switch(ID_PREVIEW_ENABLED),
             Switch(ID_PREVIEW_HOLD_PEEK),
             Switch(ID_PREVIEW_CLOSE_FOCUS),
@@ -202,7 +205,8 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_URL_LIVE),
         ],
         #[cfg(not(feature = "html-preview"))]
-        7 => &[
+        8 => &[
+            Head(ID_LBL_PREVIEW_BEHAVIOR),
             Switch(ID_PREVIEW_ENABLED),
             Switch(ID_PREVIEW_HOLD_PEEK),
             Switch(ID_PREVIEW_CLOSE_FOCUS),
@@ -230,14 +234,14 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
 /// calculated against the footer or measured HWND at runtime.
 fn fixed_row_next_y(row: Row, y: i32, first: bool) -> Option<i32> {
     match row {
-        Row::Head(_) => Some(y + if first { 24 } else { 38 }),
+        Row::Head(_) => Some(y + if first { 26 } else { 46 }),
         Row::Switch(_) => Some(y + 32),
         Row::Pair(..) => Some(y + 34),
         Row::Btn(..) | Row::BtnStatus(..) | Row::StatusBtn(..) => Some(y + 32),
         Row::Status(_) => Some(y + 22),
         Row::Btn3(..) => Some(y + 34),
         Row::Wide(_) => Some(y + 44),
-        Row::ListFill(_) | Row::ListAuto(_) => None,
+        Row::ListFill(_) => None,
     }
 }
 
@@ -266,8 +270,8 @@ mod layout_tests {
         }
 
         for ci in 0..NCAT {
-            if matches!(ci, 1 | 3) {
-                continue; // File Types and Right-click Menu intentionally scroll.
+            if ci == 2 {
+                continue; // File Types fills its list to the footer by design.
             }
             let label = ci.to_string();
             let y = bottom_of(cat_rows(ci), &label);
@@ -278,15 +282,13 @@ mod layout_tests {
             );
         }
 
-        // `cat_rows(6)` returns whichever Advanced variant matches THIS process, and a test
+        // `cat_rows(0)` returns whichever General variant matches THIS process, and a test
         // run is never portable — so the taller portable page (the extra registration row)
         // would otherwise never be measured, and would overflow only on a user's machine.
-        // This assertion is why that row is on Advanced at all: it caught General, which is
-        // already within 28px of the footer, being unable to take it.
-        let y = bottom_of(&ADVANCED, "Advanced (portable)");
+        let y = bottom_of(&GENERAL, "General (portable)");
         assert!(
             y <= MIN_FOOTER_Y - 12,
-            "the portable Advanced page reaches the footer ({y} > {})",
+            "the portable General page reaches the footer ({y} > {})",
             MIN_FOOTER_Y - 12
         );
     }
@@ -341,31 +343,36 @@ pub(super) unsafe fn draw_cat_icon(hdc: HDC, ci: usize, x: i32, y: i32, sz: i32,
                 ln(&[(21, 15), (16, 10), (5, 21)]);
             }
             1 => {
+                // appearance: a tile with a corner badge (the format-badge motif)
+                rr(3, 3, 18, 18, sz / 6);
+                el(13, 13, 21, 21);
+            }
+            2 => {
                 // grid: four rounded squares
                 for (gx, gy) in [(3, 3), (13, 3), (3, 13), (13, 13)] {
                     rr(gx, gy, gx + 8, gy + 8, sz / 8);
                 }
             }
-            2 => {
+            3 => {
                 // book: cover + spine + page lines (Ebook/comic)
                 rr(5, 4, 19, 20, sz / 8);
                 ln(&[(8, 4), (8, 20)]);
                 ln(&[(11, 9), (16, 9)]);
                 ln(&[(11, 13), (16, 13)]);
             }
-            3 => {
+            4 => {
                 // menu: three lines (last shorter)
                 for (yy, x2) in [(6, 20), (12, 20), (18, 14)] {
                     ln(&[(4, yy), (x2, yy)]);
                 }
             }
-            4 => {
+            5 => {
                 // camera: body + bump + lens
                 rr(3, 8, 21, 19, sz / 8);
                 ln(&[(8, 8), (9, 6), (15, 6), (16, 8)]);
                 el(9, 10, 15, 16);
             }
-            5 => {
+            6 => {
                 // bolt: a lightning shape (Quick action)
                 ln(&[
                     (13, 2),
@@ -377,14 +384,14 @@ pub(super) unsafe fn draw_cat_icon(hdc: HDC, ci: usize, x: i32, y: i32, sz: i32,
                     (13, 2),
                 ]);
             }
-            6 => {
+            7 => {
                 // sliders: two lines, each with a knob (Advanced)
                 ln(&[(4, 8), (20, 8)]);
                 ln(&[(4, 16), (20, 16)]);
                 el(13, 5, 19, 11);
                 el(5, 13, 11, 19);
             }
-            7 => {
+            8 => {
                 // eye: a wide almond outline + a round iris (Quick preview)
                 el(3, 8, 21, 16);
                 el(10, 9, 14, 15);
@@ -403,13 +410,14 @@ pub(super) unsafe fn draw_cat_icon(hdc: HDC, ci: usize, x: i32, y: i32, sz: i32,
 pub(super) fn cat_blurb(ci: usize) -> &'static str {
     match ci {
         0 => t("blurb_general"),
-        1 => t("blurb_filetypes"),
-        2 => t("blurb_ebook"),
-        3 => t("blurb_menu"),
-        4 => t("blurb_screenshots"),
-        5 => t("blurb_quickaction"),
-        6 => t("blurb_advanced"),
-        7 => t("blurb_quickpreview"),
+        1 => t("blurb_appearance"),
+        2 => t("blurb_filetypes"),
+        3 => t("blurb_ebook"),
+        4 => t("blurb_menu"),
+        5 => t("blurb_screenshots"),
+        6 => t("blurb_quickaction"),
+        7 => t("blurb_advanced"),
+        8 => t("blurb_quickpreview"),
         _ => t("blurb_databackup"),
     }
 }
@@ -428,22 +436,26 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
         0 => {
             !s::thumbnails_enabled()
                 || !s::use_embedded()
-                || s::format_badge()
-                || !s::format_badge_icon()
-                || s::thumb_checker()
                 || s::max_file_size_bytes() != u64::from(s::DEFAULT_MAX_FILE_MB) * 1024 * 1024
                 || s::max_thumb_size() != s::DEFAULT_THUMB_SIZE
         }
-        // File types: the two appearance rows; the format tick-list itself is deliberately
-        // not scanned (327 formats per repaint would be real work for a hint).
-        1 => s::hide_type_overlay() || s::prefer_cover_art(),
-        2 => {
+        // Appearance: every switch on the page, all default-off except the icon style.
+        1 => {
+            s::format_badge()
+                || !s::format_badge_icon()
+                || s::thumb_checker()
+                || s::hide_type_overlay()
+                || s::prefer_cover_art()
+        }
+        // File types: the format tick-list itself is deliberately not scanned
+        // (327 formats per repaint would be real work for a hint).
+        3 => {
             !s::container_sort()
                 || !s::container_prefer_cover()
                 || s::container_skip_scanlation()
                 || !s::archive_collage()
         }
-        3 => {
+        4 => {
             !s::menu_enabled()
                 || s::menu_all_file_types()
                 || s::menu_quick_verbs()
@@ -451,11 +463,11 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
                 || s::preserve_file_date()
                 || !s::keep_metadata_on_convert()
         }
-        // Screenshots / Quick action / Quick preview: their daemon-backed master switches
-        // are OFF by default (first-run offers them), so ON is the changed state.
-        4 => crate::screenshot::is_enabled(),
-        7 => s::preview_enabled(),
-        6 => !s::update_auto_check() || s::screenshot_hide_tray(),
+        // Screenshots / Quick preview: their daemon-backed master switches are OFF by
+        // default (first-run offers them), so ON is the changed state.
+        5 => crate::screenshot::is_enabled(),
+        8 => s::preview_enabled(),
+        7 => !s::update_auto_check() || s::screenshot_hide_tray(),
         _ => false,
     }
 }
@@ -617,13 +629,14 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     // (ID_LBL_GENERAL is now a sub-header on the merged General page; ID_LBL_EBOOK is
     // orphaned — Ebook/comic is its own tab with no sub-header.)
     for id in [
-        ID_LBL_THUMBS,
-        ID_LBL_EBOOK,
-        ID_LBL_SHOT,
         ID_LBL_FORMATS,
         ID_SCROLLBAR,
         ID_LEFT_MASK,
         ID_BANNER,
+        // The menu-items checklist + its Reset button live in the popup editor
+        // (`menuitems.rs`); hidden here, re-parented in while the popup is open.
+        ID_MENU_ITEMS_LIST,
+        ID_MENU_RESET,
     ] {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             let _ = ShowWindow(c, SW_HIDE);
@@ -696,7 +709,7 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
             let fixed_next_y = fixed_row_next_y(row, y, first);
             match row {
                 Row::Head(id) => {
-                    let row_y = y + if first { 0 } else { 14 };
+                    let row_y = y + if first { 0 } else { 20 };
                     if let Some(c) = place(id, PANE_X, row_y, PANE_W, 18) {
                         cats[ci].push(c);
                     }
@@ -772,26 +785,13 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                 Row::ListFill(id) => {
                     let h = (footer_y - 8 - y).max(60);
                     if let Some(c) = place(id, PANE_X, y, PANE_W, h) {
+                        // Square list corners poked out of the pane's rounded look
+                        // (report: "a little edge of the table poking into the
+                        // roundedness") — clip them.
+                        super::restyle::round_corners(hwnd, c, 8);
                         cats[ci].push(c);
                     }
                     y += h + 4;
-                }
-                Row::ListAuto(id) => {
-                    let mut wr = RECT::default();
-                    let measured = if let Ok(c) = GetDlgItem(Some(hwnd), id) {
-                        let _ = GetWindowRect(c, &mut wr);
-                        ((wr.bottom - wr.top) * 96 / dpi).max(40)
-                    } else {
-                        40
-                    };
-                    // Cap so the row(s) below (e.g. Reset order) + the footer stay
-                    // on-screen; the list scrolls internally if its rows don't fit.
-                    let avail = (footer_y - y - 8 - 36).max(80);
-                    let cur_h = measured.min(avail);
-                    if let Some(c) = place(id, PANE_X, y, PANE_W, cur_h) {
-                        cats[ci].push(c);
-                    }
-                    y += cur_h + 6;
                 }
             }
             if let Some(next_y) = fixed_next_y {
@@ -799,10 +799,9 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
             }
             first = false;
         }
-        // File Types fills its list to the footer and Right-click Menu caps an
-        // internally scrolling list above its Reset button. Every fixed page must
-        // retain visible breathing room above the footer.
-        if !matches!(ci, 1 | 3) {
+        // File Types fills its list to the footer. Every other page is fixed and
+        // must retain visible breathing room above it.
+        if ci != 2 {
             debug_assert!(
                 y <= footer_y - 12,
                 "settings category {ci} reaches the footer ({y} > {})",

@@ -6,6 +6,23 @@
 //! untouched native dialog.
 
 use super::*;
+
+/// Clip a child control to a rounded rect — the square corners of a real control (the
+/// format list, the search dropdown) otherwise poke out of the rounded look everything
+/// else in the pane has. The system takes ownership of the region after `SetWindowRgn`.
+pub(super) unsafe fn round_corners(parent: HWND, ctl: HWND, radius_dp: i32) {
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut rc = RECT::default();
+    let _ = GetWindowRect(ctl, &mut rc);
+    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let r = crate::win::dpi_scale(parent, radius_dp);
+    let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2);
+    let _ = SetWindowRgn(ctl, Some(rgn), true);
+}
 use crate::gdip;
 
 /// Owner-draw a section header: a muted, uppercase label followed by a hairline

@@ -78,6 +78,7 @@ mod build;
 use build::*;
 mod helpers;
 mod localize;
+mod menuitems;
 mod navrail;
 mod search;
 mod shot;
@@ -1156,6 +1157,9 @@ pub(crate) extern "system" fn wndproc(
                             list::reset_menu_order(mlist);
                         }
                     }
+                    // The checklist itself lives in a popup editor now — room it never
+                    // had on the page, and the page gets its breathing space back.
+                    ID_MENU_ITEMS_EDIT => menuitems::open(hwnd),
                     // Instant-screenshot checkbox: enable/disable its hotkey picker live —
                     // and re-grey its dependent rows (Quick screenshot / save-folder toggle).
                     ID_SHOT_ENABLE => {
@@ -1313,6 +1317,10 @@ pub(crate) extern "system" fn wndproc(
             // Owner-drawn dark context-menu items (light text on dark).
             WM_MEASUREITEM => {
                 let m = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
+                if m.CtlID == ID_SEARCH_RESULTS as u32 {
+                    search::measure_row(hwnd, m);
+                    return LRESULT(1);
+                }
                 if m.CtlType == ODT_MENU {
                     let label = wide(list::ctx_menu_label(m.itemID as usize));
                     let n = label.len().saturating_sub(1);
@@ -1331,6 +1339,10 @@ pub(crate) extern "system" fn wndproc(
             }
             WM_DRAWITEM => {
                 let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
+                if d.CtlID == ID_SEARCH_RESULTS as u32 {
+                    search::draw_row(hwnd, d);
+                    return LRESULT(1);
+                }
                 if d.CtlType == ODT_MENU {
                     let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
                     let bg = if selected {

@@ -49,6 +49,15 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.header(t("grp_formats_pick"), hdr, ID_LBL_FORMATS_PICK, false);
     lc.header(t("grp_convert_verbs"), hdr, ID_LBL_CONVERT_VERBS, false);
     lc.header(t("grp_preview_kinds"), hdr, ID_LBL_PREVIEW_KINDS, false);
+    lc.header(t("grp_menu_look"), hdr, ID_LBL_MENU_LOOK, false);
+    lc.header(t("grp_quickaction"), hdr, ID_LBL_QUICKACTION, false);
+    lc.header(
+        t("grp_preview_behavior"),
+        hdr,
+        ID_LBL_PREVIEW_BEHAVIOR,
+        false,
+    );
+    lc.button(t("btn_menu_items_edit"), 200, ID_MENU_ITEMS_EDIT);
 
     // Limits & quality — numeric label+edit rows. Single-line edits top-align +
     // ignore EM_SETRECT, so they're kept snug; the rounded field panel behind them

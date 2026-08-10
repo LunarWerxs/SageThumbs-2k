@@ -72,11 +72,15 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
         Some(WPARAM(1)), // keep the cue while focused, until typing starts
         Some(LPARAM(cue.as_ptr() as isize)),
     );
+    // Owner-drawn (hover highlight, dark rows) with LBS_HASSTRINGS so the row text
+    // still lives in the listbox itself.
     let list = ctl(
         hwnd,
         w!("LISTBOX"),
         "",
-        WINDOW_STYLE(LBS_NOTIFY as u32 | WS_BORDER.0 | WS_VSCROLL.0),
+        WINDOW_STYLE(
+            LBS_NOTIFY as u32 | LBS_OWNERDRAWFIXED as u32 | LBS_HASSTRINGS as u32 | WS_BORDER.0,
+        ),
         navrail::PANE_X + navrail::PANE_W - 330,
         navrail::PANE_TOP + 38,
         330,
@@ -84,7 +88,111 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
         ID_SEARCH_RESULTS,
         hinst,
     );
+    hover_subclass(list);
+    super::restyle::round_corners(hwnd, edit, 6);
     let _ = ShowWindow(list, SW_HIDE);
+}
+
+/// Row height for the owner-drawn dropdown, 96-DPI design px.
+const ROW_H: i32 = 26;
+
+thread_local! {
+    /// The row under the mouse, for the hover highlight. -1 = none.
+    static HOT: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
+}
+
+/// WM_MEASUREITEM for the dropdown (dispatched from the settings wndproc).
+pub(super) unsafe fn measure_row(hwnd: HWND, m: &mut MEASUREITEMSTRUCT) {
+    m.itemHeight = crate::win::dpi_scale(hwnd, ROW_H) as u32;
+}
+
+/// WM_DRAWITEM for the dropdown: dark row, accent-tinted hover, "Page > Label" text.
+pub(super) unsafe fn draw_row(hwnd: HWND, d: &DRAWITEMSTRUCT) {
+    use windows::Win32::Graphics::Gdi::{SetBkMode, SetTextColor, TRANSPARENT};
+    let hot = HOT.with(|h| h.get());
+    let bg = if d.itemID as i32 == hot {
+        navrail::blend(ACCENT(), SURFACE(), 22)
+    } else {
+        SURFACE()
+    };
+    fill(d.hDC, &d.rcItem, bg);
+    if (d.itemID as i32) < 0 {
+        return;
+    }
+    let mut buf = [0u16; 256];
+    let len = SendMessageW(
+        d.hwndItem,
+        LB_GETTEXT,
+        Some(WPARAM(d.itemID as usize)),
+        Some(LPARAM(buf.as_mut_ptr() as isize)),
+    )
+    .0;
+    if len <= 0 {
+        return;
+    }
+    SetBkMode(d.hDC, TRANSPARENT);
+    SetTextColor(d.hDC, DARK_TEXT());
+    windows::Win32::Graphics::Gdi::SelectObject(
+        d.hDC,
+        windows::Win32::Graphics::Gdi::HGDIOBJ(gui_font_for(hwnd).0),
+    );
+    let mut rc = d.rcItem;
+    rc.left += crate::win::dpi_scale(hwnd, 10);
+    DrawTextW(
+        d.hDC,
+        &mut buf[..len as usize],
+        &mut rc,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+    );
+}
+
+/// Subclass the dropdown for hover tracking: WM_MOUSEMOVE sets the hot row (and asks for
+/// WM_MOUSELEAVE), leave clears it. Repaints only the rows that changed.
+unsafe fn hover_subclass(list: HWND) {
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    let _ = SetWindowSubclass(list, Some(hover_proc), 1, 0);
+}
+
+unsafe extern "system" fn hover_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    };
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    match msg {
+        WM_MOUSEMOVE => {
+            let hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, None, Some(lparam)).0;
+            // High word set = outside the client area; low word = index.
+            let idx = if (hit >> 16) & 0xFFFF == 0 {
+                (hit & 0xFFFF) as i32
+            } else {
+                -1
+            };
+            let prev = HOT.with(|h| h.replace(idx));
+            if prev != idx {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            let mut tme = TRACKMOUSEEVENT {
+                cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            let _ = TrackMouseEvent(&mut tme);
+        }
+        WM_MOUSELEAVE if HOT.with(|h| h.replace(-1)) != -1 => {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
 /// Drop the built index (live language change re-labels every control, so the cached
@@ -134,7 +242,7 @@ unsafe fn ensure_index() {
                         continue;
                     }
                     // The format filter box and the two lists aren't setting rows.
-                    Wide(_) | ListFill(_) | ListAuto(_) | Status(_) => continue,
+                    Wide(_) | ListFill(_) | Status(_) => continue,
                 };
                 s.entries.push(Entry {
                     page,
@@ -207,15 +315,23 @@ pub(super) unsafe fn on_change(hwnd: HWND) {
         s.hits = hits;
     });
     if shown > 0 {
+        // Size the dropdown to EXACTLY its rows (the fixed 180px box left dead space
+        // under short result lists), then re-clip the rounded corners to the new size.
+        let h = crate::win::dpi_scale(hwnd, ROW_H * shown as i32 + 4);
+        let w = crate::win::dpi_scale(hwnd, 330);
+        let x = crate::win::dpi_scale(hwnd, navrail::PANE_X + navrail::PANE_W - 330);
+        let y = crate::win::dpi_scale(hwnd, navrail::PANE_TOP + 38);
         let _ = SetWindowPos(
             list,
             Some(HWND_TOP),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            x,
+            y,
+            w,
+            h,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE,
         );
+        super::restyle::round_corners(hwnd, list, 8);
+        HOT.with(|hot| hot.set(-1));
     } else {
         let _ = ShowWindow(list, SW_HIDE);
     }

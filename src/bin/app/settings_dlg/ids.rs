@@ -177,6 +177,15 @@ pub(super) const ID_LBL_FORMATS_PICK: i32 = 1221;
 pub(super) const ID_LBL_CONVERT_VERBS: i32 = 1222;
 /// "Also preview" header splitting Quick preview's behavior switches from content opt-ins.
 pub(super) const ID_LBL_PREVIEW_KINDS: i32 = 1223;
+/// First-section header of the Right-click menu page ("Menu appearance").
+pub(super) const ID_LBL_MENU_LOOK: i32 = 1226;
+/// First-section header of the Quick action page.
+pub(super) const ID_LBL_QUICKACTION: i32 = 1227;
+/// First-section header of the Quick preview page ("Behavior").
+pub(super) const ID_LBL_PREVIEW_BEHAVIOR: i32 = 1228;
+/// Opens the menu-items checklist in its own popup editor (the on-page list was what
+/// kept the Right-click menu page cramped).
+pub(super) const ID_MENU_ITEMS_EDIT: i32 = 1229;
 /// Settings-wide search: the always-visible edit at the top-right of the pane header…
 pub(super) const ID_SEARCH_GLOBAL: i32 = 1224;
 /// …and the results list that drops down under it (hidden until there are matches).

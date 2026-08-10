@@ -188,7 +188,7 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     let _ = settings::set_preview_muted(false);
     let _ = settings::set_preview_toc_open(true);
     reset_formats(hwnd); // every supported format re-enabled
-    // Same rule as load_values: dependents are greyed against the FINAL checkbox states.
+                         // Same rule as load_values: dependents are greyed against the FINAL checkbox states.
     sync_dependent_switches(hwnd);
 }
 

@@ -161,7 +161,7 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
     ];
     for (id, key, first) in radios {
         let group = if first { WS_GROUP } else { WINDOW_STYLE(0) };
-        ctl(
+        let radio = ctl(
             hwnd,
             BUTTON,
             t(key),
@@ -173,7 +173,12 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
             id,
             hinst,
         );
-        y += 28;
+        // The DarkMode_Explorer theme paints CHECKBOX captions light but leaves RADIO
+        // captions at the theme's black — invisible on this window (the beta's one real
+        // black-on-black report). Stripping the theme makes the radio honor
+        // WM_CTLCOLORSTATIC like every static here; the classic glyph is fine in dark.
+        let _ = windows::Win32::UI::Controls::SetWindowTheme(radio, w!(""), w!(""));
+        y += 30;
     }
     check(hwnd, ID_P_GENERAL, true);
     y += 8;
@@ -185,7 +190,7 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
         m,
         y,
         w,
-        32,
+        50,
         ID_P2_SUB,
         hinst,
     );
