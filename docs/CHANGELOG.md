@@ -20,6 +20,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   its normal meaning while the cursor is in the file-name box, so the preview only ever appears
   once you have clicked into the file list. 64-bit applications.
 
+- **Choose which tool the screenshot editor starts in**, under Settings, Screenshots. It now
+  opens holding the **arrow** instead of the rectangle, because pointing at the thing you just
+  captured is usually why you are annotating it, and you can set it to any of the ten drawing
+  tools if you would rather start somewhere else.
+
 - **A FAQ**, at [docs/FAQ.md](FAQ.md), linked from the top of the README. Thumbnails not
   appearing, files stored online-only, antivirus warnings, what the portable zip can and cannot
   do, and the limits of the Space preview, all answered in one place instead of scattered across
