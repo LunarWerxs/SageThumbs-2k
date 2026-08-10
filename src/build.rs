@@ -67,7 +67,7 @@ fn main() {
     // advapi32 link the `rar` feature needed is gone.)
     generate_locales();
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=locales");
+    println!("cargo:rerun-if-changed=assets/locales");
 }
 
 /// App manifest: Common-Controls v6 (modern themed controls) + per-monitor DPI
@@ -266,7 +266,7 @@ fn versioninfo_rc(file_desc: &str, orig_name: &str) -> String {
 /// `src/i18n.rs` includes. `en` is emitted first so it is index 0 (the
 /// fallback). Values are emitted as raw string literals — no runtime TOML.
 fn generate_locales() {
-    let dir = Path::new("locales");
+    let dir = Path::new("assets/locales");
     let mut langs: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -283,7 +283,7 @@ fn generate_locales() {
                 .unwrap_or_else(|e| panic!("locale {}: invalid TOML: {e}", path.display()));
             langs.insert(code, map);
             println!(
-                "cargo:rerun-if-changed=locales/{}",
+                "cargo:rerun-if-changed=assets/locales/{}",
                 e.file_name().to_string_lossy()
             );
         }

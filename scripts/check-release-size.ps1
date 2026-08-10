@@ -81,7 +81,7 @@ function Get-ArchitecturePolicy([object]$policy, [string]$architecture) {
 
 function Test-StageRustPayload([string]$stagePath, [object]$profile) {
     $total = [int64]0
-    foreach ($name in 'sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe') {
+    foreach ($name in 'sagethumbs2k.dll', 'st2k_dlghook.dll', 'SageThumbs2K.exe', 'st2k.exe') {
         $path = Join-Path $stagePath $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "release stage is missing required Rust artifact: $path"

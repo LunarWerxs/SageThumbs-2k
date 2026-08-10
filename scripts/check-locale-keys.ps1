@@ -19,7 +19,7 @@
 #>
 $ErrorActionPreference = 'Stop'
 $root      = Split-Path $PSScriptRoot -Parent
-$localeDir = Join-Path $root 'locales'
+$localeDir = Join-Path $root 'assets/locales'
 
 function Read-LocaleKeys([string]$path) {
     # Only flat `key = "value"` lines count; `#`-comments and blanks are skipped, which

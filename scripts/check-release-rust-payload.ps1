@@ -79,7 +79,7 @@ $maxRust = Read-RequiredInt64 $selected.Policy 'maxRustPayloadBytes'
 
 
 $total = [int64]0
-foreach ($name in 'sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe') {
+foreach ($name in 'sagethumbs2k.dll', 'st2k_dlghook.dll', 'SageThumbs2K.exe', 'st2k.exe') {
     $path = Join-Path $ArtifactDirectory $name
     Assert-ReleasePeMetadata -Path $path -Version $ExpectedVersion
     Assert-ReleasePeArchitecture -Path $path -Architecture $Architecture

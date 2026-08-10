@@ -111,7 +111,7 @@ if ($appx -notmatch [regex]::Escape("Version=`"$ver")) { $fail.Add("packaging/Ap
 #   * A DUPLICATE key is worse: build.rs's toml::from_str PANICS on one, so it breaks
 #     the build outright (and stays latent until any locale edit forces a re-run).
 # Placeholders are checked too: a dropped {dir}/{n} would break the runtime format.
-$localeDir = Join-Path $root 'locales'
+$localeDir = Join-Path $root 'assets/locales'
 function Read-Locale([string]$path) {
   $map = @{}
   $dups = New-Object System.Collections.Generic.List[string]

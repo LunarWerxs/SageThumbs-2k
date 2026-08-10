@@ -3,6 +3,7 @@ name = "sagethumbs2k-dlghook"
 version.workspace = true
 rust-version.workspace = true
 edition = "2021"
+build = "build.rs"
 publish = false
 license = "PolyForm-Noncommercial-1.0.0"
 description = "SageThumbs 2K Open/Save-dialog selection reader — a tiny in-context hook DLL"
