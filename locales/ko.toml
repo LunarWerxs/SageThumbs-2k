@@ -202,7 +202,7 @@ cv_open_folder = "출력 폴더를 열까요?"
 
 # Quick preview
 nav_quickpreview = "빠른 미리 보기"
-blurb_quickpreview = "탐색기에서 스페이스를 눌러 선택한 파일을 미리 봅니다."
+blurb_quickpreview = "스페이스로 선택한 파일을 미리 봅니다."
 chk_preview_enabled = "빠른 미리 보기 사용(스페이스 키)"
 chk_preview_hold_peek = "스페이스를 누르고 있으면 잠깐 보기(손을 떼면 닫힘)"
 chk_preview_close_focus = "미리 보기가 포커스를 잃으면 닫기"

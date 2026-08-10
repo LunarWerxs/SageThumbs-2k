@@ -201,7 +201,7 @@ cv_open_folder = "आउटपुट फ़ोल्डर खोलें?"
 
 # Quick preview
 nav_quickpreview = "त्वरित पूर्वावलोकन"
-blurb_quickpreview = "चयनित फ़ाइल का पूर्वावलोकन देखने के लिए एक्सप्लोरर में Space दबाएँ।"
+blurb_quickpreview = "चयनित फ़ाइल देखने के लिए Space दबाएँ।"
 chk_preview_enabled = "त्वरित पूर्वावलोकन चालू करें (Space दबाएँ)"
 chk_preview_hold_peek = "झलक देखने के लिए Space दबाए रखें (छोड़ते ही बंद हो जाए)"
 chk_preview_close_focus = "फ़ोकस खोने पर पूर्वावलोकन बंद करें"
@@ -281,7 +281,7 @@ blurb_menu = "एक्सप्लोरर के राइट-क्लिक
 blurb_screenshots = "वैश्विक हॉटकी के साथ अंतर्निहित स्क्रीन कैप्चर।"
 blurb_quickaction = "वैश्विक कीबोर्ड शॉर्टकट से कोई टूल चलाएँ।"
 blurb_advanced = "निदान, अपडेट, और हॉटकी सेवा।"
-blurb_databackup = "उपकरणों के बीच अपनी सेटिंग्स ले जाएँ, बैकअप लें, और सिंक करें।"
+blurb_databackup = "सेटिंग्स ले जाएँ, बैकअप लें और सिंक करें।"
 grp_lang_files = "भाषा और फ़ाइलें"
 grp_diagnostics = "निदान"
 grp_updates = "अपडेट"

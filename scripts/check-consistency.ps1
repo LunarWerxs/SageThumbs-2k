@@ -17,6 +17,13 @@
       must have a matching (ID, key) row in settings_dlg/localize.rs, or it keeps its build-time
       language when the user switches language in the dialog (apply_labels only walks that table).
 
+    6. TEXT FIT - the nav-rail labels and the page-header blurbs must MEASURE within the space
+      they are drawn in. Nothing crashes when they don't: the blurb gets a DT_END_ELLIPSIS and
+      the rail label is hard-clipped mid-word, in one language, on one page, which is precisely
+      the class nobody notices until a user does. 1.9.0 introduced the settings-wide search box,
+      which reserves the header's right 192px - that silently truncated 161 blurbs across 36
+      languages, INCLUDING English's own Right-click menu line. Measured, not guessed.
+
   Exit 1 (with the offending items) on any mismatch; exit 0 when clean. Runs fast (no build) -
   wired into CI and called by release.ps1 before tagging. Run it locally before you push.
 #>
@@ -201,10 +208,58 @@ else {
   }
 }
 
+# --- 6) text fit: nav-rail labels + page-header blurbs ------------------------
+# Budgets, both in 96-dpi design px, both read off navrail.rs rather than eyeballed:
+#   blurb : the header is PANE_W + 4 = 532 wide, its text starts at +46, and it reserves the
+#           right 192 for the floating search box -> 532 - 192 - 46 = 294. DT_END_ELLIPSIS.
+#   rail  : NAV_W 188, text at +44, and the "you changed something here" dot sits at
+#           right - 14 -> 188 - 44 - 18 = 126. No ellipsis flag at all, so it CLIPS mid-word.
+# 9px of slack on the blurb so a font-metric wobble between machines cannot re-clip it.
+# Measured in the fonts those two actually draw with: the system message font for the rail,
+# and the same family at a 22px cell / weight 600 for the header title.
+$fitSkipped = $false
+try {
+  Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+  Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+} catch { $fitSkipped = $true }
+
+if ($fitSkipped) {
+  Write-Host "[consistency] note: text-fit check skipped (System.Drawing unavailable on this host)" -ForegroundColor Yellow
+} else {
+  $fitFont = [System.Drawing.SystemFonts]::MessageBoxFont
+  $fitFlags = [System.Windows.Forms.TextFormatFlags]::NoPadding -bor [System.Windows.Forms.TextFormatFlags]::SingleLine
+  $BLURB_MAX = 285
+  $RAIL_MAX  = 126
+  $navKeys = @('nav_general','nav_appearance','nav_filetypes','nav_ebook','nav_menu',
+               'nav_screenshots','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup')
+  $blurbKeys = $navKeys | ForEach-Object { $_ -replace '^nav_', 'blurb_' }
+  $overflow = 0
+  foreach ($f in (Get-ChildItem $localeDir -Filter *.toml | Sort-Object Name)) {
+    $loc = Read-Locale $f.FullName
+    foreach ($k in $blurbKeys) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt $BLURB_MAX) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${BLURB_MAX}px header budget - it will render truncated with an ellipsis")
+      }
+    }
+    foreach ($k in $navKeys) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt $RAIL_MAX) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${RAIL_MAX}px nav-rail budget - it will be clipped mid-word")
+      }
+    }
+  }
+}
+
 # --- report -------------------------------------------------------------------
 if ($fail.Count) {
   Write-Host "[consistency] FAILED ($($fail.Count)):" -ForegroundColor Red
   $fail | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
   exit 1
 }
-Write-Host "[consistency] OK - assets tracked, format count = $count, version $ver consistent, $localeCount locales at $($en.Map.Count)-key parity, $($built.Count) Settings controls relabel live." -ForegroundColor Green
+$fitNote = if ($fitSkipped) { 'text fit NOT measured' } else { 'every nav label and blurb measures inside its box' }
+Write-Host "[consistency] OK - assets tracked, format count = $count, version $ver consistent, $localeCount locales at $($en.Map.Count)-key parity, $($built.Count) Settings controls relabel live, $fitNote." -ForegroundColor Green

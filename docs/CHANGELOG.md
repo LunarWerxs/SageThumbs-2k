@@ -54,6 +54,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   off**, leaving the edges looking bitten. They are drawn smooth now, and the search box no
   longer has its right-hand curve sliced flat by the edge of the panel it sits on.
 
+- **Page descriptions were being cut off in most languages.** The new search box sits in the
+  top right of the page header, and the description under the page title stops short of it.
+  That left less room than the translations needed, so 161 of them ended in "..." across the
+  36 languages, English's own Right-click menu line among them. Every description is shorter
+  now, and a release check measures all of them so a future translation cannot quietly
+  overflow again. Ten sidebar names were over-long too and were being cut off mid-word, which
+  is what truncated the Greek "Data & backup" page title.
+
 - **The file-types table let you drag its columns wider and narrower.** The last column is sized
   to fill the table, so dragging could only ever cut the description short or open a gap, and
   the divider you dragged it by drew as a bright line down the right-hand edge. Dragging is off
