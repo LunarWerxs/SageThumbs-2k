@@ -395,19 +395,33 @@ as the screenshot/custom-action hotkeys, so turning it on adds no extra resident
 
 Reached from the Start-menu shortcut (`SageThumbs 2K`); the window is titled
 **Settings**. Native Win32, dark-mode aware, 36 languages. **Redesigned in 0.7.0**: a
-Windows 11-style **category rail** (General · File types · Ebook/comic · Right-click menu ·
-Screenshots · Quick action · Quick preview · Advanced · Data & Backup) on the left with a content page on the right:
-**toggle switches**, category icons, and a titled header per page. Everyday knobs up front;
-Diagnostics / Updates / Backup tuck under **Advanced**. (Fixed-size window; the old single
-long scroll is gone.)
+Windows 11-style **category rail** (General · Appearance · File types · Ebook/comic ·
+Right-click menu · Screenshots · Quick action · Advanced · Quick preview · Data & Backup) on
+the left with a content page on the right: **toggle switches**, category icons, and a titled
+header per page. Everyday knobs up front; Diagnostics / Updates / Backup tuck under
+**Advanced**. (Fixed-size window; the old single long scroll is gone.)
 
-- **General:** enable thumbnails, prefer embedded (EXIF) thumbnails, **stamp the format in the
-  thumbnail's corner** (as a colour-coded file mark, one colour per kind of file, or as plain
-  text), and **paint a checkerboard behind transparent thumbnails** (off by default; Explorer
-  normally shows the folder background through them).
-- **File types:** the per-format list, plus **hide Windows' own file-type icon on thumbnails**.
-  Windows stamps the associated program's icon into the thumbnail's bottom-right corner, on top
-  of the format badge, and draws a blank page there when that program has been uninstalled.
+**Search all settings** (1.9.0): the box at the top right of the window matches every switch
+on every page, by its label *and* by its description text, and lists the hits as
+"Page ▸ Setting". Picking one opens that page and highlights the control. Ten pages and forty-odd
+switches is past the point where hunting by tab is reasonable.
+
+**A dot on the rail** marks any page holding a setting you have changed from its default, so
+"what did I turn on" is answerable without opening all ten. Opening that page clears its dot
+for good; it points at somewhere you have not looked, and is not a permanent badge.
+
+- **General:** enable thumbnails, prefer embedded (EXIF) thumbnails, the **Limits & quality**
+  block (max file size, max thumbnail size, JPEG quality, PNG compression), and the language
+  picker. On a portable copy the per-user Explorer registration switch sits at the top.
+- **Appearance** (new in 1.9.0): every "what does the tile look like" switch in one place, having
+  previously been split between General and File types. **Stamp the format in the thumbnail's
+  corner** (as a colour-coded file mark, one colour per kind of file, or as plain text),
+  **paint a checkerboard behind transparent thumbnails** (off by default; Explorer normally
+  shows the folder background through them), **hide Windows' own file-type icon on thumbnails**
+  (Windows stamps the associated program's icon into the bottom-right corner, on top of the
+  format badge, and draws a blank page there when that program has been uninstalled), and
+  **use a video's cover art instead of a frame**.
+- **File types:** purely the per-format list, with search, bulk select and **Defaults**.
 - **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders
   / Rename / Pick color), menu-preview placement (off / submenu / main menu), **a subtle
@@ -425,7 +439,11 @@ long scroll is gone.)
   your home GPS coordinates is worse than losing a camera model. To remove metadata on
   purpose, use Strip metadata.
 - **Menu items:** an XnShell-style checklist to **show/hide _and reorder_ each
-  SageThumbs 2K right-click entry**. Tick/untick to show or hide an item; **drag the rows
+  SageThumbs 2K right-click entry**, opened with **Edit menu items...** at the bottom of the
+  Right-click menu page. Since 1.9.0 it is its own window rather than a list squeezed under
+  everything else on that page, which is what kept the page cramped: a drag-to-reorder list
+  needs room, and it competes badly with a page that also has sections.
+  Tick/untick to show or hide an item; **drag the rows
   to reorder them**, and **drag the divider rows** to regroup the menu; the right-click
   menu mirrors your arrangement exactly (group dividers included; an accent line shows the
   drop point as you drag, and adjacent/edge dividers tidy themselves). A **Reset order**
@@ -583,7 +601,8 @@ long scroll is gone.)
   is already an app works straight away: Settings, Convert/Resize, Quick preview, screenshots,
   OCR, the colour picker, the folder tools and the `st2k` CLI/MCP server. **Explorer thumbnails
   and the classic right-click menu work too**, opt-in: the welcome window offers them on first
-  run, and `st2k register` / Settings ▸ Advanced toggle them any time. That registration is
+  run, and `st2k register` / Settings ▸ General toggle them any time (that row sat on Advanced
+  until 1.9.0, purely for space; it is the first row of General on a portable copy now). That registration is
   per-user, needs no elevation and is undone with `st2k register --off`; do it before moving the
   folder, since the keys record where the DLL currently sits. The Explorer *preview pane*, the
   Details-pane columns and the Windows 11 right-click menu are registered machine-wide by

@@ -422,3 +422,29 @@ settles it: check what the CURRENT-reference architecture did in the same releas
 5,150 bytes of installer and passed with 125,922 to spare, which is what proved the release was
 innocent. Rebaseline the payload in the same edit when it is also near its allowance, or the
 next release inherits a failure that has nothing to do with it either.
+
+## Installing a dev build over a running Explorer: rename the DLL, do not kill Explorer
+
+`sagethumbs2k.dll` is memory-mapped by `explorer.exe` the moment Explorer draws one
+thumbnail, and a mapped PE cannot be overwritten: the copy fails with a sharing violation.
+
+The obvious fix, kill Explorer then copy, is a race you lose about half the time. Windows
+restarts Explorer within about a second, and the new instance re-maps the DLL before a
+multi-file copy finishes, so the install fails partway through and leaves a mixed set of
+files behind.
+
+Do what the shipped installer does instead: `MoveFile` the in-use DLL to a throwaway name
+beside itself, then copy the new one into the freed path. A rename of a mapped file is
+allowed, unlike an overwrite; the old file stays on disk until its last mapping goes away
+and can be swept on the next install. Nothing has to be killed, so there is no race to lose.
+The stranded copies are real, not theoretical: one sweep removed 67 MB of them from
+Program Files, left there by earlier kill-then-copy attempts.
+
+## Running `cargo test` on a clean tree fails eight COM tests that are not broken
+
+`tests/com_roundtrip.rs` loads the built `sagethumbs2k.dll` through `LoadLibrary` rather than
+linking the crate, because the point is to exercise the real COM surface an Explorer would
+call. `cargo test` builds test binaries; it does not build the cdylib, so on a fresh checkout,
+after `cargo clean`, or after a version bump invalidates the artifact, all eight fail at once
+with `cdylib not built` (or `LoadLibrary: 0x8007007E`). Run `cargo build` first. The suite is
+green immediately afterwards, with no source change in between.

@@ -2,6 +2,63 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.9.0
+
+### Added
+
+- **A search box that finds any setting, on any page.** There are nine pages and forty-odd
+  switches now, and "where is that option" had become the slowest part of using Settings. Type
+  into the box at the top right and it lists every match as "Page ▸ Setting"; click one and it
+  opens that page and highlights the control for you. It searches the setting names AND their
+  descriptions, so "cover" finds the film poster option even though the word "cover" is not in
+  its label.
+
+- **An Appearance page**, holding everything about how a thumbnail LOOKS: the format badge and
+  its colour, the checkerboard behind transparent images, the Windows file-type icon overlay,
+  and using a video's cover art. Those switches were previously spread between General and File
+  types, where each page mixed "what SageThumbs handles" with "how it draws". General is now
+  limits and language; File types is the format list.
+
+- **A dot on the sidebar next to any page where you have changed something from its default.**
+  Nine pages is too many to check one at a time when you are trying to remember what you
+  changed. The dot clears once you open that page, and stays cleared. It is a pointer to
+  somewhere you have not looked, not a badge that nags forever.
+
+### Changed
+
+- **The Right-click menu page is no longer cramped.** The list of menu items that you can tick,
+  untick and drag into order moved into its own "Edit menu items..." window, which gives it room
+  to be readable instead of squeezing it under everything else on the page.
+
+- **The welcome screen asks a second, plain question.** It offers the two options most people
+  want on but that ship off: using a film's cover art as its thumbnail, and skipping scanlation
+  credit pages when picking a comic cover. Each is a switch that says exactly what it turns on.
+  Both stay off unless you say so, and both live in Settings if you change your mind.
+
+- **Every page now opens with a heading**, and there is more space between the groups within a
+  page, so the sections read as sections rather than one long list of switches.
+
+### Fixed
+
+- **Windows opened in the top-left corner of the screen instead of in front of you.** The
+  welcome screen, and every other window SageThumbs opens on its own (convert, resize, image
+  info, the doctor report, the OCR result, files-to-folder and tags-to-folders), all placed
+  themselves in the corner of the primary monitor. They now open centred on the monitor your
+  mouse is on, at that monitor's scaling.
+
+- **The search boxes were too tall and their text sat too high in them.** Both the settings-wide
+  search and the format filter left a band of dead space under the text. They are shorter now,
+  with the text centred.
+
+- **The rounded corners on the search box, its results list and the format list were being cut
+  off**, leaving the edges looking bitten. They are drawn smooth now, and the search box no
+  longer has its right-hand curve sliced flat by the edge of the panel it sits on.
+
+- **The file-types table let you drag its columns wider and narrower.** The last column is sized
+  to fill the table, so dragging could only ever cut the description short or open a gap, and
+  the divider you dragged it by drew as a bright line down the right-hand edge. Dragging is off
+  and the line is gone.
+
 ## 1.8.5
 
 ### Added
