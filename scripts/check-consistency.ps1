@@ -230,6 +230,8 @@ if ($fitSkipped) {
   $fitFlags = [System.Windows.Forms.TextFormatFlags]::NoPadding -bor [System.Windows.Forms.TextFormatFlags]::SingleLine
   $BLURB_MAX = 285
   $RAIL_MAX  = 126
+  $SYNC_BTN_MAX    = 140
+  $SYNC_STATUS_MAX = 348
   $navKeys = @('nav_general','nav_appearance','nav_filetypes','nav_ebook','nav_menu',
                'nav_screenshots','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup')
   $blurbKeys = $navKeys | ForEach-Object { $_ -replace '^nav_', 'blurb_' }
@@ -250,6 +252,27 @@ if ($fitSkipped) {
       if ($w -gt $RAIL_MAX) {
         $overflow++
         $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${RAIL_MAX}px nav-rail budget - it will be clipped mid-word")
+      }
+    }
+    # The Data & Backup sync row: StatusBtn(status, button, 160) on a PANE_W of 528, so the
+    # button gets 160 (less ~16 of padding) and the status fills PANE_W - 160 - 12 = 356.
+    # A long translation runs the status line straight under the button, which is exactly how
+    # the German one read before this was measured. The two placeholder-carrying status lines
+    # are measured as templates: what {who} / {error} expand to is not ours to bound.
+    foreach ($k in @('sync_btn_start','sync_btn_stop','sync_btn_disconnecting','sync_btn_signing_in')) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt $SYNC_BTN_MAX) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${SYNC_BTN_MAX}px sync-button budget - the label will be cut off")
+      }
+    }
+    foreach ($k in @('sync_state_off','sync_state_connecting','sync_state_synced','sync_state_synced_as','sync_state_updated','sync_state_pending','sync_state_pending_err')) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt $SYNC_STATUS_MAX) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${SYNC_STATUS_MAX}px sync-status budget - it will run under the button")
       }
     }
   }

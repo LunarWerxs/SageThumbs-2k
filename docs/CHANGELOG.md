@@ -54,6 +54,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   off**, leaving the edges looking bitten. They are drawn smooth now, and the search box no
   longer has its right-hand curve sliced flat by the edge of the panel it sits on.
 
+- **The parts of the app that were still English in every other language now aren't.** Settings
+  sync (its heading, its button, and every status line it shows), the tray icon's menu, the
+  list of actions you can bind to the custom hotkey, the hints along the bottom of the
+  screenshot overlay, the update prompt, and the page the browser lands on after you sign in
+  were all hardcoded English, so they stayed English in all 35 translations. That is 44 new
+  pieces of text, translated into every language SageThumbs ships.
+
 - **Page descriptions were being cut off in most languages.** The new search box sits in the
   top right of the page header, and the description under the page title stops short of it.
   That left less room than the translations needed, so 161 of them ended in "..." across the

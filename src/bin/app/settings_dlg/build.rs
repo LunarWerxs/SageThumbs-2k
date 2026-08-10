@@ -226,8 +226,8 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         200,
         ID_SHOT_ACTION,
     );
-    for &(_, label) in crate::hotkey::ACTIONS {
-        let w = wide(label);
+    for &(_, key) in crate::hotkey::ACTIONS {
+        let w = wide(crate::hotkey::action_label(key));
         SendMessageW(act, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
     }
     let cur_action = settings::custom_action();
@@ -312,8 +312,8 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // Sign in with a Connections account to sync portable preferences across machines.
     // OFF by default — NO network happens unless the user clicks this. Only the
     // allowlisted prefs sync (never file paths, secrets, or per-machine state); see
-    // `sync_client::ALLOW`. English-only for now (locale keys are a v1.1 follow-up).
-    lc.header("Settings sync", hdr, ID_LBL_SYNC, false);
+    // `sync_client::ALLOW`.
+    lc.header(t("sync_title"), hdr, ID_LBL_SYNC, false);
     // A green "● Synced · up to date" badge (or a muted invite when signed out) sits on the
     // left of the row; the button ("Stop syncing" / "Sync settings…") is right-aligned. Both
     // are seeded in refresh_sync_ui — NO raw account id ever lands in the button label.

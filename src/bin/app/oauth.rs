@@ -293,10 +293,11 @@ fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<St
 
     let params = parse_query(target);
     if let Some(err) = params.get("error") {
+        // i18n::t reads a process-wide atomic, so it is safe from this loopback thread.
         respond_html(
             stream,
-            "Sign-in canceled",
-            "You can close this tab and return to SageThumbs 2K.",
+            crate::win::t("oauth_canceled_title"),
+            crate::win::t("oauth_close_tab"),
         );
         return Some(Err(format!("sign-in was canceled ({err})")));
     }
@@ -304,16 +305,16 @@ fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<St
         (Some(code), Some(state)) if state == expected_state => {
             respond_html(
                 stream,
-                "Signed in",
-                "You can close this tab and return to SageThumbs 2K.",
+                crate::win::t("oauth_signed_in_title"),
+                crate::win::t("oauth_close_tab"),
             );
             Some(Ok(code.clone()))
         }
         _ => {
             respond_html(
                 stream,
-                "Sign-in failed",
-                "Something went wrong. Please try again in SageThumbs 2K.",
+                crate::win::t("oauth_failed_title"),
+                crate::win::t("oauth_failed_body"),
             );
             Some(Err(
                 "sign-in response was missing a code or the state didn't match".to_string(),

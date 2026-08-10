@@ -133,6 +133,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_UPDATE_AUTO, "chk_update_auto"),
         (ID_CHECK_UPDATES, "btn_check_updates"),
         (ID_LBL_UPDATES, "grp_updates"),
+        (ID_LBL_SYNC, "sync_title"),
         (ID_LBL_BACKUP, "grp_backup"),
         (ID_LBL_HOTKEY_SVC, "grp_hotkey_svc"),
         (ID_RESET_ALL, "btn_reset_all"),

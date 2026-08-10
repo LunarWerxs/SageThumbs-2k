@@ -310,12 +310,20 @@ unsafe fn remove_tray_icon(hwnd: HWND) {
 
 unsafe fn show_tray_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
-    let _ = AppendMenuW(menu, MF_STRING, IDM_CAPTURE, w!("Take Screenshot"));
-    let _ = AppendMenuW(menu, MF_STRING, IDM_OCR, w!("Copy text on screen (OCR)"));
-    let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, w!("Settings"));
-    let _ = AppendMenuW(menu, MF_STRING, IDM_HIDE, w!("Hide tray icon"));
+    // Translated, so `wide` buffers must outlive the AppendMenuW calls that point at them.
+    let (cap, ocr, set, hide, quit) = (
+        wide(crate::win::t("tray_capture")),
+        wide(crate::win::t("tray_ocr")),
+        wide(crate::win::t("tray_settings")),
+        wide(crate::win::t("tray_hide")),
+        wide(crate::win::t("tray_quit")),
+    );
+    let _ = AppendMenuW(menu, MF_STRING, IDM_CAPTURE, PCWSTR(cap.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, IDM_OCR, PCWSTR(ocr.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, PCWSTR(set.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, IDM_HIDE, PCWSTR(hide.as_ptr()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    let _ = AppendMenuW(menu, MF_STRING, IDM_QUIT, w!("Quit"));
+    let _ = AppendMenuW(menu, MF_STRING, IDM_QUIT, PCWSTR(quit.as_ptr()));
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
     // Required so the menu dismisses when the user clicks elsewhere.

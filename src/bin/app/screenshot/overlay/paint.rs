@@ -363,10 +363,10 @@ pub(super) unsafe fn draw_hint(hdc: HDC, s: &Shot) {
     let txt = if s.sel.is_none() {
         match (s.ocr_mode, s.sel_dragging) {
             // OCR launch mode: the drag is the whole interaction, so say what it does.
-            (true, false) => "Drag over the text to copy it  ·  Esc cancels".to_string(),
-            (true, true) => "Release to read the text  ·  Esc cancels".to_string(),
-            (false, false) => "Drag to select a region  ·  Esc cancels".to_string(),
-            (false, true) => "Release to capture the region  ·  Esc cancels".to_string(),
+            (true, false) => crate::win::t("shot_hint_ocr_drag").to_string(),
+            (true, true) => crate::win::t("shot_hint_ocr_release").to_string(),
+            (false, false) => crate::win::t("shot_hint_drag").to_string(),
+            (false, true) => crate::win::t("shot_hint_release").to_string(),
         }
     } else {
         let snap = if matches!(s.tool, Tool::Line | Tool::Arrow) {

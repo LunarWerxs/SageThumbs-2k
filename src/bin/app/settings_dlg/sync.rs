@@ -22,34 +22,51 @@ pub(super) enum SyncOp {
 }
 
 /// The sync button's label: signed out → an invite; signed in → a clean "Stop syncing".
-/// The account identity now lives in the status line (see [`sync_status_text`]) — it is
+/// The account identity now lives in the status line (see [`sync_status_state`]) — it is
 /// deliberately NOT baked into the button anymore (a raw account id read as noise).
 pub(super) fn sync_button_label() -> String {
     if crate::sync_client::is_signed_in() {
-        "Stop syncing".to_string()
+        t("sync_btn_stop").to_string()
     } else {
-        "Sync settings…".to_string()
+        t("sync_btn_start").to_string()
     }
 }
 
-/// The status line beside the sync button. Signed in → a green "● Synced" badge (the "●…
-/// Synced" prefix is what the WM_CTLCOLORSTATIC handler keys the green tint off) with a
-/// plain-English detail; signed out → a muted invite. `signed_in_label` prefers the
-/// account's display name (falling back to its relay email) and never returns a bare
-/// account id (`sub`), so the row never shows an ugly UUID or the opaque privacy-relay
-/// hash when a real name is available.
-pub(super) fn sync_status_text() -> String {
+// Whether the status line currently reads as a healthy "synced" state, i.e. whether
+// WM_CTLCOLORSTATIC should tint it green.
+//
+// This used to be decided by scanning the control's text for the word "Synced", which
+// worked only for as long as the line was always English. The moment these strings went
+// through `t()` the tint would have silently died in all 35 translations, with nothing to
+// fail: a green badge quietly turning grey is invisible to every test we have. The state
+// is recorded here instead, at the point the text is set, so it cannot drift from it.
+thread_local! {
+    static STATUS_GREEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Is the sync status line currently in a green (healthy) state?
+pub(super) fn sync_status_is_green() -> bool {
+    STATUS_GREEN.with(|g| g.get())
+}
+
+/// The status line beside the sync button, and whether it is a green state. Signed in → a
+/// green "● Synced" badge with a plain-language detail; signed out → a muted invite; a
+/// pending push → an ungreen "● Sync pending". `signed_in_label` prefers the account's
+/// display name (falling back to its relay email) and never returns a bare account id
+/// (`sub`), so the row never shows an ugly UUID or the opaque privacy-relay hash when a
+/// real name is available.
+pub(super) fn sync_status_state() -> (String, bool) {
     if crate::sync_client::is_signed_in() {
         if crate::sync_client::has_pending_push() {
-            "● Sync pending · saved locally; retrying automatically".to_string()
+            (t("sync_state_pending").to_string(), false)
         } else {
             match crate::sync_client::signed_in_label() {
-                Some(who) => format!("● Synced as {who} · up to date"),
-                None => "● Synced · already up to date".to_string(),
+                Some(who) => (t("sync_state_synced_as").replace("{who}", &who), true),
+                None => (t("sync_state_synced").to_string(), true),
             }
         }
     } else {
-        "Not syncing — sign in to sync your settings across your PCs".to_string()
+        (t("sync_state_off").to_string(), false)
     }
 }
 
@@ -62,13 +79,17 @@ pub(super) unsafe fn set_sync_button(hwnd: HWND, text: &str, enabled: bool) {
     }
 }
 
-/// Set the sync status line's text. `None` uses the state-derived default (green when it
-/// reads "Synced"); `Some` sets a transient line (e.g. "Connecting…"). Repaints so the
-/// WM_CTLCOLORSTATIC tint re-evaluates against the new text.
-pub(super) unsafe fn set_sync_status(hwnd: HWND, text: Option<String>) {
+/// Set the sync status line. `None` uses the state-derived default; `Some((text, green))`
+/// sets a transient line (e.g. "Connecting…") and says explicitly whether it is a green
+/// state, because only the caller knows. Repaints so the WM_CTLCOLORSTATIC tint re-reads
+/// [`sync_status_is_green`].
+pub(super) unsafe fn set_sync_status(hwnd: HWND, text: Option<(String, bool)>) {
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_SYNC_STATUS) {
-        let t = text.unwrap_or_else(sync_status_text);
-        let w = wide(&t);
+        // NOT named `t` — that is the translator function, and shadowing it here would
+        // silently break the next person who reaches for it in this scope.
+        let (line, green) = text.unwrap_or_else(sync_status_state);
+        STATUS_GREEN.with(|g| g.set(green));
+        let w = wide(&line);
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
         let _ = InvalidateRect(Some(h), None, true);
     }
@@ -85,11 +106,8 @@ pub(super) unsafe fn refresh_sync_ui(hwnd: HWND) {
 /// the privacy notice) or disconnect. The network op itself runs on a worker thread.
 pub(super) unsafe fn on_sync_click(hwnd: HWND) {
     if crate::sync_client::is_signed_in() {
-        let warn = wide(
-            "Stop syncing and disconnect this account?\n\nYour settings stay on this PC; the \
-             copy stored in your Connections account is removed.",
-        );
-        let cap = wide("Settings Sync");
+        let warn = wide(t("sync_confirm_stop"));
+        let cap = wide(t("sync_title"));
         if MessageBoxW(
             Some(hwnd),
             PCWSTR(warn.as_ptr()),
@@ -99,17 +117,12 @@ pub(super) unsafe fn on_sync_click(hwnd: HWND) {
         {
             return;
         }
-        set_sync_button(hwnd, "Disconnecting…", false);
-        set_sync_status(hwnd, Some("Disconnecting…".to_string()));
+        set_sync_button(hwnd, t("sync_btn_disconnecting"), false);
+        set_sync_status(hwnd, Some((t("sync_btn_disconnecting").to_string(), false)));
         spawn_sync(hwnd, SyncOp::Disconnect);
     } else {
-        let info = wide(
-            "Sign in with a Connections account to sync your SageThumbs 2K preferences across \
-             your PCs.\n\nOnly settings sync — never your files, folder paths, or passwords. \
-             It's optional, and you can disconnect anytime.\n\nA browser window will open for \
-             you to sign in. Continue?",
-        );
-        let cap = wide("Settings Sync");
+        let info = wide(t("sync_confirm_start"));
+        let cap = wide(t("sync_title"));
         if MessageBoxW(
             Some(hwnd),
             PCWSTR(info.as_ptr()),
@@ -119,8 +132,8 @@ pub(super) unsafe fn on_sync_click(hwnd: HWND) {
         {
             return;
         }
-        set_sync_button(hwnd, "Signing in… (see your browser)", false);
-        set_sync_status(hwnd, Some("Connecting…".to_string()));
+        set_sync_button(hwnd, t("sync_btn_signing_in"), false);
+        set_sync_status(hwnd, Some((t("sync_state_connecting").to_string(), false)));
         spawn_sync(hwnd, SyncOp::Connect);
     }
 }
@@ -194,12 +207,8 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             refresh_sync_ui(hwnd);
             msg(
                 hwnd,
-                &format!(
-                    "Signed in as {who}.\n\nYour settings now sync across your PCs. Anything \
-                     synced from another device has been applied — reopen Settings to see it \
-                     reflected here."
-                ),
-                "Settings Sync",
+                &t("sync_signed_in").replace("{who}", &who),
+                t("sync_title"),
                 MB_ICONINFORMATION,
             );
         }
@@ -207,8 +216,8 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             refresh_sync_ui(hwnd);
             msg(
                 hwnd,
-                &format!("Couldn't sign in: {e}"),
-                "Settings Sync",
+                &t("sync_signin_failed").replace("{error}", &e),
+                t("sync_title"),
                 MB_ICONWARNING,
             );
         }
@@ -218,11 +227,10 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             // whether the pull pulled anything new in the status badge.
             set_sync_button(hwnd, &sync_button_label(), true);
             match res {
-                Ok(true) => set_sync_status(
-                    hwnd,
-                    Some("● Synced · updated from another device".to_string()),
-                ),
-                _ => set_sync_status(hwnd, None), // "● Synced · already up to date"
+                Ok(true) => {
+                    set_sync_status(hwnd, Some((t("sync_state_updated").to_string(), true)))
+                }
+                _ => set_sync_status(hwnd, None), // the state-derived "● Synced" line
             }
         }
         SyncEvent::Pushed(Ok(())) => {
@@ -233,7 +241,10 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             set_sync_button(hwnd, &sync_button_label(), true);
             set_sync_status(
                 hwnd,
-                Some(format!("● Sync pending · saved locally; {error}")),
+                Some((
+                    t("sync_state_pending_err").replace("{error}", &error),
+                    false,
+                )),
             );
         }
         SyncEvent::Disconnected => {

@@ -532,10 +532,8 @@ unsafe fn reveal(hwnd: HWND, result: Status) {
 /// in-place update the Settings button used to (download → verify → elevated install),
 /// falling back to the releases page if it can't complete.
 unsafe fn offer_update(hwnd: HWND) {
-    let cap = wide("Update SageThumbs 2K");
-    let prompt = wide(
-        "Download and install the update now? SageThumbs updates itself in the background — Explorer briefly restarts, and you'll get a confirmation when it's done.",
-    );
+    let cap = wide(crate::win::t("upd_confirm_title"));
+    let prompt = wide(crate::win::t("upd_confirm"));
     if MessageBoxW(
         Some(hwnd),
         PCWSTR(prompt.as_ptr()),

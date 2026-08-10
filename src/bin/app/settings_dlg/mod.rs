@@ -791,10 +791,8 @@ unsafe fn toggle_portable_registration(hwnd: HWND) {
 /// one, or the Desktop default). Called on load and after the folder picker.
 pub(super) unsafe fn set_shot_dir_label(hwnd: HWND) {
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_SHOT_DIR) {
-        let w = wide(&format!(
-            "Folder: {}",
-            crate::screenshot::effective_save_dir()
-        ));
+        let w =
+            wide(&t("shot_dir_label").replace("{dir}", &crate::screenshot::effective_save_dir()));
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
     }
 }
@@ -997,16 +995,16 @@ pub(crate) extern "system" fn wndproc(
             SetBkMode(hdc, TRANSPARENT);
             return LRESULT(dark_bg_brush().0 as isize);
         }
-        // The Settings-sync status line: green when it reads "● Synced" (signed in), else a
-        // muted grey (the signed-out invite / a transient "Connecting…"). Mirrors the
-        // hotkey-service badge above.
+        // The Settings-sync status line: green in a healthy synced state, else a muted grey
+        // (the signed-out invite / a transient "Connecting…"). Mirrors the hotkey-service
+        // badge above. The state is asked for directly rather than sniffed out of the
+        // control's text: that used to match the English word "Synced", which would have
+        // gone grey in all 35 translations the moment the line was localized, with nothing
+        // failing to say so.
         if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
             && GetDlgItem(Some(hwnd), ID_SYNC_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
         {
-            let synced = GetDlgItem(Some(hwnd), ID_SYNC_STATUS)
-                .map(|s| String::from_utf16_lossy(&control_text(s)).contains("Synced"))
-                .unwrap_or(false);
-            if synced {
+            if sync::sync_status_is_green() {
                 let hdc = HDC(wparam.0 as *mut c_void);
                 SetTextColor(hdc, COLORREF(0x0059_C734)); // green
                 windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());

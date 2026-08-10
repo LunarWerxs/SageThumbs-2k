@@ -16,18 +16,26 @@ use sagethumbs2k_core::{run_action, Transform, VerbAction};
 /// each paired with its STABLE persisted id (`settings::custom_action`). Keep ids stable —
 /// they're stored in HKCU — so only ever APPEND new actions, never renumber. Id `1` (the
 /// colour picker) is the default ([`settings::DEFAULT_CUSTOM_ACTION`]).
+/// The second element is a LOCALE KEY, not a label: the dropdown is rebuilt on a live
+/// language switch, so the text has to be resolved at display time rather than baked in
+/// here. Use [`action_label`] to read one.
 pub(crate) const ACTIONS: &[(u32, &str)] = &[
-    (1, "Pick a colour (eyedropper)"),
-    (2, "Take a screenshot"),
-    (3, "Convert image(s)…"),
-    (4, "Rotate image(s) right 90\u{00B0}"),
-    (5, "Move file(s) into a new folder"),
-    (6, "Strip image metadata"),
-    (7, "Open SageThumbs 2K Settings"),
-    (8, "Upload image(s) (copy link)"),
-    (9, "Copy text (OCR)"),
-    (10, "Copy text on screen (OCR)"),
+    (1, "act_eyedropper"),
+    (2, "act_screenshot"),
+    (3, "act_convert"),
+    (4, "act_rotate"),
+    (5, "act_folder"),
+    (6, "act_strip"),
+    (7, "act_settings"),
+    (8, "act_upload"),
+    (9, "act_ocr"),
+    (10, "act_ocr_screen"),
 ];
+
+/// The translated label for an [`ACTIONS`] row's locale key.
+pub(crate) fn action_label(key: &str) -> &'static str {
+    crate::win::t(key)
+}
 
 /// What a bound action does + what input it needs.
 enum Kind {

@@ -54,7 +54,7 @@ impl FindState {
             return String::new();
         }
         if self.hits.is_empty() {
-            return "No results".to_string();
+            return crate::win::t("find_no_results").to_string();
         }
         format!(
             "{}/{}",
