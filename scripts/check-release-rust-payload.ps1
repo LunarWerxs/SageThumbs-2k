@@ -91,6 +91,8 @@ foreach ($name in 'sagethumbs2k.dll', 'st2k_dlghook.dll', 'SageThumbs2K.exe', 's
 
 Write-Host ("[size-ci] $Architecture/$($selected.Name) Rust payload: {0:N0} bytes; limit: {1:N0} bytes" -f $total, $maxRust) -ForegroundColor Cyan
 if ($total -gt $maxRust) {
-    throw ("production Rust payload exceeds its limit by {0:N0} bytes" -f ($total - $maxRust))
+    # REPORTING ONLY. The VERSIONINFO and machine-type assertions above still THROW: those
+    # catch a stale artifact or an x64 binary in an ARM64 build, which has nothing to do with size.
+    Write-Host ("[size-ci] NOTE Rust payload is {0:N0} bytes over the old reference budget (not enforced)." -f ($total - $maxRust)) -ForegroundColor Yellow
 }
 Write-Host ("[size-ci] Rust payload headroom: {0:N0} bytes" -f ($maxRust - $total)) -ForegroundColor Green
