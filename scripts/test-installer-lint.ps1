@@ -5,7 +5,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $lint = Join-Path $PSScriptRoot 'check-installer.ps1'
-$installer = Join-Path $root 'packaging\installer.iss'
+$installer = Join-Path $root 'scripts\packaging\installer.iss'
 $scratch = Join-Path (
     [IO.Path]::GetTempPath()
 ) ("st2k-installer-lint-" + [guid]::NewGuid().ToString('N'))

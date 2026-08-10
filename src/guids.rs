@@ -13,7 +13,7 @@ pub const CLSID_THUMBNAIL_PROVIDER: GUID = GUID::from_u128(0x7B2E6A14_9C3D_4F8A_
 pub const CLSID_THUMBNAIL_PROVIDER_STR: &str = "{7B2E6A14-9C3D-4F8A-B1E7-2A5D9F0C6E31}";
 
 /// SageThumbs 2K context-menu command (IExplorerCommand). Registered via the
-/// package manifest (`packaging/AppxManifest.xml`), NOT the registry — so there is
+/// package manifest (`scripts/packaging/AppxManifest.xml`), NOT the registry — so there is
 /// no string-form const here; the `manifest_clsids_match_explorer_command` test
 /// pins the manifest's CLSID literals to this typed GUID instead.
 pub const CLSID_EXPLORER_COMMAND: GUID = GUID::from_u128(0xD4F1C8A2_3E7B_4A96_8C0F_6B1E2D9A4C57);
@@ -22,7 +22,7 @@ pub const CLSID_EXPLORER_COMMAND: GUID = GUID::from_u128(0xD4F1C8A2_3E7B_4A96_8C
 /// as their OWN top-level entries on the Windows 11 context menu (one per CLSID), so that
 /// when `MenuQuickVerbs` is on they appear one click away instead of two levels deep inside
 /// the (dormant) `CLSID_EXPLORER_COMMAND` flyout. Each is declared as a `desktop5:Verb` in
-/// `packaging/AppxManifest.xml` pointing at the matching CLSID below; the surrogate hosts
+/// `scripts/packaging/AppxManifest.xml` pointing at the matching CLSID below; the surrogate hosts
 /// all of them out-of-proc in dllhost. `command.rs::QUICK_VERBS` binds each CLSID to its
 /// `MENU` key + manifest verb id (a test pins that table to `verbs::QUICK_KEYS`), and the
 /// `manifest_clsids_match_known` test pins these GUIDs to the manifest literals. Like the
@@ -73,7 +73,7 @@ mod tests {
         )
     }
 
-    const MANIFEST: &str = include_str!("../packaging/AppxManifest.xml");
+    const MANIFEST: &str = include_str!("../scripts/packaging/AppxManifest.xml");
 
     /// The registry string-form CLSIDs must equal their typed GUIDs — a hand typo
     /// in either would register the wrong coclass with no compile error.

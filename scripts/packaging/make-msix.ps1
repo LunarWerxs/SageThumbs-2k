@@ -9,7 +9,7 @@
   sideloads the signed package. The private key never leaves this machine's cert
   store; only the public .cer ships.
 
-  Outputs into -OutDir (default: packaging\stage, where build-release.ps1 stages):
+  Outputs into -OutDir (default: scripts\packaging\stage, where build-release.ps1 stages):
     SageThumbs2K.msix   the signed sparse package (manifest + assets; the DLL/EXE
                         live at the external location passed at install time)
     SageThumbs2K.cer    the public cert the installer adds to TrustedPeople

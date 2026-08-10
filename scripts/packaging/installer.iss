@@ -1,5 +1,5 @@
 ; Inno Setup script for SageThumbs 2K.
-; Built by scripts\build-release.ps1, which stages files into packaging\stage\
+; Built by scripts\build-release.ps1, which stages files into scripts\packaging\stage\
 ; and passes the version via /DAppVer.  Do not run this by hand - run the
 ; pipeline so the binaries + bundled ImageMagick are freshly staged.
 
@@ -156,7 +156,7 @@ Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Compone
 ; has no dialog support, which is why this row is skipifsourcedoesntexist.
 Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 ; Signed sparse package + its public cert -> the Windows 11 modern context menu.
-; Built by packaging\make-msix.ps1 (self-signed; skipped with -NoModernMenu).
+; Built by scripts\packaging\make-msix.ps1 (self-signed; skipped with -NoModernMenu).
 Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 ; Branding assets: icon (shortcut/uninstall) + swappable logo/banner overrides.

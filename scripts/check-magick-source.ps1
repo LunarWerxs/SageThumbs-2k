@@ -7,7 +7,7 @@
   sort first under Program Files. This checker validates both the reported product identity
   and a deterministic SHA-256 inventory of every file that can enter the bundle.
 
-  The inventory algorithm is documented in packaging/imagemagick-source.json. A deliberate
+  The inventory algorithm is documented in scripts/packaging/imagemagick-source.json. A deliberate
   ImageMagick upgrade requires reviewing the new upstream build, updating that pin, and
   rerunning the format regression corpus.
 #>
@@ -16,7 +16,7 @@ param(
     [Parameter(Mandatory)]
     [string]$SourcePath,
 
-    [string]$PinPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\imagemagick-source.json'),
+    [string]$PinPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\packaging\imagemagick-source.json'),
 
     # Which architecture's bundle this is. Only the runtime `magick.exe -version` check
     # cares: it can run solely when this matches the host, so a cross-architecture build

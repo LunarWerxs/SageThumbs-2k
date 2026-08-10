@@ -5,9 +5,9 @@
   Builds the DLL + stub EXE, generates placeholder logo assets if missing, then
   registers the package pointing at the build output as the external location.
 
-      .\packaging\register-dev.ps1            # build + register
-      .\packaging\register-dev.ps1 -Architecture arm64
-      .\packaging\register-dev.ps1 -Unregister
+      .\scripts\packaging\register-dev.ps1            # build + register
+      .\scripts\packaging\register-dev.ps1 -Architecture arm64
+      .\scripts\packaging\register-dev.ps1 -Unregister
 
   After registering, restart File Explorer (the script does this) and right-click
   a .jpg/.png to look for "SageThumbs". Thumbnails for .tga/.dds/.qoi/etc. should

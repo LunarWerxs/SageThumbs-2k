@@ -404,7 +404,7 @@ far more often than it is wrong, and every synonym is free.
 
 ## A size reference must name the artifact that SHIPPED, and each architecture drifts alone
 
-Two separate traps in `packaging/size-budget.json`.
+Two separate traps in `scripts/packaging/size-budget.json`.
 
 **Installers are not byte-reproducible.** Inno Setup output varies between builds of identical
 source, so the reference recorded from a local build will not match the asset the release

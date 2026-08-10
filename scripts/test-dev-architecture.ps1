@@ -48,7 +48,7 @@ function New-PeFixture([string]$Path, [uint16]$Machine) {
 
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 try {
-    foreach ($relative in @('scripts\install.ps1', 'packaging\register-dev.ps1')) {
+    foreach ($relative in @('scripts\install.ps1', 'scripts\packaging\register-dev.ps1')) {
         $path = Join-Path $root $relative
         Assert-Passes "$relative parses" { Assert-Parseable $path }
 
@@ -119,7 +119,7 @@ try {
             throw 'install host/registrar fail-closed contract missing'
         }
     }
-    $registerText = Get-Content -LiteralPath (Join-Path $root 'packaging\register-dev.ps1') -Raw
+    $registerText = Get-Content -LiteralPath (Join-Path $root 'scripts\packaging\register-dev.ps1') -Raw
     Assert-Passes 'register helper targets ARM64 explicitly and stages its manifest separately' {
         if ($registerText -notmatch '\$cargoArgs \+= @\(''--target''' -or
             $registerText -notmatch 'dev-registration-' -or
@@ -134,7 +134,7 @@ try {
         }
     }
     Assert-Passes 'register helper stages an ARM64-only loose manifest without touching its template' {
-        $register = Join-Path $root 'packaging\register-dev.ps1'
+        $register = Join-Path $root 'scripts\packaging\register-dev.ps1'
         $stage = & {
             param($ScriptPath, $BuildDir)
             . $ScriptPath -Architecture arm64 -ExternalLocation $BuildDir -ValidateOnly | Out-Null
@@ -145,7 +145,7 @@ try {
             -not (Test-Path -LiteralPath (Join-Path (Split-Path $stage) 'Assets\StoreLogo.png'))) {
             throw 'ARM64 loose manifest staging is incomplete'
         }
-        $template = Get-Content -LiteralPath (Join-Path $root 'packaging\AppxManifest.xml') -Raw
+        $template = Get-Content -LiteralPath (Join-Path $root 'scripts\packaging\AppxManifest.xml') -Raw
         if ($template -notmatch 'ProcessorArchitecture="neutral"') {
             throw 'tracked manifest was changed by loose staging'
         }

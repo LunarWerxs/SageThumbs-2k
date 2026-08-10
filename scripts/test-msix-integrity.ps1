@@ -90,7 +90,7 @@ function Set-ZipTextEntry {
 
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
-    & (Join-Path $root 'packaging\make-msix.ps1') -OutDir $scratch *> $null
+    & (Join-Path $root 'scripts\packaging\make-msix.ps1') -OutDir $scratch *> $null
     if ($LASTEXITCODE -ne 0) { throw 'test MSIX build/sign failed' }
     $msix = Join-Path $scratch 'SageThumbs2K.msix'
     $certificate = Join-Path $scratch 'SageThumbs2K.cer'
@@ -103,7 +103,7 @@ try {
     }
 
     $arm64Out = Join-Path $scratch 'arm64'
-    & (Join-Path $root 'packaging\make-msix.ps1') -OutDir $arm64Out -Architecture arm64 *> $null
+    & (Join-Path $root 'scripts\packaging\make-msix.ps1') -OutDir $arm64Out -Architecture arm64 *> $null
     if ($LASTEXITCODE -ne 0) { throw 'ARM64 test MSIX build/sign failed' }
     Assert-Passes 'ARM64 signature, signer certificate, and manifest identity' {
         Assert-ReleaseMsixPackage `

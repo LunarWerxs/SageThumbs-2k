@@ -1,5 +1,5 @@
 <#
-  check-installer.ps1 - static lint for packaging\installer.iss [Code].
+  check-installer.ps1 - static lint for scripts\packaging\installer.iss [Code].
 
   Catches uninstaller-only RUNTIME bugs that ISCC compiles happily (so a green build
   hides them) and that our dev loop never exercises - the dev uninstall (install.ps1
@@ -31,7 +31,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$IssPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\installer.iss'),
+    [string]$IssPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\packaging\installer.iss'),
 
     # When build-release supplies the staged ImageMagick directory, prove that
     # every top-level managed payload entry is covered by the exact cleanup

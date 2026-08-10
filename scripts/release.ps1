@@ -9,7 +9,7 @@
 
   Flow:  curated-notes + consistency check  ->  clean-main guard  ->  push
          ->  WAIT for CI green  ->  build + provenance-validate every installer whose
-             size reference is calibrated in packaging\size-budget.json (x64 always;
+             size reference is calibrated in scripts\packaging\size-budget.json (x64 always;
              ARM64 only once its first installer has been recorded there)
          ->  create a draft, verify the uploaded digest, publish -> winget.
 
@@ -28,7 +28,7 @@ try {
     $tag = "v$ver"
     Write-Host "== Releasing $tag ==" -ForegroundColor Cyan
     # A release ships one artifact per architecture whose installer size reference is
-    # CALIBRATED in packaging\size-budget.json.  Keep the candidate table explicit:
+    # CALIBRATED in scripts\packaging\size-budget.json.  Keep the candidate table explicit:
     # selecting a "newest" setup from dist would let an old or wrong-architecture
     # installer become a release asset.
     #
@@ -43,7 +43,7 @@ try {
             Architecture = 'x64'
             SetupPath    = Join-Path $root "dist\SageThumbs2K-Setup-$ver.exe"
             ManifestPath = Join-Path $root "dist\SageThumbs2K-Setup-$ver.release.json"
-            StagePath    = Join-Path $root 'packaging\stage\x64'
+            StagePath    = Join-Path $root 'scripts\packaging\stage\x64'
             PortablePath = Join-Path $root "dist\SageThumbs2K-Portable-$ver.zip"
             Setup        = $null
             Manifest     = $null
@@ -53,7 +53,7 @@ try {
             Architecture = 'arm64'
             SetupPath    = Join-Path $root "dist\SageThumbs2K-Setup-$ver-arm64.exe"
             ManifestPath = Join-Path $root "dist\SageThumbs2K-Setup-$ver-arm64.release.json"
-            StagePath    = Join-Path $root 'packaging\stage\arm64'
+            StagePath    = Join-Path $root 'scripts\packaging\stage\arm64'
             PortablePath = Join-Path $root "dist\SageThumbs2K-Portable-$ver-arm64.zip"
             Setup        = $null
             Manifest     = $null
@@ -61,7 +61,7 @@ try {
         }
     )
 
-    $sizePolicyPath = Join-Path $root 'packaging\size-budget.json'
+    $sizePolicyPath = Join-Path $root 'scripts\packaging\size-budget.json'
     try { $sizePolicy = Get-Content -LiteralPath $sizePolicyPath -Raw | ConvertFrom-Json }
     catch { throw "release size policy is not valid JSON: $sizePolicyPath`n$($_.Exception.Message)" }
     function Test-InstallerReferenceCalibrated([string]$Architecture) {
@@ -99,7 +99,7 @@ try {
     }
     Write-Host "   architectures in this release: $($releaseArtifacts.Architecture -join ', ')" -ForegroundColor Cyan
     foreach ($architecture in $skippedArchitectures) {
-        Write-Host "   NOT in this release: $architecture - its installer size reference is uncalibrated in packaging\size-budget.json." -ForegroundColor Yellow
+        Write-Host "   NOT in this release: $architecture - its installer size reference is uncalibrated in scripts\packaging\size-budget.json." -ForegroundColor Yellow
     }
 
     # 0) Curated notes + consistency. The release body is derived from this exact

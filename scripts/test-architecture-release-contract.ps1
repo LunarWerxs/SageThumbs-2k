@@ -44,8 +44,8 @@ Assert-Passes 'release publishes explicit x64 and ARM64 artifact pairs' {
             'SageThumbs2K-Setup-$ver-arm64.exe',
             'SageThumbs2K-Setup-$ver.release.json',
             'SageThumbs2K-Setup-$ver-arm64.release.json',
-            "'packaging\stage\x64'",
-            "'packaging\stage\arm64'",
+            "'scripts\packaging\stage\x64'",
+            "'scripts\packaging\stage\arm64'",
             '-Architecture $artifact.Architecture',
                 # ARM64 is a FULL build as of 2026-08-01, so release.ps1 must NOT pass
                 # -NoImageMagick for it any more; both architectures bundle ImageMagick.

@@ -45,7 +45,7 @@ param(
     [int]$Size = 96,
     # Override the executable under test. ImageMagick must be flattened beside
     # this EXE, just as the installer lays it out; test-staged-regression.ps1
-    # constructs that isolated runtime from packaging\stage\x64.
+    # constructs that isolated runtime from scripts\packaging\stage\x64.
     [string]$St2kPath,
     # Used only for the contact sheet and DICOM pixel assertions. Defaults to
     # the staged copy adjacent to St2kPath, then the installed ImageMagick.

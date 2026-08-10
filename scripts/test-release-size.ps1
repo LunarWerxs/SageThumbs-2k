@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $checker = Join-Path $PSScriptRoot 'check-release-size.ps1'
-$productionPolicy = Join-Path $root 'packaging\size-budget.json'
+$productionPolicy = Join-Path $root 'scripts\packaging\size-budget.json'
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("st2k-size-guard-" + [guid]::NewGuid().ToString('N'))
 $script:passed = 0
 

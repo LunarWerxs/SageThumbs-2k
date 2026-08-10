@@ -337,8 +337,8 @@ fn build_body(cat: &str, msg: &str, contact: &str) -> String {
 /// really shows up (prose, `n/a`, bare handles) without bouncing an address someone owns.
 /// Empty is still fine — the field stays optional.
 ///
-/// Kept byte-for-byte in step with `LooksLikeEmail` in `packaging/installer.iss` (the
-/// uninstall survey) and `looksLikeEmail` in `packaging/analytics/worker.js` (the server
+/// Kept byte-for-byte in step with `LooksLikeEmail` in `scripts/packaging/installer.iss` (the
+/// uninstall survey) and `looksLikeEmail` in `scripts/packaging/analytics/worker.js` (the server
 /// gate); `tests::email_rule_matches_shared_table` locks the shared cases.
 fn looks_like_email(s: &str) -> bool {
     // a@b.co is the shortest thing worth accepting; the upper bound matches the survey's
@@ -579,8 +579,8 @@ mod tests {
     }
 
     /// The one table all three implementations of the email rule are held to — this one,
-    /// `LooksLikeEmail` in `packaging/installer.iss`, and `looksLikeEmail` in
-    /// `packaging/analytics/worker.js`. It is READ from the shared fixture rather than
+    /// `LooksLikeEmail` in `scripts/packaging/installer.iss`, and `looksLikeEmail` in
+    /// `scripts/packaging/analytics/worker.js`. It is READ from the shared fixture rather than
     /// duplicated here, so the three can't drift apart by someone editing a private copy;
     /// `scripts/check-email-rule.ps1` runs the other two against this same file.
     ///

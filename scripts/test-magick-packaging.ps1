@@ -3,7 +3,7 @@
   Focused fail-closed tests for the pinned ImageMagick packaging gates.
 
 .EXAMPLE
-  pwsh scripts/test-magick-packaging.ps1 -BundlePath packaging/stage/x64/magick
+  pwsh scripts/test-magick-packaging.ps1 -BundlePath scripts/packaging/stage/x64/magick
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +20,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $sourceCheck = Join-Path $PSScriptRoot 'check-magick-source.ps1'
 $bundleCheck = Join-Path $PSScriptRoot 'check-magick-bundle.ps1'
 $pruneCheck = Join-Path $PSScriptRoot 'prune-magick-unreferenced.ps1'
-$pinPath = Join-Path $root 'packaging\imagemagick-source.json'
+$pinPath = Join-Path $root 'scripts\packaging\imagemagick-source.json'
 $resolvedBundle = (Resolve-Path -LiteralPath $BundlePath).Path
 if (-not $ObjdumpPath) {
     $inspector = Get-Command objdump, llvm-objdump -ErrorAction SilentlyContinue | Select-Object -First 1

@@ -2,7 +2,7 @@
 //!
 //! A plain in-proc COM server registered via `regsvr32`. Thumbnail providers do
 //! NOT need package identity (only the modern `IExplorerCommand` main-flyout does,
-//! and that ships as a signed sparse package — see `packaging/make-msix.ps1`), and the shell
+//! and that ships as a signed sparse package — see `scripts/packaging/make-msix.ps1`), and the shell
 //! runs us out-of-process in its isolated host automatically.
 //!
 //! KNOWN LIMITATION: Windows resolves a thumbnail handler in priority order —

@@ -136,7 +136,7 @@ try {
             }
         }
         foreach ($expected in @(
-                'packaging/make-msix.ps1',
+                'scripts/packaging/make-msix.ps1',
                 'scripts/_targetdir.ps1',
                 'scripts/check-installer.ps1',
                 'scripts/check-magick-bundle.ps1',

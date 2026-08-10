@@ -1,7 +1,7 @@
 <#
   CI gate for the three production Rust artifacts. This intentionally validates
   the raw payload before an installer exists, and selects the architecture's
-  shipped profile from packaging/size-budget.json.
+  shipped profile from scripts/packaging/size-budget.json.
 #>
 [CmdletBinding()]
 param(
@@ -57,7 +57,7 @@ function Get-ArchitecturePolicy([object]$policy, [string]$architecture) {
     return [pscustomobject]@{ Name = $profile; Policy = $profilePolicy.Value }
 }
 
-if (-not $PolicyPath) { $PolicyPath = Join-Path $root 'packaging\size-budget.json' }
+if (-not $PolicyPath) { $PolicyPath = Join-Path $root 'scripts\packaging\size-budget.json' }
 if (-not $ExpectedVersion) {
     $ExpectedVersion = ([regex]::Match(
         (Get-Content (Join-Path $root 'Cargo.toml') -Raw),

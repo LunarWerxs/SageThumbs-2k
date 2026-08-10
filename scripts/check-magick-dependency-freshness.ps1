@@ -16,7 +16,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$BundlePath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\stage\x64\magick'),
+    [string]$BundlePath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\packaging\stage\x64\magick'),
 
     # Local fixture paths are intentionally supported for deterministic offline tests.
     [string]$ZlibPagePath,

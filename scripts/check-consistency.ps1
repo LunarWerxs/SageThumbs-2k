@@ -9,7 +9,7 @@
    2. FORMAT COUNT - the count in the README shields badge and docs/FEATURES.md must match the
       number of entries in src/formats.rs `FORMATS`.
 
-    3. VERSION - packaging/AppxManifest.xml must carry the Cargo.toml version (the MSIX version
+    3. VERSION - scripts/packaging/AppxManifest.xml must carry the Cargo.toml version (the MSIX version
       is a hand-written literal that has silently drifted before).
     4. LOCALES - every translation must have the same keys and placeholders as en.toml, with
       no duplicate keys or UTF-8 BOM.
@@ -99,8 +99,8 @@ else {
 
 # --- 3) version: Cargo.toml vs AppxManifest ------------------------------------
 $ver = ([regex]::Match((Get-Content (Join-Path $root 'Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
-$appx = Get-Content (Join-Path $root 'packaging\AppxManifest.xml') -Raw
-if ($appx -notmatch [regex]::Escape("Version=`"$ver")) { $fail.Add("packaging/AppxManifest.xml Version != Cargo.toml ($ver)") }
+$appx = Get-Content (Join-Path $root 'scripts\packaging\AppxManifest.xml') -Raw
+if ($appx -notmatch [regex]::Escape("Version=`"$ver")) { $fail.Add("scripts/packaging/AppxManifest.xml Version != Cargo.toml ($ver)") }
 
 # --- 4) locale parity: every locales/*.toml matches en.toml's key set -----------
 # Two drift classes, both of which shipped:

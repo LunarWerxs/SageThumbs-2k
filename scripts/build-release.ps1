@@ -5,7 +5,7 @@
     1. reads the version from Cargo.toml
     2. cargo build --release  (MSVC)
     3. stages the DLL + Options EXE + docs + a curated, hardened ImageMagick
-    4. compiles packaging\installer.iss with Inno Setup (ISCC)
+    4. compiles scripts\packaging\installer.iss with Inno Setup (ISCC)
     5. prints the resulting SageThumbs2K-Setup-<ver>.exe and its size
 
   Usage:  pwsh scripts\build-release.ps1                         # x64 Full
@@ -51,14 +51,14 @@ $targetRel = if ($Architecture -eq 'arm64') {
 # let a portable build run inside a release silently gut the stage that
 # check-release-manifest.ps1 validates the installer against.
 $stage = if ($Portable) {
-    Join-Path $root "packaging\stage\portable-src-$Architecture"
+    Join-Path $root "scripts\packaging\stage\portable-src-$Architecture"
 } else {
-    Join-Path $root "packaging\stage\$Architecture"
+    Join-Path $root "scripts\packaging\stage\$Architecture"
 }
 $stageRelative = "stage\$Architecture"
 $outputSuffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
 # ARM64 used to be forced Compact here because there was no approved ImageMagick payload
-# for it. There is now: packaging\imagemagick-source-arm64.json pins the SAME upstream
+# for it. There is now: scripts\packaging\imagemagick-source-arm64.json pins the SAME upstream
 # 7.1.2-29 release as x64, so both architectures build Full unless -NoImageMagick is passed.
 
 function Import-Arm64BuildEnvironment {
@@ -236,7 +236,7 @@ foreach ($doc in 'README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE') {
 # Always ship the hardened policy with the core app. Compact installs can still
 # use an explicitly installed Program Files ImageMagick fallback; it must receive
 # the same restrictions even when the curated engine component is not selected.
-Copy-Item "$root\packaging\imagemagick-policy.xml" "$stage\policy.xml" -Force
+Copy-Item "$root\scripts\packaging\imagemagick-policy.xml" "$stage\policy.xml" -Force
 # Branding: the app icon (installer + shortcut) and swappable logo/banner art
 # (dropping these next to the EXE overrides the embedded defaults at runtime).
 foreach ($asset in 'app.ico','logo.png','banner.png') {
@@ -253,9 +253,9 @@ if ($bundleMagick) {
     # One pin PER ARCHITECTURE. Both describe the same upstream 7.1.2-29 release and the
     # same 195-file set, so only the bundle bytes differ; the inventory algorithm is shared.
     $magickPinPath = if ($Architecture -eq 'arm64') {
-        Join-Path $root 'packaging\imagemagick-source-arm64.json'
+        Join-Path $root 'scripts\packaging\imagemagick-source-arm64.json'
     } else {
-        Join-Path $root 'packaging\imagemagick-source.json'
+        Join-Path $root 'scripts\packaging\imagemagick-source.json'
     }
     $magickPin = Get-Content -LiteralPath $magickPinPath -Raw | ConvertFrom-Json
     $imPath = Join-Path $env:ProgramFiles ([string]$magickPin.identity.installDirectoryName)
@@ -357,7 +357,7 @@ if ($bundleMagick) {
     # the synthetic PANGO text-render input coder. Prove both invariants before removing
     # its module; this is what allows the otherwise-unused cairo/pango delegate DLLs above
     # to stay out without leaving an unresolved import.
-    [xml]$magickPolicy = Get-Content -LiteralPath "$root\packaging\imagemagick-policy.xml" -Raw
+    [xml]$magickPolicy = Get-Content -LiteralPath "$root\scripts\packaging\imagemagick-policy.xml" -Raw
     $deniedCoderAliases = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase
     )
@@ -367,7 +367,7 @@ if ($bundleMagick) {
         foreach ($token in $tokens) { [void]$deniedCoderAliases.Add($token) }
     }
     if (-not $deniedCoderAliases.Contains('PANGO')) {
-        throw 'Refusing to prune the PANGO coder: packaging/imagemagick-policy.xml no longer denies PANGO'
+        throw 'Refusing to prune the PANGO coder: scripts/packaging/imagemagick-policy.xml no longer denies PANGO'
     }
     # This asks OUR CLI which formats we advertise, purely to prove we are not about to
     # prune a coder we actually expose. The answer comes from `formats::FORMATS`, which is
@@ -597,7 +597,7 @@ if ($bundleMagick) {
     if ($LASTEXITCODE) { throw "Mechanically verified ImageMagick runtime pruning failed" }
 
     # Overwrite the stock policy.xml with our hardened one.
-    Copy-Item "$root\packaging\imagemagick-policy.xml" "$stage\magick\policy.xml" -Force
+    Copy-Item "$root\scripts\packaging\imagemagick-policy.xml" "$stage\magick\policy.xml" -Force
 
     # Authoritative final gate: reject any third-party PE import not present in the
     # bundle, then execute the exact flattened layout with bundle-local modules/config.
@@ -665,7 +665,7 @@ if ($Architecture -cne $hostArchNow) { $bundleCheckArgs['SkipSmoke'] = $true }
 # recipe to drift. Everything below is assembly: flatten, add the marker ini, zip, exit.
 if ($Portable) {
     Write-Host "[2c/3] assembling portable zip" -ForegroundColor Green
-    $portableStage = Join-Path $root "packaging\stage\portable-$Architecture"
+    $portableStage = Join-Path $root "scripts\packaging\stage\portable-$Architecture"
     if (Test-Path $portableStage) { Remove-Item $portableStage -Recurse -Force }
     New-Item -ItemType Directory $portableStage -Force | Out-Null
 
@@ -801,7 +801,7 @@ if ($Portable) {
 # Mode needed). Without it the install still works — only the classic menu ships.
 if (-not $NoModernMenu) {
     Write-Host "[2b/4] building signed sparse package (modern menu)" -ForegroundColor Green
-    & "$root\packaging\make-msix.ps1" -OutDir $stage -Architecture $Architecture
+    & "$root\scripts\packaging\make-msix.ps1" -OutDir $stage -Architecture $Architecture
 } else {
     Write-Host "[2b/4] -NoModernMenu: skipping the signed package (classic menu only)" -ForegroundColor Yellow
 }
@@ -813,7 +813,7 @@ Write-Host "[3/4] compiling installer (Inno Setup)" -ForegroundColor Green
 # compile can still ship a broken uninstaller - that's how issue #3 (TSetupForm.Create ->
 # "Resource TSetupForm not found") escaped. Fail the build before wasting a compile on it.
 $installerCheckArgs = @{
-    IssPath = "$root\packaging\installer.iss"
+    IssPath = "$root\scripts\packaging\installer.iss"
     CorePolicyPath = "$stage\policy.xml"
 }
 if ($bundleMagick) {
@@ -876,7 +876,7 @@ $expectedSetupPath = "$root\dist\SageThumbs2K-Setup-$ver$outputSuffix.exe"
 # A stale same-version artifact must not survive an odd ISCC "success" and then be
 # mistaken for the installer produced from this stage.
 Remove-Item -LiteralPath $expectedSetupPath -Force -ErrorAction SilentlyContinue
-& $iscc @isccArgs "$root\packaging\installer.iss"
+& $iscc @isccArgs "$root\scripts\packaging\installer.iss"
 if ($LASTEXITCODE) { throw "Inno Setup compile failed" }
 if (-not (Test-Path -LiteralPath $expectedSetupPath -PathType Leaf)) {
     throw "Inno Setup exited successfully but did not create the expected installer: $expectedSetupPath"

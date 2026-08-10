@@ -1,7 +1,7 @@
 <#
   Exercise the full format corpus against the exact installer payload.
 
-  packaging\stage\x64 keeps ImageMagick in a subdirectory for Inno Setup, while the
+  scripts\packaging\stage\x64 keeps ImageMagick in a subdirectory for Inno Setup, while the
   installer flattens that subdirectory into the application directory. This
   wrapper reproduces the installed layout in a disposable directory, copies the
   staged st2k.exe beside the staged Magick runtime, and delegates to
@@ -18,7 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $StagePath) {
-    $StagePath = Join-Path $root 'packaging\stage\x64'
+    $StagePath = Join-Path $root 'scripts\packaging\stage\x64'
 }
 $stage = (Resolve-Path -LiteralPath $StagePath -ErrorAction Stop).Path
 $stagedCli = Join-Path $stage 'st2k.exe'

@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-if (-not $PolicyPath) { $PolicyPath = Join-Path $root 'packaging\size-budget.json' }
+if (-not $PolicyPath) { $PolicyPath = Join-Path $root 'scripts\packaging\size-budget.json' }
 
 function Read-RequiredText([object]$object, [string]$name) {
     $property = $object.PSObject.Properties[$name]
@@ -70,7 +70,7 @@ function Get-ArchitecturePolicy([object]$policy, [string]$architecture) {
         throw "size policy '$PolicyPath' has no '$architecture' architecture policy"
     }
     # Both architectures now ship Full: ARM64 gained its own pinned ImageMagick bundle
-    # (packaging\imagemagick-source-arm64.json), so 'compact' is no longer an ARM64 fact.
+    # (scripts\packaging\imagemagick-source-arm64.json), so 'compact' is no longer an ARM64 fact.
     $profile = 'full'
     $profilePolicy = $architecturePolicy.Value.PSObject.Properties[$profile]
     if ($null -eq $profilePolicy -or $null -eq $profilePolicy.Value) {
@@ -121,7 +121,7 @@ if ($StagePath) {
 
 $installerCalibrated = Read-RequiredBool $profile 'installerReferenceCalibrated'
 if (-not $installerCalibrated) {
-    throw "release size budget cannot validate $Architecture/$($selected.Name) installer: no calibrated installer reference yet. Build and independently verify the first installer, then record its bytes and SHA-256 in packaging/size-budget.json. Policy rationale: $rationale"
+    throw "release size budget cannot validate $Architecture/$($selected.Name) installer: no calibrated installer reference yet. Build and independently verify the first installer, then record its bytes and SHA-256 in scripts/packaging/size-budget.json. Policy rationale: $rationale"
 }
 
 $referenceVersion = Read-RequiredText $profile 'referenceVersion'

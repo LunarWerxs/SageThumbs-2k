@@ -3,11 +3,11 @@
 SageThumbs 2K uses ImageMagick as its tier-3 long-tail decoder and for the Convert
 dialog's exotic output encoders. It runs out of process with resource limits and a kill
 timeout; ImageMagick is never loaded into Explorer. The x64 Full installer maps the
-contents of `packaging/stage/<arch>/magick` directly into the application directory, so
+contents of `scripts/packaging/stage/<arch>/magick` directly into the application directory, so
 that staging directory is also the final flattened runtime layout.
 
 **ARM64 is Full too, since 2026-08-02.** It has its own pin,
-[`imagemagick-source-arm64.json`](../packaging/imagemagick-source-arm64.json), describing the
+[`imagemagick-source-arm64.json`](../scripts/packaging/imagemagick-source-arm64.json), describing the
 SAME upstream 7.1.2-29 Q16-HDRI release and the same 195-file inventory; only the bundle bytes
 differ. The arm64 asset is an Inno installer rather than something installable on an x64 host,
 so its payload is extracted with `innoextract` into
@@ -42,7 +42,7 @@ Bumped from `7.1.2-25` on 2026-07-31 for the 2026 policy.xml bypass cluster, inc
 (GHSA-56m6-8q75-f2rw), the PSD/DCM/MNG/APNG/concatenate/script bypasses, and
 **CVE-2025-66628** (integer overflow on unchecked width/height in the PSX TIM coder).
 
-[`imagemagick-source.json`](../packaging/imagemagick-source.json) pins its runtime identity and a
+[`imagemagick-source.json`](../scripts/packaging/imagemagick-source.json) pins its runtime identity and a
 deterministic SHA-256 inventory of every source file eligible to enter the bundle:
 
 - `magick.exe`
@@ -57,7 +57,7 @@ the first `C:\Program Files\ImageMagick*` directory is deliberately forbidden.
 An ImageMagick upgrade is therefore an explicit source change: review the new upstream
 package, update the pin, regenerate and inspect the stubs, run the full format regression
 corpus, review the final dependency inventory, and run
-`pwsh scripts/check-magick-dependency-freshness.ps1 -BundlePath packaging/stage/x64/magick`.
+`pwsh scripts/check-magick-dependency-freshness.ps1 -BundlePath scripts/packaging/stage/x64/magick`.
 That last check is an advisory
 maintenance check against the official zlib and libpng pages, not a CI or release-network
 gate: an unavailable upstream site must not make a reproducible build fail.
@@ -240,7 +240,7 @@ zlib        1.3.2   (2026-02-17)     lqr         0.4.2   (2012-12-04)*
 
 `*` bzip2 1.0.8 and liblqr 0.4.2 are the newest upstream releases that exist, not stale pins.
 Regenerate this table after any x64 ImageMagick bump with
-`Get-ChildItem packaging\stage\x64\magick\CORE_RL_*.dll`
+`Get-ChildItem scripts\packaging\stage\x64\magick\CORE_RL_*.dll`
 and its `VersionInfo`. The three text-stack entries are our own no-op stubs and carry the
 ImageMagick version instead, by design.
 
@@ -271,8 +271,8 @@ writer delegates, upstream legal files, and clean-machine runtimes.
 Focused fail-closed tests:
 
 ```powershell
-pwsh scripts/test-magick-packaging.ps1 -BundlePath packaging/stage/x64/magick
-pwsh scripts/test-staged-regression.ps1 -StagePath packaging/stage/x64
+pwsh scripts/test-magick-packaging.ps1 -BundlePath scripts/packaging/stage/x64/magick
+pwsh scripts/test-staged-regression.ps1 -StagePath scripts/packaging/stage/x64
 ```
 
 The tests prove that source-inventory drift, a missing `VCOMP140.dll`, a missing

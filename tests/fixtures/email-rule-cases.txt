@@ -1,8 +1,8 @@
 # The email rule's contract, shared by all THREE implementations of it:
 #
-#   packaging/installer.iss          LooksLikeEmail   (uninstall survey, Pascal Script)
-#   src/bin/app/feedback.rs          looks_like_email (in-app Send feedback box, Rust)
-#   packaging/analytics/worker.js    looksLikeEmail   (server-side intake gate, JS)
+#   scripts/packaging/installer.iss        LooksLikeEmail   (uninstall survey, Pascal Script)
+#   src/bin/app/feedback.rs                looks_like_email (in-app Send feedback box, Rust)
+#   scripts/packaging/analytics/worker.js  looksLikeEmail   (server-side intake gate, JS)
 #
 # Three runtimes means three implementations; this file is what stops them drifting. Each one
 # is run against these exact cases - Rust in `feedback::tests::email_rule_matches_shared_table`,

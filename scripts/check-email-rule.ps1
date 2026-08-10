@@ -5,9 +5,9 @@
   The uninstall survey's reply field is email-only (2026-08-05). Enforcing that takes three
   implementations, because it runs in three runtimes and none of them can call the others:
 
-      packaging/installer.iss        LooksLikeEmail    Pascal Script, inside the uninstaller
+      scripts/packaging/installer.iss        LooksLikeEmail    Pascal Script, inside the uninstaller
       src/bin/app/feedback.rs        looks_like_email  Rust, the in-app Send feedback box
-      packaging/analytics/worker.js  looksLikeEmail    JS, the Cloudflare Worker intake gate
+      scripts/packaging/analytics/worker.js  looksLikeEmail    JS, the Cloudflare Worker intake gate
 
   Three copies of a rule is three chances to drift, and the drift is INVISIBLE: a stricter
   client silently drops addresses the server would have kept, a stricter server silently
@@ -40,14 +40,14 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $casesPath = Join-Path $Root 'tests\fixtures\email-rule-cases.txt'
-$workerPath = Join-Path $Root 'packaging\analytics\worker.js'
-$issPath = Join-Path $Root 'packaging\installer.iss'
+$workerPath = Join-Path $Root 'scripts\packaging\analytics\worker.js'
+$issPath = Join-Path $Root 'scripts\packaging\installer.iss'
 
 # The fixture and installer.iss are TRACKED, so their absence is a real breakage.
 foreach ($p in @($casesPath, $issPath)) {
     if (-not (Test-Path $p)) { Write-Error "missing required file: $p"; exit 1 }
 }
-# worker.js is NOT: `/packaging/analytics/` is gitignored, so a clean checkout never has it and
+# worker.js is NOT: `/scripts/packaging/analytics/` is gitignored, so a clean checkout never has it and
 # CI never will. Treating that as a failure would make the CI step red on every single run,
 # which is why this is a reported SKIP like the Pascal leg rather than a hard error. The dev box
 # and the release pipeline both have the file, so the JS leg still actually runs where it can.

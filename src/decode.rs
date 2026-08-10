@@ -125,7 +125,7 @@ pub(crate) mod limits {
 
     /// ImageMagick subprocess resource caps. These are the SINGLE source for the
     /// child's `-limit` CLI flags, the external kill-timeout ([`super::MAGICK_TIMEOUT`]),
-    /// and the shipped `packaging/imagemagick-policy.xml` (pinned by the
+    /// and the shipped `scripts/packaging/imagemagick-policy.xml` (pinned by the
     /// `magick_limits_agree*` tests). Tune here and all three stay in agreement.
     /// CPU-TIME budget for one ImageMagick child — the real containment number. A decoder
     /// stuck in a loop or grinding a decompression bomb burns CPU and is killed here.

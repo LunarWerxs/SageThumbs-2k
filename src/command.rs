@@ -188,7 +188,7 @@ unsafe fn menu_item_state(
 /// Binds each quick-verb CLSID to the `MENU` item it surfaces and its manifest `desktop5:Verb`
 /// id. The keys MUST equal [`verbs::QUICK_KEYS`] in order (a test pins this) so the modern quick
 /// verbs and the classic `quick_items()` stay the same set; the verb ids must match the `Id="…"`
-/// attributes in `packaging/AppxManifest.xml`.
+/// attributes in `scripts/packaging/AppxManifest.xml`.
 const QUICK_VERBS: &[(GUID, &str, &str)] = &[
     (
         crate::guids::CLSID_QUICK_CONVERT_INTO,

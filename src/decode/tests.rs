@@ -112,10 +112,10 @@ fn magick_time_limits_agree() {
 fn magick_limits_match_policy_xml() {
     // policy.xml ships to disk beside magick.exe, so it can't read the consts at
     // runtime — pin it here. Change a magick `-limit` and you must change
-    // packaging/imagemagick-policy.xml to match (and vice-versa).
+    // scripts/packaging/imagemagick-policy.xml to match (and vice-versa).
     let policy = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/packaging/imagemagick-policy.xml"
+        "/scripts/packaging/imagemagick-policy.xml"
     ))
     .expect("imagemagick-policy.xml must be readable");
     for (name, value) in [

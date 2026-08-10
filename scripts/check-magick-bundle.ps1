@@ -28,7 +28,7 @@ param(
     # validates against, so an ImageMagick bump is one edit in one file. It used to be
     # a version literal here too, which meant a re-pin passed the source gate and then
     # failed the smoke gate on a string nobody remembered to update.
-    [string]$SourcePinPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\imagemagick-source.json'),
+    [string]$SourcePinPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\packaging\imagemagick-source.json'),
 
     [switch]$SkipSmoke
 )

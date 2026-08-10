@@ -322,7 +322,7 @@ if ($imageMagickBundled) {
 # closure + real decode smoke tests for the x64 Full payload. ARM64 Compact
 # intentionally has no ImageMagick and cannot execute on this x64 verifier.
 if ($Architecture -eq 'x64') {
-    $magickPinPath = Join-Path $root 'packaging\imagemagick-source.json'
+    $magickPinPath = Join-Path $root 'scripts\packaging\imagemagick-source.json'
     $magickPin = Get-Content -LiteralPath $magickPinPath -Raw | ConvertFrom-Json
     $sourceDirectoryName = [string](Get-ReleaseRequiredProperty -Object $magickPin.identity -Name 'installDirectoryName')
     $magickSource = Join-Path $env:ProgramFiles $sourceDirectoryName

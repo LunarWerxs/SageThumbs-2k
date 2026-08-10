@@ -15,7 +15,7 @@
 # compiled installers — attach to GitHub Releases instead
 /dist/
 # staged payload incl. the bundled ImageMagick
-/packaging/stage/
+/scripts/packaging/stage/
 .saydeploy/
 test/
 
@@ -63,7 +63,7 @@ Thumbs.db
 /scripts/fill-audio-real.ps1
 /scripts/build-corpus-real.ps1
 /scripts/private/
-/packaging/analytics/
+/scripts/packaging/analytics/
 
 # Owner's local to-do scratch dir
 /to-do/

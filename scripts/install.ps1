@@ -184,8 +184,8 @@ Copy-Artifact "$BuildDir\SageThumbs2K.exe" $prog
 # The CLI / MCP server (`st2k --mcp`). The dist installer ships it; the dev
 # install used to omit it, leaving a live CLI check running stale code.
 Copy-Artifact "$BuildDir\st2k.exe" $prog
-Copy-Item "$root\packaging\AppxManifest.xml" $prog -Force
-Copy-Item "$root\packaging\Assets" $prog -Recurse -Force
+Copy-Item "$root\scripts\packaging\AppxManifest.xml" $prog -Force
+Copy-Item "$root\scripts\packaging\Assets" $prog -Recurse -Force
 # The legacy x64 loose package stays neutral for update compatibility. ARM64
 # Explorer can load only an ARM64 in-process extension, so its dev manifest must
 # declare arm64. Patch the copied manifest, never the tracked template.
@@ -201,7 +201,7 @@ if ($spec.Name -eq 'arm64') {
 # Our hardened ImageMagick policy.xml next to the binaries. decode.rs points
 # MAGICK_CONFIGURE_PATH here, so the policy applies even when we fall back to a
 # system-installed magick (this dev/compact install bundles none of its own).
-Copy-Item "$root\packaging\imagemagick-policy.xml" "$prog\policy.xml" -Force
+Copy-Item "$root\scripts\packaging\imagemagick-policy.xml" "$prog\policy.xml" -Force
 
 # Thumbnails + classic context menu (machine-wide, HKLM). This classic IContextMenu
 # handler serves the full owner-drawn preview + "SageThumbs 2K" submenu with Settings
@@ -213,7 +213,7 @@ if ($registrationExit -ne 0) { throw "regsvr32 registration failed ($registratio
 # verbs (Convert into / Convert… / Resize / Rotate) appear on the compact Win11 menu.
 # NOTE: on a classic-menu-default machine those packaged verbs DON'T appear (packaged verbs
 # live only in the modern compact flyout) — the classic handler shows its OWN quick verbs
-# unconditionally now. (See packaging\AppxManifest.xml.)
+# unconditionally now. (See scripts\packaging\AppxManifest.xml.)
 Get-AppxPackage $pkg | Remove-AppxPackage -ErrorAction SilentlyContinue
 Add-AppxPackage -Register "$prog\AppxManifest.xml" -ExternalLocation $prog -ForceUpdateFromAnyVersion
 # Clean up the now-inert ModernMenuActive marker (<= 1.3.0 wrote it; nothing reads it since the
