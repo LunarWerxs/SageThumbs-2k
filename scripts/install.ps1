@@ -46,6 +46,38 @@ function Get-ArchitectureSpec([string]$SelectedArchitecture) {
     }
 }
 
+# Explorer memory-maps sagethumbs2k.dll the moment it draws one thumbnail, and a mapped PE
+# cannot be OVERWRITTEN - a plain Copy-Item fails with a sharing violation. Killing Explorer
+# first is a race you lose about half the time: Windows restarts it within a second and the
+# new instance re-maps the DLL partway through a multi-file copy, leaving a mixed install.
+# A RENAME of a mapped file is allowed, so move the in-use file aside and copy into the freed
+# path instead - which is what the shipped installer does. Nothing has to be killed, so there
+# is no race to lose. The renamed copies are swept by the next install, once the last mapping
+# of them is gone (67 MB of them had accumulated from earlier kill-then-copy attempts).
+function Copy-Artifact([string]$Source, [string]$DestinationDirectory) {
+    $dest = Join-Path $DestinationDirectory (Split-Path $Source -Leaf)
+    try {
+        Copy-Item -LiteralPath $Source -Destination $dest -Force -ErrorAction Stop
+        return
+    } catch {
+        # In use. Fall through; the rename path below rethrows if it is something else.
+    }
+    $aside = "$dest.old-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    Move-Item -LiteralPath $dest -Destination $aside -Force -ErrorAction Stop
+    Copy-Item -LiteralPath $Source -Destination $dest -Force -ErrorAction Stop
+    Write-Host "  $(Split-Path $dest -Leaf) was in use; the old copy was renamed aside."
+}
+
+function Remove-StrandedCopies([string]$DestinationDirectory) {
+    if (-not (Test-Path $DestinationDirectory)) { return }
+    $freed = 0
+    foreach ($f in (Get-ChildItem $DestinationDirectory -File -Filter '*.old-*' -ErrorAction SilentlyContinue)) {
+        $size = $f.Length
+        try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $freed += $size } catch { }
+    }
+    if ($freed -gt 0) { Write-Host ("  swept {0:N1} MB of stranded old copies." -f ($freed / 1MB)) }
+}
+
 function Get-PeMachine([string]$Path) {
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
@@ -145,12 +177,13 @@ New-Item -ItemType Directory -Path $prog -Force | Out-Null
 foreach ($artifact in @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe')) {
     Assert-PeArchitecture (Join-Path $BuildDir $artifact) $spec
 }
-Copy-Item "$BuildDir\sagethumbs2k.dll" $prog -Force
+Remove-StrandedCopies $prog
+Copy-Artifact "$BuildDir\sagethumbs2k.dll" $prog
 # The bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly.
-Copy-Item "$BuildDir\SageThumbs2K.exe" $prog -Force
+Copy-Artifact "$BuildDir\SageThumbs2K.exe" $prog
 # The CLI / MCP server (`st2k --mcp`). The dist installer ships it; the dev
 # install used to omit it, leaving a live CLI check running stale code.
-Copy-Item "$BuildDir\st2k.exe" $prog -Force
+Copy-Artifact "$BuildDir\st2k.exe" $prog
 Copy-Item "$root\packaging\AppxManifest.xml" $prog -Force
 Copy-Item "$root\packaging\Assets" $prog -Recurse -Force
 # The legacy x64 loose package stays neutral for update compatibility. ARM64
