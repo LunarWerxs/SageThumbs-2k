@@ -485,11 +485,19 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
     // Only frame controls that are actually visible. A left-column field scrolled
     // out of the viewport is SW_HIDE'd; drawing its panel anyway leaks a faint
     // rounded rect below the clip mask (it was bleeding around the footer credit).
-    for id in [ID_MAXSIZE, ID_SIZE, ID_JPEG, ID_PNG, ID_SEARCH] {
+    for id in [ID_MAXSIZE, ID_SIZE, ID_JPEG, ID_PNG] {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             if IsWindowVisible(c).as_bool() {
                 draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 6, 2);
             }
+        }
+    }
+    // The format filter is the same 18px edit, but it holds a sentence of cue text rather
+    // than digits — so it wants the symmetric-looking 5/3 (ink dead centre in a 26px
+    // frame), not the digit bias above. Matches the settings-wide search box in the header.
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SEARCH) {
+        if IsWindowVisible(c).as_bool() {
+            draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 5, 3);
         }
     }
     for id in [ID_MENU_PREVIEW, ID_LANG, ID_SHOT_HOTKEY] {

@@ -46,15 +46,24 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
     // that header. WS_BORDER draws a hard SQUARE 1px frame, and the rounded region clip
     // that used to sit on top of it then bit the corners off, which is exactly what made
     // the box look like its edges were chewed.
+    // Geometry, all of it load-bearing:
+    //   x: right edge at PANE_X + PANE_W, so the 4px-inflated frame lands on PANE_W + 4 —
+    //      the same right edge the list card and the format filter frame use. The pane
+    //      header is created 4px wider than PANE_W precisely so it can host that frame
+    //      without clipping the right-hand round off it.
+    //   h: 18, not 24. A single-line EDIT top-aligns its text, so a taller box does not
+    //      centre it, it just leaves dead space underneath — the text rode 4.5px high in
+    //      a 32px box. 18 + a 5/3 frame is a 26px box with the ink dead centre.
+    //   y: PANE_TOP + 17 puts that 26px frame at PANE_TOP + 12, centred in the 50px header.
     let edit = ctl(
         hwnd,
         EDIT,
         "",
         WINDOW_STYLE(ES_AUTOHSCROLL as u32),
         navrail::PANE_X + navrail::PANE_W - 176,
-        navrail::PANE_TOP + 12,
+        navrail::PANE_TOP + 17,
         176,
-        24,
+        18,
         ID_SEARCH_GLOBAL,
         hinst,
     );
@@ -86,9 +95,9 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
         w!("LISTBOX"),
         "",
         WINDOW_STYLE(LBS_NOTIFY as u32 | LBS_OWNERDRAWFIXED as u32 | LBS_HASSTRINGS as u32),
-        navrail::PANE_X + navrail::PANE_W - 330,
-        navrail::PANE_TOP + 38,
-        330,
+        DROP_X,
+        DROP_Y,
+        DROP_W,
         180,
         ID_SEARCH_RESULTS,
         hinst,
@@ -99,6 +108,14 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
 
 /// Row height for the owner-drawn dropdown, 96-DPI design px.
 const ROW_H: i32 = 26;
+
+/// Dropdown geometry (96-DPI design px), shared by `build_search` and `on_change` so the
+/// created rect and the re-sized rect cannot drift apart. The right edge lines up with the
+/// search box's PAINTED frame (edit right + its 4px inflation), not with the edit itself,
+/// and Y clears the frame's bottom by 4px so the two rounded shapes don't touch.
+const DROP_W: i32 = 330;
+const DROP_X: i32 = navrail::PANE_X + navrail::PANE_W + 4 - DROP_W;
+const DROP_Y: i32 = navrail::PANE_TOP + 42;
 
 thread_local! {
     /// The row under the mouse, for the hover highlight. -1 = none.
@@ -368,9 +385,9 @@ pub(super) unsafe fn on_change(hwnd: HWND) {
         // Size the dropdown to EXACTLY its rows (the fixed 180px box left dead space
         // under short result lists), then re-clip the rounded corners to the new size.
         let h = crate::win::dpi_scale(hwnd, ROW_H * shown as i32 + 4);
-        let w = crate::win::dpi_scale(hwnd, 330);
-        let x = crate::win::dpi_scale(hwnd, navrail::PANE_X + navrail::PANE_W - 330);
-        let y = crate::win::dpi_scale(hwnd, navrail::PANE_TOP + 38);
+        let w = crate::win::dpi_scale(hwnd, DROP_W);
+        let x = crate::win::dpi_scale(hwnd, DROP_X);
+        let y = crate::win::dpi_scale(hwnd, DROP_Y);
         let _ = SetWindowPos(
             list,
             Some(HWND_TOP),

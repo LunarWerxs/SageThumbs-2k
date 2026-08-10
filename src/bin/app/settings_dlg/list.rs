@@ -414,7 +414,37 @@ pub(super) unsafe extern "system" fn list_subclass(
                     // Muted column-header text to match the mockup. The color is
                     // only honored if we return CDRF_NEWFONT (not CDRF_DODEFAULT).
                     SetTextColor((*nmcd).hdc, HEADER_TEXT());
-                    return LRESULT(CDRF_NEWFONT as isize);
+                    return LRESULT((CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT) as isize);
+                } else if stage == CDDS_ITEMPOSTPAINT {
+                    // Kill the LAST column's right-hand divider. The theme draws it as a
+                    // bright vertical line against the dark header — it reads as a drag
+                    // grabber, and since HDS_NOSIZING the columns can't be dragged at all.
+                    // The inner dividers stay: those separate real columns.
+                    let cols = SendMessageW(
+                        list_header(h),
+                        windows::Win32::UI::Controls::HDM_GETITEMCOUNT,
+                        None,
+                        None,
+                    )
+                    .0;
+                    if cols > 0 && (*nmcd).dwItemSpec as isize == cols - 1 {
+                        let rc = (*nmcd).rc;
+                        let hdc = (*nmcd).hdc;
+                        // Sample the header's own painted background rather than naming a
+                        // colour, so this stays right in light mode and under a future theme.
+                        let bg =
+                            windows::Win32::Graphics::Gdi::GetPixel(hdc, rc.right - 4, rc.top + 2);
+                        if bg.0 != windows::Win32::Graphics::Gdi::CLR_INVALID {
+                            let strip = RECT {
+                                left: rc.right - 2,
+                                top: rc.top,
+                                right: rc.right,
+                                bottom: rc.bottom,
+                            };
+                            fill(hdc, &strip, bg);
+                        }
+                    }
+                    return LRESULT(CDRF_DODEFAULT as isize);
                 }
             }
         }

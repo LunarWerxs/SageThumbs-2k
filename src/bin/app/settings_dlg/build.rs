@@ -468,9 +468,20 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         None,
         Some(LPARAM(DARK_TEXT().0 as isize)),
     );
+    let header = HWND(SendMessageW(list, LVM_GETHEADER, None, None).0 as *mut c_void);
+    // No column dragging. `fit_columns` already sizes Description to exactly fill the
+    // list, so every drag could do was truncate it or open a dead gap — and the divider
+    // it hung off drew as a bright grabber line at the right edge (the only thing on the
+    // page that looked like a handle). HDS_NOSIZING drops the drag AND the sizing cursor;
+    // the line itself is painted out in `list::list_subclass`'s header custom-draw.
+    let hstyle = GetWindowLongW(header, GWL_STYLE);
+    SetWindowLongW(
+        header,
+        GWL_STYLE,
+        hstyle | windows::Win32::UI::Controls::HDS_NOSIZING as i32,
+    );
     if is_dark() {
         // Native dark item-view theme is dark-only; light keeps the native light header.
-        let header = HWND(SendMessageW(list, LVM_GETHEADER, None, None).0 as *mut c_void);
         dark_control(header, w!("DarkMode_ItemsView"));
     }
     // Subclass for dark header text + SPACE/right-click bulk checkbox toggle.

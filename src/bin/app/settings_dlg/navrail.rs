@@ -240,7 +240,9 @@ fn fixed_row_next_y(row: Row, y: i32, first: bool) -> Option<i32> {
         Row::Btn(..) | Row::BtnStatus(..) | Row::StatusBtn(..) => Some(y + 32),
         Row::Status(_) => Some(y + 22),
         Row::Btn3(..) => Some(y + 34),
-        Row::Wide(_) => Some(y + 44),
+        // 8 above the edit + the 5/3 frame around an 18px box = 29, then the same ~11px
+        // gap under it the 24px box used to leave. (Was 44, for the taller box.)
+        Row::Wide(_) => Some(y + 40),
         Row::ListFill(_) => None,
     }
 }
@@ -596,15 +598,18 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     // HEADER control's client space — hence `d.hwndItem`, not `hwnd`.
     if let Ok(edit) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
         if IsWindowVisible(edit).as_bool() {
+            // 5 above / 3 below an 18px edit: a single-line EDIT top-aligns its text, so
+            // the ink sits 8px below the edit's top whatever its height. That puts the
+            // ink dead centre in the resulting 26px frame.
             super::restyle::draw_rounded_panel(
                 d.hwndItem,
                 hdc,
                 edit,
                 INPUT_BG(),
                 BORDER(),
-                8,
+                10,
                 4,
-                3,
+                5,
                 3,
             );
         }
@@ -633,8 +638,9 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let mut title = wide(nav_label(ci));
     let tn = title.len().saturating_sub(1);
     // Reserve the right edge for the settings-wide search box that floats over this
-    // header — otherwise a long title/blurb runs underneath it.
-    let text_right = rc.right - dpi_scale(hwnd, 186);
+    // header — otherwise a long title/blurb runs underneath it. 192 = the box (176) + its
+    // frame inflation + the 2px margin that keeps the frame's right round inside the header.
+    let text_right = rc.right - dpi_scale(hwnd, 192);
     let mut tr = RECT {
         left: tx,
         top: rc.top - dpi_scale(hwnd, 2),
@@ -759,6 +765,13 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
 
     // Per-pane header (icon chip + bold category title + blurb), redrawn per active
     // category. Always visible; content sits below it.
+    //
+    // PANE_W + 4, not PANE_W: everything framed below (the list card, the format filter)
+    // is a PANE_W-wide control plus a 4px painted frame inflation, so the pane's real
+    // right edge is PANE_X + PANE_W + 4. The search box floats over this header and its
+    // frame is drawn by (and therefore CLIPPED to) it — at PANE_W the frame's right round
+    // was sliced off, and pulling the box left to fit left it 6px short of the right edge
+    // every other row lines up on. Widening the header fixes both at once.
     ctl(
         hwnd,
         STATIC,
@@ -766,7 +779,7 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
         WINDOW_STYLE(SS_OWNERDRAW),
         PANE_X,
         PANE_TOP,
-        PANE_W,
+        PANE_W + 4,
         PANE_HEAD_H,
         ID_PANE_HEADER,
         hinst,
@@ -849,8 +862,10 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     }
                 }
                 Row::Wide(id) => {
-                    // Extra breathing room above/below (the search box read squished).
-                    if let Some(c) = place(id, PANE_X, y + 8, PANE_W, 24) {
+                    // 18, not 24: a single-line EDIT top-aligns its text, so the taller box
+                    // never centred the cue text — it just left 11px of dead space under it.
+                    // With the 5/3 frame this is a 26px box with the ink centred.
+                    if let Some(c) = place(id, PANE_X, y + 8, PANE_W, 18) {
                         cats[ci].push(c);
                     }
                 }
