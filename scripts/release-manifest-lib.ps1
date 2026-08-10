@@ -7,11 +7,11 @@ function Get-ReleaseCargoBuildArguments {
         [string]$Architecture,
 
         [Parameter(Mandatory)]
-        [ValidateSet('sagethumbs2k', 'sagethumbs2k-dll')]
+        [ValidateSet('sagethumbs2k', 'sagethumbs2k-dll', 'sagethumbs2k-dlghook')]
         [string]$Package,
 
-        [Parameter(Mandatory)]
-        [ValidateNotNullOrEmpty()]
+        # OPTIONAL: sagethumbs2k-dlghook declares no features at all (it depends on nothing
+        # but `windows`), and cargo rejects `--features` with an empty value.
         [string]$Features
     )
 
@@ -20,9 +20,14 @@ function Get-ReleaseCargoBuildArguments {
     } else {
         @()
     }
+    # NOT named $features: PowerShell variable names are case-INSENSITIVE, so that would BE
+    # the [string]$Features parameter, and assigning an array to it coerces the array back
+    # into one space-joined string. Cargo then sees a single argument
+    # "--features webp-lossy,html-preview,hdr-capture" and rejects it.
+    $featureArgs = if ([string]::IsNullOrWhiteSpace($Features)) { @() } else { @('--features', $Features) }
     # Keep this one canonical ordering in the build runner and both provenance
     # gates. The ARM64 target must be an actual Cargo argument, not host trivia.
-    return @('--release', '--locked') + $target + @('-p', $Package, '--features', $Features)
+    return @('--release', '--locked') + $target + @('-p', $Package) + $featureArgs
 }
 
 function Get-ReleaseRequiredInputPaths {

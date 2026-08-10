@@ -147,6 +147,8 @@ Write-Host "SageThumbs 2K release pipeline - version $ver ($Architecture)" -Fore
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 $exeBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture')
 $dllBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
+# No -Features: this crate declares none (see crates/dlghook/Cargo.toml).
+$dlgHookBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dlghook)
 # The ARM64 toolchain environment is needed by STAGING, not just by compiling: the magick
 # bundling step inspects ARM64 PEs with MSVC `dumpbin` and re-versions stub DLLs with `rc.exe`,
 # and both arrive via vcvars. It used to be set up only inside the `-not $SkipBuild` block
@@ -205,6 +207,16 @@ if (-not $SkipBuild) {
     Write-Host "[1b/4] cargo build $($dllBuildArgs -join ' ')  (slim DLL)" -ForegroundColor Green
     Push-Location $root
     try { cargo build @dllBuildArgs; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
+
+    # --- Open/Save dialog hook DLL ------------------------------------------------
+    # A THIRD package, so it needs its own `-p` build for the same reason the slim DLL does.
+    # This step exists because the x64 release only ever passed by ACCIDENT: the staging copy
+    # below found an st2k_dlghook.dll left in the target directory by an earlier hand build.
+    # ARM64, whose target directory had no such leftover, failed at the copy and exposed it.
+    # A release must build every artifact it ships, never inherit one.
+    Write-Host "[1c/4] cargo build $($dlgHookBuildArgs -join ' ')  (dialog hook DLL)" -ForegroundColor Green
+    Push-Location $root
+    try { cargo build @dlgHookBuildArgs; if ($LASTEXITCODE) { throw "dialog hook DLL build failed" } } finally { Pop-Location }
 }
 
 # 3) Stage -------------------------------------------------------------------
