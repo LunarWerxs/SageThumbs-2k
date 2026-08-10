@@ -165,6 +165,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_SHOT_USE_DIR),
             Pair(ID_LBL_SHOT_HK, ID_SHOT_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
+            Pair(ID_LBL_SHOT_TOOL, ID_SHOT_TOOL, 156, 200),
             // Service state + Restart, moved back here from Advanced 2026-08-06. A hotkey only
             // fires while the helper is resident, so "is it running / put it back" is part of
             // this feature, not a system setting. Being on Advanced made it unfindable by the

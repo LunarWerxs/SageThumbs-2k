@@ -62,6 +62,75 @@ impl Tool {
             Tool::Move => "Move",
         }
     }
+
+    /// The tools offered as a STARTING tool, in the order the Settings dropdown lists them.
+    ///
+    /// Deliberately not every variant: `Eyedropper` and `Move` don't draw anything, so opening
+    /// the editor already in one of them looks like the editor is broken. This array IS the
+    /// stored format — a setting holds an INDEX into it — so only ever APPEND, never reorder
+    /// or remove, or existing users silently get a different tool than the one they chose.
+    pub(super) const DEFAULTABLE: [Tool; 10] = [
+        Tool::Arrow,
+        Tool::Rect,
+        Tool::Ellipse,
+        Tool::Line,
+        Tool::Pen,
+        Tool::Text,
+        Tool::Number,
+        Tool::Highlight,
+        Tool::Pixelate,
+        Tool::Invert,
+    ];
+
+    /// The starting tool for a stored setting index, falling back to the first entry
+    /// ([`Tool::Arrow`]) for anything out of range — a hand-edited registry value can be
+    /// anything at all, and an unusable editor is a worse answer than the default one.
+    pub(super) fn from_default_index(index: u32) -> Tool {
+        *Tool::DEFAULTABLE
+            .get(index as usize)
+            .unwrap_or(&Tool::DEFAULTABLE[0])
+    }
+}
+
+/// The Settings dialog clamps its dropdown with `settings::SHOT_TOOL_COUNT`, because it
+/// cannot see [`Tool::DEFAULTABLE`] (that array is `pub(super)` to this module). Adding a
+/// tool here without updating that constant would silently drop it off the end of the
+/// dropdown, so the two are welded together at COMPILE time rather than by a comment.
+const _: () = assert!(
+    Tool::DEFAULTABLE.len() == sagethumbs2k_core::settings::SHOT_TOOL_COUNT as usize,
+    "Tool::DEFAULTABLE and settings::SHOT_TOOL_COUNT disagree"
+);
+
+/// Named for its subject rather than `tests`: this file already has a `mod tests` further
+/// down, and two modules of the same name in one file do not compile.
+#[cfg(test)]
+mod default_tool_tests {
+    use super::Tool;
+
+    /// The stored setting is an INDEX into DEFAULTABLE, so index 0 must stay Arrow and the
+    /// list must not be reordered under existing users. This test is the tripwire for that.
+    #[test]
+    fn default_tool_index_zero_is_arrow() {
+        assert!(matches!(Tool::from_default_index(0), Tool::Arrow));
+        assert!(matches!(Tool::DEFAULTABLE[1], Tool::Rect));
+    }
+
+    /// Anything out of range degrades to the default rather than panicking or leaving the
+    /// editor in a tool that cannot draw.
+    #[test]
+    fn out_of_range_falls_back_to_arrow() {
+        for i in [Tool::DEFAULTABLE.len() as u32, 99, u32::MAX] {
+            assert!(matches!(Tool::from_default_index(i), Tool::Arrow));
+        }
+    }
+
+    /// The non-drawing tools must never be offered as a starting tool.
+    #[test]
+    fn non_drawing_tools_are_not_offered() {
+        for t in Tool::DEFAULTABLE {
+            assert!(!matches!(t, Tool::Eyedropper | Tool::Move));
+        }
+    }
 }
 
 /// A placed annotation. Coordinates are in virtual-screen client space.

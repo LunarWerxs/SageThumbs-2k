@@ -85,6 +85,9 @@ pub(super) const ID_SHOT_QUICK_HOTKEY: i32 = 1143;
 pub(super) const ID_SHOT_USE_DIR: i32 = 1169;
 pub(super) const ID_SHOT_SET_DIR: i32 = 1170;
 pub(super) const ID_SHOT_DIR: i32 = 1171;
+/// Which annotation tool the capture editor opens with (combo + its label).
+pub(super) const ID_LBL_SHOT_TOOL: i32 = 1230;
+pub(super) const ID_SHOT_TOOL: i32 = 1231;
 // "General" section header (right-click-menu settings + UI language).
 pub(super) const ID_LBL_GENERAL: i32 = 1138;
 // "Menu items" checklist header (per-item context-menu visibility).

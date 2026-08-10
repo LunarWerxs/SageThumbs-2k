@@ -500,7 +500,7 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
             draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 5, 3);
         }
     }
-    for id in [ID_MENU_PREVIEW, ID_LANG, ID_SHOT_HOTKEY] {
+    for id in [ID_MENU_PREVIEW, ID_SHOT_TOOL, ID_LANG, ID_SHOT_HOTKEY] {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             if IsWindowVisible(c).as_bool() {
                 draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 2, 2);

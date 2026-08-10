@@ -141,6 +141,16 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
             None,
         );
     }
+    // Same discipline as the row above: "Defaults" selects the SAME value the getter falls
+    // back to, so a fresh install and pressing Defaults cannot disagree.
+    if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
+        SendMessageW(
+            tool,
+            CB_SETCURSEL,
+            Some(WPARAM(settings::DEFAULT_SHOT_TOOL as usize)),
+            None,
+        );
+    }
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
         // Factory order + every item shown (rebuilds the rows, dividers included).
         let rows = default_menu_rows(|_| true);
@@ -406,6 +416,11 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     if let Ok(prev) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
         let sel = SendMessageW(prev, CB_GETCURSEL, None, None).0.clamp(0, 2);
         let _ = settings::set_dword("MenuPreview", sel as u32);
+    }
+    if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
+        // CB_ERR is -1 (no selection); clamp to a real index rather than storing it.
+        let sel = SendMessageW(tool, CB_GETCURSEL, None, None).0.max(0);
+        let _ = settings::set_screenshot_default_tool(sel as u32);
     }
     let _ = settings::set_dword("ContainerSort", checked(hwnd, ID_C_SORT) as u32);
     let _ = settings::set_dword(

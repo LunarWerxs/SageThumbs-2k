@@ -329,7 +329,8 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
         sel: None,
         sel_dragging: false,
         sel_anchor: POINT::default(),
-        tool: Tool::Rect,
+        // The user's chosen starting tool (Settings > Screenshots). Arrow by default.
+        tool: Tool::from_default_index(sagethumbs2k_core::settings::screenshot_default_tool()),
         cur_color: {
             let (r, g, b) = PALETTE[0];
             rgb(r, g, b)

@@ -68,6 +68,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_HIDE_TYPE_OVERLAY, "chk_hide_type_overlay"),
         (ID_ENABLE_MENU, "chk_enable_menu"),
         (ID_LBL_PREVIEW, "lbl_menu_preview"),
+        (ID_LBL_SHOT_TOOL, "lbl_shot_tool"),
         (ID_MENU_QUICK, "chk_menu_quick"),
         (ID_MENU_CHECKER, "chk_menu_checker"),
         (ID_LBL_LIMITS, "grp_limits"),

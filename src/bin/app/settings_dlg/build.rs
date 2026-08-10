@@ -102,6 +102,50 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     dark_theme_combo(prev);
     restyle::dark_combo_subclass(prev, ID_MENU_PREVIEW);
 
+    let shot_tool = lc.combo(t("lbl_shot_tool"), ID_LBL_SHOT_TOOL, 160, ID_SHOT_TOOL);
+    // Option order comes from Tool::DEFAULTABLE, so the dropdown and the stored index can
+    // never drift apart: the array IS the wire format.
+    for key in [
+        "tool_arrow",
+        "tool_rect",
+        "tool_ellipse",
+        "tool_line",
+        "tool_pen",
+        "tool_text",
+        "tool_number",
+        "tool_highlight",
+        "tool_pixelate",
+        "tool_invert",
+    ] {
+        let w = wide(t(key));
+        SendMessageW(
+            shot_tool,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    // Out-of-range FALLS BACK, it does not clamp. A hand-edited registry value used to select
+    // nothing at all and render the combo BLANK; clamping to the last entry was no better,
+    // because it then showed "Invert" while the capture editor was actually starting in Arrow.
+    // `Tool::from_default_index` degrades to the default, so this has to degrade identically
+    // or the dialog reports a tool the editor is not using.
+    let raw_tool = settings::screenshot_default_tool();
+    let tool_sel = if raw_tool < settings::SHOT_TOOL_COUNT {
+        raw_tool
+    } else {
+        settings::DEFAULT_SHOT_TOOL
+    };
+    SendMessageW(
+        shot_tool,
+        CB_SETCURSEL,
+        Some(WPARAM(tool_sel as usize)),
+        None,
+    );
+    SendMessageW(shot_tool, CB_SETDROPPEDWIDTH, Some(WPARAM(230)), None);
+    dark_theme_combo(shot_tool);
+    restyle::dark_combo_subclass(shot_tool, ID_SHOT_TOOL);
+
     let combo = lc.combo(t("lbl_language"), ID_LBL_LANG, 260, ID_LANG);
     fill_lang_combo(combo);
     // The closed box is narrow, but the dropdown is wider so long native language

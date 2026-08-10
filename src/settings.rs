@@ -787,6 +787,35 @@ pub fn menu_preview() -> u32 {
     get_dword("MenuPreview", DEFAULT_MENU_PREVIEW).min(2)
 }
 
+/// Which annotation tool the capture editor opens with, as an INDEX into
+/// `screenshot::tools::Tool::DEFAULTABLE`. That array owns the ordering and the fallback;
+/// this is only the stored number, so the two cannot disagree about what index 0 means.
+pub const DEFAULT_SHOT_TOOL: u32 = 0; // Arrow
+
+/// How many tools the Settings dropdown offers, i.e. the length of
+/// `screenshot::tools::Tool::DEFAULTABLE`. It lives HERE because the Settings dialog cannot
+/// see that array (it is `pub(super)` inside the screenshot module) and still has to clamp
+/// `CB_SETCURSEL`: an out-of-range index selects nothing and the combo renders BLANK, which
+/// is what a hand-edited registry value used to produce. `tools.rs` holds a compile-time
+/// assertion that the two agree, so adding a tool without updating this fails the build
+/// rather than silently truncating the list.
+pub const SHOT_TOOL_COUNT: u32 = 10;
+
+/// The starting tool for the capture editor (index into `Tool::DEFAULTABLE`).
+///
+/// Defaults to ARROW rather than the rectangle it used to hardcode: pointing at the thing
+/// you just captured is the common case, and a rectangle is the one people undo. Unclamped
+/// on purpose — `Tool::from_default_index` owns the range check, so a hand-edited registry
+/// value degrades in exactly one place.
+pub fn screenshot_default_tool() -> u32 {
+    get_dword("ShotDefaultTool", DEFAULT_SHOT_TOOL)
+}
+
+/// Persist the capture editor's starting tool. See [`screenshot_default_tool`].
+pub fn set_screenshot_default_tool(index: u32) -> windows_registry::Result<()> {
+    set_dword("ShotDefaultTool", index)
+}
+
 /// Surface the most-used verbs (Convert into / Resize / Rotate) directly on the
 /// MAIN right-click menu (above the SageThumbs submenu), so they're one click
 /// instead of two. OFF by default — the original SageThumbs kept everything inside
