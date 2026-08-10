@@ -2,6 +2,36 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.10.0
+
+### Added
+
+- **Press Space to preview inside [Everything](https://www.voidtools.com/).** Click a result in
+  voidtools' search window and tap Space, and you get the same instant preview you get in a
+  folder, following you as you arrow down the hits. Everything 1.5 and up, installed or
+  portable. Asked for on the voidtools forum, where the answer was that support had to be added
+  on our side; it has been. While your cursor is still in Everything's search box, Space stays a
+  space, because that is what it should do.
+
+- **Press Space to preview inside any app's Open/Save dialog.** Picking a photo to attach or a
+  file to upload, and not sure which one it is? Click it in the dialog and tap Space to see it
+  full size, instead of cancelling out to go and look. It works even in Documents, Desktop and
+  Downloads, where the dialog does not otherwise tell anyone what it is pointing at. Space keeps
+  its normal meaning while the cursor is in the file-name box, so the preview only ever appears
+  once you have clicked into the file list. 64-bit applications.
+
+- **A FAQ**, at [docs/FAQ.md](FAQ.md), linked from the top of the README. Thumbnails not
+  appearing, files stored online-only, antivirus warnings, what the portable zip can and cannot
+  do, and the limits of the Space preview, all answered in one place instead of scattered across
+  issues.
+
+### Known limitation
+
+- **The Space preview cannot work over a window running as administrator.** Windows deliberately
+  withholds keystrokes typed into an elevated window from ordinary programs, so the keypress
+  never reaches us. If Everything is set to run as administrator, turn that off (Tools, Options,
+  General) and use its service instead. The FAQ has the full steps.
+
 ## 1.9.0
 
 ### Added

@@ -26,7 +26,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $pkgName = 'SageThumbs2K'
-$root = Split-Path $PSScriptRoot -Parent
+$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $manifest = Join-Path $PSScriptRoot 'AppxManifest.xml'
 $assets = Join-Path $PSScriptRoot 'Assets'
 
@@ -110,7 +110,7 @@ function New-RegistrationManifest([pscustomobject]$Spec, [string]$BuildLocation)
 
 $spec = Get-ArchitectureSpec $Architecture
 if (-not $ExternalLocation) {
-    $ExternalLocation = Join-Path (& "$PSScriptRoot\..\scripts\_targetdir.ps1") $spec.BuildSubdirectory
+    $ExternalLocation = Join-Path (& "$PSScriptRoot\..\_targetdir.ps1") $spec.BuildSubdirectory
 }
 
 if ($ValidateOnly) {

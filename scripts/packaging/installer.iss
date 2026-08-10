@@ -67,7 +67,7 @@ DisableProgramGroupPage=yes
 DisableDirPage=auto
 UninstallDisplayIcon={app}\app.ico
 SetupIconFile={#StageDir}\app.ico
-OutputDir=..\dist
+OutputDir=..\..\dist
 OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}{#OutputSuffix}
 ; The full payload contains three closely related Rust binaries plus a curated
 ; native codec tree. A 64 MiB dictionary keeps those repeated code regions in one

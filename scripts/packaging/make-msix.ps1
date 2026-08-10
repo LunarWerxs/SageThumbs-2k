@@ -29,7 +29,7 @@ param(
     [string]$Architecture = 'x64'
 )
 $ErrorActionPreference = 'Stop'
-$pkgdir = $PSScriptRoot   # ...\packaging
+$pkgdir = $PSScriptRoot   # ...\scripts\packaging
 
 # 1) Locate the Windows SDK tools (latest installed bin\<ver>\x64). ----------
 $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory -ErrorAction SilentlyContinue |
@@ -70,7 +70,7 @@ Copy-Item (Join-Path $pkgdir 'Assets') $stage -Recurse -Force
 # Patch the STAGED manifest's Identity metadata from Cargo.toml and the requested
 # external-binary architecture. The checked-in manifest is a neutral dev template;
 # only the packed copy is rewritten.
-$cargoVer = ([regex]::Match((Get-Content (Join-Path $pkgdir '..\Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
+$cargoVer = ([regex]::Match((Get-Content (Join-Path $pkgdir '..\..\Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
 if ($cargoVer -notmatch '^\d+\.\d+\.\d+$') {
     throw "could not read an MSIX-compatible version from Cargo.toml: '$cargoVer'"
 }
@@ -95,7 +95,7 @@ if ($LASTEXITCODE) { throw "makeappx pack failed ($LASTEXITCODE)" }
 & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint $msix
 if ($LASTEXITCODE) { throw "signtool sign failed ($LASTEXITCODE)" }
 
-. (Join-Path $pkgdir '..\scripts\release-manifest-lib.ps1')
+. (Join-Path $pkgdir '..\release-manifest-lib.ps1')
 $expectedIdentityArchitecture = if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' }
 Assert-ReleaseMsixPackage `
     -Path $msix `
