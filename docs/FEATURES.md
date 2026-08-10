@@ -262,6 +262,11 @@ Space; the preview follows as you arrow through the hits, exactly as it does in 
 the caret is in Everything's search box, Space stays a space: the preview is only ever offered
 to the result list.
 
+**And inside any app's Open/Save dialog.** Picking a file to attach, upload or open: click it in
+the dialog and tap Space to see what it actually is, without cancelling out to go look. Space
+keeps its normal meaning while the caret is in the file-name box, so it only ever previews once
+you have clicked into the file list. 64-bit apps only.
+
 It previews **everything the thumbnailer can decode** (all the image/RAW/ebook/office/… formats),
 plus these viewer-only extras:
 

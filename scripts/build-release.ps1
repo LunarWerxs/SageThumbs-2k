@@ -225,6 +225,11 @@ Copy-Item "$targetRel\sagethumbs2k.dll" $stage
 # (build.rs redirects its PDB to avoid the case-collision with the DLL — see Cargo.toml).
 Copy-Item "$targetRel\SageThumbs2K.exe" $stage
 Copy-Item "$targetRel\st2k.exe" $stage  # the command-line / AI-agent tool
+# The Open/Save-dialog selection reader. A SEPARATE tiny cdylib because it is loaded into
+# other applications by a WH_CALLWNDPROC hook (see dlghook/Cargo.toml) - the app looks for it
+# beside its own exe and simply has no dialog support when it is absent, so shipping it is
+# what turns the feature on.
+Copy-Item "$targetRel\st2k_dlghook.dll" $stage
 foreach ($doc in 'README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE') {
     if (Test-Path "$root\$doc") { Copy-Item "$root\$doc" $stage }
 }

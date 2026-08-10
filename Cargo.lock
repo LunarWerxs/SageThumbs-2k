@@ -1264,6 +1264,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagethumbs2k-dlghook"
+version = "1.9.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "sagethumbs2k-dll"
 version = "1.9.0"
 dependencies = [

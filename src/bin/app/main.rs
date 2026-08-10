@@ -29,6 +29,7 @@ mod about;
 mod convert;
 mod cred_store;
 mod dark;
+mod dialog_hook;
 mod doctor_report;
 mod explorer_selection;
 mod eyedropper;

@@ -151,6 +151,10 @@ Type: files; Name: "{app}\NOTICE.txt"
 Source: "{#StageDir}\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
+; The Open/Save-dialog selection reader. NOT a shell extension and never registered: the app
+; loads it on demand, into the dialog's own process, for one question. Absent = the app simply
+; has no dialog support, which is why this row is skipifsourcedoesntexist.
+Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 ; Signed sparse package + its public cert -> the Windows 11 modern context menu.
 ; Built by packaging\make-msix.ps1 (self-signed; skipped with -NoModernMenu).
 Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core

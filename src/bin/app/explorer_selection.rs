@@ -96,7 +96,7 @@ unsafe fn settled_explorer_selection() -> Vec<String> {
 /// only ever say "I have never heard of that window", and it would spend [`SETTLE_MS`] proving it.
 pub(crate) unsafe fn preview_target() -> Option<String> {
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
-    let raw = match everything_selection() {
+    let raw = match everything_selection().or_else(|| foreground_dialog_selection()) {
         Some(p) => p,
         None => settled_explorer_selection()
             .into_iter()
@@ -299,6 +299,16 @@ unsafe fn everything_selection() -> Option<String> {
         return None;
     }
     Some(String::from_utf16_lossy(&buf[..got as usize]))
+}
+
+/// The item selected in a foreground Open/Save dialog, or `None` when the foreground isn't
+/// one. The mechanics (and why they need a hook DLL at all) live in [`crate::dialog_hook`].
+unsafe fn foreground_dialog_selection() -> Option<String> {
+    let fg = GetForegroundWindow();
+    if fg.0.is_null() {
+        return None;
+    }
+    crate::dialog_hook::dialog_selection(fg)
 }
 
 /// Whether the thread owning `hwnd` has a live text caret — i.e. the user is typing in it.

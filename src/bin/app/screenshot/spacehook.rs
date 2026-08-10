@@ -163,6 +163,10 @@ unsafe fn foreground_qualifies(fg: HWND) -> bool {
         "CabinetWClass" | "ExploreWClass" => true, // an Explorer folder window
         "SageThumbs2KViewer" => true,              // our own viewer (so Space closes it)
         "Progman" | "WorkerW" => has_defview(fg),  // the Desktop (has a SHELLDLL_DefView child)
+        // A common Open/Save dialog. `is_typing` below still holds the file-name box, which
+        // has the caret whenever the dialog opens — Space only becomes a preview once the
+        // user has clicked into the item view.
+        "#32770" => crate::dialog_hook::is_file_dialog(fg),
         // Everything (voidtools). BOTH gates, and in this order: the class stem is the only
         // stable part of its name, and only a build that publishes the focused result can
         // answer the Space we are about to act on. Anything else and Space stays a space.

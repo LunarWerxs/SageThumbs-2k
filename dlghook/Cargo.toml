@@ -1,0 +1,47 @@
+[package]
+name = "sagethumbs2k-dlghook"
+version.workspace = true
+rust-version.workspace = true
+edition = "2021"
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+description = "SageThumbs 2K Open/Save-dialog selection reader — a tiny in-context hook DLL"
+
+# WHY THIS IS ITS OWN CRATE, AND WHY IT IS TINY.
+#
+# A Vista+ common file dialog (`#32770` hosting a `DUIViewWndClassName`) hands out its
+# `IShellBrowser` only through the undocumented `WM_USER + 7`, and that pointer is
+# apartment-bound: consuming it from another thread returns `RPC_E_WRONG_THREAD`
+# (measured, 2026-08-10). There is NO cross-process route — a dialog sitting on a known
+# folder exposes no filesystem path through UI Automation, MSAA, window text or
+# `OBJID_NATIVEOM`; all four were probed and all four came back empty. So the read has to
+# happen ON the dialog's own thread, which means this code is loaded into somebody else's
+# process by `SetWindowsHookExW(WH_CALLWNDPROC, …, tid)`.
+#
+# That is why this is NOT part of `sagethumbs2k.dll`. Whatever lands in this crate runs
+# inside Word, Photoshop, a browser's upload dialog. It therefore:
+#   * depends on NOTHING but `windows` (no core rlib, no image stack),
+#   * allocates nothing and touches no file,
+#   * must stay PANIC-FREE: the workspace release profile is `panic = "abort"`, so a
+#     panic here would abort the HOST application, not us. No `unwrap`, no `expect`, no
+#     indexing — see the module docs in src/lib.rs.
+[lib]
+name = "st2k_dlghook"
+crate-type = ["cdylib"]
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    # IShellBrowser::GetViewStateStream returns an IStream, so the interface itself is
+    # gated behind the structured-storage feature — without it the import does not exist.
+    "Win32_System_Com_StructuredStorage",
+    # IShellBrowser's menu-merging methods take OLEMENUGROUPWIDTHS, which lives here — the
+    # interface is gated on it just as it is on structured storage above.
+    "Win32_System_Ole",
+    "Win32_System_Memory",       # the file mapping the answer is written into
+    "Win32_System_Threading",    # OpenEventW / SetEvent
+    "Win32_UI_Shell",            # IShellBrowser / IShellView / IFolderView2 / IShellItem
+    "Win32_UI_WindowsAndMessaging",
+]
