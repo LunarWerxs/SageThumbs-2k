@@ -54,10 +54,16 @@ function Write-TestPolicy([string]$path, [bool]$armInstallerCalibrated = $false)
 }
 
 function Set-StageTotal([string]$stage, [int64]$total) {
-    if ($total -lt 2) { throw 'test stage total must be at least 2 bytes' }
+    # One byte per binary, with the last absorbing the remainder. EVERY file the checker
+    # requires must exist here, or it fails with "missing required Rust artifact" long before
+    # it reaches a size comparison. That is exactly what adding a third shipped binary
+    # (st2k_dlghook.dll) did to this fixture: the boundary tests started failing for a reason
+    # that had nothing to do with boundaries.
+    if ($total -lt 4) { throw 'test stage total must be at least 4 bytes' }
     Set-SparseLength (Join-Path $stage 'sagethumbs2k.dll') 1
+    Set-SparseLength (Join-Path $stage 'st2k_dlghook.dll') 1
     Set-SparseLength (Join-Path $stage 'SageThumbs2K.exe') 1
-    Set-SparseLength (Join-Path $stage 'st2k.exe') ($total - 2)
+    Set-SparseLength (Join-Path $stage 'st2k.exe') ($total - 3)
 }
 
 function Set-MagickTotal([string]$stage, [int64]$total) { Set-SparseLength (Join-Path $stage 'magick\payload.bin') $total }
@@ -74,6 +80,17 @@ function Assert-FailsLike([string]$name, [string]$pattern, [scriptblock]$body) {
     }
     Write-Host "  PASS  $name (failed closed)" -ForegroundColor Green; $script:passed++
 }
+# Size overruns REPORT rather than gate (owner call, 2026-08-10: the sub-10 MB target is long
+# gone, so failing a release on it bought nothing). The coverage is kept rather than deleted,
+# because "did it still NOTICE the overrun" is the part that was ever worth testing — only the
+# verdict changed. Write-Host lands on the information stream, hence 6>&1.
+function Assert-ReportsLike([string]$name, [string]$pattern, [scriptblock]$body) {
+    $out = ''
+    try { $out = (& $body 6>&1 2>&1 | Out-String) }
+    catch { throw "expected '$name' to PASS (reporting only), got: $($_.Exception.Message)" }
+    if ($out -notlike $pattern) { throw "expected '$name' to report '$pattern', got: $out" }
+    Write-Host "  PASS  $name (reported, not gated)" -ForegroundColor Green; $script:passed++
+}
 
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 try {
@@ -83,11 +100,11 @@ try {
     Set-SparseLength $installer 1100; Set-StageTotal $stage 2200; Set-MagickTotal $stage 3300
     Assert-Passes 'x64 defaults to Full and accepts exact ceilings' { & $checker -InstallerPath $installer -PolicyPath $policy -StagePath $stage }
     Set-SparseLength $installer 1101
-    Assert-FailsLike 'x64 installer ceiling plus one byte' '*installer exceeds its limit*' { & $checker -InstallerPath $installer -PolicyPath $policy }
+    Assert-ReportsLike 'x64 installer ceiling plus one byte' '*installer is*over the old reference budget*' { & $checker -InstallerPath $installer -PolicyPath $policy }
     Set-SparseLength $installer 1000; Set-StageTotal $stage 2201
-    Assert-FailsLike 'x64 Rust ceiling plus one byte' '*Rust payload exceeds its limit*' { & $checker -InstallerPath $installer -PolicyPath $policy -StagePath $stage }
+    Assert-ReportsLike 'x64 Rust ceiling plus one byte' '*Rust payload is*over the old reference budget*' { & $checker -InstallerPath $installer -PolicyPath $policy -StagePath $stage }
     Set-StageTotal $stage 2200; Set-MagickTotal $stage 3301
-    Assert-FailsLike 'x64 ImageMagick ceiling plus one byte' '*ImageMagick payload exceeds its limit*' { & $checker -InstallerPath $installer -PolicyPath $policy -StagePath $stage }
+    Assert-ReportsLike 'x64 ImageMagick ceiling plus one byte' '*ImageMagick payload is*over the old reference budget*' { & $checker -InstallerPath $installer -PolicyPath $policy -StagePath $stage }
 
     Remove-Item -LiteralPath (Join-Path $stage 'magick') -Recurse -Force
     Set-StageTotal $stage 1600; Set-SparseLength $installer 900
@@ -115,7 +132,10 @@ try {
     $inconsistent | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $policy -Encoding UTF8
     Remove-Item -LiteralPath (Join-Path $stage 'magick') -Recurse -Force
     Set-StageTotal $stage 2000
-    Assert-FailsLike 'x64 inconsistent Rust arithmetic' '*Rust maximum must equal*' {
+    # The reference/allowance/maximum arithmetic is no longer asserted either: a number that
+    # gates nothing will drift, and failing on that drift would be failing for a reason nobody
+    # can act on. Tolerating it is now the intended behaviour, so that is what is tested.
+    Assert-Passes 'x64 tolerates inconsistent Rust arithmetic now that it only reports' {
         & $checker -InstallerPath $installer -PolicyPath $policy -StagePath $stage
     }
 
@@ -151,7 +171,7 @@ try {
             }
         }
         Set-StageTotal $stage ($maxRust + 1)
-        Assert-FailsLike "production $architecture Rust ceiling plus one byte" '*Rust payload exceeds its limit*' {
+        Assert-ReportsLike "production $architecture Rust ceiling plus one byte" '*Rust payload is*over the old reference budget*' {
             & $checker -Architecture $architecture -InstallerPath $installer -PolicyPath $productionPolicy -StagePath $stage
         }
     }

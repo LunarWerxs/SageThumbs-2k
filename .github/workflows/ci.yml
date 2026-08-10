@@ -80,6 +80,11 @@ jobs:
         run: cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
       - name: Build production slim DLL
         run: cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
+      # The third shipped binary. It is COUNTED by the payload step below, so leaving it
+      # unbuilt fails that step with a missing FILE rather than a size verdict — which is
+      # how it failed the first time. No --features: this crate declares none.
+      - name: Build dialog hook DLL
+        run: cargo build --release --locked -p sagethumbs2k-dlghook
       - name: Production Rust payload size
         shell: pwsh
         run: |
