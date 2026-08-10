@@ -418,8 +418,11 @@ pub(super) unsafe fn draw_list_item(p: *mut NMLVCUSTOMDRAW) -> isize {
 /// `fill_c` and outlines it with `border_c`, corners rounded to `ell` design px.
 /// The control (same fill color) paints on top, so it reads as one soft-edged
 /// inset field / raised card.
+/// `hwnd` is BOTH the DPI reference and the coordinate space the panel is drawn in — pass
+/// whichever window owns `hdc` (the dialog for `paint_chrome`, the owner-drawn pane header
+/// for the settings-wide search box).
 #[allow(clippy::too_many_arguments)] // owner-draw helper: many positional draw params by nature
-unsafe fn draw_rounded_panel(
+pub(super) unsafe fn draw_rounded_panel(
     hwnd: HWND,
     hdc: HDC,
     ctrl: HWND,

@@ -41,11 +41,16 @@ thread_local! {
 /// OUTSIDE the per-category control lists, so both stay visible on every page.
 pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
     use crate::win::{ctl, EDIT};
+    // Borderless, like every other input on this dialog: its rounded frame is PAINTED
+    // (anti-aliased) behind it — by `navrail::draw_pane_header`, since the box floats over
+    // that header. WS_BORDER draws a hard SQUARE 1px frame, and the rounded region clip
+    // that used to sit on top of it then bit the corners off, which is exactly what made
+    // the box look like its edges were chewed.
     let edit = ctl(
         hwnd,
         EDIT,
         "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32 | WS_BORDER.0),
+        WINDOW_STYLE(ES_AUTOHSCROLL as u32),
         navrail::PANE_X + navrail::PANE_W - 176,
         navrail::PANE_TOP + 12,
         176,
@@ -73,14 +78,14 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
         Some(LPARAM(cue.as_ptr() as isize)),
     );
     // Owner-drawn (hover highlight, dark rows) with LBS_HASSTRINGS so the row text
-    // still lives in the listbox itself.
+    // still lives in the listbox itself. Borderless for the same reason as the box above:
+    // the outline is stroked anti-aliased in `paint_dropdown_border`, along the rounded
+    // region clip, instead of being a square frame the clip then chews.
     let list = ctl(
         hwnd,
         w!("LISTBOX"),
         "",
-        WINDOW_STYLE(
-            LBS_NOTIFY as u32 | LBS_OWNERDRAWFIXED as u32 | LBS_HASSTRINGS as u32 | WS_BORDER.0,
-        ),
+        WINDOW_STYLE(LBS_NOTIFY as u32 | LBS_OWNERDRAWFIXED as u32 | LBS_HASSTRINGS as u32),
         navrail::PANE_X + navrail::PANE_W - 330,
         navrail::PANE_TOP + 38,
         330,
@@ -89,7 +94,6 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
         hinst,
     );
     hover_subclass(list);
-    super::restyle::round_corners(hwnd, edit, 6);
     let _ = ShowWindow(list, SW_HIDE);
 }
 
@@ -146,8 +150,39 @@ pub(super) unsafe fn draw_row(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     );
 }
 
+/// Stroke the dropdown's rounded outline, anti-aliased, along the rounded region clip
+/// `on_change` applies. Two things this replaces: WS_BORDER (a SQUARE 1px frame that the
+/// same clip bit the corners off — the chewed-edge look), and nothing at all covering the
+/// clip's own hard staircase. Drawn after the default paint, so it sits over the rows.
+unsafe fn paint_dropdown_border(list: HWND) {
+    use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
+    let hdc = GetDC(Some(list));
+    if hdc.is_invalid() {
+        return;
+    }
+    let mut rc = RECT::default();
+    let _ = GetClientRect(list, &mut rc);
+    let bw = crate::win::dpi_scale(list, 1).max(1);
+    let rad = crate::win::dpi_scale(list, 8);
+    crate::gdip::with_aa(hdc, |g| {
+        let p = crate::gdip::pen(BORDER(), bw);
+        crate::gdip::stroke_round(
+            g,
+            p,
+            rc.left,
+            rc.top,
+            (rc.right - rc.left) - bw,
+            (rc.bottom - rc.top) - bw,
+            rad,
+        );
+        crate::gdip::drop_pen(p);
+    });
+    ReleaseDC(Some(list), hdc);
+}
+
 /// Subclass the dropdown for hover tracking: WM_MOUSEMOVE sets the hot row (and asks for
-/// WM_MOUSELEAVE), leave clears it. Repaints only the rows that changed.
+/// WM_MOUSELEAVE), leave clears it. Repaints only the rows that changed. Also owns the
+/// dropdown's background + rounded outline (see `paint_dropdown_border`).
 unsafe fn hover_subclass(list: HWND) {
     use windows::Win32::UI::Shell::SetWindowSubclass;
     let _ = SetWindowSubclass(list, Some(hover_proc), 1, 0);
@@ -189,6 +224,21 @@ unsafe extern "system" fn hover_proc(
         }
         WM_MOUSELEAVE if HOT.with(|h| h.replace(-1)) != -1 => {
             let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        WM_ERASEBKGND => {
+            // The rows paint their own SURFACE background, but the listbox's native erase
+            // uses DARK_CTL_BG — which shows through the few pixels of slack under the last
+            // row as a lighter band along the bottom. Erase in the row colour so the
+            // dropdown reads as one solid card right into its rounded corners.
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            fill(HDC(wparam.0 as *mut std::ffi::c_void), &rc, SURFACE());
+            return LRESULT(1);
+        }
+        WM_PAINT => {
+            let r = DefSubclassProc(hwnd, msg, wparam, lparam);
+            paint_dropdown_border(hwnd);
+            return r;
         }
         _ => {}
     }

@@ -472,6 +472,47 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
     }
 }
 
+thread_local! {
+    /// Bitmask of pages whose dot has already been ACKNOWLEDGED, cached from settings.
+    /// `u32::MAX` is the "not loaded yet" sentinel — there are only `NCAT` (10) pages, so
+    /// it can never be a real mask.
+    static DOTS_SEEN: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+}
+
+/// Acknowledged-dot mask, loaded from settings on first use (HKCU `NavDotsSeen`, or the
+/// portable ini). Persisted rather than per-session: a hint that came back at every launch
+/// read as an unread badge that could never be cleared.
+fn dots_seen() -> u32 {
+    DOTS_SEEN.with(|c| {
+        if c.get() == u32::MAX {
+            c.set(sagethumbs2k_core::settings::get_dword_opt("NavDotsSeen").unwrap_or(0));
+        }
+        c.get()
+    })
+}
+
+/// Should page `ci` show its dot? Only while it has a changed setting AND the user hasn't
+/// been to the page yet. The dot answers "where did I change something" for someone opening
+/// Settings cold; once they've actually opened that page it has done its job, so it stops.
+pub(super) fn dot_visible(ci: usize) -> bool {
+    ci < 32 && page_has_non_defaults(ci) && dots_seen() & (1u32 << ci) == 0
+}
+
+/// Acknowledge page `ci`'s dot. Called on every category switch — including the initial
+/// switch to page 0, so the page you land on doesn't keep a dot you're already looking at.
+fn mark_dot_seen(ci: usize) {
+    if ci >= 32 {
+        return;
+    }
+    let (cur, bit) = (dots_seen(), 1u32 << ci);
+    if cur & bit != 0 {
+        return;
+    }
+    DOTS_SEEN.with(|c| c.set(cur | bit));
+    // Best-effort: a failed write costs a dot that reappears next launch, nothing more.
+    let _ = sagethumbs2k_core::settings::set_dword("NavDotsSeen", cur | bit);
+}
+
 /// Owner-draw a nav-rail item: an accent-tinted pill + accent icon + bar when
 /// active; a muted icon + plain text otherwise.
 pub(super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool) {
@@ -512,7 +553,9 @@ pub(super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool)
     // "You changed something here": a small accent dot on the rail row. Answers "where
     // did I change a setting" across nine pages without opening each one. Painted for
     // active and inactive rows alike, so it never reads as part of the selection pill.
-    if page_has_non_defaults(ci) {
+    // Clears for good once you've visited the page (see `dot_visible`) — it's a pointer,
+    // not a permanent badge.
+    if dot_visible(ci) {
         let r = dpi_scale(hwnd, 2);
         let dx = rc.right - dpi_scale(hwnd, 14);
         let dy = rc.top + (rc.bottom - rc.top) / 2 - r;
@@ -545,6 +588,27 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let hdc = d.hDC;
     let rc = d.rcItem;
     fill(hdc, &rc, DARK_BG());
+    // The settings-wide search box floats OVER this header, so its rounded field frame has
+    // to be drawn here: this owner-draw fills the header's whole rect on every repaint, so
+    // anything `paint_chrome` drew on the dialog behind it would be painted out. Same
+    // anti-aliased frame every other input on the dialog gets, and the box itself is
+    // borderless and fills INPUT_BG, so the two meet with no seam. Coordinates are the
+    // HEADER control's client space — hence `d.hwndItem`, not `hwnd`.
+    if let Ok(edit) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
+        if IsWindowVisible(edit).as_bool() {
+            super::restyle::draw_rounded_panel(
+                d.hwndItem,
+                hdc,
+                edit,
+                INPUT_BG(),
+                BORDER(),
+                8,
+                4,
+                3,
+                3,
+            );
+        }
+    }
     let ci = NAV.with(|n| n.borrow().active);
     let chip = dpi_scale(hwnd, 34);
     let tint = blend(ACCENT(), DARK_BG(), 16);
@@ -603,6 +667,9 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
 
 /// Show category `ci`'s controls, hide the others, repaint the nav + pane.
 pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
+    // Visiting a page clears its "you changed something here" dot. Done before the rail
+    // invalidation below, which repaints every item and so picks the change up for free.
+    mark_dot_seen(ci);
     NAV.with(|n| {
         let mut n = n.borrow_mut();
         n.active = ci;
@@ -620,6 +687,11 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
     }
     if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
         let _ = InvalidateRect(Some(ph), None, true);
+    }
+    // The header owner-draw fills its whole rect — including the strip the search box
+    // floats over — so repaint the box with it, or it flashes as a hole in the header.
+    if let Ok(sb) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
+        let _ = InvalidateRect(Some(sb), None, true);
     }
     let _ = InvalidateRect(Some(hwnd), None, true);
 }

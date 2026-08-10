@@ -223,39 +223,48 @@ pub(crate) unsafe fn run_dialog(
     };
     RegisterClassW(&wc); // idempotent: re-register returns 0 (already registered) — fine
 
-    // Geometry: design pixels scaled to the relevant DPI. The owner's DPI for a
-    // modal popup; the primary monitor's DPI otherwise (a top-level dialog opens
-    // at CW_USEDEFAULT, so we use the system DPI as the creation DPI).
-    let dpi_ref = modal.unwrap_or_default();
-    let creation_dpi = if dpi_ref.0.is_null() {
-        dpi_for_system()
-    } else {
-        GetDpiForWindow(dpi_ref) as i32
-    };
-    let (sw, sh) = (
-        dpi_scale_dpi(w, creation_dpi),
-        dpi_scale_dpi(h, creation_dpi),
-    );
-
-    let (ex_style, style, x, y, parent) = match modal {
-        None => (
-            WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            None,
-        ),
+    // Geometry: design pixels scaled to the DPI of the monitor the window will actually
+    // open on, then placed there.
+    //   - modal popup: the owner's DPI, centered over the owner.
+    //   - top-level:   the CURSOR monitor's DPI, centered on that monitor's work area.
+    //
+    // Top-level dialogs used to open at CW_USEDEFAULT, which cascades from the TOP-LEFT
+    // corner of the primary monitor — so the welcome window (and every other dialog that
+    // comes through here: convert, feedback, image info, doctor report, …) opened in the
+    // corner of the screen rather than in front of the user. The Settings window already
+    // sizes AND positions itself this way (see `main.rs`); this brings the rest in line.
+    // Sizing to the cursor monitor also makes the frame DPI agree with the per-control
+    // `dpi_scale()` (`GetDpiForWindow`) on mixed-DPI multi-monitor setups.
+    let (ex_style, style, x, y, sw, sh, parent) = match modal {
+        None => {
+            let (mon_dpi, work) = cursor_monitor_metrics();
+            let (sw, sh) = (dpi_scale_dpi(w, mon_dpi), dpi_scale_dpi(h, mon_dpi));
+            (
+                WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                work.left + ((work.right - work.left) - sw).max(0) / 2,
+                work.top + ((work.bottom - work.top) - sh).max(0) / 2,
+                sw,
+                sh,
+                None,
+            )
+        }
         Some(owner) => {
+            let creation_dpi = GetDpiForWindow(owner) as i32;
+            let (sw, sh) = (
+                dpi_scale_dpi(w, creation_dpi),
+                dpi_scale_dpi(h, creation_dpi),
+            );
             // Center over the owner.
             let mut orc = RECT::default();
             let _ = GetWindowRect(owner, &mut orc);
-            let px = orc.left + ((orc.right - orc.left) - sw) / 2;
-            let py = orc.top + ((orc.bottom - orc.top) - sh) / 2;
             (
                 WS_EX_DLGMODALFRAME,
                 WS_POPUP | WS_CAPTION | WS_SYSMENU,
-                px,
-                py,
+                orc.left + ((orc.right - orc.left) - sw) / 2,
+                orc.top + ((orc.bottom - orc.top) - sh) / 2,
+                sw,
+                sh,
                 Some(owner),
             )
         }
@@ -439,31 +448,13 @@ pub(crate) unsafe fn create_shot_window(
     Some(hwnd)
 }
 
-/// The primary monitor's effective DPI (for a CW_USEDEFAULT top-level dialog,
-/// which has no HWND yet to query). Falls back to 96.
-pub(crate) fn dpi_for_system() -> i32 {
-    unsafe {
-        let dc = GetDC(None);
-        let dpi = windows::Win32::Graphics::Gdi::GetDeviceCaps(
-            Some(dc),
-            windows::Win32::Graphics::Gdi::LOGPIXELSX,
-        );
-        ReleaseDC(None, dc);
-        if dpi == 0 {
-            96
-        } else {
-            dpi
-        }
-    }
-}
-
 /// Effective DPI + work-area rect of the monitor under the cursor (where the user is).
 /// A top-level window sizes AND positions itself for the monitor it actually opens on,
 /// so the window frame's DPI matches the per-control `dpi_scale()` (`GetDpiForWindow`) —
 /// even on a mixed-DPI multi-monitor setup, or after the user changed scale without
-/// signing out. `dpi_for_system()` reports the LOGIN-time primary DPI, which is wrong in
-/// those cases and left the fixed-size v3 Settings window clipping its controls. 96/primary
-/// fallback on any failure.
+/// signing out. This replaced a `dpi_for_system()` helper that read the LOGIN-time primary
+/// DPI: wrong in both those cases, and it left the fixed-size v3 Settings window clipping
+/// its controls. 96/primary fallback on any failure.
 pub(crate) fn cursor_monitor_metrics() -> (i32, windows::Win32::Foundation::RECT) {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::Graphics::Gdi::{
