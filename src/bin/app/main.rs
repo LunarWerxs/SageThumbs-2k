@@ -185,6 +185,7 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         "--screenshot-daemon",
         "--update-check",
         "--update-task",
+        "--update-selftest",
         "--first-run-seen",
         "--updated",
         "--heal-hotkeys",
@@ -249,6 +250,16 @@ fn main() {
         if args.iter().any(|a| a == "--update-check") {
             crate::update::run_one_shot_check();
             return;
+        }
+        // `--update-selftest <setup.exe>`: the CI / release-gate smoke — run the REAL
+        // verify → lock → elevated-launch self-update pipeline against a built installer
+        // and exit 0/1. The harness (scripts/test-self-update.ps1) then asserts the
+        // upgrade landed. See update::run_selftest for why this must exist.
+        if let Some(pos) = args.iter().position(|a| a == "--update-selftest") {
+            let ok = args
+                .get(pos + 1)
+                .is_some_and(|p| crate::update::run_selftest(std::path::Path::new(p)));
+            std::process::exit(if ok { 0 } else { 1 });
         }
         // `--first-run-seen`: suppress the welcome window. The installer runs this on an
         // UPGRADE (as the real user), so an existing user is never greeted as a new one.
@@ -736,6 +747,7 @@ mod tests {
             vec!["--update-check"],
             vec!["--update-task"],
             vec!["--update-task", "remove"],
+            vec!["--update-selftest", "setup.exe"],
             vec!["--updated", "1.7.0"],
             vec!["--heal-hotkeys"],
             vec!["--rebuild-thumbnail-cache"],

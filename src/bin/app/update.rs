@@ -4,7 +4,7 @@
 //! (offline, repo renamed/moved, no releases yet, rate-limited) becomes `Failed`, so the
 //! UI can fall back to "couldn't reach the update server — check GitHub manually."
 
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -459,10 +459,20 @@ fn verify_installer_bytes(bytes: &[u8], asset: &InstallerAsset) -> bool {
     true
 }
 
-/// Atomically create the downloaded installer and keep an open handle that permits
-/// readers but denies other writers/deleters. Holding that handle through
-/// `ShellExecuteW("runas")` closes the pathname replacement window between the final
-/// hash check and the elevated process opening the image.
+/// Atomically create the downloaded installer, then hold a READ-ONLY handle that permits
+/// readers but denies other writers and deleters. Holding that handle through
+/// `ShellExecuteW("runas")` closes the pathname replacement window between the final hash
+/// check and the elevated process opening the image — and the final verification is read
+/// back THROUGH that handle, so the bytes we bless are the bytes it is protecting.
+///
+/// THE LOCK MUST NOT CARRY WRITE ACCESS. Windows maps an executable image by opening the
+/// file with `FILE_SHARE_READ | FILE_SHARE_DELETE`, and that share mode cannot coexist with
+/// an existing writer — so a read+WRITE lock makes the launch itself fail with
+/// `ERROR_SHARING_VIOLATION`, which `ShellExecuteW` reports as `SE_ERR_SHARE` (26). That is
+/// precisely what shipped in 1.3.3: one-click self-update failed on EVERY machine, every
+/// time, and the failure text blamed the user for not being an administrator. A read-only
+/// lock denies writers and deleters exactly as well (both tested below) while leaving the
+/// image mappable.
 fn write_locked_installer(
     tag: &str,
     bytes: &[u8],
@@ -477,27 +487,33 @@ fn write_locked_installer(
             "SageThumbs2K-Setup-{tag}-{}-{nonce}-{attempt}.exe",
             std::process::id()
         ));
+        // Share NOTHING while the bytes are going down: nobody may even read a half-written
+        // setup, let alone race the write.
         let opened = std::fs::OpenOptions::new()
-            .read(true)
             .write(true)
             .create_new(true)
-            .share_mode(FILE_SHARE_READ.0)
+            .share_mode(0)
             .open(&path);
         let mut file = match opened {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(_) => return Err("couldn't save the installer"),
         };
-        if file.write_all(bytes).is_err() || file.sync_all().is_err() {
-            drop(file);
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file); // the write handle is gone before anything tries to run the image
+        if written.is_err() {
             let _ = std::fs::remove_file(&path);
             return Err("couldn't save the installer");
         }
-        if file.rewind().is_err() {
-            drop(file);
+        // Re-open read-only and verify through THIS handle — the one held across the launch.
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .open(&path)
+        else {
             let _ = std::fs::remove_file(&path);
-            return Err("couldn't verify the saved installer");
-        }
+            return Err("couldn't lock the saved installer");
+        };
         let mut on_disk = Vec::with_capacity(bytes.len());
         if file.read_to_end(&mut on_disk).is_err() || !verify_installer_bytes(&on_disk, asset) {
             drop(file);
@@ -562,6 +578,7 @@ fn classify_launch_failure(
     const SE_ERR_FNF: u32 = 2;
     const SE_ERR_PNF: u32 = 3;
     const SE_ERR_ACCESSDENIED: u32 = 5;
+    const SE_ERR_SHARE: u32 = 26;
     const ERROR_VIRUS_INFECTED: u32 = 225;
     const ERROR_VIRUS_DELETED: u32 = 226;
     const ERROR_CANCELLED: u32 = 1223;
@@ -596,12 +613,26 @@ fn classify_launch_failure(
              releases page instead."
         ));
     }
+    // Something else has the setup file open for writing. We no longer do that to ourselves
+    // (see `write_locked_installer`), so this now means a real outside holder — a scanner,
+    // a backup agent, or the search indexer that woke up on a new .exe in %TEMP%.
+    if se_code == SE_ERR_SHARE {
+        return UpdateError::Blocked(format!(
+            "Another program is holding the downloaded update open, so Windows wouldn't start \
+             it.{sac_note} That is usually antivirus, a backup tool, or the search indexer \
+             scanning the new file. Try again in a moment, or download SageThumbs 2K from the \
+             releases page."
+        ));
+    }
     if last_error == ERROR_CANCELLED {
         return UpdateError::Cancelled;
     }
+    // No administrator claim here. A user who declined (or could not satisfy) the elevation
+    // prompt is already handled above as Cancelled/Blocked, so blaming permissions for every
+    // OTHER failure code is simply a guess — and it was the wrong guess for the whole of the
+    // SE_ERR_SHARE era, sending people to hunt for an admin account over our own file lock.
     UpdateError::Failed(format!(
-        "The update installer couldn't be started (Windows error {se_code}). Installing an \
-         update needs an administrator; if you're signed in as a standard user, download \
+        "Windows wouldn't start the update installer (error {se_code}). You can download \
          SageThumbs 2K from the releases page instead."
     ))
 }
@@ -778,6 +809,61 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     }
 }
 
+/// `--update-selftest <setup.exe>`: the smoke test CI and the release gate run against a
+/// freshly BUILT installer — the real post-download pipeline, end to end: byte
+/// verification, the locked temp copy, and the elevated silent launch, through the exact
+/// functions the About-card updater calls. Only the network download is substituted (the
+/// bytes come from disk; the digest is computed from them, so `verify_installer_bytes`
+/// still runs for real). Headless by design: no progress dialog and a null owner — on CI
+/// runners and admin dev boxes the `runas` verb elevates without a prompt. The exit code
+/// is the contract: success once the elevated installer PROCESS is running; the harness
+/// (`scripts/test-self-update.ps1`) then watches the upgrade actually land on disk.
+///
+/// This exists because 1.3.3..=1.10.0 shipped an updater whose own write-mode lock made
+/// every launch die with `SE_ERR_SHARE`, and no test noticed for twenty releases because
+/// nothing ever drove the real pipeline against a real executable. This entry point is
+/// what makes that class of failure a red build instead of a bug report.
+pub(crate) fn run_selftest(setup: &Path) -> bool {
+    let log = |m: &str| sagethumbs2k_core::safety::log(&format!("update-selftest: {m}"));
+    let Ok(bytes) = std::fs::read(setup) else {
+        log(&format!("couldn't read {}", setup.display()));
+        return false;
+    };
+    let Some(sha256) = sha256_hex(&bytes) else {
+        log("sha256 unavailable");
+        return false;
+    };
+    let asset = InstallerAsset {
+        url: String::new(),
+        size: bytes.len() as u64,
+        sha256,
+    };
+    if !verify_installer_bytes(&bytes, &asset) {
+        log("verification refused the installer bytes");
+        return false;
+    }
+    let (path, lock) = match write_locked_installer("selftest", &bytes, &asset) {
+        Ok(pair) => pair,
+        Err(m) => {
+            log(m);
+            return false;
+        }
+    };
+    let launched = launch_installer_silent(&path, HWND::default());
+    drop(lock);
+    match launched {
+        Ok(()) => {
+            log("elevated installer launched");
+            true
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            log(&format!("launch failed: {}", e.message()));
+            false
+        }
+    }
+}
+
 /// Shown by the installer-spawned `--updated <ver>` relaunch after a silent self-update:
 /// a NON-BLOCKING tray balloon, NOT a modal dialog — so the update stays genuinely silent
 /// (nothing to click, it auto-dismisses). The throwaway-window + temp-icon + balloon dance
@@ -826,6 +912,8 @@ fn updated_toast_text(installed: &str, running: &str) -> (&'static str, String) 
 #[cfg(test)]
 mod tests {
     use super::parse_ver;
+    use std::os::windows::process::CommandExt;
+    use std::path::Path;
 
     #[test]
     fn parses_and_orders_versions() {
@@ -1026,10 +1114,25 @@ mod tests {
             .message()
             .contains("Smart App Control"));
 
-        // Anything else is a plain failure, and it still says something out loud.
+        // A sharing violation is its own diagnosis now. It used to fall through to the
+        // generic branch, which told the user to go find an administrator - for a file our
+        // own write handle was holding shut.
+        let shared = classify(26, 0, false, false);
+        assert!(matches!(shared, E::Blocked(_)));
+        assert!(shared.message().contains("holding the downloaded update"));
+        assert!(!shared.message().contains("administrator"));
+
+        // Anything else is a plain failure, and it still says something out loud - without
+        // guessing at permissions, which is a cause the earlier branches already cover.
         let other = classify(31, 0, false, false);
         assert!(matches!(other, E::Failed(_)));
-        assert!(other.message().contains("administrator"));
+        assert!(other.message().contains("error 31"));
+        assert!(other.message().contains("releases page"));
+        assert!(
+            !other.message().contains("administrator"),
+            "{}",
+            other.message()
+        );
     }
 
     #[test]
@@ -1046,7 +1149,65 @@ mod tests {
             std::fs::OpenOptions::new().write(true).open(&path).is_err(),
             "a second writer must not be able to replace the verified installer"
         );
+        assert!(
+            std::fs::remove_file(&path).is_err(),
+            "a deleter must not be able to remove the verified installer either"
+        );
         drop(lock);
         std::fs::remove_file(path).expect("remove test installer");
+    }
+
+    /// The regression that shipped in 1.3.3 and broke one-click self-update for twenty
+    /// releases: the lock held across the launch carried WRITE access, and Windows will not
+    /// map an executable image whose file somebody else has open for writing. Every update
+    /// attempt died with `ERROR_SHARING_VIOLATION` -> `SE_ERR_SHARE` (26), reported to the
+    /// user as "installing an update needs an administrator".
+    ///
+    /// Assert it against a REAL `CreateProcess` on a REAL image, because that is the only
+    /// thing that would have caught it - the unit test above passed happily throughout, since
+    /// denying writers was never the part that was broken.
+    #[test]
+    fn locked_installer_can_still_be_launched() {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let system_exe = Path::new(&root).join("System32").join("whoami.exe");
+        let Ok(bytes) = std::fs::read(&system_exe) else {
+            eprintln!("skipping: {} is not readable", system_exe.display());
+            return;
+        };
+        let asset = super::InstallerAsset {
+            url: String::new(),
+            size: bytes.len() as u64,
+            sha256: super::sha256_hex(&bytes).expect("SHA-256"),
+        };
+        let (path, lock) = super::write_locked_installer("launch", &bytes, &asset)
+            .expect("create locked installer");
+
+        // ShellExecuteW("runas") ultimately maps the image exactly as this does.
+        let spawned = std::process::Command::new(&path)
+            .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+            .output();
+        // ...and the lock is still doing its job while that happens.
+        let writer_refused = std::fs::OpenOptions::new().write(true).open(&path).is_err();
+
+        drop(lock);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            spawned.is_ok(),
+            "the lock held across the launch blocked the launch itself: {:?}",
+            spawned.err()
+        );
+        assert!(writer_refused, "the lock stopped protecting the installer");
+    }
+
+    #[test]
+    fn selftest_refuses_a_non_executable_before_any_launch() {
+        let path =
+            std::env::temp_dir().join(format!("st2k-selftest-notpe-{}.bin", std::process::id()));
+        std::fs::write(&path, b"definitely not a PE image").unwrap();
+        // Fails at verification (no MZ), so nothing is ever handed to ShellExecuteW —
+        // which is also what makes this safe to run un-elevated in any environment.
+        assert!(!super::run_selftest(&path));
+        std::fs::remove_file(path).unwrap();
     }
 }

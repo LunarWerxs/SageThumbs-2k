@@ -272,6 +272,23 @@ try {
     }
     $global:LASTEXITCODE = 0
 
+    # The updater must NEVER ship broken again (owner directive, 2026-08-10, after
+    # 1.3.3..=1.10.0 shipped a self-lock that failed every one-click update). Prove it on
+    # the EXACT x64 artifact being published: run the built app's own verify -> lock ->
+    # elevated-launch pipeline against it, which upgrades THIS machine's install in place
+    # and throws (aborting the release) if the upgrade does not land. CI's
+    # self-update-smoke job already gated the commit on a Compact build at [3/6]; this is
+    # the same harness on the real Full installer users will download. Side effect by
+    # design: the release machine ends the ritual running the build it just shipped.
+    Write-Host "[4d/6] self-update smoke on this machine (x64 artifact)" -ForegroundColor Green
+    $x64Artifact = $releaseArtifacts | Where-Object { $_.Architecture -eq 'x64' } | Select-Object -First 1
+    if ($x64Artifact) {
+        & (Join-Path $PSScriptRoot 'test-self-update.ps1') -Setup $x64Artifact.Setup.FullName
+        if ($LASTEXITCODE) { throw 'Self-update smoke FAILED - NOT publishing.' }
+    } else {
+        Write-Host "      SKIPPED - no x64 artifact in this run (ARM64-only builds can't upgrade an x64 host)." -ForegroundColor Yellow
+    }
+
     # The build must not move HEAD or rewrite tracked inputs after we captured + validated $sha.
     # The optional local marketing-site refresh is ignored and is deliberately not an
     # installer/provenance input.

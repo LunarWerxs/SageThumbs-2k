@@ -2,6 +2,19 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.10.1
+
+### Fixed
+
+- **One-click updates work again.** Since 1.3.3, clicking "Update" downloaded the new
+  version, verified it, and then failed with a message wrongly claiming you needed an
+  administrator account. The real cause was on our side: the app kept its own grip on the
+  downloaded installer in a way that stopped Windows from starting it. If you are on any
+  version from 1.3.3 through 1.10.0, this one update has to be downloaded by hand from the
+  releases page; after that, one-click updating works from then on. The whole update path
+  now runs for real - install, then upgrade itself in place - on every code change and on
+  every release before it is published, so it cannot silently break like this again.
+
 ## 1.10.0
 
 ### Added

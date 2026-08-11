@@ -124,6 +124,77 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --all --check
 
+  # The one-click self-updater shipped broken for twenty releases (1.3.3..=1.10.0): its own
+  # write-mode file lock made Windows refuse to launch every downloaded installer with
+  # SE_ERR_SHARE, and nothing noticed because no test ever drove the real pipeline against
+  # a real executable. This job closes that class for good: it builds the actual Compact
+  # installer with the real release pipeline, installs it, then makes the app UPDATE ITSELF
+  # IN PLACE through `--update-selftest` — the exact verify → lock → elevated-launch code
+  # the About-card updater runs — and fails unless the upgrade genuinely lands on disk.
+  # Hosted runners are administrators, so the `runas` elevation proceeds without a prompt,
+  # and the runner is disposable, so installing machine-wide is fine.
+  self-update-smoke:
+    name: self-update smoke (install · in-place upgrade)
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Toolchain
+        run: rustup show
+      # Same rationale and lookup as build-test: build.rs embeds VERSIONINFO via windres,
+      # and the self-update harness compares the versions it stamps.
+      - name: Release resource compiler
+        shell: pwsh
+        run: |
+          $windresCommand = Get-Command windres.exe -CommandType Application `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          $windres = if ($windresCommand) { $windresCommand.Source } else { $null }
+          if (-not $windres) {
+            $windres = @(
+              'C:\mingw64\bin\windres.exe'
+              'C:\msys64\mingw64\bin\windres.exe'
+              'C:\msys64\ucrt64\bin\windres.exe'
+              'C:\msys64\clang64\bin\windres.exe'
+            ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+              Select-Object -First 1
+          }
+          if (-not $windres -and (Test-Path -LiteralPath 'C:\msys64')) {
+            $windres = Get-ChildItem -LiteralPath 'C:\msys64' -Filter windres.exe `
+              -File -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $windres) {
+            throw 'GitHub Windows runner did not provide windres; refusing metadata-free release binaries.'
+          }
+          Split-Path -Parent $windres |
+            Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
+          & $windres --version
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # The runner image ships Inno Setup; install it only if that ever changes.
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $iscc) { choco install innosetup --no-progress -y }
+      # The real release pipeline, minus the two payloads irrelevant to updating:
+      # ImageMagick (Compact updates identically) and the signed sparse package (needs
+      # the Windows SDK signing chain; the classic-menu installer upgrades identically).
+      - name: Build Compact installer via the release pipeline
+        shell: pwsh
+        run: ./scripts/build-release.ps1 -NoImageMagick -NoModernMenu
+      - name: Install, then self-update in place
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/SageThumbs2K-Setup-*.exe |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $setup) { throw 'No built installer found in dist/.' }
+          ./scripts/test-self-update.ps1 -Setup $setup.FullName
+
   # A native ARM64 runner catches architecture-specific Windows/COM/linker drift
   # that an x64 cross-build cannot. This is deliberately a Compact validation:
   # it builds only the Rust/OS-codec app (no staged ImageMagick payload and no
