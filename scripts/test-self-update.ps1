@@ -56,8 +56,16 @@ if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
     }
 }
 
-$beforeExe = (Get-Item -LiteralPath $installedExe).LastWriteTimeUtc
 Write-Host "  [self-update] installed: $(Get-Ver3 $installedExe) -> expecting $expected via the app's own updater"
+
+# Completion signal: Inno stamps every installed PAYLOAD file with its SOURCE timestamp,
+# so exe/dll mtimes never change on a same-version reinstall - which is exactly what CI
+# does (baseline and upgrade are the same built setup), and exactly how this check failed
+# on its first CI run. unins000.dat is different: Inno REWRITES the uninstall log with the
+# wall clock at the end of every install, same-version included, so "its mtime moved past
+# the moment we launched the updater" is the honest "the install ran to completion" signal.
+$uninsDat = Join-Path $installDir 'unins000.dat'
+$t0 = (Get-Date).ToUniversalTime()
 
 # The app-side pipeline. It exits as soon as the ELEVATED INSTALLER PROCESS is running
 # (mirroring the production caller, which exits so the installer can replace it), so a zero
@@ -74,17 +82,17 @@ $landed = $false
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
     try {
-        $item = Get-Item -LiteralPath $installedExe -ErrorAction Stop
-        if ($item.LastWriteTimeUtc -gt $beforeExe -and (Get-Ver3 $installedExe) -eq $expected) {
+        $unins = Get-Item -LiteralPath $uninsDat -ErrorAction Stop
+        if ($unins.LastWriteTimeUtc -gt $t0 -and (Get-Ver3 $installedExe) -eq $expected) {
             $landed = $true
             break
         }
     } catch {
-        # Mid-replace the file can be transiently missing/locked; keep polling.
+        # Mid-replace the files can be transiently missing/locked; keep polling.
     }
 }
 if (-not $landed) {
-    throw "Self-update did NOT land within ${TimeoutSec}s: $installedExe is $(Get-Ver3 $installedExe) (expected $expected). The launch succeeded, so the installer itself failed or stalled - check %TEMP% Inno logs and whether something held the install dir open."
+    throw "Self-update did NOT land within ${TimeoutSec}s: $installedExe is $(Get-Ver3 $installedExe) (expected $expected), uninstall log fresh: $((Test-Path $uninsDat) -and (Get-Item $uninsDat).LastWriteTimeUtc -gt $t0). The launch succeeded, so the installer itself failed or stalled - check %TEMP% Inno logs and whether something held the install dir open."
 }
 
 # The DLL must land too - a "successful" upgrade that left the shell extension stale is the
