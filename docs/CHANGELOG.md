@@ -13,6 +13,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   what is missing, so running it twice is cheap; `--rebuild-all` skips that check. It reports how
   many were built, already present, and failed. Cloud-storage placeholder files are left alone,
   because building their thumbnails would download them. Requested by @taylor-p-mason (#23).
+- **The welcome screen now offers the format badge.** The option that stamps a small label
+  (`PSD`, `SVG`, `AVIF`…) into the corner of a thumbnail already existed in Settings, but nothing
+  pointed at it, so people who wanted a way to tell similar-looking files apart never found it.
+  It is now one of the optional switches on the welcome screen's second page. Still off unless
+  you ask for it, because it changes the picture you asked to see. Raised by @knchmpgn (#22).
 
 ### Fixed
 

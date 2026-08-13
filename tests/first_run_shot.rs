@@ -40,12 +40,17 @@ fn scratch(case: &str) -> PathBuf {
 /// Capture the welcome window. `portable` points the settings layer at a throwaway ini, which
 /// is the ENTIRE switch that makes a build portable — see `settings.rs`.
 fn shot(case: &str, portable: bool) -> Vec<u8> {
+    shot_window(case, portable, "firstrun")
+}
+
+/// [`shot`] with the page chosen: `firstrun` is page 1, `firstrun2` flips to page 2 first.
+fn shot_window(case: &str, portable: bool, window: &str) -> Vec<u8> {
     let dir = scratch(case);
     let out = dir.join(format!("{case}.png"));
     let _ = std::fs::remove_file(&out);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_SageThumbs2K"));
-    cmd.arg("--shot").arg(&out).args(["--window", "firstrun"]);
+    cmd.arg("--shot").arg(&out).args(["--window", window]);
     if portable {
         // Must not exist as a real settings store with content; an absent file is a valid
         // portable ini (every getter answers with its default).
@@ -92,6 +97,30 @@ fn portable_welcome_adds_the_thumbnails_row() {
 
     let _ = std::fs::remove_dir_all(scratch("installed"));
     let _ = std::fs::remove_dir_all(scratch("portable"));
+}
+
+/// Page 2 carries THREE opt-ins now, which is one more than `DLG_H` was sized for, so
+/// `flip_to_page2` grows the window. If that resize is ever dropped, the third row and the
+/// button end up sharing the same strip of pixels — and because the controls are still
+/// created, nothing errors and no other test notices. The height IS the assertion.
+#[test]
+fn page_two_grows_to_fit_its_third_opt_in() {
+    let page1 = shot_window("p1", false, "firstrun");
+    let page2 = shot_window("p2", false, "firstrun2");
+
+    let (w1, h1) = png_size(&page1);
+    let (w2, h2) = png_size(&page2);
+
+    assert_eq!(w1, w2, "width must not change between pages");
+    assert!(
+        h2 > h1,
+        "page 2 must be taller than page 1 to fit its third opt-in \
+         (page 1 {w1}x{h1}, page 2 {w2}x{h2}) — equal heights mean `grow_for_page2` is not \
+         running and the last row is drawn under the Get started button"
+    );
+
+    let _ = std::fs::remove_dir_all(scratch("p1"));
+    let _ = std::fs::remove_dir_all(scratch("p2"));
 }
 
 /// Control: the installed shape is unchanged by the flag being absent vs the window simply

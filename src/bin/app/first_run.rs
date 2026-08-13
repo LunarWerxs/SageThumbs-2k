@@ -59,6 +59,8 @@ const ID_P_COVERS_SUB: i32 = 112;
 const ID_P_SCANLATION: i32 = 113;
 const ID_P_SCANLATION_SUB: i32 = 114;
 const ID_P2_SUB: i32 = 115;
+const ID_P_BADGE: i32 = 116;
+const ID_P_BADGE_SUB: i32 = 117;
 
 // Which page the single window is showing. One window that swaps content, not two modal
 // boxes in a row — the module doc's "reads as nagging" rule is why.
@@ -70,6 +72,18 @@ const DLG_W: i32 = 460;
 const DLG_H: i32 = 340;
 /// Extra height the portable-only thumbnails row needs (checkbox + its two-line caption).
 const THUMBS_ROW_H: i32 = 68;
+
+/// One page-2 opt-in: the checkbox plus its two-line caption. Page 2 carries three of these,
+/// which is one more than [`DLG_H`] was sized for, so [`flip_to_page2`] grows the window by
+/// exactly this much. An INSTALLED copy is the case that needs it — a portable one is already
+/// this tall for the thumbnails row and stays put.
+const PAGE2_ROW_H: i32 = 68;
+
+/// Window height page 2 needs. Page 1 keeps [`dlg_h`], so an installed copy's first screen
+/// stays compact instead of opening with a row of empty space under it.
+fn page2_h() -> i32 {
+    DLG_H + PAGE2_ROW_H
+}
 
 /// Does this copy get the thumbnails row? Only a portable one: an installed build registered
 /// the handler machine-wide at setup, so offering it again would be a switch that does nothing.
@@ -162,6 +176,7 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
             "fr2_scanlation",
             "fr2_scanlation_sub",
         ),
+        (ID_P_BADGE, ID_P_BADGE_SUB, "fr2_badge", "fr2_badge_sub"),
     ] {
         ctl(
             hwnd,
@@ -205,6 +220,49 @@ unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
     );
 }
 
+/// Grow the window so page 2's third opt-in fits, and re-anchor the button to the new bottom.
+///
+/// [`build`] placed the button against the client rect as it was THEN, and a child window keeps
+/// its absolute position when the parent resizes — so without the move the button would stay
+/// where the old bottom edge used to be, floating in the middle of page 2. The window also
+/// grows upward by half, keeping it centred where the user's eye already is rather than making
+/// it appear to slide down the screen.
+unsafe fn grow_for_page2(hwnd: HWND) {
+    let target = dpi_scale(hwnd, page2_h());
+    let mut wr = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut wr);
+    let (cur_w, cur_h) = (wr.right - wr.left, wr.bottom - wr.top);
+    if target > cur_h {
+        let grow = target - cur_h;
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            wr.left,
+            (wr.top - grow / 2).max(0),
+            cur_w,
+            target,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    let cw = (rc.right - rc.left) * 100 / unit;
+    let (bw, bh, m) = (130, 30, 20);
+    if let Ok(b) = GetDlgItem(Some(hwnd), IDOK) {
+        let _ = SetWindowPos(
+            b,
+            None,
+            dpi_scale(hwnd, cw - m - bw),
+            dpi_scale(hwnd, (rc.bottom - rc.top) * 100 / unit - bh - 16),
+            dpi_scale(hwnd, bw),
+            dpi_scale(hwnd, bh),
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
 /// Swap page 1 out for page 2 and relabel the button from Next to Get started.
 unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
     for id in [
@@ -221,6 +279,7 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     }
+    grow_for_page2(hwnd);
     build_page2(hwnd, hinst);
     if let Ok(b) = GetDlgItem(Some(hwnd), IDOK) {
         let txt = crate::win::wide(t("fr_go"));
@@ -229,7 +288,7 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
     ON_PAGE_2.with(|p| p.set(true));
 }
 
-/// Apply the two page-2 switches. Each maps 1:1 to the Settings row that owns it.
+/// Apply the page-2 switches. Each maps 1:1 to the Settings row that owns it.
 unsafe fn apply_persona(hwnd: HWND) {
     use sagethumbs2k_core::settings as s;
     if checked(hwnd, ID_P_COVERS) {
@@ -237,6 +296,12 @@ unsafe fn apply_persona(hwnd: HWND) {
     }
     if checked(hwnd, ID_P_SCANLATION) {
         let _ = s::set_dword("ContainerSkipScanlation", 1);
+    }
+    // Offered here rather than defaulted on, because it MODIFIES the picture the user asked to
+    // see. Two separate reports (#17, #22) asked for a way to tell file types apart in a folder
+    // — worth putting the switch in front of people once, not worth deciding for them.
+    if checked(hwnd, ID_P_BADGE) {
+        let _ = s::set_dword("FormatBadge", 1);
     }
 }
 
