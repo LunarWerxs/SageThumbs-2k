@@ -53,6 +53,137 @@ pub(crate) const URL_GITHUB: &str = "https://github.com/LunarWerxs/SageThumbs-2k
 /// from the installer's shortcut. A `app.ico` next to the EXE overrides at runtime.
 const APP_ICO: &[u8] = include_bytes!("../../../../assets/app-win.ico");
 
+/// The best icon font actually PRESENT on this machine, as a face name.
+///
+/// **Issue #21.** Every toolbar in this app drew its glyphs from `Segoe Fluent Icons`, which
+/// ships with Windows 11 and does NOT exist on Windows 10. GDI does not fail when a face is
+/// missing, it silently substitutes a text font that has nothing at those private-use
+/// codepoints - so on Windows 10 the caption toolbar, the video transport and the screenshot
+/// toolbar all rendered as rows of empty boxes. The code even carried a comment calling that
+/// "acceptable on the Win11-targeted app". It is not: the app supports Windows 10
+/// (`MinVersion=10.0`), and a user reported exactly this.
+///
+/// Windows 10 has `Segoe MDL2 Assets`, whose codepoints for the glyphs this app uses are the
+/// same ones Fluent inherited, so the fallback is a drop-in rather than a remap.
+///
+/// Resolved ONCE: fonts do not appear mid-session, and the probe costs a DC.
+pub(crate) fn icon_font_face() -> &'static str {
+    static FACE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    FACE.get_or_init(|| {
+        // Dev override, so the Windows 10 appearance can be SEEN on a Windows 11 machine:
+        // `ST2K_ICON_FONT="Segoe MDL2 Assets"` forces the fallback and `--shot` captures it.
+        // Without this the fix could only be verified by reasoning, which is how the bug got
+        // shipped in the first place. Ignored unless the named face actually exists.
+        if let Some(forced) = std::env::var("ST2K_ICON_FONT")
+            .ok()
+            .filter(|f| !f.is_empty())
+        {
+            for known in ["Segoe Fluent Icons", "Segoe MDL2 Assets", "Segoe UI Symbol"] {
+                if forced.eq_ignore_ascii_case(known) && font_face_exists(known) {
+                    return known;
+                }
+            }
+        }
+        // Win11 first (it is the richer set), then the Win10 font, then a face that always
+        // exists so the last resort is legible text rather than a crash.
+        for want in ["Segoe Fluent Icons", "Segoe MDL2 Assets"] {
+            if font_face_exists(want) {
+                return want;
+            }
+        }
+        "Segoe UI Symbol"
+    })
+}
+
+/// Whether GDI can honour `face`, i.e. it resolves to itself rather than being substituted.
+///
+/// `CreateFontIndirectW` NEVER fails for a missing face - it hands back a substituted font,
+/// which is exactly what made this bug invisible. Selecting the font and asking the DC what it
+/// actually got is the check that cannot be fooled.
+fn font_face_exists(face: &str) -> bool {
+    use windows::Win32::Graphics::Gdi::{
+        CreateFontIndirectW, DeleteDC, DeleteObject, GetTextFaceW, SelectObject, DEFAULT_CHARSET,
+        LOGFONTW,
+    };
+    unsafe {
+        let mut lf = LOGFONTW {
+            lfHeight: -12,
+            lfCharSet: DEFAULT_CHARSET,
+            ..Default::default()
+        };
+        let w = wide(face);
+        for (i, c) in w.iter().take(lf.lfFaceName.len() - 1).enumerate() {
+            lf.lfFaceName[i] = *c;
+        }
+        let font = CreateFontIndirectW(&lf);
+        if font.is_invalid() {
+            return false;
+        }
+        let dc = windows::Win32::Graphics::Gdi::CreateCompatibleDC(None);
+        if dc.is_invalid() {
+            let _ = DeleteObject(font.into());
+            return false;
+        }
+        let old = SelectObject(dc, font.into());
+        let mut got = [0u16; 64];
+        let n = GetTextFaceW(dc, Some(&mut got));
+        SelectObject(dc, old);
+        let _ = DeleteDC(dc);
+        let _ = DeleteObject(font.into());
+        if n <= 1 {
+            return false;
+        }
+        let got = String::from_utf16_lossy(&got[..(n as usize - 1).min(got.len())]);
+        got.eq_ignore_ascii_case(face)
+    }
+}
+
+#[cfg(test)]
+mod icon_font_tests {
+    use super::*;
+
+    /// The picker must return a face this machine REALLY has.
+    ///
+    /// The failure mode being guarded is silent by construction: `CreateFontIndirectW` happily
+    /// returns a substituted font for a name nobody has, so a wrong answer here does not error,
+    /// it just draws empty boxes - which is exactly how issue #21 reached a release.
+    #[test]
+    fn the_resolved_icon_face_actually_exists() {
+        let face = icon_font_face();
+        assert!(
+            font_face_exists(face),
+            "icon_font_face() picked {face:?}, which GDI substitutes on this machine"
+        );
+    }
+
+    /// And the probe has to be capable of saying NO, or it would rubber-stamp anything and the
+    /// fallback chain would always stop at its first entry.
+    #[test]
+    fn the_probe_rejects_a_face_that_does_not_exist() {
+        assert!(
+            !font_face_exists("Definitely Not An Installed Face 12345"),
+            "the probe must detect GDI's silent substitution, not just that a handle came back"
+        );
+    }
+
+    /// Windows 10's icon font is the whole point of the fallback. This machine is Windows 11,
+    /// which ships BOTH, so the assertion is meaningful here; on a host that genuinely lacks it
+    /// the picker still has `Segoe UI Symbol` beneath, so this stays a report rather than a
+    /// failure.
+    #[test]
+    fn the_windows_10_fallback_face_is_recognised_when_present() {
+        if font_face_exists("Segoe MDL2 Assets") {
+            assert_eq!(
+                std::env::var("ST2K_ICON_FONT").ok().as_deref(),
+                None,
+                "this test assumes no forced override"
+            );
+        } else {
+            eprintln!("Segoe MDL2 Assets absent on this host - fallback untested here");
+        }
+    }
+}
+
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     std::ffi::OsStr::new(s)
         .encode_wide()

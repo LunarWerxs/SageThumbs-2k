@@ -630,10 +630,11 @@ pub(super) unsafe fn mono_font(hwnd: HWND) -> HFONT {
     )
 }
 
-/// A **Segoe Fluent Icons** handle at toolbar size (crisp, ClearType-AA native Win11 glyphs —
-/// the same font the screenshot tool uses, instead of hand-drawn GDI lines). If the font is
-/// absent (older Windows), GDI substitutes and the glyph degrades to a box — acceptable on the
-/// Win11-targeted app. Caller owns + deletes it.
+/// An icon-font handle at toolbar size (crisp, ClearType-AA glyphs instead of hand-drawn GDI
+/// lines). The FACE is whichever icon font this machine actually has -
+/// `crate::win::icon_font_face` - because `Segoe Fluent Icons` is Windows 11 only and its
+/// absence is silent: GDI substitutes a text font and every glyph becomes an empty box, which
+/// is precisely what Windows 10 users saw (issue #21). Caller owns + deletes it.
 pub(super) unsafe fn icon_font(hwnd: HWND) -> HFONT {
     use windows::Win32::Graphics::Gdi::{
         CreateFontIndirectW, CLEARTYPE_QUALITY, DEFAULT_CHARSET, LOGFONTW,
@@ -645,7 +646,7 @@ pub(super) unsafe fn icon_font(hwnd: HWND) -> HFONT {
         lfCharSet: DEFAULT_CHARSET,
         ..Default::default()
     };
-    let face = crate::win::wide("Segoe Fluent Icons");
+    let face = crate::win::wide(crate::win::icon_font_face());
     for (i, c) in face.iter().take(lf.lfFaceName.len() - 1).enumerate() {
         lf.lfFaceName[i] = *c;
     }

@@ -2,6 +2,17 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.11.1
+
+### Fixed
+
+- **Every toolbar button showed as an empty box on Windows 10.** The Quick preview's buttons,
+  the video player controls and the screenshot editor's tools all drew their symbols from an
+  icon font that only ships with Windows 11. Windows does not complain when a font is missing,
+  it quietly swaps in a text font that has none of those symbols, so the whole row came out
+  blank. SageThumbs now uses whichever icon font the machine actually has, and checks rather
+  than assuming. Thanks to @MuntasirTonmoy for the report (#21).
+
 ## 1.11.0
 
 ### Changed

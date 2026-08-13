@@ -356,10 +356,10 @@ pub(super) unsafe fn draw(
     let _ = DeleteObject(HGDIOBJ(icon.0)); // the icon font is ours; gui_font is shared
 }
 
-/// A handle to **Segoe Fluent Icons** (the default Win11 icon font) at toolbar size,
-/// scaled to `dpi` (identity at 96). If the font is somehow absent, GDI substitutes a
-/// default and the few font-glyph tools fall back to a placeholder box — the
-/// vector-glyph tools are unaffected.
+/// A handle to whichever icon font this machine actually has (`crate::win::icon_font_face`)
+/// at toolbar size, scaled to `dpi` (identity at 96). NOT hard-coded to `Segoe Fluent Icons`:
+/// that is Windows 11 only, and GDI substitutes silently rather than failing, so on Windows 10
+/// every font-glyph button rendered as an empty box (issue #21).
 unsafe fn icon_font(dpi: i32) -> HFONT {
     let mut lf = LOGFONTW {
         lfHeight: -dpi_scale_dpi(16, dpi),
@@ -368,7 +368,7 @@ unsafe fn icon_font(dpi: i32) -> HFONT {
         lfCharSet: DEFAULT_CHARSET,
         ..Default::default()
     };
-    let face = wide("Segoe Fluent Icons");
+    let face = wide(crate::win::icon_font_face());
     for (i, c) in face.iter().take(lf.lfFaceName.len() - 1).enumerate() {
         lf.lfFaceName[i] = *c;
     }
