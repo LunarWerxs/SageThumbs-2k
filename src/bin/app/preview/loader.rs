@@ -24,6 +24,8 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     st.born.set(GetTickCount64());
     let gen = st.decode_gen.get() + 1;
     st.decode_gen.set(gen);
+    // Tell any worker still running for an earlier file that nobody is waiting for it now.
+    super::content::begin_generation(gen);
     *st.render.borrow_mut() = None;
     *st.art.borrow_mut() = None; // drops the previous track's cover-art DIB
     *st.card.borrow_mut() = None;
@@ -44,6 +46,7 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     st.pdf_page.set(0);
     st.pdf_pages.set(0);
     st.zoom.set(1.0); // reset zoom/pan/scroll for the new file
+    st.full_pending.set(false); // any full-resolution request was for the PREVIOUS file
     st.pan.set((0, 0));
     st.text_scroll.set(0);
     st.scroll_hot.set(false);

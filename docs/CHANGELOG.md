@@ -2,6 +2,102 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 1.11.0
+
+### Changed
+
+- **One installer, no Full/Compact choice.** Setup used to ask whether to include the
+  ImageMagick engine, and picking the smaller option quietly removed about a hundred file
+  types with nothing to explain why a file later showed no thumbnail. Everyone now gets the
+  complete engine; upgrading from a Compact install fills in what was missing.
+
+### Added
+
+- **Photoshop files look sharp in the Quick preview.** A PSD or PSB carries a small preview
+  picture inside it - often about 160 pixels wide no matter how big the artwork is - and that
+  is what you were seeing, stretched. Now the small one still appears instantly, and the real
+  full-size artwork replaces it a moment later, so text and fine detail stay crisp. Needs the
+  full install (the compact one has no compositor and keeps the quick preview).
+
+- **Stepping through a folder with the arrow keys is much faster.** Recently viewed pictures
+  are kept ready instead of being decoded from scratch every time, and the next file in the
+  direction you are heading is decoded before you get there. Going back to a photo you just
+  looked at is now instant. Thanks to @themakershousechaple-max for the report (#20).
+
+### Fixed
+
+- **Plain .zip, .rar and .7z files never got the contact-sheet thumbnail in Explorer, and
+  3D-printer G-code never got one at all.** Both features decide what a file is from its
+  extension, and both were asking Windows for the file's location to read it. Explorer hands a
+  thumbnail handler an open file rather than a location, so the question came back blank every
+  time and both quietly did nothing - while working perfectly from the app itself, which is why
+  it went unnoticed. They now read the file's name from what Explorer does give them.
+
+- **Setup no longer asks you to close your file manager.** Any program that has opened a
+  file-picker dialog is holding SageThumbs' thumbnail component in memory, and installers
+  normally deal with that by asking you to quit the program first, or by giving up. Directory
+  Opus and Everything were both hitting this. Setup now slides the old component aside and puts
+  the new one in its place, so whatever is running keeps working, the install finishes, and no
+  reboot is needed. Thanks to @MxMaster3 for the report (#15).
+
+- **Arrow-keying through a folder of photos is roughly five times quicker than it was.** The
+  preview window shows about a megapixel, so unpacking a 12-megapixel photo in full just to
+  shrink it was work nobody could see. It now loads a screen-sized version and only fetches the
+  full-resolution one if you zoom in. The picture you see is the same, the size shown in the
+  window is the real one, and zooming still gives you every pixel the file has.
+
+- **Large PNG images were being decoded twice.** A shortcut added for speed asks the image
+  decoder for a small version of a picture instead of a full-size one. That is a big win for
+  photos, where the decoder can genuinely skip most of its work, and no win at all for PNG,
+  where it has to unpack the whole thing anyway and shrink it afterwards. The shortcut was
+  being used for both, so every large PNG got decoded once for the shortcut and again properly.
+  SageThumbs now asks the decoder up front whether the shortcut will actually help, and skips
+  it when it will not. Arrow-keying through a folder of photos got about 15% quicker overall.
+
+- **Big pictures appear faster in the Quick preview.** Before drawing a photo, the viewer has
+  to blend it onto the window's background in case parts of it are see-through. Photos never
+  are, and blending something fully solid onto a background just gives you the photo back - so
+  it was doing tens of millions of sums per picture to arrive at the image it started with. It
+  now skips straight to drawing when a picture has no transparency, which is almost always.
+  A 24-megapixel photo reached the screen about two and a half times quicker. Pictures that
+  really do have transparency are handled exactly as before.
+
+- **Installing SageThumbs no longer takes thumbnails away from another program for good.**
+  For every file type we support, Windows keeps one slot saying which program draws that
+  type's thumbnails. We claimed those slots on install - which is the whole point of the app -
+  but we overwrote whatever was there without keeping a copy, so if another thumbnail program
+  (Icaros, a codec pack, a design app) had been drawing them, its setting was simply gone.
+  Uninstalling us did not bring it back either: we tidied up our own entry and left the slot
+  empty. Now we remember exactly what was in each slot before we took it, and hand it straight
+  back when you turn a file type off or uninstall. Nothing you need to do; it applies from this
+  version onward.
+
+- **Formats the OS decodes are noticeably quicker to preview.** When SageThumbs needs a small
+  picture from a big one, it now asks the codec for a smaller picture directly instead of
+  having it produce the full-size image and shrinking that afterwards. Modern codecs can skip
+  most of their work when they know a small result is wanted, and a half-gigabyte image went
+  from about six seconds to about four. Same output, less work.
+
+- **Very large photos, scans and panoramas get thumbnails at last.** Files past the internal
+  256 MB ceiling used to be refused before anything looked at them, so a half-gigabyte scan
+  showed a blank icon no matter what. Windows' own codecs can now read such a file straight
+  off the disk and shrink it while reading, so it never has to fit in memory. Measured: a
+  528 MB image went from nothing at all to a thumbnail in about six seconds. Covers the
+  formats the OS understands (JPEG, PNG, TIFF, HEIC, AVIF, camera RAW); anything else behaves
+  exactly as before.
+
+- **Fewer big files silently losing their thumbnail.** The "skip files bigger than this"
+  setting shipped at 100 MB while the engine itself has always been happy up to 256 MB, so the
+  setting - not any real limit - was what left large photos, scans and layered files with a
+  blank icon. The default is now 256 MB to match. (Videos were never affected: they are read a
+  few megabytes at a time, so a multi-gigabyte film has always thumbnailed regardless of this
+  number.)
+
+- **`st2k doctor` now tells you when *we* are the reason a thumbnail changed.** The report
+  could already spot another program taking a file type from us, but not the reverse - which is
+  the far more common case right after installing. It now lists every file type we took over
+  and which program we took it from, by name.
+
 ## 1.10.1
 
 ### Fixed

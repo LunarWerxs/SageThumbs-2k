@@ -49,7 +49,7 @@ function Get-ArchitecturePolicy([object]$policy, [string]$architecture) {
     if ($null -eq $architecturePolicy -or $null -eq $architecturePolicy.Value) {
         throw "size policy has no '$architecture' architecture policy"
     }
-    $profile = if ($architecture -eq 'x64') { 'full' } else { 'compact' }
+    $profile = if ($architecture -eq 'x64') { 'full' } else { 'arm64' }
     $profilePolicy = $architecturePolicy.Value.PSObject.Properties[$profile]
     if ($null -eq $profilePolicy -or $null -eq $profilePolicy.Value) {
         throw "size policy has no '$architecture/$profile' profile"

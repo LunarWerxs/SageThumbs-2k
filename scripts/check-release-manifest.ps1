@@ -156,7 +156,7 @@ $imageMagickBundled = Get-ReleaseRequiredProperty -Object $build -Name 'imageMag
 # agree with the STAGE, not with the architecture.
 $magickStaged = Test-Path -LiteralPath (Join-Path $stage.FullName 'magick') -PathType Container
 if ($imageMagickBundled -isnot [bool] -or [bool]$imageMagickBundled -ne $magickStaged) {
-    $requiredImageMagick = if ($magickStaged) { 'true (Full)' } else { 'false (Compact)' }
+    $requiredImageMagick = if ($magickStaged) { 'true (bundled)' } else { 'false (engine-less build)' }
     throw "release manifest ImageMagickBundled disagrees with the stage: requires ImageMagickBundled=$requiredImageMagick for this $Architecture stage"
 }
 if ((Get-ReleaseRequiredProperty -Object $build -Name 'cargoLocked') -isnot [bool] -or
@@ -315,7 +315,7 @@ if ($imageMagickBundled) {
         throw 'full ImageMagick payload is absent'
     }
 } elseif ($magickFiles.Count -ne 0 -or (Test-Path -LiteralPath (Join-Path $stage.FullName 'magick'))) {
-    throw 'Compact stage must not contain ImageMagick files'
+    throw 'an engine-less stage must not contain ImageMagick files'
 }
 
 # Re-run the pinned-source identity/inventory gate and the staged dependency-

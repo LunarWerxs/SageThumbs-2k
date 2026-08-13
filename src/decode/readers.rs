@@ -79,19 +79,112 @@ pub fn exr_scaled_from_reader<R: Read + std::io::Seek>(
 /// past both the user's MaxSize and [`limits::MAX_INPUT_BYTES`] and so never
 /// reached a decoder at all.
 pub fn decode_preview_streamed(path: &str, target_edge: u32) -> Option<DynamicImage> {
-    if !file_is_exr(path) {
-        return None;
+    if file_is_exr(path) {
+        return match std::fs::File::open(path)
+            .map_err(|_| Error::from(E_FAIL))
+            .and_then(|f| exr_scaled_from_reader(f, target_edge))
+        {
+            Ok(img) => Some(img),
+            Err(e) => {
+                crate::safety::log_debug(&format!("scaled EXR decode failed: {e}"));
+                None
+            }
+        };
     }
-    match std::fs::File::open(path)
-        .map_err(|_| Error::from(E_FAIL))
-        .and_then(|f| exr_scaled_from_reader(f, target_edge))
-    {
+    oversized_wic_rescue(path, target_edge)
+}
+
+/// Bounded prefix handed to the WIC rescue purely so AVIF/HEIC colour can be read; the
+/// `colr` box sits in the first ISOBMFF boxes. Small on purpose — this path exists because
+/// the file is too big to hold, so reading a large slice of it would defeat the point.
+pub const COLOR_HEAD_BYTES: usize = 256 * 1024;
+
+/// Last-chance decode for a file the buffered path REFUSES outright.
+///
+/// Gated on the file already being past [`limits::MAX_INPUT_BYTES`], so nothing that works
+/// today changes route: every file under the cap takes the exact `image`-crate-first tier
+/// order it always did, with its established colour, orientation and performance behaviour.
+/// Only what currently renders as a stock icon is affected, which is what keeps this out of
+/// the corpus baseline's way.
+///
+/// WIC covers the formats where huge files actually turn up — JPEG, PNG, TIFF, HEIC, AVIF,
+/// JPEG XR, camera RAW through the OS codecs — and it scales during decode, so the memory
+/// cost is the thumbnail, not the document. Anything WIC cannot open returns `None` and the
+/// caller refuses as before.
+fn oversized_wic_rescue(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    let len = std::fs::metadata(path).ok()?.len();
+    if len <= limits::MAX_INPUT_BYTES {
+        return None; // the ordinary buffered tiers can have it, unchanged
+    }
+    wic_scaled_from_path(path, target_edge)
+}
+
+/// The WIC-off-the-file decode itself, scaled to `target_edge`, with NO size gate.
+///
+/// Separate from [`oversized_wic_rescue`] because the two callers disagree about what
+/// "oversized" means and only they can know: the by-path front ends are bounded by
+/// [`limits::MAX_INPUT_BYTES`], while the shell's stream cascade is bounded by the user's
+/// MaxSize, which can be lower. Each applies its own threshold and then calls this.
+pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    let head = read_head(path, COLOR_HEAD_BYTES).unwrap_or_default();
+    match unsafe { wic::wic_decode_path(path, Some(target_edge), &head) } {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!("scaled EXR decode failed: {e}"));
+            crate::safety::log_debug(&format!("WIC-by-path declined {path}: {e}"));
             None
         }
     }
+}
+
+/// [`wic_scaled_from_path`], but only when the codec can actually decode at a reduced size.
+///
+/// For a caller running this as a fast PRE-PASS ahead of a normal decode, that distinction is
+/// the difference between a 4x saving and doing the work twice: a JPEG decodes DCT-scaled, a
+/// PNG has no such mode so WIC decodes it whole and resamples. See
+/// `wic::wic_decode_path_if_codec_scales` for the measurements and how the codec is asked.
+pub fn wic_scaled_from_path_if_codec_scales(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    let head = read_head(path, COLOR_HEAD_BYTES).unwrap_or_default();
+    match unsafe { wic::wic_decode_path_if_codec_scales(path, target_edge, &head) } {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::safety::log_debug(&format!("WIC scaled pre-pass declined {path}: {e}"));
+            None
+        }
+    }
+}
+
+/// The same scaled, non-buffering decode driven off an `IStream` instead of a path.
+///
+/// The shell path needs this one: a thumbnail provider is handed a stream that exposes no
+/// path (only a leaf name), so there is nothing to give [`wic_scaled_from_path`]. WIC reads a
+/// stream lazily, so this achieves the same thing without a path existing at all.
+///
+/// `head` is a bounded prefix the caller has already read for the ISOBMFF colour box. The
+/// caller owns rewinding the stream before handing it over.
+///
+/// # Safety
+/// `stream` must be a valid, seekable `IStream` positioned at the start.
+pub unsafe fn wic_scaled_from_stream(
+    stream: &windows::Win32::System::Com::IStream,
+    target_edge: u32,
+    head: &[u8],
+) -> Option<DynamicImage> {
+    match wic::wic_decode_stream(stream, Some(target_edge), head) {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::safety::log_debug(&format!("WIC-from-stream declined: {e}"));
+            None
+        }
+    }
+}
+
+/// First `max` bytes of `path` (fewer if the file is shorter).
+fn read_head(path: &str, max: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    std::io::Read::take(&mut f, max as u64).read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 /// Preview-fidelity decode BY PATH: [`decode_preview_streamed`] first, then the

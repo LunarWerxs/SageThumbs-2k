@@ -244,6 +244,41 @@ fn main() {
             crate::screenshot::run_capture_automation(hinst);
             return;
         }
+        // `--bench-preview <dir>`: hidden dev measurement. Times the Quick preview's REAL
+        // decode path over a folder — a cold pass, then a warm pass off the cache — so the
+        // arrow-key stepping cost is a number rather than an impression. Console output, no
+        // window, no side effects. Exists because "it feels faster" is not a measurement.
+        if let Some(pos) = args.iter().position(|a| a == "--bench-preview") {
+            let dir = args.get(pos + 1).cloned().unwrap_or_default();
+            crate::preview::run_bench(&dir);
+            return;
+        }
+        // `--bench-nav <dir> <steps>`: the same measurement one level up — real viewer window,
+        // real WM_KEYDOWN arrow presses, timed from keypress to painted. Answers "does holding
+        // the arrow key feel instant" without anyone having to sit and hold the arrow key.
+        if let Some(pos) = args.iter().position(|a| a == "--bench-nav") {
+            let dir = args.get(pos + 1).cloned().unwrap_or_default();
+            let steps = args
+                .get(pos + 2)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(20);
+            crate::preview::run_nav_bench(hinst, &dir, steps);
+            return;
+        }
+        // `--bench-mash <dir> <keys>`: the HELD arrow key. Presses without waiting for each
+        // paint, so several decodes really are in flight at once - the only bench that can see
+        // whether superseded work is being abandoned, since `--bench-nav` waits for every step
+        // and therefore never has two workers running. `ST2K_NO_CANCEL=1` switches abandonment
+        // off for an A/B on the same binary.
+        if let Some(pos) = args.iter().position(|a| a == "--bench-mash") {
+            let dir = args.get(pos + 1).cloned().unwrap_or_default();
+            let keys = args
+                .get(pos + 2)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(20);
+            crate::preview::run_mash_bench(hinst, &dir, keys);
+            return;
+        }
         // `--update-check`: the throttled one-shot the Scheduled Task runs (and the
         // piggyback above spawns). Toasts if a newer release exists, then exits. It never
         // re-enters the piggyback, which excludes this flag by name.

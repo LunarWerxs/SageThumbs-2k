@@ -328,7 +328,18 @@ mod store {
 }
 
 // Defaults + bounds, matching the legacy SageThumbs.h constants.
-pub const DEFAULT_MAX_FILE_MB: u32 = 100; // FILE_MAX_SIZE
+/// Skip files bigger than this (MB). Raised from the legacy 100 (2026-08-11) to match
+/// `decode::limits::MAX_INPUT_BYTES` exactly, so this preference is never TIGHTER than the
+/// engine's own ceiling. At 100 it was: `effective_input_cap` takes `min(MaxSize, 256 MiB)`,
+/// so the user-facing knob — not the safety limit — was what refused a 150 MB TIFF, and
+/// since we own that extension's thumbnail slot the file got no thumbnail from anyone. This
+/// LOOSENS nothing the hard ceiling did not already sanction; 256 remains the real wall.
+///
+/// It also matters far less than it looks: the cap gates only the "buffer the whole file"
+/// tail of `streamsrc::stream_source`. Video, audio cover art, OpenEXR, archives, RAW and the
+/// baked-preview containers (PSD/PSB/.blend/DWG) are all served by targeted or streaming
+/// reads that never consult it — a 4 GB movie thumbnails regardless of this number.
+pub const DEFAULT_MAX_FILE_MB: u32 = 256; // FILE_MAX_SIZE
                                           // Raised from the legacy 256/512 (2026-06-22): on Hi-DPI / 4K / large ("jumbo")
                                           // icon views the shell requests thumbnails well past 512px. Capping below the
                                           // requested size handed back an undersized bitmap the shell could neither display

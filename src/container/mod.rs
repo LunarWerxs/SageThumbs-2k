@@ -61,6 +61,11 @@ mod xcf;
 // Waveform thumbnails for raw-PCM audio (WAV/AIFF) with no embedded cover art.
 mod waveform;
 mod zipfmt;
+// Synthetic, structurally-valid seeds + direct fuzz entry points for the extractors above.
+// Test-only. Lives inside `container` because the format modules are private to it — see the
+// module docs for why CI needed this at all.
+#[cfg(test)]
+pub(crate) mod fuzzseed;
 
 /// A cover: either raw image-file bytes (re-decoded by the image tiers) or
 /// already-decoded pixels (DjVu, which is not a standalone image file).

@@ -27,6 +27,10 @@ mod command;
 mod container;
 /// Archive entry listing for the Quick preview viewer (no extraction).
 pub use container::list_archive;
+/// True document dimensions for containers whose extracted cover is only a small baked-in
+/// preview (PSD/PSB). The Quick preview uses it to decide whether the fast preview it just
+/// painted is worth replacing with the real composite — see `preview::content`.
+pub use container::real_dims;
 pub mod cli;
 mod contextmenu;
 pub mod decode;

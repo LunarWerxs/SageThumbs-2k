@@ -82,5 +82,15 @@ pub(in crate::preview) unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
     let next = files[ni as usize].to_string_lossy().into_owned();
     if next != cur {
         request_load(hwnd, &next);
+        // Read ahead in the direction of travel (issue #20), so a run of ←/→ steps decodes
+        // ahead of the user instead of making them wait at each stop. TWO files, not one:
+        // a cold decode measures ~250 ms for a 12 MP photo, so a single lookahead only
+        // covers someone pausing at least that long on each frame — anyone arrowing faster
+        // outruns it immediately. Two matches `MAX_PREFETCH_IN_FLIGHT`, which is the real
+        // ceiling; asking for more would just queue work the user has already run past.
+        for step in 1..=2 {
+            let ahead = (((ni + delta * step) % n + n) % n) as usize;
+            content::spawn_prefetch(files[ahead].to_string_lossy().into_owned());
+        }
     }
 }

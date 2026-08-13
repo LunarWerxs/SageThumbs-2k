@@ -86,22 +86,31 @@ function Assert-ReleaseArchitectureContract([string]$Text) {
     if ($Text.Contains('Source: "stage\', [StringComparison]::Ordinal)) {
         throw 'installer contains a hard-coded stage source instead of {#StageDir}'
     }
-    # Full vs Compact is a PAYLOAD choice on both architectures now that ARM64 bundles
-    # ImageMagick too, so these four blocks are gated on CompactOnly alone. They used to
-    # also require Architecture == "x64", which is what kept ARM64 from ever shipping the
-    # engine. Assert the architecture clause is GONE as well, so it cannot creep back.
-    $fullGuard = '#if CompactOnly == "0"'
-    if (@([regex]::Matches($Text, [regex]::Escape($fullGuard))).Count -ne 4) {
-        throw 'expected the Full type, core type list, ImageMagick component, and source to be Full-guarded'
+    # The Compact PRODUCT TIER was removed (2026-08-12): every install now carries the full
+    # ImageMagick payload. `CompactOnly` survives only as an internal build switch for CI
+    # jobs that skip staging the engine, so exactly ONE block stays guarded — the engine
+    # source row. More than one means a user-facing tier is creeping back.
+    $engineGuard = '#if CompactOnly == "0"'
+    if (@([regex]::Matches($Text, [regex]::Escape($engineGuard))).Count -ne 1) {
+        throw 'expected exactly one CompactOnly guard (the ImageMagick source row)'
     }
     if ($Text.Contains('(Architecture == "x64") && (CompactOnly', [StringComparison]::Ordinal)) {
-        throw 'ImageMagick staging must not be architecture-gated; ARM64 is a Full build too'
+        throw 'ImageMagick staging must not be architecture-gated; both architectures bundle the engine'
     }
-    if (-not $Text.Contains(
-            'Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: compact custom; Flags: fixed',
-            [StringComparison]::Ordinal
-        )) {
-        throw 'Compact-only architecture must expose no Full install type'
+    # No install-type or component SELECTION may return. Both sections being absent is what
+    # keeps Inno from rendering a components page, and it is the whole point of the removal:
+    # "all N formats" must never again depend on a checkbox the user did not understand.
+    # Section headers must be matched as WHOLE LINES, not substrings: the .iss carries a
+    # comment explaining why these sections are absent, and that comment names them.
+    foreach ($section in @('[Types]', '[Components]')) {
+        if ($lines | Where-Object { $_.Trim() -ceq $section }) {
+            throw "the Compact/Full install choice must not come back (found a $section section)"
+        }
+    }
+    foreach ($banned in @('Types: full', 'Types: compact', 'Components: magick')) {
+        if ($Text.Contains($banned, [StringComparison]::Ordinal)) {
+            throw "the Compact/Full install choice must not come back (found '$banned')"
+        }
     }
 }
 
@@ -213,19 +222,19 @@ try {
 
     $missingCorePolicy = Join-Path $scratch 'missing-core-policy.iss'
     $needle =
-        'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core'
+        'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion'
     $mutated = $source.Replace($needle, '')
     if ($mutated -ceq $source) { throw 'test mutation did not remove core policy mapping' }
     Set-Content -LiteralPath $missingCorePolicy -Value $mutated -Encoding utf8
-    Assert-LintFails 'Compact/core hardened policy mapping removed' {
+    Assert-LintFails 'hardened policy mapping removed' {
         Invoke-InstallerLint -IssPath $missingCorePolicy
     }
 
     $duplicatePolicy = Join-Path $scratch 'duplicate-policy.iss'
     $needle =
-        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs'
     $replacement =
-        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs'
     $mutated = $source.Replace($needle, $replacement)
     if ($mutated -ceq $source) { throw 'test mutation did not remove policy exclusion' }
     Set-Content -LiteralPath $duplicatePolicy -Value $mutated -Encoding utf8

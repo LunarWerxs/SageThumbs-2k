@@ -9,8 +9,8 @@
     5. prints the resulting SageThumbs2K-Setup-<ver>.exe and its size
 
   Usage:  pwsh scripts\build-release.ps1                         # x64 Full
-          pwsh scripts\build-release.ps1 -NoImageMagick          # x64 Compact
-          pwsh scripts\build-release.ps1 -Architecture arm64     # ARM64 Compact
+          pwsh scripts\build-release.ps1 -NoImageMagick          # x64, engine payload SKIPPED (CI only)
+          pwsh scripts\build-release.ps1 -Architecture arm64     # ARM64 (same full payload as x64)
           pwsh scripts\build-release.ps1 -Portable               # x64 portable zip
   Output: dist\SageThumbs2K-Setup-<ver>[-arm64].exe
           dist\SageThumbs2K-Portable-<ver>[-arm64].zip   (with -Portable)
@@ -57,7 +57,7 @@ $stage = if ($Portable) {
 }
 $stageRelative = "stage\$Architecture"
 $outputSuffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
-# ARM64 used to be forced Compact here because there was no approved ImageMagick payload
+# ARM64 used to be forced engine-less here because there was no approved ImageMagick payload
 # for it. There is now: scripts\packaging\imagemagick-source-arm64.json pins the SAME upstream
 # 7.1.2-29 release as x64, so both architectures build Full unless -NoImageMagick is passed.
 
@@ -245,7 +245,7 @@ Copy-Item "$targetRel\st2k_dlghook.dll" $stage
 foreach ($doc in 'README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE') {
     if (Test-Path "$root\$doc") { Copy-Item "$root\$doc" $stage }
 }
-# Always ship the hardened policy with the core app. Compact installs can still
+# Always ship the hardened policy with the core app. The decoder can still
 # use an explicitly installed Program Files ImageMagick fallback; it must receive
 # the same restrictions even when the curated engine component is not selected.
 Copy-Item "$root\scripts\packaging\imagemagick-policy.xml" "$stage\policy.xml" -Force

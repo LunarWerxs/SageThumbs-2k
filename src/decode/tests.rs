@@ -870,6 +870,166 @@ fn wic_path_decodes() {
     assert_eq!((img.width(), img.height()), (40, 20));
 }
 
+/// Do the pure-Rust tier and the WIC tier AGREE on a plain JPEG?
+///
+/// This is the gating question for issue 3 (`docs/ISSUES.md`): routing large JPEGs through WIC
+/// would let the codec scale during decode, which is the single biggest preview speed-up
+/// available. It is only acceptable if the picture does not visibly change, and the two tiers
+/// do not manage colour identically, so the answer has to be measured rather than assumed.
+///
+/// Reports the worst per-channel difference. Failing loudly with the number is the point: if
+/// the tiers ever diverge, whoever reads this needs to see by how much, not just "differs".
+#[test]
+fn pure_rust_and_wic_agree_on_a_plain_jpeg() {
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
+    // Smooth gradients plus hard edges: the combination that exposes both colour-management
+    // differences and chroma-upsampling differences between two JPEG decoders.
+    let src = image::RgbImage::from_fn(256, 256, |x, y| {
+        if (x / 16 + y / 16) % 2 == 0 {
+            image::Rgb([x as u8, y as u8, 200])
+        } else {
+            image::Rgb([220, (x ^ y) as u8, (255 - y) as u8])
+        }
+    });
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 92)
+        .encode_image(&image::DynamicImage::ImageRgb8(src))
+        .expect("encode jpeg");
+
+    let pure = decode_preview(&jpeg).expect("pure-Rust tier decodes the jpeg");
+    let via_wic =
+        unsafe { wic::wic_decode_with_thumbnail(&jpeg, None) }.expect("WIC decodes the same jpeg");
+    assert_eq!(
+        (pure.width(), pure.height()),
+        (via_wic.width(), via_wic.height()),
+        "tiers must at least agree on size"
+    );
+
+    let (a, b) = (pure.to_rgb8(), via_wic.to_rgb8());
+    let mut worst = 0u8;
+    let mut total = 0u64;
+    for (pa, pb) in a.pixels().zip(b.pixels()) {
+        for c in 0..3 {
+            let d = pa.0[c].abs_diff(pb.0[c]);
+            worst = worst.max(d);
+            total += d as u64;
+        }
+    }
+    let mean = total as f64 / (a.pixels().len() * 3) as f64;
+    println!("  pure-Rust vs WIC: worst channel delta {worst}, mean {mean:.2}");
+    // A few levels is ordinary IDCT/upsampling disagreement between two conforming decoders.
+    // A large delta would mean a real colour-management difference, and would make swapping
+    // tiers a visible change rather than an invisible speed-up.
+    assert!(
+        worst <= 24 && mean <= 2.0,
+        "tiers disagree too much to swap freely: worst {worst}, mean {mean:.2}"
+    );
+}
+
+/// The capability probe has to actually DISTINGUISH, or it is a no-op that costs a file open.
+///
+/// A JPEG decoder reduces in the DCT domain and must be accepted; a PNG decoder has no such
+/// mode and must be declined, because for a caller using this as a pre-pass ahead of a full
+/// decode, accepting PNG means decoding the image twice. Measured before this existed: a 24 MP
+/// PNG "scaled" decode cost 605 ms against 690 ms for the full one, i.e. it WAS the full one.
+///
+/// Both halves are asserted deliberately. A probe that says no to everything would pass a
+/// JPEG-only test by accident and silently disable the optimisation everywhere.
+///
+/// **The target edge is deliberately NOT a clean fraction of the source.** The first version of
+/// this test used 1024 -> 256, an exact quarter, and passed against a probe that was broken:
+/// it asked the codec "can you produce exactly this size", and JPEG only offers halvings, so
+/// every real photo (4000 px asked for 2048, offered 2000) was rejected and the fast path
+/// silently died everywhere except at power-of-two ratios. A benchmark caught it, this test did
+/// not. 1024 -> 400 is the awkward ratio that reproduces it.
+#[test]
+fn the_scaled_pre_pass_takes_jpeg_and_declines_png() {
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+
+    // Noise, not flat colour: a uniform image can compress to something a codec handles
+    // unusually, and the question here is about the codec's capability, not the content.
+    let mut img = image::RgbImage::new(1024, 768);
+    for (x, y, p) in img.enumerate_pixels_mut() {
+        *p = image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x ^ y) % 239) as u8]);
+    }
+    let jpg = dir.join(format!("st2k_scaleprobe_{pid}.jpg"));
+    image::DynamicImage::ImageRgb8(img)
+        .save_with_format(&jpg, image::ImageFormat::Jpeg)
+        .expect("stage temp jpeg");
+    let png = dir.join(format!("st2k_scaleprobe_{pid}.png"));
+    std::fs::write(&png, png_bytes(1024, 768, [10, 20, 200, 255])).expect("stage temp png");
+
+    let jpg_p = jpg.to_string_lossy().into_owned();
+    let png_p = png.to_string_lossy().into_owned();
+
+    let scaled = super::wic_scaled_from_path_if_codec_scales(&jpg_p, 400)
+        .expect("a JPEG codec reduces in the DCT domain and must be accepted");
+    assert_eq!(scaled.width().max(scaled.height()), 400, "scaled to target");
+    assert!(
+        super::wic_scaled_from_path_if_codec_scales(&png_p, 400).is_none(),
+        "a PNG codec cannot decode reduced, so the pre-pass must decline it rather than \
+         decode the image a second time"
+    );
+    // The unconditional entry point still serves PNG — this probe narrows the PRE-pass only,
+    // and the oversized rescue depends on WIC opening anything it can.
+    assert!(
+        super::wic_scaled_from_path(&png_p, 400).is_some(),
+        "the plain scaled decode must still handle PNG"
+    );
+
+    let _ = std::fs::remove_file(&jpg);
+    let _ = std::fs::remove_file(&png);
+}
+
+#[test]
+fn wic_by_path_decodes_and_scales_without_buffering() {
+    // The oversized rescue: WIC opens the FILE itself, so a document past
+    // `limits::MAX_INPUT_BYTES` still thumbnails instead of getting the stock icon.
+    // Staging a >256 MB file in a unit test is absurd, so this exercises the decode
+    // (`wic_scaled_from_path`, which carries no size gate — its two callers apply their
+    // own) and leaves the threshold itself to `oversized_wic_rescue`.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
+    let bytes = png_bytes(400, 200, [10, 20, 200, 255]);
+    // Process-id suffixed so concurrent `cargo test` runs cannot race each other.
+    let path = std::env::temp_dir().join(format!("st2k_wicpath_{}.png", std::process::id()));
+    std::fs::write(&path, &bytes).expect("stage temp png");
+    let p = path.to_string_lossy().into_owned();
+
+    let img = super::wic_scaled_from_path(&p, 64).expect("WIC should decode a PNG off the file");
+    // Scaled DURING decode: the long edge lands on the requested target, and the aspect
+    // ratio survives. This is what makes the memory cost the thumbnail, not the document.
+    assert_eq!(
+        img.width().max(img.height()),
+        64,
+        "long edge scaled to target"
+    );
+    assert_eq!(img.height(), 32, "aspect ratio preserved");
+
+    // A path WIC cannot open must decline rather than panic — that `None` is what lets the
+    // caller fall through to its existing refusal.
+    let missing = path.with_extension("does-not-exist");
+    assert!(super::wic_scaled_from_path(&missing.to_string_lossy(), 64).is_none());
+
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn wic_thumbnail_scaling_keeps_rgba_channel_order() {
     // A SCALED WIC decode must come back in the same channel order as an unscaled one.

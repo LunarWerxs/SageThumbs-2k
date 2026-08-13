@@ -39,6 +39,10 @@ Thumbs.db
 /CLAUDE.md
 /TODO.md
 /docs/ROADMAP.md
+# Internal working notes: the live problem list with measurements and function names, created
+# at the owner's request 2026-08-12. Private for the same reason ROADMAP and TODO are, and
+# anchored here so it cannot be swept up by a broad `git add`.
+/docs/ISSUES.md
 /CODE-REVIEW-BACKLOG.md
 /NEWDO.md
 /NEWDO-2.md

@@ -138,6 +138,13 @@ if ($Lint) {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-email-rule.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'check-email-rule.ps1 failed' }
     }
+    # Taking a shared `shellex` slot without recording who held it wipes another product's
+    # thumbnail registration for good. Nothing else can see that: it compiles, it tests green,
+    # and it only shows up on a stranger's machine. See check-registration-symmetry.ps1.
+    Stage 'registration symmetry' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-registration-symmetry.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'check-registration-symmetry.ps1 failed' }
+    }
 }
 
 if ($Fast) {
@@ -181,11 +188,11 @@ if ($Samples) {
                 $expectFail[$line] = $true
             }
         }
-        # The effective "skip files bigger than this" limit (settings.rs DEFAULT_MAX_FILE_MB = 100,
+        # The effective "skip files bigger than this" limit (settings.rs DEFAULT_MAX_FILE_MB = 256,
         # overridable per user in HKCU). A size-gated negative sample only proves anything while
         # the machine's limit is actually below the sample — otherwise rendering it is CORRECT,
         # and asserting a failure would just cry wolf on whoever raised the setting.
-        $maxMb = 100
+        $maxMb = 256
         $reg = Get-ItemProperty 'HKCU:\Software\SageThumbs2K' -ErrorAction SilentlyContinue
         if ($null -ne $reg -and $null -ne $reg.MaxSize) { $maxMb = [int]$reg.MaxSize }
         $maxBytes = if ($maxMb -le 0) { [long]::MaxValue } else { [long]$maxMb * 1MB }

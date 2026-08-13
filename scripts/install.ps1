@@ -200,7 +200,7 @@ if ($spec.Name -eq 'arm64') {
 }
 # Our hardened ImageMagick policy.xml next to the binaries. decode.rs points
 # MAGICK_CONFIGURE_PATH here, so the policy applies even when we fall back to a
-# system-installed magick (this dev/compact install bundles none of its own).
+# system-installed magick (this dev install bundles none of its own).
 Copy-Item "$root\scripts\packaging\imagemagick-policy.xml" "$prog\policy.xml" -Force
 
 # Thumbnails + classic context menu (machine-wide, HKLM). This classic IContextMenu

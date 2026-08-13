@@ -30,8 +30,9 @@ use windows::core::{Error, Interface, Result};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICBitmapFrameDecode, IWICBitmapSource,
-    IWICColorContext, IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant,
-    WICBitmapPaletteTypeCustom, WICColorContextProfile, WICDecodeMetadataCacheOnLoad,
+    IWICBitmapSourceTransform, IWICColorContext, IWICImagingFactory, WICBitmapDitherTypeNone,
+    WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom, WICColorContextProfile,
+    WICDecodeMetadataCacheOnDemand, WICDecodeMetadataCacheOnLoad,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::SHCreateMemStream;
@@ -485,7 +486,8 @@ use wic::*;
 pub(crate) use readers::effective_input_cap;
 pub use readers::{
     decode_preview_path, decode_preview_streamed, exr_scaled_from_reader, is_exr_magic,
-    read_capped, read_preview_capped, EXR_PATH_EDGE, HEAD_PREVIEW_BYTES,
+    read_capped, read_preview_capped, wic_scaled_from_path, wic_scaled_from_path_if_codec_scales,
+    wic_scaled_from_stream, COLOR_HEAD_BYTES, EXR_PATH_EDGE, HEAD_PREVIEW_BYTES,
 };
 pub use thumb::{decode_thumbnail_opts, thumbnail_from_covers, thumbnail_from_image};
 pub(crate) use tiers::{largest_embedded_jpeg, MIN_RAW_PREVIEW};

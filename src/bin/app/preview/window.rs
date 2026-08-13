@@ -26,7 +26,7 @@ use super::selection::{self, SelHit};
 use super::{infocard, parse_command, CMD_CLOSE, CMD_SET_PATH, CMD_TOGGLE, VIEWER_CLASS};
 use super::{loader::*, paint::*, toolbar::*, transport::*};
 
-/// Decode result posted from the worker (`WM_APP + 1`); LPARAM = `Box<(gen, Option<DecodedRgba>)>`.
+/// Decode result posted from the worker (`WM_APP + 1`); LPARAM = `Box<(gen, Option<SharedRgba>)>`.
 pub(super) const WM_APP_RENDER: u32 = WM_APP + 1;
 /// Animated-image frames posted from the worker (`WM_APP + 7`);
 /// LPARAM = `Box<(gen, Vec<(DecodedRgba, delay_ms)>)>`.
@@ -205,6 +205,13 @@ pub(super) struct ViewerState {
     // ----- Phase 4 viewer polish -----
     /// Image zoom RELATIVE TO FIT: 1.0 = aspect-fit (the default). Wheel + double-click drive it.
     pub(super) zoom: Cell<f64>,
+    /// A full-resolution decode has been asked for and has not landed yet.
+    ///
+    /// The fit view is served by a codec-scaled decode that holds only display-sized pixels
+    /// (see `content::spawn_decode`), and a zoom past what it holds triggers a real one. That
+    /// check runs on every paint, so without this latch a single zoom would spawn a decode per
+    /// repaint. Cleared when a full decode installs, and reset per file by `loader::load`.
+    pub(super) full_pending: Cell<bool>,
     /// Image pan offset in device px (0,0 = centered). Drag-to-pan when zoomed.
     pub(super) pan: Cell<(i32, i32)>,
     /// Active pan drag anchor: `(mouse_x, mouse_y, pan_x, pan_y)` captured at button-down.
@@ -424,6 +431,7 @@ pub(super) unsafe fn create_viewer(
         tip: Cell::new(HWND::default()),
         poll_started: Cell::new(false),
         zoom: Cell::new(1.0),
+        full_pending: Cell::new(false),
         pan: Cell::new((0, 0)),
         drag: Cell::new(None),
         scrub_drag: Cell::new(false),
@@ -1276,7 +1284,11 @@ unsafe fn video_key(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) -> bool {
 /// Handle a decode result: install the image (or fall back to an InfoCard on failure), then
 /// size + show / resize.
 unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
-    let boxed = Box::from_raw(lparam.0 as *mut (u64, Option<content::DecodedRgba>));
+    // MUST stay `content::SharedRgba` — this is a hand-written cast back from a raw pointer,
+    // so a type that disagrees with what `content::post_render` boxed is UB the compiler
+    // cannot see. Naming the shared alias (rather than spelling the type out) is what keeps
+    // the two ends in step.
+    let boxed = Box::from_raw(lparam.0 as *mut (u64, Option<content::SharedRgba>));
     let (gen, decoded) = *boxed;
     let st = &*state(hwnd);
     if gen != st.decode_gen.get() {
@@ -1297,17 +1309,56 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         return;
     }
     match decoded {
-        Some(d) => match content::make_render(d.w, d.h, &d.rgba, letterbox_bg(st)) {
+        Some(d) => match content::make_render_for(&d, letterbox_bg(st)) {
             Some(rd) => {
+                // A full-resolution decode landing clears any pending request for one, whether
+                // this IS that decode or the user simply navigated to a small image.
+                if d.is_full() {
+                    st.full_pending.set(false);
+                }
                 *st.render.borrow_mut() = Some(rd);
                 st.kind.set(ContentKind::Image);
             }
             None => fallback_card(st),
         },
+        // A failed decode must never REPLACE a picture that is already on screen. That only
+        // became reachable once the fit view started being served by a scaled decode: a
+        // subsequent full-resolution fetch can fail (a file deleted mid-zoom, a format the
+        // scaled path opened and the buffered one refuses) and swapping the visible image for
+        // an error card would be a plain downgrade. With nothing installed yet, the card is
+        // still the right answer.
+        None if st.render.borrow().is_some() => st.full_pending.set(false),
         None => fallback_card(st), // decode failure / timeout → the calm card
     }
     ensure_shown(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
+/// Fetch the real pixels if the zoom has outgrown the codec-scaled ones the fit view is served
+/// from. A no-op — one comparison — for a full-resolution render and for any un-zoomed image.
+///
+/// Called from the paint path rather than from the zoom handlers, so a window resize, a
+/// full-screen toggle and a wheel notch are all covered by the same check instead of three that
+/// have to be kept in step. `full_pending` is what stops the repaint that follows from asking
+/// again before the first answer arrives.
+pub(super) unsafe fn ensure_full_for_zoom(hwnd: HWND, rc: &RECT) {
+    let st = &*state(hwnd);
+    if st.full_pending.get() || st.kind.get() != ContentKind::Image {
+        return;
+    }
+    let wanted = st
+        .render
+        .borrow()
+        .as_ref()
+        .is_some_and(|rd| content::wants_full_resolution(rd, rc, st.zoom.get()));
+    if !wanted {
+        return;
+    }
+    let Some(path) = st.path.borrow().as_ref().cloned() else {
+        return;
+    };
+    st.full_pending.set(true);
+    content::spawn_decode_full(hwnd, path, st.decode_gen.get());
 }
 
 /// Fall back to the InfoCard for the current path (decode failed or timed out).
@@ -1338,7 +1389,13 @@ unsafe fn on_anim(hwnd: HWND, lparam: LPARAM) {
     if rds.len() < 2 {
         // couldn't build enough frames → fall through to a normal single-frame decode
         if let Some(p) = st.path.borrow().as_ref().cloned() {
-            content::spawn_decode(hwnd, p, gen);
+            // `spawn_decode_full`, NOT `spawn_decode`. `spawn_decode` re-detects the animated
+            // extension and re-runs the frame decode, which yields the same frame list that has
+            // just failed to become bitmaps - so it posts `WM_APP_ANIM` again, lands back here,
+            // and retries forever (a fresh thread and a full re-read every cycle) with the
+            // window stuck on "Loading". `spawn_decode_full` skips the animation branch
+            // entirely, which is exactly the single-frame fallback this arm promises.
+            content::spawn_decode_full(hwnd, p, gen);
         }
         return;
     }
@@ -1370,7 +1427,7 @@ unsafe fn advance_frame(hwnd: HWND) {
 
 mod clipboard;
 mod command;
-mod navigate;
+pub(super) mod navigate;
 mod zoom;
 pub(in crate::preview) use clipboard::*;
 pub(in crate::preview) use command::*;

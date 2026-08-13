@@ -117,6 +117,16 @@ fn header_targets() -> Vec<Target> {
     ]
 }
 
+/// The header targets PLUS every per-format extractor, aimed at directly instead of through
+/// `extract_cover`'s magic dispatch. See `container::fuzzseed` for why the indirection matters:
+/// a mutation only reaches a parser through the dispatcher if it left that parser's magic
+/// alone, which filters out most of the mutations worth trying.
+fn all_targets() -> Vec<Target> {
+    let mut v = header_targets();
+    v.extend(crate::container::fuzzseed::targets());
+    v
+}
+
 // ---------------------------------------------------------------------------------------------
 // Synthetic seeds — self-contained so the always-on run needs no external files.
 // ---------------------------------------------------------------------------------------------
@@ -497,7 +507,7 @@ fn with_quiet_panics<T>(body: impl FnOnce() -> T) -> T {
 const PAIR_BUDGET: std::time::Duration = std::time::Duration::from_millis(600);
 
 fn run_all(seeds: &[(&str, Vec<u8>)], iters_per: usize, base_seed: u64) -> Vec<String> {
-    let targets = header_targets();
+    let targets = all_targets();
     let mut failures = Vec::new();
     with_quiet_panics(|| {
         for (si, (label, seed)) in seeds.iter().enumerate() {
@@ -523,6 +533,11 @@ fn run_all(seeds: &[(&str, Vec<u8>)], iters_per: usize, base_seed: u64) -> Vec<S
 #[test]
 fn parsers_survive_mutation_of_synthetic_seeds() {
     let mut seeds: Vec<(&str, Vec<u8>)> = vec![("mkv", synthetic_mkv()), ("mp4", synthetic_mp4())];
+    // One structurally VALID file per container format. Without these the only container input
+    // this gate ever saw was a handful-of-bytes magic stub, so a mutation had essentially
+    // nothing to corrupt — and on CI, which has no `test-corpus` to fall back on, that was the
+    // whole of the coverage. See `container::fuzzseed`.
+    seeds.extend(crate::container::fuzzseed::seeds());
     for (i, stub) in header_stubs().into_iter().enumerate() {
         seeds.push((Box::leak(format!("stub{i}").into_boxed_str()), stub));
     }
@@ -533,7 +548,13 @@ fn parsers_survive_mutation_of_synthetic_seeds() {
         seeds.push((Box::leak(format!("rand{i}_{sz}").into_boxed_str()), buf));
     }
 
-    let failures = run_all(&seeds, 3000, 0x5A5A_1234_9E37_79B9);
+    // 3000 mutations per (seed, target) was right when there were 16 targets and 27 mostly-tiny
+    // seeds. With the container seeds and their parsers added the matrix is ~5x bigger, and at
+    // 3000 this gate cost 22.6 s of every `cargo test`. 1000 holds it near 10 s while KEEPING
+    // the exhaustive truncation sweep, which is the higher-yield half: short-read and
+    // off-by-one panics are what a prefix walk finds, and it is deterministic rather than
+    // sampled. The deep run (`--ignored`, real corpus) is where depth belongs.
+    let failures = run_all(&seeds, 1000, 0x5A5A_1234_9E37_79B9);
     assert!(
         failures.is_empty(),
         "{} parser panic(s) found by mutation fuzzing:\n{}",

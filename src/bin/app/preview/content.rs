@@ -25,14 +25,434 @@ pub(super) struct DecodedRgba {
     pub w: i32,
     pub h: i32,
     pub rgba: Vec<u8>,
+    /// The NATIVE size of the source image, which is not always `(w, h)`.
+    ///
+    /// A codec-scaled decode ([`display_scaled_first_paint`]) holds only as many pixels as the
+    /// screen can show, and everything user-facing — the size reported in the caption, the
+    /// window the viewer opens at, what "100%" means to the zoom — has to keep answering about
+    /// the real image. Carrying the native size here is what lets the pixels be small without
+    /// any of that changing.
+    pub nat: (i32, i32),
+}
+
+impl DecodedRgba {
+    /// A full-resolution decode: the pixels ARE the image.
+    pub(super) fn full(w: i32, h: i32, rgba: Vec<u8>) -> Self {
+        Self {
+            w,
+            h,
+            rgba,
+            nat: (w, h),
+        }
+    }
+
+    /// A codec-scaled decode of a `nat`-sized image.
+    fn scaled(w: i32, h: i32, rgba: Vec<u8>, nat: (i32, i32)) -> Self {
+        Self { w, h, rgba, nat }
+    }
+
+    /// True when these pixels are the whole image, so a zoom has nothing sharper to fetch.
+    pub(super) fn is_full(&self) -> bool {
+        self.nat == (self.w, self.h)
+    }
+}
+
+/// What a finished decode is posted to the UI thread as. `Arc`, not a bare `DecodedRgba`,
+/// so a cache hit is a refcount bump instead of a copy: MEASURED, the copy cost 7-8 ms on a
+/// 12 MP photo (48 MB of RGBA) and 18 ms on a 24 MP one, which is most of what a "instant"
+/// revisit was still paying. The UI only ever reads the pixels (`make_render`/`make_dib`
+/// take a slice), so sharing them is free.
+pub(super) type SharedRgba = std::sync::Arc<DecodedRgba>;
+
+// ── decoded-image cache + prefetch (issue #20: stepping ←/→ felt slow) ────────────────
+//
+// Every ←/→ step used to pay a full read + decode, even for a file shown two seconds ago,
+// because nothing remembered a decode once it had been painted. The fix is a small MRU of
+// finished decodes plus a one-file read-ahead in the direction of travel.
+
+/// How much decoded RGBA to keep.
+///
+/// MEASURED, not guessed. Decoded RGBA is ~4 bytes per pixel, so a 12 MP camera photo is
+/// ~48 MB and a 24 MP one ~96 MB — the BYTE budget is the real bound here, never the count.
+/// This started at 192 MB, which sounded generous and held only FOUR photos: `--bench-nav`
+/// walking a 9-file folder showed every wrap-around revisit still paying a full ~250 ms
+/// decode, because the earlier entries had already been evicted. 384 MB covers a run of
+/// eight, which is the "flick back a few frames" the cache exists for. It is a ceiling, not
+/// a reservation: it only fills if the user actually visits that many large images, and the
+/// viewer is a throwaway per-preview process that exits with the window.
+const CACHE_MAX_BYTES: usize = 384 << 20;
+/// Belt-and-braces bound for the opposite case: many small images.
+const CACHE_MAX_ENTRIES: usize = 16;
+/// Cap on read-ahead workers, so holding down → cannot fan out a thread per keypress.
+const MAX_PREFETCH_IN_FLIGHT: usize = 2;
+
+/// Identity of a cached decode. Carries size + mtime, not just the path: a file edited or
+/// replaced under the same name MUST miss, or the viewer would confidently show stale pixels.
+type CacheKey = (String, u64, i64);
+
+static CACHE: std::sync::Mutex<Vec<(CacheKey, std::sync::Arc<DecodedRgba>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+// ── abandoning work the user has already navigated past ───────────────────────────────────
+//
+// The UI thread has always FENCED stale results (`on_render` drops a payload whose generation
+// no longer matches), but the worker that produced it still ran to completion. Hold ← or → down
+// and every file passed over spawns a decode that keeps burning CPU against the one the user is
+// actually waiting for — the read-ahead's own workers included. Fencing the result is not the
+// same as not doing the work.
+//
+// So publish the generation somewhere a worker can see, and have each one check it BEFORE it
+// starts.
+//
+// **Only where the work cannot be reused, and that restriction is measured, not cautious.** The
+// main decode populates the shared cache, so a worker that gives up mid-flight throws away a
+// read the user is quite likely to want again the moment they arrow back - the read-ahead exists
+// precisely to bank that. A first attempt abandoned it after the read too, and the held-key
+// bench came out consistently WORSE for it (111 ms catch-up against 101 ms), because files that
+// would have been cached had to be decoded a second time. Cancelling is only free for work whose
+// result nothing else can use: the PSD composite (seconds of ImageMagick, posted to one
+// generation and never cached) and a PDF page render. Those keep their checks; the cache-filling
+// decode only checks on ENTRY, where nothing has been spent yet.
+
+/// The generation the viewer currently cares about. Written by the UI thread when it starts a
+/// load, read by decode workers.
+static LIVE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Publish the generation a load is being started for. Called by the UI thread, next to the
+/// `decode_gen` bump it mirrors.
+pub(super) fn begin_generation(gen: u64) {
+    LIVE_GEN.store(gen, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Has the user moved on since `gen` was started? Workers use this to abandon.
+///
+/// Deliberately `>` rather than `!=`: a worker must only ever give up for a NEWER generation.
+/// Equality is the live case, and a generation older than the worker's cannot happen from a
+/// monotonic counter — but treating "different" as "stale" would make a wrapped or reset
+/// counter silently cancel live work instead of merely wasting some.
+fn abandoned(gen: u64) -> bool {
+    if cancellation_disabled() {
+        return false;
+    }
+    let stale = LIVE_GEN.load(std::sync::atomic::Ordering::SeqCst) > gen;
+    if stale {
+        ABANDONED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    stale
+}
+
+/// How many workers have given up so far. Reported by `--bench-mash`.
+///
+/// Latency cannot see this. The PSD composite runs asynchronously and posts a SECOND result, so
+/// abandoning one never changes when anything paints - it changes how much ImageMagick the
+/// machine runs for documents nobody is looking at any more. A count is the honest measurement
+/// of that; a stopwatch is not.
+static ABANDONED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `--bench-mash` hook: how many workers abandoned superseded work.
+pub(super) fn bench_abandoned_count() -> usize {
+    ABANDONED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Dev switch: `ST2K_NO_CANCEL=1` makes every worker run to completion as it did before.
+///
+/// Exists so the two behaviours can be measured on ONE binary. Comparing two separate builds
+/// across a machine whose background load moves is how several confident wrong readings got
+/// made in this file's history; an A/B on the same executable, minutes apart, has none of that.
+/// Read once, so the hot path is an atomic load and not a `getenv` per check.
+fn cancellation_disabled() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("ST2K_NO_CANCEL").is_some())
+}
+static PREFETCH_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn cache_key(path: &str) -> Option<CacheKey> {
+    let md = std::fs::metadata(path).ok()?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Windows paths are case-insensitive, so the same file reached two ways is one entry.
+    Some((path.to_ascii_lowercase(), md.len(), mtime))
+}
+
+/// A cached decode for `path`, moved to the front of the MRU. `None` on a miss. Hands back a
+/// SHARE of the pixels, never a copy — see [`SharedRgba`].
+fn cache_get(path: &str) -> Option<SharedRgba> {
+    let key = cache_key(path)?;
+    let mut c = CACHE.lock().ok()?;
+    let found = c.iter().position(|(k, _)| *k == key);
+    sagethumbs2k_core::safety::log_debug(&format!(
+        "preview cache: {} for {path} ({} entries held)",
+        if found.is_some() { "HIT" } else { "miss" },
+        c.len()
+    ));
+    let pos = found?;
+    let hit = c.remove(pos);
+    let out = std::sync::Arc::clone(&hit.1);
+    c.insert(0, hit);
+    Some(out)
+}
+
+/// True when `path` is already cached — or unreadable, in which case there is nothing worth
+/// prefetching either, so "true" (don't bother) is the right answer for both callers.
+fn cache_has(path: &str) -> bool {
+    let Some(key) = cache_key(path) else {
+        return true;
+    };
+    CACHE
+        .lock()
+        .map(|c| c.iter().any(|(k, _)| *k == key))
+        .unwrap_or(true)
+}
+
+fn cache_put(path: &str, img: std::sync::Arc<DecodedRgba>) {
+    let Some(key) = cache_key(path) else {
+        return;
+    };
+    let Ok(mut c) = CACHE.lock() else {
+        return;
+    };
+    // Never DOWNGRADE an entry. Two workers can be in flight for one file - a zoom's
+    // full-resolution fetch and a revisit's codec-scaled decode - and they finish in whatever
+    // order the scheduler picks. Without this, the scaled one landing second would evict the
+    // full-resolution pixels a zoom had already paid for, and the next zoom would have to
+    // fetch them all over again.
+    if !img.is_full() {
+        if let Some((_, held)) = c.iter().find(|(k, _)| *k == key) {
+            if held.is_full() {
+                return;
+            }
+        }
+    }
+    c.retain(|(k, _)| *k != key);
+    c.insert(0, (key, img));
+    // Trim from the back. `Vec::retain` visits front-to-back in order, so a running total
+    // evicts exactly the least-recently-used tail. An image that alone busts the budget is
+    // dropped immediately, which is intended: caching it would blow the bound on its own.
+    let (mut total, mut kept) = (0usize, 0usize);
+    c.retain(|(_, v)| {
+        total += v.rgba.len();
+        kept += 1;
+        kept <= CACHE_MAX_ENTRIES && total <= CACHE_MAX_BYTES
+    });
+}
+
+/// Decode `path` in the background purely to warm the cache — nothing is posted and nothing
+/// is shown. Called for the file the user is about to arrow onto.
+pub(super) fn spawn_prefetch(path: String) {
+    use std::sync::atomic::Ordering;
+    if cache_has(&path) {
+        return;
+    }
+    // Still images only. Video, text and archives have their own load paths, and PDF goes
+    // through `spawn_decode_pdf` (page-aware), so a plain entry for one would never be read.
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "pdf" || classify(&path) != ContentKind::Image {
+        return;
+    }
+    if PREFETCH_IN_FLIGHT
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            (n < MAX_PREFETCH_IN_FLIGHT).then_some(n + 1)
+        })
+        .is_err()
+    {
+        return; // already at the cap — the user is arrowing faster than we can read ahead
+    }
+    std::thread::spawn(move || {
+        // Warm the cache with the SAME thing a real load would install — the codec-scaled
+        // decode where that is available, the full one otherwise. Reading ahead at full
+        // resolution would mean the read-ahead costing four times what the load it is racing
+        // does, which is exactly backwards for the case it exists to serve: a held-down arrow
+        // key, where the prefetch has to finish before the user arrives.
+        //
+        // The animated extensions are excluded for the same reason `spawn_decode` excludes
+        // them: a scaled decode of one yields a single still, and a still sitting in the cache
+        // is what a later load would find and post. (It also initialises its own COM apartment,
+        // so this bare worker thread needs nothing — the neighbouring path learned that one the
+        // hard way.)
+        let d = (!matches!(ext.as_str(), "gif" | "png" | "apng" | "webp"))
+            .then(|| display_scaled_first_paint(&path))
+            .flatten()
+            .or_else(|| read_and_decode(&path));
+        if let Some(d) = d {
+            cache_put(&path, std::sync::Arc::new(d));
+        }
+        PREFETCH_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    });
+}
+
+/// Long edge the deferred decode is taken at: the largest the viewer's content pane can ever be
+/// on this machine, which the monitor bounds.
+///
+/// **This used to be a hard-coded 2048, with a comment claiming a maximised viewer on a 4K panel
+/// was still under it. That was wrong**, and the way it was wrong is instructive: the viewer
+/// opens at up to 80% of the work area, so on a 3840-wide desktop a 12 MP photo aspect-fits to
+/// about 2200 px — already more than 2048. `wants_full_resolution` therefore fired on the plain
+/// FIT view of every single navigation, so each step did the scaled decode AND the full one, and
+/// the full-resolution results then evicted everything else from the cache. The arrow bench read
+/// as a win on the first pass through a folder and a loss on the second, which is exactly what
+/// that looks like.
+///
+/// **The ceiling is the load-bearing part, and it is arithmetic, not a guess.** A JPEG reduces
+/// only by halving, so a 4000 px photo can be decoded at 2000 and nothing between that and full
+/// size. A 4K pane wants about 2200. Ask for 2200 and the codec cannot help, so WIC decodes the
+/// whole image and resamples: measured at 292 ms per step against 250 ms for simply decoding it
+/// normally, i.e. the "fast path" became the slow path. Ask for 2048 and the halving applies:
+/// 59 ms. Sizing this to the monitor is therefore exactly wrong above ~2K, which is why an
+/// earlier attempt to "fix" the hard-coded value made the arrow bench three times slower.
+///
+/// So the reduction is only reachable if a modest upscale at fit is acceptable. It is, and
+/// [`FIT_UPSCALE_TOLERANCE`] is where that judgement is written down.
+fn display_edge() -> u32 {
+    static EDGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *EDGE.get_or_init(|| {
+        let (_dpi, work) = crate::win::cursor_monitor_metrics();
+        let long = (work.right - work.left).max(work.bottom - work.top).max(1) as u32;
+        // Floor keeps a small or remote desktop from decoding uselessly little; the ceiling is
+        // what keeps the codec's halving reachable for ordinary camera photos (see above).
+        long.clamp(1024, 2048)
+    })
+}
+
+/// How far the display bitmap may be stretched before the real pixels are fetched.
+///
+/// Not a corner cut — the enabling condition. Without SOME tolerance the fit view on a 4K panel
+/// (about 2200 px from a 2048 px bitmap, a 7% upscale) would demand a full decode on every
+/// single navigation, which is precisely the behaviour this defers, and the measured cost of
+/// that was every arrow step paying both decodes and the results then evicting the cache.
+///
+/// 25% is chosen so a 7-10% fit-view stretch of a photo, which no one can see, costs nothing,
+/// while the very first wheel notch (1.2x, i.e. 29%) fetches the real thing. Zooming is
+/// deliberate; browsing is not.
+const FIT_UPSCALE_TOLERANCE: f64 = 1.25;
+
+/// Only worth a scaled decode when the source is meaningfully bigger than the pane; below this
+/// the full decode is already quick and asking the codec twice would be pure overhead.
+fn scaled_first_paint_min() -> u32 {
+    display_edge().saturating_mul(3) / 2
+}
+
+/// A display-sized decode for the FIRST paint, asking the OS codec for a small picture rather
+/// than decoding full size and shrinking afterwards.
+///
+/// This is the technique fast viewers are built on: a JPEG can be reconstructed at 1/2, 1/4 or
+/// 1/8 straight from the compressed data, skipping most of the work. Our pure-Rust JPEG tier
+/// has no such API (`image` 0.25 dropped it, `zune-jpeg` never had it), but WIC does, now that
+/// the scaler sits ahead of the format converter so the codec's own transform is reachable.
+///
+/// SAFE BY CONSTRUCTION: this only ever produces an EARLIER paint. `spawn_decode` still runs
+/// the normal full decode straight afterwards and posts it over the top, so the image the user
+/// ends up looking at is byte-for-byte what it was before, and zoom still has full resolution
+/// behind it. Measured first: the two tiers differ by at most 1 level per channel on a plain
+/// JPEG (`decode::tests::pure_rust_and_wic_agree_on_a_plain_jpeg`), so the swap is invisible.
+///
+/// `None` whenever it is not clearly worth it: small source, unknown dimensions, or a format
+/// the OS codecs decline.
+fn display_scaled_first_paint(path: &str) -> Option<DecodedRgba> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+    let (w, h) = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    if w.max(h) <= scaled_first_paint_min() {
+        return None;
+    }
+    // WIC is COM, and this runs on a bare decode worker that has no apartment -- without this
+    // every call returned `CoInitialize has not been called (0x800401F0)`, so the fast path
+    // silently did nothing at all while looking like it worked. (The neighbouring
+    // `decode_preview_budgeted` initialises COM on its own sub-thread for the same reason.)
+    let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    // `_if_codec_scales`, NOT the plain scaled decode. This is a PRE-pass — the full decode
+    // still runs after it — so it is only ever worth doing where the codec can decode small in
+    // its own domain. JPEG can (68 ms against 270 ms for full, measured); PNG cannot, so WIC
+    // decodes the whole thing and resamples (605 ms against 690 ms), which meant this pre-pass
+    // was doing a SECOND full decode of every large PNG for a first paint barely any earlier.
+    let decoded =
+        sagethumbs2k_core::decode::wic_scaled_from_path_if_codec_scales(path, display_edge());
+    if inited {
+        unsafe { CoUninitialize() };
+    }
+    let img = decoded?;
+    let rgba = img.to_rgba8();
+    let (dw, dh) = (rgba.width() as i32, rgba.height() as i32);
+    // The pixels are small; `nat` keeps the real size, which is what the caption, the window
+    // sizing and the zoom's "100%" all answer against.
+    Some(DecodedRgba::scaled(
+        dw,
+        dh,
+        rgba.into_raw(),
+        (w as i32, h as i32),
+    ))
+}
+
+/// The REAL composite for a container format whose preview is only a small baked-in
+/// thumbnail — PSD/PSB, where Photoshop's resource-1036 preview is often ~160 px wide no
+/// matter how big the document is (issue #20: "PSD/PSB appear lower in resolution").
+///
+/// `None` when there is nothing better to show: not such a container, the document is not
+/// meaningfully bigger than what is already on screen, or there is no compositor (the compact
+/// install has no ImageMagick, so `decode_full` returns the same baked preview back).
+fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<DecodedRgba> {
+    let (rw, rh) = sagethumbs2k_core::real_dims(head)?;
+    // Only pay for a second decode when the document is clearly bigger than what we drew.
+    if rw <= (shown.0.max(1) as u32).saturating_mul(3) / 2
+        && rh <= (shown.1.max(1) as u32).saturating_mul(3) / 2
+    {
+        return None;
+    }
+    // Re-read the file WHOLE. The bytes the preview stage worked from came from
+    // `read_preview_capped`, which for these very formats deliberately returns only a head
+    // PREFIX (that is how a 100 MB PSD thumbnails cheaply) — and a truncated PSD cannot be
+    // composited, so handing those bytes to `decode_full` would silently fall straight back
+    // to the baked preview we are trying to replace.
+    let whole = sagethumbs2k_core::decode::read_capped(path).ok()?;
+    let full = sagethumbs2k_core::decode::decode_full(&whole).ok()?;
+    let rgba = full.to_rgba8();
+    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+    // Guard the no-compositor case explicitly: on a compact install `decode_full` falls back
+    // to the same baked preview, and swapping in an identical image is a repaint for nothing.
+    if w <= shown.0 && h <= shown.1 {
+        sagethumbs2k_core::safety::log_debug(&format!(
+            "preview: no sharper composite for {path} (document {rw}x{rh}, \
+             full decode {w}x{h}, already showing {}x{})",
+            shown.0, shown.1
+        ));
+        return None;
+    }
+    sagethumbs2k_core::safety::log_debug(&format!(
+        "preview: sharpened {path} from {}x{} to {w}x{h} (document is {rw}x{rh})",
+        shown.0, shown.1
+    ));
+    Some(DecodedRgba::full(w, h, rgba.into_raw()))
 }
 
 /// The current image render installed in the window (the DIB + its natural dims + the bg
 /// it was composited over). Sole owner of `hbmp`; freed when replaced or on window destroy.
 pub(super) struct RenderData {
     pub hbmp: HBITMAP,
+    /// The NATIVE dimensions of the image — what the file actually contains.
+    ///
+    /// Everything user-visible keys off these and always has: the aspect-fit geometry, what
+    /// "100%" means to the zoom, the size the window opens at, and the dimensions in the
+    /// caption. They stay native even when `hbmp` is a smaller codec-scaled decode, which is
+    /// what makes holding fewer pixels invisible.
     pub iw: i32,
     pub ih: i32,
+    /// The dimensions of `hbmp` ITSELF, which is a different question. Equal to `(iw, ih)` for
+    /// a full-resolution decode; smaller when the codec was asked for a display-sized picture
+    /// and [`paint_image`] stretches the last little bit.
+    bw: i32,
+    bh: i32,
     /// The bitmap holds PREMULTIPLIED alpha and must be composed with `AlphaBlend`, not blitted.
     /// Only ever true for the main image pane (see [`make_render`]); cover art and inline Markdown
     /// images stay flattened, so they keep the plain blit and want no checkerboard.
@@ -52,10 +472,22 @@ impl RenderData {
             hbmp,
             iw,
             ih,
+            bw: iw,
+            bh: ih,
             alpha: false,
             src: core::ptr::null(),
             scaled: RefCell::new(None),
         }
+    }
+
+    /// Re-label a render whose bitmap is a codec-scaled decode of a larger image, so the
+    /// geometry keeps answering about the real thing. See the `iw`/`bw` split above.
+    fn with_native(mut self, nat: (i32, i32)) -> Self {
+        self.bw = self.iw;
+        self.bh = self.ih;
+        self.iw = nat.0;
+        self.ih = nat.1;
+        self
     }
 }
 
@@ -587,18 +1019,32 @@ fn truncate_long_lines(text: &str, max: usize) -> String {
 
 /// Kick off an async decode of `path` on a detached worker thread. The result (or `None`
 /// on failure/timeout) is posted back to `hwnd` as `WM_APP_RENDER` carrying a boxed
-/// `(gen, Option<DecodedRgba>)`; `gen` lets the UI thread drop a stale result after the
+/// `(gen, Option<SharedRgba>)`; `gen` lets the UI thread drop a stale result after the
 /// user has already switched files. The UI thread NEVER blocks on the decode.
 pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
+    // Cache hit: answer on the spot, no thread, no read, no decode. Stepping ←/→ through a
+    // folder revisits the same files constantly, and this is what makes that feel instant.
+    if let Some(hit) = cache_get(&path) {
+        post_render(hwnd, gen, Some(hit));
+        return;
+    }
+    begin_generation(gen);
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         // Reconstruct the HWND inside the worker (HWND isn't `Send`; the raw pointer is).
         let hwnd = HWND(hwnd_raw as *mut c_void);
+        // Held-down arrow key: by the time the scheduler gets here the user may already be two
+        // files further on. Nothing has been read or decoded yet, so this costs one atomic load
+        // and reclaims the entire worker.
+        if abandoned(gen) {
+            return;
+        }
         // Formats that stream + downscale off the file handle (OpenEXR) skip the read
         // entirely — a 12K render pass is past every in-memory cap. Never animated, so
         // this can post the single-frame result straight away.
         if let Some(decoded) = streamed_decode(&path) {
-            let payload: Box<(u64, Option<DecodedRgba>)> = Box::new((gen, Some(decoded)));
+            let payload: Box<(u64, Option<SharedRgba>)> =
+                Box::new((gen, Some(std::sync::Arc::new(decoded))));
             let raw = Box::into_raw(payload);
             if PostMessageW(
                 Some(hwnd),
@@ -612,17 +1058,53 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
             }
             return;
         }
-        // One bounded/path-aware read for BOTH the animation probe and static fallback.
-        // This also gives the standalone viewer the core's PSD/PSB/Blender head-preview and
-        // oversized streamed-cover fast paths instead of blindly buffering the whole file.
-        let bytes = sagethumbs2k_core::decode::read_preview_capped(&path).ok();
-        // Animated GIF/APNG/animated-WebP → post the whole frame list (WM_APP_ANIM). A static
-        // file of the same extension returns None and falls through to the single-frame path.
         let ext = std::path::Path::new(&path)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        // CODEC-SCALED DECODE, ahead of the read: when this succeeds nothing else needs the
+        // file's bytes at all, so reading them first would be pure waste.
+        //
+        // The animated extensions are excluded rather than ordered around. They need the bytes
+        // for the frame probe below regardless, and none of them is a codec that decodes small,
+        // so nothing is given up. That exclusion also preserves the rule this path was built
+        // under: an animated file posts `WM_APP_ANIM` and returns, and posting a still render
+        // as well left the window with two render paths half-applied, which crashed outright on
+        // a 24 MP PNG (access violation, found by `--bench-nav` at exactly the step that
+        // reaches it). Keeping the two mutually exclusive is what makes that unrepresentable.
+        if !matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
+            // …and STOPS there. The full decode is deferred until something actually needs
+            // those pixels, which for a fit view is never: the pane shows about a megapixel and
+            // this holds up to 2048 on the long edge. Measured, 12 MP JPEG: 59 ms here against
+            // 250 ms for the full decode, so an arrow step stops paying the 250 ms at all.
+            //
+            // What makes deferring SAFE rather than a downgrade is `DecodedRgba::nat`: the
+            // pixels are small but the render still reports the real image size, so the
+            // caption, the window sizing and "100%" are unchanged.
+            // `window::ensure_full_for_zoom` fetches the real thing the moment a zoom asks for
+            // more detail than this holds.
+            //
+            // Only reached for codecs that genuinely decode small (JPEG's DCT reduction);
+            // anything else returns `None` and falls through to the full decode unchanged.
+            if let Some(quick) = display_scaled_first_paint(&path) {
+                let quick = std::sync::Arc::new(quick);
+                cache_put(&path, std::sync::Arc::clone(&quick));
+                post_render(hwnd, gen, Some(quick));
+                return;
+            }
+        }
+        // One bounded/path-aware read for BOTH the animation probe and static fallback.
+        // This also gives the standalone viewer the core's PSD/PSB/Blender head-preview and
+        // oversized streamed-cover fast paths instead of blindly buffering the whole file.
+        // Shared, never copied: the decode moves it into its worker and the sharpen pass needs
+        // the same buffer afterwards. Cloning it instead cost a full copy of the file per
+        // preview (measured: ~120 MB on a 24 MP PNG, for nothing).
+        let bytes = sagethumbs2k_core::decode::read_preview_capped(&path)
+            .ok()
+            .map(std::sync::Arc::new);
+        // Animated GIF/APNG/animated-WebP → post the whole frame list (WM_APP_ANIM). A static
+        // file of the same extension returns None and falls through to the single-frame path.
         if matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
             if let Some(bytes) = bytes.as_deref() {
                 if let Some(frames) = super::anim::decode_animation(bytes, &ext) {
@@ -642,26 +1124,392 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
                 }
             }
         }
-        let decoded = bytes.and_then(decode_loaded);
-        let payload: Box<(u64, Option<DecodedRgba>)> = Box::new((gen, decoded));
-        let raw = Box::into_raw(payload);
-        if PostMessageW(
-            Some(hwnd),
-            WM_APP_RENDER,
-            WPARAM(gen as usize),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            // Window died between the decode and the post — reclaim the box so it can't leak.
-            drop(Box::from_raw(raw));
+        let decoded = bytes
+            .clone()
+            .and_then(decode_loaded)
+            .map(std::sync::Arc::new);
+        // Cache and hand over the SAME allocation — one decode, no copy of the pixels.
+        let shown = decoded.as_ref().map(|d| (d.w, d.h));
+        if let Some(d) = &decoded {
+            cache_put(&path, std::sync::Arc::clone(d));
+        }
+        post_render(hwnd, gen, decoded);
+        // The fast preview is now on screen. For PSD/PSB that preview is Photoshop's small
+        // baked-in thumbnail, so chase it with the real composite and post a SECOND result.
+        // Two-stage on purpose: the composite shells out to ImageMagick and can take seconds,
+        // and paying that up front would trade an instant preview for a long blank window.
+        if let (Some(bytes), Some(shown)) = (bytes, shown) {
+            spawn_sharpen(hwnd, path, bytes, shown, gen);
         }
     });
 }
 
+/// Decode `path` at FULL resolution and post it, skipping the codec-scaled shortcut.
+///
+/// The other half of the deferral in [`spawn_decode`]: the fit view is served by display-sized
+/// pixels, and this is what fetches the real ones once a zoom asks for detail they do not hold.
+/// Deliberately a separate entry point rather than a flag — a caller that wants full resolution
+/// wants it unconditionally, and threading a "no really, all of it" boolean through the normal
+/// path is how the shortcut would eventually get taken by accident.
+pub(super) unsafe fn spawn_decode_full(hwnd: HWND, path: String, gen: u64) {
+    if let Some(hit) = cache_get(&path).filter(|d| d.is_full()) {
+        post_render(hwnd, gen, Some(hit));
+        return;
+    }
+    let hwnd_raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let hwnd = HWND(hwnd_raw as *mut c_void);
+        if abandoned(gen) {
+            return; // zoomed, then navigated away before this got a slice of CPU
+        }
+        let decoded = read_and_decode(&path).map(std::sync::Arc::new);
+        if let Some(d) = &decoded {
+            // Replaces the scaled entry under the same key, so a later revisit gets the full
+            // pixels straight away rather than re-deciding.
+            cache_put(&path, std::sync::Arc::clone(d));
+        }
+        post_render(hwnd, gen, decoded);
+    });
+}
+
+/// Post a finished decode to the UI thread, reclaiming the box if the window has already gone.
+unsafe fn post_render(hwnd: HWND, gen: u64, decoded: Option<SharedRgba>) {
+    let payload: Box<(u64, Option<SharedRgba>)> = Box::new((gen, decoded));
+    let raw = Box::into_raw(payload);
+    if PostMessageW(
+        Some(hwnd),
+        WM_APP_RENDER,
+        WPARAM(gen as usize),
+        LPARAM(raw as isize),
+    )
+    .is_err()
+    {
+        // Window died between the decode and the post — reclaim the box so it can't leak.
+        drop(Box::from_raw(raw));
+    }
+}
+
+/// Decode the full composite on its own worker and post it as a second `WM_APP_RENDER`.
+///
+/// Reuses `gen`, so if the user has already arrowed on, the upgrade is dropped by the exact
+/// same staleness check that guards the first result — no new state, no new message. COM is
+/// initialised here because `decode_full` can land on the WIC tier, which needs an apartment.
+unsafe fn spawn_sharpen(
+    hwnd: HWND,
+    path: String,
+    bytes: std::sync::Arc<Vec<u8>>,
+    shown: (i32, i32),
+    gen: u64,
+) {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    let hwnd_raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let hwnd = HWND(hwnd_raw as *mut c_void);
+        // Worth the most of any of these checks: the composite shells out to ImageMagick and
+        // can take SECONDS. Running one to completion for a document the user has already
+        // arrowed past is the single largest piece of wasted work the viewer could do.
+        if abandoned(gen) {
+            return;
+        }
+        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let sharp = sharper_composite(&path, &bytes, shown);
+        if inited {
+            unsafe { CoUninitialize() };
+        }
+        if let Some(sharp) = sharp {
+            let arc = std::sync::Arc::new(sharp);
+            // Cache the SHARP one: arrowing back must not drop to the small preview again.
+            cache_put(&path, std::sync::Arc::clone(&arc));
+            unsafe { post_render(hwnd, gen, Some(arc)) };
+        }
+    });
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    /// Temp files are process-id suffixed so concurrent `cargo test` runs cannot race
+    /// (the repo-wide convention — see DEVELOPMENT_GOTCHAS).
+    fn temp_file(tag: &str, body: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("st2k_cachetest_{tag}_{}", std::process::id()));
+        std::fs::write(&p, body).expect("write temp file");
+        p
+    }
+
+    fn sample() -> std::sync::Arc<DecodedRgba> {
+        std::sync::Arc::new(DecodedRgba::full(2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]))
+    }
+
+    #[test]
+    fn cached_decode_round_trips() {
+        let p = temp_file("roundtrip", b"original");
+        let path = p.to_string_lossy().into_owned();
+        cache_put(&path, sample());
+        let hit = cache_get(&path).expect("just-cached entry must hit");
+        assert_eq!((hit.w, hit.h), (2, 1));
+        assert_eq!(hit.rgba, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// The one that matters: a file edited under the same name MUST miss. A cache keyed on
+    /// the path alone would confidently paint the previous file's pixels — worse than slow.
+    #[test]
+    fn edited_file_misses() {
+        let p = temp_file("edited", b"original contents");
+        let path = p.to_string_lossy().into_owned();
+        cache_put(&path, sample());
+        assert!(cache_get(&path).is_some(), "sanity: it should be cached");
+
+        // A different length changes the key even if the clock has not ticked over.
+        std::fs::write(&p, b"different contents entirely").expect("rewrite");
+        assert!(
+            cache_get(&path).is_none(),
+            "an edited file must not serve the old decode"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A cached FULL-resolution decode must never be replaced by a scaled one.
+    ///
+    /// Both can be in flight for one file at once - a zoom's full-resolution fetch and a
+    /// revisit's codec-scaled decode - and they finish in whichever order the scheduler picks.
+    /// Losing the full pixels to a late-landing scaled result would silently undo the work a
+    /// zoom had already paid for, and the only symptom would be the next zoom being slow again.
+    #[test]
+    fn a_scaled_decode_never_evicts_a_full_resolution_one() {
+        let p = temp_file("nodowngrade", b"original");
+        let path = p.to_string_lossy().into_owned();
+
+        let full = std::sync::Arc::new(DecodedRgba::full(4, 4, vec![9u8; 4 * 4 * 4]));
+        cache_put(&path, full);
+        assert!(cache_get(&path).expect("cached").is_full());
+
+        // A scaled decode of the SAME file lands afterwards: it must be ignored.
+        let scaled = std::sync::Arc::new(DecodedRgba::scaled(2, 2, vec![1u8; 2 * 2 * 4], (4, 4)));
+        cache_put(&path, scaled);
+        assert!(
+            cache_get(&path).expect("still cached").is_full(),
+            "the full-resolution entry must survive a later scaled one"
+        );
+
+        // The reverse order is fine: an upgrade always wins.
+        let p2 = temp_file("upgrade", b"original");
+        let path2 = p2.to_string_lossy().into_owned();
+        cache_put(
+            &path2,
+            std::sync::Arc::new(DecodedRgba::scaled(2, 2, vec![1u8; 2 * 2 * 4], (4, 4))),
+        );
+        cache_put(
+            &path2,
+            std::sync::Arc::new(DecodedRgba::full(4, 4, vec![9u8; 4 * 4 * 4])),
+        );
+        assert!(
+            cache_get(&path2).expect("cached").is_full(),
+            "a full-resolution decode must replace a scaled one"
+        );
+
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&p2);
+    }
+
+    #[test]
+    fn missing_file_never_hits_and_is_not_worth_prefetching() {
+        let missing = std::env::temp_dir()
+            .join(format!("st2k_cachetest_absent_{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        assert!(cache_get(&missing).is_none());
+        // `cache_has` answers "true" for unreadable paths so `spawn_prefetch` skips them
+        // rather than spawning a worker that can only fail.
+        assert!(cache_has(&missing));
+    }
+}
+
+#[cfg(test)]
+mod render_size_tests {
+    use super::*;
+
+    /// The opaque fast path in [`make_dib_hinted`] claims to be the compositing loop with the
+    /// multiply and divide removed, not an approximation of it. That is only true if the
+    /// arithmetic genuinely reduces to the identity at full alpha — so check every combination
+    /// rather than trusting the algebra in the comment.
+    #[test]
+    fn composite_at_full_alpha_is_exactly_the_source() {
+        for s in 0..=255u32 {
+            for d in 0..=255u32 {
+                assert_eq!(
+                    composite_channel(s, d, 255),
+                    s as u8,
+                    "a fully opaque source must ignore the background (s={s}, d={d})"
+                );
+            }
+        }
+    }
+
+    /// Abandonment must fire for a NEWER generation and never for an equal or older one.
+    ///
+    /// The `>` rather than `!=` is the whole test. Treating "different" as "stale" reads fine
+    /// and is wrong in one direction that matters: a worker whose generation is somehow AHEAD
+    /// of the published one would cancel itself, i.e. live work would be silently dropped and
+    /// the viewer would sit on "Loading…" forever. Wasting some work is recoverable; cancelling
+    /// the work someone is waiting for is not.
+    #[test]
+    fn only_a_newer_generation_abandons_a_worker() {
+        begin_generation(100);
+        assert!(!abandoned(100), "the live generation must never abandon");
+        assert!(abandoned(99), "an older worker has been superseded");
+        assert!(
+            !abandoned(101),
+            "a worker AHEAD of the published generation must keep going, not cancel itself"
+        );
+        begin_generation(0); // leave the global as other tests expect to find it
+    }
+
+    /// And the other end: at zero alpha the background must survive untouched, which is what
+    /// makes the loop a real source-over rather than a lerp with rounding bias.
+    #[test]
+    fn composite_at_zero_alpha_is_exactly_the_background() {
+        for d in 0..=255u32 {
+            assert_eq!(composite_channel(200, d, 0), d as u8);
+        }
+    }
+
+    /// The invariant the whole deferred-decode scheme rests on: a scaled decode holds SMALL
+    /// pixels while the render still reports the REAL image size.
+    ///
+    /// If `iw`/`ih` ever came back as the bitmap's size instead, the failure would be quiet and
+    /// everywhere — the caption would report the wrong dimensions, the window would open at the
+    /// wrong size, "100%" would mean 100% of a downscale, and `wants_full_resolution` could
+    /// never fire because the bitmap would always look big enough.
+    #[test]
+    fn a_scaled_render_reports_the_real_image_size_not_the_bitmaps() {
+        let nat = (4000, 3000);
+        let d = DecodedRgba::scaled(400, 300, vec![255u8; 400 * 300 * 4], nat);
+        assert!(!d.is_full(), "a scaled decode is not the whole image");
+        let rd = unsafe { make_render_for(&d, 0x0020_2020) }.expect("build");
+        assert_eq!((rd.iw, rd.ih), nat, "reports the real image size");
+        assert_eq!((rd.bw, rd.bh), (400, 300), "holds only the small pixels");
+
+        // A full decode must be indistinguishable from before any of this existed.
+        let f = DecodedRgba::full(400, 300, vec![255u8; 400 * 300 * 4]);
+        assert!(f.is_full());
+        let rd = unsafe { make_render_for(&f, 0x0020_2020) }.expect("build");
+        assert_eq!((rd.iw, rd.ih), (400, 300));
+        assert_eq!((rd.bw, rd.bh), (400, 300));
+    }
+
+    /// Zoom escalation has to fire exactly when the bitmap runs out of detail, and never for a
+    /// full-resolution render (there is nothing sharper to fetch, and asking forever would
+    /// spawn a decode per repaint).
+    #[test]
+    fn full_resolution_is_requested_only_once_the_zoom_outgrows_the_bitmap() {
+        let pane = RECT {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 600,
+        };
+        let scaled = DecodedRgba::scaled(400, 300, vec![255u8; 400 * 300 * 4], (4000, 3000));
+        let rd = unsafe { make_render_for(&scaled, 0) }.expect("build");
+        // Aspect-fit puts 4000x3000 into 800x600, i.e. 800 px on screen against 400 held.
+        assert!(
+            wants_full_resolution(&rd, &pane, 1.0),
+            "800 px of screen from a 400 px bitmap is a 2x stretch, well past tolerance"
+        );
+        // Half the pane: 400 px on screen, exactly what the bitmap holds.
+        let half = RECT {
+            right: 400,
+            bottom: 300,
+            ..pane
+        };
+        assert!(!wants_full_resolution(&rd, &half, 1.0), "exactly covered");
+        // Inside the tolerance: a 20% stretch is not worth a decode (see
+        // `FIT_UPSCALE_TOLERANCE` for why this band has to exist at all).
+        assert!(
+            !wants_full_resolution(&rd, &half, 1.2),
+            "a stretch under tolerance must NOT trigger a fetch, or the fit view on a 4K              panel would demand a full decode on every navigation"
+        );
+        assert!(
+            wants_full_resolution(&rd, &half, 1.35),
+            "past tolerance, the real pixels are fetched"
+        );
+        assert!(
+            wants_full_resolution(&rd, &half, 2.0),
+            "zooming well past what it holds must ask"
+        );
+
+        let full = DecodedRgba::full(4000, 3000, vec![255u8; 16]);
+        // `make_render_for` would need the real pixel buffer; check the predicate directly on a
+        // full-resolution render built at its own size.
+        let rd_full = unsafe { make_render(2, 2, &[255u8; 16], 0) }.expect("build");
+        assert!(
+            !wants_full_resolution(&rd_full, &pane, 8.0),
+            "a full-resolution render must never ask, at any zoom"
+        );
+        assert!(full.is_full());
+    }
+}
+
+/// `--bench-preview` hook: decode `path` the way a COLD arrow-key step does — full read plus
+/// full decode, no cache — then populate the cache exactly as `spawn_decode` does. Returns the
+/// decoded size so the caller can tell a real decode from a miss.
+pub(super) fn bench_decode_uncached(path: &str) -> Option<(i32, i32)> {
+    let d = read_and_decode(path)?;
+    let dims = (d.w, d.h);
+    cache_put(path, std::sync::Arc::new(d));
+    Some(dims)
+}
+
+/// `--bench-preview` hook: the WARM path — what `spawn_decode` does on a revisit. Deliberately
+/// goes through `cache_get`, copy included, so the number is the real cost of a cache hit and
+/// not an idealised pointer lookup.
+pub(super) fn bench_decode_cached(path: &str) -> Option<(i32, i32)> {
+    cache_get(path).map(|d| (d.w, d.h))
+}
+
+/// `--bench-preview` hook: the DISPLAY cost — turning decoded pixels into the premultiplied DIB
+/// the window blits. Measured separately because on a cache hit it is the ONLY work left, and
+/// the end-to-end arrow bench says a prefetched 12 MP photo still costs ~100 ms per step. If
+/// that time is here, no decoder change can help it.
+///
+/// `--bench-preview` hook: what the codec-scaled decode costs, against the full decode in the
+/// `cold` column.
+///
+/// This is the number that decides whether the full decode can become LAZY (issue 4/5): if
+/// asking the codec for a display-sized picture is a fraction of decoding full size, then an
+/// arrow step never needs the full one until the user zooms. If it is not, there is nothing
+/// to win and the idea dies here. `None` for anything the fast path declines — a small source,
+/// or a format the OS codecs will not open.
+pub(super) fn bench_scaled_decode(path: &str) -> Option<u128> {
+    let t = std::time::Instant::now();
+    let d = display_scaled_first_paint(path)?;
+    let us = t.elapsed().as_micros();
+    let _ = d;
+    Some(us)
+}
+
+pub(super) fn bench_make_render(path: &str) -> Option<u128> {
+    let d = cache_get(path)?;
+    let t = std::time::Instant::now();
+    let rd = unsafe { make_render(d.w, d.h, &d.rgba, 0x0020_2020) };
+    let us = t.elapsed().as_micros();
+    drop(rd); // frees the HBITMAP; leaking one per benched file would skew later steps
+    Some(us)
+}
+
 /// Synchronous decode for the headless `--shot` path (off the UI hot path, no worker).
+///
+/// Resolves the sharp composite inline: a still capture gets no second paint, so the upgrade
+/// the live viewer receives asynchronously has to happen here for the shot to show it.
 pub(super) fn decode_sync(path: &str) -> Option<DecodedRgba> {
-    read_and_decode(path)
+    let first = read_and_decode(path)?;
+    if let Ok(head) = sagethumbs2k_core::decode::read_preview_capped(path) {
+        if let Some(sharp) = sharper_composite(path, &head, (first.w, first.h)) {
+            return Some(sharp);
+        }
+    }
+    Some(first)
 }
 
 /// Markdown remote-image fetch cap: badges are a few KB, hotlinked art rarely tops 8 MB.
@@ -679,7 +1527,7 @@ pub(super) unsafe fn spawn_md_img(hwnd: HWND, src: String, gen: u64) {
         let hwnd = HWND(hwnd_raw as *mut c_void);
         let decoded =
             crate::sponsors::http_fetch_capped(&src, false, MD_IMG_MAX_BYTES, MD_IMG_TIMEOUT_SECS)
-                .and_then(decode_preview_budgeted)
+                .and_then(|b| decode_preview_budgeted(std::sync::Arc::new(b)))
                 .map(|img| {
                     // Same display-cap policy as local markdown images (bounds the cached DIB).
                     let img = if img.width() > 2048 || img.height() > 4096 {
@@ -689,11 +1537,7 @@ pub(super) unsafe fn spawn_md_img(hwnd: HWND, src: String, gen: u64) {
                     };
                     let rgba = img.to_rgba8();
                     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    DecodedRgba {
-                        w,
-                        h,
-                        rgba: rgba.into_raw(),
-                    }
+                    DecodedRgba::full(w, h, rgba.into_raw())
                 });
         let payload: Box<(u64, String, Option<DecodedRgba>)> = Box::new((gen, src, decoded));
         let raw = Box::into_raw(payload);
@@ -716,6 +1560,11 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut c_void);
+        // Page-turn key held down: the OS rasteriser is the expensive part, so bail before it
+        // rather than render a page nobody is on any more.
+        if abandoned(gen) {
+            return;
+        }
         let rendered = sagethumbs2k_core::decode::read_capped(&path)
             .ok()
             .and_then(|bytes| sagethumbs2k_core::pdf::render_page_counted(&bytes, page, 1600));
@@ -724,11 +1573,7 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
                 let d = image::load_from_memory(&png).ok().map(|img| {
                     let rgba = img.to_rgba8();
                     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    DecodedRgba {
-                        w,
-                        h,
-                        rgba: rgba.into_raw(),
-                    }
+                    DecodedRgba::full(w, h, rgba.into_raw())
                 });
                 (d, Some(count))
             }
@@ -748,7 +1593,8 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
                 drop(Box::from_raw(raw));
             }
         }
-        let payload: Box<(u64, Option<DecodedRgba>)> = Box::new((gen, rgba));
+        let payload: Box<(u64, Option<SharedRgba>)> =
+            Box::new((gen, rgba.map(std::sync::Arc::new)));
         let raw = Box::into_raw(payload);
         if PostMessageW(
             Some(hwnd),
@@ -771,7 +1617,7 @@ fn read_and_decode(path: &str) -> Option<DecodedRgba> {
         return Some(img);
     }
     let bytes = sagethumbs2k_core::decode::read_preview_capped(path).ok()?;
-    decode_loaded(bytes)
+    decode_loaded(std::sync::Arc::new(bytes))
 }
 
 /// The by-path streaming decode (see `decode::decode_preview_streamed`), converted
@@ -783,24 +1629,20 @@ fn streamed_decode(path: &str) -> Option<DecodedRgba> {
     )?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-    Some(DecodedRgba {
-        w,
-        h,
-        rgba: rgba.into_raw(),
-    })
+    Some(DecodedRgba::full(w, h, rgba.into_raw()))
 }
 
 /// Decode bytes already acquired by the path-aware reader. Keeping this separate lets the
 /// animation probe fall through without issuing a second file read for ordinary PNG/WebP/GIF.
-fn decode_loaded(bytes: Vec<u8>) -> Option<DecodedRgba> {
+///
+/// Takes the buffer as an `Arc` because the caller ALSO hands it to the sharpen pass. It used
+/// to be a `Vec` and the caller cloned it, which is a full copy of the file on every preview:
+/// invisible for a 2 MB JPEG, 120 MB for a big PNG.
+fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgba> {
     let img = decode_preview_budgeted(bytes)?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-    Some(DecodedRgba {
-        w,
-        h,
-        rgba: rgba.into_raw(),
-    })
+    Some(DecodedRgba::full(w, h, rgba.into_raw()))
 }
 
 /// Run `decode::decode_preview` on a detached sub-thread, returning its result only if it
@@ -809,7 +1651,7 @@ fn decode_loaded(bytes: Vec<u8>) -> Option<DecodedRgba> {
 /// a COM MTA apartment because the WIC decode tier (HEIC/RAW/JPEG-XR) needs it — verbatim
 /// from `previewhandler::decode_preview_budgeted`, minus the DLL `ModuleRef` pin (this is
 /// an EXE, not the shell-loaded DLL).
-fn decode_preview_budgeted(bytes: Vec<u8>) -> Option<image::DynamicImage> {
+fn decode_preview_budgeted(bytes: std::sync::Arc<Vec<u8>>) -> Option<image::DynamicImage> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -828,6 +1670,34 @@ fn decode_preview_budgeted(bytes: Vec<u8>) -> Option<image::DynamicImage> {
 /// allocation failure (never panics on attacker-controlled dims). Verbatim port of
 /// `previewhandler::make_dib`.
 pub(super) unsafe fn make_dib(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Option<HBITMAP> {
+    make_dib_hinted(iw, ih, rgba, bg, None)
+}
+
+/// True when every pixel is fully opaque — the common case for a photo, and the one that lets
+/// [`make_dib_hinted`] skip the compositing arithmetic entirely.
+fn all_opaque(rgba: &[u8], px: usize) -> bool {
+    (0..px).all(|i| rgba[i * 4 + 3] == 255)
+}
+
+/// Source-over composite of one channel: `s` at coverage `a` laid onto `d`.
+///
+/// Broken out of the fill loop so the `a == 255` reduction the opaque fast path relies on is a
+/// property a test can actually assert, rather than a claim in a comment.
+#[inline]
+fn composite_channel(s: u32, d: u32, a: u32) -> u8 {
+    (((s * a) + (d * (255 - a)) + 127) / 255) as u8
+}
+
+/// [`make_dib`] with a caller-supplied opacity answer. `None` means "work it out", which costs a
+/// full pass over the alpha bytes; callers that already know (because they had to ask the same
+/// question to choose a DIB builder at all) pass `Some` and save it.
+unsafe fn make_dib_hinted(
+    iw: i32,
+    ih: i32,
+    rgba: &[u8],
+    bg: u32,
+    opaque: Option<bool>,
+) -> Option<HBITMAP> {
     if iw <= 0 || ih <= 0 {
         return None;
     }
@@ -851,15 +1721,25 @@ pub(super) unsafe fn make_dib(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Option<
     }
     let (bg_r, bg_g, bg_b) = (bg & 0xFF, (bg >> 8) & 0xFF, (bg >> 16) & 0xFF);
     let dst = core::slice::from_raw_parts_mut(bits as *mut u8, px * 4);
+    if opaque.unwrap_or_else(|| all_opaque(rgba, px)) {
+        // Fully opaque: a plain RGBA->BGRA swizzle. This is NOT an approximation of the loop
+        // below — at `a == 255` that arithmetic reduces to `dst = src` exactly, per channel
+        // (`composite_channel(s, _, 255) == s`, pinned by a test), so the two produce
+        // byte-identical output. It just drops three multiplies and three divides per pixel,
+        // which on a 12 MP photo is 36 million of each.
+        for i in 0..px {
+            dst[i * 4] = rgba[i * 4 + 2]; // B
+            dst[i * 4 + 1] = rgba[i * 4 + 1]; // G
+            dst[i * 4 + 2] = rgba[i * 4]; // R
+            dst[i * 4 + 3] = 255;
+        }
+        return Some(hbmp);
+    }
     for i in 0..px {
-        let r = rgba[i * 4] as u32;
-        let g = rgba[i * 4 + 1] as u32;
-        let b = rgba[i * 4 + 2] as u32;
         let a = rgba[i * 4 + 3] as u32;
-        let comp = |s: u32, d: u32| (((s * a) + (d * (255 - a)) + 127) / 255) as u8;
-        dst[i * 4] = comp(b, bg_b); // B
-        dst[i * 4 + 1] = comp(g, bg_g); // G
-        dst[i * 4 + 2] = comp(r, bg_r); // R
+        dst[i * 4] = composite_channel(rgba[i * 4 + 2] as u32, bg_b, a); // B
+        dst[i * 4 + 1] = composite_channel(rgba[i * 4 + 1] as u32, bg_g, a); // G
+        dst[i * 4 + 2] = composite_channel(rgba[i * 4] as u32, bg_r, a); // R
         dst[i * 4 + 3] = 255;
     }
     Some(hbmp)
@@ -882,9 +1762,12 @@ pub(super) unsafe fn make_render(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Opti
     if rgba.len() < px.checked_mul(4)? {
         return None;
     }
-    let has_alpha = (0..px).any(|i| rgba[i * 4 + 3] != 255);
+    let has_alpha = !all_opaque(rgba, px);
     if !has_alpha {
-        return make_dib(iw, ih, rgba, bg).map(|h| RenderData::opaque(h, iw, ih));
+        // The opacity question is already answered — hand it down rather than let `make_dib`
+        // walk all 12 million alpha bytes a second time to reach the same conclusion.
+        return make_dib_hinted(iw, ih, rgba, bg, Some(true))
+            .map(|h| RenderData::opaque(h, iw, ih));
     }
     let mut bmi = BITMAPINFO::default();
     bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -913,9 +1796,25 @@ pub(super) unsafe fn make_render(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Opti
         hbmp,
         iw,
         ih,
+        bw: iw,
+        bh: ih,
         alpha: true,
         src: bits as *const u8,
         scaled: RefCell::new(None),
+    })
+}
+
+/// Build the window's image render from a finished decode, whether that decode is the whole
+/// image or a codec-scaled stand-in for it.
+///
+/// The one place that knows how to keep `DecodedRgba::nat` and `RenderData::iw` in step, so no
+/// caller has to remember that the pixels and the image can be different sizes.
+pub(super) unsafe fn make_render_for(d: &DecodedRgba, bg: u32) -> Option<RenderData> {
+    let rd = make_render(d.w, d.h, &d.rgba, bg)?;
+    Some(if d.is_full() {
+        rd
+    } else {
+        rd.with_native(d.nat)
     })
 }
 
@@ -932,7 +1831,9 @@ pub(super) unsafe fn make_render(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Opti
 ///
 /// Only used when SHRINKING. Enlarging point-samples, which is what you want for inspecting pixels.
 unsafe fn scaled_for(rd: &RenderData, dw: i32, dh: i32) -> Option<HBITMAP> {
-    if rd.src.is_null() || dw <= 0 || dh <= 0 || dw >= rd.iw || dh >= rd.ih {
+    // Against the BITMAP's dims, not the image's: `hbmp` may already be a scaled decode, and
+    // shrinking is only worth doing relative to what is actually there to shrink.
+    if rd.src.is_null() || dw <= 0 || dh <= 0 || dw >= rd.bw || dh >= rd.bh {
         return None;
     }
     if let Some((cw, ch, h)) = *rd.scaled.borrow() {
@@ -953,7 +1854,7 @@ unsafe fn scaled_for(rd: &RenderData, dw: i32, dh: i32) -> Option<HBITMAP> {
         let _ = DeleteObject(out.into());
         return None;
     }
-    let (sw, sh) = (rd.iw as usize, rd.ih as usize);
+    let (sw, sh) = (rd.bw as usize, rd.bh as usize);
     let src = core::slice::from_raw_parts(rd.src, sw * sh * 4);
     let dst = core::slice::from_raw_parts_mut(bits as *mut u8, (dw * dh) as usize * 4);
     // Source span of each destination row/column, precomputed so the inner loop stays tight.
@@ -991,6 +1892,22 @@ unsafe fn scaled_for(rd: &RenderData, dw: i32, dh: i32) -> Option<HBITMAP> {
         let _ = DeleteObject(old.into());
     }
     Some(out)
+}
+
+/// Would drawing `rd` into `rc` at `zoom` magnify its bitmap, i.e. is the render a codec-scaled
+/// stand-in that has run out of detail?
+///
+/// `false` for a full-resolution render (nothing sharper exists) and for any zoom the scaled
+/// pixels still cover, which is the whole of ordinary fit-view browsing.
+pub(super) fn wants_full_resolution(rd: &RenderData, rc: &RECT, zoom: f64) -> bool {
+    if rd.bw >= rd.iw && rd.bh >= rd.ih {
+        return false; // already the whole image
+    }
+    let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
+    let scale = fit_scale(rd.iw, rd.ih, cw, ch) * zoom;
+    let need_w = rd.iw as f64 * scale;
+    let need_h = rd.ih as f64 * scale;
+    need_w > rd.bw as f64 * FIT_UPSCALE_TOLERANCE || need_h > rd.bh as f64 * FIT_UPSCALE_TOLERANCE
 }
 
 /// Aspect-fit scale (image px -> screen px) of `rd` inside `(cw, ch)`. Shared by the paint
@@ -1075,7 +1992,7 @@ pub(super) unsafe fn paint_image(
                     let _ = DeleteDC(sdc);
                 }
                 None => {
-                    let _ = AlphaBlend(hdc, dx, dy, dw, dh, memdc, 0, 0, rd.iw, rd.ih, bf);
+                    let _ = AlphaBlend(hdc, dx, dy, dw, dh, memdc, 0, 0, rd.bw, rd.bh, bf);
                 }
             }
         }
@@ -1091,8 +2008,8 @@ pub(super) unsafe fn paint_image(
                 Some(memdc),
                 0,
                 0,
-                rd.iw,
-                rd.ih,
+                rd.bw,
+                rd.bh,
                 SRCCOPY,
             );
         }

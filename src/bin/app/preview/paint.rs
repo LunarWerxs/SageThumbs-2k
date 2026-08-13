@@ -94,6 +94,9 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
             // DPI-scaled and larger than the menu tile's, because this pane is full size.
             let checker = sagethumbs2k_core::settings::preview_checker()
                 .then(|| crate::win::dpi_scale(hwnd, 12));
+            // The fit view is drawn from a codec-scaled decode. If this zoom (or a resize) has
+            // outgrown it, ask for the real pixels; they arrive asynchronously and repaint.
+            super::window::ensure_full_for_zoom(hwnd, &content_rc);
             let frames = st.frames.borrow();
             if let Some(rd) = frames.get(st.cur_frame.get()) {
                 content::paint_image(

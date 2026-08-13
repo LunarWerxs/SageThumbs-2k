@@ -106,6 +106,31 @@ fn find_sqli<R: Read + Seek>(r: &mut R, first: u64) -> Option<(u64, u64)> {
 
 /// Read a chunk header at `pos`: 8-byte name + BE u64 data length. Leaves the
 /// reader positioned at the chunk's data.
+/// Test-only: does the `CSFCHUNK` wrapper resolve to a real SQLite payload?
+///
+/// `container::fuzzseed` needs this to prove its seed reaches [`read_sqlite_preview`] instead of
+/// dying at the wrapper. It cannot assert on [`extract`]: the seed carries a genuine SQLite file
+/// but not a Clip Studio one, so `extract` correctly finds no preview row and returns `None`,
+/// which is indistinguishable from the wrapper having failed. This separates the two.
+#[cfg(test)]
+pub(crate) fn locates_sqlite(bytes: &[u8]) -> bool {
+    let mut r = std::io::Cursor::new(bytes);
+    let mut hdr = [0u8; 24];
+    if r.read_exact(&mut hdr).is_err() || !hdr.starts_with(b"CSFCHUNK") {
+        return false;
+    }
+    let Ok(raw) = <[u8; 8]>::try_from(&hdr[16..24]) else {
+        return false;
+    };
+    let Some((off, len)) = find_sqli(&mut r, u64::from_be_bytes(raw)) else {
+        return false;
+    };
+    len >= 100
+        && bytes
+            .get(off as usize..off as usize + 16)
+            .is_some_and(|m| m == b"SQLite format 3\0")
+}
+
 fn chunk_header<R: Read + Seek>(r: &mut R, pos: u64) -> Option<([u8; 8], u64)> {
     r.seek(SeekFrom::Start(pos)).ok()?;
     let mut h = [0u8; 16];

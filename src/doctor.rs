@@ -386,6 +386,48 @@ fn check_registration(r: &mut Report) -> bool {
     thumb_ok
 }
 
+/// The formats whose thumbnail slot WE took from another program — the mirror image of the
+/// "owned by another program" line below, and the case a confused user actually hits: their
+/// thumbnails changed right after installing us because we replaced someone else's handler,
+/// not because anything is broken. Until this existed the report could only see theft in one
+/// direction, so the single most common "it worked before SageThumbs" complaint was invisible
+/// to the very tool we hand people. Every entry is restored automatically on uninstall.
+fn check_displaced(r: &mut Report) {
+    let displaced = crate::register::displaced_handlers();
+    if displaced.is_empty() {
+        return;
+    }
+
+    // Two key paths are recorded per extension (the bare `.ext` and its
+    // `SystemFileAssociations` twin) — collapse them so each format is listed once.
+    let mut by_ext: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (path, clsid) in &displaced {
+        if let Some(ext) = crate::register::displaced_key_ext(path) {
+            by_ext.insert(ext.to_string(), clsid.clone());
+        }
+    }
+    if by_ext.is_empty() {
+        return;
+    }
+
+    r.head("Handlers SageThumbs 2K replaced");
+    r.line(
+        S::Info,
+        "Formats taken from another program",
+        &format!("{} — each is put back if you uninstall", by_ext.len()),
+    );
+    const SHOWN: usize = 20;
+    for (ext, clsid) in by_ext.iter().take(SHOWN) {
+        // Resolve the CLSID to its friendly name so the report reads "Icaros Thumbnail
+        // Provider" rather than a bare GUID nobody can identify.
+        let name = hkcr_default(&format!("CLSID\\{clsid}")).unwrap_or_else(|| clsid.clone());
+        r.line(S::Info, ext, &name);
+    }
+    if by_ext.len() > SHOWN {
+        r.line(S::Info, "  ...", &format!("{} more", by_ext.len() - SHOWN));
+    }
+}
+
 /// The per-extension half: for each format we claim, does `.ext\shellex` actually point
 /// at us? Reports hijacks separately from plain absences — "another program took it" is
 /// a completely different fix from "registration never ran".
@@ -1121,6 +1163,7 @@ pub fn report(file: Option<&str>) -> String {
     check_windows_switches(&mut r);
     check_registration(&mut r);
     check_extensions(&mut r);
+    check_displaced(&mut r);
     check_settings(&mut r);
     check_engine(&mut r);
     if let Some(f) = file {

@@ -32,7 +32,12 @@ pub(super) unsafe fn head_preview_fast(stream: &IStream) -> Option<Vec<u8>> {
     // G-code carries no magic bytes, so it is reachable only by extension — the
     // same Stat-recovered name the generic-archive probe uses. A stream with no
     // recoverable name (rare virtual sources) simply misses that one member.
-    let ext = stream_path(stream).map(|p| p.rsplit('.').next().unwrap_or("").to_ascii_lowercase());
+    //
+    // `stream_extension`, NOT `stream_path`: only the file TYPE is wanted here, and a shell
+    // stream reports a bare leaf name. `stream_path` refuses a name it cannot resolve to a
+    // real file (by design — a relative name would resolve against OUR working directory), so
+    // routing this through it meant G-code never matched for anything Explorer handed over.
+    let ext = stream_extension(stream);
     let wanted = crate::container::head_preview_len(
         &head,
         ext.as_deref(),

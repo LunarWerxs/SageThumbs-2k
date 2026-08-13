@@ -70,6 +70,14 @@ const PREVHOST_APPID: &str = "{6d2b5079-2f0b-48dd-ab7f-97cec514d30b}";
 /// The machine-wide list the preview pane consults for registered handlers.
 const PREVIEW_HANDLERS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers";
 const APPROVED: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
+/// Where we remember a thumbnail handler that occupied a `shellex` slot BEFORE we took it,
+/// keyed by the exact HKCR key path we overwrote. Unlike the preview/property handlers (which
+/// step aside for an incumbent — Windows' built-ins are richer there), the thumbnail provider
+/// IS the product and does take the slot. But taking it must be REVERSIBLE: without this
+/// record, `unhook`/uninstall deleted our value and left the slot empty forever, so a user who
+/// had Icaros/Adobe/a codec pack thumbnailing a format never got it back — uninstalling
+/// SageThumbs did not undo the damage. Machine-wide, mirroring the HKCR/HKLM registration.
+const DISPLACED: &str = r"SOFTWARE\SageThumbs2K\DisplacedThumbHandlers";
 
 /// (Re-)register the shell extension machine-wide under HKCR/HKLM. NOTE: the
 /// per-extension on/off flags this reads via [`settings::format_enabled`] live
@@ -320,14 +328,120 @@ fn thumb_keys(ext: &str) -> [String; 2] {
     ]
 }
 
-/// Point one extension's thumbnail `shellex` keys at our CLSID.
+/// Point one extension's thumbnail `shellex` keys at our CLSID, first recording any foreign
+/// handler we are displacing so [`remove_if_ours`] can put it back.
 fn hook_ext(ext: &str) -> Result<()> {
     for path in thumb_keys(ext) {
+        remember_displaced(&path);
         CLASSES_ROOT
-            .create(path)?
+            .create(&path)?
             .set_string("", CLSID_THUMBNAIL_PROVIDER_STR)?;
     }
     Ok(())
+}
+
+/// Note the handler currently in `path` under [`DISPLACED`] so unhooking can restore it.
+///
+/// No-ops when the slot is empty or already ours — which is what makes a re-register
+/// idempotent: the SECOND register sees our own CLSID and leaves the original record intact
+/// rather than overwriting it with ourselves (which would silently discard the thing we are
+/// meant to give back). If a third product takes the slot from us and we re-register later,
+/// recording that one is correct: restore returns the slot to whoever held it last.
+fn remember_displaced(path: &str) {
+    remember_displaced_in(CLASSES_ROOT, LOCAL_MACHINE, path);
+}
+
+/// [`remember_displaced`] against an explicit pair of hives, so the machine-wide path and the
+/// PORTABLE per-user path share one implementation. The per-user path must record into HKCU:
+/// a zip has no HKLM write access, and it evicts incumbents from `HKCU\Software\Classes` just
+/// as destructively as the installer does from HKCR. (`SOFTWARE\...` resolves under either
+/// hive — the registry is case-insensitive, and HKCU keeps the record beside the settings.)
+fn remember_displaced_in(classes: &Key, records: &Key, path: &str) {
+    let Some(existing) = classes.open(path).ok().and_then(|k| k.get_string("").ok()) else {
+        return; // no key, or no default value — nothing was there to displace
+    };
+    if existing.is_empty() || existing.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR) {
+        return;
+    }
+    if let Ok(k) = records.create(DISPLACED) {
+        let _ = k.set_string(path, &existing);
+    }
+}
+
+/// Put back the handler we displaced when we took `path`, then forget the record.
+///
+/// Only ever called once OUR value has already been removed, so the slot is empty and this
+/// cannot clobber a live third-party registration. Restoring also leaves the key non-empty,
+/// which is what stops [`prune_empty_parents`] from deleting the chain out from under it.
+/// TRAP, verified live rather than assumed: `Key::open` hands back a READ-ONLY handle, so
+/// `remove_value` on it silently no-ops. Reading the record through `open` is fine, but
+/// clearing it needs the writable handle `create` returns (`create` opens an existing key).
+/// With the read-only handle the slot WAS restored and the record survived anyway, so
+/// `st2k doctor` kept reporting a handler we no longer displaced.
+fn restore_displaced(path: &str) {
+    restore_displaced_in(CLASSES_ROOT, LOCAL_MACHINE, path);
+}
+
+/// [`restore_displaced`] against an explicit pair of hives — the twin of
+/// [`remember_displaced_in`], shared by the machine-wide and portable per-user paths.
+fn restore_displaced_in(classes: &Key, records: &Key, path: &str) {
+    let Ok(prev) = records.open(DISPLACED).and_then(|k| k.get_string(path)) else {
+        return; // no list, or nothing recorded for this slot
+    };
+    // The record is the ONLY copy of the displaced product's CLSID. Dropping it when the
+    // write-back failed would leave the slot empty AND destroy the means to ever put it right,
+    // which is the exact harm this whole mechanism exists to prevent. So the delete is
+    // conditional on the restore actually landing; a failed one keeps the record, and the next
+    // uninstall, repair or `doctor` run can still recover from it.
+    let restored = if prev.is_empty() {
+        true // nothing was in the slot to begin with, so the record has served its purpose
+    } else {
+        classes
+            .create(path)
+            .and_then(|k| k.set_string("", &prev))
+            .is_ok()
+    };
+    if restored {
+        if let Ok(writable) = records.create(DISPLACED) {
+            let _ = writable.remove_value(path);
+        }
+    }
+}
+
+/// The `.<ext>` component of a recorded [`DISPLACED`] key path, for callers that want to
+/// report by format rather than by registry path. Lives here, beside [`thumb_keys`] which
+/// produces those paths, so the two layouts cannot drift apart — `displaced_key_ext_matches`
+/// pins them together for every registered format.
+pub(crate) fn displaced_key_ext(path: &str) -> Option<&str> {
+    path.split('\\').find(|c| c.starts_with('.'))
+}
+
+/// Every extension whose thumbnail slot we took from someone else, as
+/// `(key path, displaced CLSID)`. Read-only; `st2k doctor` reports these so a user whose
+/// thumbnails changed after install can see exactly what we replaced.
+pub(crate) fn displaced_handlers() -> Vec<(String, String)> {
+    // Both hives: an installed copy records under HKLM, a portable one under HKCU, and the
+    // doctor has no business caring which kind of install the person running it has.
+    let mut out = Vec::new();
+    for root in [&LOCAL_MACHINE, &CURRENT_USER] {
+        let Ok(list) = root.open(DISPLACED) else {
+            continue;
+        };
+        let Ok(values) = list.values() else {
+            continue;
+        };
+        // Re-read each name with `get_string` rather than matching on the iterator's value
+        // enum — one less API shape to stay pinned to, and a non-string leftover is skipped
+        // either way.
+        for (name, _) in values {
+            if let Ok(clsid) = list.get_string(&name) {
+                if !clsid.is_empty() {
+                    out.push((name, clsid));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Remove one extension's thumbnail `shellex` keys — but only the ones that
@@ -399,11 +513,13 @@ fn prune_empty_parents(path: &str) {
 }
 
 /// Delete a thumbnail-handler `shellex` key only if its default value is our
-/// CLSID. A foreign handler in that slot is left untouched.
+/// CLSID, then hand the slot back to whoever we took it from. A foreign handler
+/// in that slot is left untouched.
 fn remove_if_ours(path: &str) {
     if let Ok(key) = CLASSES_ROOT.open(path) {
         if key.get_string("").ok().as_deref() == Some(CLSID_THUMBNAIL_PROVIDER_STR) {
             let _ = CLASSES_ROOT.remove_tree(path);
+            restore_displaced(path);
         }
     }
 }
@@ -432,15 +548,24 @@ pub fn unregister() -> Result<()> {
     let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
     let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_PREVIEW_HANDLER_STR}"));
     let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"));
-    if let Ok(list) = LOCAL_MACHINE.open(PREVIEW_HANDLERS) {
+    // `create`, not `open`: `open` is read-only in this crate and `remove_value` on a
+    // read-only handle silently does nothing, so these two lists kept our CLSIDs after an
+    // uninstall. Both keys are in-box Windows keys that always exist, so `create` only ever
+    // opens them. (Same trap as [`restore_displaced`] — see the note there.)
+    if let Ok(list) = LOCAL_MACHINE.create(PREVIEW_HANDLERS) {
         let _ = list.remove_value(CLSID_PREVIEW_HANDLER_STR);
     }
-    if let Ok(approved) = LOCAL_MACHINE.open(APPROVED) {
+    if let Ok(approved) = LOCAL_MACHINE.create(APPROVED) {
         let _ = approved.remove_value(CLSID_THUMBNAIL_PROVIDER_STR);
         let _ = approved.remove_value(CLSID_CONTEXT_MENU_STR);
         let _ = approved.remove_value(CLSID_PREVIEW_HANDLER_STR);
         let _ = approved.remove_value(CLSID_PROPERTY_STORE_STR);
     }
+    // The loops above restored (and cleared) every slot we still owned. Anything left in the
+    // list is a slot some OTHER product has since taken from us — putting those back would
+    // clobber the current owner, so the record dies with the uninstall rather than being
+    // replayed. Dropping the whole tree also keeps uninstall from leaving our key behind.
+    let _ = LOCAL_MACHINE.remove_tree(DISPLACED);
     notify_shell();
     Ok(())
 }
@@ -574,6 +699,10 @@ pub fn register_user(dll_path: &str) -> Result<()> {
     for (ext, _) in crate::formats::FORMATS {
         if settings::format_enabled(ext) {
             for path in thumb_keys(ext) {
+                // Same non-destructive claim as the machine-wide path: note whoever held this
+                // slot in the user's own hive so `remove_user_if_ours` can hand it straight
+                // back. Portable mode is still a real install from the shell's point of view.
+                remember_displaced_in(&classes, CURRENT_USER, &path);
                 if let Ok(k) = classes.create(&path) {
                     let _ = k.set_string("", CLSID_THUMBNAIL_PROVIDER_STR);
                 }
@@ -608,6 +737,11 @@ pub fn unregister_user() -> Result<()> {
     }
     let _ = classes.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
     let _ = classes.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
+    // The same final sweep the machine-wide `unregister` does, and for the same reason: a slot
+    // a THIRD product has since taken over from us is no longer "ours", so `remove_user_if_ours`
+    // skips it and its record is never restored or removed. Without this the portable path
+    // leaves records behind that nothing would ever clean up again.
+    let _ = CURRENT_USER.remove_tree(DISPLACED);
     notify_shell();
     Ok(())
 }
@@ -628,6 +762,9 @@ fn remove_user_if_ours(classes: &Key, ext: &str) {
             continue;
         }
         let _ = classes.remove_tree(&path);
+        // Hand the slot back to whoever we took it from. This also leaves the key non-empty,
+        // which is what stops the prune below from deleting the chain out from under it.
+        restore_displaced_in(classes, CURRENT_USER, &path);
         // Walk back up: `<assoc>\shellex`, then `<assoc>`. Stop at the first parent that
         // still holds something, so a foreign handler or a populated key is never collateral.
         let Some(shellex) = path.rsplit_once('\\').map(|(parent, _)| parent) else {
@@ -708,4 +845,40 @@ pub fn user_registration_is_here() -> bool {
     // Case-insensitive: the registry keeps whatever case was written and Windows paths are not
     // case-sensitive, so a pure case difference is the same file.
     registered.eq_ignore_ascii_case(&here.to_string_lossy())
+}
+
+#[cfg(test)]
+mod displaced_tests {
+    use super::*;
+
+    /// The doctor reports displaced handlers BY FORMAT, which means parsing the extension back
+    /// out of the key path `hook_ext` recorded. Both halves live in this file precisely so they
+    /// can be pinned together: if `thumb_keys` ever changes shape, this fails instead of the
+    /// report silently going blank (a `find` that matches nothing returns `None`, which the
+    /// doctor skips — a failure mode with no symptom at all).
+    #[test]
+    fn displaced_key_ext_matches_thumb_keys() {
+        for (ext, _) in crate::formats::FORMATS {
+            for path in thumb_keys(ext) {
+                assert_eq!(
+                    displaced_key_ext(&path),
+                    Some(format!(".{ext}").as_str()),
+                    "could not recover .{ext} from {path}"
+                );
+            }
+        }
+    }
+
+    /// The `SystemFileAssociations` twin must not collide with the bare-extension key: they are
+    /// stored as two separate value names under `DISPLACED`, so a collision would mean one of
+    /// the two displaced handlers is silently forgotten and never restored.
+    #[test]
+    fn thumb_keys_are_distinct_per_extension() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (ext, _) in crate::formats::FORMATS {
+            for path in thumb_keys(ext) {
+                assert!(seen.insert(path.clone()), "duplicate displaced key {path}");
+            }
+        }
+    }
 }

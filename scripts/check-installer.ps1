@@ -39,7 +39,7 @@ param(
     # leave the previous copy behind.
     [string]$ManagedPayloadPath,
 
-    # Always present in release staging, including Compact builds. When a full
+    # Always present in release staging, including engine-less CI builds. When a full
     # bundle also exists, the two policy copies must be byte-identical.
     [string]$CorePolicyPath
 )
@@ -139,13 +139,15 @@ if ($filesHeaders.Count -ne 1) {
     }
 }
 
-# policy.xml must be core, because Compact intentionally allows a system
-# ImageMagick fallback. The bundled Magick row must exclude its duplicate staged
-# copy so Inno has one unambiguous source for the installed policy.
+# policy.xml ships unconditionally, ahead of the engine it constrains: the decoder can fall
+# back to a separately-installed system ImageMagick, which must be constrained too. The
+# bundled Magick row must exclude its duplicate staged copy so Inno has one unambiguous
+# source for the installed policy. (Both rows lost their `Components:` clause when the
+# Full/Compact selection was removed — there are no components any more.)
 $corePolicyEntry =
-    'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core'
+    'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion'
 $magickPayloadEntry =
-    'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick'
+    'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs'
 if (@($actualFileEntries | Where-Object { $_ -ceq $corePolicyEntry }).Count -ne 1) {
     $violations.Add(
         "  installer.iss: hardened policy must be installed exactly once as core: $corePolicyEntry"
@@ -221,7 +223,7 @@ if ($CorePolicyPath) {
 if ($violations.Count -gt 0) {
     Write-Host "installer.iss lint FAILED" -ForegroundColor Red
     Write-Host "  Custom forms must be resource-safe, and upgrades must remove the exact" -ForegroundColor Red
-    Write-Host "  managed ImageMagick payload before a Full/Compact component change." -ForegroundColor Red
+    Write-Host "  managed ImageMagick payload before the engine is repopulated." -ForegroundColor Red
     Write-Host ""
     $violations | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
     exit 1

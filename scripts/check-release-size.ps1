@@ -1,6 +1,6 @@
 <#
   Fail closed when a release artifact exceeds the selected architecture's
-  policy. x64 ships the Full profile; ARM64 ships Compact and never bundles
+  policy. Both architectures ship the full profile and always bundle
   ImageMagick. ARM64's installer reference remains deliberately uncalibrated
   until the first verified installer exists, so an ARM64 installer cannot pass
   this gate merely because its raw Rust payload is within budget.
@@ -162,7 +162,7 @@ if ($StagePath -and $Architecture -eq 'x64') {
             Write-Host ("[size] NOTE ImageMagick payload is {0} over the old reference budget (not enforced)." -f (Format-Size (-$magickHeadroom))) -ForegroundColor Yellow
         }
         Write-Host "[size] ImageMagick payload: $(Format-Size $magickBytes); headroom: $(Format-Size $magickHeadroom)" -ForegroundColor Green
-    } else { Write-Host '[size] ImageMagick payload: not staged (Compact build)' -ForegroundColor DarkGray }
+    } else { Write-Host '[size] ImageMagick payload: not staged (engine-less build)' -ForegroundColor DarkGray }
 }
 
 Write-Host '[size] release size budget passed.' -ForegroundColor Green

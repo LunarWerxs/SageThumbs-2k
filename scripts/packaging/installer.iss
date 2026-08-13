@@ -35,7 +35,7 @@
   #define ArchitectureMatcher "arm64"
 #endif
 ; Live format count, injected by build-release.ps1 from `st2k formats` (never hardcode
-; it — the count is whatever formats.rs FORMATS.len() returns). Count-free fallback so a
+; it - the count is whatever formats.rs FORMATS.len() returns). Count-free fallback so a
 ; bare ISCC compile still produces sensible text.
 #ifndef FmtCount
   #define FmtCount "300+"
@@ -100,29 +100,25 @@ ArchitecturesInstallIn64BitMode={#ArchitectureMatcher}
 PrivilegesRequired=admin
 MinVersion=10.0
 
-[Types]
-#if CompactOnly == "0"
-Name: "full"; Description: "Full - all {#FmtCount} formats (recommended)"
-#endif
-Name: "compact"; Description: "Compact - common formats only (no ImageMagick)"
-Name: "custom"; Description: "Custom"; Flags: iscustom
-
-[Components]
-#if CompactOnly == "0"
-Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: full compact custom; Flags: fixed
-#else
-Name: "core"; Description: "SageThumbs 2K shell extension + Options"; Types: compact custom; Flags: fixed
-#endif
-#if CompactOnly == "0"
-Name: "magick"; Description: "ImageMagick engine - 100+ extra formats"; Types: full custom
-#endif
+; NO [Types] / [Components] SECTIONS, DELIBERATELY (2026-08-12).
+;
+; There used to be a Full / Compact / Custom choice, where Compact dropped ImageMagick and
+; with it the tier-3 long tail of formats. It was removed: it made the product's headline
+; claim ("all {#FmtCount} formats") conditional on a checkbox most people never understood,
+; and a Compact user hitting an undecodable file had no way to know why. One payload now,
+; always complete. Removing both sections is what suppresses Inno's Select-Components page -
+; a single `fixed` component would still render the page with one greyed-out checkbox.
+;
+; `CompactOnly` survives ONLY as an internal BUILD switch (`build-release.ps1
+; -NoImageMagick`) so CI jobs that do not care about the engine can skip staging the payload.
+; It is not a shipped product tier and must never regain a user-facing selection.
 
 [InstallDelete]
 ; ImageMagick is a curated, flattened payload. Inno upgrades in place and does
 ; not remove old files merely because a newer [Files] list omits them, so clear
-; only the basenames/directories SageThumbs manages before repopulating a Full
-; install. These entries intentionally have no Components condition: switching
-; from Full to Compact must remove the complete prior engine as well.
+; only the basenames/directories SageThumbs manages before repopulating. This
+; also carries an existing Compact install forward: its half-populated engine
+; directory is cleared here before the complete one is written.
 Type: filesandordirs; Name: "{app}\modules"
 Type: files; Name: "{app}\magick.exe"
 Type: files; Name: "{app}\CORE_RL_*.dll"
@@ -148,30 +144,37 @@ Type: files; Name: "{app}\NOTICE.txt"
 ; Keep the DLL and CLI adjacent in the solid stream. Both are mostly the shared
 ; core, so adjacency also helps lower-memory tooling and keeps their repeated
 ; regions close in the solid stream.
-Source: "{#StageDir}\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
-Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Components: core
+; `restartreplace uninsrestartdelete` is the BACKSTOP behind `SwapAsideInUseDll` (see [Code]).
+; The swap normally frees this name before [Files] runs, so neither flag fires; if a rename
+; ever fails, these turn "setup cannot continue" into "reboot to finish" instead. The uninstall
+; half matters for the same reason install does: a file manager holding the DLL would otherwise
+; leave it behind. See issue #15.
+Source: "{#StageDir}\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; The Open/Save-dialog selection reader. NOT a shell extension and never registered: the app
 ; loads it on demand, into the dialog's own process, for one question. Absent = the app simply
 ; has no dialog support, which is why this row is skipifsourcedoesntexist.
-Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Signed sparse package + its public cert -> the Windows 11 modern context menu.
 ; Built by scripts\packaging\make-msix.ps1 (self-signed; skipped with -NoModernMenu).
-Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Branding assets: icon (shortcut/uninstall) + swappable logo/banner overrides.
-Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "{#StageDir}\logo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "{#StageDir}\banner.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-Source: "{#StageDir}\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
-; The hardened policy is core: Compact can deliberately fall back to a Program
-; Files ImageMagick and must constrain it too. The full bundle's duplicate copy
-; exists for exact staged testing but is excluded from this second installer row.
-Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion; Components: core
+Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\logo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\banner.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; The hardened policy ships unconditionally, ahead of the engine it constrains. The decoder
+; can fall back to a separately-installed Program Files ImageMagick if our bundled one is
+; missing or unusable, and that copy must be constrained too - so this row must NOT become
+; conditional on the engine payload. The bundle's duplicate copy exists for exact staged
+; testing and is excluded from the engine row below.
+Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion
 ; Bundled ImageMagick (magick.exe + DLLs + modules\).
 #if CompactOnly == "0"
-Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: magick
+Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 [Icons]
@@ -202,7 +205,7 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 ; Runs only when the package was bundled.
 ; Remove-first: a leftover DEV registration (unpackaged `Add-AppxPackage -Register`, Dev
 ; Mode) blocks the signed package with 0x80073CFB ("already installed an unpackaged
-; version") — and -ForceUpdateFromAnyVersion does NOT clear that. Removing any existing
+; version") - and -ForceUpdateFromAnyVersion does NOT clear that. Removing any existing
 ; registration first makes the step idempotent for dev boxes and stuck states alike; on a
 ; clean end-user upgrade the remove is a harmless no-op-or-quick-swap.
 Filename: "powershell.exe"; \
@@ -288,6 +291,10 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
 ; update-check cache in %LOCALAPPDATA%), so an uninstall leaves nothing stray on disk.
 Type: files; Name: "{localappdata}\SageThumbs2K.log"
 Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
+; Any DLL copies parked aside by `SwapAsideInUseDll` on a machine that has not rebooted since.
+; They are already scheduled for deletion on restart, so this is only a tidier immediate sweep;
+; whichever is still mapped simply refuses and goes on the reboot list as before.
+Type: files; Name: "{app}\{#AppDll}.old*"
 
 [Code]
 // Set by PrepareToInstall (the last moment it is knowable) and read by IsUpgrade.
@@ -402,11 +409,74 @@ end;
 // concurrent Settings/logon launch that slipped through the first pass's window.
 // The [Run] --heal-hotkeys step brings the helper back from the NEW exe once the
 // files are in place.
+// Move an IN-USE shell-extension DLL out of the way so setup never has to ask anyone to close
+// anything. Returns True if a swap was needed and done.
+//
+// ISSUE #15: "the installer has trouble automatically closing several processes/services, for
+// me, Everything and Directory Opus. The Sage DLL also cannot be terminated automatically."
+// That is not a permissions problem (setup is already elevated) and it is not really fixable by
+// closing harder. ANY process that has opened a file dialog has loaded our shell extension and
+// keeps it mapped until it exits; Directory Opus is an Explorer REPLACEMENT that loads shell
+// extensions in-process exactly as Explorer does, and Everything runs as a service. Restart
+// Manager can only close what cooperates, and quitting the user's file manager to install a
+// thumbnail handler is a bad trade even when it works.
+//
+// The way around it is a Windows detail: a MAPPED dll cannot be deleted or overwritten, but it
+// CAN be renamed. So move the old one aside, let [Files] write the new one into the now-free
+// name, and schedule the renamed copy for deletion on the next reboot. Existing holders keep
+// running against their old mapping until they exit, every process that loads it afterwards
+// gets the new one, nothing has to be closed, and no reboot is needed to FINISH the install.
+// This is the same technique the dev install script has used for a while for the same reason.
+function SwapAsideInUseDll: Boolean;
+var
+  Dll, Aside: String;
+  i: Integer;
+begin
+  Result := False;
+  Dll := ExpandConstant('{app}\{#AppDll}');
+  if not FileExists(Dll) then
+    Exit;  // fresh install: nothing is holding anything
+  // RENAME, never delete-then-recreate. An earlier version of this called DeleteFile first
+  // "because the ordinary copy would have worked anyway", which quietly replaced Inno's
+  // atomic in-place overwrite with a window where the DLL does not exist at all - on EVERY
+  // upgrade, not just the in-use case this exists for. Setup failing anywhere between here
+  // and the file copy would then leave registered COM CLSIDs pointing at a missing file.
+  // A rename has no such window: the old file survives under a new name until it is replaced.
+  for i := 0 to 20 do
+  begin
+    Aside := Dll + '.old' + IntToStr(i);
+    // Sweep a leftover from an earlier swap on a machine that has not rebooted since. If it
+    // deletes, the slot is reusable; if not, it is still mapped and the next index is tried.
+    if FileExists(Aside) then
+      DeleteFile(Aside);
+    if not FileExists(Aside) then
+      if RenameFile(Dll, Aside) then
+      begin
+        // Nothing was holding it after all: drop the copy now rather than leave a file behind
+        // and a reboot-time deletion queued for an install that never needed either.
+        if DeleteFile(Aside) then
+          Result := False
+        else
+        begin
+          // Still mapped. Empty destination = delete on restart. Best-effort: if that fails
+          // the sweep above tidies it on the next install, which is why nothing gates on it.
+          RestartReplace(Aside, '');
+          Result := True;
+        end;
+        Exit;
+      end;
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   R: Integer;
 begin
   Result := '';
+  // Before anything else, and deliberately BEFORE the early-exit below: an in-use DLL is the
+  // one thing that can fail this install outright, and it is just as likely on a repair as on
+  // an upgrade. No-ops on a fresh install (the file does not exist yet).
+  SwapAsideInUseDll;
   // Remember whether SageThumbs was ALREADY here, before any file is copied (afterwards the
   // exe always exists, so this is the only moment the answer is knowable). Drives IsUpgrade,
   // which suppresses the first-run welcome for someone who has used the app for months.

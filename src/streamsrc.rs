@@ -86,6 +86,26 @@ pub unsafe fn stream_source(
     target_edge: u32,
     who: &str,
 ) -> Result<StreamSource> {
+    stream_source_with_caps(
+        stream,
+        max_file_bytes,
+        decode::limits::MAX_INPUT_BYTES,
+        target_edge,
+        who,
+    )
+}
+
+/// [`stream_source`] with the HARD buffering ceiling as a parameter, so tests can drive the
+/// oversized branch without staging a multi-hundred-megabyte fixture. Mirrors the by-path
+/// twin's `read_preview_capped_at`. Production always passes
+/// [`decode::limits::MAX_INPUT_BYTES`].
+pub(crate) unsafe fn stream_source_with_caps(
+    stream: &IStream,
+    max_file_bytes: u64,
+    hard_cap: u64,
+    target_edge: u32,
+    who: &str,
+) -> Result<StreamSource> {
     if peek_is_video(stream) {
         // OPTION: prefer the embedded poster over a frame from the film (`VideoCoverArt`,
         // off by default). Read BEFORE the frame tiers so a film library shows its covers
@@ -102,58 +122,58 @@ pub unsafe fn stream_source(
                 return Ok(StreamSource::Bytes(cover));
             }
         }
-        // Decode by FILE PATH when we can recover it: Media Foundation reading a
-        // multi-GB movie through the shell's IStream is catastrophically slow
-        // (30 s+, a pegged core, past Explorer's timeout), while opening the file
-        // directly is <1 s. We otherwise decode video IN MEMORY off a bounded
-        // read, NEVER streaming the multi-GB original through the shell IStream.
+        // Never stream the multi-GB original through the shell IStream: Media Foundation
+        // reading a whole movie that way is catastrophically slow (30 s+, a pegged core, past
+        // Explorer's timeout). Every tier below is a TARGETED read instead: find the one
+        // keyframe worth showing and touch only the bytes around it.
+        //
+        // There used to be a tier 0 here, "decode by FILE PATH when we can recover it". It
+        // was REMOVED (2026-08-12) because it never ran: both handlers are initialised with
+        // an `IStream`, and a shell stream reports only a bare leaf NAME, so the path lookup
+        // it depended on always returned nothing. A documented optimisation that silently
+        // does not exist is worse than none, because it makes the tiers below look like a
+        // fallback nobody needs to keep fast. They are the whole story. Measured after
+        // removal, through the real provider on a 163 MB 1080p clip: 1.2 s with the index at
+        // the END and 1.7 s with it at the front, in a DEBUG build.
         // Tiers, each fast or a fast miss:
-        //   1. by file path, if the host exposes one (non-sandboxed callers) —
-        //      MF seeks the real file to the true 30% representative frame;
-        //   2. SMART TARGETED READ (MP4/MOV): parse the moov index, build a tiny
+        //   1. SMART TARGETED READ (MP4/MOV): parse the moov index, build a tiny
         //      one-keyframe MP4 for the sync sample nearest ~30%, decode that —
         //      single-digit MB (index + one keyframe), a representative frame, and
         //      it works regardless of moov position (faststart or moov-at-end);
-        //   3. SMART TARGETED READ (Matroska/WebM): the EBML analog — read the Cues
+        //   2. SMART TARGETED READ (Matroska/WebM): the EBML analog — read the Cues
         //      index, build a tiny one-cluster MKV for the keyframe nearest ~30%;
-        //   4. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
+        //   3. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
         //      demuxer seek the real index to ~30% over a block-caching IStream that
         //      coalesces its reads (no per-format parser, any container MF decodes);
-        //   5. a faststart MP4 / small / unindexed video decodes from its head prefix;
-        //   6. a big *non*-faststart MP4 (moov at the very end) is remuxed —
+        //   4. a faststart MP4 / small / unindexed video decodes from its head prefix;
+        //   5. a big *non*-faststart MP4 (moov at the very end) is remuxed —
         //      head frames + tail moov stitched into a small valid MP4.
-        // Tiers 5–6 stay as fallbacks for anything tier 4's demuxer can't seek.
-        let frame = stream_path(stream)
-            .and_then(|p| crate::video::frame_from_path(&p))
-            .or_else(|| {
-                crate::mp4::keyframe_mini_mp4(
-                    &mut IStreamReader {
-                        stream: stream.clone(),
-                    },
-                    0.30,
-                )
-                .and_then(|buf| crate::video::frame_from_bytes(&buf))
-            })
-            .or_else(|| {
-                crate::mkv::keyframe_mini_mkv(
-                    &mut IStreamReader {
-                        stream: stream.clone(),
-                    },
-                    0.30,
-                )
-                .and_then(|buf| crate::video::frame_from_bytes(&buf))
-            })
-            .or_else(|| {
-                // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
-                // seek-to-30% reads cheap (the old shell-IStream meltdown was thousands
-                // of tiny marshaled reads — here they coalesce into a few big ones).
-                stream_size(stream)
-                    .and_then(|size| crate::video::frame_from_block_stream(stream, size, 0.30))
-            })
-            .or_else(|| video_prefix(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)))
-            .or_else(|| {
-                mp4_remux_moov(stream).and_then(|buf| crate::video::frame_from_bytes(&buf))
-            });
+        // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek.
+        let frame = crate::mp4::keyframe_mini_mp4(
+            &mut IStreamReader {
+                stream: stream.clone(),
+            },
+            0.30,
+        )
+        .and_then(|buf| crate::video::frame_from_bytes(&buf))
+        .or_else(|| {
+            crate::mkv::keyframe_mini_mkv(
+                &mut IStreamReader {
+                    stream: stream.clone(),
+                },
+                0.30,
+            )
+            .and_then(|buf| crate::video::frame_from_bytes(&buf))
+        })
+        .or_else(|| {
+            // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
+            // seek-to-30% reads cheap (the old shell-IStream meltdown was thousands
+            // of tiny marshaled reads — here they coalesce into a few big ones).
+            stream_size(stream)
+                .and_then(|size| crate::video::frame_from_block_stream(stream, size, 0.30))
+        })
+        .or_else(|| video_prefix(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)))
+        .or_else(|| mp4_remux_moov(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)));
         if let Some(frame) = frame {
             safety::log_debug(&format!(
                 "{who}: video frame {}x{}",
@@ -295,7 +315,7 @@ pub unsafe fn stream_source(
     // before reading into memory. The effective cap is the user's MaxSize but
     // never above the hard MAX_BYTES ceiling ("0 = unlimited" means "up to
     // MAX_BYTES").
-    let max = decode::effective_input_cap(max_file_bytes);
+    let max = max_file_bytes.min(hard_cap);
     let size = stream_size(stream);
     match size {
         // Oversized: the whole-file read is a DoS risk, so we skip it —
@@ -319,6 +339,37 @@ pub unsafe fn stream_source(
                 ));
                 return Ok(StreamSource::Bytes(prefix));
             }
+            // LAST RESCUE: hand the FILE to the OS codecs and let them scale during decode,
+            // so a huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
+            // Needs a real path — the shell usually exposes one (same recovery the video
+            // tier already relies on); a sandboxed or virtual item has none and falls
+            // through to the refusal below exactly as before. Nothing is buffered: WIC
+            // reads the file itself and `target_edge` bounds what we copy out.
+            // LAST RESCUE: let the OS codecs read THIS STREAM and scale during decode, so a
+            // huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
+            //
+            // Deliberately stream-based, not path-based. The shell gives a thumbnail provider
+            // no path (its stream reports only a leaf name), so an earlier by-path version of
+            // this rescue could never fire here. WIC reads a stream lazily, which is all the
+            // rescue ever actually needed: nothing buffers the document, and `target_edge`
+            // bounds what gets copied out.
+            //
+            // ONLY when OUR OWN buffering ceiling is what refused the file. If the USER set a
+            // smaller MaxSize, they asked us to skip files this big and the rescue must not
+            // quietly overrule that -- "too big to hold in memory" is our problem to route
+            // around, "don't spend effort on files over N MB" is their decision to keep.
+            if size <= max_file_bytes {
+                let head = read_prefix(stream, decode::COLOR_HEAD_BYTES);
+                if let Some(img) = decode::wic_scaled_from_stream(stream, target_edge, &head) {
+                    safety::log_debug(&format!(
+                        "{who}: oversized WIC rescue of {size}-byte stream -> {}x{}",
+                        img.width(),
+                        img.height()
+                    ));
+                    return Ok(StreamSource::Frame(img));
+                }
+                let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+            }
             safety::log_debug(&format!("{who}: skip, {size} bytes over limit"));
             Err(Error::from(E_FAIL))
         }
@@ -337,6 +388,24 @@ pub unsafe fn stream_source(
             Ok(StreamSource::Bytes(read_all(stream, max as usize, size)?))
         }
     }
+}
+
+/// First `max` bytes of `stream`, rewinding afterwards. Short reads are fine: the only
+/// consumer is the ISOBMFF colour-box probe, which simply finds nothing and lets WIC's own
+/// colour context answer instead.
+unsafe fn read_prefix(stream: &IStream, max: usize) -> Vec<u8> {
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let mut buf = vec![0u8; max];
+    let mut got: u32 = 0;
+    let hr = stream.Read(buf.as_mut_ptr() as *mut c_void, max as u32, Some(&mut got));
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    if hr.is_err() {
+        return Vec::new();
+    }
+    // Never trust the reported count past the buffer we supplied (same clamp the sibling
+    // reads use, for the same hostile-stream reason).
+    buf.truncate((got as usize).min(max));
+    buf
 }
 
 /// The stream's total size in bytes via `IStream::Stat`, or None if the stream
@@ -412,6 +481,15 @@ unsafe fn peek_is_ogg(stream: &IStream) -> bool {
 /// (`STATFLAG_DEFAULT` fills `pwcsName` — file-backed shell streams report the full path).
 /// Returned only when it names an existing file, so a stream with no / non-file name simply
 /// falls back to streaming. `pwcsName` is a CoTaskMem allocation we own and must free.
+///
+/// TEST-ONLY, deliberately. Nothing in production may depend on this, because for the streams
+/// the shell actually hands our handlers it always returns `None` (they report a bare leaf
+/// name, and resolving a relative name against our own working directory would risk opening a
+/// DIFFERENT file of the same name). It survives so tests can PIN that fact: see
+/// `nameless_oversized_7z_is_not_streamed_past_max_size`, which asserts no path is
+/// recoverable while the file's extension still is. Anything wanting a file TYPE wants
+/// [`stream_extension`]; anything wanting to avoid buffering wants the stream itself.
+#[cfg(test)]
 unsafe fn stream_path(stream: &IStream) -> Option<String> {
     let mut stat = STATSTG::default();
     stream.Stat(&mut stat, STATFLAG_DEFAULT).ok()?;
@@ -421,9 +499,20 @@ unsafe fn stream_path(stream: &IStream) -> Option<String> {
     let s = stat.pwcsName.to_string().ok();
     CoTaskMemFree(Some(stat.pwcsName.0 as *const c_void));
     let s = s?;
-    if std::path::Path::new(&s).is_file() {
+    let p = std::path::Path::new(&s);
+    // ABSOLUTE, then existing — in that order, and the absolute check is not cosmetic.
+    // Streams routinely report only a LEAF NAME rather than a path: `SHCreateStreamOnFileEx`
+    // does, and so does a shell item bound via `BHID_Stream` (both verified here). A bare
+    // name reaching `is_file()` is resolved against OUR PROCESS'S working directory, so it
+    // either fails — or, far worse, silently matches a DIFFERENT file that happens to share
+    // the name, and we would then decode and cache that one as the user's thumbnail. Refusing
+    // a relative name costs only a fast path we can retake from the stream itself.
+    if p.is_absolute() && p.is_file() {
         Some(s)
     } else {
+        safety::log_debug(&format!(
+            "stream_path: {s:?} is not an absolute path to an existing file"
+        ));
         None
     }
 }
@@ -645,6 +734,75 @@ mod tests {
                 }
             ),
         }
+    }
+
+    /// The oversized rescue, exercised through the REAL cascade without staging a 256 MB file.
+    ///
+    /// The trick is that "oversized" is relative: pass a tiny `max_file_bytes` and an ordinary
+    /// image is already past every cap, taking the exact branch a half-gigabyte scan takes in
+    /// production. What is being proven is that the branch can decode from the STREAM ALONE,
+    /// with no path anywhere, which is the whole reason this rescue works inside Explorer
+    /// where the shell hands over a stream that knows only a leaf file name.
+    #[test]
+    fn oversized_stream_is_rescued_without_any_path() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let jpeg = substantial_jpeg();
+        let stream = unsafe { SHCreateMemStream(Some(&jpeg)) }.expect("SHCreateMemStream");
+
+        // A memory stream has NO name at all, let alone a path -- if the rescue needed one it
+        // could not possibly succeed here.
+        assert!(
+            unsafe { stream_path(&stream) }.is_none(),
+            "fixture must have no recoverable path, or this proves nothing"
+        );
+
+        // `max_file_bytes` is the USER's allowance and is left generous; the small hard cap is
+        // what refuses the buffered read, which is exactly the production shape.
+        // Generous user allowance, tiny HARD cap: the file is refused by OUR buffering
+        // ceiling, which is precisely the production shape for a half-gigabyte scan.
+        let got = unsafe { stream_source_with_caps(&stream, u64::MAX, 1024, 64, "test") };
+        match got {
+            Ok(StreamSource::Frame(img)) => {
+                // Scaled DURING decode, so the rescue never materialises the full image.
+                assert!(
+                    img.width().max(img.height()) <= 64,
+                    "rescue must honour the target edge, got {}x{}",
+                    img.width(),
+                    img.height()
+                );
+            }
+            other => panic!(
+                "oversized stream should be rescued into a Frame, got {}",
+                match other {
+                    Ok(StreamSource::Bytes(_)) => "Bytes".into(),
+                    Ok(StreamSource::Covers(_)) => "Covers".into(),
+                    Ok(StreamSource::Frame(_)) => unreachable!(),
+                    Err(e) => format!("Err({e})"),
+                }
+            ),
+        }
+        unsafe { CoUninitialize() };
+    }
+
+    /// The user's own MaxSize still wins. "Too big to hold in memory" is ours to route around;
+    /// "do not bother with files over N" is the user's decision and the rescue must not
+    /// silently overrule it.
+    #[test]
+    fn rescue_does_not_overrule_the_users_max_size() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let jpeg = substantial_jpeg();
+        let stream = unsafe { SHCreateMemStream(Some(&jpeg)) }.expect("SHCreateMemStream");
+        // User allows only 1 KB; the fixture is bigger, so this is THEIR refusal, not ours.
+        let got = unsafe { stream_source_with_caps(&stream, 1024, 1 << 30, 64, "test") };
+        assert!(
+            got.is_err(),
+            "a file over the user's MaxSize must stay refused"
+        );
+        unsafe { CoUninitialize() };
     }
 
     #[test]
@@ -994,6 +1152,15 @@ mod tests {
         assert!(
             stat_path.is_none(),
             "fixture must exercise the name-less shell-stream path, got {stat_path:?}"
+        );
+        // The other half of the same fact, and the reason two probes were quietly broken:
+        // the stream DOES report a usable file TYPE even though it reports no usable PATH.
+        // Anything that only needs the extension must therefore ask `stream_extension`;
+        // asking `stream_path` gets `None` and silently disables the feature in Explorer.
+        assert_eq!(
+            unsafe { stream_extension(&stream) }.as_deref(),
+            Some("7z"),
+            "extension must still be recoverable from a stream that exposes no path"
         );
         assert!(
             unsafe { stream_source(&stream, 1, 256, "test") }.is_err(),

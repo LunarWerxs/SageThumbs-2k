@@ -78,10 +78,10 @@ Assert-Passes 'CI keeps production payloads release and validation debug' {
 
 Assert-Passes 'ARM CI mirrors shipping feature pairs in debug' {
     $text = Script-Text '.github\workflows\ci.yml'
-    $start = $text.IndexOf("  arm64-compact:", [StringComparison]::Ordinal)
-    if ($start -lt 0) { throw 'could not find the arm64-compact CI job' }
+    $start = $text.IndexOf("  arm64-native:", [StringComparison]::Ordinal)
+    if ($start -lt 0) { throw 'could not find the arm64-native CI job' }
     $end = $text.IndexOf("  msrv:", $start, [StringComparison]::Ordinal)
-    if ($end -le $start) { throw 'could not isolate the arm64-compact CI job' }
+    if ($end -le $start) { throw 'could not isolate the arm64-native CI job' }
     $arm = $text.Substring($start, $end - $start)
     foreach ($required in @(
             'build --locked --target aarch64-pc-windows-msvc -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture',

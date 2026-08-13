@@ -148,6 +148,8 @@ pub(in crate::preview) unsafe fn goto_pdf_page(hwnd: HWND, delta: i32) {
     st.pan.set((0, 0));
     let gen = st.decode_gen.get() + 1;
     st.decode_gen.set(gen);
+    // Same fence as a file switch: paging a PDF abandons the page still being rendered.
+    content::begin_generation(gen);
     if let Some(p) = st.path.borrow().as_ref().cloned() {
         content::spawn_decode_pdf(hwnd, p, new, gen);
     }

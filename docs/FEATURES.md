@@ -49,7 +49,7 @@ always use the REAL full-resolution composite.*
 (no in-box handler), PDF first page (no in-box thumbnailer), Ogg/Opus/APE album
 art, any RAW/HEIC the OS codec is missing, and a deep set of **art / CAD / 3D / design
 project files** whose baked-in preview we extract directly (no rendering, no
-codecs, works even on the ImageMagick-free compact install): **Photoshop**
+codecs, so they work without touching ImageMagick at all): **Photoshop**
 `.psd/.psb`, **Affinity** `.afphoto/.afdesign/.afpub`, **Clip Studio** `.clip`,
 **Krita** `.kra`, **OpenRaster** `.ora`, **Blender** `.blend`, **3MF** `.3mf`,
 **FreeCAD** `.fcstd`, **Autodesk Fusion 360** `.f3d`, **Paint.NET** `.pdn`, and
@@ -130,8 +130,8 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   Icon (.ico); one-click, writes a new file next to the original (never overwrites). EXIF/XMP/IPTC
   ride along into JPEG and PNG outputs (see **Saving**, below).
   *HEIC→JPG works here too (a `.heic` decodes via WIC).* *(AVIF is written via the bundled
-  ImageMagick; on a compact no-magick install that one verb reports an error (ImageMagick not
-  available) rather than silently doing nothing.)*
+  ImageMagick; if that engine is ever missing or unusable, the verb reports an error
+  (ImageMagick not available) rather than silently doing nothing.)*
 - **Convert…** (top-level): opens the **Convert dialog** (XnView-style): an
   **Output format** dropdown, native **JPG · PNG · WebP · BMP · GIF · TIFF · ICO ·
   TGA · QOI · PNM · PDF**, plus (on a full install with the bundled ImageMagick)
@@ -140,8 +140,7 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   **WebP lossless/lossy + quality** · PNG compression · **AVIF / JPEG XL quality**), a **Resize** checkbox with
   presets *or* a custom **W × H**, an output-folder picker, and a progress bar. Batch:
   applies to the whole selection. On completion it offers to **open the output folder**.
-  *(The magick-only formats are hidden on the compact install that ships without
-  ImageMagick.)*
+  *(Magick-only targets are hidden if the bundled engine is ever unavailable.)*
 - **Combine into PDF**: selected images → one PDF (one image per page, sized to the
   image). Optionally with a **page margin** (Settings ▸ Saving), and the engine also
   supports fitting onto A4 or Letter, centred, never enlarging a small image.
@@ -561,13 +560,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   right-click verb, so screen OCR cost nothing in download size either. PDF *writing* (Combine-to-PDF) is a hand-rolled minimal `/DCTDecode` PDF;
   no PDF library. HEIC/AVIF normally decode through WIC: Microsoft's free **HEIF Image
   Extensions** (+ **HEVC Video Extensions** for iPhone HEIC) and **AV1 Video Extension**
-  provide that path. The Full installer also retains ImageMagick's HEIF engine because
-  the advertised AVIF writer requires it and it provides a long-tail fallback. Compact
-  installs omit ImageMagick and therefore still rely on the applicable OS codec.
+  provide that path. The installer also retains ImageMagick's HEIF engine because
+  the advertised AVIF writer requires it and it provides a long-tail fallback.
 - **Trimmed ImageMagick** is bundled for the long tail of formats (RAW, DICOM, PCX,
-  J2K, …); the installer's "compact" mode omits it along with Magick-backed long-tail
-  decoding and export. The measured magick-only set (things that DON'T thumbnail on
-  a compact install): the JPEG-2000 family (j2c/j2k/jp2/jpc/jpf/jpm/jpx), film/print scans
+  J2K, …), and every install carries it. The measured magick-only set (the formats that
+  depend on it): the JPEG-2000 family (j2c/j2k/jp2/jpc/jpf/jpm/jpx), film/print scans
   (cin/dpx/cal/cals/fits/fts/pcd), Windows metafiles (wmf/emf/emz/wmz), Visio
   (vsd/vsdx/vsdm), legacy-Office OLE previews (max), classic bitmaps
   (pcx/dcx/dib/ras/sun/sgi/xbm/xpm/xv/wpg/pdb), scientific floats
@@ -601,7 +598,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
 - **Two architectures, both Full.** A separate `SageThumbs2K-Setup-<ver>-arm64.exe` runs
   natively on Windows on Arm and bundles the same ImageMagick engine as the x64 installer,
   so format coverage is identical on both; there is no cut-down ARM edition.
-- Inno Setup installer (`full` / `compact` / `custom`). The Full build includes a
+- Inno Setup installer, one payload with no install-type choice. Every build includes a
   dependency-closed, security-trimmed ImageMagick runtime. Its unused text-shaping stack
   (glib / harfbuzz / freetype / fribidi / raqm) is stubbed because SageThumbs never
   invokes ImageMagick's text, caption or font-rendering surfaces.

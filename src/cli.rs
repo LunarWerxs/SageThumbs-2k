@@ -131,8 +131,10 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
     // thumbnail is; `convert` is the full-fidelity verb. By PATH, so the streaming
     // rescues apply: an OpenEXR is scaled straight off the file handle instead of
     // being refused for exceeding the shared input budget (which a 12K render pass
-    // always does). Every other format takes the same bounded whole-file read as
-    // before, including its size-limit error text.
+    // always does), and anything else already PAST that budget gets one last try
+    // through the OS codecs reading the file directly. Every format under the
+    // budget takes the same bounded whole-file read as before, and a file neither
+    // rescue can open still reports the same size-limit error text.
     let edge = if max_dim > 0 {
         max_dim
     } else {

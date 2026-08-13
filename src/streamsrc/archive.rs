@@ -55,11 +55,13 @@ pub(super) unsafe fn generic_archive(
     {
         return ArchiveProbe::NotGeneric;
     }
-    let is_generic_ext = stream_path(stream)
-        .map(|p| {
-            let ext = p.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            matches!(ext.as_str(), "zip" | "rar" | "7z")
-        })
+    // `stream_extension`, NOT `stream_path`: this only needs to know the file TYPE, and a
+    // shell stream reports a bare leaf name rather than a path. `stream_path` deliberately
+    // rejects a name it cannot resolve to a real file (a relative name would otherwise be
+    // resolved against our own working directory), so asking it for an extension here meant
+    // this gate answered "not a generic archive" for every stream Explorer ever handed us.
+    let is_generic_ext = stream_extension(stream)
+        .map(|ext| matches!(ext.as_str(), "zip" | "rar" | "7z"))
         .unwrap_or(false);
     if !is_generic_ext {
         return ArchiveProbe::NotGeneric;
