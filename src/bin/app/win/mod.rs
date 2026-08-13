@@ -53,20 +53,51 @@ pub(crate) const URL_GITHUB: &str = "https://github.com/LunarWerxs/SageThumbs-2k
 /// from the installer's shortcut. A `app.ico` next to the EXE overrides at runtime.
 const APP_ICO: &[u8] = include_bytes!("../../../../assets/app-win.ico");
 
-/// The best icon font actually PRESENT on this machine, as a face name.
+/// The bundled toolbar icon font: a ~4.6 KB subset of Material Symbols (Apache-2.0), generated
+/// by `scripts/build-icon-font.py` and committed.
 ///
-/// **Issue #21.** Every toolbar in this app drew its glyphs from `Segoe Fluent Icons`, which
-/// ships with Windows 11 and does NOT exist on Windows 10. GDI does not fail when a face is
-/// missing, it silently substitutes a text font that has nothing at those private-use
-/// codepoints - so on Windows 10 the caption toolbar, the video transport and the screenshot
-/// toolbar all rendered as rows of empty boxes. The code even carried a comment calling that
-/// "acceptable on the Win11-targeted app". It is not: the app supports Windows 10
-/// (`MinVersion=10.0`), and a user reported exactly this.
+/// EMBEDDED rather than installed alongside the EXE, because `AddFontMemResourceEx` loads a
+/// font straight from memory: no installer row, no portable-zip row, no path to resolve, no
+/// file a user can delete, and it works identically for the installed build and the zip. At
+/// this size the binary cost is noise against a 128 KiB per-release installer budget.
+const ICON_FONT_TTF: &[u8] = include_bytes!("../../../../assets/icons/SageThumbs2K-Icons.ttf");
+
+/// Face name of [`ICON_FONT_TTF`]. Deliberately NOT "Material Symbols Outlined": the font is
+/// process-private, and a distinct name means a separately installed copy of Material Symbols
+/// can never be picked instead of ours.
+pub(crate) const BUNDLED_ICON_FACE: &str = "SageThumbs2K Icons";
+
+/// Register the embedded icon font for this process. `true` if GDI accepted it.
 ///
-/// Windows 10 has `Segoe MDL2 Assets`, whose codepoints for the glyphs this app uses are the
-/// same ones Fluent inherited, so the fallback is a drop-in rather than a remap.
+/// `AddFontMemResourceEx` fonts are PRIVATE to the process and are not enumerable, so this
+/// cannot leak into other applications' font pickers. The handle is deliberately never freed:
+/// the font must outlive every window that draws with it, and the process owns it until exit.
+fn load_bundled_icon_font() -> bool {
+    use windows::Win32::Graphics::Gdi::AddFontMemResourceEx;
+    let mut count: u32 = 0;
+    let handle = unsafe {
+        AddFontMemResourceEx(
+            ICON_FONT_TTF.as_ptr() as *const c_void,
+            ICON_FONT_TTF.len() as u32,
+            None,
+            core::ptr::addr_of_mut!(count),
+        )
+    };
+    !handle.is_invalid() && count > 0
+}
+
+/// The icon font the toolbars draw with, as a face name.
 ///
-/// Resolved ONCE: fonts do not appear mid-session, and the probe costs a DC.
+/// **Issue #21.** These toolbars used to hard-code `Segoe Fluent Icons`, which ships with
+/// Windows 11 and does NOT exist on Windows 10 - and GDI substitutes a missing face SILENTLY,
+/// so every button rendered as an empty box there. The app supports Windows 10
+/// (`MinVersion=10.0`); a user reported exactly this.
+///
+/// The answer is no longer to guess at what the OS has: a subset of Material Symbols is
+/// EMBEDDED (see [`ICON_FONT_TTF`]) and used first, so the toolbars look the same everywhere
+/// and depend on nothing the OS ships. The OS faces stay behind it as a safety net only.
+///
+/// Resolved ONCE: fonts do not appear mid-session, and each probe costs a DC.
 pub(crate) fn icon_font_face() -> &'static str {
     static FACE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
     FACE.get_or_init(|| {
@@ -84,8 +115,15 @@ pub(crate) fn icon_font_face() -> &'static str {
                 }
             }
         }
-        // Win11 first (it is the richer set), then the Win10 font, then a face that always
-        // exists so the last resort is legible text rather than a crash.
+        // The BUNDLED font first, so the toolbars look identical on every Windows version and
+        // do not depend on what the OS happens to ship. The OS fonts remain behind it purely as
+        // a safety net for the case where GDI refuses the embedded font.
+        if load_bundled_icon_font() && font_face_exists(BUNDLED_ICON_FACE) {
+            return BUNDLED_ICON_FACE;
+        }
+        // Win11's font, then Win10's, then a face that always exists so the last resort is
+        // legible text rather than a crash. NOTE: these use DIFFERENT codepoints from the
+        // bundled font - see `preview::paint::btn_glyph`, which maps per-face.
         for want in ["Segoe Fluent Icons", "Segoe MDL2 Assets"] {
             if font_face_exists(want) {
                 return want;
@@ -138,9 +176,102 @@ fn font_face_exists(face: &str) -> bool {
     }
 }
 
+/// Which of `codes` the face `face` has NO real glyph for.
+///
+/// `GetGlyphIndicesW` with `GGI_MARK_NONEXISTING_GLYPHS` reports `0xFFFF` for a codepoint the
+/// font does not cover, which is the only way to ask this question without a font parser - and
+/// the missing-glyph case is otherwise invisible, since GDI happily draws a blank box.
+#[cfg(test)]
+fn missing_glyphs(face: &str, codes: &[u16]) -> Vec<u16> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateFontIndirectW, DeleteDC, DeleteObject, GetGlyphIndicesW,
+        SelectObject, DEFAULT_CHARSET, GGI_MARK_NONEXISTING_GLYPHS, LOGFONTW,
+    };
+    unsafe {
+        let mut lf = LOGFONTW {
+            lfHeight: -16,
+            lfCharSet: DEFAULT_CHARSET,
+            ..Default::default()
+        };
+        for (i, c) in wide(face).iter().take(lf.lfFaceName.len() - 1).enumerate() {
+            lf.lfFaceName[i] = *c;
+        }
+        let font = CreateFontIndirectW(&lf);
+        let dc = CreateCompatibleDC(None);
+        let old = SelectObject(dc, font.into());
+        let mut out = Vec::new();
+        for &c in codes {
+            // One NUL-terminated character; `GetGlyphIndicesW` takes a PCWSTR plus a count.
+            let s = [c, 0u16];
+            let mut idx = [0u16; 1];
+            let n = GetGlyphIndicesW(
+                dc,
+                windows::core::PCWSTR(s.as_ptr()),
+                1,
+                idx.as_mut_ptr(),
+                GGI_MARK_NONEXISTING_GLYPHS,
+            );
+            if n == u32::MAX || idx[0] == 0xFFFF {
+                out.push(c);
+            }
+        }
+        SelectObject(dc, old);
+        let _ = DeleteDC(dc);
+        let _ = DeleteObject(font.into());
+        out
+    }
+}
+
 #[cfg(test)]
 mod icon_font_tests {
     use super::*;
+
+    /// Every codepoint the three toolbars draw. Kept in step with the `GLYPHS` table in
+    /// `scripts/build-icon-font.py`, which places a Material glyph at each of these.
+    const TOOLBAR_CODEPOINTS: &[u16] = &[
+        // preview caption
+        0xE8FD, 0xEB9F, 0xE943, 0xE76B, 0xE76C, 0xE718, 0xE840, 0xE8C8, 0xE8D2, 0xE946, 0xE898,
+        0xE8A7, 0xE7AC, 0xE711, // video transport
+        0xE768, 0xE769, 0xE892, 0xE893, 0xE767, 0xE74F, 0xE8EE, 0xE8AB,
+        // screenshot editor
+        0xE70F, 0xE7E6, 0xEF3C, 0xE7C2, 0xE7A7, 0xE7A6, 0xE74E, 0xE753,
+    ];
+
+    /// The bundled font must cover EVERY glyph the app asks for.
+    ///
+    /// This is the guard that makes adding a toolbar button safe: forget to re-run
+    /// `scripts/build-icon-font.py` and that one button would render as a blank box with no
+    /// error anywhere, which is precisely how issue #21 reached a release. A missing glyph now
+    /// fails the build instead.
+    #[test]
+    fn the_bundled_font_covers_every_toolbar_glyph() {
+        assert!(
+            load_bundled_icon_font(),
+            "GDI refused the embedded icon font"
+        );
+        let missing = missing_glyphs(BUNDLED_ICON_FACE, TOOLBAR_CODEPOINTS);
+        assert!(
+            missing.is_empty(),
+            "the bundled icon font is missing {} glyph(s): {:04X?}. Re-run \
+             scripts/build-icon-font.py after adding a toolbar button.",
+            missing.len(),
+            missing
+        );
+    }
+
+    /// And the coverage check has to be capable of failing, or it proves nothing.
+    #[test]
+    fn the_coverage_check_detects_an_absent_glyph() {
+        assert!(load_bundled_icon_font());
+        // A codepoint deliberately outside the subset: upstream Material has thousands, this
+        // font has thirty.
+        let missing = missing_glyphs(BUNDLED_ICON_FACE, &[0xE000]);
+        assert_eq!(
+            missing,
+            vec![0xE000],
+            "a codepoint the subset does not contain must be reported missing"
+        );
+    }
 
     /// The picker must return a face this machine REALLY has.
     ///

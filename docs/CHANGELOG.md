@@ -2,6 +2,17 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Changed
+
+- **The toolbar icons now ship with SageThumbs instead of coming from Windows.** They used to be
+  drawn with whichever icon font the operating system happened to provide, which is why they
+  vanished entirely on Windows 10 (fixed in 1.11.1) and why they looked slightly different
+  between Windows versions. A small icon set is now built into the program itself, so every
+  machine shows the same buttons regardless of Windows version. It adds about 4 KB. The old
+  behaviour is kept as a fallback in case a machine refuses the built-in one.
+
 ## 1.11.1
 
 ### Fixed
