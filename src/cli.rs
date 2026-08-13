@@ -445,10 +445,12 @@ pub fn prebuild(
     use crate::prebuild as pb;
 
     if pb::is_elevated() {
-        return Err("prebuild must NOT run as administrator: Windows keeps the thumbnail \
+        return Err(
+            "prebuild must NOT run as administrator: Windows keeps the thumbnail \
                     cache per user, so an elevated run fills the administrator's cache and \
                     nothing changes for you. Run it from a normal prompt."
-            .to_string());
+                .to_string(),
+        );
     }
 
     let opts = pb::Options {

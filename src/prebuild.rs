@@ -190,7 +190,8 @@ fn one(path: &str, opts: &Options) -> Outcome {
     let abs = parsing_path(path);
 
     let r: windows::core::Result<Outcome> = (|| unsafe {
-        let cache: IThumbnailCache = CoCreateInstance(&LocalThumbnailCache, None, CLSCTX_INPROC_SERVER)?;
+        let cache: IThumbnailCache =
+            CoCreateInstance(&LocalThumbnailCache, None, CLSCTX_INPROC_SERVER)?;
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(abs.as_str()), None)?;
 
         if !opts.rebuild_all {
@@ -198,7 +199,14 @@ fn one(path: &str, opts: &Options) -> Outcome {
             // cheap call per file instead of a full re-render.
             let mut bmp = None;
             if cache
-                .GetThumbnail(&item, opts.size, WTS_INCACHEONLY, Some(&mut bmp), None, None)
+                .GetThumbnail(
+                    &item,
+                    opts.size,
+                    WTS_INCACHEONLY,
+                    Some(&mut bmp),
+                    None,
+                    None,
+                )
                 .is_ok()
             {
                 return Ok(Outcome::Already);
@@ -220,7 +228,9 @@ fn one(path: &str, opts: &Options) -> Outcome {
 /// no change — the most confusing possible failure, because it reports total success.
 pub fn is_elevated() -> bool {
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     unsafe {
         let mut token = HANDLE::default();
@@ -365,7 +375,10 @@ mod tests {
         let f = std::env::temp_dir().join(format!("st2k-pp-{}.png", std::process::id()));
         std::fs::write(&f, b"x").expect("write");
         let got = parsing_path(&f.to_string_lossy());
-        assert!(!got.starts_with(r"\\?\"), "extended prefix must be stripped");
+        assert!(
+            !got.starts_with(r"\\?\"),
+            "extended prefix must be stripped"
+        );
         assert!(Path::new(&got).is_absolute(), "must be absolute");
         let _ = std::fs::remove_file(&f);
     }
@@ -374,6 +387,9 @@ mod tests {
     /// races with a user deleting files underneath it.
     #[test]
     fn parsing_path_passes_through_a_missing_file() {
-        assert_eq!(parsing_path("Z:\\nope\\missing.png"), "Z:\\nope\\missing.png");
+        assert_eq!(
+            parsing_path("Z:\\nope\\missing.png"),
+            "Z:\\nope\\missing.png"
+        );
     }
 }

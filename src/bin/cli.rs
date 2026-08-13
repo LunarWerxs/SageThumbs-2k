@@ -100,9 +100,13 @@ fn run(args: &[String]) -> Result<String, String> {
             cli::prebuild(
                 &inputs,
                 has_flag(rest, "--recurse") || has_flag(rest, "-r"),
-                flag(rest, "--size").and_then(|s| s.parse().ok()).unwrap_or(256),
+                flag(rest, "--size")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(256),
                 has_flag(rest, "--rebuild-all"),
-                flag(rest, "--jobs").and_then(|s| s.parse().ok()).unwrap_or(3),
+                flag(rest, "--jobs")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(3),
             )
         }
         "rotate" => {
