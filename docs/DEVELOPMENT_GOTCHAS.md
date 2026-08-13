@@ -267,6 +267,39 @@ IMAGE. ImageMagick's `jp2:reduce-factor` and `oxigdal-jpeg2000`'s
 like a spectacular speedup until you render them. Compare against a full decode, visually,
 every time.
 
+## A missing FONT does not fail, it substitutes - and the app draws empty boxes
+
+`CreateFontIndirectW` NEVER returns an error for a face that is not installed. GDI hands back a
+substituted font, and if the code then draws private-use codepoints (icon fonts live at U+E000
+and up), every glyph comes out as a blank box. Nothing errors, nothing logs, and a developer
+machine that HAS the font shows no symptom at all.
+
+This shipped: all three toolbars hard-coded `Segoe Fluent Icons`, which is Windows 11 only, so
+every button in the Quick preview, the video transport and the screenshot editor was an empty
+square on Windows 10 (issue #21, v1.11.0, patched in v1.11.1). The code even carried a comment
+calling the degradation "acceptable on the Win11-targeted app" - the installer's
+`MinVersion=10.0` says otherwise.
+
+**Never trust a face name. Ask GDI what it actually gave you:** create the font, select it into
+a DC, call `GetTextFaceW` and compare. That is `win::font_face_exists`, and it is the only check
+that survives silent substitution.
+
+**Better: do not depend on the OS at all.** `win::icon_font_face` now prefers a ~4.4 KB subset of
+Material Symbols (Apache-2.0) EMBEDDED in the binary and loaded with `AddFontMemResourceEx`, so
+the toolbars look identical on every Windows version. Notes if you touch it:
+
+- Microsoft's icon fonts (`Segoe Fluent Icons`, `Segoe MDL2 Assets`) CANNOT be redistributed.
+  That is why the bundled one is Material Symbols. They remain as a runtime fallback only.
+- Regenerate with `python scripts/build-icon-font.py` after adding a toolbar button, and COMMIT
+  the result - `check-consistency.ps1` fails on an untracked `include_bytes!` asset.
+- The subset places each glyph at the app's EXISTING Segoe codepoint, so the three glyph tables
+  in Rust never change and the fallback chain works off one table. Remap in the build script.
+- `win::icon_font_tests::the_bundled_font_covers_every_toolbar_glyph` asks GDI
+  (`GetGlyphIndicesW` + `GGI_MARK_NONEXISTING_GLYPHS`) whether the face really has each
+  codepoint, so forgetting to regenerate fails the build instead of shipping a blank square.
+- `ST2K_ICON_FONT="Segoe MDL2 Assets"` forces a face, so the Windows 10 rendering can be
+  `--shot`-captured on a Windows 11 box. Use it: this bug was originally "verified" by reasoning.
+
 ## A WIC component may not return the pixel format you gave it
 
 The direct cost of the optimisation above, and it shipped in 1.3.6 and was not caught until
