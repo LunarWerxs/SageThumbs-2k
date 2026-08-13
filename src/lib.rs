@@ -71,6 +71,7 @@ pub mod i18n;
 #[doc(hidden)]
 pub mod parallel;
 pub mod pdf;
+pub mod prebuild;
 mod previewhandler;
 mod propstore;
 pub mod register;
