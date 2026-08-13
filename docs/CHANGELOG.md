@@ -4,6 +4,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **Build thumbnails for a whole folder up front, instead of waiting for Explorer to catch up.**
+  `st2k prebuild <folder> --recurse` walks a folder and asks Windows for every supported file's
+  thumbnail, so the pictures are already there the first time you open it. Useful after clearing
+  the thumbnail cache, or for a large library you have just copied in. By default it only builds
+  what is missing, so running it twice is cheap; `--rebuild-all` skips that check. It reports how
+  many were built, already present, and failed. Cloud-storage placeholder files are left alone,
+  because building their thumbnails would download them. Requested by @taylor-p-mason (#23).
+
 ### Changed
 
 - **The toolbar icons now ship with SageThumbs instead of coming from Windows.** They used to be

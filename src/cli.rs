@@ -430,6 +430,74 @@ fn expand_inputs(inputs: &[String]) -> Vec<String> {
 /// Outputs go to `out_dir` (created if needed) or next to each source. Returns a
 /// `done/total` summary.
 #[allow(clippy::too_many_arguments)]
+/// Pre-build Explorer's thumbnails for whole folders, so browsing them later is instant.
+///
+/// Refuses to run elevated on purpose: the thumbnail cache is per-user, so an admin prompt
+/// would faithfully build every thumbnail into the ADMINISTRATOR's cache and the user would
+/// see no change at all — a total success that accomplishes nothing.
+pub fn prebuild(
+    inputs: &[String],
+    recurse: bool,
+    size: u32,
+    rebuild_all: bool,
+    jobs: usize,
+) -> Result<String, String> {
+    use crate::prebuild as pb;
+
+    if pb::is_elevated() {
+        return Err("prebuild must NOT run as administrator: Windows keeps the thumbnail \
+                    cache per user, so an elevated run fills the administrator's cache and \
+                    nothing changes for you. Run it from a normal prompt."
+            .to_string());
+    }
+
+    let opts = pb::Options {
+        recurse,
+        size,
+        rebuild_all,
+        jobs,
+        ..Default::default()
+    };
+
+    // A drive walk can take a while before the first thumbnail; say what is happening rather
+    // than looking hung.
+    eprintln!("Scanning...");
+    let last = std::sync::atomic::AtomicUsize::new(0);
+    let rep = pb::run(inputs, &opts, |done, total| {
+        // One line per percent, not per file: a 200k-file run would otherwise spend its time
+        // writing to the console.
+        let pct = done * 100 / total.max(1);
+        if pct != last.swap(pct, std::sync::atomic::Ordering::Relaxed) {
+            eprint!("\r  {done}/{total} ({pct}%)   ");
+        }
+    });
+    eprintln!();
+
+    let mut out = format!(
+        "{} supported file(s) found\n  built    {}\n  cached   {}\n  failed   {}",
+        rep.found, rep.built, rep.already, rep.failed
+    );
+    if rep.skipped_offline > 0 {
+        out.push_str(&format!(
+            "\n  skipped  {} cloud placeholder(s) — extracting these would download them",
+            rep.skipped_offline
+        ));
+    }
+    if rep.unreadable_dirs > 0 {
+        out.push_str(&format!(
+            "\n  {} folder(s) could not be read",
+            rep.unreadable_dirs
+        ));
+    }
+    out.push_str(&format!(
+        "\n\nBuilt at {size}px. Explorer caches each icon size separately, so a view using a \
+         different size still builds its own. Windows also caps the cache and evicts the \
+         oldest entries, so very large runs can lose their earliest work — prefer folders \
+         over whole drives."
+    ));
+    Ok(out)
+}
+
 pub fn batch(
     op: &str,
     inputs: &[String],

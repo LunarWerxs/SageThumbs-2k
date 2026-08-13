@@ -13,6 +13,8 @@ USAGE:
   st2k batch <thumbnail|convert> <in|dir...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%]
                                                 bulk-process many files/folders in parallel (one process)
   st2k convert   <in> <out> [--quality N] [--webp-quality N] [--resize WxH|N%]   (--webp-quality → lossy WebP)
+  st2k prebuild  <dir|file...> [--recurse] [--size N] [--rebuild-all] [--jobs N]
+                                                fill Explorer's thumbnail cache ahead of browsing
   st2k rotate    <in> --by right|left|180|fliph|flipv
   st2k compress  <in> --max-size 1MB|500KB|N    shrink to a target file size (JPEG, quality+scale search)
   st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG, lossless)
@@ -87,6 +89,20 @@ fn run(args: &[String]) -> Result<String, String> {
                 flag(rest, "--to").as_deref(),
                 q,
                 cli::parse_resize(flag(rest, "--resize").as_deref())?,
+            )
+        }
+        "prebuild" => {
+            // prebuild <paths...> [--recurse] [--size N] [--rebuild-all] [--jobs N]
+            let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
+            if inputs.is_empty() {
+                return Err("prebuild needs at least one folder or file".to_string());
+            }
+            cli::prebuild(
+                &inputs,
+                has_flag(rest, "--recurse") || has_flag(rest, "-r"),
+                flag(rest, "--size").and_then(|s| s.parse().ok()).unwrap_or(256),
+                has_flag(rest, "--rebuild-all"),
+                flag(rest, "--jobs").and_then(|s| s.parse().ok()).unwrap_or(3),
             )
         }
         "rotate" => {
