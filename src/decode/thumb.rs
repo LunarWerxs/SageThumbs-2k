@@ -32,11 +32,22 @@ pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Resul
     // (DDS texture maps, render passes — formats whose alpha channel isn't
     // transparency), show that content opaque instead: every image viewer renders
     // these files fine, so a default icon would read as "broken".
+    //
+    // That force-opaque leg is GATED to the formats it was written for. In a PNG/GIF/
+    // WebP the alpha channel unambiguously IS transparency, so an all-zero alpha means
+    // "show nothing" — and revealing the RGB underneath renders whatever the exporter
+    // happened to leave there, which is usually black. That produced the reported
+    // "transparent PNG thumbnails have a solid black background" (issue #17): the tile
+    // is not a decode failure, it is this leg showing a zeroed-alpha PNG's hidden RGB.
+    // It also silently defeated the transparency checkerboard, because `ThumbChecker`
+    // runs `checkerpx::compose_under` AFTER this and that early-outs on an all-opaque
+    // buffer. Such a file now falls to the reject branch and gets the file's icon.
     if is_fully_transparent(&decoded.rgba) {
-        if decoded
-            .rgba
-            .chunks_exact(4)
-            .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
+        if !alpha_means_transparency(bytes)
+            && decoded
+                .rgba
+                .chunks_exact(4)
+                .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
         {
             crate::safety::log_debug(
                 "decode: all-transparent but has RGB content — forcing opaque",
@@ -76,6 +87,24 @@ pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicI
 /// True when every pixel is fully transparent (alpha 0) — i.e. nothing visible.
 pub(super) fn is_fully_transparent(rgba: &[u8]) -> bool {
     !rgba.is_empty() && rgba.chunks_exact(4).all(|px| px[3] == 0)
+}
+
+/// Does this file's alpha channel unambiguously mean *transparency*?
+///
+/// Only a deliberate allow-list of formats whose specs say so: PNG, GIF and WebP. It
+/// gates the "all-transparent but has RGB — force it opaque" leg in
+/// [`decode_thumbnail_opts`], so the formats that leg exists for keep it: DDS and TGA
+/// routinely ship a zeroed or garbage alpha channel beside a perfectly good image, EXR
+/// and HDR render passes use alpha as data, and every one of those must still thumbnail.
+/// Sniffing the magic (rather than trusting the extension) keeps a mislabelled file on
+/// the behaviour its bytes earn — and an unrecognised format falls through to `false`,
+/// i.e. the pre-existing behaviour, so this can only ever narrow the leg.
+pub(super) fn alpha_means_transparency(bytes: &[u8]) -> bool {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    bytes.starts_with(PNG)
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+        || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"))
 }
 
 /// Sources at or below this size (longest edge) are treated as pixel-art / icons and
