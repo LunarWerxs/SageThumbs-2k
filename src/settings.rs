@@ -701,6 +701,18 @@ pub fn set_hide_type_overlay(on: bool) -> windows_registry::Result<()> {
     set_dword("HideTypeOverlay", u32::from(on))
 }
 
+/// `FolderPrebuildVerb` — the folder right-click entry that pre-builds thumbnails. Default ON,
+/// unlike [`hide_type_overlay`]: it only creates keys of our own under `HKCU`, changes nothing
+/// that already exists, and adds no code to Explorer's process (see [`crate::foldermenu`]).
+/// The product already puts a right-click menu on files, so a folder entry is in character.
+pub fn folder_prebuild_verb() -> bool {
+    get_dword("FolderPrebuildVerb", 1) != 0
+}
+
+pub fn set_folder_prebuild_verb(on: bool) -> windows_registry::Result<()> {
+    set_dword("FolderPrebuildVerb", u32::from(on))
+}
+
 // ---- Convert-verb quality settings --------------------------------------
 
 /// Clamp a stored JPEG quality DWORD into the 0..=100 byte range. Pure so it

@@ -13,8 +13,9 @@ USAGE:
   st2k batch <thumbnail|convert> <in|dir...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%]
                                                 bulk-process many files/folders in parallel (one process)
   st2k convert   <in> <out> [--quality N] [--webp-quality N] [--resize WxH|N%]   (--webp-quality → lossy WebP)
-  st2k prebuild  <dir|file...> [--recurse] [--size N] [--rebuild-all] [--jobs N]
+  st2k prebuild  <dir|file...> [--recurse] [--size N,N] [--rebuild-all] [--jobs N]
                                                 fill Explorer's thumbnail cache ahead of browsing
+                                                (--size defaults to 96,256,768 — one per Explorer view)
   st2k rotate    <in> --by right|left|180|fliph|flipv
   st2k compress  <in> --max-size 1MB|500KB|N    shrink to a target file size (JPEG, quality+scale search)
   st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG, lossless)
@@ -92,17 +93,28 @@ fn run(args: &[String]) -> Result<String, String> {
             )
         }
         "prebuild" => {
-            // prebuild <paths...> [--recurse] [--size N] [--rebuild-all] [--jobs N]
+            // prebuild <paths...> [--recurse] [--size N[,N…]] [--rebuild-all] [--jobs N]
             let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
             if inputs.is_empty() {
                 return Err("prebuild needs at least one folder or file".to_string());
             }
+            // `--size` takes a LIST because the shell caches per size bucket; a single number
+            // leaves every other Explorer view still building its tiles by hand.
+            let sizes: Vec<u32> = match flag(rest, "--size") {
+                Some(s) => {
+                    let parsed: Vec<u32> =
+                        s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                    if parsed.is_empty() {
+                        return Err(format!("--size: no number found in \"{s}\""));
+                    }
+                    parsed
+                }
+                None => sagethumbs2k_core::prebuild::DEFAULT_SIZES.to_vec(),
+            };
             cli::prebuild(
                 &inputs,
                 has_flag(rest, "--recurse") || has_flag(rest, "-r"),
-                flag(rest, "--size")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(256),
+                sizes,
                 has_flag(rest, "--rebuild-all"),
                 flag(rest, "--jobs")
                     .and_then(|s| s.parse().ok())

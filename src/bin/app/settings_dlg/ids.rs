@@ -151,6 +151,11 @@ pub(super) const ID_PREVIEW_MARKDOWN: i32 = 1208;
 pub(super) const ID_PREVIEW_HTML: i32 = 1209;
 #[cfg(feature = "html-preview")]
 pub(super) const ID_PREVIEW_URL_LIVE: i32 = 1210;
+// "Add 'Build thumbnails here' to the folder right-click menu" — a folder-level verb
+// (see `crate::foldermenu`), not a thumbnail-appearance switch, so it lives with the
+// other right-click-menu checkboxes. 1211 was the one free id between the html-preview
+// block above and ID_C_ARCHIVE_SHEET below.
+pub(super) const ID_FOLDER_PREBUILD: i32 = 1211;
 // Generic-archive (.zip/.rar/.7z) contact-sheet thumbnails (Ebook/comic tab).
 pub(super) const ID_C_ARCHIVE_SHEET: i32 = 1212;
 pub(super) const ID_FORMAT_BADGE: i32 = 1213;

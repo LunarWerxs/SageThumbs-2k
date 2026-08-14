@@ -71,6 +71,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_SHOT_TOOL, "lbl_shot_tool"),
         (ID_MENU_QUICK, "chk_menu_quick"),
         (ID_MENU_CHECKER, "chk_menu_checker"),
+        (ID_FOLDER_PREBUILD, "chk_folder_prebuild"),
         (ID_LBL_LIMITS, "grp_limits"),
         (ID_LBL_TILE_LOOK, "grp_tile_look"),
         (ID_LBL_MENU_LOOK, "grp_menu_look"),

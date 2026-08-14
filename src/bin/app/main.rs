@@ -42,6 +42,7 @@ mod http;
 mod image_info;
 mod oauth;
 mod ocr_result;
+mod prebuild_dlg;
 mod preview;
 mod screenshot;
 mod settings_dlg;
@@ -452,6 +453,15 @@ fn main() {
         // system-wide screen color picker.
         if args.iter().any(|a| a == "--eyedropper") {
             run_eyedropper(hinst);
+            return;
+        }
+        // Pre-build thumbnails: `--prebuild <folder>` (the folder right-click entry) walks the
+        // folder and fills Explorer's thumbnail cache, showing progress. The engine lives in
+        // the core crate and is shared with `st2k prebuild`.
+        if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
+            if let Some(dir) = args.get(pos + 1) {
+                prebuild_dlg::run_prebuild(dir);
+            }
             return;
         }
         // Image info: `--image-info <path>` (spawned by the DLL's Image info verb) shows

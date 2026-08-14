@@ -144,6 +144,9 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // This controls the transparency backdrop of the context-menu preview,
             // so keep it with that surface instead of crowding the General page.
             Switch(ID_MENU_CHECKER),
+            // Folder right-click verb ("Build thumbnails here") — a menu-presence switch
+            // like the ones above it, not a verb-behavior one, so it stays in this group.
+            Switch(ID_FOLDER_PREBUILD),
             // "Converting & resizing": these two govern what the Convert/Resize VERBS do
             // to a file, not what the menu looks like — the header makes that seam
             // visible instead of leaving four menu switches running into two file rows.
@@ -463,6 +466,7 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
                 || s::menu_all_file_types()
                 || s::menu_quick_verbs()
                 || !s::preview_checker()
+                || !s::folder_prebuild_verb()
                 || s::preserve_file_date()
                 || !s::keep_metadata_on_convert()
         }

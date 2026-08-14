@@ -24,6 +24,7 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_C_ARCHIVE_SHEET, settings::archive_collage());
     check(hwnd, ID_MENU_QUICK, settings::menu_quick_verbs());
     check(hwnd, ID_MENU_CHECKER, settings::preview_checker());
+    check(hwnd, ID_FOLDER_PREBUILD, settings::folder_prebuild_verb());
     check(hwnd, ID_PRESERVE_DATE, settings::preserve_file_date());
     check(hwnd, ID_KEEP_METADATA, settings::keep_metadata_on_convert());
     check(
@@ -111,6 +112,7 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_C_ARCHIVE_SHEET, true);
     check(hwnd, ID_MENU_QUICK, true);
     check(hwnd, ID_MENU_CHECKER, true);
+    check(hwnd, ID_FOLDER_PREBUILD, true); // defaults ON — see settings::folder_prebuild_verb
     check(hwnd, ID_PRESERVE_DATE, false);
     check(hwnd, ID_KEEP_METADATA, true); // losing capture data by accident is the worse default
     check(hwnd, ID_PDF_MARGIN, false); // tight pages are right for scans and comics
@@ -371,6 +373,13 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     if overlay_now != settings::hide_type_overlay() {
         let _ = settings::set_hide_type_overlay(overlay_now);
         sagethumbs2k_core::typeoverlay::sync(overlay_now);
+    }
+    // Same shape as the overlay above: a registry-only change the shell reads directly, so it
+    // needs writing and syncing but no thumbnail purge.
+    let folder_verb_now = checked(hwnd, ID_FOLDER_PREBUILD);
+    if folder_verb_now != settings::folder_prebuild_verb() {
+        let _ = settings::set_folder_prebuild_verb(folder_verb_now);
+        sagethumbs2k_core::foldermenu::sync(folder_verb_now);
     }
     let _ = settings::set_dword("EnableMenu", checked(hwnd, ID_ENABLE_MENU) as u32);
     let _ = settings::set_dword("MenuAllFileTypes", checked(hwnd, ID_MENU_ALL_TYPES) as u32);
@@ -900,6 +909,10 @@ pub(super) unsafe fn repair_associations(hwnd: HWND) {
     // is written per ProgID — so re-point it at whatever owns the types NOW, or the repair
     // would silently leave the icon back on top of the badge.
     sagethumbs2k_core::typeoverlay::sync(sagethumbs2k_core::settings::hide_type_overlay());
+    // The folder verb records an ABSOLUTE path to the companion EXE, so a repair after the app
+    // moved (or a reinstall to a different directory) has to rewrite it or the entry silently
+    // launches nothing.
+    sagethumbs2k_core::foldermenu::sync(sagethumbs2k_core::settings::folder_prebuild_verb());
     // Registration rewrote the hooks; drop the stale cached thumbnails + restart Explorer so
     // the repaired ones render right away. (The cmd sequence gives regsvr32 time to finish.)
     let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();

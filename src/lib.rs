@@ -37,6 +37,7 @@ pub mod decode;
 mod dib;
 pub mod doctor;
 mod factory;
+pub mod foldermenu;
 pub mod formats;
 mod fsutil;
 // Structure-aware mutation fuzzing of the pure-Rust parsers, compiled only for tests.

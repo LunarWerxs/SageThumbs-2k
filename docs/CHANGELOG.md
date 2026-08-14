@@ -13,6 +13,18 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   what is missing, so running it twice is cheap; `--rebuild-all` skips that check. It reports how
   many were built, already present, and failed. Cloud-storage placeholder files are left alone,
   because building their thumbnails would download them. Requested by @taylor-p-mason (#23).
+
+  Windows stores thumbnails separately for each icon size, so building only one size would leave
+  you still watching tiles appear in every other Explorer view. It therefore builds the three
+  sizes Explorer's Medium, Large and Extra-large views actually read. `--size` takes a list if
+  you want to choose (for example `--size 256`), and sizes that land in the same internal bucket
+  are merged so nothing is built twice.
+- **"Build thumbnails here" on the right-click menu for folders and drives.** The pre-build
+  feature above is now a menu entry rather than a command you have to type. Right-click a folder
+  (or the empty space inside one, or a drive) and it walks the whole tree with a progress window
+  you can cancel. It appears by default and can be turned off in Settings. It is a plain menu
+  entry rather than a shell add-in, so it loads no SageThumbs code into Explorer and cannot slow
+  down or crash your folder windows.
 - **The welcome screen now offers the format badge.** The option that stamps a small label
   (`PSD`, `SVG`, `AVIF`…) into the corner of a thumbnail already existed in Settings, but nothing
   pointed at it, so people who wanted a way to tell similar-looking files apart never found it.

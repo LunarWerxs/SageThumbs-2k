@@ -47,14 +47,21 @@ pub struct Report {
     pub skipped_offline: usize,
     /// Directories the walk could not read (permissions, vanished mid-walk).
     pub unreadable_dirs: usize,
+    /// The size buckets actually used, after [`normalize_sizes`]. Reported rather than assumed
+    /// so the caller can say which views are now warm instead of echoing what was asked for.
+    pub sizes: Vec<u32>,
+    /// The run stopped early because the caller set its cancel flag.
+    pub cancelled: bool,
 }
 
 /// Knobs for [`run`]. Defaults match the CLI's defaults.
 pub struct Options {
     pub recurse: bool,
-    /// Edge in pixels. The shell caches per SIZE BUCKET, so building 256 does not fill the
-    /// 96 bucket that Explorer's Large-icons view reads — see [`run`].
-    pub size: u32,
+    /// Edges in pixels, built per file. The shell caches SEPARATELY PER SIZE BUCKET, so this
+    /// is a list and not a number: building only 256 leaves Explorer's Medium-icons view
+    /// (96) empty, and the user still watches tiles build in exactly the situation this
+    /// feature exists to prevent. See [`DEFAULT_SIZES`].
+    pub sizes: Vec<u32>,
     /// Skip the `WTS_INCACHEONLY` probe and extract every file.
     pub rebuild_all: bool,
     /// Worker threads. Clamped hard: these calls serialise inside the shell, so a wide pool
@@ -64,11 +71,43 @@ pub struct Options {
     pub max_depth: u32,
 }
 
+/// The buckets Explorer's own views read: 96 is Medium icons, 256 is Large, 768 is Extra
+/// large. Details/List/Small icons draw no thumbnail at all, so there is nothing to prefill
+/// for them, and the giant buckets above 768 are only reached by a slider most people never
+/// touch — building those by default would multiply the run time for a view nobody is in.
+pub const DEFAULT_SIZES: [u32; 3] = [96, 256, 768];
+
+/// Windows' actual cache buckets. A request lands in the smallest bucket that fits it, so
+/// asking for 200 fills the 256 one; normalising up front keeps the report honest about what
+/// was really built and stops two requested sizes silently doing the same work twice.
+const BUCKETS: [u32; 6] = [32, 96, 256, 768, 1024, 1920];
+
+/// Round each requested edge up to the bucket that will actually hold it, then dedupe.
+pub fn normalize_sizes(requested: &[u32]) -> Vec<u32> {
+    let mut out: Vec<u32> = requested
+        .iter()
+        .filter(|s| **s > 0)
+        .map(|s| {
+            BUCKETS
+                .iter()
+                .copied()
+                .find(|b| b >= s)
+                .unwrap_or(*BUCKETS.last().expect("BUCKETS is never empty"))
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    if out.is_empty() {
+        out.push(256);
+    }
+    out
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
             recurse: false,
-            size: 256,
+            sizes: DEFAULT_SIZES.to_vec(),
             rebuild_all: false,
             jobs: 3,
             max_depth: 64,
@@ -189,33 +228,44 @@ fn one(path: &str, opts: &Options) -> Outcome {
     APARTMENT.with(|_| {});
     let abs = parsing_path(path);
 
+    // One file, every requested bucket. The file's verdict is the most significant thing that
+    // happened to it: built if any size needed work, already if every size was there, failed
+    // only if no size could be produced at all — so a file that is cached at 96 but missing at
+    // 256 reports as built, which is what actually happened.
     let r: windows::core::Result<Outcome> = (|| unsafe {
         let cache: IThumbnailCache =
             CoCreateInstance(&LocalThumbnailCache, None, CLSCTX_INPROC_SERVER)?;
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(abs.as_str()), None)?;
 
-        if !opts.rebuild_all {
-            // Probe first. This never extracts, so a library that is already built costs one
-            // cheap call per file instead of a full re-render.
+        let (mut built, mut already) = (false, false);
+        for &size in &opts.sizes {
+            if !opts.rebuild_all {
+                // Probe first. This never extracts, so a library that is already built costs
+                // one cheap call per size instead of a full re-render.
+                let mut bmp = None;
+                if cache
+                    .GetThumbnail(&item, size, WTS_INCACHEONLY, Some(&mut bmp), None, None)
+                    .is_ok()
+                {
+                    already = true;
+                    continue;
+                }
+            }
             let mut bmp = None;
             if cache
-                .GetThumbnail(
-                    &item,
-                    opts.size,
-                    WTS_INCACHEONLY,
-                    Some(&mut bmp),
-                    None,
-                    None,
-                )
+                .GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None)
                 .is_ok()
             {
-                return Ok(Outcome::Already);
+                built = true;
             }
         }
-
-        let mut bmp = None;
-        cache.GetThumbnail(&item, opts.size, WTS_EXTRACT, Some(&mut bmp), None, None)?;
-        Ok(Outcome::Built)
+        if built {
+            Ok(Outcome::Built)
+        } else if already {
+            Ok(Outcome::Already)
+        } else {
+            Ok(Outcome::Failed)
+        }
     })();
 
     r.unwrap_or(Outcome::Failed)
@@ -254,16 +304,21 @@ pub fn is_elevated() -> bool {
 
 /// Walk `inputs` and fill the shell's thumbnail cache for everything supported inside them.
 ///
-/// `progress` is called with (done, total) roughly as work completes, for a CLI counter.
+/// `progress` is called with (done, total) roughly as work completes, for a counter or bar.
+/// `cancel`, when supplied and set, stops the run at the next file: the pool has no cancel
+/// primitive, so every remaining item is visited and skipped rather than truly interrupted.
+/// That is instant in practice because skipping is free, and it avoids threading a new
+/// abort path through [`crate::parallel`].
 ///
-/// Two things the caller must tell the user about, because both make a successful-looking run
-/// do nothing visible:
-/// 1. **Size buckets.** The cache is per size (32/96/256/768/1024/1920…). Building 256 does
-///    not fill the 96 bucket Explorer's Large-icons view reads, so a user on a different view
-///    still watches tiles build.
-/// 2. **The cache is LRU-capped.** Pre-building a whole 32 TB drive evicts its own early work
-///    long before it finishes. Scope it to the folders that matter.
-pub fn run(inputs: &[String], opts: &Options, progress: impl Fn(usize, usize) + Sync) -> Report {
+/// The caller must still tell the user that the cache is **LRU-capped**: pre-building a whole
+/// 32 TB drive evicts its own early work long before it finishes, so a run can report complete
+/// success and leave the far end of the library unbuilt. Scope it to the folders that matter.
+pub fn run(
+    inputs: &[String],
+    opts: &Options,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    progress: impl Fn(usize, usize) + Sync,
+) -> Report {
     let mut rep = Report::default();
     let mut files: Vec<String> = Vec::new();
     for i in inputs {
@@ -277,28 +332,47 @@ pub fn run(inputs: &[String], opts: &Options, progress: impl Fn(usize, usize) + 
     files.sort();
     files.dedup();
     rep.found = files.len();
+    rep.sizes = normalize_sizes(&opts.sizes);
     if files.is_empty() {
         return rep;
     }
 
+    // Work against the normalised buckets, so two requested sizes that land in the same bucket
+    // don't extract the same thumbnail twice.
+    let opts = Options {
+        recurse: opts.recurse,
+        sizes: rep.sizes.clone(),
+        rebuild_all: opts.rebuild_all,
+        jobs: opts.jobs,
+        max_depth: opts.max_depth,
+    };
+
     // These calls serialise inside the shell; a wide pool only adds contention and makes the
     // machine unusable while it runs. 1..=4 is the whole useful range.
     let workers = opts.jobs.clamp(1, 4);
-    let (built, already, failed) = (
+    let (built, already, failed, skipped) = (
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
     let done = AtomicUsize::new(0);
     let total = files.len();
+    let stopping = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
     crate::parallel::map_indexed(
         &files,
         workers,
-        |_, path: &String| match one(path, opts) {
-            Outcome::Built => built.fetch_add(1, Ordering::Relaxed),
-            Outcome::Already => already.fetch_add(1, Ordering::Relaxed),
-            Outcome::Failed => failed.fetch_add(1, Ordering::Relaxed),
+        |_, path: &String| {
+            if stopping() {
+                skipped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            match one(path, &opts) {
+                Outcome::Built => built.fetch_add(1, Ordering::Relaxed),
+                Outcome::Already => already.fetch_add(1, Ordering::Relaxed),
+                Outcome::Failed => failed.fetch_add(1, Ordering::Relaxed),
+            };
         },
         || {
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -309,6 +383,7 @@ pub fn run(inputs: &[String], opts: &Options, progress: impl Fn(usize, usize) + 
     rep.built = built.into_inner();
     rep.already = already.into_inner();
     rep.failed = failed.into_inner();
+    rep.cancelled = skipped.into_inner() > 0;
     rep
 }
 
@@ -381,6 +456,49 @@ mod tests {
         );
         assert!(Path::new(&got).is_absolute(), "must be absolute");
         let _ = std::fs::remove_file(&f);
+    }
+
+    /// Requested edges must land on real cache buckets, and two requests that resolve to the
+    /// same bucket must collapse — otherwise the run extracts the same thumbnail twice and
+    /// the report claims work that never happened.
+    #[test]
+    fn sizes_snap_to_cache_buckets_and_dedupe() {
+        assert_eq!(
+            normalize_sizes(&[256]),
+            vec![256],
+            "an exact bucket is kept"
+        );
+        assert_eq!(
+            normalize_sizes(&[200]),
+            vec![256],
+            "a request rounds UP to the bucket that will hold it"
+        );
+        assert_eq!(
+            normalize_sizes(&[100, 200, 250]),
+            vec![256],
+            "three requests inside one bucket collapse to a single extraction"
+        );
+        assert_eq!(
+            normalize_sizes(&[768, 96, 256]),
+            vec![96, 256, 768],
+            "order is normalised so the report reads predictably"
+        );
+        assert_eq!(
+            normalize_sizes(&[99_999]),
+            vec![1920],
+            "anything past the top bucket clamps to it rather than being dropped"
+        );
+        assert_eq!(
+            normalize_sizes(&[0]),
+            vec![256],
+            "a zero is not a size; fall back to the default rather than asking for nothing"
+        );
+        assert_eq!(normalize_sizes(&[]), vec![256], "empty falls back too");
+        assert_eq!(
+            normalize_sizes(&DEFAULT_SIZES),
+            DEFAULT_SIZES.to_vec(),
+            "the shipped default must already be canonical, or every run pays to normalise it"
+        );
     }
 
     /// A path that does not exist must come back unchanged rather than panicking — the walk

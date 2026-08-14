@@ -445,6 +445,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_SHOT_TOOL, "tip_shot_tool"),
     (ID_MENU_QUICK, "tip_menu_quick"),
     (ID_MENU_CHECKER, "tip_menu_checker"),
+    (ID_FOLDER_PREBUILD, "tip_folder_prebuild"),
     (ID_MAXSIZE, "tip_max_file"),
     (ID_SIZE, "tip_max_thumb"),
     (ID_JPEG, "tip_jpeg"),

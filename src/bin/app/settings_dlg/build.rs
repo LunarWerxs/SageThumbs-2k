@@ -82,6 +82,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_menu_all_types"), cb, 300, ID_MENU_ALL_TYPES);
     lc.checkbox(t("chk_menu_quick"), cb, 312, ID_MENU_QUICK);
     lc.checkbox(t("chk_menu_checker"), cb, 300, ID_MENU_CHECKER);
+    lc.checkbox(t("chk_folder_prebuild"), cb, 312, ID_FOLDER_PREBUILD);
     lc.checkbox(t("chk_preserve_date"), cb, 312, ID_PRESERVE_DATE);
     lc.checkbox(t("chk_keep_metadata"), cb, 312, ID_KEEP_METADATA);
     lc.checkbox(t("chk_pdf_margin"), cb, 312, ID_PDF_MARGIN);

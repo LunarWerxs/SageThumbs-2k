@@ -130,6 +130,12 @@ pub fn register(dll_path: &str) -> Result<()> {
     // PropertySystem subtree must never break the thumbnail/context-menu setup above.
     let _ = register_property_handler(dll_path, &approved);
 
+    // The folder right-click entry. Written HERE and not only from Settings, because a normal
+    // install never opens Settings — without this the verb would exist for nobody until they
+    // happened to visit that page. It records an absolute path to the companion EXE, so
+    // re-running registration after a move is also what repoints it.
+    crate::foldermenu::sync(settings::folder_prebuild_verb());
+
     notify_shell();
     Ok(())
 }
@@ -529,6 +535,9 @@ pub fn unregister() -> Result<()> {
     // Nothing else would ever clean these up, and a leftover empty `TypeOverlay` would keep
     // suppressing another program's icon long after we are gone.
     crate::typeoverlay::remove_all();
+    // The folder right-click entry is ours alone under HKCU, but nothing else would ever take
+    // it out, and a leftover verb would point at an EXE that is no longer installed.
+    crate::foldermenu::remove_all();
     // Order matters: remove the property-store VALUES on `SystemFileAssociations\.<ext>` FIRST,
     // so the subsequent thumbnail/preview `*_and_prune` calls find that key empty and prune it —
     // otherwise the lingering InfoTip/FullDetails/… values keep the key alive as orphan litter.

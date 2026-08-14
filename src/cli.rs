@@ -438,7 +438,7 @@ fn expand_inputs(inputs: &[String]) -> Vec<String> {
 pub fn prebuild(
     inputs: &[String],
     recurse: bool,
-    size: u32,
+    sizes: Vec<u32>,
     rebuild_all: bool,
     jobs: usize,
 ) -> Result<String, String> {
@@ -455,7 +455,7 @@ pub fn prebuild(
 
     let opts = pb::Options {
         recurse,
-        size,
+        sizes,
         rebuild_all,
         jobs,
         ..Default::default()
@@ -465,7 +465,7 @@ pub fn prebuild(
     // than looking hung.
     eprintln!("Scanning...");
     let last = std::sync::atomic::AtomicUsize::new(0);
-    let rep = pb::run(inputs, &opts, |done, total| {
+    let rep = pb::run(inputs, &opts, None, |done, total| {
         // One line per percent, not per file: a 200k-file run would otherwise spend its time
         // writing to the console.
         let pct = done * 100 / total.max(1);
@@ -491,11 +491,17 @@ pub fn prebuild(
             rep.unreadable_dirs
         ));
     }
+    let px = rep
+        .sizes
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     out.push_str(&format!(
-        "\n\nBuilt at {size}px. Explorer caches each icon size separately, so a view using a \
-         different size still builds its own. Windows also caps the cache and evicts the \
-         oldest entries, so very large runs can lose their earliest work — prefer folders \
-         over whole drives."
+        "\n\nBuilt at {px} px. Explorer caches each icon size separately, and these are the \
+         buckets its Medium, Large and Extra-large views read. Windows caps the cache and \
+         evicts the oldest entries, so very large runs can lose their earliest work — prefer \
+         folders over whole drives."
     ));
     Ok(out)
 }
