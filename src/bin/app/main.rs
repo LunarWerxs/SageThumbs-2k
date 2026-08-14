@@ -83,28 +83,12 @@ use crate::win::app_icon;
 /// daemon spawned from that context inherits the elevation and is then UIPI-deaf to the
 /// non-elevated Settings window's `WM_RELOAD` forever (hotkey changes silently stop
 /// applying), and every capture helper it spawns runs as admin too.
+///
+/// The token check itself lives in the core crate (`prebuild::is_elevated`), which needs the
+/// same answer for a different reason: the thumbnail cache is per user, so an elevated
+/// pre-build would fill the administrator's cache instead. One implementation, two callers.
 unsafe fn is_elevated() -> bool {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    let mut tok = windows::Win32::Foundation::HANDLE::default();
-    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok).is_err() {
-        return false;
-    }
-    let mut e = TOKEN_ELEVATION::default();
-    let mut len = 0u32;
-    let ok = GetTokenInformation(
-        tok,
-        TokenElevation,
-        Some(&mut e as *mut _ as *mut core::ffi::c_void),
-        core::mem::size_of::<TOKEN_ELEVATION>() as u32,
-        &mut len,
-    )
-    .is_ok();
-    let _ = CloseHandle(tok);
-    ok && e.TokenIsElevated != 0
+    sagethumbs2k_core::prebuild::is_elevated()
 }
 
 /// De-elevate the heal through a ONE-SHOT `LIMITED` scheduled task: the task starts
