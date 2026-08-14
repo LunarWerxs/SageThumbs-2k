@@ -100,17 +100,26 @@ jobs:
           $ver = & $magick -version 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) { Write-Host $ver; throw "bundled ARM64 magick failed to run ($LASTEXITCODE)" }
           Write-Host $ver
-          # Prove it can actually convert, not merely start. The input is a real PNG written
-          # from bytes, NOT ImageMagick's `xc:` canvas generator: the release prunes every
-          # coder SageThumbs does not use, and `xc:` is one of them, so asking for it tests
-          # our pruning rather than the engine and fails on a correctly built bundle.
-          $src = Join-Path $env:RUNNER_TEMP 'probe.png'
-          $dst = Join-Path $env:RUNNER_TEMP 'probe.jpg'
+          # Converting must be driven THROUGH st2k, not by calling magick directly.
+          # `decode/magick.rs` sets MAGICK_HOME, MAGICK_CODER_MODULE_PATH and friends before
+          # spawning, precisely because a bare magick.exe on Windows looks its coder modules up
+          # in the registry and fails with RegistryKeyLookupFailed 'CoderModulesPath' when there
+          # is no installed copy. Invoking it bare therefore tests an integration the product
+          # does not use, and reports a failure that does not exist.
+          #
+          # DDS is the lever: it is an exotic output target with no pure-Rust encoder, so
+          # `st2k convert` to it can ONLY succeed by driving the bundled engine successfully.
+          $st2k = Join-Path $env:drop 'st2k.exe'
+          $src = Join-Path $env:drop 'probe.png'
+          $dst = Join-Path $env:drop 'probe.dds'
           [IO.File]::WriteAllBytes($src, [Convert]::FromBase64String(
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='))
-          & $magick $src $dst
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dst)) { throw 'magick could not convert on ARM64' }
-          Write-Host "magick PNG->JPEG round-trip OK ($((Get-Item $dst).Length) bytes)"
+          $out = & $st2k convert $src $dst 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dst)) {
+            Write-Host $out
+            throw 'st2k could not drive the bundled ARM64 ImageMagick (DDS encode failed)'
+          }
+          Write-Host "ARM64 engine round-trip OK: PNG -> DDS ($((Get-Item $dst).Length) bytes)"
 
       - name: Portable mode is on, and it is the ini that does it
         shell: pwsh
