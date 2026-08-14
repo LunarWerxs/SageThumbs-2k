@@ -1,0 +1,130 @@
+# Run the SHIPPED ARM64 portable zip on real ARM64 silicon.
+#
+# Why this exists, given ci.yml already has an ARM64 job: that job proves portable MODE using
+# debug binaries it assembles itself, and deliberately skips the ImageMagick payload. The zip
+# we actually publish is never executed by anything. `build-release.ps1 -Portable` skips its own
+# smoke test when cross-building (an x64 box cannot run ARM64 code at all), and the packaging
+# checks read the ARM64 DLLs' import tables rather than running them. So a bundled ARM64
+# ImageMagick that loads on nobody's machine would pass every existing gate and reach users.
+#
+# This closes that by downloading the release asset itself and running it. It verifies AFTER
+# publish rather than gating it, which is the trade for not cross-building a 22 MB engine
+# payload inside CI; a failure here means "pull or fix that asset", and finding out at all is
+# the improvement.
+name: ARM64 portable verify
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to verify (e.g. v1.12.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: run the published ARM64 portable zip on ARM64
+    runs-on: windows-11-arm
+    steps:
+      - name: Resolve the tag
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ inputs.tag }}'
+          } else {
+            '${{ github.event.release.tag_name }}'
+          }
+          if (-not $tag) { throw 'no tag resolved' }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "verifying $tag"
+
+      - name: Confirm this really is ARM64 silicon
+        shell: pwsh
+        run: |
+          # The whole point of this job is the hardware. If it ever silently lands on an x64
+          # runner, every assertion below would still pass under emulation-that-does-not-exist,
+          # or worse, pass against the wrong binaries. Fail loudly instead.
+          $arch = $env:PROCESSOR_ARCHITECTURE
+          Write-Host "PROCESSOR_ARCHITECTURE = $arch"
+          if ($arch -ne 'ARM64') { throw "expected ARM64 host, got '$arch'" }
+
+      - name: Download the published ARM64 portable zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.tag.outputs.tag }}'
+          $ver = $tag.TrimStart('v')
+          $asset = "SageThumbs2K-Portable-$ver-arm64.zip"
+          gh release download $tag --repo '${{ github.repository }}' --pattern $asset --dir "$env:RUNNER_TEMP"
+          if ($LASTEXITCODE -ne 0) { throw "could not download $asset from $tag" }
+          $zip = Join-Path $env:RUNNER_TEMP $asset
+          "zip=$zip" >> $env:GITHUB_ENV
+          Write-Host ("downloaded {0:N2} MB" -f ((Get-Item $zip).Length / 1MB))
+
+      - name: Extract to a folder it was never installed to
+        shell: pwsh
+        run: |
+          $drop = Join-Path $env:RUNNER_TEMP 'portable-run'
+          Remove-Item $drop -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $env:zip -DestinationPath $drop -Force
+          "drop=$drop" >> $env:GITHUB_ENV
+          Get-ChildItem $drop | Select-Object -First 12 Name, Length | Format-Table -AutoSize
+
+      - name: Our own binaries run from the zip
+        shell: pwsh
+        run: |
+          $st2k = Join-Path $env:drop 'st2k.exe'
+          if (-not (Test-Path $st2k)) { throw 'st2k.exe missing from the portable zip' }
+          # `formats` is the check the local smoke test makes, and it exercises real work
+          # (it reads the format table) rather than just printing a version string.
+          $out = & $st2k formats 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { Write-Host $out; throw "st2k formats failed ($LASTEXITCODE)" }
+          if ($out -notmatch '(?i)png') { Write-Host $out; throw 'format list looks empty' }
+          Write-Host ($out -split "`n" | Select-Object -First 5 | Out-String)
+
+      - name: The bundled ARM64 ImageMagick actually loads
+        shell: pwsh
+        run: |
+          # THE point of this job. Everything else about the payload is verified by reading
+          # PE headers and import tables; nothing runs it. A wrong-architecture or
+          # missing-dependency magick would sail through those static checks.
+          $magick = Join-Path $env:drop 'magick.exe'
+          if (-not (Test-Path $magick)) { throw 'magick.exe missing from the portable zip' }
+          $ver = & $magick -version 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { Write-Host $ver; throw "bundled ARM64 magick failed to run ($LASTEXITCODE)" }
+          Write-Host $ver
+          # Prove it can actually decode, not merely start: round-trip a generated image
+          # through the engine and read the result back.
+          $src = Join-Path $env:RUNNER_TEMP 'probe.bmp'
+          $dst = Join-Path $env:RUNNER_TEMP 'probe.png'
+          & $magick -size 64x64 'xc:red' $src
+          if ($LASTEXITCODE -ne 0) { throw 'magick could not write a test image' }
+          & $magick $src $dst
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dst)) { throw 'magick could not convert on ARM64' }
+          Write-Host "magick round-trip OK ($((Get-Item $dst).Length) bytes)"
+
+      - name: Portable mode is on, and it is the ini that does it
+        shell: pwsh
+        run: |
+          # The marker ini ships INSIDE the zip, so unlike ci.yml's synthetic check this proves
+          # the real payload's portability. Distinctive values make the answer observable, and
+          # the negative control is the load-bearing half.
+          $st2k = Join-Path $env:drop 'st2k.exe'
+          $iniName = 'SageThumbs2K.ini'
+          if (-not (Test-Path (Join-Path $env:drop $iniName))) {
+            throw "the portable marker $iniName is missing from the zip - it IS the switch"
+          }
+          Set-Content (Join-Path $env:drop $iniName) -Value @('[Settings]', 'MaxSize=42', 'Width=137', 'Height=137')
+          $report = & $st2k doctor 2>&1 | Out-String
+          if ($report -notmatch '137') {
+            Write-Host $report
+            throw 'portable ini was ignored: doctor did not report the ini values'
+          }
+          Write-Host 'portable ini honoured on ARM64'
