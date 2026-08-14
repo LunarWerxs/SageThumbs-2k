@@ -43,6 +43,13 @@ const DLG_H: i32 = 190;
 
 /// Set by Cancel, read by the engine between files.
 static CANCEL: AtomicBool = AtomicBool::new(false);
+/// The run is over and the button now means "close".
+///
+/// Tracked separately rather than inferred from [`RESULT`], because `WM_PB_DONE` TAKES the
+/// summary out to render it — so a "is RESULT populated?" test reads false immediately after
+/// the run finishes, and the button silently stopped closing the window. That is exactly how
+/// a finished dialog ended up stuck on screen with a Close button that did nothing.
+static FINISHED: AtomicBool = AtomicBool::new(false);
 /// Finished counts, handed from the worker to `WM_PB_DONE`.
 static RESULT: Mutex<Option<Summary>> = Mutex::new(None);
 /// Last posted (done, total), so a repaint can restate them without asking the worker.
@@ -244,6 +251,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_PB_DONE => {
+            FINISHED.store(true, Ordering::Relaxed);
             let s = RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
             let text = s.map(|s| summary_text(&s)).unwrap_or_default();
             set_text(hwnd, ID_STATUS, &text);
@@ -263,15 +271,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 // One button, two jobs: while work is running it cancels, and once the
                 // summary is up it closes. Two buttons would leave a dead one on screen for
                 // the whole run.
-                if RESULT.lock().unwrap_or_else(|e| e.into_inner()).is_some()
-                    || CANCEL.load(Ordering::Relaxed)
-                {
+                if FINISHED.load(Ordering::Relaxed) {
+                    // The run is over and the button reads "Close" — so close.
                     let _ = DestroyWindow(hwnd);
                 } else if SEEN.1.load(Ordering::Relaxed) == 0 {
-                    // Still scanning: nothing to cancel yet, so just close.
+                    // Still scanning, so there is no progress to abandon: shut the flag and go.
                     CANCEL.store(true, Ordering::Relaxed);
                     let _ = DestroyWindow(hwnd);
                 } else {
+                    // Mid-run: ask the engine to stop and wait for its WM_PB_DONE, which brings
+                    // the real counts. Closing here instead would throw away the summary of the
+                    // work that WAS done.
                     CANCEL.store(true, Ordering::Relaxed);
                     set_text(hwnd, ID_ACTION, t("pb_close"));
                 }
@@ -323,6 +333,7 @@ pub(crate) unsafe fn run_prebuild(folder: &str) {
     }
 
     CANCEL.store(false, Ordering::Relaxed);
+    FINISHED.store(false, Ordering::Relaxed);
     *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     SEEN.0.store(0, Ordering::Relaxed);
     SEEN.1.store(0, Ordering::Relaxed);
