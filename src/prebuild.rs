@@ -81,19 +81,18 @@ pub const DEFAULT_SIZES: [u32; 3] = [96, 256, 768];
 /// asking for 200 fills the 256 one; normalising up front keeps the report honest about what
 /// was really built and stops two requested sizes silently doing the same work twice.
 const BUCKETS: [u32; 6] = [32, 96, 256, 768, 1024, 1920];
+/// The last entry of [`BUCKETS`], spelled as a constant so the clamp below needs no runtime
+/// unwrap for a value the array literal already guarantees.
+const LARGEST: u32 = BUCKETS[BUCKETS.len() - 1];
 
 /// Round each requested edge up to the bucket that will actually hold it, then dedupe.
 pub fn normalize_sizes(requested: &[u32]) -> Vec<u32> {
     let mut out: Vec<u32> = requested
         .iter()
         .filter(|s| **s > 0)
-        .map(|s| {
-            BUCKETS
-                .iter()
-                .copied()
-                .find(|b| b >= s)
-                .unwrap_or(*BUCKETS.last().expect("BUCKETS is never empty"))
-        })
+        // Anything past the top bucket clamps to it rather than being dropped, so a silly
+        // request still builds something instead of silently doing nothing.
+        .map(|s| BUCKETS.iter().copied().find(|b| b >= s).unwrap_or(LARGEST))
         .collect();
     out.sort_unstable();
     out.dedup();

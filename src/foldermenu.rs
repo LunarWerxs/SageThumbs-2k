@@ -62,11 +62,11 @@ fn apply(label: &str) -> windows_registry::Result<()> {
         let key = classes.create(format!(r"{class}\shell\{VERB_KEY}"))?;
         key.set_string("", label)?;
         // The app's own icon, so the entry reads as ours in a crowded menu.
-        key.set_string("Icon", &format!("{exe},0"))?;
+        key.set_string("Icon", format!("{exe},0"))?;
         // Quote BOTH the exe and the folder: Program Files has a space, and so do most of the
         // folders anyone would point this at.
         key.create("command")?
-            .set_string("", &format!("\"{exe}\" --prebuild \"{token}\""))?;
+            .set_string("", format!("\"{exe}\" --prebuild \"{token}\""))?;
     }
     Ok(())
 }
@@ -85,7 +85,7 @@ fn remove() {
 /// the setting or the UI language changes, so the two can never disagree.
 pub fn sync(on: bool) {
     if on {
-        if let Err(e) = apply(&crate::i18n::t("pb_verb")) {
+        if let Err(e) = apply(crate::i18n::t("pb_verb")) {
             crate::safety::log(&format!("foldermenu: could not write the verb: {e}"));
         }
     } else {
