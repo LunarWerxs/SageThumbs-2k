@@ -2,7 +2,7 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 1.12.0
 
 ### Added
 
@@ -11,8 +11,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   thumbnail, so the pictures are already there the first time you open it. Useful after clearing
   the thumbnail cache, or for a large library you have just copied in. By default it only builds
   what is missing, so running it twice is cheap; `--rebuild-all` skips that check. It reports how
-  many were built, already present, and failed. Cloud-storage placeholder files are left alone,
-  because building their thumbnails would download them. Requested by @taylor-p-mason (#23).
+  many were built, already present, and failed. Files that live in the cloud and have not been
+  downloaded yet are skipped, because building their thumbnails would pull them down.
+  Requested by @taylor-p-mason (#23).
 
   Windows stores thumbnails separately for each icon size, so building only one size would leave
   you still watching tiles appear in every other Explorer view. It therefore builds the three
