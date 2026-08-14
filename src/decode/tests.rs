@@ -742,46 +742,25 @@ fn fully_transparent_thumbnail_is_rejected_blank() {
     assert!(decode_thumbnail_opts(&opaque, 256, false).is_ok());
 }
 
-/// Issue #17: a PNG whose alpha channel is entirely zero but whose RGB still carries a
-/// picture must NOT be forced opaque. Doing so revealed the hidden RGB — normally black —
-/// and Explorer drew the artwork sitting on a solid black rectangle. In a PNG an all-zero
-/// alpha means "show nothing", so this belongs on the reject leg with the icon fallback.
+/// Issue #17's case, and the behaviour we deliberately KEPT after trying the alternative.
+///
+/// A PNG whose alpha is entirely zero but whose RGB still holds a picture is shown OPAQUE,
+/// so the user sees their artwork. It looks wrong when the hidden RGB is black, which is what
+/// was reported — but gating this off for PNG was tried and reverted: it replaced an ugly
+/// thumbnail with no thumbnail, and a tile you can recognise beats a generic file icon.
 #[test]
-fn a_zeroed_alpha_png_is_rejected_rather_than_shown_on_black() {
-    // Non-zero RGB under a fully-zero alpha: the exact shape that tripped the watchdog.
+fn a_zeroed_alpha_png_is_shown_opaque_not_rejected() {
     let hidden = png_bytes(32, 32, [255, 210, 0, 0]);
+    let d = decode_thumbnail_opts(&hidden, 256, false)
+        .expect("a zeroed-alpha PNG with real colour must still produce a thumbnail");
     assert!(
-        decode_thumbnail_opts(&hidden, 256, false).is_err(),
-        "a zeroed-alpha PNG must be rejected, not forced opaque onto black"
-    );
-}
-
-/// The other half of that gate: the formats the force-opaque leg was written for still
-/// get it. DDS/TGA/EXR routinely carry a zeroed alpha beside a perfectly good image, and
-/// those must keep thumbnailing rather than fall back to a "broken"-looking icon.
-#[test]
-fn a_zeroed_alpha_non_png_still_forces_opaque() {
-    assert!(
-        !alpha_means_transparency(b"DDS |arbitrary trailing bytes"),
-        "DDS alpha is data, not transparency — the leg must still apply"
+        d.rgba.chunks_exact(4).all(|px| px[3] == 255),
+        "it must come back fully opaque, or the shell composites it away to nothing"
     );
     assert!(
-        !alpha_means_transparency(&[0u8; 18]),
-        "a headerless TGA is unrecognised and must keep the pre-existing behaviour"
+        d.rgba.chunks_exact(4).any(|px| px[0] != 0 || px[1] != 0),
+        "and it must still carry the picture that was hidden under the zeroed alpha"
     );
-    assert!(
-        alpha_means_transparency(&png_bytes(2, 2, [0, 0, 0, 0])),
-        "PNG magic must be recognised"
-    );
-    assert!(alpha_means_transparency(b"GIF89a\0\0"), "GIF magic");
-    let mut webp = b"RIFF\0\0\0\0WEBP".to_vec();
-    webp.extend_from_slice(b"VP8 ");
-    assert!(alpha_means_transparency(&webp), "WebP magic");
-    assert!(
-        !alpha_means_transparency(b"RIFF\0\0\0\0WAVE"),
-        "a RIFF that is not WEBP must not match"
-    );
-    assert!(!alpha_means_transparency(&[]), "empty input");
 }
 
 #[test]

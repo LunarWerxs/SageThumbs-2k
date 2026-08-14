@@ -31,17 +31,6 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   It is now one of the optional switches on the welcome screen's second page. Still off unless
   you ask for it, because it changes the picture you asked to see. Raised by @knchmpgn (#22).
 
-### Fixed
-
-- **Some transparent PNGs got a thumbnail with a solid black background.** It affected pictures
-  saved with their transparency zeroed out but their colours still stored underneath, which some
-  export tools produce. SageThumbs treated that as a picture worth showing and revealed the hidden
-  colours, which are usually black, so the artwork appeared to sit on a black rectangle. The same
-  thing quietly stopped the transparency checkerboard from appearing on those files. Such a file
-  now falls back to the ordinary file icon. Texture and render-pass formats (DDS, TGA, EXR, HDR),
-  where a blank transparency channel is normal and the picture is still real, are unchanged.
-  Thanks to @eddy593 for the report (#17).
-
 ### Changed
 
 - **The toolbar icons now ship with SageThumbs instead of coming from Windows.** They used to be
