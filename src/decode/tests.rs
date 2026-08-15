@@ -1833,3 +1833,65 @@ fn the_wic_guard_bounds_the_output_when_scaling_and_the_source_when_not() {
     assert!(!wic_source_within_limits(MAX_DIM + 1, 1, None));
     assert_eq!(MAX_PIXELS * 4, MAX_SCALED_SOURCE_PIXELS);
 }
+
+/// The widened scaled-decode ceiling must NOT be reachable from inside `explorer.exe`.
+///
+/// `MAX_SCALED_SOURCE_PIXELS` lets a thumbnail request stream a source four times past
+/// `MAX_PIXELS`, which is safe because thumbnails are drawn in an ISOLATED host — a hostile
+/// file costs a throwaway `dllhost`, and the measured worst case there is ~4 s. The classic
+/// context menu's preview tile is the one decode that runs in-process on Explorer's own UI
+/// thread under `panic = "abort"`, so it must keep the strict guard.
+///
+/// It does, but only because `decode_menu_preview` -> `decode_cheap` -> `decode_any` passes
+/// `None` for the target edge. That is a property of the call graph, and call graphs get
+/// refactored, so this pins the BEHAVIOUR instead.
+///
+/// **The fixture is 20000x20, and the shape is the whole point.** It is past `MAX_DIM` on one
+/// edge (so the strict guard refuses it) while being 0.4 MP in total (so the widened guard
+/// accepts it AND a real decode is instant). An earlier version of this test used a 20000x20000
+/// bomb with a deliberately invalid payload, reasoning that every guard rejects on the declared
+/// size before inflating anything — and it passed even when `decode_any` was edited to pass
+/// `Some(256)`, because the garbage payload failed to decode either way. It was asserting
+/// nothing. Valid pixels are what make the failure mode observable: if the guard ever lets this
+/// through, the decode SUCCEEDS and the assertion below fires.
+#[test]
+fn the_in_process_menu_path_never_gets_the_widened_ceiling() {
+    use super::limits::{MAX_DIM, MAX_SCALED_SOURCE_PIXELS};
+
+    const W: u32 = 20_000;
+    const H: u32 = 20;
+    // The fixture's two properties are decidable at compile time, so a bad edit should fail the
+    // BUILD rather than wait for someone to run the tests — the same call `settings` makes for
+    // its constant relationships.
+    const _: () = assert!(
+        W > MAX_DIM,
+        "fixture must exceed the strict per-edge guard, or the split is not being tested"
+    );
+    const _: () = assert!(
+        (W as u64) * (H as u64) < MAX_SCALED_SOURCE_PIXELS,
+        "fixture must sit UNDER the widened ceiling, or this proves nothing about the split"
+    );
+
+    // The split itself, stated as the pure rule both paths consult.
+    assert!(
+        wic::wic_source_within_limits(W, H, Some(256)),
+        "a thumbnail request may stream this source — it runs in an isolated host"
+    );
+    assert!(
+        !wic::wic_source_within_limits(W, H, None),
+        "a full decode of the same source must stay refused"
+    );
+
+    // Real, decodable pixels — see the note above about why an invalid payload proved nothing.
+    let png = png_bytes(W, H, [20, 140, 90, 255]);
+    // The `image` tier declines it first (its own Limits carry MAX_DIM), so this genuinely
+    // reaches the WIC tier's guard rather than being rejected earlier for an unrelated reason.
+    assert!(
+        decode_with_image(&png).is_err(),
+        "the image tier must decline it, or the WIC guard is not what this test measures"
+    );
+    assert!(
+        decode_menu_preview(&png).is_err(),
+        "the in-process context-menu preview must refuse a source past the strict guard — it          runs inside explorer.exe under panic=abort, where there is no isolated host to lose"
+    );
+}
