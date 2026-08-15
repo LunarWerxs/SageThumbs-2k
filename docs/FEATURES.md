@@ -438,7 +438,16 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   checkerboard behind transparent previews** (on by default), and **show quick actions
   (Convert / Resize / Rotate) directly in the main right-click menu**.
 - **Limits & quality:** max file size (MB), max thumbnail size (px), JPEG quality,
-  PNG compression.
+  PNG compression. **Max file size bounds what is read INTO MEMORY, not what can be
+  thumbnailed.** A picture past it is not given up on: it is read off the disk a strip at a
+  time and shrunk as it is read, so a 340-megapixel, several-hundred-megabyte image still
+  produces a thumbnail (about two seconds, with no meaningful memory growth) instead of a
+  stock icon. Lowering the setting yourself still means "do not spend effort on files this
+  big" and is honoured; the default is deliberately set clear of the internal ceiling so it
+  is never the thing that refuses a file the engine could handle.
+  **Settings you have not changed are not written when you press Save**, so they keep
+  following the default and benefit from any later change to it; anything you set explicitly
+  is stored and honoured unchanged.
 - **Saving:** **keep the original file's date/time on Convert / Resize / Rotate /
   Shrink output** (opt-in; off = "now", like most tools). Plus **keep EXIF and other
   metadata when converting** (on by default): Convert and Resize carry the camera, lens,

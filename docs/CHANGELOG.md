@@ -45,9 +45,39 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   space, so this is a ceiling you opt into rather than one everybody pays for. Note that it
   controls the size SageThumbs generates, not how large Explorer chooses to draw a tile.
   Raised by @taylor-p-mason (#26).
+- **Very large images get thumbnails now.** Pictures too big to load into memory, such as
+  AI-upscaled wallpapers running to hundreds of megabytes and tens of thousands of pixels
+  across, previously showed a plain file icon. They are now read straight off the disk a
+  strip at a time and shrunk as they are read, so a 340-megapixel photograph produces a
+  thumbnail in about two seconds without ever being held in memory whole. The default size
+  limit in Settings, General has been raised to match; if you had lowered it yourself, your
+  choice is still respected.
+
+### Changed
+
+- **Settings no longer freezes the defaults when you press Save.** Previously, opening
+  Settings and saving wrote down every value on the page, whether or not you had touched
+  it. That quietly pinned each one forever, so any later improvement to a default could
+  never reach you. Values you have not changed are now left alone and continue to follow
+  the default; values you deliberately set are stored and honoured exactly as before.
 
 ### Fixed
 
+- **Some transparent AVIF images showed no thumbnail at all.** An AVIF and a video can share
+  the same underlying file structure, and they are told apart by a short code near the start
+  of the file. One of the codes that image editors write was missing from the list, so those
+  pictures were treated as videos, produced no frame, and were given up on rather than being
+  handed to the picture decoders. They now thumbnail correctly, and the check reads every
+  format marker the file declares rather than only the first, so an unusual encoder cannot
+  cause this again.
+- **Photographs from Canon cameras thumbnailed about thirteen times slower than they needed
+  to.** A Canon raw file stores its sensor data in a form that, from the outside, is
+  indistinguishable from an ordinary photo, and SageThumbs was picking that instead of the
+  preview picture the camera saved alongside it. Since nothing can display sensor data as an
+  image, the whole shortcut was wasted and the file took the slow route.
+- **Large photographs thumbnailed far slower than necessary.** A big JPEG was decoded at full
+  size and then shrunk, rather than asked for a small version to begin with. A folder of
+  large wallpapers now pre-builds in around a tenth of the time it used to.
 - **"Build thumbnails here" did nothing on a drive root.** Right-clicking a whole drive
   (`E:\`) appeared to do nothing at all, while the same entry worked on any ordinary folder.
   A drive root ends in a backslash, and that backslash was being swallowed by the quoting
