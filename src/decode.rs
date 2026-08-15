@@ -688,6 +688,9 @@ fn decode_preview_with_raw_order(
         let at = crate::settings::video_offset_frac();
         let frame = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), at)
             .or_else(|| crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), at))
+            // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
+            // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
+            .or_else(|| crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes)))
             .and_then(|mini| crate::video::frame_from_bytes(&mini))
             // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
             // seek its own index to the true ~30 % frame (no head-prefix depth cap).

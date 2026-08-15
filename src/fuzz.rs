@@ -78,6 +78,9 @@ fn header_targets() -> Vec<Target> {
         ("mp4::keyframe_mini_mp4", |b| {
             let _ = crate::mp4::keyframe_mini_mp4(&mut Cursor::new(b), 0.30);
         }),
+        ("flv::keyframe_mini_mp4", |b| {
+            let _ = crate::flv::keyframe_mini_mp4(&mut Cursor::new(b));
+        }),
         ("mp4::video_codec_fourcc", |b| {
             let _ = crate::mp4::video_codec_fourcc(&mut Cursor::new(b));
         }),
@@ -332,6 +335,43 @@ fn synthetic_mp4() -> Vec<u8> {
     out
 }
 
+/// A structurally valid H.264 FLV, the way `flv::keyframe_mini_mp4` walks it: header,
+/// PreviousTagSize0, a script tag, an AVC sequence-header tag whose payload is an
+/// AVCDecoderConfigurationRecord with a real baseline SPS, an audio tag, and a keyframe
+/// NALU tag. Mutations reach the tag walk, the config parse, AND the Exp-Golomb SPS
+/// geometry reader instead of bouncing off the "FLV" magic.
+fn synthetic_flv() -> Vec<u8> {
+    fn tag(tag_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut t = vec![tag_type];
+        t.extend_from_slice(&(payload.len() as u32).to_be_bytes()[1..4]); // u24 DataSize
+        t.extend_from_slice(&[0u8; 7]); // timestamp(3) + ext(1) + stream id(3)
+        t.extend_from_slice(payload);
+        t.extend_from_slice(&((11 + payload.len()) as u32).to_be_bytes());
+        t
+    }
+    // Baseline SPS for 64×48 (hand-packed Exp-Golomb; see flv.rs tests for the encoder):
+    // profile 66, level 30, poc_type 2, 4×3 macroblocks, frame_mbs_only, no cropping.
+    // The `flv_seed_reaches_the_muxer` test below asserts this stays parseable.
+    let sps: &[u8] = &[0x67, 0x42, 0x00, 0x1E, 0xDA, 0x11, 0xC4];
+    let mut avcc = vec![1u8, 66, 0, 30, 0xFF, 0xE1];
+    avcc.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    avcc.extend_from_slice(sps);
+    avcc.push(0); // no PPS
+    let mut seq_payload = vec![0x17, 0x00, 0, 0, 0]; // keyframe|AVC, seq header, cts
+    seq_payload.extend_from_slice(&avcc);
+    let mut kf_payload = vec![0x17, 0x01, 0, 0, 0]; // keyframe|AVC, NALU, cts
+    kf_payload.extend_from_slice(&[0, 0, 0, 3, 0x65, 0xAB, 0xCD]); // one 3-byte IDR NALU
+
+    let mut f = b"FLV\x01\x05".to_vec();
+    f.extend_from_slice(&9u32.to_be_bytes()); // DataOffset
+    f.extend_from_slice(&0u32.to_be_bytes()); // PreviousTagSize0
+    f.extend_from_slice(&tag(18, b"\x02\x00\x0AonMetaData"));
+    f.extend_from_slice(&tag(9, &seq_payload));
+    f.extend_from_slice(&tag(8, &[0xAF, 0x00, 0x12]));
+    f.extend_from_slice(&tag(9, &kf_payload));
+    f
+}
+
 fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -528,11 +568,26 @@ fn run_all(seeds: &[(&str, Vec<u8>)], iters_per: usize, base_seed: u64) -> Vec<S
     failures
 }
 
+/// A seed its own parser rejects is worse than no seed (the fuzzer mutates it happily while
+/// every iteration dies at the first gate) — same rule `container::fuzzseed` enforces. The
+/// FLV seed must walk clean through to the muxer, SPS geometry parse included.
+#[test]
+fn flv_seed_reaches_the_muxer() {
+    assert!(
+        crate::flv::keyframe_mini_mp4(&mut Cursor::new(synthetic_flv())).is_some(),
+        "synthetic FLV seed no longer reaches flv::keyframe_mini_mp4's happy path"
+    );
+}
+
 /// The always-on, self-contained fuzz pass: synthetic seeds + random buffers, no external
 /// files. Runs in CI and on every `cargo test`.
 #[test]
 fn parsers_survive_mutation_of_synthetic_seeds() {
-    let mut seeds: Vec<(&str, Vec<u8>)> = vec![("mkv", synthetic_mkv()), ("mp4", synthetic_mp4())];
+    let mut seeds: Vec<(&str, Vec<u8>)> = vec![
+        ("mkv", synthetic_mkv()),
+        ("mp4", synthetic_mp4()),
+        ("flv", synthetic_flv()),
+    ];
     // One structurally VALID file per container format. Without these the only container input
     // this gate ever saw was a handful-of-bytes magic stub, so a mutation had essentially
     // nothing to corrupt — and on CI, which has no `test-corpus` to fall back on, that was the

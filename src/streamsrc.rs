@@ -147,6 +147,9 @@ pub(crate) unsafe fn stream_source_with_caps(
         //      it works regardless of moov position (faststart or moov-at-end);
         //   2. SMART TARGETED READ (Matroska/WebM): the EBML analog — read the Cues
         //      index, build a tiny one-cluster MKV for the keyframe nearest the mark;
+        //  2b. FLV (H.264 only): walk the head tags for the AVC config + first keyframe
+        //      and remux them into a mini-MP4 — MF has no FLV demuxer, so no later tier
+        //      can open the container at all (it has no index, so `at` can't be honoured);
         //   3. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
         //      demuxer seek the real index over a block-caching IStream that
         //      coalesces its reads (no per-format parser, any container MF decodes);
@@ -170,6 +173,12 @@ pub(crate) unsafe fn stream_source_with_caps(
                 },
                 at,
             )
+            .and_then(|buf| crate::video::frame_from_bytes(&buf))
+        })
+        .or_else(|| {
+            crate::flv::keyframe_mini_mp4(&mut IStreamReader {
+                stream: stream.clone(),
+            })
             .and_then(|buf| crate::video::frame_from_bytes(&buf))
         })
         .or_else(|| {

@@ -512,8 +512,8 @@ fn sample_location(
 // Mini-MP4 muxing
 // ---------------------------------------------------------------------------------------------
 
-/// `[size][type][payload]` box.
-fn bx(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+/// `[size][type][payload]` box. `pub(crate)` for `flv`'s hand-built `stsd`.
+pub(crate) fn bx(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(8 + payload.len());
     v.extend_from_slice(&((8 + payload.len()) as u32).to_be_bytes());
     v.extend_from_slice(typ);
@@ -521,8 +521,8 @@ fn bx(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     v
 }
 
-/// `[size][type][version][flags(3)][body]` full box.
-fn fbx(typ: &[u8; 4], version: u8, flags: u32, body: &[u8]) -> Vec<u8> {
+/// `[size][type][version][flags(3)][body]` full box. `pub(crate)` for `flv`.
+pub(crate) fn fbx(typ: &[u8; 4], version: u8, flags: u32, body: &[u8]) -> Vec<u8> {
     let mut p = Vec::with_capacity(4 + body.len());
     p.push(version);
     p.extend_from_slice(&flags.to_be_bytes()[1..4]);
@@ -564,8 +564,11 @@ fn default_ftyp() -> Vec<u8> {
 /// Assemble a one-track, one-sample MP4: copied `ftyp` + a synthesized `moov` describing a
 /// single video sample (codec config copied verbatim from the source `stsd`) + an `mdat` of
 /// just that keyframe's bytes. `dur` is the sample's duration in `timescale` units.
+///
+/// `pub(crate)`: this is a PURE muxer — a function of its arguments only, never of a source
+/// container — so `flv` reuses it with an `stsd` it synthesizes from an FLV's AVC config.
 #[allow(clippy::too_many_arguments)]
-fn build_mini_mp4(
+pub(crate) fn build_mini_mp4(
     src_ftyp: Option<&[u8]>,
     stsd: &[u8],
     desc_index: u32,
@@ -683,7 +686,8 @@ fn concat32(vals: &[u32]) -> Vec<u8> {
 }
 
 /// Read exactly `buf.len()` bytes at absolute `off`, looping over short reads.
-fn read_exact_at<R: Read + Seek>(r: &mut R, off: u64, buf: &mut [u8]) -> Option<()> {
+/// `pub(crate)` for `flv`'s tag walk.
+pub(crate) fn read_exact_at<R: Read + Seek>(r: &mut R, off: u64, buf: &mut [u8]) -> Option<()> {
     r.seek(SeekFrom::Start(off)).ok()?;
     let mut filled = 0;
     while filled < buf.len() {

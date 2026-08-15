@@ -37,6 +37,7 @@ pub mod decode;
 mod dib;
 pub mod doctor;
 mod factory;
+mod flv;
 pub mod foldermenu;
 pub mod formats;
 mod fsutil;

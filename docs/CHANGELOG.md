@@ -2,6 +2,59 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Added
+
+- **Flash video (`.flv`) files now get thumbnails, when the video inside is H.264.**
+  Windows has no way to open an FLV at all, so these have always shown a blank icon.
+  SageThumbs now reads the FLV itself, lifts out a single keyframe, and hands just that
+  frame to Windows in a form it does understand. Nothing is unpacked to disk and the rest
+  of the file is never touched. Most FLVs made after roughly 2008 are H.264 and will work.
+  Older ones using VP6 or Sorenson Spark still cannot be read yet. Raised by
+  @taylor-p-mason (#26).
+- **Android app packages now show their real icon.** `.apk` files, and the split-bundle
+  wrappers `.xapk`, `.apks` and `.apkm`, get the launcher icon the app actually declares
+  rather than a generic file icon. An APK is a zip, so simply picking an image out of it
+  would have grabbed an arbitrary graphic from somewhere inside the app; instead the app
+  manifest is read to find which icon it nominates, and the highest resolution version of
+  that icon is used. Apps that only ship an adaptive icon (one Android assembles from
+  separate layers at runtime) fall back to the best plain image in the package.
+  Requested by @SamRohod (#24).
+- **A setting for which frame a video thumbnail comes from.** Settings, Appearance, "Video
+  frame at (% in)". Films that open on a black distributor card or a slow fade used to
+  thumbnail as a black rectangle, which looks exactly like SageThumbs failing. The default
+  is 30% of the way in, unchanged from before, so nothing moves unless you move it.
+  Raised by @taylor-p-mason (#26).
+- **Bigger thumbnails are now allowed.** The maximum in Settings, General goes up to 2560
+  pixels instead of 1024. The old limit was historical rather than technical. The default
+  stays at 1024 deliberately: larger thumbnails cost memory, generation time and cache
+  space, so this is a ceiling you opt into rather than one everybody pays for. Note that it
+  controls the size SageThumbs generates, not how large Explorer chooses to draw a tile.
+  Raised by @taylor-p-mason (#26).
+
+### Fixed
+
+- **"Build thumbnails here" did nothing on a drive root.** Right-clicking a whole drive
+  (`E:\`) appeared to do nothing at all, while the same entry worked on any ordinary folder.
+  A drive root ends in a backslash, and that backslash was being swallowed by the quoting
+  rules Windows uses to pass the folder to the program, so what arrived was not a path that
+  could exist. Reported by @taylor-p-mason (#26).
+- **That same menu entry was labelled `(?)`.** The caption is written into the registry when
+  SageThumbs registers itself, and it was being looked up in a list that the shell extension
+  ships only a trimmed copy of, so the text came back empty. It now says what it should, in
+  every language, and corrects itself when you update. Reported by @taylor-p-mason (#26).
+- **The File Types columns can be resized again.** Extension and Category were fixed at a
+  width too narrow for their own labels in several languages, and widening the window did
+  not help because only the Description column grew. Reported by @taylor-p-mason (#26).
+- **Thumbnails are no longer randomly smaller than the files next to them.** Explorer centres
+  a thumbnail rather than enlarging it, so any file whose source picture was smaller than the
+  icon size drew as a visibly smaller tile. Photoshop files showed this worst, because the
+  preview Photoshop bakes into a PSD varies in size depending on the app and version that
+  wrote it, so two PSDs side by side could get different tile sizes for no visible reason.
+  Reported by @eddy593 (#25).
+
+
 ## 1.12.0
 
 ### Added
