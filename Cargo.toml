@@ -211,6 +211,23 @@ djvu-rs = { version = "0.27", default-features = false, features = ["std"] }
 # MSRV is higher because of sevenz-rust2 (see `rust-version` above).
 jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
 
+# --- FLV Flash codecs: VP6 + Sorenson Spark (issue #26) ---
+# Pure-Rust decoders for the two pre-H.264 FLV codecs, the exact crates Ruffle ships
+# (they ARE the Flash codecs). Not on crates.io, so pinned by rev to Ruffle's repos.
+# ALL FIVE ARE OPTIONAL behind the EXE-only `flash-video` feature (see [features]):
+# both decoder stacks PANIC on malformed input (measured: 17 unwrap/panic sites in
+# nihav's vp56.rs, 28 in h263's reader.rs), and this workspace builds panic=abort
+# where catch_unwind cannot help — so they must NEVER link into the shell-extension
+# DLL. They are referenced ONLY from `src/bin/` (the `st2k flv-frame` child verb);
+# the core rlib spawns st2k.exe out of process instead (src/flv.rs), mirroring how
+# webview2-com is kept EXE-only via `html-preview`. Acceptance check:
+# `cargo tree -p sagethumbs2k-dll` must never list nihav or h263.
+nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
+nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
+nihav_duck = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
+h263-rs = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", optional = true }
+h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", optional = true }
+
 [features]
 
 # HDR screenshots (Windows Graphics Capture + D3D11 + DXGI). APP-ONLY on purpose:
@@ -233,7 +250,11 @@ hdr-capture = [
 ]
 
 # (`.cbr`/RAR is now always-on via the pure-Rust `rars` crate — no feature gate.)
-default = []
+# `flash-video` is DEFAULT-ON so a plain dev `cargo build`/`cargo test` exercises the FLV
+# VP6/Sorenson path; the DLL stays clean because crates/dll depends on this package with
+# `default-features = false` (its effective feature set was empty before this and is
+# unchanged). See the `flash-video` entry below for why the DLL must never enable it.
+default = ["flash-video"]
 # Quick preview's WebView2 HTML host (local .html render + optional .url live preview).
 # EXE-ONLY, off by default: build-release.ps1 enables it for the `-p sagethumbs2k` (EXE)
 # build; the separately-built slim DLL never requests it, so `webview2-com` never links
@@ -242,6 +263,22 @@ default = []
 # heavy is bundled — just the ~150 KB WebView2Loader.dll alongside the EXE. Runtime is
 # ALSO gated behind default-OFF Settings toggles (preview_html / preview_url_live).
 html-preview = ["dep:webview2-com"]
+# FLV VP6 / Sorenson Spark decode for the hidden `st2k flv-frame` child verb. EXE-ONLY,
+# same containment as `html-preview`: the decoder crates are referenced ONLY from
+# `src/bin/flvdec/` (the st2k console binary), and the DLL package opts out via
+# `default-features = false` on its core dependency, so the panicky decoder crates never
+# link into the shell-extension cdylib (they abort the whole host process on malformed
+# input under panic=abort — inside Explorer that would be fatal; acceptance check:
+# `cargo tree -p sagethumbs2k-dll` lists no nihav/h263). The core rlib needs no cfg: it
+# just spawns the sibling st2k.exe, and a build without this feature answers that spawn
+# with a clean non-zero exit (no thumbnail, exactly the pre-#26 behaviour).
+flash-video = [
+    "dep:nihav_core",
+    "dep:nihav_codec_support",
+    "dep:nihav_duck",
+    "dep:h263-rs",
+    "dep:h263-rs-yuv",
+]
 # Lossy WebP encode via libwebp (C). Off by default → pure-Rust build; the release
 # installer enables it. Without it, lossy-WebP convert falls back to lossless WebP.
 webp-lossy = ["dep:webp"]
@@ -289,6 +326,7 @@ features = [
     "Win32_System_SystemInformation", # GetLocalTime for screenshot filenames
     "Win32_System_RemoteDesktop", # WTSRegisterSessionNotification: re-arm the screenshot hotkeys on session lock/unlock + RDP reconnect (they get silently dropped otherwise)
     "Win32_System_Threading", # CreateMutexW: TOCTOU-safe single-instance guards (FindWindow alone races at logon/double-click)
+    "Win32_System_JobObjects", # the `st2k flv-frame` child caps its OWN memory before reading stdin: a subprocess contains a crash, not an 8 GB allocation from a crafted Sorenson header
     "Win32_Security", # GetTokenInformation(TokenElevation): the install-time heal must NOT spawn the hotkey daemon elevated (UIPI would deafen it to Settings)
     "Win32_System_Time", # SystemTimeToFileTime: EXIF DateTaken (YYYY:MM:DD…) -> FILETIME for the property handler
     "Win32_System_WindowsProgramming", # MulDiv for the app dialogs' DPI scaling

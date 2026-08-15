@@ -145,7 +145,11 @@ Write-Host "SageThumbs 2K release pipeline - version $ver ($Architecture)" -Fore
 # fresh clone; the machine-local .cargo/config.toml carries the same flag for dev
 # builds. (RUSTFLAGS overrides config [target] rustflags — keep them identical.)
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
-$exeBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture')
+# `flash-video` links the FLV VP6/Sorenson decoders (git-pinned nihav/h263-rs) into the
+# EXEs ONLY — st2k.exe's hidden `flv-frame` verb decodes them out of process for the DLL.
+# It must NEVER be added to the DLL build below: those crates panic on malformed input,
+# which under panic=abort would kill Explorer (verify with `cargo tree -p sagethumbs2k-dll`).
+$exeBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture,flash-video')
 $dllBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
 # No -Features: this crate declares none (see crates/dlghook/Cargo.toml).
 $dlgHookBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dlghook)

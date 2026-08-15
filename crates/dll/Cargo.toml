@@ -20,7 +20,14 @@ crate-type = ["cdylib"]
 # The core rlib (package `sagethumbs2k`, lib `sagethumbs2k_core`). Aliased to
 # `st2k_core` so the dependency name doesn't collide with THIS crate's lib name
 # (`sagethumbs2k`), which cargo would reject.
-st2k_core = { package = "sagethumbs2k", path = "../.." }
+#
+# `default-features = false` is LOAD-BEARING: the core's default set carries
+# `flash-video` (the FLV VP6/Sorenson decoder crates for st2k.exe's hidden
+# `flv-frame` verb), and those decoders PANIC on malformed input — under
+# panic=abort inside Explorer that would kill the user's shell. The DLL gets its
+# FLV Flash frames by SPAWNING st2k.exe instead (src/flv.rs::flash_frame).
+# Verify with `cargo tree -p sagethumbs2k-dll`: it must never list nihav/h263.
+st2k_core = { package = "sagethumbs2k", path = "../..", default-features = false }
 # Only for the COM entry-point signatures (GUID / HRESULT). No Win32 features needed —
 # DllMain takes the HMODULE as a raw isize so this stays a featherweight dep.
 windows-core = "0.62"

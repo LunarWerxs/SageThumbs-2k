@@ -105,6 +105,7 @@ ff
 fits
 fl32
 flac
+flv
 fts
 gco
 gcode

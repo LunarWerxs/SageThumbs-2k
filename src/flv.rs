@@ -10,14 +10,20 @@
 //! [`crate::mp4::build_mini_mp4`] — the result decodes through
 //! [`crate::video::frame_from_bytes`] like any other mini-MP4.
 //!
-//! Codec ids other than 7 (AVC) — Sorenson Spark (2), VP6 (4/5) — have no Windows decoder
-//! and no viable pure-Rust one, so they return `None` cleanly (default icon, same as today).
+//! Codec ids 2 (Sorenson Spark) and 4 (VP6) have no Windows decoder, but pure-Rust ones
+//! exist (the Ruffle Flash codecs). Those decoders PANIC on malformed input and this crate
+//! builds `panic = "abort"`, so they must never run inside Explorer: [`flash_frame`] spawns
+//! the sibling `st2k.exe` with the FLV bytes on stdin and reads a PNG back — the crash, if
+//! any, dies in a throwaway child (`src/bin/flvdec`). Other ids still return `None` cleanly.
 //!
 //! This parses UNTRUSTED bytes in-process (`panic = "abort"` inside explorer.exe), hence:
 //! no indexing, no unwraps, checked arithmetic on every file-supplied length, a strictly
 //! forward tag walk with tag-count and byte caps, and capped allocations throughout.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::windows::process::CommandExt;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use crate::mp4::{build_mini_mp4, bx, fbx, read_exact_at};
 
@@ -87,7 +93,8 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
             let frame_type = vh[0] >> 4;
             let codec_id = vh[0] & 0x0F;
             if codec_id != 7 {
-                // Sorenson Spark / VP6 / anything else: no decoder available — stop cleanly.
+                // Sorenson Spark / VP6 / anything else: not remuxable into an MP4 — stop
+                // cleanly. Codec ids 2/4 get their frame via [`flash_frame`] instead.
                 return None;
             }
             let packet_type = vh[1];
@@ -160,6 +167,229 @@ fn build_stsd(avc_config: &[u8], width: u16, height: u16) -> Vec<u8> {
     let mut body = 1u32.to_be_bytes().to_vec(); // entry_count
     body.extend_from_slice(&avc1);
     fbx(b"stsd", 0, 0, &body)
+}
+
+// ---------------------------------------------------------------------------------------------
+// VP6 / Sorenson Spark (codec ids 4 / 2): decoded OUT OF PROCESS by the sibling st2k.exe
+// ---------------------------------------------------------------------------------------------
+
+/// Cap on the FLV bytes handed to the `st2k flv-frame` child (and on what that child will
+/// accept from stdin — the two ends share this constant). The config-free Flash codecs put
+/// their first keyframe at the head of the file, so a prefix this large is generous.
+pub const FLASH_INPUT_CAP: usize = 32 * 1024 * 1024;
+/// Largest frame edge the child will decode (and the parent will accept back). FLV predates
+/// HD; VP6's coded size is 8-bit macroblock counts (≤4080 px) and Sorenson's custom format
+/// is 16-bit, so anything past this is a crafted file, not a video.
+pub const FLASH_MAX_DIM: usize = 4096;
+/// CPU budget for one child decode (one keyframe of a ≤4096px pre-2010 codec is far under a
+/// second; this is pure headroom), plus the elapsed backstop for a child that hangs without
+/// burning CPU on a loaded machine — the same split the ImageMagick watchdog uses.
+const FLASH_CPU_BUDGET: Duration = Duration::from_secs(10);
+const FLASH_WALL_CEILING: Duration = Duration::from_secs(30);
+/// Cap on the PNG read back from the child. A 4096×4096 RGBA frame is ~64 MiB raw, and PNG
+/// only shrinks that; more means a broken or hostile child.
+const FLASH_PNG_CAP: usize = 64 * 1024 * 1024;
+
+/// The two Flash-era FLV codecs the `st2k flv-frame` child can decode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlashCodec {
+    /// Codec id 2 — Sorenson Spark, the Flash flavour of H.263.
+    Sorenson,
+    /// Codec id 4 — On2 VP6.
+    Vp6,
+}
+
+/// Outcome of scanning an in-memory FLV for its first Flash-codec keyframe. This is the
+/// ONE walk both sides of the process boundary use: the `st2k flv-frame` child extracts the
+/// keyframe payload with it, and the tests pin its behaviour, so the parent's spawn
+/// decision and the child's parse can't drift apart.
+pub enum FlashScan<'a> {
+    /// A codec 2/4 keyframe: the payload with the 1-byte FrameType/CodecID header stripped
+    /// (for VP6 the leading adjustment byte is still present — the decoder consumes it).
+    Keyframe(FlashCodec, &'a [u8]),
+    /// The first video tag uses some other codec (7 = H.264, which the MF remux path owns).
+    OtherCodec(u8),
+    /// Not an FLV, truncated, or no usable video keyframe within the caps.
+    NoVideo,
+}
+
+/// Walk an in-memory FLV for the first VP6/Sorenson KEYFRAME tag. Same tag layout and caps
+/// as [`keyframe_mini_mp4`]'s walk, over a slice because the child holds the whole (capped)
+/// input in memory. The first video tag decides the codec — a file that switches codecs
+/// mid-stream is not a real FLV.
+pub fn scan_flash_keyframe(flv: &[u8]) -> FlashScan<'_> {
+    let Some(codec) = slice_walk(flv, &mut |frame_type, codec_id, payload| {
+        let codec = match codec_id {
+            2 => FlashCodec::Sorenson,
+            4 => FlashCodec::Vp6,
+            other => return SliceWalk::Stop(FlashScan::OtherCodec(other)),
+        };
+        if frame_type == 1 && !payload.is_empty() {
+            SliceWalk::Stop(FlashScan::Keyframe(codec, payload))
+        } else {
+            SliceWalk::Continue // an inter frame before the first keyframe — keep looking
+        }
+    }) else {
+        return FlashScan::NoVideo;
+    };
+    codec
+}
+
+/// The codec id of the first video tag (2 = Sorenson, 4 = VP6, 7 = H.264, …), or `None`
+/// for a non-FLV / truncated / video-less input. Powers [`crate::vcodec::identify`]'s FLV
+/// arm and [`flash_frame`]'s cheap pre-spawn gate.
+pub(crate) fn video_codec_id<R: Read + Seek>(r: &mut R) -> Option<u8> {
+    // A bounded head read is cheaper and simpler than a second Read+Seek walk: the first
+    // video tag sits within the first few tags of any real FLV (metadata + audio headers).
+    const PROBE_CAP: usize = 4 * 1024 * 1024;
+    let total = r.seek(SeekFrom::End(0)).ok()?;
+    r.seek(SeekFrom::Start(0)).ok()?;
+    let take = total.min(PROBE_CAP as u64);
+    let mut head = Vec::new();
+    r.take(take).read_to_end(&mut head).ok()?;
+    slice_walk(&head, &mut |_frame_type, codec_id, _payload| {
+        SliceWalk::Stop(codec_id)
+    })
+}
+
+/// What a [`slice_walk`] visitor wants next.
+enum SliceWalk<T> {
+    Stop(T),
+    Continue,
+}
+
+/// Shared forward-only FLV tag walk over a slice: calls `visit` for every VIDEO tag with
+/// `(frame_type, codec_id, payload-after-the-header-byte)` until it returns `Stop` or the
+/// caps run out. Checked arithmetic throughout — this runs in-process on untrusted bytes.
+fn slice_walk<'a, T>(
+    flv: &'a [u8],
+    visit: &mut dyn FnMut(u8, u8, &'a [u8]) -> SliceWalk<T>,
+) -> Option<T> {
+    if flv.len() < 24 || &flv[0..3] != b"FLV" {
+        return None;
+    }
+    let data_offset = u32::from_be_bytes([flv[5], flv[6], flv[7], flv[8]]) as u64;
+    if !(9..=HEADER_MAX).contains(&data_offset) {
+        return None;
+    }
+    let total = flv.len() as u64;
+    let mut pos = data_offset.checked_add(4)?; // skip PreviousTagSize0
+    let mut tags = 0u32;
+    while pos.checked_add(11)? <= total {
+        tags = tags.checked_add(1)?;
+        if tags > MAX_TAGS {
+            return None;
+        }
+        let th = flv.get(pos as usize..pos as usize + 11)?;
+        let tag_type = th[0] & 0x1F;
+        let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
+        let payload_pos = pos.checked_add(11)?;
+        if payload_pos.checked_add(data_size)? > total {
+            return None; // truncated mid-tag
+        }
+        if tag_type == 9 && data_size >= 2 {
+            let payload = flv.get(payload_pos as usize..(payload_pos + data_size) as usize)?;
+            let (frame_type, codec_id) = (payload[0] >> 4, payload[0] & 0x0F);
+            if let SliceWalk::Stop(out) = visit(frame_type, codec_id, &payload[1..]) {
+                return Some(out);
+            }
+        }
+        pos = payload_pos.checked_add(data_size)?.checked_add(4)?;
+    }
+    None
+}
+
+/// Decode the first VP6/Sorenson keyframe of an FLV to a frame — OUT OF PROCESS.
+///
+/// The pure-Rust decoders for these codecs (nihav / h263-rs, the Ruffle Flash codecs) panic
+/// on malformed input, and under `panic = "abort"` a panic here would kill the user's
+/// Explorer, so they are linked ONLY into `st2k.exe` (the EXE-only `flash-video` feature).
+/// This spawns that sibling with the FLV bytes on stdin — no temp file ever holds a frame
+/// of the user's video — and reads the PNG back, on the same CPU+wall watchdog and the same
+/// cross-process concurrency gate the ImageMagick tier uses (a folder of 500 FLVs must not
+/// spawn 500 children). Any failure — no sibling exe (DLL-only or feature-less build),
+/// hostile input, a child crash/abort, over-budget — is a clean `None`, exactly the
+/// pre-support behaviour.
+pub(crate) fn flash_frame<R: Read + Seek>(r: &mut R) -> Option<image::DynamicImage> {
+    if !matches!(video_codec_id(r), Some(2) | Some(4)) {
+        return None; // not an FLV, or not a codec we self-decode — nothing to spawn for
+    }
+    let total = r.seek(SeekFrom::End(0)).ok()?;
+    r.seek(SeekFrom::Start(0)).ok()?;
+    let mut flv = Vec::new();
+    r.take(total.min(FLASH_INPUT_CAP as u64))
+        .read_to_end(&mut flv)
+        .ok()?;
+    let png = flash_child_png(&flv)?;
+    // Bounded parse of OUR OWN child's output: the PNG is size-capped above and the child
+    // caps its frame at FLASH_MAX_DIM², so this in-process decode is small by construction;
+    // the dimension re-check makes that a verified property, not an assumption.
+    let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?;
+    if img.width() == 0
+        || img.height() == 0
+        || img.width() as usize > FLASH_MAX_DIM
+        || img.height() as usize > FLASH_MAX_DIM
+    {
+        crate::safety::log_debug("flv flash decode: child returned out-of-bounds dimensions");
+        return None;
+    }
+    Some(img)
+}
+
+/// Run `st2k flv-frame` with `flv` on stdin, returning its PNG stdout. Mirrors the
+/// ImageMagick child harness in `decode/magick.rs`: stdin fed from its own thread, stdout
+/// read on another, a CPU-budget watchdog with a wall-clock backstop, an unconditional
+/// kill before the joins so a wedged child can't hang the (shell-hosted) caller, and the
+/// shared cross-process gate bounding concurrent children.
+fn flash_child_png(flv: &[u8]) -> Option<Vec<u8>> {
+    let exe = crate::sibling_of_dll(crate::CLI_EXE)?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("flv-frame")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null()) // the child logs its own failures via the panic hook/log
+        .creation_flags(crate::CREATE_NO_WINDOW);
+    // Bound concurrent decode children (the ImageMagick gate is cross-process and named, so
+    // st2k fan-outs and in-process decodes share the one cap).
+    let _permit = crate::decode::magick_gate::acquire();
+    let mut child = cmd.spawn().ok()?;
+
+    // Feed stdin on its own thread so a full stdout pipe can't deadlock us.
+    let mut stdin = child.stdin.take()?;
+    let input = flv.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+        // drop(stdin) closes the pipe so the child sees EOF
+    });
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::take(&mut stdout, (FLASH_PNG_CAP + 1) as u64).read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+
+    let png =
+        crate::decode::await_child_output(&mut child, &rx, FLASH_CPU_BUDGET, FLASH_WALL_CEILING);
+    // Kill unconditionally (no-op if exited): a child that closed stdout but stopped
+    // draining stdin would otherwise block writer.join() forever.
+    let _ = child.kill();
+    let _ = writer.join();
+    let _ = reader.join();
+    let status = child.wait().ok();
+    match png {
+        Ok(png) if !png.is_empty() && png.len() <= FLASH_PNG_CAP => Some(png),
+        Ok(_) => {
+            crate::safety::log_debug(&format!(
+                "flv flash decode: child produced no/oversized output (status {status:?})"
+            ));
+            None
+        }
+        Err(why) => {
+            crate::safety::log_debug(&format!("flv flash decode: {why} (status {status:?})"));
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -618,11 +848,12 @@ mod tests {
         assert_eq!(keyframe_mini_mp4(&mut Cursor::new(&flv)), None);
     }
 
-    /// The corpus `sample.flv` is Sorenson Spark (codec id 2) — the correct answer for it
-    /// is a clean decline, exactly what the pre-FLV-support behaviour was. Skips when the
-    /// dev corpus isn't present (CI).
+    /// The corpus `sample.flv` is Sorenson Spark (codec id 2) — the MP4-remux path must
+    /// still decline it cleanly (it now renders via [`flash_frame`]'s out-of-process tier
+    /// instead), and the probe must name its codec. Skips when the dev corpus isn't
+    /// present (CI).
     #[test]
-    fn corpus_sorenson_flv_declines_cleanly() {
+    fn corpus_sorenson_flv_declines_the_mp4_remux_path() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("test-corpus")
@@ -632,6 +863,92 @@ mod tests {
             return;
         };
         assert_eq!(keyframe_mini_mp4(&mut Cursor::new(&bytes)), None);
+        assert_eq!(video_codec_id(&mut Cursor::new(&bytes)), Some(2));
+        assert!(matches!(
+            scan_flash_keyframe(&bytes),
+            FlashScan::Keyframe(FlashCodec::Sorenson, _)
+        ));
+    }
+
+    // --- The Flash-codec (VP6/Sorenson) probe + scan -----------------------------------------
+
+    #[test]
+    fn flash_scan_finds_the_first_sorenson_keyframe() {
+        let body = [0x08u8; 32];
+        let flv = flv_file(&[
+            tag(18, 0, b"\x02\x00\x0AonMetaData"),
+            tag(8, 0, &[0xAF, 0x00, 0x12]), // audio ahead of the video
+            tag(9, 0, &{
+                let mut p = vec![(2 << 4) | 2]; // inter frame first — must be skipped
+                p.extend_from_slice(&[0xEE; 8]);
+                p
+            }),
+            tag(9, 40, &{
+                let mut p = vec![(1 << 4) | 2]; // the keyframe
+                p.extend_from_slice(&body);
+                p
+            }),
+        ]);
+        match scan_flash_keyframe(&flv) {
+            FlashScan::Keyframe(FlashCodec::Sorenson, payload) => assert_eq!(payload, body),
+            _ => panic!("expected a Sorenson keyframe"),
+        }
+        assert_eq!(video_codec_id(&mut Cursor::new(&flv)), Some(2));
+    }
+
+    #[test]
+    fn flash_scan_reports_vp6_and_defers_h264() {
+        let vp6 = flv_file(&[tag(9, 0, &{
+            let mut p = vec![(1 << 4) | 4, 0x21]; // adjustment byte then frame data
+            p.extend_from_slice(&[0x55; 16]);
+            p
+        })]);
+        match scan_flash_keyframe(&vp6) {
+            FlashScan::Keyframe(FlashCodec::Vp6, payload) => {
+                assert_eq!(payload[0], 0x21); // the adjustment byte stays for the decoder
+                assert_eq!(payload.len(), 17);
+            }
+            _ => panic!("expected a VP6 keyframe"),
+        }
+        let h264 = h264_flv(4, 4);
+        assert!(matches!(
+            scan_flash_keyframe(&h264),
+            FlashScan::OtherCodec(7)
+        ));
+        assert_eq!(video_codec_id(&mut Cursor::new(&h264)), Some(7));
+    }
+
+    #[test]
+    fn flash_scan_declines_junk_cleanly() {
+        assert!(matches!(scan_flash_keyframe(&[]), FlashScan::NoVideo));
+        assert!(matches!(
+            scan_flash_keyframe(b"not an flv at all, sorry"),
+            FlashScan::NoVideo
+        ));
+        // Audio-only: no video tag ever arrives.
+        let audio = flv_file(&[tag(8, 0, &[0xAF, 0x00, 0x12, 0x34])]);
+        assert!(matches!(scan_flash_keyframe(&audio), FlashScan::NoVideo));
+        // Every truncation must scan without panicking.
+        let whole = flv_file(&[tag(9, 0, &[(1 << 4) | 2, 0xAA, 0xBB])]);
+        for n in 0..whole.len() {
+            let _ = scan_flash_keyframe(&whole[..n]);
+            let _ = video_codec_id(&mut Cursor::new(&whole[..n]));
+        }
+    }
+
+    /// With no `st2k.exe` next to the test binary, the out-of-process tier must decline
+    /// cleanly (that is also the DLL-only / feature-less install behaviour). H.264 input
+    /// must not even attempt a spawn.
+    #[test]
+    fn flash_frame_declines_cleanly_without_the_helper() {
+        let sorenson = flv_file(&[tag(9, 0, &{
+            let mut p = vec![(1 << 4) | 2];
+            p.extend_from_slice(&[0x08; 16]);
+            p
+        })]);
+        assert!(flash_frame(&mut Cursor::new(&sorenson)).is_none());
+        assert!(flash_frame(&mut Cursor::new(&h264_flv(4, 4))).is_none());
+        assert!(flash_frame(&mut Cursor::new(&b"junk"[..])).is_none());
     }
 
     /// End-to-end through Media Foundation: take the REAL avcC + keyframe out of the corpus

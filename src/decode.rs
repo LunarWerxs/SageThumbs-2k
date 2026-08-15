@@ -167,7 +167,7 @@ use limits::{MAX_ALLOC, MAX_DIM, MAX_PIXELS};
 /// decodes AND every `st2k.exe` the DLL spawns (they share the one kernel object by
 /// name). The fast tiers (`image`/WIC/SVG) never touch this, so pure-Rust batches
 /// still parallelize at full width.
-mod magick_gate {
+pub(crate) mod magick_gate {
     use std::ffi::c_void;
     use std::sync::OnceLock;
 
@@ -216,7 +216,7 @@ mod magick_gate {
     }
 
     /// Held while a magick child runs; releases one slot on drop.
-    pub(super) struct Permit(*mut c_void);
+    pub(crate) struct Permit(*mut c_void);
     impl Drop for Permit {
         fn drop(&mut self) {
             unsafe { ReleaseSemaphore(self.0, 1, std::ptr::null_mut()) };
@@ -230,7 +230,7 @@ mod magick_gate {
     /// released on drop; a timed-out wait acquired nothing, so there is nothing to
     /// release. This finite wait is what prevents a leaked permit (see [`GATE_WAIT_MS`])
     /// from turning into an indefinite host-process hang.
-    pub(super) fn acquire() -> Option<Permit> {
+    pub(crate) fn acquire() -> Option<Permit> {
         let h = handle()?;
         (unsafe { WaitForSingleObject(h, GATE_WAIT_MS) } == WAIT_OBJECT_0).then(|| Permit(h))
     }
@@ -460,6 +460,10 @@ pub fn jp2_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 mod exrscale;
 mod magick;
 pub(crate) use magick::looks_like_metafile;
+// The subprocess watchdog (CPU budget + wall backstop), shared with the OTHER decode child
+// this crate spawns: `flv::flash_child_png`'s `st2k flv-frame` run. One implementation so
+// the two harnesses can't drift on the "child already exited / child merely starved" cases.
+pub(crate) use magick::await_magick_output as await_child_output;
 #[cfg(test)]
 use magick::metafile_min_density;
 use magick::{decode_psd_composite, decode_via_magick, decode_via_magick_capped};
@@ -692,6 +696,11 @@ fn decode_preview_with_raw_order(
             // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
             .or_else(|| crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes)))
             .and_then(|mini| crate::video::frame_from_bytes(&mini))
+            // FLV, VP6/Sorenson (issue #26): NO Windows decoder exists for these, so the
+            // frame is decoded out of process by the sibling st2k.exe (see `flv::flash_frame`
+            // for why the pure-Rust Flash decoders must never run in THIS process). Self-gated
+            // on the FLV magic + codec id, so every other container skips it for free.
+            .or_else(|| crate::flv::flash_frame(&mut std::io::Cursor::new(bytes)))
             // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
             // seek its own index to the true ~30 % frame (no head-prefix depth cap).
             .or_else(|| crate::video::frame_from_bytes_repr(bytes));

@@ -7,8 +7,8 @@
 //! indistinguishable from a bug in us.
 //!
 //! Identification is pure Rust over the container's own metadata — the Matroska `CodecID`
-//! (`crate::mkv`) or the ISO-BMFF `stsd` sample-entry fourcc (`crate::mp4`) — no MF calls,
-//! no decode attempt. The presence probe then asks MF's own registry (`MFTEnumEx`) whether
+//! (`crate::mkv`), the ISO-BMFF `stsd` sample-entry fourcc (`crate::mp4`), or the FLV
+//! VideoTagHeader codec id (`crate::flv`) — no MF calls, no decode attempt. The presence probe then asks MF's own registry (`MFTEnumEx`) whether
 //! ANY decoder claims the codec's subtype, which answers "is it installed" without touching
 //! the file. Both are `doctor`-only paths, never on the thumbnail hot path.
 
@@ -41,6 +41,11 @@ pub struct CodecInfo {
     /// decoder ships with Windows (its absence then means an "N" edition, which the Media
     /// Foundation presence check reports separately).
     pub install_hint: Option<&'static str>,
+    /// SageThumbs 2K decodes this codec ITSELF (out of process via `st2k flv-frame` —
+    /// FLV's VP6 and Sorenson Spark). No Windows decoder exists, none can be installed,
+    /// and neither fact is a problem: the thumbnail works anyway, and `doctor` must say
+    /// so instead of prescribing a Store extension that doesn't exist.
+    pub self_decoded: bool,
 }
 
 const HINT_HEVC: &str = "install 'HEVC Video Extensions' from the Microsoft Store (Microsoft \
@@ -50,8 +55,8 @@ const HINT_VP9: &str = "install the free 'VP9 Video Extensions' from the Microso
 const HINT_MPEG2: &str = "install the free 'MPEG-2 Video Extension' from the Microsoft Store";
 const HINT_THEORA: &str = "install the free 'Web Media Extensions' from the Microsoft Store";
 
-/// Identify the video codec of `r` — a Matroska/WebM or ISO-BMFF (MP4/MOV) source. Each
-/// container parser self-gates on its magic, so trying both in turn is cheap. `None`:
+/// Identify the video codec of `r` — a Matroska/WebM, ISO-BMFF (MP4/MOV), or FLV source.
+/// Each container parser self-gates on its magic, so trying them in turn is cheap. `None`:
 /// some other container (AVI/WMV/…) or no video track found.
 pub fn identify<R: Read + Seek>(r: &mut R) -> Option<CodecInfo> {
     if let Some(id) = crate::mkv::video_codec_id(r) {
@@ -59,6 +64,9 @@ pub fn identify<R: Read + Seek>(r: &mut R) -> Option<CodecInfo> {
     }
     if let Some(fourcc) = crate::mp4::video_codec_fourcc(r) {
         return Some(from_mp4_fourcc(fourcc));
+    }
+    if let Some(id) = crate::flv::video_codec_id(r) {
+        return Some(from_flv_codec_id(id));
     }
     None
 }
@@ -99,6 +107,7 @@ fn from_mkv_codec_id(id: &str) -> CodecInfo {
                 subtype: None,
                 known: false,
                 install_hint: None,
+                self_decoded: false,
             }
         }
     };
@@ -108,6 +117,7 @@ fn from_mkv_codec_id(id: &str) -> CodecInfo {
         subtype,
         known: true,
         install_hint: hint,
+        self_decoded: false,
     }
 }
 
@@ -134,6 +144,7 @@ fn from_mp4_fourcc(fourcc: [u8; 4]) -> CodecInfo {
                 subtype: None,
                 known: false,
                 install_hint: None,
+                self_decoded: false,
             }
         }
     };
@@ -143,6 +154,44 @@ fn from_mp4_fourcc(fourcc: [u8; 4]) -> CodecInfo {
         subtype,
         known: true,
         install_hint: hint,
+        self_decoded: false,
+    }
+}
+
+/// Map an FLV VideoTagHeader codec id to a display name (+ MF subtype for H.264).
+///
+/// VP6 (4) and Sorenson Spark (2) carry NO install hint and NO subtype on purpose: Windows
+/// has never shipped or sold a decoder for either, and since issue #26 SageThumbs 2K
+/// decodes them itself (out of process, `st2k flv-frame`), so `self_decoded` makes
+/// `doctor` report a working thumbnail instead of prescribing a Store extension that does
+/// not exist. VP6-with-alpha (5) and the Screen Video codecs (3/6) are recognized but not
+/// decoded (yet) — known, hint-less, honest.
+fn from_flv_codec_id(id: u8) -> CodecInfo {
+    let (name, subtype, self_decoded): (&str, Option<GUID>, bool) = match id {
+        2 => ("Sorenson Spark (H.263)", None, true),
+        3 => ("Screen Video", None, false),
+        4 => ("On2 VP6", None, true),
+        5 => ("On2 VP6 with alpha", None, false),
+        6 => ("Screen Video 2", None, false),
+        7 => ("H.264 (AVC)", Some(MFVideoFormat_H264), false),
+        other => {
+            return CodecInfo {
+                raw: format!("FLV codec id {other}"),
+                name: format!("FLV codec id {other}"),
+                subtype: None,
+                known: false,
+                install_hint: None,
+                self_decoded: false,
+            }
+        }
+    };
+    CodecInfo {
+        raw: format!("FLV codec id {id}"),
+        name: name.to_string(),
+        subtype,
+        known: true,
+        install_hint: None,
+        self_decoded,
     }
 }
 
@@ -206,6 +255,22 @@ mod tests {
         assert_eq!(from_mp4_fourcc(*b"hvc1").name, "HEVC (H.265)");
         assert_eq!(from_mp4_fourcc(*b"av01").name, "AV1");
         assert_eq!(from_mp4_fourcc(*b"zzzz").name, "zzzz");
+    }
+
+    /// The Flash codecs we decode OURSELVES must never carry an install hint — there is
+    /// nothing to install, and `self_decoded` is what keeps doctor from inventing one.
+    #[test]
+    fn flv_codec_ids_map() {
+        let sorenson = from_flv_codec_id(2);
+        assert!(sorenson.self_decoded && sorenson.install_hint.is_none());
+        assert_eq!(sorenson.name, "Sorenson Spark (H.263)");
+        let vp6 = from_flv_codec_id(4);
+        assert!(vp6.self_decoded && vp6.subtype.is_none());
+        let h264 = from_flv_codec_id(7);
+        assert!(!h264.self_decoded && h264.subtype.is_some());
+        let vp6a = from_flv_codec_id(5);
+        assert!(vp6a.known && !vp6a.self_decoded && vp6a.install_hint.is_none());
+        assert!(!from_flv_codec_id(15).known);
     }
 
     /// The probe must ANSWER on any machine with MF — H.264's decoder ships inbox on

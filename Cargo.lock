@@ -318,7 +318,7 @@ dependencies = [
  "djvu-pixmap",
  "djvu-zp",
  "thiserror",
- "wide",
+ "wide 0.7.33",
 ]
 
 [[package]]
@@ -353,7 +353,7 @@ dependencies = [
  "djvu-zp",
  "png 0.17.16",
  "thiserror",
- "wide",
+ "wide 0.7.33",
  "zune-jpeg",
 ]
 
@@ -503,6 +503,26 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "h263-rs"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/h263-rs?rev=e4e8b8303a33900d0988eaa8739bef43970f867d#e4e8b8303a33900d0988eaa8739bef43970f867d"
+dependencies = [
+ "bitflags 2.13.1",
+ "lazy_static",
+ "num-traits",
+ "thiserror",
+]
+
+[[package]]
+name = "h263-rs-yuv"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/h263-rs?rev=e4e8b8303a33900d0988eaa8739bef43970f867d#e4e8b8303a33900d0988eaa8739bef43970f867d"
+dependencies = [
+ "bytemuck",
+ "wide 0.8.3",
+]
 
 [[package]]
 name = "half"
@@ -833,6 +853,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "lebe"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -939,6 +965,28 @@ name = "mutate_once"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
+
+[[package]]
+name = "nihav_codec_support"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/nihav-vp6?rev=12d0bdf10a85641dc2de3d6900c747894431ed77#12d0bdf10a85641dc2de3d6900c747894431ed77"
+dependencies = [
+ "nihav_core",
+]
+
+[[package]]
+name = "nihav_core"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/nihav-vp6?rev=12d0bdf10a85641dc2de3d6900c747894431ed77#12d0bdf10a85641dc2de3d6900c747894431ed77"
+
+[[package]]
+name = "nihav_duck"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/nihav-vp6?rev=12d0bdf10a85641dc2de3d6900c747894431ed77#12d0bdf10a85641dc2de3d6900c747894431ed77"
+dependencies = [
+ "nihav_codec_support",
+ "nihav_core",
+]
 
 [[package]]
 name = "num-complex"
@@ -1221,6 +1269,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "safe_arch"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "629516c85c29fe757770fa03f2074cf1eac43d44c02a3de9fc2ef7b0e207dfdd"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "sagethumbs2k"
 version = "1.12.0"
 dependencies = [
@@ -1231,12 +1288,17 @@ dependencies = [
  "encoding_rs",
  "exr",
  "flate2",
+ "h263-rs",
+ "h263-rs-yuv",
  "image",
  "img-parts",
  "jxl-oxide",
  "kamadak-exif",
  "lofty",
  "moxcms 0.9.0",
+ "nihav_codec_support",
+ "nihav_core",
+ "nihav_duck",
  "percent-encoding",
  "pulldown-cmark",
  "rars",
@@ -1710,7 +1772,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
 dependencies = [
  "bytemuck",
- "safe_arch",
+ "safe_arch 0.7.4",
+]
+
+[[package]]
+name = "wide"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13ca908d26e4786149c48efcf6c0ea09ab0e06d1fe3c17dc1b4b0f1ca4a7e788"
+dependencies = [
+ "bytemuck",
+ "safe_arch 0.9.3",
 ]
 
 [[package]]

@@ -6,13 +6,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
-- **Flash video (`.flv`) files now get thumbnails, when the video inside is H.264.**
-  Windows has no way to open an FLV at all, so these have always shown a blank icon.
-  SageThumbs now reads the FLV itself, lifts out a single keyframe, and hands just that
-  frame to Windows in a form it does understand. Nothing is unpacked to disk and the rest
-  of the file is never touched. Most FLVs made after roughly 2008 are H.264 and will work.
-  Older ones using VP6 or Sorenson Spark still cannot be read yet. Raised by
-  @taylor-p-mason (#26).
+- **Flash video (`.flv`) files now get thumbnails.** Windows has no way to open an FLV at
+  all, so these have always shown a blank icon, whatever was inside them. All three of the
+  codecs people actually have now work:
+  - **H.264** is handed to Windows as a single frame in a form it already understands.
+  - **VP6** and **Sorenson Spark**, the older Flash codecs, are decoded by SageThumbs
+    itself, using the same pure-Rust decoders the Ruffle Flash emulator ships.
+
+  Nothing is unpacked to disk, and the rest of the file is never read. The two older
+  decoders run in a separate, short-lived helper process, so even a corrupt or deliberately
+  malformed video can only lose you that one thumbnail; it cannot disturb File Explorer.
+  Raised by @taylor-p-mason (#26).
 - **Android app packages now show their real icon.** `.apk` files, and the split-bundle
   wrappers `.xapk`, `.apks` and `.apkm`, get the launcher icon the app actually declares
   rather than a generic file icon. An APK is a zip, so simply picking an image out of it

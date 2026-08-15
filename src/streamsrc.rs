@@ -150,6 +150,8 @@ pub(crate) unsafe fn stream_source_with_caps(
         //  2b. FLV (H.264 only): walk the head tags for the AVC config + first keyframe
         //      and remux them into a mini-MP4 — MF has no FLV demuxer, so no later tier
         //      can open the container at all (it has no index, so `at` can't be honoured);
+        //  2c. FLV (VP6 / Sorenson Spark): decode the first keyframe OUT OF PROCESS via
+        //      the sibling st2k.exe — Windows has no decoder for these at all;
         //   3. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
         //      demuxer seek the real index over a block-caching IStream that
         //      coalesces its reads (no per-format parser, any container MF decodes);
@@ -180,6 +182,15 @@ pub(crate) unsafe fn stream_source_with_caps(
                 stream: stream.clone(),
             })
             .and_then(|buf| crate::video::frame_from_bytes(&buf))
+        })
+        .or_else(|| {
+            // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
+            //     decoded out of process by the sibling st2k.exe (`flv::flash_frame` — the
+            //     pure-Rust Flash decoders panic on hostile input and must never run inside
+            //     the shell host). Self-gated on the FLV magic + codec id; bounded head read.
+            crate::flv::flash_frame(&mut IStreamReader {
+                stream: stream.clone(),
+            })
         })
         .or_else(|| {
             // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its

@@ -111,7 +111,7 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
 # ProcessorCount st2k spawns) can starve that render of CPU so a metafile that
 # renders in ~300 ms unloaded blows past 3 s and spuriously "fails". Re-rendering
 # the failures ONE AT A TIME (no CPU contention) clears such load flakes; a
-# genuinely-unrenderable file (doc/flv/…) just fails again in a few ms. This makes
+# genuinely-unrenderable file (legacy-OLE doc/…) just fails again in a few ms. This makes
 # the gate deterministic without touching the production timeout.
 $retry = @($results | Where-Object { -not $_.Ok })
 if ($retry.Count) {

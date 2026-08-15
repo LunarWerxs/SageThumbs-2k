@@ -935,12 +935,27 @@ fn video_codec_note(r: &mut Report, path: &str) {
         r.line(
             S::Info,
             "Video codec",
-            "not identifiable from the container header (only Matroska/WebM and MP4/MOV \
-             carry one we parse) — the decode check below is the real test",
+            "not identifiable from the container header (only Matroska/WebM, MP4/MOV and \
+             FLV carry one we parse) — the decode check below is the real test",
         );
         return;
     };
     let label = format!("{} ({})", info.name, info.raw);
+    // Codecs we decode OURSELVES (FLV's VP6 / Sorenson Spark, out of process via st2k):
+    // Windows has no decoder and never will, and that is fine — say so BEFORE the MF
+    // probe, whose honest answer ("no decoder installed") would come with a fix
+    // prescription that does not apply.
+    if info.self_decoded {
+        r.line(
+            S::Ok,
+            "Video codec",
+            &format!(
+                "{label} — decoded by SageThumbs 2K's own built-in decoder (Windows has \
+                 none for this codec, and none is needed)"
+            ),
+        );
+        return;
+    }
     match info.subtype.map(crate::vcodec::decoder_installed) {
         Some(Some(true)) => r.line(
             S::Ok,

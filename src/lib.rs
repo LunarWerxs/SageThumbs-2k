@@ -37,7 +37,11 @@ pub mod decode;
 mod dib;
 pub mod doctor;
 mod factory;
-mod flv;
+// `pub` (hidden) because the `st2k` bin's `flv-frame` child verb reuses the FLV tag walk
+// (`flv::scan_flash_keyframe`) — one parser, so the parent's probe and the child's
+// extraction can never disagree about what counts as the first Flash-codec keyframe.
+#[doc(hidden)]
+pub mod flv;
 pub mod foldermenu;
 pub mod formats;
 mod fsutil;

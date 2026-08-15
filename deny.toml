@@ -28,6 +28,11 @@ targets = [
 # Evaluate optional deps too, so the scan stays honest about what *could* be
 # compiled in.
 all-features = false
+# The `flash-video` feature (EXE-only FLV VP6/Sorenson decoders, git-pinned — see
+# [sources]) is in the core package's DEFAULT set today, but name it explicitly so the
+# license/advisory/source checks keep seeing the crates we ship even if the default
+# set ever changes.
+features = ["flash-video"]
 
 # ----------------------------------------------------------------------------
 [advisories]
@@ -79,6 +84,25 @@ private = { ignore = true }
 # (No license exceptions needed: the whole graph is permissive now that RAR/CBR
 # uses the pure-Rust `rars` crate instead of the proprietary UnRAR C++.)
 
+# The three nihav crates (the git-pinned VP6 decoder, see [sources]) declare NO `license`
+# field in their Cargo.tomls; the repository's root COPYING is the literal MIT license
+# text, which covers the whole workspace. Clarify rather than allowlist-by-exception so
+# cargo-deny still verifies everything else about them.
+[[licenses.clarify]]
+crate = "nihav_core"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "nihav_codec_support"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "nihav_duck"
+expression = "MIT"
+license-files = []
+
 # ----------------------------------------------------------------------------
 [bans]
 # A duplicated crate version is a smell (bigger binary, slower build) but not a
@@ -111,3 +135,13 @@ skip = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# The ONLY allowed git sources: the pure-Rust FLV Flash codecs (issue #26). Neither is
+# published on crates.io, so Ruffle's repos — where these crates are maintained and
+# shipped as THE Flash codecs — are the canonical source. Both are pinned by rev in
+# Cargo.toml (never a branch), reachable only via the EXE-only `flash-video` feature,
+# and permissively licensed (nihav: MIT per the repo's COPYING, clarified below;
+# h263-rs*: MIT OR Apache-2.0). Anything else from git stays denied.
+allow-git = [
+    "https://github.com/ruffle-rs/nihav-vp6",
+    "https://github.com/ruffle-rs/h263-rs",
+]

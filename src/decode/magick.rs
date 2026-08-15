@@ -612,7 +612,7 @@ fn child_cpu_time(child: &std::process::Child) -> Option<Duration> {
 ///    returns as soon as that thread is scheduled, and killing at that point would throw
 ///    away a decode that already succeeded (issue #9 logged this as
 ///    `decode timed out (status Some(ExitStatus(0)))`).
-fn await_magick_output(
+pub(crate) fn await_magick_output(
     child: &mut std::process::Child,
     rx: &std::sync::mpsc::Receiver<Vec<u8>>,
     cpu_budget: Duration,
