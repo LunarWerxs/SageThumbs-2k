@@ -1451,3 +1451,36 @@ fn jxl_applies_its_embedded_color_profile() {
         );
     }
 }
+
+/// The PDF raster edge has been wrong twice, in opposite directions, so pin the rule.
+///
+/// It must never render SMALLER than the historical fixed 1024 (that would be a quality
+/// regression), never render LARGER than the tile actually asked for (that was the red-team
+/// finding: deriving it from the user's global ceiling made a 32 px icon request rasterize a
+/// 2560 px page), and must follow a genuinely large request up so PDFs are not the one format
+/// that upscales a too-small source once the ceiling exceeds 1024.
+#[test]
+fn pdf_raster_edge_follows_the_request_but_never_drops_below_1024() {
+    use super::pdf_raster_edge;
+
+    // Small icon views ask for far less than 1024; rasterizing lower would look worse than
+    // the behaviour that shipped, so the floor holds.
+    for cx in [1, 32, 96, 256, 768, 1024] {
+        assert_eq!(
+            pdf_raster_edge(Some(cx)),
+            1024,
+            "cx={cx} must still rasterize at the historical 1024 floor",
+        );
+    }
+    // A genuinely large request is followed, which is the issue #26.5 half of the fix.
+    assert_eq!(pdf_raster_edge(Some(1025)), 1025);
+    assert_eq!(pdf_raster_edge(Some(2560)), 2560);
+    // Full-fidelity callers (Convert, Image info) pass None and keep the historical edge.
+    assert_eq!(pdf_raster_edge(None), 1024);
+    // And it must NOT track the user's global ceiling: at the top setting, a tiny request is
+    // still a tiny request. This is the assertion that fails if the regression comes back.
+    assert!(
+        pdf_raster_edge(Some(32)) < crate::settings::THUMB_MAX,
+        "a small request must not rasterize at the global ceiling",
+    );
+}

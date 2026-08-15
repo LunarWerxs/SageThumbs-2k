@@ -543,8 +543,12 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         // Native dark item-view theme is dark-only; light keeps the native light header.
         dark_control(header, w!("DarkMode_ItemsView"));
     }
-    // Subclass for dark header text + SPACE/right-click bulk checkbox toggle.
+    // Subclass for dark header text, the column-drag reflow, and the SPACE/right-click bulk
+    // checkbox toggle.
     let _ = SetWindowSubclass(list, Some(list::list_subclass), 0, 0);
+    // Fresh list, fresh column widths: drop any "the user dragged Description" state left
+    // behind by a PREVIOUS Settings window in this same process.
+    super::reset_desc_width_manual();
     // Extension | Category | Description. FORMATS is ordered by category, so the
     // list naturally clusters: Images, then Camera RAW, then Ebooks & comics —
     // and the Category column labels each (robust in dark mode, unlike native

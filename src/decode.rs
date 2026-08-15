@@ -630,6 +630,18 @@ fn decode_cover(bytes: &[u8]) -> Result<DynamicImage> {
     decode_cheap(bytes)
 }
 
+/// Longest edge to rasterize a PDF's first page at, for a request whose target is `cx`.
+///
+/// Pure, so the rule is testable without the OS PDF engine. It exists as a named function
+/// because the obvious one-liner has been wrong twice: a fixed 1024 upscales once the user's
+/// ceiling can exceed it, and `settings::max_thumb_size()` reads the global CEILING rather than
+/// what was asked for, so a 32 px icon request would rasterize a 2560 px page and discard it.
+pub(crate) fn pdf_raster_edge(wic_thumbnail_cx: Option<u32>) -> u32 {
+    // Floor at the historical 1024: a big source downscales cheaply and stays crisp, and this
+    // guarantees the change can never render a PDF at LOWER quality than it used to.
+    wic_thumbnail_cx.unwrap_or(1024).max(1024)
+}
+
 fn decode_preview_with_raw_order(
     bytes: &[u8],
     raw_preview: RawPreviewOrder,
@@ -705,12 +717,22 @@ fn decode_preview_with_raw_order(
         };
     }
     // PDF: rasterize page 1 via the OS PDF engine (Windows.Data.Pdf). The PNG it
-    // returns goes through `decode_image`, same as an ebook cover. The raster edge FOLLOWS the
-    // user's thumbnail ceiling, floored at the 1024 this always used: once that ceiling could
-    // be raised past 1024 (issue #26.5) a fixed 1024 here would have made PDFs the one format
-    // that silently upscaled a too-small source instead of rendering at the size asked for.
+    // returns goes through `decode_image`, same as an ebook cover.
+    //
+    // The raster edge follows THIS REQUEST's target, floored at the 1024 this always used, so
+    // it is never smaller than before and never larger than the tile actually needs. Two ways
+    // to get this wrong, both avoided here:
+    //   - A fixed 1024 (what shipped before) would make PDFs the one format that upscales a
+    //     too-small source once the ceiling can exceed 1024 (issue #26.5).
+    //   - Deriving it from `settings::max_thumb_size()` instead — which is what the first cut
+    //     of this fix did — reads the user's global CEILING rather than what Explorer asked
+    //     for, so a 32 px icon-view request would rasterize a 2560 px page and throw almost
+    //     all of it away. `wic_thumbnail_cx` is already clamped per request
+    //     (`thumbprovider`: `cx.min(max_thumb)`), which is exactly the number wanted here, and
+    //     is what the JP2 branch above uses too.
+    // Full-fidelity callers pass None and keep the historical 1024.
     if bytes.starts_with(b"%PDF-") {
-        let edge = crate::settings::max_thumb_size().max(1024);
+        let edge = pdf_raster_edge(wic_thumbnail_cx);
         if let Some(png) = crate::pdf::render_first_page(bytes, edge) {
             return decode_image_with_raw_order(&png, raw_preview, wic_thumbnail_cx);
         }

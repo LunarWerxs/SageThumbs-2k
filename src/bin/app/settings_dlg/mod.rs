@@ -727,6 +727,17 @@ pub(super) fn mark_desc_width_manual() {
     DESC_WIDTH_IS_MANUAL.with(|m| m.set(true));
 }
 
+/// Forget any manual Description width. Called when the file-types list is CREATED.
+///
+/// The flag is thread-local, not per-window, and the Settings window can be opened, closed and
+/// opened again inside one process (the tray and the shell verb both do it). Without this
+/// reset, the second window would be built with the creation widths — 64 / 92 / 196 — and then
+/// refuse to fit Description to the list, leaving a permanent dead gap on the right that the
+/// user could not explain and could only clear by restarting the app.
+pub(super) fn reset_desc_width_manual() {
+    DESC_WIDTH_IS_MANUAL.with(|m| m.set(false));
+}
+
 /// Size the Description column to fill the list's current visible width — no dead
 /// gap, no horizontal scroll. Re-run after a filter (the scrollbar may toggle), and
 /// after the user drags either of the two columns to its left.

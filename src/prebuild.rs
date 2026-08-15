@@ -421,6 +421,62 @@ pub fn run(
 mod tests {
     use super::*;
 
+    /// PROVE THE PREMISE, don't assume it. Everything above rests on the claim that Windows
+    /// really does turn our registered command into the argument `E:"` for a drive root. That
+    /// is a claim about `CommandLineToArgvW`'s escaping rules, so ask `CommandLineToArgvW`.
+    ///
+    /// Without this, the fix could be repairing a mangling that never happens (and quietly
+    /// corrupting nothing, but also fixing nothing) and every other test here would still pass,
+    /// because they all take the mangled string as a given.
+    #[test]
+    fn windows_really_does_mangle_a_quoted_drive_root() {
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::Shell::CommandLineToArgvW;
+
+        // Exactly what `foldermenu::apply` writes, with `%1` substituted by the shell.
+        let parse = |line: &str| -> Vec<String> {
+            let wide: Vec<u16> = line.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut argc = 0i32;
+            unsafe {
+                let argv = CommandLineToArgvW(PCWSTR(wide.as_ptr()), &mut argc);
+                assert!(!argv.is_null(), "CommandLineToArgvW failed on {line}");
+                let out = (0..argc as usize)
+                    .map(|i| (*argv.add(i)).to_string().expect("argv is valid UTF-16"))
+                    .collect();
+                let _ = windows::Win32::Foundation::LocalFree(Some(
+                    windows::Win32::Foundation::HLOCAL(argv.cast()),
+                ));
+                out
+            }
+        };
+
+        let exe = r"C:\Program Files\SageThumbs2K\SageThumbs2K.exe";
+
+        // An ordinary folder: three clean arguments, the path intact. This is why the entry
+        // always worked here.
+        let ok = parse(&format!("\"{exe}\" --prebuild \"E:\\Photos\""));
+        assert_eq!(ok.len(), 3, "ordinary folder should parse cleanly: {ok:?}");
+        assert_eq!(ok[2], r"E:\Photos");
+
+        // A drive root: the trailing `\"` is read as an escaped quote, so the path is
+        // destroyed. THIS is issue #26.1, demonstrated rather than asserted.
+        let broken = parse(&format!("\"{exe}\" --prebuild \"E:\\\""));
+        assert_eq!(
+            broken[2], "E:\"",
+            "the premise of unmangle_shell_path no longer holds: Windows parsed the drive root \
+             as {:?} rather than the expected mangled `E:\"`",
+            broken[2]
+        );
+        assert!(
+            !std::path::Path::new(&broken[2]).exists(),
+            "the mangled argument must be a path that cannot exist, which is why the verb \
+             silently did nothing"
+        );
+
+        // And the repair turns that back into the drive root the user right-clicked.
+        assert_eq!(unmangle_shell_path(&broken[2]), r"E:\");
+    }
+
     /// A drive root reaches us as `E:"`, because Explorer substituted `E:\` into a quoted
     /// token and `CommandLineToArgvW` then ate the backslash as a quote escape. This is the
     /// whole of issue #26.1: the entry worked on every folder and did nothing on a drive.

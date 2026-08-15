@@ -409,13 +409,47 @@ pub(super) unsafe extern "system" fn list_subclass(
             // reflow Description so the three still exactly fill the list; dragging
             // Description itself means the user wants that width, so the auto-fit stands down
             // rather than snapping the drag back.
+            //
+            // GATED ON ID_LIST, and that is load-bearing: this subclass is installed on TWO
+            // listviews (the file-types list in `build.rs`, and the single-column checklist in
+            // `mod.rs::checklist`, which reuses it for the SPACE bulk-toggle). The checklist
+            // has no visible header to drag, so this cannot fire for it today — but `fit_columns`
+            // is written for the three-column file-types list specifically, so pointing it at
+            // any other list would be wrong the moment that changes.
             if (*nmhdr).code == windows::Win32::UI::Controls::HDN_ENDTRACKW
                 && (*nmhdr).hwndFrom == list_header(h)
+                && GetDlgCtrlID(h) == ID_LIST
             {
                 let hdn = l.0 as *const windows::Win32::UI::Controls::NMHEADERW;
                 if (*hdn).iItem == 2 {
                     super::mark_desc_width_manual();
                 } else {
+                    // FLOOR THE DRAGGED COLUMN FIRST. A Win32 header divider can be dragged
+                    // all the way to zero, and a 0 px column is a trap rather than a choice:
+                    // its two dividers land on the same pixel, so there is no longer anything
+                    // to grab to drag it back, and nothing on this page resets column widths
+                    // (Defaults resets the format ticks, not the layout). Snapping back to a
+                    // usable minimum keeps the column reachable; the user can still make it
+                    // genuinely narrow, just not vanish it.
+                    const MIN_COL_W: i32 = 40;
+                    let col = (*hdn).iItem;
+                    if (0..2).contains(&col) {
+                        let w = SendMessageW(
+                            h,
+                            windows::Win32::UI::Controls::LVM_GETCOLUMNWIDTH,
+                            Some(WPARAM(col as usize)),
+                            None,
+                        )
+                        .0 as i32;
+                        if w < MIN_COL_W {
+                            SendMessageW(
+                                h,
+                                LVM_SETCOLUMNWIDTH,
+                                Some(WPARAM(col as usize)),
+                                Some(LPARAM(MIN_COL_W as isize)),
+                            );
+                        }
+                    }
                     super::fit_columns(h);
                 }
                 // Repaint: the rows underneath still carry the pre-drag column geometry.
