@@ -85,7 +85,7 @@ fn remove() {
 /// the setting or the UI language changes, so the two can never disagree.
 pub fn sync(on: bool) {
     if on {
-        if let Err(e) = apply(crate::i18n::t("pb_verb")) {
+        if let Err(e) = apply(crate::i18n::t("menu_pb_verb")) {
             crate::safety::log(&format!("foldermenu: could not write the verb: {e}"));
         }
     } else {

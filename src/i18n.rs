@@ -191,6 +191,124 @@ pub fn native_name(code: &str) -> &'static str {
 mod tests {
     use super::*;
 
+    /// EVERY `t("…")` IN LIB CODE MUST USE A `menu_*` KEY, because the shipped DLL's locale
+    /// table is FILTERED to exactly those (`dll-i18n-subset`, see build.rs). A lib-side lookup
+    /// of any other key compiles, tests, and runs perfectly in every EXE — and then resolves to
+    /// the [`MISSING_KEY`] sentinel `⟨?⟩` inside the real DLL, because that string was stripped
+    /// out of the table the DLL ships with.
+    ///
+    /// That is not hypothetical. 1.12.0 added `foldermenu.rs`, which calls `t()` to get the
+    /// caption for the "Build thumbnails here" static verb and WRITES IT INTO THE REGISTRY. The
+    /// key was `pb_verb`, not `menu_pb_verb`, so every user got a right-click entry captioned
+    /// literally `⟨?⟩` — and because the caption is baked into the registry at registration
+    /// time, it stayed wrong until the next re-registration (issue #26.2). The build.rs comment
+    /// asserting the DLL "only ever calls t() with menu_* keys" had quietly become false, and
+    /// nothing checked it.
+    ///
+    /// This scans the lib sources rather than trusting that comment. `src/bin/` is excluded:
+    /// those are the EXEs, which link the FULL table and may use any key.
+    #[test]
+    fn lib_side_translation_keys_all_survive_the_dll_subset() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut checked = 0usize;
+        let mut offenders: Vec<String> = Vec::new();
+
+        // Walk src/ minus src/bin/. Small tree, plain recursion, no dev-dependency needed.
+        let mut stack = vec![src.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if p.file_name().is_some_and(|n| n == "bin") {
+                        continue; // the EXEs get the full locale table
+                    }
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let Ok(text) = std::fs::read_to_string(&p) else {
+                        continue;
+                    };
+                    // Match the literal-key form `t("…")`. The dynamic form `t(title)` is
+                    // covered separately by `every_menu_title_is_a_menu_key` in verbs.
+                    for (i, _) in text.match_indices("t(\"") {
+                        // Require the char before `t` to be a non-identifier one, so this does
+                        // not fire on `format!("…{}", other_fn_that("x"))`-style names ending
+                        // in `t` (e.g. `set(`, `get(`, `insert(`).
+                        if i > 0 && text.as_bytes()[i - 1].is_ascii_alphanumeric() {
+                            continue;
+                        }
+                        if i > 0 && text.as_bytes()[i - 1] == b'_' {
+                            continue;
+                        }
+                        let rest = &text[i + 3..];
+                        let Some(end) = rest.find('"') else { continue };
+                        let key = &rest[..end];
+                        // Only judge things that are actually translation keys: every key in
+                        // en.toml is snake_case ASCII. Anything else is some other `…t("…")`.
+                        if key.is_empty()
+                            || !key
+                                .bytes()
+                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                        {
+                            continue;
+                        }
+                        if lookup(0, key).is_none() {
+                            continue; // not a translation key at all
+                        }
+                        checked += 1;
+                        if !key.starts_with("menu_") {
+                            offenders.push(format!(
+                                "{}: t(\"{key}\") — rename the key to `menu_{key}` in every \
+                                 assets/locales/*.toml, or the shipped DLL renders it as ⟨?⟩",
+                                p.strip_prefix(&src).unwrap_or(&p).display(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "lib-side t() calls using keys the slim DLL does not ship:\n  {}",
+            offenders.join("\n  "),
+        );
+        // A scan that silently matched nothing would pass forever while proving nothing.
+        assert!(
+            checked > 0,
+            "the scan found no lib-side t(\"literal\") calls at all — the matcher is broken, \
+             not the code",
+        );
+    }
+
+    /// The subset predicate in build.rs and the guard above have to agree, or the guard is
+    /// checking a rule the build does not apply. `DLL_KEYS` is build.rs's own answer to
+    /// "which keys does the DLL ship"; assert it really is exactly the `menu_*` set.
+    #[test]
+    fn dll_keys_is_exactly_the_menu_prefix_set() {
+        assert!(
+            DLL_KEYS.iter().all(|k| k.starts_with("menu_")),
+            "DLL_KEYS contains a non-menu_ key — build.rs's is_dll_key predicate changed",
+        );
+        let en_menu = LOCALES[0]
+            .1
+            .iter()
+            .filter(|(k, _)| k.starts_with("menu_"))
+            .count();
+        assert_eq!(
+            DLL_KEYS.len(),
+            en_menu,
+            "DLL_KEYS and the en menu_* keys disagree; the guard above would check the wrong set",
+        );
+        assert!(
+            DLL_KEYS.contains(&"menu_pb_verb"),
+            "menu_pb_verb must ship in the DLL — foldermenu writes it into the registry as the \
+             right-click caption (issue #26.2)",
+        );
+    }
+
     /// `lookup` binary-searches each locale's pairs, which is only correct if they
     /// are sorted by key. build.rs emits them from a BTreeMap (sorted), so this
     /// holds today — this test fails loudly if a future build.rs change breaks it.

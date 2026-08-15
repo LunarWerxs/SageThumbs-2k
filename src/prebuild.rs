@@ -270,6 +270,37 @@ fn one(path: &str, opts: &Options) -> Outcome {
     r.unwrap_or(Outcome::Failed)
 }
 
+/// Repair the one way Explorer's `"%1"` substitution can hand us a broken path: a DRIVE ROOT.
+///
+/// [`crate::foldermenu`] registers a static verb whose command is a plain registry string, and
+/// it quotes the folder token because most folders anyone points this at contain spaces:
+///
+/// ```text
+/// "C:\Program Files\SageThumbs2K\SageThumbs2K.exe" --prebuild "%1"
+/// ```
+///
+/// Explorer substitutes the literal path. For an ordinary folder that yields `"E:\Photos"` and
+/// everything is fine. For a **drive root** it yields `"E:\"`, and `CommandLineToArgvW` reads
+/// the closing `\"` as an ESCAPED QUOTE rather than a backslash followed by the terminator. The
+/// argument that reaches `main` is therefore `E:"` — a path that cannot exist — so the menu
+/// entry looked completely dead on a drive root while working on every normal folder. That is
+/// the first half of issue #26.
+///
+/// It cannot be fixed on the registry side: every token Explorer offers (`%1`, `%V`, `%L`)
+/// expands to `E:\` for a drive root, and appending a further argument does not help because
+/// the unterminated quote swallows the rest of the line into the same argument. Repairing it
+/// HERE has the additional advantage of fixing installs that already wrote the old command
+/// string, which a registry-side change could not do.
+///
+/// The repair is unambiguous: `"` is not a legal character in a Windows path, so an argument
+/// ending in one cannot be a real path and can only have come from this mangling.
+pub fn unmangle_shell_path(arg: &str) -> String {
+    match arg.strip_suffix('"') {
+        Some(rest) => format!(r"{rest}\"),
+        None => arg.to_string(),
+    }
+}
+
 /// True when this process is running elevated.
 ///
 /// The thumbnail cache is PER USER (`%LocalAppData%\Microsoft\Windows\Explorer`). Run from an
@@ -389,6 +420,36 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drive root reaches us as `E:"`, because Explorer substituted `E:\` into a quoted
+    /// token and `CommandLineToArgvW` then ate the backslash as a quote escape. This is the
+    /// whole of issue #26.1: the entry worked on every folder and did nothing on a drive.
+    #[test]
+    fn a_mangled_drive_root_is_repaired() {
+        assert_eq!(unmangle_shell_path("E:\""), r"E:\");
+        assert_eq!(unmangle_shell_path("C:\""), r"C:\");
+        // A UNC share root mangles identically and repairs identically.
+        assert_eq!(
+            unmangle_shell_path("\\\\server\\share\""),
+            r"\\server\share\"
+        );
+    }
+
+    /// Ordinary folders are NOT touched. `%1` only produces a trailing backslash for a root,
+    /// so every normal path must come through byte-for-byte — including one ending in a
+    /// quote-free backslash, and one containing the spaces the quoting exists for.
+    #[test]
+    fn ordinary_folder_paths_pass_through_untouched() {
+        for p in [
+            r"E:\Photos",
+            r"C:\Users\sam\My Pictures",
+            r"D:\a b\c d\e",
+            r"E:\Photos\", // already correct: no quote, so nothing to repair
+            "",
+        ] {
+            assert_eq!(unmangle_shell_path(p), p, "must not rewrite {p}");
+        }
+    }
 
     /// The walk must pick up supported files, honour `recurse`, and never wander into a
     /// junction — the loop guard that keeps "pre-build my D: drive" from never terminating.

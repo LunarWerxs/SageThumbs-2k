@@ -444,7 +444,12 @@ fn main() {
         // the core crate and is shared with `st2k prebuild`.
         if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
             if let Some(dir) = args.get(pos + 1) {
-                prebuild_dlg::run_prebuild(dir);
+                // A DRIVE ROOT arrives here as `E:"` — see `prebuild::unmangle_shell_path` for
+                // why the shell's own quoting does that and why it cannot be fixed in the
+                // registry string. Repairing it here also heals installs that already wrote
+                // the old command.
+                let dir = sagethumbs2k_core::prebuild::unmangle_shell_path(dir);
+                prebuild_dlg::run_prebuild(&dir);
             }
             return;
         }
