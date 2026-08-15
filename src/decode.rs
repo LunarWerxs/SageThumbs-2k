@@ -37,7 +37,7 @@ use windows::Win32::Graphics::Imaging::{
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 
-use crate::container::jpeg_span_len;
+use crate::container::{jpeg_sof_is_decodable, jpeg_span};
 // Don't flash a console window when we spawn `magick.exe` from the shell host.
 use crate::CREATE_NO_WINDOW;
 /// Hard WALL-CLOCK backstop on a single ImageMagick child (belt-and-suspenders with its
@@ -85,6 +85,23 @@ pub(crate) mod limits {
     /// ~1 GiB of RGBA — the absolute worst case we'll let a decoder materialize.
     /// Used as the WIC pixel cap and as the container area cap.
     pub const MAX_PIXELS: u64 = (MAX_DIM as u64) * (MAX_DIM as u64);
+
+    /// Source-pixel ceiling for a WIC decode that SCALES on the way out — four times
+    /// [`MAX_PIXELS`], and the gap is not bravado. The two bound different things.
+    ///
+    /// [`MAX_PIXELS`] answers "how much will we materialize", which is the right question
+    /// when the caller wants the whole image. Ask WIC for a 256 px thumbnail and the answer
+    /// stops depending on the source at all: the codec streams into `IWICBitmapScaler` and we
+    /// copy out `cx` squared. Measured on a 24000x14160 PNG (309 MB, 340 MP — a 4x upscale,
+    /// the kind of file this ceiling exists to have an opinion about): 2.1 s to a 256 px
+    /// thumbnail with NO measurable growth in the process working set. PNG has no
+    /// reduced-size mode, so that is the unfavourable case, not the flattering one.
+    ///
+    /// What still needs a ceiling is a decompression bomb, whose cost tracks neither the file
+    /// size nor the output size — a few KB of headers can declare billions of pixels, and
+    /// streaming them is cheap in memory but not in time. At the ~160 MP/s that measurement
+    /// implies, 1 GP is a worst case of roughly seven seconds in an isolated host.
+    pub const MAX_SCALED_SOURCE_PIXELS: u64 = 4 * MAX_PIXELS;
 
     /// Per-decode allocation cap handed to the `image` crate's `Limits`. 512 MiB
     /// bounds intermediate decode buffers well under MAX_PIXELS' ~1 GiB RGBA
@@ -157,7 +174,7 @@ pub(crate) mod limits {
     pub const MAGICK_MAP_LIMIT: &str = "1GiB";
 }
 
-use limits::{MAX_ALLOC, MAX_DIM, MAX_PIXELS};
+use limits::{MAX_ALLOC, MAX_DIM, MAX_PIXELS, MAX_SCALED_SOURCE_PIXELS};
 
 /// Session-wide cap on concurrent ImageMagick child processes. Each child can use
 /// up to `MAGICK_MEMORY_LIMIT` (512 MiB) of RAM, so an unbounded fan-out from a
@@ -335,7 +352,7 @@ fn decode_any_with_wic_target(
     // callers use the late fallback below so Convert/Resize/Image-info prefer real
     // WIC/ImageMagick decoders whenever they are available.
     if raw_preview == RawPreviewOrder::BeforeExternal {
-        match decode_raw_preview(bytes) {
+        match decode_raw_preview(bytes, wic_thumbnail_cx) {
             Ok(img) => return Ok(img),
             Err(e) => crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}")),
         }
@@ -419,7 +436,7 @@ fn decode_any_with_wic_target(
             }
         }
         if raw_preview == RawPreviewOrder::AfterExternal {
-            match decode_raw_preview(bytes) {
+            match decode_raw_preview(bytes, wic_thumbnail_cx) {
                 Ok(img) => return Ok(img),
                 Err(e) => {
                     crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}"))

@@ -828,6 +828,41 @@ mod tests {
         unsafe { CoUninitialize() };
     }
 
+    /// The rescue must fire at the SHIPPED DEFAULT, not merely at "Unlimited".
+    ///
+    /// Its sibling above passes `u64::MAX` for the user allowance, and that is exactly how the
+    /// bug hid for two releases: `u64::MAX` satisfies the rescue's `size <= max_file_bytes`
+    /// gate for any file at all, so the test passed while proving it only for a configuration
+    /// almost nobody runs. The rescue actually lives in the window
+    /// `hard cap < size <= MaxSize`, and a default MaxSize EQUAL to the hard cap — which is
+    /// what shipped — makes that window empty. Every user who never opened Settings got the
+    /// stock icon on files this code exists to rescue. Driving the real cascade with the real
+    /// constant is what makes that unrepresentable.
+    #[test]
+    fn oversized_stream_is_rescued_at_the_shipped_default_not_only_at_unlimited() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let jpeg = substantial_jpeg();
+        let stream = unsafe { SHCreateMemStream(Some(&jpeg)) }.expect("SHCreateMemStream");
+        let default_allowance = u64::from(crate::settings::DEFAULT_MAX_FILE_MB) * 1024 * 1024;
+        assert!(
+            default_allowance > decode::limits::MAX_INPUT_BYTES,
+            "the default allowance must sit CLEAR of the buffering ceiling, or the rescue's \
+             window is empty and it can never run at the shipped setting ({default_allowance} \
+             vs {})",
+            decode::limits::MAX_INPUT_BYTES
+        );
+        // Same shape as production: the user's allowance is the default, and the (scaled-down)
+        // hard cap is what refuses the buffered read.
+        let got = unsafe { stream_source_with_caps(&stream, default_allowance, 1024, 64, "test") };
+        assert!(
+            matches!(got, Ok(StreamSource::Frame(_))),
+            "the default setting must still reach the oversized rescue"
+        );
+        unsafe { CoUninitialize() };
+    }
+
     /// The user's own MaxSize still wins. "Too big to hold in memory" is ours to route around;
     /// "do not bother with files over N" is the user's decision and the rescue must not
     /// silently overrule it.

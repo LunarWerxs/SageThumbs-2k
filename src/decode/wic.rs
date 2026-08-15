@@ -205,6 +205,60 @@ unsafe fn codec_scales_natively(frame: &IWICBitmapFrameDecode, target_edge: u32)
     cw < w || ch < h
 }
 
+/// MEASUREMENT hook: what a codec ANSWERS about reduced-size decoding, decoding nothing.
+///
+/// Returns `(width, height, closest_width, closest_height)`. `closest == full` is a codec
+/// saying "I have no reduced-size mode"; anything smaller is the offer the scaled pre-pass
+/// exists to take. Test-only because shipping code never needs the numbers, only the verdict
+/// [`codec_scales_natively`] derives from them — but the numbers are what decides which
+/// formats the pre-pass should cover, so the sweep in `super::tests` needs them visible.
+#[cfg(test)]
+pub(super) unsafe fn wic_scaling_answer(bytes: &[u8]) -> Option<(u32, u32, u32, u32)> {
+    let factory: IWICImagingFactory =
+        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+    let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes))?;
+    let decoder = factory
+        .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
+        .ok()?;
+    let frame = decoder.GetFrame(0).ok()?;
+    let (mut w, mut h) = (0u32, 0u32);
+    frame.GetSize(&mut w, &mut h).ok()?;
+    let transform = frame.cast::<IWICBitmapSourceTransform>().ok()?;
+    let (mut cw, mut ch) = (1u32, 1u32);
+    transform.GetClosestSize(&mut cw, &mut ch).ok()?;
+    Some((w, h, cw, ch))
+}
+
+/// Bomb guard for the WIC tier: may we decode a `w` x `h` source for a caller that wants
+/// `thumbnail_cx`? Pure, and a named function rather than an inline conjunction, because the
+/// answer depends on something the obvious one-liner got wrong for two years.
+///
+/// **A full decode and a scaled decode bound different things.** MAX_PIXELS asks "how much
+/// will we materialize", which is the right question when the caller wants every pixel — WIC
+/// hands back one buffer and we copy `w * h * 4` out of it. Ask for a THUMBNAIL and the answer
+/// stops depending on the source: the codec streams into `IWICBitmapScaler` and what we copy
+/// is `cx` squared, a few megabytes whatever arrives. The old guard tested the source against
+/// MAX_DIM/MAX_PIXELS either way, which contradicted the rationale written beside it.
+///
+/// It cost real files, not hypothetical ones. A 24000x14160 PNG is refused here even though
+/// its thumbnail is 256x151, so the by-path rescue that exists precisely for a file that big
+/// returned `None` and the file got the stock icon — after spending ~24 s to find out. See
+/// [`limits::MAX_SCALED_SOURCE_PIXELS`] for the measurement and for why a scaled decode still
+/// needs a ceiling (a decompression bomb costs time even when it costs no memory).
+pub(super) fn wic_source_within_limits(w: u32, h: u32, thumbnail_cx: Option<u32>) -> bool {
+    if w == 0 || h == 0 {
+        return false;
+    }
+    let pixels = (w as u64) * (h as u64);
+    // "Scaling" means the scaler will actually engage — a source already at or under the
+    // requested edge is copied out whole, so it is a full decode wearing a thumbnail's
+    // clothes and gets the full decode's ceiling.
+    if matches!(thumbnail_cx, Some(cx) if w.max(h) > cx) {
+        return pixels <= MAX_SCALED_SOURCE_PIXELS;
+    }
+    w <= MAX_DIM && h <= MAX_DIM && pixels <= MAX_PIXELS
+}
+
 pub(super) unsafe fn wic_decode_frame(
     factory: &IWICImagingFactory,
     frame: &IWICBitmapFrameDecode,
@@ -214,12 +268,7 @@ pub(super) unsafe fn wic_decode_frame(
     let mut w: u32 = 0;
     let mut h: u32 = 0;
     frame.GetSize(&mut w, &mut h)?;
-    // Bomb guard for the WIC tier: per-edge MAX_DIM and total MAX_PIXELS, both
-    // from `limits`. MAX_PIXELS (~1 GiB RGBA) is intentionally a higher ceiling
-    // than the `image` tier's 512 MiB alloc cap — see the reconciliation note on
-    // `limits::MAX_ALLOC` for why the two ceilings differ (single final
-    // OS-decoded buffer vs. multiplied in-process transients).
-    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64) * (h as u64) > MAX_PIXELS {
+    if !wic_source_within_limits(w, h, thumbnail_cx) {
         return Err(Error::from(E_FAIL));
     }
 

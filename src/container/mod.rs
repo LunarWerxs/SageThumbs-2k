@@ -599,7 +599,7 @@ pub(crate) use psd::testutil as psd_testutil;
 
 /// Shared embedded-JPEG span scanner — see [`util::jpeg_span_len`]. Re-exported so
 /// `decode` and the container extractors (PSP, C4D) don't each hand-roll their own.
-pub(crate) use util::jpeg_span_len;
+pub(crate) use util::{jpeg_sof_is_decodable, jpeg_span, jpeg_span_len};
 
 #[cfg(test)]
 mod tests {

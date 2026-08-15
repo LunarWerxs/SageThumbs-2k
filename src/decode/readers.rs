@@ -153,8 +153,30 @@ pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage
 /// scaled or not. Letting WIC claim those formats first would replace a shortcut with a decode
 /// and read as a speedup while being a regression. JPEG has no such shortcut to lose (a JFIF
 /// thumbnail is optional and usually absent), it is the format the DCT trick exists for, and it
-/// is what the measurement was taken on. Widening this to other codecs means re-measuring
-/// against the shortcut each one already has, not just relaxing the magic test.
+/// is what the measurement was taken on.
+///
+/// **That widening HAS now been measured, and the answer is no** — see
+/// `decode::tests::scaled_pre_pass_sweep_by_format`, which is banked in the repo so this does
+/// not get re-argued from intuition. Over large real samples at a 256 px target:
+///
+///   * **HEIC / AVIF / JPEG XR / camera RAW gain nothing, because they already have this.**
+///     Whenever the WIC tier is the tier that runs, `wic_decode_frame` hands it the target edge
+///     and `IWICBitmapScaler` asks the codec to reduce — the same mechanism, one tier down. A
+///     12 MP HEIC measured 177 ms through this pre-pass against 183 ms shipping, with the two
+///     thumbnails byte-identical. There is no second helping to take.
+///   * **PNG / TIFF / WebP / BMP cannot.** PNG's codec answers `GetClosestSize` with the full
+///     dimensions (no reduced-size mode) and WIC declines the other three outright, so the
+///     probe is pure loss.
+///   * **AVIF appears to win 34x and that number is a trap.** ImageMagick-written AVIF is
+///     deliberately routed AROUND WIC (issue #9: the AV1 codec misreads libaom's `nclx` box),
+///     so the "shipping" cost being beaten is the price of correct colour. Taking the fast path
+///     there reintroduces the bug — and it showed up in the sweep's fidelity column as a
+///     channel shift, not in its timings. **Any future widening must compare colour, not just
+///     clocks.**
+///
+/// So the remaining beneficiaries are formats a SLOWER tier claims before WIC ever sees them.
+/// JPEG is one (the `image` crate takes it). The other found so far is the full-resolution JPEG
+/// carved out of a camera RAW, which `tiers::decode_raw_preview` now routes here directly.
 ///
 /// `MIN_SCALED_BYTES` keeps small files on the pure-Rust tier: creating a WIC factory and a
 /// decoder costs a COM round trip that a small JPEG's whole decode does not justify.

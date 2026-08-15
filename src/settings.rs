@@ -328,24 +328,39 @@ mod store {
 }
 
 // Defaults + bounds, matching the legacy SageThumbs.h constants.
-/// Skip files bigger than this (MB). Raised from the legacy 100 (2026-08-11) to match
-/// `decode::limits::MAX_INPUT_BYTES` exactly, so this preference is never TIGHTER than the
-/// engine's own ceiling. At 100 it was: `effective_input_cap` takes `min(MaxSize, 256 MiB)`,
-/// so the user-facing knob — not the safety limit — was what refused a 150 MB TIFF, and
-/// since we own that extension's thumbnail slot the file got no thumbnail from anyone. This
-/// LOOSENS nothing the hard ceiling did not already sanction; 256 remains the real wall.
+/// Skip files bigger than this (MB). Legacy 100 -> 256 (2026-08-11) -> 4096 (2026-08-15), and
+/// both raises fixed the same class of fault: the user-facing PREFERENCE, not the safety
+/// limit, was what refused a file nothing else objected to. At 100, `effective_input_cap`
+/// takes `min(MaxSize, 256 MiB)`, so a 150 MB TIFF was refused by the knob — and since we own
+/// that extension's thumbnail slot, it then got no thumbnail from anyone.
+///
+/// **256 was still wrong, more subtly: it EQUALLED the hard ceiling, which silently closed a
+/// rescue window.** `streamsrc::stream_source` refuses a file when `size > min(MaxSize, hard
+/// cap)` and then offers the oversized WIC rescue when `size <= MaxSize` — the two conditions
+/// describing "our buffering ceiling refused it" and "the user did not ask us to skip it".
+/// Make MaxSize equal the hard cap and that pair reads `size > 256 MiB && size <= 256 MiB`,
+/// which is false for every file that has ever existed. The rescue was unreachable at the
+/// default setting, and its own tests missed it by driving the cascade with MaxSize unlimited.
+/// Sitting the default clear of the ceiling is what re-opens it; the gate's logic was right.
+///
+/// This LOOSENS no buffering: 256 MiB remains the real wall for anything we read into memory
+/// (`effective_input_cap` still clamps). What it opens is the path that never buffers — WIC
+/// reading the file itself and scaling during decode, measured at 2.1 s and no measurable
+/// memory for a 340 MP PNG. 4096 keeps a meaningful "don't even try" for the genuinely absurd
+/// while covering every real image file; the honest cost ceiling is pixels, not bytes, and
+/// that one is `decode::limits::MAX_SCALED_SOURCE_PIXELS`.
 ///
 /// It also matters far less than it looks: the cap gates only the "buffer the whole file"
 /// tail of `streamsrc::stream_source`. Video, audio cover art, OpenEXR, archives, RAW and the
 /// baked-preview containers (PSD/PSB/.blend/DWG) are all served by targeted or streaming
 /// reads that never consult it — a 4 GB movie thumbnails regardless of this number.
-pub const DEFAULT_MAX_FILE_MB: u32 = 256; // FILE_MAX_SIZE
-                                          // Raised from the legacy 256/512 (2026-06-22): on Hi-DPI / 4K / large ("jumbo")
-                                          // icon views the shell requests thumbnails well past 512px. Capping below the
-                                          // requested size handed back an undersized bitmap the shell could neither display
-                                          // crisply NOR durably cache — so it re-extracted on every refresh (an expensive
-                                          // 4K video-frame decode each time). We honor the request up to 1024 now; small
-                                          // views are unaffected (the provider still does `cx.min(max_thumb)`).
+pub const DEFAULT_MAX_FILE_MB: u32 = 4096; // FILE_MAX_SIZE
+                                           // Raised from the legacy 256/512 (2026-06-22): on Hi-DPI / 4K / large ("jumbo")
+                                           // icon views the shell requests thumbnails well past 512px. Capping below the
+                                           // requested size handed back an undersized bitmap the shell could neither display
+                                           // crisply NOR durably cache — so it re-extracted on every refresh (an expensive
+                                           // 4K video-frame decode each time). We honor the request up to 1024 now; small
+                                           // views are unaffected (the provider still does `cx.min(max_thumb)`).
 pub const DEFAULT_THUMB_SIZE: u32 = 1024; // THUMB_STORE_SIZE (was 256)
 pub const THUMB_MIN: u32 = 32; // THUMB_MIN_SIZE
 /// Ceiling the user may raise the thumbnail edge to. Raised 1024 -> 2560 (2026-08-14, issue

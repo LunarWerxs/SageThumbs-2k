@@ -85,8 +85,26 @@ pub(super) const PREVIEW_SOFT_MAX: usize = 1024 * 1024;
 /// sensor data via WIC/ImageMagick. The carved JPEG is re-decoded through the safe
 /// `image` tier (bomb-guard limits apply). Returns Err when there's no real embedded
 /// preview, so [`decode_any`] falls through to the WIC/magick tiers unchanged.
-pub(super) fn decode_raw_preview(bytes: &[u8]) -> Result<DynamicImage> {
+pub(super) fn decode_raw_preview(bytes: &[u8], thumbnail_cx: Option<u32>) -> Result<DynamicImage> {
     let jpeg = largest_embedded_jpeg(bytes, MIN_RAW_PREVIEW).ok_or_else(|| Error::from(E_FAIL))?;
+    // The carved preview can be a FULL-RESOLUTION JPEG, and for some cameras it is the only
+    // one: [`PREVIEW_SOFT_MAX`] above prefers a screen-size "review" JPEG, but a body that
+    // ships none leaves the oversized fallback as the honest pick. Measured on a Canon 5D
+    // Mark II CR2, whose only previews are 160x120 and 5616x3744 — nothing in between — the
+    // full-res carve costs ~1.0 s against ~3 ms for a Nikon NEF that happens to embed a
+    // 1632x1080 one. That gap is Canon's file layout, not a defect in the pick.
+    //
+    // What it IS, though, is a large JPEG headed for a small tile, which is exactly the
+    // bargain the DCT-scaled decode exists for — asking the codec for a reduced resolution
+    // level rather than every pixel. The floor inside `wic_scaled_from_bytes_if_codec_scales`
+    // keeps the mid-size previews (a few hundred KB) on the pure-Rust tier where they are
+    // already fast, so only the oversized carve pays the COM round trip. Any failure falls
+    // through to the decode that shipped, so no RAW that rendered before can stop rendering.
+    if let Some(cx) = thumbnail_cx {
+        if let Some(img) = wic_scaled_from_bytes_if_codec_scales(jpeg, cx) {
+            return Ok(img);
+        }
+    }
     decode_with_image(jpeg)
 }
 
@@ -114,8 +132,24 @@ pub(crate) fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8
         }
         if data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
             // SOI (FF D8 FF…). Measure it; a valid JPEG is skipped whole.
-            match jpeg_span_len(data, i) {
-                Some(len) => {
+            match jpeg_span(data, i) {
+                // A structurally perfect JPEG we cannot decode is worse than no candidate at
+                // all: picking it costs the whole tier. Canon CR2 is the case — its raw sensor
+                // data is a ~20 MB LOSSLESS JPEG (SOF3) with a valid marker chain, so it wins
+                // "largest embedded JPEG" over the real 3 MB display preview, and both the
+                // `image` crate and WIC then reject it ("the image header is unrecognized").
+                // The tier failed outright and a Canon RAW fell through to a ~900 ms WIC
+                // demosaic — while the preview it wanted sat right there. Skipping the frame
+                // still advances `i` by its measured span, so this costs nothing.
+                Some((len, Some(sof))) if !jpeg_sof_is_decodable(sof) => {
+                    i += len;
+                    seen += 1;
+                    if seen >= 64 {
+                        break;
+                    }
+                    continue;
+                }
+                Some((len, _)) => {
                     if len >= min_size {
                         if match overall {
                             None => true,

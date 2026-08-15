@@ -4,6 +4,8 @@ use super::*;
 // The tests exercise internals that now live in the sibling children; glob them in so
 // every assertion below still names them exactly as it did pre-split.
 use super::readers::*;
+// Not imported by the hub any more: only these tests still name the length-only wrapper.
+use crate::container::jpeg_span_len;
 
 fn png_bytes(w: u32, h: u32, color: [u8; 4]) -> Vec<u8> {
     let mut img = image::RgbaImage::new(w, h);
@@ -182,6 +184,73 @@ fn jpeg_span_len_ignores_ffd9_in_metadata() {
     assert!(jpeg_span_len(&[0u8, 1, 2, 3], 0).is_none());
 }
 
+/// [`mini_jpeg`] carrying an explicit SOFn frame header, so a test can build the difference
+/// between a picture and a pile of sensor readings. `sof` is the marker's low byte: 0xC0 is
+/// baseline, 0xC3 is LOSSLESS — the encoding Canon CR2 uses for raw sensor data.
+fn mini_jpeg_sof(sof: u8, entropy: usize) -> Vec<u8> {
+    let mut v = vec![0xFF, 0xD8]; // SOI
+                                  // SOFn. The declared length (0x0B = 11) counts its own two bytes, so exactly 9 must
+                                  // follow: precision, height, width, component count, then one 3-byte component spec. Get
+                                  // that wrong and `jpeg_span` walks off into the next marker and rejects the whole frame —
+                                  // a fixture bug that reads exactly like a code bug.
+    v.extend_from_slice(&[
+        0xFF, sof, 0x00, 0x0B, // marker + segment length
+        0x08, 0x00, 0x10, 0x00, 0x10, 0x01, // 8-bit, 16x16, one component
+        0x00, 0x11, 0x00, // component 0: id, sampling 1x1, quant table 0
+    ]);
+    v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02]); // SOS, header length = 2 (none)
+    v.extend(std::iter::repeat_n(0x55, entropy)); // entropy data (contains no 0xFF)
+    v.extend_from_slice(&[0xFF, 0xD9]); // EOI
+    v
+}
+
+/// A structurally perfect JPEG that nothing can decode must never win the pick.
+///
+/// This is the Canon CR2 shape, and it cost the whole RAW fast tier before it was found: a
+/// CR2 stores its compressed sensor data as a ~20 MB LOSSLESS JPEG (SOF3) with a valid SOI,
+/// a valid marker chain and a valid EOI. "Largest embedded JPEG" therefore picked the sensor
+/// data over the real display preview, and both the `image` crate and WIC rejected it ("the
+/// image header is unrecognized"), so `decode_raw_preview` failed outright and a Canon RAW
+/// fell all the way through to a ~900 ms WIC demosaic. Measured after the fix: 76 ms.
+#[test]
+fn largest_embedded_jpeg_skips_lossless_frames_like_a_cr2_sensor_stream() {
+    let preview = mini_jpeg_sof(0xC0, 40 * 1024); // baseline — the real display preview
+    let sensor = mini_jpeg_sof(0xC3, 400 * 1024); // lossless — ten times bigger, undecodable
+    let mut raw = vec![0u8; 32];
+    let off = raw.len();
+    raw.extend_from_slice(&preview);
+    raw.extend_from_slice(&[0xAB; 16]);
+    raw.extend_from_slice(&sensor);
+    let pick = largest_embedded_jpeg(&raw, MIN_RAW_PREVIEW).expect("the baseline preview");
+    assert_eq!(
+        pick,
+        &raw[off..off + preview.len()],
+        "the lossless frame is larger and must still lose — size is not the tiebreak when the \
+         bigger candidate cannot be decoded at all"
+    );
+
+    // And when the sensor stream is the ONLY thing there, the tier must decline rather than
+    // hand a decoder bytes it will reject: declining lets WIC/magick demosaic properly.
+    let mut sensor_only = vec![0u8; 32];
+    sensor_only.extend_from_slice(&mini_jpeg_sof(0xC3, 400 * 1024));
+    assert!(
+        largest_embedded_jpeg(&sensor_only, MIN_RAW_PREVIEW).is_none(),
+        "a RAW with no decodable preview must fall through to the demosaic tiers"
+    );
+
+    // The span itself is still measured for a skipped frame — that is what lets the scan step
+    // OVER it rather than re-entering its entropy data looking for more SOI markers.
+    let lossless = mini_jpeg_sof(0xC3, 1024);
+    assert_eq!(
+        crate::container::jpeg_span(&lossless, 0),
+        Some((lossless.len(), Some(0xC3)))
+    );
+    assert!(!crate::container::jpeg_sof_is_decodable(0xC3));
+    for good in [0xC0u8, 0xC1, 0xC2] {
+        assert!(crate::container::jpeg_sof_is_decodable(good));
+    }
+}
+
 #[test]
 fn largest_embedded_jpeg_prefers_the_real_preview() {
     // A fake RAW: leading header junk, a tiny thumb (< MIN_RAW_PREVIEW), junk, then
@@ -309,7 +378,7 @@ fn raw_preview_parsers_are_panic_safe_on_hostile_input() {
         let _ = jpeg_span_len(c, 0);
         let _ = largest_embedded_jpeg(c, MIN_RAW_PREVIEW);
         let _ = largest_embedded_jpeg(c, LENIENT_RAW_PREVIEW);
-        let _ = decode_raw_preview(c); // full path (Err on all of these)
+        let _ = decode_raw_preview(c, None); // full path (Err on all of these)
     }
 }
 
@@ -1530,4 +1599,237 @@ fn pdf_raster_edge_follows_the_request_but_never_drops_below_1024() {
         pdf_raster_edge(Some(32)) < crate::settings::THUMB_MAX,
         "a small request must not rasterize at the global ceiling",
     );
+}
+
+/// MEASUREMENT INSTRUMENT — what the codec-scaled pre-pass costs PER FORMAT, against what
+/// that format's thumbnail decode costs today. Prints a table; asserts nothing.
+///
+/// The pre-pass ([`wic_scaled_from_bytes_if_codec_scales`]) is gated to JPEG, and that gate's
+/// doc comment says widening it is a RE-MEASUREMENT rather than a relaxed magic test. This is
+/// that measurement, banked in the repo so the next person reads a number instead of rebuilding
+/// the rig. Point it at a folder of LARGE samples — a 256 px thumbnail of a 256 px image proves
+/// nothing, and every format here has a small file for which the answer is "don't bother".
+///
+/// Columns:
+///   * `scales` — what `IWICBitmapSourceTransform::GetClosestSize` answers, plus the size it
+///     offers. `no` ends the discussion for that format: there is nothing to win.
+///   * `probe` — factory + decoder + `GetFrame` + `GetClosestSize` and no decode. This is the
+///     pure cost a DECLINED probe adds to every file of that format, and therefore what the
+///     `MIN_SCALED_BYTES` floor is really buying.
+///   * `pre-pass` — the scaled decode itself, magic gate bypassed.
+///   * `today` — [`decode_preview_capped`], i.e. exactly what ships.
+///
+/// Widening pays only where `pre-pass` is materially under `today`. A format whose tier already
+/// lifts an embedded preview (camera RAW, PSD) shows the OPPOSITE, which is precisely why the
+/// gate cannot be a magic-byte list.
+///
+/// ```text
+/// $env:ST2K_FMT_DIR = "...\samples"
+/// cargo test --release --lib scaled_pre_pass_sweep -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "measurement over a folder of large samples; set ST2K_FMT_DIR and run --release"]
+fn scaled_pre_pass_sweep_by_format() {
+    let Ok(dir) = std::env::var("ST2K_FMT_DIR") else {
+        println!("set ST2K_FMT_DIR to a folder of large samples first");
+        return;
+    };
+    let edge: u32 = std::env::var("ST2K_FMT_EDGE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(256);
+    // Best-of, not mean: this box regularly sits at high background load, and the minimum is
+    // the closest thing to "what the work actually costs" that a noisy machine will give up.
+    let reps: usize = std::env::var("ST2K_FMT_REPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
+
+    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|e| e.path())
+            .collect(),
+        Err(e) => {
+            println!("cannot read {dir}: {e}");
+            return;
+        }
+    };
+    files.sort();
+
+    /// Fastest of `reps` runs, in microseconds, plus whether the work ever succeeded.
+    fn best_us(reps: usize, mut f: impl FnMut() -> bool) -> (u128, bool) {
+        let (mut best, mut ok) = (u128::MAX, false);
+        for _ in 0..reps.max(1) {
+            let t = std::time::Instant::now();
+            ok |= f();
+            best = best.min(t.elapsed().as_micros());
+        }
+        (best, ok)
+    }
+    fn ms(us: u128) -> String {
+        format!("{:.1}", us as f64 / 1000.0)
+    }
+
+    println!("\nscaled pre-pass sweep — target edge {edge} px, best of {reps}");
+    println!("dir: {dir}\n");
+    println!(
+        "{:<14} {:>7} {:>12} {:>18} {:>8} {:>10} {:>10} {:>8}  MAD/out",
+        "file", "MB", "pixels", "scales", "probe", "pre-pass", "today", "ratio"
+    );
+    println!("{}", "-".repeat(112));
+
+    for p in &files {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Ok(bytes) = std::fs::read(p) else {
+            continue;
+        };
+        let mb = bytes.len() as f64 / (1024.0 * 1024.0);
+
+        let answer = unsafe { wic::wic_scaling_answer(&bytes) };
+        let (dims, scales) = match answer {
+            Some((w, h, cw, ch)) => (
+                format!("{w}x{h}"),
+                if cw < w || ch < h {
+                    format!("yes {cw}x{ch}")
+                } else {
+                    "no".to_string()
+                },
+            ),
+            None => ("-".to_string(), "wic declines".to_string()),
+        };
+        let (probe_us, _) = best_us(reps, || unsafe {
+            wic::wic_scaling_answer(&bytes).is_some()
+        });
+
+        let head = &bytes[..bytes.len().min(COLOR_HEAD_BYTES)];
+        let (pre_us, pre_ok) = best_us(reps, || unsafe {
+            wic::wic_decode_bytes_if_codec_scales(&bytes, edge, head).is_ok()
+        });
+        let (today_us, today_ok) = best_us(reps, || decode_preview_capped(&bytes, edge).is_ok());
+
+        // FIDELITY, not just speed — the column without which this table is a trap. Several
+        // codecs answer `GetClosestSize` with a size far BELOW the request (a HEIF `thmb` item,
+        // a tile count), and a scaler that takes such an offer and upscales is enormously fast
+        // and completely wrong. Compare the two decodes on a common grid: a real reduced-
+        // resolution decode differs from the reference by resampling noise, a upscaled
+        // postage stamp differs by a mile.
+        let fidelity = match (
+            unsafe { wic::wic_decode_bytes_if_codec_scales(&bytes, edge, head) },
+            decode_preview_capped(&bytes, edge),
+        ) {
+            (Ok(pre), Ok(reference)) => {
+                let (pw, ph) = (pre.width(), pre.height());
+                let a = pre.resize_exact(64, 64, image::imageops::FilterType::Triangle);
+                let b = reference.resize_exact(64, 64, image::imageops::FilterType::Triangle);
+                let (a, b) = (a.to_rgb8(), b.to_rgb8());
+                let sum: u64 = a
+                    .pixels()
+                    .zip(b.pixels())
+                    .map(|(x, y)| (0..3).map(|c| x.0[c].abs_diff(y.0[c]) as u64).sum::<u64>())
+                    .sum();
+                let mad = sum as f64 / (64.0 * 64.0 * 3.0);
+                if let Ok(dir) = std::env::var("ST2K_FMT_OUT") {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = pre.save(std::path::Path::new(&dir).join(format!("{name}.pre.png")));
+                    let _ =
+                        reference.save(std::path::Path::new(&dir).join(format!("{name}.ref.png")));
+                }
+                format!("{mad:.1} {pw}x{ph}")
+            }
+            _ => "-".to_string(),
+        };
+
+        // A JPEG over the floor ALREADY takes the pre-pass, so its `today` is the fast number
+        // and the ratio is 1.0 by construction. Mark it rather than let the table read as
+        // "JPEG gains nothing".
+        let shipped = bytes.starts_with(&[0xFF, 0xD8, 0xFF]) && bytes.len() >= 512 * 1024;
+        let ratio = match (pre_ok, today_ok) {
+            (true, true) if shipped => "(wired)".to_string(),
+            (true, true) => format!("{:.1}x", today_us as f64 / pre_us.max(1) as f64),
+            (false, _) => "declined".to_string(),
+            (_, false) => "no decode".to_string(),
+        };
+        println!(
+            "{:<14} {:>7.1} {:>12} {:>18} {:>8} {:>10} {:>10} {:>8}  {}",
+            name,
+            mb,
+            dims,
+            scales,
+            ms(probe_us),
+            if pre_ok { ms(pre_us) } else { "-".into() },
+            if today_ok { ms(today_us) } else { "-".into() },
+            ratio,
+            fidelity
+        );
+    }
+    println!(
+        "\n(times ms; `probe` is what a DECLINED probe adds per file. MAD is mean absolute \n\
+         per-channel difference from the shipping decode on a common 64x64 grid — single \n\
+         digits are resampling noise, tens mean the pre-pass returned a different picture.)"
+    );
+}
+
+/// The WIC bomb guard bounds what we COPY OUT, and for a thumbnail that is not the source.
+///
+/// The rule this pins cost three real files to find: a 24000x14160 PNG (309 MB) was refused
+/// outright, even though the requested thumbnail was 256x151 and WIC produces it by streaming
+/// rows into the scaler — measured at 2.1 s with no measurable growth in the process working
+/// set. Two of the three were UNDER the byte cap, so they were read and decoded for 12-24 s
+/// before this guard threw the result away and Explorer drew the stock icon.
+#[test]
+fn the_wic_guard_bounds_the_output_when_scaling_and_the_source_when_not() {
+    use super::limits::{MAX_DIM, MAX_PIXELS, MAX_SCALED_SOURCE_PIXELS};
+    use super::wic::wic_source_within_limits;
+
+    // The file that started it: past MAX_DIM on both edges and past MAX_PIXELS in total.
+    assert!(
+        wic_source_within_limits(24_000, 14_160, Some(256)),
+        "a 340 MP source must be accepted for a 256 px thumbnail — the scaler decides what we \
+         copy out, and that is 256x151 whatever arrives"
+    );
+    // ...and the SAME source is still refused when the caller wants every pixel, because then
+    // the source really is what we materialize. This half is what keeps Convert/Image-info
+    // bounded, and it is why the guard could not simply be relaxed.
+    assert!(
+        !wic_source_within_limits(24_000, 14_160, None),
+        "a full-fidelity decode of the same source must stay refused"
+    );
+
+    // A source already within the requested edge is a full decode wearing a thumbnail's
+    // clothes: no scaler engages, so it gets the full decode's ceiling.
+    assert!(!wic_source_within_limits(20_000, 20_000, Some(32_768)));
+
+    // The scaled ceiling is real, not absent — a decompression bomb costs time even when it
+    // costs no memory, and time is what an isolated host actually runs out of.
+    let half = (MAX_SCALED_SOURCE_PIXELS / 2) as u32;
+    assert!(
+        wic_source_within_limits(half, 2, Some(256)),
+        "exactly AT the ceiling is allowed — the boundary belongs to the accepted side"
+    );
+    assert!(
+        !wic_source_within_limits(half + 1, 2, Some(256)),
+        "past MAX_SCALED_SOURCE_PIXELS a scaled decode must still be refused"
+    );
+
+    // Degenerate sizes are refused on either path.
+    for cx in [None, Some(256)] {
+        assert!(!wic_source_within_limits(0, 100, cx));
+        assert!(!wic_source_within_limits(100, 0, cx));
+    }
+
+    // The unscaled path is untouched: exactly MAX_DIM square is the historical boundary.
+    assert!(wic_source_within_limits(MAX_DIM, MAX_DIM, None));
+    assert!(!wic_source_within_limits(MAX_DIM + 1, 1, None));
+    assert_eq!(MAX_PIXELS * 4, MAX_SCALED_SOURCE_PIXELS);
 }

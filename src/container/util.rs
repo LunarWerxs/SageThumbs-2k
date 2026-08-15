@@ -112,9 +112,39 @@ pub(super) fn le64(b: &[u8], o: usize) -> Option<u64> {
 /// preview) — previously three hand-copies that had drifted to different segment
 /// caps; this uses the strictest of the three (4096).
 pub(crate) fn jpeg_span_len(data: &[u8], off: usize) -> Option<usize> {
+    jpeg_span(data, off).map(|(len, _)| len)
+}
+
+/// Is `sof` a frame the raster decoders in this codebase can actually decode?
+///
+/// Only the DCT-based, Huffman-coded frames: SOF0 (baseline), SOF1 (extended sequential),
+/// SOF2 (progressive). Everything else in the SOFn range is a dead end here — the arithmetic
+/// variants (SOF9/10/11, 13-15) are unimplemented in the `image` crate and in WIC, the
+/// differential ones (SOF5-7) are effectively extinct, and **SOF3 is lossless JPEG, which is
+/// how Canon CR2 (and many DNGs) store the compressed SENSOR DATA**.
+///
+/// That last one is not a curiosity, it is the whole reason this function exists. A CR2's raw
+/// stream is a ~20 MB "JPEG" by every structural test — valid SOI, valid marker chain, valid
+/// EOI — so a scanner looking for the largest embedded JPEG picks it over the real 3 MB
+/// display preview and hands a decoder something no decoder can read. See
+/// [`crate::decode::tiers::largest_embedded_jpeg`].
+pub(crate) fn jpeg_sof_is_decodable(sof: u8) -> bool {
+    matches!(sof, 0xC0..=0xC2)
+}
+
+/// [`jpeg_span_len`] plus the frame's SOF marker, so a caller can tell a picture from a
+/// pile of sensor readings. Returns `(span length, SOF marker)`.
+///
+/// The SOF is an `Option` and deliberately does NOT gate the span: `jpeg_span_len` predates
+/// this and several callers (`c4d`, `psp`) rely on its exact acceptance, so a stream whose
+/// markers parse to a clean EOI without a frame header keeps measuring the same length it
+/// always did. Only a caller that CARES what kind of frame it found consults the marker, and
+/// then absence means "unknown", not "reject".
+pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> {
     if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
         return None;
     }
+    let mut sof: Option<u8> = None;
     let mut p = off + 2;
     // A well-formed JPEG has far fewer segments than this; the cap just stops a
     // crafted run of pseudo-markers from spinning.
@@ -128,7 +158,18 @@ pub(crate) fn jpeg_span_len(data: &[u8], off: usize) -> Option<usize> {
         let marker = *data.get(p)?;
         p = p.checked_add(1)?;
         match marker {
-            0xD9 => return Some(p - off), // EOI — done
+            0xD9 => return Some((p - off, sof)), // EOI — done
+            // SOFn. 0xC4 (DHT), 0xC8 (reserved) and 0xCC (DAC) share the range but are not
+            // frame headers; record the FIRST real one, since that is the frame this span
+            // describes and a later thumbnail SOF must not overwrite it.
+            0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
+                sof.get_or_insert(marker);
+                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
+                if len < 2 {
+                    return None;
+                }
+                p = p.checked_add(len)?;
+            }
             0xDA => {
                 // Start-of-scan: skip its header by length, then the entropy data.
                 let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
