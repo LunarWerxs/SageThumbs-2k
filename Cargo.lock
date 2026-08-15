@@ -571,7 +571,7 @@ dependencies = [
  "exr",
  "gif",
  "image-webp",
- "moxcms 0.8.1",
+ "moxcms",
  "num-traits",
  "png 0.18.1",
  "qoi",
@@ -951,16 +951,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moxcms"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aee701c0ffba6cc991c0fefda5ff5fca1bd2f2f4a928ffba9f825b9afceedbc3"
-dependencies = [
- "num-traits",
- "pxfm",
-]
-
-[[package]]
 name = "mutate_once"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1295,7 +1285,7 @@ dependencies = [
  "jxl-oxide",
  "kamadak-exif",
  "lofty",
- "moxcms 0.9.0",
+ "moxcms",
  "nihav_codec_support",
  "nihav_core",
  "nihav_duck",
@@ -1307,6 +1297,7 @@ dependencies = [
  "serde_json",
  "sevenz-rust2",
  "toml",
+ "vp9dec",
  "webp",
  "webview2-com",
  "windows",
@@ -1670,6 +1661,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vp9dec"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85dc9eb9e26fa02ce81898998c5e1ccc718f14bfc485c7a4518f464bba57d338"
 
 [[package]]
 name = "wasm-bindgen"

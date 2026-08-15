@@ -703,7 +703,15 @@ fn decode_preview_with_raw_order(
             .or_else(|| crate::flv::flash_frame(&mut std::io::Cursor::new(bytes)))
             // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
             // seek its own index to the true ~30 % frame (no head-prefix depth cap).
-            .or_else(|| crate::video::frame_from_bytes_repr(bytes));
+            .or_else(|| crate::video::frame_from_bytes_repr(bytes))
+            // VP9 Profile 2/3 (10/12-bit HDR in webm/mkv, issue #26): Media Foundation's
+            // VP9 decoder stops at Profile 0/1 even with the Store extension installed, so
+            // when every MF tier above came back empty AND the container says V_VP9, the
+            // keyframe is decoded out of process by the sibling st2k.exe (`crate::vp9` for
+            // why the pure-Rust decoder must never run in THIS process). Deliberately LAST:
+            // Profile 0 is the common case and MF is hardware-accelerated and in-process —
+            // it must keep winning, and only otherwise-blank tiles pay for a spawn.
+            .or_else(|| crate::vp9::vp9_frame(&mut std::io::Cursor::new(bytes), at));
         if let Some(frame) = frame {
             return Ok(frame);
         }

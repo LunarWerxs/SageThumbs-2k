@@ -5,11 +5,12 @@
 
 use sagethumbs2k_core::cli;
 
-// The hidden `flv-frame` verb's decoders (VP6 via nihav, Sorenson via h263-rs). Behind the
-// EXE-only `flash-video` feature so the panicky decoder crates exist ONLY in this console
-// binary — see src/bin/flvdec/mod.rs for the whole containment argument.
-#[cfg(feature = "flash-video")]
-mod flvdec;
+// The hidden video-decode child verbs (`flv-frame`: VP6 via nihav + Sorenson via h263-rs;
+// `vp9-frame`: VP9 Profile 2/3 via vp9dec). Behind EXE-only features so the panicky /
+// unsafe-heavy decoder crates exist ONLY in this console binary — see src/bin/vdec/mod.rs
+// for the whole containment argument.
+#[cfg(any(feature = "flash-video", feature = "vp9-video"))]
+mod vdec;
 
 const USAGE: &str = "\
 st2k — SageThumbs 2K command line
@@ -196,16 +197,26 @@ fn main() {
         return;
     }
 
-    // HIDDEN verb, deliberately absent from USAGE (like the app's `--shot` harness): our
-    // own DLL/EXE spawns `st2k flv-frame` with FLV bytes on stdin and reads the first
-    // VP6/Sorenson keyframe back as a PNG on stdout (binary — it must never go through the
-    // println! path below). Exit 0 with output; any failure is a non-zero exit and none.
+    // HIDDEN verbs, deliberately absent from USAGE (like the app's `--shot` harness): our
+    // own DLL/EXE spawns `st2k flv-frame` with FLV bytes on stdin (first VP6/Sorenson
+    // keyframe back as a PNG) or `st2k vp9-frame` with one raw VP9 keyframe on stdin
+    // (decoded frame back as a PNG) — binary stdout, so neither may ever go through the
+    // println! path below. Exit 0 with output; any failure is a non-zero exit and none.
     if args.first().is_some_and(|a| a == "flv-frame") {
         #[cfg(feature = "flash-video")]
-        std::process::exit(flvdec::run());
+        std::process::exit(vdec::run_flv());
         #[cfg(not(feature = "flash-video"))]
         {
             eprintln!("st2k: this build was compiled without the flash-video feature");
+            std::process::exit(1);
+        }
+    }
+    if args.first().is_some_and(|a| a == "vp9-frame") {
+        #[cfg(feature = "vp9-video")]
+        std::process::exit(vdec::run_vp9());
+        #[cfg(not(feature = "vp9-video"))]
+        {
+            eprintln!("st2k: this build was compiled without the vp9-video feature");
             std::process::exit(1);
         }
     }

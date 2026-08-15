@@ -98,7 +98,7 @@ exr = { version = "=1.74.2", default-features = false }
 # wrong). NOT a new dependency — `image` (and `jxl-oxide`) ALREADY pull moxcms 0.8
 # transitively, so naming it here shares the same compiled crate = zero added bytes.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
-moxcms = "0.9"
+moxcms = "0.8"
 # CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
 # → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
 # `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
@@ -222,6 +222,20 @@ jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
 # the core rlib spawns st2k.exe out of process instead (src/flv.rs), mirroring how
 # webview2-com is kept EXE-only via `html-preview`. Acceptance check:
 # `cargo tree -p sagethumbs2k-dll` must never list nihav or h263.
+# --- VP9 Profile 2/3 (10/12-bit HDR in webm/mkv, the last open codec of issue #26) ---
+# Media Foundation cannot decode VP9 Profile 2 AT ALL — measured on this machine with the
+# Store VP9 extension 1.2.20.0 installed AND an RTX 4070 Ti present: Profile 0 renders,
+# Profile 2 returns "cannot decode" (the GPU vendor decoder is not reachable through
+# IMFSourceReader). `vp9dec` is a pure-Rust VP9 decoder (MIT, ZERO dependencies) verified
+# here against FFmpeg FATE conformance vectors (Profile 2 10/12-bit, Profile 3 10-bit
+# 4:4:4 + 12-bit 4:2:2, Profile 1 4:4:0) and fuzzed with 20k keyframe mutations (0 panics).
+# OPTIONAL behind the EXE-only `vp9-video` feature, same containment as `flash-video`
+# above: it is 0.1.1 with 55 unsafe blocks (mostly SIMD) and this workspace builds
+# panic="abort" where catch_unwind cannot help, so it runs ONLY in the throwaway
+# `st2k vp9-frame` child process, never the shell DLL. Acceptance check:
+# `cargo tree -p sagethumbs2k-dll` must never list vp9dec.
+vp9dec = { version = "0.1.1", optional = true }
+
 nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
 nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
 nihav_duck = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
@@ -254,7 +268,7 @@ hdr-capture = [
 # VP6/Sorenson path; the DLL stays clean because crates/dll depends on this package with
 # `default-features = false` (its effective feature set was empty before this and is
 # unchanged). See the `flash-video` entry below for why the DLL must never enable it.
-default = ["flash-video"]
+default = ["flash-video", "vp9-video"]
 # Quick preview's WebView2 HTML host (local .html render + optional .url live preview).
 # EXE-ONLY, off by default: build-release.ps1 enables it for the `-p sagethumbs2k` (EXE)
 # build; the separately-built slim DLL never requests it, so `webview2-com` never links
@@ -265,7 +279,7 @@ default = ["flash-video"]
 html-preview = ["dep:webview2-com"]
 # FLV VP6 / Sorenson Spark decode for the hidden `st2k flv-frame` child verb. EXE-ONLY,
 # same containment as `html-preview`: the decoder crates are referenced ONLY from
-# `src/bin/flvdec/` (the st2k console binary), and the DLL package opts out via
+# `src/bin/vdec/` (the st2k console binary), and the DLL package opts out via
 # `default-features = false` on its core dependency, so the panicky decoder crates never
 # link into the shell-extension cdylib (they abort the whole host process on malformed
 # input under panic=abort — inside Explorer that would be fatal; acceptance check:
@@ -279,6 +293,15 @@ flash-video = [
     "dep:h263-rs",
     "dep:h263-rs-yuv",
 ]
+# VP9 Profile 2/3 decode for the hidden `st2k vp9-frame` child verb. EXE-ONLY, the exact
+# `flash-video` containment: `vp9dec` is referenced ONLY from `src/bin/vdec/` (the st2k
+# console binary), and the DLL package opts out via `default-features = false` on its core
+# dependency, so the unsafe-SIMD-heavy 0.1.x decoder never links into the shell-extension
+# cdylib (under panic=abort a panic there would kill Explorer; acceptance check:
+# `cargo tree -p sagethumbs2k-dll` lists no vp9dec). The core rlib needs no cfg: it just
+# spawns the sibling st2k.exe, and a build without this feature answers that spawn with a
+# clean non-zero exit (no thumbnail — exactly the pre-support behaviour for Profile 2/3).
+vp9-video = ["dep:vp9dec"]
 # Lossy WebP encode via libwebp (C). Off by default → pure-Rust build; the release
 # installer enables it. Without it, lossy-WebP convert falls back to lossless WebP.
 webp-lossy = ["dep:webp"]

@@ -97,6 +97,10 @@ mod verbs;
 // before touching the delay-loaded MF imports; the decode entry points stay internal.
 pub mod vcodec;
 pub mod video;
+// Hidden like `flv`: public only so the `st2k vp9-frame` child (a separate bin crate) and
+// its tests can reach the shared caps + keyframe extraction — not a stable API.
+#[doc(hidden)]
+pub mod vp9;
 mod vstream;
 
 pub use strip::read_info_verbose;

@@ -121,6 +121,50 @@ jobs:
           }
           Write-Host "ARM64 engine round-trip OK: PNG -> DDS ($((Get-Item $dst).Length) bytes)"
 
+      # The decoders added in 2.0 had never been EXECUTED on ARM64 by anything, only compiled.
+      # That gap was invisible because the compile side genuinely is covered: `flash-video` is a
+      # DEFAULT feature and `build-release.ps1` computes the same EXE feature set for both
+      # architectures, so ARM64 users do get the codecs. What no job did was decode with them.
+      #
+      # It matters most for the out-of-process ones. VP6 and Sorenson are decoded by nihav and
+      # h263-rs inside a spawned `st2k flv-frame` child that caps its own memory with a job
+      # object, so this exercises bitstream maths, a process spawn, and the job-object call on
+      # ARM64 silicon at once. (Neither decoder carries an x86-only fast path - both were
+      # grepped for x86 intrinsics and have none - so the risk was never a silent slow path,
+      # it was that nobody had ever run them here at all.)
+      #
+      # Driven THROUGH st2k for the same reason the magick probe above is: it must test the
+      # integration the product actually uses.
+      - name: The new decoders actually decode on ARM64 silicon
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $st2k = Join-Path $env:drop 'st2k.exe'
+          # Sorenson Spark FLV: the decoder runs in the spawned child, not in-process.
+          $flv = Join-Path $env:drop 'probe.flv'
+          Invoke-WebRequest 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv' `
+            -OutFile $flv -UseBasicParsing -TimeoutSec 120
+          $png = Join-Path $env:drop 'probe-flv.png'
+          $out = & $st2k thumbnail $flv $png 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $png)) {
+            Write-Host $out
+            throw 'VP6 FLV did not decode on ARM64 (the st2k flv-frame child path)'
+          }
+          Write-Host "ARM64 VP6 decode OK ($((Get-Item $png).Length) bytes)"
+
+          # Android package: binary XML + resources.arsc, parsed IN-PROCESS. Different risk
+          # class from the video path, so it gets its own assertion rather than riding along.
+          $apk = Join-Path $env:drop 'probe.apk'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk' `
+            -OutFile $apk -UseBasicParsing -TimeoutSec 120
+          $apkPng = Join-Path $env:drop 'probe-apk.png'
+          $out = & $st2k thumbnail $apk $apkPng 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $apkPng)) {
+            Write-Host $out
+            throw 'APK launcher icon did not resolve on ARM64'
+          }
+          Write-Host "ARM64 APK decode OK ($((Get-Item $apkPng).Length) bytes)"
+
       - name: Portable mode is on, and it is the ini that does it
         shell: pwsh
         run: |

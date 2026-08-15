@@ -200,7 +200,22 @@ pub(crate) unsafe fn stream_source_with_caps(
                 .and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
         })
         .or_else(|| video_prefix(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)))
-        .or_else(|| mp4_remux_moov(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)));
+        .or_else(|| mp4_remux_moov(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)))
+        .or_else(|| {
+            // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
+            //    Profile 0/1 even with the Store extension installed, so when every tier
+            //    above came back empty AND the container says V_VP9, the keyframe (located
+            //    via the same Cues read as tier 2) is decoded out of process by the sibling
+            //    st2k.exe (`crate::vp9`). Deliberately LAST: Profile 0 must keep hitting the
+            //    hardware-accelerated in-process MF path, and only otherwise-blank tiles pay
+            //    for a process spawn. Self-gated on the codec id; bounded targeted reads.
+            crate::vp9::vp9_frame(
+                &mut IStreamReader {
+                    stream: stream.clone(),
+                },
+                at,
+            )
+        });
         if let Some(frame) = frame {
             safety::log_debug(&format!(
                 "{who}: video frame {}x{}",

@@ -42,6 +42,10 @@ const ID_CUE_TRACK: u64 = 0xF7;
 const ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
 const ID_CLUSTER: u64 = 0x1F43_B675;
 const ID_CLUSTER_TIMECODE: u64 = 0xE7;
+const ID_SIMPLE_BLOCK: u64 = 0xA3;
+const ID_BLOCK_GROUP: u64 = 0xA0;
+const ID_BLOCK: u64 = 0xA1;
+const ID_REFERENCE_BLOCK: u64 = 0xFB;
 const ID_CODEC_ID: u64 = 0x86;
 const ID_ATTACHMENTS: u64 = 0x1941_A469;
 const ID_ATTACHED_FILE: u64 = 0x61A7;
@@ -70,6 +74,10 @@ struct SegmentMap {
     tracks: Option<u64>,
     cues: Option<u64>,
     attachments: Option<u64>,
+    /// Where the first Cluster begins — the front walk stops there anyway, so recording it
+    /// is free, and it is the fallback for Cues-less files (`vp9_keyframe`): tiny WebMs
+    /// (conformance vectors, screen grabs) routinely carry no index at all.
+    first_cluster: Option<u64>,
 }
 
 /// Parse the EBML + Segment headers and locate the metadata children. `None` if `r` isn't
@@ -109,6 +117,7 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
     let mut tracks_pos = None;
     let mut cues_pos = None;
     let mut attach_pos = None;
+    let mut cluster_pos = None;
     let mut p = seg_data;
     for _ in 0..64 {
         if p + 2 > seg_end {
@@ -121,7 +130,10 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
             ID_TRACKS => tracks_pos = Some(p),
             ID_CUES => cues_pos = Some(p),
             ID_ATTACHMENTS => attach_pos = Some(p),
-            ID_CLUSTER => break,
+            ID_CLUSTER => {
+                cluster_pos = Some(p);
+                break;
+            }
             _ => {}
         }
         if eunk {
@@ -158,6 +170,7 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
         tracks: tracks_pos,
         cues: cues_pos,
         attachments: attach_pos,
+        first_cluster: cluster_pos,
     })
 }
 
@@ -174,8 +187,40 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
 
     // Pick the cluster: video track number, the Cue list, then the cue nearest `fraction`.
     let video_track = video_track_number(&tracks[tracks_hlen..]);
-    let (duration, _timescale) = info_duration(&info[info_hlen..]);
-    let cues_list = cue_points(&cues[cues_hlen..], video_track);
+    let cluster_rel = cue_cluster_position(
+        &cues[cues_hlen..],
+        &info[info_hlen..],
+        video_track,
+        fraction,
+    )?;
+    let cluster_abs = seg_data.checked_add(cluster_rel)?;
+    if cluster_abs >= total {
+        return None;
+    }
+
+    // Copy that one Cluster, then zero its Timecode so the mini-clip starts at t=0 (otherwise
+    // `frame_from_bytes`'s near-the-head seek would land before the cluster's real timestamp
+    // and grab nothing). Likewise zero Info's Duration so that seek computes ~0.
+    let (_, cluster_hlen, mut cluster) =
+        read_element_full(r, cluster_abs, CLUSTER_MAX, ID_CLUSTER)?;
+    zero_child(&mut cluster, cluster_hlen, ID_CLUSTER_TIMECODE);
+    zero_child(&mut info, info_hlen, ID_DURATION);
+
+    Some(build_mini_mkv(&ebml, &info, &tracks, &cluster))
+}
+
+/// The Segment-relative position of the Cluster holding the keyframe nearest `fraction` of
+/// the running time, from an in-memory Cues body. Shared by [`keyframe_mini_mkv`] (which
+/// wraps that cluster for Media Foundation) and [`vp9_keyframe`] (which pulls the raw block
+/// out of it), so the two can't disagree about WHICH frame represents the file.
+fn cue_cluster_position(
+    cues_body: &[u8],
+    info_body: &[u8],
+    video_track: Option<u64>,
+    fraction: f64,
+) -> Option<u64> {
+    let (duration, _timescale) = info_duration(info_body);
+    let cues_list = cue_points(cues_body, video_track);
     if cues_list.is_empty() {
         return None;
     }
@@ -197,20 +242,132 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
         // No Duration → cues are ~evenly spaced, so index into the list by the fraction.
         _ => ((cues_list.len() as f64 * frac) as usize).min(cues_list.len() - 1),
     };
-    let cluster_abs = seg_data.checked_add(cues_list[idx].1)?;
-    if cluster_abs >= total {
+    Some(cues_list[idx].1)
+}
+
+/// The raw bytes of one VP9 keyframe — the block payload as the encoder wrote it — for the
+/// out-of-process `st2k vp9-frame` decoder (`crate::vp9`). Self-gates on the container
+/// being Matroska/WebM whose FIRST VIDEO TRACK is `V_VP9`; everything else is `None`.
+///
+/// Cluster choice mirrors [`keyframe_mini_mkv`]: the Cues entry nearest `fraction` of the
+/// running time when the file carries an index. Unlike that path, a Cues-less file falls
+/// back to the FIRST cluster (tiny WebMs — conformance vectors, screen grabs — routinely
+/// have no index at all, and their first block is the keyframe). Within the cluster, the
+/// keyframe is the first video SimpleBlock with the key flag, or the first BlockGroup
+/// without a ReferenceBlock; laced blocks are declined (see [`unlaced_frame`]).
+pub fn vp9_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>> {
+    let map = segment_map(r)?;
+    let (_, tracks_hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
+    let tracks_body = &tracks[tracks_hlen..];
+    if video_track_codec(tracks_body).as_deref() != Some("V_VP9") {
         return None;
     }
+    let video_track = video_track_number(tracks_body)?;
 
-    // Copy that one Cluster, then zero its Timecode so the mini-clip starts at t=0 (otherwise
-    // `frame_from_bytes`'s near-the-head seek would land before the cluster's real timestamp
-    // and grab nothing). Likewise zero Info's Duration so that seek computes ~0.
-    let (_, cluster_hlen, mut cluster) =
-        read_element_full(r, cluster_abs, CLUSTER_MAX, ID_CLUSTER)?;
-    zero_child(&mut cluster, cluster_hlen, ID_CLUSTER_TIMECODE);
-    zero_child(&mut info, info_hlen, ID_DURATION);
+    // Preferred cluster from the Cues (representative mid-video frame), first cluster as
+    // the fallback — also taken when the indexed cluster turns out to hold no keyframe
+    // block we can use (e.g. its video blocks are laced).
+    let mut candidates: Vec<u64> = Vec::new();
+    if let (Some(cues_pos), Some(info_pos)) = (map.cues, map.info) {
+        if let (Some((_, cues_hlen, cues)), Some((_, info_hlen, info))) = (
+            read_element_full(r, cues_pos, CUES_MAX, ID_CUES),
+            read_element_full(r, info_pos, META_MAX, ID_INFO),
+        ) {
+            if let Some(rel) = cue_cluster_position(
+                &cues[cues_hlen..],
+                &info[info_hlen..],
+                Some(video_track),
+                fraction,
+            ) {
+                if let Some(abs) = map.seg_data.checked_add(rel) {
+                    candidates.push(abs);
+                }
+            }
+        }
+    }
+    if let Some(first) = map.first_cluster {
+        if !candidates.contains(&first) {
+            candidates.push(first);
+        }
+    }
 
-    Some(build_mini_mkv(&ebml, &info, &tracks, &cluster))
+    for cluster_abs in candidates {
+        if cluster_abs >= map.total {
+            continue;
+        }
+        let Some((_, chlen, cluster)) = read_element_full(r, cluster_abs, CLUSTER_MAX, ID_CLUSTER)
+        else {
+            continue;
+        };
+        if let Some(frame) = cluster_keyframe(&cluster[chlen..], video_track) {
+            return Some(frame);
+        }
+    }
+    None
+}
+
+/// The first video-track KEYFRAME payload in a Cluster body: a SimpleBlock whose keyframe
+/// flag (0x80) is set, or a BlockGroup whose Block carries no ReferenceBlock (that absence
+/// IS Matroska's keyframe marker for grouped blocks).
+fn cluster_keyframe(cluster_body: &[u8], video_track: u64) -> Option<Vec<u8>> {
+    for (id, _, data) in children(cluster_body) {
+        match id {
+            ID_SIMPLE_BLOCK => {
+                if let Some((track, flags, frame)) = parse_block(data) {
+                    if track == video_track && flags & 0x80 != 0 {
+                        if let Some(f) = unlaced_frame(flags, frame) {
+                            return Some(f.to_vec());
+                        }
+                    }
+                }
+            }
+            ID_BLOCK_GROUP => {
+                let mut block = None;
+                let mut has_ref = false;
+                for (cid, _, cd) in children(data) {
+                    match cid {
+                        ID_BLOCK => block = Some(cd),
+                        ID_REFERENCE_BLOCK => has_ref = true,
+                        _ => {}
+                    }
+                }
+                if !has_ref {
+                    if let Some((track, flags, frame)) = block.and_then(parse_block) {
+                        if track == video_track {
+                            if let Some(f) = unlaced_frame(flags, frame) {
+                                return Some(f.to_vec());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a (Simple)Block body into `(track_number, flags, frame_bytes)`: a size-style vint
+/// track number, a 2-byte relative timecode, one flags byte, then the frame data.
+fn parse_block(data: &[u8]) -> Option<(u64, u8, &[u8])> {
+    let (track, tlen, unknown) = vint_size(data, 0)?;
+    if unknown {
+        return None;
+    }
+    let flags = *data.get(tlen + 2)?;
+    Some((track, flags, data.get(tlen + 3..)?))
+}
+
+/// The frame bytes of a block, only when it is UNLACED (lacing bits 0b110 clear). A laced
+/// block packs several frames behind a lace-size table, and handing that table to a codec
+/// as if it were bitstream would be garbage-in; video keyframes are never laced in
+/// practice (lacing exists for tiny audio frames), so declining is a non-loss.
+fn unlaced_frame(flags: u8, frame: &[u8]) -> Option<&[u8]> {
+    if flags & 0b0000_0110 == 0 && !frame.is_empty() {
+        Some(frame)
+    } else {
+        None
+    }
 }
 
 /// The CodecID of the first video track ("V_MPEGH/ISO/HEVC", "V_AV1", …), for the doctor's
@@ -887,6 +1044,118 @@ mod tests {
             attached_cover(&mut cur).as_deref(),
             Some(b"PNGDATA".as_slice())
         );
+    }
+
+    // --- vp9_keyframe: the raw-block extraction for the out-of-process VP9 decoder -------
+
+    /// A minimal VP9 Matroska: Tracks (track 1 = V_VP9 video) + one Cluster of blocks.
+    fn vp9_mkv(cluster_children: &[Vec<u8>]) -> Vec<u8> {
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_NUMBER, &[1]),
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_VP9"),
+                ]
+                .concat(),
+            ),
+        );
+        let cluster = elem(
+            ID_CLUSTER,
+            &[
+                elem(ID_CLUSTER_TIMECODE, &[0]).as_slice(),
+                &cluster_children.concat(),
+            ]
+            .concat(),
+        );
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &[tracks, cluster].concat()));
+        file
+    }
+
+    /// A SimpleBlock for track 1: flags byte as given, then the frame bytes.
+    fn simple_block(flags: u8, frame: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x81, 0, 0, flags]; // track vint (1), timecode, flags
+        body.extend_from_slice(frame);
+        elem(ID_SIMPLE_BLOCK, &body)
+    }
+
+    #[test]
+    fn vp9_keyframe_finds_the_first_keyframe_simpleblock() {
+        // An inter block first (no key flag) — must be skipped; then the keyframe.
+        let file = vp9_mkv(&[
+            simple_block(0x00, &[0xEE; 8]),
+            simple_block(0x80, &[0x86, 0x00, 0x42, 0x11, 0x22]),
+        ]);
+        assert_eq!(
+            vp9_keyframe(&mut Cursor::new(&file), 0.30).as_deref(),
+            Some([0x86, 0x00, 0x42, 0x11, 0x22].as_slice())
+        );
+    }
+
+    #[test]
+    fn vp9_keyframe_reads_blockgroups_and_lacing_rules() {
+        // A BlockGroup WITH a ReferenceBlock is an inter frame; one WITHOUT is the key.
+        let inter_group = elem(
+            ID_BLOCK_GROUP,
+            &[
+                elem(ID_BLOCK, &[0x81, 0, 0, 0x00, 0xAA, 0xBB]),
+                elem(ID_REFERENCE_BLOCK, &[0x7F]),
+            ]
+            .concat(),
+        );
+        let key_group = elem(
+            ID_BLOCK_GROUP,
+            &elem(ID_BLOCK, &[0x81, 0, 0, 0x00, 0xCC, 0xDD]),
+        );
+        let file = vp9_mkv(&[inter_group, key_group]);
+        assert_eq!(
+            vp9_keyframe(&mut Cursor::new(&file), 0.30).as_deref(),
+            Some([0xCC, 0xDD].as_slice())
+        );
+        // A LACED keyframe block (lacing bits set) is declined, not mis-sliced.
+        let laced = vp9_mkv(&[simple_block(0x80 | 0x06, &[2, 0x11, 0x22, 0x33, 0x44])]);
+        assert_eq!(vp9_keyframe(&mut Cursor::new(&laced), 0.30), None);
+    }
+
+    #[test]
+    fn vp9_keyframe_gates_on_the_codec_and_survives_junk() {
+        // Same structure, wrong codec: the extraction must decline — this gate is what
+        // keeps every non-VP9 video from paying for a child-process attempt.
+        let mut vp8 = vp9_mkv(&[simple_block(0x80, &[0x11; 6])]);
+        let at = vp8
+            .windows(5)
+            .position(|w| w == b"V_VP9")
+            .expect("codec id present");
+        vp8[at + 4] = b'8';
+        assert_eq!(vp9_keyframe(&mut Cursor::new(&vp8), 0.30), None);
+        // Junk + every truncation: Err/None only, never a panic.
+        assert_eq!(vp9_keyframe(&mut Cursor::new(&b"junk"[..]), 0.30), None);
+        let whole = vp9_mkv(&[simple_block(0x80, &[0x55; 16])]);
+        for n in 0..whole.len() {
+            let _ = vp9_keyframe(&mut Cursor::new(&whole[..n]), 0.30);
+        }
+    }
+
+    /// The real FATE Profile 2 vector must yield a keyframe payload (it has no Cues, so
+    /// this also covers the first-cluster fallback). Skips when the corpus is absent (CI).
+    #[test]
+    fn corpus_vp9_profile2_yields_a_keyframe() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-corpus")
+            .join("sample-vp9p2.webm");
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("corpus_vp9_profile2: no sample-vp9p2.webm — skipping");
+            return;
+        };
+        let frame = vp9_keyframe(&mut Cursor::new(&bytes), 0.30)
+            .expect("FATE vp9 profile-2 vector should yield a keyframe block");
+        assert!(!frame.is_empty());
+        // VP9 frame marker: top two bits of the first byte are 0b10.
+        assert_eq!(frame[0] >> 6, 0b10, "payload should start a VP9 frame");
     }
 
     /// End-to-end: parse a real MKV (path in `ST2K_TEST_MKV`) into a one-cluster mini-MKV and

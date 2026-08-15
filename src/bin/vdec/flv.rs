@@ -1,17 +1,13 @@
-//! The hidden `st2k flv-frame` verb: FLV bytes on STDIN → first VP6/Sorenson-Spark
-//! keyframe as a PNG on STDOUT. Exit 0 with output, non-zero with none.
+//! The `st2k flv-frame` decode core: FLV bytes → first VP6/Sorenson-Spark keyframe as PNG.
 //!
-//! This is the CHILD side of `sagethumbs2k_core::flv::flash_frame`. The decoders here —
-//! nihav (VP6) and h263-rs (Sorenson), the exact crates Ruffle ships as the Flash codecs —
-//! PANIC on malformed input, and the workspace builds `panic = "abort"`, so they may only
-//! ever run in this throwaway process: a crash is a non-zero exit the parent shrugs at,
-//! never a dead Explorer. That is also why this module is compiled ONLY into the `st2k`
-//! console binary behind the EXE-only `flash-video` feature — `cargo tree -p
-//! sagethumbs2k-dll` must never list nihav or h263 (mirrors the webview2 arrangement).
+//! This is the CHILD side of `sagethumbs2k_core::flv::flash_frame` (see the parent module
+//! [`super`] for the shared containment story — memory cap, stdin/stdout, why these
+//! decoders can never run in the shell). The decoders here — nihav (VP6) and h263-rs
+//! (Sorenson), the exact crates Ruffle ships as the Flash codecs — PANIC on malformed
+//! input, which is the whole reason this process exists.
 //!
-//! Stdin/stdout on purpose (matching the ImageMagick child): a decoded frame of someone's
-//! video never touches the disk. H.264 input (codec id 7) is DECLINED — the in-process
-//! Media Foundation remux path owns it, and doing it here too would fork the behaviour.
+//! H.264 input (codec id 7) is DECLINED — the in-process Media Foundation remux path owns
+//! it, and doing it here too would fork the behaviour.
 //!
 //! The decode wiring mirrors Ruffle's `ruffle_video_software` decoders (the reference
 //! Flash implementation): the same VP56Decoder/H263State setup, the same macroblock-crop
@@ -19,109 +15,12 @@
 //! studio-swing BT.601, so `h263_rs_yuv::bt601` (which expands 16..235 to full range) is
 //! the faithful conversion for BOTH, whatever nihav's format tag nominally says.
 
-use std::io::{Cursor, Read, Write};
+use std::io::Cursor;
 
-use sagethumbs2k_core::flv::{
-    scan_flash_keyframe, FlashCodec, FlashScan, FLASH_INPUT_CAP, FLASH_MAX_DIM,
-};
-
-/// Hard cap on how much memory this child may commit, enforced by Windows itself.
-///
-/// A subprocess contains a CRASH. It does not, on its own, contain a MEMORY BOMB: a child
-/// quietly committing tens of gigabytes hurts the whole machine long before the CPU watchdog
-/// notices, because it burns almost no CPU doing it.
-///
-/// And that is reachable. h263-rs allocates the full luma + chroma planes the moment it parses
-/// a picture header, straight from a 16-bit custom width/height that a crafted Sorenson header
-/// may declare as 65535x65535 — roughly 8.6 GB from a few hundred bytes of input, before this
-/// module's own `check_dims` ever gets to run.
-///
-/// The obvious fix, pre-parsing those dimensions ourselves and refusing early, is the WRONG
-/// one: the size fields sit at a bit offset that depends on `recognize_start_code`'s scan for
-/// the picture start code, so a pre-check means re-implementing their bitstream search and
-/// getting it exactly right forever. Instead this bounds the whole process by mechanism, which
-/// also covers every other allocation site in either decoder — including the ones nobody has
-/// audited, which is the point.
-///
-/// Over the limit, the commit fails, Rust's allocator error handler aborts the child, and the
-/// parent sees a dead child and falls back to the stock icon: the same outcome as any other
-/// decode failure. 512 MiB is far above a legitimate frame (the 4096 px cap is ~67 MB of RGBA)
-/// and far below anything that troubles the machine.
-const CHILD_MEMORY_CAP: usize = 512 * 1024 * 1024;
-
-/// Put THIS process under a job-object memory cap, before a single byte of input is read.
-///
-/// Self-assignment is deliberate: capping from the parent would leave a window between
-/// `CreateProcess` and `AssignProcessToJobObject` in which the child is already running and
-/// could allocate, and `std::process::Command` cannot spawn suspended. Doing it here, first
-/// thing, closes that window entirely. Best-effort: on the (unexpected) failure path we carry
-/// on, because a missing cap is a smaller problem than refusing to thumbnail anything.
-fn cap_own_memory() {
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_PROCESS_MEMORY,
-    };
-    use windows::Win32::System::Threading::GetCurrentProcess;
-
-    unsafe {
-        let Ok(job) = CreateJobObjectW(None, None) else {
-            return;
-        };
-        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-        info.ProcessMemoryLimit = CHILD_MEMORY_CAP;
-        let ok = SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            core::ptr::addr_of!(info).cast(),
-            u32::try_from(core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                .unwrap_or(0),
-        )
-        .is_ok();
-        if ok {
-            let _ = AssignProcessToJobObject(job, GetCurrentProcess());
-        }
-    }
-}
-
-/// Entry point for the verb: returns the process exit code.
-pub fn run() -> i32 {
-    // FIRST, before any input is read: see `CHILD_MEMORY_CAP`.
-    cap_own_memory();
-    let mut flv = Vec::new();
-    // Cap + 1 so an over-cap stream is detected as such instead of being silently
-    // truncated into a "valid" but different file.
-    if std::io::stdin()
-        .lock()
-        .take((FLASH_INPUT_CAP + 1) as u64)
-        .read_to_end(&mut flv)
-        .is_err()
-    {
-        eprintln!("st2k flv-frame: could not read stdin");
-        return 1;
-    }
-    if flv.len() > FLASH_INPUT_CAP {
-        eprintln!("st2k flv-frame: input exceeds the {FLASH_INPUT_CAP}-byte cap");
-        return 1;
-    }
-    match frame_png(&flv) {
-        Ok(png) => {
-            let mut out = std::io::stdout().lock();
-            if out.write_all(&png).and_then(|()| out.flush()).is_err() {
-                return 1;
-            }
-            0
-        }
-        Err(why) => {
-            eprintln!("st2k flv-frame: {why}");
-            1
-        }
-    }
-}
+use sagethumbs2k_core::flv::{scan_flash_keyframe, FlashCodec, FlashScan, FLASH_MAX_DIM};
 
 /// The testable core: FLV bytes → PNG bytes of the first VP6/Sorenson keyframe.
-fn frame_png(flv: &[u8]) -> Result<Vec<u8>, String> {
+pub(super) fn frame_png(flv: &[u8]) -> Result<Vec<u8>, String> {
     let (codec, payload) = match scan_flash_keyframe(flv) {
         FlashScan::Keyframe(codec, payload) => (codec, payload),
         // H.264 belongs to the in-process FLV→mini-MP4→Media Foundation path; decoding it
@@ -267,6 +166,7 @@ fn crop_plane(data: &[u8], stride: usize, w: usize, h: usize) -> Option<Vec<u8>>
 
 #[cfg(test)]
 mod tests {
+    use super::super::CHILD_MEMORY_CAP;
     use super::*;
 
     /// A Sorenson picture header declaring a 16-bit custom size of 65535x65535.

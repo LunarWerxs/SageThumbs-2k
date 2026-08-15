@@ -14,7 +14,7 @@
 //! exist (the Ruffle Flash codecs). Those decoders PANIC on malformed input and this crate
 //! builds `panic = "abort"`, so they must never run inside Explorer: [`flash_frame`] spawns
 //! the sibling `st2k.exe` with the FLV bytes on stdin and reads a PNG back — the crash, if
-//! any, dies in a throwaway child (`src/bin/flvdec`). Other ids still return `None` cleanly.
+//! any, dies in a throwaway child (`src/bin/vdec`). Other ids still return `None` cleanly.
 //!
 //! This parses UNTRUSTED bytes in-process (`panic = "abort"` inside explorer.exe), hence:
 //! no indexing, no unwraps, checked arithmetic on every file-supplied length, a strictly
@@ -320,7 +320,13 @@ pub(crate) fn flash_frame<R: Read + Seek>(r: &mut R) -> Option<image::DynamicIma
     r.take(total.min(FLASH_INPUT_CAP as u64))
         .read_to_end(&mut flv)
         .ok()?;
-    let png = flash_child_png(&flv)?;
+    let png = child_frame_png(
+        "flv-frame",
+        &flv,
+        FLASH_CPU_BUDGET,
+        FLASH_WALL_CEILING,
+        FLASH_PNG_CAP,
+    )?;
     // Bounded parse of OUR OWN child's output: the PNG is size-capped above and the child
     // caps its frame at FLASH_MAX_DIM², so this in-process decode is small by construction;
     // the dimension re-check makes that a verified property, not an assumption.
@@ -336,15 +342,23 @@ pub(crate) fn flash_frame<R: Read + Seek>(r: &mut R) -> Option<image::DynamicIma
     Some(img)
 }
 
-/// Run `st2k flv-frame` with `flv` on stdin, returning its PNG stdout. Mirrors the
+/// Run a hidden `st2k <verb>` decode child with `input` on stdin, returning its PNG stdout.
+/// Shared by the FLV Flash-codec tier here and the VP9 Profile 2/3 tier (`crate::vp9`), so
+/// the two out-of-process decoders can't drift on the containment mechanics. Mirrors the
 /// ImageMagick child harness in `decode/magick.rs`: stdin fed from its own thread, stdout
 /// read on another, a CPU-budget watchdog with a wall-clock backstop, an unconditional
 /// kill before the joins so a wedged child can't hang the (shell-hosted) caller, and the
 /// shared cross-process gate bounding concurrent children.
-fn flash_child_png(flv: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn child_frame_png(
+    verb: &'static str,
+    input: &[u8],
+    cpu_budget: Duration,
+    wall_ceiling: Duration,
+    png_cap: usize,
+) -> Option<Vec<u8>> {
     let exe = crate::sibling_of_dll(crate::CLI_EXE)?;
     let mut cmd = Command::new(exe);
-    cmd.arg("flv-frame")
+    cmd.arg(verb)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // the child logs its own failures via the panic hook/log
@@ -356,7 +370,7 @@ fn flash_child_png(flv: &[u8]) -> Option<Vec<u8>> {
 
     // Feed stdin on its own thread so a full stdout pipe can't deadlock us.
     let mut stdin = child.stdin.take()?;
-    let input = flv.to_vec();
+    let input = input.to_vec();
     let writer = std::thread::spawn(move || {
         let _ = stdin.write_all(&input);
         // drop(stdin) closes the pipe so the child sees EOF
@@ -365,12 +379,11 @@ fn flash_child_png(flv: &[u8]) -> Option<Vec<u8>> {
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = std::io::Read::take(&mut stdout, (FLASH_PNG_CAP + 1) as u64).read_to_end(&mut buf);
+        let _ = std::io::Read::take(&mut stdout, (png_cap + 1) as u64).read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
 
-    let png =
-        crate::decode::await_child_output(&mut child, &rx, FLASH_CPU_BUDGET, FLASH_WALL_CEILING);
+    let png = crate::decode::await_child_output(&mut child, &rx, cpu_budget, wall_ceiling);
     // Kill unconditionally (no-op if exited): a child that closed stdout but stopped
     // draining stdin would otherwise block writer.join() forever.
     let _ = child.kill();
@@ -378,15 +391,15 @@ fn flash_child_png(flv: &[u8]) -> Option<Vec<u8>> {
     let _ = reader.join();
     let status = child.wait().ok();
     match png {
-        Ok(png) if !png.is_empty() && png.len() <= FLASH_PNG_CAP => Some(png),
+        Ok(png) if !png.is_empty() && png.len() <= png_cap => Some(png),
         Ok(_) => {
             crate::safety::log_debug(&format!(
-                "flv flash decode: child produced no/oversized output (status {status:?})"
+                "{verb} decode: child produced no/oversized output (status {status:?})"
             ));
             None
         }
         Err(why) => {
-            crate::safety::log_debug(&format!("flv flash decode: {why} (status {status:?})"));
+            crate::safety::log_debug(&format!("{verb} decode: {why} (status {status:?})"));
             None
         }
     }

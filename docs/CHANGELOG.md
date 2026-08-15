@@ -17,6 +17,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   decoders run in a separate, short-lived helper process, so even a corrupt or deliberately
   malformed video can only lose you that one thumbnail; it cannot disturb File Explorer.
   Raised by @taylor-p-mason (#26).
+- **HDR video thumbnails (VP9 Profile 2 and 3).** 10-bit and 12-bit VP9, the kind used for
+  HDR and 4K streaming, never produced a thumbnail: Windows decodes only the ordinary 8-bit
+  kind, and that is still true even with Microsoft's free VP9 extension installed and a
+  graphics card that can do it in hardware. SageThumbs now decodes those itself.
+
+  Ordinary 8-bit VP9 is untouched and still goes to Windows, which is faster and uses your
+  graphics card. The built-in decoder only runs when Windows has already declined, and it
+  runs in a separate short-lived process, so a corrupt file costs you one thumbnail rather
+  than disturbing File Explorer. Raised by @taylor-p-mason (#26).
 - **Android app packages now show their real icon.** `.apk` files, and the split-bundle
   wrappers `.xapk`, `.apks` and `.apkm`, get the launcher icon the app actually declares
   rather than a generic file icon. An APK is a zip, so simply picking an image out of it

@@ -401,6 +401,17 @@ if (-not $SkipDownloads) {
         # Without a VP6 file here the VP6 half rested entirely on manual checking.
         # SHA-256: F61D4A1696000CBB6D1E6A8BD7E4682656DA3AD017C49FD6D7C47A7F28D8AEFE
         'sample-vp6.flv'  = 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv'
+        # VP9 Profile 2 (10-bit 4:2:0) + Profile 3 (12-bit 4:4:4) WebM, from FFmpeg's own
+        # FATE conformance vectors. Media Foundation cannot decode these AT ALL (verified
+        # with the Store VP9 extension installed and a capable GPU present), so they
+        # exercise the out-of-process `st2k vp9-frame` tier (pure-Rust vp9dec) — the last
+        # open codec of issue #26. A plain .webm sample already exists (generated below);
+        # these two are extra for the same reason .flv carries two: one extension, several
+        # codepaths.
+        # SHA-256: C4B56B148D5039AA824FDE3D4877DBD2604D0DE7F77AF96F4BA1ADE537396A38
+        'sample-vp9p2.webm' = 'https://fate-suite.ffmpeg.org/vp9-test-vectors/vp92-2-20-10bit-yuv420.webm'
+        # SHA-256: E758190A9A4A75E5F35C370FC6C362C56B66AAAFE9FBC981747B5CC59C68B903
+        'sample-vp9p3.webm' = 'https://fate-suite.ffmpeg.org/vp9-test-vectors/vp93-2-20-12bit-yuv444.webm'
         # Android package (container/apk.rs): a REAL apk, because the whole point of that
         # extractor is resolving the launcher icon the manifest names through the compiled
         # resource table, and a synthesised one only proves the parser reads what we wrote.
