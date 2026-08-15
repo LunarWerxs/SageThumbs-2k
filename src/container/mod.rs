@@ -203,7 +203,7 @@ fn blend_compressed_head(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut reader: Box<dyn Read + '_> = if bytes.starts_with(&[0x1F, 0x8B]) {
         Box::new(flate2::read::GzDecoder::new(bytes))
     } else if bytes.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
-        Box::new(ruzstd::StreamingDecoder::new(bytes).ok()?)
+        Box::new(ruzstd::decoding::StreamingDecoder::new(bytes).ok()?)
     } else {
         return None;
     };

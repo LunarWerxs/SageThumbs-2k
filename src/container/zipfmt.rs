@@ -181,7 +181,10 @@ pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
 /// flag, so those names get CP437-decoded into mojibake even though the crate followed the flag
 /// correctly. `read_named`/`by_name` lookups must keep using `f.name()` verbatim (it's the
 /// crate's own index key); this override is for display/selection only.
-fn entry_display_name(f: &zip::read::ZipFile<'_>) -> String {
+// `ZipFile` gained a reader type parameter in zip 8 (`ZipFile<'a, R: Read + ?Sized>`), so this
+// is generic over it rather than over one concrete reader. `?Sized` is required: the crate hands
+// out `ZipFile<'_, dyn Read>` on some paths.
+fn entry_display_name<R: std::io::Read + ?Sized>(f: &zip::read::ZipFile<'_, R>) -> String {
     prefer_utf8(f.name_raw(), f.name())
 }
 

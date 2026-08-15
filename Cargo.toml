@@ -98,7 +98,7 @@ exr = { version = "=1.74.2", default-features = false }
 # wrong). NOT a new dependency — `image` (and `jxl-oxide`) ALREADY pull moxcms 0.8
 # transitively, so naming it here shares the same compiled crate = zero added bytes.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
-moxcms = "0.8"
+moxcms = "0.9"
 # CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
 # → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
 # `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
@@ -113,7 +113,7 @@ serde_json = "1"
 # (VIEWER / EXE-only). Pure-Rust, MIT, small — chosen over a WebView2 host to keep the binary
 # lean + the render `--shot`-verifiable. Referenced ONLY from `src/bin/app/preview/**`, so LTO
 # dead-strips it from the DLL. default-features off drops the `getopts` CLI bits.
-pulldown-cmark = { version = "0.12", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
 # Lossless metadata strip (rewrite JPEG segments / PNG chunks, no pixel re-encode).
 # Pure-Rust, MIT OR Apache-2.0. Adds `bytes` as the only new transitive crate.
 img-parts = "0.4"
@@ -127,7 +127,7 @@ webp = { version = "0.3", default-features = false, optional = true }
 # default-features off: we render with `usvg::Options::default()` and never load a
 # fontdb, so `text`/`system-fonts`/`memmap-fonts` are dead weight, and we don't need
 # the `raster-images` (<image>-tag) decoder. Shapes/paths/gradients still render.
-resvg = { version = "0.47", default-features = false }
+resvg = { version = "0.48", default-features = false }
 windows-registry = "0.6"
 # NOT unused despite what cargo-machete says: the `#[implement]` macro from
 # windows-implement EXPANDS to code that references `windows_core::` paths, so the
@@ -146,18 +146,25 @@ webview2-com = { version = "0.39", optional = true }
 # --- Ebook / comic-archive cover extraction (the DarkThumbs port) ---
 # All pure-Rust, MIT/Apache. We only ever READ zip members, so we want inflate
 # without the zopfli *encoder*. zip's umbrella `deflate` feature hardcodes both
-# `flate2/rust_backend` AND `deflate-zopfli`. Instead: `deflate-flate2` selects
-# the flate2 read path, the implicit `flate2` feature activates zip's optional
-# flate2 dependency (which zip declares with default-features = false), and the
-# direct flate2 dep below supplies its pure-Rust `rust_backend` (miniz_oxide) via
-# feature unification — C-free, and no zopfli.
-zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
+# `deflate-zopfli` AND a zlib backend. Instead: `deflate-flate2` selects the flate2
+# read path and activates zip's optional flate2 dependency, and the direct flate2 dep
+# below supplies its pure-Rust `rust_backend` (miniz_oxide) via feature unification —
+# C-free, and no zopfli.
+#
+# The companion `"flate2"` feature that used to sit here is GONE as of zip 8: the crate
+# moved that optional dependency to `dep:` syntax, which removes the implicit feature of
+# the same name, and naming it is now a hard resolver error rather than a no-op. It is
+# also redundant, because `deflate-flate2 = ["_deflate-any", "dep:flate2"]` already turns
+# the dependency on. Verified against zip 8.6.0's own manifest: neither `deflate-zopfli`
+# nor any `deflate-flate2-zlib*` variant is reachable from what we ask for, so the
+# C-free/no-zopfli property this comment exists to protect still holds.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # Autodesk Fusion 360 `.f3d` stores its preview PNG as a zstd-compressed ZIP entry,
 # which the `zip` crate can't inflate without the zstd C lib. `ruzstd` is a pure-Rust,
 # decode-only zstd implementation (MIT OR Apache-2.0) — keeps the build C-free.
-ruzstd = "0.7"
-base64 = "0.22"
+ruzstd = "0.9"
+base64 = "0.23"
 encoding_rs = "0.8"
 percent-encoding = "2"
 # 7-Zip (cb7 + generic .7z) — pure-Rust. `default-features = false` is LOAD-BEARING:
@@ -169,14 +176,14 @@ percent-encoding = "2"
 sevenz-rust2 = { version = "0.21", default-features = false }
 # Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
 # Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
-lofty = "0.22"
+lofty = "0.25"
 # RAR (cbr) cover decode — the PURE-RUST `rars` crate (MIT OR Apache-2.0, no C, no
 # proprietary UnRAR, `#![forbid(unsafe_code)]`). Validated byte-identical to UnRAR on
 # real RAR3/RAR5 + a real comic. Replaces the old optional `unrar` C++ dep (2026-06-15),
 # so `.cbr` now works in the DEFAULT build and there's no longer a non-permissive piece
 # anywhere. Default features only (the `fast`=SIMD/nightly and `parallel`=rayon features
 # are left off). Reads from memory, so no `tempfile` spill is needed either.
-rars = "0.2"
+rars = "0.6"
 # DjVu (.djvu) cover decode — the maintained pure-Rust `djvu-rs` codec (MIT, C-free,
 # fuzzed). Replaced our hand-rolled zp/iw44/jb2/djvu stack (2026-06-14): deletes ~2,400
 # lines of our own arithmetic-coder/wavelet/bilevel code + gains full multipage support.
@@ -191,7 +198,7 @@ rars = "0.2"
 # bump to 0.26 sheds `jpeg-encoder` + `zopfli` (+ its runtime `bumpalo`) from the DLL and
 # restores our C-free/no-zopfli `zip`. Decode-only otherwise (no image/tiff/epub/jpeg
 # export, no OCR/async/cli/parallel/serde/mmap).
-djvu-rs = { version = "0.26", default-features = false, features = ["std"] }
+djvu-rs = { version = "0.27", default-features = false, features = ["std"] }
 # JPEG XL (.jxl) decode — the pure-Rust `jxl-oxide` crate (MIT OR Apache-2.0, C-free).
 # jxl is an ADVERTISED format (formats.rs) but neither the `image` crate nor WIC decode
 # it, and build-release.ps1 strips the jxl coder out of the bundled magick — so without
@@ -257,7 +264,7 @@ sevenz-rust2 = { version = "0.21", default-features = false, features = ["compre
 embed-manifest = "1.4"
 # Build-time only: parse locales/*.toml into a static table. No runtime TOML
 # parser ships in the DLL — translations are baked in as &'static str.
-toml = "0.8"
+toml = "1"
 # VERSIONINFO (FileVersion/ProductVersion = pkg version, ProductName "SageThumbs
 # 2K") is embedded by build.rs's own windres pass — folded into the existing
 # manifest+icon .rc for the EXEs, and a separate `rustc-link-arg-cdylib` object

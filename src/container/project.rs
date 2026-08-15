@@ -126,7 +126,7 @@ fn read_suffix<R: Read + Seek>(zip: &mut ZipArchive<R>, suffix_lc: &str) -> Opti
         .take(super::MAX_COVER)
         .read_to_end(&mut raw)
         .ok()?;
-    let mut dec = ruzstd::StreamingDecoder::new(raw.as_slice()).ok()?;
+    let mut dec = ruzstd::decoding::StreamingDecoder::new(raw.as_slice()).ok()?;
     let mut out = Vec::new();
     dec.by_ref()
         .take(super::MAX_COVER)

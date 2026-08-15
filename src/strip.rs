@@ -608,7 +608,10 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
     out.title = tag.title().and_then(clean);
     out.track = tag.track();
     out.genre = tag.genre().and_then(clean);
-    out.year = tag.year();
+    // lofty 0.25 replaced `Accessor::year()` with `date() -> Option<Timestamp>`, which reads
+    // the same underlying fields (`RecordingDate`, falling back to `Year`) and then parses
+    // them. We only ever wanted the year, so take that component back off.
+    out.year = tag.date().map(|d| u32::from(d.year));
     out
 }
 
