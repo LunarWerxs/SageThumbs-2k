@@ -411,6 +411,52 @@ pub fn set_dword(name: &str, value: u32) -> windows_registry::Result<()> {
     CURRENT_USER.create(hkcu_root())?.set_u32(name, value)
 }
 
+/// Delete a DWORD so the setting goes back to TRACKING its default. Best-effort — "absent"
+/// is the goal state, so a value that was already missing is success.
+///
+/// Uses `create`, not `open`, on purpose: `open` hands back a READ-ONLY key and `remove_value`
+/// on one fails *silently*. That exact mistake made `typeoverlay::remove_progid` a no-op in
+/// production once; the comment there is the full story. `create` on an existing key just
+/// opens it for writing.
+pub fn remove_dword(name: &str) {
+    if store::portable() {
+        store::remove_value(None, name);
+        return;
+    }
+    if let Ok(key) = CURRENT_USER.create(hkcu_root()) {
+        let _ = key.remove_value(name);
+    }
+}
+
+/// Persist a DWORD that HAS a default, storing it only when it genuinely differs.
+///
+/// **A value equal to its default is not a customization.** The nav rail already asserts
+/// exactly that (`page_has_non_defaults` drives the "you changed something here" dot), but
+/// persistence disagreed: the Settings dialog's `apply()` writes every setting on every OK,
+/// touched or not. So the moment anyone opened Settings and clicked OK, they froze a snapshot
+/// of whatever the defaults happened to be that day, and **no future default change could ever
+/// reach them** — the code would keep reading their stored copy of the old number forever.
+///
+/// That is not a hypothetical. `MaxSize` shipped in 1.12.0 defaulting to exactly the engine's
+/// buffering ceiling, which made the oversized-file rescue unreachable by construction (see
+/// [`DEFAULT_MAX_FILE_MB`]). Raising the default repairs it for everyone whose value is ABSENT,
+/// and keeping it absent is this function's whole job.
+///
+/// **Removing rather than merely skipping the write is the load-bearing half.** A user who
+/// moves a setting away from the default and then back must end with no stored value, not a
+/// stale one — skipping would leave the old number in place and silently ignore the change.
+pub fn set_dword_tracking_default(
+    name: &str,
+    value: u32,
+    default: u32,
+) -> windows_registry::Result<()> {
+    if value == default {
+        remove_dword(name);
+        return Ok(());
+    }
+    set_dword(name, value)
+}
+
 /// Read an arbitrary string value from the root key, or `None` when unset/empty. The typed
 /// accessors below cover everything this module owns; this pair exists for callers that keep
 /// their own value in the same root (the screenshot tool's remembered custom colours), so
@@ -740,7 +786,11 @@ pub fn video_offset_pct() -> u32 {
 }
 
 pub fn set_video_offset_pct(pct: u32) -> windows_registry::Result<()> {
-    set_dword("VideoOffset", clamp_video_offset_pct(pct))
+    set_dword_tracking_default(
+        "VideoOffset",
+        clamp_video_offset_pct(pct),
+        DEFAULT_VIDEO_OFFSET_PCT,
+    )
 }
 
 /// The same value as the fraction every seek site actually wants.
@@ -1557,5 +1607,79 @@ mod tests {
     fn unknown_format_defaults_enabled() {
         // A made-up extension nobody configured is enabled by default.
         assert!(format_enabled("zzz_definitely_not_configured"));
+    }
+}
+
+#[cfg(test)]
+mod tracking_default_tests {
+    use super::*;
+
+    /// A tuning number equal to its default must leave NO stored value behind, and a value
+    /// changed away and back again must remove the stale one rather than skip the write.
+    ///
+    /// This is the mechanism that lets a default ever be reconsidered. The Settings dialog
+    /// writes every setting on every OK whether or not it was touched, so before this a plain
+    /// `set_dword` froze each value at the default of the day the user first pressed OK, and no
+    /// later default change could reach them. `MaxSize` is the case that proved it: it shipped
+    /// defaulting to exactly the engine's buffering ceiling, which made the oversized-file
+    /// rescue unreachable, and the repair is a raised DEFAULT that only lands where the value
+    /// is absent.
+    ///
+    /// Runs against a scratch HKCU subkey via `ST2K_SETTINGS_ROOT` (see `hkcu_root`), so it
+    /// never touches the developer's real settings — and `hkcu_root` caches on first use, so
+    /// the variable is set before anything else in this process reads it.
+    #[test]
+    fn a_value_equal_to_its_default_is_stored_as_absent() {
+        const NAME: &str = "St2kTrackingDefaultProbe";
+        const DEFAULT: u32 = 4096;
+
+        // Skip rather than fail if another test in this binary already resolved the root: the
+        // cache is process-wide and by design, so racing it would be the test's bug, not the
+        // code's. In practice `--lib` runs this in its own process alongside pure-helper tests.
+        if std::env::var("ST2K_SETTINGS_ROOT").is_err() {
+            let scratch = format!(r"{ROOT}\TestScratch{}", std::process::id());
+            unsafe { std::env::set_var("ST2K_SETTINGS_ROOT", &scratch) };
+        }
+
+        // Start clean, whatever a previous run left.
+        remove_dword(NAME);
+        assert_eq!(get_dword_opt(NAME), None, "precondition: nothing stored");
+
+        // Equal to the default -> nothing is written, and reads still see the default.
+        set_dword_tracking_default(NAME, DEFAULT, DEFAULT).expect("write");
+        assert_eq!(
+            get_dword_opt(NAME),
+            None,
+            "a value equal to its default must not be persisted, or the default is frozen"
+        );
+        assert_eq!(get_dword(NAME, DEFAULT), DEFAULT);
+        // ...and it therefore TRACKS a later default change, which is the entire point.
+        assert_eq!(
+            get_dword(NAME, 9999),
+            9999,
+            "an absent value follows the default"
+        );
+
+        // Different from the default -> stored, and read back exactly.
+        set_dword_tracking_default(NAME, 512, DEFAULT).expect("write");
+        assert_eq!(get_dword_opt(NAME), Some(512));
+        assert_eq!(
+            get_dword(NAME, 9999),
+            512,
+            "an explicit choice outranks the default"
+        );
+
+        // Back to the default -> the stale value must be REMOVED, not merely left unwritten.
+        // Skipping instead of deleting here is the subtle bug this assertion exists to catch:
+        // the user's change back would be silently ignored and 512 would persist forever.
+        set_dword_tracking_default(NAME, DEFAULT, DEFAULT).expect("write");
+        assert_eq!(
+            get_dword_opt(NAME),
+            None,
+            "moving a setting back to its default must clear the stored override"
+        );
+        assert_eq!(get_dword(NAME, 9999), 9999);
+
+        remove_dword(NAME);
     }
 }

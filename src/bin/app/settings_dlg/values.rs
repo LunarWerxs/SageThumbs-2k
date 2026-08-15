@@ -449,15 +449,29 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     );
     let _ = settings::set_dword("ArchiveCollage", checked(hwnd, ID_C_ARCHIVE_SHEET) as u32);
 
+    // The three TUNING NUMBERS go through `set_dword_tracking_default`, which stores them only
+    // when they differ from the default and DELETES them when they match. This dialog writes
+    // every setting on every OK whether or not it was touched, so a plain `set_dword` here
+    // pinned each value at whatever the default was on the day the user first clicked OK — and
+    // no later default change could reach them. `MaxSize` is why that matters: it shipped
+    // defaulting to exactly the engine's buffering ceiling, which made the oversized-file
+    // rescue unreachable, and the repair is a raised DEFAULT that only lands on users whose
+    // value is absent. See `settings::set_dword_tracking_default`.
+    //
+    // Deliberately NOT applied to the checkboxes on this page. Their defaults are product
+    // decisions that do not get retuned, and each polarity would have to be re-derived by hand
+    // from its accessor — getting one wrong silently INVERTS a setting for every user who ever
+    // pressed OK, which is a far worse failure than the one being fixed.
     let mut ok = Default::default();
     let max_mb = GetDlgItemInt(hwnd, ID_MAXSIZE, Some(&mut ok), false);
-    let _ = settings::set_dword(
+    let _ = settings::set_dword_tracking_default(
         "MaxSize",
         if ok.as_bool() {
             max_mb
         } else {
             settings::DEFAULT_MAX_FILE_MB
         },
+        settings::DEFAULT_MAX_FILE_MB,
     );
 
     let size = GetDlgItemInt(hwnd, ID_SIZE, Some(&mut ok), false);
@@ -466,8 +480,8 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     } else {
         settings::DEFAULT_THUMB_SIZE
     };
-    let _ = settings::set_dword("Width", size);
-    let _ = settings::set_dword("Height", size);
+    let _ = settings::set_dword_tracking_default("Width", size, settings::DEFAULT_THUMB_SIZE);
+    let _ = settings::set_dword_tracking_default("Height", size, settings::DEFAULT_THUMB_SIZE);
 
     // How far into a video the thumbnail frame comes from (issue #26.4). An empty or
     // non-numeric box restores the default rather than silently meaning 0 %, which would give
