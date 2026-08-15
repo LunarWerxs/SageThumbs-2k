@@ -64,13 +64,23 @@ jobs:
             Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
           & $windres --version
 
+      # ACTION PINS ARE MAINTAINED BY HAND - there is deliberately no .github/dependabot.yml
+      # (removed 2026-08-14, owner directive). Pin every action to the commit sha OF A RELEASE
+      # TAG, with the tag in the trailing comment, and bump them during a release pass.
+      # Dependabot was worse than nothing here: it proposed the CURRENT HEAD of the action's
+      # default branch, not the newest release. Its open PR moved rust-cache from an untagged
+      # March main commit to an untagged August main commit - unreviewed, unreleased code
+      # granted the same trust as a release, which is the exact supply-chain exposure that
+      # pinning by sha is supposed to remove. Resolve the sha from the tag instead:
+      #   gh api repos/<owner>/<repo>/tags --jq '.[0:3][] | "\(.name)\t\(.commit.sha)"'
+      #
       # Swatinem/rust-cache keys on the rustc version + Cargo.lock + job AND prunes
       # stale build artifacts before saving. The old hashFiles(Cargo.lock)-only
       # actions/cache did neither: it restored a wholesale `target/` across commits
       # (same key when Cargo.lock is unchanged), which accumulated into an intermittent
       # release-LTO link error ("unresolved external symbol core::panicking::assert_failed").
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Build the exact two production feature sets in the same order as
       # build-release.ps1: full EXEs first, then the menu-translation-subset DLL.
@@ -171,7 +181,7 @@ jobs:
             Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
           & $windres --version
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # The runner image ships Inno Setup; install it only if that ever changes.
       - name: Ensure Inno Setup
         shell: pwsh
@@ -221,7 +231,7 @@ jobs:
           rustup run stable-aarch64-pc-windows-msvc rustc -vV
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # No --release and no ImageMagick staging: this is the engine-less runtime
       # path. The explicit target keeps artifacts separate from x64 and makes
@@ -415,7 +425,7 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: DWA library tests
         run: 'cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --lib compression::dwa::'
       - name: DWAA and DWAB roundtrips

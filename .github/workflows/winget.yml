@@ -78,6 +78,16 @@ jobs:
       # gracefully instead of failing every release. Once the package exists, this passes
       # through and auto-publishes with zero changes. Manifests live at
       # manifests/<first-letter-lowercased>/<Publisher>/<Package>/.
+      #
+      # ONLY 404 MEANS "NOT ONBOARDED". Everything else that is not 200 is a broken setup,
+      # and it MUST fail the job (2026-08-14). This step used to treat every non-200 as
+      # "not yet onboarded" and skip the whole workflow with a green tick. WINGET_TOKEN then
+      # expired, this call started answering 401, and NINE consecutive releases (1.8.2
+      # through 1.12.0) silently never reached winget while every run reported success —
+      # `release.ps1` watches the run, so a green run told it the submission had happened.
+      # winget users sat on 1.8.1 for a week, on a build whose one-click self-updater was
+      # itself broken (fixed in 1.10.1), so they had no working way off it at all.
+      # A skip that cannot be distinguished from a success is not a safe default.
       - name: Check the package is onboarded to winget-pkgs
         id: onboarded
         shell: bash
@@ -86,12 +96,23 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/l/LunarWerxs/SageThumbs2K")
-          if [ "$code" = "200" ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=winget skipped::LunarWerxs.SageThumbs2K not yet in winget-pkgs (HTTP $code) — auto-publish resumes once the first submission is merged."
-          fi
+          case "$code" in
+            200)
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              echo "::notice title=winget skipped::LunarWerxs.SageThumbs2K not yet in winget-pkgs (HTTP 404) — auto-publish resumes once the first submission is merged."
+              ;;
+            401|403)
+              echo "::error title=WINGET_TOKEN is dead::GitHub answered HTTP $code for a PUBLIC repository's contents, which only happens when the credential itself is rejected — WINGET_TOKEN is expired, revoked, or malformed. Nothing was submitted to winget. Fix: mint a new fine-grained PAT (Contents + Workflows + Pull requests, read-write, on all LunarWerxs repos), set it as the WINGET_TOKEN secret, then re-run this workflow with the release tag."
+              exit 1
+              ;;
+            *)
+              echo "::error title=winget onboarding check failed::Unexpected HTTP $code from api.github.com. Nothing was submitted to winget. Re-run this workflow with the release tag once the cause is known."
+              exit 1
+              ;;
+          esac
 
       # Komac needs the fork to push its branch to. Check it up front so a missing fork is
       # reported as a missing fork, with the command that fixes it.

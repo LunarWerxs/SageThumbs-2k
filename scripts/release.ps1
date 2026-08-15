@@ -426,10 +426,30 @@ try {
                 ConvertFrom-Json | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
             if ($wgRun -and $wgRun.status -eq 'completed') { break }
         }
+        # VERIFY THE OUTCOME, NOT THE EXIT CODE. A green run is not evidence a submission
+        # happened: the onboarding guard used to swallow a dead WINGET_TOKEN as "not onboarded"
+        # and skip every remaining step, so the job finished green having done nothing, and
+        # this line reported "submitted OK" for 1.8.2 through 1.12.0 while winget users stayed
+        # on 1.8.1 for a week. The guard now hard-fails on 401/403 (see winget.yml), and this
+        # asks the only question that actually settles it: is there a pull request for THIS
+        # version against microsoft/winget-pkgs? Both halves matter — the guard stops the lie
+        # at the source, this stops trusting the run's own verdict about itself.
+        $wgPr = $null
+        if ($wgRun -and $wgRun.status -eq 'completed') {
+            $wgPr = gh pr list --repo microsoft/winget-pkgs --state all --limit 30 `
+                --search "LunarWerxs.SageThumbs2K version $ver in:title" `
+                --json number, url, state 2>$null | ConvertFrom-Json | Select-Object -First 1
+        }
         if (-not $wgRun) {
             Write-Host "[winget] no run found for $tag yet - check Actions before assuming it published." -ForegroundColor Yellow
+        } elseif ($wgPr) {
+            Write-Host "[winget] submitted OK - PR #$($wgPr.number) ($($wgPr.state)) against microsoft/winget-pkgs: $($wgPr.url)" -ForegroundColor DarkGray
         } elseif ($wgRun.conclusion -eq 'success') {
-            Write-Host "[winget] submitted OK - a PR is open against microsoft/winget-pkgs." -ForegroundColor DarkGray
+            # Green run, no pull request. The run did nothing and said nothing was wrong.
+            Write-Host "[winget] RUN WENT GREEN BUT NO PULL REQUEST EXISTS FOR $ver." -ForegroundColor Red
+            Write-Host "  The submission did NOT happen. winget users stay on the previous version." -ForegroundColor Red
+            Write-Host "  log: $($wgRun.url)" -ForegroundColor Red
+            Write-Host "  recover with: pwsh scripts\winget-submit.ps1 -Version $ver" -ForegroundColor Yellow
         } else {
             # The usual failure is now the LAST step only: Komac pushes its manifest branch to
             # the fork fine, then cannot open the pull request. That is not a fixable permission
@@ -450,6 +470,7 @@ try {
             if (-not $branch) {
                 Write-Host "  no manifest branch for $ver on the fork - Komac failed EARLIER than the PR step." -ForegroundColor Yellow
                 Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
+                Write-Host "  recover with: pwsh scripts\winget-submit.ps1 -Version $ver" -ForegroundColor Yellow
             } elseif ($existing -and [int]$existing -gt 0) {
                 Write-Host "  a PR from $branch is already open - nothing to do." -ForegroundColor DarkGray
             } else {
