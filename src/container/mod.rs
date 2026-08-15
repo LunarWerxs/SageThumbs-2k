@@ -69,6 +69,11 @@ mod zipfmt;
 // module docs for why CI needed this at all.
 #[cfg(test)]
 pub(crate) mod fuzzseed;
+// Test-only re-export so `crate::fuzz` can aim at the APK sub-parsers directly (a zip's CRC
+// check stops any mutation from reaching them through `apk::extract` — see `fuzz::inner_targets`).
+// The format modules themselves stay private to `container`.
+#[cfg(test)]
+pub(crate) use apk::fuzzapi as apk_fuzzapi;
 
 /// A cover: either raw image-file bytes (re-decoded by the image tiers) or
 /// already-decoded pixels (DjVu, which is not a standalone image file).

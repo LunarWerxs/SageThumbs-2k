@@ -431,6 +431,38 @@ fn sps_dims(cfg: &[u8]) -> Option<(u16, u16)> {
     parse_sps(&rbsp)
 }
 
+/// Direct fuzz entry points into the H.264 bitstream readers. Test-only.
+///
+/// The container walk above rejects a tag whose sizes stop adding up, so a mutation to an FLV
+/// only reaches the SPS reader if it happened to leave every tag length intact — which filters
+/// out most of the mutations worth trying against Exp-Golomb code. These hand the bit readers
+/// their own bytes. Same argument as `crate::container::apk::fuzzapi`.
+#[cfg(test)]
+pub(crate) mod fuzzapi {
+    /// The AVCDecoderConfigurationRecord geometry reader (the whole record).
+    pub(crate) fn sps_dims(cfg: &[u8]) {
+        let _ = super::sps_dims(cfg);
+    }
+
+    /// The SPS itself: unbounded-width Exp-Golomb over attacker-controlled bits, plus the
+    /// scaling-list walk and the frame-cropping arithmetic behind it.
+    pub(crate) fn parse_sps(rbsp: &[u8]) {
+        let _ = super::parse_sps(rbsp);
+    }
+
+    /// The emulation-prevention unescaper, which sizes an allocation from the input.
+    pub(crate) fn strip_emulation_prevention(b: &[u8]) {
+        let _ = super::strip_emulation_prevention(b);
+    }
+
+    /// The same geometry read, RETURNING its answer, so the fuzz seed self-check can assert
+    /// the `h264-avcc` seed still parses to its known dimensions instead of merely not
+    /// panicking. (The target above discards, deliberately: it asserts robustness.)
+    pub(crate) fn sps_dims_ret(cfg: &[u8]) -> Option<(u16, u16)> {
+        super::sps_dims(cfg)
+    }
+}
+
 /// Remove H.264 emulation-prevention bytes: any 0x03 that follows two 0x00s is an escape,
 /// not data.
 fn strip_emulation_prevention(b: &[u8]) -> Vec<u8> {
@@ -881,6 +913,40 @@ mod tests {
             scan_flash_keyframe(&bytes),
             FlashScan::Keyframe(FlashCodec::Sorenson, _)
         ));
+    }
+
+    /// The corpus `sample-h264.flv` is a REAL H.264 FLV, and it must take the in-process
+    /// mini-MP4 remux — never the helper process.
+    ///
+    /// `real_h264_flv_round_trips_through_mediafoundation` below already exercises this path,
+    /// but it BUILDS its input: it lifts a genuine avcC and keyframe out of `sample.mp4` and
+    /// wraps them in an FLV this test file wrote. That proves the muxer and the Media
+    /// Foundation hand-off, and it cannot prove we read the tag layout a real Flash encoder
+    /// emits — the half that faces users, and the codec behind the original "FLVs are blank"
+    /// report. So this reads a file made by someone else's encoder.
+    ///
+    /// The `OtherCodec(7)` assertion is the load-bearing one: it is what keeps H.264 OFF the
+    /// spawned-child tier. If it ever became a `Keyframe`, every H.264 FLV — the commonest
+    /// kind — would cost a process per thumbnail while still looking perfectly correct.
+    #[test]
+    fn corpus_h264_flv_remuxes_in_process() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-corpus")
+            .join("sample-h264.flv");
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("corpus_h264_flv: no sample-h264.flv — skipping");
+            return;
+        };
+        assert_eq!(video_codec_id(&mut Cursor::new(&bytes)), Some(7));
+        assert!(
+            matches!(scan_flash_keyframe(&bytes), FlashScan::OtherCodec(7)),
+            "H.264 must be deferred by the Flash scanner, not decoded out of process"
+        );
+        let mp4 = keyframe_mini_mp4(&mut Cursor::new(&bytes))
+            .expect("a real H.264 FLV must remux to a mini-MP4");
+        assert!(mp4.len() > 64, "mini-MP4 implausibly small: {}", mp4.len());
+        assert_eq!(&mp4[4..8], b"ftyp", "mini-MP4 must start with an ftyp box");
     }
 
     // --- The Flash-codec (VP6/Sorenson) probe + scan -----------------------------------------

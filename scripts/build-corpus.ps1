@@ -393,14 +393,22 @@ if (-not $SkipDownloads) {
         'sample-avif-alpha.avif' = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/simple_osm_tile_alpha.avif'
         # DICOM (read-only in magick): pydicom's small CT test file -> magick read tier.
         'sample.dcm'      = 'https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm'
-        # Flash video. THREE codecs live in .flv and they take three different paths, so the
-        # corpus needs more than one: sample.flv (synthesised below) is SORENSON SPARK, which
-        # our own out-of-process decoder handles, and this is real VP6 from FFmpeg's own FATE
-        # suite, which is the other pure-Rust decoder. H.264-in-FLV goes through Media
-        # Foundation instead and is covered by a unit test that re-wraps sample.mp4's bytes.
-        # Without a VP6 file here the VP6 half rested entirely on manual checking.
+        # Flash video. THREE codecs live in .flv and they take three DIFFERENT paths, so one
+        # sample cannot represent the extension:
+        #   * sample.flv (synthesised below) is SORENSON SPARK  -> spawned st2k child (h263-rs)
+        #   * sample-vp6.flv, real VP6 from FFmpeg's FATE suite -> spawned st2k child (nihav)
+        #   * sample-h264.flv                                   -> IN-PROCESS mini-MP4 remux
+        #                                                          + Media Foundation
+        # Without the VP6 file the VP6 half rested entirely on manual checking.
         # SHA-256: F61D4A1696000CBB6D1E6A8BD7E4682656DA3AD017C49FD6D7C47A7F28D8AEFE
         'sample-vp6.flv'  = 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv'
+        # H.264-in-FLV is the codec behind the ORIGINAL report — Windows cannot open an FLV at
+        # all, so every one of them was blank regardless of what was inside. This note used to
+        # say the path needed no file here because a unit test re-wraps sample.mp4's avcC and
+        # keyframe into a synthetic FLV. That test proves the MUXER; it cannot prove we read a
+        # tag layout a real Flash encoder emitted, which is the half that faces users. 36 KB.
+        # SHA-256: 395D606D171A0088BDEDA14929F8A3686ED4CD29477A13EAE1248D4889EC2FEE
+        'sample-h264.flv' = 'https://fate-suite.ffmpeg.org/flv/streamloop.flv'
         # VP9 Profile 2 (10-bit 4:2:0) + Profile 3 (12-bit 4:4:4) WebM, from FFmpeg's own
         # FATE conformance vectors. Media Foundation cannot decode these AT ALL (verified
         # with the Store VP9 extension installed and a capable GPU present), so they

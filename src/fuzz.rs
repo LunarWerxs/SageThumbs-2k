@@ -69,6 +69,13 @@ fn header_targets() -> Vec<Target> {
         ("mkv::keyframe_mini_mkv", |b| {
             let _ = crate::mkv::keyframe_mini_mkv(&mut Cursor::new(b), 0.30);
         }),
+        // Added with the VP9 Profile 2/3 tier: this walks the container's own Cues index and
+        // then a Cluster's block list, all out of file-supplied offsets, and it runs
+        // IN-PROCESS in the shell (only the decode itself is out of process). It was not a
+        // target when it shipped.
+        ("mkv::vp9_keyframe", |b| {
+            let _ = crate::mkv::vp9_keyframe(&mut Cursor::new(b), 0.30);
+        }),
         ("mkv::video_codec_id", |b| {
             let _ = crate::mkv::video_codec_id(&mut Cursor::new(b));
         }),
@@ -80,6 +87,15 @@ fn header_targets() -> Vec<Target> {
         }),
         ("flv::keyframe_mini_mp4", |b| {
             let _ = crate::flv::keyframe_mini_mp4(&mut Cursor::new(b));
+        }),
+        // The VP6/Sorenson tag walk and its codec gate. Both are IN-PROCESS: only the decode
+        // crosses to `st2k flv-frame`, so the bytes that pick the keyframe are parsed inside
+        // the shell. Neither was a target when the Flash codecs shipped.
+        ("flv::scan_flash_keyframe", |b| {
+            let _ = crate::flv::scan_flash_keyframe(b);
+        }),
+        ("flv::video_codec_id", |b| {
+            let _ = crate::flv::video_codec_id(&mut Cursor::new(b));
         }),
         ("mp4::video_codec_fourcc", |b| {
             let _ = crate::mp4::video_codec_fourcc(&mut Cursor::new(b));
@@ -127,7 +143,42 @@ fn header_targets() -> Vec<Target> {
 fn all_targets() -> Vec<Target> {
     let mut v = header_targets();
     v.extend(crate::container::fuzzseed::targets());
+    v.extend(inner_targets());
     v
+}
+
+/// The parsers that sit BELOW a verifying container, aimed at directly.
+///
+/// The dispatcher argument in `container::fuzzseed` (a mutation only reaches a parser if it
+/// left that parser's magic alone) has a stronger form here. An APK's inner files live in a
+/// zip, and a zip CHECKSUMS what it hands out — so a mutation to `AndroidManifest.xml` or
+/// `resources.arsc` is rejected by CRC32 one layer above the AXML and arsc parsers, which
+/// then never run at all. `apk_mutations_do_not_reach_the_inner_parsers_through_the_zip`
+/// measures it: of 20,000 mutations of a valid APK, the number that delivered mutated
+/// manifest bytes to the parser is ZERO. Fuzzing `apk::extract` is fuzzing the `zip` crate.
+///
+/// The FLV case is the same shape, softer: the tag walk rejects a file whose sizes stop
+/// adding up, so only mutations that left every length intact reach the Exp-Golomb SPS
+/// reader — filtering out most of what is worth trying against bit-level code.
+///
+/// These entry points hand each parser its own bytes, which is the only way a mutation ever
+/// reaches the chunk walk, the string pool, the attribute stride, the resource-id resolver,
+/// or the SPS bit reader.
+fn inner_targets() -> Vec<Target> {
+    use crate::container::apk_fuzzapi as apk;
+    use crate::flv::fuzzapi as flv;
+    vec![
+        ("apk::manifest_icon", apk::manifest_icon),
+        ("apk::arsc_resolve", apk::arsc_resolve),
+        ("apk::string_pool", apk::string_pool),
+        ("apk::type_chunk", apk::type_chunk),
+        ("flv::sps_dims", flv::sps_dims),
+        ("flv::parse_sps", flv::parse_sps),
+        (
+            "flv::strip_emulation_prevention",
+            flv::strip_emulation_prevention,
+        ),
+    ]
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -349,14 +400,7 @@ fn synthetic_flv() -> Vec<u8> {
         t.extend_from_slice(&((11 + payload.len()) as u32).to_be_bytes());
         t
     }
-    // Baseline SPS for 64×48 (hand-packed Exp-Golomb; see flv.rs tests for the encoder):
-    // profile 66, level 30, poc_type 2, 4×3 macroblocks, frame_mbs_only, no cropping.
-    // The `flv_seed_reaches_the_muxer` test below asserts this stays parseable.
-    let sps: &[u8] = &[0x67, 0x42, 0x00, 0x1E, 0xDA, 0x11, 0xC4];
-    let mut avcc = vec![1u8, 66, 0, 30, 0xFF, 0xE1];
-    avcc.extend_from_slice(&(sps.len() as u16).to_be_bytes());
-    avcc.extend_from_slice(sps);
-    avcc.push(0); // no PPS
+    let avcc = h264_avcc();
     let mut seq_payload = vec![0x17, 0x00, 0, 0, 0]; // keyframe|AVC, seq header, cts
     seq_payload.extend_from_slice(&avcc);
     let mut kf_payload = vec![0x17, 0x01, 0, 0, 0]; // keyframe|AVC, NALU, cts
@@ -370,6 +414,156 @@ fn synthetic_flv() -> Vec<u8> {
     f.extend_from_slice(&tag(8, &[0xAF, 0x00, 0x12]));
     f.extend_from_slice(&tag(9, &kf_payload));
     f
+}
+
+/// Baseline SPS for 64×48 (hand-packed Exp-Golomb; see `flv.rs`'s tests for the encoder):
+/// profile 66, level 30, poc_type 2, 4×3 macroblocks, frame_mbs_only, no cropping. Hoisted to
+/// module scope so it can be a fuzz SEED in its own right — `flv::fuzzapi::parse_sps` takes
+/// exactly these bytes, and no container-level mutation ever delivers them mutated.
+/// `flv_seed_reaches_the_muxer` asserts it stays parseable.
+const H264_SPS: &[u8] = &[0x67, 0x42, 0x00, 0x1E, 0xDA, 0x11, 0xC4];
+
+/// The AVCDecoderConfigurationRecord wrapping [`H264_SPS`], as an FLV sequence header carries
+/// it. Also a seed in its own right, for `flv::fuzzapi::sps_dims`.
+fn h264_avcc() -> Vec<u8> {
+    let mut avcc = vec![1u8, 66, 0, 30, 0xFF, 0xE1];
+    avcc.extend_from_slice(&(H264_SPS.len() as u16).to_be_bytes());
+    avcc.extend_from_slice(H264_SPS);
+    avcc.push(0); // no PPS
+    avcc
+}
+
+/// A structurally valid FLV whose first video tag is a Flash-codec KEYFRAME (`2` = Sorenson
+/// Spark, `4` = VP6) — the shape [`crate::flv::scan_flash_keyframe`] walks.
+///
+/// [`synthetic_flv`] cannot stand in for this: it is H.264 (codec 7), which that scanner
+/// correctly refuses at the first video tag, so it only ever exercises the decline path.
+fn synthetic_flash_flv(codec_id: u8) -> Vec<u8> {
+    fn tag(tag_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut t = vec![tag_type];
+        t.extend_from_slice(&(payload.len() as u32).to_be_bytes()[1..4]); // u24 DataSize
+        t.extend_from_slice(&[0u8; 7]); // timestamp(3) + ext(1) + stream id(3)
+        t.extend_from_slice(payload);
+        t.extend_from_slice(&((11 + payload.len()) as u32).to_be_bytes());
+        t
+    }
+    // An inter frame FIRST, so the walk has to keep looking rather than stopping on tag one.
+    let inter = {
+        let mut p = vec![(2u8 << 4) | codec_id]; // FrameType 2 = inter
+        p.extend_from_slice(&[0x11; 24]);
+        p
+    };
+    let key = {
+        let mut p = vec![(1u8 << 4) | codec_id]; // FrameType 1 = keyframe
+                                                 // VP6 keeps a leading adjustment byte the decoder consumes; Sorenson does not.
+        if codec_id == 4 {
+            p.push(0x00);
+        }
+        // A plausible Sorenson picture header start (temporal ref + picture start code region)
+        // — the point is body bytes for a mutation to land in, not a decodable frame.
+        p.extend_from_slice(&[0x00, 0x00, 0x84, 0x00, 0x07, 0x02, 0x87, 0x85]);
+        p.extend_from_slice(&[0x5A; 40]);
+        p
+    };
+    let mut f = b"FLV\x01\x05".to_vec();
+    f.extend_from_slice(&9u32.to_be_bytes()); // DataOffset
+    f.extend_from_slice(&0u32.to_be_bytes()); // PreviousTagSize0
+    f.extend_from_slice(&tag(18, b"\x02\x00\x0AonMetaData"));
+    f.extend_from_slice(&tag(8, &[0xAF, 0x00, 0x12])); // an audio tag in the way
+    f.extend_from_slice(&tag(9, &inter));
+    f.extend_from_slice(&tag(9, &key));
+    f
+}
+
+/// A structurally valid WebM whose first video track is `V_VP9`, with a Cues index pointing at
+/// a Cluster that holds a keyframe SimpleBlock — the exact shape [`crate::mkv::vp9_keyframe`]
+/// walks (Cues ▸ CueTrackPositions ▸ cluster ▸ SimpleBlock flags ▸ lacing).
+///
+/// [`synthetic_mkv`] cannot stand in for it: that scaffold declares an HEVC track, and
+/// `vp9_keyframe` self-gates on `V_VP9`, so it returns before touching any of the above.
+fn synthetic_webm_vp9() -> Vec<u8> {
+    const ID_EBML: u64 = 0x1A45_DFA3;
+    const ID_SEGMENT: u64 = 0x1853_8067;
+    const ID_INFO: u64 = 0x1549_A966;
+    const ID_TIMECODE_SCALE: u64 = 0x2AD7B1;
+    const ID_DURATION: u64 = 0x4489;
+    const ID_TRACKS: u64 = 0x1654_AE6B;
+    const ID_TRACK_ENTRY: u64 = 0xAE;
+    const ID_TRACK_NUMBER: u64 = 0xD7;
+    const ID_TRACK_TYPE: u64 = 0x83;
+    const ID_CODEC_ID: u64 = 0x86;
+    const ID_CUES: u64 = 0x1C53_BB6B;
+    const ID_CUE_POINT: u64 = 0xBB;
+    const ID_CUE_TIME: u64 = 0xB3;
+    const ID_CUE_TRACK_POSITIONS: u64 = 0xB7;
+    const ID_CUE_TRACK: u64 = 0xF7;
+    const ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
+    const ID_CLUSTER: u64 = 0x1F43_B675;
+    const ID_CLUSTER_TIMECODE: u64 = 0xE7;
+    const ID_SIMPLE_BLOCK: u64 = 0xA3;
+
+    let info = ebml(
+        ID_INFO,
+        &[
+            ebml(ID_TIMECODE_SCALE, &[0x0F, 0x42, 0x40]),
+            ebml(ID_DURATION, &1000.0f32.to_be_bytes()),
+        ]
+        .concat(),
+    );
+    let tracks = ebml(
+        ID_TRACKS,
+        &ebml(
+            ID_TRACK_ENTRY,
+            &[
+                ebml(ID_TRACK_NUMBER, &[1]),
+                ebml(ID_TRACK_TYPE, &[1]),
+                ebml(ID_CODEC_ID, b"V_VP9"),
+            ]
+            .concat(),
+        ),
+    );
+    // SimpleBlock body: track vint (0x81 = 1), s16 relative timecode, flags (0x80 = keyframe,
+    // no lacing), then the frame. The payload starts with a real VP9 uncompressed-header
+    // frame marker so the bytes a mutation lands in mean something to the reader downstream.
+    let mut block = vec![0x81u8, 0x00, 0x00, 0x80];
+    block.extend_from_slice(&[0x82, 0x49, 0x83, 0x42, 0x00, 0x07, 0x00, 0x3C]);
+    block.extend_from_slice(&[0xA5; 32]);
+    let cluster = ebml(
+        ID_CLUSTER,
+        &[
+            ebml(ID_CLUSTER_TIMECODE, &[0]),
+            ebml(ID_SIMPLE_BLOCK, &block),
+        ]
+        .concat(),
+    );
+    // CueClusterPosition is written at a FIXED 8-byte width, so building the index twice —
+    // once to learn the cluster's offset, once with the real value — cannot shift any length
+    // around it. (The same two-pass trick `synthetic_mp4` uses for its stco offsets.)
+    let cues_for = |pos: u64| {
+        ebml(
+            ID_CUES,
+            &ebml(
+                ID_CUE_POINT,
+                &[
+                    ebml(ID_CUE_TIME, &[0]),
+                    ebml(
+                        ID_CUE_TRACK_POSITIONS,
+                        &[
+                            ebml(ID_CUE_TRACK, &[1]),
+                            ebml(ID_CUE_CLUSTER_POSITION, &pos.to_be_bytes()),
+                        ]
+                        .concat(),
+                    ),
+                ]
+                .concat(),
+            ),
+        )
+    };
+    let cluster_rel = (info.len() + tracks.len() + cues_for(0).len()) as u64;
+    let body = [info, tracks, cues_for(cluster_rel), cluster].concat();
+    let mut file = ebml(ID_EBML, &[0x42, 0x82, 0x84, b'w', b'e', b'b', b'm']);
+    file.extend_from_slice(&ebml(ID_SEGMENT, &body));
+    file
 }
 
 fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -403,6 +597,40 @@ fn header_stubs() -> Vec<Vec<u8>> {
 // ---------------------------------------------------------------------------------------------
 // Mutation engine
 // ---------------------------------------------------------------------------------------------
+
+/// Ceiling on a mutant's size. Stacked mutations compound: the duplicate-a-slice case can
+/// double the buffer, so eight of them could grow a seed 256×, and the run would spend its
+/// budget memcpying instead of parsing.
+const MAX_MUTANT: usize = 2 * 1024 * 1024;
+
+/// Apply `stack` mutations in sequence, optionally grafting in a run of a DIFFERENT seed
+/// first. The always-on gate uses `stack = 1`; the deep session varies it.
+///
+/// Why both knobs exist: one mutation from a valid seed only ever explores that seed's
+/// immediate neighbourhood, which is the right trade for a gate that must stay under ten
+/// seconds but leaves anything needing TWO coordinated corruptions (a length field AND the
+/// data it measures) unreachable. The crossover is how a parser meets a chunk header it would
+/// never have generated for itself — Android's AXML and its resources.arsc share a framing,
+/// so a pool chunk grafted from one into the other is a realistic hostile shape.
+fn mutate_stacked(rng: &mut Rng, seed: &[u8], others: &[&[u8]], stack: usize) -> Vec<u8> {
+    let mut b = seed.to_vec();
+    if !others.is_empty() && !b.is_empty() && rng.below(4) == 0 {
+        let src = others[rng.below(others.len())];
+        if !src.is_empty() {
+            let len = 1 + rng.below(src.len().min(64));
+            let from = rng.below(src.len() - len + 1);
+            let at = rng.below(b.len());
+            b.splice(at..at, src[from..from + len].iter().copied());
+        }
+    }
+    for _ in 0..stack.max(1) {
+        b = mutate(rng, &b);
+        if b.len() > MAX_MUTANT {
+            b.truncate(MAX_MUTANT);
+        }
+    }
+    b
+}
 
 /// Apply one random structure-aware mutation to `seed`. Kept localized (a few bytes, one
 /// length field, one truncation) so mutated inputs stay close enough to valid to reach deep
@@ -469,15 +697,37 @@ fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
 /// Run `iters` mutations of `seed` (named `label`) through `target`, capturing any panic.
 /// Returns a human-readable failure string on the FIRST panic, else `None`.
 fn hammer(target: Target, label: &str, seed: &[u8], iters: usize, rng: &mut Rng) -> Option<String> {
+    hammer_n(target, label, seed, &[], iters, 1, rng, PAIR_BUDGET, &mut 0)
+}
+
+/// [`hammer`] with the deep session's extra knobs: `stack` mutations per iteration, `others`
+/// to graft from, an explicit time `budget`, and a counter so a run can report how many
+/// inputs it actually got through rather than how many it hoped to.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one fuzz driver, all knobs explicit"
+)]
+fn hammer_n(
+    target: Target,
+    label: &str,
+    seed: &[u8],
+    others: &[&[u8]],
+    iters: usize,
+    stack: usize,
+    rng: &mut Rng,
+    budget: std::time::Duration,
+    done: &mut u64,
+) -> Option<String> {
     let (name, f) = target;
-    let deadline = std::time::Instant::now() + PAIR_BUDGET;
+    let deadline = std::time::Instant::now() + budget;
     for it in 0..iters {
         // Checked every 32 iterations: `Instant::now()` per iteration would itself be a
         // measurable share of the cost for the parsers that reject in nanoseconds.
         if it % 32 == 0 && std::time::Instant::now() > deadline {
             break;
         }
-        let input = mutate(rng, seed);
+        let input = mutate_stacked(rng, seed, others, stack);
+        *done += 1;
         let res = catch_unwind(AssertUnwindSafe(|| f(&input)));
         if let Err(e) = res {
             let msg = e
@@ -568,14 +818,280 @@ fn run_all(seeds: &[(&str, Vec<u8>)], iters_per: usize, base_seed: u64) -> Vec<S
     failures
 }
 
+/// Seeds for the surfaces this release added: the VP9 container walk, the Flash-codec tag
+/// walk, and the APK / H.264 sub-parsers that a verifying container hides from any whole-file
+/// mutation. Shared by the always-on gate and the deep session so the two cannot diverge.
+fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    use crate::container::fuzzseed as fs;
+    const ICON: &str = "res/mipmap/ic_launcher.png";
+    vec![
+        ("webm-vp9", synthetic_webm_vp9()),
+        ("flv-sorenson", synthetic_flash_flv(2)),
+        ("flv-vp6", synthetic_flash_flv(4)),
+        // The three below are INNER files, handed over as seeds in their own right rather
+        // than wrapped in the zip that would checksum them out of reach.
+        ("axml-raw", fs::apk_axml(ICON)),
+        ("arsc-raw", fs::apk_arsc(ICON)),
+        ("respool-raw", fs::apk_pool_utf8(&["", "application", ICON])),
+        ("h264-avcc", h264_avcc()),
+        ("h264-sps", H264_SPS.to_vec()),
+    ]
+}
+
 /// A seed its own parser rejects is worse than no seed (the fuzzer mutates it happily while
-/// every iteration dies at the first gate) — same rule `container::fuzzseed` enforces. The
-/// FLV seed must walk clean through to the muxer, SPS geometry parse included.
+/// every iteration dies at the first gate) — same rule `container::fuzzseed` enforces, and the
+/// reason its `every_seed_reaches_its_parser` is described there as load-bearing.
+///
+/// Each assertion below is one seed proving it gets past the front door into the code being
+/// fuzzed. `arsc-raw` is the one asserted a step short, and deliberately: the seed's manifest
+/// takes the direct-string rung, so nothing in a PRISTINE table is reachable by resolution —
+/// the table exists for the mutations (one flipped dataType byte turns the manifest attribute
+/// into a reference). Asserting it parses is the strongest claim that is actually true.
 #[test]
-fn flv_seed_reaches_the_muxer() {
+fn every_new_surface_seed_reaches_its_parser() {
     assert!(
         crate::flv::keyframe_mini_mp4(&mut Cursor::new(synthetic_flv())).is_some(),
         "synthetic FLV seed no longer reaches flv::keyframe_mini_mp4's happy path"
+    );
+    // The VP9 container walk: codec gate, Cues index, cluster, SimpleBlock keyframe flag.
+    let webm = synthetic_webm_vp9();
+    assert_eq!(
+        crate::mkv::video_codec_id(&mut Cursor::new(&webm[..])).as_deref(),
+        Some("V_VP9"),
+        "webm-vp9 seed must declare a VP9 track or vp9_keyframe returns before parsing"
+    );
+    assert!(
+        crate::mkv::vp9_keyframe(&mut Cursor::new(&webm[..]), 0.30).is_some(),
+        "webm-vp9 seed no longer reaches a keyframe SimpleBlock"
+    );
+    // The Flash tag walk, both codecs. A keyframe AFTER an inter frame, so the walk has to
+    // keep looking rather than stopping on the first video tag.
+    for (label, id) in [("flv-sorenson", 2u8), ("flv-vp6", 4u8)] {
+        let flv = synthetic_flash_flv(id);
+        assert_eq!(
+            crate::flv::video_codec_id(&mut Cursor::new(&flv[..])),
+            Some(id),
+            "{label} seed must present codec {id} as its first video tag"
+        );
+        assert!(
+            matches!(
+                crate::flv::scan_flash_keyframe(&flv),
+                crate::flv::FlashScan::Keyframe(..)
+            ),
+            "{label} seed no longer reaches scan_flash_keyframe's keyframe arm"
+        );
+    }
+    // The inner APK parsers, on their own bytes.
+    use crate::container::apk_fuzzapi as apk;
+    use crate::container::fuzzseed as fs;
+    const ICON: &str = "res/mipmap/ic_launcher.png";
+    assert_eq!(
+        apk::manifest_icon_path(&fs::apk_axml(ICON)).as_deref(),
+        Some(ICON),
+        "axml-raw seed no longer resolves its icon attribute"
+    );
+    assert!(
+        apk::arsc_parses(&fs::apk_arsc(ICON)),
+        "arsc-raw seed no longer parses as a resource table"
+    );
+    // And the H.264 bit readers, on theirs.
+    assert_eq!(
+        crate::flv::fuzzapi::sps_dims_ret(&h264_avcc()),
+        Some((64, 48)),
+        "h264-avcc seed no longer parses to its known 64x48 geometry"
+    );
+}
+
+/// The measurement behind [`inner_targets`]: mutating an APK does not fuzz the APK parsers.
+///
+/// A zip CHECKSUMS what it hands out, so a mutation landing in `AndroidManifest.xml` is
+/// rejected by CRC32 before `manifest_icon` ever sees it — the parser is not hardened by that
+/// run, it is simply never called. This counts, over a real mutation run, how many mutants
+/// delivered MUTATED manifest bytes to the parser.
+///
+/// It asserts the number rather than describing it so the comment cannot go stale: if a future
+/// `zip` release stopped verifying, this fails loudly and the direct entry points could be
+/// reconsidered instead of quietly duplicating coverage.
+#[test]
+fn apk_mutations_do_not_reach_the_inner_parsers_through_the_zip() {
+    let apk = crate::container::fuzzseed::seeds()
+        .into_iter()
+        .find(|(n, _)| *n == "apk")
+        .map(|(_, b)| b)
+        .expect("apk seed");
+    let pristine = read_zip_entry(&apk, "AndroidManifest.xml").expect("pristine manifest reads");
+
+    let mut rng = Rng::new(0x00A9_1CE5_D00D_F00D);
+    let (mut opened, mut emptied, mut real_structure) = (0u32, 0u32, 0u32);
+    for _ in 0..20_000 {
+        let m = mutate(&mut rng, &apk);
+        let Some(bytes) = read_zip_entry(&m, "AndroidManifest.xml") else {
+            continue;
+        };
+        opened += 1;
+        if bytes == pristine {
+            continue;
+        }
+        // The one way past the checksum, and it carries nothing: the central directory stores
+        // crc32 and the two size fields ADJACENT, so a single zero-a-region mutation can null
+        // all three at once. The entry then declares zero bytes, the reader returns an empty
+        // buffer, and CRC32 of nothing really is 0 — a legitimate pass over a legitimately
+        // empty file. `manifest_icon` rejects that at its first length check, which the
+        // degenerate-buffer seeds already covered.
+        if bytes.is_empty() {
+            emptied += 1;
+        } else {
+            real_structure += 1;
+        }
+    }
+    eprintln!(
+        "apk zip reach: 20000 mutants, {opened} manifests read back, \
+         {emptied} emptied by a nulled size/crc triple, \
+         {real_structure} carrying mutated STRUCTURE"
+    );
+    assert_eq!(
+        real_structure, 0,
+        "the zip layer stopped verifying entry contents — mutating an APK now DOES deliver \
+         mutated structure to the AXML parser, so `inner_targets` may be redundant rather \
+         than load-bearing"
+    );
+}
+
+/// Read one zip entry fully, or `None` if the archive, the entry, or its CRC is bad. The
+/// operation `apk::manifest_icon_path` performs, without reaching into `container::zipfmt`.
+fn read_zip_entry(archive: &[u8], name: &str) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut zip = zip::ZipArchive::new(Cursor::new(archive)).ok()?;
+    let mut entry = zip.by_name(name).ok()?;
+    let mut buf = Vec::new();
+    entry.read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// A DELIBERATE deep fuzz session over the parsers this release added — not a gate.
+///
+/// The always-on run is tuned to stay under ten seconds of every `cargo test`, which buys
+/// breadth (every parser, every seed) at the cost of depth: one mutation per iteration, a
+/// 600 ms ceiling per pair. That combination cannot find a bug needing two coordinated
+/// corruptions, and it gives a brand-new parser the same handful of milliseconds it gives one
+/// that has been fuzzed on every commit for months.
+///
+/// This runs the twelve NEW entry points against their own seeds plus any real corpus samples,
+/// with stacked mutations and cross-format grafts, round-robin so no pair starves, until a
+/// wall-clock budget expires. Round-robin rather than sequential specifically so a cheap
+/// parser cannot consume the session while an expensive one goes unvisited.
+///
+/// ```text
+/// ST2K_FUZZ_SECS=600 cargo test --lib fuzz::deep_session -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "deliberate deep fuzz session (minutes); set ST2K_FUZZ_SECS and run with --ignored"]
+fn deep_session_over_the_new_parsers() {
+    let secs: u64 = std::env::var("ST2K_FUZZ_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(180);
+
+    let mut seeds = new_surface_seeds();
+    // Real samples where the corpus has them: a synthetic seed is a scaffold this code wrote
+    // for itself, so it can only ever contain structures this code already thought of.
+    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test-corpus");
+    for name in [
+        "sample.apk",
+        "sample.xapk",
+        "sample-vp6.flv",
+        "sample.flv",
+        "sample-vp9p2.webm",
+        "sample-vp9p3.webm",
+        "sample.webm",
+    ] {
+        if let Ok(mut bytes) = std::fs::read(corpus.join(name)) {
+            bytes.truncate(512 * 1024);
+            if !bytes.is_empty() {
+                seeds.push((Box::leak(name.to_string().into_boxed_str()), bytes));
+            }
+        }
+    }
+    // Every seed is also a graft donor for every other, which is how an arsc chunk ends up
+    // inside an AXML body and a VP9 block ends up inside an FLV tag.
+    let donors: Vec<&[u8]> = seeds.iter().map(|(_, b)| b.as_slice()).collect();
+
+    let mut targets = inner_targets();
+    for t in header_targets() {
+        if matches!(
+            t.0,
+            "mkv::vp9_keyframe" | "flv::scan_flash_keyframe" | "flv::video_codec_id"
+        ) {
+            targets.push(t);
+        }
+    }
+    targets.push(("container::extract_cover", |b| {
+        let _ = crate::container::extract_cover(b);
+    }));
+    targets.push(("apk::extract", crate::container::apk_fuzzapi::extract));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut counts = vec![0u64; targets.len()];
+    let mut failures: Vec<String> = Vec::new();
+    let mut rounds = 0u64;
+
+    eprintln!(
+        "deep fuzz: {} targets x {} seeds, {secs}s budget",
+        targets.len(),
+        seeds.len()
+    );
+    with_quiet_panics(|| {
+        'session: loop {
+            rounds += 1;
+            for (ti, &target) in targets.iter().enumerate() {
+                for (si, (label, seed)) in seeds.iter().enumerate() {
+                    // A fresh stream per (round, seed, target): distinct inputs each round,
+                    // and still fully determined by the fixed base seed, so any failure this
+                    // reports reproduces exactly.
+                    let mut rng = Rng::new(
+                        0x51A5_D00D_1234_ABCD
+                            ^ rounds.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                            ^ ((si as u64) << 32)
+                            ^ (ti as u64).wrapping_mul(0x0BAD_C0DE),
+                    );
+                    // Stack depth cycles 1..=6 across rounds: shallow mutations stay close to
+                    // valid (deep code, narrow exploration), deep ones roam further (wide
+                    // exploration, more early rejects). Both are wanted, so alternate rather
+                    // than pick.
+                    let stack = 1 + (rounds as usize + si) % 6;
+                    if let Some(f) = hammer_n(
+                        target,
+                        label,
+                        seed,
+                        &donors,
+                        4_000,
+                        stack,
+                        &mut rng,
+                        std::time::Duration::from_millis(120),
+                        &mut counts[ti],
+                    ) {
+                        failures.push(f);
+                    }
+                    if std::time::Instant::now() > deadline {
+                        break 'session;
+                    }
+                }
+            }
+        }
+    });
+
+    let total: u64 = counts.iter().sum();
+    eprintln!("deep fuzz: {total} inputs across {rounds} rounds");
+    for (t, n) in targets.iter().zip(&counts) {
+        eprintln!("  {:>34}  {n:>10}", t.0);
+    }
+    assert!(
+        failures.is_empty(),
+        "{} parser panic(s) found by the deep session:\n{}",
+        failures.len(),
+        failures.join("\n")
     );
 }
 
@@ -593,6 +1109,7 @@ fn parsers_survive_mutation_of_synthetic_seeds() {
     // nothing to corrupt — and on CI, which has no `test-corpus` to fall back on, that was the
     // whole of the coverage. See `container::fuzzseed`.
     seeds.extend(crate::container::fuzzseed::seeds());
+    seeds.extend(new_surface_seeds());
     for (i, stub) in header_stubs().into_iter().enumerate() {
         seeds.push((Box::leak(format!("stub{i}").into_boxed_str()), stub));
     }
@@ -605,11 +1122,15 @@ fn parsers_survive_mutation_of_synthetic_seeds() {
 
     // 3000 mutations per (seed, target) was right when there were 16 targets and 27 mostly-tiny
     // seeds. With the container seeds and their parsers added the matrix is ~5x bigger, and at
-    // 3000 this gate cost 22.6 s of every `cargo test`. 1000 holds it near 10 s while KEEPING
-    // the exhaustive truncation sweep, which is the higher-yield half: short-read and
-    // off-by-one panics are what a prefix walk finds, and it is deterministic rather than
-    // sampled. The deep run (`--ignored`, real corpus) is where depth belongs.
-    let failures = run_all(&seeds, 1000, 0x5A5A_1234_9E37_79B9);
+    // 3000 this gate cost 22.6 s of every `cargo test`; 1000 held it near 10 s. The 2.0 parsers
+    // (VP9 container walk, Flash tag walk, the APK/H.264 sub-parsers) grew it again — 8 seeds
+    // and 7 targets, which put 1000 back up at 16.2 s — so the count drops again to hold the
+    // budget. Breadth is what this gate is FOR; depth moved to
+    // `deep_session_over_the_new_parsers`, which runs the same targets for minutes rather than
+    // milliseconds. What must NOT be traded away for time is the exhaustive truncation sweep:
+    // short-read and off-by-one panics are what a prefix walk finds, and it is deterministic
+    // rather than sampled.
+    let failures = run_all(&seeds, 600, 0x5A5A_1234_9E37_79B9);
     assert!(
         failures.is_empty(),
         "{} parser panic(s) found by mutation fuzzing:\n{}",

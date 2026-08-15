@@ -694,7 +694,12 @@ fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 /// A UTF-8 `ResStringPool` chunk (shared framing of AXML and resources.arsc).
-fn apk_pool_utf8(strings: &[&str]) -> Vec<u8> {
+///
+/// `pub(crate)` alongside [`apk_axml`] and [`apk_arsc`] because `crate::fuzz`'s deep session
+/// feeds these three to `apk::fuzzapi` as seeds IN THEIR OWN RIGHT, rather than buried inside
+/// a zip whose CRC check would reject any mutation to them. Built once, here, so the seed the
+/// zip carries and the seed the inner parser is handed cannot drift apart.
+pub(crate) fn apk_pool_utf8(strings: &[&str]) -> Vec<u8> {
     let mut data = Vec::new();
     let mut offs = Vec::new();
     for s in strings {
@@ -729,7 +734,7 @@ fn apk_pool_utf8(strings: &[&str]) -> Vec<u8> {
 /// resource-map chunk — pool index 0 → 0x01010002 android:icon — is the identity), and
 /// one `<application>` START_ELEMENT whose single attribute is a TYPE_STRING pointing
 /// straight at `path` inside the zip.
-fn apk_axml(path: &str) -> Vec<u8> {
+pub(crate) fn apk_axml(path: &str) -> Vec<u8> {
     let pool = apk_pool_utf8(&["", "application", path]);
     let mut map = Vec::new();
     map.extend_from_slice(&0x0180u16.to_le_bytes()); // RES_XML_RESOURCE_MAP
@@ -770,7 +775,7 @@ fn apk_axml(path: &str) -> Vec<u8> {
 /// manifest takes the direct-string rung, so this table exists for the MUTATIONS: one
 /// flipped dataType byte turns the manifest attribute into a reference and walks this
 /// parser's package/type/entry arithmetic.
-fn apk_arsc(path: &str) -> Vec<u8> {
+pub(crate) fn apk_arsc(path: &str) -> Vec<u8> {
     let global = apk_pool_utf8(&[path]);
     let mut spec = Vec::new();
     spec.extend_from_slice(&0x0202u16.to_le_bytes()); // RES_TABLE_TYPE_SPEC
