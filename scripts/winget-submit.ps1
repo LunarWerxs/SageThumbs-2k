@@ -3,17 +3,19 @@
     Submit a published SageThumbs 2K release to winget-pkgs from THIS machine, without CI.
 
 .DESCRIPTION
-    The normal path is `.github/workflows/winget.yml` (Komac, driven by the WINGET_TOKEN
-    secret). This script is the recovery path for when that did not happen, and it needs no
-    secret at all: it uses the local `gh` login, whose OAuth token already carries `repo` +
+    THIS IS THE PUBLISHING PATH. `scripts/release.ps1` calls it at the end of a release, and it
+    needs NO SECRET: it uses the local `gh` login, whose OAuth token already carries `repo` +
     `workflow`.
 
-    Why it exists (2026-08-14): the workflow's onboarding guard treated EVERY non-200 answer
-    as "package not onboarded yet" and skipped the whole job with a green tick. WINGET_TOKEN
-    expired, the check started answering 401, and nine consecutive releases (1.8.2 .. 1.12.0)
-    silently never reached winget while every run reported success. Recovering meant
-    reconstructing the manifests by hand under time pressure. It is a script now, so it does
-    not have to be reconstructed a second time.
+    It replaced a GitHub Action (Komac driven by a WINGET_TOKEN secret) on 2026-08-14, after
+    that arrangement failed silently for a year. The workflow's onboarding guard treated EVERY
+    non-200 answer as "package not onboarded yet" and skipped the whole job with a green tick;
+    a classic PAT expired after 1.7.2, the fine-grained PAT that replaced it was answering 401
+    within two hours, and nine consecutive releases (1.8.2 .. 1.12.0) reported success while
+    publishing nothing. The token was re-minted repeatedly and could never have worked as
+    asked: a fine-grained PAT only carries permissions on repositories its owner OWNS, so the
+    pull-request call against microsoft/winget-pkgs is 403 by construction. Needing a token at
+    all was the problem. This needs none, so there is nothing left to expire.
 
     What it does, in order:
       1. Reads the release's installer assets + GitHub's own sha256 digests (never re-hashes

@@ -324,6 +324,12 @@ try {
     # State the portable scope in the notes rather than letting the filename imply more than
     # it delivers. Everyone who downloads it will otherwise ask the same question, which is
     # the one issue #13 already asked. No sizes or counts here - the notes stay evergreen.
+    #
+    # CORRECTED 2026-08-14. This block used to say the portable build could NOT do Explorer
+    # thumbnails or the right-click menu. That was true of 1.8.0 and was FIXED IN 1.8.1, which
+    # ships the handler in the zip and registers it per user - and nobody updated the notes, so
+    # every release from 1.8.1 to 1.12.0 shipped release notes denying one of its own headline
+    # features. Keep this in step with CLAUDE.md's portable section if the scope changes again.
     Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
         '',
         '### Portable (no installer)',
@@ -331,10 +337,18 @@ try {
         'Extract and run. Nothing is installed, nothing goes in the registry, no admin needed.',
         'Settings live in `SageThumbs2K.ini` next to the exe.',
         '',
-        'It gives you the app and the command line tool: settings, convert and resize, quick',
-        'preview, screenshots, OCR, the colour picker and the folder tools. It does **not**',
-        'give you Explorer thumbnails or the right-click menu, because Windows only loads a',
-        'shell extension whose COM class is registered. Install the normal build for those.'
+        'You get the app and the command line tool: settings, convert and resize, quick',
+        'preview, screenshots, OCR, the colour picker and the folder tools.',
+        '',
+        '**Explorer thumbnails and the classic right-click menu work too.** Turn them on with',
+        '`st2k register`, or the button in Settings under Advanced. That registers the handler',
+        'for your user account only: no installer, no administrator rights, nothing written',
+        'machine-wide. `st2k register --off` undoes it, and you should run that *before* moving',
+        'or deleting the folder, otherwise Windows is left pointing at a file that has gone.',
+        '',
+        'Three things still need the installer, because Windows only accepts them registered',
+        'for the whole machine: the Explorer **preview pane**, the **Details pane** columns,',
+        'and the **Windows 11 right-click menu** (the compact one).'
     )
     foreach ($artifact in $releaseArtifacts) {
         Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
@@ -404,99 +418,31 @@ try {
 
     Write-Host "[6/6] DONE - $tag released." -ForegroundColor Cyan
 
-    # 7) One-time winget onboarding reminder. The winget.yml workflow can only UPDATE an
-    # EXISTING winget package; the FIRST submission of LunarWerxs.SageThumbs2K has to be done by
-    # hand with Komac. This check self-clears the moment the package is merged into winget-pkgs,
-    # so it only nags until onboarding is done, then goes quiet forever.
-    gh api "repos/microsoft/winget-pkgs/contents/manifests/l/LunarWerxs/SageThumbs2K" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        # Don't just ASSERT that auto-publish works — watch it. Publishing this release fires
-        # `winget.yml`, and that job has its own way to fail that nothing else here would
-        # notice: it pushes a branch to the winget-pkgs fork using the WINGET_TOKEN secret,
-        # which is a classic PAT that EXPIRES. When it lapsed after 1.7.2, this line happily
-        # printed "onboarded" for 1.7.3 and 1.7.4 while both submissions failed, so winget
-        # users silently stayed two versions behind. The release itself is already published
-        # and correct at this point, so a winget failure is reported, never fatal.
-        Write-Host "[winget] release published - watching the Publish-to-winget run..." -ForegroundColor DarkGray
-        $wgRun = $null
-        foreach ($attempt in 1..20) {
-            Start-Sleep -Seconds 6
-            $wgRun = gh run list --workflow winget.yml --limit 5 `
-                --json databaseId, headBranch, status, conclusion, url 2>$null |
-                ConvertFrom-Json | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
-            if ($wgRun -and $wgRun.status -eq 'completed') { break }
-        }
-        # VERIFY THE OUTCOME, NOT THE EXIT CODE. A green run is not evidence a submission
-        # happened: the onboarding guard used to swallow a dead WINGET_TOKEN as "not onboarded"
-        # and skip every remaining step, so the job finished green having done nothing, and
-        # this line reported "submitted OK" for 1.8.2 through 1.12.0 while winget users stayed
-        # on 1.8.1 for a week. The guard now hard-fails on 401/403 (see winget.yml), and this
-        # asks the only question that actually settles it: is there a pull request for THIS
-        # version against microsoft/winget-pkgs? Both halves matter — the guard stops the lie
-        # at the source, this stops trusting the run's own verdict about itself.
-        $wgPr = $null
-        if ($wgRun -and $wgRun.status -eq 'completed') {
-            $wgPr = gh pr list --repo microsoft/winget-pkgs --state all --limit 30 `
-                --search "LunarWerxs.SageThumbs2K version $ver in:title" `
-                --json number, url, state 2>$null | ConvertFrom-Json | Select-Object -First 1
-        }
-        if (-not $wgRun) {
-            Write-Host "[winget] no run found for $tag yet - check Actions before assuming it published." -ForegroundColor Yellow
-        } elseif ($wgPr) {
-            Write-Host "[winget] submitted OK - PR #$($wgPr.number) ($($wgPr.state)) against microsoft/winget-pkgs: $($wgPr.url)" -ForegroundColor DarkGray
-        } elseif ($wgRun.conclusion -eq 'success') {
-            # Green run, no pull request. The run did nothing and said nothing was wrong.
-            Write-Host "[winget] RUN WENT GREEN BUT NO PULL REQUEST EXISTS FOR $ver." -ForegroundColor Red
-            Write-Host "  The submission did NOT happen. winget users stay on the previous version." -ForegroundColor Red
-            Write-Host "  log: $($wgRun.url)" -ForegroundColor Red
-            Write-Host "  recover with: pwsh scripts\winget-submit.ps1 -Version $ver" -ForegroundColor Yellow
-        } else {
-            # The usual failure is now the LAST step only: Komac pushes its manifest branch to
-            # the fork fine, then cannot open the pull request. That is not a fixable permission
-            # — a fine-grained PAT can only hold permissions on repositories the account OWNS,
-            # and microsoft/winget-pkgs is permanently read-only to one (measured 2026-08-07:
-            # `permissions` reads pull=true and nothing else, and POST /pulls answers 403, not
-            # the 422 an already-existing PR would give). A classic PAT is the only token that
-            # can do it, and we are not using classic PATs.
-            #
-            # So finish it from HERE instead, with the local `gh`, whose OAuth login already
-            # carries the scope the PAT cannot. That needs no secret at all and makes the split
-            # coherent: CI does the half a fine-grained token can do, this does the other half.
-            Write-Host "[winget] submission run failed - finishing the pull request locally" -ForegroundColor Yellow
-            $branch = gh api "repos/LunarWerxs/winget-pkgs/branches" --paginate `
-                --jq "[.[] | select(.name | startswith(`"LunarWerxs.SageThumbs2K-$ver-`"))] | last | .name" 2>$null
-            $existing = gh pr list --repo microsoft/winget-pkgs --state open --limit 50 `
-                --json headRefName --jq "[.[] | select(.headRefName == `"$branch`")] | length" 2>$null
-            if (-not $branch) {
-                Write-Host "  no manifest branch for $ver on the fork - Komac failed EARLIER than the PR step." -ForegroundColor Yellow
-                Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
-                Write-Host "  recover with: pwsh scripts\winget-submit.ps1 -Version $ver" -ForegroundColor Yellow
-            } elseif ($existing -and [int]$existing -gt 0) {
-                Write-Host "  a PR from $branch is already open - nothing to do." -ForegroundColor DarkGray
-            } else {
-                $prUrl = gh pr create --repo microsoft/winget-pkgs --base master `
-                    --head "LunarWerxs:$branch" `
-                    --title "New version: LunarWerxs.SageThumbs2K version $ver" `
-                    --body "### Pull request has been created with [WinGet Releaser](https://github.com/vedantmgoyal9/winget-releaser) :rocket:" 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "  winget PR opened: $prUrl" -ForegroundColor Green
-                } else {
-                    Write-Host "  could not open the PR: $prUrl" -ForegroundColor Yellow
-                    Write-Host "  the manifests ARE pushed; open it by hand from $branch." -ForegroundColor Yellow
-                    Write-Host "  log: $($wgRun.url)" -ForegroundColor Yellow
-                }
-            }
-        }
-    } else {
-        $dl = "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/$tag/$($x64Artifact[0].Setup.Name)"
-        Write-Host ""
-        Write-Host "  =========== ACTION NEEDED (one-time): submit to winget ===========" -ForegroundColor Yellow
-        Write-Host "  LunarWerxs.SageThumbs2K is not in winget-pkgs yet, so auto-publish is skipped." -ForegroundColor Yellow
-        Write-Host "  Do the FIRST submission by hand; every release after this auto-publishes:" -ForegroundColor Yellow
-        Write-Host "    1) winget install RussellBanks.Komac" -ForegroundColor Yellow
-        Write-Host "    2) komac new LunarWerxs.SageThumbs2K --version $ver --urls $dl" -ForegroundColor Yellow
-        Write-Host "    3) confirm the WINGET_TOKEN repo secret is set (see .github/workflows/winget.yml)" -ForegroundColor Yellow
-        Write-Host "  ==================================================================" -ForegroundColor Yellow
+    # 7) Submit to winget, FROM HERE, with the local `gh`. No secret, no CI run, no PAT.
+    #
+    # This used to publish through the `winget.yml` GitHub Action driven by a WINGET_TOKEN
+    # secret, and that arrangement failed repeatedly and silently for a year:
+    #   * a classic PAT expired after 1.7.2, so 1.7.3 and 1.7.4 never published;
+    #   * the fine-grained PAT that replaced it on 2026-08-06 was answering 401 within two
+    #     hours, and because the workflow's onboarding guard treated ANY non-200 as "package
+    #     not onboarded yet" and skipped with a green tick, nothing ever said so. Nine
+    #     releases (1.8.2 .. 1.12.0) reported success while publishing nothing.
+    # The token was replaced several times. It could not have worked in the shape it was asked
+    # to: a fine-grained PAT only carries permissions on repositories its owner OWNS, and
+    # microsoft/winget-pkgs is permanently read-only to one, so the pull-request step was
+    # unreachable by construction. The recurring "the token is dead again" was a symptom.
+    #
+    # The local `gh` OAuth login already carries everything the whole job needs, and
+    # `winget-submit.ps1` does the whole job with it: read the release's own published digests,
+    # rewrite the manifest triplet, sync the fork, push the branch, open the PR. It is
+    # idempotent and stops early if the version is already published or a PR is already open.
+    # A release failing at winget is reported, never fatal - the release itself is already
+    # public and correct by this point.
+    Write-Host "[winget] submitting $ver to winget-pkgs..." -ForegroundColor DarkGray
+    & (Join-Path $PSScriptRoot 'winget-submit.ps1') -Version $ver
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[winget] submission did NOT complete - winget users stay on the previous version." -ForegroundColor Red
+        Write-Host "  retry with: pwsh scripts\winget-submit.ps1 -Version $ver" -ForegroundColor Yellow
     }
 }
 finally { Pop-Location }

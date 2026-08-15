@@ -1,206 +1,102 @@
-# Auto-publish each GitHub release to the Windows Package Manager (winget).
+# Publish a release to the Windows Package Manager (winget).
 #
-# How it works: when a release is *published* (not draft/pre-release), this submits a
-# pull request to microsoft/winget-pkgs with an updated manifest pointing at the new
-# installer asset. Set up once → zero ongoing work.
+# ============================================================================================
+# THIS WORKFLOW IS NO LONGER THE PUBLISHING PATH, AND IT NEEDS NO SECRET.
 #
-# One-time setup (owner), BOTH parts are required:
-#   1. A CLASSIC GitHub PAT with `public_repo` scope, added as the repo secret WINGET_TOKEN
-#      (Settings → Secrets and variables → Actions).
-#   2. A FORK of microsoft/winget-pkgs under that token's account. Komac submits by pushing
-#      a branch to your fork and opening a PR from it, so no fork means no submission:
-#         gh repo fork microsoft/winget-pkgs --clone=false
+# `scripts/release.ps1` submits to winget directly, on the maintainer's machine, by calling
+# `scripts/winget-submit.ps1`. That script does the whole job with the LOCAL `gh` login: read
+# the release's own published sha256 digests, rewrite the manifest triplet, sync the fork, push
+# the branch, open the pull request. It needs no PAT, and there is nothing to expire.
 #
-# THE PULL-REQUEST STEP CANNOT WORK FROM A FINE-GRAINED TOKEN, and no permission setting
-# changes that (measured 2026-08-07, not inferred): a fine-grained PAT only carries permissions
-# on repositories the account OWNS, so its access to microsoft/winget-pkgs reads
-# `{pull: true, push: false, ...}` and `POST /repos/microsoft/winget-pkgs/pulls` answers 403 —
-# not the 422 an already-existing PR would return, which is how we know it is the permission
-# and not the request. Only a classic PAT can do it, and this project does not use those.
+# WHY THE CI PATH WAS ABANDONED (2026-08-14). It failed silently for a year, and the failure
+# mode was worse than not having it:
+#   * a classic PAT expired after 1.7.2, so 1.7.3 and 1.7.4 never published;
+#   * the fine-grained PAT that replaced it on 2026-08-06 was answering 401 within two hours;
+#   * the onboarding guard treated ANY non-200 as "package not onboarded yet" and skipped the
+#     whole job with a GREEN TICK, so nine consecutive releases (1.8.2 .. 1.12.0) reported
+#     success while publishing nothing, and winget users sat on 1.8.1 for a week.
+# The token was reissued several times. It could never have worked in the shape it was asked
+# to: a fine-grained PAT only carries permissions on repositories its owner OWNS, so
+# `POST /repos/microsoft/winget-pkgs/pulls` is 403 by construction, and a classic PAT is a
+# credential that expires and must be re-minted forever. The recurring "the token is dead
+# again" was the symptom; needing a token at all was the disease.
 #
-# So the work is SPLIT, and the failure below is expected and handled:
-#   * this workflow does what a fine-grained WINGET_TOKEN genuinely can - check the fork, sync
-#     it with upstream, and let Komac push the manifest branch;
-#   * `scripts/release.ps1` then opens the pull request from that branch using the maintainer's
-#     LOCAL `gh`, whose OAuth login already carries the scope the PAT cannot hold.
-# Net effect: winget still publishes on every release, with no classic token anywhere.
-# WINGET_PR_TOKEN is honoured if it ever exists, but nothing depends on it.
-# The FIRST package submission is done by hand with Komac (the action is for updates);
-# every release after that is automatic via this workflow.
+# So: the WINGET_TOKEN secret can be DELETED. Nothing here or in release.ps1 reads it.
+# ============================================================================================
 #
-# 2026-07-21: the fork went missing at some point after 1.1.1 and every release since failed
-# with Komac's unhelpful "Could not resolve to a Repository with the name '<owner>/winget-pkgs'".
-# 1.2.0, 1.2.1 and 1.2.2 never reached winget because of it. The explicit fork check below
-# exists so the next occurrence names the cause and the fix instead of that error.
+# What remains is a MANUAL fallback for the case where the maintainer's machine is not
+# available. It is `workflow_dispatch` only - deliberately NOT triggered by a release, because
+# release.ps1 already submits and two submitters would race to open duplicate pull requests.
 #
-# 2026-08-04: 1.7.3 and 1.7.4 both failed with
-#     "LunarWerxs does not have the correct permissions to execute `CreateRef`"
-# and nothing noticed, because release.ps1 printed "onboarded" without checking the run. It
-# now watches the run and reports the failure (see its winget block).
+# It uses the built-in GITHUB_TOKEN, which is minted per run, always valid, and never needs
+# provisioning. That is enough for the read below. It is NOT enough for Komac to push a branch
+# to the fork, which is precisely why this path is a diagnostic rather than a publisher: it
+# tells you whether the package is onboarded and whether the fork is in a state that would
+# work, then points at the script that actually does the submission.
 #
-# ROOT CAUSE, proven by elimination on 2026-08-04: a STALE FORK. Komac creates its
-# submission branch from UPSTREAM's current HEAD; when the fork's `master` has fallen far
-# enough behind microsoft/winget-pkgs (ours was two weeks stale), GitHub refuses the ref
-# create and MISREPORTS it as "<owner> does not have the correct permissions to execute
-# `CreateRef`". It is not a permissions problem at all:
-#   * a fresh classic PAT, verified `public_repo` + owner LunarWerxs via the API, failed
-#     with the identical error — the token was never the issue;
-#   * `gh repo sync LunarWerxs/winget-pkgs --source microsoft/winget-pkgs`, then re-run,
-#     succeeded immediately with that same token.
-# So when this error appears: SYNC THE FORK FIRST. Only chase the token if a fresh sync
-# does not fix it. (Do not trust the error text; it lies about the cause.)
-name: Publish to winget
+# Historical note kept because it costs a day every time it is rediscovered: when Komac fails
+# with "<owner> does not have the correct permissions to execute `CreateRef`", the cause is a
+# STALE FORK, not permissions. `gh repo sync LunarWerxs/winget-pkgs --source microsoft/winget-pkgs`
+# fixes it. The error text lies about the cause.
+name: Check winget submission state
 
 on:
-  release:
-    types: [released] # published, non-prerelease
   workflow_dispatch:
     inputs:
-      tag:
-        description: Existing release tag to (re)publish, e.g. v0.4.9
-        required: true
-      check_only:
-        description: Verify the token and fork sync, then stop without submitting anything
-        type: boolean
-        default: false
+      version:
+        description: Version to check, without the leading v (e.g. 1.12.0)
+        required: false
 
-# Submission uses the dedicated WINGET_TOKEN; the workflow-scoped GitHub token
-# needs no repository write permission.
 permissions:
   contents: read
 
 jobs:
-  winget:
-    runs-on: windows-latest
+  check:
+    runs-on: ubuntu-latest
     steps:
-      # winget-releaser can only UPDATE a package that already exists in winget-pkgs; the
-      # FIRST version must be merged by hand (Microsoft review). Until that lands, skip
-      # gracefully instead of failing every release. Once the package exists, this passes
-      # through and auto-publishes with zero changes. Manifests live at
-      # manifests/<first-letter-lowercased>/<Publisher>/<Package>/.
-      #
-      # ONLY 404 MEANS "NOT ONBOARDED". Everything else that is not 200 is a broken setup,
-      # and it MUST fail the job (2026-08-14). This step used to treat every non-200 as
-      # "not yet onboarded" and skip the whole workflow with a green tick. WINGET_TOKEN then
-      # expired, this call started answering 401, and NINE consecutive releases (1.8.2
-      # through 1.12.0) silently never reached winget while every run reported success —
-      # `release.ps1` watches the run, so a green run told it the submission had happened.
-      # winget users sat on 1.8.1 for a week, on a build whose one-click self-updater was
-      # itself broken (fixed in 1.10.1), so they had no working way off it at all.
-      # A skip that cannot be distinguished from a success is not a safe default.
-      - name: Check the package is onboarded to winget-pkgs
-        id: onboarded
+      # Read-only, against a PUBLIC repository, with the run's own built-in token. Only 404
+      # means "not onboarded"; anything else that is not 200 is a broken setup and must fail
+      # loudly rather than be swallowed as a skip. That distinction is the entire lesson of the
+      # 1.8.2 .. 1.12.0 silent-skip incident described above.
+      - name: Report winget state
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
         run: |
+          pkg=manifests/l/LunarWerxs/SageThumbs2K
           code=$(curl -s -o /dev/null -w '%{http_code}' \
-            -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/l/LunarWerxs/SageThumbs2K")
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/$pkg")
           case "$code" in
-            200)
-              echo "exists=true" >> "$GITHUB_OUTPUT"
-              ;;
+            200) echo "package is onboarded to winget-pkgs." ;;
             404)
-              echo "exists=false" >> "$GITHUB_OUTPUT"
-              echo "::notice title=winget skipped::LunarWerxs.SageThumbs2K not yet in winget-pkgs (HTTP 404) — auto-publish resumes once the first submission is merged."
-              ;;
-            401|403)
-              echo "::error title=WINGET_TOKEN is dead::GitHub answered HTTP $code for a PUBLIC repository's contents, which only happens when the credential itself is rejected — WINGET_TOKEN is expired, revoked, or malformed. Nothing was submitted to winget. Fix: mint a new fine-grained PAT (Contents + Workflows + Pull requests, read-write, on all LunarWerxs repos), set it as the WINGET_TOKEN secret, then re-run this workflow with the release tag."
+              echo "::error title=Not onboarded::LunarWerxs.SageThumbs2K is not in winget-pkgs. The FIRST submission must be merged by hand (komac new)."
               exit 1
               ;;
             *)
-              echo "::error title=winget onboarding check failed::Unexpected HTTP $code from api.github.com. Nothing was submitted to winget. Re-run this workflow with the release tag once the cause is known."
+              echo "::error title=Unexpected HTTP $code::Could not read a public repository's contents. Nothing was checked."
               exit 1
               ;;
           esac
 
-      # Komac needs the fork to push its branch to. Check it up front so a missing fork is
-      # reported as a missing fork, with the command that fixes it.
-      - name: Check the winget-pkgs fork exists
-        if: steps.onboarded.outputs.exists == 'true'
-        shell: bash
-        run: |
-          # Print the token's SCOPES (never its value). `workflow` is the one that is easy to
-          # leave off and hard to diagnose: without it the fork sync below fails, because
-          # fast-forwarding master carries winget-pkgs' own .github/workflows changes.
-          # `|| true` because fine-grained tokens send no scopes header, grep then exits 1,
-          # and the runner shell's `-e -o pipefail` would kill the whole step over it.
-          scopes=$(curl -s -D - -o /dev/null -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" https://api.github.com/user \
-            | tr -d '\r' | grep -i '^x-oauth-scopes:' | cut -d' ' -f2- || true)
-          echo "WINGET_TOKEN scopes: ${scopes:-(none reported - fine-grained token)}"
-          # Fine-grained tokens send no scopes header at all; their permissions are checked
-          # functionally by the sync below, so only classic tokens get the scope warning.
-          # Since 2026-08-06 the secret holds a fine-grained token with Contents, Workflows,
-          # and Pull requests read-write on all LunarWerxs repos - verified against both
-          # merge-upstream and CreateRef on the fork before it was swapped in.
-          if [ -n "$scopes" ]; then
-            case "$scopes" in
-              *workflow*) echo "  workflow scope: present" ;;
-              *) echo "::warning title=WINGET_TOKEN missing 'workflow' scope::Fork sync will likely fail with HTTP 422. Add the scope at https://github.com/settings/tokens and update the WINGET_TOKEN secret." ;;
-            esac
-          fi
-          owner=$(curl -s -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" https://api.github.com/user | jq -r .login)
-          code=$(curl -s -o /dev/null -w '%{http_code}' \
-            -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$owner/winget-pkgs")
-          if [ "$code" != "200" ]; then
-            echo "::error title=winget-pkgs fork missing::$owner/winget-pkgs does not exist (HTTP $code). Komac pushes its submission branch there. Create it once, as $owner: gh repo fork microsoft/winget-pkgs --clone=false — then re-run this workflow with the release tag."
-            exit 1
-          fi
-          echo "fork ok: $owner/winget-pkgs"
-          # Sync the fork with upstream EVERY run. A fork left to drift eventually makes
-          # Komac's branch creation fail with a misleading "does not have the correct
-          # permissions to execute CreateRef" (see the 2026-08-04 header note): the error
-          # names permissions, the cause is staleness. Syncing is cheap, idempotent, and
-          # works with public_repo scope, so just always do it. Non-fatal on conflict:
-          # Komac may still succeed, and if not, its own error surfaces below.
-          sync=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer ${{ secrets.WINGET_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$owner/winget-pkgs/merge-upstream" \
-            -d '{"branch":"master"}')
-          echo "fork sync with upstream: HTTP $sync (200=synced, 409=conflict/manual)"
-          # Say so LOUDLY when the sync did not happen. On 1.8.0 this printed 422 and the run
-          # carried on to fail in Komac with the "does not have the correct permissions to
-          # execute CreateRef" lie, which sends you after the token instead of the fork. The
-          # same merge-upstream call from a token with `workflow` scope fast-forwarded
-          # immediately, so a 422 here most likely means WINGET_TOKEN cannot fast-forward a
-          # branch whose diff touches winget-pkgs' own .github/workflows files.
-          if [ "$sync" != "200" ]; then
-            echo "::warning title=winget-pkgs fork NOT synced::merge-upstream returned HTTP $sync. If the submission below fails with a CreateRef permissions error, the fork is stale, NOT the token. Fix: add the 'workflow' scope to WINGET_TOKEN, or sync by hand with 'gh api -X POST repos/$owner/winget-pkgs/merge-upstream -f branch=master' and re-run this workflow."
+          echo "latest published versions:"
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/$pkg" \
+            | jq -r '.[] | select(.type=="dir") | .name' | sort -V | tail -5
+
+          if [ -n "$VERSION" ]; then
+            open=$(gh pr list --repo microsoft/winget-pkgs --state all --limit 30 \
+              --search "LunarWerxs.SageThumbs2K version $VERSION in:title" \
+              --json number,state,url --jq '.[0] | "\(.number) \(.state) \(.url)"' 2>/dev/null)
+            if [ -n "$open" ] && [ "$open" != "null" ]; then
+              echo "pull request for $VERSION: $open"
+            else
+              echo "::warning title=No pull request for $VERSION::Submit it from the maintainer's machine: pwsh scripts/winget-submit.ps1 -Version $VERSION"
+            fi
           fi
 
-      - name: Submit to winget-pkgs
-        if: steps.onboarded.outputs.exists == 'true' && inputs.check_only != true
-        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
-        with:
-          # winget package identifier: Publisher.Package (PascalCase, no spaces).
-          identifier: LunarWerxs.SageThumbs2K
-          # Match the installer asset on the release (SageThumbs2K-Setup-<ver>.exe).
-          installers-regex: 'SageThumbs2K-Setup-.*\.exe$'
-          release-tag: ${{ github.event.inputs.tag || github.event.release.tag_name }}
-          # Prefer the classic PR token; fall back so an existing single-secret setup still works.
-          token: ${{ secrets.WINGET_PR_TOKEN || secrets.WINGET_TOKEN }}
-
-      # Komac pushes its branch BEFORE it opens the PR, so a token that can write to the fork
-      # but not open a PR upstream leaves the manifests sitting there, complete and correct,
-      # with nothing pointing at them. That is recoverable in one command instead of a rerun —
-      # say so here rather than leaving the next person to work it out from the raw error.
-      - name: Explain how to finish a failed submission
-        if: failure()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
-          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
-        run: |
-          owner=$(gh api user --jq .login 2>/dev/null || echo LunarWerxs)
-          branch=$(gh api "repos/$owner/winget-pkgs/branches" --jq \
-            '[.[] | select(.name | test("SageThumbs2K"))] | last | .name' 2>/dev/null || true)
-          if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-            echo "::warning title=Manifests are already pushed::Komac's branch exists on $owner/winget-pkgs; only the pull request is missing. Open it with: gh pr create --repo microsoft/winget-pkgs --base master --head $owner:$branch --title \"New version: LunarWerxs.SageThumbs2K version ${TAG#v}\" --body \"Pull request created with WinGet Releaser\""
-          else
-            echo "::warning title=No submission branch::Komac did not get as far as pushing manifests, so there is nothing to open a PR from. Re-run this workflow once the token can write to the fork."
-          fi
+          echo
+          echo "To PUBLISH a version, run this on the maintainer's machine (no secret needed):"
+          echo "    pwsh scripts/winget-submit.ps1 -Version <x.y.z>"
