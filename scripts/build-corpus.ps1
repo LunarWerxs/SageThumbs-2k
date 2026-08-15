@@ -393,6 +393,19 @@ if (-not $SkipDownloads) {
         'sample-avif-alpha.avif' = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/simple_osm_tile_alpha.avif'
         # DICOM (read-only in magick): pydicom's small CT test file -> magick read tier.
         'sample.dcm'      = 'https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm'
+        # Flash video. THREE codecs live in .flv and they take three different paths, so the
+        # corpus needs more than one: sample.flv (synthesised below) is SORENSON SPARK, which
+        # our own out-of-process decoder handles, and this is real VP6 from FFmpeg's own FATE
+        # suite, which is the other pure-Rust decoder. H.264-in-FLV goes through Media
+        # Foundation instead and is covered by a unit test that re-wraps sample.mp4's bytes.
+        # Without a VP6 file here the VP6 half rested entirely on manual checking.
+        # SHA-256: F61D4A1696000CBB6D1E6A8BD7E4682656DA3AD017C49FD6D7C47A7F28D8AEFE
+        'sample-vp6.flv'  = 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv'
+        # Android package (container/apk.rs): a REAL apk, because the whole point of that
+        # extractor is resolving the launcher icon the manifest names through the compiled
+        # resource table, and a synthesised one only proves the parser reads what we wrote.
+        # Pinned to a commit: androguard's test data is stable but `master` is not a promise.
+        'sample.apk'      = 'https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk'
         # GIMP XCF (read-only in magick): GIMP's own test file -> magick read tier.
         'sample.xcf'      = 'https://gitlab.gnome.org/GNOME/gimp/-/raw/master/app/tests/files/gimp-2-6-file.xcf'
     }
@@ -401,6 +414,17 @@ if (-not $SkipDownloads) {
         # curl UA: GitLab (the GIMP xcf) 406es PowerShell's default User-Agent.
         try { Invoke-WebRequest $dls[$n] -OutFile "$OutDir\$n" -UseBasicParsing -TimeoutSec 60 -UserAgent 'curl/8.4.0' } catch { Write-Host "  download failed: $n" }
     }
+}
+
+# Android split-bundle wrappers (.xapk / .apks / .apkm) are zips CONTAINING an apk, so they
+# are built from the real one rather than downloaded: the wrapper layer is ours to exercise,
+# and hunting three separate hosted bundles would add three more things that can 404.
+if (Test-Path "$OutDir\sample.apk") {
+    $apkBytes = [System.IO.File]::ReadAllBytes("$OutDir\sample.apk")
+    # base.apk is the entry name real bundles use, and the one apk.rs prefers.
+    New-Zip "$OutDir\sample.xapk" @{ 'base.apk' = $apkBytes }
+    New-Zip "$OutDir\sample.apks" @{ 'base.apk' = $apkBytes }
+    New-Zip "$OutDir\sample.apkm" @{ 'base.apk' = $apkBytes }
 }
 
 # Visio .vsdm is structurally identical to .vsdx — reuse the downloaded sample.
