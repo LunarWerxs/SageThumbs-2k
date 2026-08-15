@@ -98,10 +98,22 @@ pub fn is_video_magic(head: &[u8]) -> bool {
         };
         // The ftyp box: [size:4][ftyp:4][major:4][minor_version:4][compatible brands...].
         // Bounded by the declared box size AND by what we were actually handed.
-        let box_end = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
-        let end = box_end.clamp(16, head.len());
-        if head[16..end].chunks_exact(4).any(is_still) {
-            return false;
+        //
+        // The `head.len() >= 16` guard is LOAD-BEARING and must stay OUTSIDE the clamp, not
+        // folded into it. Compatible brands start at offset 16, but the function only
+        // requires 12 bytes (the major brand ends there), so a 12..=15 byte head reaches
+        // here — and `clamp(16, head.len())` is then `min > max`, which PANICS by contract.
+        // This parser runs in-process inside `explorer.exe` under `panic = "abort"` (see
+        // safety.rs), so a 13-byte ftyp-shaped file or stream would abort the user's shell.
+        // Skipping the scan is the correct degrade: a head that short carries no compatible
+        // brands at all, and the major-brand check below still classifies it.
+        // Found by the always-on `fuzz::parsers_survive_mutation_of_synthetic_seeds` gate.
+        if head.len() >= 16 {
+            let box_end = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+            let end = box_end.clamp(16, head.len());
+            if head[16..end].chunks_exact(4).any(is_still) {
+                return false;
+            }
         }
         let not_video = is_still(brand)
             || brand == b"M4A "
@@ -762,5 +774,47 @@ mod still_brand_tests {
         let mut lying = ftyp(b"zzzz", &[b"mif1"]);
         lying[0..4].copy_from_slice(&9999u32.to_be_bytes());
         assert!(!is_video_magic(&lying));
+    }
+
+    /// A head that STOPS INSIDE the ftyp box must not panic.
+    ///
+    /// The function's own entry guard is `len >= 12` (enough for `ftyp` + the major brand),
+    /// but compatible brands start at offset 16 — so a 12..=15 byte head used to reach
+    /// `box_end.clamp(16, head.len())`, which is `min > max` and panics by `clamp`'s
+    /// contract. Not a soft failure: this parser runs in-process inside `explorer.exe`
+    /// under `panic = "abort"`, so a 13-byte ftyp-shaped file or stream aborted the user's
+    /// whole shell. Found by `fuzz::parsers_survive_mutation_of_synthetic_seeds`
+    /// ("seed 'stub15' iter 0: min > max. min = 16, max = 13").
+    ///
+    /// Every prefix is swept, not just the guilty lengths, because the next edit to this
+    /// function is as likely to move the boundary as to remove it.
+    #[test]
+    fn a_head_truncated_inside_the_ftyp_box_does_not_panic() {
+        for major in [b"mp42", b"heic", b"zzzz"] {
+            let full = ftyp(major, &[b"mif1", b"isom"]);
+            for n in 0..=full.len() {
+                let _ = is_video_magic(&full[..n]);
+            }
+        }
+
+        // The exact fuzz seed: 13 bytes of an ISO-BMFF head, box size declaring more than
+        // arrived. The major brand is all that's readable, and it must still be honoured —
+        // skipping the compatible-brands scan may not silently reclassify the file.
+        let heic13 = &ftyp(b"heic", &[b"mif1"])[..13];
+        assert_eq!(heic13.len(), 13);
+        assert!(
+            !is_video_magic(heic13),
+            "a short HEIC head is still a still"
+        );
+        assert!(
+            is_video_magic(&ftyp(b"mp42", &[b"isom"])[..13]),
+            "a short mp4 head is still video"
+        );
+
+        // The boundary either side of 16, where the clamp's min and max meet.
+        for n in 12..=16 {
+            assert!(!is_video_magic(&ftyp(b"avif", &[b"mif1"])[..n]));
+            assert!(is_video_magic(&ftyp(b"isom", &[b"iso2"])[..n]));
+        }
     }
 }
