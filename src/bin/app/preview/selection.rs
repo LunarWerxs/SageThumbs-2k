@@ -428,6 +428,14 @@ unsafe fn first_visible_off(hwnd: HWND) -> Option<usize> {
             ensure_text_starts(st);
             let lh = mono_line_h(hwnd);
             let starts = st.line_starts.borrow();
+            // `ensure_text_starts` returns WITHOUT pushing anything when no text is loaded
+            // (its `let Some(t) = t.as_deref() else { return }`), so this can still be empty
+            // here — and `len() as i32 - 1` is then -1, making the clamp `min > max`, which
+            // panics by contract rather than saturating. The sibling `text_move` guards the
+            // same state with `text.as_deref()?`; this path never did.
+            if starts.is_empty() {
+                return None;
+            }
             let li = (st.text_scroll.get() / lh).clamp(0, starts.len() as i32 - 1) as usize;
             starts.get(li).copied()
         }
