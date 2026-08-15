@@ -142,6 +142,42 @@ pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage
 /// the difference between a 4x saving and doing the work twice: a JPEG decodes DCT-scaled, a
 /// PNG has no such mode so WIC decodes it whole and resamples. See
 /// `wic::wic_decode_path_if_codec_scales` for the measurements and how the codec is asked.
+/// Decode an already-buffered image DCT-scaled, when the codec can genuinely do that.
+///
+/// This is the thumbnail path's version of [`wic_scaled_from_path_if_codec_scales`], which the
+/// shell provider could never call: it receives an `IStream`, not a filename.
+///
+/// **Gated to JPEG on purpose, and the gate is not timidity.** The tiers above this one are
+/// ordered around what each format's own container offers — a RAW's embedded preview, a PSD's
+/// baked thumbnail, a video's keyframe — and every one of those is FASTER than any full decode,
+/// scaled or not. Letting WIC claim those formats first would replace a shortcut with a decode
+/// and read as a speedup while being a regression. JPEG has no such shortcut to lose (a JFIF
+/// thumbnail is optional and usually absent), it is the format the DCT trick exists for, and it
+/// is what the measurement was taken on. Widening this to other codecs means re-measuring
+/// against the shortcut each one already has, not just relaxing the magic test.
+///
+/// `MIN_SCALED_BYTES` keeps small files on the pure-Rust tier: creating a WIC factory and a
+/// decoder costs a COM round trip that a small JPEG's whole decode does not justify.
+pub fn wic_scaled_from_bytes_if_codec_scales(
+    bytes: &[u8],
+    target_edge: u32,
+) -> Option<DynamicImage> {
+    /// Below this, a full decode is already fast enough that the probe could cost more than it
+    /// saves. Above it, the halving is worth a COM round trip several times over.
+    const MIN_SCALED_BYTES: usize = 512 * 1024;
+    if bytes.len() < MIN_SCALED_BYTES || !bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return None;
+    }
+    let head = &bytes[..bytes.len().min(COLOR_HEAD_BYTES)];
+    match unsafe { wic::wic_decode_bytes_if_codec_scales(bytes, target_edge, head) } {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::safety::log_debug(&format!("WIC scaled-from-bytes declined: {e}"));
+            None
+        }
+    }
+}
+
 pub fn wic_scaled_from_path_if_codec_scales(path: &str, target_edge: u32) -> Option<DynamicImage> {
     let head = read_head(path, COLOR_HEAD_BYTES).unwrap_or_default();
     match unsafe { wic::wic_decode_path_if_codec_scales(path, target_edge, &head) } {

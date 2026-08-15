@@ -142,6 +142,42 @@ pub(super) unsafe fn wic_decode_path_if_codec_scales(
     wic_decode_frame(&factory, &frame, Some(target_edge), head)
 }
 
+/// [`wic_decode_path_if_codec_scales`] over BYTES rather than a path.
+///
+/// The shell's thumbnail provider is handed an `IStream`, never a filename (that is what lets
+/// it run in the isolated host at all), so the by-path variant — the only one that existed —
+/// was unreachable from the surface that draws every thumbnail in Explorer. It was wired into
+/// the Quick preview viewer and nowhere else, which is why a folder of large JPEGs paid a full
+/// decode per tile while the fast path sat there tested and unused.
+///
+/// `SHCreateMemStream` copies the buffer. That is deliberate: `IWICStream::InitializeFromMemory`
+/// borrows, and would need the caller's slice to outlive a COM object whose lifetime WIC owns —
+/// a lifetime bug waiting for the one input that makes the decoder hold on. A copy of an
+/// already-buffered image is nothing next to the decode this avoids.
+pub(super) unsafe fn wic_decode_bytes_if_codec_scales(
+    bytes: &[u8],
+    target_edge: u32,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    let factory: IWICImagingFactory =
+        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+    let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes))
+        .ok_or_else(|| Error::from(E_FAIL))?;
+    // `OnDemand` for the same reason as the by-path twin: this often decides it cannot help and
+    // returns without decoding, so eagerly walking the metadata graph would be pure loss on top
+    // of the normal decode the caller then runs.
+    let decoder = factory.CreateDecoderFromStream(
+        &stream,
+        std::ptr::null(),
+        WICDecodeMetadataCacheOnDemand,
+    )?;
+    let frame = decoder.GetFrame(0)?;
+    if !codec_scales_natively(&frame, target_edge) {
+        return Err(Error::from(E_FAIL));
+    }
+    wic_decode_frame(&factory, &frame, Some(target_edge), head)
+}
+
 /// Whether the codec behind `frame` can decode at a REDUCED size natively, rather than
 /// decoding everything and resampling afterwards. See [`wic_decode_path_if_codec_scales`].
 unsafe fn codec_scales_natively(frame: &IWICBitmapFrameDecode, target_edge: u32) -> bool {

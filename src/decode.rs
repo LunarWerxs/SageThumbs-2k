@@ -490,8 +490,9 @@ use wic::*;
 pub(crate) use readers::effective_input_cap;
 pub use readers::{
     decode_preview_path, decode_preview_streamed, exr_scaled_from_reader, is_exr_magic,
-    read_capped, read_preview_capped, wic_scaled_from_path, wic_scaled_from_path_if_codec_scales,
-    wic_scaled_from_stream, COLOR_HEAD_BYTES, EXR_PATH_EDGE, HEAD_PREVIEW_BYTES,
+    read_capped, read_preview_capped, wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
+    wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, COLOR_HEAD_BYTES, EXR_PATH_EDGE,
+    HEAD_PREVIEW_BYTES,
 };
 pub use thumb::{decode_thumbnail_opts, thumbnail_from_covers, thumbnail_from_image};
 pub(crate) use tiers::{largest_embedded_jpeg, MIN_RAW_PREVIEW};
@@ -668,6 +669,25 @@ fn decode_preview_with_raw_order(
                 }
             }
             crate::safety::log_debug("decode: jp2 native reduced decode declined, using tiers");
+        }
+    }
+    // Large JPEG: decode DCT-SCALED instead of decoding every pixel and then throwing almost
+    // all of them away. Exactly the same bargain as the JP2 arm above — ask the codec for a
+    // reduced resolution level rather than the full image — and gated the same way, on a
+    // caller that actually wants a thumbnail.
+    //
+    // This is the difference between a 7680x2160 wallpaper costing ~4 s a tile and costing a
+    // fraction of that. Measured on a real folder: 65 files, 1.3 GB of AI-upscaled JPEG and
+    // PNG, took ~150 s to pre-build, of which the top seven files alone were ~55 s. Thread
+    // count was NOT the cause (3 -> 16 workers moved it 6 %), nor the three size buckets; it
+    // was that every tile decoded its source in full.
+    //
+    // Only JPEG, and only above a size floor — see `wic_scaled_from_bytes_if_codec_scales` for
+    // why widening it is a re-measurement rather than a one-line change. Any failure falls
+    // straight through to the tiers below, so nothing that rendered before can stop rendering.
+    if let Some(cx) = wic_thumbnail_cx {
+        if let Some(img) = wic_scaled_from_bytes_if_codec_scales(bytes, cx) {
+            return Ok(img);
         }
     }
     // Video: grab a representative frame via the OS Media Foundation codecs (no bundled

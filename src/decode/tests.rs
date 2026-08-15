@@ -1036,6 +1036,53 @@ fn the_scaled_pre_pass_takes_jpeg_and_declines_png() {
         "the plain scaled decode must still handle PNG"
     );
 
+    // The BYTES twin, which is the one the shell provider can actually reach: it is handed an
+    // IStream and never a filename, so the by-path probe above was unreachable from the surface
+    // that draws every thumbnail in Explorer. Same three answers, over buffers.
+    // Big enough to clear the size floor: the 1024x768 file above encodes to a few hundred KB,
+    // which this path is SUPPOSED to decline. Noise so it cannot compress its way back under.
+    let mut big = image::RgbImage::new(3000, 2000);
+    for (x, y, p) in big.enumerate_pixels_mut() {
+        *p = image::Rgb([
+            (x.wrapping_mul(7) % 251) as u8,
+            (y.wrapping_mul(13) % 241) as u8,
+            ((x ^ y).wrapping_mul(3) % 239) as u8,
+        ]);
+    }
+    let mut big_jpg = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(big)
+        .write_to(&mut big_jpg, image::ImageFormat::Jpeg)
+        .expect("encode big jpeg");
+    let jpg_bytes = big_jpg.into_inner();
+    assert!(
+        jpg_bytes.len() >= 512 * 1024,
+        "the fixture must clear the size floor to test the path at all, got {} bytes",
+        jpg_bytes.len()
+    );
+    let png_file_bytes = std::fs::read(&png).expect("read staged png");
+    let scaled_b = super::wic_scaled_from_bytes_if_codec_scales(&jpg_bytes, 400)
+        .expect("a buffered JPEG must take the DCT-scaled path");
+    assert_eq!(scaled_b.width().max(scaled_b.height()), 400);
+    assert!(
+        super::wic_scaled_from_bytes_if_codec_scales(&png_file_bytes, 400).is_none(),
+        "PNG must decline: it has no reduced-size mode, so this would decode it twice"
+    );
+    // The size floor is load-bearing, not decoration. Below it a full decode is already fast
+    // and the COM round trip could cost more than it saves, so a small JPEG must NOT be
+    // diverted here — and a tiny one is exactly what most folders are full of.
+    let mut small = image::RgbImage::new(64, 48);
+    for (x, y, p) in small.enumerate_pixels_mut() {
+        *p = image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x ^ y) % 239) as u8]);
+    }
+    let mut small_jpg = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(small)
+        .write_to(&mut small_jpg, image::ImageFormat::Jpeg)
+        .expect("encode small jpeg");
+    assert!(
+        super::wic_scaled_from_bytes_if_codec_scales(small_jpg.get_ref(), 400).is_none(),
+        "a JPEG under the size floor must stay on the pure-Rust tier"
+    );
+
     let _ = std::fs::remove_file(&jpg);
     let _ = std::fs::remove_file(&png);
 }
