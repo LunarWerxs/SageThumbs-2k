@@ -1696,20 +1696,28 @@ fn scaled_pre_pass_sweep_by_format() {
         };
         let mb = bytes.len() as f64 / (1024.0 * 1024.0);
 
-        let answer = unsafe { wic::wic_scaling_answer(&bytes) };
-        let (dims, scales) = match answer {
-            Some((w, h, cw, ch)) => (
+        // Three distinct answers, kept distinct on purpose. An earlier version of this sweep
+        // printed "wic declines" for both "no codec" and "opened it, exposes no transform
+        // interface", which reported TIFF as unreadable when WIC reads it perfectly well.
+        let (dims, scales) = match unsafe { wic::wic_scaling_answer(&bytes) } {
+            wic::ScalingAnswer::CannotOpen => ("-".to_string(), "wic cannot open".to_string()),
+            wic::ScalingAnswer::NoTransform { w, h } => {
+                (format!("{w}x{h}"), "no transform iface".to_string())
+            }
+            wic::ScalingAnswer::Offers { w, h, cw, ch } => (
                 format!("{w}x{h}"),
                 if cw < w || ch < h {
                     format!("yes {cw}x{ch}")
                 } else {
-                    "no".to_string()
+                    "no (full size back)".to_string()
                 },
             ),
-            None => ("-".to_string(), "wic declines".to_string()),
         };
-        let (probe_us, _) = best_us(reps, || unsafe {
-            wic::wic_scaling_answer(&bytes).is_some()
+        let (probe_us, _) = best_us(reps, || {
+            !matches!(
+                unsafe { wic::wic_scaling_answer(&bytes) },
+                wic::ScalingAnswer::CannotOpen
+            )
         });
 
         let head = &bytes[..bytes.len().min(COLOR_HEAD_BYTES)];

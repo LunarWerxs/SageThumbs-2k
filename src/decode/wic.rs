@@ -205,28 +205,58 @@ unsafe fn codec_scales_natively(frame: &IWICBitmapFrameDecode, target_edge: u32)
     cw < w || ch < h
 }
 
-/// MEASUREMENT hook: what a codec ANSWERS about reduced-size decoding, decoding nothing.
+/// What a codec ANSWERS about reduced-size decoding, decoding nothing. See [`ScalingAnswer`].
 ///
-/// Returns `(width, height, closest_width, closest_height)`. `closest == full` is a codec
-/// saying "I have no reduced-size mode"; anything smaller is the offer the scaled pre-pass
-/// exists to take. Test-only because shipping code never needs the numbers, only the verdict
-/// [`codec_scales_natively`] derives from them — but the numbers are what decides which
-/// formats the pre-pass should cover, so the sweep in `super::tests` needs them visible.
+/// Test-only: shipping code needs only the verdict [`codec_scales_natively`] derives from
+/// these numbers, but the numbers are what decides which formats the pre-pass should cover,
+/// so the sweep in `super::tests` needs them visible.
 #[cfg(test)]
-pub(super) unsafe fn wic_scaling_answer(bytes: &[u8]) -> Option<(u32, u32, u32, u32)> {
-    let factory: IWICImagingFactory =
-        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
-    let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes))?;
-    let decoder = factory
+pub(super) unsafe fn wic_scaling_answer(bytes: &[u8]) -> ScalingAnswer {
+    let Ok(factory) = CoCreateInstance::<_, IWICImagingFactory>(
+        &CLSID_WICImagingFactory,
+        None,
+        CLSCTX_INPROC_SERVER,
+    ) else {
+        return ScalingAnswer::CannotOpen;
+    };
+    let Some(stream) = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes)) else {
+        return ScalingAnswer::CannotOpen;
+    };
+    let opened = factory
         .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
-        .ok()?;
-    let frame = decoder.GetFrame(0).ok()?;
+        .and_then(|d| d.GetFrame(0));
+    let Ok(frame) = opened else {
+        return ScalingAnswer::CannotOpen;
+    };
     let (mut w, mut h) = (0u32, 0u32);
-    frame.GetSize(&mut w, &mut h).ok()?;
-    let transform = frame.cast::<IWICBitmapSourceTransform>().ok()?;
+    if frame.GetSize(&mut w, &mut h).is_err() {
+        return ScalingAnswer::CannotOpen;
+    }
+    // No transform interface at all is a DIFFERENT answer from "opened it and it will not
+    // reduce", and conflating the two is how a sweep reports a format as unreadable when WIC
+    // reads it perfectly well. TIFF is the case that exposed this: WIC opens an 80 MB LZW TIFF
+    // without complaint and simply exposes no `IWICBitmapSourceTransform`.
+    let Ok(transform) = frame.cast::<IWICBitmapSourceTransform>() else {
+        return ScalingAnswer::NoTransform { w, h };
+    };
     let (mut cw, mut ch) = (1u32, 1u32);
-    transform.GetClosestSize(&mut cw, &mut ch).ok()?;
-    Some((w, h, cw, ch))
+    if transform.GetClosestSize(&mut cw, &mut ch).is_err() {
+        return ScalingAnswer::NoTransform { w, h };
+    }
+    ScalingAnswer::Offers { w, h, cw, ch }
+}
+
+/// The three genuinely different things a codec can say when asked to decode smaller.
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) enum ScalingAnswer {
+    /// WIC has no codec for these bytes (or cannot read the frame header).
+    CannotOpen,
+    /// WIC opens it, but the codec exposes no `IWICBitmapSourceTransform` — so there is no
+    /// reduced-size decode to ask for, though a full decode works fine.
+    NoTransform { w: u32, h: u32 },
+    /// The codec answered. `cw`/`ch` equal to `w`/`h` still means "I will not reduce".
+    Offers { w: u32, h: u32, cw: u32, ch: u32 },
 }
 
 /// Bomb guard for the WIC tier: may we decode a `w` x `h` source for a caller that wants
