@@ -416,14 +416,30 @@ pub(super) unsafe extern "system" fn list_subclass(
             // has no visible header to drag, so this cannot fire for it today — but `fit_columns`
             // is written for the three-column file-types list specifically, so pointing it at
             // any other list would be wrong the moment that changes.
+            // DESCRIPTION IS NOT DRAGGABLE — refuse the drag before it starts.
+            //
+            // It is the LAST column and `fit_columns` sizes it to exactly fill the list, so the
+            // only thing dragging it can do is make it narrower and leave dead space against the
+            // scrollbar. There is no width the user could want there that fitting does not
+            // already give them, and the gap reads as a rendering bug rather than as their own
+            // layout. Returning TRUE from HDN_BEGINTRACK is the documented way to say no.
+            //
+            // This replaces a "remember that the user dragged Description and stop auto-fitting
+            // it" flag. That flag existed only to stop the auto-fit snapping such a drag back —
+            // once the drag itself is refused, it had nothing left to do.
+            if (*nmhdr).code == windows::Win32::UI::Controls::HDN_BEGINTRACKW
+                && (*nmhdr).hwndFrom == list_header(h)
+                && GetDlgCtrlID(h) == ID_LIST
+                && (*(l.0 as *const windows::Win32::UI::Controls::NMHEADERW)).iItem == 2
+            {
+                return LRESULT(1);
+            }
             if (*nmhdr).code == windows::Win32::UI::Controls::HDN_ENDTRACKW
                 && (*nmhdr).hwndFrom == list_header(h)
                 && GetDlgCtrlID(h) == ID_LIST
             {
                 let hdn = l.0 as *const windows::Win32::UI::Controls::NMHEADERW;
-                if (*hdn).iItem == 2 {
-                    super::mark_desc_width_manual();
-                } else {
+                {
                     // FLOOR THE DRAGGED COLUMN FIRST. A Win32 header divider can be dragged
                     // all the way to zero, and a 0 px column is a trap rather than a choice:
                     // its two dividers land on the same pixel, so there is no longer anything

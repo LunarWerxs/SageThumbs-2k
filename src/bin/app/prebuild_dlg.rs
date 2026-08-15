@@ -39,7 +39,18 @@ const PBM_SETRANGE32: u32 = 0x0406;
 const PROGRESS_CLASS: PCWSTR = w!("msctls_progress32");
 
 const DLG_W: i32 = 420;
-const DLG_H: i32 = 190;
+/// **Sizes the WINDOW, not the client area** — the caption and borders come out of this, and
+/// [`build`] lays out against `GetClientRect`. At 96 dpi a 420x190 window has a 404x151 client,
+/// so 39 px vanish before the layout starts.
+///
+/// It was 190, and that was 11 px short: the status label occupied client y 80..116 while the
+/// button, positioned from the BOTTOM at `ch - bh - 16`, started at 105. They overlapped, the
+/// label painted over the button's top edge, and the button looked chopped in half. The layout
+/// needs `116 + 30 + 16 = 162` px of client, so the window needs 162 + 39.
+///
+/// Same trap as `--window about` (see CLAUDE.md §6): a dialog that measures itself in client
+/// coordinates cannot be sized in window coordinates without adding the frame back.
+const DLG_H: i32 = 205;
 
 /// Set by Cancel, read by the engine between files.
 static CANCEL: AtomicBool = AtomicBool::new(false);
@@ -50,6 +61,12 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 /// the run finishes, and the button silently stopped closing the window. That is exactly how
 /// a finished dialog ended up stuck on screen with a Close button that did nothing.
 static FINISHED: AtomicBool = AtomicBool::new(false);
+/// The run had something worth reading — files the shell refused. Kept as its own flag for the
+/// same reason as [`FINISHED`]: `WM_PB_DONE` TAKES [`RESULT`] to render it, so anything derived
+/// from it afterwards reads as zero.
+static FAILED: AtomicBool = AtomicBool::new(false);
+/// `WM_TIMER` id for the auto-close after a clean run.
+const AUTOCLOSE_TIMER: usize = 1;
 /// Finished counts, handed from the worker to `WM_PB_DONE`.
 static RESULT: Mutex<Option<Summary>> = Mutex::new(None);
 /// Last posted (done, total), so a repaint can restate them without asking the worker.
@@ -253,6 +270,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_PB_DONE => {
             FINISHED.store(true, Ordering::Relaxed);
             let s = RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
+            FAILED.store(s.as_ref().is_some_and(|s| s.failed > 0), Ordering::Relaxed);
             let text = s.map(|s| summary_text(&s)).unwrap_or_default();
             set_text(hwnd, ID_STATUS, &text);
             // The bar must READ as finished. A cancelled run stops part-way, and leaving it
@@ -264,6 +282,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             }
             set_text(hwnd, ID_ACTION, t("pb_close"));
+            // A CLEAN run closes itself. Leaving a dialog on screen that says "done" and does
+            // nothing makes the user dismiss a window to finish a job they already asked for.
+            // The delay is so the summary is readable rather than a flash — long enough to
+            // catch "48 built", short enough not to feel stuck.
+            //
+            // It stays open when there is something to READ: a cancelled run, or one where the
+            // shell refused files. Those are the cases where vanishing would hide the answer.
+            let clean = !CANCEL.load(Ordering::Relaxed) && !FAILED.load(Ordering::Relaxed);
+            if clean {
+                let _ = SetTimer(Some(hwnd), AUTOCLOSE_TIMER, 1_400, None);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == AUTOCLOSE_TIMER => {
+            let _ = KillTimer(Some(hwnd), AUTOCLOSE_TIMER);
+            let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -334,6 +368,7 @@ pub(crate) unsafe fn run_prebuild(folder: &str) {
 
     CANCEL.store(false, Ordering::Relaxed);
     FINISHED.store(false, Ordering::Relaxed);
+    FAILED.store(false, Ordering::Relaxed);
     *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     SEEN.0.store(0, Ordering::Relaxed);
     SEEN.1.store(0, Ordering::Relaxed);

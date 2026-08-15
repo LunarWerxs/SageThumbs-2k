@@ -529,16 +529,19 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // enough for their own labels in a long language, and no amount of window resizing helps
     // because only Description grows. The reporter of issue #26.3 could read neither.
     //
-    // Sizing is back on, and `fit_columns` now measures the first two columns instead of
+    // Sizing is back on for THE FIRST TWO, and `fit_columns` now measures them instead of
     // assuming their widths, so widening Extension reflows Description and the total still
-    // exactly fills the list. Dragging Description itself turns the auto-fit off for the rest
-    // of the session (see `DESC_WIDTH_IS_MANUAL`) — otherwise the column would snap straight
-    // back and the drag would look broken.
+    // exactly fills the list.
     //
-    // The last column's right-hand divider is still painted out in `list::list_subclass`: it
-    // sits at the far edge of the list where there is nothing to drag INTO, so it reads as a
-    // grabber that does nothing. The INNER dividers — the ones that now do something — are
-    // left alone.
+    // DESCRIPTION ITSELF IS REFUSED, in `list::list_subclass` via HDN_BEGINTRACK. It is the last
+    // column and it is auto-fitted to fill, so a drag can only shrink it and leave dead space
+    // against the scrollbar — which looks like a rendering fault, not a layout the user chose.
+    // An earlier attempt allowed the drag and turned the auto-fit off to stop it snapping back;
+    // that traded a snap-back for a permanent gap, so the drag is simply not offered now.
+    //
+    // The last column's right-hand divider is also painted out in `list::list_subclass`: it sits
+    // at the far edge of the list where there is nothing to drag INTO. The INNER dividers — the
+    // ones that do something — are left alone.
     if is_dark() {
         // Native dark item-view theme is dark-only; light keeps the native light header.
         dark_control(header, w!("DarkMode_ItemsView"));
@@ -546,9 +549,6 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // Subclass for dark header text, the column-drag reflow, and the SPACE/right-click bulk
     // checkbox toggle.
     let _ = SetWindowSubclass(list, Some(list::list_subclass), 0, 0);
-    // Fresh list, fresh column widths: drop any "the user dragged Description" state left
-    // behind by a PREVIOUS Settings window in this same process.
-    super::reset_desc_width_manual();
     // Extension | Category | Description. FORMATS is ordered by category, so the
     // list naturally clusters: Images, then Camera RAW, then Ebooks & comics —
     // and the Category column labels each (robust in dark mode, unlike native

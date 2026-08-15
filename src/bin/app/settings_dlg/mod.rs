@@ -712,39 +712,17 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
     fit_columns(list);
 }
 
-thread_local! {
-    /// Set once the user drags the Description column itself. From then on [`fit_columns`]
-    /// leaves that column alone: re-fitting it would snap the drag straight back, which reads
-    /// as the resize being broken rather than as a deliberate layout.
-    ///
-    /// Deliberately NOT persisted. It exists to stop the auto-fit fighting a drag in progress,
-    /// not to remember a layout — and a width saved at one window size is wrong at the next.
-    static DESC_WIDTH_IS_MANUAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Stop auto-fitting Description; called when the user finishes dragging that column.
-pub(super) fn mark_desc_width_manual() {
-    DESC_WIDTH_IS_MANUAL.with(|m| m.set(true));
-}
-
-/// Forget any manual Description width. Called when the file-types list is CREATED.
-///
-/// The flag is thread-local, not per-window, and the Settings window can be opened, closed and
-/// opened again inside one process (the tray and the shell verb both do it). Without this
-/// reset, the second window would be built with the creation widths — 64 / 92 / 196 — and then
-/// refuse to fit Description to the list, leaving a permanent dead gap on the right that the
-/// user could not explain and could only clear by restarting the app.
-pub(super) fn reset_desc_width_manual() {
-    DESC_WIDTH_IS_MANUAL.with(|m| m.set(false));
-}
-
 /// Size the Description column to fill the list's current visible width — no dead
 /// gap, no horizontal scroll. Re-run after a filter (the scrollbar may toggle), and
 /// after the user drags either of the two columns to its left.
+///
+/// It is now UNCONDITIONAL. There used to be a thread-local "the user dragged Description, so
+/// leave it alone" flag guarding this, which existed only so the auto-fit would not snap such a
+/// drag straight back. `list.rs` refuses that drag outright (dragging the last column can only
+/// open dead space against the scrollbar), so the flag guarded a case that can no longer happen
+/// — and it carried a real hazard of its own: being thread-local rather than per-window, a
+/// second Settings window in the same process inherited it and could keep a permanent dead gap.
 pub(super) unsafe fn fit_columns(list: HWND) {
-    if DESC_WIDTH_IS_MANUAL.with(std::cell::Cell::get) {
-        return;
-    }
     let mut crc = RECT::default();
     let _ = GetClientRect(list, &mut crc);
     // MEASURE the extension + category columns rather than assuming 64 + 92. Those were the
