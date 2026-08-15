@@ -80,7 +80,18 @@ pub const DEFAULT_SIZES: [u32; 3] = [96, 256, 768];
 /// Windows' actual cache buckets. A request lands in the smallest bucket that fits it, so
 /// asking for 200 fills the 256 one; normalising up front keeps the report honest about what
 /// was really built and stops two requested sizes silently doing the same work twice.
-const BUCKETS: [u32; 6] = [32, 96, 256, 768, 1024, 1920];
+///
+/// CORRECTED 2026-08-14 against the real set of `thumbcache_*.db` files Windows 10/11 ship:
+/// 16, 32, 48, 96, 256, 768, 1280, 1920, 2560. The old list carried **1024**, which is a
+/// Windows 7 era bucket that no longer exists, and was missing 1280 and 2560 — so a request in
+/// the 769..=1280 range normalised to a bucket Windows does not keep, and 2560 (newly
+/// reachable since `settings::THUMB_MAX` was raised) clamped down to 1920.
+///
+/// This only ever affected our own dedup and the "what did I build" report: `one()` passes the
+/// raw size to `IThumbnailCache`, which does its own bucket selection regardless of what we
+/// think the buckets are. So this is an honesty fix, not a behaviour fix — worth having
+/// precisely because the report is what anyone debugging a missing thumbnail reads first.
+const BUCKETS: [u32; 9] = [16, 32, 48, 96, 256, 768, 1280, 1920, 2560];
 /// The last entry of [`BUCKETS`], spelled as a constant so the clamp below needs no runtime
 /// unwrap for a value the array literal already guarantees.
 const LARGEST: u32 = BUCKETS[BUCKETS.len() - 1];
@@ -251,11 +262,19 @@ fn one(path: &str, opts: &Options) -> Outcome {
                 }
             }
             let mut bmp = None;
-            if cache
-                .GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None)
-                .is_ok()
-            {
-                built = true;
+            match cache.GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
+                Ok(()) => built = true,
+                // SAY WHICH FILE, WHICH SIZE, AND WHY. A per-size failure only ever landed in
+                // a total count, so "it didn't pre-build my PDFs" (issue #26.3) could not be
+                // told apart from "it never tried", from "the shell refused this one format",
+                // from "this size is not one the view reads". All three look identical in a
+                // summary line, and the reporter and I both ended up guessing.
+                //
+                // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
+                // unless someone has turned diagnostics on to find exactly this.
+                Err(e) => {
+                    crate::safety::log_debug(&format!("prebuild: {abs} size {size} not built: {e}"))
+                }
             }
         }
         if built {
@@ -263,6 +282,12 @@ fn one(path: &str, opts: &Options) -> Outcome {
         } else if already {
             Ok(Outcome::Already)
         } else {
+            // No size produced anything AND none was already cached. Worth a line even at
+            // normal verbosity would be too much for a big run, so it stays debug-gated, but
+            // it is the one that names a file the user will actually notice.
+            crate::safety::log_debug(&format!(
+                "prebuild: {abs} produced no thumbnail at any size"
+            ));
             Ok(Outcome::Failed)
         }
     })();
@@ -601,9 +626,20 @@ mod tests {
         );
         assert_eq!(
             normalize_sizes(&[99_999]),
-            vec![1920],
+            vec![2560],
             "anything past the top bucket clamps to it rather than being dropped"
         );
+        // The three buckets the corrected list added or fixed. 1024 is NOT a Windows 10/11
+        // bucket (it was Windows 7's), so a request in that range belongs in 1280 — getting
+        // this wrong made the run report a size Windows does not keep.
+        assert_eq!(normalize_sizes(&[1024]), vec![1280], "1024 is not a bucket");
+        assert_eq!(normalize_sizes(&[1281]), vec![1920]);
+        assert_eq!(
+            normalize_sizes(&[2000]),
+            vec![2560],
+            "the raised thumbnail ceiling must have a bucket to land in"
+        );
+        assert_eq!(normalize_sizes(&[40]), vec![48], "small buckets exist too");
         assert_eq!(
             normalize_sizes(&[0]),
             vec![256],

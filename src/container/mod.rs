@@ -20,6 +20,9 @@ pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
 
 mod affinity;
+// Android packages (.apk) + split-bundle wrappers (.xapk/.apks/.apkm) — the
+// manifest-declared launcher icon, resolved through binary XML + resources.arsc.
+mod apk;
 mod audio;
 mod blend;
 mod icns;
@@ -225,6 +228,14 @@ fn blend_compressed_head(bytes: &[u8]) -> Option<Vec<u8>> {
 
 /// If `bytes` is a recognized ebook/comic container, return its cover image.
 pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
+    // Android packages and their split-bundle wrappers: the REAL launcher icon via
+    // AndroidManifest.xml / resources.arsc. Must stay BEFORE the generic zip branch —
+    // an APK is a zip, and the generic image-pick would grab an arbitrary res/
+    // drawable instead of the declared icon. The sniff is a central-directory name
+    // check only, so a plain zip pays one directory parse, no decompression.
+    if apk::looks_like_apk(bytes) {
+        return apk::extract(bytes).map(CoverOut::Bytes);
+    }
     // ZIP family: EPUB / CBZ / FBZ (and any zip of images).
     if is_zip(bytes) {
         return zipfmt::extract(bytes).map(CoverOut::Bytes);
@@ -383,7 +394,21 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
 ) -> Option<Vec<u8>> {
     // ZIP family: CBZ / ZIP (and any zip of images).
     if is_zip(head) {
-        return zipfmt::cover_from_reader(reader);
+        // APK FIRST, exactly as in the buffered path above. An Android package IS a zip, so
+        // without this an oversized one takes the generic cover pick and shows an arbitrary
+        // bundled drawable instead of its launcher icon. Oversized is not the rare case here:
+        // `.xapk`/`.apks` split bundles for big games are precisely the ones that pass
+        // `limits::MAX_INPUT_BYTES` and reach this path rather than the buffered one.
+        // Opening the archive costs one central-directory read; handing the reader back with
+        // `into_inner` lets the generic path re-open it unchanged. That double read only ever
+        // happens on files past 256 MiB, where it is noise against the decode that follows.
+        let Ok(mut zip) = zip::ZipArchive::new(reader) else {
+            return None;
+        };
+        if apk::archive_is_apk(&mut zip) {
+            return apk::extract_seek(zip.into_inner());
+        }
+        return zipfmt::cover_from_reader(zip.into_inner());
     }
     // 7-Zip: CB7.
     if is_7z(head) {

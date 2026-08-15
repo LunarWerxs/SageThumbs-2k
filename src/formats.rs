@@ -239,6 +239,13 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("xd", "Adobe XD design"),
     ("max", "Autodesk 3ds Max scene"),
     ("c4d", "Cinema 4D scene"),
+    // Android packages — the manifest-declared launcher icon (container/apk.rs); the
+    // split-bundle wrappers carry a base.apk inside another zip. Deliberately NOT in
+    // ARCHIVE_EXTS: these get a real single-icon cover, not the archive contact sheet.
+    ("apk", "Android application package"),
+    ("apks", "Android split-APK bundle"),
+    ("xapk", "Android split-APK bundle (XAPK)"),
+    ("apkm", "Android split-APK bundle (APKM)"),
     ("pam", "Portable Arbitrary Map"),
     ("pbm", "Portable bitmap format"),
     ("pcd", "Photo CD"),

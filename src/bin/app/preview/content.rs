@@ -625,8 +625,10 @@ pub(super) fn read_doc(path: &str) -> Option<String> {
 
 /// Extensions shown as a file LISTING (container formats with no cover/thumbnail — deliberately
 /// NOT comics/ebooks/office, which already preview their embedded image). The long tail here is
-/// all just zip-in-disguise: appx/msix (Windows packages), xapk (split APKs), oxt (LibreOffice
-/// extensions) — `list_archive` sniffs the signature, so a mislabeled file falls through safely.
+/// all just zip-in-disguise: appx/msix (Windows packages), oxt (LibreOffice extensions) —
+/// `list_archive` sniffs the signature, so a mislabeled file falls through safely. Android
+/// packages (apk/apks/xapk/apkm) are NOT here anymore: they have a real cover now (the
+/// launcher icon, `container/apk.rs`), the same reason cbz/epub never were.
 pub(super) fn is_archive_ext(ext: &str) -> bool {
     matches!(
         ext,
@@ -634,7 +636,6 @@ pub(super) fn is_archive_ext(ext: &str) -> bool {
             | "7z"
             | "rar"
             | "jar"
-            | "apk"
             | "war"
             | "xpi"
             | "whl"
@@ -646,7 +647,6 @@ pub(super) fn is_archive_ext(ext: &str) -> bool {
             | "msix"
             | "appxbundle"
             | "msixbundle"
-            | "xapk"
             | "oxt"
     )
 }
