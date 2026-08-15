@@ -63,18 +63,57 @@ pub fn is_video_magic(head: &[u8]) -> bool {
         let brand = &head[8..12];
         // ISO-BMFF is shared by HEIC/AVIF (images) and M4A/M4B (audio); exclude those
         // brands so they're handled by the image tiers / audio-art path, not as video.
-        let not_video = brand == b"heic"
-            || brand == b"heix"
-            || brand == b"heim"
-            || brand == b"heis"
-            || brand == b"mif1"
-            || brand == b"msf1"
-            || brand == b"avif"
-            || brand == b"avis"
-            || brand == b"heif"
+        //
+        // CHECK THE COMPATIBLE BRANDS TOO, not just the major one. A major brand is whatever
+        // the encoder felt like declaring, and getting this wrong is not a soft failure: the
+        // shell cascade STOPS on "video that decoded no frame" rather than falling through to
+        // the image tiers, so one unrecognised image brand means a stock icon in Explorer
+        // forever. That shipped: libheif writes `mif3` (MIAF, ISO/IEC 23000-22) as the major
+        // brand of an alpha AVIF, `mif3` was not in the list below, and the file thumbnailed
+        // perfectly through the CLI while Explorer showed nothing. Every real image file also
+        // lists a KNOWN still brand among its compatible brands, so reading them turns an
+        // allowlist that must be exhaustive into one that merely has to be representative.
+        let is_still = |b: &[u8]| {
+            matches!(
+                b,
+                b"heic"
+                    | b"heix"
+                    | b"heim"
+                    | b"heis"
+                    | b"hevc"
+                    | b"hevx"
+                    | b"mif1"
+                    | b"mif2"
+                    | b"mif3"
+                    | b"msf1"
+                    | b"miaf"
+                    | b"MA1A"
+                    | b"MA1B"
+                    | b"avif"
+                    | b"avio"
+                    | b"avis"
+                    | b"heif"
+                    | b"jxl "
+            )
+        };
+        // The ftyp box: [size:4][ftyp:4][major:4][minor_version:4][compatible brands...].
+        // Bounded by the declared box size AND by what we were actually handed.
+        let box_end = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        let end = box_end.clamp(16, head.len());
+        if head[16..end].chunks_exact(4).any(is_still) {
+            return false;
+        }
+        let not_video = is_still(brand)
             || brand == b"M4A "
             || brand == b"M4B "
-            || brand == b"M4P ";
+            || brand == b"M4P "
+            // Canon CR3 RAW is ISO-BMFF too (both brands are seen in the wild — see
+            // rawsniff.rs's own `crx `/`cr3 ` check). Without this exclusion a CR3 is
+            // misrouted into the video cascade, every MF tier fails to demux a RAW photo,
+            // and streamsrc.rs returns E_FAIL directly with no fall-through to the RAW/WIC
+            // cascade that already knows this format.
+            || brand == b"crx "
+            || brand == b"cr3 ";
         return !not_video; // mp4/mov/m4v/3gp brands → video
     }
     // MPEG-TS (.ts/.mts): 188-byte packets, each led by the 0x47 sync byte. Requiring TWO
@@ -124,15 +163,18 @@ impl Drop for MfSession {
 /// expiry we return `None` (default icon) and let the worker exit on its own.
 const VIDEO_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Grab a frame by FILE PATH — Media Foundation opens the file itself (efficient seeks +
-/// read-ahead), the FAST path that matches what Windows' own video thumbnailer does. Used
-/// when we can recover the path; otherwise the caller decodes a bounded prefix in memory
-/// ([`frame_from_bytes`]). We deliberately NEVER decode the multi-GB original *through* the
-/// shell's thumbnail `IStream`: MF's random access on it pegs a core for 30 s+ (far past
-/// Explorer's timeout → the folder "never thumbnails"), while the file opened directly is
-/// <1 s. The path is `Send`, so it runs on the budgeted worker under [`VIDEO_TIMEOUT`] — a
-/// hostile/odd file fails fast (default icon) instead of pegging the host.
-pub fn frame_from_path(path: &str) -> Option<DynamicImage> {
+/// Grab a frame by FILE PATH — Media Foundation opens the file itself and seeks via its own
+/// index. **Current role: a last resort**, not the hot path the name once implied — the only
+/// caller left is `strip::read_info_verbose`'s unbounded width/height rescue when nothing
+/// cheaper found dimensions (`strip.rs:250`); every shell-facing thumbnail/preview goes
+/// through the shell `IStream` tiers instead ([`frame_from_bytes`]/[`frame_from_block_stream`]),
+/// because this path can spawn a long-lived MF worker that has no place in the in-shell
+/// budget. We deliberately NEVER decode the multi-GB original *through* the shell's thumbnail
+/// `IStream`: MF's random access on it pegs a core for 30 s+ (far past Explorer's timeout →
+/// the folder "never thumbnails"), while the file opened directly is <1 s. The path is
+/// `Send`, so it runs on the budgeted worker under [`VIDEO_TIMEOUT`] — a hostile/odd file
+/// fails fast (default icon) instead of pegging the host.
+pub(crate) fn frame_from_path(path: &str) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
     // structured exception under `panic = "abort"`. See `media_foundation_available`.
     if !media_foundation_available() {
@@ -160,13 +202,25 @@ pub fn frame_from_path(path: &str) -> Option<DynamicImage> {
 /// a memory stream — fine for the size-capped CLI read, not the unbounded shell path.
 /// Bounded by [`VIDEO_TIMEOUT`] so a codec that wedges inside `ReadSample` can't hang the
 /// caller's thread.
+///
+/// Takes a borrowed slice and clones it, so a caller that already owns an unused `Vec<u8>`
+/// pays for a second copy it doesn't need. [`frame_from_owned_bytes`] is the same grab
+/// without that copy — prefer it when the buffer is already an owned, otherwise-unused
+/// `Vec<u8>` (every mp4/mkv/flv remux buffer, `mp4_remux_moov`'s output). This borrowing
+/// form stays because some callers only ever hold a slice.
 pub fn frame_from_bytes(bytes: &[u8]) -> Option<DynamicImage> {
+    frame_from_owned_bytes(bytes.to_vec())
+}
+
+/// As [`frame_from_bytes`], but takes ownership of the buffer instead of cloning it —
+/// `grab_budgeted`'s `'static` bound needs an owned buffer to move onto its worker thread
+/// either way, so a caller that already has one should hand it over directly.
+pub fn frame_from_owned_bytes(owned: Vec<u8>) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
     // structured exception under `panic = "abort"`. See `media_foundation_available`.
     if !media_foundation_available() {
         return None;
     }
-    let owned = bytes.to_vec();
     grab_budgeted(move || unsafe {
         let stream = SHCreateMemStream(Some(&owned))?;
         let bs = MFCreateMFByteStreamOnStream(&stream).ok()?;
@@ -229,18 +283,66 @@ pub fn frame_from_block_stream(shell: &IStream, size: u64, frac: f64) -> Option<
     }
     // S_OK / S_FALSE both add a ref; RPC_E_CHANGED_MODE means COM is already up on this thread.
     let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-    let r = unsafe {
-        grab_block_stream(
-            shell.clone(),
-            size,
-            Seek {
-                frac,
-                cap_hns: None,
-            },
-        )
-    };
+    let shell = shell.clone();
+    // BlockCacheStream's own deadline only bounds time spent inside ITS Read calls; time
+    // spent inside MFCreateSourceReaderFromByteStream / ReadSample itself (codec init/parsing
+    // that never calls back into the stream) has no interrupt of its own — unlike every other
+    // frame_from_* tier, which runs on grab_budgeted's worker and is bounded by its
+    // recv_timeout. This one can't move there: the shell IStream is apartment-bound to THIS
+    // thread (see the doc comment above). Watch it from the side instead, so a stuck call
+    // leaves a log line rather than total silence. Logging, not a forced abort: killing a
+    // thread mid-COM-call can leave process-wide CRT/COM locks held forever, turning one slow
+    // file into a dead host for every OTHER file it's asked to thumbnail — and this only ever
+    // pins the isolated dllhost/prevhost host (CLAUDE.md §5), never Explorer's own UI thread.
+    let r = with_watchdog(
+        VIDEO_TIMEOUT,
+        || {
+            crate::safety::log(
+                "frame_from_block_stream: still running past VIDEO_TIMEOUT (no interrupt inside MF's own calls)",
+            );
+        },
+        || unsafe {
+            grab_block_stream(
+                shell,
+                size,
+                Seek {
+                    frac,
+                    cap_hns: None,
+                },
+            )
+        },
+    );
     if inited {
         unsafe { CoUninitialize() };
+    }
+    r
+}
+
+/// Run `f` on the CALLING thread while a side thread watches the wall clock: if `f` hasn't
+/// finished by `timeout`, `on_timeout` fires once (the watchdog keeps waiting for `f` after
+/// that — it never touches `f`'s thread, it only reports). The watchdog is always joined
+/// before returning, so it can never outlive this call. Used for grabs that can't run on
+/// [`grab_budgeted`]'s own worker (an apartment-bound `IStream`) but still want the same
+/// "a stuck call is visible, not silent" guarantee that worker gives every other tier.
+fn with_watchdog<T>(
+    timeout: Duration,
+    on_timeout: impl FnOnce() + Send + 'static,
+    f: impl FnOnce() -> T,
+) -> T {
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let watchdog = std::thread::Builder::new()
+        .name("st2k-video-watchdog".into())
+        .spawn(move || {
+            if done_rx.recv_timeout(timeout).is_err() {
+                on_timeout();
+            }
+        });
+    let r = f();
+    // Unblock the watchdog before f's caller can be logged as "still running" — a fast `f`
+    // must never race a slow watchdog thread startup into a false-positive log line.
+    let _ = done_tx.send(());
+    if let Ok(w) = watchdog {
+        let _ = w.join();
     }
     r
 }
@@ -522,5 +624,143 @@ mod tests {
         if tested == 0 {
             eprintln!("block_stream_decodes_avi_and_wmv: no avi/wmv samples in corpus — skipping");
         }
+    }
+
+    /// A CR3 is ISO-BMFF (shares the `ftyp` box with HEIC/AVIF/MP4), so without this
+    /// exclusion it gets routed into the video cascade, every MF tier fails to demux a RAW
+    /// photo, and `streamsrc.rs` returns `E_FAIL` directly with no fall-through to the
+    /// RAW/WIC cascade that already recognizes `crx `/`cr3 ` (`rawsniff.rs`).
+    #[test]
+    fn cr3_and_crx_ftyp_brands_are_not_video() {
+        let head_for = |brand: &[u8; 4]| -> Vec<u8> {
+            let mut h = vec![0u8; 12];
+            h[4..8].copy_from_slice(b"ftyp");
+            h[8..12].copy_from_slice(brand);
+            h
+        };
+        assert!(!super::is_video_magic(&head_for(b"crx ")));
+        assert!(!super::is_video_magic(&head_for(b"cr3 ")));
+        // A real MP4 brand must still be treated as video — the exclusion list must stay narrow.
+        assert!(super::is_video_magic(&head_for(b"isom")));
+    }
+
+    /// The watchdog must report an `f` that outlives the timeout, and must never mistake a
+    /// fast one for stuck — either mistake defeats its whole purpose (a silent-forever wedge,
+    /// or a log line that cries wolf on the normal case).
+    #[test]
+    fn with_watchdog_fires_only_when_f_outlives_the_timeout() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let fast_fired = Arc::new(AtomicBool::new(false));
+        let flag = fast_fired.clone();
+        let r = super::with_watchdog(
+            Duration::from_millis(50),
+            move || flag.store(true, Ordering::SeqCst),
+            || 42,
+        );
+        assert_eq!(r, 42);
+        // Give a spuriously-firing watchdog time to prove itself before asserting it didn't.
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(
+            !fast_fired.load(Ordering::SeqCst),
+            "watchdog fired even though f returned well inside the timeout"
+        );
+
+        let slow_fired = Arc::new(AtomicBool::new(false));
+        let flag = slow_fired.clone();
+        let r = super::with_watchdog(
+            Duration::from_millis(20),
+            move || flag.store(true, Ordering::SeqCst),
+            || {
+                std::thread::sleep(Duration::from_millis(150));
+                7
+            },
+        );
+        assert_eq!(r, 7);
+        assert!(
+            slow_fired.load(Ordering::SeqCst),
+            "watchdog never fired for an f that ran past the timeout"
+        );
+    }
+
+    /// `frame_from_bytes` is now a thin `.to_vec()` + delegate over
+    /// [`super::frame_from_owned_bytes`] (the A202 fix: callers that already own a `Vec<u8>`
+    /// — every mp4/mkv/flv remux buffer, `mp4_remux_moov`'s output — call the owned entry
+    /// point directly instead of paying for a second copy). Both entry points must still
+    /// agree on the same input regardless of which one a caller reaches for; empty bytes can
+    /// never produce a keyframe on any host, Media Foundation present or not, so this holds
+    /// without needing the video corpus.
+    #[test]
+    fn frame_from_bytes_and_frame_from_owned_bytes_agree_on_the_same_input() {
+        assert!(super::frame_from_bytes(&[]).is_none());
+        assert!(super::frame_from_owned_bytes(Vec::new()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod still_brand_tests {
+    use super::is_video_magic;
+
+    /// Build an `ftyp` box: size, "ftyp", major brand, minor version, compatible brands.
+    fn ftyp(major: &[u8; 4], compat: &[&[u8; 4]]) -> Vec<u8> {
+        let size = 16 + 4 * compat.len();
+        let mut v = (size as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(b"ftyp");
+        v.extend_from_slice(major);
+        v.extend_from_slice(&[0, 0, 0, 1]); // minor version
+        for c in compat {
+            v.extend_from_slice(*c);
+        }
+        v.resize(size.max(16), 0);
+        v
+    }
+
+    /// A still image must NEVER be classified as video, and the shell is why this is not a
+    /// cosmetic distinction: `streamsrc::stream_source` STOPS when something sniffs as video
+    /// and then decodes no frame, rather than falling through to the image tiers. So one
+    /// unrecognised image brand is a permanent stock icon in Explorer, while the CLI (which
+    /// reads by path and never consults this) renders the same file perfectly.
+    ///
+    /// That shipped. libheif writes `mif3` as the MAJOR brand of an alpha AVIF; `mif3` was
+    /// absent from the allowlist, and `sample-avif-alpha.avif` returned 0x8004B200 from
+    /// `IShellItemImageFactory` while `st2k thumbnail` produced a perfect 256x256 tile.
+    #[test]
+    fn miaf_still_brands_are_never_mistaken_for_video() {
+        // The exact regression: major brand mif3, no compatible brands at all.
+        assert!(!is_video_magic(&ftyp(b"mif3", &[])));
+
+        // The MIAF/HEIF/AVIF family, as major brands.
+        for major in [
+            b"heic", b"heix", b"heim", b"heis", b"mif1", b"mif2", b"mif3", b"msf1", b"miaf",
+            b"MA1A", b"MA1B", b"avif", b"avio", b"avis", b"heif",
+        ] {
+            assert!(
+                !is_video_magic(&ftyp(major, &[])),
+                "{} must not sniff as video",
+                String::from_utf8_lossy(major)
+            );
+        }
+
+        // The robustness half: an UNKNOWN major brand still reads as a still when a known one
+        // appears among the compatible brands. This is what stops the next exotic brand from
+        // costing another silent Explorer regression.
+        assert!(!is_video_magic(&ftyp(b"zzzz", &[b"mif1", b"avif"])));
+        assert!(!is_video_magic(&ftyp(b"1234", &[b"miaf"])));
+
+        // ...and real video is still video, both by major brand and with video-only compat.
+        assert!(is_video_magic(&ftyp(b"isom", &[b"isom", b"iso2", b"mp41"])));
+        assert!(is_video_magic(&ftyp(b"mp42", &[])));
+        assert!(is_video_magic(&ftyp(b"qt  ", &[])));
+
+        // Audio and Canon RAW keep their existing exclusions.
+        assert!(!is_video_magic(&ftyp(b"M4A ", &[])));
+        assert!(!is_video_magic(&ftyp(b"crx ", &[])));
+
+        // A declared box size larger than the buffer must not panic or over-read.
+        let mut lying = ftyp(b"zzzz", &[b"mif1"]);
+        lying[0..4].copy_from_slice(&9999u32.to_be_bytes());
+        assert!(!is_video_magic(&lying));
     }
 }

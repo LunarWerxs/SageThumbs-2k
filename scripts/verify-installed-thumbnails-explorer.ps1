@@ -80,6 +80,13 @@ $cases = @(
     @{ Name = 'sample-vp9p3.webm'; Helpers = 1; Why = 'VP9 Profile 3 via vp9dec in a spawned st2k child' }
     @{ Name = 'sample.webm';       Helpers = 0; Why = 'VP9 Profile 0: must stay on the in-process Media Foundation path' }
     @{ Name = 'sample.mp4';        Helpers = 0; Why = 'H.264: the commonest video of all, must never leave the process' }
+    # A STILL that must never be mistaken for a video. libheif writes `mif3` as this file's
+    # major ftyp brand; that brand was missing from `video::is_video_magic`'s still list, so
+    # the shell cascade classified an image as video, decoded no frame, and STOPPED instead of
+    # falling through to the image tiers. Explorer showed the stock icon while `st2k thumbnail`
+    # rendered it perfectly, which is exactly the class of fault only a through-the-shell check
+    # can catch. Helpers = 0: nothing about a still image should ever spawn a child.
+    @{ Name = 'sample-avif-alpha.avif'; Helpers = 0; Why = 'AVIF whose ftyp brand (mif3) once sniffed as video' }
 )
 
 # ---------------------------------------------------------------------------------------------

@@ -439,6 +439,12 @@ if (-not $SkipDownloads) {
 # are built from the real one rather than downloaded: the wrapper layer is ours to exercise,
 # and hunting three separate hosted bundles would add three more things that can 404.
 if (Test-Path "$OutDir\sample.apk") {
+    # FIRST: swap the stock Android robot for labelled, colour-coded icons. The upstream
+    # sample ships the default robot, which is exactly what a FAILED apk thumbnail also
+    # looks like, so pass and fail were indistinguishable by eye (it fooled a human reader
+    # once). Must run before the wrappers are built, or they would carry the old icons.
+    & (Join-Path $PSScriptRoot 'make-apk-icons-distinctive.ps1') -Apk "$OutDir\sample.apk"
+
     $apkBytes = [System.IO.File]::ReadAllBytes("$OutDir\sample.apk")
     # base.apk is the entry name real bundles use, and the one apk.rs prefers.
     New-Zip "$OutDir\sample.xapk" @{ 'base.apk' = $apkBytes }

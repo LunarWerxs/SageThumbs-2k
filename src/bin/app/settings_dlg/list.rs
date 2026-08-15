@@ -295,8 +295,11 @@ pub(super) const SEP_LABEL: &str = "──────────────�
 
 /// Rebuild the list from `(lParam, checked)` rows: item rows (lParam = toggle index) get
 /// their translated label + checkbox; divider rows (lParam == [`SEP_PARAM`]) get the rule
-/// label and no checkbox. Optionally selects the row whose lParam == `select`.
-pub(super) unsafe fn rebuild_rows(list: HWND, rows: &[(isize, bool)], select: Option<isize>) {
+/// label and no checkbox. Optionally selects the row at display INDEX `select` — not by
+/// lParam key, because every divider shares [`SEP_PARAM`] and a key match would always land
+/// on the FIRST divider rather than whichever one the caller actually means (see A266 at
+/// [`finish_menu_drag`]).
+pub(super) unsafe fn rebuild_rows(list: HWND, rows: &[(isize, bool)], select: Option<usize>) {
     use windows::Win32::UI::Controls::{
         LVIF_PARAM, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVM_DELETEALLITEMS,
     };
@@ -331,8 +334,8 @@ pub(super) unsafe fn rebuild_rows(list: HWND, rows: &[(isize, bool)], select: Op
             set_check(list, row as i32, checked);
         }
     }
-    if let Some(key) = select {
-        if let Some(idx) = rows.iter().position(|&(p, _)| p == key) {
+    if let Some(idx) = select {
+        if idx < rows.len() {
             let f = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
             let sel = LVITEMW {
                 stateMask: f,
@@ -372,9 +375,41 @@ unsafe fn finish_menu_drag(list: HWND, x: i32, y: i32) {
     }
     let dest = (dest.max(0) as usize).min(rows.len());
     rows.insert(dest, elem);
-    // Collapse any double/edge divider the drop created so the list mirrors the menu.
-    let rows = normalize_rows(&rows);
-    rebuild_rows(list, &rows, Some(elem.0));
+    // Collapse any double/edge divider the drop created so the list mirrors the menu, while
+    // tracking where the JUST-DROPPED row (not merely "a row with the same key") ends up. A
+    // plain lParam-key lookup can't tell dividers apart — every one shares SEP_PARAM — so it
+    // always resolves to the FIRST divider in the list rather than the one just dragged (A266).
+    let (rows, sel_idx) = normalize_rows_tracking(&rows, dest);
+    rebuild_rows(list, &rows, sel_idx);
+}
+
+/// Like [`normalize_rows`], but also reports where the row at input index `track` ended up in
+/// the output, or `None` if normalization dropped that exact row (it collapsed into an earlier
+/// divider, or it was a trailing divider that got trimmed). Kept as a private twin rather than
+/// changing [`normalize_rows`] itself, which `settings_dlg/mod.rs` also calls and has no
+/// per-row tracking need.
+fn normalize_rows_tracking(
+    rows: &[(isize, bool)],
+    track: usize,
+) -> (Vec<(isize, bool)>, Option<usize>) {
+    let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
+    let mut tracked = None;
+    for (i, &(p, c)) in rows.iter().enumerate() {
+        if p == SEP_PARAM && (out.is_empty() || out.last().unwrap().0 == SEP_PARAM) {
+            continue; // dropped: a leading/duplicate divider, same rule as normalize_rows
+        }
+        if i == track {
+            tracked = Some(out.len());
+        }
+        out.push((p, c));
+    }
+    while out.last().map(|r| r.0) == Some(SEP_PARAM) {
+        if tracked == Some(out.len() - 1) {
+            tracked = None; // the tracked row was itself the trimmed trailing divider
+        }
+        out.pop();
+    }
+    (out, tracked)
 }
 
 /// Reset the menu-items list to its DEFAULT order (items + dividers in tree order),
@@ -427,10 +462,12 @@ pub(super) unsafe extern "system" fn list_subclass(
             // This replaces a "remember that the user dragged Description and stop auto-fitting
             // it" flag. That flag existed only to stop the auto-fit snapping such a drag back —
             // once the drag itself is refused, it had nothing left to do.
-            if (*nmhdr).code == windows::Win32::UI::Controls::HDN_BEGINTRACKW
-                && (*nmhdr).hwndFrom == list_header(h)
-                && GetDlgCtrlID(h) == ID_LIST
-                && (*(l.0 as *const windows::Win32::UI::Controls::NMHEADERW)).iItem == 2
+            if (*nmhdr).hwndFrom == list_header(h)
+                && refuses_header_drag(
+                    (*nmhdr).code,
+                    GetDlgCtrlID(h),
+                    (*(l.0 as *const windows::Win32::UI::Controls::NMHEADERW)).iItem,
+                )
             {
                 return LRESULT(1);
             }
@@ -552,4 +589,132 @@ pub(super) unsafe extern "system" fn list_subclass(
         _ => {}
     }
     DefSubclassProc(h, msg, w, l)
+}
+
+/// Index of the Description column in the file-types list: the LAST of the three.
+pub(super) const DESC_COLUMN: i32 = 2;
+
+/// Should this header notification be refused outright?
+///
+/// The `hwndFrom` check stays at the call site (it compares live HWNDs and cannot be a value),
+/// but everything that is a RULE lives here so it can be tested. Before this it was an inline
+/// four-term conjunction inside a wndproc, which is only checkable by dragging a column with a
+/// mouse, and "someone please drag this" is not a test.
+///
+/// See the call site for why Description specifically is not draggable: it is the last column
+/// and `fit_columns` sizes it to exactly fill the list, so the only thing a drag can achieve is
+/// dead space against the scrollbar.
+pub(super) fn refuses_header_drag(code: u32, ctrl_id: i32, column: i32) -> bool {
+    code == windows::Win32::UI::Controls::HDN_BEGINTRACKW
+        && ctrl_id == ID_LIST
+        && column == DESC_COLUMN
+}
+
+#[cfg(test)]
+mod header_drag_tests {
+    use super::*;
+    use windows::Win32::UI::Controls::{HDN_BEGINTRACKW, HDN_ENDTRACKW};
+
+    /// Issue #26.3's second half: the Description column must refuse a drag, and NOTHING else
+    /// may. The three ways to get this wrong are all pinned here, because each one ships as a
+    /// silently different UI rather than as a failure.
+    #[test]
+    fn only_the_description_column_of_the_file_types_list_refuses_a_drag() {
+        // The one case that is refused.
+        assert!(refuses_header_drag(HDN_BEGINTRACKW, ID_LIST, DESC_COLUMN));
+
+        // Extension and Category stay draggable — refusing those would be a regression of the
+        // original issue, which was that the columns could not be resized at all.
+        assert!(!refuses_header_drag(HDN_BEGINTRACKW, ID_LIST, 0));
+        assert!(!refuses_header_drag(HDN_BEGINTRACKW, ID_LIST, 1));
+
+        // The subclass is installed on a SECOND listview (the single-column checklist), and
+        // `fit_columns` is written for the three-column list specifically. A drag there must
+        // never be answered by this rule.
+        assert!(!refuses_header_drag(
+            HDN_BEGINTRACKW,
+            ID_MENU_ITEMS_LIST,
+            DESC_COLUMN
+        ));
+
+        // END of a drag is a different notification and must fall through to the width-flooring
+        // handler below it; swallowing it here would strand a column at zero width.
+        assert!(!refuses_header_drag(HDN_ENDTRACKW, ID_LIST, DESC_COLUMN));
+    }
+}
+
+#[cfg(test)]
+mod menu_drag_reorder_tests {
+    use super::*;
+
+    /// A266: dragging a divider row past ANOTHER divider must reselect the one that was just
+    /// dropped, not merely "a row with the same lParam" — every divider shares [`SEP_PARAM`],
+    /// so a naive key match always resolves to the FIRST divider in the list. Here the two
+    /// dividers aren't adjacent (an item sits between them), so normalize collapses nothing —
+    /// this pins that the tracker still finds the SECOND one, not the first.
+    #[test]
+    fn tracks_the_dropped_divider_past_an_earlier_divider() {
+        let rows = vec![
+            (0, true),
+            (SEP_PARAM, false),
+            (1, true),
+            (SEP_PARAM, false), // dropped here, index 3
+            (2, true),
+        ];
+        let (out, sel) = normalize_rows_tracking(&rows, 3);
+        assert_eq!(
+            out, rows,
+            "no adjacent/edge dividers here, so nothing collapses"
+        );
+        assert_eq!(
+            sel,
+            Some(3),
+            "must track the SPECIFIC divider instance dropped at index 3, not index 1"
+        );
+    }
+
+    /// Dropping a divider directly after an existing one collapses the pair (normalize_rows'
+    /// existing rule): the JUST-DROPPED instance is the one that gets skipped, so there is no
+    /// surviving row that IS the one the user dropped — `None` (no forced selection) is the
+    /// honest answer, and strictly better than the old bug of highlighting an unrelated divider.
+    #[test]
+    fn tracks_none_when_the_dropped_divider_collapses_into_an_earlier_one() {
+        let rows = vec![
+            (0, true),
+            (SEP_PARAM, false),
+            (SEP_PARAM, false), // dropped here, index 2, collapses into index 1
+            (1, true),
+        ];
+        let (out, sel) = normalize_rows_tracking(&rows, 2);
+        assert_eq!(out, vec![(0, true), (SEP_PARAM, false), (1, true)]);
+        assert_eq!(
+            sel, None,
+            "the dropped instance was itself the one collapsed away"
+        );
+    }
+
+    /// A divider dropped at the very end is trimmed as a trailing divider — there is no row
+    /// left to select, so the tracker must say so rather than pointing past the end (or, worse,
+    /// silently pointing at whatever now happens to occupy that index).
+    #[test]
+    fn tracks_none_when_the_dropped_row_is_itself_trimmed_as_trailing() {
+        let rows = vec![(0, true), (SEP_PARAM, false)];
+        let (out, sel) = normalize_rows_tracking(&rows, 1);
+        assert_eq!(out, vec![(0, true)]);
+        assert_eq!(
+            sel, None,
+            "the trimmed trailing divider has no surviving row to select"
+        );
+    }
+
+    /// An ordinary item row (not a divider) is unaffected by any of the divider-collapsing
+    /// rules, so its tracked index simply carries through unchanged.
+    #[test]
+    fn tracks_a_plain_item_row_unchanged() {
+        let rows = vec![(SEP_PARAM, false), (0, true), (1, false)];
+        let (out, sel) = normalize_rows_tracking(&rows, 1);
+        // The leading divider is dropped, shifting index 1 down to output index 0.
+        assert_eq!(out, vec![(0, true), (1, false)]);
+        assert_eq!(sel, Some(0));
+    }
 }
