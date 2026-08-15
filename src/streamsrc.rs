@@ -135,25 +135,32 @@ pub(crate) unsafe fn stream_source_with_caps(
         // fallback nobody needs to keep fast. They are the whole story. Measured after
         // removal, through the real provider on a 163 MB 1080p clip: 1.2 s with the index at
         // the END and 1.7 s with it at the front, in a DEBUG build.
+        // WHERE in the video: the user's `VideoOffset` (30 % unless changed — see
+        // `settings::video_offset_frac`). Read ONCE here so every tier below seeks to the same
+        // mark; a per-tier read could disagree if the setting changed mid-decode, and the
+        // fallbacks would then show a different frame from the tier that was meant to run.
+        let at = crate::settings::video_offset_frac();
         // Tiers, each fast or a fast miss:
         //   1. SMART TARGETED READ (MP4/MOV): parse the moov index, build a tiny
-        //      one-keyframe MP4 for the sync sample nearest ~30%, decode that —
+        //      one-keyframe MP4 for the sync sample nearest the mark, decode that —
         //      single-digit MB (index + one keyframe), a representative frame, and
         //      it works regardless of moov position (faststart or moov-at-end);
         //   2. SMART TARGETED READ (Matroska/WebM): the EBML analog — read the Cues
-        //      index, build a tiny one-cluster MKV for the keyframe nearest ~30%;
+        //      index, build a tiny one-cluster MKV for the keyframe nearest the mark;
         //   3. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
-        //      demuxer seek the real index to ~30% over a block-caching IStream that
+        //      demuxer seek the real index over a block-caching IStream that
         //      coalesces its reads (no per-format parser, any container MF decodes);
         //   4. a faststart MP4 / small / unindexed video decodes from its head prefix;
         //   5. a big *non*-faststart MP4 (moov at the very end) is remuxed —
         //      head frames + tail moov stitched into a small valid MP4.
-        // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek.
+        // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek. They read a
+        // bounded head prefix, so they CANNOT honour a late offset — there are no bytes there
+        // to seek into. That is a property of the fallback, not a bug to fix here.
         let frame = crate::mp4::keyframe_mini_mp4(
             &mut IStreamReader {
                 stream: stream.clone(),
             },
-            0.30,
+            at,
         )
         .and_then(|buf| crate::video::frame_from_bytes(&buf))
         .or_else(|| {
@@ -161,16 +168,16 @@ pub(crate) unsafe fn stream_source_with_caps(
                 &mut IStreamReader {
                     stream: stream.clone(),
                 },
-                0.30,
+                at,
             )
             .and_then(|buf| crate::video::frame_from_bytes(&buf))
         })
         .or_else(|| {
             // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
-            // seek-to-30% reads cheap (the old shell-IStream meltdown was thousands
+            // seek reads cheap (the old shell-IStream meltdown was thousands
             // of tiny marshaled reads — here they coalesce into a few big ones).
             stream_size(stream)
-                .and_then(|size| crate::video::frame_from_block_stream(stream, size, 0.30))
+                .and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
         })
         .or_else(|| video_prefix(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)))
         .or_else(|| mp4_remux_moov(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)));

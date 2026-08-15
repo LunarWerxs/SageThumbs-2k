@@ -18,6 +18,7 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     let _ = SetDlgItemInt(hwnd, ID_SIZE, settings::max_thumb_size(), false);
     let _ = SetDlgItemInt(hwnd, ID_JPEG, settings::jpeg_quality() as u32, false);
     let _ = SetDlgItemInt(hwnd, ID_PNG, settings::png_level(), false);
+    let _ = SetDlgItemInt(hwnd, ID_VIDEO_OFFSET, settings::video_offset_pct(), false);
     check(hwnd, ID_C_SORT, settings::container_sort());
     check(hwnd, ID_C_PREFER_COVER, settings::container_prefer_cover());
     check(hwnd, ID_C_SKIP_SCAN, settings::container_skip_scanlation());
@@ -106,6 +107,12 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     let _ = SetDlgItemInt(hwnd, ID_SIZE, settings::DEFAULT_THUMB_SIZE, false);
     let _ = SetDlgItemInt(hwnd, ID_JPEG, settings::DEFAULT_JPEG, false);
     let _ = SetDlgItemInt(hwnd, ID_PNG, settings::DEFAULT_PNG, false);
+    let _ = SetDlgItemInt(
+        hwnd,
+        ID_VIDEO_OFFSET,
+        settings::DEFAULT_VIDEO_OFFSET_PCT,
+        false,
+    );
     check(hwnd, ID_C_SORT, true);
     check(hwnd, ID_C_PREFER_COVER, true);
     check(hwnd, ID_C_SKIP_SCAN, false);
@@ -461,6 +468,16 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     };
     let _ = settings::set_dword("Width", size);
     let _ = settings::set_dword("Height", size);
+
+    // How far into a video the thumbnail frame comes from (issue #26.4). An empty or
+    // non-numeric box restores the default rather than silently meaning 0 %, which would give
+    // the first frame — the black one people are trying to get AWAY from.
+    let offset = GetDlgItemInt(hwnd, ID_VIDEO_OFFSET, Some(&mut ok), false);
+    let _ = settings::set_video_offset_pct(if ok.as_bool() {
+        offset
+    } else {
+        settings::DEFAULT_VIDEO_OFFSET_PCT
+    });
 
     let jpeg = GetDlgItemInt(hwnd, ID_JPEG, Some(&mut ok), false).min(100);
     let _ = settings::set_dword(

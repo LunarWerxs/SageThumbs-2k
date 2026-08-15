@@ -348,7 +348,19 @@ pub const DEFAULT_MAX_FILE_MB: u32 = 256; // FILE_MAX_SIZE
                                           // views are unaffected (the provider still does `cx.min(max_thumb)`).
 pub const DEFAULT_THUMB_SIZE: u32 = 1024; // THUMB_STORE_SIZE (was 256)
 pub const THUMB_MIN: u32 = 32; // THUMB_MIN_SIZE
-pub const THUMB_MAX: u32 = 1024; // THUMB_MAX_SIZE (was 512)
+/// Ceiling the user may raise the thumbnail edge to. Raised 1024 -> 2560 (2026-08-14, issue
+/// #26.5). The old 1024 was historical, not technical: Windows itself keeps thumbnail cache
+/// buckets above it (`thumbcache_1280/1920/2560.db`), and the decoders' own guard is
+/// `decode::limits::MAX_DIM` at 16384, so nothing in the pipeline needed 1024 specifically.
+/// The request came from cover-art libraries viewed on a 4K/85" screen, where a 1024 px tile
+/// cannot resolve the text printed on a movie poster.
+///
+/// The DEFAULT deliberately stays 1024. Above it, every raised edge costs memory, decode time,
+/// cache-file growth and Explorer responsiveness on exactly the large collections that want it
+/// — so this is a ceiling a user opts into, not one everybody pays for. `max_thumb_size()` is
+/// also only ever an upper bound on what the shell asks for (`cx.min(max_thumb)`), so raising
+/// it changes nothing until Explorer genuinely requests a bigger tile.
+pub const THUMB_MAX: u32 = 2560; // THUMB_MAX_SIZE (was 512, then 1024)
 pub const EMBEDDED_MAX_REQUEST: u32 = 96; // THUMB_EMBEDDED_MIN_SIZE
 pub const DEFAULT_JPEG: u32 = 90; // JPEG_DEFAULT
 pub const DEFAULT_PNG: u32 = 9; // PNG_DEFAULT
@@ -547,7 +559,7 @@ pub(crate) fn clamp_thumb_size(w: u32, h: u32) -> u32 {
     w.max(h).clamp(THUMB_MIN, THUMB_MAX)
 }
 
-/// The max thumbnail edge to generate, clamped to the [32, 1024] range.
+/// The max thumbnail edge to generate, clamped to the [`THUMB_MIN`, `THUMB_MAX`] range.
 /// The original stored Width/Height separately; we cap the square request box
 /// at the larger of the two so either knob raises the ceiling.
 pub fn max_thumb_size() -> u32 {
@@ -688,6 +700,42 @@ pub fn prefer_cover_art() -> bool {
 
 pub fn set_prefer_cover_art(on: bool) -> windows_registry::Result<()> {
     set_dword("VideoCoverArt", u32::from(on))
+}
+
+/// `VideoOffset` — how far INTO a video the thumbnail frame is taken from, as a percentage of
+/// its running time. 30 % has always been the hard-coded mark; this makes it a setting.
+///
+/// The default is unchanged, because 30 % is a good answer for the videos most people have.
+/// It is a bad answer for a specific and common library: films and TV rips that open on a
+/// black distributor card, a fade-in, or a title sequence over black. Those thumbnail as a
+/// black rectangle, which is indistinguishable from "SageThumbs failed" (issue #26.4).
+pub const DEFAULT_VIDEO_OFFSET_PCT: u32 = 30;
+/// Upper bound. Not 100: seeking to the very end lands on credits, a fade-out, or past the
+/// last keyframe, so the tile would be black for the opposite reason.
+pub const VIDEO_OFFSET_PCT_MAX: u32 = 95;
+
+/// Clamp a stored percentage into the usable range. Pure, so the range is testable without
+/// touching HKCU. 0 is allowed and means "the first frame".
+pub(crate) fn clamp_video_offset_pct(pct: u32) -> u32 {
+    pct.min(VIDEO_OFFSET_PCT_MAX)
+}
+
+pub fn video_offset_pct() -> u32 {
+    clamp_video_offset_pct(get_dword("VideoOffset", DEFAULT_VIDEO_OFFSET_PCT))
+}
+
+pub fn set_video_offset_pct(pct: u32) -> windows_registry::Result<()> {
+    set_dword("VideoOffset", clamp_video_offset_pct(pct))
+}
+
+/// The same value as the fraction every seek site actually wants.
+///
+/// One conversion in one place: the seek fraction is threaded through four separate call
+/// paths (`video::frame_from_path`, `frame_from_bytes_repr`, `mp4::keyframe_mini_mp4`,
+/// `mkv::keyframe_mini_mkv` and `video::frame_from_block_stream`), and they must agree or the
+/// same file thumbnails differently in Explorer, the preview pane and the CLI.
+pub fn video_offset_frac() -> f64 {
+    f64::from(video_offset_pct()) / 100.0
 }
 
 /// `HideTypeOverlay` — suppress Explorer's own file-type icon on the thumbnails of the
@@ -1396,6 +1444,31 @@ mod tests {
     // The clamps are tested hermetically through the PURE helpers below, with
     // explicit out-of-range inputs — no dependency on whatever happens to be in
     // the live HKCU (where a test that only reads the getter could never fail).
+
+    /// The point of issue #26.5 was that the ceiling had to rise ABOVE the default, so a user
+    /// on a 4K screen can opt into bigger tiles while everyone else keeps paying 1024. A change
+    /// that quietly pinned the two back together would restore the complaint with the constants
+    /// still looking configurable.
+    ///
+    /// The two relationships between constants are `const` assertions rather than runtime ones:
+    /// they are decidable at compile time, so a bad edit should fail the BUILD rather than wait
+    /// for someone to run the tests.
+    const _: () = assert!(
+        THUMB_MAX > DEFAULT_THUMB_SIZE,
+        "THUMB_MAX must leave headroom above DEFAULT_THUMB_SIZE, or the setting cannot be raised",
+    );
+    /// The ceiling must stay under the decoders' own bomb guard, which is the real technical
+    /// limit; past it every raised request would be refused rather than honoured.
+    const _: () = assert!(THUMB_MAX < crate::decode::limits::MAX_DIM);
+
+    #[test]
+    fn the_thumbnail_ceiling_reaches_the_size_the_issue_asked_for() {
+        assert_eq!(
+            clamp_thumb_size(2560, 2560),
+            2560,
+            "2560 is the size the issue asked for; it must survive the clamp",
+        );
+    }
 
     #[test]
     fn clamp_thumb_size_enforces_legacy_range() {

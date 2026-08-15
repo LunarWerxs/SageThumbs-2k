@@ -405,6 +405,22 @@ pub(super) unsafe extern "system" fn list_subclass(
         }
         WM_NOTIFY => {
             let nmhdr = l.0 as *const NMHDR;
+            // A finished column drag (issue #26.3). Dragging Extension or Category has to
+            // reflow Description so the three still exactly fill the list; dragging
+            // Description itself means the user wants that width, so the auto-fit stands down
+            // rather than snapping the drag back.
+            if (*nmhdr).code == windows::Win32::UI::Controls::HDN_ENDTRACKW
+                && (*nmhdr).hwndFrom == list_header(h)
+            {
+                let hdn = l.0 as *const windows::Win32::UI::Controls::NMHEADERW;
+                if (*hdn).iItem == 2 {
+                    super::mark_desc_width_manual();
+                } else {
+                    super::fit_columns(h);
+                }
+                // Repaint: the rows underneath still carry the pre-drag column geometry.
+                let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(h), None, true);
+            }
             if (*nmhdr).code == NM_CUSTOMDRAW && (*nmhdr).hwndFrom == list_header(h) {
                 let nmcd = l.0 as *const NMCUSTOMDRAW;
                 let stage = (*nmcd).dwDrawStage;

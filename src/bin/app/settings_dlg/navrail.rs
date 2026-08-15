@@ -116,6 +116,10 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_THUMB_CHECKER),
             Switch(ID_HIDE_TYPE_OVERLAY),
             Switch(ID_VIDEO_COVER_ART),
+            // Reads as the follow-up to the switch above: "or, if you'd rather have a frame,
+            // here is which one." General could not take it (that page is already within a
+            // row of its footer), and this is where it belongs by topic anyway.
+            Pair(ID_LBL_VIDEO_OFFSET, ID_VIDEO_OFFSET, 84, 18),
         ],
         2 => &[
             // File types: purely "which formats", with the appearance strays gone.
@@ -452,6 +456,7 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
                 || s::thumb_checker()
                 || s::hide_type_overlay()
                 || s::prefer_cover_art()
+                || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
         }
         // File types: the format tick-list itself is deliberately not scanned
         // (327 formats per repaint would be real work for a hint).

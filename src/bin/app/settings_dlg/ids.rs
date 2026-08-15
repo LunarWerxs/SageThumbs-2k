@@ -172,6 +172,12 @@ pub(super) const ID_HIDE_TYPE_OVERLAY: i32 = 1218;
 /// FALLBACK regardless of this switch (a file whose codec Windows lacks has no frame at all);
 /// this makes it the PREFERENCE, which is what a ripped-film library wants.
 pub(super) const ID_VIDEO_COVER_ART: i32 = 1219;
+/// How far into a video the thumbnail frame is taken from, as a percentage of its length
+/// (`VideoOffset`, default 30). Lives beside the cover-art switch because it answers the same
+/// question — "what picture stands for this film" — and because a black tile is the reason
+/// people reach for either. See `settings::video_offset_pct` for why 30 % is not always right.
+pub(super) const ID_LBL_VIDEO_OFFSET: i32 = 1232;
+pub(super) const ID_VIDEO_OFFSET: i32 = 1233;
 /// Portable build only: turn the per-user Explorer thumbnail registration on/off, plus the
 /// status line that says which it currently is. Hidden entirely on an installed build, where
 /// the machine-wide registration already covers it and a second switch would only confuse.

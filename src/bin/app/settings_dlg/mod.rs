@@ -439,6 +439,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_BADGE_ICON, "tip_badge_icon"),
     (ID_THUMB_CHECKER, "tip_thumb_checker"),
     (ID_VIDEO_COVER_ART, "tip_video_cover_art"),
+    (ID_LBL_VIDEO_OFFSET, "tip_video_offset"),
     (ID_HIDE_TYPE_OVERLAY, "tip_hide_type_overlay"),
     (ID_ENABLE_MENU, "tip_enable_menu"),
     (ID_MENU_PREVIEW, "tip_menu_preview"),
@@ -711,13 +712,46 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
     fit_columns(list);
 }
 
+thread_local! {
+    /// Set once the user drags the Description column itself. From then on [`fit_columns`]
+    /// leaves that column alone: re-fitting it would snap the drag straight back, which reads
+    /// as the resize being broken rather than as a deliberate layout.
+    ///
+    /// Deliberately NOT persisted. It exists to stop the auto-fit fighting a drag in progress,
+    /// not to remember a layout — and a width saved at one window size is wrong at the next.
+    static DESC_WIDTH_IS_MANUAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Stop auto-fitting Description; called when the user finishes dragging that column.
+pub(super) fn mark_desc_width_manual() {
+    DESC_WIDTH_IS_MANUAL.with(|m| m.set(true));
+}
+
 /// Size the Description column to fill the list's current visible width — no dead
-/// gap, no horizontal scroll. Re-run after a filter (the scrollbar may toggle).
+/// gap, no horizontal scroll. Re-run after a filter (the scrollbar may toggle), and
+/// after the user drags either of the two columns to its left.
 pub(super) unsafe fn fit_columns(list: HWND) {
+    if DESC_WIDTH_IS_MANUAL.with(std::cell::Cell::get) {
+        return;
+    }
     let mut crc = RECT::default();
     let _ = GetClientRect(list, &mut crc);
-    // 64 + 92 are the extension + category column widths.
-    let descw = ((crc.right - crc.left) - 64 - 92).max(80);
+    // MEASURE the extension + category columns rather than assuming 64 + 92. Those were the
+    // creation widths, and they were also a silent dependency: the moment the user could drag
+    // them (issue #26.3) a hard-coded pair would leave Description overlapping or short by
+    // exactly however far the drag went.
+    let fixed: i32 = (0..2)
+        .map(|c| {
+            SendMessageW(
+                list,
+                windows::Win32::UI::Controls::LVM_GETCOLUMNWIDTH,
+                Some(WPARAM(c)),
+                None,
+            )
+            .0 as i32
+        })
+        .sum();
+    let descw = ((crc.right - crc.left) - fixed).max(80);
     SendMessageW(
         list,
         LVM_SETCOLUMNWIDTH,

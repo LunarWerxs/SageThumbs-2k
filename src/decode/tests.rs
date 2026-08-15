@@ -142,11 +142,14 @@ fn fits_box_and_preserves_aspect() {
 }
 
 #[test]
-fn midsize_images_are_not_upscaled() {
-    // Above the tiny pixel-art threshold (>64px) a small image stays native — only
-    // LARGE images shrink, only TINY (<=64px) sprites are Nearest-upscaled.
+fn midsize_images_are_enlarged_smoothly_not_nearest() {
+    // 100×50 in a 256 box is above the pixel-art threshold (>64px), so it is enlarged to fill
+    // the box (issue #25 — Explorer centres an undersized tile rather than scaling it up), and
+    // with Lanczos3 rather than the Nearest reserved for sprites: a small PHOTO nearest-scaled
+    // is visibly blocky, which is the reason the two paths are separate.
     let d = decode_thumbnail_opts(&png_bytes(100, 50, [0, 255, 0, 255]), 256, false).unwrap();
-    assert_eq!((d.width, d.height), (100, 50));
+    assert_eq!((d.width, d.height), (256, 128));
+    assert_eq!(d.rgba.len(), (d.width * d.height * 4) as usize);
 }
 
 #[test]
@@ -764,7 +767,7 @@ fn a_zeroed_alpha_png_is_shown_opaque_not_rejected() {
 }
 
 #[test]
-fn tiny_sprite_nearest_upscales_but_midsize_stays_native() {
+fn tiny_sprite_nearest_upscales_and_midsize_fills_the_box() {
     // 16×16 sprite in a 256 box → integer Nearest upscale to 16× = 256 (crisp).
     let sprite = png_bytes(16, 16, [10, 20, 30, 255]);
     let d = decode_thumbnail_opts(&sprite, 256, false).unwrap();
@@ -773,13 +776,36 @@ fn tiny_sprite_nearest_upscales_but_midsize_stays_native() {
         (256, 256),
         "16px sprite should nearest-upscale to 256"
     );
-    // 200×200 is above the sprite threshold → must stay native (no blocky upscale).
+    // 200×200 in a 256 box now FILLS the box (issue #25). This assertion used to read "must
+    // stay native", on the belief that Explorer would scale the tile up for us. It does not —
+    // it centres what we hand it — so a source under the requested size drew as a visibly
+    // smaller tile than its neighbours. Photoshop files showed it worst, because the size of
+    // the preview Photoshop bakes into a PSD varies by writing app and version, so two PSDs
+    // side by side got different tile sizes for no reason the user could see.
     let mid = png_bytes(200, 200, [10, 20, 30, 255]);
     let d2 = decode_thumbnail_opts(&mid, 256, false).unwrap();
     assert_eq!(
         (d2.width, d2.height),
-        (200, 200),
-        "mid-size image must stay native"
+        (256, 256),
+        "a mid-size source must be enlarged to fill the requested box"
+    );
+    // Aspect ratio survives the enlargement — the long edge lands on cx, the short one scales.
+    let wide = png_bytes(200, 100, [10, 20, 30, 255]);
+    let d4 = decode_thumbnail_opts(&wide, 256, false).unwrap();
+    assert_eq!(
+        (d4.width, d4.height),
+        (256, 128),
+        "enlarging must preserve aspect ratio, not stretch to a square"
+    );
+    // But there IS a ceiling: past MAX_UPSCALE_FACTOR the source has no detail to give, so a
+    // soft full-size rectangle would be worse than an honestly small tile. 100px into a 1024
+    // box is 10×, well over the limit, so it stays native.
+    let small_for_huge = png_bytes(100, 100, [10, 20, 30, 255]);
+    let d5 = decode_thumbnail_opts(&small_for_huge, 1024, false).unwrap();
+    assert_eq!(
+        (d5.width, d5.height),
+        (100, 100),
+        "beyond MAX_UPSCALE_FACTOR the source is left native rather than blown up"
     );
     // A large image still shrinks to fit.
     let big = png_bytes(800, 600, [10, 20, 30, 255]);

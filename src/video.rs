@@ -144,12 +144,12 @@ pub fn frame_from_path(path: &str) -> Option<DynamicImage> {
         let attrs = grab_attrs()?;
         let reader = MFCreateSourceReaderFromURL(&HSTRING::from(owned.as_str()), &attrs).ok()?;
         // Direct file access: Media Foundation seeks efficiently via the file's own index
-        // (exactly what Windows' own thumbnailer does), so we jump to the TRUE 30% mark for a
-        // representative frame — no need for the bounded buffer's near-the-head seek cap.
+        // (exactly what Windows' own thumbnailer does), so we jump to the TRUE representative
+        // mark — no need for the bounded buffer's near-the-head seek cap.
         grab_reader(
             &reader,
             Seek {
-                frac: 0.30,
+                frac: crate::settings::video_offset_frac(),
                 cap_hns: None,
             },
         )
@@ -184,10 +184,11 @@ pub fn frame_from_bytes(bytes: &[u8]) -> Option<DynamicImage> {
     })
 }
 
-/// Grab a frame from a full in-memory buffer at the TRUE representative mark (~30 %, no depth
-/// cap). For callers that hold the WHOLE file in RAM (the size-capped CLI read), so MF can seek
-/// freely via the container's own index — unlike [`frame_from_bytes`], whose 3 s cap assumes a
-/// bounded head prefix. Used as the CLI/preview fallback for non-MP4/MKV containers.
+/// Grab a frame from a full in-memory buffer at the TRUE representative mark
+/// ([`crate::settings::video_offset_frac`], no depth cap). For callers that hold the WHOLE file
+/// in RAM (the size-capped CLI read), so MF can seek freely via the container's own index —
+/// unlike [`frame_from_bytes`], whose 3 s cap assumes a bounded head prefix. Used as the
+/// CLI/preview fallback for non-MP4/MKV containers.
 pub fn frame_from_bytes_repr(bytes: &[u8]) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
     // structured exception under `panic = "abort"`. See `media_foundation_available`.
@@ -201,7 +202,7 @@ pub fn frame_from_bytes_repr(bytes: &[u8]) -> Option<DynamicImage> {
         grab(
             &bs,
             Seek {
-                frac: 0.30,
+                frac: crate::settings::video_offset_frac(),
                 cap_hns: None,
             },
         )

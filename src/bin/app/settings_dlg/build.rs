@@ -67,6 +67,14 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.edit(t("lbl_max_thumb"), ID_LBL_MAXTHUMB, edit_style, ID_SIZE);
     lc.edit(t("lbl_jpeg"), ID_LBL_JPEG, edit_style, ID_JPEG);
     lc.edit(t("lbl_png"), ID_LBL_PNG, edit_style, ID_PNG);
+    // Created with the other numeric rows; `navrail::cat_rows` puts it on Appearance, next to
+    // the video cover-art switch it belongs with (creation order carries no meaning here).
+    lc.edit(
+        t("lbl_video_offset"),
+        ID_LBL_VIDEO_OFFSET,
+        edit_style,
+        ID_VIDEO_OFFSET,
+    );
 
     // Ebook & comic archive cover options (the DarkThumbs toggles).
     lc.header(t("grp_ebook"), hdr, ID_LBL_EBOOK, false);
@@ -514,17 +522,23 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         Some(LPARAM(DARK_TEXT().0 as isize)),
     );
     let header = HWND(SendMessageW(list, LVM_GETHEADER, None, None).0 as *mut c_void);
-    // No column dragging. `fit_columns` already sizes Description to exactly fill the
-    // list, so every drag could do was truncate it or open a dead gap — and the divider
-    // it hung off drew as a bright grabber line at the right edge (the only thing on the
-    // page that looked like a handle). HDS_NOSIZING drops the drag AND the sizing cursor;
-    // the line itself is painted out in `list::list_subclass`'s header custom-draw.
-    let hstyle = GetWindowLongW(header, GWL_STYLE);
-    SetWindowLongW(
-        header,
-        GWL_STYLE,
-        hstyle | windows::Win32::UI::Controls::HDS_NOSIZING as i32,
-    );
+    // COLUMNS ARE DRAG-RESIZABLE. This used to OR in `HDS_NOSIZING`, on the reasoning that
+    // `fit_columns` already sized Description to exactly fill the list so a drag could only
+    // truncate it or open a dead gap. That reasoning covered the LAST column and quietly took
+    // the other two with it: Extension and Category are fixed at 64 and 92 px, which is not
+    // enough for their own labels in a long language, and no amount of window resizing helps
+    // because only Description grows. The reporter of issue #26.3 could read neither.
+    //
+    // Sizing is back on, and `fit_columns` now measures the first two columns instead of
+    // assuming their widths, so widening Extension reflows Description and the total still
+    // exactly fills the list. Dragging Description itself turns the auto-fit off for the rest
+    // of the session (see `DESC_WIDTH_IS_MANUAL`) — otherwise the column would snap straight
+    // back and the drag would look broken.
+    //
+    // The last column's right-hand divider is still painted out in `list::list_subclass`: it
+    // sits at the far edge of the list where there is nothing to drag INTO, so it reads as a
+    // grabber that does nothing. The INNER dividers — the ones that now do something — are
+    // left alone.
     if is_dark() {
         // Native dark item-view theme is dark-only; light keeps the native light header.
         dark_control(header, w!("DarkMode_ItemsView"));

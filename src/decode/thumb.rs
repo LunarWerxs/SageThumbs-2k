@@ -96,9 +96,36 @@ pub(super) fn is_fully_transparent(rgba: &[u8]) -> bool {
 /// upscaling a *small photo* would look blocky, so anything bigger is left native.
 pub(super) const NEAREST_UPSCALE_MAX: u32 = 64;
 
+/// Most a mid-size source is allowed to be enlarged by to fill the requested box.
+///
+/// Beyond this the source simply does not carry the detail: enlarging a 64 px cover 16× into a
+/// 1024 px tile produces a soft rectangle that is worse than an honestly small one, and costs
+/// the memory of a full-size buffer to do it. Within it — which is where the real cases sit,
+/// e.g. Photoshop's baked 128/160/256 px preview resource against Explorer's 256 px request —
+/// the enlargement is slight and the tile matches its neighbours.
+pub(super) const MAX_UPSCALE_FACTOR: u32 = 4;
+
 /// Fit within a `cx`-by-`cx` box, preserving aspect ratio. Large images shrink with
 /// Lanczos3; tiny pixel-art / icons are integer-upscaled with Nearest so they render
-/// crisp instead of bilinear-smeared; mid-size images are left native (Explorer scales).
+/// crisp instead of bilinear-smeared; mid-size images are enlarged to FILL the box with
+/// Lanczos3, up to [`MAX_UPSCALE_FACTOR`].
+///
+/// # Why mid-size images are no longer left native (issue #25)
+///
+/// This used to return anything already inside the box untouched, on the assumption that
+/// "Explorer scales". Explorer does not enlarge a thumbnail — it centres the bitmap it was
+/// given inside the icon cell. So a source smaller than the requested `cx` drew as a SMALLER
+/// TILE than its neighbours, in the same view, at the same icon size.
+///
+/// That is exactly what the issue reported, and Photoshop files are where it shows worst:
+/// `container::psd` returns the preview resource Photoshop baked into the file, whose size
+/// depends on the writing application, the file's version, and whether "Maximize
+/// Compatibility" was on. So one PSD yielded a full-size tile and the PSD beside it yielded a
+/// half-size one, with nothing about the two files explaining the difference to the user.
+///
+/// It is also the same failure the file-size cap was raised to avoid (see
+/// `settings::DEFAULT_MAX_FILE_MB`): an undersized bitmap is one the shell can neither draw
+/// crisply nor durably cache, so it re-extracts on every refresh.
 pub(super) fn fit_to_box(img: DynamicImage, cx: u32) -> Decoded {
     let (w, h) = (img.width(), img.height());
     let long = w.max(h);
@@ -106,9 +133,14 @@ pub(super) fn fit_to_box(img: DynamicImage, cx: u32) -> Decoded {
         img.resize(cx, cx, FilterType::Lanczos3)
     } else if w > 0 && h > 0 && long <= NEAREST_UPSCALE_MAX && long * 2 <= cx {
         // Tiny sprite/icon: scale by the largest integer factor that fits, with Nearest
-        // (integer + Nearest = perfectly crisp pixels, no blur).
+        // (integer + Nearest = perfectly crisp pixels, no blur). Checked BEFORE the general
+        // enlargement below so pixel art keeps its hard edges instead of being smoothed.
         let factor = cx / long;
         img.resize_exact(w * factor, h * factor, FilterType::Nearest)
+    } else if w > 0 && h > 0 && long < cx && cx <= long.saturating_mul(MAX_UPSCALE_FACTOR) {
+        // Mid-size: enlarge to fill the box so the tile is the size the shell asked for.
+        // `resize` preserves aspect ratio, so the long edge lands exactly on `cx`.
+        img.resize(cx, cx, FilterType::Lanczos3)
     } else {
         img
     };

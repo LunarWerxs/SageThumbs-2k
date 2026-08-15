@@ -667,12 +667,15 @@ fn decode_preview_with_raw_order(
                 return decode_image_with_raw_order(&cover, raw_preview, wic_thumbnail_cx);
             }
         }
-        // Prefer the smart targeted read for a representative ~30% keyframe built from the
+        // Prefer the smart targeted read for a representative keyframe built from the
         // container's own index — MP4/MOV via the `moov` (`crate::mp4`), Matroska/WebM via the
         // Cues (`crate::mkv`). Each self-gates to its container and returns None otherwise (or
         // when the index can't be mapped), so we fall back to decoding a frame off the buffer.
-        let frame = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), 0.30)
-            .or_else(|| crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), 0.30))
+        // The mark is the user's `VideoOffset` (30 % unless changed), read ONCE so every tier
+        // below seeks to the same place.
+        let at = crate::settings::video_offset_frac();
+        let frame = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), at)
+            .or_else(|| crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), at))
             .and_then(|mini| crate::video::frame_from_bytes(&mini))
             // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
             // seek its own index to the true ~30 % frame (no head-prefix depth cap).
@@ -702,10 +705,13 @@ fn decode_preview_with_raw_order(
         };
     }
     // PDF: rasterize page 1 via the OS PDF engine (Windows.Data.Pdf). The PNG it
-    // returns goes through `decode_image`, same as an ebook cover. 1024px on the
-    // long edge gives a crisp source for any Explorer thumbnail size.
+    // returns goes through `decode_image`, same as an ebook cover. The raster edge FOLLOWS the
+    // user's thumbnail ceiling, floored at the 1024 this always used: once that ceiling could
+    // be raised past 1024 (issue #26.5) a fixed 1024 here would have made PDFs the one format
+    // that silently upscaled a too-small source instead of rendering at the size asked for.
     if bytes.starts_with(b"%PDF-") {
-        if let Some(png) = crate::pdf::render_first_page(bytes, 1024) {
+        let edge = crate::settings::max_thumb_size().max(1024);
+        if let Some(png) = crate::pdf::render_first_page(bytes, edge) {
             return decode_image_with_raw_order(&png, raw_preview, wic_thumbnail_cx);
         }
     }
