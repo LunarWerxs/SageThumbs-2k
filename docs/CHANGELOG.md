@@ -4,6 +4,50 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 2.0.0
 
+**Why this is 2.0 and not 1.13.** The new formats below are the visible half. The half that
+earned the version number is underneath: this release was taken apart and put back together by
+**nine independent AI code reviews**, the last of them five separate models reading the entire
+codebase at once, and everything they found was verified by hand against the source before it
+was touched.
+
+That matters more here than in most software. SageThumbs opens files nobody vouched for, and it
+does that work **inside File Explorer itself**. A thumbnail is generated for a file you have not
+opened, may not trust, and possibly only downloaded by accident. So a parser that mishandles a
+malformed file does not show a broken picture, it can take your desktop down with it. Every
+format added is one more piece of code reading hostile input in that position, and after nine
+releases of adding formats it was time to stop and audit all of it at once instead.
+
+What that came to, measured rather than estimated:
+
+- **280 findings from the final review round, each checked individually against the code.** 264
+  were real and are fixed. 17 were wrong, and are recorded as rejected with the reason rather
+  than quietly dropped, because a review you cannot disagree with is not a review.
+- **The test suite grew from 789 tests to 1,123**, a 42% increase, and 30 commits changed 214
+  files.
+- **The tests were then tested.** Automated mutation testing deliberately breaks the code and
+  checks that something goes red. It found three tests that could not fail at all: one compared
+  a function to itself, one never called the parser it was named after, and one accepted failure
+  on every single input it swept. All three are replaced with tests proven to catch the bug they
+  describe.
+- **Every file parser is fuzzed on every build**, not on a nightly nobody reads. Nineteen
+  structurally valid sample files are built in code and mutated tens of thousands of times per
+  run through 31 parser entry points. This closed a real gap: the fuzzing used to seed itself
+  from a sample folder that only exists on the developer's machine, so in automated builds it
+  had been running against three empty buffers and effectively testing nothing.
+- **The arithmetic was audited specifically for overflow.** Release builds turn off Rust's
+  automatic overflow checks for speed, so a size calculation that wraps around does not stop,
+  it quietly produces a wrong, small number and reads out of bounds. One real instance of this
+  was found and fixed in the MP4 parser.
+- **New permanent guardrails.** Several classes of mistake now fail the build or the automated
+  checks instead of shipping: a size guard that would refuse legal files, a release recipe
+  drifting out of step with what actually ships, an internal identifier collision, and stale
+  numbers in the documentation. Each of these was a real bug caught during this release, so
+  each one now has a check standing behind it.
+
+None of that changes what you see day to day, which is the point. It is the difference between
+software that works and software you can leave running inside Explorer on a machine full of
+files you did not create.
+
 ### Added
 
 - **Flash video (`.flv`) files now get thumbnails.** Windows has no way to open an FLV at

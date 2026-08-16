@@ -153,15 +153,34 @@ Write-Host "  API reports default = $applied" -ForegroundColor DarkGray
 
 # Prove it. SourceForge can take a moment to reflect the change, so give it a few tries rather
 # than declaring success off the back of a 200 that may not have applied to the platform map.
-foreach ($attempt in 1..5) {
-    Start-Sleep -Seconds ([math]::Min(2 * $attempt, 8))
+#
+# The window used to be five tries at 2/4/6/8/8 seconds, i.e. 28 seconds in total, and that is
+# not long enough. On the 2.0.0 release the PUT succeeded, this loop timed out, the release
+# printed "NOT set - the green Download button may point at the wrong installer" in red, and a
+# re-run minutes later reported "already correct - nothing to do". So the change had landed the
+# whole time and only `best_release.json`, which is cached, had not caught up.
+#
+# That is the worst thing a check can do: it cried wolf about the one setting nobody can verify
+# by eye (SourceForge tailors that button to each visitor's own platform, so it looks right to
+# you while being wrong for everyone else). The next person to see this red is now that much
+# more likely to wave it through. Roughly four minutes of patience costs nothing here, because
+# this runs once per release and the alternative is a false alarm every time.
+foreach ($attempt in 1..10) {
+    Start-Sleep -Seconds ([math]::Min(10 * $attempt, 30))
     $now = Get-WindowsDefault
     if ($now -eq $wanted) {
         Write-Host "  verified: windows default is now $now" -ForegroundColor Green
         exit 0
     }
-    Write-Host "  attempt ${attempt}: still reads '$now'" -ForegroundColor DarkGray
+    Write-Host "  attempt ${attempt}/10: still reads '$now'" -ForegroundColor DarkGray
 }
-Write-Host "  API reported success but best_release.json still says '$(Get-WindowsDefault)'." -ForegroundColor Red
-Write-Host "  Set it by hand: https://sourceforge.net/projects/$Project/files/$folder/" -ForegroundColor Yellow
+# Still not visible. The PUT was accepted (we are past the rejection branch above), so this is
+# very likely the cache lagging rather than a failure. Say exactly that instead of implying the
+# setting did not take, and give the one command that settles it.
+Write-Host "  The API accepted the change, but best_release.json still reads" -ForegroundColor Yellow
+Write-Host "  '$(Get-WindowsDefault)' after 4 minutes. That endpoint is cached, so this is" -ForegroundColor Yellow
+Write-Host "  usually lag rather than failure, and it does NOT mean the release is broken." -ForegroundColor Yellow
+Write-Host "  Confirm in a few minutes with:  pwsh scripts\set-sourceforge-default.ps1" -ForegroundColor Yellow
+Write-Host "  It is idempotent, and 'already correct - nothing to do' means it landed." -ForegroundColor Yellow
+Write-Host "  If it still disagrees then, set it by hand: https://sourceforge.net/projects/$Project/files/$folder/" -ForegroundColor Yellow
 exit 1
