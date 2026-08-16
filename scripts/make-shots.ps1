@@ -9,7 +9,11 @@
 #   pwsh scripts\make-shots.ps1 -ExePath C:\some\other\target\release\SageThumbs2K.exe
 #
 # Produces (into assets\screenshots and mirrors into site\img):
-#   settings.gif          — animated walkthrough cycling all 9 Settings category tabs (README + site)
+#   settings.gif          — animated walkthrough cycling EVERY Settings category tab (README + site).
+#                           The frame loop is `0..NCAT` in settings_dlg\shot.rs, so a page added to
+#                           the nav rail appears here automatically. Don't write the count into this
+#                           comment: it said "9" while the dialog had ten, because Appearance landed
+#                           on 2026-08-09 and nothing here was looking.
 #   convert.png           — the Convert… dialog (spare asset)
 #   preview-quicklook.png — the Quick preview viewer over a syntax-highlighted source file
 #                           (stable in-repo input: src\bin\app\preview\highlight.rs)

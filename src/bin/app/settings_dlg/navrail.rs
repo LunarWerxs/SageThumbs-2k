@@ -16,9 +16,20 @@ pub(super) const PANE_X: i32 = 212;
 pub(super) const PANE_W: i32 = 528;
 pub(super) const PANE_TOP: i32 = 16;
 pub(super) const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
-pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT (1700..1708)
+pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT
 pub(super) const ID_PANE_HEADER: i32 = 1710;
 pub(super) const NCAT: usize = 10;
+// The nav ids and ID_PANE_HEADER share one id space, and at NCAT = 10 they fit with exactly
+// ZERO headroom: nav owns 1700..=1709 and the header sits on 1710. An eleventh category would
+// silently hand the pane header a nav item's identity, and the two `(ID_NAV_BASE..ID_NAV_BASE +
+// NCAT)` range tests in `mod.rs`'s WM_COMMAND would start routing clicks on the header as a
+// category switch. Nothing about that fails to compile or looks wrong in a diff, which is
+// exactly the shape of bug this repo keeps paying for, so it fails the BUILD instead.
+// (The stale comment this replaces still said the range ended at 1708, from when NCAT was 8.)
+const _: () = assert!(
+    ID_NAV_BASE as usize + NCAT <= ID_PANE_HEADER as usize,
+    "a new Settings category pushed the nav ids onto ID_PANE_HEADER: move ID_PANE_HEADER up"
+);
 /// Localized nav-rail / page-header label for category `ci`. Pulls from `t()` so a
 /// live language switch re-texts it (the nav statics + pane header re-read this).
 pub(super) fn nav_label(ci: usize) -> &'static str {
