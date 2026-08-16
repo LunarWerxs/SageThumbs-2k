@@ -6,6 +6,47 @@
 
 use super::*;
 
+thread_local! {
+    /// The off-screen frame surface `shot_paint` builds each frame into, cached across
+    /// paints instead of a fresh `CreateCompatibleDC`+`CreateCompatibleBitmap(vw, vh)` on
+    /// EVERY `WM_PAINT` — tens to ~130MB on a multi-4K rig, paid again and again for paints
+    /// that `input.rs`'s handlers deliberately kept small (e.g. mousemove invalidates only
+    /// the old/new cursor rect). `(dc, bitmap, w, h)`; `w`/`h` are the size it was built at,
+    /// so a virtual-screen size change (a monitor plugged/unplugged mid-session) is still
+    /// caught and rebuilt rather than blitting into a surface that no longer covers it.
+    static FRAME: std::cell::Cell<Option<(HDC, HBITMAP, i32, i32)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Pure decision logic for `frame_dc`'s cache check, factored out so the "never blit into a
+/// surface that no longer covers the frame" rule is testable without a live HDC.
+fn frame_cache_hit(cached: Option<(i32, i32)>, vw: i32, vh: i32) -> bool {
+    cached == Some((vw, vh))
+}
+
+/// The cached frame DC, sized (and kept selected with) a bitmap covering at least the
+/// current virtual screen — created on first use, rebuilt only if `vw`/`vh` no longer match.
+/// This process is a fresh `--screenshot` launch per capture (see `overlay.rs`), so unlike a
+/// long-lived window there is no "session end" to free it at other than process exit, which
+/// reclaims it for free — the same assumption the rest of this one-shot process already leans on.
+unsafe fn frame_dc(hdc: HDC, vw: i32, vh: i32) -> HDC {
+    if let Some((mem, bmp, w, h)) = FRAME.with(|f| f.get()) {
+        if frame_cache_hit(Some((w, h)), vw, vh) {
+            return mem;
+        }
+        // Stale size — drop it and fall through to build a fresh one below.
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(mem);
+    }
+    let mem = CreateCompatibleDC(Some(hdc));
+    let bmp = CreateCompatibleBitmap(hdc, vw, vh);
+    // Selected once, for the surface's whole cached lifetime — there is no per-paint
+    // deselect/reselect any more (nothing else ever uses this DC).
+    SelectObject(mem, HGDIOBJ(bmp.0));
+    FRAME.with(|f| f.set(Some((mem, bmp, vw, vh))));
+    mem
+}
+
 pub(super) unsafe fn shot_paint(hwnd: HWND) {
     let s = &mut *shot_ptr(hwnd);
     let mut ps = PAINTSTRUCT::default();
@@ -13,9 +54,7 @@ pub(super) unsafe fn shot_paint(hwnd: HWND) {
 
     // Build the whole frame off-screen, then blit it once — this is what kills the
     // flicker (the screen was being assembled in several visible steps before).
-    let mem = CreateCompatibleDC(Some(hdc));
-    let frame_bmp = CreateCompatibleBitmap(hdc, s.vw, s.vh);
-    let oldbmp = SelectObject(mem, HGDIOBJ(frame_bmp.0));
+    let mem = frame_dc(hdc, s.vw, s.vh);
 
     // Dimmed screen everywhere; the selection shows through at full brightness.
     let _ = BitBlt(mem, 0, 0, s.vw, s.vh, Some(s.dimmed), 0, 0, SRCCOPY);
@@ -142,11 +181,24 @@ pub(super) unsafe fn shot_paint(hwnd: HWND) {
         );
     }
 
-    // One blit to the window.
-    let _ = BitBlt(hdc, 0, 0, s.vw, s.vh, Some(mem), 0, 0, SRCCOPY);
-    SelectObject(mem, oldbmp);
-    let _ = DeleteObject(HGDIOBJ(frame_bmp.0));
-    let _ = DeleteDC(mem);
+    // One blit to the window — only the actually-invalidated rect (`ps.rcPaint`, from
+    // BeginPaint above), since `mem` is cached now: a small invalidate (e.g. mousemove's
+    // old/new cursor rect) no longer pays to move the whole virtual-screen frame either.
+    let pr = ps.rcPaint;
+    let (pw, ph) = (pr.right - pr.left, pr.bottom - pr.top);
+    if pw > 0 && ph > 0 {
+        let _ = BitBlt(
+            hdc,
+            pr.left,
+            pr.top,
+            pw,
+            ph,
+            Some(mem),
+            pr.left,
+            pr.top,
+            SRCCOPY,
+        );
+    }
     let _ = EndPaint(hwnd, &ps);
     if s.automation.is_some() {
         let _ = GdiFlush();
@@ -438,4 +490,32 @@ pub(super) unsafe fn draw_hint(hdc: HDC, s: &Shot) {
     let tx = crate::win::dpi_scale_dpi(10, dpi); // text left padding
     let ty = crate::win::dpi_scale_dpi(5, dpi); // text top padding
     let _ = TextOutW(hdc, bx + tx, by + ty, &w[..w.len().saturating_sub(1)]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No cached surface at all (the first paint of a session) must always rebuild.
+    #[test]
+    fn frame_cache_hit_is_false_when_nothing_is_cached() {
+        assert!(!frame_cache_hit(None, 1920, 1080));
+    }
+
+    /// A cached surface exactly the current virtual-screen size is reused.
+    #[test]
+    fn frame_cache_hit_is_true_when_the_cached_size_matches() {
+        assert!(frame_cache_hit(Some((1920, 1080)), 1920, 1080));
+    }
+
+    /// The bug this fix must never reintroduce: blitting into a surface built for a
+    /// DIFFERENT (smaller) virtual screen than the one being painted now — a monitor
+    /// plugged in mid-session grows `vw`/`vh`, and reusing the old, too-small bitmap would
+    /// either fail the blit or silently crop the frame instead of rebuilding.
+    #[test]
+    fn frame_cache_hit_is_false_when_the_virtual_screen_size_changed() {
+        assert!(!frame_cache_hit(Some((1920, 1080)), 3840, 2160));
+        assert!(!frame_cache_hit(Some((1920, 1080)), 1920, 1081)); // height-only mismatch
+        assert!(!frame_cache_hit(Some((1920, 1080)), 1921, 1080)); // width-only mismatch
+    }
 }

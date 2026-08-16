@@ -144,7 +144,15 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
     let out_w = full_w.div_ceil(1 << drop).max(1);
     let out_h = full_h.div_ceil(1 << drop).max(1);
     let px = (out_w as u64) * (out_h as u64);
-    if px > crate::decode::limits::MAX_PIXELS {
+    // MAX_PIXELS (268MP) bounds the DECLARED area; it says nothing about the `planes`
+    // allocation two lines down, which is `ncomp` separate f32 buffers of that area. A
+    // spec-legal single-resolution file (levels == 0) forces `drop` to stay 0 regardless
+    // of target_edge (the drop-selection loop above is a no-op when levels == 0), so a
+    // 268MP-declared, single-resolution JP2 requested at a tiny thumbnail size would
+    // still try to allocate up to ~4.3GB across 4 components. Bound the allocation
+    // itself too, independent of MAX_PIXELS.
+    let max_px_for_alloc = crate::decode::limits::MAX_ALLOC / (4 * ncomp as u64);
+    if px > crate::decode::limits::MAX_PIXELS || px > max_px_for_alloc {
         return Err(Jp2Error::Unsupported("reduced image still too large"));
     }
 
@@ -226,6 +234,24 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
     Ok((rgb, out_w, out_h))
 }
 
+/// A subband descriptor sized for the packet walk, with pixel storage only when
+/// `materialize` is true. See the budget comment in `decode_tile` for why: resolutions
+/// above what the caller asked to `keep` are walked for packet lengths only and never
+/// read a sample, so giving them zero-length storage instead of a real allocation is
+/// what keeps a small thumbnail request from paying for a crafted file's full-resolution
+/// pyramid.
+fn sized_band(w: usize, h: usize, materialize: bool) -> SubBand {
+    if materialize {
+        SubBand::empty(w, h)
+    } else {
+        SubBand {
+            w,
+            h,
+            data: Vec::new(),
+        }
+    }
+}
+
 /// Decode one tile's contribution into the output planes.
 #[allow(clippy::too_many_arguments)]
 fn decode_tile(
@@ -269,6 +295,15 @@ fn decode_tile(
         y1: u32,
         bands: Vec<SubBand>, // r == 0: [LL]; r > 0: [HL, LH, HH]
     }
+    // Budget the pixel storage we are ABOUT TO allocate (r <= keep only — see
+    // `sized_band` above) against MAX_ALLOC. `levels` comes straight off an untrusted
+    // marker with no bound past MAX_PIXELS (~1 GiB of *final* RGBA), which says nothing
+    // about an intermediate tile pyramid: a file that declares a near-268MP image but is
+    // requested at a tiny thumbnail size would, before this check, still walk `r` up to
+    // the FULL resolution allocating a full-size SubBand every time (see `sized_band`) —
+    // several GB across up to 4 components for one call. Bail before any such allocation.
+    let max_alloc_floats = crate::decode::limits::MAX_ALLOC / 4;
+    let mut alloc_floats: u64 = 0;
     let mut comps: Vec<Vec<Res>> = Vec::with_capacity(ncomp);
     for _ in 0..ncomp {
         let mut rs = Vec::with_capacity(levels as usize + 1);
@@ -278,8 +313,20 @@ fn decode_tile(
             let y0 = ty0.div_ceil(1 << nb);
             let x1 = tx1.div_ceil(1 << nb);
             let y1 = ty1.div_ceil(1 << nb);
+            // Only resolutions the caller actually needs (r <= keep) get pixel storage.
+            // Anything above is walked for its packet LENGTHS only (the `r as u32 >
+            // max_res` skip further down) and its band data is never read, so a
+            // dims-only descriptor is enough — see `sized_band`.
+            let materialize = r <= keep;
             let bands = if r == 0 {
-                vec![SubBand::empty((x1 - x0) as usize, (y1 - y0) as usize)]
+                let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+                if materialize {
+                    alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
+                    if alloc_floats > max_alloc_floats {
+                        return Err(Jp2Error::Unsupported("tile pyramid too large"));
+                    }
+                }
+                vec![sized_band(w, h, materialize)]
             } else {
                 // Band bounds per spec equation B-15 (what opj_tcd_init_tile computes):
                 // tbx0 = ceil((tx0 - 2^(n-1)*xob) / 2^n), with xob/yob = 1 on the
@@ -290,11 +337,22 @@ fn decode_tile(
                 let (hl0, hl1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, false));
                 let (lh0, lh1) = (band_span(tx0, tx1, d, false), band_span(ty0, ty1, d, true));
                 let (hh0, hh1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, true));
-                vec![
-                    SubBand::empty(hl0.1, hl1.1), // HL: high-pass x, low-pass y
-                    SubBand::empty(lh0.1, lh1.1), // LH: low-pass x, high-pass y
-                    SubBand::empty(hh0.1, hh1.1), // HH
-                ]
+                let dims = [
+                    (hl0.1, hl1.1), // HL: high-pass x, low-pass y
+                    (lh0.1, lh1.1), // LH: low-pass x, high-pass y
+                    (hh0.1, hh1.1), // HH
+                ];
+                if materialize {
+                    for (w, h) in dims {
+                        alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
+                        if alloc_floats > max_alloc_floats {
+                            return Err(Jp2Error::Unsupported("tile pyramid too large"));
+                        }
+                    }
+                }
+                dims.into_iter()
+                    .map(|(w, h)| sized_band(w, h, materialize))
+                    .collect()
             };
             rs.push(Res {
                 x0,
@@ -533,7 +591,14 @@ fn decode_tile(
         let gain = subband_gain(band_kind);
         let prec = c.siz.components[ci].prec as u32 + 1;
         let guard = quant_for(c, ci).guard_bits as u32;
-        let max_bp = guard + exp as u32 - 1;
+        // guard (0-7, the QCD/QCC Sqcd 3-bit field) and exp (0-31, 5 bits) come straight
+        // off an untrusted marker with no further bound. guard=exp=0 previously
+        // underflowed this subtraction to u32::MAX (wraps in release, panics in debug
+        // under panic=abort); guard=7,exp=31 previously overflowed max_bp to 37, which
+        // mq.rs turns into a bitplane count that `1i32 << bitplane` cannot safely shift
+        // by (shift amounts >= 32 are themselves out of range). Saturate the subtraction
+        // and cap to the widest bitplane count a 32-bit magnitude can shift into.
+        let max_bp = guard.saturating_add(exp as u32).saturating_sub(1).min(30);
         let out = mq::decode_code_block(
             &a.bytes,
             cw,
@@ -926,6 +991,36 @@ mod fuzz_tests {
     /// A `Psot` that does not clear its own SOT segment used to send the cursor backwards,
     /// and the marker loop re-read the same SOT forever. Hand-built because no fuzz seed
     /// reliably produces a valid SIZ plus a hostile SOT.
+    /// Same mutation strategy as `never_panics_on_mutated_real_files`, but exercises the
+    /// actual PIXEL decode (`decode_reduced`), not just header parsing. `dimensions` and
+    /// `is_jp2` never reach the tile / packet / tier-1 code the A005 (QCD guard/exp
+    /// arithmetic) and A009 (tile pyramid allocation) findings lived in, so this is the
+    /// seed that actually red-teams that code under adversarial marker values. Window-only
+    /// mutants (not appended with the file's remainder) so this stays fast even for the
+    /// multi-MB corpus files — a truncated tail mostly exercises the header/marker parsing
+    /// this test adds on top of, still with real quant/precinct/code-block bytes upstream.
+    #[test]
+    fn never_panics_decoding_mutated_real_files() {
+        let files = corpus();
+        if files.is_empty() {
+            eprintln!("skipping: no JPEG 2000 samples in ../test-corpus");
+            return;
+        }
+        let mut rng = Rng(0xFEED_C0DE_5A55_0002);
+        for base in &files {
+            let window = base.len().min(64 * 1024);
+            for _ in 0..60 {
+                let mut v = base[..window].to_vec();
+                let flips = 1 + (rng.next() % 16) as usize;
+                for _ in 0..flips {
+                    let i = (rng.next() as usize) % v.len();
+                    v[i] = rng.byte();
+                }
+                let _ = decode_reduced(&v, 64);
+            }
+        }
+    }
+
     #[test]
     fn hostile_psot_terminates() {
         let mut cs: Vec<u8> = vec![0xFF, 0x4F]; // SOC

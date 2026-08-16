@@ -17,7 +17,9 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_EVENT_CANPLAY, MF_MEDIA_ENGINE_EVENT_ERROR,
     MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA, MF_MEDIA_ENGINE_PLAYBACK_HWND, MF_VERSION,
 };
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, PostMessageW, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
     WINDOW_EX_STYLE, WM_APP, WS_CHILD, WS_VISIBLE,
@@ -86,13 +88,14 @@ impl IMFMediaEngineNotify_Impl for Notify_Impl {
     }
 }
 
-/// Start Media Foundation once per process (lite = no socket/full init).
-fn ensure_mf() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| unsafe {
-        let _ = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-    });
+/// Start Media Foundation once per process (lite = no socket/full init). Returns whether
+/// the (first, and only) attempt succeeded, so a caller whose MFStartup failed can bail
+/// before wasting a CoCreateInstance on a subsystem that was never initialized, instead of
+/// discovering that indirectly as a generic "engine creation failed".
+fn ensure_mf() -> bool {
+    use std::sync::OnceLock;
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE).is_ok() })
 }
 
 /// Create a player for `path`: a `WS_CHILD` render window over `rc` (client coords of `parent`),
@@ -115,7 +118,16 @@ pub(super) unsafe fn create(
     if !sagethumbs2k_core::video::media_foundation_available() {
         return None;
     }
-    ensure_mf();
+    // CoCreateInstance(CLSID_MF_MEDIA_ENGINE_CLASS_FACTORY) below wants a COM-initialized
+    // calling thread. It has worked without this only because that class factory happens
+    // to be free-threaded today; webview.rs inits COM on this same preview UI thread but
+    // only when HTML content loads, so a plain video/audio file never got it. Idempotent
+    // (S_FALSE if already STA) and never uninitialized, same as webview.rs, leaving the
+    // apartment for the thread's life.
+    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    if !ensure_mf() {
+        return None;
+    }
     // The child render window (plain STATIC; the engine owns the swap chain on it).
     //
     // For an audio track it is created HIDDEN: the engine still needs a real, correctly-sized

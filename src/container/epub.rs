@@ -125,16 +125,19 @@ fn resolve_html_cover<R: Read + Seek>(zip: &mut ZipArchive<R>, html_path: &str) 
 
 /// First image reference in an (x)html/SVG page: the earliest `<img` (HTML) or
 /// `<image` (SVG) tag — note `<img` is NOT a prefix of `<image` (img vs im*a*ge),
-/// so both must be searched. We then read `src`, else `xlink:href`, else `href`.
+/// so both must be checked. We then read `src`, else `xlink:href`, else `href`.
+///
+/// A single forward pass over every `<` (via `match_indices`, itself a linear
+/// scan) rather than re-running `str::find` for both patterns from a barely-
+/// advanced start each iteration — that used to rescan the entire remaining
+/// string on every tag when the page held no `<image`, giving O(n^2) on a page
+/// with many `<img>` tags.
 fn first_html_image(html: &str) -> Option<String> {
-    let mut search = 0usize;
-    loop {
-        let rest = html.get(search..)?;
-        let next = ["<img", "<image"]
-            .iter()
-            .filter_map(|pat| rest.find(pat))
-            .min()?;
-        let pos = search + next;
+    for (pos, _) in html.match_indices('<') {
+        let rest = &html[pos..];
+        if !(rest.starts_with("<img") || rest.starts_with("<image")) {
+            continue;
+        }
         if let Some(tag) = tag_from(html, pos) {
             let href = tag_attr(tag, "src")
                 .or_else(|| tag_attr(tag, "xlink:href"))
@@ -145,8 +148,8 @@ fn first_html_image(html: &str) -> Option<String> {
                 }
             }
         }
-        search = pos + 1; // past this '<' so we don't re-match the same tag
     }
+    None
 }
 
 /// The `<...>` tag that STARTS at byte position `start` (the '<').
@@ -237,13 +240,15 @@ fn read_named_ci<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<
     if let Some(b) = read_named(zip, name) {
         return Some(b);
     }
-    let target = name.to_ascii_lowercase();
     // Same `MAX_LIST_ENTRIES` bound as the other listing scans (see
-    // `brute_force_cover`) — this fallback lowercases every entry name.
+    // `brute_force_cover`). `name_for_index` is a cheap central-directory-only
+    // lookup — unlike `by_index`, it doesn't open/parse each entry's local
+    // header just to compare a name.
     for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
-        let Ok(f) = zip.by_index(i) else { continue };
-        if f.name().to_ascii_lowercase() == target {
-            drop(f);
+        if zip
+            .name_for_index(i)
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        {
             return read_index(zip, i);
         }
     }
@@ -308,6 +313,32 @@ mod tests {
         assert_eq!(
             first_html_image("<html><body>no images here</body></html>"),
             None
+        );
+    }
+
+    /// A page with many `<img>` tags and no `<image>` at all is exactly the shape
+    /// that made the old two-`str::find`-per-iteration scan O(n^2) (the search for
+    /// `<image>`, which never matches, rescanned the whole remainder every time).
+    /// The fixed single forward pass must both find the real cover AND stay fast
+    /// at this scale — a reintroduced quadratic scan would blow well past the
+    /// generous time budget below even on a loaded machine.
+    #[test]
+    fn first_html_image_scales_past_many_non_matching_img_tags() {
+        let mut html = String::from("<html><body>");
+        for _ in 0..40_000 {
+            html.push_str(r#"<img alt="x"/>"#); // no `src` — keeps the scan going
+        }
+        html.push_str(r#"<img src="Images/real-cover.jpg"/>"#);
+        html.push_str("</body></html>");
+
+        let start = std::time::Instant::now();
+        let found = first_html_image(&html);
+        let elapsed = start.elapsed();
+
+        assert_eq!(found.as_deref(), Some("Images/real-cover.jpg"));
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "first_html_image took {elapsed:?} for a 40k-tag page — looks quadratic again"
         );
     }
 

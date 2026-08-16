@@ -43,30 +43,25 @@ fn boxes(buf: &[u8], base: usize) -> Vec<([u8; 4], usize, usize)> {
         let Some(sz) = buf.get(p..p + 4).and_then(|b| b.try_into().ok()) else {
             break;
         };
-        let size = u32::from_be_bytes(sz) as usize;
+        let size32 = u32::from_be_bytes(sz);
         let Ok(typ): std::result::Result<[u8; 4], _> = buf[p + 4..p + 8].try_into() else {
             break;
         };
-        let (hdr, end) = match size {
-            1 => {
-                let Some(big) = buf.get(p + 8..p + 16).and_then(|b| b.try_into().ok()) else {
-                    break;
-                };
-                let Some(e) = p.checked_add(u64::from_be_bytes(big) as usize) else {
-                    break;
-                };
-                (16usize, e)
-            }
-            0 => (8usize, buf.len()),
-            n if n >= 8 => match p.checked_add(n) {
-                Some(e) => (8usize, e),
-                None => break,
-            },
-            _ => break,
+        let extended = if size32 == 1 {
+            let Some(big) = buf.get(p + 8..p + 16).and_then(|b| b.try_into().ok()) else {
+                break;
+            };
+            Some(u64::from_be_bytes(big))
+        } else {
+            None
         };
-        if end > buf.len() || end < p + hdr {
+        let Some((full, hdr)) =
+            crate::container::boxhdr::decode_box_size(size32, extended, p as u64, buf.len() as u64)
+        else {
             break;
-        }
+        };
+        let (full, hdr) = (full as usize, hdr as usize);
+        let end = p + full; // checked already: decode_box_size verified p + full <= buf.len()
         out.push((typ, base + p + hdr, end - (p + hdr)));
         p = end;
     }
@@ -289,6 +284,16 @@ pub(super) fn strip(bytes: &[u8]) -> Option<Vec<u8>> {
     {
         return None;
     }
+    // Same refusal for a too-short XMP item: write_empty_xmp only writes its xpacket
+    // header when the slot is at least EMPTY.len() bytes, so without this guard a
+    // short XMP item would be blanked to bare spaces (no valid xpacket at all) while
+    // strip() still reported success — exactly the "half-fix" this module refuses to do.
+    if targets
+        .iter()
+        .any(|i| &i.kind == b"mime" && i.is_xmp && i.extent.is_some_and(|(_, l)| l < MIN_XMP_ITEM))
+    {
+        return None;
+    }
     // A target must not overlap ANY other item's bytes, nor the `meta` box itself.
     // `iloc` is attacker-controlled: a crafted file can point an Exif item at
     // another item's payload (or at the box structure), and overwriting it in place
@@ -327,6 +332,12 @@ pub(super) fn strip(bytes: &[u8]) -> Option<Vec<u8>> {
 /// anything well-formed, so [`strip`] refuses the file instead of leaving a blob
 /// of zeroes behind and calling it success.
 const MIN_EXIF_ITEM: usize = 18;
+
+/// The 48 bytes an empty XMP item needs: exactly [`write_empty_xmp`]'s `EMPTY` xpacket,
+/// which is what the slot gets replaced with. An item smaller than this cannot hold a
+/// valid xpacket, so [`strip`] refuses the file instead of leaving pure whitespace where
+/// a reader expects one (mirrors the `MIN_EXIF_ITEM` guard above).
+const MIN_XMP_ITEM: usize = 48;
 
 /// A HEIF EXIF item is a 4-byte TIFF-header offset followed by the TIFF block.
 /// Replace it with a well-formed IFD0 that has zero entries, then pad.
@@ -471,8 +482,16 @@ mod tests {
 
     #[test]
     fn strip_erases_payloads_without_moving_a_byte() {
+        // The XMP payload must be at least MIN_XMP_ITEM (48) bytes so this exercises the
+        // real successful-strip path rather than the new too-short refusal below.
         let (file, _) = synth(
-            &[(1, b"II*\0secret-camera-data"), (2, b"<x:xmpmeta>gps")],
+            &[
+                (1, b"II*\0secret-camera-data"),
+                (
+                    2,
+                    b"<x:xmpmeta>gps-coordinates-secret-location-data</x:xmpmeta>",
+                ),
+            ],
             &[],
         );
         let out = strip(&file).expect("strip refused");
@@ -484,6 +503,19 @@ mod tests {
         assert!(!out.windows(3).any(|w| w == b"gps"), "XMP payload survived");
         // The boxes themselves are untouched, so the items are still discoverable.
         assert_eq!(items(&out).len(), 2);
+    }
+
+    #[test]
+    fn refuses_when_xmp_item_is_too_short_for_a_valid_xpacket() {
+        // A 14-byte XMP payload is well under MIN_XMP_ITEM (48). Before this guard,
+        // write_empty_xmp would silently blank it to bare spaces (no xpacket header at
+        // all) and strip() still reported success — the "half-fix" the module's own docs
+        // say never to do.
+        let (file, _) = synth(
+            &[(1, b"II*\0secret-camera-data"), (2, b"<x:xmpmeta>gps")],
+            &[],
+        );
+        assert!(strip(&file).is_none());
     }
 
     #[test]

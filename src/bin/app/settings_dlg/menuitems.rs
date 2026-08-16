@@ -145,10 +145,68 @@ extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 }
                 LRESULT(0)
             }
-            // Right-click bulk toggle (check all / uncheck all) on the checklist.
-            WM_CONTEXTMENU => {
+            // Right-click bulk toggle (check all / uncheck all) on the checklist. Gated on
+            // the sender being the list itself — WM_CONTEXTMENU also fires for Reset/Done
+            // and for the popup's own background, and without this guard any of those
+            // right-clicks popped the list's Check/Uncheck/Toggle menu too. Mirrors the
+            // same guard on the format list's own WM_CONTEXTMENU in mod.rs.
+            WM_CONTEXTMENU
+                if HWND(wparam.0 as *mut c_void)
+                    == GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST).unwrap_or_default() =>
+            {
                 list::list_context_menu(HWND(wparam.0 as *mut c_void), hwnd, lparam);
                 LRESULT(0)
+            }
+            // Owner-drawn dark context-menu items (light text on dark). TrackPopupMenu
+            // routes WM_MEASUREITEM/WM_DRAWITEM to its `hOwner` argument, which
+            // `list::list_context_menu` passes as THIS popup (not Settings), so the popup
+            // wndproc must handle them itself — mod.rs's ODT_MENU arms did this for the
+            // format list's identical dark-mode menu, but this window never inherited it.
+            WM_MEASUREITEM => {
+                let m = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
+                if m.CtlType == ODT_MENU {
+                    let label = wide(list::ctx_menu_label(m.itemID as usize));
+                    let n = label.len().saturating_sub(1);
+                    let hdc = GetDC(Some(hwnd));
+                    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
+                    let mut sz = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
+                    SelectObject(hdc, old);
+                    ReleaseDC(Some(hwnd), hdc);
+                    m.itemWidth = (sz.cx + 30) as u32;
+                    m.itemHeight = 26;
+                    LRESULT(1)
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
+            WM_DRAWITEM => {
+                let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
+                if d.CtlType == ODT_MENU {
+                    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
+                    let bg = if selected {
+                        dark_menu_sel_brush()
+                    } else {
+                        dark_menu_brush()
+                    };
+                    FillRect(d.hDC, &d.rcItem, bg);
+                    SetBkMode(d.hDC, TRANSPARENT);
+                    SetTextColor(d.hDC, DARK_TEXT());
+                    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
+                    let mut label = wide(list::ctx_menu_label(d.itemID as usize));
+                    let n = label.len().saturating_sub(1);
+                    let mut rc = d.rcItem;
+                    rc.left += 14;
+                    DrawTextW(
+                        d.hDC,
+                        &mut label[..n],
+                        &mut rc,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                    );
+                    LRESULT(1)
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
             }
             WM_COMMAND => {
                 match (wparam.0 & 0xFFFF) as i32 {

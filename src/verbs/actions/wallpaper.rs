@@ -36,7 +36,10 @@ pub fn prepare_wallpaper_in(dir: &Path, path: &str) -> Result<PathBuf> {
         let _ = std::fs::remove_file(&tmp);
         Error::new(E_FAIL, format!("encode wallpaper PNG: {e}"))
     })?;
-    std::fs::rename(&tmp, &out).map_err(|e| {
+    // Retry past a transient Explorer/thumbnail-cache lock on `out` (Windows os error
+    // 5/32) instead of failing outright — the same short backoff every other writer in
+    // this codebase uses (see `fsutil::rename_retrying`).
+    crate::fsutil::rename_retrying(&tmp, &out).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         Error::new(E_FAIL, format!("rename wallpaper into place: {e}"))
     })?;
@@ -100,4 +103,56 @@ pub fn set_wallpaper(path: &str, mode: WallpaperMode) -> Result<()> {
         .map_err(|e| Error::new(E_FAIL, format!("SPI_SETDESKWALLPAPER failed: {e}")))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    /// A transient Explorer/AV lock on the destination (Windows os error 5/32) must not
+    /// fail the wallpaper write outright — `prepare_wallpaper_in`'s final rename has to
+    /// retry past it (`fsutil::rename_retrying`), not fail on a bare `std::fs::rename`.
+    #[test]
+    fn prepare_wallpaper_in_survives_a_transient_lock_on_the_destination() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_wallpaper_lock_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let src_path = dir.join("src.png");
+        let img = image::RgbImage::from_pixel(1, 1, image::Rgb([200, 100, 50]));
+        image::DynamicImage::ImageRgb8(img)
+            .save_with_format(&src_path, ImageFormat::Png)
+            .unwrap();
+
+        // Pre-create the destination and hold it open with no sharing for a while, the
+        // way a real Explorer/thumbnail-cache lock briefly does.
+        let dest = dir.join("wallpaper.png");
+        std::fs::write(&dest, b"placeholder").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&dest)
+            .unwrap();
+        let lock_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(140));
+            drop(held);
+        });
+
+        let result = prepare_wallpaper_in(&dir, src_path.to_str().unwrap());
+        lock_thread.join().unwrap();
+
+        assert!(
+            result.is_ok(),
+            "rename must retry past the transient lock, not fail immediately: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

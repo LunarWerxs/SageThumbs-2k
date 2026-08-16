@@ -33,12 +33,20 @@ fn read_sector(bytes: &[u8], s: u32, sector_size: usize) -> Option<&[u8]> {
 }
 
 /// Walk a FAT/mini-FAT chain from `start`, returning the ordered sector list.
-fn follow(start: u32, fat: &[u32]) -> Option<Vec<u32>> {
+///
+/// `max_hops` is an additional, tighter ceiling on top of `MAX_SECTORS`: when the
+/// caller already knows the stream's declared byte size, it can pass a hop count
+/// derived from that size so a self-looping chain gets cut off in a handful of
+/// hops instead of walking up to the flat 4M-entry cap. Pass `MAX_SECTORS` at
+/// call sites where no size is known yet (e.g. while the FAT/directory itself is
+/// still being assembled).
+fn follow(start: u32, fat: &[u32], max_hops: usize) -> Option<Vec<u32>> {
+    let cap = max_hops.min(MAX_SECTORS);
     let mut out = Vec::new();
     let mut s = start;
     while s != ENDOFCHAIN && s != FREESECT {
         let idx = s as usize;
-        if idx >= fat.len() || out.len() > MAX_SECTORS {
+        if idx >= fat.len() || out.len() > cap {
             return None;
         }
         out.push(s);
@@ -100,8 +108,9 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
     }
 
     // --- Read the directory stream and find the target + root entries.
+    // Its size isn't known ahead of the walk, so no tighter cap is available yet.
     let mut dir = Vec::new();
-    for s in follow(first_dir, &fat)? {
+    for s in follow(first_dir, &fat, MAX_SECTORS)? {
         dir.extend_from_slice(read_sector(bytes, s, sector_size)?);
     }
     let mut target: Option<(u32, u64)> = None;
@@ -135,8 +144,12 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
 
     // --- Big stream → main FAT; small stream → mini-FAT inside the root stream.
     if tsize as u64 >= mini_cutoff {
+        // Cap the walk at the sector count the declared size actually needs (plus
+        // slack): a self-looping chain then dies in a handful of hops instead of
+        // the flat MAX_SECTORS ceiling.
+        let cap = tsize.div_ceil(sector_size).saturating_add(2);
         let mut out = Vec::with_capacity(tsize);
-        for s in follow(tstart, &fat)? {
+        for s in follow(tstart, &fat, cap)? {
             out.extend_from_slice(read_sector(bytes, s, sector_size)?);
             if out.len() >= tsize {
                 break;
@@ -147,8 +160,9 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
     } else {
         let (rstart, rsize) = root?;
         let rsize = (rsize.min(MAX_STREAM as u64)) as usize;
+        let root_cap = rsize.div_ceil(sector_size).saturating_add(2);
         let mut ministream = Vec::with_capacity(rsize);
-        for s in follow(rstart, &fat)? {
+        for s in follow(rstart, &fat, root_cap)? {
             ministream.extend_from_slice(read_sector(bytes, s, sector_size)?);
             if ministream.len() >= rsize {
                 break;
@@ -156,7 +170,8 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
         }
         ministream.truncate(rsize);
         let mut minifat: Vec<u32> = Vec::new();
-        for s in follow(first_minifat, &fat)? {
+        // The mini-FAT's own sector count isn't known ahead of the walk either.
+        for s in follow(first_minifat, &fat, MAX_SECTORS)? {
             let sec = read_sector(bytes, s, sector_size)?;
             for i in 0..sector_size / 4 {
                 minifat.push(le32(sec, i * 4)?);
@@ -165,22 +180,116 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
                 return None;
             }
         }
+        // Walk via the same hop-bounded follow() the FAT/root-stream chains use
+        // (not an out.len()-growth bound): when the root stream is empty and
+        // minifat self-loops, growth-based termination never trips because a
+        // zero-length ministream slice is appended every iteration forever.
+        // follow() bounds on hop count and index range instead, so it always
+        // terminates regardless of what the mini-stream itself contains, and the
+        // size-derived cap kills a cycle in a handful of hops rather than 4M.
+        let mini_cap = tsize.div_ceil(mini_size).saturating_add(2);
         let mut out = Vec::with_capacity(tsize);
-        let mut s = tstart;
-        while s != ENDOFCHAIN && s != FREESECT {
-            let idx = s as usize;
-            if idx >= minifat.len() || out.len() > tsize.saturating_add(mini_size) {
-                return None;
-            }
+        for idx in follow(tstart, &minifat, mini_cap)? {
+            let idx = idx as usize;
             let o = idx.checked_mul(mini_size)?;
             let end = o.checked_add(mini_size)?.min(ministream.len());
             out.extend_from_slice(ministream.get(o..end)?);
             if out.len() >= tsize {
                 break;
             }
-            s = minifat[idx];
         }
         out.truncate(tsize);
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds the smallest real compound file that reaches the mini-stream walk:
+    /// sector 0 = FAT, sector 1 = directory (Root Entry with an EMPTY root stream +
+    /// one named stream small enough to route through the mini-FAT), sector 2 =
+    /// mini-FAT whose only entry self-loops (`minifat[0] = 0`). `read_stream`
+    /// doesn't walk the directory tree, it just scans every 128-byte slot, so no
+    /// sibling/child linkage is needed for the entries to be found.
+    fn synthetic_ole_self_looping_minifat(stream_name: &str) -> Vec<u8> {
+        const SECTOR: usize = 512;
+        const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
+        const FREESECT: u32 = 0xFFFF_FFFF;
+
+        let mut header = vec![0u8; SECTOR];
+        header[0..8].copy_from_slice(&SIG);
+        header[0x1E..0x20].copy_from_slice(&9u16.to_le_bytes()); // sector shift: 512
+        header[0x20..0x22].copy_from_slice(&6u16.to_le_bytes()); // mini sector shift: 64
+        header[0x30..0x34].copy_from_slice(&1u32.to_le_bytes()); // first directory sector
+        header[0x38..0x3C].copy_from_slice(&4096u32.to_le_bytes()); // mini stream cutoff
+        header[0x3C..0x40].copy_from_slice(&2u32.to_le_bytes()); // first mini-FAT sector
+        header[0x44..0x48].copy_from_slice(&ENDOFCHAIN.to_le_bytes()); // no DIFAT chain
+        header[0x4C..0x50].copy_from_slice(&0u32.to_le_bytes()); // DIFAT[0] = FAT sector 0
+        for i in 1..109usize {
+            let o = 0x4C + i * 4;
+            header[o..o + 4].copy_from_slice(&FREESECT.to_le_bytes());
+        }
+
+        // Sector 0: the FAT. Each of our three sectors is its own one-sector chain.
+        let mut fat = vec![0u8; SECTOR];
+        for s in 0..3usize {
+            fat[s * 4..s * 4 + 4].copy_from_slice(&ENDOFCHAIN.to_le_bytes());
+        }
+        for i in 3..(SECTOR / 4) {
+            fat[i * 4..i * 4 + 4].copy_from_slice(&FREESECT.to_le_bytes());
+        }
+
+        // Sector 1: the directory. Slot 0 = Root Entry with a zero-length root
+        // stream (start = ENDOFCHAIN); slot 1 = our target stream, small enough
+        // (10 bytes < the 4096 mini cutoff) to route through the mini-FAT, with
+        // `start = 0` so the walk begins at the self-looping mini-FAT entry.
+        let mut dir = vec![0u8; SECTOR];
+        let mut put_entry = |slot: usize, name: &str, kind: u8, start: u32, size: u64| {
+            let base = slot * 128;
+            let utf16: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            for (i, c) in utf16.iter().enumerate() {
+                dir[base + i * 2..base + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
+            }
+            dir[base + 64..base + 66].copy_from_slice(&((utf16.len() * 2) as u16).to_le_bytes());
+            dir[base + 66] = kind;
+            dir[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
+            dir[base + 120..base + 128].copy_from_slice(&size.to_le_bytes());
+        };
+        put_entry(0, "Root Entry", 5, ENDOFCHAIN, 0);
+        put_entry(1, stream_name, 2, 0, 10);
+
+        // Sector 2: the mini-FAT. Entry 0 points back at itself.
+        let mut minifat = vec![0u8; SECTOR];
+        minifat[0..4].copy_from_slice(&0u32.to_le_bytes());
+        for i in 1..(SECTOR / 4) {
+            minifat[i * 4..i * 4 + 4].copy_from_slice(&FREESECT.to_le_bytes());
+        }
+
+        [header, fat, dir, minifat].concat()
+    }
+
+    /// Regression for A023: with an empty root stream and a self-looping mini-FAT
+    /// entry, the old walk was bounded only by output-buffer growth. Since the
+    /// (empty) ministream always yields a zero-length slice, `out` never grew and
+    /// the loop ran forever. The hop-bounded `follow()` walk must terminate (with
+    /// `None`, since the chain can never actually deliver the declared bytes)
+    /// instead of hanging the calling thread.
+    #[test]
+    fn read_stream_terminates_on_self_looping_minifat() {
+        let bytes = synthetic_ole_self_looping_minifat("Target");
+        assert_eq!(read_stream(&bytes, "Target"), None);
+    }
+
+    #[test]
+    fn follow_caps_at_the_tighter_of_max_hops_and_max_sectors() {
+        // A 3-entry chain (0 -> 1 -> 2 -> ENDOFCHAIN) with max_hops = 1 must be
+        // rejected as too long, proving the tighter caller-supplied cap is what
+        // actually bites, not just the flat MAX_SECTORS ceiling.
+        const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
+        let fat = vec![1u32, 2u32, ENDOFCHAIN];
+        assert_eq!(follow(0, &fat, 1), None);
+        assert_eq!(follow(0, &fat, 3), Some(vec![0, 1, 2]));
     }
 }

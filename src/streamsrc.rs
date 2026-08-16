@@ -111,7 +111,16 @@ pub(crate) unsafe fn stream_source_with_caps(
         // off by default). Read BEFORE the frame tiers so a film library shows its covers
         // without paying for a decode first; a file with no cover falls straight through to
         // the normal cascade, having cost one bounded metadata read.
+        //
+        // `tried_cover_art` remembers whether this pass ran: if it did and found nothing,
+        // the fallback rescue below (after every frame tier also fails) must not call
+        // `vcodec::cover_art` a second time — the stream hasn't changed, so it would just
+        // re-scan the same moov to the same null answer. That third full scan (cover_art,
+        // keyframe_mini_mp4, cover_art again) was the actual A032 cost on a HEVC-with-no-
+        // cover-and-no-OS-codec file.
+        let mut tried_cover_art = false;
         if crate::settings::prefer_cover_art() {
+            tried_cover_art = true;
             if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
                 stream: stream.clone(),
             }) {
@@ -167,7 +176,7 @@ pub(crate) unsafe fn stream_source_with_caps(
             },
             at,
         )
-        .and_then(|buf| crate::video::frame_from_bytes(&buf))
+        .and_then(crate::video::frame_from_owned_bytes)
         .or_else(|| {
             crate::mkv::keyframe_mini_mkv(
                 &mut IStreamReader {
@@ -175,13 +184,13 @@ pub(crate) unsafe fn stream_source_with_caps(
                 },
                 at,
             )
-            .and_then(|buf| crate::video::frame_from_bytes(&buf))
+            .and_then(crate::video::frame_from_owned_bytes)
         })
         .or_else(|| {
             crate::flv::keyframe_mini_mp4(&mut IStreamReader {
                 stream: stream.clone(),
             })
-            .and_then(|buf| crate::video::frame_from_bytes(&buf))
+            .and_then(crate::video::frame_from_owned_bytes)
         })
         .or_else(|| {
             // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
@@ -199,8 +208,8 @@ pub(crate) unsafe fn stream_source_with_caps(
             stream_size(stream)
                 .and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
         })
-        .or_else(|| video_prefix(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)))
-        .or_else(|| mp4_remux_moov(stream).and_then(|buf| crate::video::frame_from_bytes(&buf)))
+        .or_else(|| video_prefix(stream).and_then(crate::video::frame_from_owned_bytes))
+        .or_else(|| mp4_remux_moov(stream).and_then(crate::video::frame_from_owned_bytes))
         .or_else(|| {
             // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
             //    Profile 0/1 even with the Store extension installed, so when every tier
@@ -232,14 +241,16 @@ pub(crate) unsafe fn stream_source_with_caps(
         // routinely attach a poster, so show the film instead of a blank tile. Bounded:
         // the attachment element is read via the container's own index, never the stream.
         if !peek_is_ogg(stream) {
-            if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
-                stream: stream.clone(),
-            }) {
-                safety::log_debug(&format!(
-                    "{who}: video frame undecodable — using attached cover art ({} bytes)",
-                    cover.len()
-                ));
-                return Ok(StreamSource::Bytes(cover));
+            if needs_fallback_cover_art(tried_cover_art) {
+                if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
+                    stream: stream.clone(),
+                }) {
+                    safety::log_debug(&format!(
+                        "{who}: video frame undecodable — using attached cover art ({} bytes)",
+                        cover.len()
+                    ));
+                    return Ok(StreamSource::Bytes(cover));
+                }
             }
             safety::log_debug(&format!("{who}: video with no decodable frame"));
             return Err(Error::from(E_FAIL));
@@ -430,6 +441,17 @@ pub(crate) unsafe fn stream_source_with_caps(
             Ok(StreamSource::Bytes(read_all(stream, max as usize, size)?))
         }
     }
+}
+
+/// Does the post-frame-tiers cover-art rescue in [`stream_source_with_caps`] need
+/// to call `vcodec::cover_art` at all, or did the prefer-cover-art pass already
+/// call it (and find nothing) for this exact stream? A second call on an
+/// untouched stream can only repeat the same answer — a redundant full moov
+/// scan this predicate exists to skip. Kept as a standalone, argument-driven
+/// function (rather than inlined) so the decision itself — not the registry
+/// read or the IStream plumbing around it — is what a test pins down.
+fn needs_fallback_cover_art(already_tried_cover_art: bool) -> bool {
+    !already_tried_cover_art
 }
 
 /// First `max` bytes of `stream`, rewinding afterwards. Short reads are fine: the only
@@ -880,6 +902,17 @@ mod tests {
             "a file over the user's MaxSize must stay refused"
         );
         unsafe { CoUninitialize() };
+    }
+
+    /// The exact A032 fix: once the prefer-cover-art pass has already run
+    /// `vcodec::cover_art` for this stream (whether or not it found anything),
+    /// the fallback rescue after all frame tiers fail must NOT run it again —
+    /// that was the third full moov scan. When that pass never ran (feature
+    /// off), the fallback is still the only place `cover_art` gets called.
+    #[test]
+    fn fallback_cover_art_skipped_only_when_already_tried() {
+        assert!(!needs_fallback_cover_art(true));
+        assert!(needs_fallback_cover_art(false));
     }
 
     #[test]

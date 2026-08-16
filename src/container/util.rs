@@ -202,6 +202,50 @@ pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> 
     None
 }
 
+/// Width/height (in that order) of the first decodable SOF frame (SOF0/1/2) in the
+/// JPEG starting at `off`, or `None` if none is found before the walk's segment cap.
+///
+/// Shares [`jpeg_span`]'s bounded FF-marker walk (same 4096-segment cap) so this can't be
+/// driven past the point that one is bounded at either; it stops as soon as it has the
+/// dimensions rather than continuing to the EOI, since callers that only want a preview's
+/// pixel size (not its byte span) have no use for walking the rest of the entropy data.
+/// Extracted so cover extractors that need dimensions (not just a span) don't each hand-roll
+/// their own marker walk — see `c4d.rs`'s `jpeg_dims`, previously a parallel copy of this walk.
+pub(super) fn jpeg_sof_dims(data: &[u8], off: usize) -> Option<(u16, u16)> {
+    if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut p = off + 2;
+    for _ in 0..4096 {
+        if *data.get(p)? != 0xFF {
+            return None; // expected a marker here
+        }
+        while *data.get(p)? == 0xFF {
+            p = p.checked_add(1)?; // skip 0xFF fill bytes
+        }
+        let marker = *data.get(p)?;
+        p = p.checked_add(1)?;
+        match marker {
+            0xC0..=0xC2 => {
+                // length(2) precision(1) height(2) width(2)
+                let h = u16::from_be_bytes([*data.get(p + 3)?, *data.get(p + 4)?]);
+                let w = u16::from_be_bytes([*data.get(p + 5)?, *data.get(p + 6)?]);
+                return Some((w, h));
+            }
+            0xD9 | 0xDA => return None, // EOI or scan start reached with no frame header
+            0x01 | 0xD0..=0xD7 => {}    // standalone markers, no payload
+            _ => {
+                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
+                if len < 2 {
+                    return None;
+                }
+                p = p.checked_add(len)?;
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +259,22 @@ mod tests {
         // Case-insensitive match still works.
         assert!(contains_ci(b"AbCOpenDocumentXyz", b"opendocument"));
         assert!(!contains_ci(b"nope", b"zzz"));
+    }
+
+    #[test]
+    fn jpeg_sof_dims_reads_the_first_baseline_frame() {
+        let mut jpeg = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(37, 41))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        assert_eq!(jpeg_sof_dims(&jpeg, 0), Some((37, 41)));
+        // Not a JPEG at all -> None, not a panic.
+        assert_eq!(jpeg_sof_dims(b"not a jpeg", 0), None);
+        // Truncated right after SOI -> None (no marker to read).
+        assert_eq!(jpeg_sof_dims(&jpeg[..2], 0), None);
     }
 
     #[test]

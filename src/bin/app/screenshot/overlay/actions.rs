@@ -8,6 +8,21 @@
 
 use super::*;
 
+/// Intersect `r` with `sel` — both in the same (screen) coordinate space. Used to keep a
+/// region-effect shape's rect from reaching past the selection edge when `compose` bakes it
+/// into the cropped output (see the comment at its call site). Yields an empty/inverted rect
+/// (`right < left` and/or `bottom < top`) when `r` doesn't overlap `sel` at all; callers
+/// already treat too-small a rect as a no-op (e.g. `tools::draw_pixelate`'s `w < 4 || h < 4`
+/// guard), so that case draws nothing rather than needing a special case here.
+fn clamp_rect(r: RECT, sel: RECT) -> RECT {
+    RECT {
+        left: r.left.max(sel.left),
+        top: r.top.max(sel.top),
+        right: r.right.min(sel.right),
+        bottom: r.bottom.min(sel.bottom),
+    }
+}
+
 /// Composite the selected region (snapshot + annotations) into an offscreen DC
 /// and pull its top-down BGRA pixels. Returns `(pixels, w, h)` — the callers route
 /// it to the clipboard and/or a PNG.
@@ -26,22 +41,46 @@ pub(super) unsafe fn compose(s: &Shot) -> Option<(Vec<u8>, i32, i32)> {
     // Offset the annotations (screen space) into region space. We pass the shift
     // explicitly rather than via SetViewportOrgEx because GDI+ (the anti-aliased
     // drawing) ignores the DC's viewport origin — only plain GDI honours it.
+    //
+    // The live preview clips its draw to `sel` (paint.rs's SaveDC + IntersectClipRect), but a
+    // shape's STORED rect is never bounded to the selection — only its on-screen paint was
+    // clipped. `comp` is exactly `sel`'s own w×h, so a rect that reaches past the selection
+    // edge asks the region-effect tools to read/write beyond it: Pixelate in particular
+    // *samples* pixels via StretchBlt, and a source rect past `comp`'s own bitmap reads
+    // whatever GDI's surface clamp gives it — a visual glitch in the saved/copied output.
+    // Clamp those rects to `sel` here rather than in `tools::draw_shape`, so every region
+    // effect the compose stage bakes in stays inside the bitmap it's actually drawing into.
     for sh in &s.shapes {
-        tools::draw_shape(comp, -sel.left, -sel.top, sh);
+        match sh {
+            tools::Shape::Pixelate { r } => tools::draw_shape(
+                comp,
+                -sel.left,
+                -sel.top,
+                &tools::Shape::Pixelate {
+                    r: clamp_rect(*r, sel),
+                },
+            ),
+            tools::Shape::Highlight { r, color } => tools::draw_shape(
+                comp,
+                -sel.left,
+                -sel.top,
+                &tools::Shape::Highlight {
+                    r: clamp_rect(*r, sel),
+                    color: *color,
+                },
+            ),
+            tools::Shape::Invert { r } => tools::draw_shape(
+                comp,
+                -sel.left,
+                -sel.top,
+                &tools::Shape::Invert {
+                    r: clamp_rect(*r, sel),
+                },
+            ),
+            _ => tools::draw_shape(comp, -sel.left, -sel.top, sh),
+        }
     }
 
-    let mut bi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h, // negative = top-down
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
     // 64-bit size math (w/h are already > 0 above); bail on an absurd selection so
     // the i32 product can't overflow into an undersized buffer for GetDIBits.
     let n = w as i64 * h as i64 * 4;
@@ -53,33 +92,37 @@ pub(super) unsafe fn compose(s: &Shot) -> Option<(Vec<u8>, i32, i32)> {
         let _ = DeleteObject(cbmp.into());
         return None;
     }
-    let mut buf = vec![0u8; n as usize];
-    let got = GetDIBits(
-        comp,
-        cbmp,
-        0,
-        h as u32,
-        Some(buf.as_mut_ptr() as *mut c_void),
-        &mut bi,
-        DIB_RGB_COLORS,
-    );
+    // Pull top-down BGRA (negative biHeight) — shared with capture_instant/capture_hwnd_bgra.
+    let buf = window_shot::pull_top_down_bgra(comp, cbmp, w, h, n as usize);
     SelectObject(comp, oldbmp);
     let _ = DeleteDC(comp);
     let _ = DeleteObject(HGDIOBJ(cbmp.0));
-    if got == 0 {
-        return None;
-    }
-    Some((buf, w, h))
+    Some((buf?, w, h))
 }
 
-/// Copy the composited capture to the clipboard. (Caller commits in-progress text first.)
-pub(super) unsafe fn finish_copy(s: &Shot) {
+/// Copy the composited capture to the clipboard. Returns whether it actually landed there
+/// (`true` for the automation no-op too, so callers don't treat a blocked automation run as
+/// a failure). (Caller commits in-progress text first.)
+pub(super) unsafe fn finish_copy(s: &Shot) -> bool {
     if s.automation.is_some() {
-        return;
+        return true;
     }
-    if let Some((buf, w, h)) = compose(s) {
-        output::copy_dib_to_clipboard(&buf, w, h);
+    let Some((buf, w, h)) = compose(s) else {
+        return false;
+    };
+    let ok = output::copy_dib_to_clipboard(&buf, w, h);
+    if !ok {
+        // This used to be silently discarded: every caller (Enter, Ctrl+C, the toolbar Copy
+        // button) destroyed the window right after regardless, so a clipboard failure closed
+        // the editor with nothing copied and zero feedback. Mirror capture_instant's toast so
+        // the failure is at least visible, whichever path triggered it.
+        crate::win::notify_toast(
+            "SageThumbs 2K",
+            crate::win::t("toast_shot_fail_clip"),
+            std::time::Duration::from_secs(5),
+        );
     }
+    ok
 }
 
 /// Composite the capture to a throwaway temp PNG and hand it to a helper process
@@ -152,6 +195,23 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
                 &output::timestamped_name(),
             ) {
                 saved = output::save_png_to_path(std::path::Path::new(&path), &buf, w, h);
+                if !saved {
+                    // A write failure here looks IDENTICAL to a user Cancel (both leave `saved`
+                    // false) unless we say something — the fixed-folder branch above already
+                    // warns on its own failure; this path had no equivalent.
+                    let dir = std::path::Path::new(&path)
+                        .parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let m = wide(&crate::win::t("shot_save_failed").replace("{dir}", &dir));
+                    let cap = wide("SageThumbs 2K");
+                    MessageBoxW(
+                        Some(hwnd),
+                        PCWSTR(m.as_ptr()),
+                        PCWSTR(cap.as_ptr()),
+                        MB_OK | MB_ICONWARNING,
+                    );
+                }
             }
         });
         saved
@@ -225,9 +285,12 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
         }
         Button::Copy => {
             commit_text(s);
-            finish_copy(s);
-            let _ = DestroyWindow(hwnd);
-            true
+            if finish_copy(s) {
+                let _ = DestroyWindow(hwnd);
+                true
+            } else {
+                false // clipboard failure (toast already shown) -> keep editing, like Save-As cancel
+            }
         }
         Button::Ocr => {
             commit_text(s);
@@ -255,5 +318,53 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
             true
         }
         Button::Sep => false, // not clickable (hit() skips separators)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shape dragged (or moved) so its rect crosses the selection edge must be clamped
+    /// INTO the selection before compose() draws it — the live preview only clips the paint,
+    /// never the stored rect, so this is the only place the bound actually gets enforced.
+    #[test]
+    fn clamp_rect_keeps_shape_bounds_inside_the_selection() {
+        let sel = RECT {
+            left: 100,
+            top: 100,
+            right: 300,
+            bottom: 300,
+        };
+
+        // Straddles every edge — must come back exactly at `sel`'s bounds.
+        let straddling = RECT {
+            left: 50,
+            top: 50,
+            right: 350,
+            bottom: 350,
+        };
+        assert_eq!(clamp_rect(straddling, sel), sel);
+
+        // Fully inside — must pass through unchanged.
+        let inside = RECT {
+            left: 150,
+            top: 150,
+            right: 200,
+            bottom: 200,
+        };
+        assert_eq!(clamp_rect(inside, sel), inside);
+
+        // Entirely outside — collapses to an empty/inverted rect (right < left), which the
+        // region-effect draw functions already treat as "draw nothing" (e.g. draw_pixelate's
+        // `w < 4 || h < 4` guard), not something clamp_rect itself needs to special-case.
+        let outside = RECT {
+            left: 400,
+            top: 400,
+            right: 450,
+            bottom: 450,
+        };
+        let c = clamp_rect(outside, sel);
+        assert!(c.right - c.left <= 0 || c.bottom - c.top <= 0);
     }
 }

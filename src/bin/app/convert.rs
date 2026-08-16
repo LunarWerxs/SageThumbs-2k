@@ -578,6 +578,24 @@ unsafe fn read_resize_jobs(hwnd: HWND) -> Vec<(Resize, Option<String>)> {
     vec![(read_resize(hwnd), None)]
 }
 
+/// Mirrors `decode::limits::MAX_DIM` (16384): that constant is `pub(crate)` to the
+/// core lib, so it isn't reachable from this EXE crate, but the ceiling it
+/// enforces is the same one that matters here. Without a cap, a typed dimension
+/// like 30000x30000 reaches `apply_resize`'s `FitUp` arm (which only floors with
+/// `.max(1)`, no ceiling) and attempts a multi-GB allocation; release runs
+/// panic="abort", so an allocation failure aborts the WHOLE process mid-batch.
+const MAX_TYPED_RESIZE_DIM: u32 = 16_384;
+
+/// Parse one typed resize-dimension field, clamped to [`MAX_TYPED_RESIZE_DIM`].
+/// Pulled out of `read_resize` as a plain function (no `HWND`) so the clamp is
+/// unit-testable without a live dialog.
+fn parse_resize_dim(text: &str) -> u32 {
+    text.trim()
+        .parse::<u32>()
+        .unwrap_or(0)
+        .min(MAX_TYPED_RESIZE_DIM)
+}
+
 /// The verbs-crate `Resize` selected in the dialog (None when unchecked).
 unsafe fn read_resize(hwnd: HWND) -> Resize {
     if !checked(hwnd, CID_RESIZE_CHK) {
@@ -591,14 +609,14 @@ unsafe fn read_resize(hwnd: HWND) -> Resize {
         Some(ResizeMode::Fit(w, h)) => wrap(w, h, Resize::Fit(w, h)),
         Some(ResizeMode::Pct(p)) => Resize::Percent(p),
         _ => {
-            let w = get_edit_text(hwnd, CID_RESIZE_W)
-                .trim()
-                .parse::<u32>()
-                .unwrap_or(0);
-            let h = get_edit_text(hwnd, CID_RESIZE_H)
-                .trim()
-                .parse::<u32>()
-                .unwrap_or(0);
+            // Clamped BEFORE the w>0 && h>0 gate below, not after: a typed value
+            // past MAX_TYPED_RESIZE_DIM is out-of-range input, not a request for
+            // "as big as possible", so it's capped to the same ceiling decode::
+            // uses rather than let through to become a multi-GB allocation
+            // attempt (release runs panic="abort", so an alloc failure there kills
+            // the whole batch, not just this one file).
+            let w = parse_resize_dim(&get_edit_text(hwnd, CID_RESIZE_W));
+            let h = parse_resize_dim(&get_edit_text(hwnd, CID_RESIZE_H));
             if w > 0 && h > 0 {
                 // Explicitly typed dimensions scale UP too — "make it bigger"
                 // must make it bigger. The presets above stay shrink-only.
@@ -1042,19 +1060,7 @@ extern "system" fn convert_wndproc(
                 let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
                 match id {
                     IDOK => start_convert(hwnd),
-                    IDCANCEL => {
-                        if CONVERT_RUNNING.load(Ordering::Relaxed) {
-                            // A batch is running — signal it to stop (don't close yet);
-                            // the worker posts WM_CONVERT_DONE as it winds down, which
-                            // closes the dialog. Disable the button so it can't re-fire.
-                            CONVERT_CANCEL.store(true, Ordering::Relaxed);
-                            if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
-                                let _ = EnableWindow(b, false);
-                            }
-                        } else {
-                            let _ = DestroyWindow(hwnd);
-                        }
-                    }
+                    IDCANCEL => request_close(hwnd),
                     CID_BROWSE => {
                         if let Some(dir) = pick_folder(hwnd) {
                             set_edit_text(hwnd, CID_OUTDIR, &dir);
@@ -1117,8 +1123,14 @@ extern "system" fn convert_wndproc(
                 wm_dpichanged(hwnd, lparam);
                 LRESULT(0)
             }
+            // The title-bar X / Alt+F4 / taskbar-close path must mirror IDCANCEL's
+            // deferred close (below), NOT destroy unconditionally. A batch write is
+            // detached and keeps running after DestroyWindow tears the window down;
+            // without this check WM_CLOSE cascades straight to WM_DESTROY ->
+            // PostQuitMessage and kills the worker mid-write regardless of
+            // CONVERT_RUNNING.
             WM_CLOSE => {
-                let _ = DestroyWindow(hwnd);
+                request_close(hwnd);
                 LRESULT(0)
             }
             WM_DESTROY => {
@@ -1126,6 +1138,128 @@ extern "system" fn convert_wndproc(
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+/// Close the Convert dialog, or defer the close if a batch is still running.
+/// Shared by IDCANCEL (the Cancel button) and WM_CLOSE (title-bar X / Alt+F4) so
+/// both paths behave identically: while `CONVERT_RUNNING`, just signal the worker
+/// to stop and disable Cancel so it can't re-fire; the worker posts
+/// WM_CONVERT_DONE as it winds down, which is what actually closes the window.
+unsafe fn request_close(hwnd: HWND) {
+    if CONVERT_RUNNING.load(Ordering::Relaxed) {
+        CONVERT_CANCEL.store(true, Ordering::Relaxed);
+        if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
+            let _ = EnableWindow(b, false);
+        }
+    } else {
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+
+    /// A016: a typed dimension must be capped, not passed straight through toward
+    /// an `apply_resize` allocation that scales with it.
+    #[test]
+    fn parse_resize_dim_clamps_absurd_typed_input() {
+        assert_eq!(parse_resize_dim("300"), 300);
+        assert_eq!(parse_resize_dim("0"), 0);
+        assert_eq!(parse_resize_dim(""), 0);
+        assert_eq!(parse_resize_dim("not a number"), 0);
+        assert_eq!(
+            parse_resize_dim("30000"),
+            MAX_TYPED_RESIZE_DIM,
+            "an out-of-range typed value must be clamped, not passed through toward a \
+             multi-GB allocation attempt"
+        );
+        assert_eq!(
+            parse_resize_dim(&MAX_TYPED_RESIZE_DIM.to_string()),
+            MAX_TYPED_RESIZE_DIM
+        );
+    }
+
+    /// A012 regression: WM_CLOSE (title-bar X / Alt+F4) must defer exactly like
+    /// IDCANCEL while a batch is running, instead of destroying the window (and
+    /// killing the detached worker mid-write) unconditionally.
+    ///
+    /// Exercises the real wndproc directly: no message loop and no Explorer
+    /// needed: a bare top-level window plus one IDCANCEL child button is all
+    /// `request_close`'s `GetDlgItem` + `EnableWindow` calls need to resolve.
+    #[test]
+    fn wm_close_defers_to_the_same_path_as_idcancel_while_running() {
+        unsafe {
+            let Ok(hmodule) = GetModuleHandleW(None) else {
+                eprintln!("wm_close_defers: no module handle, skipping");
+                return;
+            };
+            let hinst: HINSTANCE = hmodule.into();
+            let Ok(hwnd) = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("st2k-convert-test"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                Some(hinst),
+                None,
+            ) else {
+                eprintln!("wm_close_defers: CreateWindowExW failed, skipping");
+                return;
+            };
+            let cancel_btn = ctl(
+                hwnd,
+                BUTTON,
+                "Cancel",
+                WINDOW_STYLE(0),
+                0,
+                0,
+                10,
+                10,
+                IDCANCEL,
+                hinst,
+            );
+            assert!(
+                !cancel_btn.is_invalid(),
+                "IDCANCEL child button must be created"
+            );
+
+            CONVERT_RUNNING.store(true, Ordering::Relaxed);
+            CONVERT_CANCEL.store(false, Ordering::Relaxed);
+
+            convert_wndproc(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+
+            assert!(
+                IsWindow(Some(hwnd)).as_bool(),
+                "a running batch must NOT be destroyed by WM_CLOSE"
+            );
+            assert!(
+                CONVERT_CANCEL.load(Ordering::Relaxed),
+                "WM_CLOSE must signal cancel exactly like IDCANCEL does"
+            );
+            assert!(
+                !IsWindowEnabled(cancel_btn).as_bool(),
+                "the Cancel button must be disabled so it can't re-fire"
+            );
+
+            // Not-running path: WM_CLOSE must still actually close the window.
+            CONVERT_RUNNING.store(false, Ordering::Relaxed);
+            convert_wndproc(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            assert!(
+                !IsWindow(Some(hwnd)).as_bool(),
+                "with nothing running, WM_CLOSE must destroy the window as before"
+            );
+
+            CONVERT_RUNNING.store(false, Ordering::Relaxed);
+            CONVERT_CANCEL.store(false, Ordering::Relaxed);
         }
     }
 }

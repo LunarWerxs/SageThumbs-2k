@@ -53,6 +53,10 @@ menu_wallpaper = "Set as wallpaper"
 menu_wallpaper_stretch = "Stretched"
 menu_wallpaper_tile = "Tiled"
 menu_wallpaper_center = "Centered"
+menu_compress = "Compress to size"
+menu_compress_1mb = "Under 1 MB"
+menu_compress_5mb = "Under 5 MB"
+menu_compress_10mb = "Under 10 MB"
 menu_settings = "Settings"
 
 # Options dialog

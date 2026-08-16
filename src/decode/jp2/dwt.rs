@@ -65,7 +65,15 @@ fn ext(v: &[f32], i0: isize, i: isize) -> f32 {
 
 /// 1D inverse lifting on an already-interleaved signal whose first sample is at absolute
 /// index `i0`. Parity of the absolute index decides low-pass (even) vs high-pass (odd).
-fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool) {
+///
+/// `scratch` is caller-owned SCRATCH SPACE, reused across every row and column of one
+/// [`reconstruct`] call instead of allocating fresh here (A221): the reversible (5/3) branch
+/// used to `.to_vec()`/`.clone()` up to three signal-length buffers per call, and the
+/// irreversible (9/7) branch `.to_vec()`'d once per lifting step (4x per call) — this runs
+/// once per row AND once per column per resolution level, so that was real allocation churn
+/// in the decoder's hottest loop. `scratch.clear()` + `extend_from_slice` reuses the
+/// allocation the caller already grew to fit the largest row/column it will ever pass.
+fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool, scratch: &mut Vec<f32>) {
     let n = sig.len();
     if n == 0 {
         return;
@@ -87,28 +95,35 @@ fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool) {
         return;
     }
 
+    scratch.clear();
+    scratch.extend_from_slice(sig);
+    // `scratch` is now the untouched original ("src" in the derivation below); `sig` becomes
+    // the working buffer, written in place.
+
     if reversible {
         // 5/3: even samples first, then odd, using the just-updated evens.
-        let src = sig.to_vec();
-        let mut even = src.clone();
-        for (k, slot) in even.iter_mut().enumerate() {
+        for (k, slot) in sig.iter_mut().enumerate() {
             let i = i0i + k as isize;
             if i % 2 == 0 {
-                let a = ext(&src, i0i, i - 1);
-                let b = ext(&src, i0i, i + 1);
-                *slot = src[k] - ((a + b + 2.0) / 4.0).floor();
+                let a = ext(scratch, i0i, i - 1);
+                let b = ext(scratch, i0i, i + 1);
+                *slot = scratch[k] - ((a + b + 2.0) / 4.0).floor();
             }
         }
-        let mut out = even.clone();
-        for (k, slot) in out.iter_mut().enumerate() {
+        // The odd pass is done IN PLACE on `sig` (no second scratch buffer): it only ever
+        // needs an EVEN-position neighbor (i-1/i+1 for an odd i), and `ext`'s periodic/mirror
+        // extension can't turn an even query into an odd one — the period `2*(n-1)` is always
+        // even, and folding via `period - k` preserves k's parity — so every neighbor read
+        // here lands on a slot the loop above already finished writing, never one this loop
+        // is about to overwrite.
+        for k in 0..n {
             let i = i0i + k as isize;
             if i % 2 != 0 {
-                let a = ext(&even, i0i, i - 1);
-                let b = ext(&even, i0i, i + 1);
-                *slot = src[k] + ((a + b) / 2.0).floor();
+                let a = ext(sig, i0i, i - 1);
+                let b = ext(sig, i0i, i + 1);
+                sig[k] = scratch[k] + ((a + b) / 2.0).floor();
             }
         }
-        sig.copy_from_slice(&out);
     } else {
         // 9/7: undo the K scaling, then the four lifting steps in reverse.
         for (k, s) in sig.iter_mut().enumerate() {
@@ -116,13 +131,14 @@ fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool) {
             *s = if i % 2 == 0 { *s * K } else { *s / K };
         }
         for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
-            let src = sig.to_vec();
+            scratch.clear();
+            scratch.extend_from_slice(sig);
             for (k, s) in sig.iter_mut().enumerate() {
                 let i = i0i + k as isize;
                 if (i % 2 == 0) == even_step {
-                    let a = ext(&src, i0i, i - 1);
-                    let b = ext(&src, i0i, i + 1);
-                    *s = src[k] - coef * (a + b);
+                    let a = ext(scratch, i0i, i - 1);
+                    let b = ext(scratch, i0i, i + 1);
+                    *s = scratch[k] - coef * (a + b);
                 }
             }
         }
@@ -175,11 +191,13 @@ pub(super) fn reconstruct(
         }
     }
 
-    // HOR_SR then VER_SR.
+    // HOR_SR then VER_SR. One scratch buffer, sized for the larger of the two passes, is
+    // shared by every `filtr_1d` call below instead of each call allocating its own (A221).
+    let mut scratch = Vec::with_capacity(w.max(h));
     let mut row = vec![0.0f32; w];
     for y in 0..h {
         row.copy_from_slice(&out.data[y * w..(y + 1) * w]);
-        filtr_1d(&mut row, x0, reversible);
+        filtr_1d(&mut row, x0, reversible, &mut scratch);
         out.data[y * w..(y + 1) * w].copy_from_slice(&row);
     }
     let mut col = vec![0.0f32; h];
@@ -187,7 +205,7 @@ pub(super) fn reconstruct(
         for (y, c) in col.iter_mut().enumerate() {
             *c = out.data[y * w + x];
         }
-        filtr_1d(&mut col, y0, reversible);
+        filtr_1d(&mut col, y0, reversible, &mut scratch);
         for (y, c) in col.iter().enumerate() {
             out.data[y * w + x] = *c;
         }
@@ -223,6 +241,96 @@ mod tests {
                     assert!(
                         (*v - 100.0).abs() < 1.5,
                         "flat reconstruction drifted at {i}: {v} (origin {x0},{y0}, rev={reversible})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A221: `filtr_1d`'s reversible pass used to write its odd-position results into a
+    /// THIRD buffer (`out`, cloned from `even`); it now writes them into `sig` in place,
+    /// reasoning that every neighbor `ext()` reads during that pass lands on an even-position
+    /// slot the first pass already finished (never one this pass is still writing). This test
+    /// is the check on that reasoning: an independent re-implementation of the original
+    /// three-buffer algorithm serves as an oracle, compared bit-for-bit against the in-place
+    /// version across varied signals, origins, and both the reversible and irreversible paths
+    /// — a wrong aliasing assumption here would show up as silently wrong pixels, not a panic.
+    #[test]
+    fn filtr_1d_matches_the_original_three_buffer_algorithm() {
+        fn reference(sig: &[f32], i0: usize, reversible: bool) -> Vec<f32> {
+            let n = sig.len();
+            let i0i = i0 as isize;
+            if n <= 1 {
+                let mut out = sig.to_vec();
+                if n == 1 && !i0.is_multiple_of(2) {
+                    out[0] /= 2.0;
+                    if reversible {
+                        out[0] = out[0].trunc();
+                    }
+                }
+                return out;
+            }
+            if reversible {
+                let src = sig.to_vec();
+                let mut even = src.clone();
+                for (k, slot) in even.iter_mut().enumerate() {
+                    let i = i0i + k as isize;
+                    if i % 2 == 0 {
+                        let a = ext(&src, i0i, i - 1);
+                        let b = ext(&src, i0i, i + 1);
+                        *slot = src[k] - ((a + b + 2.0) / 4.0).floor();
+                    }
+                }
+                let mut out = even.clone();
+                for (k, slot) in out.iter_mut().enumerate() {
+                    let i = i0i + k as isize;
+                    if i % 2 != 0 {
+                        let a = ext(&even, i0i, i - 1);
+                        let b = ext(&even, i0i, i + 1);
+                        *slot = src[k] + ((a + b) / 2.0).floor();
+                    }
+                }
+                out
+            } else {
+                let mut sig = sig.to_vec();
+                for (k, s) in sig.iter_mut().enumerate() {
+                    let i = i0i + k as isize;
+                    *s = if i % 2 == 0 { *s * K } else { *s / K };
+                }
+                for (even_step, coef) in
+                    [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)]
+                {
+                    let src = sig.to_vec();
+                    for (k, s) in sig.iter_mut().enumerate() {
+                        let i = i0i + k as isize;
+                        if (i % 2 == 0) == even_step {
+                            let a = ext(&src, i0i, i - 1);
+                            let b = ext(&src, i0i, i + 1);
+                            *s = src[k] - coef * (a + b);
+                        }
+                    }
+                }
+                sig
+            }
+        }
+
+        let signals: &[&[f32]] = &[
+            &[1.0, -2.5, 3.25, 0.0, 7.0, -4.0],
+            &[10.0, 20.0, 30.0, 40.0, 50.0],
+            &[0.5],
+            &[1.0, 2.0],
+            &[3.0, -1.0, 4.0, -1.5, 5.0, 9.0, 2.0],
+        ];
+        let mut scratch = Vec::new();
+        for &s in signals {
+            for i0 in [0usize, 1, 2, 3] {
+                for reversible in [true, false] {
+                    let expected = reference(s, i0, reversible);
+                    let mut got = s.to_vec();
+                    filtr_1d(&mut got, i0, reversible, &mut scratch);
+                    assert_eq!(
+                        got, expected,
+                        "signal={s:?} i0={i0} reversible={reversible}"
                     );
                 }
             }

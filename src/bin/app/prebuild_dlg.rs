@@ -21,7 +21,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim};
-use crate::win::{ctl, dpi_scale, run_dialog, t, wm_dpichanged, BUTTON, STATIC};
+use crate::win::{ctl, dpi_scale, run_dialog, set_edit_text, t, wm_dpichanged, BUTTON, STATIC};
 
 const ID_PATH: i32 = 200;
 const ID_BAR: i32 = 201;
@@ -188,13 +188,6 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE, folder: &str) {
     );
 }
 
-unsafe fn set_text(hwnd: HWND, id: i32, text: &str) {
-    if let Ok(h) = GetDlgItem(Some(hwnd), id) {
-        let t = crate::win::wide(text);
-        let _ = SetWindowTextW(h, PCWSTR(t.as_ptr()));
-    }
-}
-
 /// Kick the engine off on its own thread. `hwnd` is only ever used with `PostMessageW`,
 /// which is the one window API safe to call across threads.
 fn spawn_worker(hwnd: HWND, folder: String) {
@@ -264,7 +257,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 );
                 let _ = SendMessageW(bar, PBM_SETPOS, Some(WPARAM(done)), None);
             }
-            set_text(hwnd, ID_STATUS, &format!("{done} / {total}"));
+            set_edit_text(hwnd, ID_STATUS, &format!("{done} / {total}"));
             LRESULT(0)
         }
         WM_PB_DONE => {
@@ -272,7 +265,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let s = RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
             FAILED.store(s.as_ref().is_some_and(|s| s.failed > 0), Ordering::Relaxed);
             let text = s.map(|s| summary_text(&s)).unwrap_or_default();
-            set_text(hwnd, ID_STATUS, &text);
+            set_edit_text(hwnd, ID_STATUS, &text);
             // The bar must READ as finished. A cancelled run stops part-way, and leaving it
             // half-filled next to "stopped" is the honest picture; a completed one is filled.
             if !CANCEL.load(Ordering::Relaxed) {
@@ -281,7 +274,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = SendMessageW(bar, PBM_SETPOS, Some(WPARAM(total)), None);
                 }
             }
-            set_text(hwnd, ID_ACTION, t("pb_close"));
+            set_edit_text(hwnd, ID_ACTION, t("pb_close"));
             // A CLEAN run closes itself. Leaving a dialog on screen that says "done" and does
             // nothing makes the user dismiss a window to finish a job they already asked for.
             // The delay is so the summary is readable rather than a flash — long enough to
@@ -317,7 +310,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     // the real counts. Closing here instead would throw away the summary of the
                     // work that WAS done.
                     CANCEL.store(true, Ordering::Relaxed);
-                    set_text(hwnd, ID_ACTION, t("pb_close"));
+                    set_edit_text(hwnd, ID_ACTION, t("pb_close"));
                 }
             }
             LRESULT(0)

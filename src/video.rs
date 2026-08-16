@@ -663,12 +663,23 @@ mod tests {
     fn with_watchdog_fires_only_when_f_outlives_the_timeout() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         let fast_fired = Arc::new(AtomicBool::new(false));
         let flag = fast_fired.clone();
+        // TEN SECONDS, not the 50 ms this used to allow, and the size is the whole point.
+        // `f` here returns instantly, so the only way the watchdog can fire is if the test
+        // thread is descheduled for longer than the timeout between arming and returning.
+        // At 50 ms that is entirely reachable on a loaded machine: this test failed exactly
+        // once in the whole suite, while `cargo mutants` was saturating every core, and
+        // passed alone immediately afterwards. A flaky gate is worse than no gate, because
+        // the next person reads a real failure here as "that one is just noisy".
+        //
+        // Widening the FAST half costs nothing: an instant `f` is nowhere near 10 s, so the
+        // assertion still fails the moment the watchdog genuinely misfires. Only the SLOW
+        // half needs its timeout to be small, and it stays small.
         let r = super::with_watchdog(
-            Duration::from_millis(50),
+            Duration::from_secs(10),
             move || flag.store(true, Ordering::SeqCst),
             || 42,
         );
@@ -682,11 +693,35 @@ mod tests {
 
         let slow_fired = Arc::new(AtomicBool::new(false));
         let flag = slow_fired.clone();
+        let observed = slow_fired.clone();
+        // WAIT for the watchdog rather than racing it against a fixed sleep. This half used
+        // to sleep 150 ms and assume the watchdog thread would be scheduled somewhere inside
+        // that window. On a machine saturated by a release build that assumption is simply
+        // untrue, and it is how this test went red on 2026-08-15 for a reason that had
+        // nothing to do with the code under test. The pass before that widened the FAST half
+        // against exactly this hazard and left this half racy, so the flake survived a fix
+        // aimed at it.
+        //
+        // Blocking until the flag is set asks the question the contract actually makes, "does
+        // the watchdog fire at all for an `f` that overruns", instead of the scheduling
+        // question "did it fire inside 150 ms". The deadline is a backstop that only a
+        // watchdog which never fires can reach, not a timing budget: a working watchdog
+        // releases this loop after one 5 ms tick no matter how loaded the box is.
+        //
+        // Note on how this was verified, because the previous pass got this wrong: an
+        // artificial load harness (96 CPU burners on 32 cores) could NOT reproduce the
+        // original failure, passing 20/20 against the OLD racy shape as well as this one. So
+        // "it passed N times under load" is not evidence here and was not treated as any. The
+        // claim this fix rests on is structural: there is no longer a window to lose. Do not
+        // re-tighten it into a fixed sleep on the strength of a green load run.
         let r = super::with_watchdog(
             Duration::from_millis(20),
             move || flag.store(true, Ordering::SeqCst),
-            || {
-                std::thread::sleep(Duration::from_millis(150));
+            move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !observed.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 7
             },
         );

@@ -1,5 +1,13 @@
 //! ZIP-family container dispatch: EPUB (OPF cover cascade), FBZ (zipped FB2),
 //! or a plain image zip / CBZ (first page by cover-selection).
+//!
+//! A178, accepted bound: every `ZipArchive::new` call here (and in `container/apk.rs`,
+//! the other zip-based crate consumer) must fully parse the central directory before
+//! ANY of our `MAX_LIST_ENTRIES`/`MAX_COVER` caps can run — that parse is the `zip`
+//! crate's own constructor, and it has no bounded/streaming-directory option to hand
+//! it one. A crafted archive of millions of tiny entries therefore costs the
+//! directory parse regardless of what we cap afterward. No fix available at this
+//! layer; recorded here rather than re-discovered per call site.
 
 use std::io::{Cursor, Read, Seek};
 
@@ -93,18 +101,49 @@ pub(crate) fn cover_image_only<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Optio
     covers_image_only(zip, 1).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
 }
 
+/// Aggregate decode ceiling for a CONTACT SHEET's cover picks (`want` > 1), mirroring
+/// `sevenz::NON_SOLID_COVERS_BUDGET` (the aggregate pattern already retired there).
+/// `read_index`'s [`super::MAX_COVER`] caps each entry independently, but nothing
+/// previously shared a budget ACROSS the up-to-4 picks a contact sheet reads, so a
+/// crafted archive of MAX_COVER-sized "cover" candidates could cost 128 MiB
+/// synchronously for one shell thumbnail. A single-cover request (`want == 1`, the
+/// ordinary `extract`/`cover_image_only` path) is left uncapped by this budget —
+/// MAX_COVER alone was already the right bound there, and this only closes the gap
+/// the aggregation itself opened.
+const CONTACT_SHEET_COVERS_BUDGET: u64 = 8 * 1024 * 1024;
+
 /// Up to `want` natural-first images (cover-named first), one bounded entry read
 /// each. An entry that fails to read (corrupt / encrypted / unsupported method)
 /// is skipped rather than failing the set — the sheet degrades gracefully.
+///
+/// Each pick is charged against [`CONTACT_SHEET_COVERS_BUDGET`] by its DECLARED size
+/// (capped at MAX_COVER, matching what `read_index` would actually spend reading it)
+/// BEFORE the read runs and regardless of whether that read then succeeds — so a run
+/// of picks that all fail to decode still can't dodge the budget by never charging it.
 pub(crate) fn covers_image_only<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     want: usize,
 ) -> Option<Vec<Vec<u8>>> {
     let entries = list_entries(zip);
-    let out: Vec<Vec<u8>> = pick_covers(&entries, want)
-        .into_iter()
-        .filter_map(|idx| read_index(zip, idx))
-        .collect();
+    let mut remaining = if want > 1 {
+        CONTACT_SHEET_COVERS_BUDGET
+    } else {
+        u64::MAX
+    };
+    let mut out = Vec::new();
+    for idx in pick_covers(&entries, want) {
+        let Some(entry) = entries.get(idx) else {
+            continue;
+        };
+        let cost = entry.size.min(super::MAX_COVER);
+        if cost > remaining {
+            continue;
+        }
+        remaining -= cost;
+        if let Some(bytes) = read_index(zip, idx) {
+            out.push(bytes);
+        }
+    }
     (!out.is_empty()).then_some(out)
 }
 
@@ -246,6 +285,48 @@ mod tests {
         assert_eq!(
             covers_from_reader(Cursor::new(&bytes), 1).unwrap()[0].as_slice(),
             png.as_slice()
+        );
+    }
+
+    /// A062: the per-entry MAX_COVER cap alone let a contact sheet's up-to-4 picks each
+    /// spend their own full 32 MiB independently — 128 MiB synchronously for one shell
+    /// thumbnail. Three picks here individually clear MAX_COVER easily but together
+    /// clear the much smaller aggregate budget, so the fix must return FEWER than all
+    /// three eligible covers, while a plain want=1 extraction (unaffected by the
+    /// aggregate cap) still gets its one pick.
+    #[test]
+    fn contact_sheet_covers_respect_an_aggregate_budget_across_picks() {
+        // ~3.34 MiB each: comfortably under MAX_COVER (32 MiB) individually, but two of
+        // them already use most of CONTACT_SHEET_COVERS_BUDGET (8 MiB) and three exceed it.
+        let page_bytes = vec![0xABu8; 3_500_000];
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for name in ["page01.png", "page02.png", "page03.png"] {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(&page_bytes).unwrap();
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+
+        // want=1 (the ordinary single-cover extraction) is unaffected by the contact-sheet
+        // budget: one ~3.34 MiB pick is nowhere near either ceiling.
+        let mut zip1 = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        assert_eq!(
+            covers_image_only(&mut zip1, 1).map(|v| v.len()),
+            Some(1),
+            "single-cover extraction must be unaffected by the contact-sheet aggregate budget"
+        );
+
+        // want=4 (a contact sheet): the aggregate budget must cap the returned set BELOW
+        // the 3 that are individually eligible under MAX_COVER alone, proving the picks
+        // now share one budget instead of each getting a fresh MAX_COVER allowance.
+        let mut zip4 = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let out = covers_image_only(&mut zip4, 4).expect("the first pick alone must fit");
+        assert_eq!(
+            out.len(),
+            2,
+            "2 x ~3.34 MiB fits the 8 MiB budget, a 3rd does not; got {} covers",
+            out.len()
         );
     }
 

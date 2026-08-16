@@ -28,8 +28,12 @@ use std::time::Duration;
 use crate::mp4::{build_mini_mp4, bx, fbx, read_exact_at};
 
 /// Give up after this many tags. A real pre-keyframe run is a metadata tag plus a handful
-/// of audio tags; hundreds of thousands means a crafted file, not a video.
-const MAX_TAGS: u32 = 200_000;
+/// of audio tags — even a generous 10 s audio preroll is only a few hundred — so this stays
+/// small on purpose: `keyframe_mini_mp4` issues at least one `read_exact_at` per tag over a
+/// caller stream that may be a marshaled shell `IStream`, where each read is a synchronous
+/// COM round trip. The old 200,000 let a tiny-tag-heavy FLV force on the order of 200k-400k
+/// of those before the cap fired — not infinite, but a real hang inside the thumbnail host.
+const MAX_TAGS: u32 = 4_096;
 /// Never walk past this absolute offset looking for the config + first keyframe. Both live
 /// near the head of any real FLV (the sequence header is the first video tag by spec).
 const WALK_MAX: u64 = 256 * 1024 * 1024;
@@ -277,7 +281,11 @@ fn slice_walk<'a, T>(
     let mut tags = 0u32;
     while pos.checked_add(11)? <= total {
         tags = tags.checked_add(1)?;
-        if tags > MAX_TAGS {
+        // Same pair of caps `keyframe_mini_mp4` applies. Currently redundant in practice —
+        // every caller already bounds `flv` well under WALK_MAX (32 MiB/4 MiB vs 256 MiB) —
+        // but keeping both walks on the same two caps means a future caller can't silently
+        // inherit only half the bound.
+        if tags > MAX_TAGS || pos > WALK_MAX {
             return None;
         }
         let th = flv.get(pos as usize..pos as usize + 11)?;
@@ -823,6 +831,44 @@ mod tests {
         let mut tags: Vec<Vec<u8>> = (0..64).map(|i| tag(8, i, &[])).collect();
         let avcc = synthetic_avcc(&synthetic_sps(4, 4));
         let keyframe = [0u32.to_be_bytes().as_slice(), &[0x65]].concat();
+        tags.push(tag(9, 0, &avc_payload(1, 7, 0, &avcc)));
+        tags.push(tag(9, 40, &avc_payload(1, 7, 1, &keyframe)));
+        assert!(keyframe_mini_mp4(&mut Cursor::new(&flv_file(&tags))).is_some());
+    }
+
+    /// The tag-count cap now fires at MAX_TAGS (4,096), not the old 200,000: a run of
+    /// `MAX_TAGS + 100` audio tags ahead of a real keyframe pushes the walk over the NEW
+    /// cap while staying comfortably under the old one, so this proves the lower value is
+    /// actually enforced rather than merely declared.
+    #[test]
+    fn tag_count_cap_fires_at_the_new_lower_threshold() {
+        // A compile-time check (clippy correctly flags a runtime assert on a const as
+        // pointless): MAX_TAGS must stay a meaningfully small cap, not creep back toward
+        // the old 200k.
+        const _: () = assert!(MAX_TAGS < 10_000);
+        let avcc = synthetic_avcc(&synthetic_sps(4, 3));
+        let keyframe = [0u32.to_be_bytes().as_slice(), &[0x65, 0xAA, 0xBB]].concat();
+        let mut tags: Vec<Vec<u8>> = (0..MAX_TAGS + 100)
+            .map(|i| tag(8, i, &[0xAF, 0x00]))
+            .collect();
+        tags.push(tag(9, 0, &avc_payload(1, 7, 0, &avcc)));
+        tags.push(tag(9, 40, &avc_payload(1, 7, 1, &keyframe)));
+        assert_eq!(
+            keyframe_mini_mp4(&mut Cursor::new(&flv_file(&tags))),
+            None,
+            "a keyframe past MAX_TAGS audio tags must be capped, not found"
+        );
+    }
+
+    /// The same construction with the video tags brought back under the cap succeeds —
+    /// pinning that the previous test's `None` is the cap firing, not some other rejection.
+    #[test]
+    fn tag_count_just_under_the_cap_still_finds_the_keyframe() {
+        let avcc = synthetic_avcc(&synthetic_sps(4, 3));
+        let keyframe = [0u32.to_be_bytes().as_slice(), &[0x65, 0xAA, 0xBB]].concat();
+        let mut tags: Vec<Vec<u8>> = (0..MAX_TAGS - 10)
+            .map(|i| tag(8, i, &[0xAF, 0x00]))
+            .collect();
         tags.push(tag(9, 0, &avc_payload(1, 7, 0, &avcc)));
         tags.push(tag(9, 40, &avc_payload(1, 7, 1, &keyframe)));
         assert!(keyframe_mini_mp4(&mut Cursor::new(&flv_file(&tags))).is_some());

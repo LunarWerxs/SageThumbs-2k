@@ -74,8 +74,19 @@ pub(crate) fn reserve(name: impl Fn(u32) -> PathBuf) -> OutSlot {
     }
 }
 
-/// Reserve a free `<stem>.<ext>` next to `src` (`<stem> (n).<ext>` if taken),
-/// atomically (see [`reserve`]). Replaces the old existence-check picker.
+/// The collision number a `reserve()` closure stamps onto its Nth retry, shared by every
+/// namer in this module: `n` is `reserve`'s zero-based retry counter (0 = the bare name,
+/// already free), and this turns the first ACTUAL collision (n=1) into "(2)" rather than
+/// "(1)", matching Windows Explorer's own duplicate-file naming. `unique_output` used to
+/// stamp the bare `n` instead (first collision "(1)") while `reserve_unique_suffix` already
+/// used `n + 1` ("(2)") — two conventions for the same concept in the same file.
+fn collision_number(n: u32) -> u32 {
+    n + 1
+}
+
+/// Reserve a free `<stem>.<ext>` next to `src` (`<stem> (2).<ext>` if taken, `<stem>
+/// (3).<ext>` after that — see [`collision_number`]), atomically (see [`reserve`]).
+/// Replaces the old existence-check picker.
 pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
     let stem = src
         .file_stem()
@@ -88,7 +99,7 @@ pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
         let name = if n == 0 {
             format!("{stem}.{ext}")
         } else {
-            format!("{stem} ({n}).{ext}")
+            format!("{stem} ({}).{ext}", collision_number(n))
         };
         dir.join(name)
     })
@@ -147,7 +158,7 @@ pub(crate) fn reserve_unique_suffix(src: &Path, suffix: &str, ext: &str) -> OutS
         let name = if n == 0 {
             format!("{stem} ({suffix}).{ext}")
         } else {
-            format!("{stem} ({suffix} {}).{ext}", n + 1)
+            format!("{stem} ({suffix} {}).{ext}", collision_number(n))
         };
         dir.join(name)
     })
@@ -169,4 +180,34 @@ pub(crate) fn predict_unique_suffix(src: &Path, suffix: &str, ext: &str) -> Path
         n += 1;
     }
     cand
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `unique_output` and `reserve_unique_suffix` must agree on the SAME first-collision
+    /// numbering ("(2)", matching Explorer) — before this fix `unique_output` picked "(1)"
+    /// while `reserve_unique_suffix` already picked "(… 2)", two conventions for one concept
+    /// in this file.
+    #[test]
+    fn unique_output_first_collision_matches_explorer_numbering() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_slots_collision_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("img.png");
+        std::fs::write(&src, b"x").unwrap();
+
+        // The bare name is already taken by `src` itself, so the FIRST reservation collides.
+        let slot = unique_output(&src, "png");
+        assert_eq!(slot.path(), dir.join("img (2).png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

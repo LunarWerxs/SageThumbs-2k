@@ -191,7 +191,12 @@ impl IObjectWithSite_Impl for PreviewHandler_Impl {
 
     fn GetSite(&self, riid: *const GUID, ppvsite: *mut *mut c_void) -> Result<()> {
         safety::guard(|| unsafe {
-            if ppvsite.is_null() {
+            // BOTH out-params, not just the buffer. `query` forwards `riid` straight into
+            // QueryInterface, which dereferences it, so a null `riid` from a careless host
+            // is a null read inside our process. `factory::CreateInstance` already guards its
+            // twin of this call; this site was the other half of the same finding and was
+            // lost when this file was reverted, so it is spelled out rather than assumed.
+            if ppvsite.is_null() || riid.is_null() {
                 return Err(Error::from(E_POINTER));
             }
             *ppvsite = core::ptr::null_mut();
@@ -612,7 +617,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut c_void);
             let mut rc = RECT::default();
             _ = GetClientRect(hwnd, &mut rc);
-            draw(hwnd, hdc, &rc);
+            // Guarded exactly like the WM_PAINT arm above. This is the SAME `draw` reached
+            // by a different system-driven callback (PrintWindow / thumbnail capture), so
+            // leaving it bare meant a panic that WM_PAINT would have contained instead
+            // unwound across the callback and aborted the host.
+            let _ = safety::guard_hr(|| {
+                draw(hwnd, hdc, &rc);
+                windows::Win32::Foundation::S_OK
+            });
             LRESULT(0)
         }
         WM_NCDESTROY => {

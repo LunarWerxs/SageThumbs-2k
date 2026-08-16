@@ -53,6 +53,23 @@ pub(super) unsafe fn on_lang_change(hwnd: HWND) {
     super::search::refresh_cue(hwnd);
 }
 
+/// Locale keys for the screenshot-tool combo (`ID_SHOT_TOOL`), in the SAME fixed order as
+/// build.rs's creation loop that first populates it (the stored setting is a plain index
+/// into this order), so the two lists must stay in lockstep or a live language switch would
+/// silently relabel the combo out from under the index the user already picked.
+const SHOT_TOOL_KEYS: [&str; 10] = [
+    "tool_arrow",
+    "tool_rect",
+    "tool_ellipse",
+    "tool_line",
+    "tool_pen",
+    "tool_text",
+    "tool_number",
+    "tool_highlight",
+    "tool_pixelate",
+    "tool_invert",
+];
+
 /// Re-apply every translatable label in the active language (used after a live
 /// language change). Edits/selections are preserved (we only set text).
 pub(super) unsafe fn apply_labels(hwnd: HWND) {
@@ -142,6 +159,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_RESET_ALL, "btn_reset_all"),
         (ID_IMPORT, "btn_import"),
         (ID_EXPORT, "btn_export"),
+        (ID_ABOUT, "btn_about"),
         (IDOK, "btn_ok"),
         (IDCANCEL, "btn_close"), // see build.rs: this button closes, it does not revert
     ];
@@ -156,12 +174,12 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     #[cfg(not(feature = "html-preview"))]
     let gated: &[(i32, &str)] = &[];
     for &(id, key) in pairs.iter().chain(gated) {
-        set_dlg_text(hwnd, id, t(key));
+        crate::win::set_edit_text(hwnd, id, t(key));
     }
     // Re-text + repaint the owner-draw nav rail and the page header (they read their
     // labels from nav_label()/cat_blurb(), which now follow the active language).
     for i in 0..NCAT as i32 {
-        set_dlg_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
+        crate::win::set_edit_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
         if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
             let _ = InvalidateRect(Some(nav), None, true);
         }
@@ -199,19 +217,51 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         }
         SendMessageW(prev, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
     }
+    // The screenshot-tool combo holds translated items (same fixed order as build.rs's
+    // creation loop, which the stored index is keyed to): rebuild, keep selection.
+    if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
+        let sel = SendMessageW(tool, CB_GETCURSEL, None, None).0.max(0);
+        SendMessageW(tool, CB_RESETCONTENT, None, None);
+        for key in SHOT_TOOL_KEYS {
+            let w = wide(t(key));
+            SendMessageW(tool, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+        }
+        SendMessageW(tool, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    // The custom-action combo: same curated `hotkey::ACTIONS` list build.rs seeded it from,
+    // re-labeled via `action_label` (which itself goes through `t()`) rather than a
+    // duplicated key table.
+    if let Ok(act) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
+        let sel = SendMessageW(act, CB_GETCURSEL, None, None).0.max(0);
+        SendMessageW(act, CB_RESETCONTENT, None, None);
+        for &(_, key) in crate::hotkey::ACTIONS {
+            let w = wide(crate::hotkey::action_label(key));
+            SendMessageW(act, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+        }
+        SendMessageW(act, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    // The credit SysLink's caption ("<promo text> Lunarwerx"): build.rs's ID_PROMO_LINK
+    // format string, verbatim, so a language switch doesn't leave this one line English.
+    if let Ok(promo) = GetDlgItem(Some(hwnd), ID_PROMO_LINK) {
+        let credit = format!(
+            "{} <a href=\"{URL_PARENT}\">Lunarwerx</a>",
+            t("promo_made_by")
+        );
+        let w = wide(&credit);
+        let _ = SetWindowTextW(promo, PCWSTR(w.as_ptr()));
+    }
     // The hover hints were also baked in the old language — re-text them.
     refresh_tooltips(hwnd);
     // The portable registration button's caption and its status word are state-dependent, so
     // the table above can only seed one of the two variants. Re-derive them in the new
     // language now that everything else has been re-texted.
     set_portable_reg_state(hwnd);
-}
-
-pub(super) unsafe fn set_dlg_text(hwnd: HWND, id: i32, s: &str) {
-    if let Ok(h) = GetDlgItem(Some(hwnd), id) {
-        let w = wide(s);
-        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
-    }
+    // These two also carry translated text but live outside apply_labels' static pairs table
+    // (state-derived, like the portable row above): the sync status line's wording and the
+    // screenshot save-folder label's "{dir}" sentence both need a fresh t() pass too, or a
+    // live language switch leaves them in whatever language was active when they were last set.
+    refresh_sync_ui(hwnd);
+    set_shot_dir_label(hwnd);
 }
 
 pub(super) unsafe fn set_window_title(hwnd: HWND) {
@@ -239,3 +289,18 @@ pub(super) unsafe fn set_column_text(list: HWND, idx: i32, s: &str) {
 /// it reflects a self-heal or the helper stopping without reopening the dialog.
 /// IDs 1–2 are the sponsor banner timers (see [`crate::sponsors`]); this is the third.
 pub(super) const TIMER_SHOT_STATUS: usize = 3;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `SHOT_TOOL_KEYS` is a hand-kept mirror of build.rs's screenshot-tool creation loop
+    /// (see its doc comment); nothing enforces that mirror at compile time. If a tool is
+    /// ever added to one list and not the other, this is the one check that would catch the
+    /// drift: `settings::SHOT_TOOL_COUNT` is the count `shot_tool_combo_index` (values.rs)
+    /// already treats as authoritative for range-checking a stored index.
+    #[test]
+    fn shot_tool_keys_len_matches_settings_shot_tool_count() {
+        assert_eq!(SHOT_TOOL_KEYS.len() as u32, settings::SHOT_TOOL_COUNT);
+    }
+}

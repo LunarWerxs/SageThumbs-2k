@@ -259,7 +259,7 @@ fn convert_verb_invoke_creates_file() {
             .find(|c| title_of(c) == "JPG")
             .expect("jpg verb");
 
-        let dir = std::env::temp_dir().join("st2k_verb_invoke");
+        let dir = std::env::temp_dir().join(format!("st2k_verb_invoke_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("v.png");
         let mut img = image::RgbaImage::new(16, 16);
@@ -304,7 +304,7 @@ fn clipboard_verb_copies_image_to_clipboard() {
             .find(|c| title_of(c) == "Copy to clipboard")
             .expect("clipboard verb");
 
-        let dir = std::env::temp_dir().join("st2k_clip_invoke");
+        let dir = std::env::temp_dir().join(format!("st2k_clip_invoke_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("c.png");
         let mut img = image::RgbaImage::new(24, 18);
@@ -423,7 +423,7 @@ fn quick_verbs_structure_and_gate() {
         }
 
         // Gating. Build a real PNG and an (extension-only) audio file.
-        let dir = std::env::temp_dir().join("st2k_quick_gate");
+        let dir = std::env::temp_dir().join(format!("st2k_quick_gate_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("q.png");
         let mut img = image::RgbaImage::new(8, 8);

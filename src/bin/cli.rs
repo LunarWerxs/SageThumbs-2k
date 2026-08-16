@@ -25,7 +25,7 @@ USAGE:
                                                 (--size defaults to 96,256,768 — one per Explorer view)
   st2k rotate    <in> --by right|left|180|fliph|flipv
   st2k compress  <in> --max-size 1MB|500KB|N    shrink to a target file size (JPEG, quality+scale search)
-  st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG, lossless)
+  st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG/WebP/SVG(Z)/HEIC/HEIF/AVIF, lossless)
   st2k ocr       <in>                           recognize text → stdout
   st2k pdf       <out.pdf> <in> [in...]         combine images into one PDF
   st2k info      <in> [--json]                  dimensions + camera/date/GPS
@@ -38,10 +38,70 @@ USAGE:
   st2k --version | -V                            print the version and exit
 ";
 
+/// Flags that take a following value; used to keep that value out of `pos` (the
+/// positional-argument list) instead of it silently becoming an extra `<in>`/`<out>`.
+/// Global across verbs on purpose: no name here means something different for two
+/// different verbs, so one table is the single source of truth rather than a per-verb
+/// copy that could disagree with itself.
+const VALUE_FLAGS: &[&str] = &[
+    "--size",
+    "--quality",
+    "--webp-quality",
+    "--resize",
+    "--out",
+    "--to",
+    "--by",
+    "--max-size",
+    "--jobs",
+];
+
+/// Flags that take NO value — excluded from `pos` on their own, without consuming the
+/// following token. `-r` is the short alias `prebuild --recurse` also accepts (and,
+/// before this fix, was the one flag that could slip into `pos` as a bogus input path
+/// since it doesn't start with `--`).
+const BOOL_FLAGS: &[&str] = &[
+    "--recurse",
+    "-r",
+    "--rebuild-all",
+    "--json",
+    "--status",
+    "--off",
+    "--open",
+];
+
+/// Split `rest` into positional arguments, walking by index so a known value-flag's
+/// value is consumed WITH it rather than falling through to `pos` as if it were an
+/// `<in>`/`<out>` path (`st2k thumbnail --size 128 in.png out.png` used to read `pos[0]`
+/// as `"128"`, off by one for everything after). An unrecognized `--flag` is still
+/// excluded from `pos` on its own (matching the previous behaviour for flags no verb
+/// here defines) but does not eat a value, since we have no table entry saying it should.
+fn positionals(rest: &[String]) -> Vec<&String> {
+    let mut pos = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let a = rest[i].as_str();
+        if VALUE_FLAGS.contains(&a) {
+            i += 2; // the flag AND its value, whatever the value looks like
+            continue;
+        }
+        if BOOL_FLAGS.contains(&a) || a.starts_with("--") {
+            i += 1;
+            continue;
+        }
+        pos.push(&rest[i]);
+        i += 1;
+    }
+    pos
+}
+
+/// A flag's value token, or `None` if the flag is absent OR the next token is itself
+/// another `--flag` (an unfinished `--size --recurse` must not silently treat
+/// `--recurse` as the size).
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
+        .filter(|v| !v.starts_with("--"))
         .cloned()
 }
 
@@ -49,25 +109,46 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
+/// A numeric flag with a default for when it's simply absent — but an ERROR, not a
+/// silent fallback to that default, when it's present and doesn't parse. A typo'd
+/// `--size 12x` used to render at the wrong size with nothing telling the caller why.
+fn flag_num<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> Result<T, String> {
+    match flag(args, name) {
+        None => Ok(default),
+        Some(v) => v
+            .parse()
+            .map_err(|_| format!("{name}: not a number: \"{v}\"")),
+    }
+}
+
+/// Same as [`flag_num`] but for a flag with no default — `None` only when the flag is
+/// genuinely absent, `Err` when it's present with an unparseable value (`--webp-quality
+/// abc` must not silently behave as "lossy WebP not requested").
+fn flag_num_opt<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<T>, String> {
+    match flag(args, name) {
+        None => Ok(None),
+        Some(v) => v
+            .parse()
+            .map(Some)
+            .map_err(|_| format!("{name}: not a number: \"{v}\"")),
+    }
+}
+
 fn run(args: &[String]) -> Result<String, String> {
     let verb = args.first().map(|s| s.as_str()).unwrap_or("");
     let rest = &args[args.len().min(1)..];
-    let pos: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
+    let pos = positionals(rest);
 
     match verb {
         "thumbnail" | "thumb" => {
             let (i, o) = (need(&pos, 0)?, need(&pos, 1)?);
-            let size = flag(rest, "--size")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(256);
+            let size = flag_num(rest, "--size", 256)?;
             cli::thumbnail(i, o, size)
         }
         "convert" => {
             let (i, o) = (need(&pos, 0)?, need(&pos, 1)?);
-            let q = flag(rest, "--quality")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(90u8);
-            let wq = flag(rest, "--webp-quality").and_then(|s| s.parse::<u8>().ok());
+            let q = flag_num(rest, "--quality", 90u8)?;
+            let wq = flag_num_opt::<u8>(rest, "--webp-quality")?;
             cli::convert(
                 i,
                 o,
@@ -83,12 +164,8 @@ fn run(args: &[String]) -> Result<String, String> {
             if inputs.is_empty() {
                 return Err("batch needs at least one input file or directory".to_string());
             }
-            let size = flag(rest, "--size")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(256);
-            let q = flag(rest, "--quality")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(90u8);
+            let size = flag_num(rest, "--size", 256)?;
+            let q = flag_num(rest, "--quality", 90u8)?;
             cli::batch(
                 op,
                 &inputs,
@@ -123,9 +200,7 @@ fn run(args: &[String]) -> Result<String, String> {
                 has_flag(rest, "--recurse") || has_flag(rest, "-r"),
                 sizes,
                 has_flag(rest, "--rebuild-all"),
-                flag(rest, "--jobs")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(3),
+                flag_num(rest, "--jobs", 3)?,
             )
         }
         "rotate" => {
@@ -239,5 +314,83 @@ fn main() {
             eprintln!("st2k: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn as_strs<'a>(pos: &'a [&'a String]) -> Vec<&'a str> {
+        pos.iter().map(|s| s.as_str()).collect()
+    }
+
+    /// A008's headline case: `st2k thumbnail --size 128 in.png out.png` used to read
+    /// `pos[0]` as `"128"` because `pos` only excluded tokens starting with `--`, not a
+    /// known flag's VALUE.
+    #[test]
+    fn a_known_value_flags_value_never_lands_in_positionals() {
+        let rest = args(&["--size", "128", "in.png", "out.png"]);
+        assert_eq!(as_strs(&positionals(&rest)), vec!["in.png", "out.png"]);
+    }
+
+    #[test]
+    fn a_known_value_flag_is_skipped_regardless_of_its_position_among_positionals() {
+        // The flag arriving BEFORE the positional it belongs after used to shift every
+        // positional over by one (`rotate --by right in.jpg` read pos[0] as "right").
+        let rest = args(&["--by", "right", "in.jpg"]);
+        assert_eq!(as_strs(&positionals(&rest)), vec!["in.jpg"]);
+    }
+
+    #[test]
+    fn an_unrecognized_flags_own_token_is_excluded_but_its_value_is_not_swallowed() {
+        let rest = args(&["--weird", "9", "in.png"]);
+        // We have no table entry saying "--weird" takes a value, so we don't assume one:
+        // only the flag's own spelling is excluded, matching pre-fix behaviour for a flag
+        // no verb here defines.
+        assert_eq!(as_strs(&positionals(&rest)), vec!["9", "in.png"]);
+    }
+
+    #[test]
+    fn short_recurse_flag_does_not_pollute_positionals() {
+        // Before this fix, `-r` (prebuild's short --recurse alias) didn't start with
+        // "--", so it slipped straight into `pos` as a bogus input path.
+        let rest = args(&["-r", "C:\\folder"]);
+        assert_eq!(as_strs(&positionals(&rest)), vec!["C:\\folder"]);
+        assert!(has_flag(&rest, "-r"));
+    }
+
+    #[test]
+    fn flag_does_not_treat_the_next_flag_as_its_own_value() {
+        let rest = args(&["--size", "--recurse", "in.png"]);
+        assert_eq!(flag(&rest, "--size"), None);
+    }
+
+    #[test]
+    fn flag_num_defaults_when_absent_but_errors_on_garbage() {
+        let absent = args(&["thumbnail"]);
+        assert_eq!(flag_num(&absent, "--size", 256u32), Ok(256));
+
+        let bad = args(&["--size", "12x"]);
+        assert!(
+            flag_num(&bad, "--size", 256u32).is_err(),
+            "an unparseable --size must error, not silently fall back to the default"
+        );
+    }
+
+    #[test]
+    fn flag_num_opt_distinguishes_absent_from_unparseable() {
+        let absent = args(&["convert"]);
+        assert_eq!(flag_num_opt::<u8>(&absent, "--webp-quality"), Ok(None));
+
+        let bad = args(&["--webp-quality", "abc"]);
+        assert!(
+            flag_num_opt::<u8>(&bad, "--webp-quality").is_err(),
+            "an unparseable --webp-quality must error, not silently behave as \"not requested\""
+        );
     }
 }

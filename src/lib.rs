@@ -84,6 +84,12 @@ pub mod register;
 pub mod safety;
 pub mod settings;
 pub mod shellcmd;
+// Shared read-only SQLite low-level primitives (varint/serial-size/overflow local-size) — one
+// copy used by both `container::clip` and the app EXE's `preview::dbdoc`. `pub` (hidden) for the
+// same reason as `ocr`/`parallel`/`flv`: `dbdoc` lives in the companion binary crate and needs
+// `sagethumbs2k_core::sqlite_prim` to reach it.
+#[doc(hidden)]
+pub mod sqlite_prim;
 mod streamsrc;
 mod strip;
 mod thumbprovider;

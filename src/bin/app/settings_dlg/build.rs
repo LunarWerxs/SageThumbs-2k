@@ -223,17 +223,12 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // (Desktop by default); off → Ctrl+S prompts each time. (Ctrl+C always copies.)
     lc.checkbox(t("chk_shot_use_dir"), cb, 300, ID_SHOT_USE_DIR);
     let shot = lc.combo(t("lbl_shot_hotkey"), ID_LBL_SHOT_HK, 200, ID_SHOT_HOTKEY);
-    for &(label, _) in SHOT_PRESETS {
-        let w = wide(label);
-        SendMessageW(shot, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-    }
     // Select the preset matching the stored hotkey (default = first = Ctrl+PrtScn).
+    // A legacy/foreign chord (not in the curated list) gets its own trailing item
+    // instead of collapsing to the default — see `populate_hotkey_presets`.
     let (m, v) = settings::screenshot_hotkey();
     let packed = (m << 8) | v;
-    let sel = SHOT_PRESETS
-        .iter()
-        .position(|&(_, p)| p == packed)
-        .unwrap_or(0);
+    let sel = populate_hotkey_presets(shot, packed, 0);
     SendMessageW(shot, CB_SETCURSEL, Some(WPARAM(sel)), None);
     dark_theme_combo(shot);
     restyle::dark_combo_subclass(shot, ID_SHOT_HOTKEY);
@@ -246,25 +241,17 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         200,
         ID_SHOT_QUICK_HOTKEY,
     );
-    for &(label, _) in SHOT_PRESETS {
-        let w = wide(label);
-        SendMessageW(quick, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-    }
     // Select the saved chord, or default to one that won't collide with the main
-    // Ctrl+PrtScn, so flipping the checkbox on just works.
+    // Ctrl+PrtScn, so flipping the checkbox on just works. 0 = genuinely unset
+    // (falls to the quick default); any other unrecognized value is a real
+    // stored chord and gets its own trailing item.
     let (qm, qv) = settings::screenshot_quick_hotkey();
     let qpacked = (qm << 8) | qv;
-    let qsel = if qpacked == 0 {
-        SHOT_PRESETS
-            .iter()
-            .position(|&(l, _)| l == QUICK_DEFAULT_LABEL)
-            .unwrap_or(0)
-    } else {
-        SHOT_PRESETS
-            .iter()
-            .position(|&(_, p)| p == qpacked)
-            .unwrap_or(0)
-    };
+    let quick_default = SHOT_PRESETS
+        .iter()
+        .position(|&(l, _)| l == QUICK_DEFAULT_LABEL)
+        .unwrap_or(0);
+    let qsel = populate_hotkey_presets(quick, qpacked, quick_default);
     SendMessageW(quick, CB_SETCURSEL, Some(WPARAM(qsel)), None);
     dark_theme_combo(quick);
     restyle::dark_combo_subclass(quick, ID_SHOT_QUICK_HOTKEY);
@@ -299,15 +286,31 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_SHOT_ACTION_HK,
     );
     let none_w = wide(t("opt_none_unassigned"));
-    SendMessageW(
+    let none_idx = SendMessageW(
         ahk,
         CB_ADDSTRING,
         None,
         Some(LPARAM(none_w.as_ptr() as isize)),
+    )
+    .0;
+    // Item data mirrors the packed chord (0 = unbound) for every item, "(none)"
+    // included, so Save reads it back with CB_GETITEMDATA instead of re-deriving
+    // it from position (see `values::apply_settings`).
+    SendMessageW(
+        ahk,
+        CB_SETITEMDATA,
+        Some(WPARAM(none_idx as usize)),
+        Some(LPARAM(0)),
     );
-    for &(label, _) in SHOT_PRESETS {
+    for &(label, packed) in SHOT_PRESETS {
         let w = wide(label);
-        SendMessageW(ahk, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+        let idx = SendMessageW(ahk, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize))).0;
+        SendMessageW(
+            ahk,
+            CB_SETITEMDATA,
+            Some(WPARAM(idx as usize)),
+            Some(LPARAM(packed as isize)),
+        );
     }
     let (cam, cav) = settings::custom_action_hotkey();
     let cpacked = (cam << 8) | cav;
@@ -317,7 +320,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         SHOT_PRESETS
             .iter()
             .position(|&(_, p)| p == cpacked)
-            .map_or(0, |i| i + 1)
+            .map_or_else(|| append_unknown_chord_item(ahk, cpacked), |i| i + 1)
     };
     SendMessageW(ahk, CB_SETCURSEL, Some(WPARAM(hksel)), None);
     dark_theme_combo(ahk);
@@ -610,41 +613,37 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     }
 
     // ===== Sponsor promotion =====
-    // Centered clickable banner (the product push), loaded from a remote URL at
-    // runtime so it can change without a rebuild. SS_NOTIFY -> STN_CLICKED.
-    // SS_REALSIZECONTROL pins the banner at 440×56 and fits the image to it — so an
-    // oversized remote sponsor image can't grow the static over the footer buttons.
+    // Centered clickable banner (the product push). SS_NOTIFY -> STN_CLICKED.
+    // SS_REALSIZECONTROL pins the banner at 440×56 and fits an image to it.
     //
-    // The banner is gated on the REMOTE feed: `sponsors_enabled()` does a bounded,
-    // cached fetch of the manifest and is true only if the feed is reachable, not
-    // kill-switched (`"enabled": false`), and lists ≥1 sponsor. When off we never
-    // create the banner control (every banner message handler already no-ops when
-    // `GetDlgItem(ID_BANNER)` finds nothing) AND the footer rises into the banner's
-    // slot so no empty gap is left; the outer window height (main.rs) is derived from
-    // the same layout helper, so the window opens at the right size with no reflow.
-    // The no-sponsor footer y == the banner's y by design (footer takes its slot).
-    let sponsors_on = sponsors_enabled();
-    let layout = sponsor_layout(is_dark(), sponsors_on);
-    if sponsors_on {
-        let banner = ctl(
-            hwnd,
-            STATIC,
-            "",
-            WINDOW_STYLE(SS_BITMAP | SS_NOTIFY | SS_REALSIZECONTROL),
-            138,
-            layout.banner_y,
-            440,
-            56,
-            ID_BANNER,
-            hinst,
-        );
-        // Placeholder fills the reserved space while the real sponsor art downloads
-        // (the gate already confirmed sponsors exist), then gets swapped for it.
-        if let Some(hbmp) = load_art(BANNER_PNG, "banner.png", 440, 56) {
-            set_static_bitmap(banner, hbmp);
-        }
-        spawn_remote_sponsors(banner, 440, 56);
-    }
+    // v3 nav-rail layout (`apply_v3_layout`, called at the end of this function)
+    // unconditionally hides ID_BANNER on every page (`navrail::V3_ALWAYS_HIDDEN`)
+    // with no page that ever un-hides it. Creating the (permanently invisible)
+    // control itself is cheap and kept, so its message handlers keep a live
+    // control to safely no-op against, same as every other permanently-hidden
+    // v3 control — but the real cost, the remote art download/decode + rotator
+    // timers, no longer runs at all: nothing loads a bitmap into it and
+    // `spawn_remote_sponsors` (the download/decode pipeline) is never called
+    // (A093/A264, 2026-08-15).
+    //
+    // `sponsors_enabled()` still runs: its manifest fetch is also where the
+    // one-shot install/reinstall report gets sent (`manifest_bytes` in
+    // `sponsors.rs`), and that side effect stays live regardless of whether the
+    // banner shows. The boolean result itself is no longer needed for layout.
+    let _ = sponsors_enabled();
+    let layout = sponsor_layout(is_dark());
+    ctl(
+        hwnd,
+        STATIC,
+        "",
+        WINDOW_STYLE(SS_BITMAP | SS_NOTIFY | SS_REALSIZECONTROL),
+        138,
+        460,
+        440,
+        56,
+        ID_BANNER,
+        hinst,
+    );
 
     // ===== Bottom row: About + credit (left), inline with Save / Cancel (right) =====
     ctl(
@@ -771,4 +770,135 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // content-pane shell (replacing the single scrolling column). Done as a
     // post-creation reposition so all the seeding/combo/list logic stays intact.
     apply_v3_layout(hwnd, hinst);
+}
+
+/// Format a hotkey chord that isn't one of the curated [`SHOT_PRESETS`] — e.g. a
+/// value an older preset list offered and has since dropped, or one written by
+/// hand into the registry — so Save can round-trip it instead of silently
+/// replacing it with preset 0. Deliberately plain (modifier names + a raw VK
+/// hex byte), not a friendly key name: this is a recovery display for values
+/// outside the curated list, not worth a `GetKeyNameTextW` round trip for.
+fn describe_unknown_chord(packed: u32) -> String {
+    let hkf = (packed >> 8) & 0xFF;
+    let vk = packed & 0xFF;
+    let mut mods = Vec::new();
+    if hkf & 0x02 != 0 {
+        mods.push("Ctrl");
+    }
+    if hkf & 0x01 != 0 {
+        mods.push("Shift");
+    }
+    if hkf & 0x04 != 0 {
+        mods.push("Alt");
+    }
+    if mods.is_empty() {
+        format!("Custom (VK 0x{vk:02X})")
+    } else {
+        format!("Custom ({} + VK 0x{vk:02X})", mods.join(" + "))
+    }
+}
+
+/// Append one combo item for a chord outside the curated list, with its packed
+/// value stashed as the item's data (read back at Save via `CB_GETITEMDATA`
+/// instead of re-deriving it from position). Returns the new item's index.
+unsafe fn append_unknown_chord_item(combo: HWND, packed: u32) -> usize {
+    let label = wide(&describe_unknown_chord(packed));
+    let idx = SendMessageW(
+        combo,
+        CB_ADDSTRING,
+        None,
+        Some(LPARAM(label.as_ptr() as isize)),
+    )
+    .0;
+    SendMessageW(
+        combo,
+        CB_SETITEMDATA,
+        Some(WPARAM(idx as usize)),
+        Some(LPARAM(packed as isize)),
+    );
+    idx as usize
+}
+
+/// Decide which combo index a stored chord should select: a curated preset's
+/// index, `default_when_unset` when nothing is genuinely saved yet (`current ==
+/// 0`), or `None` when `current` is a real value that just isn't in the curated
+/// list — the caller must then append a dedicated item for it rather than
+/// falling back to a default. This is the exact decision the original bug got
+/// wrong (`SHOT_PRESETS.position(...).unwrap_or(0)` treated "unknown" and
+/// "unset" as the same thing, both collapsing to preset 0).
+fn preset_index_for(current: u32, default_when_unset: usize) -> Option<usize> {
+    if current == 0 {
+        return Some(default_when_unset);
+    }
+    SHOT_PRESETS.iter().position(|&(_, p)| p == current)
+}
+
+/// Populate a hotkey combo with the curated [`SHOT_PRESETS`] (each item's data =
+/// its packed chord), append a trailing item for `current` when it's a real
+/// (non-zero) chord absent from that list, and return the index to select —
+/// `default_when_unset` when `current` is 0 (a combo-specific "nothing saved
+/// yet" default; see callers). Save-time code reads the selection back with
+/// `CB_GETITEMDATA`, so the appended item round-trips exactly like a curated
+/// one instead of collapsing to preset 0 on the next Save (the bug this fixes).
+unsafe fn populate_hotkey_presets(combo: HWND, current: u32, default_when_unset: usize) -> usize {
+    for &(label, packed) in SHOT_PRESETS {
+        let w = wide(label);
+        let idx = SendMessageW(combo, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize))).0;
+        SendMessageW(
+            combo,
+            CB_SETITEMDATA,
+            Some(WPARAM(idx as usize)),
+            Some(LPARAM(packed as isize)),
+        );
+    }
+    match preset_index_for(current, default_when_unset) {
+        Some(idx) => idx,
+        None => append_unknown_chord_item(combo, current),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stored chord that isn't in `SHOT_PRESETS` must NOT resolve to the same
+    /// index as "nothing saved" — that collapse (both cases returning
+    /// `unwrap_or(0)`) is exactly what made Save silently replace a legacy/
+    /// foreign chord with preset 0.
+    #[test]
+    fn unknown_chord_does_not_collapse_to_the_unset_default() {
+        // A value that was never one of the curated presets.
+        let foreign = (0x07 << 8) | 0x99; // Ctrl+Shift+Alt + an odd VK
+        assert!(SHOT_PRESETS.iter().all(|&(_, p)| p != foreign));
+        assert_eq!(preset_index_for(foreign, 0), None);
+    }
+
+    /// A genuinely unset chord (0 — no hotkey saved yet, e.g. the quick-save
+    /// combo before the user ever touches it) still gets the caller's default.
+    #[test]
+    fn unset_chord_uses_the_caller_default() {
+        assert_eq!(preset_index_for(0, 4), Some(4));
+    }
+
+    /// A stored chord that IS one of the curated presets resolves to that
+    /// preset's own index, never to `default_when_unset`.
+    #[test]
+    fn known_chord_resolves_to_its_own_preset_index() {
+        for (i, &(_, packed)) in SHOT_PRESETS.iter().enumerate() {
+            assert_eq!(preset_index_for(packed, 99), Some(i));
+        }
+    }
+
+    #[test]
+    fn describe_unknown_chord_names_every_modifier() {
+        assert_eq!(describe_unknown_chord(0x41), "Custom (VK 0x41)");
+        assert_eq!(
+            describe_unknown_chord((0x02 << 8) | 0x41),
+            "Custom (Ctrl + VK 0x41)"
+        );
+        assert_eq!(
+            describe_unknown_chord((0x07 << 8) | 0x41),
+            "Custom (Ctrl + Shift + Alt + VK 0x41)"
+        );
+    }
 }

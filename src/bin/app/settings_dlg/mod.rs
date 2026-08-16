@@ -53,15 +53,15 @@ use crate::dark::{
     DISABLED_TEXT, HEADER_TEXT, INPUT_BG, ON_ACCENT, SEL_BG, SURFACE, ZEBRA,
 };
 use crate::sponsors::{
-    drop_sponsor_rotator, show_current_image, spawn_remote_sponsors, sponsors_enabled,
-    SponsorRotator, BANNER_PNG, TIMER_BANNER, TIMER_ROTATE, WM_APP_SPONSORS,
+    drop_sponsor_rotator, show_current_image, sponsors_enabled, SponsorRotator, TIMER_BANNER,
+    TIMER_ROTATE, WM_APP_SPONSORS,
 };
 use crate::win::{
     check, checked, ctl, dpi_scale, get_edit_text, gui_font, gui_font_for, gui_font_header,
-    load_art, message_box, open_url, set_static_bitmap, t, wide, wm_dpichanged, wstr_to_string,
-    BTN_H, BUTTON, CHECKED, COMBOBOX, EDIT, EDIT_X, IDCANCEL, IDOK, INDENT, LABEL_W, MARGIN,
-    SS_BITMAP, SS_NOTIFY, SS_OWNERDRAW, SS_REALSIZECONTROL, STATIC, SYSLINK, TTS_ALWAYSTIP,
-    TTS_NOPREFIX, UNCHECKED, URL_PARENT, URL_PRODUCT,
+    message_box, open_url, t, wide, wm_dpichanged, wstr_to_string, BTN_H, BUTTON, CHECKED,
+    COMBOBOX, EDIT, EDIT_X, IDCANCEL, IDOK, INDENT, LABEL_W, MARGIN, SS_BITMAP, SS_NOTIFY,
+    SS_OWNERDRAW, SS_REALSIZECONTROL, STATIC, SYSLINK, TTS_ALWAYSTIP, TTS_NOPREFIX, UNCHECKED,
+    URL_PARENT, URL_PRODUCT,
 };
 
 // Submodules split out of this (formerly ~2030-line) file. They're descendants of
@@ -96,18 +96,19 @@ const CB_SETDROPPEDWIDTH: u32 = 0x0160;
 
 #[derive(Clone, Copy)]
 pub(super) struct SponsorLayout {
-    banner_y: i32,
     foot_y: i32,
     credit_y: i32,
 }
 
-pub(super) fn sponsor_layout(_dark: bool, sponsors_on: bool) -> SponsorLayout {
-    // Compact layout in BOTH themes — light is a recolored clone of dark, so the
-    // left column scrolls and the window stays short regardless of theme.
-    let banner_y = 460;
-    let foot_y = if sponsors_on { 534 } else { 470 };
+/// Initial creation-time position for the footer row (About/Close/Save) and the
+/// credit line. `apply_v3_layout` (`navrail.rs`) unconditionally repositions all
+/// three afterward, so this only matters for the brief window between control
+/// creation and that reflow — always the no-banner spacing since ID_BANNER is
+/// permanently hidden in the v3 shell (see build.rs's sponsor-promotion comment;
+/// A093/A264, 2026-08-15).
+pub(super) fn sponsor_layout(_dark: bool) -> SponsorLayout {
+    let foot_y = 470;
     SponsorLayout {
-        banner_y,
         foot_y,
         credit_y: foot_y + 6,
     }
@@ -749,7 +750,19 @@ pub(super) unsafe fn fit_columns(list: HWND) {
     );
 }
 
-pub(super) unsafe fn set_shot_status(hwnd: HWND, txt: &str) {
+// Whether the screenshot-daemon status line currently reads as a healthy "running" state,
+// i.e. whether WM_CTLCOLORSTATIC should tint it green. Mirrors sync.rs's STATUS_GREEN: this
+// used to be decided by scanning the control's text for "Running"/"Started", which only
+// works while the line is hard-coded English: the moment it goes through `t()` the tint
+// would silently stop matching in every translation, with nothing to fail (a green badge
+// quietly turning grey is invisible to every test we have). Recording the state here, at
+// the point the text is set, means the tint can't drift from what was actually written.
+thread_local! {
+    static SHOT_STATUS_GREEN: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+pub(super) unsafe fn set_shot_status(hwnd: HWND, txt: &str, running: bool) {
+    SHOT_STATUS_GREEN.with(|g| g.set(running));
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_SHOT_STATUS) {
         let w = wide(txt);
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
@@ -838,6 +851,7 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     } else {
         0
     };
+    let daemon_running = enabled && crate::screenshot::is_daemon_running();
     let txt = if !enabled {
         // Screenshot feature off — but a bound CUSTOM action hotkey still runs through
         // the same daemon, and ITS conflict (bit2) would otherwise be invisible in the
@@ -847,7 +861,7 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
         } else {
             "Off"
         }
-    } else if crate::screenshot::is_daemon_running() {
+    } else if daemon_running {
         // Keep the "Running" prefix: the balloon-nudge logic below string-matches it.
         if bind_failed != 0 {
             "Running \u{2014} a hotkey is in use by another app (pick a different one)"
@@ -857,7 +871,9 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     } else {
         "Stopped \u{2014} click Restart"
     };
-    set_shot_status(hwnd, txt);
+    // Green exactly when the daemon is actually confirmed running: a bind conflict still
+    // shows "Running" text (the daemon IS up) but the color question is the same either way.
+    set_shot_status(hwnd, txt, daemon_running);
     // The Restart button does nothing when the hotkey is off — disable + repaint it.
     if let Ok(btn) = GetDlgItem(Some(hwnd), ID_SHOT_RESTART) {
         let _ = EnableWindow(btn, enabled);
@@ -865,10 +881,18 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     }
 }
 
-// ---- Vertical resize: let the user drag the window taller --------------------------
-// The window grows in HEIGHT only (width locked in WM_GETMINMAXINFO). On WM_SIZE the
-// bottom-anchored controls slide down / the stretchy ones grow, and the left scroll
-// viewport recomputes — so a taller window simply shows more options at once.
+// ---- Vertical resize (v2-era; harmless leftover, see A048) ------------------------
+// Originally: the window grew in HEIGHT only (width locked in WM_GETMINMAXINFO); on
+// WM_SIZE the bottom-anchored controls slid down / the stretchy ones grew, and the
+// left scroll viewport recomputed — so a taller window simply showed more options.
+// The v3 nav-rail shell (`navrail::apply_v3_layout`) dropped WS_THICKFRAME (see
+// main.rs), so the window is fixed-size now and WM_SIZE only ever fires once, at
+// creation — the "first call just captures the design layout" branch below, which
+// never falls through to an actual reflow. Left in place rather than deleted
+// outright: fully retiring it means retiring its scroll-module counterpart too
+// (`scroll::recompute_scroll`/`on_vscroll`/`scroll_to`, in the sibling `scroll.rs`),
+// which is a wider cut than this pass makes — REFLOW_CTLS below is trimmed to drop
+// the controls the v3 layout keeps permanently hidden either way (A048/A261).
 
 pub(super) struct ReflowCtl {
     id: i32,
@@ -888,13 +912,14 @@ thread_local! {
     static RESIZE: core::cell::RefCell<Option<ResizeState>> = const { core::cell::RefCell::new(None) };
 }
 
-/// Controls reflowed on resize: the right file-types list + the left scrollbar GROW in
-/// height; the fold-mask, sponsor banner, and footer buttons slide down with the bottom.
+/// Controls reflowed on resize: the right file-types list GROWs in height; the
+/// footer buttons slide down with the bottom. Does NOT list `ID_SCROLLBAR` /
+/// `ID_LEFT_MASK` / `ID_BANNER` — `navrail::V3_ALWAYS_HIDDEN` hides those on every
+/// page with no page that ever un-hides them, so reflowing them would just move
+/// invisible controls (A048/A261; `reflow_ctls_never_targets_a_permanently_hidden_control`
+/// below locks this against a future entry re-adding one of them).
 const REFLOW_CTLS: &[(i32, bool)] = &[
     (ID_LIST, true),
-    (ID_SCROLLBAR, true),
-    (ID_LEFT_MASK, false),
-    (ID_BANNER, false),
     (ID_ABOUT, false),
     (ID_PROMO_LINK, false),
     (IDCANCEL, false),
@@ -1004,12 +1029,10 @@ pub(crate) extern "system" fn wndproc(
             && GetDlgItem(Some(hwnd), ID_SHOT_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
         {
             let hdc = HDC(wparam.0 as *mut c_void);
-            let running = GetDlgItem(Some(hwnd), ID_SHOT_STATUS)
-                .map(|s| {
-                    let txt = String::from_utf16_lossy(&control_text(s));
-                    txt.contains("Running") || txt.contains("Started")
-                })
-                .unwrap_or(false);
+            // Decided from the typed state SHOT_STATUS_GREEN was set to alongside the text
+            // (see set_shot_status), not by sniffing the (eventually localized) label for
+            // English words, which broke silently in every non-English build.
+            let running = SHOT_STATUS_GREEN.with(|g| g.get());
             let col = if running {
                 COLORREF(0x0059_C734)
             } else {
@@ -1216,7 +1239,11 @@ pub(crate) extern "system" fn wndproc(
                         crate::screenshot::set_enabled(true);
                         crate::screenshot::reload_hotkey();
                         check(hwnd, ID_SHOT_ENABLE, true);
-                        set_shot_status(hwnd, "Started");
+                        set_shot_status(hwnd, "Started", true);
+                        // check() above is a raw BM_SETCHECK, not a click: it never sends
+                        // WM_COMMAND, so the normal ID_SHOT_ENABLE handler (which greys/ungreys
+                        // ID_SHOT_QUICK_ENABLE / ID_SHOT_USE_DIR) never runs on its own here.
+                        sync_dependent_switches(hwnd);
                     }
                     ID_LANG if notify == CBN_SELCHANGE => on_lang_change(hwnd),
                     ID_ABOUT => show_about(hwnd),
@@ -1510,24 +1537,38 @@ pub(crate) extern "system" fn wndproc(
                 let pr = ps.rcPaint;
                 let (pw, ph) = (pr.right - pr.left, pr.bottom - pr.top);
                 if pw > 0 && ph > 0 {
-                    let mem = CreateCompatibleDC(Some(hdc));
-                    let bmp = CreateCompatibleBitmap(hdc, pw, ph);
-                    let old = SelectObject(mem, HGDIOBJ(bmp.0));
-                    // Map client coords onto the dirty-rect-sized buffer so paint_chrome
-                    // (which works in client coords) draws into the right place.
-                    let _ = SetViewportOrgEx(mem, -pr.left, -pr.top, None);
                     let br = if is_dark() {
                         dark_bg_brush()
                     } else {
                         HBRUSH(16isize as *mut c_void)
                     };
-                    FillRect(mem, &pr, br);
-                    restyle::paint_chrome(hwnd, mem);
-                    let _ = SetViewportOrgEx(mem, 0, 0, None);
-                    let _ = BitBlt(hdc, pr.left, pr.top, pw, ph, Some(mem), 0, 0, SRCCOPY);
-                    SelectObject(mem, old);
-                    let _ = DeleteObject(HGDIOBJ(bmp.0));
-                    let _ = DeleteDC(mem);
+                    let mem = CreateCompatibleDC(Some(hdc));
+                    let bmp = CreateCompatibleBitmap(hdc, pw, ph);
+                    // Under GDI handle exhaustion either call can come back invalid, so mirror
+                    // preview/paint.rs's fallback rather than blitting from an unset default
+                    // bitmap (which would paint garbage/black instead of the real chrome).
+                    if !mem.is_invalid() && !bmp.is_invalid() {
+                        let old = SelectObject(mem, HGDIOBJ(bmp.0));
+                        // Map client coords onto the dirty-rect-sized buffer so paint_chrome
+                        // (which works in client coords) draws into the right place.
+                        let _ = SetViewportOrgEx(mem, -pr.left, -pr.top, None);
+                        FillRect(mem, &pr, br);
+                        restyle::paint_chrome(hwnd, mem);
+                        let _ = SetViewportOrgEx(mem, 0, 0, None);
+                        let _ = BitBlt(hdc, pr.left, pr.top, pw, ph, Some(mem), 0, 0, SRCCOPY);
+                        SelectObject(mem, old);
+                    } else {
+                        // Buffer alloc failed: paint straight to the window DC (correct,
+                        // just flickers on a fast scroll instead of blitting garbage).
+                        FillRect(hdc, &pr, br);
+                        restyle::paint_chrome(hwnd, hdc);
+                    }
+                    if !bmp.is_invalid() {
+                        let _ = DeleteObject(HGDIOBJ(bmp.0));
+                    }
+                    if !mem.is_invalid() {
+                        let _ = DeleteDC(mem);
+                    }
                 }
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
@@ -1592,5 +1633,67 @@ pub(crate) extern "system" fn wndproc(
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `set_shot_status` must record the green/not-green state in `SHOT_STATUS_GREEN`
+    /// regardless of the control lookup outcome: the WM_CTLCOLORSTATIC tint handler reads
+    /// that cell, not the window's (eventually localized) text, so the color can no longer
+    /// drift out of step with a translation the way the old `txt.contains("Running")` sniff
+    /// did (it matched only literal English). `HWND::default()` (no real control exists)
+    /// exercises exactly the state-write half of the function, independent of GDI.
+    #[test]
+    fn set_shot_status_records_green_state_independent_of_the_label_text() {
+        unsafe {
+            set_shot_status(HWND::default(), "some string, in any language", true);
+            assert!(
+                SHOT_STATUS_GREEN.with(|g| g.get()),
+                "running=true must set the tint cell"
+            );
+            set_shot_status(HWND::default(), "some string, in any language", false);
+            assert!(
+                !SHOT_STATUS_GREEN.with(|g| g.get()),
+                "running=false must clear the tint cell, even though the text is unchanged"
+            );
+        }
+    }
+
+    /// A048/A261: `REFLOW_CTLS` must never target a control `navrail::V3_ALWAYS_HIDDEN`
+    /// keeps permanently hidden — reflowing an invisible control on resize is pure
+    /// waste and is exactly what got trimmed here (ID_SCROLLBAR/ID_LEFT_MASK/
+    /// ID_BANNER). Fails if a future edit re-adds one of those ids to REFLOW_CTLS
+    /// without noticing the v3 layout hides it unconditionally.
+    #[test]
+    fn reflow_ctls_never_targets_a_permanently_hidden_control() {
+        for &(id, _stretchy) in REFLOW_CTLS {
+            assert!(
+                !V3_ALWAYS_HIDDEN.contains(&id),
+                "REFLOW_CTLS reflows id {id}, but navrail::V3_ALWAYS_HIDDEN hides it on \
+                 every page with no page that un-hides it"
+            );
+        }
+    }
+
+    /// A093/A264: `sponsor_layout` used to open a wider gap above the footer
+    /// (`foot_y` 534 instead of 470) whenever `sponsors_enabled()` was true, to
+    /// reserve room for the banner it was about to create. That reservation is
+    /// pointless now that `build_controls` never creates ID_BANNER in the first
+    /// place (`navrail::V3_ALWAYS_HIDDEN` hides it on every page with no page
+    /// that un-hides it), so the footer position must be the single fixed
+    /// no-banner value regardless — this guards against a future edit
+    /// reintroducing a sponsor-state-dependent gap without also reinstating a
+    /// way to show the banner.
+    #[test]
+    fn sponsor_layout_never_reserves_room_for_the_never_shown_banner() {
+        let layout = sponsor_layout(true);
+        assert_eq!(
+            layout.foot_y, 470,
+            "footer must use the fixed no-banner spacing; ID_BANNER is never created"
+        );
+        assert_eq!(layout.credit_y, layout.foot_y + 6);
     }
 }

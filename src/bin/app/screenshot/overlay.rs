@@ -3,21 +3,18 @@
 //! [`output`](super::output)) or cancel. Owns all mutable capture state in a `Shot`
 //! attached to the window (`GWLP_USERDATA`).
 
-use core::ffi::c_void;
-
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, COLORREF, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT,
-    WPARAM,
+    GetLastError, COLORREF, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
+    POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     AlphaBlend, BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GdiFlush, GetDC, GetDIBits,
-    GetPixel, IntersectClipRect, InvalidateRect, MonitorFromRect, ReleaseDC, RestoreDC, SaveDC,
-    SelectObject, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW, AC_SRC_OVER,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, COLORONCOLOR, DIB_RGB_COLORS, DT_CALCRECT,
-    DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBITMAP, HDC, HGDIOBJ, LOGFONTW, MONITOR_DEFAULTTONEAREST,
-    PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GdiFlush, GetDC, GetPixel,
+    IntersectClipRect, InvalidateRect, MonitorFromRect, ReleaseDC, RestoreDC, SaveDC, SelectObject,
+    SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW, AC_SRC_OVER, BLENDFUNCTION,
+    COLORONCOLOR, DT_CALCRECT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBITMAP, HDC, HGDIOBJ, LOGFONTW,
+    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -37,6 +34,7 @@ use crate::win::{app_icon, gui_font, wide};
 use super::output;
 use super::toolbar::{self, Button, Swatch, TextItem};
 use super::tools::{self, Shape, Tool, PALETTE};
+use super::window_shot;
 use crate::gdip;
 
 mod actions;
@@ -247,25 +245,39 @@ fn overlay_ex_style() -> WINDOW_EX_STYLE {
     WS_EX_TOPMOST | WS_EX_NOACTIVATE
 }
 
-unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) {
-    // Claim one shared mutex before any window lookup or screen allocation. Two
-    // near-simultaneous hotkey/test launches can both pass FindWindow; the kernel
-    // mutex closes that TOCTOU race and covers normal + automation classes together.
-    let Ok(_overlay_lock) = CreateMutexW(None, true, w!("SageThumbs2K.ShotOverlay.Single")) else {
-        return;
-    };
+/// Claim the single-overlay mutex `name` and confirm neither overlay window class is
+/// already up. Shared by [`run_capture_inner`] (the full editor) and [`capture_instant`]
+/// (the quick-save hotkey) so a press of either while the other is already running cannot
+/// stack a second freeze on top of it: a named kernel mutex closes the TOCTOU race between
+/// two near-simultaneous launches (`CreateMutexW` requesting initial ownership of an
+/// ALREADY-existing mutex reports `ERROR_ALREADY_EXISTS` without granting it, which is
+/// exactly the "someone else got there first" signal this checks for), and the FindWindow
+/// pair catches the case where an editor overlay is already up and holding the SAME mutex.
+/// `Err` means the caller must return immediately without allocating any screen resources.
+/// Returns the held mutex `HANDLE` on success — keep it alive for as long as the capture
+/// runs, the same way the original single-function version did.
+unsafe fn claim_single_overlay_slot(name: PCWSTR) -> windows::core::Result<HANDLE> {
+    let lock = CreateMutexW(None, true, name)?;
     if GetLastError() == ERROR_ALREADY_EXISTS {
-        return;
+        return Err(windows::core::Error::from(E_FAIL));
     }
-
     // One overlay at a time: each hotkey press spawns a fresh `--screenshot` process, and
     // MOD_NOREPEAT only suppresses key auto-repeat — a second REAL press would stack another
     // fullscreen overlay whose frozen snapshot is a picture OF the first (dimmed) overlay.
     if FindWindowW(w!("SageThumbs2KShot"), PCWSTR::null()).is_ok()
         || FindWindowW(w!("SageThumbs2KShotAutomation"), PCWSTR::null()).is_ok()
     {
-        return;
+        return Err(windows::core::Error::from(E_FAIL));
     }
+    Ok(lock)
+}
+
+unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) {
+    // Claim one shared mutex before any window lookup or screen allocation — see
+    // `claim_single_overlay_slot` for why this closes the TOCTOU race.
+    let Ok(_overlay_lock) = claim_single_overlay_slot(w!("SageThumbs2K.ShotOverlay.Single")) else {
+        return;
+    };
     let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -280,6 +292,24 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
     let screen = GetDC(None);
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, vw, vh);
+    // A GDI failure here (object-quota exhaustion is the realistic cause) must not fall
+    // through to SelectObject/BitBlt on a null handle — that paints "you captured a black
+    // screen" instead of a diagnosable failure (A139).
+    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
+        sagethumbs2k_core::safety::log(
+            "screenshot: full-screen GDI setup failed, aborting capture",
+        );
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(bmp.into());
+        }
+        if !screen.is_invalid() {
+            ReleaseDC(None, screen);
+        }
+        return;
+    }
     SelectObject(mem, HGDIOBJ(bmp.0));
     if automation {
         draw_automation_canvas(mem, vw, vh);
@@ -427,6 +457,15 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    } else {
+        // CreateWindowExW failed (window-handle exhaustion is the realistic cause): `state`
+        // drops right here as a plain Box, which does NOT release the four GDI objects it
+        // holds (Shot has no Drop impl) — free them explicitly so a failed launch doesn't
+        // leak a full-screen DC + bitmap pair (A144).
+        let _ = DeleteDC(state.shot);
+        let _ = DeleteObject(state.shot_bmp.into());
+        let _ = DeleteDC(state.dimmed);
+        let _ = DeleteObject(state.dimmed_bmp.into());
     }
     gdip::shutdown(gdip_token);
 }
@@ -436,6 +475,12 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
 /// Mirrors the screen-freeze in [`run_capture`] but skips every bit of UI, so it
 /// returns the moment the file/clipboard are written.
 pub(crate) unsafe fn capture_instant() {
+    // Same single-overlay guard as `run_capture_inner` (A135): without it, pressing this
+    // hotkey while the full editor overlay is already open freezes a picture OF the
+    // dimmed overlay window instead of the real screen.
+    let Ok(_instant_lock) = claim_single_overlay_slot(w!("SageThumbs2K.ShotOverlay.Single")) else {
+        return;
+    };
     let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -446,22 +491,29 @@ pub(crate) unsafe fn capture_instant() {
     let screen = GetDC(None);
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, vw, vh);
+    // Same null-check as run_capture_inner's screen-freeze (A139): a GDI failure must not
+    // fall through to SelectObject/BitBlt on a null handle.
+    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
+        sagethumbs2k_core::safety::log("instant capture: full-screen GDI setup failed");
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(bmp.into());
+        }
+        if !screen.is_invalid() {
+            ReleaseDC(None, screen);
+        }
+        return;
+    }
     let old = SelectObject(mem, HGDIOBJ(bmp.0));
-    let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
+    // HDR capture first, same as run_capture_inner's non-automation path (A017): the
+    // quick-save hotkey used to always plain-BitBlt, shipping a washed-out capture on an
+    // HDR display while the full editor's capture path already handled it correctly.
+    if !hdr_capture(mem, vx, vy, vw, vh) {
+        let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
+    }
 
-    // Pull top-down BGRA (negative biHeight) — exactly what `output` expects.
-    let mut bi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: vw,
-            biHeight: -vh,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
     // 64-bit size math + sane bail: the i32 product `vw*vh*4` could (only on an
     // absurd >0.5-gigapixel virtual screen) overflow into an undersized buffer that
     // GetDIBits then overruns. Never reachable on real hardware, but cheap to close.
@@ -474,23 +526,15 @@ pub(crate) unsafe fn capture_instant() {
         ReleaseDC(None, screen);
         return;
     }
-    let mut buf = vec![0u8; n as usize];
-    let got = GetDIBits(
-        mem,
-        bmp,
-        0,
-        vh as u32,
-        Some(buf.as_mut_ptr() as *mut c_void),
-        &mut bi,
-        DIB_RGB_COLORS,
-    );
+    // Pull top-down BGRA (negative biHeight) — exactly what `output` expects.
+    let buf = window_shot::pull_top_down_bgra(mem, bmp, vw, vh, n as usize);
     SelectObject(mem, old);
     let _ = DeleteObject(HGDIOBJ(bmp.0));
     let _ = DeleteDC(mem);
     ReleaseDC(None, screen);
-    if got == 0 {
+    let Some(buf) = buf else {
         return;
-    }
+    };
     let copied = output::copy_dib_to_clipboard(&buf, vw, vh);
     // The editor-less instant capture can't prompt, so it always auto-saves to the
     // effective save folder (the configured one, or the Desktop by default).
@@ -609,6 +653,27 @@ mod tests {
             last_drag: None,
             status: "ready",
             published_title: String::new(),
+        }
+    }
+
+    /// A135: `capture_instant` used to have no guard at all against a second capture
+    /// starting while one is already in flight. This exercises the shared mechanism
+    /// directly (with a private test-only mutex name, so it can't collide with a real
+    /// overlay or with another test in this same process) rather than driving the full
+    /// GDI/window-message `run_capture_inner`/`capture_instant` paths, which need a live
+    /// desktop session this unit test does not assume.
+    #[test]
+    fn single_overlay_guard_blocks_a_second_concurrent_claim() {
+        unsafe {
+            let name = w!("SageThumbs2K.ShotOverlay.Single.UnitTest");
+            let first = claim_single_overlay_slot(name);
+            assert!(first.is_ok(), "first claim must succeed");
+            let second = claim_single_overlay_slot(name);
+            assert!(
+                second.is_err(),
+                "a second concurrent claim while the first is still held must be refused"
+            );
+            drop(first);
         }
     }
 

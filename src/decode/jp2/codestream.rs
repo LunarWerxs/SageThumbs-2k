@@ -24,7 +24,13 @@ pub(super) mod marker {
 /// allocations, so every one of them is bounded before it is trusted — this parser runs
 /// in-process on files arriving from Explorer.
 const MAX_COMPONENTS: u16 = 4;
-const MAX_DECOMPOSITION_LEVELS: u8 = 32;
+// The spec allows NL up to 32, but decode_tile/decode_reduced (mod.rs) compute
+// `1u32 << nb` for a per-resolution shift amount `nb` that reaches `levels`, and a u32
+// shift by 32 is UB territory that release silently wraps to `1<<0`, corrupting every
+// subband/tile bound it feeds. Capping accepted levels at 31 keeps every such shift
+// strictly inside u32's valid 0..=31 range, so this ceiling is a correctness bound, not
+// just a size bomb guard.
+const MAX_DECOMPOSITION_LEVELS: u8 = 31;
 const MAX_TILES: u64 = 65_536;
 
 /// `SIZ`: image grid, tile grid, and per-component sampling.
@@ -106,8 +112,9 @@ pub(super) struct Codestream<'a> {
     pub cod: Cod,
     pub qcd: Qcd,
     /// Per-component quantization overrides from QCC, when present. (COC coding-style
-    /// overrides are parsed and currently unused: this decoder declines the styles a COC
-    /// could meaningfully change, so the default COD governs every accepted file.)
+    /// overrides are parsed and checked against COD at the end of `parse` — a file whose
+    /// COC actually differs is rejected there, so by the time a `Codestream` exists this
+    /// field is redundant with `cod` and decode always uses the single global COD.)
     #[allow(dead_code)]
     pub cod_comp: Vec<Option<Cod>>,
     pub qcd_comp: Vec<Option<Qcd>>,
@@ -449,9 +456,26 @@ pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
         r.p = seg_end;
     }
 
+    let cod = cod.ok_or(Jp2Error::Malformed("no COD"))?;
+    // cod_comp is parsed but this decoder never applies a per-component COC override —
+    // every component is decoded with the single global COD (see the `cod_comp` field
+    // comment). A file whose COC actually signals a DIFFERENT coding style would
+    // therefore be silently mis-decoded if accepted, so reject it here instead of
+    // pretending the override was honoured.
+    for comp in cod_comp.iter().flatten() {
+        if comp.levels != cod.levels
+            || comp.cblk_w != cod.cblk_w
+            || comp.cblk_h != cod.cblk_h
+            || comp.reversible != cod.reversible
+            || comp.precincts != cod.precincts
+        {
+            return Err(Jp2Error::Unsupported("COC overrides COD"));
+        }
+    }
+
     Ok(Codestream {
         siz: siz.ok_or(Jp2Error::Malformed("no SIZ"))?,
-        cod: cod.ok_or(Jp2Error::Malformed("no COD"))?,
+        cod,
         qcd: qcd.ok_or(Jp2Error::Malformed("no QCD"))?,
         cod_comp,
         qcd_comp,
@@ -542,7 +566,16 @@ fn parse_coding_params(
     if has_precincts {
         while r.p < seg_end {
             let b = r.u8()?;
-            precincts.push((b & 0x0F, b >> 4));
+            let (ppx, ppy) = (b & 0x0F, b >> 4);
+            // A precinct exponent of 0 (or 1) means a 1x1 (or 2x2) precinct, so the
+            // resolution's precinct grid approaches its full pixel count — and mod.rs
+            // allocates one struct per precinct, so an unbounded npx*npy from a tiny
+            // file is an allocation bomb, not just a non-conformant encoder. Real
+            // encoders don't emit exponents this small; reject rather than guess a cap.
+            if ppx < 2 || ppy < 2 {
+                return Err(Jp2Error::Unsupported("precinct size"));
+            }
+            precincts.push((ppx, ppy));
         }
     }
     Ok(Cod {
@@ -643,4 +676,131 @@ fn parse_qcc(r: &mut Reader, seg_end: usize, ncomp: usize) -> Result<(usize, Qcd
         r.u16()? as usize
     };
     Ok((idx, parse_quant(r, seg_end)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Assembles a minimal one-component, one-tile, 8x8 J2K codestream: SOC + SIZ + COD +
+    /// QCD + EOC, with no tile-part data (`parse` never requires one). `levels` and
+    /// `precinct_byte` (when `Some`, one byte repeated per resolution) let each test dial
+    /// in exactly the field under test; everything else is the smallest legal value.
+    fn minimal_codestream(levels: u8, precinct_byte: Option<u8>) -> Vec<u8> {
+        let mut cs = Vec::new();
+        cs.extend_from_slice(&marker::SOC.to_be_bytes());
+
+        let mut siz_body = Vec::new();
+        siz_body.extend_from_slice(&0u16.to_be_bytes()); // Rsiz
+        siz_body.extend_from_slice(&8u32.to_be_bytes()); // Xsiz
+        siz_body.extend_from_slice(&8u32.to_be_bytes()); // Ysiz
+        siz_body.extend_from_slice(&0u32.to_be_bytes()); // XOsiz
+        siz_body.extend_from_slice(&0u32.to_be_bytes()); // YOsiz
+        siz_body.extend_from_slice(&8u32.to_be_bytes()); // XTsiz
+        siz_body.extend_from_slice(&8u32.to_be_bytes()); // YTsiz
+        siz_body.extend_from_slice(&0u32.to_be_bytes()); // XTOsiz
+        siz_body.extend_from_slice(&0u32.to_be_bytes()); // YTOsiz
+        siz_body.extend_from_slice(&1u16.to_be_bytes()); // Csiz = 1 component
+        siz_body.push(7); // Ssiz: 8-bit unsigned (prec-1 = 7)
+        siz_body.push(1); // XRsiz
+        siz_body.push(1); // YRsiz
+        cs.extend_from_slice(&marker::SIZ.to_be_bytes());
+        cs.extend_from_slice(&((siz_body.len() + 2) as u16).to_be_bytes());
+        cs.extend_from_slice(&siz_body);
+
+        let mut cod_body = Vec::new();
+        let scod: u8 = if precinct_byte.is_some() { 1 } else { 0 };
+        cod_body.push(scod);
+        cod_body.push(0); // progression
+        cod_body.extend_from_slice(&1u16.to_be_bytes()); // layers
+        cod_body.push(0); // MCT off
+        cod_body.push(levels);
+        cod_body.push(0); // cbw exponent -> code-block width 4
+        cod_body.push(0); // cbh exponent -> code-block height 4
+        cod_body.push(0); // cblk style
+        cod_body.push(1); // transform: reversible
+        if let Some(pb) = precinct_byte {
+            // One precinct-size byte per resolution level (levels + 1 resolutions).
+            for _ in 0..=levels {
+                cod_body.push(pb);
+            }
+        }
+        cs.extend_from_slice(&marker::COD.to_be_bytes());
+        cs.extend_from_slice(&((cod_body.len() + 2) as u16).to_be_bytes());
+        cs.extend_from_slice(&cod_body);
+
+        // QCD, style 0 (no quantization): one 8-bit exponent for the (only) subband.
+        let qcd_body = [0u8, 0u8];
+        cs.extend_from_slice(&marker::QCD.to_be_bytes());
+        cs.extend_from_slice(&((qcd_body.len() + 2) as u16).to_be_bytes());
+        cs.extend_from_slice(&qcd_body);
+
+        cs.extend_from_slice(&marker::EOC.to_be_bytes());
+        cs
+    }
+
+    /// Same base codestream as [`minimal_codestream`], with a COC segment for component 0
+    /// spliced in before EOC. `coc_levels` is the ONLY field the COC's SPcoc differs on.
+    fn codestream_with_coc(base_levels: u8, coc_levels: u8) -> Vec<u8> {
+        let mut cs = minimal_codestream(base_levels, None);
+        let eoc = cs.split_off(cs.len() - 2);
+
+        let coc_body = vec![
+            0,          // Ccoc: component 0
+            0,          // Scoc: no precincts
+            coc_levels, //
+            0,          // cbw
+            0,          // cbh
+            0,          // cblk style
+            1,          // transform: reversible
+        ];
+        cs.extend_from_slice(&marker::COC.to_be_bytes());
+        cs.extend_from_slice(&((coc_body.len() + 2) as u16).to_be_bytes());
+        cs.extend_from_slice(&coc_body);
+
+        cs.extend_from_slice(&eoc);
+        cs
+    }
+
+    /// A006: NL == 32 is spec-legal but shifts `1u32 << nb` up to 32 downstream (mod.rs),
+    /// which release silently wraps instead of panicking. Must be rejected, not clamped.
+    #[test]
+    fn decomposition_levels_32_is_rejected() {
+        let cs = minimal_codestream(32, None);
+        assert!(matches!(parse(&cs), Err(Jp2Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn decomposition_levels_31_is_accepted() {
+        let cs = minimal_codestream(31, None);
+        assert!(parse(&cs).is_ok());
+    }
+
+    /// A014: a signalled PPx/PPy of 0 makes the precinct grid approach the resolution's
+    /// full pixel count, and mod.rs allocates one struct per precinct from it.
+    #[test]
+    fn precinct_exponent_zero_is_rejected() {
+        let cs = minimal_codestream(1, Some(0x00)); // PPx = PPy = 0
+        assert!(matches!(parse(&cs), Err(Jp2Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn precinct_exponent_two_is_accepted() {
+        let cs = minimal_codestream(1, Some(0x22)); // PPx = PPy = 2
+        assert!(parse(&cs).is_ok());
+    }
+
+    /// A147: a COC that actually changes the coding style is silently ignored by decode
+    /// (it only ever reads the global COD), so accepting it would mis-decode the file.
+    #[test]
+    fn coc_override_differing_from_cod_is_rejected() {
+        let cs = codestream_with_coc(1, 2);
+        assert!(matches!(parse(&cs), Err(Jp2Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn coc_override_matching_cod_is_accepted() {
+        let cs = codestream_with_coc(1, 1);
+        assert!(parse(&cs).is_ok());
+    }
 }

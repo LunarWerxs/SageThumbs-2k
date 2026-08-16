@@ -178,9 +178,6 @@ try {
         Write-Host "[4/6] build installers: $($releaseArtifacts.Architecture -join ' + ')" -ForegroundColor Green
         foreach ($artifact in $releaseArtifacts) {
             $buildArgs = @('-Architecture', $artifact.Architecture)
-            if ($artifact.Architecture -eq 'arm64') {
-
-            }
             pwsh "$root\scripts\build-release.ps1" @buildArgs
             if ($LASTEXITCODE) { throw "$($artifact.Architecture) installer build failed" }
         }

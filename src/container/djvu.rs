@@ -19,12 +19,27 @@ const MAX_DIM: u32 = crate::decode::limits::MAX_DIM;
 const RENDER_CAP: u32 = 1600;
 
 pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
+    // `djvu_rs::Document::from_bytes` only takes an owned `Vec<u8>` (no `&[u8]`-borrowing
+    // constructor in its public API - `DjVuDocument::parse(&[u8])` is the low-level, non-owning
+    // entry point, but it lacks the display_width/height rotation handling this file relies on,
+    // so switching to it would risk silently swapping w/h on a rotated page). The crate itself
+    // does NOT copy again: `Document::from_bytes` moves the Vec straight into an `Arc`. The one
+    // copy here is therefore bounded by the same input cap every caller already enforces before
+    // reaching this function (`decode::limits::MAX_INPUT_BYTES`, 256 MiB) - a bounded one-time
+    // cost, not unbounded growth.
     let doc = djvu_rs::Document::from_bytes(bytes.to_vec()).ok()?;
     let page = doc.page(0).ok()?;
 
     // Prefer the encoder's baked page thumbnail (TH44) when present — fast + tiny.
     // Otherwise render page 1, capping the long edge so a huge scan doesn't allocate
     // a ~130 MB buffer for a thumbnail.
+    //
+    // `page.thumbnail()` fully decodes the TH44 IW44 stream (allocating its RGBA buffer)
+    // before returning, so the MAX_DIM check below necessarily runs AFTER that allocation -
+    // djvu-rs 0.27's public API has no declared-dimension probe to check first. We rely on
+    // djvu-rs's own internal bounds during that decode (the crate is fuzzed for exactly this
+    // input); MAX_DIM here is defense in depth against whatever it does hand back, not a
+    // pre-allocation guard.
     let pm = match page.thumbnail() {
         Ok(Some(thumb)) => thumb,
         _ => {

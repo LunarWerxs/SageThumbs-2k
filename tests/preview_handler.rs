@@ -316,10 +316,13 @@ fn preview_renders_a_png_from_memory_stream() {
 /// guaranteed blank pane).
 #[test]
 fn preview_streams_cover_from_oversized_cbz() {
-    // Build <tmp>\st2k-preview-huge.cbz: a red cover + >256 MiB of STORED zeros
+    // Build <tmp>\st2k-preview-huge-<pid>.cbz: a red cover + >256 MiB of STORED zeros
     // (stored, so the on-disk size really exceeds the ceiling no matter the
     // user's MaxSize setting — the effective cap is min(MaxSize, 256 MiB)).
-    let path = std::env::temp_dir().join("st2k-preview-huge.cbz");
+    // PID-suffixed (matching `preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load`
+    // below) so two concurrent `cargo test` runs can't race File::create-truncate /
+    // remove_file against the same ~304 MiB file.
+    let path = std::env::temp_dir().join(format!("st2k-preview-huge-{}.cbz", std::process::id()));
     {
         let f = std::fs::File::create(&path).expect("create temp cbz");
         let mut zw = zip::ZipWriter::new(f);

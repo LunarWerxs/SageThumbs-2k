@@ -126,9 +126,14 @@ pub(super) const ID_SHOT_ACTION_HK: i32 = 1181;
 // plus group sub-headers for the reorganized General / Advanced pages.
 pub(super) const ID_CUSTOM_ACTION_ENABLE: i32 = 1182;
 /// "Check for problems" - opens the doctor report (see `doctor_report.rs`).
-/// 1183 because it was the one free slot left in this block. A first attempt reused 1177,
-/// which is `ID_UPDATE_AUTO`: Win32 identifies a control by its id, so that did not error,
-/// it silently REPLACED the "Automatically check for updates" switch on the Advanced page.
+/// 1183 was picked as the one free `const` slot left in this block. A first attempt reused
+/// 1177, which is `ID_UPDATE_AUTO`: Win32 identifies a control by its id, so that did not
+/// error, it silently REPLACED the "Automatically check for updates" switch on the Advanced
+/// page. (1183 was never fully free even after that: `MENU_ITEM_TOGGLES` below also carried a
+/// `(1183, "menu_upload")` entry, invisible to the test because it only parsed `const ID_*`
+/// lines, not array literals - harmless in practice since nothing ever reads that field, but
+/// it meant this comment's "free slot" claim was never quite true. Moved to 1234; the test now
+/// scans `MENU_ITEM_TOGGLES` too.)
 /// The duplicate-id test at the bottom of this file exists so the next one fails loudly.
 pub(super) const ID_RUN_DOCTOR: i32 = 1183;
 pub(super) const ID_LBL_UPDATES: i32 = 1184;
@@ -226,7 +231,7 @@ pub(super) const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1148, "menu_pick_color"),
     (1149, "menu_strip_meta"),
     (1161, "menu_copy"),
-    (1183, "menu_upload"),
+    (1234, "menu_upload"), // moved off 1183 - collided with ID_RUN_DOCTOR, see the comment there
     (1162, "menu_set_folder_icon"),
     (1163, "menu_wallpaper"),
 ];
@@ -269,37 +274,62 @@ mod tests {
     /// a control missing, which is not a thing to rely on.
     ///
     /// Parses THIS FILE rather than listing the constants, so a new id is covered the moment it
-    /// is added and nobody has to remember to extend a list.
+    /// is added and nobody has to remember to extend a list. Also scans `MENU_ITEM_TOGGLES`'s
+    /// tuple literals: their first field is a leftover id column nothing reads by index, but a
+    /// stray literal there (`(1183, "menu_upload")` collided with `ID_RUN_DOCTOR` for a while)
+    /// is exactly as capable of shadowing a real control id as a `const` would be, and a plain
+    /// `const ID_*` parse can't see into an array literal at all.
     #[test]
     fn control_ids_are_unique() {
         let src = include_str!("ids.rs");
-        let mut seen: Vec<(&str, i64)> = Vec::new();
+        let mut seen: Vec<(String, i64)> = Vec::new();
         for line in src.lines() {
             let line = line.trim();
-            let Some(rest) = line.strip_prefix("pub(super) const ") else {
-                continue;
-            };
-            let Some((name, tail)) = rest.split_once(':') else {
-                continue;
-            };
-            let name = name.trim();
-            if !name.starts_with("ID_") {
-                continue; // geometry constants share values legitimately
+            if let Some(rest) = line.strip_prefix("pub(super) const ") {
+                let Some((name, tail)) = rest.split_once(':') else {
+                    continue;
+                };
+                let name = name.trim();
+                if !name.starts_with("ID_") {
+                    continue; // geometry constants share values legitimately
+                }
+                let Some((_, value)) = tail.split_once('=') else {
+                    continue;
+                };
+                // Skip anything computed from another constant; only plain literals compare.
+                let Ok(value) = value.trim().trim_end_matches(';').trim().parse::<i64>() else {
+                    continue;
+                };
+                if let Some((other, _)) = seen.iter().find(|(_, v)| *v == value) {
+                    panic!(
+                        "duplicate control id {value}: {name} collides with {other}. \
+                         Win32 will silently replace one control with the other; pick a free id."
+                    );
+                }
+                seen.push((name.to_string(), value));
+            } else if let Some(rest) = line.strip_prefix('(') {
+                // A `MENU_ITEM_TOGGLES`-style tuple literal `(NUM, "key"),`. Distinguished from
+                // `SHOT_PRESETS`'s `("label", value)` tuples by leading with a digit, not a `"`.
+                if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+                    continue;
+                }
+                let Some((num, tail)) = rest.split_once(',') else {
+                    continue;
+                };
+                let Ok(value) = num.trim().parse::<i64>() else {
+                    continue;
+                };
+                let key = tail.trim().trim_start_matches('"');
+                let key = key.split('"').next().unwrap_or(key);
+                let name = format!("MENU_ITEM_TOGGLES[\"{key}\"]");
+                if let Some((other, _)) = seen.iter().find(|(_, v)| *v == value) {
+                    panic!(
+                        "duplicate control id {value}: {name} collides with {other}. \
+                         Win32 will silently replace one control with the other; pick a free id."
+                    );
+                }
+                seen.push((name, value));
             }
-            let Some((_, value)) = tail.split_once('=') else {
-                continue;
-            };
-            // Skip anything computed from another constant; only plain literals are comparable.
-            let Ok(value) = value.trim().trim_end_matches(';').trim().parse::<i64>() else {
-                continue;
-            };
-            if let Some((other, _)) = seen.iter().find(|(_, v)| *v == value) {
-                panic!(
-                    "duplicate control id {value}: {name} collides with {other}. \
-                     Win32 will silently replace one control with the other; pick a free id."
-                );
-            }
-            seen.push((name, value));
         }
         assert!(
             seen.len() > 50,

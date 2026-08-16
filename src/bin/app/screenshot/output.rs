@@ -63,7 +63,36 @@ pub(super) fn save_png_to_dir(dir: &std::path::Path, top_down_bgra: &[u8], w: i3
     };
     let _ = std::fs::create_dir_all(dir);
     let name = unsafe { timestamped_name() };
-    img.save(dir.join(name)).is_ok()
+    img.save(unique_name_in(dir, &name)).is_ok()
+}
+
+/// Pick a filename in `dir` that doesn't already exist, appending " (2)", " (3)", … before the
+/// extension when `name` collides. `timestamped_name` only has 1-second resolution, so two
+/// captures started within the same second would otherwise silently overwrite each other —
+/// `img.save` has no "don't clobber" mode of its own.
+fn unique_name_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png");
+    let mut n = 2u32;
+    loop {
+        let candidate = dir.join(format!("{stem} ({n}).{ext}"));
+        // Give up disambiguating past a pathological run rather than looping forever; a rare
+        // overwrite here beats a hang on the capture path.
+        if !candidate.exists() || n >= 1000 {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Save the PNG to an exact path — the location the user chose in the Save-As dialog
@@ -135,6 +164,37 @@ fn sweep_stale_captures(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two captures landing on the same second must not collide — `timestamped_name` only has
+    /// 1-second resolution, so without a disambiguator the second capture's `img.save` would
+    /// silently destroy the first one with no error.
+    #[test]
+    fn unique_name_in_does_not_collide_with_an_existing_same_second_capture() {
+        let dir =
+            std::env::temp_dir().join(format!("st2k_unique_name_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let name = "Screenshot 2026-01-01 00.00.00.png";
+        std::fs::write(dir.join(name), b"first capture").expect("write first capture");
+
+        let picked = unique_name_in(&dir, name);
+        assert_ne!(
+            picked,
+            dir.join(name),
+            "a second same-second capture must not be pointed at the first capture's path"
+        );
+        assert!(
+            !picked.exists(),
+            "the disambiguated path must not itself already be taken"
+        );
+
+        // A name with no existing collision is returned unchanged.
+        let free = unique_name_in(&dir, "Screenshot 2026-01-01 00.00.01.png");
+        assert_eq!(free, dir.join("Screenshot 2026-01-01 00.00.01.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The sweep must only ever take files that are BOTH ours and old. Getting this wrong deletes
     /// a capture out from under a hand-off that's still in flight — i.e. the user's screenshot

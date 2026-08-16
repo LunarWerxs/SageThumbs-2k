@@ -13,7 +13,6 @@ use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR,
 
 use super::actions::is_image;
 use super::encode::{read_capped, reserve, write_atomic, OutSlot};
-use crate::decode;
 
 /// Case-insensitive whole-path comparison (Windows file names are case-folding,
 /// so `Photo.JPG` and `photo.jpg` are the same file — don't bump the counter or
@@ -22,8 +21,23 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
 }
 
+/// Windows reserved device names — invalid as a full component AND as the part before
+/// the first `.` (`CON.txt` is exactly as blocked as bare `CON`), case-insensitively.
+const RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// A cleaned component is a reserved device name if its part before the first `.`
+/// case-insensitively matches one of the DOS device names above (a folder or file
+/// literally named `Con`, or `Con.txt`, fails to create opaquely otherwise).
+fn is_reserved_name(s: &str) -> bool {
+    let stem = s.split('.').next().unwrap_or(s);
+    RESERVED_NAMES.iter().any(|r| stem.eq_ignore_ascii_case(r))
+}
+
 /// Strip characters Windows forbids in a filename, and trailing dots/spaces
-/// (which Explorer also rejects). Never returns empty.
+/// (which Explorer also rejects). Never returns empty, never a reserved device name.
 pub(crate) fn sanitize_component(s: &str) -> String {
     let cleaned: String = s
         .chars()
@@ -34,7 +48,7 @@ pub(crate) fn sanitize_component(s: &str) -> String {
         })
         .collect();
     let cleaned = cleaned.trim().trim_end_matches(['.', ' ']).trim();
-    if cleaned.is_empty() {
+    if cleaned.is_empty() || is_reserved_name(cleaned) {
         "image".to_string()
     } else {
         cleaned.to_string()
@@ -246,8 +260,23 @@ fn copy_into(src: &Path, dir: &Path) -> Result<PathBuf> {
     let Some(slot) = reserve_dest(src, dir, stem)? else {
         return Ok(src.to_path_buf()); // copying onto itself → nothing to do
     };
-    std::fs::copy(src, slot.path()).map_err(|_| Error::from(E_FAIL))?;
+    if std::fs::copy(src, slot.path()).is_err() {
+        // A copy that fails partway (disk full, revoked permission) can leave the
+        // reserved placeholder non-empty but truncated. `OutSlot`'s Drop only cleans up
+        // a still-ZERO-byte placeholder (its normal job: an untouched reservation), so a
+        // partial write wouldn't be caught by it. Remove the destination explicitly here
+        // instead of relying on Drop to notice a partial write it structurally can't see.
+        cleanup_failed_dest(slot.path());
+        return Err(Error::from(E_FAIL));
+    }
     Ok(slot.release())
+}
+
+/// Remove a copy/write destination after a failed attempt, unconditionally — regardless
+/// of how many bytes landed there. See `copy_into`'s call site for why this can't be left
+/// to `OutSlot`'s Drop (which only removes an EMPTY placeholder).
+fn cleanup_failed_dest(path: &Path) {
+    let _ = std::fs::remove_file(path);
 }
 
 /// Tell the shell to refresh `dir` (so a new subfolder / moved files appear).
@@ -277,14 +306,26 @@ pub fn files_to_folder(paths: &[String], folder_name: &str) -> Result<PathBuf> {
         .to_path_buf();
 
     // A *fresh* folder (dedupe) — "create a folder & move files in", never silently
-    // merge into an unrelated existing folder.
+    // merge into an unrelated existing folder. `create_dir` (non-recursive, `parent` is
+    // known to exist already) instead of a `while dir.exists() { … } create_dir_all`
+    // check-then-create: the old shape had a TOCTOU gap between the exists() check and
+    // the create — a folder landing there (another `st2k`, Explorer, an AV scan) made
+    // `create_dir_all` silently succeed as a no-op INTO that folder, exactly the "never
+    // silently merge" this function promises not to do. `create_dir` instead errors
+    // AlreadyExists, which we treat the same as a losing `exists()` check: try the next
+    // candidate name. Same atomic-claim pattern as this file's own `reserve()`.
     let mut dir = parent.join(&name);
     let mut n = 2u32;
-    while dir.exists() {
-        dir = parent.join(format!("{name} ({n})"));
-        n += 1;
+    loop {
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                dir = parent.join(format!("{name} ({n})"));
+                n += 1;
+            }
+            Err(_) => return Err(Error::from(E_FAIL)),
+        }
     }
-    std::fs::create_dir_all(&dir).map_err(|_| Error::from(E_FAIL))?;
 
     // Count successful moves so a TOTAL failure (permissions, cross-volume, locked files)
     // surfaces as an error instead of a fake success — callers build the user-facing report
@@ -312,13 +353,10 @@ fn dims(path: &str) -> Option<(u32, u32)> {
         }
     }
     let bytes = read_capped(path).ok()?;
-    // Container header probe (PSD canvas size) — the real document dimensions,
-    // without the full-fidelity decode below spawning ImageMagick per file.
-    if let Some(d) = crate::container::real_dims(&bytes) {
-        return Some(d);
-    }
-    let img = decode::decode_full(&bytes).ok()?;
-    Some((img.width(), img.height()))
+    // Container header probe (PSD canvas size) first, falling back to the full-fidelity
+    // decode (may spawn ImageMagick) — the same chain `strip::read_info_impl` uses, shared
+    // via `real_or_decoded_dims` rather than hand-copied here.
+    crate::container::real_or_decoded_dims(&bytes)
 }
 
 /// Move each selected image into a `WIDTHxHEIGHT` subfolder of its own parent
@@ -365,15 +403,46 @@ pub(crate) fn expand_template(
     missing: &str,
 ) -> String {
     let or = |o: &Option<String>| o.clone().unwrap_or_else(|| missing.to_string());
+    let artist = or(&tags.artist);
+    let album = or(&tags.album);
+    let title = or(&tags.title);
     let track = tags
         .track
         .map(|n| format!("{n:02}"))
         .unwrap_or_else(|| missing.to_string());
-    template
-        .replace("$artist", &or(&tags.artist))
-        .replace("$album", &or(&tags.album))
-        .replace("$title", &or(&tags.title))
-        .replace("$track", &track)
+    let subs = [
+        ("$artist", artist.as_str()),
+        ("$album", album.as_str()),
+        ("$title", title.as_str()),
+        ("$track", track.as_str()),
+    ];
+
+    // A single left-to-right scan over the TEMPLATE only, not four chained `.replace()`
+    // calls over the growing output string — chaining re-scans an already-substituted
+    // value for the NEXT placeholder, so a tag whose text happens to literally contain
+    // e.g. "$title" gets re-expanded by the later call. Each token is matched at most
+    // once per template position, against the template's own text.
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    'scan: while !rest.is_empty() {
+        for (token, value) in subs {
+            if let Some(stripped) = rest.strip_prefix(token) {
+                out.push_str(value);
+                rest = stripped;
+                continue 'scan;
+            }
+        }
+        // No token starts here: copy one char and advance. `chars().next()` is `None`
+        // only when `rest` is empty, which the loop guard already excludes — `break`
+        // rather than `unwrap`/`expect` (this crate denies both) to stay total anyway.
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(c) => out.push(c),
+            None => break,
+        }
+        rest = chars.as_str();
+    }
+    out
 }
 
 /// Turn an expanded template into a relative folder path: split on `/` or `\`
@@ -510,5 +579,85 @@ mod tests {
         let xml = comic_info_xml(&[Some((8, 9)), None]);
         assert!(xml.contains("<PageCount>2</PageCount>"));
         assert!(xml.contains(r#"<Page Image="1" />"#), "{xml}");
+    }
+
+    /// `files_to_folder` must not conjure a missing PARENT via `create_dir_all` — that
+    /// is the same "silently create/merge past the check" bug family the switch to a
+    /// non-recursive, atomic `create_dir` closes. The literal microsecond-scale TOCTOU
+    /// race (another process landing the folder in the gap between the exists check and
+    /// the create) can't be reproduced deterministically in-process, but this proves the
+    /// mechanism: `create_dir` never touches ancestors, `create_dir_all` silently would.
+    #[test]
+    fn files_to_folder_never_creates_missing_ancestor_directories() {
+        let base = std::env::temp_dir().join(format!("st2k_f2f_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ghost_parent = base.join("ghost"); // deliberately never created
+        let phantom_file = ghost_parent.join("photo.png");
+
+        let _ = files_to_folder(&[phantom_file.to_string_lossy().into_owned()], "New folder");
+
+        assert!(
+            !ghost_parent.exists(),
+            "create_dir must not silently conjure the missing parent chain the way \
+             create_dir_all would"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A folder literally named after a DOS device (or `<device>.ext`) must fall back to
+    /// "image" like the empty-input case — Windows can never create such a path, and the
+    /// prior failure was opaque (an unexplained create error deep in `files_to_folder`).
+    #[test]
+    fn sanitize_component_rejects_reserved_device_names_case_insensitively() {
+        assert_eq!(sanitize_component("Con"), "image");
+        assert_eq!(sanitize_component("con"), "image");
+        assert_eq!(
+            sanitize_component("CON.txt"),
+            "image",
+            "the stem is reserved too"
+        );
+        assert_eq!(sanitize_component("COM1"), "image");
+        assert_eq!(sanitize_component("lpt9"), "image");
+        // Merely CONTAINING a reserved word is fine — only an exact stem match blocks.
+        assert_eq!(sanitize_component("Constitution"), "Constitution");
+        assert_eq!(sanitize_component("My Con Notes"), "My Con Notes");
+    }
+
+    /// A tag value that happens to literally contain another placeholder token must not
+    /// get re-expanded when THAT token's own turn comes — each `$token` in the TEMPLATE
+    /// is substituted at most once, and only the template's own text is scanned.
+    #[test]
+    fn expand_template_does_not_re_expand_a_substituted_value() {
+        let tags = crate::strip::AudioTags {
+            artist: Some("$title".to_string()),
+            title: Some("Real Title".to_string()),
+            ..Default::default()
+        };
+        let out = expand_template("$artist - $title", &tags, "missing");
+        assert_eq!(
+            out, "$title - Real Title",
+            "the literal text substituted for $artist must not be re-scanned for $title"
+        );
+    }
+
+    /// A `copy_into` failure must remove whatever landed at the reserved destination,
+    /// even if the write got partway through and left a non-empty, truncated file —
+    /// `OutSlot`'s Drop only cleans up a still-EMPTY placeholder, so this can't be left
+    /// to Drop alone.
+    #[test]
+    fn cleanup_failed_dest_removes_a_non_empty_truncated_leftover() {
+        let dir = std::env::temp_dir().join(format!("st2k_cleanup_dest_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("partial.bin");
+        std::fs::write(&p, b"partial data from a failed copy, not empty").unwrap();
+        assert!(p.exists());
+
+        cleanup_failed_dest(&p);
+
+        assert!(
+            !p.exists(),
+            "a non-empty truncated leftover must still be removed, not just an empty one"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

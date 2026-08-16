@@ -146,6 +146,42 @@ pub(crate) fn targets() -> Vec<Target> {
         ("apk::looks_like_apk", |b| {
             let _ = apk::looks_like_apk(b);
         }),
+        ("xcf::extract", |b| {
+            let _ = xcf::extract(b);
+        }),
+        ("xcf::looks_like_xcf", |b| {
+            let _ = xcf::looks_like_xcf(b);
+        }),
+        ("skp::extract", |b| {
+            let _ = skp::extract(b);
+        }),
+        ("skp::looks_like_skp", |b| {
+            let _ = skp::looks_like_skp(b);
+        }),
+        ("rhino::extract", |b| {
+            let _ = rhino::extract(b);
+        }),
+        ("rhino::looks_like_3dm", |b| {
+            let _ = rhino::looks_like_3dm(b);
+        }),
+        ("djvu::extract", |b| {
+            let _ = djvu::extract(b);
+        }),
+        // Raw-PCM waveform rendering (`.wav`/`.aiff` with no embedded cover art). Takes a
+        // `Read + Seek` rather than raw bytes, so a mutated buffer is fed in through a Cursor —
+        // same input surface Explorer's shell IStream drives in production.
+        ("waveform::render_from_reader", |b| {
+            let _ = waveform::render_from_reader(&mut std::io::Cursor::new(b));
+        }),
+        // The ZIP-packaged "project" family (Krita/OpenRaster/3MF/FreeCAD/Fusion/…). Only a
+        // structurally valid zip reaches the parser at all (a mutated central directory just
+        // fails `ZipArchive::new`), so this exercises `project::extract`'s own path probing
+        // rather than the zip crate — the same shape `apk`'s targets already accept.
+        ("project::extract", |b| {
+            if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(b)) {
+                let _ = project::extract(&mut zip);
+            }
+        }),
     ]
 }
 
@@ -842,6 +878,167 @@ fn synthetic_xapk() -> Vec<u8> {
     stored_zip(&[("base.apk", &synthetic_apk())])
 }
 
+/// Deflate `data` and return the compressed bytes, or an empty `Vec` on the (practically
+/// unreachable) encoder-write failure — avoids `unwrap` in non-test code the way every other
+/// builder in this file does (`write_to(...)` ignored, `unwrap_or_default()`), since this
+/// function itself is NOT `#[cfg(test)]` and the crate warns on `unwrap_used`.
+fn zlib_compress(data: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let _ = enc.write_all(data);
+    enc.finish().unwrap_or_default()
+}
+
+/// GIMP XCF: a v0 header (no precision word — the simplest of the version-gated shapes),
+/// one RGBA layer with an uncompressed 8×8 tile. Exercises the full header -> properties ->
+/// layer -> hierarchy -> level -> tile walk `xcf::extract` does, with opaque pixel data so
+/// the flattened result is not all-transparent (which `extract` treats as "nothing decoded"
+/// and declines).
+fn synthetic_xcf() -> Vec<u8> {
+    const W: u32 = 8;
+    const H: u32 = 8;
+
+    let mut out = b"gimp xcf file\0".to_vec(); // v0: "file", no precision word follows
+    debug_assert_eq!(out.len(), 14);
+    out.extend_from_slice(&W.to_be_bytes());
+    out.extend_from_slice(&H.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes()); // base_type — unread by decode_layer
+
+    // Property list: one PROP_COMPRESSION (0 = none, so the tile below is a raw copy), then
+    // PROP_END.
+    out.extend_from_slice(&17u32.to_be_bytes());
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.push(0);
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+
+    // Layer pointer list: one layer, then the 0 terminator.
+    let layer_off = out.len() as u32 + 8;
+    out.extend_from_slice(&layer_off.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    debug_assert_eq!(out.len(), layer_off as usize);
+
+    // Layer: lw, lh, ltype=1 (RGBA), an empty name, PROP_END, the hierarchy pointer, then a
+    // null mask pointer (no layer mask).
+    out.extend_from_slice(&W.to_be_bytes());
+    out.extend_from_slice(&H.to_be_bytes());
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes()); // name_len = 0
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    let hier_off = out.len() as u32 + 8;
+    out.extend_from_slice(&hier_off.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    debug_assert_eq!(out.len(), hier_off as usize);
+
+    // Hierarchy: hw/hh (present but unread beyond consuming the bytes), bpp=4 (RGBA at one
+    // byte per sample), then the first (only) level pointer.
+    out.extend_from_slice(&W.to_be_bytes());
+    out.extend_from_slice(&H.to_be_bytes());
+    out.extend_from_slice(&4u32.to_be_bytes());
+    let level_off = out.len() as u32 + 4;
+    out.extend_from_slice(&level_off.to_be_bytes());
+    debug_assert_eq!(out.len(), level_off as usize);
+
+    // Level: must restate lw/lh exactly, then one tile pointer — W×H fits inside a single
+    // 64×64 tile, so the grid is 1×1.
+    out.extend_from_slice(&W.to_be_bytes());
+    out.extend_from_slice(&H.to_be_bytes());
+    let tile_off = out.len() as u32 + 4;
+    out.extend_from_slice(&tile_off.to_be_bytes());
+    debug_assert_eq!(out.len(), tile_off as usize);
+
+    // The tile itself, COMPRESS_NONE: raw interleaved RGBA bytes, fully opaque.
+    for _ in 0..(W * H) {
+        out.extend_from_slice(&[200, 50, 50, 255]);
+    }
+    out
+}
+
+/// SketchUp `.skp`: the ASCII header the older-format sniff matches, then an embedded PNG
+/// the way a GUI save bakes one in (see `skp::tests::carves_first_embedded_png`, which this
+/// mirrors).
+fn synthetic_skp() -> Vec<u8> {
+    let mut f = b"SketchUp Model".to_vec();
+    f.extend_from_slice(&[0u8; 16]);
+    f.extend_from_slice(&png(24, 24));
+    f.extend_from_slice(&[0xAB; 64]); // trailing model data
+    f
+}
+
+/// Rhino `.3dm`: the header string, the `TCODE_PROPERTIES_COMPRESSED_PREVIEWIMAGE` chunk
+/// (a 40-byte BITMAPINFOHEADER + the ON compressed-buffer framing `rhino::extract` scans
+/// past), and a zlib-deflated 24bpp DIB pixel buffer — the same construction as
+/// `rhino::tests::inflates_and_wraps_a_dib`.
+fn synthetic_rhino() -> Vec<u8> {
+    const PREVIEW_TYPECODE: [u8; 4] = [0x25, 0x80, 0x00, 0x20];
+    let (w, h) = (2i32, 2i32);
+    let stride = 2 * 3 + 2; // 6 bytes/row padded to 8 (24bpp, no BI_BITFIELDS)
+    let pixels = vec![0u8; stride * h as usize];
+
+    let mut bmih = Vec::new();
+    bmih.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    bmih.extend_from_slice(&w.to_le_bytes());
+    bmih.extend_from_slice(&h.to_le_bytes());
+    bmih.extend_from_slice(&1u16.to_le_bytes()); // planes
+    bmih.extend_from_slice(&24u16.to_le_bytes()); // bitcount
+    bmih.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    bmih.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+    bmih.extend_from_slice(&[0u8; 16]); // xppm/yppm/clrused/clrimportant
+
+    let zbytes = zlib_compress(&pixels);
+
+    let mut chunk_content = Vec::new();
+    chunk_content.extend_from_slice(&bmih);
+    chunk_content.extend_from_slice(&(pixels.len() as u32).to_le_bytes()); // uncompressedSize
+    chunk_content.extend_from_slice(&0u32.to_le_bytes()); // crc (unchecked)
+    chunk_content.push(1); // method = deflate
+    chunk_content.extend_from_slice(&0u32.to_le_bytes()); // nested typecode
+    chunk_content.extend_from_slice(&(zbytes.len() as u64).to_le_bytes()); // nested len
+    chunk_content.extend_from_slice(&zbytes);
+
+    let mut f = b"3D Geometry File Format 7\0".to_vec();
+    f.extend_from_slice(&PREVIEW_TYPECODE);
+    f.extend_from_slice(&(chunk_content.len() as u64).to_le_bytes());
+    f.extend_from_slice(&chunk_content);
+    f
+}
+
+/// A minimal 16-bit mono PCM WAV — enough frames that `column_peaks` samples real data at
+/// every output column, mirroring `waveform::tests::tiny_wav`.
+fn synthetic_wav() -> Vec<u8> {
+    let frames = 4096u32;
+    let mut data = Vec::new();
+    for i in 0..frames {
+        let s = ((i as i32 % 2000) - 1000) as i16;
+        data.extend_from_slice(&s.to_le_bytes());
+    }
+    let mut w = b"RIFF".to_vec();
+    w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    w.extend_from_slice(b"WAVE");
+    w.extend_from_slice(b"fmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&1u16.to_le_bytes()); // mono
+    w.extend_from_slice(&44100u32.to_le_bytes());
+    w.extend_from_slice(&88200u32.to_le_bytes()); // byte rate
+    w.extend_from_slice(&2u16.to_le_bytes()); // block align
+    w.extend_from_slice(&16u16.to_le_bytes()); // bits
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    w.extend_from_slice(&data);
+    w
+}
+
+/// Krita `.kra`: the `mimetype`-keyed project-preview path (see `project::tests`), a stored
+/// zip so mutations land on the mimetype string / preview PNG rather than a DEFLATE checksum.
+fn synthetic_project() -> Vec<u8> {
+    stored_zip(&[
+        ("mimetype", b"application/x-krita"),
+        ("mergedimage.png", &png(16, 16)),
+    ])
+}
+
 /// Every seed, labelled. Handed to the fuzzer alongside its synthetic MKV/MP4 pair.
 pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     vec![
@@ -868,6 +1065,11 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("clip", synthetic_clip()),
         ("apk", synthetic_apk()),
         ("xapk", synthetic_xapk()),
+        ("xcf", synthetic_xcf()),
+        ("skp", synthetic_skp()),
+        ("rhino", synthetic_rhino()),
+        ("wav", synthetic_wav()),
+        ("project", synthetic_project()),
     ]
 }
 
@@ -954,6 +1156,31 @@ mod tests {
             apk::extract(&by("xapk")).is_some(),
             "xapk wrapper -> inner base.apk -> icon"
         );
+        assert!(xcf::looks_like_xcf(&by("xcf")), "xcf magic");
+        assert!(
+            xcf::extract(&by("xcf")).is_some(),
+            "xcf property/layer/hierarchy/level/tile walk"
+        );
+        assert!(skp::looks_like_skp(&by("skp")), "skp header");
+        assert!(skp::extract(&by("skp")).is_some(), "skp embedded png carve");
+        assert!(rhino::looks_like_3dm(&by("rhino")), "3dm header");
+        assert!(
+            rhino::extract(&by("rhino")).is_some(),
+            "3dm compressed preview chunk"
+        );
+        assert!(
+            waveform::render_from_reader(&mut std::io::Cursor::new(by("wav"))).is_some(),
+            "wav pcm waveform render"
+        );
+        {
+            let bytes = by("project");
+            let mut zip =
+                zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip seed");
+            assert!(
+                project::extract(&mut zip).is_some(),
+                "project krita mimetype preview"
+            );
+        }
     }
 
     /// The dispatcher has to route them too — that is the path the shell actually takes, and a
@@ -964,10 +1191,12 @@ mod tests {
         // real SQLite but carries no Clip Studio preview row, so there is no cover to route.
         // `apk`/`xapk` here prove the ordering contract too: both are zips, so they
         // only route to the launcher-icon path while the apk arm sits BEFORE the
-        // generic `is_zip` branch in `extract_cover`.
+        // generic `is_zip` branch in `extract_cover`. `wav` is absent too: waveform
+        // rendering is reached only through `audio_art_from_reader`, never through
+        // `extract_cover`'s magic dispatch.
         for name in [
             "psd", "ilbm", "cdr", "icns", "pdn", "psp", "c4d", "max", "fb2", "gcode", "affinity",
-            "indd", "mobi", "blend", "dwg", "apk", "xapk",
+            "indd", "mobi", "blend", "dwg", "apk", "xapk", "xcf", "skp", "rhino", "project",
         ] {
             let bytes = seeds()
                 .into_iter()

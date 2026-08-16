@@ -1648,9 +1648,19 @@ fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgba> {
 /// Run `decode::decode_preview` on a detached sub-thread, returning its result only if it
 /// finishes within [`DECODE_BUDGET`]. On timeout returns `None` and abandons the
 /// sub-thread (it sends into a dropped channel and exits on its own). The sub-thread holds
-/// a COM MTA apartment because the WIC decode tier (HEIC/RAW/JPEG-XR) needs it — verbatim
-/// from `previewhandler::decode_preview_budgeted`, minus the DLL `ModuleRef` pin (this is
-/// an EXE, not the shell-loaded DLL).
+/// a COM MTA apartment because the WIC decode tier (HEIC/RAW/JPEG-XR) needs it — the
+/// detach/timeout shape is verbatim from `previewhandler::decode_preview_budgeted`, minus the
+/// DLL `ModuleRef` pin (this is an EXE, not the shell-loaded DLL).
+///
+/// **Deliberately NOT `decode_preview_capped`, unlike the preview-pane version.** This is the
+/// one decode this whole viewer uses for zoom-to-detail (`spawn_decode_full`), the headless
+/// `--shot` capture (`decode_sync`), and the `--bench-preview` "cold, full decode" measurement
+/// — all three need the real resolution, and `display_scaled_first_paint`'s doc comment
+/// depends on this call always being a full decode ("zoom still has full resolution behind
+/// it... byte-for-byte what it was before"). Capping it to the pane's small target edge would
+/// fix the same 12s-budget risk previewhandler's issue #11 fix addressed, but it would also
+/// silently cap every zoom and screenshot in the viewer — that needs a separate, smaller-edge
+/// decode path for the background-prefetch case specifically, not a blanket cap here.
 fn decode_preview_budgeted(bytes: std::sync::Arc<Vec<u8>>) -> Option<image::DynamicImage> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1679,11 +1689,13 @@ fn all_opaque(rgba: &[u8], px: usize) -> bool {
     (0..px).all(|i| rgba[i * 4 + 3] == 255)
 }
 
-/// Source-over composite of one channel: `s` at coverage `a` laid onto `d`.
-///
-/// Broken out of the fill loop so the `a == 255` reduction the opaque fast path relies on is a
-/// property a test can actually assert, rather than a claim in a comment.
-#[inline]
+/// Source-over composite of one channel: `s` at coverage `a` laid onto `d`. Mirrors the private
+/// `comp` closure inside `sagethumbs2k_core::safety::composite_rgba_over_bg` (the now-shared
+/// implementation `make_dib_hinted` below delegates to) — kept here, `#[cfg(test)]`-only, so the
+/// `a == 255` / `a == 0` reductions that fast path relies on stay a property a test can assert
+/// against, rather than just a claim in a comment. Not production code any more (nothing here
+/// calls it outside `render_size_tests`), hence the test-only gate.
+#[cfg(test)]
 fn composite_channel(s: u32, d: u32, a: u32) -> u8 {
     (((s * a) + (d * (255 - a)) + 127) / 255) as u8
 }
@@ -1691,6 +1703,13 @@ fn composite_channel(s: u32, d: u32, a: u32) -> u8 {
 /// [`make_dib`] with a caller-supplied opacity answer. `None` means "work it out", which costs a
 /// full pass over the alpha bytes; callers that already know (because they had to ask the same
 /// question to choose a DIB builder at all) pass `Some` and save it.
+///
+/// A thin wrapper over [`sagethumbs2k_core::safety::composite_rgba_over_bg`] — the actual
+/// compositing loop is shared with `previewhandler::make_dib` (the Explorer preview-pane host),
+/// which used to carry its own hand-copied duplicate that never got this opacity-hint fast
+/// path. `all_opaque` above stays local: `make_render`'s premultiplied path below still needs it
+/// directly, and that path is NOT part of this shared loop (different output — premultiplied
+/// BGRA for `AlphaBlend`, not composited-over-bg).
 unsafe fn make_dib_hinted(
     iw: i32,
     ih: i32,
@@ -1698,51 +1717,7 @@ unsafe fn make_dib_hinted(
     bg: u32,
     opaque: Option<bool>,
 ) -> Option<HBITMAP> {
-    if iw <= 0 || ih <= 0 {
-        return None;
-    }
-    let px = (iw as usize).checked_mul(ih as usize)?;
-    if rgba.len() < px.checked_mul(4)? {
-        return None;
-    }
-    let mut bmi = BITMAPINFO::default();
-    bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = iw;
-    bmi.bmiHeader.biHeight = -ih; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-    let mut bits: *mut c_void = core::ptr::null_mut();
-    let hbmp = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-    if bits.is_null() {
-        let _ = DeleteObject(hbmp.into());
-        return None;
-    }
-    let (bg_r, bg_g, bg_b) = (bg & 0xFF, (bg >> 8) & 0xFF, (bg >> 16) & 0xFF);
-    let dst = core::slice::from_raw_parts_mut(bits as *mut u8, px * 4);
-    if opaque.unwrap_or_else(|| all_opaque(rgba, px)) {
-        // Fully opaque: a plain RGBA->BGRA swizzle. This is NOT an approximation of the loop
-        // below — at `a == 255` that arithmetic reduces to `dst = src` exactly, per channel
-        // (`composite_channel(s, _, 255) == s`, pinned by a test), so the two produce
-        // byte-identical output. It just drops three multiplies and three divides per pixel,
-        // which on a 12 MP photo is 36 million of each.
-        for i in 0..px {
-            dst[i * 4] = rgba[i * 4 + 2]; // B
-            dst[i * 4 + 1] = rgba[i * 4 + 1]; // G
-            dst[i * 4 + 2] = rgba[i * 4]; // R
-            dst[i * 4 + 3] = 255;
-        }
-        return Some(hbmp);
-    }
-    for i in 0..px {
-        let a = rgba[i * 4 + 3] as u32;
-        dst[i * 4] = composite_channel(rgba[i * 4 + 2] as u32, bg_b, a); // B
-        dst[i * 4 + 1] = composite_channel(rgba[i * 4 + 1] as u32, bg_g, a); // G
-        dst[i * 4 + 2] = composite_channel(rgba[i * 4] as u32, bg_r, a); // R
-        dst[i * 4 + 3] = 255;
-    }
-    Some(hbmp)
+    sagethumbs2k_core::safety::composite_rgba_over_bg(iw, ih, rgba, bg, opaque)
 }
 
 /// The same DIB, but for the MAIN image pane, where transparency has to survive to paint time so a

@@ -49,7 +49,9 @@ pub(crate) use slots::{
     with_tmp_suffix, write_atomic, OutSlot,
 };
 
-const EMAIL_JPEG_QUALITY: u8 = 82;
+// pub(crate): the routed CLI path (verbs::actions::helper::shrink_one) formats this
+// into `--quality` instead of hard-coding "82", so the two paths can't silently desync.
+pub(crate) const EMAIL_JPEG_QUALITY: u8 = 82;
 
 /// Composite onto white and drop alpha. JPEG has no alpha channel, and a plain
 /// `to_rgb8()` would expose whatever color transparent pixels happened to carry
@@ -207,6 +209,7 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
             Transform::FlipV => crate::jpegtran::Op::FlipV,
         };
         if let Some(out_bytes) = crate::jpegtran::transform(&bytes, op) {
+            let out_bytes = neutralize_lossless_jpeg_orientation(out_bytes);
             let slot = reserve_unique_suffix(src, "edited", &ext);
             write_atomic(slot.path(), |tmp| {
                 std::fs::write(tmp, &out_bytes).map_err(|_| Error::from(E_FAIL))
@@ -234,15 +237,122 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
         Some(native_output_format(out_ext).unwrap_or(ImageFormat::Png))
     };
     let slot = reserve_unique_suffix(src, "edited", out_ext);
+    // A104: this pixel fallback (progressive JPEG / PNG / TIFF / …) decodes-and-re-encodes,
+    // which drops every metadata block on its own — `resize_file` below already carries EXIF/
+    // XMP/IPTC through the same shape of pipeline; this branch was the one place that didn't.
+    let carried = carry::read(&bytes, &ext);
     write_atomic(slot.path(), |tmp| {
         if let Some(format) = native_format {
-            encode_to(&out_img, format, out_ext, tmp)
+            encode_to(&out_img, format, out_ext, tmp)?;
         } else {
-            decode::encode_via_magick(&out_img, tmp, out_ext, None)
+            decode::encode_via_magick(&out_img, tmp, out_ext, None)?;
         }
+        if let Some(m) = &carried {
+            carry::apply(m, tmp, out_ext)?;
+        }
+        Ok(())
     })?;
     preserve_src_time(src, slot.path());
     Ok(slot.path().to_path_buf())
+}
+
+/// A273: after a lossless rotate/flip, reset a stale EXIF Orientation tag to 1.
+///
+/// `crate::jpegtran::transform` keeps APPn/EXIF segments byte-for-byte verbatim while
+/// physically transforming the DCT grid (that's the whole point — zero requantize loss), so
+/// a source whose Orientation was non-1 now has a tag describing the WRONG transform: an
+/// orientation-aware viewer rotates the already-rotated pixels a second time. This branch
+/// returns straight to the caller before `carry` is ever consulted (there is no fresh
+/// re-encode here for `carry::apply` to graft onto), so nothing else neutralizes it — mirrors
+/// `carry::normalize_orientation`'s bit layout exactly, just applied to the OUTPUT file's own
+/// already-present segment instead of a metadata block lifted off the source.
+///
+/// Best-effort: any parse surprise returns `bytes` unchanged rather than risk corrupting a
+/// file whose pixel transform already succeeded. A file with no EXIF, or none of the shapes
+/// this recognizes, is untouched — exactly today's behavior for those cases.
+fn neutralize_lossless_jpeg_orientation(bytes: Vec<u8>) -> Vec<u8> {
+    use img_parts::jpeg::{markers, Jpeg, JpegSegment};
+    use img_parts::Bytes;
+
+    const EXIF_PREFIX: &[u8] = b"Exif\0\0";
+    const TAG_ORIENTATION: u16 = 0x0112;
+
+    // Same bit layout `carry::normalize_orientation` rewrites: IFD0's Orientation entry is a
+    // single SHORT stored inline in the entry's own 4-byte value field, so this never changes
+    // the block's length or any offset within it.
+    fn normalize(tiff: &mut [u8]) {
+        let le = match tiff.first_chunk::<2>() {
+            Some(b"II") => true,
+            Some(b"MM") => false,
+            _ => return,
+        };
+        let u16at = |b: &[u8], o: usize| -> Option<u16> {
+            let v = b.get(o..o + 2)?.first_chunk::<2>()?;
+            Some(if le {
+                u16::from_le_bytes(*v)
+            } else {
+                u16::from_be_bytes(*v)
+            })
+        };
+        let u32at = |b: &[u8], o: usize| -> Option<u32> {
+            let v = b.get(o..o + 4)?.first_chunk::<4>()?;
+            Some(if le {
+                u32::from_le_bytes(*v)
+            } else {
+                u32::from_be_bytes(*v)
+            })
+        };
+        let Some(ifd0) = u32at(tiff, 4).map(|v| v as usize) else {
+            return;
+        };
+        let Some(count) = u16at(tiff, ifd0) else {
+            return;
+        };
+        for i in 0..count as usize {
+            let entry = ifd0 + 2 + i * 12;
+            if u16at(tiff, entry) != Some(TAG_ORIENTATION) {
+                continue;
+            }
+            // Type 3 (SHORT), count 1 — anything else is malformed; leave it alone rather
+            // than guess at a layout we do not recognise.
+            if u16at(tiff, entry + 2) != Some(3) || u32at(tiff, entry + 4) != Some(1) {
+                return;
+            }
+            let one: [u8; 2] = if le {
+                1u16.to_le_bytes()
+            } else {
+                1u16.to_be_bytes()
+            };
+            if let Some(slot) = tiff.get_mut(entry + 8..entry + 10) {
+                slot.copy_from_slice(&one);
+            }
+            return;
+        }
+    }
+
+    let Ok(mut jpeg) = Jpeg::from_bytes(Bytes::from(bytes.clone())) else {
+        return bytes;
+    };
+    let segs = jpeg.segments_mut();
+    let Some(idx) = segs
+        .iter()
+        .position(|s| s.marker() == markers::APP1 && s.contents().starts_with(EXIF_PREFIX))
+    else {
+        return bytes; // no EXIF segment — nothing to neutralize
+    };
+    let mut tiff = segs[idx].contents()[EXIF_PREFIX.len()..].to_vec();
+    normalize(&mut tiff);
+    let mut new_contents = EXIF_PREFIX.to_vec();
+    new_contents.extend_from_slice(&tiff);
+    segs[idx] = JpegSegment::new_with_contents(markers::APP1, Bytes::from(new_contents));
+
+    let out = jpeg.encoder().bytes();
+    // Sanity re-parse, mirroring carry::apply_jpeg — never hand back something we cannot
+    // read again.
+    if Jpeg::from_bytes(out.clone()).is_err() {
+        return bytes;
+    }
+    out.to_vec()
 }
 
 /// Resize via a menu preset and write a new "(resized)" file next to the source,
@@ -1191,6 +1301,166 @@ mod bounded_native_encoder_tests {
             Some("psd")
         );
         assert!(std::fs::read(&resized).unwrap().starts_with(b"8BPS"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A `SystemTime`+pid-suffixed scratch dir, matching the pattern the other `transform_file`/
+    /// `resize_file` tests in this module already use.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Little-endian TIFF IFD0 with one entry, Orientation (tag 0x0112) as SHORT — same
+    /// shape `carry`'s own (private, cross-file-inaccessible) test fixture uses, rebuilt here
+    /// because a private helper in a sibling module cannot be imported across the file
+    /// boundary.
+    fn tiff_with_orientation(o: u16) -> Vec<u8> {
+        let mut v = b"II*\0".to_vec();
+        v.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at offset 8
+        v.extend_from_slice(&1u16.to_le_bytes()); // one entry
+        v.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+        v.extend_from_slice(&3u16.to_le_bytes()); // type SHORT
+        v.extend_from_slice(&1u32.to_le_bytes()); // count
+        v.extend_from_slice(&(o as u32).to_le_bytes()); // value, left-packed inline
+        v.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+        v
+    }
+
+    fn orientation_of(tiff: &[u8]) -> u16 {
+        let e = 8 + 2; // IFD0 offset(8) + entry count(2) -> first (only) entry
+        u16::from_le_bytes([tiff[e + 8], tiff[e + 9]])
+    }
+
+    /// Little-endian TIFF IFD0 with one ASCII entry, Make (tag 0x010F) = "SageT\0" (6 bytes,
+    /// out-of-line since ASCII > 4 bytes doesn't fit the inline value field).
+    fn tiff_with_make() -> Vec<u8> {
+        // header(8) + count(2) + one 12-byte entry + next-IFD(4) = where the out-of-line
+        // value lands.
+        let value_offset: u32 = 8 + 2 + 12 + 4;
+        let mut v = b"II*\0".to_vec();
+        v.extend_from_slice(&8u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&0x010Fu16.to_le_bytes()); // Make
+        v.extend_from_slice(&2u16.to_le_bytes()); // type ASCII
+        v.extend_from_slice(&6u32.to_le_bytes()); // count, incl. the NUL
+        v.extend_from_slice(&value_offset.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+        v.extend_from_slice(b"SageT\0");
+        assert_eq!(
+            v.len() as u32,
+            value_offset + 6,
+            "offset math must match the actual layout"
+        );
+        v
+    }
+
+    fn jpeg_with_exif(base: &[u8], tiff: &[u8]) -> Vec<u8> {
+        let mut payload = b"Exif\0\0".to_vec();
+        payload.extend_from_slice(tiff);
+        let mut out = base[0..2].to_vec(); // SOI
+        out.extend_from_slice(&[0xFF, img_parts::jpeg::markers::APP1]);
+        out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&payload);
+        out.extend_from_slice(&base[2..]);
+        out
+    }
+
+    fn png_with_exif(w: u32, h: u32, tiff: &[u8]) -> Vec<u8> {
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            w,
+            h,
+            image::Rgba([20, 80, 160, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut base), ImageFormat::Png)
+        .unwrap();
+        let mut png = img_parts::png::Png::from_bytes(img_parts::Bytes::from(base)).unwrap();
+        png.chunks_mut().insert(
+            1, // straight after IHDR, matching carry::apply_png's own placement
+            img_parts::png::PngChunk::new(*b"eXIf", img_parts::Bytes::from(tiff.to_vec())),
+        );
+        png.encoder().bytes().to_vec()
+    }
+
+    /// A273: `transform_file`'s LOSSLESS jpegtran path keeps a source's APP1 EXIF segment
+    /// byte-for-byte verbatim while physically rotating the DCT grid, so a stale
+    /// Orientation=6 must come back reset to 1 — otherwise an orientation-aware viewer
+    /// rotates the already-rotated pixels a second time.
+    #[test]
+    fn transform_file_lossless_jpeg_path_resets_stale_orientation() {
+        let dir = scratch_dir("lossless-orient");
+        let input = dir.join("source.jpg");
+
+        // 32x32 is MCU-aligned for both 4:2:0 and 4:4:4 chroma subsampling, so the lossless
+        // jpegtran path is guaranteed to take the transform rather than falling through to
+        // the pixel path this test isn't exercising.
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            32,
+            32,
+            image::Rgb([90, 140, 30]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut base), ImageFormat::Jpeg)
+        .unwrap();
+        let with_exif = jpeg_with_exif(&base, &tiff_with_orientation(6));
+        std::fs::write(&input, &with_exif).unwrap();
+
+        let edited = transform_file(input.to_str().unwrap(), Transform::Right90).unwrap();
+        assert_eq!(
+            edited.extension().and_then(|e| e.to_str()),
+            Some("jpg"),
+            "the lossless path keeps the source extension"
+        );
+
+        let out_bytes = std::fs::read(&edited).unwrap();
+        let jpeg = img_parts::jpeg::Jpeg::from_bytes(img_parts::Bytes::from(out_bytes)).unwrap();
+        let exif_seg = jpeg
+            .segments()
+            .iter()
+            .find(|s| {
+                s.marker() == img_parts::jpeg::markers::APP1
+                    && s.contents().starts_with(b"Exif\0\0")
+            })
+            .expect("lossless transform must not drop the EXIF segment entirely");
+        let tiff_out = &exif_seg.contents()[6..];
+        assert_eq!(
+            orientation_of(tiff_out),
+            1,
+            "a stale non-identity Orientation must be reset after the lossless rotate, \
+             or viewers double-rotate it"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A104: `transform_file`'s PIXEL fallback (progressive JPEG / PNG / TIFF / …) decodes
+    /// and re-encodes, which drops every metadata block on its own unless carried through —
+    /// exactly what `resize_file` already does and this branch didn't. A plain `.png` source
+    /// never takes the lossless jpegtran path at all, so this exercises the pixel fallback
+    /// directly.
+    #[test]
+    fn transform_file_pixel_fallback_carries_exif_through_rotation() {
+        let dir = scratch_dir("pixel-carry");
+        let input = dir.join("source.png");
+        std::fs::write(&input, png_with_exif(12, 8, &tiff_with_make())).unwrap();
+
+        let edited = transform_file(input.to_str().unwrap(), Transform::Right90).unwrap();
+        let info = crate::strip::read_info(edited.to_str().unwrap());
+        assert_eq!(
+            info.make.as_deref(),
+            Some("SageT"),
+            "EXIF Make must survive the pixel-fallback rotate, matching resize_file"
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -125,11 +125,18 @@ impl Default for Options {
     }
 }
 
-/// `FILE_ATTRIBUTE_OFFLINE` | `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`. A OneDrive/Dropbox
-/// placeholder carries one of these; extracting its thumbnail DOWNLOADS the whole file, so a
-/// "pre-build my library" run over a cloud folder would silently pull the entire library onto
-/// the disk it was meant to stay off. Skipped, and counted so the report says it happened.
-const OFFLINE_ATTRS: u32 = 0x0000_1000 | 0x0040_0000;
+/// `FILE_ATTRIBUTE_OFFLINE` | `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` | `FILE_ATTRIBUTE_RECALL_ON_OPEN`.
+/// A OneDrive/Dropbox placeholder carries one of these; extracting its thumbnail DOWNLOADS the
+/// whole file, so a "pre-build my library" run over a cloud folder would silently pull the
+/// entire library onto the disk it was meant to stay off. Skipped, and counted so the report
+/// says it happened.
+///
+/// `pub(crate)` (not private): `doctor.rs`'s cloud-placeholder diagnostic and `cli.rs`'s
+/// `expand_inputs` (the `st2k batch` cloud guard) check the SAME trio — this used to be three
+/// independently hand-typed copies of the same three flags, which is exactly how one of them
+/// (`doctor.rs`) drifted to missing RECALL_ON_OPEN. One definition now; a file carrying only
+/// RECALL_ON_OPEN must be skipped/flagged everywhere that reads this constant.
+pub(crate) const OFFLINE_ATTRS: u32 = 0x0000_1000 | 0x0040_0000 | 0x0004_0000;
 /// `FILE_ATTRIBUTE_REPARSE_POINT` — junctions and symlinks, which the walk does not follow.
 const REPARSE: u32 = 0x0000_0400;
 
@@ -183,7 +190,11 @@ fn walk(root: &Path, opts: &Options, depth: u32, out: &mut Vec<String>, rep: &mu
 /// `canonicalize` returns the extended-length form and the parsing-name grammar rejects it, so
 /// strip it back: `\\?\C:\…` -> `C:\…`, and the UNC form `\\?\UNC\server\share` -> the plain
 /// `\\server\share` (stripping only `\\?\` there would leave `UNC\…`, which resolves nowhere).
-fn parsing_path(path: &str) -> String {
+///
+/// `pub(crate)`: `doctor.rs`'s `shell_roundtrip` needs the exact same normalization before its
+/// own `SHCreateItemFromParsingName` call, and used to carry a hand-copied duplicate of this
+/// logic (relocated from a fn into an inline block, near-verbatim) rather than importing it.
+pub(crate) fn parsing_path(path: &str) -> String {
     Path::new(path)
         .canonicalize()
         .map(|p| {
@@ -529,6 +540,26 @@ mod tests {
             "",
         ] {
             assert_eq!(unmangle_shell_path(p), p, "must not rewrite {p}");
+        }
+    }
+
+    /// `OFFLINE_ATTRS` must cover all three HSM/cloud-placeholder flags `doctor.rs` enumerates
+    /// (OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS) — a file carrying only RECALL_ON_OPEN
+    /// used to sail past this mask and get hydrated/downloaded by WTS_EXTRACT.
+    #[test]
+    fn offline_attrs_mask_covers_all_three_recall_flags() {
+        const OFFLINE: u32 = 0x0000_1000;
+        const RECALL_ON_OPEN: u32 = 0x0004_0000;
+        const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+        for (name, flag) in [
+            ("OFFLINE", OFFLINE),
+            ("RECALL_ON_OPEN", RECALL_ON_OPEN),
+            ("RECALL_ON_DATA_ACCESS", RECALL_ON_DATA_ACCESS),
+        ] {
+            assert!(
+                OFFLINE_ATTRS & flag != 0,
+                "OFFLINE_ATTRS must include {name} ({flag:#010x})"
+            );
         }
     }
 

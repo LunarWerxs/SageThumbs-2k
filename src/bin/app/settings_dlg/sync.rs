@@ -228,6 +228,12 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             set_sync_button(hwnd, &sync_button_label(), true);
             match res {
                 Ok(true) => {
+                    // The pull just wrote new values into HKCU, but this open dialog's
+                    // controls still hold whatever was on screen before the pull. Without
+                    // reloading them here, a Save right after this event would run
+                    // apply_settings on the stale on-screen state and write it straight back
+                    // over HKCU, silently reverting (and re-pushing) the pull it just applied.
+                    super::values::refresh_from_settings(hwnd);
                     set_sync_status(hwnd, Some((t("sync_state_updated").to_string(), true)))
                 }
                 _ => set_sync_status(hwnd, None), // the state-derived "● Synced" line

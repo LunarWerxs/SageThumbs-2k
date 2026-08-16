@@ -800,13 +800,25 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     let (path, installer_lock) = prepared?;
     let launched = launch_installer_silent(&path, parent);
     drop(installer_lock); // the elevated process has opened the image (or the launch failed)
+                          // `path` is disposable either way once we get here — on failure nothing will ever run
+                          // it, and on success the elevated child has its OWN open handle on it by now
+                          // (ShellExecuteW has returned, meaning the child process started), which is what
+                          // makes deleting it safe: the same way a running .exe on Windows can be deleted from
+                          // its directory while it keeps executing from the handle it already holds. If the
+                          // child somehow opened it without FILE_SHARE_DELETE, this silently no-ops rather than
+                          // failing the update; the goal is just to not leave a 10-15 MB setup .exe behind in
+                          // %TEMP% on the (common) successful path, which the old success arm never did.
+    cleanup_installer_payload(&path);
     match launched {
         Ok(()) => Ok(tag),
-        Err(e) => {
-            let _ = std::fs::remove_file(&path); // never leave a setup .exe behind in %TEMP%
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
+}
+
+/// Best-effort removal of the downloaded installer payload, run after `launch_installer_silent`
+/// returns regardless of outcome. See the call site for why this is safe even on success.
+fn cleanup_installer_payload(path: &Path) {
+    let _ = std::fs::remove_file(path);
 }
 
 /// `--update-selftest <setup.exe>`: the smoke test CI and the release gate run against a
@@ -911,9 +923,34 @@ fn updated_toast_text(installed: &str, running: &str) -> (&'static str, String) 
 
 #[cfg(test)]
 mod tests {
-    use super::parse_ver;
+    use super::{cleanup_installer_payload, parse_ver};
     use std::os::windows::process::CommandExt;
     use std::path::Path;
+
+    /// The downloaded installer must be swept regardless of outcome — before this fix, only
+    /// the failure arm of `download_and_install`'s match on `launch_installer_silent` ever
+    /// deleted it, leaving a real ~10-15 MB setup .exe behind in %TEMP% on every ordinary,
+    /// successful update.
+    #[test]
+    fn cleanup_installer_payload_removes_the_file() {
+        let path = std::env::temp_dir().join(format!(
+            "st2k_update_cleanup_{}_{}.exe",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"fake installer bytes").unwrap();
+        assert!(path.exists());
+
+        cleanup_installer_payload(&path);
+
+        assert!(
+            !path.exists(),
+            "the installer payload must be swept on every outcome, not only on failure"
+        );
+    }
 
     #[test]
     fn parses_and_orders_versions() {

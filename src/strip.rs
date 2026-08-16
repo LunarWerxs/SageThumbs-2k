@@ -29,6 +29,11 @@ mod svgmeta;
 mod webpmeta;
 mod xmpinfo;
 
+// Direct fuzz entry points into the (private) parsers above — see its own doc comment for why
+// it lives here rather than in `crate::fuzz`.
+#[cfg(test)]
+pub(crate) mod fuzzseed;
+
 pub use isobmff::has_gain_map;
 pub use jumbf::has_content_credentials;
 
@@ -38,6 +43,50 @@ pub use jumbf::has_content_credentials;
 /// APP11 is NOT in this list because it is marker-ambiguous: JPEG XT uses it for
 /// HDR extension layers. It is filtered per-segment instead, in [`jumbf`].
 const STRIP_APP_MARKERS: &[u8] = &[markers::APP1, markers::APP13, markers::COM];
+
+/// APP11 packet identity: `(box instance, packet sequence)`, per the JUMBF/CIPA layout
+/// `JP`(2) + box instance(2, BE `u16`) + packet sequence(4, BE `u32`). The FIRST packet
+/// of a box (sequence 1) carries the `LBox`/`TBox` header [`jumbf::is_jumbf_app11`]
+/// matches on; a LATER packet in the same box instance (sequence > 1) carries none - raw
+/// continuation payload only. Two independent boxes (a JUMBF manifest and, say, an
+/// unrelated JPEG XT HDR layer) can legally reuse the same instance number since they
+/// are never interleaved, and both are then "first of their own box" (sequence 1) - so
+/// grouping keys on `sequence > 1` too, not the instance number alone, or an unrelated
+/// same-instance first packet would be mistaken for this box's continuation.
+fn app11_identity(contents: &[u8]) -> Option<(u16, u32)> {
+    if contents.len() < 8 || !contents.starts_with(b"JP") {
+        return None;
+    }
+    let instance = u16::from_be_bytes([contents[2], contents[3]]);
+    let sequence = u32::from_be_bytes([contents[4], contents[5], contents[6], contents[7]]);
+    Some((instance, sequence))
+}
+
+/// Inflate a `.svgz` gzip stream with a hard output cap (decompression-bomb guard),
+/// mirroring `decode::svg::gunzip_bounded` (not shared directly: that helper is private
+/// to the decode module for its one caller, and duplicating this small a read loop here
+/// is cheaper than widening its visibility). Bounded to the same ceiling every other
+/// decode path uses for untrusted input, so a highly-compressible hostile payload can't
+/// expand without limit. `None` on any inflate error or empty output.
+fn gunzip_bounded(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .take(crate::decode::limits::MAX_INPUT_BYTES)
+        .read_to_end(&mut out)
+        .ok()?;
+    (!out.is_empty()).then_some(out)
+}
+
+/// Re-gzip stripped SVG source for the `.svgz` output path, so the file's own
+/// extension stays truthful (a plain-XML rewrite of a `.svgz` would silently become an
+/// uncompressed file wearing a compressed-format extension).
+fn regzip(bytes: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(bytes).map_err(|_| Error::from(E_FAIL))?;
+    gz.finish().map_err(|_| Error::from(E_FAIL))
+}
 
 /// Strip metadata from `path` in place (JPEG / PNG / WebP). Re-parses the rewritten
 /// bytes before swapping, so a malformed rewrite can never clobber the original.
@@ -52,14 +101,39 @@ pub fn strip_metadata(path: &str) -> Result<()> {
     let out_bytes: Vec<u8> = match ext.as_str() {
         "jpg" | "jpeg" | "jpe" | "jfif" => {
             let mut jpeg = Jpeg::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
+            // C2PA / Content Credentials: a JUMBF box spread over APP11 segments. Only the
+            // FIRST packet of a box carries the LBox/TBox header `is_jumbf_app11` looks for;
+            // once a manifest exceeds ~64KB it continues in more APP11 segments that share the
+            // same box-instance number but have no TBox of their own to match on. Find every
+            // C2PA box instance from whichever segment announces it, then drop every APP11
+            // segment in that instance - not just the one that matched - so a multi-segment
+            // manifest doesn't leave its continuation packets behind (which would otherwise let
+            // `has_content_credentials` report `false` while manifest fragments still survive).
+            let c2pa_instances: std::collections::HashSet<u16> = jpeg
+                .segments()
+                .iter()
+                .filter(|s| s.marker() == markers::APP11 && jumbf::is_jumbf_app11(s.contents()))
+                .filter_map(|s| app11_identity(s.contents()).map(|(inst, _)| inst))
+                .collect();
             jpeg.segments_mut().retain(|s| {
                 if STRIP_APP_MARKERS.contains(&s.marker()) {
                     return false;
                 }
-                // C2PA / Content Credentials: a JUMBF box spread over APP11
-                // segments. Only the `jumb` ones go - a JPEG XT HDR layer wears
-                // the same marker and must survive.
-                !(s.marker() == markers::APP11 && jumbf::is_jumbf_app11(s.contents()))
+                if s.marker() == markers::APP11 {
+                    if jumbf::is_jumbf_app11(s.contents()) {
+                        return false; // the box-defining packet itself
+                    }
+                    // A JPEG XT HDR layer wears the same marker and must survive - only a
+                    // genuine CONTINUATION packet (sequence > 1) of a flagged box instance is
+                    // dropped, never an unrelated first-of-its-own-box packet that happens to
+                    // reuse the same instance number.
+                    if let Some((inst, seq)) = app11_identity(s.contents()) {
+                        if seq > 1 && c2pa_instances.contains(&inst) {
+                            return false;
+                        }
+                    }
+                }
+                true
             });
             let bytes = jpeg.encoder().bytes();
             Jpeg::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?; // sanity re-parse
@@ -77,7 +151,19 @@ pub fn strip_metadata(path: &str) -> Result<()> {
             bytes.to_vec()
         }
         "webp" => webpmeta::strip(input)?,
-        "svg" | "svgz" if ext == "svg" => svgmeta::strip(&input)?,
+        "svg" => svgmeta::strip(&input)?,
+        // .svgz is gzip-compressed SVG (Illustrator/Inkscape's "compressed" save option). The
+        // old match arm here (`"svg" | "svgz" if ext == "svg"`) guarded the WHOLE or-pattern on
+        // `ext == "svg"`, so it could only ever fire for "svg" and every real .svgz file fell
+        // through to the unsupported case below. Inflate bounded by the same input ceiling as
+        // every other decode path (a compression bomb here would otherwise expand a KB-sized
+        // file-controlled payload without limit), strip the decompressed XML, then re-gzip so
+        // the file's own ".svgz" extension stays truthful.
+        "svgz" => {
+            let inflated = gunzip_bounded(&input).ok_or_else(|| Error::from(E_FAIL))?;
+            let stripped = svgmeta::strip(&inflated)?;
+            regzip(&stripped)?
+        }
         // HEIC/AVIF items are rewritten in place (see `isobmff`); `None` means the
         // layout was not one we can touch without risking the picture.
         "heic" | "heif" | "hif" | "avif" => {
@@ -226,11 +312,7 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
     if info.width == 0 && info.height == 0 && !bounded {
         let bytes = std::fs::read(path).ok();
         if let Some(bytes) = bytes {
-            if let Some((w, h)) = crate::container::real_dims(&bytes).or_else(|| {
-                crate::decode::decode_full(&bytes)
-                    .ok()
-                    .map(|i| (i.width(), i.height()))
-            }) {
+            if let Some((w, h)) = crate::container::real_or_decoded_dims(&bytes) {
                 info.width = w;
                 info.height = h;
             }
@@ -394,11 +476,7 @@ pub fn read_info_verbose(path: &str) -> String {
     }
     if w == 0 && h == 0 {
         if let Ok(bytes) = std::fs::read(path) {
-            if let Some((cw, ch)) = crate::container::real_dims(&bytes).or_else(|| {
-                crate::decode::decode_full(&bytes)
-                    .ok()
-                    .map(|i| (i.width(), i.height()))
-            }) {
+            if let Some((cw, ch)) = crate::container::real_or_decoded_dims(&bytes) {
                 (w, h) = (cw, ch);
             }
         }
@@ -791,6 +869,108 @@ mod tests {
             (d.width(), d.height()),
             (16, 12),
             "pixels must be untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A C2PA manifest past ~64KB spans more than one APP11 segment: only the FIRST
+    /// packet (sequence 1) carries the `LBox`/`TBox` header `is_jumbf_app11` matches on,
+    /// so a per-segment-only filter left later packets (sequence > 1, same box instance)
+    /// behind - the manifest fragment survived even though `has_content_credentials`
+    /// reported `false`.
+    #[test]
+    fn strips_every_continuation_packet_of_a_multi_segment_c2pa_manifest() {
+        let dir = std::env::temp_dir().join(format!("st2k_c2pa_multi_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg = dir.join("c.jpg");
+
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            16,
+            12,
+            image::Rgb([10, 20, 30]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut base),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+
+        // Packet 1 of box instance 1: carries the LBox/TBox header, TBox == "jumb".
+        let mut first = b"JP".to_vec();
+        first.extend_from_slice(&[0, 1]); // box instance 1
+        first.extend_from_slice(&[0, 0, 0, 1]); // sequence 1
+        first.extend_from_slice(&64u32.to_be_bytes()); // LBox
+        first.extend_from_slice(b"jumb"); // TBox
+        first.extend_from_slice(b"manifest-part-one");
+        // Packet 2 of the SAME box instance: sequence 2, no LBox/TBox of its own - a real
+        // continuation packet, exactly what `is_jumbf_app11` can never match directly.
+        let mut second = b"JP".to_vec();
+        second.extend_from_slice(&[0, 1]); // same box instance
+        second.extend_from_slice(&[0, 0, 0, 2]); // sequence 2
+        second.extend_from_slice(b"manifest-part-two");
+
+        let mut out = base[0..2].to_vec(); // SOI
+        for payload in [first, second] {
+            out.extend_from_slice(&[0xFF, markers::APP11]);
+            out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            out.extend_from_slice(&payload);
+        }
+        out.extend_from_slice(&base[2..]);
+        std::fs::write(&jpg, &out).unwrap();
+
+        let path = jpg.to_str().unwrap();
+        assert!(
+            has_content_credentials(path),
+            "setup must carry a C2PA manifest"
+        );
+
+        strip_metadata(path).unwrap();
+
+        let after = std::fs::read(&jpg).unwrap();
+        assert!(
+            !after.windows(18).any(|w| w == b"manifest-part-one"),
+            "the box-defining packet survived the strip"
+        );
+        assert!(
+            !after.windows(18).any(|w| w == b"manifest-part-two"),
+            "the continuation packet survived the strip"
+        );
+        assert!(!has_content_credentials(path));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Before this fix, the match arm `"svg" | "svgz" if ext == "svg"` could only ever
+    /// be true for `ext == "svg"`, so a real `.svgz` always fell through to the
+    /// unsupported case and `strip_metadata` refused every compressed SVG.
+    #[test]
+    fn strips_metadata_from_a_gzip_compressed_svgz_file() {
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!("st2k_svgz_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("logo.svgz");
+
+        let svg = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">\n",
+            "  <title>Company logo FINAL v3</title>\n",
+            "  <path d=\"M0 0h10v10z\"/>\n</svg>\n"
+        );
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(svg.as_bytes()).unwrap();
+        std::fs::write(&path, gz.finish().unwrap()).unwrap();
+
+        strip_metadata(path.to_str().unwrap()).unwrap();
+
+        let rewritten = std::fs::read(&path).unwrap();
+        let inflated = gunzip_bounded(&rewritten).expect("output must still be valid gzip");
+        let text = String::from_utf8(inflated).unwrap();
+        assert!(!text.contains("Company logo"), "{text}");
+        assert!(
+            text.contains("<path d=\"M0 0h10v10z\"/>"),
+            "art damaged: {text}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

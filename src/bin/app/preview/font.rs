@@ -131,7 +131,10 @@ pub(super) unsafe fn render_specimen(
     bg: COLORREF,
     fg: COLORREF,
 ) -> Option<(Vec<u8>, i32, i32)> {
-    let bytes = std::fs::read(path).ok()?;
+    // Bounded read: an unadorned `std::fs::read` had no ceiling at all, so a hostile
+    // multi-GB file dropped on the preview would buffer wholesale before any font
+    // parsing even started. Shares the same DoS budget every other by-path decode uses.
+    let bytes = sagethumbs2k_core::decode::read_capped(path).ok()?;
     // A WOFF is an sfnt with deflated tables. Windows' loader only takes a PATH,
     // so the rebuilt font goes to a temp file that is deleted before we return.
     let unwrapped = super::woff::is_woff(&bytes).then(|| super::woff::to_sfnt(&bytes));
@@ -260,4 +263,42 @@ pub(super) unsafe fn render_specimen(
     let _ = RemoveFontResourceExW(PCWSTR(wpath.as_ptr()), FR_PRIVATE.0, None);
 
     Some((rgba, w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `render_specimen`'s file read must be BOUNDED — a bare `std::fs::read` had no
+    /// ceiling at all, so a hostile multi-hundred-MB file would buffer wholesale before
+    /// any font parsing even started. Uses a sparse file (`set_len`, no real bytes
+    /// written) so the test stays fast while still exercising the real size check; the
+    /// oversized read must be refused before any GDI call, so this needs no live display.
+    #[test]
+    fn render_specimen_refuses_a_file_past_the_input_cap() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_font_cap_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("huge.ttf");
+        let file = std::fs::File::create(&path).unwrap();
+        // 300 MiB — safely past the documented 256 MiB `decode::limits::MAX_INPUT_BYTES`
+        // ceiling `read_capped` enforces (that constant is crate-internal to
+        // `sagethumbs2k_core`, so it isn't named directly from this crate).
+        file.set_len(300 * 1024 * 1024).unwrap();
+        drop(file);
+
+        let got = unsafe { render_specimen(path.to_str().unwrap(), COLORREF(0), COLORREF(0)) };
+        assert!(
+            got.is_none(),
+            "an oversized font file must be refused, not read wholesale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

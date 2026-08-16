@@ -33,6 +33,13 @@ const MOOV_MAX: u64 = 96 * 1024 * 1024;
 const KEYFRAME_MAX: u64 = 64 * 1024 * 1024;
 /// Largest plausible `ftyp` box (it's normally 16–40 bytes); past this we synthesize our own.
 const FTYP_MAX: u64 = 1024;
+/// Cap on top-level boxes `scan_top_level` will examine, mirroring flv.rs's `MAX_TAGS` /
+/// mkv.rs's `0..64` walk cap. Without it the loop is bounded only by total file size: a
+/// file built from many tiny top-level boxes (or with no `moov` at all) drives roughly
+/// `total/8` iterations, each a Seek+Read pair straight onto the marshaled COM `IStream`
+/// with no buffering layer, on the calling apartment thread. A real file has a handful of
+/// top-level boxes (`ftyp`/`moov`/`mdat`/`free`/…), so this never bites legitimate input.
+const MAX_TOP_LEVEL_BOXES: u32 = 4096;
 
 /// Build a one-keyframe mini-MP4 for the sync sample nearest `fraction` of the running time.
 /// `r` is the source video (the shell `IStream`, a file, or in tests a `Cursor`). Returns the
@@ -104,25 +111,32 @@ fn scan_top_level<R: Read + Seek>(r: &mut R) -> Option<(u64, Option<Vec<u8>>, Ve
     let mut pos: u64 = 0;
     let mut ftyp: Option<Vec<u8>> = None;
     let mut moov_range: Option<(u64, u64)> = None;
+    let mut boxes_seen: u32 = 0;
     while pos + 8 <= total {
+        boxes_seen += 1;
+        if boxes_seen > MAX_TOP_LEVEL_BOXES {
+            return None;
+        }
         let mut hdr = [0u8; 8];
         if read_exact_at(r, pos, &mut hdr).is_none() {
             break;
         }
-        let size32 = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as u64;
+        let size32 = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
         let typ = [hdr[4], hdr[5], hdr[6], hdr[7]];
-        let full = if size32 == 1 {
+        // Only read the extended 8-byte size field when the header actually needs it — the
+        // shared `decode_box_size` treats a missing `extended` as "decline size32 == 1".
+        let extended = if size32 == 1 {
             let mut ext = [0u8; 8];
             read_exact_at(r, pos + 8, &mut ext)?;
-            u64::from_be_bytes(ext)
-        } else if size32 == 0 {
-            total - pos // extends to EOF
+            Some(u64::from_be_bytes(ext))
         } else {
-            size32
+            None
         };
-        if full < 8 {
+        let Some((full, _header_len)) =
+            crate::container::boxhdr::decode_box_size(size32, extended, pos, total)
+        else {
             break;
-        }
+        };
         // ISO-BMFF gate: a real mp4/mov starts with `ftyp`. This cheaply rejects Matroska/AVI/
         // ASF/FLV/MPEG (their leading bytes are not a sane `ftyp` box), so the caller's broader
         // `is_video_magic` sniff still routes those to the bounded-prefix path.
@@ -249,18 +263,22 @@ fn boxes(buf: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
         }
         let size32 = u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
         let typ = [buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]];
-        let full = if size32 == 1 {
-            g64(buf, pos + 8)? as usize
-        } else if size32 == 0 {
-            buf.len() - pos
-        } else {
-            size32 as usize
-        };
-        if full < 8 || pos + full > buf.len() {
-            return None;
-        }
-        let out = &buf[pos..pos + full];
-        pos += full;
+        let extended = (size32 == 1).then(|| g64(buf, pos + 8)).flatten();
+        // `decode_box_size` does the checked arithmetic (`pos + full` via `checked_add`) that
+        // matters here: the 64-bit extended-size form (`size32 == 1`) puts a file-controlled u64
+        // straight into `full`, and the release profile builds with overflow-checks off — so an
+        // unchecked `full = u64::MAX` would wrap `pos + full` to `pos - 1`, which SATISFIES a
+        // naive bounds test and then panics in the slice on the next line. Under `panic = "abort"`
+        // in the in-process context-menu path that aborts explorer.exe itself.
+        let (full, _header_len) = crate::container::boxhdr::decode_box_size(
+            size32,
+            extended,
+            pos as u64,
+            buf.len() as u64,
+        )?;
+        let end = pos.checked_add(full as usize)?;
+        let out = &buf[pos..end];
+        pos = end;
         Some((typ, out))
     })
 }
@@ -362,24 +380,34 @@ fn stts_target(p: &[u8], fraction: f64) -> Option<(u64, u64)> {
 /// `target` itself. A sync sample is an IDR/IRAP, independently decodable as a standalone frame.
 fn nearest_sync(stss: Option<&[u8]>, target: u64) -> Option<u64> {
     let Some(stss) = stss else {
+        // Box absent: per ISO-BMFF that means every sample is independently
+        // decodable, so the target sample itself is fine to use directly.
         return Some(target);
     };
     let p = full_box_body(stss);
     let n = g32(p, 0)? as usize;
     if n == 0 {
-        return Some(target);
+        // Box PRESENT but empty is a distinct claim from "box absent": the file
+        // is asserting there are no sync samples at all, so nothing here is
+        // independently decodable. Returning `target` here (as the absent case
+        // does) would build a mini-MP4 around a sample that may need earlier
+        // frames to decode.
+        return None;
     }
-    let mut best = None;
+    // Scan every entry and keep the best `<= target`, rather than trusting the
+    // table's claimed ascending order and stopping at the first overshoot: an
+    // unsorted stss from a buggy muxer would otherwise silently pick the wrong
+    // (e.g. frame-1) sync sample. `p` is already bounded by MOOV_MAX, so a full
+    // scan is cheap.
+    let mut best: Option<u64> = None;
     let mut first = None;
     for i in 0..n {
         let s = g32(p, 4 + i * 4)? as u64;
         if first.is_none() {
             first = Some(s);
         }
-        if s <= target {
+        if s <= target && best.is_none_or(|b| s > b) {
             best = Some(s);
-        } else {
-            break;
         }
     }
     best.or(first)
@@ -462,7 +490,10 @@ fn sample_location(
         let next_first = if i + 1 < n {
             g32(stsc, base + 12)? as u64
         } else {
-            num_chunks + 1
+            // checked_add, matching the module's own discipline for file-derived
+            // arithmetic: harmless in practice (num_chunks is u32-bounded) but keeps
+            // debug builds from trapping and this site consistent with its neighbors.
+            num_chunks.checked_add(1)?
         };
         if next_first < first_chunk {
             return None;
@@ -476,7 +507,10 @@ fn sample_location(
             hit = Some((chunk1, first_sample_of_chunk, desc));
             break;
         }
-        first_sample_of_run += samples_in_run;
+        // checked_add: `samples_in_run` comes from a checked_mul above and can approach
+        // u64::MAX across many stsc entries, unlike the other u32-bounded terms in this
+        // function, so this accumulator is the one term that genuinely needs the guard.
+        first_sample_of_run = first_sample_of_run.checked_add(samples_in_run)?;
     }
     let (chunk1, first_sample_of_chunk, desc) = hit?;
     if chunk1 == 0 || chunk1 > num_chunks {
@@ -703,8 +737,27 @@ pub(crate) fn read_exact_at<R: Read + Seek>(r: &mut R, off: u64, buf: &mut [u8])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
     use std::path::Path;
+
+    /// Wraps a `Cursor` and counts `seek()` calls, so a test can prove a walk
+    /// stopped early instead of just checking its (possibly coincidentally
+    /// identical) final answer.
+    struct CountingReader<'a> {
+        inner: Cursor<&'a [u8]>,
+        seeks: usize,
+    }
+    impl Read for CountingReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.inner.read(buf)
+        }
+    }
+    impl Seek for CountingReader<'_> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.seeks += 1;
+            self.inner.seek(pos)
+        }
+    }
 
     /// Validate the box-navigation primitives on a hand-built nested structure.
     #[test]
@@ -717,6 +770,65 @@ mod tests {
         // full_box_body skips ver/flags → entry_count then the sample number.
         assert_eq!(g32(full_box_body(found_stss), 0), Some(1));
         assert_eq!(g32(full_box_body(found_stss), 4), Some(7));
+    }
+
+    /// A hostile 64-bit box size must END the walk, not wrap the cursor into a panic.
+    ///
+    /// `size32 == 1` means "the real size is the u64 that follows", and that u64 is entirely
+    /// file-controlled. With `u64::MAX` the old `pos + full` wrapped (release builds carry no
+    /// overflow checks) to `pos - 1`, so `pos + full > buf.len()` was FALSE and the walk fell
+    /// through to `&buf[pos..pos - 1]` — a start-after-end slice panic, i.e. an abort of
+    /// whatever host was parsing, `explorer.exe` included.
+    ///
+    /// The second box is where it has to be tested: at `pos == 0` the wrap lands on
+    /// `usize::MAX`, which the bounds check happens to catch. Only a non-zero cursor exposes it.
+    #[test]
+    fn a_wrapping_64bit_box_size_ends_the_walk_instead_of_panicking() {
+        let mut buf = bx(b"ftyp", &[0u8; 8]); // a normal first box → cursor lands past 0
+        let start = buf.len();
+        assert!(start > 0);
+        buf.extend_from_slice(&1u32.to_be_bytes()); // size32 == 1 → 64-bit extended form
+        buf.extend_from_slice(b"moov");
+        buf.extend_from_slice(&u64::MAX.to_be_bytes()); // the hostile length
+        buf.extend_from_slice(&[0u8; 16]); // some payload, so the slice would be in-range-ish
+
+        // Wrapping arithmetic is what the fix removed: prove the trap is still armed, so this
+        // test cannot quietly stop measuring anything if the constant is ever changed.
+        assert!(
+            start.wrapping_add(u64::MAX as usize) < buf.len(),
+            "the wrapped end must look in-bounds, or this fixture proves nothing"
+        );
+
+        let walked: Vec<[u8; 4]> = boxes(&buf).map(|(t, _)| t).collect();
+        assert_eq!(
+            walked,
+            vec![*b"ftyp"],
+            "the walk must stop AT the hostile box"
+        );
+        assert!(find(&buf, b"moov").is_none());
+    }
+
+    /// A `size32 == 1` box declares a 16-byte header (8 fixed + 8 extended), so its own claimed
+    /// size can never legally be smaller than 16. The walker used to check the claimed size
+    /// against a hardcoded `8` regardless of which header length was actually in play, so a box
+    /// like this one — extended size 10, which only covers the *fixed* header — was silently
+    /// accepted and yielded a box slice narrower than its own header (`box_body` would then read
+    /// past the end of a 10-byte slice looking for the 16-byte header offset and get an empty
+    /// body). The shared `decode_box_size` checks against the REAL header length (16 here), so
+    /// this must now be rejected outright instead of walked past.
+    #[test]
+    fn a_size_one_box_shorter_than_its_own_16_byte_header_is_rejected() {
+        let mut buf = bx(b"ftyp", &[0u8; 8]); // a normal first box
+        buf.extend_from_slice(&1u32.to_be_bytes()); // size32 == 1 → extended form
+        buf.extend_from_slice(b"moov");
+        buf.extend_from_slice(&10u64.to_be_bytes()); // claimed size: shorter than the header
+
+        let walked: Vec<[u8; 4]> = boxes(&buf).map(|(t, _)| t).collect();
+        assert_eq!(
+            walked,
+            vec![*b"ftyp"],
+            "a box claiming to be shorter than its own header must be rejected, not accepted"
+        );
     }
 
     /// A trak with no `mdia` is one bad track, not the end of the moov. Editors emit
@@ -911,5 +1023,57 @@ mod tests {
             frame.width(),
             frame.height()
         );
+    }
+
+    /// A030: `scan_top_level`'s loop used to be bounded only by total file size, so a
+    /// file built from many tiny top-level boxes (no `moov` anywhere) drove one
+    /// Seek+Read pair per box. Build more boxes than `MAX_TOP_LEVEL_BOXES` and prove
+    /// the walk stops at the cap instead of visiting every one of them: checks the
+    /// seek COUNT, not just the final `None`, since "no moov" returns `None` either way.
+    #[test]
+    fn scan_top_level_bails_after_max_top_level_boxes() {
+        let mut buf = bx(b"ftyp", &[0u8; 8]);
+        let tiny_box_count = MAX_TOP_LEVEL_BOXES as usize + 900;
+        for _ in 0..tiny_box_count {
+            buf.extend_from_slice(&bx(b"free", &[]));
+        }
+        let mut r = CountingReader {
+            inner: Cursor::new(buf.as_slice()),
+            seeks: 0,
+        };
+        assert_eq!(
+            scan_top_level(&mut r),
+            None,
+            "no moov present anywhere, so this must fail either way"
+        );
+        assert!(
+            r.seeks <= MAX_TOP_LEVEL_BOXES as usize + 2,
+            "must bail at the box cap instead of walking all {tiny_box_count} boxes (seeks = {})",
+            r.seeks
+        );
+    }
+
+    /// A233: `stss` PRESENT but with sample_count == 0 means there are NO sync
+    /// samples, which is a different claim than `stss` ABSENT (every sample is
+    /// sync). Both used to return `Some(target)`, silently building a mini-MP4
+    /// around a sample that may not be independently decodable.
+    #[test]
+    fn nearest_sync_declines_a_present_but_empty_stss() {
+        let empty_stss = fbx(b"stss", 0, 0, &concat32(&[0])); // sample_count = 0
+        assert_eq!(nearest_sync(Some(&empty_stss), 42), None);
+        // The genuinely-absent case is unaffected: still "every sample is sync".
+        assert_eq!(nearest_sync(None, 42), Some(42));
+    }
+
+    /// A234: the old scan trusted stss's claimed ascending order and broke at the
+    /// first overshoot, so an unsorted table (a buggy muxer) could silently return
+    /// the wrong sync sample instead of the true nearest one <= target.
+    #[test]
+    fn nearest_sync_finds_the_true_nearest_in_an_unsorted_stss() {
+        // Deliberately out of order: 61 appears before 31, but 31 is the nearer
+        // sync sample <= 45. A break-on-first-overshoot scan sees 61 > 45 first
+        // and stops, missing 31 (and returning the wrong answer) entirely.
+        let stss = fbx(b"stss", 0, 0, &concat32(&[3, 61, 31, 1]));
+        assert_eq!(nearest_sync(Some(&stss), 45), Some(31));
     }
 }

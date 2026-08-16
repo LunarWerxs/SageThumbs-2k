@@ -23,8 +23,20 @@ use super::select::{dedupe_by_name, pick_covers, Entry};
 /// host. Mirrors 7z's `SOLID_SCAN_BUDGET`, which caps exactly the same drain.
 const SKIP_SCAN_BUDGET: u64 = 8 * 1024 * 1024;
 
-/// A `Write` sink that appends into a shared buffer, capped at `MAX_COVER`.
-struct CapBuf(Rc<RefCell<Vec<u8>>>);
+/// Ceiling on the SUM of bytes captured across every picked cover in one contact-sheet
+/// pull (`extract_n`'s `want` targets share ONE pass). Each entry is already capped
+/// individually at `MAX_COVER` (32 MiB) by [`CapBuf`], but nothing previously bounded
+/// their total — up to 4 picks each hitting `MAX_COVER` could synchronously buffer 128
+/// MiB for one shell thumbnail. Mirrors 7z's `NON_SOLID_COVERS_BUDGET`, which caps
+/// exactly the same drain (see `sevenz.rs`).
+const COVERS_AGGREGATE_BUDGET: u64 = 8 * 1024 * 1024;
+
+/// A `Write` sink that appends into a shared buffer, capped at `MAX_COVER` per entry AND
+/// charged against a shared [`COVERS_AGGREGATE_BUDGET`] across every pick in the pass.
+struct CapBuf {
+    buf: Rc<RefCell<Vec<u8>>>,
+    aggregate_remaining: Rc<std::cell::Cell<u64>>,
+}
 
 /// A `Write` sink that DISCARDS its input but charges it against a shared budget, erroring out
 /// (which aborts the whole `extract_to` walk) once the budget is spent. `std::io::sink()` costs
@@ -47,10 +59,23 @@ impl Write for BudgetSink {
 
 impl Write for CapBuf {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        let mut b = self.0.borrow_mut();
+        let mut b = self.buf.borrow_mut();
         if (b.len() + data.len()) as u64 > super::MAX_COVER {
+            // A rejected write must not leave a TRUNCATED prefix behind: the final
+            // filter in `extract_n` only checks length <= MAX_COVER, so an incomplete
+            // (and possibly corrupt) image under that cap would otherwise silently pass
+            // as the chosen cover.
+            b.clear();
             return Err(std::io::Error::other("cover too large"));
         }
+        let remaining = self.aggregate_remaining.get();
+        if data.len() as u64 > remaining {
+            // Same poisoning as the per-entry cap above: an aggregate-budget cutoff
+            // mid-write must not leave a truncated buffer that still passes the filter.
+            b.clear();
+            return Err(std::io::Error::other("covers aggregate budget exhausted"));
+        }
+        self.aggregate_remaining.set(remaining - data.len() as u64);
         b.extend_from_slice(data);
         Ok(data.len())
     }
@@ -103,8 +128,15 @@ pub fn extract_n(bytes: &[u8], want: usize) -> Option<Vec<Vec<u8>>> {
     let bufs: Vec<Rc<RefCell<Vec<u8>>>> = (0..picks.len())
         .map(|_| Rc::new(RefCell::new(Vec::new())))
         .collect();
+    let aggregate_remaining = Rc::new(std::cell::Cell::new(COVERS_AGGREGATE_BUDGET));
     let mut remaining = picks.len();
     let drained = Rc::new(std::cell::Cell::new(0u64));
+    // Sequential on purpose: `rars` also exposes `extract_to_parallel_buffered`, which
+    // spins up a rayon thread pool. rayon already LINKS into the DLL (rars 0.6 made it a
+    // mandatory dependency, see the `rars` comment in Cargo.toml), but no pool actually
+    // runs today because we never call the parallel entry point. Swapping this call for
+    // the parallel one would put a global thread pool inside explorer.exe, the exact
+    // thing `src/parallel.rs`'s hand-rolled pool exists to avoid. Guarded by a test below.
     let _ = archive.extract_to(None, |meta| {
         if remaining == 0 {
             return Err(std::io::Error::other("covers captured").into());
@@ -112,7 +144,10 @@ pub fn extract_n(bytes: &[u8], want: usize) -> Option<Vec<Vec<u8>>> {
         let name = String::from_utf8_lossy(&meta.name).into_owned();
         if let Some(rank) = targets.remove(name.as_str()) {
             remaining -= 1;
-            Ok(Box::new(CapBuf(Rc::clone(&bufs[rank]))) as Box<dyn Write>)
+            Ok(Box::new(CapBuf {
+                buf: Rc::clone(&bufs[rank]),
+                aggregate_remaining: Rc::clone(&aggregate_remaining),
+            }) as Box<dyn Write>)
         } else {
             // Not a pick — discard, but on the clock (see `SKIP_SCAN_BUDGET`).
             Ok(Box::new(BudgetSink(Rc::clone(&drained))) as Box<dyn Write>)
@@ -141,4 +176,88 @@ pub fn list(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rejected per-entry write (over `MAX_COVER`) must not leave a TRUNCATED prefix in
+    /// the shared buffer — the final `extract_n` filter only checks length, so a partial
+    /// image under the cap would otherwise pass as a valid, if corrupt, cover.
+    #[test]
+    fn capbuf_clears_its_buffer_when_the_per_entry_cap_is_exceeded() {
+        let buf = Rc::new(RefCell::new(Vec::new()));
+        let aggregate_remaining = Rc::new(std::cell::Cell::new(COVERS_AGGREGATE_BUDGET));
+        let mut cap = CapBuf {
+            buf: Rc::clone(&buf),
+            aggregate_remaining,
+        };
+        // A first, small write succeeds and is visible in the shared buffer.
+        cap.write_all(b"partial jpeg bytes").unwrap();
+        assert!(!buf.borrow().is_empty());
+
+        // A write that would push the buffer past MAX_COVER is rejected...
+        let huge = vec![0u8; (crate::container::MAX_COVER + 1) as usize];
+        assert!(cap.write(&huge).is_err());
+        // ...and the truncated prefix must be gone, not left behind for the caller to
+        // mistake for a complete (if oddly small) cover.
+        assert!(buf.borrow().is_empty());
+    }
+
+    /// The SUM of bytes captured across every picked cover in one pass must be bounded,
+    /// even though each individual entry stays under `MAX_COVER`.
+    #[test]
+    fn covers_aggregate_budget_is_shared_and_charged_across_picks() {
+        let aggregate_remaining = Rc::new(std::cell::Cell::new(COVERS_AGGREGATE_BUDGET));
+        let buf_a = Rc::new(RefCell::new(Vec::new()));
+        let buf_b = Rc::new(RefCell::new(Vec::new()));
+        let mut cap_a = CapBuf {
+            buf: Rc::clone(&buf_a),
+            aggregate_remaining: Rc::clone(&aggregate_remaining),
+        };
+        let mut cap_b = CapBuf {
+            buf: Rc::clone(&buf_b),
+            aggregate_remaining: Rc::clone(&aggregate_remaining),
+        };
+
+        // First pick spends most of the shared budget; well under MAX_COVER on its own.
+        let first = vec![0u8; (COVERS_AGGREGATE_BUDGET - 1024) as usize];
+        cap_a.write_all(&first).unwrap();
+        assert_eq!(buf_a.borrow().len(), first.len());
+
+        // Second pick, also under MAX_COVER individually, no longer fits the SHARED
+        // remaining budget — before this fix only the per-entry MAX_COVER cap applied,
+        // so this write would have succeeded and let two picks buffer far more than the
+        // aggregate ceiling.
+        let second = vec![0u8; 4096];
+        assert!(cap_b.write(&second).is_err());
+        assert!(
+            buf_b.borrow().is_empty(),
+            "the truncated pick must be poisoned, not partial"
+        );
+    }
+
+    /// `rars` exposes both a sequential `extract_to` and a `extract_to_parallel_buffered`
+    /// that spins up a rayon thread pool. rayon already links into the shell DLL (rars 0.6
+    /// made it a mandatory dependency, see the `rars` comment in Cargo.toml), so calling
+    /// the parallel entry point from here would put a live global thread pool inside
+    /// explorer.exe, which `src/parallel.rs` exists specifically to avoid. This is a
+    /// source-text guard, not a runtime one: it fails the moment someone swaps the call,
+    /// before it ever ships.
+    #[test]
+    fn rar_extraction_never_calls_the_parallel_rars_api() {
+        let src = include_str!("rar.rs");
+        // Built from two joined pieces on purpose: `include_str!` pulls in this very
+        // test file, and the parallel method's NAME is unavoidably spelled out in the
+        // explanatory comments above (and in this doc-comment). Writing the call's
+        // dot-prefixed, paren-suffixed form as ONE contiguous literal would make this
+        // check trip on its own documentation the moment it's read back via include_str!.
+        let banned_call = [".extract_to_parallel_", "buffered("].concat();
+        assert!(
+            !src.contains(&banned_call),
+            "rar.rs must keep using the sequential extract_to, not the parallel rars API \
+             that spins up a rayon thread pool inside explorer.exe"
+        );
+    }
 }

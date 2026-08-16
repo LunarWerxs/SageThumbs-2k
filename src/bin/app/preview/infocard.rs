@@ -9,6 +9,9 @@ use windows::Win32::Graphics::Gdi::{
     DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HDC, TRANSPARENT,
 };
 
+// Shared with content.rs's archive listing (and dbdoc.rs's DB view) so a file's size reads
+// identically in every pane instead of drifting between separately maintained formatters.
+use super::content::human_size;
 use super::paint::draw_text;
 use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON};
@@ -143,21 +146,6 @@ unsafe fn shell_icon(path: &str) -> Option<HICON> {
     }
 }
 
-/// "1.2 MB"-style size string.
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
-    if bytes < 1024 {
-        return format!("{bytes} bytes");
-    }
-    let mut v = bytes as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    format!("{v:.1} {}", UNITS[u])
-}
-
 /// The file's last-modified time as "YYYY-MM-DD HH:MM" in local time. `None` if the file
 /// can't be stat'd.
 unsafe fn modified_string(path: &str) -> Option<String> {
@@ -186,4 +174,20 @@ unsafe fn modified_string(path: &str) -> Option<String> {
         "{:04}-{:02}-{:02} {:02}:{:02}",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute
     ))
+}
+
+#[cfg(test)]
+mod human_size_tests {
+    use super::*;
+
+    /// The bug this guarded: infocard.rs used to carry its OWN `human_size`, formatting a
+    /// sub-1024-byte size as "512 bytes" while content.rs's canonical version (already the one
+    /// `dbdoc.rs` imports) formats the same value as "512 B" — the same file's size could read
+    /// differently depending which pane showed it. Now that infocard imports the shared
+    /// function instead of defining its own, this must hold.
+    #[test]
+    fn the_info_card_uses_the_shared_canonical_size_format() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(0), "0 B");
+    }
 }

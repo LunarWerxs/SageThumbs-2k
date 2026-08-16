@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::gdip;
+use windows::Win32::UI::Controls::ODS_FOCUS;
+use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_RETURN, VK_UP};
 
 // ===================== v3 layout: nav rail + content pane =====================
 // Geometry (96-dpi design px). The window is nav rail (left) + a content pane that
@@ -78,9 +80,9 @@ const GENERAL: [Row; 11] = {
 };
 
 /// Advanced — system behaviors only: Diagnostics / Updates / Hotkey service.
-/// (Settings sync + Backup moved to their own "Data & Backup" tab.)
-/// Index 0 is the portable-only registration row; an installed build takes `ADVANCED[1..]`,
-/// so there is one list here rather than two that could drift apart.
+/// (Settings sync + Backup moved to their own "Data & Backup" tab.) Unlike GENERAL, this
+/// list is NOT sliced for installed builds — `cat_rows`' `7 => &ADVANCED` arm is
+/// unconditional, and ADVANCED[0] is the Diagnostics header, not a portable-only row.
 const ADVANCED: [Row; 11] = {
     use Row::*;
     [
@@ -442,12 +444,16 @@ pub(super) fn cat_blurb(ci: usize) -> &'static str {
 pub(super) fn page_has_non_defaults(ci: usize) -> bool {
     use sagethumbs2k_core::settings as s;
     match ci {
-        // General: master switch, embedded pref, badge trio, checkerboard + the numbers.
+        // General: master switch, embedded pref, badge trio, checkerboard, the numbers,
+        // and the JPEG/PNG quality fields (also on this page — see ID_JPEG/ID_PNG in
+        // `cat_rows`'s GENERAL rows).
         0 => {
             !s::thumbnails_enabled()
                 || !s::use_embedded()
                 || s::max_file_size_bytes() != u64::from(s::DEFAULT_MAX_FILE_MB) * 1024 * 1024
                 || s::max_thumb_size() != s::DEFAULT_THUMB_SIZE
+                || s::jpeg_quality() != s::DEFAULT_JPEG as u8
+                || s::png_level() != s::DEFAULT_PNG
         }
         // Appearance: every switch on the page, all default-off except the icon style.
         1 => {
@@ -458,13 +464,14 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
                 || s::prefer_cover_art()
                 || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
         }
-        // File types: the format tick-list itself is deliberately not scanned
-        // (327 formats per repaint would be real work for a hint).
+        // Ebook/comic: also where ID_PDF_MARGIN actually lives (moved here from General,
+        // see `cat_rows`), so its non-Tight PDF page layout counts toward this page's dot.
         3 => {
             !s::container_sort()
                 || !s::container_prefer_cover()
                 || s::container_skip_scanlation()
                 || !s::archive_collage()
+                || s::pdf_page() != sagethumbs2k_core::PdfPage::Tight
         }
         4 => {
             !s::menu_enabled()
@@ -478,6 +485,8 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
         // Screenshots / Quick preview: their daemon-backed master switches are OFF by
         // default (first-run offers them), so ON is the changed state.
         5 => crate::screenshot::is_enabled(),
+        // Quick action: unbound (vk == 0) is the default; any bound hotkey is a change.
+        6 => s::custom_action_hotkey().1 != 0,
         8 => s::preview_enabled(),
         7 => !s::update_auto_check() || s::screenshot_hide_tray(),
         _ => false,
@@ -592,6 +601,25 @@ pub(super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool)
         &mut tr,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
     );
+    // Keyboard focus cue: `ODS_FOCUS` is set automatically once `nav_item_subclass`'s
+    // WM_GETDLGCODE lets this owner-draw static actually receive focus. Without some visible
+    // marker a keyboard user tabbing/arrowing through the rail has no way to see where they are.
+    if (d.itemState.0 & ODS_FOCUS.0) != 0 {
+        let m = dpi_scale(hwnd, 2);
+        gdip::with_aa(hdc, |g| {
+            let p = gdip::pen_round(ACCENT(), dpi_scale(hwnd, 1).max(1));
+            gdip::stroke_round(
+                g,
+                p,
+                rc.left + m,
+                rc.top + m,
+                (rc.right - rc.left) - 2 * m,
+                (rc.bottom - rc.top) - 2 * m,
+                dpi_scale(hwnd, 8),
+            );
+            gdip::drop_pen(p);
+        });
+    }
 }
 
 /// Owner-draw the per-pane header: an accent-tinted icon chip + the active
@@ -681,6 +709,60 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     );
 }
 
+/// Keyboard access for a nav-rail item (the rail used to be mouse-only: SS_OWNERDRAW|SS_NOTIFY
+/// statics with no WS_TABSTOP and no key handling at all).
+///
+/// `WM_GETDLGCODE` claims arrows AND "all keys" so `IsDialogMessageW` (the message-pump helper
+/// `run_dialog` uses — see `win::mod.rs`) hands us Up/Down/Enter/Space instead of either moving
+/// focus itself or treating Enter as a click on the dialog's default button.
+unsafe extern "system" fn nav_item_subclass(
+    h: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    uid: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(h, Some(nav_item_subclass), uid);
+        }
+        WM_GETDLGCODE => {
+            let base = DefSubclassProc(h, msg, w, l).0 as u32;
+            return LRESULT((base | DLGC_WANTARROWS | DLGC_WANTALLKEYS) as isize);
+        }
+        // `ODS_FOCUS` in the next `WM_DRAWITEM` already reflects the new focus state (standard
+        // owner-draw behaviour); this just makes sure a repaint actually happens right away
+        // instead of waiting for some unrelated invalidate to draw the focus cue in or out.
+        WM_SETFOCUS | WM_KILLFOCUS => {
+            let _ = InvalidateRect(Some(h), None, false);
+        }
+        WM_KEYDOWN => {
+            let vk = w.0 as u16;
+            if let Ok(parent) = GetParent(h) {
+                let ci = (GetDlgCtrlID(h) - ID_NAV_BASE) as usize;
+                if vk == VK_RETURN.0 || vk == VK_SPACE.0 {
+                    switch_category(parent, ci);
+                    return LRESULT(0);
+                }
+                if vk == VK_UP.0 || vk == VK_DOWN.0 {
+                    let next = if vk == VK_UP.0 {
+                        (ci + NCAT - 1) % NCAT
+                    } else {
+                        (ci + 1) % NCAT
+                    };
+                    if let Ok(target) = GetDlgItem(Some(parent), ID_NAV_BASE + next as i32) {
+                        let _ = SetFocus(Some(target));
+                    }
+                    return LRESULT(0);
+                }
+            }
+        }
+        _ => {}
+    }
+    DefSubclassProc(h, msg, w, l)
+}
+
 /// Show category `ci`'s controls, hide the others, repaint the nav + pane.
 pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
     // Visiting a page clears its "you changed something here" dot. Done before the rail
@@ -712,20 +794,26 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 
+/// Controls this dialog creates but the v3 nav-rail layout hides on EVERY page, with
+/// no page that ever un-hides them (`ID_LBL_GENERAL` is now a sub-header on the
+/// merged General page; `ID_LBL_EBOOK` is orphaned — Ebook/comic is its own tab with
+/// no sub-header; the menu-items checklist + its Reset button live in the popup
+/// editor (`menuitems.rs`), re-parented in only while that popup is open). Named so
+/// other v2-era machinery that still keys off these ids (e.g. mod.rs's resize
+/// reflow table) can check itself against the SAME list instead of hand-copying it
+/// out of sync — see A048/A261.
+pub(super) const V3_ALWAYS_HIDDEN: &[i32] = &[
+    ID_LBL_FORMATS,
+    ID_SCROLLBAR,
+    ID_LEFT_MASK,
+    ID_BANNER,
+    ID_MENU_ITEMS_LIST,
+    ID_MENU_RESET,
+];
+
 pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     // Hide the old scrolling chrome + the headers the nav/page-header now title.
-    // (ID_LBL_GENERAL is now a sub-header on the merged General page; ID_LBL_EBOOK is
-    // orphaned — Ebook/comic is its own tab with no sub-header.)
-    for id in [
-        ID_LBL_FORMATS,
-        ID_SCROLLBAR,
-        ID_LEFT_MASK,
-        ID_BANNER,
-        // The menu-items checklist + its Reset button live in the popup editor
-        // (`menuitems.rs`); hidden here, re-parented in while the popup is open.
-        ID_MENU_ITEMS_LIST,
-        ID_MENU_RESET,
-    ] {
+    for &id in V3_ALWAYS_HIDDEN {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             let _ = ShowWindow(c, SW_HIDE);
         }
@@ -756,14 +844,16 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
         }
     };
 
-    // Nav rail.
+    // Nav rail. WS_TABSTOP + the subclass below give it keyboard access (Tab into the
+    // rail, arrows to move between categories, Enter/Space to switch) — previously these
+    // were plain SS_OWNERDRAW|SS_NOTIFY statics with no keyboard path at all.
     #[allow(clippy::needless_range_loop)] // i drives both the label index and position/id math
     for i in 0..NCAT {
-        ctl(
+        let nav = ctl(
             hwnd,
             STATIC,
             nav_label(i),
-            WINDOW_STYLE(SS_OWNERDRAW | SS_NOTIFY),
+            WINDOW_STYLE(SS_OWNERDRAW | SS_NOTIFY) | WS_TABSTOP,
             NAV_X,
             NAV_TOP + i as i32 * NAV_ITEM_H,
             NAV_W,
@@ -771,6 +861,7 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
             ID_NAV_BASE + i as i32,
             hinst,
         );
+        let _ = SetWindowSubclass(nav, Some(nav_item_subclass), 0, 0);
     }
 
     // Per-pane header (icon chip + bold category title + blurb), redrawn per active

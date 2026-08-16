@@ -1903,3 +1903,82 @@ fn the_in_process_menu_path_never_gets_the_widened_ceiling() {
         "the in-process context-menu preview must refuse a source past the strict guard — it          runs inside explorer.exe under panic=abort, where there is no isolated host to lose"
     );
 }
+
+/// Wrap a JPEG's bytes with an EXIF APP1 declaring `orientation` (1..=8).
+///
+/// Hand-assembled rather than pulled from a corpus file so the test states exactly what it
+/// depends on: one IFD0 entry, tag 0x0112, little-endian TIFF.
+fn with_exif_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {
+    assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "fixture must be a JPEG");
+    let mut app1: Vec<u8> = Vec::new();
+    app1.extend_from_slice(b"Exif\0\0");
+    app1.extend_from_slice(b"II\x2A\x00"); // little-endian TIFF magic
+    app1.extend_from_slice(&8u32.to_le_bytes()); // IFD0 begins at offset 8
+    app1.extend_from_slice(&1u16.to_le_bytes()); // one entry
+    app1.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+    app1.extend_from_slice(&3u16.to_le_bytes()); // type SHORT
+    app1.extend_from_slice(&1u32.to_le_bytes()); // count
+    app1.extend_from_slice(&(orientation as u32).to_le_bytes()); // value, left-packed
+    app1.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+
+    let mut out = Vec::with_capacity(jpeg.len() + app1.len() + 4);
+    out.extend_from_slice(&jpeg[..2]); // SOI
+    out.extend_from_slice(&[0xFF, 0xE1]);
+    out.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
+    out.extend_from_slice(&app1);
+    out.extend_from_slice(&jpeg[2..]);
+    out
+}
+
+/// A large camera JPEG must come out of the DCT-scaled fast path the right way up.
+///
+/// The fast path added for large-JPEG thumbnail performance returns early, and an early
+/// return is a return PAST `apply_exif_orientation`. WIC hands back the codec's stored
+/// pixels and never orients them itself, so every portrait phone photo over the 512 KiB
+/// floor thumbnailed on its side, and Explorer then cached it that way.
+///
+/// The test is two-sided ON PURPOSE. Asserting only that the final image is portrait would
+/// also pass if WIC declined and the ordinary tiers (which always oriented correctly) ran
+/// instead, i.e. it would pass without ever measuring the path it exists to measure. So it
+/// first pins that the fast path is genuinely taken AND that its raw output is unrotated,
+/// and only then that the public entry point rotates it.
+#[test]
+fn the_scaled_jpeg_fast_path_still_applies_exif_orientation() {
+    // The fast path IS WIC, so it needs COM on this thread like every other WIC test here.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
+    // Landscape, and noisy enough to clear the 512 KiB floor that gates the fast path.
+    let base = noisy_jpeg_bytes(1400, 900);
+    let bytes = with_exif_orientation(&base, 6); // 6 = rotate 90 CW
+    assert!(
+        bytes.len() >= 512 * 1024,
+        "fixture is {} bytes, under the fast path's floor: it would prove nothing",
+        bytes.len()
+    );
+    assert_eq!(
+        exif_orientation(&bytes),
+        Some(6),
+        "the APP1 must be readable"
+    );
+
+    // 1) The fast path really runs for this input, and really returns unrotated pixels.
+    let raw = wic_scaled_from_bytes_if_codec_scales(&bytes, 256)
+        .expect("WIC must take the scaled path for a >512 KiB JPEG");
+    assert!(
+        raw.width() > raw.height(),
+        "WIC is expected to return the stored, unoriented landscape pixels"
+    );
+
+    // 2) The public thumbnail entry point must nonetheless hand back a PORTRAIT tile.
+    let out = decode_preview_thumbnail(&bytes, 256).expect("thumbnail decode must succeed");
+    assert!(
+        out.height() > out.width(),
+        "orientation 6 must rotate the landscape source to portrait, got {}x{}",
+        out.width(),
+        out.height()
+    );
+}

@@ -45,7 +45,7 @@ pub const CLSID_CONTEXT_MENU_STR: &str = "{9F3A2B1C-5E8D-4A7F-9C2E-1B6D4F8A0E53}
 pub const CLSID_PREVIEW_HANDLER: GUID = GUID::from_u128(0x2C8F1A3D_6B4E_4D9C_A1F2_7E3B5C8D0A46);
 pub const CLSID_PREVIEW_HANDLER_STR: &str = "{2C8F1A3D-6B4E-4D9C-A1F2-7E3B5C8D0A46}";
 
-/// SageThumbs 2K property handler (IPropertyStore + IInitializeWithStream). Surfaces image
+/// SageThumbs 2K property handler (IPropertyStore + IInitializeWithFile). Surfaces image
 /// dimensions / EXIF camera / audio tags in Explorer's Details pane, info-tips, and columns.
 /// Loads in-process into explorer.exe + SearchIndexer.exe (read-only, panic-guarded).
 pub const CLSID_PROPERTY_STORE: GUID = GUID::from_u128(0x5E1A7C92_8F3D_4B6A_A0E4_3C7B9D2F1A68);

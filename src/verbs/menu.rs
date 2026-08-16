@@ -45,6 +45,28 @@ impl EmailSize {
     }
 }
 
+/// A "compress to under N MB" preset for the one-click menu leaf (the CLI's `st2k
+/// compress --max-size` takes an arbitrary byte target; the menu offers fixed
+/// presets since a right-click verb has no text-entry field).
+#[derive(Clone, Copy)]
+pub enum CompressSize {
+    Mb1,
+    Mb5,
+    Mb10,
+}
+
+impl CompressSize {
+    /// Target size in bytes for [`crate::verbs::encode::compress_to_size`]. Decimal
+    /// megabytes (1_000_000), matching the CLI's `parse_size` / the menu label.
+    pub(crate) fn target_bytes(self) -> u64 {
+        match self {
+            CompressSize::Mb1 => 1_000_000,
+            CompressSize::Mb5 => 5_000_000,
+            CompressSize::Mb10 => 10_000_000,
+        }
+    }
+}
+
 /// How to name files for the batch-rename verb. The first two read EXIF (photos);
 /// the last two read audio tags via `lofty` (music files).
 #[derive(Clone, Copy)]
@@ -81,6 +103,9 @@ pub enum VerbAction {
     ResizeImg(Resize),
     /// Re-encode to a small "(email)" JPEG sibling at the given size preset.
     ShrinkForEmail(EmailSize),
+    /// Shrink (JPEG quality + scale search) until the image fits under the given
+    /// size preset — a "(compressed)" JPEG sibling. Never touches the original.
+    CompressToSize(CompressSize),
     /// Batch-rename the selected images from their EXIF capture metadata.
     RenameByExif(RenamePattern),
     /// Make the selected image the icon of the folder that contains it.
@@ -280,6 +305,23 @@ pub const MENU: &[MenuItem] = &[
             MenuItem::Verb(
                 "menu_wallpaper_center",
                 VerbAction::Wallpaper(WallpaperMode::Center),
+            ),
+        ],
+    ),
+    MenuItem::Group(
+        "menu_compress",
+        &[
+            MenuItem::Verb(
+                "menu_compress_1mb",
+                VerbAction::CompressToSize(CompressSize::Mb1),
+            ),
+            MenuItem::Verb(
+                "menu_compress_5mb",
+                VerbAction::CompressToSize(CompressSize::Mb5),
+            ),
+            MenuItem::Verb(
+                "menu_compress_10mb",
+                VerbAction::CompressToSize(CompressSize::Mb10),
             ),
         ],
     ),
@@ -541,27 +583,7 @@ pub fn condensed_top_level() -> Vec<(&'static MenuItem, u32)> {
     // image dimensions / EXIF / audio tags, so on a truly unsupported file (e.g. a .docx) they'd
     // silently no-op. (Audio files take `audio_top_level` instead, where Sort/Rename DO apply.)
     const KEYS: &[&str] = &["menu_files_to_folder", "menu_pick_color"];
-    let mut items: Vec<(&'static MenuItem, u32)> = Vec::new();
-    let mut sep: Option<(&'static MenuItem, u32)> = None;
-    let mut settings: Option<(&'static MenuItem, u32)> = None;
-    let mut idx = 0u32;
-    for it in MENU {
-        if matches!(it, MenuItem::Separator) {
-            sep.get_or_insert((it, idx));
-        } else if it.title() == "menu_settings" {
-            settings = Some((it, idx));
-        } else if KEYS.contains(&it.title()) {
-            items.push((it, idx));
-        }
-        idx += count_leaves(it);
-    }
-    if let Some(s) = sep {
-        items.push(s);
-    }
-    if let Some(st) = settings {
-        items.push(st);
-    }
-    items
+    top_level_subset(KEYS)
 }
 
 /// The AUDIO-only top-level items shown when every selected file is audio (music
@@ -583,6 +605,15 @@ pub fn audio_top_level() -> Vec<(&'static MenuItem, u32)> {
         "menu_sort",
         "menu_pick_color",
     ];
+    top_level_subset(KEYS)
+}
+
+/// Shared walk behind [`condensed_top_level`] and [`audio_top_level`]: collect every
+/// top-level `MENU` item whose `title()` is in `keys`, plus the trailing
+/// separator+Settings, each carrying its ORIGINAL leaf-start index so command ids match
+/// the default [`leaves`] and dispatch is unchanged. The two callers differ only in which
+/// keys they pass — the walk itself had drifted into two byte-identical copies.
+fn top_level_subset(keys: &[&str]) -> Vec<(&'static MenuItem, u32)> {
     let mut items: Vec<(&'static MenuItem, u32)> = Vec::new();
     let mut sep: Option<(&'static MenuItem, u32)> = None;
     let mut settings: Option<(&'static MenuItem, u32)> = None;
@@ -592,7 +623,7 @@ pub fn audio_top_level() -> Vec<(&'static MenuItem, u32)> {
             sep.get_or_insert((it, idx));
         } else if it.title() == "menu_settings" {
             settings = Some((it, idx));
-        } else if KEYS.contains(&it.title()) {
+        } else if keys.contains(&it.title()) {
             items.push((it, idx));
         }
         idx += count_leaves(it);
@@ -724,7 +755,7 @@ mod tests {
     fn leaf_count_snapshot() {
         assert_eq!(
             leaf_count(),
-            43,
+            46,
             "MENU leaf count changed — re-check quick_items()/preview-slot math, then update this snapshot",
         );
     }
@@ -799,8 +830,8 @@ mod tests {
         }
         assert_eq!(
             out.first().unwrap().0.title(),
-            "menu_wallpaper",
-            "reversed → wallpaper first"
+            "menu_compress",
+            "reversed → the last default-order reorderable item (compress) comes first"
         );
         assert_eq!(
             out.last().unwrap().0.title(),

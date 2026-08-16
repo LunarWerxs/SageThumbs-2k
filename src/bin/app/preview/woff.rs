@@ -71,9 +71,20 @@ pub(super) fn to_sfnt(bytes: &[u8]) -> Option<Vec<u8>> {
         let data = if comp == orig {
             raw.to_vec()
         } else {
-            let mut out = Vec::with_capacity(orig.min(total));
+            // `orig` is this ONE table's own origLength, attacker-controlled and
+            // independent of `total` (the whole-font size already checked against the
+            // 64 MiB cap above). Bounding the read by `orig` alone would let a small
+            // WOFF with a small `total` still decompress far past that cap — the
+            // allocation hint two lines up was already `orig.min(total)`, but the
+            // actual zlib read wasn't, so the over-cap bytes got decompressed (and
+            // dropped) before the length check below ever ran. `.min(total)` here
+            // makes the read agree with the allocation: a legitimate table (orig <=
+            // total) is unaffected, and an inflated one now short-reads and is
+            // rejected below instead of being decompressed past the cap first.
+            let cap = orig.min(total);
+            let mut out = Vec::with_capacity(cap);
             flate2::read::ZlibDecoder::new(raw)
-                .take(orig as u64)
+                .take(cap as u64)
                 .read_to_end(&mut out)
                 .ok()?;
             if out.len() != orig {
@@ -206,6 +217,45 @@ mod tests {
         let at = HDR + 12;
         w[at..at + 4].copy_from_slice(&9999u32.to_be_bytes());
         assert!(to_sfnt(&w).is_none());
+    }
+
+    /// A single-table WOFF with an explicit `total` (totalSfntSize) header field,
+    /// deliberately independent of the table's own real decompressed length — the
+    /// two fields are never required to agree in the format, which is exactly what
+    /// `to_sfnt`'s per-table decompression cap has to defend against.
+    fn woff_with_total(total: u32, t1: &[u8]) -> Vec<u8> {
+        let c1 = deflate(t1);
+        let dir = HDR + DIR_ENTRY;
+        let mut v = b"wOFF".to_vec();
+        v.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // flavor: TrueType
+        v.extend_from_slice(&0u32.to_be_bytes()); // length (unused here)
+        v.extend_from_slice(&1u16.to_be_bytes()); // numTables
+        v.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        v.extend_from_slice(&total.to_be_bytes()); // totalSfntSize
+        v.extend_from_slice(&[0; 24]);
+        assert_eq!(v.len(), HDR);
+        v.extend_from_slice(b"cmap");
+        v.extend_from_slice(&(dir as u32).to_be_bytes());
+        v.extend_from_slice(&(c1.len() as u32).to_be_bytes());
+        v.extend_from_slice(&(t1.len() as u32).to_be_bytes()); // origLength
+        v.extend_from_slice(&0xAAAA_AAAAu32.to_be_bytes());
+        v.extend_from_slice(&c1);
+        v
+    }
+
+    #[test]
+    fn a_tables_origlength_cannot_outrun_the_checked_total_cap() {
+        // A real deflate stream whose TRUE decompressed length (10,000 bytes) vastly
+        // exceeds a deliberately tiny `total` (the whole-font size the 64 MiB guard
+        // above actually bounds). Before the fix, `.take(orig as u64)` ignored
+        // `total` entirely, so this table would fully decompress and be ACCEPTED —
+        // the read ran straight past the cap the allocation hint already respected.
+        let big = vec![b'x'; 10_000];
+        let w = woff_with_total(64, &big);
+        assert!(
+            to_sfnt(&w).is_none(),
+            "a table's own origLength let decompression run past the checked total cap"
+        );
     }
 
     #[test]

@@ -18,6 +18,20 @@ use windows::Win32::UI::Shell::{
 
 use super::wide;
 
+/// RAII `CoUninitialize` for the four file-dialog pickers below, each of which calls
+/// `CoInitializeEx` on entry: `.0` is whether that call actually succeeded (a caller
+/// already on an initialized apartment gets `RPC_E_CHANGED_MODE` or similar, and must
+/// NOT uninitialize an apartment it didn't start). Was defined identically four times,
+/// once per function; hoisted to one module-level definition.
+struct ComGuard(bool);
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
 pub(crate) unsafe fn desktop_dir() -> String {
     match SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None) {
         Ok(pw) => {
@@ -31,15 +45,6 @@ pub(crate) unsafe fn desktop_dir() -> String {
 
 /// Folder picker via IFileOpenDialog (FOS_PICKFOLDERS).
 pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
-    struct ComGuard(bool);
-    impl Drop for ComGuard {
-        fn drop(&mut self) {
-            if self.0 {
-                unsafe { CoUninitialize() };
-            }
-        }
-    }
-
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
     let dlg: IFileOpenDialog =
         CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -59,15 +64,6 @@ pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
 /// centres itself on the owner, so it can't get lost. Seeds the dialog with folder `dir`
 /// and default file `name`. Returns the chosen path (a `.png`), or None if cancelled.
 pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option<String> {
-    struct ComGuard(bool);
-    impl Drop for ComGuard {
-        fn drop(&mut self) {
-            if self.0 {
-                unsafe { CoUninitialize() };
-            }
-        }
-    }
-
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
     let dlg: IFileSaveDialog =
         CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -100,15 +96,6 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
 /// "Save settings as" dialog (a `.json` file) via IFileSaveDialog — centres on `owner`
 /// like [`pick_save_png`]. Seeds the default file `name`; returns the chosen path or None.
 pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<String> {
-    struct ComGuard(bool);
-    impl Drop for ComGuard {
-        fn drop(&mut self) {
-            if self.0 {
-                unsafe { CoUninitialize() };
-            }
-        }
-    }
-
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
     let dlg: IFileSaveDialog =
         CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -134,15 +121,6 @@ pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<Strin
 /// "Open settings" dialog (a `.json` file) via IFileOpenDialog. Returns the chosen path
 /// or None. Open dialogs default to file-must-exist, so a bad pick can't reach us.
 pub(crate) unsafe fn pick_open_settings(owner: HWND) -> Option<String> {
-    struct ComGuard(bool);
-    impl Drop for ComGuard {
-        fn drop(&mut self) {
-            if self.0 {
-                unsafe { CoUninitialize() };
-            }
-        }
-    }
-
     let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
     let dlg: IFileOpenDialog =
         CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;

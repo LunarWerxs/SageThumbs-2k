@@ -183,7 +183,10 @@ unsafe fn selected_path(dialog: u64) -> Option<Vec<u16>> {
 }
 
 /// Copy a NUL-terminated shell string into an owned buffer, bounded by [`PATH_CAP`] so a
-/// hostile/garbage pointer cannot walk memory forever. `None` for null or empty.
+/// hostile/garbage pointer cannot walk memory forever. `None` for null, empty, or a string
+/// with no NUL within `PATH_CAP` units — the last case means the real path is longer than we
+/// can carry, and handing back a silently truncated path is worse than the caller's existing
+/// `STATE_FAILED` handling (a truncated path can resolve to a different, real file).
 unsafe fn copy_pwstr(p: *const u16) -> Option<Vec<u16>> {
     if p.is_null() {
         return None;
@@ -193,15 +196,17 @@ unsafe fn copy_pwstr(p: *const u16) -> Option<Vec<u16>> {
         return None;
     }
     let mut i = 0usize;
+    let mut terminated = false;
     while i < PATH_CAP {
         let c = *p.add(i);
         if c == 0 {
+            terminated = true;
             break;
         }
         out.push(c);
         i += 1;
     }
-    if out.is_empty() {
+    if !terminated || out.is_empty() {
         None
     } else {
         Some(out)
@@ -246,4 +251,45 @@ unsafe fn signal_done() {
     };
     let _ = SetEvent(ev);
     let _ = CloseHandle(HANDLE(ev.0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A NUL-terminated string within the cap is copied verbatim.
+    #[test]
+    fn copy_pwstr_returns_the_terminated_string() {
+        let src: Vec<u16> = "C:\\pics\\a.png\0".encode_utf16().collect();
+        let out = unsafe { copy_pwstr(src.as_ptr()) }.expect("terminated string must copy");
+        assert_eq!(out, "C:\\pics\\a.png".encode_utf16().collect::<Vec<u16>>());
+    }
+
+    /// A string with no NUL within `PATH_CAP` units used to be silently truncated and handed
+    /// back as `Some(out)` — the caller then reported `STATE_DONE` with a cut-off path instead
+    /// of the `STATE_FAILED` this exact case is meant to produce. Must now be `None`.
+    #[test]
+    fn copy_pwstr_rejects_a_string_with_no_nul_within_the_cap_instead_of_truncating() {
+        let src: Vec<u16> = core::iter::repeat_n(b'x' as u16, PATH_CAP).collect();
+        assert!(
+            unsafe { copy_pwstr(src.as_ptr()) }.is_none(),
+            "an unterminated string at the cap boundary must be rejected, not truncated"
+        );
+    }
+
+    /// A NUL landing on the very last index the bounded loop checks (`PATH_CAP - 1`) is still
+    /// a real, legitimate terminated string and must not be caught by the new truncation
+    /// guard — only a string with NO NUL anywhere in range is a truncation.
+    #[test]
+    fn copy_pwstr_accepts_a_string_terminated_exactly_at_the_cap_boundary() {
+        let mut src: Vec<u16> = core::iter::repeat_n(b'x' as u16, PATH_CAP - 1).collect();
+        src.push(0); // NUL at index PATH_CAP - 1, the last index the loop reads
+        let out = unsafe { copy_pwstr(src.as_ptr()) }.expect("boundary-terminated string");
+        assert_eq!(out.len(), PATH_CAP - 1);
+    }
+
+    #[test]
+    fn copy_pwstr_rejects_null_pointer() {
+        assert!(unsafe { copy_pwstr(core::ptr::null()) }.is_none());
+    }
 }

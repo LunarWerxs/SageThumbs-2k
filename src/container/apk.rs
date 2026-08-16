@@ -29,6 +29,7 @@ use std::io::{Cursor, Read, Seek};
 
 use zip::ZipArchive;
 
+use super::util::{le16, le32};
 use super::zipfmt;
 
 // Chunk types (u16, little-endian, shared by AXML and resources.arsc).
@@ -101,6 +102,13 @@ pub(crate) fn looks_like_apk(bytes: &[u8]) -> bool {
     if !super::is_zip(bytes) {
         return false;
     }
+    // ACCEPTED BOUND, not a gap in this file: the `zip` crate's own `ZipArchive::new`
+    // fully parses the central directory before any entry-count cap here (or in
+    // `zipfmt.rs`'s MAX_LIST_ENTRIES-bounded calls below) has a chance to run, so a
+    // crafted zip of many tiny entries pays that parse cost regardless of what this
+    // module does afterward. There is no bounded-directory constructor to switch to;
+    // `MAX_INPUT_BYTES` (the whole-file cap upstream of every container extractor) is
+    // what actually limits it.
     let Ok(mut zip) = ZipArchive::new(Cursor::new(bytes)) else {
         return false;
     };
@@ -287,16 +295,6 @@ fn scan_for_launcher<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<String> 
 
 // ===== shared byte-level helpers ==============================================================
 
-fn u16le(b: &[u8], at: usize) -> Option<u16> {
-    let s = b.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes(s.try_into().ok()?))
-}
-
-fn u32le(b: &[u8], at: usize) -> Option<u32> {
-    let s = b.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes(s.try_into().ok()?))
-}
-
 /// ASCII-case-insensitive suffix test that never slices mid-UTF-8 (a non-boundary
 /// `get` simply returns `None`, i.e. "no match").
 fn ends_with_ci(name: &str, suffix: &str) -> bool {
@@ -343,9 +341,9 @@ impl<'a> Iterator for Chunks<'a> {
             return None;
         }
         self.seen += 1;
-        let t = u16le(self.data, self.pos)?;
-        let hs = u16le(self.data, self.pos.checked_add(2)?)? as usize;
-        let size = u32le(self.data, self.pos.checked_add(4)?)? as usize;
+        let t = le16(self.data, self.pos)?;
+        let hs = le16(self.data, self.pos.checked_add(2)?)? as usize;
+        let size = le32(self.data, self.pos.checked_add(4)?)? as usize;
         if size < 8 || hs < 8 || size < hs {
             return None;
         }
@@ -367,12 +365,12 @@ struct Pool<'a> {
 
 impl<'a> Pool<'a> {
     fn parse(chunk: &'a [u8], header_size: usize) -> Option<Self> {
-        let count = u32le(chunk, 8)?;
+        let count = le32(chunk, 8)?;
         if count > MAX_STRINGS {
             return None;
         }
-        let flags = u32le(chunk, 16)?;
-        let strings_start = u32le(chunk, 20)? as usize;
+        let flags = le32(chunk, 16)?;
+        let strings_start = le32(chunk, 20)? as usize;
         // The offsets array must fit inside the chunk; a truncated pool is refused
         // here rather than surprising every later `get`.
         let offsets_end = header_size.checked_add((count as usize).checked_mul(4)?)?;
@@ -395,7 +393,7 @@ impl<'a> Pool<'a> {
         let slot = self
             .offsets_at
             .checked_add((index as usize).checked_mul(4)?)?;
-        let off = u32le(self.chunk, slot)? as usize;
+        let off = le32(self.chunk, slot)? as usize;
         let at = self.strings_start.checked_add(off)?;
         if self.utf8 {
             decode_utf8_entry(self.chunk, at)
@@ -429,11 +427,11 @@ fn decode_utf8_entry(b: &[u8], at: usize) -> Option<String> {
 /// UTF-16 pool entry: the same two-step length scheme in u16 units (`0x8000`
 /// continuation bit), then that many UTF-16LE units.
 fn decode_utf16_entry(b: &[u8], at: usize) -> Option<String> {
-    let w0 = u16le(b, at)?;
+    let w0 = le16(b, at)?;
     let (units, hdr) = if w0 & 0x8000 == 0 {
         (w0 as usize, 2usize)
     } else {
-        let w1 = u16le(b, at.checked_add(2)?)?;
+        let w1 = le16(b, at.checked_add(2)?)?;
         (((w0 & 0x7FFF) as usize) << 16 | w1 as usize, 4)
     };
     let start = at.checked_add(hdr)?;
@@ -460,11 +458,11 @@ enum IconAttr {
 /// `<application android:icon>` (falling back to `android:roundIcon`) out of a
 /// compiled AndroidManifest.xml.
 fn manifest_icon(axml: &[u8]) -> Option<IconAttr> {
-    if u16le(axml, 0)? != RES_XML {
+    if le16(axml, 0)? != RES_XML {
         return None;
     }
-    let hs = u16le(axml, 2)? as usize;
-    let size = u32le(axml, 4)? as usize;
+    let hs = le16(axml, 2)? as usize;
+    let size = le32(axml, 4)? as usize;
     if hs < 8 || size < hs || size > axml.len() {
         return None;
     }
@@ -500,14 +498,14 @@ fn manifest_icon(axml: &[u8]) -> Option<IconAttr> {
 fn element_icon(chunk: &[u8], pool: &Pool, map: &[u8]) -> (Option<IconAttr>, Option<IconAttr>) {
     let nothing = (None, None);
     // Node header is 16 bytes (chunk header + lineNumber + comment); attrExt follows.
-    let Some(name_idx) = u32le(chunk, 20) else {
+    let Some(name_idx) = le32(chunk, 20) else {
         return nothing;
     };
     if pool.get(name_idx).as_deref() != Some("application") {
         return nothing;
     }
     let (Some(astart), Some(asize), Some(acount)) =
-        (u16le(chunk, 24), u16le(chunk, 26), u16le(chunk, 28))
+        (le16(chunk, 24), le16(chunk, 26), le16(chunk, 28))
     else {
         return nothing;
     };
@@ -530,15 +528,15 @@ fn element_icon(chunk: &[u8], pool: &Pool, map: &[u8]) -> (Option<IconAttr>, Opt
         let Some(attr) = chunk.get(at..end) else {
             break; // truncated attribute run — stop, keep what we have
         };
-        let Some(name) = u32le(attr, 4) else { break };
+        let Some(name) = le32(attr, 4) else { break };
         // The name STRING is usually "" — the resource map is the identity.
-        let Some(rid) = (name as usize).checked_mul(4).and_then(|o| u32le(map, o)) else {
+        let Some(rid) = (name as usize).checked_mul(4).and_then(|o| le32(map, o)) else {
             continue; // not a platform attribute
         };
         if rid != ID_ICON && rid != ID_ROUND_ICON {
             continue;
         }
-        let (Some(raw), Some(&dtype), Some(data)) = (u32le(attr, 8), attr.get(15), u32le(attr, 16))
+        let (Some(raw), Some(&dtype), Some(data)) = (le32(attr, 8), attr.get(15), le32(attr, 16))
         else {
             break;
         };
@@ -570,11 +568,11 @@ struct Arsc<'a> {
 }
 
 fn parse_arsc(arsc: &[u8]) -> Option<Arsc<'_>> {
-    if u16le(arsc, 0)? != RES_TABLE {
+    if le16(arsc, 0)? != RES_TABLE {
         return None;
     }
-    let hs = u16le(arsc, 2)? as usize;
-    let size = u32le(arsc, 4)? as usize;
+    let hs = le16(arsc, 2)? as usize;
+    let size = le32(arsc, 4)? as usize;
     if hs < 12 || size < hs || size > arsc.len() {
         return None;
     }
@@ -587,7 +585,7 @@ fn parse_arsc(arsc: &[u8]) -> Option<Arsc<'_>> {
         match t {
             RES_STRING_POOL if global.is_none() => global = Pool::parse(chunk, chs),
             RES_TABLE_PACKAGE if packages.len() < MAX_PACKAGES => {
-                if let Some(id) = u32le(chunk, 8) {
+                if let Some(id) = le32(chunk, 8) {
                     packages.push((id, chunk, chs));
                 }
             }
@@ -669,20 +667,20 @@ fn resolve_icon_path(table: &Arsc, id: u32, depth: u8, work: &mut u32) -> Option
 /// data)`. `None` when the entry is absent here, complex (a bag), or malformed.
 fn type_chunk_value(chunk: &[u8], hs: usize, entry_idx: u16) -> Option<(u16, u8, u32)> {
     let flags = *chunk.get(9)?;
-    let entry_count = u32le(chunk, 12)?;
+    let entry_count = le32(chunk, 12)?;
     if entry_count == 0 || entry_count > MAX_ENTRY_COUNT {
         return None;
     }
-    let entries_start = u32le(chunk, 16)? as usize;
+    let entries_start = le32(chunk, 16)? as usize;
     // ResTable_config self-reports its size; density sits at its byte 16.
-    let cfg_size = u32le(chunk, 20)? as usize;
-    let density = if cfg_size >= 18 { u16le(chunk, 36)? } else { 0 };
+    let cfg_size = le32(chunk, 20)? as usize;
+    let density = if cfg_size >= 18 { le16(chunk, 36)? } else { 0 };
     let off = if flags & SPARSE_FLAG != 0 {
         // Sparse: `{idx, offset/4}` u16 pairs matched by idx — NOT positional.
         let mut found = None;
         for i in 0..entry_count as usize {
             let p = hs.checked_add(i.checked_mul(4)?)?;
-            let (idx, o) = (u16le(chunk, p)?, u16le(chunk, p.checked_add(2)?)?);
+            let (idx, o) = (le16(chunk, p)?, le16(chunk, p.checked_add(2)?)?);
             if idx == entry_idx {
                 found = Some((o as usize).checked_mul(4)?);
                 break;
@@ -694,21 +692,21 @@ fn type_chunk_value(chunk: &[u8], hs: usize, entry_idx: u16) -> Option<(u16, u8,
             return None;
         }
         let p = hs.checked_add((entry_idx as usize).checked_mul(4)?)?;
-        let o = u32le(chunk, p)?;
+        let o = le32(chunk, p)?;
         if o == NO_ENTRY {
             return None;
         }
         o as usize
     };
     let entry = entries_start.checked_add(off)?;
-    let eflags = u16le(chunk, entry.checked_add(2)?)?;
+    let eflags = le16(chunk, entry.checked_add(2)?)?;
     if eflags & ENTRY_COMPLEX != 0 {
         return None;
     }
     // `Res_value` follows the 8-byte entry header: size, res0, dataType, data.
     let value = entry.checked_add(8)?;
     let dtype = *chunk.get(value.checked_add(3)?)?;
-    let data = u32le(chunk, value.checked_add(4)?)?;
+    let data = le32(chunk, value.checked_add(4)?)?;
     Some((density, dtype, data))
 }
 

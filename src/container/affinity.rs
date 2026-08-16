@@ -8,6 +8,8 @@
 //! the LAST embedded PNG whose longest edge is ≤ 512 (the thumbnail) — picking
 //! "largest" grabs a full-res layer, "smallest" grabs a tiny layer icon.
 
+use super::util::find;
+
 const PNG_SIG: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 const IEND: [u8; 8] = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
 
@@ -41,7 +43,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         // Found a PNG header; find its IEND terminator (incl. CRC) within a
         // bounded window after the header (don't linearly scan to EOF).
         let span_end = (i + 8).saturating_add(MAX_SCAN).min(bytes.len());
-        match find(&bytes[i + 8..span_end], &IEND) {
+        match find(&bytes[i + 8..span_end], IEND.as_slice()) {
             Some(rel) => {
                 let end = i + 8 + rel + IEND.len();
                 let png = &bytes[i..end];
@@ -74,11 +76,6 @@ fn ihdr_dims(png: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-/// First index of `needle` in `hay`.
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +105,14 @@ mod tests {
             "should pick the ≤512 preview"
         );
         assert!(extract(b"no png in here").is_none());
+    }
+
+    /// `extract` used to carry its own copy of `find` with no empty-needle guard
+    /// (`windows(0)` panics in std, which under `panic = "abort"` would kill the shell
+    /// host). It now calls `super::util::find`, which is guarded; this proves the guard
+    /// is actually reachable through this module rather than merely present in `util`.
+    #[test]
+    fn find_helper_does_not_panic_on_an_empty_needle() {
+        assert_eq!(find(b"anything", b""), None);
     }
 }

@@ -14,6 +14,14 @@ use windows_registry::{Key, CURRENT_USER};
 
 use sagethumbs2k_core::settings::{self, ROOT};
 
+/// The OAuth refresh-token subkey (`HKCU\...\SageThumbs2K\OAuth`, see `cred_store.rs`) is
+/// volatile, machine-local (the token is DPAPI-encrypted per-user-per-machine and undecryptable
+/// elsewhere) and secret-shaped. It must never round-trip through a settings file that the
+/// export doc itself calls "safe to hand-edit": exporting would embed the encrypted blob +
+/// signed-in identity into a plain file, and importing another export would silently clobber
+/// (sign out) the local session. Skipped by name in both directions.
+const OAUTH_SUBKEY: &str = "OAuth";
+
 /// Read one registry key's values into a JSON object — DWORDs as numbers, strings as
 /// strings; any other value type is skipped (we only ever store those two).
 fn read_values(key: &Key) -> Map<String, Json> {
@@ -40,6 +48,9 @@ fn export_tree(root: Option<&Key>) -> String {
         values = read_values(root);
         if let Ok(names) = root.keys() {
             for name in names {
+                if name == OAUTH_SUBKEY {
+                    continue;
+                }
                 if let Ok(sub) = root.open(&name) {
                     let sv = read_values(&sub);
                     if !sv.is_empty() {
@@ -118,8 +129,10 @@ fn write_values(key: &Key, obj: &Map<String, Json>) -> usize {
     let mut n = 0;
     for (name, val) in obj {
         let wrote = match val {
-            Json::Number(num) => match num.as_u64() {
-                Some(u) => key.set_u32(name, u as u32).is_ok(),
+            // `as u32` would silently truncate an out-of-range value (e.g. 4294967296 -> 0)
+            // instead of rejecting it, and the write would still count as a success.
+            Json::Number(num) => match num.as_u64().and_then(|u| u32::try_from(u).ok()) {
+                Some(u) => key.set_u32(name, u).is_ok(),
                 None => false,
             },
             Json::Bool(b) => key.set_u32(name, *b as u32).is_ok(),
@@ -147,6 +160,9 @@ fn import_tree(root: &Key, text: &str) -> Result<usize, String> {
     }
     if let Some(subs) = doc.get("subkeys").and_then(Json::as_object) {
         for (subname, subval) in subs {
+            if subname == OAUTH_SUBKEY {
+                continue; // never let an import clobber the local sign-in
+            }
             if let Some(obj) = subval.as_object() {
                 if let Ok(sub) = root.create(subname) {
                     n += write_values(&sub, obj);
@@ -253,6 +269,68 @@ mod tests {
         assert_eq!(root.get_u32("EnableThumbs").unwrap(), 0);
         assert_eq!(root.get_string("Lang").unwrap(), "fr");
         assert_eq!(root.open("jpg").unwrap().get_u32("Enabled").unwrap(), 0);
+
+        let _ = CURRENT_USER.remove_tree(KEY); // cleanup
+    }
+
+    /// `export_tree` must never surface the OAuth subkey, and `import_tree` must never let a
+    /// crafted/foreign export doc write one into the registry (which would clobber the local
+    /// refresh token / sign the user out).
+    #[test]
+    fn export_and_import_skip_oauth_subkey() {
+        const KEY: &str = r"Software\SageThumbs2K_iotest_oauth";
+        let _ = CURRENT_USER.remove_tree(KEY);
+        let root = CURRENT_USER.create(KEY).unwrap();
+        root.set_u32("Width", 42).unwrap();
+        root.create("OAuth")
+            .unwrap()
+            .set_string("RefreshToken", "super-secret-blob")
+            .unwrap();
+
+        let json = export_tree(Some(&root));
+        assert!(
+            !json.contains("OAuth"),
+            "export leaked the OAuth subkey: {json}"
+        );
+        assert!(
+            !json.contains("super-secret-blob"),
+            "export leaked the refresh token: {json}"
+        );
+
+        // A doc that carries an OAuth subkey (e.g. a hand-edited or foreign export) must not
+        // be able to write/overwrite it via import.
+        CURRENT_USER.remove_tree(KEY).unwrap();
+        let root = CURRENT_USER.create(KEY).unwrap();
+        let malicious = r#"{"values":{},"subkeys":{"OAuth":{"RefreshToken":"attacker-value"}}}"#;
+        assert!(
+            import_tree(&root, malicious).is_err(),
+            "no other settings, should be a no-op"
+        );
+        assert!(
+            root.open("OAuth").is_err(),
+            "import must not create the OAuth subkey"
+        );
+
+        let _ = CURRENT_USER.remove_tree(KEY); // cleanup
+    }
+
+    /// An out-of-range u32 in the `values` table (e.g. `4294967296`, one past u32::MAX) must
+    /// be skipped rather than silently truncated by a bare `as u32` (which would wrap it to 0
+    /// and still count the write as successful).
+    #[test]
+    fn write_values_rejects_out_of_range_u32() {
+        const KEY: &str = r"Software\SageThumbs2K_iotest_overflow";
+        let _ = CURRENT_USER.remove_tree(KEY);
+        let root = CURRENT_USER.create(KEY).unwrap();
+
+        let doc = r#"{"values":{"Good":10,"TooBig":4294967296},"subkeys":{}}"#;
+        let n = import_tree(&root, doc).unwrap();
+        assert_eq!(n, 1, "only the in-range value should be written");
+        assert_eq!(root.get_u32("Good").unwrap(), 10);
+        assert!(
+            root.get_u32("TooBig").is_err(),
+            "the truncated wraparound value must not land"
+        );
 
         let _ = CURRENT_USER.remove_tree(KEY); // cleanup
     }

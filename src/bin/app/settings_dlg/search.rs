@@ -127,6 +127,32 @@ pub(super) unsafe fn measure_row(hwnd: HWND, m: &mut MEASUREITEMSTRUCT) {
     m.itemHeight = crate::win::dpi_scale(hwnd, ROW_H) as u32;
 }
 
+/// Read one listbox row's text via the safe two-step LB_GETTEXTLEN/LB_GETTEXT pattern
+/// (mirrors restyle.rs's CB_GETLBTEXTLEN/CB_GETLBTEXT for combo boxes) instead of trusting a
+/// fixed-size stack buffer: rows are built only from our own localized strings today, but
+/// LB_GETTEXT writes into whatever buffer we hand it with no length check of its own, so a
+/// longer string would silently overflow a fixed `[u16; N]`. Returns `None` for an
+/// empty/invalid row.
+unsafe fn read_row_text(list: HWND, idx: i32) -> Option<Vec<u16>> {
+    let text_len = SendMessageW(list, LB_GETTEXTLEN, Some(WPARAM(idx as usize)), None).0;
+    if text_len <= 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; text_len as usize + 1];
+    let len = SendMessageW(
+        list,
+        LB_GETTEXT,
+        Some(WPARAM(idx as usize)),
+        Some(LPARAM(buf.as_mut_ptr() as isize)),
+    )
+    .0;
+    if len <= 0 {
+        return None;
+    }
+    buf.truncate(len as usize);
+    Some(buf)
+}
+
 /// WM_DRAWITEM for the dropdown: dark row, accent-tinted hover, "Page > Label" text.
 pub(super) unsafe fn draw_row(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     use windows::Win32::Graphics::Gdi::{SetBkMode, SetTextColor, TRANSPARENT};
@@ -140,17 +166,9 @@ pub(super) unsafe fn draw_row(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     if (d.itemID as i32) < 0 {
         return;
     }
-    let mut buf = [0u16; 256];
-    let len = SendMessageW(
-        d.hwndItem,
-        LB_GETTEXT,
-        Some(WPARAM(d.itemID as usize)),
-        Some(LPARAM(buf.as_mut_ptr() as isize)),
-    )
-    .0;
-    if len <= 0 {
+    let Some(mut buf) = read_row_text(d.hwndItem, d.itemID as i32) else {
         return;
-    }
+    };
     SetBkMode(d.hDC, TRANSPARENT);
     SetTextColor(d.hDC, DARK_TEXT());
     windows::Win32::Graphics::Gdi::SelectObject(
@@ -161,7 +179,7 @@ pub(super) unsafe fn draw_row(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     rc.left += crate::win::dpi_scale(hwnd, 10);
     DrawTextW(
         d.hDC,
-        &mut buf[..len as usize],
+        &mut buf,
         &mut rc,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
     );
@@ -323,10 +341,17 @@ unsafe fn ensure_index() {
 
 /// Lower-cased text of a control, for matching.
 unsafe fn label_lc(hwnd: HWND, id: i32) -> String {
+    label_text(hwnd, id).to_lowercase()
+}
+
+/// Case-preserved text of a control, for the row's DISPLAY string. `label_lc` lowercases
+/// this same text for matching only: the dropdown row itself must keep the control's real
+/// casing, or every result reads permanently lowercase.
+unsafe fn label_text(hwnd: HWND, id: i32) -> String {
     match GetDlgItem(Some(hwnd), id) {
         Ok(c) => String::from_utf16_lossy(&control_text(c))
             .trim_end_matches('\0')
-            .to_lowercase(),
+            .to_string(),
         Err(_) => String::new(),
     }
 }
@@ -368,8 +393,14 @@ pub(super) unsafe fn on_change(hwnd: HWND) {
                 || tip_lc(e.label_id).contains(&needle)
                 || tip_lc(e.focus_id).contains(&needle)
             {
-                // Row text: "Page > Label", both already localized.
-                let row = format!("{}  >  {}", navrail::nav_label(e.page), label);
+                // Row text: "Page > Label", both already localized. Re-fetch the label in its
+                // real casing: `label` above is `label_lc`'s lowercased copy, kept for the
+                // `contains()` match only, and must not leak into what the user sees.
+                let row = format!(
+                    "{}  >  {}",
+                    navrail::nav_label(e.page),
+                    label_text(hwnd, e.label_id)
+                );
                 let w = wide(&row);
                 SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
                 hits.push(i);
@@ -438,4 +469,115 @@ pub(super) unsafe fn on_pick(hwnd: HWND) {
         let _ = SetFocus(Some(c));
     }
     let _ = ShowWindow(list, SW_HIDE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Plain `DefWindowProcW` forwarder with the required `extern "system"` ABI —
+    /// `DefWindowProcW` itself is a normal Rust fn item, not a fn pointer of that ABI, so
+    /// `WNDCLASSW::lpfnWndProc` (mirrors `win::notify_toast`'s `toast_wndproc`) can't take it
+    /// directly.
+    unsafe extern "system" fn test_wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        DefWindowProcW(h, m, w, l)
+    }
+
+    /// A throwaway, invisible top-level window to host real child controls. `GetDlgItem`/`ctl`
+    /// need a real parent/child relationship, which can't be faked without one.
+    unsafe fn test_window() -> HWND {
+        let hmod =
+            windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+        let hinst = windows::Win32::Foundation::HINSTANCE(hmod.0);
+        let class = w!("SageThumbs2KSearchTest");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(test_wndproc),
+            hInstance: hinst,
+            lpszClassName: class,
+            ..Default::default()
+        };
+        RegisterClassW(&wc); // ok if already registered by a prior test in this process
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class,
+            w!("search-test"),
+            WS_POPUP,
+            0,
+            0,
+            100,
+            100,
+            None,
+            None,
+            Some(hinst),
+            None,
+        )
+        .expect("create throwaway test window")
+    }
+
+    /// `label_text` must preserve the control's real casing while `label_lc` lowercases the
+    /// same text for matching only. Regression for the bug where the dropdown row reused
+    /// `label_lc`'s output for DISPLAY too, so every search result rendered lowercase.
+    #[test]
+    fn label_text_preserves_case_while_label_lc_lowercases() {
+        unsafe {
+            let hwnd = test_window();
+            let hmod =
+                windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+            let hinst = windows::Win32::Foundation::HINSTANCE(hmod.0);
+            let edit = ctl(
+                hwnd,
+                EDIT,
+                "Enable Thumbnails",
+                WINDOW_STYLE(0),
+                0,
+                0,
+                50,
+                12,
+                9001,
+                hinst,
+            );
+            assert!(!edit.is_invalid());
+
+            assert_eq!(label_text(hwnd, 9001), "Enable Thumbnails");
+            assert_eq!(label_lc(hwnd, 9001), "enable thumbnails");
+
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    /// `read_row_text` must round-trip a row longer than the old fixed 256-`u16` stack
+    /// buffer without truncating it. Before the fix, LB_GETTEXT wrote into that fixed buffer
+    /// with no length check of its own, so a row this long would overflow it.
+    #[test]
+    fn read_row_text_handles_a_row_longer_than_the_old_fixed_buffer() {
+        unsafe {
+            let hwnd = test_window();
+            let hmod =
+                windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+            let hinst = windows::Win32::Foundation::HINSTANCE(hmod.0);
+            let list = ctl(
+                hwnd,
+                w!("LISTBOX"),
+                "",
+                WINDOW_STYLE(0),
+                0,
+                0,
+                50,
+                50,
+                9002,
+                hinst,
+            );
+            assert!(!list.is_invalid());
+
+            let long = "x".repeat(300);
+            let w = wide(&long);
+            SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+
+            let text = read_row_text(list, 0).expect("row 0 should have text");
+            assert_eq!(text.len(), long.len(), "row text must not be truncated");
+            assert_eq!(String::from_utf16_lossy(&text), long);
+
+            let _ = DestroyWindow(hwnd);
+        }
+    }
 }

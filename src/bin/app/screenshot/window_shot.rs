@@ -12,7 +12,7 @@ use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, FillRect,
     GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, HGDIOBJ,
+    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -87,6 +87,39 @@ unsafe fn capture_hwnd_bgra_once(hwnd: HWND, fill: COLORREF) -> Option<(Vec<u8>,
     let printed = PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT).as_bool();
 
     // Pull top-down BGRA (negative biHeight) — exactly what `output::to_rgba` wants.
+    let buf = pull_top_down_bgra(mem, bmp, w, h, n as usize);
+
+    SelectObject(mem, old);
+    let _ = DeleteObject(HGDIOBJ(bmp.0));
+    let _ = DeleteDC(mem);
+    ReleaseDC(None, screen);
+
+    if !printed {
+        return None;
+    }
+    let buf = buf?;
+    // GetWindowRect includes DWM's INVISIBLE resize border (~8px on left/right/bottom) that isn't
+    // part of the visible window — PrintWindow renders it near-black, so the capture gets a black
+    // frame. Crop to the TRUE visible bounds (DWMWA_EXTENDED_FRAME_BOUNDS) so the window sits flush,
+    // then shave off the window's own 1px outer border line, which still reads near-black.
+    let (buf, w, h) = crop_to_extended_frame(hwnd, &r, buf, w, h);
+    Some(trim_black_edges(buf, w, h))
+}
+
+/// Pull `w`×`h` top-down BGRA pixels (negative `biHeight`) out of `bmp`, currently selected
+/// into `dc`, via `GetDIBits` — the same construct-`BITMAPINFO`-then-`GetDIBits` sequence this
+/// module, `overlay.rs`'s `capture_instant`, and `overlay/actions.rs`'s `compose` each used to
+/// hand-roll separately. `None` on a `GetDIBits` failure. `n` is the caller's OWN already
+/// overflow-checked `w * h * 4` byte count (`w`/`h` come from a live GDI bitmap here, but a
+/// selection-driven caller can't assume that) — bailing on that overflow happens before any GDI
+/// object exists, so it stays each call site's responsibility rather than this helper's.
+pub(super) unsafe fn pull_top_down_bgra(
+    dc: HDC,
+    bmp: HBITMAP,
+    w: i32,
+    h: i32,
+    n: usize,
+) -> Option<Vec<u8>> {
     let mut bi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -99,9 +132,9 @@ unsafe fn capture_hwnd_bgra_once(hwnd: HWND, fill: COLORREF) -> Option<(Vec<u8>,
         },
         ..Default::default()
     };
-    let mut buf = vec![0u8; n as usize];
+    let mut buf = vec![0u8; n];
     let got = GetDIBits(
-        mem,
+        dc,
         bmp,
         0,
         h as u32,
@@ -109,21 +142,11 @@ unsafe fn capture_hwnd_bgra_once(hwnd: HWND, fill: COLORREF) -> Option<(Vec<u8>,
         &mut bi,
         DIB_RGB_COLORS,
     );
-
-    SelectObject(mem, old);
-    let _ = DeleteObject(HGDIOBJ(bmp.0));
-    let _ = DeleteDC(mem);
-    ReleaseDC(None, screen);
-
-    if !printed || got == 0 {
-        return None;
+    if got == 0 {
+        None
+    } else {
+        Some(buf)
     }
-    // GetWindowRect includes DWM's INVISIBLE resize border (~8px on left/right/bottom) that isn't
-    // part of the visible window — PrintWindow renders it near-black, so the capture gets a black
-    // frame. Crop to the TRUE visible bounds (DWMWA_EXTENDED_FRAME_BOUNDS) so the window sits flush,
-    // then shave off the window's own 1px outer border line, which still reads near-black.
-    let (buf, w, h) = crop_to_extended_frame(hwnd, &r, buf, w, h);
-    Some(trim_black_edges(buf, w, h))
 }
 
 /// Trim any fully-(near)black edge rows/columns left after the DWM-bounds crop — the window's
@@ -274,4 +297,52 @@ pub(crate) fn encode_gif(frames: &[RgbaImage], path: &Path, delay_ms: u16) -> bo
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `pull_top_down_bgra` is now the single implementation this module's own
+    /// `capture_hwnd_bgra_once`, `overlay.rs::capture_instant`, and
+    /// `overlay/actions.rs::compose` all share (previously three hand-rolled copies of the
+    /// same `BITMAPINFO` + `GetDIBits` sequence) — drive it directly against a real GDI
+    /// bitmap to pin the size and BGRA byte order every caller depends on.
+    #[test]
+    fn pull_top_down_bgra_returns_the_right_size_and_byte_order() {
+        unsafe {
+            let screen = GetDC(None);
+            let (w, h) = (4i32, 3i32);
+            let mem = CreateCompatibleDC(Some(screen));
+            let bmp = CreateCompatibleBitmap(screen, w, h);
+            let old = SelectObject(mem, HGDIOBJ(bmp.0));
+            // COLORREF is 0x00BBGGRR; pick a color with distinct R/G/B channels so a swapped
+            // channel order would fail this test rather than passing by coincidence.
+            let brush = CreateSolidBrush(COLORREF(0x00_10_80_C0)); // R=0xC0 G=0x80 B=0x10
+            let _ = FillRect(
+                mem,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: w,
+                    bottom: h,
+                },
+                brush,
+            );
+            let _ = DeleteObject(HGDIOBJ(brush.0));
+
+            let n = (w as i64 * h as i64 * 4) as usize;
+            let buf = pull_top_down_bgra(mem, bmp, w, h, n);
+
+            SelectObject(mem, old);
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, screen);
+
+            let buf = buf.expect("GetDIBits must succeed on a real compatible bitmap");
+            assert_eq!(buf.len(), n);
+            // BGRA byte order: index 0 = B (0x10), 1 = G (0x80), 2 = R (0xC0).
+            assert_eq!(&buf[0..3], &[0x10, 0x80, 0xC0]);
+        }
+    }
 }

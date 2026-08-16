@@ -43,7 +43,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 ## TL;DR
 
-- 🖼️ Explorer thumbnails for **327 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
+- 🖼️ Explorer thumbnails for **331 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
 - 🛡️ **A corrupt or malicious file can't crash Explorer**: runs out-of-process, panic-guarded, with a sandboxed decoder.
 - ⚡ **Fast even on big files**: camera RAW thumbnails from its embedded preview instead of a slow demosaic (3–13× quicker), and no format is allowed to hang a folder.
 - 🧰 **Right-click toolkit:** convert, resize, lossless rotate, combine-to-PDF/CBZ, system-wide eyedropper, OCR, and more; all non-destructive, and **multi-file jobs run in parallel across every core**.
@@ -79,7 +79,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 
 |  |  |
 |---|---|
-| 🖼️ **327 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
+| 🖼️ **331 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
 | 📚 **Ebooks & comics** | EPUB, MOBI/AZW (Kindle), FB2, CBZ/CB7/CBR/CBT: real covers in Explorer (a native-Rust [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) port). Plain ZIP/RAR/7Z archives within the configured file-size limit get a contact-sheet thumbnail of the images inside, too |
 | 🎨 **Art / CAD / 3D / design** | PSD/PSB, Affinity, Clip Studio, Krita, OpenRaster, Blender, 3MF, FreeCAD, G-code, **SketchUp, Rhino, AutoCAD DWG, 3ds Max, Adobe XD, InDesign, Visio, CorelDRAW, Fusion 360 (.f3d)**: preview pulled straight from inside the file (no host app needed) |
 | 📄 **DjVu** | Pure-Rust, zero-GPL decode via [`djvu-rs`](https://crates.io/crates/djvu-rs); scanned books show their text |
@@ -89,7 +89,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 | ⚡ **Parallel batch** | Multi-file Convert / Resize / Rotate / Strip and Combine-to-PDF fan out across **all CPU cores** (6–15× faster): a tiny dependency-free scoped thread pool, no rayon bloat in the shell DLL |
 | 🎛️ **Make the menu yours** | The Settings "Menu items" list lets you **drag-reorder** every right-click entry *and* its group dividers: the menu mirrors your layout exactly (WYSIWYG). Tick items off to hide them, or hit **Reset order** for the default |
 | 🤖 **CLI + MCP server** | `st2k.exe`: `thumbnail · convert · batch · rotate · ocr · pdf · …` as a scriptable/AI-agent toolbox (`st2k --mcp`); **`batch`** parallel-processes whole folders in one process. The MCP server adds **`view`** (decode any supported format to a PNG block so an AI agent can *see* the file) and **`compress`** tools |
-| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 327 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
+| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 331 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
 | 🎨 **Colour management** | Embedded **ICC** profiles and wide-gamut images (**Display P3 / Adobe RGB**) render in correct sRGB instead of over-saturated; AVIF/HEIC read their `colr` box (incl. the iPhone-HEIC CICP Display-P3 signal), and **CMYK JPEGs** are colour-managed through their embedded profile; pure-Rust, no C deps |
 | 🔧 **Repair file associations** | One button in **Settings ▸ Diagnostics** re-registers SageThumbs for every enabled format when another app has hijacked the thumbnails, then clears the thumbnail cache |
 | 🛡️ **Crash-isolated** | Out-of-process, `catch_unwind` under `panic = "abort"`, sandboxed ImageMagick child (CPU-time budget + kill-timeout), decompression-bomb guards |
@@ -110,8 +110,8 @@ There's a checklist of little utilities people reinstall on every new Windows bo
 
 | Instead of installing... | You already have it |
 |---|---|
-| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **327 formats**, crash-isolated so a corrupt file can't hang Explorer |
-| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 327 formats (reading pane and Open dialogs) |
+| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **331 formats**, crash-isolated so a corrupt file can't hang Explorer |
+| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 331 formats (reading pane and Open dialogs) |
 | A **Space-bar preview** app (QuickLook, Seer) | Tap Space for an instant full-size preview, macOS-style: video plays, code is syntax-highlighted, Markdown renders, PDFs page, SQLite databases open as tables **(new)** |
 | An **EXIF / metadata viewer** (ExifToolGUI, Opanda IExif) | EXIF, GPS, dimensions and audio tags as **sortable Explorer columns** |
 | A **batch converter** (XnConvert, IrfanView + plugins, ImageMagick) | Right-click **Convert** to ~29 formats (AVIF, JPEG XL, PSD, DDS, EXR...), batched across every core |
@@ -206,7 +206,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 ## 🗂 Supported formats
 
 <details open>
-<summary><strong>327 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
+<summary><strong>331 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
 
 - **RAW**: 3fr, arw, cr2/cr3/crw, dng, erf, iiq, mef, mrw, nef/nrw, orf, pef, raf, rw2, sr2/srw, x3f, …
 - **Pro / scientific**: dcm (DICOM), dpx, cin, exr, fits, hdr, pfm
@@ -217,9 +217,9 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 - **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, blend, 3mf, fcstd, gcode, **eps** (embedded raster preview only), **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange)
 - **Icons**: ico, cur, **icns** (Apple)
 - **Docs & audio**: pdf, **doc/docx/docm, xls/xlsx/xlsm/xlsb, ppt/pptx/pptm/ppsx** (MS Office), odt/ods/odp, **key/pages/numbers** (Apple iWork), **indd/indt** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), djvu + mp3/flac/ogg/opus/m4a/wma/**dsf** (DSD)/ape/…
-- **Video**: mkv/webm, mp4/m4v/mov, avi, wmv, flv, mpg/mpeg, 3gp/3g2, ts/m2ts/mts, ogv, divx, …: a representative frame (~30% in) via the OS **Media Foundation** codecs
+- **Video**: mkv/webm, mp4/m4v/mov, avi, wmv, flv, mpg/mpeg, 3gp/3g2, ts/m2ts/mts, ogv, divx, …: a representative frame (30% in by default, adjustable in Settings) via the OS **Media Foundation** codecs, plus **FLV** (VP6 / Sorenson Spark) and **HDR VP9** (Profile 2/3, 10- and 12-bit) decoded by SageThumbs itself in a short-lived helper process
 
-*(PostScript without an embedded raster preview and font-only ImageMagick coders are excluded for safety; PDF uses the in-box OS renderer. Video frames come from Windows' own Media Foundation codecs; formats Windows has no codec for, e.g. FLV or MPEG-1/2 without the optional pack, keep their default icon.)*
+*(PostScript without an embedded raster preview and font-only ImageMagick coders are excluded for safety; PDF uses the in-box OS renderer. Video frames normally come from Windows' own Media Foundation codecs. Where Windows has no codec (FLV's VP6 and Sorenson Spark, and VP9 Profile 2/3 HDR), SageThumbs decodes the frame itself in a separate short-lived process, so a corrupt file costs one thumbnail rather than disturbing Explorer. Anything neither side can decode, such as MPEG-1/2 without the optional pack, keeps its default icon.)*
 
 </details>
 

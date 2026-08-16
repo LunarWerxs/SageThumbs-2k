@@ -125,6 +125,18 @@ impl ThumbnailProvider_Impl {
             unsafe { streamsrc::stream_source(stream, cfg.max_file_bytes, cx, "GetThumbnail") }?
         };
 
+        // A168: unlike `pdf.rs`/`ocr.rs`, this decode runs INLINE on the calling COM thread —
+        // no detached-worker + `recv_timeout` host-side wall budget. That's deliberate, not an
+        // oversight: those two wrap a WinRT call that can genuinely deadlock on the wrong
+        // apartment, so they need a fresh MTA thread regardless of timing; nothing here has
+        // that apartment hazard. The actual gap this leaves is a pathological/malformed file
+        // that makes `decode_thumbnail_opts` itself hang with no internal budget — and the
+        // backstop for THAT is process isolation: `IThumbnailProvider` runs in the shell's
+        // isolated `dllhost.exe` surrogate (see CLAUDE.md §4), so a wedged decode parks that
+        // disposable host, not Explorer, and the shell's own per-call timeout eventually kills
+        // it. Adding a second worker thread here would duplicate that host-side budget for a
+        // hang the OS-level isolation already survives, at the cost of a second COM-apartment
+        // hazard on whatever the tiered decoders (WIC/magick) assume about the calling thread.
         let img = match source {
             StreamSource::Frame(frame) => decode::thumbnail_from_image(frame, cx),
             StreamSource::Bytes(bytes) => {

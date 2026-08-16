@@ -190,13 +190,33 @@ unsafe fn hdrop_paths(obj: &IDataObject) -> Result<Vec<String>> {
     Ok(paths)
 }
 
+/// Bound a `std::fs::metadata` call the same way [`decode_menu_thumb_budgeted`]
+/// bounds the decode. An unresponsive network share or removable device can make
+/// `metadata()` block far longer than a local stat, and this pre-gate is called
+/// synchronously on Explorer's own thread, from `IShellExtInit::Initialize` and
+/// from [`ContextMenu::ensure_preview`], with nothing else in that chain
+/// protecting it. `MENU_PREVIEW_BUDGET` is already the "how long may this whole
+/// menu wait" contract; the metadata call must not be the one link left
+/// unbounded inside it. Detached on timeout, matching every other recv_timeout
+/// worker in this codebase: the call is simply abandoned, not cancelled.
+fn metadata_budgeted(path: &str) -> Option<std::fs::Metadata> {
+    let path = path.to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .spawn(move || {
+            let _ = tx.send(std::fs::metadata(&path).ok());
+        })
+        .ok()?;
+    rx.recv_timeout(MENU_PREVIEW_BUDGET).ok().flatten()
+}
+
 /// Cheap pre-gate (metadata only, NO read/decode): the file exists and is within
 /// the preview size budget. `QueryContextMenu` checks this before composing the
 /// tile at all, so an oversized file costs one `metadata` call. The decode itself
 /// still runs on a detached worker under [`MENU_PREVIEW_BUDGET`] (see
 /// [`ContextMenu::ensure_preview`]), so a slow file cannot freeze the menu paint.
 fn preview_size_ok(path: &str) -> bool {
-    std::fs::metadata(path)
+    metadata_budgeted(path)
         .map(|m| m.len() <= PREVIEW_MAX_BYTES && m.len() <= settings::max_file_size_bytes())
         .unwrap_or(false)
 }
@@ -207,7 +227,7 @@ fn build_preview(
     path: &str,
     prefetched: Option<std::sync::mpsc::Receiver<Option<MenuThumb>>>,
 ) -> Option<Preview> {
-    let meta = std::fs::metadata(path).ok()?;
+    let meta = metadata_budgeted(path)?;
     if meta.len() > PREVIEW_MAX_BYTES || meta.len() > settings::max_file_size_bytes() {
         return None;
     }
@@ -421,6 +441,18 @@ unsafe fn build_menu_into(
     budget: u32,
     vis: &settings::MenuVisibility,
 ) {
+    // Deferred, not appended immediately: a separator is held here until the next
+    // real (non-hidden, successfully-inserted) item actually gets appended. Per-item
+    // visibility can hide every item between two separators in the tree (or a
+    // leading/trailing one with nothing on one side at all); appending on sight, as
+    // this used to, rendered two adjacent divider rows in that case despite the
+    // comment on the Separator arm below claiming otherwise. A pending separator
+    // that never finds a following item (budget cutoff, or it was trailing) is
+    // simply dropped when the loop ends. `has_emitted` is what makes a LEADING
+    // separator drop too: the Separator arm only arms `sep_pending` once something
+    // real has already been appended, so there is nothing to flush it against yet.
+    let mut sep_pending = false;
+    let mut has_emitted = false;
     for it in items {
         // Per-item visibility: a hidden top-level item is skipped from the drawn
         // menu but still advances the leaf counter, so command ids stay aligned
@@ -434,18 +466,34 @@ unsafe fn build_menu_into(
         }
         match it {
             verbs::MenuItem::Group(title, children) => {
-                let Ok(sub) = CreatePopupMenu() else { continue };
+                let Ok(sub) = CreatePopupMenu() else {
+                    // Same advance as the hidden-item branch above: without it,
+                    // every later sibling leaf's command id shifts down (a GDI
+                    // handle exhaustion / OOM here would misdispatch InvokeCommand
+                    // for the rest of the menu, not just drop this group).
+                    *next_leaf += verbs::count_leaves(it);
+                    continue;
+                };
                 build_menu_into(sub, children, idcmdfirst, next_leaf, budget, vis);
+                if sep_pending {
+                    let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
+                    sep_pending = false;
+                }
                 let _ = AppendMenuW(
                     parent,
                     MF_POPUP | MF_STRING,
                     sub.0 as usize,
                     &HSTRING::from(crate::i18n::t(title)),
                 );
+                has_emitted = true;
             }
             verbs::MenuItem::Verb(title, _) => {
                 if *next_leaf >= budget {
                     return;
+                }
+                if sep_pending {
+                    let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
+                    sep_pending = false;
                 }
                 // The leaf's command id is its global leaf index, mapped through
                 // the central id_for() so the offset convention lives in one place.
@@ -458,11 +506,16 @@ unsafe fn build_menu_into(
                     &HSTRING::from(crate::i18n::t(title)),
                 );
                 *next_leaf += 1;
+                has_emitted = true;
             }
             verbs::MenuItem::Separator => {
-                // A divider — consumes no command id. (Skip a leading/trailing one
-                // so we never start or end a (sub)menu with a stray separator.)
-                let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
+                // A divider: consumes no command id. Deferred rather than appended
+                // here (see `sep_pending` above), and only armed once something real
+                // has already been appended, so a leading separator has nothing to
+                // flush against and is dropped along with duplicates and trailers.
+                if has_emitted {
+                    sep_pending = true;
+                }
             }
         }
     }
@@ -736,5 +789,51 @@ mod tests {
             menu_skin_loaded(),
             "the host probe must be stable within a process"
         );
+    }
+
+    /// A199 regression: a leading separator, a trailing separator, and a run of
+    /// adjacent separators (which a hidden item in between would also produce, but
+    /// two literal `Separator` entries in a row are a simpler and deterministic way
+    /// to exercise the exact same `sep_pending` path) must all collapse to nothing
+    /// or to a single divider row: never two adjacent MF_SEPARATOR rows, and never
+    /// one at either end of the (sub)menu, matching what the comment on the
+    /// Separator arm has always claimed.
+    #[test]
+    fn separators_never_lead_trail_or_double_up() {
+        use windows::Win32::UI::WindowsAndMessaging::{GetMenuItemCount, MFT_SEPARATOR};
+
+        const ITEMS: &[verbs::MenuItem] = &[
+            verbs::MenuItem::Separator, // leading -> must be dropped
+            verbs::MenuItem::Separator, // duplicate -> collapses into one
+            verbs::MenuItem::Verb("SepTestA", verbs::VerbAction::Clipboard),
+            verbs::MenuItem::Separator,
+            verbs::MenuItem::Separator, // duplicate -> collapses into one
+            verbs::MenuItem::Verb("SepTestB", verbs::VerbAction::Clipboard),
+            verbs::MenuItem::Separator, // trailing -> must be dropped
+        ];
+
+        unsafe {
+            let menu = CreatePopupMenu().expect("CreatePopupMenu");
+            let vis = settings::menu_visibility();
+            let mut next_leaf = 0u32;
+            build_menu_into(menu, ITEMS, 1, &mut next_leaf, u32::MAX, &vis);
+
+            assert_eq!(
+                GetMenuItemCount(Some(menu)),
+                3,
+                "want [Verb, Separator, Verb] only: no leading/trailing/doubled dividers"
+            );
+            let (t0, _) = item_type_and_id(menu, 0);
+            assert!(!t0.contains(MFT_SEPARATOR), "row 0 must be the first verb");
+            let (t1, _) = item_type_and_id(menu, 1);
+            assert!(
+                t1.contains(MFT_SEPARATOR),
+                "row 1 must be the single divider between the two verbs"
+            );
+            let (t2, _) = item_type_and_id(menu, 2);
+            assert!(!t2.contains(MFT_SEPARATOR), "row 2 must be the second verb");
+
+            let _ = DestroyMenu(menu);
+        }
     }
 }

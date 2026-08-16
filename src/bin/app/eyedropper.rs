@@ -12,12 +12,13 @@ use std::sync::OnceLock;
 
 use std::sync::Mutex;
 use windows::core::w;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-    DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GetDC, GetPixel, InvalidateRect,
-    ReleaseDC, SelectObject, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, COLORONCOLOR,
-    DT_LEFT, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    DrawTextW, EndPaint, FillRect, FrameRect, GetDC, GetPixel, GetStockObject, InvalidateRect,
+    ReleaseDC, SelectObject, SetBkMode, SetDCBrushColor, SetStretchBltMode, SetTextColor,
+    StretchBlt, COLORONCOLOR, DC_BRUSH, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HGDIOBJ,
+    PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_SPACE};
@@ -371,11 +372,47 @@ unsafe fn eye_paint(hwnd: HWND) {
     let _ = EndPaint(hwnd, &ps);
 }
 
+/// Recolor the stock DC brush and hand it back ready to `Fill`/`FrameRect` with.
+///
+/// `eye_draw_loupe` used to `CreateSolidBrush` + `DeleteObject` a fresh brush for every
+/// shape on every repaint, and the loupe repaints on every `WM_MOUSEMOVE` — real GDI
+/// object churn on a high-frequency path. `DC_BRUSH` is a single stock object shared by
+/// the whole process; `SetDCBrushColor` just recolors it, so there is nothing to free.
+unsafe fn dc_brush(hdc: HDC, color: COLORREF) -> HBRUSH {
+    SetDCBrushColor(hdc, color);
+    HBRUSH(GetStockObject(DC_BRUSH).0)
+}
+
+/// The `EYE_SPAN`² source window for the loupe's `StretchBlt`, shifted to stay fully
+/// inside a `vw`×`vh` snapshot, plus the cursor pixel's cell `(kx, ky)` within that
+/// (possibly shifted) window. Returns `(sx, sy, kx, ky)`.
+///
+/// A bare `cx - EYE_K, cy - EYE_K` source (the previous behaviour) reads outside the
+/// snapshot DC near a screen edge — `GetPixel`/`StretchBlt` on out-of-bounds source
+/// coordinates return blank/garbage, not an error, so the loupe silently showed a
+/// corrupted magnifier there instead of failing loudly. Mirrors
+/// `screenshot::overlay::loupe::draw_loupe`'s clamped `sx`/`sy`/`kx`/`ky`; that version
+/// can't be called directly from here (`loupe`'s module is private to `overlay`), so
+/// the fix is ported rather than shared.
+fn eye_sample_window(cx: i32, cy: i32, vw: i32, vh: i32) -> (i32, i32, i32, i32) {
+    let sx = (cx - EYE_K).clamp(0, (vw - EYE_SPAN).max(0));
+    let sy = (cy - EYE_K).clamp(0, (vh - EYE_SPAN).max(0));
+    let kx = (cx - sx).clamp(0, EYE_SPAN - 1);
+    let ky = (cy - sy).clamp(0, EYE_SPAN - 1);
+    (sx, sy, kx, ky)
+}
+
 /// Draw the magnifier loupe (zoomed pixels + crosshair + hex label) near the
 /// cursor, sampling from the frozen `shotdc`.
 unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
     let lb = eye_loupe_box(cx, cy);
     let (bx, by) = (lb.left, lb.top);
+
+    let (vw, vh) = (
+        EYE_VW.load(Ordering::Relaxed),
+        EYE_VH.load(Ordering::Relaxed),
+    );
+    let (sx, sy, kx, ky) = eye_sample_window(cx, cy, vw, vh);
 
     // Magnified pixels — nearest-neighbor so each screen pixel is a crisp block.
     SetStretchBltMode(hdc, COLORONCOLOR);
@@ -386,24 +423,23 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
         EYE_MAG,
         EYE_MAG,
         Some(shotdc),
-        cx - EYE_K,
-        cy - EYE_K,
+        sx,
+        sy,
         EYE_SPAN,
         EYE_SPAN,
         SRCCOPY,
     );
 
-    // Crosshair on the center cell (the pixel that gets picked).
+    // Crosshair on the cursor's cell (the pixel that gets picked).
     let cell = EYE_MAG / EYE_SPAN;
     let cc = RECT {
-        left: bx + EYE_K * cell,
-        top: by + EYE_K * cell,
-        right: bx + EYE_K * cell + cell,
-        bottom: by + EYE_K * cell + cell,
+        left: bx + kx * cell,
+        top: by + ky * cell,
+        right: bx + kx * cell + cell,
+        bottom: by + ky * cell + cell,
     };
-    let red = CreateSolidBrush(rgb(255, 40, 40));
+    let red = dc_brush(hdc, rgb(255, 40, 40));
     FrameRect(hdc, &cc, red);
-    let _ = DeleteObject(red.into());
 
     // Label strip: swatch + hex (top row), then a "Press Space to copy" hint.
     let (r, g, b) = eye_sample(cx, cy);
@@ -413,18 +449,16 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
         right: bx + EYE_MAG,
         bottom: by + EYE_MAG + EYE_LBL,
     };
-    let lbg = CreateSolidBrush(rgb(24, 24, 24));
+    let lbg = dc_brush(hdc, rgb(24, 24, 24));
     FillRect(hdc, &lbl, lbg);
-    let _ = DeleteObject(lbg.into());
     let sw = RECT {
         left: bx + 5,
         top: by + EYE_MAG + 5,
         right: bx + 21,
         bottom: by + EYE_MAG + 21,
     };
-    let swb = CreateSolidBrush(rgb(r, g, b));
+    let swb = dc_brush(hdc, rgb(r, g, b));
     FillRect(hdc, &sw, swb);
-    let _ = DeleteObject(swb.into());
 
     SelectObject(hdc, HGDIOBJ(gui_font().0));
     SetBkMode(hdc, TRANSPARENT);
@@ -462,9 +496,8 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
                 right: x + EYE_SW,
                 bottom: y + EYE_SW,
             };
-            let br = CreateSolidBrush(rgb(c.0, c.1, c.2));
+            let br = dc_brush(hdc, rgb(c.0, c.1, c.2));
             FillRect(hdc, &cell, br);
-            let _ = DeleteObject(br.into());
         }
         // More than fits: say how many, rather than silently showing a subset.
         if stash.len() as i32 > EYE_SW_MAX {
@@ -510,7 +543,7 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
     );
 
     // Outer + magnifier borders.
-    let border = CreateSolidBrush(rgb(0, 0, 0));
+    let border = dc_brush(hdc, rgb(0, 0, 0));
     let outer = RECT {
         left: bx,
         top: by,
@@ -525,5 +558,51 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
         bottom: by + EYE_MAG,
     };
     FrameRect(hdc, &mag, border);
-    let _ = DeleteObject(border.into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for the unclamped `StretchBlt` source: near any edge of the
+    /// snapshot, `sx`/`sy` must stay in `[0, v - EYE_SPAN]` so the source rect never
+    /// extends past the snapshot bounds, and `kx`/`ky` must still land on the cursor's
+    /// own cell inside that (possibly shifted) window.
+    #[test]
+    fn eye_sample_window_stays_inside_the_snapshot_near_every_edge() {
+        let (vw, vh) = (1920, 1080);
+        for (cx, cy) in [
+            (0, 0),           // top-left corner
+            (vw - 1, vh - 1), // bottom-right corner
+            (0, vh / 2),      // left edge
+            (vw - 1, vh / 2), // right edge
+            (vw / 2, 0),      // top edge
+            (vw / 2, vh - 1), // bottom edge
+            (vw / 2, vh / 2), // interior — no clamp should be needed
+        ] {
+            let (sx, sy, kx, ky) = eye_sample_window(cx, cy, vw, vh);
+            assert!(
+                sx >= 0 && sx + EYE_SPAN <= vw,
+                "sx {sx} puts the source rect outside [0, {vw}) at cursor ({cx}, {cy})"
+            );
+            assert!(
+                sy >= 0 && sy + EYE_SPAN <= vh,
+                "sy {sy} puts the source rect outside [0, {vh}) at cursor ({cx}, {cy})"
+            );
+            // The cursor's own pixel, mapped into the (possibly shifted) window, must
+            // still be the cell that gets the crosshair.
+            assert_eq!(sx + kx, cx, "kx must map back to the cursor's own column");
+            assert_eq!(sy + ky, cy, "ky must map back to the cursor's own row");
+        }
+    }
+
+    /// A degenerate/tiny snapshot (smaller than the sample span) must not panic or
+    /// produce a negative-width source rect — `(vw - EYE_SPAN).max(0)` is what
+    /// prevents that.
+    #[test]
+    fn eye_sample_window_handles_a_snapshot_smaller_than_the_span() {
+        let (sx, sy, kx, ky) = eye_sample_window(2, 2, 4, 4);
+        assert_eq!((sx, sy), (0, 0));
+        assert!(kx < EYE_SPAN && ky < EYE_SPAN);
+    }
 }

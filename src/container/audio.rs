@@ -16,6 +16,7 @@
 
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
+use lofty::config::ParseOptions;
 use lofty::file::TaggedFileExt;
 use lofty::picture::PictureType;
 use lofty::probe::Probe;
@@ -63,11 +64,63 @@ pub fn extract_reader<R: Read + Seek>(mut reader: R) -> Option<Vec<u8>> {
     super::waveform::render_from_reader(&mut reader)
 }
 
+/// Total bytes lofty may pull out of the reader while parsing a tag, regardless of what
+/// any frame/tag header inside it CLAIMS its own size to be. See [`BudgetedReader`] and
+/// `lofty_cover`. A notch above `MAX_COVER`, matching the sibling `MAX_APE_TAG`/
+/// `MAX_ASF_HEADER` tag-parsing budgets (`audio/ape.rs`, `audio/asf.rs`).
+const MAX_LOFTY_READ: u64 = super::MAX_COVER + 1024 * 1024;
+
+/// Caps the total bytes lofty can actually materialize while parsing, independent of a
+/// frame's declared content length. `Probe::read()` parses the WHOLE tag — including any
+/// embedded picture — into memory before `lofty_cover`'s `MAX_COVER` check below ever
+/// runs, so a hostile file that declares an oversized picture/frame would otherwise be
+/// fully read into memory first and only rejected after the fact (the cap bounds what's
+/// KEPT, not what gets ALLOCATED). Seeking stays free (no allocation, so `Ok`), and once
+/// the budget is spent, reads report EOF (`Ok(0)`) rather than erroring — lofty then
+/// finishes its normal parse with a short buffer, and the existing size check downstream
+/// rejects it exactly as it would any other oversized picture.
+struct BudgetedReader<'a> {
+    inner: &'a mut dyn super::ReadSeek,
+    read_so_far: u64,
+    budget: u64,
+}
+
+impl Read for BudgetedReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.read_so_far >= self.budget {
+            return Ok(0);
+        }
+        let allowed = (self.budget - self.read_so_far).min(buf.len() as u64) as usize;
+        let n = self.inner.read(&mut buf[..allowed])?;
+        self.read_so_far += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for BudgetedReader<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
 /// Front-cover (or first) album art via lofty's tag reader. `None` if the format
 /// is unidentified, untagged, or carries no picture.
 fn lofty_cover(reader: &mut dyn super::ReadSeek) -> Option<Vec<u8>> {
     reader.seek(SeekFrom::Start(0)).ok()?;
-    let tagged = Probe::new(reader).guess_file_type().ok()?.read().ok()?;
+    let bounded = BudgetedReader {
+        inner: reader,
+        read_so_far: 0,
+        budget: MAX_LOFTY_READ,
+    };
+    // Properties (duration/bitrate/…) are never used here — only tags/pictures are — so
+    // skip reading them too: on a large audio file they'd otherwise spend most of the
+    // read budget on data we throw away instead of on the tag we actually want.
+    let tagged = Probe::new(bounded)
+        .guess_file_type()
+        .ok()?
+        .options(ParseOptions::new().read_properties(false))
+        .read()
+        .ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
     let pics = tag.pictures();
     let pic = pics
@@ -122,6 +175,52 @@ mod tests {
         name_eq, ASF_CONTENT_DESC_GUID, ASF_ECD_GUID, ASF_HDR_EXT_GUID, ASF_HEADER_GUID,
         ASF_MDLIB_GUID, ASF_META_GUID,
     };
+
+    /// The size cap on what lofty is allowed to READ must be enforced regardless of how
+    /// much data the underlying stream actually offers — a hostile file's declared
+    /// picture/frame size is exactly the kind of backing-reader size this stands in for.
+    /// Small budget so the test stays instant; the mechanism is size-independent.
+    #[test]
+    fn budgeted_reader_stops_at_the_budget_regardless_of_backing_size() {
+        let huge = vec![0xABu8; 10_000]; // far more than the reader is allowed to hand out
+        let mut cursor = Cursor::new(huge);
+        let budget = 256u64;
+        let mut bounded = BudgetedReader {
+            inner: &mut cursor,
+            read_so_far: 0,
+            budget,
+        };
+        let mut out = Vec::new();
+        bounded.read_to_end(&mut out).unwrap();
+        assert_eq!(
+            out.len() as u64,
+            budget,
+            "read_to_end must stop AT the budget, not the underlying reader's real size \
+             (this is what stands between an attacker-declared oversized picture and lofty \
+             actually materializing all of it before the MAX_COVER check runs)"
+        );
+    }
+
+    /// Seeking must stay free — an EOF-once-spent read budget would be useless if a big
+    /// seek (e.g. lofty jumping to a trailing APEv2/ID3v1 footer) also ate into it.
+    #[test]
+    fn budgeted_reader_seeking_does_not_spend_the_read_budget() {
+        let data = vec![0xCDu8; 10_000];
+        let mut cursor = Cursor::new(data);
+        let budget = 10u64;
+        let mut bounded = BudgetedReader {
+            inner: &mut cursor,
+            read_so_far: 0,
+            budget,
+        };
+        bounded.seek(SeekFrom::Start(9_000)).unwrap();
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            bounded.read(&mut byte).unwrap(),
+            1,
+            "a seek must not have spent the budget"
+        );
+    }
 
     /// Smallest bytes that pass `looks_like_raster` as a JPEG (so the extracted art
     /// is "decodable" without shipping a real image fixture).

@@ -995,17 +995,27 @@ pub(crate) unsafe fn set_static_bitmap(ctl: HWND, hbmp: HBITMAP) {
     }
 }
 
-/// Pixel width of `s` rendered in the GUI font (for centering controls).
-pub(crate) unsafe fn text_width(s: &str) -> i32 {
+/// Pixel width of `s` rendered in the GUI font, in 96-DPI DESIGN pixels — the same units
+/// every `ctl()` caller passes as `cw`, since `ctl()` unconditionally re-scales `cw` via
+/// `dpi_scale(parent, cw)`.
+///
+/// Measures with `gui_font_for(hwnd)` (not the process-lifetime-cached [`gui_font`]), so the
+/// font actually matches `hwnd`'s real current DPI rather than whatever DPI happened to be
+/// active the first time any dialog in this process asked for a font. `dpi_unscale` then
+/// converts that real-DPI pixel width back down to 96-DPI design units before returning —
+/// without it, a caller like the About box would hand `ctl()` an already-DPI-scaled width,
+/// and `ctl()` would scale it AGAIN, sizing the pill wrong on any non-96-DPI monitor. At
+/// 96 DPI both the font and the unscale are identity, so the common case is unchanged.
+pub(crate) unsafe fn text_width(hwnd: HWND, s: &str) -> i32 {
     let hdc = GetDC(None);
-    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
+    let old = SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
     let w = wide(s);
     let n = w.len().saturating_sub(1);
     let mut sz = windows::Win32::Foundation::SIZE::default();
     let _ = GetTextExtentPoint32W(hdc, &w[..n], &mut sz);
     SelectObject(hdc, old);
     ReleaseDC(None, hdc);
-    sz.cx
+    dpi_unscale(hwnd, sz.cx)
 }
 
 /// Show a simple warning message box owned by the dialog.
@@ -1018,6 +1028,24 @@ pub(crate) unsafe fn message_box(hwnd: HWND, text: &str, caption: &str) {
         PCWSTR(c.as_ptr()),
         MB_OK | MB_ICONWARNING,
     );
+}
+
+/// Copy `s` into `dst` as UTF-16, truncated to fit, always leaving a terminating NUL. A
+/// `zip`-based copy into a fixed-size `WCHAR` field just stops at whichever of `dst`/`s` is
+/// shorter — if `s` is longer than `dst`, no NUL ever lands inside the buffer, and a reader
+/// like `Shell_NotifyIconW` walks past the intended text into whatever struct bytes follow
+/// (garbled toast text; the fields are contiguous and in-bounds, so not a memory-safety bug,
+/// just a display one).
+fn copy_wide_capped(dst: &mut [u16], s: &str) {
+    let Some(cap) = dst.len().checked_sub(1) else {
+        return; // a zero-length field has nowhere to put even the terminator
+    };
+    let mut n = 0;
+    for (d, c) in dst.iter_mut().zip(s.encode_utf16().take(cap)) {
+        *d = c;
+        n += 1;
+    }
+    dst[n] = 0;
 }
 
 /// One-shot tray balloon from a WINDOWLESS helper process: a throwaway hidden window
@@ -1076,14 +1104,8 @@ pub(crate) unsafe fn notify_toast(title: &str, body: &str, linger: std::time::Du
 
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
-    let t = wide(title);
-    let i = wide(body);
-    for (d, s) in nid.szInfoTitle.iter_mut().zip(t.iter()) {
-        *d = *s;
-    }
-    for (d, s) in nid.szInfo.iter_mut().zip(i.iter()) {
-        *d = *s;
-    }
+    copy_wide_capped(&mut nid.szInfoTitle, title);
+    copy_wide_capped(&mut nid.szInfo, body);
     let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
 
     // Pump so the balloon paints + lingers, then clean up and return to the caller.
@@ -1143,4 +1165,95 @@ pub(crate) unsafe fn get_edit_text(hwnd: HWND, id: i32) -> String {
     let mut buf = vec![0u16; n as usize + 1];
     let got = GetWindowTextW(h, &mut buf) as usize;
     String::from_utf16_lossy(&buf[..got])
+}
+
+#[cfg(test)]
+mod toast_text_tests {
+    use super::*;
+
+    #[test]
+    fn copy_wide_capped_nul_terminates_text_that_fits() {
+        let mut dst = [0u16; 8];
+        copy_wide_capped(&mut dst, "hi");
+        assert_eq!(String::from_utf16_lossy(&dst[..2]), "hi");
+        assert_eq!(dst[2], 0, "must be NUL-terminated right after the text");
+    }
+
+    /// The bug this replaces: a `zip`-based copy stops at whichever of the source/dest is
+    /// shorter, so text at least as long as the field leaves NO NUL anywhere in the buffer -
+    /// `Shell_NotifyIconW` then reads past the intended text into whatever struct bytes follow.
+    #[test]
+    fn copy_wide_capped_truncates_and_still_nul_terminates_oversized_text() {
+        let mut dst = [0u16; 4];
+        copy_wide_capped(&mut dst, "toolong"); // 7 chars into a 4-wide field
+                                               // Exactly 3 characters copied (cap = len - 1, reserving the terminator slot).
+        assert_eq!(String::from_utf16_lossy(&dst[..3]), "too");
+        assert_eq!(
+            dst[3], 0,
+            "the last slot must hold the terminator even when the source overflows"
+        );
+    }
+
+    #[test]
+    fn copy_wide_capped_handles_a_zero_length_field_without_panicking() {
+        let mut dst: [u16; 0] = [];
+        copy_wide_capped(&mut dst, "anything"); // must not index out of bounds
+    }
+}
+
+#[cfg(test)]
+mod text_width_tests {
+    use super::*;
+
+    // The DPI-override guard is `scaling::DpiOverrideGuard`, imported through the glob
+    // above. This module used to keep its OWN copy because scaling's was private, and that
+    // duplication is precisely what let this test and scaling's race on the one global they
+    // share. One guard, one lock, or they collide again.
+    use super::scaling::DpiOverrideGuard;
+
+    /// `ctl()` unconditionally re-scales its `cw` argument by the window's DPI
+    /// (`dpi_scale(parent, cw)`), so `text_width` must hand back a 96-DPI DESIGN-pixel
+    /// width — not the raw device-pixel width of whatever font it measured with, or a
+    /// pill built from it gets scaled TWICE on any non-96-DPI monitor. This reproduces
+    /// the bug directly: round-tripping `text_width`'s result back through `dpi_scale`
+    /// (exactly what `ctl()` does) must reproduce the REAL 192-DPI measurement, not
+    /// double it. `HWND(usize::MAX as _)` is never dereferenced — `set_dpi_override`
+    /// makes `effective_dpi` short-circuit before `GetDpiForWindow` is ever called,
+    /// the same pattern `scaling.rs`'s own DPI-override test already relies on.
+    #[test]
+    fn text_width_round_trips_through_dpi_scale_without_doubling() {
+        let hwnd = HWND(usize::MAX as *mut c_void);
+        let _guard = DpiOverrideGuard::acquire(); // BEFORE the set: see the lock's doc
+        set_dpi_override(192); // 2x
+
+        let s = "v1.2.3";
+        let design_w = unsafe { text_width(hwnd, s) };
+
+        // The raw 192-DPI measurement `text_width` is supposed to un-scale from —
+        // computed independently so the test doesn't just echo the implementation.
+        let raw_w = unsafe {
+            let hdc = GetDC(None);
+            let old = SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
+            let w = wide(s);
+            let n = w.len().saturating_sub(1);
+            let mut sz = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(hdc, &w[..n], &mut sz);
+            SelectObject(hdc, old);
+            ReleaseDC(None, hdc);
+            sz.cx
+        };
+
+        let rescaled = dpi_scale(hwnd, design_w);
+        assert!(
+            (rescaled - raw_w).abs() <= 1,
+            "ctl()'s rescale of text_width's result ({rescaled}) must reproduce the real \
+             192-DPI measurement ({raw_w}) — not double- or under-scale it"
+        );
+        assert!(
+            design_w < raw_w,
+            "a 96-DPI design width ({design_w}) must be smaller than the raw 192-DPI \
+             measurement ({raw_w}); returning the raw width unchanged is the exact bug \
+             this test catches"
+        );
+    }
 }

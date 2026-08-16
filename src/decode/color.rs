@@ -12,9 +12,13 @@ use super::*;
 /// then a linear→sRGB transfer encodes it for display. Replaces an ImageMagick
 /// subprocess for this whole format class (and lets EXR/HDR work without magick).
 /// Non-finite / negative samples are clamped to 0.
+///
+/// Matches the concrete `Rgb32F`/`Rgba32F` variant and iterates its own buffer directly
+/// rather than calling `to_rgba32f()` first: every call site already gates on one of
+/// those two variants (readers.rs, decode.rs, tiers.rs), so the conversion was always a
+/// redundant full-image copy — a second W*H*16B allocation on top of the one this
+/// function itself makes.
 pub(super) fn tone_map_float(img: &DynamicImage) -> DynamicImage {
-    let src = img.to_rgba32f();
-    let mut out = image::RgbaImage::new(src.width(), src.height());
     let map = |c: f32| -> u8 {
         let c = if c.is_finite() && c > 0.0 { c } else { 0.0 };
         let tone = c / (1.0 + c); // Reinhard
@@ -25,20 +29,47 @@ pub(super) fn tone_map_float(img: &DynamicImage) -> DynamicImage {
         };
         (srgb * 255.0 + 0.5).clamp(0.0, 255.0) as u8
     };
+
+    let (w, h) = (img.width(), img.height());
+    let mut out = image::RgbaImage::new(w, h);
     let mut any_alpha = false;
-    for (o, s) in out.pixels_mut().zip(src.pixels()) {
-        let [r, g, b, a] = s.0;
-        let alpha = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        any_alpha |= alpha != 0;
-        *o = image::Rgba([map(r), map(g), map(b), alpha]);
+    match img {
+        // No alpha channel at all: every pixel is opaque, matching what `to_rgba32f()`
+        // used to synthesize (a=1.0) for this variant.
+        DynamicImage::ImageRgb32F(buf) => {
+            for (o, s) in out.pixels_mut().zip(buf.pixels()) {
+                let [r, g, b] = s.0;
+                *o = image::Rgba([map(r), map(g), map(b), 255]);
+            }
+            any_alpha = true;
+        }
+        DynamicImage::ImageRgba32F(buf) => {
+            for (o, s) in out.pixels_mut().zip(buf.pixels()) {
+                let [r, g, b, a] = s.0;
+                let alpha = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                any_alpha |= alpha != 0;
+                *o = image::Rgba([map(r), map(g), map(b), alpha]);
+            }
+        }
+        // Not reached by any current call site (all gate on the two variants above), but
+        // kept total rather than panicking under panic=abort if one ever calls in unguarded.
+        other => {
+            let src = other.to_rgba32f();
+            for (o, s) in out.pixels_mut().zip(src.pixels()) {
+                let [r, g, b, a] = s.0;
+                let alpha = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                any_alpha |= alpha != 0;
+                *o = image::Rgba([map(r), map(g), map(b), alpha]);
+            }
+        }
     }
     // VFX render passes (emission/environment/AOV EXRs) legitimately carry RGB with
     // the ENTIRE alpha channel at 0 — honoring that verbatim hands the caller a
     // fully-transparent image the `is_fully_transparent` watchdog then rejects, so
     // the file shows a default icon while every image viewer shows its RGB fine.
     // When ALL alpha is 0 there is no compositing intent to preserve; show the RGB
-    // opaque instead. Partial alpha stays untouched. (Rgb32F sources convert with
-    // a=1.0, so this only fires on genuinely all-transparent RGBA floats.)
+    // opaque instead. Partial alpha stays untouched. (Rgb32F sources are always
+    // opaque above, so this only fires on genuinely all-transparent RGBA floats.)
     if !any_alpha {
         for px in out.pixels_mut() {
             px.0[3] = 255;
@@ -79,6 +110,18 @@ pub(super) fn is_cmyk_jpeg(b: &[u8]) -> bool {
     false
 }
 
+/// Would decoding a `w`×`h` CMYK JPEG through [`decode_cmyk_jpeg`] blow past `max_alloc`?
+/// Sums the three transient buffers the function allocates along the way: zune's raw CMYK
+/// output (4 B/px), the padded `Cmyka` copy (5 B/px), and the final RGBA buffer (4 B/px) —
+/// 13 B/px, well past the 512 MiB budget every other decode tier is held to at anything near
+/// the dimension cap. A plain `w * h * 13` multiply is used instead of `checked_mul` because
+/// both factors are already bounded by `MAX_DIM`/`MAX_PIXELS` at every call site, so the
+/// product can't approach `u64::MAX`.
+fn cmyk_transient_bytes_exceed_budget(w: u32, h: u32, max_alloc: u64) -> bool {
+    const CMYK_TRANSIENT_BYTES_PER_PIXEL: u64 = 13;
+    (w as u64) * (h as u64) * CMYK_TRANSIENT_BYTES_PER_PIXEL > max_alloc
+}
+
 /// Decode a CMYK/YCCK JPEG to color-managed sRGB: pull the RAW 4-channel CMYK from
 /// zune-jpeg (the image crate would convert it to RGB naively, dropping the profile), then
 /// run it through the embedded CMYK ICC → sRGB with moxcms. Returns `None` (caller falls
@@ -101,6 +144,14 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     let info = dec.info()?;
     let (w, h) = (u32::from(info.width), u32::from(info.height));
     if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64) * (h as u64) > MAX_PIXELS {
+        return None;
+    }
+    // MAX_DIM/MAX_PIXELS alone bound the OUTPUT shape, not what this function actually
+    // allocates on the way there. Unlike `decode_with_image_alloc`, this path runs before
+    // that budget is even constructed (it's tried up front in `decode_with_image_alloc`),
+    // so it has to enforce its own ceiling here rather than inherit one from a
+    // caller-supplied `Limits`.
+    if cmyk_transient_bytes_exceed_budget(w, h, MAX_ALLOC) {
         return None;
     }
     // We can only color-manage with the embedded CMYK profile — without one there is no
@@ -230,22 +281,21 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
         }
         let mut p = 0usize;
         while p + 8 <= buf.len() {
-            let size = u32::from_be_bytes(buf[p..p + 4].try_into().ok()?) as usize;
+            let size32 = u32::from_be_bytes(buf[p..p + 4].try_into().ok()?);
             let typ = &buf[p + 4..p + 8];
-            let (hdr, end) = match size {
-                1 => (
-                    16usize,
-                    p.checked_add(
-                        u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?) as usize
-                    )?,
-                ),
-                0 => (8usize, buf.len()),
-                n if n >= 8 => (8usize, p.checked_add(n)?),
-                _ => return None,
+            let extended = if size32 == 1 {
+                Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
+            } else {
+                None
             };
-            if end > buf.len() || end < p + hdr {
-                return None;
-            }
+            let (full, hdr) = crate::container::boxhdr::decode_box_size(
+                size32,
+                extended,
+                p as u64,
+                buf.len() as u64,
+            )?;
+            let (full, hdr) = (full as usize, hdr as usize);
+            let end = p + full;
             let body = &buf[p + hdr..end];
             match typ {
                 b"colr" => {
@@ -319,20 +369,18 @@ pub(super) fn avif_wic_misreads_color(bytes: &[u8]) -> bool {
             let Ok(raw) = buf[p..p + 4].try_into() else {
                 return;
             };
-            let size = u32::from_be_bytes(raw) as usize;
+            let size32 = u32::from_be_bytes(raw);
             let typ = &buf[p + 4..p + 8];
-            let (hdr, end) = match size {
-                0 => (8usize, buf.len()),
-                n if n >= 8 => match p.checked_add(n) {
-                    Some(e) => (8usize, e),
-                    None => return,
-                },
-                // 64-bit sizes only ever wrap `mdat` here, which holds no colour metadata.
-                _ => return,
-            };
-            if end > buf.len() || end < p + hdr {
+            // 64-bit sizes only ever wrap `mdat` here, which holds no colour metadata, so this
+            // never reads the extended field — `decode_box_size` declines a `size32 == 1` box
+            // when `extended` is `None`, matching the original "just stop" behaviour exactly.
+            let Some((full, hdr)) =
+                crate::container::boxhdr::decode_box_size(size32, None, p as u64, buf.len() as u64)
+            else {
                 return;
-            }
+            };
+            let (full, hdr) = (full as usize, hdr as usize);
+            let end = p + full;
             let body = &buf[p + hdr..end];
             match typ {
                 // ColourInformationBox: `nclx` carries CICP as 3 × u16 then a full-range bit.
@@ -402,19 +450,19 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
 
             let size32 = u32::from_be_bytes(buf.get(p..p + 4)?.try_into().ok()?);
             let typ = buf.get(p + 4..p + 8)?.try_into().ok()?;
-            let (header_len, size) = match size32 {
-                0 => (8usize, buf.len() - p),
-                1 => {
-                    let raw = buf.get(p + 8..p + 16)?.try_into().ok()?;
-                    let size = usize::try_from(u64::from_be_bytes(raw)).ok()?;
-                    (16usize, size)
-                }
-                size => (8usize, size as usize),
+            let extended = if size32 == 1 {
+                Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
+            } else {
+                None
             };
-            if size < header_len {
-                return None;
-            }
-            let end = p.checked_add(size)?;
+            let (size, header_len) = crate::container::boxhdr::decode_box_size(
+                size32,
+                extended,
+                p as u64,
+                buf.len() as u64,
+            )?;
+            let (size, header_len) = (size as usize, header_len as usize);
+            let end = p + size;
             let body = buf.get(p + header_len..end)?;
             out.push((typ, body));
             p = end;
@@ -624,5 +672,61 @@ pub(super) fn colr_profile(body: &[u8]) -> Option<Vec<u8>> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A moderately-sized CMYK JPEG (well within MAX_DIM/MAX_PIXELS) must still be refused
+    /// once its transient CMYK/Cmyka/RGBA buffers would exceed MAX_ALLOC (512 MiB) — the gap
+    /// A025/A010 found between the dimension caps and the actual allocation budget.
+    #[test]
+    fn cmyk_transient_budget_catches_what_dimension_caps_miss() {
+        // 8000x8000 is far under MAX_DIM (16384) and MAX_PIXELS (16384^2), but at 13 transient
+        // bytes/px that's ~830 MiB, comfortably past the 512 MiB MAX_ALLOC budget.
+        assert!(cmyk_transient_bytes_exceed_budget(8000, 8000, MAX_ALLOC));
+        // A small, ordinary CMYK JPEG must sail through unaffected.
+        assert!(!cmyk_transient_bytes_exceed_budget(800, 600, MAX_ALLOC));
+        // Right at the boundary: exactly MAX_ALLOC bytes is not "exceeds".
+        let (w, h) = (200u32, 200u32);
+        let budget = (w as u64) * (h as u64) * 13;
+        assert!(!cmyk_transient_bytes_exceed_budget(w, h, budget));
+        assert!(cmyk_transient_bytes_exceed_budget(w, h, budget - 1));
+    }
+
+    /// Bogus/non-CMYK input must still decline cleanly through the normal early-outs — the
+    /// budget check sits between the dimension gate and the ICC-profile read, so it must
+    /// never itself be reachable with attacker data that isn't already a plausible CMYK JPEG.
+    #[test]
+    fn decode_cmyk_jpeg_declines_non_jpeg_bytes() {
+        assert!(decode_cmyk_jpeg(b"not a jpeg at all").is_none());
+        assert!(decode_cmyk_jpeg(&[]).is_none());
+    }
+
+    /// `tone_map_float` must not allocate a second `to_rgba32f()` copy for the two variants
+    /// every call site actually passes it (Rgb32F/Rgba32F) — pinned by checking both variants
+    /// still tone-map correctly after the rewrite, matching the pre-existing Rgba32F coverage
+    /// in `decode::tests::tone_map_rescues_all_zero_alpha_float`.
+    #[test]
+    fn tone_map_float_matches_concrete_variant_directly() {
+        // Rgb32F has no alpha channel: output must be fully opaque, matching the old
+        // to_rgba32f()-synthesized a=1.0 behaviour.
+        let mut buf = image::Rgb32FImage::new(2, 2);
+        for p in buf.pixels_mut() {
+            *p = image::Rgb([0.5f32, 0.25, 1.5]);
+        }
+        let out = tone_map_float(&DynamicImage::ImageRgb32F(buf)).to_rgba8();
+        assert!(out.pixels().all(|p| p.0[3] == 255), "Rgb32F must be opaque");
+        assert!(out.pixels().all(|p| p.0[0] > 0), "RGB content must survive");
+
+        // Rgba32F: partial alpha must still be preserved verbatim (not rescued to opaque).
+        let mut buf = image::Rgba32FImage::new(2, 1);
+        buf.put_pixel(0, 0, image::Rgba([1.0f32, 1.0, 1.0, 1.0]));
+        buf.put_pixel(1, 0, image::Rgba([1.0f32, 1.0, 1.0, 0.0]));
+        let out = tone_map_float(&DynamicImage::ImageRgba32F(buf)).to_rgba8();
+        assert_eq!(out.get_pixel(0, 0).0[3], 255);
+        assert_eq!(out.get_pixel(1, 0).0[3], 0, "partial alpha must survive");
     }
 }

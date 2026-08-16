@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use windows::core::{Error, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    E_FAIL, E_INVALIDARG, FILETIME, PROPERTYKEY, STG_E_ACCESSDENIED, SYSTEMTIME,
+    E_FAIL, E_INVALIDARG, E_POINTER, FILETIME, PROPERTYKEY, STG_E_ACCESSDENIED, SYSTEMTIME,
 };
 use windows::Win32::Storage::EnhancedStorage::{
     PKEY_Audio_EncodingBitrate, PKEY_GPS_LatitudeDecimal, PKEY_GPS_LongitudeDecimal,
@@ -126,11 +126,27 @@ impl Default for PropertyStore {
 impl IInitializeWithFile_Impl for PropertyStore_Impl {
     fn Initialize(&self, pszfilepath: &PCWSTR, _grfmode: u32) -> Result<()> {
         safety::guard(|| {
+            // `PCWSTR::as_wide` (called inside `to_string`) runs an unconditional `wcslen`
+            // on the raw pointer — a null here is a hard access violation, not a catchable
+            // Rust panic, unlike the other raw-pointer args in this file (GetAt/GetValue both
+            // null-check first).
+            if pszfilepath.is_null() {
+                return Err(Error::from(E_POINTER));
+            }
             let path = unsafe { pszfilepath.to_string() }.map_err(|_| Error::from(E_FAIL))?;
             *self
                 .path
                 .try_borrow_mut()
                 .map_err(|_| Error::from(E_FAIL))? = Some(path);
+            // A host is free to re-Initialize one PropertyStore instance across several files
+            // (a documented, real shell pattern) — without clearing the cache here,
+            // `with_props`'s `get_or_insert_with` only ever builds it on the FIRST query, so
+            // every query after that silently answers with the PREVIOUS file's metadata under
+            // the new file's path, with no error to signal it.
+            *self
+                .props
+                .try_borrow_mut()
+                .map_err(|_| Error::from(E_FAIL))? = None;
             Ok(())
         })
     }
@@ -321,8 +337,14 @@ impl PropertyStore_Impl {
 /// crate version, only the vector form.)
 fn pv_lpwstr(s: &str) -> PROPVARIANT {
     let wide = crate::wide(s);
+    // Overflow-safe byte count, matching command.rs::alloc_pwstr's guard: can't actually
+    // overflow for any real string, but keep the allocation provably sound rather than
+    // wrapping into an under-sized CoTaskMemAlloc.
+    let Some(bytes) = checked_utf16_byte_len(wide.len()) else {
+        return PROPVARIANT::default();
+    };
     unsafe {
-        let p = CoTaskMemAlloc(wide.len() * 2) as *mut u16;
+        let p = CoTaskMemAlloc(bytes) as *mut u16;
         if p.is_null() {
             return PROPVARIANT::default();
         }
@@ -339,6 +361,13 @@ fn pv_lpwstr(s: &str) -> PROPVARIANT {
             },
         }
     }
+}
+
+/// Overflow-safe UTF-16 byte length (`len * size_of::<u16>()`, checked). Split out from
+/// `pv_lpwstr` so the arithmetic itself is unit-testable without needing a near-`usize::MAX`
+/// element `Vec<u16>` just to exercise the overflow branch.
+fn checked_utf16_byte_len(len: usize) -> Option<usize> {
+    len.checked_mul(2)
 }
 
 /// Build a `VT_VECTOR | VT_LPWSTR` PROPVARIANT for the multi-value string keys. System.Music.Artist
@@ -389,11 +418,14 @@ fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
 }
 
 /// Run the header/metadata-only file probe ([`crate::strip::read_info_bounded`] + audio tags) on
-/// a detached worker, returning only if it finishes within [`PROBE_BUDGET`]. On timeout returns
-/// `None` and leaves the worker to finish and exit on its own, so the calling shell thread blocks
-/// for at most 250 ms. This deliberately does not initialize COM: the bounded image probe never
-/// invokes WIC, WinRT, ImageMagick, or a pixel decode. `ImageInfo`/`AudioTags` are plain `Send`
-/// data; no COM object crosses the channel.
+/// a detached worker, returning only if it finishes within [`PROBE_BUDGET`], so the calling
+/// shell thread blocks for at most 250 ms. This deliberately does not initialize COM: the
+/// bounded image probe never invokes WIC, WinRT, ImageMagick, or a pixel decode.
+/// `ImageInfo`/`AudioTags` are plain `Send` data; no COM object crosses the channel.
+///
+/// Built on [`safety::spawn_budgeted`] (shared with `previewhandler.rs`'s decode and `ocr.rs`'s
+/// recognizer) — see that function's doc for the ModuleRef-pin / slot-guard / spawn-failure
+/// contract this relies on.
 fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip::AudioTags)> {
     let now = safety::elapsed_ms();
     let slot = acquire_probe_slot(now)?;
@@ -405,37 +437,26 @@ fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip
             release_probe_slot(self.0, self.1);
         }
     }
+    // Constructed here (not inside the worker closure) and moved into `op` below, so
+    // `spawn_budgeted`'s spawn-failure path drops it (and so releases the slot) exactly like a
+    // normal worker exit would — see that function's doc.
+    let active = ActiveProbe(slot, lease);
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let worker = std::thread::Builder::new()
-        .name("st2k-property-probe".into())
-        .spawn(move || {
-            let _active = ActiveProbe(slot, lease);
-            // Pin the DLL for this detached worker's whole lifetime. On timeout we return but
-            // leave this thread running, and `DllCanUnloadNow` does NOT count it — so when the
-            // host (e.g. a file-open dialog in Chrome) releases the property object on CLOSE, the
-            // DLL could unload mid-probe → crash-on-close. Mirrors run_action_detached.
-            #[allow(clippy::default_constructed_unit_structs)]
-            let _module = crate::ModuleRef::default();
-            let is_audio = property_path_is_audio(&path);
-            let tags = if is_audio {
-                crate::strip::read_audio_tags(&path)
-            } else {
-                crate::strip::AudioTags::default()
-            };
-            let info = if is_audio {
-                crate::strip::ImageInfo::default()
-            } else {
-                crate::strip::read_info_bounded(&path)
-            };
-            let probed = (info, tags);
-            let _ = tx.send(probed);
-        });
-    if worker.is_err() {
-        release_probe_slot(slot, lease);
-        return None;
-    }
-    rx.recv_timeout(PROBE_BUDGET).ok()
+    safety::spawn_budgeted("st2k-property-probe", PROBE_BUDGET, move || {
+        let _active = active;
+        let is_audio = property_path_is_audio(&path);
+        let tags = if is_audio {
+            crate::strip::read_audio_tags(&path)
+        } else {
+            crate::strip::AudioTags::default()
+        };
+        let info = if is_audio {
+            crate::strip::ImageInfo::default()
+        } else {
+            crate::strip::read_info_bounded(&path)
+        };
+        (info, tags)
+    })
 }
 
 fn property_path_is_audio(path: &str) -> bool {
@@ -449,6 +470,20 @@ fn property_path_is_audio(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `checked_utf16_byte_len` must catch the overflow instead of silently wrapping into an
+    /// under-sized `CoTaskMemAlloc` — the plain `len * 2` this replaced would wrap (release
+    /// builds run with `overflow-checks` off) rather than error, handing `pv_lpwstr` a buffer
+    /// too small for the UTF-16 copy that follows.
+    #[test]
+    fn checked_utf16_byte_len_catches_overflow_instead_of_wrapping() {
+        assert_eq!(
+            checked_utf16_byte_len(usize::MAX),
+            None,
+            "a byte length that can't fit in usize must be rejected, not wrapped"
+        );
+        assert_eq!(checked_utf16_byte_len(4), Some(8));
+    }
 
     #[test]
     fn expensive_audio_probe_is_extension_gated() {
@@ -512,5 +547,96 @@ mod tests {
         for slot in PROBE_SLOTS.iter() {
             slot.store(0, Ordering::Release);
         }
+    }
+
+    /// A COM host is free to re-Initialize one `PropertyStore` instance across several files
+    /// (a documented, real shell pattern). `with_props`'s `get_or_insert_with` only ever
+    /// builds the cache on the FIRST query, so without clearing `props` in `Initialize`, every
+    /// query after a re-Initialize would silently keep answering with the PREVIOUS file's
+    /// metadata under the new path — no error, just wrong data.
+    #[test]
+    fn reinitialize_clears_the_previous_files_cached_props() {
+        // `#[implement]` moves the real fields onto an inner `PropertyStore`, reachable
+        // through `windows::core::ComObject`'s `Deref`/`get()` — the generated `_Impl`
+        // wrapper type the trait is written against can't be named or constructed from
+        // application code, so this is the supported way to drive the real `Initialize`
+        // trait method (through the actual `IInitializeWithFile` vtable, exactly like a COM
+        // host would) while still being able to peek at the cache field afterward.
+        let com = windows::core::ComObject::new(PropertyStore::default());
+        // Seed a stale cache directly, as if a first Initialize + query already ran for a
+        // different file — cheaper and more deterministic than driving a real probe through
+        // GetCount/GetValue.
+        *com.get().props.borrow_mut() = Some(vec![(PKEY_Title, PROPVARIANT::default())]);
+
+        let init: IInitializeWithFile = com.to_interface();
+        let w = crate::wide(r"C:\second\file.jpg");
+        let pc = PCWSTR(w.as_ptr());
+        unsafe { init.Initialize(pc, 0) }.expect("Initialize should succeed");
+
+        assert!(
+            com.get().props.borrow().is_none(),
+            "Initialize must drop the previous file's cached props, or with_props's \
+             get_or_insert_with never rebuilds them for the new path"
+        );
+    }
+
+    /// `PCWSTR::as_wide` (called inside `to_string`) runs an unconditional `wcslen` on the raw
+    /// pointer — a null here used to be a hard access violation (not a catchable Rust panic),
+    /// in a coclass any local caller can load in-process. Now it must be a clean `Err`.
+    #[test]
+    fn initialize_with_null_path_returns_an_error_instead_of_crashing() {
+        let com = windows::core::ComObject::new(PropertyStore::default());
+        let init: IInitializeWithFile = com.to_interface();
+        let pc = PCWSTR(core::ptr::null());
+        assert!(
+            unsafe { init.Initialize(pc, 0) }.is_err(),
+            "a null pszFilePath must be rejected before it reaches PCWSTR::to_string()"
+        );
+    }
+
+    /// `probe_budgeted`'s worker deliberately never touches COM (see its own doc comment): a
+    /// WIC-backed fallback was added to this call chain once before and silently violated that,
+    /// blanking every Details-pane probe with no error. Run the exact calls the worker makes on
+    /// a fresh thread and confirm COM is still uninitialized afterward — `CoInitializeEx`
+    /// returning `S_OK` rather than `S_FALSE` is the "this thread never called it before" signal.
+    #[test]
+    fn probe_worker_path_never_touches_com() {
+        use windows::Win32::Foundation::S_FALSE;
+        use windows::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .spawn(move || {
+                let path = r"C:\definitely\does\not\exist\st2k_com_probe_test.jpg".to_string();
+                // Mirrors probe_budgeted's worker body exactly, for a non-audio extension.
+                let is_audio = property_path_is_audio(&path);
+                let _tags = if is_audio {
+                    crate::strip::read_audio_tags(&path)
+                } else {
+                    crate::strip::AudioTags::default()
+                };
+                let _info = if is_audio {
+                    crate::strip::ImageInfo::default()
+                } else {
+                    crate::strip::read_info_bounded(&path)
+                };
+                let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+                let already_inited = hr == S_FALSE;
+                if hr.is_ok() {
+                    unsafe { CoUninitialize() };
+                }
+                let _ = tx.send(!already_inited);
+            })
+            .expect("spawn probe-mirroring thread");
+        let clean = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or(false);
+        assert!(
+            clean,
+            "probe_budgeted's worker path initialized COM somewhere in its call chain — this \
+             coclass deliberately keeps that path COM-free (see probe_budgeted's doc comment)"
+        );
     }
 }

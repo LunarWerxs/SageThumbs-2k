@@ -201,26 +201,27 @@ if ([string](Get-ReleaseRequiredProperty -Object $exeBuild -Name 'package') -cne
 if ([string](Get-ReleaseRequiredProperty -Object $dllBuild -Name 'package') -cne 'sagethumbs2k-dll') {
     throw 'release manifest has the wrong shell-extension package'
 }
-# These four expectations are DELIBERATELY a second, independent copy of the shipping
-# build recipe: their whole job is to refuse a manifest whose build silently gained or
-# lost a feature. So when the recipe in build-release.ps1 changes, it must be changed
-# HERE and in write-release-manifest.ps1 too. A release that fails at this gate is this
-# working as designed; fix the recipe copies, do not weaken the assertion.
+# These four expectations are reconstructed from the ONE shared Get-ReleaseFeatureList
+# (A249) rather than a hand-typed copy per script: hand-typed copies are exactly what let
+# the feature list silently drift between build-release.ps1 and this gate before. This
+# still independently recomputes the expected values and compares them against what got
+# WRITTEN to the manifest, so a manifest that was hand-edited or a build that bypassed the
+# shared helper is still caught; fix the recipe, do not weaken the assertion.
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $exeBuild -Name 'features') `
-    -Expected @('webp-lossy', 'html-preview', 'hdr-capture') `
+    -Expected @((Get-ReleaseFeatureList -Package sagethumbs2k) -split ',') `
     -Name 'executable feature set'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $dllBuild -Name 'features') `
-    -Expected @('webp-lossy', 'dll-i18n-subset') `
+    -Expected @((Get-ReleaseFeatureList -Package sagethumbs2k-dll) -split ',') `
     -Name 'shell-extension feature set'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $exeBuild -Name 'arguments') `
-    -Expected @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture') `
+    -Expected @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features (Get-ReleaseFeatureList -Package sagethumbs2k)) `
     -Name 'executable Cargo arguments'
 Assert-ExactStringArray `
     -ActualObject (Get-ReleaseRequiredProperty -Object $dllBuild -Name 'arguments') `
-    -Expected @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset') `
+    -Expected @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features (Get-ReleaseFeatureList -Package sagethumbs2k-dll)) `
     -Name 'shell-extension Cargo arguments'
 
 $head = (& git -C $root rev-parse HEAD)

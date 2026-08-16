@@ -60,6 +60,49 @@ fn run_st2k(exe: &Path, args: &[&str]) -> RunOutcome {
     }
 }
 
+/// Outcome of a routed `st2k` run whose stdout IS the answer (the produced file's
+/// real path), not just success/failure.
+enum CaptureOutcome {
+    /// Exited 0 with a non-empty stdout line — the real path `st2k` wrote to.
+    Ok(PathBuf),
+    /// The child ran but failed, or printed nothing usable on a "successful" exit.
+    Failed,
+    /// The child could not be spawned at all.
+    SpawnFailed,
+}
+
+/// Like [`run_st2k`], but reads the child's stdout back instead of discarding it —
+/// for verbs (like `rotate`) whose one line of stdout on success IS the real output
+/// path `main.rs`'s `println!("{out}")` prints, so the caller can read back what
+/// `st2k` actually produced instead of predicting the name it will pick.
+fn run_st2k_capture(exe: &Path, args: &[&str]) -> CaptureOutcome {
+    match Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            // `println!` adds the trailing newline; trim it (and any stray CR) off.
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if path.is_empty() {
+                CaptureOutcome::Failed
+            } else {
+                CaptureOutcome::Ok(PathBuf::from(path))
+            }
+        }
+        Ok(_) => CaptureOutcome::Failed,
+        Err(e) => {
+            crate::safety::log(&format!(
+                "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
+            ));
+            CaptureOutcome::SpawnFailed
+        }
+    }
+}
+
 /// Render a [`Resize`] preset into the `--resize WxH|N%` syntax the CLI accepts
 /// (the inverse of `cli::parse_resize`), or `None` when there's nothing to pass.
 /// `Fit`/`FitUp` both serialize to `WxH`; the CLI's `convert` always fits-without-
@@ -141,23 +184,36 @@ pub(super) fn transform_one(exe: Option<&Path>, p: &str, t: Transform) -> Option
                 Transform::FlipV => "flipv",
             };
             // `st2k rotate` auto-names the `<stem> (edited).<ext>` sibling itself
-            // (same `transform_file`). Predict that name BEFORE the run (while it's
-            // still free) so it matches what st2k picks — recomputing afterwards
-            // would see the new file and pick `(edited 2)` instead.
-            let src = Path::new(p);
-            let ext = routed_edit_output_ext(src);
-            // PREDICT (read-only) the name `st2k rotate` will auto-pick — do NOT
-            // reserve it, or st2k's own picker would see our placeholder and bump to
-            // `(edited 2)`. Rotate names derive from the distinct source stem, so
-            // parallel rotates of a selection don't collide on the prediction.
-            let predicted = predict_unique_suffix(src, "edited", &ext);
-            match run_st2k(exe, &["rotate", p, "--by", by]) {
-                RunOutcome::Ok => Some(predicted),
-                RunOutcome::Failed => {
+            // (same `transform_file`) and PRINTS that real path on success
+            // (`src/bin/cli.rs`'s `println!("{out}")`). Read that back instead of
+            // guessing the name ourselves — a guess made BEFORE the subprocess runs
+            // can be stolen by a concurrent rotate landing in the gap between our
+            // prediction and st2k's own atomic reserve, which would report a name
+            // st2k didn't actually produce.
+            match run_st2k_capture(exe, &["rotate", p, "--by", by]) {
+                CaptureOutcome::Ok(path) => {
+                    // Cheap self-check against the OLD predict-then-hope approach: a
+                    // mismatch here IS the exact race A277 was about (a concurrent
+                    // rotate stealing the guessed name) — worth a log line, but `path`
+                    // (read back from st2k's own stdout, not guessed) is always the
+                    // ground truth now, so it's used regardless.
+                    let src = Path::new(p);
+                    let ext = routed_edit_output_ext(src);
+                    let predicted = predict_unique_suffix(src, "edited", &ext);
+                    if predicted != path {
+                        crate::safety::log(&format!(
+                            "Transform (st2k): predicted output {predicted:?} differs from \
+                             the actual {path:?} for {p} — a concurrent edit likely won the \
+                             naming race; using the actual path"
+                        ));
+                    }
+                    Some(path)
+                }
+                CaptureOutcome::Failed => {
                     crate::safety::log(&format!("Transform (st2k) failed for {p}"));
                     None
                 }
-                RunOutcome::SpawnFailed => transform_one(None, p, t),
+                CaptureOutcome::SpawnFailed => transform_one(None, p, t),
             }
         }
         None => transform_file(p, t).ok(),
@@ -222,10 +278,20 @@ pub(super) fn shrink_one(exe: Option<&Path>, p: &str, size: EmailSize) -> Option
             };
             let edge = size.max_edge();
             let resize = format!("{edge}x{edge}");
-            // EMAIL_JPEG_QUALITY (82) is private to encode.rs; pass the same literal.
+            // Same constant the in-process path uses (encode::EMAIL_JPEG_QUALITY is
+            // pub(crate) exactly so this can't silently desync from it).
+            let quality = crate::verbs::encode::EMAIL_JPEG_QUALITY.to_string();
             match run_st2k(
                 exe,
-                &["convert", p, out_s, "--quality", "82", "--resize", &resize],
+                &[
+                    "convert",
+                    p,
+                    out_s,
+                    "--quality",
+                    &quality,
+                    "--resize",
+                    &resize,
+                ],
             ) {
                 RunOutcome::Ok => Some(slot.path().to_path_buf()),
                 RunOutcome::Failed => {
@@ -264,5 +330,98 @@ pub(super) fn strip_one(exe: Option<&Path>, p: &str) -> bool {
                 false
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Locks the fix for A121: shrink_one's routed `--quality` arg must be DERIVED from
+    // encode::EMAIL_JPEG_QUALITY (now pub(crate)), not a hand-copied literal that can
+    // silently drift from the in-process value. Referencing the constant here would not
+    // even COMPILE without the pub(crate) visibility fix, and the value check catches a
+    // future edit to one side without the other.
+    #[test]
+    fn routed_email_quality_matches_in_process_constant() {
+        let routed_quality_arg = crate::verbs::encode::EMAIL_JPEG_QUALITY.to_string();
+        assert_eq!(routed_quality_arg, "82");
+        assert_eq!(crate::verbs::encode::EMAIL_JPEG_QUALITY, 82);
+    }
+
+    /// The module docs promise a missing helper "can never break a verb — it only
+    /// forfeits the crash isolation". Nothing was proving that, and the reason is easy
+    /// to miss: [`st2k_exe`] RESOLVES under test on any machine that has built the
+    /// workspace, because cargo hardlinks `st2k.exe` into the very `deps\` directory
+    /// the test binary runs from — and CI runs `cargo build` before `cargo test`, so it
+    /// does too. Every routed verb therefore takes the ROUTED arm in BOTH places, and
+    /// the in-process arm — the one a DLL-only install actually runs — was exercised
+    /// nowhere. Don't "simplify" this by deleting the explicit `None`: that argument is
+    /// the whole test, and letting `st2k_exe()` supply it would silently go back to
+    /// testing the routed path twice.
+    #[test]
+    fn the_in_process_fallback_still_converts_when_no_helper_is_present() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_helper_fallback_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("photo.png");
+        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(9, 7, image::Rgb([10, 90, 200])))
+            .save(&src)
+            .unwrap();
+
+        // `None` is exactly what `run_action` passes when `st2k_exe()` finds nothing.
+        let out = convert_one(
+            None,
+            src.to_str().unwrap(),
+            Target {
+                format: ImageFormat::Jpeg,
+                ext: "jpg",
+                webp_quality: None,
+            },
+        )
+        .expect("a missing helper must forfeit isolation only — never the conversion");
+
+        assert_eq!(
+            out.extension().and_then(|e| e.to_str()),
+            Some("jpg"),
+            "the fallback must land on the same auto-named path the routed arm targets"
+        );
+        assert!(
+            image::open(&out).is_ok(),
+            "the fallback's output must be a real decodable image, not an empty slot"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Locks the fix for A277: `transform_one` must return the path `st2k rotate`
+    // actually reports on stdout, not a name predicted before the subprocess ran
+    // (which a concurrent edit could steal). `run_st2k_capture` is the mechanism
+    // that makes that possible — it must actually read the child's stdout instead
+    // of discarding it like `run_st2k` does. Exercises a real subprocess (cmd.exe
+    // standing in for st2k) rather than mocking it: a regression back to
+    // `.status()` (stdout discarded) would make this fail every time, since
+    // `CaptureOutcome::Ok` could never be reached.
+    #[test]
+    fn run_st2k_capture_reads_the_real_path_from_stdout() {
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let cmd_exe = Path::new(&system_root).join("System32").join("cmd.exe");
+        // No spaces/parens in the echoed path — keeps this test independent of
+        // Windows' argv quoting rules, which aren't what's under test here.
+        let outcome = run_st2k_capture(&cmd_exe, &["/c", "echo", "C:\\out\\file_edited.jpg"]);
+        match outcome {
+            CaptureOutcome::Ok(path) => {
+                assert_eq!(path, PathBuf::from("C:\\out\\file_edited.jpg"));
+            }
+            CaptureOutcome::Failed => panic!("cmd.exe echo should have exited 0 with output"),
+            CaptureOutcome::SpawnFailed => panic!("cmd.exe should always be spawnable in CI"),
+        }
     }
 }

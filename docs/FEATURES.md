@@ -6,7 +6,7 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs (Explorer thumbnails for 327 file types plus
+> rebuilds the abandoned SageThumbs (Explorer thumbnails for 331 file types plus
 > a rich right-click image toolkit) and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0).
 
@@ -28,7 +28,7 @@ grouped):
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
 | **Document** (43) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
 | **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
-| **Video** (22) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (~30 % in, not the intro) via the OS **Media Foundation** codecs (no bundled bytes). MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest 30 % (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. (`.mpg/.mpeg/.flv` need MPEG-1/2 or FLV decoders Windows doesn't ship, so they keep the default icon.) |
+| **Video** (22) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Two codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here) and **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed). `.mpg/.mpeg` still need MPEG-1/2 support Windows does not always carry, and keep the default icon without it. |
 | **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive, including SVG: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Identified generic archives honor **Max file size** before their directory is parsed; an oversized 7z is also rejected safely when its shell stream has no filename. ZIP/RAR and non-solid 7z read only the picked images; 7z extraction is single-threaded with an 8 MiB aggregate image budget. Solid 7z scans only a small bounded prefix and falls back to the stock icon when its images are buried too deeply. No readable image (or encrypted) keeps the stock icon |
 
 *Counts sum to **331** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
@@ -653,7 +653,7 @@ genuinely-outstanding work.)*
 > **`compress`** (`batch` is CLI-only).
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (327-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (331-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new**; only surface existing functions.
@@ -661,14 +661,14 @@ bundle anything new**; only surface existing functions.
 **Status:**
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
-   (combine), `thumbnail` (render any of the 327 types to PNG), **`batch`** (bulk
+   (combine), `thumbnail` (render any of the 331 types to PNG), **`batch`** (bulk
    thumbnail/convert over many files/folders in ONE process, fanned out across all CPU
    cores), `formats`. All logic lives in the `lib` (`verbs`, `strip`, `ocr`, `topdf`,
    `decode`, `parallel`); the CLI is a thin arg-parser over the same functions the menu
    uses. (Shipped as a separate binary, not a flag on the Options app.)
 2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0): exposes **10** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs plus **`view`** (which decodes any of the 327 formats to a PNG **image
+   core verbs plus **`view`** (which decodes any of the 331 formats to a PNG **image
    block**) so an AI agent can actually *see* the file, and **`compress`**. Newline-
    delimited stdio, spawned on demand by the client (not a daemon); one small dep
    (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an MCP client at

@@ -363,14 +363,14 @@ unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
     // version is constant; the status pill is sized to its widest possible text), so
     // the owner-draw just centers content inside.
     let ver = format!("v{}", env!("CARGO_PKG_VERSION"));
-    let ver_w = 14 + ICON + 7 + text_width(&ver) + 14;
+    let ver_w = 14 + ICON + 7 + text_width(hwnd, &ver) + 14;
     let cand = [
         t("about_checking").to_string(),
         t("about_uptodate").to_string(),
         t("about_check_failed").to_string(),
         format!("{} 99.99.99", t("about_update")),
     ];
-    let max_tw = cand.iter().map(|c| text_width(c)).max().unwrap_or(80);
+    let max_tw = cand.iter().map(|c| text_width(hwnd, c)).max().unwrap_or(80);
     let status_w = 14 + 10 + 8 + max_tw + 14;
     let gap = 12;
     let gx = (CW - (ver_w + gap + status_w)) / 2;
@@ -403,7 +403,7 @@ unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
     // "Send feedback", centered on its own row under the status pills. Sized to its
     // label (same 14px end padding as the others) so the stadium never looks stretched.
     let fb = t("fb_pill");
-    let fb_w = 14 + text_width(fb) + 14;
+    let fb_w = 14 + text_width(hwnd, fb) + 14;
     ctl(
         hwnd,
         STATIC,
@@ -471,6 +471,18 @@ unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
 
 // ---- Update check (worker thread → WM_ABOUT_CHECKED) --------------------
 
+/// Whether the boxed update-check tag must be reclaimed right here, on the worker thread,
+/// rather than waiting for [`WM_ABOUT_CHECKED`]'s own reclaim (below) to run.
+///
+/// That handler already frees the tag when the window was torn down between post and
+/// dispatch (its `st.is_null()` check) — but only for a message that actually made it into
+/// the queue. When `PostMessageW` itself fails (an invalid or already-destroyed HWND), no
+/// message is ever queued, so that reclaim path never fires and the box would otherwise leak.
+/// Pure so the decision is unit-testable without a real HWND or a real post.
+fn post_failed_leaks_tag(posted_ok: bool, lp: isize) -> bool {
+    !posted_ok && lp != 0
+}
+
 /// Kick off a fresh GitHub update check on a worker thread; it posts the outcome
 /// back to `hwnd` via [`WM_ABOUT_CHECKED`]. HWND isn't `Send`, so the raw handle
 /// value crosses the thread boundary and is rebuilt for the (thread-safe) post.
@@ -482,12 +494,15 @@ unsafe fn start_check(hwnd: HWND) {
             update::UpdateCheck::Available(tag) => (1usize, Box::into_raw(Box::new(tag)) as isize),
             update::UpdateCheck::Failed => (2usize, 0isize),
         };
-        let _ = PostMessageW(
+        let posted = PostMessageW(
             Some(HWND(raw as *mut c_void)),
             WM_ABOUT_CHECKED,
             WPARAM(code),
             LPARAM(lp),
         );
+        if post_failed_leaks_tag(posted.is_ok(), lp) {
+            drop(Box::from_raw(lp as *mut String));
+        }
     });
 }
 
@@ -924,5 +939,33 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod update_check_tests {
+    use super::*;
+
+    /// The bug this guards: a `PostMessageW` failure used to be silently swallowed (`let _ =
+    /// ...`), so a boxed `Available(tag)` string was never freed — `WM_ABOUT_CHECKED`'s own
+    /// reclaim only runs for a message that actually reached the queue.
+    #[test]
+    fn a_failed_post_carrying_a_boxed_tag_must_reclaim() {
+        assert!(post_failed_leaks_tag(false, 0x1000));
+    }
+
+    /// `UpToDate`/`Failed` results carry `lp == 0` (nothing boxed) — a failed post must not
+    /// try to reclaim a null pointer.
+    #[test]
+    fn a_failed_post_with_no_tag_needs_no_reclaim() {
+        assert!(!post_failed_leaks_tag(false, 0));
+    }
+
+    /// A successful post means the message reached the queue, so `WM_ABOUT_CHECKED` now owns
+    /// the tag (either it consumes it, or its own null-check reclaims it) — the worker thread
+    /// must not double-free by also reclaiming here.
+    #[test]
+    fn a_successful_post_never_reclaims_on_the_worker_thread() {
+        assert!(!post_failed_leaks_tag(true, 0x1000));
     }
 }

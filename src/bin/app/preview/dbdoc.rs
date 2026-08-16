@@ -27,6 +27,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use super::content::human_size;
 use super::docconv::md_cell;
+use sagethumbs2k_core::sqlite_prim::{local_size, serial_size, varint};
 
 /// Extensions offered the database view. Kept here rather than in `formats.rs` for the same
 /// reason `content::is_archive_ext` is: these are VIEWER routing, not registered formats.
@@ -36,6 +37,13 @@ const DB_EXTS: &[&str] = &["db", "db3", "sqlite", "sqlite3", "s3db", "sl3"];
 const MAX_TABLES: usize = 64;
 /// Rows shown per table.
 const MAX_ROWS: usize = 50;
+/// `sqlite_master` rows decoded when reading the SCHEMA (tables/indexes/views/triggers), kept
+/// independent of [`MAX_ROWS`]: that cap is sized for a per-table row PREVIEW (50 is plenty to
+/// show), but sqlite_master is walked with the same `read_rows` and would otherwise inherit the
+/// same 50-row ceiling, silently dropping any table past the 50th `sqlite_master` entry and
+/// making the `MAX_TABLES` "first N of M" branch below unreachable. Generous on purpose; the
+/// page-walk budget ([`TABLE_PAGE_BUDGET`]) is what actually bounds worst-case I/O.
+const MAX_SCHEMA_OBJECTS: usize = 4096;
 /// Columns shown per table (a 200-column table clips rather than shredding the layout).
 const MAX_COLS: usize = 24;
 /// Characters kept per cell before an ellipsis.
@@ -260,58 +268,7 @@ impl<R: Read + Seek> Db<R> {
     }
 }
 
-/// Bytes of a cell payload stored in the cell itself, per the format's overflow threshold.
-/// `table_leaf` picks the table-leaf threshold (`U-35`) over the index-page one.
-fn local_size(total: usize, usable: usize, table_leaf: bool) -> usize {
-    let max_local = if table_leaf {
-        usable - 35
-    } else {
-        (usable - 12) * 64 / 255 - 23
-    };
-    if total <= max_local {
-        return total;
-    }
-    let min_local = (usable - 12) * 32 / 255 - 23;
-    let k = min_local + (total - min_local) % (usable - 4);
-    if k <= max_local {
-        k
-    } else {
-        min_local
-    }
-}
-
 // ---- Record decoding ------------------------------------------------------------------------
-
-/// SQLite big-endian base-128 varint (1–9 bytes) → (value, bytes consumed).
-fn varint(b: &[u8], off: usize) -> Option<(u64, usize)> {
-    let mut result: u64 = 0;
-    for i in 0..9 {
-        let byte = *b.get(off + i)?;
-        if i == 8 {
-            return Some(((result << 8) | byte as u64, 9));
-        }
-        result = (result << 7) | (byte & 0x7F) as u64;
-        if byte & 0x80 == 0 {
-            return Some((result, i + 1));
-        }
-    }
-    Some((result, 9))
-}
-
-/// Byte length of a serial type's column data.
-fn serial_size(s: u64) -> usize {
-    match s {
-        0 | 8 | 9 => 0,
-        1 => 1,
-        2 => 2,
-        3 => 3,
-        4 => 4,
-        5 => 6,
-        6 | 7 => 8,
-        10 | 11 => 0, // reserved by the format; treated as empty
-        n => ((n - 12) / 2) as usize,
-    }
-}
 
 /// Big-endian two's-complement integer of 1–8 bytes.
 fn be_int(b: &[u8]) -> i64 {
@@ -408,6 +365,8 @@ struct Walk {
     seen: HashSet<u32>,
     /// Column index an `INTEGER PRIMARY KEY` occupies, if any.
     rowid_alias: Option<usize>,
+    /// How many rows to fully decode before switching to count-only (see [`Db::read_rows`]).
+    max_rows: usize,
 }
 
 /// B-trees are shallow (a billion rows fit in well under ten levels), so this is a generous
@@ -415,14 +374,16 @@ struct Walk {
 const MAX_DEPTH: usize = 32;
 
 impl<R: Read + Seek> Db<R> {
-    /// Walk the b-tree rooted at `root`, decoding the first [`MAX_ROWS`] rows and counting the
+    /// Walk the b-tree rooted at `root`, decoding the first `max_rows` rows and counting the
     /// rest. Handles both shapes: a rowid table (table b-tree, rows in the LEAVES) and a
     /// `WITHOUT ROWID` table (index b-tree, rows in leaves AND interior nodes).
     ///
     /// `rowid_alias` is the column index that an `INTEGER PRIMARY KEY` occupies, if any — SQLite
     /// stores that column as NULL and keeps the value in the cell's rowid, so without this the
-    /// id column of nearly every table would read as empty.
-    fn read_rows(&mut self, root: u32, rowid_alias: Option<usize>) -> Rows {
+    /// id column of nearly every table would read as empty. `max_rows` is caller-chosen: a
+    /// per-table row PREVIEW wants [`MAX_ROWS`]; reading `sqlite_master` itself (the schema)
+    /// wants [`MAX_SCHEMA_OBJECTS`] instead, so the two purposes don't share one cap.
+    fn read_rows(&mut self, root: u32, rowid_alias: Option<usize>, max_rows: usize) -> Rows {
         let mut w = Walk {
             rows: Vec::new(),
             total: 0,
@@ -430,6 +391,7 @@ impl<R: Read + Seek> Db<R> {
             budget: TABLE_PAGE_BUDGET,
             seen: HashSet::new(),
             rowid_alias,
+            max_rows,
         };
         self.walk(root, &mut w, 0);
         Rows {
@@ -517,7 +479,7 @@ impl<R: Read + Seek> Db<R> {
             w.total += 1;
             // Past the display cap only the COUNT matters, and counting costs no payload
             // assembly — this is what keeps a million-row table cheap to summarise.
-            if w.rows.len() >= MAX_ROWS {
+            if w.rows.len() >= w.max_rows {
                 continue;
             }
             let plen = plen as usize;
@@ -582,12 +544,22 @@ fn longest_backtick_run(objs: &[&Obj]) -> usize {
 }
 
 impl<R: Read + Seek> Db<R> {
-    /// Read `sqlite_master` (always rooted at page 1) into its rows.
-    fn schema(&mut self) -> Vec<Obj> {
+    /// Read `sqlite_master` (always rooted at page 1) into its rows, plus whether more schema
+    /// objects existed than the [`MAX_SCHEMA_OBJECTS`] cap could decode (a lower bound past
+    /// that point: every downstream count derived from the returned `Vec<Obj>` is then a
+    /// floor, not an exact total).
+    fn schema(&mut self) -> (Vec<Obj>, bool) {
         // sqlite_master is an ordinary rowid table; its 5 columns are
         // (type, name, tbl_name, rootpage, sql).
-        let rows = self.read_rows(1, None);
-        rows.rows
+        let rows = self.read_rows(1, None, MAX_SCHEMA_OBJECTS);
+        // `truncated` too, not just the count: when the b-tree walk gives up (short read,
+        // corrupt page, cycle guard, depth cap) it sets that flag and `total` degrades to a
+        // LOWER BOUND, so `total > len` can be false while objects really were lost. Counting
+        // alone would then present a partial schema as the whole one, which is the single
+        // most misleading thing this renderer can do.
+        let incomplete = rows.truncated || rows.total > rows.rows.len() as u64;
+        let objs = rows
+            .rows
             .into_iter()
             .filter_map(|v| {
                 let kind = match v.first() {
@@ -613,7 +585,8 @@ impl<R: Read + Seek> Db<R> {
                     sql,
                 })
             })
-            .collect()
+            .collect();
+        (objs, incomplete)
     }
 }
 
@@ -1023,7 +996,7 @@ fn unquote(s: &str) -> String {
 impl<R: Read + Seek> Db<R> {
     /// The whole preview document: a summary line, one section per table, then the DDL.
     fn render(&mut self, name: &str, size: u64) -> String {
-        let objs = self.schema();
+        let (objs, schema_incomplete) = self.schema();
         let tables: Vec<&Obj> = objs
             .iter()
             .filter(|o| {
@@ -1038,20 +1011,25 @@ impl<R: Read + Seek> Db<R> {
                 .count()
         };
         let (n_idx, n_view, n_trig) = (count("index"), count("view"), count("trigger"));
+        // A `≥` marks every count derived from `objs` as a floor, not an exact total, when
+        // sqlite_master itself had more rows than MAX_SCHEMA_OBJECTS could decode (see
+        // `Db::schema`), matching the `≥`-on-the-count convention this module's row-truncation
+        // notes already use, rather than silently presenting a lower bound as the real count.
+        let lb = if schema_incomplete { "≥" } else { "" };
 
         let mut out = String::with_capacity(4096);
         out.push_str(&format!("# {}\n\n", md_cell(name)));
         let mut bits = vec![
             "SQLite database".to_string(),
             human_size(size),
-            plural(tables.len(), "table"),
+            format!("{lb}{}", plural(tables.len(), "table")),
         ];
         for (n, word) in [(n_idx, "index"), (n_view, "view"), (n_trig, "trigger")] {
             if n > 0 {
                 bits.push(if word == "index" {
-                    format!("{n} {}", if n == 1 { "index" } else { "indexes" })
+                    format!("{lb}{n} {}", if n == 1 { "index" } else { "indexes" })
                 } else {
-                    plural(n, word)
+                    format!("{lb}{}", plural(n, word))
                 });
             }
         }
@@ -1097,7 +1075,7 @@ impl<R: Read + Seek> Db<R> {
     /// One table's section: heading, a GFM row table, and the truncation note.
     fn render_table(&mut self, t: &Obj) -> String {
         let cols = parse_columns(&t.sql);
-        let data = self.read_rows(t.root, cols.rowid_alias);
+        let data = self.read_rows(t.root, cols.rowid_alias, MAX_ROWS);
         let mut out = format!("## {}\n\n", md_cell(&t.name));
 
         // Widest row wins: the DDL can disagree with what a record actually holds (an ALTER
@@ -1462,6 +1440,120 @@ mod tests {
         assert!(md.contains("## Schema"));
         assert!(md.contains("```sql"));
         assert!(md.contains("CREATE TABLE users"));
+    }
+
+    /// Build a single-page synthetic SQLite file whose page 1 IS `sqlite_master`: a table-leaf
+    /// b-tree page holding `n` `CREATE TABLE` rows. Every field is a single-byte varint/int (kept
+    /// under 128), which keeps the record encoding trivial while still exercising the real
+    /// `Db`/`walk` path: `schema()` and `render()` are not special-cased for tests. Root page
+    /// numbers are made up (never a page this synthetic file actually has); `Db::page` returns
+    /// `None` for those, which is fine: these tests only look at what `schema()`/`render()`
+    /// counts and lists, not at each fake table's own (nonexistent) rows.
+    fn synthetic_master_page(n: usize) -> Vec<u8> {
+        assert!(
+            n < 100,
+            "test helper's single-byte varints top out well under 128"
+        );
+
+        // One sqlite_master row: (type='table', name, tbl_name=name, rootpage, sql), all as
+        // single-byte varints/serials (every string here is short enough to stay under 128).
+        fn leaf_cell(rowid: u8, name: &str, root: u8, sql: &str) -> Vec<u8> {
+            let text_serial = |s: &str| (13 + 2 * s.len()) as u8;
+            let serials = [
+                text_serial("table"),
+                text_serial(name),
+                text_serial(name), // tbl_name: unread by `schema()`, reuse `name`
+                1u8,               // rootpage: a 1-byte INTEGER
+                text_serial(sql),
+            ];
+            let mut rec = vec![(1 + serials.len()) as u8]; // varint(header_len), itself 1 byte
+            rec.extend_from_slice(&serials);
+            rec.extend_from_slice(b"table");
+            rec.extend_from_slice(name.as_bytes());
+            rec.extend_from_slice(name.as_bytes());
+            rec.push(root);
+            rec.extend_from_slice(sql.as_bytes());
+            assert!(
+                rec.len() < 128,
+                "test helper's varint(payload_len) must stay 1 byte"
+            );
+
+            let mut cell = vec![rec.len() as u8, rowid]; // varint(payload_len), varint(rowid)
+            cell.extend_from_slice(&rec);
+            cell
+        }
+
+        let cells: Vec<Vec<u8>> = (1..=n)
+            .map(|i| {
+                let name = format!("t{i}");
+                let sql = format!("CREATE TABLE {name} (a)");
+                leaf_cell(i as u8, &name, (i + 1) as u8, &sql)
+            })
+            .collect();
+
+        const PAGE_SIZE: usize = 4096;
+        const FILE_HDR: usize = 100;
+        const BTREE_HDR: usize = 8; // table-leaf, no right-pointer
+        let ptr_array = n * 2;
+        let content_start = FILE_HDR + BTREE_HDR + ptr_array;
+
+        let mut page = vec![0u8; PAGE_SIZE];
+        page[0..16].copy_from_slice(b"SQLite format 3\0");
+        page[16..18].copy_from_slice(&(PAGE_SIZE as u16).to_be_bytes());
+        page[20] = 0; // reserved bytes per page, so usable == page_size
+
+        let h = FILE_HDR;
+        page[h] = 0x0D; // table b-tree leaf page
+        page[h + 3..h + 5].copy_from_slice(&(n as u16).to_be_bytes()); // ncells
+        page[h + 5..h + 7].copy_from_slice(&(content_start as u16).to_be_bytes());
+
+        let mut offset = content_start;
+        for (i, cell) in cells.iter().enumerate() {
+            let ptr = h + BTREE_HDR + i * 2;
+            page[ptr..ptr + 2].copy_from_slice(&(offset as u16).to_be_bytes());
+            page[offset..offset + cell.len()].copy_from_slice(cell);
+            offset += cell.len();
+        }
+        assert!(offset <= PAGE_SIZE, "synthetic page overflowed: {offset}");
+        page
+    }
+
+    /// `schema()` must decode every `sqlite_master` row up to [`MAX_SCHEMA_OBJECTS`], not stop at
+    /// the (unrelated) per-table row-preview cap [`MAX_ROWS`] (50). Before the fix, `schema()`
+    /// shared `read_rows`'s hardcoded `MAX_ROWS` cap, so a database with 70 tables would silently
+    /// report only 50.
+    #[test]
+    fn schema_reads_past_the_old_fifty_row_cap() {
+        let page = synthetic_master_page(70);
+        let mut db = Db::open(std::io::Cursor::new(page)).expect("valid sqlite header");
+        let (objs, incomplete) = db.schema();
+        assert!(
+            !incomplete,
+            "70 objects must fit comfortably under MAX_SCHEMA_OBJECTS"
+        );
+        let tables = objs
+            .iter()
+            .filter(|o| o.kind.eq_ignore_ascii_case("table") && o.root > 0)
+            .count();
+        assert_eq!(
+            tables, 70,
+            "sqlite_master has 70 real tables; the old MAX_ROWS=50 cap would have silently \
+             dropped 20 of them"
+        );
+    }
+
+    /// With `schema()` no longer capped at 50, a database with more tables than [`MAX_TABLES`]
+    /// (64) must actually reach the "first N of M" branch in `render`: before the fix this
+    /// branch was unreachable (50 < 64, so `tables.len()` could never exceed `MAX_TABLES`).
+    #[test]
+    fn render_reaches_the_max_tables_branch_past_sixty_four_tables() {
+        let page = synthetic_master_page(70);
+        let mut db = Db::open(std::io::Cursor::new(page)).expect("valid sqlite header");
+        let md = db.render("many.db", 4096);
+        assert!(
+            md.contains("Showing the first 64 of 70 tables."),
+            "MAX_TABLES branch did not trigger:\n{md}"
+        );
     }
 
     /// The DDL is stored text from an untrusted file and is the one string that does NOT go

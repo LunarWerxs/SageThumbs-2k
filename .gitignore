@@ -1,5 +1,10 @@
 /target
 **/*.rs.bk
+# Build/test output redirected to a file. Agents and humans both do `cargo clippy > x.log`
+# while iterating, and on 2026-08-15 a session left THIRTEEN such files sitting untracked in
+# the repo root of a PUBLIC repo, one `git add -A` away from being published. They are pure
+# scratch and nothing tracked here is a .log, so ignoring them costs nothing.
+*.log
 # Cargo.lock IS committed — this ships binaries, so builds must be reproducible.
 *.pdb
 # Signing material — never commit a private key or cert
@@ -43,6 +48,11 @@ Thumbs.db
 # at the owner's request 2026-08-12. Private for the same reason ROADMAP and TODO are, and
 # anchored here so it cannot be swept up by a broad `git add`.
 /docs/ISSUES.md
+# Security-review working notes (2026-08-15). Private for the same reason ROADMAP and TODO
+# are, and more strictly: a review names weaknesses before the fixes ship, so it must never
+# be the thing that publishes them. Anchored on the DIRECTORY, not on the files in it, so a
+# review dropped in later inherits the protection instead of leaking by default.
+/docs/sagey/
 /CODE-REVIEW-BACKLOG.md
 /NEWDO.md
 /NEWDO-2.md

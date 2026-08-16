@@ -153,7 +153,7 @@ pub(in crate::preview) unsafe fn on_char(hwnd: HWND, ch: u32) -> bool {
 
 /// A key press while the bar is open. Returns whether it was consumed.
 pub(in crate::preview) unsafe fn on_key(hwnd: HWND, vk: u16, shift: bool) -> bool {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_F3, VK_RETURN};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_F3, VK_RETURN, VK_SPACE};
     let st = &*state(hwnd);
     // F3 works even with the bar closed, so a search survives Esc and can be resumed.
     if vk == VK_F3.0 {
@@ -178,6 +178,13 @@ pub(in crate::preview) unsafe fn on_key(hwnd: HWND, vk: u16, shift: bool) -> boo
         step(hwnd, !shift);
         return true;
     }
+    // Manual mode closes the viewer on a bare Space (window.rs), which runs AFTER this
+    // returns false. A typed space in the query would otherwise close the viewer mid-query
+    // before WM_CHAR ever delivers the character. Consume the keydown here (WM_CHAR still
+    // fires separately and inserts the space via on_char) so it never reaches that handler.
+    if vk == VK_SPACE.0 {
+        return true;
+    }
     false
 }
 
@@ -186,7 +193,7 @@ pub(in crate::preview) unsafe fn on_key(hwnd: HWND, vk: u16, shift: bool) -> boo
 unsafe fn research(hwnd: HWND) {
     let st = &*state(hwnd);
     ensure_hay(hwnd);
-    let from = st.sel.get().map(|(a, _)| a).unwrap_or(0);
+    let from = resume_from(st.sel.get());
     {
         let mut f = st.find.borrow_mut();
         f.hits.clear();
@@ -207,6 +214,14 @@ unsafe fn research(hwnd: HWND) {
             .or(if f.hits.is_empty() { None } else { Some(0) });
     }
     goto_current(hwnd);
+}
+
+/// The byte offset a fresh search should resume from. `sel` is stored unordered — (anchor,
+/// focus) — so a right-to-left drag has anchor > focus; taking the raw first element would
+/// then resume from the far (larger) end of the selection instead of past all of it. The
+/// normalized end (the max of the pair) is correct regardless of drag direction.
+fn resume_from(sel: Option<(usize, usize)>) -> usize {
+    sel.map(|(a, b)| a.max(b)).unwrap_or(0)
 }
 
 /// Move to the next/previous match, wrapping at both ends.
@@ -383,6 +398,24 @@ pub(in crate::preview) fn new_state() -> RefCell<FindState> {
 
 #[cfg(test)]
 mod tests {
+    use super::resume_from;
+
+    /// `sel` is stored unordered as (anchor, focus), the anchor being wherever the drag
+    /// started. The old code read the raw first tuple element (the anchor) directly: for a
+    /// left-to-right drag (anchor is the SMALLER offset) that resumed from the start of the
+    /// selection instead of past it. The fix takes the normalized end (the larger offset)
+    /// regardless of which direction the drag went, so both directions agree.
+    #[test]
+    fn resume_from_uses_normalized_end_not_raw_anchor() {
+        // Left-to-right drag: anchor(5) < focus(20). Raw-anchor (the old bug) would give 5;
+        // the normalized end is 20.
+        assert_eq!(resume_from(Some((5, 20))), 20);
+        // Right-to-left drag: anchor(20) > focus(5). Normalized end is still the larger
+        // offset, 20, independent of which element of the pair is the anchor.
+        assert_eq!(resume_from(Some((20, 5))), 20);
+        assert_eq!(resume_from(None), 0);
+    }
+
     /// The property the whole design rests on: ASCII folding never moves a byte, so an offset found
     /// in the folded copy indexes the same character in the original. A Unicode fold does not have
     /// this property, which is why it is not used.

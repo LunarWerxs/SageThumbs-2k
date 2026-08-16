@@ -6,6 +6,13 @@
   reviewed hashes. Any edit therefore requires an explicit checksum update.
   cargo metadata additionally proves the application resolves exr from this
   local directory rather than silently falling back to the registry.
+
+  Scope note: this is a DRIFT check only - it proves the vendored source still
+  matches what was reviewed. It does NOT check whether upstream exr has since
+  shipped the fix this vendor/patch exists for (that would need a network call
+  to crates.io, which a pre-push gate that must stay offline and non-flaky
+  can't take on). Retiring the vendor override once upstream ships is still a
+  manual, periodic call - see docs/TODO.md.
 #>
 [CmdletBinding()]
 param()

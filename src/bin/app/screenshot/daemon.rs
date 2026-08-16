@@ -235,7 +235,24 @@ unsafe fn register_configured_hotkey(hwnd: HWND) {
     if cvk != 0 && RegisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID, hkf_to_mods(chkf), cvk).is_err() {
         failed |= 4;
     }
-    let _ = sagethumbs2k_core::settings::set_dword("HotkeyBindFailed", failed);
+    // A140: this fires from REARM_TIMER_ID every 60s for as long as the daemon runs, so an
+    // unconditional write here is a full settings rewrite (a portable-mode ini rewrite) once a
+    // minute forever, even on the overwhelming majority of ticks where nothing changed. Only
+    // write when the bitmask actually moved.
+    let current = sagethumbs2k_core::settings::get_dword_opt("HotkeyBindFailed");
+    if hotkey_bind_failed_changed(current, failed) {
+        let _ = sagethumbs2k_core::settings::set_dword("HotkeyBindFailed", failed);
+    }
+}
+
+/// Whether the freshly-computed `HotkeyBindFailed` bitmask differs from what's already
+/// stored, so [`register_configured_hotkey`] can skip the rewrite when it hasn't changed.
+/// `current` mirrors [`sagethumbs2k_core::settings::get_dword_opt`]'s "absent" semantics —
+/// the Settings status line (`settings_dlg/mod.rs`) reads a never-written value as `0`, so
+/// `None` must compare equal to `new == 0` here too, or a freshly-installed daemon would
+/// write a redundant `0` on its very first re-arm tick.
+fn hotkey_bind_failed_changed(current: Option<u32>, new: u32) -> bool {
+    current.unwrap_or(0) != new
 }
 
 /// Drop and re-create every global hotkey registration from the current settings. Called by the
@@ -530,5 +547,28 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A140: the 60s re-arm timer must skip the settings write when the bitmask hasn't
+    /// actually changed — otherwise a portable install rewrites its whole ini once a minute
+    /// forever even while every hotkey stays bound.
+    #[test]
+    fn hotkey_bind_failed_changed_only_on_a_real_difference() {
+        // Same value stored vs. computed → no write needed.
+        assert!(!hotkey_bind_failed_changed(Some(0), 0));
+        assert!(!hotkey_bind_failed_changed(Some(3), 3));
+        // A genuine change → write needed.
+        assert!(hotkey_bind_failed_changed(Some(0), 1));
+        assert!(hotkey_bind_failed_changed(Some(3), 0));
+        // Never-written (None) reads as 0 everywhere this value is consumed (see
+        // settings_dlg/mod.rs's status line), so it must compare equal to a freshly
+        // computed 0 — a brand-new daemon must not immediately write a redundant 0.
+        assert!(!hotkey_bind_failed_changed(None, 0));
+        assert!(hotkey_bind_failed_changed(None, 1));
     }
 }

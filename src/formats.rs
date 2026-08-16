@@ -78,6 +78,10 @@ const ARCHIVE_EXTS: &[&str] = &["7z", "rar", "zip"];
 pub const REMOVED_EXTENSIONS: &[&str] = &[
     "aai", "art", "avs", "cache", "hrz", "ipl", "mtv", "palm", "six", "jpt", "fax", "g3", "g4",
     "otb", "wbmp", "rgb", "pct", "pict",
+    // jbig: removed 2026-07-08 (see the FORMATS comment above); listed here so
+    // register()/unregister() still sweep the stale shellex hook on machines that
+    // ran a build where it was registered.
+    "jbig",
 ];
 
 /// Classify an extension into a display category.
@@ -681,6 +685,18 @@ mod tests {
             n[Category::Image as usize],
             FORMATS.len() - non_image,
             "Image is the remainder of FORMATS",
+        );
+    }
+
+    /// jbig was dropped from FORMATS 2026-07-08 (see the inline comment above FORMATS'
+    /// `jfif` entry) but must still be swept by register()/unregister(), or a machine
+    /// that ran a build where jbig was registered keeps an orphaned shellex hook forever.
+    #[test]
+    fn removed_extensions_contains_jbig() {
+        assert!(
+            REMOVED_EXTENSIONS.contains(&"jbig"),
+            "jbig was a registered-then-removed extension and must be in REMOVED_EXTENSIONS \
+             so register/unregister sweep the stale hook on upgrade",
         );
     }
 

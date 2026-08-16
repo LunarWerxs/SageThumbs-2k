@@ -98,9 +98,24 @@ pub(crate) mod limits {
     /// reduced-size mode, so that is the unfavourable case, not the flattering one.
     ///
     /// What still needs a ceiling is a decompression bomb, whose cost tracks neither the file
-    /// size nor the output size — a few KB of headers can declare billions of pixels, and
-    /// streaming them is cheap in memory but not in time. At the ~160 MP/s that measurement
-    /// implies, 1 GP is a worst case of roughly seven seconds in an isolated host.
+    /// size nor the output size — a few MB of nearly-incompressible-looking headers can declare
+    /// billions of pixels, and streaming them is cheap in MEMORY but not in TIME.
+    ///
+    /// **The worst allowed case was measured, not estimated.** A hand-built 32000x32000 PNG
+    /// (1024 MP, just under this ceiling) costs 0.2 s when its rows are zeros, and **4.2 s**
+    /// when every row is Paeth-filtered over a non-trivial pattern — the adversarial shape,
+    /// since Paeth forces a per-byte predictor instead of a memcpy. 34000x34000 and 60000x60000
+    /// are refused at the header in under 0.1 s. Four seconds is well inside what this codebase
+    /// already tolerates from a hostile file (the ImageMagick tier carries a 20 s CPU budget),
+    /// and it buys real gigapixel panoramas rather than only the owner's 340 MP upscales.
+    ///
+    /// **This ceiling is reachable ONLY from the isolated hosts.** It applies when a target edge
+    /// is supplied, and the in-process path that runs inside `explorer.exe` — the classic
+    /// context menu's preview tile, via `decode_menu_preview` -> `decode_cheap` -> `decode_any` —
+    /// passes `None`, so it keeps the strict [`MAX_PIXELS`]/[`MAX_DIM`] guard and refuses these
+    /// files at the header. That is the property that makes 4 s acceptable at all, and it is
+    /// pinned by `tests::the_in_process_menu_path_never_gets_the_widened_ceiling` rather than
+    /// left to the call graph's good behaviour.
     pub const MAX_SCALED_SOURCE_PIXELS: u64 = 4 * MAX_PIXELS;
 
     /// Per-decode allocation cap handed to the `image` crate's `Limits`. 512 MiB
@@ -467,9 +482,10 @@ mod dds;
 mod jp2;
 /// Image dimensions straight from a JPEG 2000 codestream header, with no decode.
 ///
-/// Only the container/codestream half of `jp2` is wired in today; the reduced-resolution
-/// pixel path is still being verified and stays dead code until it matches a reference
-/// decoder. Header parsing IS verified, across every JPEG 2000 flavour in the corpus.
+/// Both halves of `jp2` are wired in: header parsing here, and the reduced-resolution
+/// pixel path (`jp2::decode_reduced`) live in `decode_preview_with_raw_order`'s
+/// DCT-scaled/JP2 fast-path arm. Header parsing IS verified, across every JPEG 2000
+/// flavour in the corpus.
 pub fn jp2_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     jp2::is_jp2(bytes).then(|| jp2::dimensions(bytes)).flatten()
 }
@@ -568,6 +584,31 @@ pub fn decode_preview_capped(bytes: &[u8], max_edge: u32) -> Result<DynamicImage
     decode_preview_thumbnail(bytes, max_edge.max(1))
 }
 
+/// Try SVG or gzip-wrapped SVG (`.svgz`). Returns `(Some(image), _)` when resvg decoded it.
+///
+/// The second element is the gzip-inflated bytes, handed back whenever `bytes` was
+/// gzip-wrapped but the inner content wasn't SVG (or resvg couldn't parse it) — so a
+/// caller that also needs to try a raster decode on gzip-wrapped non-SVG vector formats
+/// (`.emz`) doesn't have to inflate the bytes a second time. Callers that don't need that
+/// (the menu/cover paths, which just fall back to the ORIGINAL bytes) ignore it.
+fn decode_svg_if_svg(bytes: &[u8]) -> (Option<DynamicImage>, Option<Vec<u8>>) {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let Some(inner) = gunzip_bounded(bytes) else {
+            return (None, None);
+        };
+        // A false "looks SVG-ish" match on HTML/XML, or a gzip that isn't SVG at all
+        // (e.g. `.emz`), just fails/skips resvg and falls through to the raster tiers.
+        let img = looks_like_svg(&inner)
+            .then(|| decode_svg(&inner).ok())
+            .flatten();
+        (img, Some(inner))
+    } else if looks_like_svg(bytes) {
+        (decode_svg(bytes).ok(), None)
+    } else {
+        (None, None)
+    }
+}
+
 /// CHEAP, in-process-only preview decode for the CLASSIC CONTEXT MENU, whose
 /// owner-drawn thumbnail is built on explorer.exe's OWN UI thread (the classic
 /// `IContextMenu` loads IN-PROCESS, unlike the isolated thumbnail/preview hosts). Uses
@@ -587,23 +628,10 @@ pub fn decode_menu_preview(bytes: &[u8]) -> Result<DynamicImage> {
     // user-visible wait regardless, degrading a pathological SVG to a caption-only tile.
     // resvg is already the SVG tier for the (isolated) thumbnail + preview handlers, so this
     // adds no dependency and no new decode code — it just stops the menu skipping it.
-    if bytes.starts_with(&[0x1f, 0x8b]) {
-        // `.svgz` (gzipped SVG): inflate once (bounded) and try resvg on the inner bytes.
-        // A gzip that isn't SVG (e.g. `.emz`) falls through to the container/cheap path
-        // unchanged — no regression versus today's caption-only tile for those.
-        if let Some(inner) = gunzip_bounded(bytes) {
-            if looks_like_svg(&inner) {
-                if let Ok(img) = decode_svg(&inner) {
-                    return Ok(img);
-                }
-            }
-        }
-    } else if looks_like_svg(bytes) {
-        // A false "looks SVG-ish" match on HTML/XML just fails resvg parse and falls
-        // through, same as the full preview path.
-        if let Ok(img) = decode_svg(bytes) {
-            return Ok(img);
-        }
+    // A gzip that isn't SVG (e.g. `.emz`) falls through to the container/cheap path
+    // unchanged — no regression versus today's caption-only tile for those.
+    if let (Some(img), _) = decode_svg_if_svg(bytes) {
+        return Ok(img);
     }
     if let Some(cover) = crate::container::extract_cover(bytes) {
         return match cover {
@@ -632,22 +660,11 @@ fn decode_cheap(bytes: &[u8]) -> Result<DynamicImage> {
 /// `SVG_TIMEOUT`-bounded) is safe here. Without this, a `.7z`/`.zip` of SVG logos
 /// (every cover an `.svg`) decoded nothing and fell back to the stock icon.
 fn decode_cover(bytes: &[u8]) -> Result<DynamicImage> {
-    if bytes.starts_with(&[0x1f, 0x8b]) {
-        // `.svgz` (gzipped SVG): inflate once (bounded) and try resvg. A non-SVG
-        // gzip (e.g. `.emz`) falls through to the raster tiers unchanged.
-        if let Some(inner) = gunzip_bounded(bytes) {
-            if looks_like_svg(&inner) {
-                if let Ok(img) = decode_svg(&inner) {
-                    return Ok(img);
-                }
-            }
-        }
-    } else if looks_like_svg(bytes) {
-        // A false "looks SVG-ish" match on HTML/XML just fails resvg parse and falls
-        // through to decode_cheap, same as the full preview path.
-        if let Ok(img) = decode_svg(bytes) {
-            return Ok(img);
-        }
+    // `.svgz` (gzipped SVG) inflates once (bounded) and tries resvg on the inner bytes; a
+    // non-SVG gzip (e.g. `.emz`) or a failed resvg parse falls through to decode_cheap,
+    // same as the full preview path.
+    if let (Some(img), _) = decode_svg_if_svg(bytes) {
+        return Ok(img);
     }
     decode_cheap(bytes)
 }
@@ -682,7 +699,10 @@ fn decode_preview_with_raw_order(
         if jp2::is_jp2(bytes) {
             if let Ok((rgb, w, h)) = jp2::decode_reduced(bytes, cx) {
                 if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
-                    return Ok(DynamicImage::ImageRgb8(img));
+                    // EXIF orientation, same as the tier path below applies at the end of this
+                    // function. An early return here is a return past that call, and a thumbnail
+                    // that comes back rotated is one Explorer then CACHES rotated.
+                    return Ok(apply_exif_orientation(DynamicImage::ImageRgb8(img), bytes));
                 }
             }
             crate::safety::log_debug("decode: jp2 native reduced decode declined, using tiers");
@@ -702,9 +722,14 @@ fn decode_preview_with_raw_order(
     // Only JPEG, and only above a size floor — see `wic_scaled_from_bytes_if_codec_scales` for
     // why widening it is a re-measurement rather than a one-line change. Any failure falls
     // straight through to the tiers below, so nothing that rendered before can stop rendering.
+    //
+    // WIC does NOT apply EXIF orientation (it hands back the codec's stored pixels), and this
+    // early return skips the `apply_exif_orientation` at the end of this function — so it has to
+    // apply it here. Camera JPEGs are overwhelmingly the files that clear the 512 KiB floor AND
+    // carry a non-identity orientation, which makes this arm the one place it matters most.
     if let Some(cx) = wic_thumbnail_cx {
         if let Some(img) = wic_scaled_from_bytes_if_codec_scales(bytes, cx) {
-            return Ok(img);
+            return Ok(apply_exif_orientation(img, bytes));
         }
     }
     // Video: grab a representative frame via the OS Media Foundation codecs (no bundled
@@ -732,7 +757,7 @@ fn decode_preview_with_raw_order(
             // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
             // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
             .or_else(|| crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes)))
-            .and_then(|mini| crate::video::frame_from_bytes(&mini))
+            .and_then(crate::video::frame_from_owned_bytes)
             // FLV, VP6/Sorenson (issue #26): NO Windows decoder exists for these, so the
             // frame is decoded out of process by the sibling st2k.exe (see `flv::flash_frame`
             // for why the pure-Rust Flash decoders must never run in THIS process). Self-gated
@@ -813,26 +838,17 @@ fn decode_image_with_raw_order(
     // ImageMagick has no EMZ coder, so inflate once (bounded) and decode the
     // inner bytes. We decode the inflated bytes inline — never re-entering on a
     // gzip magic — so a gzip-in-gzip payload can't recurse.
-    if bytes.starts_with(&[0x1f, 0x8b]) {
-        if let Some(inner) = gunzip_bounded(bytes) {
-            if looks_like_svg(&inner) {
-                if let Ok(img) = decode_svg(&inner) {
-                    return Ok(img); // vector; no EXIF orientation
-                }
-            }
-            return Ok(apply_exif_orientation(
-                decode_any_with_wic_target(&inner, raw_preview, true, wic_thumbnail_cx)?,
-                &inner,
-            ));
-        }
+    let (svg_img, inner) = decode_svg_if_svg(bytes);
+    if let Some(img) = svg_img {
+        return Ok(img); // vector; no EXIF orientation
     }
-    if looks_like_svg(bytes) {
-        // "looks SVG-ish" (matched `<svg` in the first 1 KB) can misfire on HTML or
-        // XML that merely embeds/mentions SVG. If resvg can't parse it, fall through
-        // to the raster tiers instead of treating it as a terminal failure.
-        if let Ok(img) = decode_svg(bytes) {
-            return Ok(img); // vector; no EXIF orientation
-        }
+    // `inner` is only `Some` when `bytes` was gzip-wrapped and inflated but wasn't SVG
+    // (e.g. `.emz`) — decode THAT, so a gzip-in-gzip payload still can't recurse.
+    if let Some(inner) = inner {
+        return Ok(apply_exif_orientation(
+            decode_any_with_wic_target(&inner, raw_preview, true, wic_thumbnail_cx)?,
+            &inner,
+        ));
     }
     Ok(apply_exif_orientation(
         decode_any_with_wic_target(bytes, raw_preview, true, wic_thumbnail_cx)?,
@@ -842,6 +858,17 @@ fn decode_image_with_raw_order(
 
 fn decode_with_image(bytes: &[u8]) -> Result<DynamicImage> {
     decode_with_image_alloc(bytes, MAX_ALLOC)
+}
+
+/// Whether a `(w, h)` frame at `bytes_per_pixel` would allocate more than `max_alloc` —
+/// pulled out of [`decode_with_image_alloc`] so the header-only bomb check is unit-testable
+/// without decoding gigabytes of real pixel data (see the call site for why the check is
+/// needed at all: not every decoder's `set_limits` enforces this itself).
+fn exceeds_alloc_budget(w: u32, h: u32, bytes_per_pixel: u64, max_alloc: u64) -> bool {
+    u64::from(w)
+        .saturating_mul(u64::from(h))
+        .saturating_mul(bytes_per_pixel)
+        > max_alloc
 }
 
 /// As [`decode_with_image`] but with an explicit allocation budget. Dimensions
@@ -873,9 +900,93 @@ fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage>
     decoder
         .set_limits(limits)
         .map_err(|_| Error::from(E_FAIL))?;
+    // `set_limits` above only guarantees MAX_DIM: `ImageDecoder::set_limits`'s DEFAULT
+    // impl (used by decoders that don't override it, e.g. the HDR/Radiance codec) checks
+    // dimensions only and never enforces `max_alloc` against the output buffer it is
+    // about to materialize. A 16384x16384 frame is dimension-legal at MAX_DIM but, at
+    // Rgb32F's 12 bytes/px, ~3.2 GiB — 6x this call's own budget. Check the buffer size
+    // ourselves, from the header alone (before `from_decoder` allocates it), so every
+    // decoder gets the same allocation ceiling regardless of whether it opted in.
+    let (w, h) = decoder.dimensions();
+    let bpp = u64::from(decoder.color_type().bytes_per_pixel());
+    if exceeds_alloc_budget(w, h, bpp, max_alloc) {
+        return Err(Error::from(E_FAIL));
+    }
     let icc = decoder.icc_profile().ok().flatten();
     let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
     Ok(apply_icc_to_srgb(img, icc))
+}
+
+// Local, hub-owned tests: the per-tier fixture-driven suite lives in the sibling
+// `decode/tests.rs` module below, but a few pure helpers introduced directly in this file
+// (the hub) are cheapest to pin right next to their definition.
+#[cfg(test)]
+mod hub_tests {
+    use super::*;
+
+    #[test]
+    fn exceeds_alloc_budget_flags_a_max_dim_legal_hdr_frame_that_blows_the_alloc_cap() {
+        // 16000x16000 clears MAX_DIM (16384) — the only guard `HdrDecoder::set_limits`
+        // actually applies, since it never overrides the trait's dimension-only default —
+        // but at Rgb32F's 12 bytes/px that is ~2.86 GiB, more than 5x MAX_ALLOC.
+        assert!(exceeds_alloc_budget(16_000, 16_000, 12, limits::MAX_ALLOC));
+    }
+
+    #[test]
+    fn exceeds_alloc_budget_allows_an_ordinary_photo_sized_rgba_frame() {
+        assert!(!exceeds_alloc_budget(4_000, 3_000, 4, limits::MAX_ALLOC));
+    }
+
+    #[test]
+    fn exceeds_alloc_budget_is_exact_at_the_boundary() {
+        // Saturating arithmetic must not round the boundary away in either direction.
+        assert!(!exceeds_alloc_budget(1, 1, 1, 1));
+        assert!(exceeds_alloc_budget(1, 1, 2, 1));
+    }
+
+    const TEST_SVG: &[u8] =
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>"#;
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(bytes).expect("in-memory gzip write");
+        enc.finish().expect("in-memory gzip finish")
+    }
+
+    #[test]
+    fn decode_svg_if_svg_decodes_a_bare_svg_and_reports_no_inflated_bytes() {
+        let (img, inner) = decode_svg_if_svg(TEST_SVG);
+        assert!(img.is_some());
+        assert!(inner.is_none());
+    }
+
+    #[test]
+    fn decode_svg_if_svg_decodes_an_svgz_and_still_hands_back_the_inflated_bytes() {
+        // The three call sites this was extracted from (decode_menu_preview, decode_cover,
+        // decode_image_with_raw_order) differ only in whether they use the second element;
+        // the SVGZ case must keep returning it even when decode already succeeded, since
+        // `decode_image_with_raw_order` doesn't consult it unless `img` is `None`.
+        let (img, inner) = decode_svg_if_svg(&gzip(TEST_SVG));
+        assert!(img.is_some());
+        assert!(inner.is_some());
+    }
+
+    #[test]
+    fn decode_svg_if_svg_declines_plain_non_svg_bytes() {
+        let (img, inner) = decode_svg_if_svg(b"not an svg");
+        assert!(img.is_none());
+        assert!(inner.is_none());
+    }
+
+    #[test]
+    fn decode_svg_if_svg_hands_back_inflated_bytes_for_a_non_svg_gzip_like_emz() {
+        // `.emz` (gzipped EMF/WMF): not SVG, but `decode_image_with_raw_order` needs the
+        // inflated bytes to try a raster decode on them without inflating twice.
+        let (img, inner) = decode_svg_if_svg(&gzip(b"not svg either"));
+        assert!(img.is_none());
+        assert_eq!(inner.as_deref(), Some(&b"not svg either"[..]));
+    }
 }
 
 #[cfg(test)]

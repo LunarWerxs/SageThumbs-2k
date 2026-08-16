@@ -23,13 +23,20 @@ function Step([string]$name, [scriptblock]$block) {
     }
 }
 
-# Mirror .github/workflows/ci.yml -> build-test job, in order.
-Step 'build (release)'              { cargo build --release }
-# Guard: the build regenerates Cargo.lock — if it now differs from the COMMITTED lock, the
-# committed lock is stale (a version bump or dep change wasn't locked in). CI runs
-# `cargo-deny --locked` and REJECTS that (this is exactly what broke the 0.8.0 release: the
-# version bump landed in Cargo.toml but the lock update never got committed). Catch it here,
-# before the push, instead of after a full CI round-trip.
+# Mirror .github/workflows/ci.yml -> build-test job, in order. A bare default-feature
+# `cargo build --release` (no -p split) used to stand in for this and NEVER built the
+# dll/dlghook packages or the webp-lossy/html-preview/hdr-capture/dll-i18n-subset feature
+# combinations CI gates on — a compile error reachable only under one of those passed here
+# and only surfaced after a CI round-trip. `--locked` (matching CI) also means a stale
+# Cargo.lock now fails the build directly here, same as it would in CI.
+Step 'build production EXEs'        { cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture }
+if (-not $failed) { Step 'build production slim DLL' { cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset } }
+if (-not $failed) { Step 'build dialog hook DLL'      { cargo build --release --locked -p sagethumbs2k-dlghook } }
+# Guard: a build that DID succeed can still have regenerated Cargo.lock in a way `--locked`
+# let through (e.g. a lockfile-only change unrelated to what was just compiled) — if it now
+# differs from the COMMITTED lock, the committed lock is stale. CI runs `cargo-deny --locked`
+# and REJECTS that (this is exactly what broke the 0.8.0 release: the version bump landed in
+# Cargo.toml but the lock update never got committed). Catch it here, before the push.
 if (-not $failed) {
     Step 'Cargo.lock in sync with Cargo.toml' {
         git diff --quiet -- Cargo.lock

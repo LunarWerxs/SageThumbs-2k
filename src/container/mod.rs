@@ -20,6 +20,9 @@ pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
 
 mod affinity;
+// Shared checked box-header size arithmetic for every ISO-BMFF-family box walker
+// in the tree (mp4.rs, streamsrc/mp4remux.rs, decode/{color,magick}.rs, strip/isobmff.rs).
+pub(crate) mod boxhdr;
 // Android packages (.apk) + split-bundle wrappers (.xapk/.apks/.apkm) — the
 // manifest-declared launcher icon, resolved through binary XML + resources.arsc.
 mod apk;
@@ -498,6 +501,24 @@ pub fn real_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
+/// [`real_dims`], falling back to a full decode's dimensions when the cheap header probe
+/// doesn't recognise the format. This exact two-step fallback — the container header probe,
+/// then a full [`crate::decode::decode_full`] — used to be hand-copied verbatim at every
+/// dims-probing call site that needed it (`strip::read_info_impl`, `strip::read_info_verbose`,
+/// `verbs::fileops::dims`); one shared implementation here so a future change to the chain
+/// can't update some copies and miss others.
+///
+/// `decode_full` is the EXPENSIVE tier (it can spawn an ImageMagick subprocess), so a caller
+/// that must stay cheap for a bulk probe (e.g. `fileops::page_dims_from_head`, run once per
+/// CBZ page) should keep calling [`real_dims`] alone instead of this.
+pub(crate) fn real_or_decoded_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    real_dims(bytes).or_else(|| {
+        crate::decode::decode_full(bytes)
+            .ok()
+            .map(|i| (i.width(), i.height()))
+    })
+}
+
 /// True when a PSD/PSB document is transparent (its merged composite has an alpha
 /// channel). The baked-in preview (resource 1036) is a JPEG with no alpha, so the
 /// thumbnail/preview path renders the real layer composite for these instead of a
@@ -604,6 +625,34 @@ pub(crate) use util::{jpeg_sof_is_decodable, jpeg_span, jpeg_span_len};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `real_or_decoded_dims` is the shared chain that replaced three hand-copied versions of
+    /// "try `real_dims`, else fall back to a full decode" (`strip::read_info_impl`,
+    /// `strip::read_info_verbose`, `verbs::fileops::dims`). A plain PNG carries no
+    /// `real_dims`-recognised header (that probe only knows PSD/JP2), so getting dimensions
+    /// back at all proves the fallback tier actually ran rather than the chain stopping at
+    /// `real_dims`'s `None`.
+    #[test]
+    fn real_or_decoded_dims_falls_back_to_a_full_decode_when_the_header_probe_misses() {
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(5, 3, image::Rgb([1, 2, 3])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        assert_eq!(
+            real_dims(&png_bytes),
+            None,
+            "PNG must not be real_dims-recognised, or this test proves nothing about the fallback"
+        );
+        assert_eq!(real_or_decoded_dims(&png_bytes), Some((5, 3)));
+    }
+
+    #[test]
+    fn real_or_decoded_dims_declines_when_neither_tier_can_read_the_bytes() {
+        assert_eq!(real_or_decoded_dims(b"not an image at all"), None);
+    }
 
     /// The oversized-.clip STREAMING path: the preview comes off a real seekable
     /// File via the tail-database seek — the walk hops the (stand-in) layer

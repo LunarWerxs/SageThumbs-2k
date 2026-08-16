@@ -22,7 +22,6 @@
 use core::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP, HGDIOBJ};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -46,6 +45,12 @@ pub(crate) const BANNER_URL: &str = "https://st2k.lunarwerx.com/sponsor";
 /// while the real sponsor images download (only ever displayed once the feed has
 /// already confirmed sponsors exist — see [`sponsors_enabled`]). A `banner.png`
 /// dropped next to the EXE overrides at runtime (user-swappable).
+///
+/// Currently unused: the Settings dialog's v3 nav-rail layout permanently hides
+/// the banner control (see `settings_dlg/build.rs`'s sponsor-promotion comment;
+/// A093/A264, 2026-08-15), so nothing loads this placeholder right now. Kept for
+/// whenever a page surfaces the banner again — not deleting the feature.
+#[allow(dead_code)]
 pub(crate) const BANNER_PNG: &[u8] = include_bytes!("../../../assets/banner.png");
 
 /// Max bytes we'll pull for ANY remote banner asset (manifest JSON or image). A
@@ -131,9 +136,11 @@ pub(crate) fn os_tag() -> String {
 }
 
 /// The remote gate for the whole sponsor banner. **Off unless the feed is reachable
-/// AND not disabled AND lists at least one sponsor.** Called synchronously at startup
-/// (and again, from cache, when the dialog lays out) to decide whether to reserve the
-/// banner's space — so a disabled/unreachable feed leaves no empty gap.
+/// AND not disabled AND lists at least one sponsor.** Called synchronously when the
+/// Settings dialog builds. Its caller currently discards the boolean (the v3
+/// nav-rail layout permanently hides the banner control either way — see
+/// `settings_dlg/build.rs`) but still calls it, because [`manifest_bytes`] is also
+/// where the one-shot install/reinstall report gets sent, and that must keep firing.
 pub(crate) fn sponsors_enabled() -> bool {
     manifest_bytes().is_some_and(manifest_has_sponsors)
 }
@@ -298,7 +305,13 @@ pub(crate) fn http_fetch(url: &str, reload: bool) -> Option<Vec<u8>> {
 /// Like [`http_fetch`] but with an explicit byte cap + per-phase timeout (seconds). The
 /// self-updater uses this to pull the multi-MB installer with a far longer receive window
 /// than the tiny manifest needs. Same guarantees otherwise: HTTPS-only, bounded, returns
-/// None on a non-HTTPS URL, any WinINet failure, an empty body, or an over-cap response.
+/// None on a non-HTTPS URL, any WinINet failure, a non-2xx status, an empty body, or an
+/// over-cap response.
+///
+/// Routes through [`crate::http::request_ex`] — the ONE WinINet core, shared with the
+/// Connections settings-sync client — instead of hand-rolling a second `InternetOpenUrlW`
+/// stack that (as this one used to) never looks at the response status (A130) and has no
+/// overall wall-clock budget past WinINet's own per-phase timeouts (A123).
 pub(crate) fn http_fetch_capped(
     url: &str,
     reload: bool,
@@ -308,56 +321,29 @@ pub(crate) fn http_fetch_capped(
     if !is_https_url(url) {
         return None;
     }
-    use windows::Win32::Networking::WinInet::{
-        InternetCloseHandle, InternetOpenUrlW, InternetOpenW, InternetSetOptionW,
-        INTERNET_FLAG_NO_CACHE_WRITE, INTERNET_FLAG_PRAGMA_NOCACHE, INTERNET_FLAG_RELOAD,
-        INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
-        INTERNET_OPTION_SEND_TIMEOUT,
-    };
-    unsafe {
-        let agent = wide("SageThumbs2K");
-        let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
-        if session.is_null() {
-            return None;
-        }
-        // Bound each network phase so a slow/dead host can't stall the synchronous
-        // startup manifest check (which would freeze the Settings window on open).
-        let timeout_ms: u32 = (timeout_secs as u32) * 1000;
-        for opt in [
-            INTERNET_OPTION_CONNECT_TIMEOUT,
-            INTERNET_OPTION_RECEIVE_TIMEOUT,
-            INTERNET_OPTION_SEND_TIMEOUT,
-        ] {
-            let _ = InternetSetOptionW(
-                Some(session),
-                opt,
-                Some(&timeout_ms as *const u32 as *const c_void),
-                std::mem::size_of::<u32>() as u32,
-            );
-        }
-        let url_w = wide(url);
-        let mut flags = INTERNET_FLAG_SECURE; // require TLS (URL is already https)
-        if reload {
-            flags |=
-                INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_PRAGMA_NOCACHE;
-        }
-        let req = InternetOpenUrlW(session, PCWSTR(url_w.as_ptr()), None, flags, None);
-        if req.is_null() {
-            let _ = InternetCloseHandle(session);
-            return None;
-        }
-        let data = crate::win::wininet_drain(req, max_bytes);
-        let _ = InternetCloseHandle(req);
-        let _ = InternetCloseHandle(session);
-        data.filter(|d| !d.is_empty())
-    }
+    let resp = crate::http::request_ex(
+        "GET",
+        url,
+        reload,
+        timeout_secs,
+        overall_timeout_secs(timeout_secs),
+        max_bytes,
+        None,
+    )?;
+    // A non-2xx response (error page, auth wall, a redirect WinINet didn't chase, …) must
+    // not be treated as a good manifest/image — same status-aware contract `http.rs`
+    // already gives its own (Connections) callers.
+    is_success_status(resp.status)
+        .then_some(resp.body)
+        .filter(|b| !b.is_empty())
 }
 
 /// Stream an HTTPS download into memory, invoking `on_progress(downloaded_bytes)` after each
 /// chunk — return `false` from it to abort (e.g. the user hit Cancel). Always reloads (no
-/// cache), bounded by `max_bytes` + per-phase timeouts. The self-updater uses this to drive a
-/// live progress bar while pulling the installer. None on a non-HTTPS URL, any WinINet
-/// failure, an abort, or an over-cap / empty body.
+/// cache), bounded by `max_bytes` + per-phase timeouts + an overall wall-clock budget (see
+/// [`http_fetch_capped`]'s doc for why the latter matters). The self-updater uses this to
+/// drive a live progress bar while pulling the installer. None on a non-HTTPS URL, any
+/// WinINet failure, a non-2xx status, an abort, or an over-cap / empty body.
 pub(crate) fn http_download_streaming(
     url: &str,
     max_bytes: usize,
@@ -367,74 +353,34 @@ pub(crate) fn http_download_streaming(
     if !is_https_url(url) {
         return None;
     }
-    use windows::Win32::Networking::WinInet::{
-        InternetCloseHandle, InternetOpenUrlW, InternetOpenW, InternetReadFile, InternetSetOptionW,
-        INTERNET_FLAG_NO_CACHE_WRITE, INTERNET_FLAG_PRAGMA_NOCACHE, INTERNET_FLAG_RELOAD,
-        INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
-        INTERNET_OPTION_SEND_TIMEOUT,
-    };
-    unsafe {
-        let agent = wide("SageThumbs2K");
-        let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
-        if session.is_null() {
-            return None;
-        }
-        let timeout_ms: u32 = (timeout_secs as u32) * 1000;
-        for opt in [
-            INTERNET_OPTION_CONNECT_TIMEOUT,
-            INTERNET_OPTION_RECEIVE_TIMEOUT,
-            INTERNET_OPTION_SEND_TIMEOUT,
-        ] {
-            let _ = InternetSetOptionW(
-                Some(session),
-                opt,
-                Some(&timeout_ms as *const u32 as *const c_void),
-                std::mem::size_of::<u32>() as u32,
-            );
-        }
-        let url_w = wide(url);
-        let flags = INTERNET_FLAG_SECURE
-            | INTERNET_FLAG_RELOAD
-            | INTERNET_FLAG_NO_CACHE_WRITE
-            | INTERNET_FLAG_PRAGMA_NOCACHE;
-        let req = InternetOpenUrlW(session, PCWSTR(url_w.as_ptr()), None, flags, None);
-        if req.is_null() {
-            let _ = InternetCloseHandle(session);
-            return None;
-        }
-        let mut data = Vec::new();
-        let mut buf = [0u8; 65536];
-        let mut ok = true;
-        loop {
-            let mut read = 0u32;
-            if InternetReadFile(
-                req,
-                buf.as_mut_ptr() as *mut c_void,
-                buf.len() as u32,
-                &mut read,
-            )
-            .is_err()
-            {
-                ok = false; // read error → incomplete, don't trust it
-                break;
-            }
-            if read == 0 {
-                break; // end of stream
-            }
-            data.extend_from_slice(&buf[..read as usize]);
-            if data.len() > max_bytes {
-                ok = false; // oversized / never-ending → reject
-                break;
-            }
-            if !on_progress(data.len() as u64) {
-                ok = false; // caller asked to stop (cancel)
-                break;
-            }
-        }
-        let _ = InternetCloseHandle(req);
-        let _ = InternetCloseHandle(session);
-        (ok && !data.is_empty()).then_some(data)
-    }
+    let resp = crate::http::request_ex(
+        "GET",
+        url,
+        true,
+        timeout_secs,
+        overall_timeout_secs(timeout_secs),
+        max_bytes,
+        Some(on_progress),
+    )?;
+    is_success_status(resp.status)
+        .then_some(resp.body)
+        .filter(|b| !b.is_empty())
+}
+
+/// The overall wall-clock backstop for [`http_fetch_capped`] / [`http_download_streaming`]
+/// (A123): generous enough that no legitimate manifest/image/installer fetch at the given
+/// per-phase timeout should ever brush it, but finite — unlike relying on WinINet's per-phase
+/// `INTERNET_OPTION_RECEIVE_TIMEOUT` alone, which resets on every partial read and so never
+/// fires for a server that trickles just fast enough to avoid it. Mirrors the shape of
+/// `decode.rs`'s ImageMagick subprocess elapsed guard (a CPU-time budget PLUS a wall-clock one).
+fn overall_timeout_secs(timeout_secs: u64) -> u64 {
+    timeout_secs.saturating_mul(4).max(30)
+}
+
+/// Only a 2xx status counts as a real success (A130): a 4xx/5xx error page must not be
+/// treated the same as a good manifest/image just because WinINet handed back SOME body.
+fn is_success_status(status: u16) -> bool {
+    (200..300).contains(&status)
 }
 
 /// Parse the sponsor manifest JSON and decode each sponsor's art (sized to `w`×`h`).
@@ -534,6 +480,14 @@ fn build_sponsors_from_manifest(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<Spo
 /// manifest is missing, kill-switched, or yields no usable sponsor — but the gate
 /// ([`sponsors_enabled`]) has already confirmed sponsors exist before the banner is
 /// created, so the usual path does install a rotator.
+///
+/// Currently unused: the Settings dialog still creates ID_BANNER (cheap, and
+/// its message handlers rely on a live control to no-op against), but the v3
+/// nav-rail layout permanently hides it (see `settings_dlg/build.rs`'s
+/// sponsor-promotion comment; A093/A264, 2026-08-15), so nothing calls into
+/// this download/decode pipeline for it anymore. Kept, not deleted, for
+/// whenever a page surfaces the banner again.
+#[allow(dead_code)]
 pub(crate) fn spawn_remote_sponsors(banner: HWND, w: u32, h: u32) {
     let hwnd = banner.0 as usize;
     std::thread::spawn(move || {
@@ -650,5 +604,40 @@ mod tests {
         // Parse failure / empty body (what an unreachable-but-somehow-empty feed looks like).
         assert!(!manifest_has_sponsors(b"not json"));
         assert!(!manifest_has_sponsors(b""));
+    }
+
+    /// A130: `http_fetch_capped`/`http_download_streaming` used to hand back ANY body
+    /// WinINet returned regardless of status, so a 404/500 error page containing bytes
+    /// would be treated the same as a real manifest/image/installer. Only a 2xx may pass.
+    #[test]
+    fn is_success_status_accepts_only_2xx() {
+        assert!(!is_success_status(0)); // query_status's own "couldn't read it" fallback
+        assert!(!is_success_status(199));
+        assert!(is_success_status(200));
+        assert!(is_success_status(204));
+        assert!(is_success_status(299));
+        assert!(!is_success_status(300));
+        assert!(!is_success_status(404));
+        assert!(!is_success_status(500));
+    }
+
+    /// A123: the two fetch helpers used to bound only WinINet's per-phase timeouts, each of
+    /// which resets on any partial read — so a server trickling one byte often enough could
+    /// hold the connection open forever. `overall_timeout_secs` is the wall-clock backstop;
+    /// this pins its shape (a generous floor, then scales with the per-phase budget) and
+    /// proves it never overflows on an absurd input.
+    #[test]
+    fn overall_timeout_secs_has_a_floor_and_scales_with_the_phase_budget() {
+        assert_eq!(overall_timeout_secs(5), 30, "below the floor, 30s wins");
+        assert_eq!(
+            overall_timeout_secs(20),
+            80,
+            "above the floor, it's 4x the phase budget"
+        );
+        assert_eq!(
+            overall_timeout_secs(u64::MAX),
+            u64::MAX,
+            "saturates rather than wrapping"
+        );
     }
 }

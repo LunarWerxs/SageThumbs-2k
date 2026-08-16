@@ -621,10 +621,7 @@ fn fence_len(body: &str) -> usize {
 /// AND inline) is routed through [`super::super::mdhtml::feed`] into the same builder.
 pub(super) fn parse_blocks(md: &str, remote_ok: bool) -> Vec<Block> {
     let md = fence_front_matter(md);
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_TABLES);
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    opts.insert(Options::ENABLE_TASKLISTS);
+    let opts = md_options();
 
     let mut b = Builder::new(remote_ok);
     let mut in_code = false;

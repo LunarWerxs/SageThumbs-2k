@@ -15,13 +15,23 @@
 //! untouched — and we simply count that file as failed.
 //!
 //! This is **strictly opt-in on the helper being present**: [`st2k_exe`] returns
-//! the sibling `st2k.exe` only if it exists. When it's absent (unit/integration
-//! tests, or a partial install where only the DLL got registered) we transparently
-//! **fall back to the original in-process code path**, unchanged. A missing helper
-//! can therefore never break a verb — it only forfeits the crash isolation. (This
-//! is also what keeps `tests/explorer_command.rs::convert_verb_invoke_creates_file`
-//! green: no `st2k.exe` sits next to the test binary, so Convert runs in-process
-//! and still writes the file.)
+//! the sibling `st2k.exe` only if it exists. When it's absent (a partial install
+//! where only the DLL got registered, or a checkout that never built the CLI) we
+//! transparently **fall back to the original in-process code path**, unchanged. A
+//! missing helper can therefore never break a verb — it only forfeits the crash
+//! isolation.
+//!
+//! **Don't assume a test takes that fallback.** A test binary runs out of cargo's
+//! `deps\` directory and cargo drops `st2k.exe` there too, so on any machine that has
+//! built the workspace `st2k_exe()` resolves and the ROUTED path is what runs. That's
+//! harmless for the routed verbs (both paths write the same file, so
+//! `tests/explorer_command.rs::convert_verb_invoke_creates_file` is green either way),
+//! but it has two consequences worth knowing. The fallback arm is exercised by NO test
+//! unless one passes `None` deliberately, which is what
+//! `helper::tests::the_in_process_fallback_still_converts_when_no_helper_is_present`
+//! exists to do. And it is precisely why the *other* sibling lookup needed a real
+//! seam: the companion-app launchers spawn a GUI process with side effects no test
+//! wants. See [`intercept_launch`].
 //!
 //! Routed verbs (helper-if-present): **Convert**, **Transform** (→ `rotate`),
 //! **ResizeImg** (→ `convert --resize`), **ShrinkForEmail** (→ `convert --resize`),
@@ -46,6 +56,11 @@
 //! - Clipboard / Wallpaper / SetFolderIcon (touch shell/desktop state),
 //!   CombineToCbz (no CLI verb), and the info/sort/rename/dialog/settings/eyedropper
 //!   verbs (UI or pure file moves, not decode-heavy) — never in scope.
+//! - **CompressToSize**: `st2k compress` exists and shares the same
+//!   `compress_to_size` engine, so it COULD route the same way ResizeImg does — but
+//!   doing so needs a `compress_one` shim in `helper.rs`, a file outside this
+//!   change's ownership. Runs in-process (still on the batch pool) until that
+//!   routing is added.
 //!
 //! Crucially, the [`ActionReport`] returned is **identical** between the routed and
 //! the fallback path: a routed per-file success increments `done` exactly as an
@@ -86,8 +101,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::encode::{
-    edit_output_ext, predict_unique_suffix, read_capped, reserve_unique_suffix, resize_file,
-    shrink_for_email, transform_file, with_tmp_suffix, Resize, Target,
+    compress_to_size, edit_output_ext, predict_unique_suffix, read_capped, reserve_unique_suffix,
+    resize_file, shrink_for_email, transform_file, with_tmp_suffix, Resize, Target,
 };
 use super::fileops::{
     combine_to_cbz, combined_path, files_to_folder, reserve_dest, sanitize_component,
@@ -418,13 +433,29 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             }
             // Hold the slot for the whole write: it's what keeps a second, concurrent Combine
             // from picking the same name and renaming over this one's finished file.
-            let slot = combined_pdf_path(&imgs[0]);
+            let slot = combined_path(&imgs[0], "pdf");
             let out = slot.path().to_path_buf();
             match crate::topdf::combine_to_pdf(&imgs, &out, crate::settings::jpeg_quality()) {
-                Ok(_) => ActionReport {
-                    output: Some(out),
-                    ..ActionReport::applied(1, 1)
-                },
+                // `dropped` is how many of `imgs` were undecodable and so silently excluded
+                // from the PDF by `combine_to_pdf_paged`. This used to be invisible here — any
+                // `Ok(_)` reported a flat `applied(1, 1)` ("1 of 1 succeeded") no matter how many
+                // of a 10-image combine actually made it into the PDF. Report the REAL counts
+                // instead, so a partial combine surfaces via the normal `surface()` message box
+                // (which only pops for `failed() > 0`) rather than claiming full success.
+                Ok((_, dropped)) => {
+                    let attempted = imgs.len();
+                    let done = attempted.saturating_sub(dropped);
+                    let report = ActionReport {
+                        output: Some(out),
+                        ..ActionReport::applied(attempted, done)
+                    };
+                    if dropped > 0 {
+                        let plural = if dropped == 1 { "" } else { "s" };
+                        report.with_note(format!("{dropped} image{plural} couldn't be read"))
+                    } else {
+                        report
+                    }
+                }
                 Err(e) => {
                     crate::safety::log(&format!("Combine to PDF failed: {e:?}"));
                     ActionReport::applied(1, 0).with_note("couldn't build the PDF")
@@ -550,6 +581,32 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             rep.output = first;
             rep
         }
+        VerbAction::CompressToSize(size) => {
+            // Per-image, IN-PROCESS (not routed through the st2k helper — `helper.rs`
+            // is outside this change's file ownership, so no `compress_one` routing
+            // shim exists; see the module doc's routing list). Runs on the batch pool
+            // like the other per-image verbs above.
+            let imgs: Vec<String> = paths
+                .iter()
+                .filter(|p| is_image(p.as_str()))
+                .cloned()
+                .collect();
+            let target = size.target_bytes();
+            let outs: Vec<PathBuf> =
+                crate::parallel::map(&imgs, |_, p| compress_to_size(p, target).ok())
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            let attempted = imgs.len();
+            let done = outs.len();
+            let first = outs.into_iter().next();
+            let mut rep = ActionReport::applied(attempted, done);
+            if done < attempted {
+                rep.note = Some("couldn't compress some images".into());
+            }
+            rep.output = first;
+            rep
+        }
         VerbAction::RenameByExif(pattern) => rename_by_exif(paths, pattern),
         VerbAction::SetFolderIcon => {
             // One folder icon. Use the first *image* in the selection.
@@ -629,6 +686,11 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
 /// Launch the companion EXE with no arguments → the Options/Settings window.
 /// Resolves the EXE from the DLL's own directory (host-process-safe).
 fn launch_app(args: &[&str]) {
+    // Test seam: swallows the launch (recording the argv) so a unit test can never
+    // start a real process. Always false in a real build — see `intercept_launch`.
+    if intercept_launch(args) {
+        return;
+    }
     // A failed launch used to vanish without a trace — the menu item just "did nothing"
     // (missing companion EXE on a broken install, or spawn failure). Log it so the
     // Diagnostics log at least explains a dead menu item.
@@ -643,101 +705,115 @@ fn launch_app(args: &[&str]) {
     }
 }
 
-/// Launch the companion EXE's Convert… dialog over the selected images. Writes
-/// the (filtered) path list to a temp file and passes its path — robust to many
-/// files / odd names where a command line would overflow or mis-quote. Resolves
-/// the EXE from the DLL's OWN directory (NOT current_exe(), which in the shell
-/// host returns explorer.exe/dllhost.exe).
-fn launch_convert_dialog(paths: &[String]) {
-    let imgs: Vec<String> = paths
-        .iter()
-        .filter(|p| is_image(p.as_str()))
-        .cloned()
-        .collect();
-    if imgs.is_empty() {
-        return;
+/// Whether this [`launch_app`] call was intercepted instead of performed. **Always
+/// `false` in a real build** — the launcher spawns exactly as it always has.
+///
+/// Under `cfg(test)` it records the argv in [`launch_probe`] and returns `true`, so a
+/// unit test never starts a real process. This is the same "absent → no-op" gate
+/// [`st2k_exe`] gives the routed verbs, applied to the OTHER sibling lookup — and it
+/// has to be an explicit seam, because that lookup's absence can't be relied on. The
+/// module docs spell out why: cargo puts `SageThumbs2K.exe` in the very `deps\`
+/// directory a test binary runs from, so `sibling_of_dll(APP_EXE)` resolves and a test
+/// really does spawn the companion GUI app. That app opens a dialog and, through its
+/// `read_listfile`, DELETES the listfile it was handed — which is what made
+/// [`tests::rapid_same_kind_launches_get_distinct_listfile_names`] flaky: three real
+/// `--convert` processes raced its scan and ate the files it was counting.
+#[cfg(test)]
+fn intercept_launch(args: &[&str]) -> bool {
+    launch_probe::record(args);
+    true
+}
+
+#[cfg(not(test))]
+fn intercept_launch(_args: &[&str]) -> bool {
+    false
+}
+
+/// The launches [`intercept_launch`] swallowed, so a test can assert on what *would*
+/// have been spawned — a stronger check than the side effect it replaces.
+#[cfg(test)]
+mod launch_probe {
+    use std::sync::{Mutex, MutexGuard};
+
+    static LAUNCHES: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+
+    /// A test panicking elsewhere poisons the lock; that must not cascade into a
+    /// second, unrelated failure here.
+    fn log() -> MutexGuard<'static, Vec<Vec<String>>> {
+        LAUNCHES.lock().unwrap_or_else(|e| e.into_inner())
     }
-    let mut lf = std::env::temp_dir();
-    lf.push(format!("st2k_convert_{}.lst", std::process::id()));
-    if std::fs::write(&lf, imgs.join("\r\n")).is_err() {
-        return;
+
+    pub(super) fn record(args: &[&str]) {
+        log().push(args.iter().map(|a| (*a).to_string()).collect());
     }
-    if let Some(s) = lf.to_str() {
-        launch_app(&["--convert", s]);
+
+    /// Every argv recorded so far, in call order. Unit tests share one process and run
+    /// in parallel, so a caller must FILTER this down to its own launches (by a
+    /// pid-unique listfile name, say) rather than assume it owns the log — which is
+    /// also why there's deliberately no `clear()` for two tests to race on.
+    pub(super) fn recorded() -> Vec<Vec<String>> {
+        log().clone()
     }
 }
 
-/// Launch the companion EXE's keyless uploader over the selected images (path list
-/// via a temp file, like [`launch_convert_dialog`]). The app POSTs each file and
-/// copies the resulting link(s) to the clipboard; the ORIGINAL files are never
-/// modified or deleted (the app's `--upload-keep` path keeps them, unlike the
-/// screenshot `--upload` path which deletes its throwaway capture).
-fn launch_upload(paths: &[String]) {
-    let imgs: Vec<String> = paths
+/// Write `paths` (after `filter`) to a uniquely-named temp `.lst` file and launch the
+/// companion EXE with `flag <listfile>` — the shared body behind the four
+/// "handoff a file list to a companion-app dialog" launchers below, which used to
+/// repeat this write-then-launch shape with only the filter/prefix/flag differing.
+///
+/// The filename mixes the host PID with a per-process atomic counter, not the PID
+/// alone: the DLL runs inside one long-lived `explorer.exe`/`dllhost.exe` host, so two
+/// near-simultaneous launches of the *same* kind from that host used to compute the
+/// identical `st2k_<kind>_<pid>.lst` path, and the second write could clobber the
+/// first before the spawned app read it. The counter makes every call's filename
+/// unique for the life of the host process. No cleanup is needed here: the companion
+/// app's `read_listfile` deletes the file once it's read.
+fn launch_with_list(paths: &[String], filter: impl Fn(&str) -> bool, prefix: &str, flag: &str) {
+    let filtered: Vec<String> = paths
         .iter()
-        .filter(|p| is_image(p.as_str()))
+        .filter(|p| filter(p.as_str()))
         .cloned()
         .collect();
-    if imgs.is_empty() {
+    if filtered.is_empty() {
         return;
     }
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut lf = std::env::temp_dir();
-    lf.push(format!("st2k_upload_{}.lst", std::process::id()));
-    if std::fs::write(&lf, imgs.join("\r\n")).is_err() {
+    lf.push(format!("st2k_{prefix}_{}_{n}.lst", std::process::id()));
+    if std::fs::write(&lf, filtered.join("\r\n")).is_err() {
         return;
     }
     if let Some(s) = lf.to_str() {
-        launch_app(&["--upload-keep", s]);
+        launch_app(&[flag, s]);
     }
+}
+
+/// Launch the companion EXE's Convert… dialog over the selected images. Resolves the
+/// EXE from the DLL's OWN directory (NOT current_exe(), which in the shell host
+/// returns explorer.exe/dllhost.exe) — a temp-file handoff is robust to many files /
+/// odd names where a command line would overflow or mis-quote.
+fn launch_convert_dialog(paths: &[String]) {
+    launch_with_list(paths, is_image, "convert", "--convert");
+}
+
+/// Launch the companion EXE's keyless uploader over the selected images. The app
+/// POSTs each file and copies the resulting link(s) to the clipboard; the ORIGINAL
+/// files are never modified or deleted (the app's `--upload-keep` path keeps them,
+/// unlike the screenshot `--upload` path which deletes its throwaway capture).
+fn launch_upload(paths: &[String]) {
+    launch_with_list(paths, is_image, "upload", "--upload-keep");
 }
 
 /// Launch the companion EXE's "Files to folder" name-prompt dialog over the
-/// selected files. Writes the (unfiltered — any file type) path list to a temp
-/// file and passes its path, like [`launch_convert_dialog`].
+/// selected files (unfiltered — any file type).
 fn launch_files_to_folder(paths: &[String]) {
-    if paths.is_empty() {
-        return;
-    }
-    let mut lf = std::env::temp_dir();
-    lf.push(format!("st2k_f2f_{}.lst", std::process::id()));
-    if std::fs::write(&lf, paths.join("\r\n")).is_err() {
-        return;
-    }
-    if let Some(s) = lf.to_str() {
-        launch_app(&["--files-to-folder", s]);
-    }
+    launch_with_list(paths, |_| true, "f2f", "--files-to-folder");
 }
 
-/// Launch the companion EXE's "Tags to folders" dialog over the selected audio
-/// files (path list via a temp file, like [`launch_files_to_folder`]).
+/// Launch the companion EXE's "Tags to folders" dialog over the selected audio files.
 fn launch_tags_to_folders(audio: &[String]) {
-    if audio.is_empty() {
-        return;
-    }
-    let mut lf = std::env::temp_dir();
-    lf.push(format!("st2k_ttf_{}.lst", std::process::id()));
-    if std::fs::write(&lf, audio.join("\r\n")).is_err() {
-        return;
-    }
-    if let Some(s) = lf.to_str() {
-        launch_app(&["--tags-to-folders", s]);
-    }
-}
-
-/// `combined.pdf` (deduped) next to the first image, ATOMICALLY reserved — see
-/// [`crate::verbs::combined_path`] for why this can't be a `while cand.exists()` loop.
-fn combined_pdf_path(first: &str) -> crate::verbs::encode::OutSlot {
-    let dir = Path::new(first)
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    crate::verbs::encode::reserve(|n| {
-        if n == 0 {
-            dir.join("combined.pdf")
-        } else {
-            dir.join(format!("combined ({}).pdf", n + 1))
-        }
-    })
+    launch_with_list(audio, |_| true, "ttf", "--tags-to-folders");
 }
 
 /// Open the verbose, copyable "Image info" window in the companion app (it gathers the
@@ -752,6 +828,107 @@ mod tests {
     use super::foldericon::merge_shell_class_info;
     use super::helper::routed_edit_output_ext;
     use super::reveal_is_noise;
+    use super::{run_action, VerbAction};
+
+    /// A280: "Compress to under N MB" had no menu leaf / `VerbAction` / `run_action`
+    /// arm at all — this drives `run_action` exactly the way a right-click on the new
+    /// leaf would, and checks a real "(compressed)" JPEG lands next to the source.
+    #[test]
+    fn compress_to_size_dispatches_and_writes_a_compressed_sibling() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_actions_compress_dispatch_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let src = dir.join("photo.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            64,
+            48,
+            image::Rgb([120, 40, 200]),
+        ))
+        .save(&src)
+        .unwrap();
+        let path = src.to_str().unwrap().to_string();
+
+        let report = run_action(
+            VerbAction::CompressToSize(crate::verbs::menu::CompressSize::Mb1),
+            &[path],
+        );
+        assert_eq!(report.attempted, 1, "the one image was attempted");
+        assert_eq!(report.done, 1, "compress must succeed on a plain image");
+        let out = report
+            .output
+            .expect("a compressed sibling must be reported");
+        assert!(out.exists(), "the compressed file must actually be written");
+        assert_eq!(
+            out.extension().and_then(|e| e.to_str()),
+            Some("jpg"),
+            "compress always writes a JPEG"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bug: `combine_to_pdf`'s `Ok(_)` arm used to report a flat `applied(1, 1)` ("1 of 1
+    /// succeeded") no matter how many of the selected images actually made it into the PDF.
+    /// Combine 2 genuine images with 1 garbage file (same extension, so `is_image` still
+    /// selects it) and check the report reflects the REAL 2-of-3 outcome, with a note — not a
+    /// silent, misleadingly-total "succeeded".
+    #[test]
+    fn combine_to_pdf_reports_a_partial_success_when_some_inputs_are_undecodable() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_actions_combine_drop_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let good: Vec<String> = (0..2)
+            .map(|i| {
+                let p = dir.join(format!("good{i}.png"));
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                    12,
+                    8,
+                    image::Rgb([i as u8 * 50, 40, 40]),
+                ))
+                .save(&p)
+                .unwrap();
+                p.to_str().unwrap().to_string()
+            })
+            .collect();
+        let garbage = dir.join("garbage.png");
+        std::fs::write(&garbage, b"not a png").unwrap();
+
+        let mut paths = good;
+        paths.push(garbage.to_str().unwrap().to_string());
+
+        let report = run_action(VerbAction::CombineToPdf, &paths);
+        assert_eq!(report.attempted, 3, "all 3 selected images were attempted");
+        assert_eq!(
+            report.done, 2,
+            "only the 2 decodable images made it into the PDF"
+        );
+        assert!(
+            report.note.is_some(),
+            "a partial combine must carry an explanatory note, not report silent full success"
+        );
+        assert!(
+            report.output.is_some(),
+            "the partial PDF is still a real output to reveal"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Setting a folder icon must not eat the rest of desktop.ini. Explorer keeps localized
     /// folder names and tooltips in the same file, and the old code replaced the whole thing.
@@ -866,5 +1043,90 @@ mod tests {
             routed_edit_output_ext(std::path::Path::new("photo.JPEG")),
             "jpeg"
         );
+    }
+
+    /// Two rapid launches of the SAME kind (e.g. two Convert clicks from different
+    /// Explorer windows in one host process) used to both compute the same
+    /// `st2k_<kind>_{pid}.lst` path — the second write could clobber the first before
+    /// the spawned app read it. The counter `launch_with_list` adds must keep every
+    /// call's listfile name unique, for any number of back-to-back calls.
+    ///
+    /// Both halves are asserted: three distinct files on disk, AND three launches each
+    /// carrying its own one. The second half is the real check — the files are only
+    /// still there to count because [`super::intercept_launch`] swallows the spawn
+    /// under `cfg(test)`. Without that seam this test starts three REAL
+    /// `SageThumbs2K.exe --convert` processes (cargo puts the companion EXE in the same
+    /// `deps\` directory the test binary runs from, so `sibling_of_dll` finds it), and
+    /// their `read_listfile` deletes the listfiles out from under the scan: reproduced
+    /// here at roughly one run in two, single-threaded and alone, counting 0 or 2 of
+    /// the 3. Never relax this to "at least one" — the whole point is that three rapid
+    /// launches get three distinct names.
+    #[test]
+    fn rapid_same_kind_launches_get_distinct_listfile_names() {
+        let dir = std::env::temp_dir();
+        let prefix = format!("st2k_distincttest_{}_", std::process::id());
+        // The pid keeps this test's listfiles distinguishable from every other test's
+        // (and every other concurrent `cargo test` process's) in the shared temp dir.
+        let mine = |p: &std::path::Path| -> Option<String> {
+            let name = p.file_name()?.to_str()?.to_owned();
+            (name.starts_with(&prefix) && name.ends_with(".lst")).then_some(name)
+        };
+        let scan = || -> Vec<std::path::PathBuf> {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| mine(p).is_some())
+                .collect()
+        };
+        // Clean up any leftovers from a prior failed run before asserting on counts.
+        for f in scan() {
+            let _ = std::fs::remove_file(f);
+        }
+
+        for _ in 0..3 {
+            super::launch_with_list(
+                &["a.png".to_string()],
+                |_| true,
+                "distincttest",
+                "--convert",
+            );
+        }
+
+        let files = scan();
+        let mut on_disk: Vec<String> = files.iter().filter_map(|p| mine(p.as_path())).collect();
+        on_disk.sort();
+        assert_eq!(
+            on_disk.len(),
+            3,
+            "three same-kind launches must produce three distinct listfiles, got {on_disk:?}"
+        );
+
+        // …and every one of those files must have been handed to a launch of its own.
+        // Filtered to our own pid: the probe log is process-wide and other tests may be
+        // recording into it in parallel.
+        let ours: Vec<(String, String)> = super::launch_probe::recorded()
+            .into_iter()
+            .filter_map(|argv| {
+                let name = mine(std::path::Path::new(argv.get(1)?))?;
+                Some((argv.first()?.clone(), name))
+            })
+            .collect();
+        for (flag, name) in &ours {
+            assert_eq!(
+                flag, "--convert",
+                "{name} must reach the app behind its flag"
+            );
+        }
+        let mut launched: Vec<String> = ours.into_iter().map(|(_, name)| name).collect();
+        launched.sort();
+        assert_eq!(
+            launched, on_disk,
+            "each listfile written must be the one its own launch passed to the app"
+        );
+
+        for f in &files {
+            let _ = std::fs::remove_file(f);
+        }
     }
 }

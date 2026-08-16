@@ -46,11 +46,15 @@ fn read_line_capped<R: BufRead>(
             }
         };
         reader.consume(used);
-        if done {
-            break;
-        }
+        // Check the cap BEFORE the done/break check: a chunk that pushes `buf` past `max`
+        // can be the very chunk that also carries the terminating newline, and checking
+        // order previously let `done` short-circuit past the size check on that same
+        // iteration — accepting (and parsing) an oversized line instead of dropping it.
         if buf.len() > max {
             return Ok(0); // oversized message — give up on this stream
+        }
+        if done {
+            break;
         }
     }
     if buf.is_empty() {
@@ -107,6 +111,14 @@ pub fn serve() -> std::io::Result<()> {
 /// Dispatch one parsed message. Returns `Some(response)` for a request (has an
 /// `id`), `None` for a notification (no `id`) or a no-reply method.
 fn handle(req: &Value) -> Option<Value> {
+    // A JSON-RPC batch array or a bare scalar isn't an object, so `Value::get` (which only
+    // resolves string keys on `Object`) silently returns `None` for both "id" and "method"
+    // below — that used to fall to the wildcard arm's `id.map(...)`, which is `None` too, so
+    // `serve()` wrote nothing back and the caller hung waiting for a reply that never came.
+    // Answer immediately instead: id is unknowable for a non-object request, so it's null.
+    if !req.is_object() {
+        return Some(error_resp(Value::Null, -32600, "Invalid Request"));
+    }
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
     match method {
@@ -188,9 +200,12 @@ fn tool_defs() -> Value {
         },
         {
             "name": "strip",
-            "description": "Losslessly strip EXIF/IPTC/XMP metadata from a JPEG or PNG in place (keeps the ICC color profile; no pixel re-encode).",
+            // Synced to strip.rs's real match arms (jpg/jpeg/jpe/jfif, png, webp, svg/svgz,
+            // heic/heif/hif/avif) — this used to say "JPEG or PNG" only, understating what an
+            // agent could actually call it on.
+            "description": "Losslessly strip EXIF/IPTC/XMP metadata from a JPEG, PNG, WebP, SVG/SVGZ, or HEIC/HEIF/AVIF file in place (keeps the ICC color profile where present; no pixel re-encode).",
             "inputSchema": { "type": "object", "properties": {
-                "input": str_prop("JPEG or PNG path")
+                "input": str_prop("JPEG/PNG/WebP/SVG(Z)/HEIC/HEIF/AVIF path")
             }, "required": ["input"] }
         },
         {
@@ -219,6 +234,31 @@ fn tool_defs() -> Value {
             "name": "formats",
             "description": "List every supported input format (extension, category, description). Returns JSON.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "doctor",
+            "description": "Read-only self-check: is the shell extension registered, loadable, and enabled? Diagnoses \"why aren't thumbnails showing\". Returns a paste-ready text report with a FIX per finding; optionally probes one file's decode as well.",
+            "inputSchema": { "type": "object", "properties": {
+                "file": str_prop("optional path to also probe (does this ONE file decode)")
+            } }
+        },
+        {
+            "name": "batch",
+            "description": "Bulk-process many files/folders in one process (thumbnail or convert every supported image found, recursively).",
+            "inputSchema": { "type": "object", "properties": {
+                "op": { "type": "string", "enum": ["thumbnail", "convert"], "description": "operation to run on every input" },
+                "inputs": { "type": "array", "items": { "type": "string" }, "description": "file and/or folder paths" },
+                "out": str_prop("output directory (default: alongside each source file)"),
+                "size": { "type": "integer", "description": "thumbnail max long-edge in px (default 256; ignored for convert)" },
+                "to": str_prop("output extension, required when op is \"convert\""),
+                "quality": { "type": "integer", "description": "encoder quality 1-100 (default 90)" },
+                "resize": str_prop("optional 'WxH' (fit, no upscale) or 'N%' (scale), convert only")
+            }, "required": ["op", "inputs"] }
+        },
+        {
+            "name": "register_status",
+            "description": "Portable build only: report whether Explorer thumbnails are currently registered for this user.",
+            "inputSchema": { "type": "object", "properties": {} }
         }
     ])
 }
@@ -243,7 +283,7 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
                 json!({ "content": [{ "type": "text", "text": "missing string argument 'input'" }], "isError": true }),
             );
         };
-        let size = args.get("size").and_then(|v| v.as_u64()).unwrap_or(512) as u32;
+        let size = saturating_u32(args.get("size").and_then(|v| v.as_u64()).unwrap_or(512));
         return match cli::view_png(input, size) {
             Ok(png) => result(
                 id,
@@ -274,13 +314,10 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
     let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
     let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
     let u64_or = |k: &str, d: u64| args.get(k).and_then(|v| v.as_u64()).unwrap_or(d);
+    let u32_or = |k: &str, d: u64| saturating_u32(u64_or(k, d));
 
     match name {
-        "thumbnail" => cli::thumbnail(
-            &need("input")?,
-            &need("output")?,
-            u64_or("size", 256) as u32,
-        ),
+        "thumbnail" => cli::thumbnail(&need("input")?, &need("output")?, u32_or("size", 256)),
         "convert" => {
             let q = u64_or("quality", 90).clamp(1, 100) as u8;
             let wq = args
@@ -313,8 +350,40 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
         }
         "info" => cli::info(&need("input")?, true),
         "formats" => Ok(cli::list_formats(true)),
+        "doctor" => Ok(crate::doctor::report(want("file").as_deref())),
+        "batch" => {
+            let op = need("op")?;
+            let inputs: Vec<String> = args
+                .get("inputs")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            cli::batch(
+                &op,
+                &inputs,
+                want("out").as_deref(),
+                u32_or("size", 256),
+                want("to").as_deref(),
+                u64_or("quality", 90).clamp(1, 100) as u8,
+                cli::parse_resize(want("resize").as_deref())?,
+            )
+        }
+        "register_status" => cli::register_portable(false, true),
         other => Err(format!("unknown tool '{other}'")),
     }
+}
+
+/// Clamp a JSON `u64` size argument into `u32`, saturating rather than truncating. A plain
+/// `as u32` cast WRAPS at 2^32 (`u32::MAX as u64 + 1` overflows back to 0), and 0 already
+/// means something to every size-taking tool here ("full size, no downscale") — so a
+/// client that sent an out-of-range size would silently get the opposite of what it asked
+/// for instead of a large-but-sane clamp.
+fn saturating_u32(v: u64) -> u32 {
+    v.min(u32::MAX as u64) as u32
 }
 
 fn result(id: Value, result: Value) -> Value {
@@ -361,6 +430,9 @@ mod tests {
             "pdf",
             "info",
             "formats",
+            "doctor",
+            "batch",
+            "register_status",
         ] {
             assert!(names.contains(&v), "tools/list missing '{v}'");
         }
@@ -434,6 +506,75 @@ mod tests {
             resp["result"]["isError"],
             json!(true),
             "missing 'output' is a tool error"
+        );
+    }
+
+    #[test]
+    fn read_line_capped_rejects_an_oversized_line_even_when_the_newline_arrives_in_the_same_chunk()
+    {
+        // A `BufReader` over a `Cursor` presents the WHOLE remaining slice in a single
+        // `fill_buf` call when it fits the default internal buffer — the exact case where
+        // the newline and the size overshoot land in the same chunk. `if done { break; }`
+        // used to run before the size check, so this oversized line was accepted instead
+        // of dropped.
+        let data = b"123456789012345\n".to_vec(); // 16 bytes, well past the 10-byte cap
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(data));
+        let mut line = String::new();
+        let n = read_line_capped(&mut reader, &mut line, 10).unwrap();
+        assert_eq!(n, 0, "an oversized line must be dropped, not accepted");
+        assert!(line.is_empty(), "no partial line should have been kept");
+    }
+
+    #[test]
+    fn a_json_rpc_batch_array_gets_an_invalid_request_error_instead_of_silence() {
+        // `Value::get` only resolves string keys on `Object`, so an array or bare scalar
+        // used to make both "id" and "method" read as absent/empty, falling through to the
+        // wildcard arm's `id.map(...)` — `None` for a `None` id — and `serve()` wrote
+        // nothing back. The caller would hang waiting for a reply that never arrives.
+        let req = json!([{ "jsonrpc": "2.0", "id": 1, "method": "ping" }]);
+        let resp = handle(&req).expect("a non-object request must still get a reply");
+        assert_eq!(resp["error"]["code"], json!(-32600));
+        assert_eq!(resp["id"], Value::Null);
+    }
+
+    #[test]
+    fn saturating_u32_clamps_instead_of_wrapping_at_the_u32_boundary() {
+        assert_eq!(saturating_u32(0), 0);
+        assert_eq!(saturating_u32(512), 512);
+        assert_eq!(saturating_u32(u32::MAX as u64), u32::MAX);
+        // The bug this guards against: a plain `as u32` cast wraps 2^32 back to 0, which
+        // `view`/`thumbnail` both read as "full size" instead of an out-of-range request.
+        assert_eq!(saturating_u32(u32::MAX as u64 + 1), u32::MAX);
+        assert_eq!(saturating_u32((u32::MAX as u64) * 3), u32::MAX);
+    }
+
+    #[test]
+    fn tools_call_doctor_returns_a_text_report() {
+        let req = json!({ "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": { "name": "doctor", "arguments": {} } });
+        let resp = handle(&req).unwrap();
+        assert_eq!(resp["result"]["isError"], json!(false), "got {resp}");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.is_empty(), "doctor must return a non-empty report");
+    }
+
+    #[test]
+    fn tools_call_register_status_runs_without_error() {
+        let req = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "register_status", "arguments": {} } });
+        let resp = handle(&req).unwrap();
+        assert_eq!(resp["result"]["isError"], json!(false), "got {resp}");
+    }
+
+    #[test]
+    fn tools_call_batch_missing_op_is_a_tool_error() {
+        let req = json!({ "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": { "name": "batch", "arguments": { "inputs": ["x.png"] } } });
+        let resp = handle(&req).unwrap();
+        assert_eq!(
+            resp["result"]["isError"],
+            json!(true),
+            "missing 'op' is a tool error"
         );
     }
 }

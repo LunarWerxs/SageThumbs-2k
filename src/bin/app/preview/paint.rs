@@ -3,11 +3,11 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx, SelectObject,
-    SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PAINTSTRUCT, PS_SOLID, SRCCOPY,
-    TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, DeleteDC,
+    DeleteObject, DrawTextW, EndPaint, FillRect, GetStockObject, LineTo, MoveToEx, SelectObject,
+    SetBkMode, SetDCBrushColor, SetTextColor, DC_BRUSH, DRAW_TEXT_FORMAT, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT,
+    HGDIOBJ, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -16,7 +16,7 @@ use super::selection::sel_range;
 use super::toolbar::button_rects;
 use super::transport::{draw_scrub_strip, scrub_rect, video_rect};
 use super::window::{
-    clamp_text_scroll, state, text_scrollbar, Btn, ContentKind, BTNS, CAPTION_H, PAD,
+    clamp_text_scroll, state, text_scrollbar, Btn, ContentKind, ViewerState, BTNS, CAPTION_H, PAD,
 };
 use super::{highlight, infocard};
 
@@ -33,36 +33,103 @@ pub(super) unsafe fn draw_text(hdc: HDC, text: &mut [u16], rc: &mut RECT, fmt: D
     DrawTextW(hdc, text, rc, fmt);
 }
 
+/// Fill `rc` with a flat `color` using GDI's per-thread stock DC brush — no
+/// `CreateSolidBrush`/`DeleteObject` pair for what is just a flat fill. This viewer paints
+/// on every scroll notch and hover, so the 8 sites in this file that used to allocate +
+/// delete a brush per call are the hot path, not a one-off. Mirrors
+/// `settings_dlg::helpers::fill` (private to that module — this is a same-shaped copy
+/// local to this one, not a call to it).
+unsafe fn fill(hdc: HDC, rc: &RECT, color: u32) {
+    SetDCBrushColor(hdc, COLORREF(color));
+    FillRect(hdc, rc, HBRUSH(GetStockObject(DC_BRUSH).0));
+}
+
 pub(super) unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
     if !hdc.is_invalid() {
-        // Double-buffer: render the whole client into an off-screen bitmap, then blit it once.
-        // Painting straight to the window DC drew the content-bg fill and then the text/lines
-        // separately on-screen, which FLASHED on every scroll notch. One BitBlt = no flash.
-        // (BeginPaint's DC is clipped to the invalid region, so the blit only touches what changed.)
+        // Double-buffer: render the whole client into a CACHED off-screen bitmap (allocated once
+        // per client size, not reallocated on every paint — see `ensure_back_buffer`), then blit
+        // it once. Painting straight to the window DC drew the content-bg fill and then the
+        // text/lines separately on-screen, which FLASHED on every scroll notch. One BitBlt = no
+        // flash. (BeginPaint's DC is clipped to the invalid region, so the blit only touches what
+        // changed.)
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
         let w = (rc.right - rc.left).max(1);
         let h = (rc.bottom - rc.top).max(1);
-        let mem = CreateCompatibleDC(Some(hdc));
-        let bmp = CreateCompatibleBitmap(hdc, w, h);
-        if !mem.is_invalid() && !bmp.is_invalid() {
-            let old = SelectObject(mem, bmp.into());
-            paint_into(hwnd, mem);
-            let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
-            SelectObject(mem, old);
-        } else {
-            paint_into(hwnd, hdc); // buffer alloc failed — paint directly (correct, just flickers)
+        let st = &*state(hwnd);
+        match ensure_back_buffer(st, hdc, w, h) {
+            Some(mem) => {
+                paint_into(hwnd, mem);
+                let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
+            }
+            // Allocation failed (e.g. out of GDI handles) — paint directly; correct, just flickers.
+            None => paint_into(hwnd, hdc),
         }
+    }
+    let _ = EndPaint(hwnd, &ps);
+}
+
+/// Whether the cached back-buffer bitmap (`cached` = its last-built `(w, h)`, `None` if never
+/// built or just freed by a resize) must be (re)allocated to paint a client of `wanted` size.
+/// This is the actual defect being fixed: every `WM_PAINT` used to `CreateCompatibleBitmap` a
+/// fresh full-client bitmap (tens of MB at 4K) and delete it before returning — on every scroll
+/// notch and hover, not just on resize. Split out from the real GDI calls in
+/// [`ensure_back_buffer`] so the reuse/recreate decision is testable without a live HDC.
+pub(super) fn back_buffer_needs_alloc(cached: Option<(i32, i32)>, wanted: (i32, i32)) -> bool {
+    cached != Some(wanted)
+}
+
+/// Get (creating or resizing as needed) the cached off-screen DC that [`paint`] double-buffers
+/// into. Reused across repaints at the same client size; `WM_SIZE` (via [`free_back_buffer`])
+/// frees the stale one so this allocates fresh here on the next paint at the new size. Returns
+/// `None` only if the GDI calls themselves fail, in which case the caller paints straight to the
+/// window DC.
+unsafe fn ensure_back_buffer(st: &ViewerState, hdc: HDC, w: i32, h: i32) -> Option<HDC> {
+    let have = !st.back_dc.get().is_invalid() && !st.back_bmp.get().is_invalid();
+    let cached = have.then(|| st.back_size.get());
+    if !back_buffer_needs_alloc(cached, (w, h)) {
+        return Some(st.back_dc.get());
+    }
+    free_back_buffer(st);
+    let mem = CreateCompatibleDC(Some(hdc));
+    let bmp = CreateCompatibleBitmap(hdc, w, h);
+    if mem.is_invalid() || bmp.is_invalid() {
         if !bmp.is_invalid() {
             let _ = DeleteObject(bmp.into());
         }
         if !mem.is_invalid() {
             let _ = DeleteDC(mem);
         }
+        return None;
     }
-    let _ = EndPaint(hwnd, &ps);
+    let stock = SelectObject(mem, bmp.into()); // the DC's original 1x1 bitmap — restored before free
+    st.back_dc.set(mem);
+    st.back_bmp.set(bmp);
+    st.back_stock.set(stock);
+    st.back_size.set((w, h));
+    Some(mem)
+}
+
+/// Release the cached `WM_PAINT` double-buffer's GDI handles, if any. Called on `WM_SIZE` (the
+/// buffer is now the wrong size) and `WM_DESTROY` (final cleanup) — see `ViewerState::back_dc`.
+pub(super) unsafe fn free_back_buffer(st: &ViewerState) {
+    let mem = st.back_dc.get();
+    let bmp = st.back_bmp.get();
+    if !mem.is_invalid() && !bmp.is_invalid() {
+        // Deselect our bitmap back to the DC's original stock bitmap FIRST — GDI leaks a bitmap
+        // silently (DeleteObject becomes a no-op) if it is deleted while still selected into a DC.
+        SelectObject(mem, st.back_stock.get());
+        let _ = DeleteObject(bmp.into());
+    }
+    if !mem.is_invalid() {
+        let _ = DeleteDC(mem);
+    }
+    st.back_dc.set(HDC::default());
+    st.back_bmp.set(Default::default());
+    st.back_stock.set(Default::default());
+    st.back_size.set((0, 0));
 }
 
 pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
@@ -131,32 +198,35 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
         }
         ContentKind::Text => {
             if let Some(t) = st.text.borrow().as_ref() {
-                let ext = st
-                    .path
-                    .borrow()
-                    .as_deref()
-                    .and_then(|p| std::path::Path::new(p).extension().and_then(|e| e.to_str()))
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                let mut lang = highlight::lang_from_ext(&ext);
-                if matches!(lang, highlight::Lang::Plain) {
-                    // No usable extension (Makefile, Dockerfile, .bashrc, a bare shebang script):
-                    // fall back to the file NAME and the first line's `#!` before giving up on
-                    // colouring it. Only reached when the extension told us nothing, so a real
-                    // `.txt` is never second-guessed.
-                    let name = st
+                let lang = cached_text_lang(hwnd, st.decode_gen.get(), || {
+                    let ext = st
                         .path
                         .borrow()
                         .as_deref()
-                        .and_then(|p| {
-                            std::path::Path::new(p)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(str::to_owned)
-                        })
-                        .unwrap_or_default();
-                    lang = highlight::lang_from_name_or_shebang(&name, t);
-                }
+                        .and_then(|p| std::path::Path::new(p).extension().and_then(|e| e.to_str()))
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    let mut lang = highlight::lang_from_ext(&ext);
+                    if matches!(lang, highlight::Lang::Plain) {
+                        // No usable extension (Makefile, Dockerfile, .bashrc, a bare shebang
+                        // script): fall back to the file NAME and the first line's `#!` before
+                        // giving up on colouring it. Only reached when the extension told us
+                        // nothing, so a real `.txt` is never second-guessed.
+                        let name = st
+                            .path
+                            .borrow()
+                            .as_deref()
+                            .and_then(|p| {
+                                std::path::Path::new(p)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_default();
+                        lang = highlight::lang_from_name_or_shebang(&name, t);
+                    }
+                    lang
+                });
                 let th = paint_text(
                     hwnd,
                     hdc,
@@ -272,11 +342,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
             let vr = video_rect(hwnd);
             match st.art.borrow().as_ref() {
                 Some(art) => content::paint_image(hdc, &vr, art, 0x0000_0000, 1.0, (0, 0), None),
-                None => {
-                    let brush = CreateSolidBrush(COLORREF(0x0000_0000));
-                    FillRect(hdc, &vr, brush);
-                    let _ = DeleteObject(brush.into());
-                }
+                None => fill(hdc, &vr, 0x0000_0000),
             }
             if let Some(v) = st.video.borrow().as_ref() {
                 draw_scrub_strip(hwnd, hdc, &scrub_rect(hwnd), v, text, subtle);
@@ -285,12 +351,8 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
         ContentKind::Loading => {
             paint_message(hwnd, hdc, &content_rc, content_bg, subtle, "Loading…")
         }
-        ContentKind::Html => {
-            // The WebView2 child window renders over the content area; just fill behind it.
-            let brush = CreateSolidBrush(COLORREF(content_bg));
-            FillRect(hdc, &content_rc, brush);
-            let _ = DeleteObject(brush.into());
-        }
+        // The WebView2 child window renders over the content area; just fill behind it.
+        ContentKind::Html => fill(hdc, &content_rc, content_bg),
     }
 
     // Scroll-position thumb for the text + markdown panes (they have no OS scrollbar). Drawn on top
@@ -303,9 +365,7 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     super::find::paint(hwnd, hdc, text, subtle);
 
     // Caption strip.
-    let brush = CreateSolidBrush(COLORREF(cap_bg));
-    FillRect(hdc, &caption_rc, brush);
-    let _ = DeleteObject(brush.into());
+    fill(hdc, &caption_rc, cap_bg);
     // Hairline under the caption.
     let pen = CreatePen(PS_SOLID, 1, COLORREF(crate::dark::BORDER().0));
     let old = SelectObject(hdc, HGDIOBJ(pen.0));
@@ -406,6 +466,42 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
     let _ = DeleteObject(icon.into());
 }
 
+thread_local! {
+    /// Per-window cached Text-pane syntax language, keyed by `(hwnd, ViewerState::decode_gen)`.
+    /// `decode_gen` bumps on every (re)load, so a file switch in the SAME window (arrow-nav,
+    /// daemon reuse) invalidates the cache instead of relighting a NEW file with the PREVIOUS
+    /// one's language forever. `lang_from_ext`/`lang_from_name_or_shebang` used to re-run on
+    /// every `WM_PAINT` (every scroll notch, every hover redraw) even though the answer cannot
+    /// change until the next load — this makes it a once-per-load cost instead.
+    ///
+    /// Lives here rather than on `ViewerState` itself (its natural home) because that struct is
+    /// out of scope for this change; a stray entry for a since-destroyed window costs a couple
+    /// of bytes, not a GDI handle, so no destroy hook is needed to keep this bounded in practice.
+    static TEXT_LANG_CACHE: std::cell::RefCell<std::collections::HashMap<isize, (u64, highlight::Lang)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The Text pane's resolved syntax language for the window's CURRENT load: computed once via
+/// `compute` and reused by every repaint until `gen` (the load generation) changes.
+fn cached_text_lang(
+    hwnd: HWND,
+    gen: u64,
+    compute: impl FnOnce() -> highlight::Lang,
+) -> highlight::Lang {
+    TEXT_LANG_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let key = hwnd.0 as isize;
+        if let Some((cached_gen, lang)) = c.get(&key) {
+            if *cached_gen == gen {
+                return *lang;
+            }
+        }
+        let lang = compute();
+        c.insert(key, (gen, lang));
+        lang
+    })
+}
+
 /// Centered single-line message (e.g. "Loading…") in `rc`.
 pub(super) unsafe fn paint_message(
     hwnd: HWND,
@@ -415,9 +511,7 @@ pub(super) unsafe fn paint_message(
     color: u32,
     text: &str,
 ) {
-    let brush = CreateSolidBrush(COLORREF(bg));
-    FillRect(hdc, rc, brush);
-    let _ = DeleteObject(brush.into());
+    fill(hdc, rc, bg);
     if text.is_empty() {
         return;
     }
@@ -457,9 +551,7 @@ unsafe fn paint_toc(
     let muted = crate::dark::HEADER_TEXT().0;
     let accent = crate::dark::ACCENT().0;
 
-    let brush = CreateSolidBrush(COLORREF(bg));
-    FillRect(hdc, rc, brush);
-    let _ = DeleteObject(brush.into());
+    fill(hdc, rc, bg);
     // right-edge separator
     let pen = CreatePen(PS_SOLID, 1, COLORREF(crate::dark::BORDER().0));
     let op = SelectObject(hdc, HGDIOBJ(pen.0));
@@ -556,9 +648,7 @@ pub(super) unsafe fn paint_text(
     scroll: i32,
     sel: Option<(usize, usize)>,
 ) -> i32 {
-    let brush = CreateSolidBrush(COLORREF(bg));
-    FillRect(hdc, rc, brush);
-    let _ = DeleteObject(brush.into());
+    fill(hdc, rc, bg);
     let m = crate::win::dpi_scale(hwnd, 12);
     SetBkMode(hdc, TRANSPARENT);
     let font = mono_font(hwnd);
@@ -599,9 +689,7 @@ unsafe fn paint_scroll_thumb(hwnd: HWND, hdc: HDC) {
     } else {
         crate::dark::BORDER_STRONG().0
     };
-    let brush = CreateSolidBrush(COLORREF(color));
-    FillRect(hdc, &sb.thumb, brush);
-    let _ = DeleteObject(brush.into());
+    fill(hdc, &sb.thumb, color);
 }
 
 /// A ~13px Consolas monospace font for the text preview (Consolas ships on every Win10/11;
@@ -691,7 +779,6 @@ pub(super) unsafe fn draw_button(
 ) {
     // Hover background pill.
     if hot {
-        let hb = CreateSolidBrush(COLORREF(crate::dark::BTN_FACE_HOT().0));
         let pad = crate::win::dpi_scale(hwnd, 3);
         let pr = RECT {
             left: r.left + pad,
@@ -699,8 +786,7 @@ pub(super) unsafe fn draw_button(
             right: r.right - pad,
             bottom: r.bottom - pad,
         };
-        FillRect(hdc, &pr, hb);
-        let _ = DeleteObject(hb.into());
+        fill(hdc, &pr, crate::dark::BTN_FACE_HOT().0);
     }
     let active = (matches!(btn, Btn::Pin) && pinned)
         || (matches!(btn, Btn::Toc) && toc_open)
@@ -728,4 +814,79 @@ pub(super) unsafe fn draw_button(
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
     SelectObject(hdc, old);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// Fabricate a distinct-but-harmless `HWND` for cache-key tests: [`cached_text_lang`] only
+    /// ever uses `.0` as a hashmap key and never dereferences it, so an arbitrary value is safe.
+    fn fake_hwnd(n: isize) -> HWND {
+        HWND(n as *mut std::ffi::c_void)
+    }
+
+    /// The whole point of the fix (paint.rs used to re-derive the Text pane's syntax language
+    /// on every `WM_PAINT` — every scroll notch, every hover redraw): a repaint at the SAME
+    /// load generation must reuse the cached language, not recompute it, and a NEW load (the
+    /// generation bumping, e.g. arrow-nav to the next file in the same window) must invalidate
+    /// the cache rather than keep serving the previous file's language forever.
+    #[test]
+    fn cached_text_lang_recomputes_only_when_the_load_generation_changes() {
+        let hwnd = fake_hwnd(0x1111);
+        let calls = Cell::new(0);
+        let compute_rust = || {
+            calls.set(calls.get() + 1);
+            highlight::Lang::Rust
+        };
+
+        assert!(cached_text_lang(hwnd, 1, compute_rust) == highlight::Lang::Rust);
+        assert_eq!(calls.get(), 1);
+
+        // Same generation, second repaint: must NOT recompute.
+        assert!(cached_text_lang(hwnd, 1, compute_rust) == highlight::Lang::Rust);
+        assert_eq!(
+            calls.get(),
+            1,
+            "must not recompute while decode_gen is unchanged"
+        );
+
+        // New generation: must invalidate and recompute, and pick up the NEW answer.
+        let compute_py = || {
+            calls.set(calls.get() + 1);
+            highlight::Lang::Py
+        };
+        assert!(cached_text_lang(hwnd, 2, compute_py) == highlight::Lang::Py);
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// Two different windows must not share a cache slot — an arbitrary HWND collision would
+    /// paint one preview window's file in another window's language.
+    #[test]
+    fn cached_text_lang_keys_are_per_window() {
+        let a = fake_hwnd(0x2222);
+        let b = fake_hwnd(0x3333);
+        assert!(cached_text_lang(a, 1, || highlight::Lang::Rust) == highlight::Lang::Rust);
+        assert!(cached_text_lang(b, 1, || highlight::Lang::Py) == highlight::Lang::Py);
+        // `a`'s entry must still read back Rust, not have been clobbered by `b`'s insert.
+        assert!(cached_text_lang(a, 1, || highlight::Lang::Py) == highlight::Lang::Rust);
+    }
+
+    /// A091: WM_PAINT used to `CreateCompatibleBitmap` a fresh full-client back buffer (tens of
+    /// MB at 4K) and delete it on EVERY repaint, instead of caching one sized to the client and
+    /// only rebuilding it when that size actually changes (WM_SIZE). Without the cache, this
+    /// predicate would need to return `true` unconditionally (every paint reallocates); with it,
+    /// a same-size repaint must reuse the buffer and only a real size change forces a rebuild.
+    #[test]
+    fn back_buffer_reused_across_repaints_reallocated_on_resize() {
+        // Nothing cached yet (first paint, or just freed by WM_SIZE/WM_DESTROY) — must allocate.
+        assert!(back_buffer_needs_alloc(None, (800, 600)));
+        // Same client size as what's cached (a scroll notch, a hover redraw) — must NOT
+        // reallocate. This is the fix: the old code had no such check at all.
+        assert!(!back_buffer_needs_alloc(Some((800, 600)), (800, 600)));
+        // The client size actually changed (WM_SIZE) — the cached bitmap no longer matches the
+        // window and MUST be rebuilt, or the next paint would blit a stale-size buffer.
+        assert!(back_buffer_needs_alloc(Some((800, 600)), (1024, 768)));
+    }
 }

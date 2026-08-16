@@ -172,9 +172,10 @@ fn pressing_the_button_twice_round_trips_to_rendered() {
     cleanup("round");
 }
 
-/// The `--hot N` button indices are positional (`BTNS`), and the source toggle sits at index 1.
-/// Hovering it must render (this is also the cheapest guard that adding the variant kept every
-/// `Btn` match arm — glyph, tooltip key, visibility — in agreement).
+/// The `--hot N` button indices are positional (`BTNS`), and the source toggle sits at index 2
+/// (index 1 is `Btn::MdImages`, added 2026-08-07 and inserted ahead of `Btn::Source`). Hovering
+/// it must render (this is also the cheapest guard that adding the variant kept every `Btn`
+/// match arm — glyph, tooltip key, visibility — in agreement).
 #[test]
 fn hovering_the_source_button_renders() {
     let dir = std::env::temp_dir().join(format!("st2k_src_hot_{}", std::process::id()));
@@ -187,7 +188,7 @@ fn hovering_the_source_button_renders() {
         .arg(&out)
         .args(["--window", "preview", "--file"])
         .arg(&doc)
-        .args(["--hot", "1"])
+        .args(["--hot", "2"])
         .status()
         .expect("spawn SageThumbs2K --shot");
     assert!(

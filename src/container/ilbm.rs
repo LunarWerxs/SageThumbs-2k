@@ -18,7 +18,7 @@
 
 use image::{DynamicImage, RgbaImage};
 
-use crate::decode::limits::{MAX_DIM, MAX_PIXELS};
+use crate::decode::limits::{MAX_ALLOC, MAX_DIM, MAX_PIXELS};
 
 /// CAMG viewport flags we care about.
 const CAMG_EHB: u32 = 0x0000_0080;
@@ -118,8 +118,12 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     let expected = row_bytes
         .checked_mul(planes_per_row as usize)?
         .checked_mul(h as usize)?;
-    // Cap the raw buffer we'll materialize (decompression-bomb guard).
-    if expected as u64 > 4 * MAX_PIXELS {
+    // Cap the raw intermediate buffer AND the RGBA canvas against the shared
+    // single-allocation ceiling (MAX_ALLOC = 512 MiB), not just MAX_PIXELS: the earlier
+    // w*h <= MAX_PIXELS check alone still lets w*h reach ~268M, and 4 bytes/pixel for
+    // either buffer alone then approaches ~1 GiB — well past the budget every other
+    // decode tier enforces for a single allocation.
+    if expected as u64 > MAX_ALLOC || (w as u64) * (h as u64) * 4 > MAX_ALLOC {
         return None;
     }
 
@@ -378,5 +382,45 @@ mod tests {
         let enc = [1u8, b'A', b'B', (256 - 2) as u8, b'C'];
         let dec = byterun1_decode(&enc, 5).unwrap();
         assert_eq!(dec, b"ABCCC");
+    }
+
+    /// A024: 12000x12000 clears the old `w*h <= MAX_PIXELS` guard (144M < ~268M) but its
+    /// RGBA canvas alone (w*h*4 ~= 549 MiB) exceeds MAX_ALLOC (512 MiB). The BODY is filled
+    /// out to its full expected size (not left short) so this exercises the ALLOC-SIZE
+    /// guard specifically: a short BODY already returns `None` via the pre-existing
+    /// truncation check regardless of this fix, which would make a short-body test pass
+    /// before and after and prove nothing.
+    #[test]
+    fn oversized_canvas_within_max_pixels_is_rejected() {
+        let (w, h): (u32, u32) = (12000, 12000);
+        let mut bmhd = Vec::new();
+        bmhd.extend_from_slice(&(w as u16).to_be_bytes());
+        bmhd.extend_from_slice(&(h as u16).to_be_bytes());
+        bmhd.extend_from_slice(&0u32.to_be_bytes()); // x,y
+        bmhd.push(1); // nPlanes
+        bmhd.push(0); // masking none
+        bmhd.push(0); // compression none
+        bmhd.extend_from_slice(&[0; 9]); // pad..pageH (fill to 20 bytes)
+        let cmap = [0u8, 0, 0];
+        // Same row-layout formula the decoder uses: word-aligned 2-byte rows, 1 plane.
+        let row_bytes = (w.div_ceil(16) * 2) as usize;
+        let body = vec![0u8; row_bytes * h as usize]; // ~18 MB, fully sized — not short
+
+        let mut form = Vec::new();
+        form.extend_from_slice(b"ILBM");
+        be_chunk(&mut form, b"BMHD", &bmhd);
+        be_chunk(&mut form, b"CMAP", &cmap);
+        be_chunk(&mut form, b"BODY", &body);
+
+        let mut file = Vec::new();
+        file.extend_from_slice(b"FORM");
+        file.extend_from_slice(&(form.len() as u32).to_be_bytes());
+        file.extend_from_slice(&form);
+
+        assert!(
+            extract(&file).is_none(),
+            "a 12000x12000 canvas (~549 MiB RGBA) must be rejected against MAX_ALLOC even \
+             with a fully-sized BODY"
+        );
     }
 }

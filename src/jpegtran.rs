@@ -278,7 +278,12 @@ fn decode_block(
         }
         k += r;
         if k >= 64 {
-            break;
+            // A run-length that pushes past the block's 64 coefficients means the source
+            // table/data is corrupt or crafted. Silently truncating here used to return
+            // `Some(blk)` with the tail zeroed out — a wrong-but-"successful" lossless
+            // rotate/flip. Decline instead, like the DC-category guard above, so the caller
+            // falls back to the lossy re-encode path rather than writing garbage.
+            return None;
         }
         blk[ZIGZAG[k]] = extend(br.receive(s)?, s);
         k += 1;
@@ -1074,6 +1079,30 @@ mod tests {
         assert!(
             transform(&jpeg, Op::Rot90).is_none(),
             "non-aligned dims should bail"
+        );
+    }
+
+    /// An AC run-length that pushes the coefficient index past 63 (a corrupt or crafted Huffman
+    /// table/data) must decline the block entirely, not return a truncated one. Before the fix,
+    /// `decode_block` silently `break`d out of the loop and returned `Some(blk)` with the tail
+    /// left zeroed — a wrong-but-"successful" lossless transform. Drives `decode_block` directly
+    /// with a single-code DC table (t=0, diff=0) and a single-code AC table mapping to (run=15,
+    /// size=1): each successful iteration advances k by 16 (15-run + the coefficient itself),
+    /// so k goes 1 -> 17 -> 33 -> 49, then the fourth symbol's run alone (+15) reaches 64 before
+    /// a coefficient is stored, tripping the guard.
+    #[test]
+    fn ac_run_length_past_63_declines_instead_of_truncating() {
+        let dc = build_dec(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], &[0]);
+        let ac = build_dec(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], &[0xF1]);
+        // Every code AND every data bit here is 1-bit-"0", so 9 zero bits cover the DC symbol
+        // plus 4 AC iterations (huffman bit + 1 data bit each); the trailing zero bits are
+        // never reached once the guard fires.
+        let data = [0x00u8, 0x00u8];
+        let mut br = BitReader::new(&data, 0);
+        let mut pred = 0i32;
+        assert!(
+            decode_block(&mut br, &dc, &ac, &mut pred).is_none(),
+            "a run-length overflowing the 64-coefficient block must decline (None)"
         );
     }
 }

@@ -105,22 +105,27 @@ const ALLOW: &[(&str, Kind)] = &[
 // ---- local <-> JSON ------------------------------------------------------
 
 /// Snapshot the currently-stored allowlisted settings into a JSON object. Only values
-/// that are actually PRESENT in the registry are included, so a machine that never
-/// touched a setting won't push its default and clobber another machine's choice.
+/// that are actually PRESENT are included, so a machine that never touched a setting
+/// won't push its default and clobber another machine's choice.
+///
+/// Goes through [`settings::get_dword_opt`] / [`settings::get_string_opt`] rather than
+/// opening `CURRENT_USER` directly, because those redirect to the portable ini under
+/// `settings::portable()` the same way every other setting in this codebase does. A
+/// direct registry read here silently saw an EMPTY snapshot on every portable install
+/// (real settings live only in the ini, never HKCU), so sync pushed nothing and pulled
+/// nothing without ever surfacing an error.
 fn read_local() -> Map<String, Value> {
     let mut map = Map::new();
-    if let Ok(k) = CURRENT_USER.open(settings::ROOT) {
-        for (name, kind) in ALLOW {
-            match kind {
-                Kind::Dword => {
-                    if let Ok(v) = k.get_u32(name) {
-                        map.insert((*name).to_string(), Value::from(v));
-                    }
+    for (name, kind) in ALLOW {
+        match kind {
+            Kind::Dword => {
+                if let Some(v) = settings::get_dword_opt(name) {
+                    map.insert((*name).to_string(), Value::from(v));
                 }
-                Kind::Str => {
-                    if let Ok(s) = k.get_string(name) {
-                        map.insert((*name).to_string(), Value::from(s));
-                    }
+            }
+            Kind::Str => {
+                if let Some(s) = settings::get_string_opt(name) {
+                    map.insert((*name).to_string(), Value::from(s));
                 }
             }
         }
@@ -128,24 +133,32 @@ fn read_local() -> Map<String, Value> {
     map
 }
 
-/// Apply a remote `settings` object to local HKCU — but ONLY allowlisted keys with the
+/// Apply a remote `settings` object to local storage — but ONLY allowlisted keys with the
 /// expected type. Unknown keys are ignored (forward-compat + a hostile/expanded doc can't
 /// write arbitrary registry values). Returns how many values were applied.
+///
+/// Same portable-redirect reasoning as [`read_local`]: writing straight to `CURRENT_USER`
+/// meant a pulled setting never reached a portable install's actual backing store (the
+/// ini), so `pull_on_open` silently applied zero values there every time.
 fn apply_remote(settings_obj: &Value) -> u32 {
     let Some(obj) = settings_obj.as_object() else {
-        return 0;
-    };
-    let Ok(k) = CURRENT_USER.create(settings::ROOT) else {
         return 0;
     };
     let mut applied = 0;
     for (name, kind) in ALLOW {
         let Some(val) = obj.get(*name) else { continue };
         let ok = match kind {
+            // `u32::try_from` rather than `as u32`: an out-of-range remote value (a hostile
+            // or corrupted doc) must be REJECTED, not silently truncated and then counted as
+            // a successful apply - `as u32` on 4294967296 would wrap to 0 and still report
+            // success, writing a value the remote document never actually held.
             Kind::Dword => val
                 .as_u64()
-                .is_some_and(|n| k.set_u32(name, n as u32).is_ok()),
-            Kind::Str => val.as_str().is_some_and(|s| k.set_string(name, s).is_ok()),
+                .and_then(|n| u32::try_from(n).ok())
+                .is_some_and(|n| settings::set_dword(name, n).is_ok()),
+            Kind::Str => val
+                .as_str()
+                .is_some_and(|s| settings::set_string(name, s).is_ok()),
         };
         if ok {
             applied += 1;
@@ -449,13 +462,30 @@ fn validate_sync_snapshot(snapshot: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Persist a freshly-rotated refresh token via `save`, failing loudly if the store
+/// rejects it. Taking `save` as a parameter (rather than calling `cred_store` directly)
+/// is what makes this — the actual decision logic A037 was about — testable without a
+/// live DPAPI/HKCU credential store.
+fn persist_rotation(rotated: Option<&str>, save: impl FnOnce(&str) -> bool) -> Result<(), String> {
+    match rotated {
+        // The server already rotated the token by the time we get here; if the local
+        // write fails, the cache would otherwise hold a token the server has already
+        // invalidated, and every future refresh would fail with no clue why.
+        Some(new_rt) if !save(new_rt) => {
+            Err("couldn't securely store your renewed sign-in".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Mint a fresh access token from the stored refresh token (rotating + re-persisting it).
 fn access_token() -> Result<String, String> {
     let rt = cred_store::load_refresh_token().ok_or_else(|| "not signed in".to_string())?;
     let tokens = oauth::refresh(&rt)?;
-    if let Some(new_rt) = &tokens.refresh_token {
-        cred_store::save_refresh_token(new_rt);
-    }
+    persist_rotation(
+        tokens.refresh_token.as_deref(),
+        cred_store::save_refresh_token,
+    )?;
     Ok(tokens.access_token)
 }
 
@@ -666,6 +696,15 @@ mod tests {
     }
 
     #[test]
+    fn apply_remote_rejects_out_of_range_dword_instead_of_truncating() {
+        // 4294967296 (2^32) is a valid JSON number and a valid u64, but doesn't fit a u32.
+        // The old `as u32` cast wrapped it to 0 and still counted it as applied; `try_from`
+        // must reject it instead, so nothing is written and the count stays 0.
+        let doc = serde_json::json!({ "JPEG": 4294967296u64 });
+        assert_eq!(apply_remote(&doc), 0);
+    }
+
+    #[test]
     fn credential_values_are_refused_even_when_nested() {
         let doc = serde_json::json!({
             "future": {
@@ -693,5 +732,28 @@ mod tests {
             retry_after_seconds(br#"{"retry_after_seconds":9}"#),
             Some(9)
         );
+    }
+
+    /// A037: a rotated refresh token the server already accepted must never be silently
+    /// discarded just because the local DPAPI/HKCU write failed.
+    #[test]
+    fn persist_rotation_errors_when_a_rotated_token_fails_to_save() {
+        let result = persist_rotation(Some("new-token"), |_| false);
+        assert!(
+            result.is_err(),
+            "a failed save of a rotated token must surface an error, not vanish silently"
+        );
+    }
+
+    #[test]
+    fn persist_rotation_succeeds_when_the_store_accepts_the_rotated_token() {
+        assert!(persist_rotation(Some("new-token"), |_| true).is_ok());
+    }
+
+    #[test]
+    fn persist_rotation_is_a_no_op_when_the_server_did_not_rotate_the_token() {
+        // `save` must not even be called when nothing rotated.
+        let result = persist_rotation(None, |_| panic!("save must not run without a rotation"));
+        assert!(result.is_ok());
     }
 }

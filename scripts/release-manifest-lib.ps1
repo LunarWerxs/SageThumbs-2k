@@ -30,6 +30,25 @@ function Get-ReleaseCargoBuildArguments {
     return @('--release', '--locked') + $target + @('-p', $Package) + $featureArgs
 }
 
+# Single source of truth for the release feature lists (A249: before this, build-release.ps1,
+# write-release-manifest.ps1, and check-release-manifest.ps1 each hand-typed their own copy of
+# this string, and that exact drift class shipped once already as SG-01). Every script that
+# builds, records, or verifies the release EXE/DLL must call this rather than hardcode a copy.
+function Get-ReleaseFeatureList {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('sagethumbs2k', 'sagethumbs2k-dll')]
+        [string]$Package
+    )
+    switch ($Package) {
+        # `flash-video` is named EXPLICITLY even though Cargo.toml has it in `default`: this
+        # string is compared for exact equality against the arguments the build actually ran,
+        # and it went missing once when the FLV work landed (see write-release-manifest.ps1).
+        'sagethumbs2k'     { 'webp-lossy,html-preview,hdr-capture,flash-video' }
+        'sagethumbs2k-dll' { 'webp-lossy,dll-i18n-subset' }
+    }
+}
+
 function Get-ReleaseRequiredInputPaths {
     @(
         '.gitattributes',

@@ -28,7 +28,9 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         Error::new(E_FAIL, format!("write {}: {e}", tmp.display()))
     })?;
-    std::fs::rename(&tmp, &ico_path).map_err(|e| {
+    // Retry past a transient Explorer/shell lock on the target (Windows os error 5/32)
+    // instead of failing outright — see `fsutil::rename_retrying`.
+    crate::fsutil::rename_retrying(&tmp, &ico_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         Error::new(E_FAIL, format!("rename .ico into place: {e}"))
     })?;
@@ -73,7 +75,9 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
     // desktop.ini is normally Hidden+System, and a rename onto a hidden file fails on Windows
     // unless the destination's attributes allow it — clear them first, then re-apply below.
     clear_attrs(&ini_path, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
-    std::fs::rename(&ini_tmp, &ini_path).map_err(|e| {
+    // Retry past a transient Explorer/shell lock on the target (Windows os error 5/32)
+    // instead of failing outright — see `fsutil::rename_retrying`.
+    crate::fsutil::rename_retrying(&ini_tmp, &ini_path).map_err(|e| {
         let _ = std::fs::remove_file(&ini_tmp);
         Error::new(E_FAIL, format!("rename desktop.ini into place: {e}"))
     })?;
@@ -216,4 +220,99 @@ pub(super) fn merge_shell_class_info(prior: &str, ico_name: &str) -> String {
     let mut s = out.join("\r\n");
     s.push_str("\r\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    /// Build a tiny source PNG in `dir` for `set_folder_icon` to read.
+    fn make_src(dir: &Path) -> PathBuf {
+        let src_path = dir.join("src.png");
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([10, 20, 30]));
+        image::DynamicImage::ImageRgb8(img)
+            .save_with_format(&src_path, ImageFormat::Png)
+            .unwrap();
+        src_path
+    }
+
+    /// A transient Explorer/shell lock on the destination `.ico` (Windows os error 5/32)
+    /// must not fail the folder-icon write outright — the rename has to retry past it
+    /// (`fsutil::rename_retrying`), not fail on a bare `std::fs::rename`.
+    #[test]
+    fn set_folder_icon_survives_a_transient_lock_on_the_ico() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_foldericon_lock_ico_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = make_src(&dir);
+
+        // Pre-create the .ico target and hold it open with no sharing, mimicking a
+        // transient Explorer/thumbnail-cache lock on the rename destination.
+        let ico_path = dir.join("SageThumbsFolder.ico");
+        std::fs::write(&ico_path, b"placeholder").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&ico_path)
+            .unwrap();
+        let lock_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(140));
+            drop(held);
+        });
+
+        let result = set_folder_icon(src_path.to_str().unwrap());
+        lock_thread.join().unwrap();
+
+        assert!(
+            result.is_ok(),
+            "rename must retry past the transient lock, not fail immediately: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Same as above, for the `desktop.ini` rename (the second of the two writer sites
+    /// this file owns).
+    #[test]
+    fn set_folder_icon_survives_a_transient_lock_on_desktop_ini() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_foldericon_lock_ini_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = make_src(&dir);
+
+        let ini_path = dir.join("desktop.ini");
+        std::fs::write(&ini_path, b"placeholder").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&ini_path)
+            .unwrap();
+        let lock_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(140));
+            drop(held);
+        });
+
+        let result = set_folder_icon(src_path.to_str().unwrap());
+        lock_thread.join().unwrap();
+
+        assert!(
+            result.is_ok(),
+            "rename must retry past the transient lock, not fail immediately: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

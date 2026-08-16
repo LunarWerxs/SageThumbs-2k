@@ -118,9 +118,13 @@ pub fn register(dll_path: &str) -> Result<()> {
     // StartAllBack, ExplorerPatcher, or the {86ca1aa0…} tweak). Registered under
     // "*" (all files) and filtered to images inside QueryContextMenu.
     register_inproc_server(CLSID_CONTEXT_MENU_STR, CM_NAME, dll_path, &approved)?;
-    CLASSES_ROOT
-        .create("*\\shellex\\ContextMenuHandlers\\SageThumbs2K")?
-        .set_string("", CLSID_CONTEXT_MENU_STR)?;
+    // Best-effort like the preview/property registration below: the format loop above has
+    // already displaced third-party thumbnail handlers, so a policy-locked "*" subtree here
+    // must not abort before we ever reach preview/property, leaving thumbs hooked but
+    // nothing else set up.
+    if let Ok(k) = CLASSES_ROOT.create("*\\shellex\\ContextMenuHandlers\\SageThumbs2K") {
+        let _ = k.set_string("", CLSID_CONTEXT_MENU_STR);
+    }
 
     // The preview-pane handler. Best-effort: a failure here (e.g. a locked-down
     // PreviewHandlers list) must never break the thumbnail/context-menu setup above.
@@ -188,12 +192,26 @@ fn hook_ext_propstore(ext: &str) -> Result<()> {
         .create(&handler)?
         .set_string("", CLSID_PROPERTY_STORE_STR)?;
     let a = CLASSES_ROOT.create(&assoc)?;
-    a.set_string("InfoTip", PROP_INFOTIP)?;
-    a.set_string("FullDetails", PROP_FULLDETAILS)?;
-    a.set_string("PreviewDetails", PROP_PREVIEWDETAILS)?;
-    a.set_string("AdditionalProperties", PROP_ADDITIONAL)?;
+    // A third-party app can write these SystemFileAssociations values directly, without ever
+    // registering a property handler — so the `handler` guard above (which only looked at
+    // PropertyHandlers\.<ext>) can't see it. Fill each value only where it's genuinely empty,
+    // so such a value is never clobbered.
+    set_assoc_value_if_empty(&a, "InfoTip", PROP_INFOTIP);
+    set_assoc_value_if_empty(&a, "FullDetails", PROP_FULLDETAILS);
+    set_assoc_value_if_empty(&a, "PreviewDetails", PROP_PREVIEWDETAILS);
+    set_assoc_value_if_empty(&a, "AdditionalProperties", PROP_ADDITIONAL);
     set_perceived_type(ext);
     Ok(())
+}
+
+/// Write `name` on `key` only when it's currently absent/empty — mirrors [`set_perceived_type`]'s
+/// "fill an empty slot, never overwrite" rule for the property-list values written above.
+fn set_assoc_value_if_empty(key: &Key, name: &str, value: &str) {
+    let already = key.get_string(name).ok();
+    if matches!(already.as_deref(), Some(s) if !s.is_empty()) {
+        return; // a value is already present (Windows or another app) — leave it
+    }
+    let _ = key.set_string(name, value);
 }
 
 /// Set `HKCR\.<ext>`'s `PerceivedType` so `kind:` search + library grouping can classify the
@@ -233,7 +251,10 @@ fn set_perceived_type(ext: &str) {
 /// was ours, so a value Windows or another app owns is never clobbered.
 fn unhook_perceived_type(ext: &str) {
     let key = format!(".{ext}");
-    if let Ok(k) = CLASSES_ROOT.open(&key) {
+    // `create`, not `open`: `open` hands back a read-only handle in this crate and
+    // `remove_value` on it silently no-ops (see the note on `restore_displaced`), which left
+    // PerceivedType/the marker behind on every uninstall/disable.
+    if let Ok(k) = CLASSES_ROOT.create(&key) {
         if k.get_string(PERCEIVED_TYPE_MARK).is_ok() {
             let _ = k.remove_value("PerceivedType");
             let _ = k.remove_value(PERCEIVED_TYPE_MARK);
@@ -257,7 +278,10 @@ fn unhook_ext_propstore(ext: &str) {
         // an older install wrote DIFFERENT strings, so an equality check would orphan them across
         // an upgrade-then-uninstall. We are the only writer of these value names for a format we
         // own. Gated on `was_ours` so we never touch lists under a foreign handler.
-        if let Ok(k) = CLASSES_ROOT.open(&assoc) {
+        // `create`, not `open`: same read-only-handle trap as `unhook_perceived_type` above —
+        // `open`'s handle makes `remove_value` a silent no-op, so these four values survived
+        // every uninstall/disable.
+        if let Ok(k) = CLASSES_ROOT.create(&assoc) {
             for v in [
                 "InfoTip",
                 "FullDetails",
@@ -336,14 +360,26 @@ fn thumb_keys(ext: &str) -> [String; 2] {
 
 /// Point one extension's thumbnail `shellex` keys at our CLSID, first recording any foreign
 /// handler we are displacing so [`remove_if_ours`] can put it back.
+///
+/// Each key is attempted independently (see [`set_shellex_key`]): the module doc above says
+/// `SystemFileAssociations` is checked BEFORE the bare-extension key, so a failure on the
+/// lower-priority bare key must never skip the higher-priority one.
 fn hook_ext(ext: &str) -> Result<()> {
     for path in thumb_keys(ext) {
         remember_displaced(&path);
-        CLASSES_ROOT
-            .create(&path)?
-            .set_string("", CLSID_THUMBNAIL_PROVIDER_STR)?;
+        set_shellex_key(CLASSES_ROOT, &path, CLSID_THUMBNAIL_PROVIDER_STR);
     }
     Ok(())
+}
+
+/// Write `clsid` as `path`'s default value under `root`, best-effort — a failure on one key
+/// (e.g. the bare-extension key) must never stop a caller from still attempting its sibling
+/// key (e.g. `SystemFileAssociations`). Shared by [`hook_ext`], [`hook_ext_preview`], and
+/// [`register_user`]'s per-user loop, which had each hand-rolled this same create+set_string.
+fn set_shellex_key(root: &Key, path: &str, clsid: &str) {
+    if let Ok(k) = root.create(path) {
+        let _ = k.set_string("", clsid);
+    }
 }
 
 /// Note the handler currently in `path` under [`DISPLACED`] so unhooking can restore it.
@@ -605,9 +641,9 @@ fn hook_ext_preview(ext: &str) -> Result<()> {
         ) {
             continue; // a real handler already owns this slot — leave it alone
         }
-        CLASSES_ROOT
-            .create(path)?
-            .set_string("", CLSID_PREVIEW_HANDLER_STR)?;
+        // Best-effort per key, same reasoning as `hook_ext`: a failure on one key must not
+        // skip its sibling (the loop used to hard-`?` here and abort on the first failure).
+        set_shellex_key(CLASSES_ROOT, &path, CLSID_PREVIEW_HANDLER_STR);
     }
     Ok(())
 }
@@ -712,13 +748,18 @@ pub fn register_user(dll_path: &str) -> Result<()> {
                 // slot in the user's own hive so `remove_user_if_ours` can hand it straight
                 // back. Portable mode is still a real install from the shell's point of view.
                 remember_displaced_in(&classes, CURRENT_USER, &path);
-                if let Ok(k) = classes.create(&path) {
-                    let _ = k.set_string("", CLSID_THUMBNAIL_PROVIDER_STR);
-                }
+                set_shellex_key(&classes, &path, CLSID_THUMBNAIL_PROVIDER_STR);
             }
         } else {
             remove_user_if_ours(&classes, ext);
         }
+    }
+    // Sweep stale hooks from extensions older builds registered but we've since dropped —
+    // mirrors register()/unregister()/unregister_user(), all three of which already do this.
+    // Without it, a portable copy upgraded past a dropped extension keeps a stale HKCU
+    // shellex entry for it forever (the FORMATS loop above never touches it again).
+    for ext in crate::formats::REMOVED_EXTENSIONS {
+        remove_user_if_ours(&classes, ext);
     }
 
     if let Ok(k) = classes.create("*\\shellex\\ContextMenuHandlers\\SageThumbs2K") {
@@ -888,6 +929,174 @@ mod displaced_tests {
             for path in thumb_keys(ext) {
                 assert!(seen.insert(path.clone()), "duplicate displaced key {path}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod registry_write_tests {
+    use super::*;
+
+    /// A scratch stand-in for the classes root these helpers write into, removed when the guard
+    /// drops, so these tests can exercise real registry writes without touching the machine's
+    /// own associations (mirrors the `Scratch` pattern in `typeoverlay.rs`).
+    struct Scratch(String);
+
+    impl Scratch {
+        fn new(name: &str) -> (Self, Key) {
+            let path = format!(r"Software\SageThumbs2K-test\register-{name}");
+            let key = CURRENT_USER.create(&path).expect("scratch key");
+            (Scratch(path), key)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = CURRENT_USER.remove_tree(&self.0);
+        }
+    }
+
+    /// `hook_ext`/`hook_ext_preview` used to `?` inside their per-key loop (opus-SG-06 / A054):
+    /// a failure on the FIRST key returned `Err` before the second (higher-priority, per the
+    /// module doc) key was ever attempted. `set_shellex_key` is the shared best-effort
+    /// replacement all three call sites now use; prove it keeps going past a key that can't be
+    /// created — a 300-char key-name segment exceeds the registry's documented 255-character
+    /// key-name limit, so `create` genuinely fails for it, without needing elevation or
+    /// touching a real hive.
+    #[test]
+    fn set_shellex_key_keeps_writing_later_keys_after_an_earlier_one_fails_to_create() {
+        let (_guard, root) = Scratch::new("short-circuit");
+        let unwritable = "x".repeat(300);
+        let good = "good-sibling";
+
+        for name in [unwritable.as_str(), good] {
+            set_shellex_key(&root, name, "TEST-CLSID");
+        }
+
+        assert!(
+            root.open(&unwritable).is_err(),
+            "sanity: the 300-char segment must genuinely have failed to create, or this test \
+             proves nothing about the old short-circuit"
+        );
+        let k = root
+            .open(good)
+            .expect("the good key after an invalid earlier sibling must still be written");
+        assert_eq!(k.get_string("").as_deref(), Ok("TEST-CLSID"));
+    }
+
+    /// The ordinary case: a writable path round-trips through `set_shellex_key`.
+    #[test]
+    fn set_shellex_key_round_trips_on_a_writable_path() {
+        let (_guard, root) = Scratch::new("roundtrip");
+        set_shellex_key(&root, "child\\grandchild", "TEST-CLSID");
+        let k = root.open("child\\grandchild").expect("key created");
+        assert_eq!(k.get_string("").as_deref(), Ok("TEST-CLSID"));
+    }
+
+    /// A054's companion in the property-store path (A055): `set_assoc_value_if_empty` must fill
+    /// a genuinely blank value while leaving one a third-party app already set alone, even
+    /// though our caller's only ownership signal (the PropertyHandlers\.<ext> guard) can't see
+    /// that value at all.
+    #[test]
+    fn set_assoc_value_if_empty_fills_blanks_but_never_clobbers_a_foreign_value() {
+        let (_guard, classes) = Scratch::new("propstore-guard");
+        let k = classes.create("Assoc").expect("create");
+        k.set_string("InfoTip", "set by some other app")
+            .expect("set");
+        drop(k);
+
+        let k = classes.create("Assoc").expect("writable handle");
+        set_assoc_value_if_empty(&k, "InfoTip", "our default infotip");
+        set_assoc_value_if_empty(&k, "FullDetails", "our default fulldetails");
+
+        assert_eq!(
+            k.get_string("InfoTip").as_deref(),
+            Ok("set by some other app"),
+            "a pre-existing foreign value must survive"
+        );
+        assert_eq!(
+            k.get_string("FullDetails").as_deref(),
+            Ok("our default fulldetails"),
+            "a genuinely empty slot must still get filled"
+        );
+    }
+
+    /// A056's defect class, reproduced against a safe scratch key instead of the real
+    /// `CLASSES_ROOT` paths `unhook_perceived_type`/`unhook_ext_propstore` actually touch:
+    /// `Key::open` in this crate hands back a read-only handle, so `remove_value` through it
+    /// silently no-ops, while `Key::create` re-opens the SAME existing key with write access
+    /// and `remove_value` through THAT handle actually removes it. This is exactly the swap
+    /// those two functions needed.
+    #[test]
+    fn a_read_only_open_handle_cannot_remove_a_value_but_a_create_handle_can() {
+        let (_guard, classes) = Scratch::new("open-vs-create");
+        let k = classes.create("Marked").expect("create");
+        k.set_string("Marker", "1").expect("set");
+        drop(k);
+
+        let ro = classes.open("Marked").expect("open (read-only)");
+        let _ = ro.remove_value("Marker");
+        drop(ro);
+        assert_eq!(
+            classes
+                .open("Marked")
+                .unwrap()
+                .get_string("Marker")
+                .as_deref(),
+            Ok("1"),
+            "a read-only handle's remove_value must not have taken effect"
+        );
+
+        let rw = classes.create("Marked").expect("create (writable)");
+        rw.remove_value("Marker")
+            .expect("remove_value via a writable handle must succeed");
+        assert!(
+            classes
+                .open("Marked")
+                .unwrap()
+                .get_string("Marker")
+                .is_err(),
+            "the value must actually be gone now"
+        );
+    }
+
+    /// A160: `register_user`'s per-extension loop only ever walks `FORMATS`, so a stale hook
+    /// left by a dropped extension needed its own sweep, mirroring `register`/`unregister`/
+    /// `unregister_user`. This proves the underlying removal call the new sweep relies on —
+    /// `remove_user_if_ours` — actually clears a hook it owns and leaves a foreign one alone
+    /// (register_user() itself is not called here: it walks the real, live `FORMATS` list
+    /// against the real `HKCU\Software\Classes`, which would mutate this machine's actual
+    /// thumbnail associations for 300+ extensions as a side effect of running the test suite).
+    #[test]
+    fn remove_user_if_ours_clears_our_stale_hook_but_leaves_a_foreign_one() {
+        let (_guard, classes) = Scratch::new("removed-ext-sweep");
+        // `remove_user_if_ours` calls `thumb_keys`, which is a fixed real-extension-shaped
+        // path — reuse it verbatim against the scratch root instead of duplicating its shape.
+        for path in thumb_keys("zzzstaletestext") {
+            classes
+                .create(&path)
+                .and_then(|k| k.set_string("", CLSID_THUMBNAIL_PROVIDER_STR))
+                .expect("seed our stale hook");
+        }
+        for path in thumb_keys("zzzforeigntestext") {
+            classes
+                .create(&path)
+                .and_then(|k| k.set_string("", "{some-other-vendor-clsid}"))
+                .expect("seed a foreign hook");
+        }
+
+        remove_user_if_ours(&classes, "zzzstaletestext");
+        remove_user_if_ours(&classes, "zzzforeigntestext");
+
+        for path in thumb_keys("zzzstaletestext") {
+            assert!(
+                classes.open(&path).is_err(),
+                "our own stale hook at {path} must be gone"
+            );
+        }
+        for path in thumb_keys("zzzforeigntestext") {
+            let k = classes.open(&path).expect("foreign hook key must survive");
+            assert_eq!(k.get_string("").as_deref(), Ok("{some-other-vendor-clsid}"));
         }
     }
 }

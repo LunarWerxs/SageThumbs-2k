@@ -8,19 +8,25 @@
       pwsh scripts\verify.ps1 -Fast                       # check + lib/app unit tests   (~20 s)
       pwsh scripts\verify.ps1                             # + debug build + ALL tests    (~1 min)
       pwsh scripts\verify.ps1 -Lint                       # + rustfmt, clippy -D warnings,
-                                                          #   cargo-deny, cargo-machete (mirrors CI)
+                                                          #   cargo-deny, cargo-machete, and
+                                                          #   ALL 10 of ci.yml's `consistency`
+                                                          #   job scripts (mirrors CI in full)
       pwsh scripts\verify.ps1 -Samples "archive-*"        # + render matching corpus samples,
                                                           #   asserting _expected-fail.txt
-      pwsh scripts\verify.ps1 -Release                    # + the one §6.0 release pair  (~3 min)
+      pwsh scripts\verify.ps1 -Release                    # + the same 3 builds ci.yml runs (~3 min)
       pwsh scripts\verify.ps1 -Release -Install           # + elevated dev install + hash check
 
   Rules this encodes (so nobody re-learns them):
    * tests\com_roundtrip.rs asserts the DEBUG cdylib exists -> `cargo build` MUST
      precede `cargo test` (a bare `cargo test` after only `cargo check` fails all 5
      with "cdylib not built").
-   * The release pair is exactly TWO builds in THIS order: bare `cargo build
-     --release` (DLL + EXEs), then `--bin SageThumbs2K --features html-preview`
-     (a bare release build alone silently drops the EXE's html-preview tab rows).
+   * -Release is the same THREE --locked, package-split builds ci.yml's build-test
+     job runs, in the same order: `-p sagethumbs2k --features webp-lossy,html-preview,
+     hdr-capture`, `-p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset`, then
+     `-p sagethumbs2k-dlghook`. A bare `cargo build --release` (default features, no
+     -p split) exercises none of those feature combinations or the dll/dlghook
+     packages, so a compile error reachable only under one of them used to pass this
+     ladder locally and only surface after a CI round-trip.
    * -Samples asserts EXPECTATIONS, not just exit codes: samples listed in
      <corpus>\_expected-fail.txt MUST fail (stock icon is their correct result);
      everything else matched MUST render. No more hand-written per-file loops.
@@ -34,13 +40,18 @@ param(
     [switch]$Fast,
     # Corpus filename wildcard (e.g. "archive-*", "*.psd") to render + assert.
     [string]$Samples,
-    # The §6.0 release build pair (exactly once, correct order).
+    # The 3 --locked, package-split release builds CI's build-test job runs (exactly
+    # once, correct order) — see the header comment above.
     [switch]$Release,
     # Elevated dev install (scripts\install.ps1) + installed==built hash check.
     [switch]$Install,
-    # Static analysis, mirroring CI's gates locally (run before any push):
+    # Static analysis, mirroring CI's gates locally IN FULL (run before any push):
     # rustfmt --check, clippy -D warnings (all targets), cargo-deny (advisories/
-    # licenses per deny.toml), cargo-machete (unused deps). ~1 min warm.
+    # licenses per deny.toml), cargo-machete (unused deps), plus all 10 of ci.yml's
+    # `consistency`-job scripts (check-consistency, the 3 architecture/freshness
+    # contracts, email-rule, registration-symmetry, release-size, release-pipeline,
+    # installer-lint, msix-integrity, vendored-exr) and check-locale-keys (which
+    # verify covers but ci.yml's consistency job still does not). ~1-2 min warm.
     [switch]$Lint
 )
 
@@ -145,6 +156,24 @@ if ($Lint) {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-registration-symmetry.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'check-registration-symmetry.ps1 failed' }
     }
+    # The remaining 5 of ci.yml's 10 `consistency`-job scripts that used to be missing
+    # from -Lint entirely: a green local -Lint said nothing about them, so a regression
+    # only surfaced after a CI round-trip (release-size policy, release provenance/
+    # curated-notes, installer cleanup/uninstaller safety, MSIX signature/signer/
+    # identity, and the vendored-exr drift check). All five are dependency-free —
+    # they build their own scratch fixtures rather than needing a prior release build.
+    Stage 'release/installer/MSIX consistency contracts' {
+        foreach ($scriptName in @(
+            'test-release-size.ps1',
+            'test-release-pipeline.ps1',
+            'test-installer-lint.ps1',
+            'test-msix-integrity.ps1',
+            'check-vendored-exr.ps1'
+        )) {
+            & pwsh -NoProfile -File (Join-Path $PSScriptRoot $scriptName)
+            if ($LASTEXITCODE -ne 0) { throw "$scriptName failed" }
+        }
+    }
 }
 
 if ($Fast) {
@@ -243,9 +272,28 @@ if ($Samples) {
 }
 
 # ---- release pair ----------------------------------------------------------
+# The exact three feature-gated, package-split builds ci.yml runs (build-test job),
+# in the same order, all --locked. A bare `cargo build --release` (default features,
+# no -p split) does NOT exercise webp-lossy/html-preview/hdr-capture/dll-i18n-subset,
+# nor the separate dll/dlghook packages — a compile error reachable only under one of
+# those would pass this ladder locally and only surface after a CI round-trip.
 if ($Release) {
-    Stage 'release: DLL + EXEs' { cargo build --release --quiet 2>&1 | Write-Host }
-    Stage 'release: EXE html-preview' { cargo build --release --quiet --bin SageThumbs2K --features html-preview,hdr-capture 2>&1 | Write-Host }
+    Stage 'release: production EXEs' {
+        cargo build --release --locked --quiet -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture 2>&1 | Write-Host
+    }
+    Stage 'release: production slim DLL' {
+        cargo build --release --locked --quiet -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset 2>&1 | Write-Host
+    }
+    Stage 'release: dialog hook DLL' {
+        cargo build --release --locked --quiet -p sagethumbs2k-dlghook 2>&1 | Write-Host
+    }
+    # Every window/content-type actually follows the light/dark setting (the QuickLook-#1797
+    # class of bug: one paint path never asks the theme, and only ever shows up in one theme).
+    # Needs the just-built release EXE, so it rides -Release rather than every plain `verify.ps1`.
+    Stage 'theme shots' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-theme-shots.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'check-theme-shots.ps1 failed' }
+    }
 }
 
 # ---- elevated install + installed==built proof -----------------------------

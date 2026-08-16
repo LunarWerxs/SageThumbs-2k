@@ -8,8 +8,8 @@ use std::cell::{Cell, RefCell};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, InvalidateRect, MonitorFromWindow, ScreenToClient, HDC, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, InvalidateRect, MonitorFromWindow, ScreenToClient, HBITMAP, HDC, HGDIOBJ,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -312,6 +312,17 @@ pub(super) struct ViewerState {
     /// The live WebView2 host for `ContentKind::Html` (feature `html-preview`); `None` otherwise.
     #[cfg(feature = "html-preview")]
     pub(super) webview: RefCell<Option<super::webview::WebViewHost>>,
+    /// Cached `WM_PAINT` double-buffer: a memory DC + bitmap sized to the client area, reused
+    /// across repaints instead of a fresh `CreateCompatibleBitmap` (tens of MB at 4K) per frame.
+    /// `back_stock` is the DC's original 1x1 stock bitmap, swapped back in before deleting
+    /// `back_bmp` — GDI silently leaks a bitmap deleted while still selected into a DC. Default
+    /// (all-zero/invalid) until the first paint allocates it. Invalidated (freed) on `WM_SIZE` —
+    /// the client size just changed under it — and freed for good on `WM_DESTROY`; see
+    /// `paint::free_back_buffer`.
+    pub(super) back_dc: Cell<HDC>,
+    pub(super) back_bmp: Cell<HBITMAP>,
+    pub(super) back_stock: Cell<HGDIOBJ>,
+    pub(super) back_size: Cell<(i32, i32)>,
 }
 
 /// Pull the state pointer out of `GWLP_USERDATA`.
@@ -467,6 +478,10 @@ pub(super) unsafe fn create_viewer(
         pending_path: RefCell::new(None),
         #[cfg(feature = "html-preview")]
         webview: RefCell::new(None),
+        back_dc: Cell::new(HDC::default()),
+        back_bmp: Cell::new(HBITMAP::default()),
+        back_stock: Cell::new(HGDIOBJ::default()),
+        back_size: Cell::new((0, 0)),
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(st) as isize);
     // GDI+ for this viewer's lifetime (torn down in WM_DESTROY). It goes HERE, not in a
@@ -683,6 +698,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_SIZE => {
                 let st = &*state(hwnd);
+                // The cached back-buffer bitmap was sized to the OLD client rect; keeping it
+                // would blit stale-size content (or a mismatched BitBlt) on the very next paint.
+                // Free it now so `paint::ensure_back_buffer` allocates fresh at the new size.
+                free_back_buffer(st);
                 if let Some(p) = st.video.borrow().as_ref() {
                     p.place(&video_rect(hwnd)); // child fills content minus the scrub strip
                 }
@@ -1023,6 +1042,30 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 match st.kind.get() {
                     ContentKind::Image => zoom_at_cursor(hwnd, delta, lparam),
                     ContentKind::Text | ContentKind::Markdown => scroll_text(hwnd, delta),
+                    // A244: the wheel was dead over video/audio content — every other media
+                    // player uses it for volume, with Ctrl+wheel for seek. Reuses the SAME
+                    // relative-step helpers the transport's arrow-key controls already call
+                    // (`video_key`'s VK_UP/DOWN nudge_volume, VK_LEFT/RIGHT seek_by), not the
+                    // strip's `apply_vol`/`apply_seek` — those map an absolute click POSITION
+                    // on the strip, which a wheel notch has none of. Shares `wheel_remainder`
+                    // with text scrolling (same accumulate-to-a-full-notch reasoning) so a
+                    // precision trackpad's tiny deltas don't yank the volume on every tick.
+                    ContentKind::Video => {
+                        if let Some(v) = st.video.borrow().as_ref() {
+                            let (notches, remainder) =
+                                wheel_notches(st.wheel_remainder.get(), delta);
+                            st.wheel_remainder.set(remainder);
+                            if notches != 0 {
+                                if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+                                    v.seek_by(f64::from(notches) * 5.0);
+                                } else {
+                                    v.nudge_volume(f64::from(notches) * 0.05);
+                                    persist_volume(v);
+                                }
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 LRESULT(0)
@@ -1058,6 +1101,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // toolbar's `</>` toggle. Ignored on files that only have one view.
                 if ctrl && vk == 'U' as u16 {
                     toggle_source(hwnd);
+                    return LRESULT(0);
+                }
+                // Bare "W": toggle fit-width vs aspect-fit — the mode a portrait page (a
+                // scanned document, a tall screenshot) needs in a landscape-shaped preview
+                // window, where aspect-fit leaves empty margins on both sides instead of using
+                // the width that's actually there. Sits alongside the double-click
+                // aspect-fit/100% toggle above; unmodified because it only ever reaches here
+                // when no child control (e.g. the find bar's edit box) has keyboard focus.
+                if !ctrl && !shift && vk == 'W' as u16 && st.kind.get() == ContentKind::Image {
+                    toggle_fit_width(hwnd);
                     return LRESULT(0);
                 }
                 // Shift+<nav key> extends the selection (plain arrows stay file navigation).
@@ -1159,6 +1212,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     if !tip.is_invalid() {
                         let _ = DestroyWindow(tip); // owned popup; destroy before the state frees
                     }
+                    free_back_buffer(&*ptr); // release the cached WM_PAINT double-buffer GDI handles
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     drop(Box::from_raw(ptr)); // frees RenderData (HBITMAP) + InfoCard (HICON)
                 }
@@ -1319,6 +1373,10 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
                 *st.render.borrow_mut() = Some(rd);
                 st.kind.set(ContentKind::Image);
             }
+            // A successful DECODE that then fails to become a DIB (e.g. CreateDIBSection
+            // under memory pressure) must not orphan a valid image already on screen —
+            // mirrors the None-decode guard just below rather than falling to InfoCard.
+            None if st.render.borrow().is_some() => st.full_pending.set(false),
             None => fallback_card(st),
         },
         // A failed decode must never REPLACE a picture that is already on screen. That only

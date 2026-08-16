@@ -33,7 +33,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     // Find the first JPEG SOI. The doc preview, when present, is the first one and
     // sits within the header window.
     let soi = find_soi(bytes, PREVIEW_MAX_OFFSET)?;
-    let (w, h) = jpeg_dims(&bytes[soi..])?;
+    let (w, h) = super::util::jpeg_sof_dims(bytes, soi)?;
     if w.max(h) < MIN_PREVIEW_EDGE {
         return None; // a material swatch, not the scene preview
     }
@@ -46,46 +46,6 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 fn find_soi(b: &[u8], window: usize) -> Option<usize> {
     let lim = b.len().min(window);
     (0..lim.saturating_sub(2)).find(|&i| b[i] == 0xFF && b[i + 1] == 0xD8 && b[i + 2] == 0xFF)
-}
-
-/// Width/height from the JPEG starting at the slice head, read off the first SOF
-/// marker (`FFC0`/`FFC1`/`FFC2`). Bounds-checked.
-fn jpeg_dims(j: &[u8]) -> Option<(u16, u16)> {
-    // Cap the walk like `container::jpeg_span_len` does. This runs BEFORE the MAX_COVER check, so
-    // `j` is the rest of the whole file — a preview JPEG with no SOF (crafted or truncated) would
-    // otherwise byte-crawl to the end of a file up to the 256 MiB read cap, in-process, on the
-    // classic-menu preview's shared budget. A real doc-preview SOF is in the first few hundred
-    // bytes; nothing legitimate needs thousands of segments.
-    const MAX_SEGMENTS: usize = 4096;
-    let mut p = 2usize; // past SOI
-    let mut steps = 0usize;
-    while p + 9 < j.len() {
-        steps += 1;
-        if steps > MAX_SEGMENTS {
-            return None;
-        }
-        if j[p] != 0xFF {
-            p += 1;
-            continue;
-        }
-        let marker = j[p + 1];
-        if matches!(marker, 0xC0..=0xC2) {
-            let h = u16::from_be_bytes([j[p + 5], j[p + 6]]);
-            let w = u16::from_be_bytes([j[p + 7], j[p + 8]]);
-            return Some((w, h));
-        }
-        // Skip length-prefixed segments; bail on entropy/markers we don't expect.
-        if matches!(marker, 0xD8 | 0xD9 | 0x01) || (0xD0..=0xD7).contains(&marker) {
-            p += 2;
-        } else {
-            let len = u16::from_be_bytes([j[p + 2], j[p + 3]]) as usize;
-            if len < 2 {
-                return None;
-            }
-            p += 2 + len;
-        }
-    }
-    None
 }
 
 #[cfg(test)]

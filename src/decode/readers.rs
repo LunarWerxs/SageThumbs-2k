@@ -128,7 +128,12 @@ fn oversized_wic_rescue(path: &str, target_edge: u32) -> Option<DynamicImage> {
 pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage> {
     let head = read_head(path, COLOR_HEAD_BYTES).unwrap_or_default();
     match unsafe { wic::wic_decode_path(path, Some(target_edge), &head) } {
-        Ok(img) => Some(img),
+        // WIC hands back the codec's stored pixels, unrotated. The sole caller of this
+        // path is `oversized_wic_rescue` (files past MAX_INPUT_BYTES, so no full buffer
+        // exists to read EXIF from), and camera JPEGs carry Orientation in the first few
+        // KB — well inside the head we already read for the `colr` box — so applying it
+        // here is what keeps a large rotated phone photo from rendering sideways.
+        Ok(img) => Some(apply_exif_orientation(img, &head)),
         Err(e) => {
             crate::safety::log_debug(&format!("WIC-by-path declined {path}: {e}"));
             None
@@ -180,14 +185,24 @@ pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage
 ///
 /// `MIN_SCALED_BYTES` keeps small files on the pure-Rust tier: creating a WIC factory and a
 /// decoder costs a COM round trip that a small JPEG's whole decode does not justify.
+///
+/// Split out from [`wic_scaled_from_bytes_if_codec_scales`] so the routing decision — too
+/// small, not JPEG, or CMYK/YCCK — is unit-testable without a live WIC/COM round trip.
+fn scaled_prepass_declines(bytes: &[u8]) -> bool {
+    /// Below this, a full decode is already fast enough that the probe could cost more than it
+    /// saves. Above it, the halving is worth a COM round trip several times over.
+    const MIN_SCALED_BYTES: usize = 512 * 1024;
+    // CMYK/YCCK JPEGs need `decode_with_image`'s is_cmyk_jpeg intercept for correct color
+    // (embedded CMYK ICC); this pre-pass hands the bytes to plain WIC, which converts CMYK
+    // naively. Declining them here keeps the color-managed tier reachable regardless of size.
+    bytes.len() < MIN_SCALED_BYTES || !bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || is_cmyk_jpeg(bytes)
+}
+
 pub fn wic_scaled_from_bytes_if_codec_scales(
     bytes: &[u8],
     target_edge: u32,
 ) -> Option<DynamicImage> {
-    /// Below this, a full decode is already fast enough that the probe could cost more than it
-    /// saves. Above it, the halving is worth a COM round trip several times over.
-    const MIN_SCALED_BYTES: usize = 512 * 1024;
-    if bytes.len() < MIN_SCALED_BYTES || !bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+    if scaled_prepass_declines(bytes) {
         return None;
     }
     let head = &bytes[..bytes.len().min(COLOR_HEAD_BYTES)];
@@ -349,4 +364,143 @@ pub(super) fn head_preview_file_fast(path: &str, len: u64, prefix_cap: usize) ->
     crate::container::extract_cover(&buf)
         .is_some()
         .then_some(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noisy_jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
+        let mut img = image::RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let r = ((x * 37 + y * 11) & 0xFF) as u8;
+                let g = ((x * 13 + y * 53) & 0xFF) as u8;
+                let b = ((x * 97 + y * 3) & 0xFF) as u8;
+                img.put_pixel(x, y, image::Rgb([r, g, b]));
+            }
+        }
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("encode noisy jpeg");
+        bytes
+    }
+
+    /// Wrap a JPEG's bytes with an EXIF APP1 declaring `orientation` (1..=8).
+    ///
+    /// Hand-assembled rather than pulled from a corpus file so the test states exactly what
+    /// it depends on: one IFD0 entry, tag 0x0112, little-endian TIFF.
+    fn with_exif_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "fixture must be a JPEG");
+        let mut app1: Vec<u8> = Vec::new();
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(b"II\x2A\x00"); // little-endian TIFF magic
+        app1.extend_from_slice(&8u32.to_le_bytes()); // IFD0 begins at offset 8
+        app1.extend_from_slice(&1u16.to_le_bytes()); // one entry
+        app1.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+        app1.extend_from_slice(&3u16.to_le_bytes()); // type SHORT
+        app1.extend_from_slice(&1u32.to_le_bytes()); // count
+        app1.extend_from_slice(&(orientation as u32).to_le_bytes()); // value, left-packed
+        app1.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+
+        let mut out = Vec::with_capacity(jpeg.len() + app1.len() + 4);
+        out.extend_from_slice(&jpeg[..2]); // SOI
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    /// Minimal JPEG shaped like a CMYK/YCCK frame: SOI + SOF0 declaring `nf` components.
+    /// Matches `color::is_cmyk_jpeg`'s own detection rule (component count only, no pixel
+    /// decode needed), same construction proven against that function in `decode::tests`.
+    fn jpeg_with_components(nf: u8) -> Vec<u8> {
+        let len = 8 + 3 * nf as usize; // SOF0 length field
+        let mut b = vec![0xFF, 0xD8]; // SOI
+        b.extend_from_slice(&[0xFF, 0xC0, (len >> 8) as u8, len as u8, 8, 0, 1, 0, 1, nf]);
+        b.extend(std::iter::repeat_n(0u8, 3 * nf as usize)); // component specs
+        b.extend_from_slice(&[0xFF, 0xD9]); // EOI
+        b
+    }
+
+    /// A064 / A083: the DCT-scaled fast path used to gate only on size + JPEG magic, so a
+    /// CMYK/YCCK JPEG over the size floor skipped `is_cmyk_jpeg`'s color-managed tier and
+    /// went through WIC's naive CMYK->RGB instead. Pad PAST the floor with the CMYK-shaped
+    /// header still leading, so this exercises the CMYK arm of the OR, not the size one.
+    #[test]
+    fn scaled_prepass_declines_cmyk_jpeg_even_when_large_enough_to_qualify() {
+        let mut cmyk = jpeg_with_components(4);
+        cmyk.resize(600 * 1024, 0);
+        assert!(
+            cmyk.len() >= 512 * 1024,
+            "fixture must clear the size floor, or this proves nothing about the CMYK gate"
+        );
+        assert!(
+            is_cmyk_jpeg(&cmyk),
+            "fixture must actually look CMYK to the shared detector"
+        );
+        assert!(
+            scaled_prepass_declines(&cmyk),
+            "a CMYK JPEG over the size floor must still be declined by the fast-path gate"
+        );
+
+        // Sanity: an otherwise-identical 3-component (non-CMYK) header of the SAME size must
+        // NOT be declined — proves the assertion above is about component count, not merely
+        // about being large and JPEG-shaped.
+        let mut rgb_like = jpeg_with_components(3);
+        rgb_like.resize(600 * 1024, 0);
+        assert!(!is_cmyk_jpeg(&rgb_like));
+        assert!(
+            !scaled_prepass_declines(&rgb_like),
+            "a non-CMYK JPEG over the size floor must still qualify for the fast path"
+        );
+    }
+
+    /// A084: `decode_preview_path` returns `decode_preview_streamed`'s result directly on
+    /// success; for a file past MAX_INPUT_BYTES that result comes from
+    /// `oversized_wic_rescue` -> `wic_scaled_from_path`, which used to hand back WIC's raw,
+    /// unrotated pixels with no EXIF orientation applied anywhere on that branch — so a large
+    /// rotated phone photo/scan rendered sideways. `wic_scaled_from_path` carries no size gate
+    /// of its own (its callers apply theirs), so this exercises the real function directly
+    /// off a real file, the same as `oversized_wic_rescue` would for an oversized one.
+    #[test]
+    fn wic_scaled_from_path_applies_exif_orientation() {
+        // The path is genuinely WIC, so it needs COM on this thread like the other WIC tests.
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            );
+        }
+        let base = noisy_jpeg_bytes(1400, 900); // landscape
+        let bytes = with_exif_orientation(&base, 6); // 6 = rotate 90 deg CW
+        assert_eq!(
+            exif_orientation(&bytes),
+            Some(6),
+            "the APP1 orientation must be readable by the same reader apply_exif_orientation uses"
+        );
+
+        // PID-suffixed so concurrent `cargo test` runs cannot race each other on the file.
+        let path = std::env::temp_dir().join(format!(
+            "st2k_oversized_rescue_orient_{}.jpg",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).expect("stage temp jpeg");
+        let p = path.to_string_lossy().into_owned();
+
+        let out = wic_scaled_from_path(&p, 256).expect("WIC must decode the staged JPEG");
+        assert!(
+            out.height() > out.width(),
+            "orientation 6 must rotate the landscape source to portrait, got {}x{}",
+            out.width(),
+            out.height()
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

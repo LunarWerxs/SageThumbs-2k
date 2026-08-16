@@ -111,7 +111,7 @@ fn hkcu_root() -> &'static str {
 mod store {
     use std::collections::BTreeMap;
     use std::io;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
 
     /// The file whose presence next to the running module means "portable".
@@ -149,9 +149,26 @@ mod store {
         ini_path().is_some()
     }
 
-    /// Parse an ini. Unknown/blank lines and `;`/`#` comments are skipped; a value before
-    /// any `[section]` header is treated as a root value, which makes a hand-written file
-    /// that omits the `[Settings]` header still work.
+    /// Strip a trailing `; comment` / `# comment` from a value, so a hand-edited file like
+    /// `MaxSize=100 ; big files` stores `"100"`, not the literal `"100 ; big files"` (which
+    /// then fails `u32::parse` in `get_u32` and silently falls back to the default). Only a
+    /// `;`/`#` preceded by whitespace counts, so a value that legitimately contains one (a
+    /// path, a URL fragment) passes through untouched.
+    fn strip_inline_comment(v: &str) -> &str {
+        let bytes = v.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if (b == b';' || b == b'#') && i > 0 && bytes[i - 1].is_ascii_whitespace() {
+                return v[..i].trim_end();
+            }
+        }
+        v
+    }
+
+    /// Parse an ini. Unknown/blank lines and full-line `;`/`#` comments are skipped; a
+    /// value before any `[section]` header is treated as a root value, which makes a
+    /// hand-written file that omits the `[Settings]` header still work. A trailing
+    /// `; comment` after a value on the same line is stripped too (see
+    /// [`strip_inline_comment`]).
     fn parse(text: &str) -> Doc {
         let mut doc = Doc::new();
         let mut section = ROOT_SECTION.to_string();
@@ -165,9 +182,10 @@ mod store {
                 continue;
             }
             if let Some((k, v)) = line.split_once('=') {
-                doc.entry(section.clone())
-                    .or_default()
-                    .insert(k.trim().to_string(), v.trim().to_string());
+                doc.entry(section.clone()).or_default().insert(
+                    k.trim().to_string(),
+                    strip_inline_comment(v.trim()).to_string(),
+                );
             }
         }
         doc
@@ -215,13 +233,72 @@ mod store {
             .unwrap_or_default()
     }
 
-    /// Apply `edit` to the parsed file and write it back. The cache re-`stat`s, so the
-    /// next read picks the new content up without extra bookkeeping here.
+    /// Short-lived cross-process lock guarding one `update()` call, so two writers to the
+    /// SAME portable ini (the Settings EXE, `st2k`, the screenshot daemon, or two `st2k`
+    /// invocations, all in portable mode) cannot race a load-edit-write and silently drop
+    /// one edit. A NAMED mutex so every process shares the one kernel object; `Local\`
+    /// scopes it to this logon session, matching `decode::magick_gate`'s semaphore.
+    struct IniLock(windows::Win32::Foundation::HANDLE);
+
+    impl IniLock {
+        /// Best-effort: a lock that could not be created, or a wait that timed out (a
+        /// leaked/wedged mutex must never hang a settings write forever — the same
+        /// reasoning as `decode::magick_gate`'s finite wait), returns `None` and the
+        /// caller proceeds unlocked rather than blocking a shell/host thread forever.
+        fn acquire() -> Option<Self> {
+            use windows::core::w;
+            use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+            use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+            let h =
+                unsafe { CreateMutexW(None, false, w!("Local\\SageThumbs2K.PortableIni")) }.ok()?;
+            match unsafe { WaitForSingleObject(h, 2_000) } {
+                // WAIT_ABANDONED means a previous holder died mid-edit without releasing;
+                // we still got ownership, and the file itself is never left half-written
+                // because `write_atomic` only replaces it via a completed rename.
+                WAIT_OBJECT_0 | WAIT_ABANDONED => Some(IniLock(h)),
+                _ => {
+                    let _ = unsafe { windows::Win32::Foundation::CloseHandle(h) };
+                    None
+                }
+            }
+        }
+    }
+
+    impl Drop for IniLock {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
+                let _ = windows::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+
+    /// Write `content` to `path` via a sibling `.tmp` file + rename, so a crash mid-write
+    /// (this runs under `panic = "abort"`, and several of our own processes can hit it)
+    /// leaves either the OLD file intact or the fully-written NEW one, never a truncated
+    /// mix of both. `rename_retrying` (not a bare `fs::rename`) absorbs a transient AV /
+    /// indexer lock on the destination, same as every other write path in this codebase.
+    fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, content)?;
+        if let Err(e) = crate::fsutil::rename_retrying(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Apply `edit` to the parsed file and write it back. Held under [`IniLock`] for the
+    /// whole load-edit-write so two writers can't race and silently drop one edit, and
+    /// written via [`write_atomic`] so a crash mid-write can't leave a truncated ini
+    /// behind. The cache re-`stat`s, so the next read picks the new content up without
+    /// extra bookkeeping here.
     fn update(edit: impl FnOnce(&mut Doc)) -> io::Result<()> {
         let path = ini_path().ok_or_else(|| io::Error::other("not in portable mode"))?;
+        let _lock = IniLock::acquire();
         let mut doc = load();
         edit(&mut doc);
-        std::fs::write(path, render(&doc))
+        write_atomic(path, &render(&doc))
     }
 
     /// The section a registry subkey maps to. `None` = the root key.
@@ -274,6 +351,15 @@ mod store {
             .collect()
     }
 
+    /// The WHOLE parsed file, section by section — one `load()` (one file read/parse) for a
+    /// caller that's about to look up many different sections (e.g. [`super::format_enabled_snapshot`]
+    /// sweeping every registered extension). Every other getter above calls `load()` itself per
+    /// lookup, which is fine for a handful of reads but reparses the file from scratch on each
+    /// one — see [`load`]'s own doc comment for why that isn't cached at THIS layer.
+    pub fn full_doc() -> BTreeMap<String, BTreeMap<String, String>> {
+        load()
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -323,6 +409,77 @@ mod store {
         fn empty_and_garbage_parse_to_nothing_rather_than_panicking() {
             assert!(parse("").is_empty());
             assert!(parse("no equals sign here\n[unclosed\n").is_empty());
+        }
+
+        /// A005-style value drift: a hand-edited `MaxSize=100 ; big files` used to store the
+        /// literal comment text as part of the value, which then silently failed `u32::parse`
+        /// in `get_u32` and fell back to the default with no indication anything was wrong.
+        #[test]
+        fn trailing_inline_comment_is_stripped_from_the_value() {
+            let doc = parse("MaxSize=100 ; big files\nLabel=x#not-a-comment\n");
+            assert_eq!(doc[ROOT_SECTION]["MaxSize"], "100");
+            // No leading whitespace before the `#` -> not a comment, kept literally: the
+            // value legitimately contains the character (e.g. a URL fragment).
+            assert_eq!(doc[ROOT_SECTION]["Label"], "x#not-a-comment");
+        }
+
+        #[test]
+        fn write_atomic_writes_full_content_and_leaves_no_tmp_behind() {
+            let dir =
+                std::env::temp_dir().join(format!("st2k_write_atomic_test_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+            let path = dir.join("probe.ini");
+
+            write_atomic(&path, "[Settings]\nA=1\n").expect("write_atomic");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Settings]\nA=1\n");
+            assert!(
+                !path.with_extension("tmp").exists(),
+                "write_atomic must not leave its .tmp sibling behind"
+            );
+
+            // A second write REPLACES the file rather than appending to or corrupting it.
+            write_atomic(&path, "[Settings]\nA=2\n").expect("second write_atomic");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Settings]\nA=2\n");
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// A004/A271: `update()` used to load-edit-write with no lock at all, so two
+        /// concurrent writers could race and one edit would silently vanish. This proves
+        /// `IniLock` actually gives mutual exclusion, using a DELIBERATELY unsynchronized
+        /// shared counter — correctness here depends entirely on the lock, not on any other
+        /// primitive. Without it, many threads racing this non-atomic read-sleep-write lose
+        /// updates and the final count comes out under N; that is the same failure MODE
+        /// (not the same process boundary) as the cross-process lost-write the finding
+        /// described.
+        #[test]
+        fn ini_lock_serializes_concurrent_holders() {
+            struct Racy(std::cell::UnsafeCell<u32>);
+            unsafe impl Sync for Racy {}
+            static COUNTER: Racy = Racy(std::cell::UnsafeCell::new(0));
+
+            const N: usize = 24;
+            let handles: Vec<_> = (0..N)
+                .map(|_| {
+                    std::thread::spawn(|| {
+                        let _lock = IniLock::acquire();
+                        let p = COUNTER.0.get();
+                        unsafe {
+                            let cur = p.read();
+                            std::thread::yield_now(); // widen the race window
+                            p.write(cur + 1);
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+            assert_eq!(
+                unsafe { *COUNTER.0.get() },
+                N as u32,
+                "IniLock must serialize its holders, or concurrent writers lose updates"
+            );
         }
     }
 }
@@ -1277,7 +1434,7 @@ pub fn set_preview_arrow_nav(on: bool) -> windows_registry::Result<()> {
     set_dword("PreviewArrowNav", on as u32)
 }
 
-/// Quick preview playback speed in PERCENT (50..=200, default 100). Percent rather than a float
+/// Quick preview playback speed in PERCENT (25..=400, default 100). Percent rather than a float
 /// because the settings store is DWORD-only, and the transport only ever offers fixed steps.
 pub fn preview_speed() -> u32 {
     get_dword("PreviewSpeed", 100).clamp(25, 400)
@@ -1381,6 +1538,50 @@ pub fn format_enabled(ext: &str) -> bool {
         .and_then(|k| k.get_u32("Enabled"))
         .map(|v| v != 0)
         .unwrap_or(true)
+}
+
+/// A one-shot snapshot of every per-extension `Enabled` flag, for a caller that's about to
+/// call the equivalent of [`format_enabled`] once per format in a sweep over `FORMATS`
+/// (`register.rs`'s HKCR (re)registration, `typeoverlay.rs`, `doctor.rs`'s per-format audit —
+/// each on the order of ~330 lookups). In portable mode, [`format_enabled`] goes through
+/// `store::get_u32`, which — per `store::load`'s own doc comment — re-reads and re-parses the
+/// WHOLE ini file from disk on every single call; unlike [`menu_visibility`]'s "read the tree
+/// once per menu build" snapshot, nothing collapsed that for the per-extension flags. This
+/// does: one [`store::full_doc`] parse up front, then every [`FormatEnabledSnapshot::enabled`]
+/// lookup is an in-memory map hit. The registry arm doesn't get the same win (each extension is
+/// its own HKCU subkey, so there's no single tree to snapshot) but stays correct by falling
+/// back to [`format_enabled`] per lookup — the whole benefit here is portable-only.
+pub struct FormatEnabledSnapshot(FormatEnabledSource);
+
+enum FormatEnabledSource {
+    Registry,
+    Portable(std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>),
+}
+
+/// Take the snapshot. Call this once before a sweep and reuse it for every extension, instead
+/// of calling [`format_enabled`] per extension.
+pub fn format_enabled_snapshot() -> FormatEnabledSnapshot {
+    FormatEnabledSnapshot(if store::portable() {
+        FormatEnabledSource::Portable(store::full_doc())
+    } else {
+        FormatEnabledSource::Registry
+    })
+}
+
+impl FormatEnabledSnapshot {
+    /// Same semantics as [`format_enabled`] (default true unless an explicit `0` is stored),
+    /// reusing the one-shot parse in portable mode.
+    pub fn enabled(&self, ext: &str) -> bool {
+        match &self.0 {
+            FormatEnabledSource::Registry => format_enabled(ext),
+            FormatEnabledSource::Portable(doc) => doc
+                .get(ext)
+                .and_then(|v| v.get("Enabled"))
+                .and_then(|v| v.parse::<u32>().ok())
+                .map(|v| v != 0)
+                .unwrap_or(true),
+        }
+    }
 }
 
 /// Persist a per-extension enable flag (used by the Options dialog).
@@ -1496,7 +1697,12 @@ impl MenuVisibility {
                 !matches!(k.as_ref().and_then(|k| k.get_u32(key).ok()), Some(0))
             }
             MenuVisibilitySource::Portable(m) => {
-                !matches!(m.get(key).map(String::as_str), Some("0"))
+                // Numeric, like the registry arm above and like `menu_item_shown` (this
+                // function's own doc claims "identical" to it) — a literal string match
+                // against "0" disagreed on a non-canonical stored value like "00", which
+                // `menu_item_shown`'s `get_u32` parses as 0 (hidden) but this used to keep
+                // as "shown" since "00" != "0".
+                !matches!(m.get(key).and_then(|v| v.parse::<u32>().ok()), Some(0))
             }
         }
     }
@@ -1607,6 +1813,45 @@ mod tests {
     fn unknown_format_defaults_enabled() {
         // A made-up extension nobody configured is enabled by default.
         assert!(format_enabled("zzz_definitely_not_configured"));
+    }
+
+    /// A188: [`FormatEnabledSnapshot`]'s portable arm must agree with [`format_enabled`] for
+    /// every case that matters — an explicit `0` (disabled), any other stored value (enabled),
+    /// and an extension nobody configured at all (enabled by default) — since it exists purely
+    /// to replace repeated `format_enabled` calls with one parse, not to change the answer.
+    #[test]
+    fn format_enabled_snapshot_portable_arm_matches_format_enabled_semantics() {
+        let mut doc = std::collections::BTreeMap::new();
+        let mut psd = std::collections::BTreeMap::new();
+        psd.insert("Enabled".to_string(), "0".to_string());
+        doc.insert(".psd".to_string(), psd);
+        let mut heic = std::collections::BTreeMap::new();
+        heic.insert("Enabled".to_string(), "1".to_string());
+        doc.insert(".heic".to_string(), heic);
+
+        let snap = FormatEnabledSnapshot(FormatEnabledSource::Portable(doc));
+        assert!(!snap.enabled(".psd"), "explicit 0 must read as disabled");
+        assert!(snap.enabled(".heic"), "explicit 1 must read as enabled");
+        assert!(
+            snap.enabled(".never_configured"),
+            "an extension with no stored value defaults enabled, matching format_enabled"
+        );
+    }
+
+    /// A187: the portable arm of `MenuVisibility::shown` used to literal-string-match
+    /// `"0"`, disagreeing with `menu_item_shown`'s numeric `get_u32` parse (which reads
+    /// "00" as 0) despite `shown`'s own doc comment calling the two "identical".
+    #[test]
+    fn menu_visibility_portable_arm_parses_stored_value_numerically() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("menu_convert_into".to_string(), "00".to_string());
+        let mv = MenuVisibility(MenuVisibilitySource::Portable(m));
+        assert!(
+            !mv.shown("menu_convert_into"),
+            "a non-canonical \"00\" must be treated as 0 (hidden), matching menu_item_shown"
+        );
+        // Absent / non-numeric stored values stay shown (the documented default).
+        assert!(mv.shown("menu_never_configured"));
     }
 }
 

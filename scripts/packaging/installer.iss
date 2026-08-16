@@ -821,5 +821,11 @@ begin
     // subtree, then leave only a tiny marker noting the version last installed.
     RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\SageThumbs2K');
     RegWriteStringValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'Tombstone', '{#AppVer}');
+    // The screenshot daemon's autostart entry lives in a SEPARATE registry location
+    // (…\CurrentVersion\Run, not our own Software\SageThumbs2K subtree — see
+    // screenshot/enable.rs's RUN_KEY/RUN_NAME), so the delete above never touches it. Left
+    // behind, it points at the now-deleted exe and fails silently at every logon. Mirrors
+    // install.ps1's dev-uninstaller, which already removes this same value.
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'SageThumbs2KScreenshot');
   end;
 end;

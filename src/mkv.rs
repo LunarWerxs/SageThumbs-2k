@@ -20,38 +20,45 @@
 
 use std::io::{Read, Seek, SeekFrom};
 
+// Byte-identical to mp4.rs's own helper; reuse it rather than keep a drifting private copy
+// (flv.rs already does the same).
+use crate::mp4::read_exact_at;
+
 // EBML / Matroska element IDs (full IDs incl. the length-marker, as a big-endian integer).
-const ID_EBML: u64 = 0x1A45_DFA3;
-const ID_SEGMENT: u64 = 0x1853_8067;
+// `pub(crate)`: `crate::fuzz`'s synthetic_mkv seed builds the same element tree these parsers
+// walk, and used to keep its own drifting copy of this table (see `encode_vint`/`elem` below
+// for the rest of that consolidation).
+pub(crate) const ID_EBML: u64 = 0x1A45_DFA3;
+pub(crate) const ID_SEGMENT: u64 = 0x1853_8067;
 const ID_SEEKHEAD: u64 = 0x114D_9B74;
 const ID_SEEK: u64 = 0x4DBB;
 const ID_SEEK_ID: u64 = 0x53AB;
 const ID_SEEK_POSITION: u64 = 0x53AC;
-const ID_INFO: u64 = 0x1549_A966;
-const ID_TIMECODE_SCALE: u64 = 0x2AD7B1;
-const ID_DURATION: u64 = 0x4489;
-const ID_TRACKS: u64 = 0x1654_AE6B;
-const ID_TRACK_ENTRY: u64 = 0xAE;
-const ID_TRACK_NUMBER: u64 = 0xD7;
-const ID_TRACK_TYPE: u64 = 0x83;
-const ID_CUES: u64 = 0x1C53_BB6B;
-const ID_CUE_POINT: u64 = 0xBB;
-const ID_CUE_TIME: u64 = 0xB3;
-const ID_CUE_TRACK_POSITIONS: u64 = 0xB7;
-const ID_CUE_TRACK: u64 = 0xF7;
-const ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
-const ID_CLUSTER: u64 = 0x1F43_B675;
-const ID_CLUSTER_TIMECODE: u64 = 0xE7;
+pub(crate) const ID_INFO: u64 = 0x1549_A966;
+pub(crate) const ID_TIMECODE_SCALE: u64 = 0x2AD7B1;
+pub(crate) const ID_DURATION: u64 = 0x4489;
+pub(crate) const ID_TRACKS: u64 = 0x1654_AE6B;
+pub(crate) const ID_TRACK_ENTRY: u64 = 0xAE;
+pub(crate) const ID_TRACK_NUMBER: u64 = 0xD7;
+pub(crate) const ID_TRACK_TYPE: u64 = 0x83;
+pub(crate) const ID_CUES: u64 = 0x1C53_BB6B;
+pub(crate) const ID_CUE_POINT: u64 = 0xBB;
+pub(crate) const ID_CUE_TIME: u64 = 0xB3;
+pub(crate) const ID_CUE_TRACK_POSITIONS: u64 = 0xB7;
+pub(crate) const ID_CUE_TRACK: u64 = 0xF7;
+pub(crate) const ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
+pub(crate) const ID_CLUSTER: u64 = 0x1F43_B675;
+pub(crate) const ID_CLUSTER_TIMECODE: u64 = 0xE7;
 const ID_SIMPLE_BLOCK: u64 = 0xA3;
 const ID_BLOCK_GROUP: u64 = 0xA0;
 const ID_BLOCK: u64 = 0xA1;
 const ID_REFERENCE_BLOCK: u64 = 0xFB;
-const ID_CODEC_ID: u64 = 0x86;
-const ID_ATTACHMENTS: u64 = 0x1941_A469;
-const ID_ATTACHED_FILE: u64 = 0x61A7;
-const ID_FILE_NAME: u64 = 0x466E;
-const ID_FILE_MIME: u64 = 0x4660;
-const ID_FILE_DATA: u64 = 0x465C;
+pub(crate) const ID_CODEC_ID: u64 = 0x86;
+pub(crate) const ID_ATTACHMENTS: u64 = 0x1941_A469;
+pub(crate) const ID_ATTACHED_FILE: u64 = 0x61A7;
+pub(crate) const ID_FILE_NAME: u64 = 0x466E;
+pub(crate) const ID_FILE_MIME: u64 = 0x4660;
+pub(crate) const ID_FILE_DATA: u64 = 0x465C;
 
 const TRACK_TYPE_VIDEO: u64 = 1;
 
@@ -60,6 +67,11 @@ const META_MAX: u64 = 8 * 1024 * 1024; // EBML header / Info / Tracks
 const CUES_MAX: u64 = 32 * 1024 * 1024; // the index
 const CLUSTER_MAX: u64 = 96 * 1024 * 1024; // one cluster (≤ a few seconds of 4K)
 const ATTACH_MAX: u64 = 64 * 1024 * 1024; // all attachments (cover art + subtitle fonts)
+/// Cap on CuePoint entries collected+sorted by [`cue_points`]. `CUES_MAX` already bounds the
+/// body to 32 MiB, which indirectly bounds the entry count too (roughly 1-2M at typical
+/// per-entry EBML overhead) — this makes that bound an explicit, independent one instead of
+/// relying on how compact a hostile file's entries happen to be.
+const CUE_POINTS_MAX: usize = 200_000;
 
 /// Where a Matroska file's Segment metadata sits: the verbatim EBML header plus absolute
 /// positions of the top-level children the readers below need — resolved by the
@@ -123,7 +135,15 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
         if p + 2 > seg_end {
             break;
         }
-        let (eid, esize, ehlen, eunk) = header_at(r, p)?;
+        // A header_at failure here (truncated read, reserved 0x00 marker byte, an
+        // oversized VINT) used to propagate via `?` straight out of segment_map, discarding
+        // every position already resolved (Info/Tracks/Cues/Attachments) even when the bad
+        // element sits AFTER them. Treat it as end-of-walk instead: stop scanning forward,
+        // but keep whatever this pass already found (the SeekHead resolution below still
+        // runs against it).
+        let Some((eid, esize, ehlen, eunk)) = header_at(r, p) else {
+            break;
+        };
         match eid {
             ID_SEEKHEAD if esize <= META_MAX => seekhead = read_full_at(r, p + ehlen, esize),
             ID_INFO => info_pos = Some(p),
@@ -147,18 +167,22 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
     }
 
     // Resolve anything still missing via the SeekHead (Cues are typically at the file's end).
+    // SeekPosition is an attacker-controlled EBML uint up to u64::MAX; `checked_add` drops
+    // an entry that would overflow instead of wrapping to a bogus offset (release,
+    // overflow-checks off) or panicking (debug/test) — matching the checked_add already used
+    // for Cues-derived cluster positions elsewhere in this file.
     if let Some(sh) = &seekhead {
         if cues_pos.is_none() {
-            cues_pos = seek_lookup(sh, ID_CUES).map(|rel| seg_data + rel);
+            cues_pos = seek_lookup(sh, ID_CUES).and_then(|rel| seg_data.checked_add(rel));
         }
         if info_pos.is_none() {
-            info_pos = seek_lookup(sh, ID_INFO).map(|rel| seg_data + rel);
+            info_pos = seek_lookup(sh, ID_INFO).and_then(|rel| seg_data.checked_add(rel));
         }
         if tracks_pos.is_none() {
-            tracks_pos = seek_lookup(sh, ID_TRACKS).map(|rel| seg_data + rel);
+            tracks_pos = seek_lookup(sh, ID_TRACKS).and_then(|rel| seg_data.checked_add(rel));
         }
         if attach_pos.is_none() {
-            attach_pos = seek_lookup(sh, ID_ATTACHMENTS).map(|rel| seg_data + rel);
+            attach_pos = seek_lookup(sh, ID_ATTACHMENTS).and_then(|rel| seg_data.checked_add(rel));
         }
     }
 
@@ -412,32 +436,48 @@ fn build_mini_mkv(ebml: &[u8], info: &[u8], tracks: &[u8], cluster: &[u8]) -> Ve
 // ---------------------------------------------------------------------------------------------
 
 /// Parse the element header at absolute `pos`: `(id, data_size, header_len, size_is_unknown)`.
+///
+/// Reads up to 12 bytes (4-byte ID max + 8-byte size max, the widest an EBML header can be)
+/// in ONE bulk read instead of up to 12 separate single-byte ones. `IStreamReader` (the
+/// shell-COM backing reader used when this walks a live Explorer stream) has no internal
+/// buffering, so each single-byte read used to cost its own marshaled COM round trip — up to
+/// 12 of them per header, and `segment_map`'s walk can call this dozens of times per file.
 fn header_at<R: Read + Seek>(r: &mut R, pos: u64) -> Option<(u64, u64, u64, bool)> {
     r.seek(SeekFrom::Start(pos)).ok()?;
-    let mut b = [0u8; 1];
+    let mut buf = [0u8; 12];
+    let mut have = 0usize;
+    while have < buf.len() {
+        match r.read(&mut buf[have..]) {
+            // A short read here just means the header we actually need (which may be far
+            // fewer than 12 bytes) fits before EOF; validated below by `have`, not here.
+            Ok(0) => break,
+            Ok(n) => have += n,
+            Err(_) => return None,
+        }
+    }
+    let buf = &buf[..have];
 
     // Element ID: 1–4 bytes, value keeps the length-marker bit.
-    r.read_exact(&mut b).ok()?;
-    if b[0] == 0 {
+    let b0 = *buf.first()?;
+    if b0 == 0 {
         return None;
     }
-    let id_len = b[0].leading_zeros() as usize + 1;
-    if id_len > 4 {
+    let id_len = b0.leading_zeros() as usize + 1;
+    if id_len > 4 || id_len > have {
         return None;
     }
-    let mut id = b[0] as u64;
-    for _ in 1..id_len {
-        r.read_exact(&mut b).ok()?;
-        id = (id << 8) | b[0] as u64;
+    let mut id = 0u64;
+    for &b in &buf[..id_len] {
+        id = (id << 8) | b as u64;
     }
 
     // Size: 1–8 bytes, value strips the marker bit; all-ones data = unknown size.
-    r.read_exact(&mut b).ok()?;
-    if b[0] == 0 {
+    let sb0 = *buf.get(id_len)?;
+    if sb0 == 0 {
         return None;
     }
-    let sz_len = b[0].leading_zeros() as usize + 1;
-    if sz_len > 8 {
+    let sz_len = sb0.leading_zeros() as usize + 1;
+    if sz_len > 8 || id_len + sz_len > have {
         return None;
     }
     // Widen before shifting: an 8-byte size vint (first byte 0x01 — ffmpeg writes the
@@ -445,12 +485,12 @@ fn header_at<R: Read + Seek>(r: &mut R, pos: u64) -> Option<(u64, u64, u64, bool
     // The u8 version panicked in debug and, worse, silently produced mask 0xFF in release —
     // a phantom 2^56 in every 8-byte size and unknown-size never detected.
     let mask = (0xFFu16 >> sz_len) as u8;
-    let mut size = (b[0] & mask) as u64;
-    let mut all_ones = (b[0] & mask) == mask;
-    for _ in 1..sz_len {
-        r.read_exact(&mut b).ok()?;
-        size = (size << 8) | b[0] as u64;
-        if b[0] != 0xFF {
+    let size_bytes = &buf[id_len..id_len + sz_len];
+    let mut size = (size_bytes[0] & mask) as u64;
+    let mut all_ones = (size_bytes[0] & mask) == mask;
+    for &b in &size_bytes[1..] {
+        size = (size << 8) | b as u64;
+        if b != 0xFF {
             all_ones = false;
         }
     }
@@ -482,19 +522,6 @@ fn read_full_at<R: Read + Seek>(r: &mut R, pos: u64, len: u64) -> Option<Vec<u8>
     let mut buf = vec![0u8; len as usize];
     read_exact_at(r, pos, &mut buf)?;
     Some(buf)
-}
-
-fn read_exact_at<R: Read + Seek>(r: &mut R, off: u64, buf: &mut [u8]) -> Option<()> {
-    r.seek(SeekFrom::Start(off)).ok()?;
-    let mut filled = 0;
-    while filled < buf.len() {
-        match r.read(&mut buf[filled..]) {
-            Ok(0) => return None,
-            Ok(n) => filled += n,
-            Err(_) => return None,
-        }
-    }
-    Some(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -691,6 +718,9 @@ fn info_duration(info_data: &[u8]) -> (Option<f64>, u64) {
 fn cue_points(cues_data: &[u8], video_track: Option<u64>) -> Vec<(u64, u64)> {
     let mut out = Vec::new();
     for (id, _, cp) in children(cues_data) {
+        if out.len() >= CUE_POINTS_MAX {
+            break;
+        }
         if id != ID_CUE_POINT {
             continue;
         }
@@ -765,7 +795,7 @@ fn seek_lookup(seekhead: &[u8], target_id: u64) -> Option<u64> {
 }
 
 /// Encode `n` as an EBML size vint (shortest length whose all-ones value isn't reserved).
-fn encode_vint(n: u64) -> Vec<u8> {
+pub(crate) fn encode_vint(n: u64) -> Vec<u8> {
     for len in 1u32..=8 {
         let cap = (1u64 << (7 * len)) - 1; // all-ones reserved for "unknown size"
         if n < cap {
@@ -780,6 +810,21 @@ fn encode_vint(n: u64) -> Vec<u8> {
         }
     }
     vec![0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE]
+}
+
+/// Emit one EBML element: id bytes (as stored in the `ID_*` constants) + size vint + data.
+/// Test/fuzz-only (moved out of `mod tests` to module scope so `crate::fuzz`'s synthetic_mkv
+/// seed can reuse it, rather than maintaining a parallel encoder that could silently desync
+/// from the real ID table / vint format).
+#[cfg(test)]
+pub(crate) fn elem(id: u64, data: &[u8]) -> Vec<u8> {
+    let id_bytes = id.to_be_bytes();
+    let start = id_bytes.iter().position(|&b| b != 0).unwrap();
+    let mut out = Vec::new();
+    out.extend_from_slice(&id_bytes[start..]);
+    out.extend_from_slice(&encode_vint(data.len() as u64));
+    out.extend_from_slice(data);
+    out
 }
 
 #[cfg(test)]
@@ -855,17 +900,6 @@ mod tests {
         }
         let list = cue_points(&cues, Some(1));
         assert_eq!(list, vec![(0, 100), (5000, 9000)]); // video-track positions, sorted
-    }
-
-    /// Emit one EBML element: id bytes (as stored in the `ID_*` constants) + size vint + data.
-    fn elem(id: u64, data: &[u8]) -> Vec<u8> {
-        let id_bytes = id.to_be_bytes();
-        let start = id_bytes.iter().position(|&b| b != 0).unwrap();
-        let mut out = Vec::new();
-        out.extend_from_slice(&id_bytes[start..]);
-        out.extend_from_slice(&encode_vint(data.len() as u64));
-        out.extend_from_slice(data);
-        out
     }
 
     /// The 8-byte size vint (first byte 0x01) is what ffmpeg writes for the Segment size in
@@ -1188,5 +1222,141 @@ mod tests {
             frame.width(),
             frame.height()
         );
+    }
+
+    // --- segment_map robustness -----------------------------------------------------------
+
+    /// A malformed element (reserved 0x00 ID/size marker byte) sitting after Tracks in the
+    /// front-of-segment walk used to make `header_at(r, p)?` propagate `None` straight out of
+    /// `segment_map`, discarding the Tracks position already found. It must instead stop the
+    /// walk there and keep what was already resolved.
+    #[test]
+    fn malformed_element_after_tracks_does_not_abort_the_whole_walk() {
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_AV1"),
+                ]
+                .concat(),
+            ),
+        );
+        let mut body = tracks;
+        // Two bytes so the loop's `p + 2 > seg_end` pre-check doesn't just break on its own
+        // before header_at ever runs — this must exercise header_at returning None, not the
+        // ordinary "ran out of room" exit.
+        body.push(0x00);
+        body.push(0x00);
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+
+        let mut cur = Cursor::new(&file);
+        assert_eq!(
+            video_codec_id(&mut cur).as_deref(),
+            Some("V_AV1"),
+            "a malformed element after Tracks must not erase the Tracks already found"
+        );
+    }
+
+    /// A SeekHead SeekPosition large enough that `seg_data + rel` overflows u64 must be
+    /// dropped (via `checked_add`), not wrapped (release) or panicked on (debug/test, where
+    /// overflow-checks are on by default) — and it must not poison resolution of the OTHER
+    /// front-of-segment data the same walk already found directly.
+    #[test]
+    fn seekhead_position_overflow_is_dropped_not_wrapped() {
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_AV1"),
+                ]
+                .concat(),
+            ),
+        );
+        let cluster = elem(ID_CLUSTER, &elem(ID_CLUSTER_TIMECODE, &[0]));
+        let huge_pos = u64::MAX - 1;
+        let seekhead = elem(
+            ID_SEEKHEAD,
+            &elem(
+                ID_SEEK,
+                &[
+                    elem(ID_SEEK_ID, &[0x19, 0x41, 0xA4, 0x69]), // Attachments
+                    elem(ID_SEEK_POSITION, &huge_pos.to_be_bytes()),
+                ]
+                .concat(),
+            ),
+        );
+        let body = [seekhead, tracks, cluster].concat();
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+
+        let mut cur = Cursor::new(&file);
+        // Must not panic, and must not resolve Attachments to a bogus wrapped offset.
+        assert_eq!(attached_cover(&mut cur), None);
+        // The overflowing entry must not poison the rest of the walk.
+        assert_eq!(video_codec_id(&mut cur).as_deref(), Some("V_AV1"));
+    }
+
+    // --- header_at bulk read ----------------------------------------------------------------
+
+    /// The bulk-read rewrite must parse identically to the old byte-at-a-time version even
+    /// when fewer than the full 12-byte scratch buffer are actually available (a header near
+    /// EOF) — the short read must not be mistaken for "header truncated" when the header
+    /// itself needed fewer bytes than that.
+    #[test]
+    fn header_at_parses_a_short_header_right_at_eof() {
+        // A 2-byte header (1-byte ID + 1-byte size) with nothing after it at all: the fixed
+        // 12-byte scratch buffer only gets 2 bytes back, which must not be mistaken for a
+        // truncated read of a header that only ever needed 2.
+        let file = elem(ID_CUE_POINT, &[]);
+        let mut cur = Cursor::new(&file);
+        let (id, size, hlen, unknown) = header_at(&mut cur, 0).expect("short header at EOF");
+        assert_eq!(id, ID_CUE_POINT);
+        assert_eq!(size, 0);
+        assert_eq!(hlen, 2);
+        assert!(!unknown);
+    }
+
+    /// A header whose ID/size vints genuinely run past EOF must still decline, not read
+    /// garbage from the fixed-size scratch buffer.
+    #[test]
+    fn header_at_declines_a_genuinely_truncated_header() {
+        // A 4-byte ID marker (0x10..) with only 2 bytes total available — needs 4+ but has 2.
+        let truncated = [0x10u8, 0x00];
+        let mut cur = Cursor::new(&truncated[..]);
+        assert_eq!(header_at(&mut cur, 0), None);
+    }
+
+    // --- cue_points cap ----------------------------------------------------------------------
+
+    /// `cue_points` must never collect more than `CUE_POINTS_MAX` entries, independent of how
+    /// small each entry manages to be within the 32 MiB `CUES_MAX` body cap.
+    #[test]
+    fn cue_points_collection_is_capped() {
+        let one = |t: u16| {
+            let ctp = [
+                elem(ID_CUE_TRACK, &[1]),
+                elem(ID_CUE_CLUSTER_POSITION, &(t as u32).to_be_bytes()),
+            ]
+            .concat();
+            elem(
+                ID_CUE_POINT,
+                &[
+                    elem(ID_CUE_TIME, &t.to_be_bytes()),
+                    elem(ID_CUE_TRACK_POSITIONS, &ctp),
+                ]
+                .concat(),
+            )
+        };
+        let mut cues = Vec::new();
+        for t in 0..(CUE_POINTS_MAX + 10) as u32 {
+            cues.extend_from_slice(&one(t as u16));
+        }
+        let list = cue_points(&cues, Some(1));
+        assert_eq!(list.len(), CUE_POINTS_MAX);
     }
 }

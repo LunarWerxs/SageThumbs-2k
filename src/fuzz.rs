@@ -143,6 +143,7 @@ fn header_targets() -> Vec<Target> {
 fn all_targets() -> Vec<Target> {
     let mut v = header_targets();
     v.extend(crate::container::fuzzseed::targets());
+    v.extend(crate::strip::fuzzseed::targets());
     v.extend(inner_targets());
     v
 }
@@ -185,64 +186,23 @@ fn inner_targets() -> Vec<Target> {
 // Synthetic seeds — self-contained so the always-on run needs no external files.
 // ---------------------------------------------------------------------------------------------
 
-/// One EBML element: id bytes (big-endian, leading zero bytes trimmed) + size vint + data.
-fn ebml(id: u64, data: &[u8]) -> Vec<u8> {
-    let idb = id.to_be_bytes();
-    let start = idb.iter().position(|&b| b != 0).unwrap_or(7);
-    let mut out = Vec::new();
-    out.extend_from_slice(&idb[start..]);
-    out.extend_from_slice(&ebml_vint(data.len() as u64));
-    out.extend_from_slice(data);
-    out
-}
-
-/// EBML size vint, shortest length whose all-ones value isn't the "unknown size" reserve.
-fn ebml_vint(n: u64) -> Vec<u8> {
-    for len in 1u32..=8 {
-        let cap = (1u64 << (7 * len)) - 1;
-        if n < cap {
-            let mut v = vec![0u8; len as usize];
-            let mut x = n;
-            for i in (0..len as usize).rev() {
-                v[i] = (x & 0xFF) as u8;
-                x >>= 8;
-            }
-            v[0] |= 1u8 << (8 - len);
-            return v;
-        }
-    }
-    vec![0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE]
-}
+// The EBML element encoder + the Matroska ID table below are `crate::mkv`'s own — reused here
+// rather than kept as a second, driftable copy (mkv.rs's own doc comment on `elem` explains
+// why: the class of bug this whole fuzz harness exists to catch, per the module doc above, is
+// exactly a parser/encoder desync).
+use crate::mkv::elem as ebml;
+use crate::mkv::{
+    ID_ATTACHED_FILE, ID_ATTACHMENTS, ID_CLUSTER, ID_CLUSTER_TIMECODE, ID_CODEC_ID, ID_CUES,
+    ID_CUE_CLUSTER_POSITION, ID_CUE_POINT, ID_CUE_TIME, ID_CUE_TRACK, ID_CUE_TRACK_POSITIONS,
+    ID_DURATION, ID_EBML, ID_FILE_DATA, ID_FILE_MIME, ID_FILE_NAME, ID_INFO, ID_SEGMENT,
+    ID_TIMECODE_SCALE, ID_TRACKS, ID_TRACK_ENTRY, ID_TRACK_NUMBER, ID_TRACK_TYPE,
+};
 
 /// A structurally valid Matroska file with the pieces every reader here walks: EBML header,
 /// Segment, SeekHead, Info, Tracks (one HEVC video track), Cues, a Cluster, and Attachments
 /// with a cover. Not a decodable video — a scaffold rich enough that mutations reach the
 /// arithmetic-bearing code instead of bailing at the magic.
 fn synthetic_mkv() -> Vec<u8> {
-    const ID_EBML: u64 = 0x1A45_DFA3;
-    const ID_SEGMENT: u64 = 0x1853_8067;
-    const ID_INFO: u64 = 0x1549_A966;
-    const ID_TIMECODE_SCALE: u64 = 0x2AD7B1;
-    const ID_DURATION: u64 = 0x4489;
-    const ID_TRACKS: u64 = 0x1654_AE6B;
-    const ID_TRACK_ENTRY: u64 = 0xAE;
-    const ID_TRACK_NUMBER: u64 = 0xD7;
-    const ID_TRACK_TYPE: u64 = 0x83;
-    const ID_CODEC_ID: u64 = 0x86;
-    const ID_CUES: u64 = 0x1C53_BB6B;
-    const ID_CUE_POINT: u64 = 0xBB;
-    const ID_CUE_TIME: u64 = 0xB3;
-    const ID_CUE_TRACK_POSITIONS: u64 = 0xB7;
-    const ID_CUE_TRACK: u64 = 0xF7;
-    const ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
-    const ID_CLUSTER: u64 = 0x1F43_B675;
-    const ID_CLUSTER_TIMECODE: u64 = 0xE7;
-    const ID_ATTACHMENTS: u64 = 0x1941_A469;
-    const ID_ATTACHED_FILE: u64 = 0x61A7;
-    const ID_FILE_NAME: u64 = 0x466E;
-    const ID_FILE_MIME: u64 = 0x4660;
-    const ID_FILE_DATA: u64 = 0x465C;
-
     let info = ebml(
         ID_INFO,
         &[
@@ -566,6 +526,169 @@ fn synthetic_webm_vp9() -> Vec<u8> {
     file
 }
 
+/// A `synthetic_mkv`-shaped Cluster carrying one hand-crafted child element whose SIZE
+/// VINT is the EBML "unknown size" reserve (marker byte `0x01` then seven `0xFF`
+/// bytes — the largest value an 8-byte size vint can hold, `2^56 - 1`) instead of a
+/// real length. Built by hand rather than via [`ebml`]/[`ebml_vint`] because those
+/// helpers deliberately AVOID ever emitting this exact reserved pattern.
+///
+/// This file's own header comment describes the bug class such a declared size finds:
+/// a reader that adds it straight to an offset instead of going through
+/// `checked_add`. `header_at`/`children` already guard that arithmetic, so this seed
+/// doesn't demonstrate a live bug — it LOCKS the guard in, so a future refactor that
+/// drops the `checked_add` panics here instead of shipping.
+fn synthetic_mkv_largesize_bomb() -> Vec<u8> {
+    const ID_EBML: u64 = 0x1A45_DFA3;
+    const ID_SEGMENT: u64 = 0x1853_8067;
+    const ID_CLUSTER: u64 = 0x1F43_B675;
+    const ID_SIMPLE_BLOCK: u8 = 0xA3;
+
+    let mut bomb = vec![
+        ID_SIMPLE_BLOCK,
+        0x01,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+    ];
+    bomb.extend_from_slice(&[0xAB; 16]); // a little real data after it, for good measure
+    let cluster = ebml(ID_CLUSTER, &bomb);
+    let mut file = ebml(ID_EBML, &[0x42, 0x82, 0x84, b'w', b'e', b'b', b'm']);
+    file.extend_from_slice(&ebml(ID_SEGMENT, &cluster));
+    file
+}
+
+/// A minimal 16-bit mono PCM WAV (RIFF/WAVE, `fmt ` then `data`) — the shape
+/// `container::waveform::parse_wav` walks. Before this, `audio_art_from_reader`'s only
+/// WAV-flavoured input was the 12-byte `RIFF….WAVE` magic stub in [`header_stubs`], so
+/// a mutation almost always died at the `fmt `/`data` chunk scan before reaching any
+/// of the format/bit-depth arithmetic in `parse_wav`/`sample_to_f32`.
+fn synthetic_wav() -> Vec<u8> {
+    const FRAMES: u32 = 512;
+    let mut data = Vec::new();
+    for i in 0..FRAMES {
+        let s = ((i as i32 % 2000) - 1000) as i16; // small triangle-ish ramp
+        data.extend_from_slice(&s.to_le_bytes());
+    }
+    let mut w = Vec::new();
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    w.extend_from_slice(b"WAVE");
+    w.extend_from_slice(b"fmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&1u16.to_le_bytes()); // mono
+    w.extend_from_slice(&44100u32.to_le_bytes());
+    w.extend_from_slice(&88200u32.to_le_bytes()); // byte rate
+    w.extend_from_slice(&2u16.to_le_bytes()); // block align
+    w.extend_from_slice(&16u16.to_le_bytes()); // bits
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    w.extend_from_slice(&data);
+    w
+}
+
+/// A minimal 16-bit mono PCM AIFF (FORM/AIFF, `COMM` then `SSND`) — the
+/// big-endian sibling of [`synthetic_wav`], the shape
+/// `container::waveform::parse_aiff` walks.
+fn synthetic_aiff() -> Vec<u8> {
+    const FRAMES: u32 = 512;
+    let mut samples = Vec::new();
+    for i in 0..FRAMES {
+        let s = ((i as i32 % 2000) - 1000) as i16;
+        samples.extend_from_slice(&s.to_be_bytes());
+    }
+    let mut comm = Vec::new();
+    comm.extend_from_slice(&1u16.to_be_bytes()); // channels
+    comm.extend_from_slice(&FRAMES.to_be_bytes()); // numSampleFrames
+    comm.extend_from_slice(&16u16.to_be_bytes()); // sampleSize (bits)
+    comm.extend_from_slice(&[0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0]); // 80-bit extended rate (unused by the parser)
+
+    let mut ssnd = Vec::new();
+    ssnd.extend_from_slice(&0u32.to_be_bytes()); // offset
+    ssnd.extend_from_slice(&0u32.to_be_bytes()); // blockSize
+    ssnd.extend_from_slice(&samples);
+
+    fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut c = id.to_vec();
+        c.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        c.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            c.push(0); // chunks are word-aligned, like a real AIFF writer
+        }
+        c
+    }
+    let comm_chunk = chunk(b"COMM", &comm);
+    let ssnd_chunk = chunk(b"SSND", &ssnd);
+    let body_len = 4 /* "AIFF" form type */ + comm_chunk.len() + ssnd_chunk.len();
+
+    let mut f = Vec::new();
+    f.extend_from_slice(b"FORM");
+    f.extend_from_slice(&(body_len as u32).to_be_bytes());
+    f.extend_from_slice(b"AIFF");
+    f.extend_from_slice(&comm_chunk);
+    f.extend_from_slice(&ssnd_chunk);
+    f
+}
+
+/// A minimal ASF/WMA header carrying one `WM/Picture` attribute in the Extended
+/// Content Description Object — the shape `container::audio::asf::asf_cover` walks
+/// (GUID-tagged objects, `ecd_attrs`'s name/type/value descriptor stream, then
+/// `parse_wm_picture`'s own length-prefixed MIME/description/image fields). Before
+/// this, the only ASF-flavoured input was the 4-byte GUID-prefix magic stub in
+/// [`header_stubs`], so a mutation never reached any of that arithmetic.
+///
+/// GUID bytes and the descriptor layouts are copied from `container/audio/asf.rs`
+/// (read, not imported — those constants are `pub(super)` to that module and this
+/// file cannot see them); they must stay byte-for-byte in sync with that file's own
+/// on-disk format or this seed stops reaching the parser.
+fn synthetic_asf() -> Vec<u8> {
+    const ASF_HEADER_GUID: [u8; 16] = [
+        0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE,
+        0x6C,
+    ];
+    const ASF_ECD_GUID: [u8; 16] = [
+        0x40, 0xA4, 0xD0, 0xD2, 0x07, 0xE3, 0xD2, 0x11, 0x97, 0xF0, 0x00, 0xA0, 0xC9, 0x5E, 0xA8,
+        0x50,
+    ];
+    // Just enough bytes to pass `looks_like_raster` (JPEG SOI + APP0 marker).
+    const FAKE_JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F'];
+
+    fn utf16z(s: &str) -> Vec<u8> {
+        let mut v: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        v.extend_from_slice(&[0, 0]); // NUL terminator
+        v
+    }
+
+    let mut wm_picture = vec![3u8]; // picture type 3 = front cover
+    wm_picture.extend_from_slice(&(FAKE_JPEG.len() as u32).to_le_bytes());
+    wm_picture.extend_from_slice(&utf16z("image/jpeg"));
+    wm_picture.extend_from_slice(&utf16z(""));
+    wm_picture.extend_from_slice(FAKE_JPEG);
+
+    let name = utf16z("WM/Picture");
+    let mut ecd_payload = 1u16.to_le_bytes().to_vec(); // descriptor count
+    ecd_payload.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    ecd_payload.extend_from_slice(&name);
+    ecd_payload.extend_from_slice(&1u16.to_le_bytes()); // value type 1 = byte array
+    ecd_payload.extend_from_slice(&(wm_picture.len() as u16).to_le_bytes());
+    ecd_payload.extend_from_slice(&wm_picture);
+
+    let mut ecd = ASF_ECD_GUID.to_vec();
+    ecd.extend_from_slice(&((24 + ecd_payload.len()) as u64).to_le_bytes());
+    ecd.extend_from_slice(&ecd_payload);
+
+    let mut header = ASF_HEADER_GUID.to_vec();
+    header.extend_from_slice(&((30 + ecd.len()) as u64).to_le_bytes()); // header object size
+    header.extend_from_slice(&1u32.to_le_bytes()); // number of header sub-objects
+    header.extend_from_slice(&[1, 2]); // reserved
+    header.extend_from_slice(&ecd);
+    header
+}
+
 fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -835,6 +958,12 @@ fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("respool-raw", fs::apk_pool_utf8(&["", "application", ICON])),
         ("h264-avcc", h264_avcc()),
         ("h264-sps", H264_SPS.to_vec()),
+        // The audio-shaped seeds `audio_art_from_reader` had NONE of before: WAV/AIFF
+        // PCM (drives `container::waveform`'s chunk walk) and ASF/WMA (drives
+        // `container::audio::asf`'s GUID-object walk + `WM/Picture` parse).
+        ("wav-pcm", synthetic_wav()),
+        ("aiff-pcm", synthetic_aiff()),
+        ("asf-wm-picture", synthetic_asf()),
     ]
 }
 
@@ -899,6 +1028,19 @@ fn every_new_surface_seed_reaches_its_parser() {
         crate::flv::fuzzapi::sps_dims_ret(&h264_avcc()),
         Some((64, 48)),
         "h264-avcc seed no longer parses to its known 64x48 geometry"
+    );
+    // The audio seeds, all via the same entry point `header_targets` fuzzes.
+    assert!(
+        crate::container::audio_art_from_reader(Cursor::new(synthetic_wav())).is_some(),
+        "wav-pcm seed no longer reaches the waveform renderer"
+    );
+    assert!(
+        crate::container::audio_art_from_reader(Cursor::new(synthetic_aiff())).is_some(),
+        "aiff-pcm seed no longer reaches the waveform renderer"
+    );
+    assert!(
+        crate::container::audio_art_from_reader(Cursor::new(synthetic_asf())).is_some(),
+        "asf-wm-picture seed no longer reaches asf_cover's WM/Picture parse"
     );
 }
 
@@ -1103,6 +1245,7 @@ fn parsers_survive_mutation_of_synthetic_seeds() {
         ("mkv", synthetic_mkv()),
         ("mp4", synthetic_mp4()),
         ("flv", synthetic_flv()),
+        ("mkv-largesize-bomb", synthetic_mkv_largesize_bomb()),
     ];
     // One structurally VALID file per container format. Without these the only container input
     // this gate ever saw was a handful-of-bytes magic stub, so a mutation had essentially

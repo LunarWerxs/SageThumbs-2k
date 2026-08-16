@@ -11,17 +11,18 @@
 //! status line — the store needs the code, not just the body.
 
 use std::ffi::c_void;
+use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
 use windows::Win32::Networking::WinInet::{
     HttpOpenRequestW, HttpQueryInfoW, HttpSendRequestW, InternetCloseHandle, InternetConnectW,
-    InternetOpenW, InternetSetOptionW, HTTP_QUERY_ETAG, HTTP_QUERY_FLAG_NUMBER,
+    InternetOpenW, InternetReadFile, InternetSetOptionW, HTTP_QUERY_ETAG, HTTP_QUERY_FLAG_NUMBER,
     HTTP_QUERY_STATUS_CODE, INTERNET_FLAG_NO_CACHE_WRITE, INTERNET_FLAG_PRAGMA_NOCACHE,
     INTERNET_FLAG_RELOAD, INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT,
     INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP,
 };
 
-use crate::win::{wide, wininet_drain};
+use crate::win::wide;
 
 /// A completed HTTPS response: status, ETag (when present), and capped body.
 pub(crate) struct Resp {
@@ -91,6 +92,44 @@ pub(crate) fn request(
     unsafe { request_raw(method, &host, &path, headers, body, timeout_secs, max_resp) }
 }
 
+/// Like [`request`], but exposes the knobs `sponsors.rs`'s fetch/download helpers need so they
+/// can share this ONE WinINet core instead of hand-rolling their own (A130): `reload` controls
+/// whether WinINet is told to bypass its cache (the manifest/self-update checks want a fresh
+/// origin fetch every time; versioned/immutable sponsor images don't), and `on_progress` — when
+/// given — is polled after every chunk read (return `false` to abort, e.g. a user Cancel).
+///
+/// `overall_timeout_secs` bounds the WHOLE call end-to-end (A123): WinINet's own
+/// `INTERNET_OPTION_*_TIMEOUT`s are per-phase and — critically — the receive one resets on
+/// every partial read, so a server that trickles one byte just often enough can otherwise hold
+/// the connection open forever. This adds the wall-clock backstop that's missing without it,
+/// the same role `decode.rs`'s ImageMagick subprocess elapsed guard plays for CPU-time budgets.
+pub(crate) fn request_ex(
+    method: &str,
+    url: &str,
+    reload: bool,
+    timeout_secs: u64,
+    overall_timeout_secs: u64,
+    max_resp: usize,
+    on_progress: Option<&mut dyn FnMut(u64) -> bool>,
+) -> Option<Resp> {
+    let (host, path) = split_https(url)?;
+    let deadline = Instant::now() + Duration::from_secs(overall_timeout_secs.max(1));
+    unsafe {
+        request_raw_ex(
+            method,
+            &host,
+            &path,
+            "",
+            &[],
+            reload,
+            timeout_secs,
+            Some(deadline),
+            max_resp,
+            on_progress,
+        )
+    }
+}
+
 unsafe fn request_raw(
     method: &str,
     host: &str,
@@ -99,6 +138,36 @@ unsafe fn request_raw(
     body: &[u8],
     timeout_secs: u64,
     max_resp: usize,
+) -> Option<Resp> {
+    // `reload: true` + `deadline: None` reproduces this function's ORIGINAL behavior exactly
+    // (unconditional cache-bypass flags, no overall wall-clock cap) — `request`'s existing
+    // callers (oauth.rs, sync_client.rs, feedback.rs) keep their current behavior unchanged.
+    request_raw_ex(
+        method,
+        host,
+        path,
+        headers,
+        body,
+        true,
+        timeout_secs,
+        None,
+        max_resp,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn request_raw_ex(
+    method: &str,
+    host: &str,
+    path: &str,
+    headers: &str,
+    body: &[u8],
+    reload: bool,
+    timeout_secs: u64,
+    deadline: Option<Instant>,
+    max_resp: usize,
+    on_progress: Option<&mut dyn FnMut(u64) -> bool>,
 ) -> Option<Resp> {
     let agent = wide("SageThumbs2K");
     let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
@@ -138,10 +207,10 @@ unsafe fn request_raw(
 
     let verb = wide(method);
     let path_w = wide(path);
-    let flags = INTERNET_FLAG_SECURE
-        | INTERNET_FLAG_RELOAD
-        | INTERNET_FLAG_NO_CACHE_WRITE
-        | INTERNET_FLAG_PRAGMA_NOCACHE;
+    let mut flags = INTERNET_FLAG_SECURE;
+    if reload {
+        flags |= INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_PRAGMA_NOCACHE;
+    }
     let req = HttpOpenRequestW(
         conn,
         PCWSTR(verb.as_ptr()),
@@ -177,9 +246,10 @@ unsafe fn request_raw(
     let resp = if sent {
         let status = query_status(req).unwrap_or(0);
         let etag = query_text_header(req, HTTP_QUERY_ETAG);
-        // `wininet_drain` returns Some(empty) for a 0-byte body (e.g. 204), None only on
-        // a read error or an over-cap body — either way we still hand back the status.
-        let body = wininet_drain(req, max_resp).unwrap_or_default();
+        // `drain` returns Some(empty) for a 0-byte body (e.g. 204), None only on a read
+        // error, an over-cap body, an expired deadline, or an aborted callback — either
+        // way we still hand back the status.
+        let body = drain(req, max_resp, deadline, on_progress).unwrap_or_default();
         Some(Resp { status, etag, body })
     } else {
         None
@@ -189,6 +259,54 @@ unsafe fn request_raw(
     let _ = InternetCloseHandle(conn);
     let _ = InternetCloseHandle(session);
     resp
+}
+
+/// Read a WinInet request handle to EOF, capped at `max_bytes`. Returns the FULL body, or
+/// `None` on a read error, an over-cap response, an expired `deadline`, or an abort from
+/// `on_progress` returning `false` — never a truncated body (mirrors
+/// `crate::win::wininet_drain`'s contract; this is `http.rs`'s own copy because it additionally
+/// needs the wall-clock deadline and progress callback that shared helper doesn't take).
+unsafe fn drain(
+    req: *mut c_void,
+    max_bytes: usize,
+    deadline: Option<Instant>,
+    mut on_progress: Option<&mut dyn FnMut(u64) -> bool>,
+) -> Option<Vec<u8>> {
+    let mut data = Vec::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        // Checked before each read, not just once up front: this is what actually bounds a
+        // slow trickle — WinINet's own RECEIVE_TIMEOUT only bounds the gap BETWEEN reads and
+        // resets on every partial one, so it never fires for a server that keeps sending a
+        // few bytes just often enough (see this function's doc + A123).
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return None;
+        }
+        let mut read = 0u32;
+        if InternetReadFile(
+            req,
+            buf.as_mut_ptr() as *mut c_void,
+            buf.len() as u32,
+            &mut read,
+        )
+        .is_err()
+        {
+            return None; // read error → response is incomplete, don't trust it
+        }
+        if read == 0 {
+            break; // end of stream
+        }
+        data.extend_from_slice(&buf[..read as usize]);
+        if data.len() > max_bytes {
+            return None; // oversized / never-ending → reject (no truncated bodies)
+        }
+        if let Some(cb) = on_progress.as_deref_mut() {
+            if !cb(data.len() as u64) {
+                return None; // caller asked to stop (cancel)
+            }
+        }
+    }
+    Some(data)
 }
 
 /// Read the numeric HTTP status code off a completed request via `HttpQueryInfoW`
@@ -265,5 +383,14 @@ mod tests {
         assert_eq!(split_https("https://example.com\\other/"), None);
         assert_eq!(split_https("https://example.com/path#fragment"), None);
         assert_eq!(split_https("https://exam ple.com/"), None);
+    }
+
+    /// `request_ex` (A130/A123's shared core for `sponsors.rs`) must reject a non-HTTPS URL
+    /// via the same `split_https` gate as `request`, before ever touching WinINet — not just
+    /// eventually fail after opening a session.
+    #[test]
+    fn request_ex_rejects_non_https_before_touching_wininet() {
+        assert!(request_ex("GET", "http://example.com/", true, 5, 30, 4096, None).is_none());
+        assert!(request_ex("GET", "not a url", true, 5, 30, 4096, None).is_none());
     }
 }

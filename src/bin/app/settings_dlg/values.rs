@@ -518,12 +518,17 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // Screenshot capture service: persist the chosen hotkey, then enable/disable the
     // daemon (HKCU autostart + the running tray helper). If it stays enabled and a
     // daemon is already running with a different chord, nudge it to re-register.
+    // Read the packed chord back via CB_GETITEMDATA, not by re-deriving it from
+    // the selected index into SHOT_PRESETS: `build_controls` stashes the real
+    // packed value on every item, including the trailing "unknown chord" item it
+    // appends for a stored value outside the curated list, so this round-trips
+    // that value instead of silently collapsing it to preset 0.
     if let Ok(shot) = GetDlgItem(Some(hwnd), ID_SHOT_HOTKEY) {
         let sel = SendMessageW(shot, CB_GETCURSEL, None, None).0;
         if sel >= 0 {
-            if let Some(&(_, packed)) = SHOT_PRESETS.get(sel as usize) {
-                let _ = settings::set_screenshot_hotkey(packed);
-            }
+            let packed =
+                SendMessageW(shot, CB_GETITEMDATA, Some(WPARAM(sel as usize)), None).0 as u32;
+            let _ = settings::set_screenshot_hotkey(packed);
         }
     }
     // Instant screenshot: the checkbox is the on/off switch. On → save the combo's
@@ -533,9 +538,11 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
         0
     } else if let Ok(quick) = GetDlgItem(Some(hwnd), ID_SHOT_QUICK_HOTKEY) {
         let qsel = SendMessageW(quick, CB_GETCURSEL, None, None).0;
-        SHOT_PRESETS
-            .get(qsel.max(0) as usize)
-            .map_or(0, |&(_, p)| p)
+        if qsel >= 0 {
+            SendMessageW(quick, CB_GETITEMDATA, Some(WPARAM(qsel as usize)), None).0 as u32
+        } else {
+            0
+        }
     } else {
         0
     };
@@ -556,10 +563,13 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     }
     if let Ok(ahk) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
         let sel = SendMessageW(ahk, CB_GETCURSEL, None, None).0;
-        let packed = if sel <= 0 {
-            0 // "(none)" — unbound
+        // Item 0's data is explicitly 0 ("(none)" — unbound), so reading item
+        // data uniformly handles every index, curated or the appended unknown-
+        // chord item alike.
+        let packed = if sel < 0 {
+            0
         } else {
-            SHOT_PRESETS.get((sel - 1) as usize).map_or(0, |&(_, p)| p)
+            SendMessageW(ahk, CB_GETITEMDATA, Some(WPARAM(sel as usize)), None).0 as u32
         };
         let _ = settings::set_custom_action_hotkey(packed);
     }
@@ -712,9 +722,11 @@ pub(super) unsafe fn import_settings_from_file(hwnd: HWND) {
 }
 
 /// Reload every control from the (just-changed) HKCU settings: the simple controls via
-/// [`load_values`], plus re-seed the format-list model + repaint it.
+/// [`load_values`], the combo SELECTIONS via [`seed_combo_selections`], plus re-seed the
+/// format-list model + repaint it.
 pub(super) unsafe fn refresh_from_settings(hwnd: HWND) {
     load_values(hwnd);
+    seed_combo_selections(hwnd);
     FMT_STATE.with(|s| {
         *s.borrow_mut() = formats::FORMATS
             .iter()
@@ -722,7 +734,123 @@ pub(super) unsafe fn refresh_from_settings(hwnd: HWND) {
             .collect();
     });
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
+        // populate_list rebuilds the list UNFILTERED. Without also clearing the search box
+        // and its cached needle, retyping the SAME query the box still shows short-circuits
+        // on mod.rs's EN_CHANGE equality check (LAST_FILTER == the new needle) and skips the
+        // rebuild — leaving the list wrongly unfiltered while the box shows the old text.
+        if let Ok(search) = GetDlgItem(Some(hwnd), ID_SEARCH) {
+            let empty = wide("");
+            let _ = SetWindowTextW(search, PCWSTR(empty.as_ptr()));
+        }
+        LAST_FILTER.with(|f| *f.borrow_mut() = None);
         populate_list(list, "");
+    }
+}
+
+/// Combo index for the "default screenshot tool" picker — degrades like
+/// `Tool::from_default_index` does, so a hand-edited/out-of-range registry value can't select
+/// nothing (a blank combo) or silently disagree with the tool the capture editor actually
+/// starts in.
+pub(super) fn shot_tool_combo_index(raw: u32) -> u32 {
+    if raw < settings::SHOT_TOOL_COUNT {
+        raw
+    } else {
+        settings::DEFAULT_SHOT_TOOL
+    }
+}
+
+/// Combo index matching a packed `(mods << 8 | vk)` hotkey against [`SHOT_PRESETS`], or `0`
+/// ("(none)"/first entry) when nothing matches.
+pub(super) fn preset_combo_index(packed: u32) -> usize {
+    SHOT_PRESETS
+        .iter()
+        .position(|&(_, p)| p == packed)
+        .unwrap_or(0)
+}
+
+/// Combo index for the quick-save hotkey: an unbound (`0`) chord falls back to the
+/// non-colliding default preset rather than "(none)", matching `build_controls`.
+pub(super) fn quick_hotkey_combo_index(packed: u32) -> usize {
+    if packed == 0 {
+        SHOT_PRESETS
+            .iter()
+            .position(|&(l, _)| l == QUICK_DEFAULT_LABEL)
+            .unwrap_or(0)
+    } else {
+        preset_combo_index(packed)
+    }
+}
+
+/// Combo index for the custom-action hotkey: item 0 is "(none)" (unbound), items 1.. mirror
+/// [`SHOT_PRESETS`] — so an unbound action (`vk == 0`) is index 0, everything else is offset
+/// by one.
+pub(super) fn custom_action_hk_combo_index(packed: u32, vk: u32) -> usize {
+    if vk == 0 {
+        0
+    } else {
+        SHOT_PRESETS
+            .iter()
+            .position(|&(_, p)| p == packed)
+            .map_or(0, |i| i + 1)
+    }
+}
+
+/// Re-select every combo whose current index [`load_values`] cannot restore on its own — it
+/// has no `CB_SETCURSEL` calls of its own, because these six combos are seeded ONCE, inline,
+/// when `build::build_controls` creates them. That is fine for the dialog's normal lifetime
+/// (the combo keeps whatever the user last picked), but `refresh_from_settings` (post-Import)
+/// calls `load_values` WITHOUT re-running `build_controls`, so without this the six combos
+/// below kept showing the PRE-import on-screen selection — and `apply_settings` then read that
+/// stale index back via `CB_GETCURSEL` and silently overwrote the just-imported value on Save.
+/// (`ID_LANG` is deliberately not here: `apply_settings` never reads it, so Save can't revert
+/// it — see `mod.rs`'s live `CBN_SELCHANGE` handling instead.)
+pub(super) unsafe fn seed_combo_selections(hwnd: HWND) {
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
+        SendMessageW(
+            c,
+            CB_SETCURSEL,
+            Some(WPARAM(settings::menu_preview() as usize)),
+            None,
+        );
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
+        let sel = shot_tool_combo_index(settings::screenshot_default_tool());
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_HOTKEY) {
+        let (m, v) = settings::screenshot_hotkey();
+        SendMessageW(
+            c,
+            CB_SETCURSEL,
+            Some(WPARAM(preset_combo_index((m << 8) | v))),
+            None,
+        );
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_QUICK_HOTKEY) {
+        let (m, v) = settings::screenshot_quick_hotkey();
+        SendMessageW(
+            c,
+            CB_SETCURSEL,
+            Some(WPARAM(quick_hotkey_combo_index((m << 8) | v))),
+            None,
+        );
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
+        let cur = settings::custom_action();
+        let sel = crate::hotkey::ACTIONS
+            .iter()
+            .position(|&(id, _)| id == cur)
+            .unwrap_or(0);
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel)), None);
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
+        let (m, v) = settings::custom_action_hotkey();
+        SendMessageW(
+            c,
+            CB_SETCURSEL,
+            Some(WPARAM(custom_action_hk_combo_index((m << 8) | v, v))),
+            None,
+        );
     }
 }
 
@@ -953,4 +1081,67 @@ pub(super) unsafe fn repair_associations(hwnd: HWND) {
         "Repair File Associations",
         MB_ICONINFORMATION,
     );
+}
+
+#[cfg(test)]
+mod combo_reseed_tests {
+    use super::*;
+
+    /// `seed_combo_selections` re-derives every index from these pure functions — the actual
+    /// `HWND`/`SendMessageW` plumbing around them isn't unit-testable in-process (this module's
+    /// own end-to-end test is `#[ignore]`d for the same reason — CLAUDE.md §4), but the index
+    /// MATH is, and it's the part that would silently select the wrong entry if it drifted from
+    /// `build_controls`'s seeding (the bug this whole fix exists for: Import writing a value
+    /// nothing then re-selects, so a stale on-screen index gets read back and saved over it).
+    #[test]
+    fn shot_tool_index_falls_back_out_of_range() {
+        assert_eq!(shot_tool_combo_index(0), 0);
+        assert_eq!(
+            shot_tool_combo_index(settings::SHOT_TOOL_COUNT - 1),
+            settings::SHOT_TOOL_COUNT - 1
+        );
+        // A hand-edited or stale registry value past the option count must degrade to the
+        // SAME default `Tool::from_default_index` falls back to — not select nothing.
+        assert_eq!(
+            shot_tool_combo_index(settings::SHOT_TOOL_COUNT),
+            settings::DEFAULT_SHOT_TOOL
+        );
+        assert_eq!(shot_tool_combo_index(u32::MAX), settings::DEFAULT_SHOT_TOOL);
+    }
+
+    #[test]
+    fn preset_index_matches_a_known_chord_and_falls_back_on_an_unknown_one() {
+        let (_, known_packed) = SHOT_PRESETS[SHOT_PRESETS.len() - 1];
+        assert_eq!(
+            preset_combo_index(known_packed),
+            SHOT_PRESETS.len() - 1,
+            "must find the LAST preset, not just the first"
+        );
+        assert_eq!(preset_combo_index(0xFFFF_FFFF), 0);
+    }
+
+    #[test]
+    fn quick_hotkey_index_unbound_falls_back_to_the_noncolliding_default() {
+        let expected = SHOT_PRESETS
+            .iter()
+            .position(|&(l, _)| l == QUICK_DEFAULT_LABEL)
+            .expect("QUICK_DEFAULT_LABEL must be one of the presets");
+        // Packed 0 means "no chord stored" — must land on the default preset, not "(none)"
+        // (this combo has no such entry — every row is a real chord).
+        assert_eq!(quick_hotkey_combo_index(0), expected);
+        let (_, real_packed) = SHOT_PRESETS[0];
+        assert_eq!(quick_hotkey_combo_index(real_packed), 0);
+    }
+
+    #[test]
+    fn custom_action_hk_index_unbound_is_the_none_entry_bound_is_offset_by_one() {
+        // vk == 0 means unbound regardless of what `packed` happens to hold.
+        assert_eq!(custom_action_hk_combo_index(0xABCD, 0), 0);
+        let (_, real_packed) = SHOT_PRESETS[0];
+        let real_vk = real_packed & 0xFF;
+        assert_eq!(custom_action_hk_combo_index(real_packed, real_vk), 1);
+        // An unrecognized-but-bound chord still falls back to "(none)" rather than panicking
+        // or pointing at the wrong row.
+        assert_eq!(custom_action_hk_combo_index(0xFFFF, 1), 0);
+    }
 }

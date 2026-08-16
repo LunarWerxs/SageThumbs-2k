@@ -149,6 +149,17 @@ unsafe fn image_state(items: &Ref<'_, IShellItemArray>) -> u32 {
     state_for(selection_has_image(items))
 }
 
+/// Whether a top-level modern-menu QUICK verb should be visible at all, ahead of the
+/// shared image/audio gate: both the "Quick verbs on the main menu" master toggle
+/// AND this item's own per-item "Menu items" visibility must be on. Named/split out
+/// so the combining logic has an independent test — the quick-verb CLSIDs are
+/// standalone top-level `IExplorerCommand` objects with their own CLSID, never routed
+/// through `EnumSubCommands`' `vis.shown()` filter, so without this check hiding a
+/// quick verb in Settings' "Menu items" list did nothing for it.
+fn quick_root_visible(quick_verbs_on: bool, item_shown: bool) -> bool {
+    quick_verbs_on && item_shown
+}
+
 /// Per-item visibility for a top-level flyout command. The modern flyout's
 /// `EnumSubCommands` lists every top-level verb with NO selection context (it can't
 /// filter the list like the classic `QueryContextMenu` does), so the audio gate lands
@@ -312,8 +323,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
             // CONDENSED mode: an UNSUPPORTED selection with "show on all file types" enabled gets
             // the file-agnostic utility set (Files-to-folder / Sort / Rename / Pick color / Settings),
             // mirroring the classic handler. GetState ran first and cached has_image; `Some(false)`
-            // means the selection had no supported image. (Default to the full menu if GetState
-            // somehow didn't run — `None` → not condensed.)
+            // means the selection had no supported image.
             // `!= Some(true)` (not `== Some(false)`): if GetState somehow didn't run first
             // (has_image == None) AND the toggle is on, default to the condensed set — the safe
             // choice for "show on all file types", since the full image menu would otherwise show
@@ -432,7 +442,11 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
             // default), then the shared image+audio gate (`top_level: true` → hidden on an
             // audio-only selection). Re-read each call so a settings change is honored live.
             if self.quick_root {
-                if !settings::menu_quick_verbs() {
+                let visible = quick_root_visible(
+                    settings::menu_quick_verbs(),
+                    settings::menu_visibility().shown(self.item.title()),
+                );
+                if !visible {
                     return Ok(ECS_HIDDEN.0 as u32);
                 }
                 return Ok(unsafe { menu_item_state(self.item, true, &items) });
@@ -597,6 +611,24 @@ mod tests {
         }
         assert!(!is_quick_clsid(crate::guids::CLSID_EXPLORER_COMMAND));
         assert!(quick_root_item(crate::guids::CLSID_EXPLORER_COMMAND).is_none());
+    }
+
+    /// A quick verb's GetState must hide it when EITHER gate is off, not just the
+    /// master "Quick verbs on the main menu" toggle. Before this, the quick_root
+    /// branch never consulted `menu_visibility()` at all, so hiding e.g. "Resize" in
+    /// Settings' "Menu items" list left it visible in the Win11 compact flyout.
+    #[test]
+    fn quick_root_visibility_requires_both_the_master_toggle_and_the_per_item_setting() {
+        assert!(quick_root_visible(true, true));
+        assert!(
+            !quick_root_visible(false, true),
+            "master toggle off must hide a quick verb even if its own setting is shown"
+        );
+        assert!(
+            !quick_root_visible(true, false),
+            "the per-item 'Menu items' hide must hide a quick verb, not just the master toggle"
+        );
+        assert!(!quick_root_visible(false, false));
     }
 
     /// The quick-verb CLSIDs are all distinct (a copy-paste dup would make two verbs activate

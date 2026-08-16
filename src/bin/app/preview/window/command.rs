@@ -4,6 +4,15 @@
 
 use super::*;
 
+/// True when `a` and `b` name the same file. NTFS paths are case-insensitive (matches the
+/// case-insensitive path compares elsewhere in this module, e.g. `mod.rs`'s daemon-reuse
+/// check): a differently cased path to the same file must still count as "same file", or
+/// CMD_TOGGLE would treat re-clicking the same file (via a differently-cased shell path) as
+/// a switch instead of a close.
+fn same_file(a: Option<&str>, b: Option<&str>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b))
+}
+
 /// Handle a `WM_COPYDATA` command from the daemon (or the single-instance forwarder).
 pub(in crate::preview) unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
     let Some((cmd, path)) = parse_command(lparam) else {
@@ -21,7 +30,7 @@ pub(in crate::preview) unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
             if in_grace {
                 return;
             }
-            let same = matches!((path.as_deref(), st.path.borrow().as_deref()), (Some(a), Some(b)) if a == b);
+            let same = same_file(path.as_deref(), st.path.borrow().as_deref());
             match path {
                 Some(p) if !same => request_load(hwnd, &p),
                 _ => request_close(hwnd),
@@ -150,7 +159,12 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
                     PCWSTR::null(),
                     SW_SHOWNORMAL,
                 );
-                let _ = DestroyWindow(hwnd); // Open hands off to the default app, then closes
+                // Open hands off to the default app, then closes. Route through
+                // `request_close` (not a direct `DestroyWindow`): a reentrant click while a
+                // WebView2 `create` is pumping its own message loop would otherwise free
+                // `ViewerState` (WM_DESTROY) while that create still holds `hwnd`. `request_close`
+                // defers the destroy until the create returns, same as every other close path.
+                request_close(hwnd);
             }
         }
         Btn::OpenWith => {
@@ -192,5 +206,30 @@ pub(in crate::preview) unsafe fn toggle_source(hwnd: HWND) {
     let path = st.path.borrow().clone();
     if let Some(p) = path {
         request_load(hwnd, &p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_file_ignores_case() {
+        assert!(same_file(
+            Some(r"C:\Users\me\Photo.JPG"),
+            Some(r"c:\users\me\photo.jpg")
+        ));
+    }
+
+    #[test]
+    fn same_file_rejects_a_different_path() {
+        assert!(!same_file(Some(r"C:\a.jpg"), Some(r"C:\b.jpg")));
+    }
+
+    #[test]
+    fn same_file_is_false_when_either_side_is_missing() {
+        assert!(!same_file(None, Some("a")));
+        assert!(!same_file(Some("a"), None));
+        assert!(!same_file(None, None));
     }
 }

@@ -32,9 +32,10 @@ use core::ffi::c_void;
 
 use windows::core::PCWSTR;
 use windows::Win32::Networking::WinInet::{
-    HttpOpenRequestW, HttpSendRequestW, InternetCloseHandle, InternetConnectW, InternetOpenW,
-    InternetSetOptionW, INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT,
-    INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP,
+    HttpOpenRequestW, HttpQueryInfoW, HttpSendRequestW, InternetCloseHandle, InternetConnectW,
+    InternetOpenW, InternetSetOptionW, HTTP_QUERY_FLAG_NUMBER, HTTP_QUERY_STATUS_CODE,
+    INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
+    INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -147,41 +148,38 @@ fn upload_hosts() -> Result<Vec<UploadHost>, String> {
         }
     }
 
-    // 2) Legacy single-host registry override.
-    if let Ok(key) = windows_registry::CURRENT_USER.open(sagethumbs2k_core::settings::ROOT) {
-        if let Ok(raw) = key.get_string("ScreenshotUploadUrl") {
-            let url = raw.trim().to_string();
-            if !url.is_empty() {
-                let Some((host, path)) = crate::http::split_https(&url) else {
-                    return Err(format!(
-                        "Custom screenshot upload host must be a valid https:// URL on port 443 \
-                         (uploads always use TLS).\n\n\
-                         Got: {url}\n\nFix it in HKCU\\Software\\SageThumbs2K\\ScreenshotUploadUrl \
-                         (or use the upload-hosts config file)."
-                    ));
-                };
-                let field = key
-                    .get_string("ScreenshotUploadField")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "file".into());
-                let extra = key
-                    .get_string("ScreenshotUploadExtra")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .and_then(|kv| {
-                        kv.split_once('=')
-                            .map(|(k, v)| vec![(k.to_string(), v.to_string())])
-                    })
-                    .unwrap_or_default();
-                return Ok(vec![UploadHost {
-                    host,
-                    path,
-                    field,
-                    extra,
-                    json: false,
-                }]);
-            }
+    // 2) Legacy single-host override. Routed through settings::get_string_opt (not a
+    // direct CURRENT_USER open) so a portable install (marker-INI backend) reads the
+    // same value it can actually set — opening the registry here would silently miss
+    // a portable override and could pick up stale machine-registry state instead.
+    if let Some(raw) = sagethumbs2k_core::settings::get_string_opt("ScreenshotUploadUrl") {
+        let url = raw.trim().to_string();
+        if !url.is_empty() {
+            let Some((host, path)) = crate::http::split_https(&url) else {
+                return Err(format!(
+                    "Custom screenshot upload host must be a valid https:// URL on port 443 \
+                     (uploads always use TLS).\n\n\
+                     Got: {url}\n\nFix it in HKCU\\Software\\SageThumbs2K\\ScreenshotUploadUrl \
+                     (or use the upload-hosts config file)."
+                ));
+            };
+            let field = sagethumbs2k_core::settings::get_string_opt("ScreenshotUploadField")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "file".into());
+            let extra = sagethumbs2k_core::settings::get_string_opt("ScreenshotUploadExtra")
+                .filter(|s| !s.is_empty())
+                .and_then(|kv| {
+                    kv.split_once('=')
+                        .map(|(k, v)| vec![(k.to_string(), v.to_string())])
+                })
+                .unwrap_or_default();
+            return Ok(vec![UploadHost {
+                host,
+                path,
+                field,
+                extra,
+                json: false,
+            }]);
         }
     }
 
@@ -354,6 +352,12 @@ pub(crate) unsafe fn run_upload(path: &str) {
     };
     let bytes = std::fs::read(path);
     let _ = std::fs::remove_file(path);
+    // The temp file is gone the moment we read it (the pill's worker thread can run
+    // long enough — up to three host retries — that leaving it around risks a second
+    // process racing the same path). Keep the bytes themselves alive past the upload
+    // attempt so a total failure below can still recover the capture instead of
+    // reporting it lost with nothing left to show for it.
+    let recovery_bytes = bytes.as_ref().ok().cloned();
     let result = with_busy_pill(t("up_busy_one"), move || match bytes {
         // SAFETY: upload_any only touches WinInet handles it creates + closes itself,
         // so running it on the pill's worker thread is fine.
@@ -365,12 +369,37 @@ pub(crate) unsafe fn run_upload(path: &str) {
             let _ = set_clipboard_text(&u);
             crate::upload_result::show_upload_result(t("up_done_one"), &u);
         }
-        Err(reasons) => notify(
-            &upload_failed_msg(t("up_what_screenshot"), &reasons),
-            shot_caption(),
-            true,
-        ),
+        Err(reasons) => {
+            let base = upload_failed_msg(t("up_what_screenshot"), &reasons);
+            // Every host failed and the temp capture is already deleted — write the
+            // in-memory bytes back out so the shot isn't gone for good, and say where.
+            let msg = match recovery_bytes.and_then(|b| save_recovery_copy(&b)) {
+                Some(p) => format!("{base}\n\nSaved a copy to:\n{}", p.display()),
+                None => base,
+            };
+            notify(&msg, shot_caption(), true);
+        }
     }
+}
+
+/// Write `bytes` (a whole PNG) into `dir` under the standard timestamped capture
+/// name. Split out from [`save_recovery_copy`] so the write itself is testable
+/// without touching the registry-backed save-folder setting.
+fn write_recovery_copy(dir: &std::path::Path, bytes: &[u8]) -> Option<std::path::PathBuf> {
+    let _ = std::fs::create_dir_all(dir);
+    let name = unsafe { super::output::timestamped_name() };
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).ok()?;
+    Some(path)
+}
+
+/// Recover a failed upload's bytes to the user's normal capture save location (their
+/// configured folder, or Desktop) — the same place a manual Ctrl+S would have gone.
+fn save_recovery_copy(bytes: &[u8]) -> Option<std::path::PathBuf> {
+    write_recovery_copy(
+        &std::path::PathBuf::from(super::effective_save_dir()),
+        bytes,
+    )
 }
 
 /// Upload the USER files listed (one path per line) in `list_path` — the right-click
@@ -528,11 +557,23 @@ unsafe fn upload_one(bytes: &[u8], filename: &str, h: &UploadHost) -> Result<Str
         Some(r) => r,
         None => return Err("no response (no connection?)".to_string()),
     };
-    let text = String::from_utf8_lossy(&resp);
-    match extract_url(&text, h.json) {
+    interpret_response(resp.status, &resp.body, h.json)
+}
+
+/// Decide whether a completed response is a real upload, from the STATUS first. A
+/// host's 4xx/5xx error page can still contain something that looks like a URL (an
+/// ad link, a docs link, …), so the body is only scraped for one once the status is
+/// confirmed 2xx — a status we couldn't even query (0) counts as failure too, same
+/// as any other non-2xx.
+fn interpret_response(status: u16, body: &[u8], json: bool) -> Result<String, String> {
+    let text = String::from_utf8_lossy(body);
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status} — {}", short_reason(&text)));
+    }
+    match extract_url(&text, json) {
         Some(url) => Ok(url),
-        // No link in the reply (an HTML error page, a "paused" notice, …) — surface
-        // the host's own words so an outage is visible.
+        // 2xx but no link in the reply (a "paused" notice, an unexpected body, …) —
+        // surface the host's own words so an outage is visible.
         None => Err(short_reason(&text)),
     }
 }
@@ -596,8 +637,15 @@ fn short_reason(body: &str) -> String {
     }
 }
 
+/// A POST response: the HTTP status (so the caller can require 2xx before trusting
+/// the body) plus the capped body itself.
+struct PostResp {
+    status: u16,
+    body: Vec<u8>,
+}
+
 /// A minimal WinInet HTTPS POST (mirrors `sponsors.rs::http_fetch`, but with a body).
-unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<Vec<u8>> {
+unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<PostResp> {
     let agent = wide("SageThumbs2K");
     let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
     if session.is_null() {
@@ -662,21 +710,39 @@ unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<Vec
     .is_ok();
 
     // Drain via the shared helper, which caps the body and returns None on over-cap
-    // (the old inline loop here returned the TRUNCATED body — a corrupt URL).
-    let out = if sent {
-        crate::win::wininet_drain(req, MAX_RESP)
+    // (the old inline loop here returned the TRUNCATED body — a corrupt URL). Read the
+    // status BEFORE draining (HttpQueryInfoW wants it off the still-open request) so a
+    // 4xx/5xx page can never be scraped for a URL as if it were a success.
+    let resp = if sent {
+        let status = query_status(req).unwrap_or(0);
+        crate::win::wininet_drain(req, MAX_RESP).map(|body| PostResp { status, body })
     } else {
         None
     };
     let _ = InternetCloseHandle(req);
     let _ = InternetCloseHandle(conn);
     let _ = InternetCloseHandle(session);
-    out
+    resp
+}
+
+/// Read the numeric HTTP status off a completed request (mirrors `http.rs::query_status`).
+unsafe fn query_status(req: *mut c_void) -> Option<u16> {
+    let mut code: u32 = 0;
+    let mut len: u32 = size_of::<u32>() as u32;
+    HttpQueryInfoW(
+        req,
+        HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+        Some(&mut code as *mut u32 as *mut c_void),
+        &mut len,
+        None,
+    )
+    .ok()?;
+    Some(code as u16)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_url, parse_hosts_config};
+    use super::{extract_url, interpret_response, parse_hosts_config, write_recovery_copy};
 
     #[test]
     fn upload_response_requires_an_exact_web_scheme() {
@@ -711,5 +777,50 @@ https://bad example/upload | file | text
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].host, "good.example");
         assert_eq!(hosts[0].path, "/upload");
+    }
+
+    #[test]
+    fn non_2xx_status_is_rejected_even_when_the_body_contains_a_url() {
+        // A 4xx/5xx error page that happens to embed something URL-shaped (an ad
+        // link, a status-page link, …) must never be reported to the user as their
+        // own upload link — the status has to gate the body scrape, not the body alone.
+        let body = b"<html>502 Bad Gateway. See https://status.example.test/incident/1</html>";
+        let err = interpret_response(502, body, false).unwrap_err();
+        assert!(
+            err.contains("502"),
+            "failure reason should surface the status code, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_2xx_plain_reply_still_extracts_the_url() {
+        assert_eq!(
+            interpret_response(200, b"https://files.example.test/a.png", false).as_deref(),
+            Ok("https://files.example.test/a.png")
+        );
+    }
+
+    #[test]
+    fn an_unqueryable_status_is_treated_as_failure_not_success() {
+        // query_status returns None (mapped to 0 by the caller) on a request WinInet
+        // couldn't report a status for — that must not be silently treated as OK.
+        let err = interpret_response(0, b"https://files.example.test/a.png", false).unwrap_err();
+        assert!(err.contains('0'));
+    }
+
+    #[test]
+    fn upload_failure_recovery_writes_the_bytes_back_to_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_upload_recovery_test_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bytes = b"not a real png, just proving the bytes survive";
+
+        let path = write_recovery_copy(&dir, bytes).expect("recovery write should succeed");
+
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

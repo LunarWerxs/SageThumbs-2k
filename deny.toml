@@ -28,11 +28,14 @@ targets = [
 # Evaluate optional deps too, so the scan stays honest about what *could* be
 # compiled in.
 all-features = false
-# The `flash-video` feature (EXE-only FLV VP6/Sorenson decoders, git-pinned — see
-# [sources]) is in the core package's DEFAULT set today, but name it explicitly so the
-# license/advisory/source checks keep seeing the crates we ship even if the default
-# set ever changes.
-features = ["flash-video"]
+# Every feature `scripts/build-release.ps1` actually turns on for a shipped EXE, named
+# explicitly so the license/advisory/source checks keep seeing the crates we ship even
+# if the default set ever changes. `flash-video` and `vp9-video` are in the core
+# package's DEFAULT set already (so were implicitly scanned regardless), but
+# `html-preview` and `webp-lossy` are NOT default — they're enabled only by the release
+# EXE build — so without listing them here `webview2-com` and `libwebp-sys` were never
+# in cargo-deny's scanned graph at all despite shipping in every release. (A036)
+features = ["flash-video", "vp9-video", "html-preview", "webp-lossy"]
 
 # ----------------------------------------------------------------------------
 [advisories]
@@ -58,7 +61,7 @@ yanked = "deny"
 # Allowlist covering the actual DEFAULT-feature graph (derived from Cargo.lock):
 #   MIT / Apache-2.0 ........ the overwhelming majority of the tree
 #   BSD-2-Clause ............ arrayref
-#   BSD-3-Clause ............ tiny-skia, tiny-skia-path, encoding_rs (AND component)
+#   BSD-3-Clause ............ tiny-skia, tiny-skia-path
 #   Zlib .................... foldhash
 #   Unicode-3.0 ............. unicode-ident (AND component of its SPDX expr)
 # (No MPL-2.0 or ISC crate is present in the default graph, so neither is
@@ -124,6 +127,15 @@ skip = [
     { crate = "png@0.17.16", reason = "required by djvu-rs std; upstream 0.27 still pins png 0.17" },
     { crate = "bitflags@1.3.2", reason = "transitive through djvu-rs's pinned png 0.17" },
     { crate = "syn@3.0.3", reason = "thiserror 2.0.19 has migrated to syn 3 while the Windows, ZIP, and derive stacks still require syn 2" },
+    # wide/safe_arch (A113, 2026-08-15): djvu-rs pulls wide 0.7.33 -> safe_arch 0.7.4; the FLV
+    # VP6 decode stack's h263-rs-yuv pulls wide 0.8.3 -> safe_arch 0.9.3. Documented in
+    # docs/TODO.md as "a NOTE, not a blocker" but that note wasn't in deny.toml itself, so a
+    # genuinely NEW duplicate wouldn't have stood out against these two the way the skip list
+    # is meant to make new ones do.
+    { crate = "wide@0.7.33", reason = "required by djvu-rs; h263-rs-yuv (flash-video) pulls wide 0.8.3" },
+    { crate = "wide@0.8.3", reason = "required by h263-rs-yuv (flash-video); djvu-rs pulls wide 0.7.33" },
+    { crate = "safe_arch@0.7.4", reason = "transitive through djvu-rs's pinned wide 0.7.33" },
+    { crate = "safe_arch@0.9.3", reason = "transitive through h263-rs-yuv's pinned wide 0.8.3" },
 ]
 
 # ----------------------------------------------------------------------------
@@ -145,3 +157,7 @@ allow-git = [
     "https://github.com/ruffle-rs/nihav-vp6",
     "https://github.com/ruffle-rs/h263-rs",
 ]
+# Neither crate has a crates.io release, so there's no semver and this list is a real
+# supply-chain dependency on Ruffle's repos staying reachable, accepted, not ignored:
+# the pin is by REV (never a branch, see Cargo.toml). If repo availability ever becomes
+# a concern, vendor under crates/vendor/ with a SAGETHUMBS-PATCH.md (the exr precedent).

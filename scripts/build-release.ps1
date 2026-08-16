@@ -149,8 +149,8 @@ $env:RUSTFLAGS = '-C target-feature=+crt-static'
 # EXEs ONLY — st2k.exe's hidden `flv-frame` verb decodes them out of process for the DLL.
 # It must NEVER be added to the DLL build below: those crates panic on malformed input,
 # which under panic=abort would kill Explorer (verify with `cargo tree -p sagethumbs2k-dll`).
-$exeBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture,flash-video')
-$dllBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
+$exeBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features (Get-ReleaseFeatureList -Package sagethumbs2k))
+$dllBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features (Get-ReleaseFeatureList -Package sagethumbs2k-dll))
 # No -Features: this crate declares none (see crates/dlghook/Cargo.toml).
 $dlgHookBuildArgs = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dlghook)
 # The ARM64 toolchain environment is needed by STAGING, not just by compiling: the magick
@@ -211,6 +211,27 @@ if (-not $SkipBuild) {
     Write-Host "[1b/4] cargo build $($dllBuildArgs -join ' ')  (slim DLL)" -ForegroundColor Green
     Push-Location $root
     try { cargo build @dllBuildArgs; if ($LASTEXITCODE) { throw "slim DLL build failed" } } finally { Pop-Location }
+
+    # --- DLL containment check ----------------------------------------------------
+    # The "must never list vp9dec/nihav/h263" rule above (and the matching Cargo.toml
+    # comments) used to be prose only, with nothing that actually ran it. `cargo tree` is
+    # ground truth for the real dependency graph; assert it here so a future feature-flag
+    # or dependency change that pulls a panic-on-malformed-input decoder into the
+    # panic=abort DLL fails the release loudly instead of shipping a crash risk into
+    # Explorer. NOTE: `rayon` is deliberately NOT included yet - rars 0.6.0 currently pulls
+    # it into this same DLL as a non-optional dependency (see Cargo.toml's rars comment),
+    # so enforcing it here would fail every release until that upstream dependency is
+    # fixed/pinned; adding it is tracked as a follow-up, not silently done here.
+    Push-Location $root
+    try {
+        $dllTree = @(& cargo tree -p sagethumbs2k-dll --locked 2>&1)
+        if ($LASTEXITCODE) { throw "cargo tree -p sagethumbs2k-dll failed (exit $LASTEXITCODE)" }
+        foreach ($forbidden in 'vp9dec', 'nihav', 'h263') {
+            if ($dllTree -match $forbidden) {
+                throw "Containment violation: '$forbidden' is linked into sagethumbs2k-dll (run ``cargo tree -p sagethumbs2k-dll`` to see the path)"
+            }
+        }
+    } finally { Pop-Location }
 
     # --- Open/Save dialog hook DLL ------------------------------------------------
     # A THIRD package, so it needs its own `-p` build for the same reason the slim DLL does.
@@ -465,7 +486,6 @@ if ($bundleMagick) {
     # this, and it stays regardless.
     # Export extraction (gendef) is architecture-independent; only the compile/link half
     # is toolchain-specific, so ARM64 stubs with MSVC and x64 keeps gcc/windres.
-    if ($true) {
     $stubWork = Join-Path $stage 'magick\_stubwork'
     New-Item -ItemType Directory $stubWork -Force | Out-Null
     try {
@@ -585,7 +605,6 @@ if ($bundleMagick) {
         Remove-Item $stubWork -Recurse -Force -EA SilentlyContinue
     }
     Write-Host "      stubbed + export-verified the magick text stack (glib/harfbuzz/freetype/fribidi/raqm)" -ForegroundColor DarkGray
-    }
 
     # These pinned-build companions become unreachable after pruning/stubbing above.
     # The helper refuses each deletion unless no staged PE import and no ASCII/UTF-16
@@ -603,13 +622,9 @@ if ($bundleMagick) {
     # This candidate list is only unreferenced BECAUSE stubbing removed the code that
     # imported it. ARM64 does not stub (MinGW stubs are x86-only), so those DLLs are
     # genuinely still referenced there and the helper correctly refuses to delete them.
-    # Run the prune only where the precondition it was written for actually holds.
-    if ($true) {
-        & "$PSScriptRoot\prune-magick-unreferenced.ps1" -BundlePath "$stage\magick" -ObjdumpPath $peInspector -Candidate $unreferencedRuntime
-    } else {
-        Write-Host "      runtime prune SKIPPED for $Architecture (its candidates stay referenced without stubbing)" -ForegroundColor Yellow
-        $global:LASTEXITCODE = 0
-    }
+    # Run the prune (this precondition it was written for always holds: this whole stage
+    # only ever runs where stubbing already ran, above).
+    & "$PSScriptRoot\prune-magick-unreferenced.ps1" -BundlePath "$stage\magick" -ObjdumpPath $peInspector -Candidate $unreferencedRuntime
     if ($LASTEXITCODE) { throw "Mechanically verified ImageMagick runtime pruning failed" }
 
     # Overwrite the stock policy.xml with our hardened one.
@@ -788,7 +803,11 @@ if ($Portable) {
     # all (the emulation goes the other way), so cross-building the ARM64 zip would fail this
     # check for a reason that says nothing about the payload. Skipping is the honest outcome,
     # but say so loudly: an unsmoked zip is exactly the one to hand to an ARM64 machine first.
-    $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    # OS architecture, not this PROCESS's bitness (matches the check at line ~394 and
+    # install.ps1's Assert-NativeArm64Host): an x64 PowerShell process running natively on
+    # genuine ARM64 Windows reports 'AMD64' via $env:PROCESSOR_ARCHITECTURE and would wrongly
+    # skip a smoke test that host can actually run.
+    $hostArch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
     if ($hostArch -eq $Architecture) {
         $smoke = & "$portableStage\st2k.exe" formats 2>&1 | Select-Object -First 1
         if ($LASTEXITCODE -or $smoke -notmatch '^\d+\s') {
@@ -877,6 +896,10 @@ New-Item -ItemType Directory "$root\dist" -Force | Out-Null
 $fmtCount = ''
 if ($Architecture -eq 'x64') {
     $fmtLine = & "$targetRel\st2k.exe" formats 2>$null | Select-Object -First 1
+    # A crash/failure here must fail the release loudly, not silently leave $fmtCount empty:
+    # an empty count skips /DFmtCount below and installer.iss falls back to its stale "300+"
+    # literal, which would ship silently wrong instead of failing the build.
+    if ($LASTEXITCODE -ne 0) { throw "st2k.exe formats failed (exit $LASTEXITCODE) while deriving the installer's live format count" }
     if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
 }
 $compactOnly = if ($NoImageMagick) { '1' } else { '0' }

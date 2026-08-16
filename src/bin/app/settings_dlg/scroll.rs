@@ -1,7 +1,12 @@
-//! The left options live in a fixed viewport; content taller than it scrolls via
-//! a vertical scrollbar + the mouse wheel. The controls stay direct children of
-//! the dialog (so the GetDlgItem-based load/save stays untouched) — scrolling
-//! moves them and an opaque mask hides whatever slides below the viewport.
+//! The left viewport's scrollbar + mouse-wheel plumbing (thumb position, range,
+//! WM_VSCROLL). The v3 nav-rail layout (`navrail::apply_v3_layout`) hides both the
+//! scrollbar and the fold mask this module was built to drive unconditionally at
+//! dialog init, so nothing here is visible today, but `mod.rs` still routes
+//! WM_VSCROLL/WM_MOUSEWHEEL/WM_DRAWITEM through it, so the plumbing stays live and
+//! correct rather than silently no-op. The original per-control reposition/hide-show
+//! pass (an `items: Vec<HWND>` populated by a since-removed `init_scroll`) was deleted
+//! here: it read a field nothing in the tree ever pushed to, so it always iterated
+//! zero controls. Removing it changes nothing observable: it never did anything.
 
 use super::*;
 
@@ -23,7 +28,6 @@ pub(super) unsafe fn draw_left_mask(hwnd: HWND, d: &DRAWITEMSTRUCT) {
 
 #[derive(Default)]
 pub(super) struct ScrollData {
-    items: Vec<HWND>,
     scrollbar: HWND,
     pub(super) pos: i32, // read by the parent's WM_MOUSEWHEEL handler
     range: i32,          // max scroll offset (device px)
@@ -53,36 +57,10 @@ pub(super) unsafe fn view_bottom_dev(dialog: HWND) -> i32 {
     dpi_scale(dialog, LEFT_VIEW_BOTTOM)
 }
 
-/// Hide controls fully outside the viewport (so they can't paint over the
-/// banner/footer); show those at least partly inside. The opaque mask + clip-
-/// siblings handle the one row that straddles the bottom edge.
-unsafe fn update_visibility(dialog: HWND) {
-    let top = dpi_scale(dialog, LEFT_VIEW_TOP);
-    let bot = view_bottom_dev(dialog);
-    SCROLL.with(|s| {
-        for &h in &s.borrow().items {
-            let mut r = RECT::default();
-            if GetWindowRect(h, &mut r).is_err() {
-                continue;
-            }
-            let mut a = POINT {
-                x: r.left,
-                y: r.top,
-            };
-            let mut b = POINT {
-                x: r.left,
-                y: r.bottom,
-            };
-            let _ = ScreenToClient(dialog, &mut a);
-            let _ = ScreenToClient(dialog, &mut b);
-            let visible = b.y > top && a.y < bot;
-            let _ = ShowWindow(h, if visible { SW_SHOW } else { SW_HIDE });
-        }
-    });
-}
-
-/// Scroll the left column to `new_pos` (clamped): move its controls + the
-/// scrollbar thumb, then repaint the viewport.
+/// Scroll the left column to `new_pos` (clamped): move the scrollbar thumb, then
+/// repaint the viewport band. (This used to also reposition a tracked list of child
+/// controls; that list was never populated anywhere in the tree (see the module
+/// doc), so the reposition pass was deleted as a proven no-op, not a behavior change.)
 pub(super) unsafe fn scroll_to(dialog: HWND, new_pos: i32) {
     let (delta, np, sb) = SCROLL.with(|s| {
         let mut s = s.borrow_mut();
@@ -94,42 +72,6 @@ pub(super) unsafe fn scroll_to(dialog: HWND, new_pos: i32) {
     if delta == 0 {
         return;
     }
-    SCROLL.with(|s| {
-        let s = s.borrow();
-        // Reposition each scrolled child with an individual SetWindowPos. A single
-        // batched DeferWindowPos pass was tried here (for one combined repaint), but
-        // the batch silently failed to COMMIT — every Defer/EndDeferWindowPos call
-        // returned success yet the controls never moved, so the column "scrolled" the
-        // thumb only while the options stayed put. Per-control SetWindowPos repositions
-        // reliably.
-        //
-        // SWP_NOREDRAW is the key for smooth scrolling: it moves each control WITHOUT
-        // the default bit-copy + per-control repaint. Without it, each move blits the
-        // control's pixels to the new spot one-at-a-time and the screen composites
-        // between them — on a window with WS_CLIPCHILDREN (so the parent can't erase the
-        // vacated strips) that reads as ghosting/tearing text. Moving everything silently
-        // here, then doing ONE RedrawWindow over the whole band below, lands all the
-        // controls at their new offset in a single coherent frame.
-        for &h in &s.items {
-            let mut r = RECT::default();
-            if GetWindowRect(h, &mut r).is_ok() {
-                let mut tl = POINT {
-                    x: r.left,
-                    y: r.top,
-                };
-                let _ = ScreenToClient(dialog, &mut tl);
-                let _ = SetWindowPos(
-                    h,
-                    None,
-                    tl.x,
-                    tl.y - delta,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
-                );
-            }
-        }
-    });
     let si = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
         fMask: SIF_POS,
@@ -137,26 +79,15 @@ pub(super) unsafe fn scroll_to(dialog: HWND, new_pos: i32) {
         ..Default::default()
     };
     SetScrollInfo(sb, SB_CTL, &si, true);
-    update_visibility(dialog);
     let rc = RECT {
         left: 0,
         top: 0,
         right: dpi_scale(dialog, LEFT_RIGHT_EDGE + 6),
         bottom: view_bottom_dev(dialog),
     };
-    // Repaint the band AND all the (silently-moved) child controls in one pass.
-    // RDW_ALLCHILDREN is required because the SWP_NOREDRAW moves above suppressed the
-    // controls' own repaint — a plain InvalidateRect on the dialog wouldn't reach them,
-    // leaving them blank/stale. The double-buffered WM_PAINT fills the bg + chrome and
-    // each child repaints itself at its final position, so the frame is coherent (no
-    // bit-copy ghosts, no per-control tearing).
-    //
-    // RDW_UPDATENOW forces that repaint SYNCHRONOUSLY (WM_PAINT before this returns). It
-    // is essential, not optional: a fast wheel floods the queue with WM_MOUSEWHEEL, so a
-    // deferred (coalesced) paint never gets serviced until the scroll stops — the controls
-    // keep moving with SWP_NOREDRAW but the screen doesn't repaint, leaving big blank
-    // bands and a "draggy" lag. Painting each step now keeps the screen locked to the
-    // wheel. The band is small + double-buffered, so the synchronous repaint is cheap.
+    // Repaint the viewport band (mask + scrollbar chrome). No child controls are moved
+    // here (see the module doc), so this is a plain repaint, not the coalesced
+    // "move-then-flush" it used to be when a reposition pass ran first.
     let _ = RedrawWindow(
         Some(dialog),
         Some(&rc),
@@ -166,8 +97,7 @@ pub(super) unsafe fn scroll_to(dialog: HWND, new_pos: i32) {
 }
 
 /// Recompute the scroll range for the CURRENT viewport (after the window was resized
-/// taller/shorter), preserving the scroll position (clamped). Cheaper than `init_scroll`
-/// — no re-enumeration/re-subclassing, and no jump to the top.
+/// taller/shorter), preserving the scroll position (clamped).
 pub(super) unsafe fn recompute_scroll(dialog: HWND) {
     let view_top = dpi_scale(dialog, LEFT_VIEW_TOP);
     let new_vp = (view_bottom_dev(dialog) - view_top).max(1);
@@ -194,9 +124,8 @@ pub(super) unsafe fn recompute_scroll(dialog: HWND) {
     };
     SetScrollInfo(sb, SB_CTL, &si, true);
     let _ = ShowWindow(sb, if new_range == 0 { SW_HIDE } else { SW_SHOW });
-    // Slide the scrolled controls to the (clamped) position, then repaint the viewport.
+    // Land the thumb at the (clamped) position and repaint the viewport band.
     scroll_to(dialog, pos);
-    update_visibility(dialog);
 }
 
 /// Handle a WM_VSCROLL from the left scrollbar.
@@ -229,4 +158,40 @@ pub(super) unsafe fn on_vscroll(dialog: HWND, wparam: WPARAM, lparam: LPARAM) {
         _ => pos,
     };
     scroll_to(dialog, new);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The per-control reposition pass this module used to run (driven by an `items:
+    /// Vec<HWND>` field) was removed as dead code: nothing anywhere in the tree ever
+    /// pushed a handle into it, so it always iterated zero controls (see the module doc).
+    /// This locks in that `scroll_to` still clamps and records the position correctly
+    /// with NO per-control list at all: `HWND::default()` (no real window, same pattern
+    /// as `mod.rs`'s `set_shot_status_records_green_state_independent_of_the_label_text`)
+    /// exercises the state-write half independent of GDI, so a future edit that quietly
+    /// reintroduces a hidden dependency on such a list fails here instead of only
+    /// breaking silently in the UI.
+    #[test]
+    fn scroll_to_clamps_and_records_position_without_any_control_list() {
+        unsafe {
+            SCROLL.with(|s| {
+                let mut s = s.borrow_mut();
+                s.range = 500;
+                s.pos = 0;
+            });
+
+            scroll_to(HWND::default(), 120);
+            assert_eq!(SCROLL.with(|s| s.borrow().pos), 120);
+
+            // Clamped to the range ceiling, not the raw (out-of-range) request.
+            scroll_to(HWND::default(), 9999);
+            assert_eq!(SCROLL.with(|s| s.borrow().pos), 500);
+
+            // Clamped to zero, not negative.
+            scroll_to(HWND::default(), -50);
+            assert_eq!(SCROLL.with(|s| s.borrow().pos), 0);
+        }
+    }
 }

@@ -134,8 +134,15 @@ $sourceTreeClean = $gitStatus.Count -eq 0
 # `hdr-capture` is APP-ONLY (see Cargo.toml): it links D3D11/DXGI, which the
 # shell DLL must never load. These canonical helpers are shared with the build
 # runner and checker so their exact ARM target ordering cannot drift.
-$expectedExeArguments = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features 'webp-lossy,html-preview,hdr-capture')
-$expectedDllArguments = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features 'webp-lossy,dll-i18n-subset')
+#
+# The feature strings themselves now come from the ONE shared Get-ReleaseFeatureList
+# (A249), not a hand-typed copy: a prior hand-typed copy here went stale when the FLV work
+# added `flash-video` to build-release.ps1's recipe, which made every 2.0.0 build fail this
+# gate (the build was correct, the expectation was stale). A single source can't drift from
+# itself; this still independently reconstructs the expected arguments and compares them
+# against what the build actually ran, so a bypass of the shared helper still gets caught.
+$expectedExeArguments = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k -Features (Get-ReleaseFeatureList -Package sagethumbs2k))
+$expectedDllArguments = @(Get-ReleaseCargoBuildArguments -Architecture $Architecture -Package sagethumbs2k-dll -Features (Get-ReleaseFeatureList -Package sagethumbs2k-dll))
 function Test-ExactArguments([string[]]$Actual, [string[]]$Expected) {
     if ($Actual.Count -ne $Expected.Count) { return $false }
     for ($i = 0; $i -lt $Expected.Count; $i++) {

@@ -95,12 +95,123 @@ else {
                 "(one of the category numbers is stale - `st2k formats` prints the live breakdown)")
     }
   }
+
+  # --- 2b) the count in ORDINARY PROSE, not just the four structured spots -------
+  # The checks above look at the README shields badge and at FEATURES' "NNN registered
+  # extensions" / "Counts sum to NNN" / per-category rows. On 2026-08-15 every one of those
+  # was correctly 331 while SIX sentences in README and four in FEATURES still said 327, the
+  # count from before the four Android extensions landed. Nothing caught it, because nothing
+  # was looking at the number a reader actually reads. It would have shipped in a 2.0
+  # announcement, which is the worst possible place to be visibly wrong about your own
+  # headline number.
+  #
+  # The `(?!\+)` is load-bearing: "the 300+ formats Windows has no native reader for" is a
+  # DELIBERATELY vague convention (same intent as the badge's "hundreds-"), and flagging it
+  # would make this check cry wolf on prose that is correct by design. Verified both ways
+  # before landing: zero hits on the tree as it stands, and all six README sites flagged when
+  # the count is simulated stale. A guard that cannot fail is not a guard.
+  $proseRx = '(?i)\b(\d{3})(?!\+)\b(?:[^\r\n.]{0,30}?)\s(formats?|file types?|extensions?)\b'
+  foreach ($rel in 'README.md', 'docs\FEATURES.md') {
+    $p = Join-Path $root $rel
+    if (-not (Test-Path $p)) { continue }
+    foreach ($m in [regex]::Matches((Get-Content $p -Raw), $proseRx)) {
+      if ([int]$m.Groups[1].Value -ne $count) {
+        $fail.Add("$($rel -replace '\\','/') says '$($m.Value.Trim())' but FORMATS has $count " +
+                  "(use the exact count, or the vague 'NNN+' convention if you mean it loosely)")
+      }
+    }
+  }
 }
 
 # --- 3) version: Cargo.toml vs AppxManifest ------------------------------------
 $ver = ([regex]::Match((Get-Content (Join-Path $root 'Cargo.toml') -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
 $appx = Get-Content (Join-Path $root 'scripts\packaging\AppxManifest.xml') -Raw
 if ($appx -notmatch [regex]::Escape("Version=`"$ver")) { $fail.Add("scripts/packaging/AppxManifest.xml Version != Cargo.toml ($ver)") }
+
+# --- 3b) release feature recipe: real, not tautological ------------------------
+# HISTORY, because this check changed shape once and the reason matters. The build runner
+# and both provenance gates used to hold three hand-typed copies of the shipping feature
+# string, DELIBERATELY, so a gate could never share an expectation with the thing it checks.
+# That duplication then went stale the moment `flash-video` landed in the build runner only,
+# and EVERY 2.0.0 build would have failed the manifest gate at publish time, after CI, after
+# the push. In its whole life the duplication caught zero real drifts and caused one
+# release-blocking false failure, so the copies were collapsed into ONE
+# `Get-ReleaseFeatureList` in release-manifest-lib.ps1.
+#
+# Collapsing them means a string-equality check between the copies is now a tautology, so
+# this asserts the things that are still EXTERNALLY true and that the shared helper cannot
+# certify about itself:
+#   1. every feature it names actually exists in Cargo.toml (a typo or a renamed feature
+#      would otherwise reach `cargo build` as a hard error only at release time),
+#   2. the shell-extension recipe never names an EXE-only feature. That one is load-bearing:
+#      html-preview links webview2, hdr-capture links D3D11/DXGI and flash-video links the
+#      panicky FLV decoders, and NONE of them may enter the DLL that loads inside
+#      explorer.exe (CLAUDE.md 9, Cargo.toml's own feature comments),
+#   3. nobody reintroduces a fourth hardcoded copy alongside the helper.
+$recipeFail = @()
+. (Join-Path $root 'scripts\release-manifest-lib.ps1')
+$cargoText = Get-Content (Join-Path $root 'Cargo.toml') -Raw
+
+# The [features] table's declared names, plus whatever `default` pulls in.
+$featSection = [regex]::Match($cargoText, '(?ms)^\[features\]\s*(.*?)(?=^\[)')
+$declared = @()
+if ($featSection.Success) {
+  $declared = @([regex]::Matches($featSection.Groups[1].Value, '(?m)^\s*([A-Za-z0-9_-]+)\s*=') |
+    ForEach-Object { $_.Groups[1].Value })
+}
+if (-not $declared.Count) { $recipeFail += 'could not parse Cargo.toml [features]' }
+
+# EXE-only by construction: each links a stack the shell DLL must never load.
+$exeOnly = @('html-preview', 'hdr-capture', 'flash-video')
+
+foreach ($pkg in @('sagethumbs2k', 'sagethumbs2k-dll')) {
+  $recipe = @((Get-ReleaseFeatureList -Package $pkg) -split ',' | Where-Object { $_ })
+  if (-not $recipe.Count) {
+    $recipeFail += "Get-ReleaseFeatureList returned nothing for $pkg"
+    continue
+  }
+  foreach ($f in $recipe) {
+    if ($declared.Count -and $declared -notcontains $f) {
+      $recipeFail += "the release recipe for $pkg names '$f', which is not a feature in Cargo.toml"
+    }
+  }
+  if ($pkg -eq 'sagethumbs2k-dll') {
+    foreach ($f in $recipe) {
+      if ($exeOnly -contains $f) {
+        $recipeFail += "the shell-extension recipe names EXE-only feature '$f'; that stack must never link into the DLL that loads inside explorer.exe"
+      }
+    }
+  }
+}
+
+# 3. No fourth copy. Every release script must go through the shared helper.
+foreach ($sc in @('build-release.ps1', 'write-release-manifest.ps1', 'check-release-manifest.ps1')) {
+  $t = Get-Content (Join-Path $root "scripts\$sc") -Raw
+  foreach ($m in [regex]::Matches($t, "-Features\s+'([^']*)'")) {
+    $recipeFail += "scripts/$sc hardcodes -Features '$($m.Groups[1].Value)'; call Get-ReleaseFeatureList instead so there is one recipe, not four"
+  }
+}
+
+# 4. ci.yml is a FIFTH copy, and it cannot dot-source a PowerShell helper, so it is checked
+# by comparison instead of by refactoring. It builds with `--features <list>` inline. Those
+# lists are allowed to be a SUBSET of the release recipe (CI legitimately omits default-on
+# features such as flash-video, which cargo enables anyway), but they must never name a
+# feature the release recipe does not, or CI is testing a binary nobody ships. An audit
+# found this gap: the guard above scanned three scripts and left the workflow unchecked.
+$ciPath = Join-Path $root '.github\workflows\ci.yml'
+if (Test-Path $ciPath) {
+  $ciText = Get-Content $ciPath -Raw
+  foreach ($m in [regex]::Matches($ciText, '-p\s+(sagethumbs2k(?:-dll)?)\s+--features\s+([A-Za-z0-9,_-]+)')) {
+    $pkg = $m.Groups[1].Value
+    $recipe = @((Get-ReleaseFeatureList -Package $pkg) -split ',' | Where-Object { $_ })
+    foreach ($f in @($m.Groups[2].Value -split ',' | Where-Object { $_ })) {
+      if ($recipe -notcontains $f) {
+        $recipeFail += ".github/workflows/ci.yml builds $pkg with '$f', which is not in the shipping recipe '$($recipe -join ',')'; CI would be testing a binary that never ships"
+      }
+    }
+  }
+}
+$recipeFail | ForEach-Object { $fail.Add($_) }
 
 # --- 4) locale parity: every locales/*.toml matches en.toml's key set -----------
 # Two drift classes, both of which shipped:

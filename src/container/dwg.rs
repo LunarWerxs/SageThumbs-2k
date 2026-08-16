@@ -97,19 +97,35 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
-    if let Some((off, size)) = png {
-        let p = bytes.get(off..off.checked_add(size)?)?;
-        return super::util::decodable_image(p.to_vec());
+    // Try each candidate in priority order (PNG > DIB > WMF); an undecodable record — bad
+    // image data, or an offset/size that doesn't fit the buffer — falls through to the next
+    // instead of aborting the whole extraction. Real R2018 files carry multiple preview
+    // records, so a busted PNG must not hide a good DIB/WMF sitting right behind it.
+    if let Some(img) = try_decode(bytes, png, |s| Some(s.to_vec())) {
+        return Some(img);
     }
-    if let Some((off, size)) = dib {
-        let d = bytes.get(off..off.checked_add(size)?)?;
-        return super::util::decodable_image(dib_to_bmp(d)?);
+    if let Some(img) = try_decode(bytes, dib, dib_to_bmp) {
+        return Some(img);
     }
-    if let Some((off, size)) = wmf {
-        let w = bytes.get(off..off.checked_add(size)?)?;
-        return super::util::decodable_image(w.to_vec());
+    if let Some(img) = try_decode(bytes, wmf, |s| Some(s.to_vec())) {
+        return Some(img);
     }
     None
+}
+
+/// Slice one `(off, size)` record out of `bytes`, run it through `convert` (identity for
+/// PNG/WMF, `dib_to_bmp` for a bare DIB), then try to decode it. Returns `None` on any
+/// failure — an out-of-bounds record or a `convert`/decode failure — so the caller can just
+/// move on to the next candidate record.
+fn try_decode(
+    bytes: &[u8],
+    rec: Option<(usize, usize)>,
+    convert: impl Fn(&[u8]) -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    let (off, size) = rec?;
+    let end = off.checked_add(size)?;
+    let slice = bytes.get(off..end)?;
+    super::util::decodable_image(convert(slice)?)
 }
 
 /// Test-only synthetic-DWG builder, shared with the head-preview fast-path tests
@@ -265,5 +281,49 @@ mod tests {
 
         let got = extract(&f).expect("should extract the PNG record");
         assert!(got.starts_with(&[0x89, b'P', b'N', b'G']));
+    }
+
+    /// An R2018 file carries multiple preview records. If the PNG record's bytes are
+    /// undecodable (corrupt, or simply not PNG despite the code byte), `extract` must fall
+    /// through to try the DIB record right behind it instead of giving up — the bug this
+    /// guards was an unconditional early `return` on the PNG branch regardless of whether
+    /// decoding actually succeeded.
+    #[test]
+    fn falls_through_to_dib_when_png_record_is_undecodable() {
+        // A minimal DIB (BITMAPINFOHEADER, 24bpp, no palette) that `dib_to_bmp` accepts.
+        let mut dib = vec![0u8; 40];
+        dib[0..4].copy_from_slice(&40u32.to_le_bytes()); // biSize
+        dib[14..16].copy_from_slice(&24u16.to_le_bytes()); // biBitCount
+
+        let mut f = b"AC1032\x00\x00\x00\x00\x00".to_vec();
+        f.resize(13, 0);
+        let imgptr = 64u32;
+        f.extend_from_slice(&imgptr.to_le_bytes()); // seeker at 0x0D
+        f.resize(imgptr as usize, 0);
+        f.extend_from_slice(&SENTINEL);
+        f.extend_from_slice(&0u32.to_le_bytes()); // overall size (ignored)
+        f.push(2); // 2 records: a bogus PNG, then a real DIB
+
+        let table_end = f.len() + 9 * 2;
+        let png_off = table_end as u32;
+        let png_junk = [0u8; 8]; // code says PNG but the bytes are not
+        let dib_off = png_off + png_junk.len() as u32;
+
+        f.push(6); // code = PNG
+        f.extend_from_slice(&png_off.to_le_bytes());
+        f.extend_from_slice(&(png_junk.len() as u32).to_le_bytes());
+        f.push(2); // code = DIB
+        f.extend_from_slice(&dib_off.to_le_bytes());
+        f.extend_from_slice(&(dib.len() as u32).to_le_bytes());
+
+        debug_assert_eq!(f.len(), png_off as usize);
+        f.extend_from_slice(&png_junk);
+        f.extend_from_slice(&dib);
+
+        let got = extract(&f).expect("should fall through to the DIB record");
+        assert!(
+            got.starts_with(b"BM"),
+            "expected a wrapped BMP from the DIB fallback"
+        );
     }
 }

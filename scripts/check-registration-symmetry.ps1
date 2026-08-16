@@ -39,6 +39,22 @@ if (-not (Test-Path $RegisterPath)) {
 }
 $lines = Get-Content $RegisterPath
 
+# --- 0. Analyse PRODUCTION code only; stop at the test module. ---------------------------
+# The invariant this enforces is about the user's real registry: claiming a slot another
+# product holds evicts it permanently. A `#[cfg(test)]` function writing into a `Scratch`
+# root under a throwaway key, with invented `zzz…` extensions, claims nothing from anyone
+# and has no incumbent to record.
+#
+# Without this cut the check fires on exactly the test you most want to exist. On
+# 2026-08-15 it failed `remove_user_if_ours_clears_our_stale_hook_but_leaves_a_foreign_one`,
+# a test whose entire purpose is proving we DON'T clobber a foreign hook, and whose only
+# writes are seeding the two fixtures it then asserts on. The suggested remedy would have
+# been to call `remember_displaced()` inside a test that is not displacing anything, i.e.
+# to distort the test until the linter was happy. A false red on a correct test is worse
+# than no check at all: it teaches the next person that this one cries wolf.
+$testMod = ($lines | Select-String -Pattern '^\s*#\[cfg\(test\)\]' | Select-Object -First 1)
+if ($testMod) { $lines = $lines[0..($testMod.LineNumber - 2)] }
+
 # --- 1. Find the helpers that BUILD shared-slot key paths. ------------------------------
 # A shared slot is one keyed by a handler-category GUID: `…\shellex\{CATEGORY}` for the
 # thumbnail/preview handlers, and the machine-wide PropertyHandlers list for the property

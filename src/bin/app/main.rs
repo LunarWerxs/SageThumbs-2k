@@ -675,10 +675,14 @@ fn main() {
         };
         RegisterClassW(&wc);
 
-        // WS_THICKFRAME lets the user drag the window TALLER; the dialog's
-        // WM_GETMINMAXINFO locks the width + a minimum height, and WM_SIZE reflows the
-        // bottom-anchored controls (right list / scrollbar / fold-mask / footer) so the
-        // left options get a bigger scroll viewport.
+        // HISTORICAL (v2, before the nav-rail): WS_THICKFRAME let the user drag the
+        // window TALLER; WM_GETMINMAXINFO locked the width + a minimum height, and
+        // WM_SIZE reflowed the bottom-anchored controls (right list / scrollbar /
+        // fold-mask / footer) so the left options got a bigger scroll viewport. That
+        // machinery still exists in `settings_dlg::mod::on_resize` (harmless — it just
+        // never runs without WS_THICKFRAME to trigger it) but is no longer wired to a
+        // resizable frame; see A048 in the private dev notes for why it wasn't deleted
+        // outright (its scroll counterpart lives in a sibling module).
         //
         // WS_CLIPCHILDREN: the left options are real child controls that the scroll
         // path slides with SetWindowPos + a full-band invalidate each tick. Without it,

@@ -4,6 +4,22 @@
 
 use super::*;
 
+/// Command ids consumed by `QueryContextMenu`, given the leaf budget and whether the preview
+/// slot was actually FILLED (not merely reserved). Pure so the invariant is unit-testable
+/// without a real `IContextMenu2_Impl` call.
+///
+/// Gating on `preview_inserted` rather than "a preview id was reserved" matters: a reserved id
+/// whose `insert_preview` call then failed (undecodable / timed-out tile) must not be counted,
+/// or the next handler in the chain gets its id range shifted by one for an item that was never
+/// actually added to the menu.
+fn consumed_ids(budget: u32, preview_inserted: bool) -> u32 {
+    if preview_inserted {
+        budget + 1
+    } else {
+        budget
+    }
+}
+
 impl IShellExtInit_Impl for ContextMenu_Impl {
     fn Initialize(
         &self,
@@ -109,6 +125,11 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 // ONLY this classic handler now, not the packaged modern command, so the
                 // menu can't double-list "SageThumbs 2K" — see AppxManifest.xml / register.rs.)
                 let mut pos = indexmenu;
+                // Whether `insert_preview` actually added a menu item, NOT merely whether a
+                // command id was reserved: a reserved id whose insert then failed (undecodable
+                // / timed-out tile) must not be counted in `consumed` below, or the next
+                // handler in the chain gets its id range shifted by one for nothing.
+                let mut preview_inserted = false;
 
                 // 1) Preview directly on the main menu (mode 2), topmost. A bitmap item
                 //    on a stock host, owner-drawn on a menu-skinned one — see
@@ -116,6 +137,7 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 if let Some(cmd) = self.preview_cmd.get() {
                     if mode == 2 && self.insert_preview(hmenu, pos, cmd) {
                         pos += 1;
+                        preview_inserted = true;
                     }
                 }
 
@@ -197,6 +219,7 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 if let Ok(hsub) = CreatePopupMenu() {
                     if let Some(cmd) = self.preview_cmd.get() {
                         if mode == 1 && self.insert_preview(hsub, 0, cmd) {
+                            preview_inserted = true;
                             // Real Explorer does not reliably forward
                             // WM_INITMENUPOPUP for this child popup, so the row must
                             // exist before the submenu is handed to the parent.
@@ -262,8 +285,9 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                         InsertMenuW(hmenu, pos, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
                 }
                 // Command ids consumed: the preview slot (offset = leaf count) when a
-                // preview was added, else the leaves the submenu used (0 when skipped).
-                // Claiming the leaf range is harmless when only the preview is present.
+                // preview was ACTUALLY added, else the leaves the submenu used (0 when
+                // skipped). Claiming the leaf range is harmless when only the preview is
+                // present.
                 //
                 // Report `budget`, NOT `leaves_n`: `budget = leaves_n.min(avail)` is what
                 // `build_menu_into` was actually allowed to append, and `QueryContextMenu` must
@@ -271,11 +295,10 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 // the NEXT extension in the chain's `idCmdFirst` past `idCmdLast`. The `+ 1` is
                 // safe because a preview id is only handed out when `avail > leaves_n`, which
                 // also forces `budget == leaves_n`.
-                let consumed = if self.preview_cmd.get().is_some() {
-                    budget + 1
-                } else {
-                    budget
-                };
+                //
+                // Gated on `preview_inserted`, not `preview_cmd.get().is_some()`: see
+                // `consumed_ids`'s doc comment for why that distinction is the whole fix.
+                let consumed = consumed_ids(budget, preview_inserted);
                 HRESULT(consumed as i32)
             }
         })
@@ -355,5 +378,32 @@ impl IContextMenu3_Impl for ContextMenu_Impl {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod consumed_ids_tests {
+    use super::*;
+
+    /// The bug this guards: `consumed` used to be driven by "was an id reserved", so a
+    /// reserved-but-never-inserted preview still reported `budget + 1` and shifted the next
+    /// chained handler's command-id range by one for an item that doesn't exist on the menu.
+    #[test]
+    fn a_reserved_but_uninserted_preview_must_not_be_counted() {
+        assert_eq!(
+            consumed_ids(5, false),
+            5,
+            "insert_preview failing must report only the leaves actually appended"
+        );
+    }
+
+    #[test]
+    fn an_actually_inserted_preview_adds_exactly_one() {
+        assert_eq!(consumed_ids(5, true), 6);
+    }
+
+    #[test]
+    fn a_zero_budget_with_no_preview_consumes_nothing() {
+        assert_eq!(consumed_ids(0, false), 0);
     }
 }

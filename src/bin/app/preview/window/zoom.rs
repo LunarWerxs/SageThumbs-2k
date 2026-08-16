@@ -26,6 +26,15 @@ pub(in crate::preview) fn snap_zoom_step(old: f64, new: f64, anchor: f64, tolera
     }
 }
 
+/// The zoom multiplier (relative to `fit`) that reaches true 100% — one image pixel per
+/// screen pixel (display scale 1.0). Floored at 1.0 (never shrink below the current
+/// zoom baseline) but deliberately NOT capped: a hard 8x ceiling here understated true
+/// 1:1 scale for any image more than 8x the pane's fit scale (a large photo opened in a
+/// small/default window), which contradicted the "true 100%" the caller advertises.
+pub(in crate::preview) fn true_100_zoom(fit: f64) -> f64 {
+    (1.0 / fit).max(1.0)
+}
+
 /// Video-only: the render child's rect = content area minus the bottom scrub strip.
 /// Zoom the image in/out by a wheel notch, keeping the image point under the cursor fixed.
 pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: LPARAM) {
@@ -42,7 +51,7 @@ pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: 
     let fit = content::fit_scale(iw, ih, cw, ch);
     let old_zoom = st.zoom.get();
     let raw_zoom = old_zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 };
-    let full = (1.0 / fit).clamp(1.0, 8.0); // true 100% (display scale 1.0), same as toggle_fit_100
+    let full = true_100_zoom(fit); // true 100% (display scale 1.0), same as toggle_fit_100
     let fit_snap = snap_zoom_step(old_zoom, raw_zoom, 1.0, ZOOM_SNAP_TOLERANCE);
     let snapped = if (fit_snap - raw_zoom).abs() > f64::EPSILON {
         fit_snap
@@ -84,8 +93,43 @@ pub(in crate::preview) unsafe fn toggle_fit_100(hwnd: HWND) {
     };
     let c = content_rect(hwnd);
     let fit = content::fit_scale(iw, ih, c.right - c.left, c.bottom - c.top);
-    let full = (1.0 / fit).clamp(1.0, 8.0); // 100% == display scale 1.0
+    let full = true_100_zoom(fit); // 100% == display scale 1.0
     st.zoom.set(if st.zoom.get() <= 1.01 { full } else { 1.0 });
+    st.pan.set((0, 0));
+    clamp_pan(hwnd);
+    let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+}
+
+/// The zoom multiplier (relative to `fit`) that makes the image exactly as wide as the
+/// content pane, however tall it then runs — the mode a portrait document (a scanned page,
+/// a tall screenshot) needs in a landscape-shaped preview window, where aspect-fit is
+/// height-limited and leaves empty margins on both sides instead of using the width that's
+/// actually there. Returns 1.0 (no-op) when aspect-fit is already width-limited — fit-width
+/// then has nothing left to do — and when `iw` is degenerate (mirrors `fit_scale`'s own
+/// fallback rather than dividing by zero).
+pub(in crate::preview) fn fit_width_zoom(iw: i32, ih: i32, cw: i32, ch: i32) -> f64 {
+    if iw <= 0 {
+        return 1.0;
+    }
+    let fit = content::fit_scale(iw, ih, cw, ch);
+    (cw as f64 / iw as f64) / fit
+}
+
+/// Toggle between aspect-fit and fit-width, recentering (same shape as [`toggle_fit_100`],
+/// the third zoom mode alongside aspect-fit/100%).
+pub(in crate::preview) unsafe fn toggle_fit_width(hwnd: HWND) {
+    let st = &*state(hwnd);
+    let Some((iw, ih)) = image_dims(st) else {
+        return;
+    };
+    let c = content_rect(hwnd);
+    let (cw, ch) = (c.right - c.left, c.bottom - c.top);
+    let width_zoom = fit_width_zoom(iw, ih, cw, ch);
+    st.zoom.set(if st.zoom.get() <= 1.01 {
+        width_zoom
+    } else {
+        1.0
+    });
     st.pan.set((0, 0));
     clamp_pan(hwnd);
     let _ = InvalidateRect(Some(hwnd), Some(&c), false);
@@ -212,8 +256,45 @@ mod tests {
     }
 
     #[test]
+    fn true_100_zoom_is_not_capped_at_8x_for_a_very_oversized_image() {
+        // A photo 20x the pane's fit scale (a large image opened in a small/default
+        // window) used to report "100%" at a mere 8x zoom — well under true 1:1.
+        assert_eq!(true_100_zoom(0.05), 20.0);
+    }
+
+    #[test]
+    fn true_100_zoom_never_drops_below_one() {
+        // fit >= 1 means the image already fits at or under native size; 100% must
+        // never ask for LESS than the current zoom baseline.
+        assert_eq!(true_100_zoom(1.0), 1.0);
+        assert_eq!(true_100_zoom(2.0), 1.0);
+    }
+
+    #[test]
     fn snap_zoom_step_far_away_is_unaffected() {
         // Neither endpoint is near the anchor: the step passes through untouched.
         assert_eq!(snap_zoom_step(1.05, 1.26, 2.0, ZOOM_SNAP_TOLERANCE), 1.26);
+    }
+
+    #[test]
+    fn fit_width_zoom_fills_the_pane_width_for_a_tall_portrait_image() {
+        // A tall portrait image (1000x2000) in a landscape pane (800x400): aspect-fit is
+        // height-limited (fit = 400/2000 = 0.2, using only 200 of the 800 px available
+        // width). Fit-width must instead reach cw/iw = 800/1000 = 0.8 exactly, i.e. 4x the
+        // aspect-fit baseline.
+        assert_eq!(fit_width_zoom(1000, 2000, 800, 400), 4.0);
+    }
+
+    #[test]
+    fn fit_width_zoom_is_a_no_op_when_aspect_fit_is_already_width_limited() {
+        // A wide image (2000x1000) in a squarish pane (800x800): aspect-fit is ALREADY
+        // width-limited (fit = 800/2000 = 0.4, using the full width) - fit-width has
+        // nothing left to do, so it must equal the aspect-fit baseline (1.0x).
+        assert_eq!(fit_width_zoom(2000, 1000, 800, 800), 1.0);
+    }
+
+    #[test]
+    fn fit_width_zoom_falls_back_to_one_for_degenerate_width() {
+        assert_eq!(fit_width_zoom(0, 100, 800, 400), 1.0);
     }
 }

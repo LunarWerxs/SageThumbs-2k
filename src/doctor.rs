@@ -371,6 +371,8 @@ fn check_registration(r: &mut Report) -> bool {
     for (name, clsid) in [
         ("Approved: thumbnail", CLSID_THUMBNAIL_PROVIDER_STR),
         ("Approved: context menu", CLSID_CONTEXT_MENU_STR),
+        ("Approved: preview handler", CLSID_PREVIEW_HANDLER_STR),
+        ("Approved: property handler", CLSID_PROPERTY_STORE_STR),
     ] {
         let listed = approved
             .as_ref()
@@ -428,6 +430,19 @@ fn check_displaced(r: &mut Report) {
     }
 }
 
+/// Resolve the effective thumbnail handler for one extension: the SystemFileAssociations
+/// key first (Windows consults it before the bare-extension key — see register.rs's module
+/// doc), falling back to the bare key. `lookup` reads one key's default value; taken as a
+/// parameter (rather than calling `hkcr_default` directly) so the precedence itself is
+/// testable without touching the real registry.
+fn effective_thumb_handler(
+    sfa_key: &str,
+    bare_key: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    lookup(sfa_key).or_else(|| lookup(bare_key))
+}
+
 /// The per-extension half: for each format we claim, does `.ext\shellex` actually point
 /// at us? Reports hijacks separately from plain absences — "another program took it" is
 /// a completely different fix from "registration never ran".
@@ -443,8 +458,14 @@ fn check_extensions(r: &mut Report) {
             disabled += 1;
             continue;
         }
-        let key = format!(".{ext}\\shellex\\{THUMB_HANDLER}");
-        match hkcr_default(&key).as_deref() {
+        // register.rs writes BOTH the SystemFileAssociations twin and the bare-extension
+        // key, and Windows consults the former first (see register.rs's module doc). Check
+        // it first here too, falling back to the bare key: reading only the bare key would
+        // report a wrong verdict on a machine where just one of the pair was overwritten.
+        let sfa_key = format!(r"SystemFileAssociations\.{ext}\shellex\{THUMB_HANDLER}");
+        let bare_key = format!(".{ext}\\shellex\\{THUMB_HANDLER}");
+        let effective = effective_thumb_handler(&sfa_key, &bare_key, hkcr_default);
+        match effective.as_deref() {
             Some(c) if c.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR) => ours += 1,
             Some(other) => {
                 stolen += 1;
@@ -664,16 +685,14 @@ fn check_engine(r: &mut Report) {
 fn cloud_placeholder_note(r: &mut Report, p: &Path, ext: &str) {
     use std::os::windows::fs::MetadataExt;
 
-    // Win32 file attributes: OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS.
-    const OFFLINE: u32 = 0x0000_1000;
-    const RECALL_ON_OPEN: u32 = 0x0004_0000;
-    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
-
     let Ok(meta) = std::fs::metadata(p) else {
         return;
     };
     let attrs = meta.file_attributes();
-    if attrs & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) == 0 {
+    // Same OFFLINE / RECALL_ON_OPEN / RECALL_ON_DATA_ACCESS trio `prebuild.rs` skips on —
+    // one definition, so this diagnostic and that guard can't drift apart again (see
+    // `crate::prebuild::OFFLINE_ATTRS`'s own doc for how they already had once).
+    if attrs & crate::prebuild::OFFLINE_ATTRS == 0 {
         return; // fully local: nothing to say
     }
 
@@ -734,24 +753,11 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
 
     // The shell wants an absolute path — handed a relative one (`st2k doctor file.mkv` from
     // the file's own folder), SHCreateItemFromParsingName fails with FILE_NOT_FOUND and this
-    // check would report a spurious "shell returned NO thumbnail". Canonicalize first, and
-    // undo the extended-length prefix canonicalize adds (the parsing name grammar rejects
-    // it): `\\?\C:\…` -> `C:\…`, and the UNC form `\\?\UNC\server\share\…` -> the plain
-    // `\\server\share\…` (stripping just `\\?\` there would leave `UNC\…`, which no API
-    // resolves — a network-share doctor run would then fail this check falsely).
-    let abs = Path::new(path)
-        .canonicalize()
-        .map(|p| {
-            let s = p.to_string_lossy().into_owned();
-            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-                format!(r"\\{rest}")
-            } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-                rest.to_string()
-            } else {
-                s
-            }
-        })
-        .unwrap_or_else(|_| path.to_string());
+    // check would report a spurious "shell returned NO thumbnail". `prebuild::parsing_path`
+    // canonicalizes and undoes the extended-length prefix (its own doc has the UNC details);
+    // shared with `prebuild.rs`'s `one()`, which needs the identical normalization for its
+    // own `SHCreateItemFromParsingName` call — this used to be a hand-copied duplicate.
+    let abs = crate::prebuild::parsing_path(path);
     let path = abs.as_str();
 
     // The shell objects need an apartment. Uninitialise only if WE initialised, so this
@@ -1147,6 +1153,17 @@ pub fn report(file: Option<&str>) -> String {
     r.line(S::Info, "SageThumbs 2K version", env!("CARGO_PKG_VERSION"));
     r.line(S::Info, "Windows", &crate::safety::os_string());
     r.line(S::Info, "Process architecture", std::env::consts::ARCH);
+    if crate::prebuild::is_elevated() {
+        // Every HKCU check below reads THIS process's hive. Elevated, that is the
+        // administrator's hive, not the interactive user's — a clean HKCU check here can
+        // still misreport the user's own session as unregistered.
+        r.line(
+            S::Warn,
+            "Elevated",
+            "yes — HKCU checks below inspect the administrator's hive, which may not \
+             match the interactive user's session. Re-run un-elevated for a per-user check.",
+        );
+    }
     match installed_dll() {
         Some(p) => {
             let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
@@ -1291,6 +1308,42 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bug this guards: reading only the bare-extension key mislabels an extension as
+    /// "stolen" (or "missing") when the higher-priority SystemFileAssociations key still
+    /// holds ours — and mislabels it "ours" the other way around when the SFA key was
+    /// overwritten but the bare key happens to still be intact.
+    #[test]
+    fn effective_thumb_handler_prefers_system_file_associations_over_bare_key() {
+        use std::collections::HashMap;
+        const SFA: &str = "SystemFileAssociations\\.xyz\\shellex\\{THUMB}";
+        const BARE: &str = ".xyz\\shellex\\{THUMB}";
+
+        // SFA holds ours, bare was overwritten by another program — must read as OURS, not
+        // stolen. This is exactly the case a bare-key-only read got wrong.
+        let mut regs = HashMap::new();
+        regs.insert(SFA, CLSID_THUMBNAIL_PROVIDER_STR.to_string());
+        regs.insert(BARE, "{some-foreign-clsid}".to_string());
+        let lookup = |k: &str| regs.get(k).cloned();
+        assert_eq!(
+            effective_thumb_handler(SFA, BARE, lookup),
+            Some(CLSID_THUMBNAIL_PROVIDER_STR.to_string())
+        );
+
+        // SFA absent (never written on an old install) but bare set: falls back correctly.
+        let mut regs2 = HashMap::new();
+        regs2.insert(BARE, CLSID_THUMBNAIL_PROVIDER_STR.to_string());
+        let lookup2 = |k: &str| regs2.get(k).cloned();
+        assert_eq!(
+            effective_thumb_handler(SFA, BARE, lookup2),
+            Some(CLSID_THUMBNAIL_PROVIDER_STR.to_string())
+        );
+
+        // Neither set: None, same as before.
+        let empty: HashMap<&str, String> = HashMap::new();
+        let lookup3 = |k: &str| empty.get(k).cloned();
+        assert_eq!(effective_thumb_handler(SFA, BARE, lookup3), None);
     }
 
     /// Set FILE_ATTRIBUTE_OFFLINE, preserving whatever else is set.

@@ -25,6 +25,55 @@ pub(super) unsafe fn round_corners(parent: HWND, ctl: HWND, radius_dp: i32) {
 }
 use crate::gdip;
 
+/// Cached GDI+ brushes/pens, keyed by the inputs that fully determine them, so
+/// `draw_check_glyph`/`draw_switch_glyph` stop allocating-then-immediately-freeing a
+/// `GpBrush`/`GpPen` on every WM_DRAWITEM/custom-draw pass (2-3 create+drop pairs per
+/// control, every repaint) when the whole palette is a handful of fixed theme colors.
+/// Never freed, like `dark.rs`'s own `cached_brush` — the key space is small enough
+/// that "for the process's lifetime" costs nothing worth reclaiming.
+mod glyph_cache {
+    use super::gdip;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::Graphics::GdiPlus::{GpBrush, GpPen};
+
+    thread_local! {
+        static BRUSHES: RefCell<HashMap<u32, usize>> = RefCell::new(HashMap::new());
+        static PENS: RefCell<HashMap<(u32, i32), usize>> = RefCell::new(HashMap::new());
+        static ROUND_PENS: RefCell<HashMap<(u32, i32), usize>> = RefCell::new(HashMap::new());
+    }
+
+    /// A solid brush of `color`, created once per distinct color and reused after.
+    pub(super) unsafe fn brush(color: COLORREF) -> *mut GpBrush {
+        BRUSHES.with(|c| {
+            *c.borrow_mut()
+                .entry(color.0)
+                .or_insert_with(|| gdip::brush(color) as usize) as *mut GpBrush
+        })
+    }
+
+    /// A solid pen of `(color, width)`, created once per distinct pair and reused after.
+    pub(super) unsafe fn pen(color: COLORREF, w: i32) -> *mut GpPen {
+        PENS.with(|c| {
+            *c.borrow_mut()
+                .entry((color.0, w))
+                .or_insert_with(|| gdip::pen(color, w) as usize) as *mut GpPen
+        })
+    }
+
+    /// As [`pen`], but round-capped (see [`gdip::pen_round`]) — kept in its own cache so
+    /// it can never collide with (and silently return) a square-capped pen of the same
+    /// color/width.
+    pub(super) unsafe fn pen_round(color: COLORREF, w: i32) -> *mut GpPen {
+        ROUND_PENS.with(|c| {
+            *c.borrow_mut()
+                .entry((color.0, w))
+                .or_insert_with(|| gdip::pen_round(color, w) as usize) as *mut GpPen
+        })
+    }
+}
+
 /// Owner-draw a section header: a muted, uppercase label followed by a hairline
 /// that runs from after the text to the control's right edge.
 pub(super) unsafe fn draw_section_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
@@ -110,14 +159,12 @@ unsafe fn draw_check_glyph(
     };
     let bw = s(hwnd, 1).max(1);
     gdip::with_aa(hdc, |gg| {
-        let b = gdip::brush(fill_c);
+        let b = glyph_cache::brush(fill_c);
         gdip::fill_round(gg, b, x, y, g, g, rad);
-        gdip::drop_brush(b);
-        let p = gdip::pen(border_c, bw);
+        let p = glyph_cache::pen(border_c, bw);
         gdip::stroke_round(gg, p, x, y, g, g, rad);
-        gdip::drop_pen(p);
         if on {
-            let cp = gdip::pen_round(ON_ACCENT(), s(hwnd, 2).max(2));
+            let cp = glyph_cache::pen_round(ON_ACCENT(), s(hwnd, 2).max(2));
             gdip::polyline(
                 gg,
                 cp,
@@ -127,7 +174,6 @@ unsafe fn draw_check_glyph(
                     (x + g * 73 / 100, y + g * 33 / 100),
                 ],
             );
-            gdip::drop_pen(cp);
         }
     });
 }
@@ -187,15 +233,12 @@ unsafe fn draw_switch_glyph(
         // Pill track: a rounded-rect fill (radius == half-height → full pill) plus a hairline
         // border inset by the pen width so the outer edge stays crisp. Anti-aliased, so the
         // curve no longer stair-steps like the old GDI RoundRect.
-        let b = gdip::brush(track_fill);
+        let b = glyph_cache::brush(track_fill);
         gdip::fill_round(g, b, x, y, w, h, h / 2);
-        gdip::drop_brush(b);
-        let p = gdip::pen(track_border, bw);
+        let p = glyph_cache::pen(track_border, bw);
         gdip::stroke_round(g, p, x, y, w, h, h / 2);
-        gdip::drop_pen(p);
-        let kb = gdip::brush(knob);
+        let kb = glyph_cache::brush(knob);
         gdip::fill_ellipse(g, kb, kx, ky, kd, kd);
-        gdip::drop_brush(kb);
     });
 }
 
@@ -672,4 +715,48 @@ pub(super) unsafe extern "system" fn scrollbar_subclass(
         _ => {}
     }
     DefSubclassProc(h, msg, w, l)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::COLORREF;
+
+    /// The whole point of caching: repeated calls with the SAME key must return the
+    /// SAME handle (no repeated Gdip* allocation on every owner-draw pass — see the
+    /// `glyph_cache` doc comment), while a different color or width must not collide
+    /// with (and silently reuse) an unrelated one.
+    #[test]
+    fn glyph_cache_reuses_by_key_and_separates_distinct_keys() {
+        unsafe {
+            let token = gdip::startup();
+
+            let blue1 = glyph_cache::brush(COLORREF(0x00FF0000));
+            let blue2 = glyph_cache::brush(COLORREF(0x00FF0000));
+            let green = glyph_cache::brush(COLORREF(0x0000FF00));
+            assert_eq!(blue1, blue2, "same color must reuse the cached brush");
+            assert_ne!(blue1, green, "different colors must not share a brush");
+
+            let p1 = glyph_cache::pen(COLORREF(0x00FF0000), 2);
+            let p2 = glyph_cache::pen(COLORREF(0x00FF0000), 2);
+            let p3 = glyph_cache::pen(COLORREF(0x00FF0000), 3);
+            assert_eq!(p1, p2, "same (color, width) must reuse the cached pen");
+            assert_ne!(
+                p1, p3,
+                "a different width must not reuse another width's pen"
+            );
+
+            // Square-capped and round-capped pens of the identical (color, width) must
+            // stay in separate caches — otherwise whichever flavor is requested first
+            // would silently hand its caps to every later request of the other flavor.
+            let square = glyph_cache::pen(COLORREF(0x000000FF), 2);
+            let round = glyph_cache::pen_round(COLORREF(0x000000FF), 2);
+            assert_ne!(
+                square, round,
+                "round-capped and square-capped pens must not collide"
+            );
+
+            gdip::shutdown(token);
+        }
+    }
 }

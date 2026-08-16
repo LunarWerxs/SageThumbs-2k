@@ -546,9 +546,35 @@ fn file_uri(path: &str) -> String {
 /// Parse a `.url`/`.webloc` shortcut for its target. `.url` is an INI (`URL=` under
 /// `[InternetShortcut]`); `.webloc` is a plist with a `<string>` URL. `None` unless the scheme is
 /// http(s) — so WebView2 never gets a `file:`/`javascript:` target from a shortcut.
+/// Decode a `.url`/`.webloc` shortcut's raw bytes as text. Windows commonly writes `.url`
+/// files with a non-ASCII target as UTF-16 (LE, with BOM) — a plain `read_to_string`
+/// (UTF-8 only) silently failed on those, so the live-preview feature never engaged for
+/// them. Sniff the BOM and decode accordingly; UTF-8 (the common case, and `.webloc`'s
+/// plist encoding) falls through unchanged.
+#[cfg(feature = "html-preview")]
+fn decode_shortcut_text(bytes: &[u8]) -> Option<String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units).ok();
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units).ok();
+    }
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes); // UTF-8 BOM
+    std::str::from_utf8(bytes).ok().map(str::to_string)
+}
+
 #[cfg(feature = "html-preview")]
 fn parse_url_shortcut(path: &str) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    let text = decode_shortcut_text(&bytes)?;
     let url = if path.to_ascii_lowercase().ends_with(".webloc") {
         let a = text.find("<string>")? + 8;
         let b = text[a..].find("</string>")? + a;
@@ -912,6 +938,36 @@ pub(super) unsafe fn forget_size(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::clamp_remembered_size;
+    #[cfg(feature = "html-preview")]
+    use super::parse_url_shortcut;
+
+    /// Windows commonly writes a `.url` shortcut with a non-ASCII target as UTF-16 LE
+    /// with a BOM — a plain `read_to_string` (UTF-8 only) used to fail on these outright,
+    /// so the live-preview feature never engaged for them.
+    #[cfg(feature = "html-preview")]
+    #[test]
+    fn parse_url_shortcut_reads_a_utf16_le_target_with_bom() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_loader_url_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shortcut.url");
+
+        let text = "[InternetShortcut]\r\nURL=https://example.com/caf\u{e9}\r\n";
+        let mut bytes = vec![0xFFu8, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let got = parse_url_shortcut(path.to_str().unwrap());
+        assert_eq!(got.as_deref(), Some("https://example.com/caf\u{e9}"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_remembered_size_is_kept_when_it_fits() {

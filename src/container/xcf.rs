@@ -22,14 +22,54 @@
 
 use image::{DynamicImage, RgbaImage};
 
-/// Canvas / layer dimension ceiling (matches the decoder's MAX_DIM bomb guard).
-const MAX_DIM: u32 = 16384;
+/// Canvas / layer dimension ceiling. Derived from the decoder's shared bomb guard rather
+/// than repeated as a literal, so retuning that ceiling cannot leave this file behind.
+const MAX_DIM: u32 = crate::decode::limits::MAX_DIM;
 /// Cap on layers we'll composite (a crafted file can't make us walk millions).
 const MAX_LAYERS: usize = 8192;
+/// Total LAYER pixels this decoder may materialize, summed across every layer it composites.
+///
+/// The per-edge [`MAX_DIM`] check and [`MAX_LAYERS`] are each necessary and neither is
+/// sufficient: they permit 8192 layers that are individually legal at 16384x16384. Peak
+/// memory stays bounded because a layer is dropped before the next is decoded, but the WORK
+/// is not, and this runs on a detached worker inside `explorer.exe` whose 2 s budget bounds
+/// only how long the MENU waits, not how long the abandoned worker keeps going.
+///
+/// **This deliberately does NOT include the canvas, and that is a correction, not an
+/// oversight.** The first version of this budget was `MAX_ALLOC / 4` (134 MP) charged to the
+/// canvas first, which is BELOW this codebase's own declared-area ceiling
+/// [`crate::decode::limits::MAX_PIXELS`] (`MAX_DIM`^2, 268 MP). That silently refused a legal
+/// 12000x12000 XCF that rendered fine before, breaking the rule this project treats as
+/// cardinal: nothing that rendered before may stop rendering. The canvas is already bounded
+/// to `MAX_PIXELS` by the per-edge `MAX_DIM` test above, and it is the OUTPUT, so it is
+/// always worth paying for. Only the layer pile is speculative work, so only it is budgeted.
+///
+/// One full-size image worth of layer data, which is generous for any real layered XCF (they
+/// spend a small multiple of their canvas) and thousands of times short of a bomb.
+const MAX_LAYER_PIXELS: u64 = crate::decode::limits::MAX_PIXELS;
+
+/// The budget must never sit BELOW the declared-area ceiling the rest of the decoder admits,
+/// or a canvas that every other check accepts gets refused before a single layer is read.
+/// That is not hypothetical: it is exactly the regression an audit caught in the first
+/// version of this budget. Asserted at COMPILE time rather than in a test, because it is a
+/// relationship between two constants: breaking it should fail the build, not wait for
+/// someone to run the suite.
+const _: () = assert!(MAX_LAYER_PIXELS >= crate::decode::limits::MAX_PIXELS);
 /// Cap on tiles per level (ceil(w/64)*ceil(h/64) for MAX_DIM² is ~65k; give margin).
 const MAX_TILES: usize = 1 << 20;
 /// XCF tiles are a fixed 64×64 grid.
 const TILE: u32 = 64;
+
+/// Whether a `w` x `h` LAYER still fits the remaining budget, and what is left after it.
+///
+/// Split out as a pure function ON PURPOSE, following `pdf_raster_edge` and
+/// `acquire_decode_slot` in this codebase: the cases worth testing are at 16384-square
+/// scale, and materializing one to test it costs exactly the gigabyte-scale allocation the
+/// budget exists to refuse. A pure rule can be checked at its boundary for free, and
+/// `decode_layer` consulting it is then a one-line fact anyone can verify by eye.
+fn spend_layer(budget: u64, w: u32, h: u32) -> Option<u64> {
+    budget.checked_sub(u64::from(w) * u64::from(h))
+}
 
 /// Does `b` open a GIMP XCF file? (All versions share the 9-byte signature.)
 pub fn looks_like_xcf(b: &[u8]) -> bool {
@@ -105,14 +145,30 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
         return None;
     }
 
+    // One cumulative budget for the LAYER pile only. The canvas is the output and is already
+    // bounded to MAX_PIXELS by the per-edge check above, so charging it here would refuse
+    // legal images (see MAX_LAYER_PIXELS). The per-edge and per-count caps cannot bound the
+    // layer total on their own, which is what this is for.
+    let mut budget = MAX_LAYER_PIXELS;
+
     // The flattened canvas, transparent to start.
     let mut canvas = RgbaImage::new(width, height);
 
     for &lptr in layer_ptrs.iter().rev() {
+        if budget == 0 {
+            break; // spent: composite what we have rather than returning nothing
+        }
         // Best-effort per layer: a single corrupt layer shouldn't lose the whole image.
-        if let Some(layer) =
-            decode_layer(bytes, lptr, wide, compression, prec, &colormap, base_type)
-        {
+        if let Some(layer) = decode_layer(
+            bytes,
+            lptr,
+            wide,
+            compression,
+            prec,
+            &colormap,
+            base_type,
+            &mut budget,
+        ) {
             if layer.visible && layer.opacity > 0.0 {
                 composite(&mut canvas, &layer);
             }
@@ -148,6 +204,7 @@ fn decode_layer(
     prec: Precision,
     colormap: &[[u8; 3]],
     _base_type: u32,
+    budget: &mut u64,
 ) -> Option<Layer> {
     let mut r = Rd { d, p: off };
     let lw = r.u32()?;
@@ -156,6 +213,11 @@ fn decode_layer(
     if lw == 0 || lh == 0 || lw > MAX_DIM || lh > MAX_DIM {
         return None;
     }
+    // Charge this layer to the shared budget BEFORE anything is allocated for it. A layer
+    // that does not fit ends the composite: with layers walked bottom-first, the ones already
+    // drawn are the ones underneath, so stopping yields a partial image rather than a wrong
+    // one, and `None` from this function is already the "skip this layer" path.
+    *budget = spend_layer(*budget, lw, lh)?;
     // Layer name: u32 length (incl. trailing NUL), then that many bytes. We skip it.
     let name_len = r.u32()? as usize;
     r.take(name_len)?;
@@ -646,16 +708,24 @@ struct Rd<'a> {
 
 impl<'a> Rd<'a> {
     fn u32(&mut self) -> Option<u32> {
-        let b = self.d.get(self.p..self.p + 4)?;
-        self.p += 4;
+        // A197/A172: `self.p` can be set directly from an attacker-controlled 64-bit file
+        // offset (`hptr`/`tptr` below both feed `p` from `ptr()`'s return), so a raw `p + 4`
+        // could overflow. Release runs with overflow-checks OFF, where that silently wraps to
+        // a small `p` whose `.get()` then spuriously succeeds against the WRONG bytes instead
+        // of failing closed; `checked_add` (matching `take()`, this struct's other cursor
+        // advance) makes the overflow itself refuse the read instead of wrapping past it.
+        let end = self.p.checked_add(4)?;
+        let b = self.d.get(self.p..end)?;
+        self.p = end;
         Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     }
 
     /// A file offset: 64-bit in v011+, 32-bit before.
     fn ptr(&mut self, wide: bool) -> Option<u64> {
         if wide {
-            let b = self.d.get(self.p..self.p + 8)?;
-            self.p += 8;
+            let end = self.p.checked_add(8)?;
+            let b = self.d.get(self.p..end)?;
+            self.p = end;
             Some(u64::from_be_bytes([
                 b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
             ]))
@@ -681,6 +751,326 @@ mod tests {
         assert!(extract(b"not an xcf file at all").is_none());
         assert!(!looks_like_xcf(b"PK\x03\x04"));
         assert!(looks_like_xcf(b"gimp xcf v011\0rest"));
+    }
+
+    /// A172: `Rd::u32`/`Rd::ptr` build their slice range from `self.p`, which can be set
+    /// directly from an attacker-controlled 64-bit file offset (`hptr`/`tptr` feed `p` via
+    /// `ptr()`'s own return). A cursor positioned near `usize::MAX` must make the `p + N`
+    /// addition itself refuse cleanly (`None`) rather than panic (debug/test, overflow-checks
+    /// on) or silently wrap to a small `p` whose `.get()` then spuriously succeeds against the
+    /// WRONG bytes (release, overflow-checks off) — the exact failure mode `take()`, the same
+    /// struct's other cursor-advance method, already avoided with `checked_add`.
+    #[test]
+    fn u32_and_ptr_refuse_a_cursor_near_the_end_of_the_address_space_instead_of_overflowing() {
+        let data = [0u8; 4];
+        let mut cursor = Rd {
+            d: &data,
+            p: usize::MAX - 1,
+        };
+        assert_eq!(cursor.u32(), None);
+
+        let mut cursor = Rd {
+            d: &data,
+            p: usize::MAX - 3,
+        };
+        assert_eq!(cursor.ptr(true), None); // wide (8-byte) read
+        cursor.p = usize::MAX - 1;
+        assert_eq!(cursor.ptr(false), None); // narrow (4-byte, delegates to u32) read
+    }
+
+    /// The cumulative budget must be spendable to exhaustion by legal-looking layers.
+    ///
+    /// Each individual value a bomb declares is inside a cap that already existed: the canvas
+    /// is within MAX_DIM, every layer is within MAX_DIM, and the layer COUNT is within
+    /// MAX_LAYERS. Only the total is absurd, which is exactly what those three caps cannot
+    /// see. This pins the arithmetic of that total rather than building a multi-gigabyte
+    /// fixture, since materializing the bomb to prove we refuse the bomb costs the bomb.
+    /// The rule `decode_layer` actually consults, tested at its boundary.
+    ///
+    /// An adversarial audit fairly pointed out that the arithmetic test below never touches
+    /// the parser, so it could not tell "the budget is enforced" from "the budget exists as a
+    /// constant". `spend_layer` IS the decision `decode_layer` makes (one line), so pinning
+    /// it pins the refusal without allocating the gigabytes the refusal prevents.
+    #[test]
+    fn the_layer_budget_refuses_the_layer_that_would_overspend_it() {
+        // A full-size layer fits once and leaves nothing, so a SECOND one is refused. That
+        // pair is the whole property: legal files render, a pile of them does not.
+        let full = u64::from(MAX_DIM) * u64::from(MAX_DIM);
+        assert_eq!(spend_layer(MAX_LAYER_PIXELS, MAX_DIM, MAX_DIM), Some(0));
+        assert_eq!(
+            spend_layer(0, MAX_DIM, MAX_DIM),
+            None,
+            "a spent budget must refuse, not wrap into a huge allowance"
+        );
+        assert_eq!(
+            full, MAX_LAYER_PIXELS,
+            "the budget is exactly one full-size image"
+        );
+
+        // One pixel past the remaining budget is refused; exactly at it is allowed.
+        assert_eq!(spend_layer(100, 10, 10), Some(0));
+        assert_eq!(spend_layer(99, 10, 10), None);
+    }
+
+    /// The canvas must NOT be charged to the layer budget.
+    ///
+    /// This is the regression an audit caught: the first version of the budget subtracted the
+    /// canvas from a shared pool sized at MAX_ALLOC/4 (134 MP), which is BELOW this project's
+    /// declared-area ceiling MAX_PIXELS (268 MP), so a legal 12000x12000 XCF that used to
+    /// render started returning nothing. Nothing that rendered before may stop rendering.
+    #[test]
+    fn a_legal_full_size_canvas_is_never_refused_by_the_layer_budget() {
+        // The largest canvas the per-edge check admits is exactly MAX_PIXELS, and a layer
+        // that size still fits the budget, so no legal canvas can be priced out.
+        assert_eq!(
+            u64::from(MAX_DIM) * u64::from(MAX_DIM),
+            crate::decode::limits::MAX_PIXELS
+        );
+        // The specific size the audit named, 144 MP, is comfortably inside it.
+        assert!(spend_layer(MAX_LAYER_PIXELS, 12_000, 12_000).is_some());
+    }
+
+    /// Build a structurally VALID minimal XCF: v011 (64-bit pointers), RGB, uncompressed,
+    /// one opaque layer that fills the canvas, filled with `rgb`.
+    ///
+    /// Offsets are computed rather than hand-counted because every pointer in this format is
+    /// absolute, so one inserted field silently invalidates a literal table.
+    fn synthetic_xcf(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+        synthetic_xcf_with_props(w, h, rgb, &[])
+    }
+
+    /// The same, with `props` written into the LAYER's property list as raw
+    /// `(ptype, payload)` pairs, so the opacity / visibility / offset branches can be
+    /// exercised with real bytes instead of being assumed.
+    fn synthetic_xcf_with_props(w: u32, h: u32, rgb: [u8; 3], props: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        fn u32b(v: u32) -> [u8; 4] {
+            v.to_be_bytes()
+        }
+        fn u64b(v: u64) -> [u8; 8] {
+            v.to_be_bytes()
+        }
+        // Sizes of each region, so the absolute pointers can be resolved before writing.
+        let header = 14 + 4 * 4 + (4 + 4 + 1) + (4 + 4); // magic..props incl. PROP_END
+        let ptr_list = 8 + 8; // one layer pointer + terminator
+        let layer_off = header + ptr_list;
+        let props_len: usize = props.iter().map(|(_, v)| 4 + 4 + v.len()).sum();
+        let layer_len = 4 + 4 + 4 + 4 + 1 + props_len + (4 + 4) + 8 + 8; // dims..maskptr
+        let hier_off = layer_off + layer_len;
+        let hier_len = 4 + 4 + 4 + 8;
+        let level_off = hier_off + hier_len;
+        let level_len = 4 + 4 + 8; // dims + ONE tile pointer (w,h <= TILE here)
+        let tile_off = level_off + level_len;
+
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(b"gimp xcf v011\0");
+        b.extend_from_slice(&u32b(w));
+        b.extend_from_slice(&u32b(h));
+        b.extend_from_slice(&u32b(0)); // base type RGB
+        b.extend_from_slice(&u32b(150)); // 8-bit gamma
+        b.extend_from_slice(&u32b(17)); // PROP_COMPRESSION
+        b.extend_from_slice(&u32b(1));
+        b.push(0); // none
+        b.extend_from_slice(&u32b(0)); // PROP_END
+        b.extend_from_slice(&u32b(0));
+        assert_eq!(
+            b.len(),
+            header,
+            "header layout drifted from its computed size"
+        );
+
+        b.extend_from_slice(&u64b(layer_off as u64));
+        b.extend_from_slice(&u64b(0)); // end of layer list
+
+        // --- layer ---
+        b.extend_from_slice(&u32b(w));
+        b.extend_from_slice(&u32b(h));
+        b.extend_from_slice(&u32b(0)); // RGB, 3 channels
+        b.extend_from_slice(&u32b(1)); // name length (just the NUL)
+        b.push(0);
+        for (ptype, payload) in props {
+            b.extend_from_slice(&u32b(*ptype));
+            b.extend_from_slice(&u32b(payload.len() as u32));
+            b.extend_from_slice(payload);
+        }
+        b.extend_from_slice(&u32b(0)); // PROP_END
+        b.extend_from_slice(&u32b(0));
+        b.extend_from_slice(&u64b(hier_off as u64));
+        b.extend_from_slice(&u64b(0)); // no layer mask
+        assert_eq!(b.len(), hier_off);
+
+        // --- hierarchy ---
+        b.extend_from_slice(&u32b(w));
+        b.extend_from_slice(&u32b(h));
+        b.extend_from_slice(&u32b(3)); // bpp = 3 channels x 1 byte
+        b.extend_from_slice(&u64b(level_off as u64));
+        assert_eq!(b.len(), level_off);
+
+        // --- level ---
+        b.extend_from_slice(&u32b(w));
+        b.extend_from_slice(&u32b(h));
+        b.extend_from_slice(&u64b(tile_off as u64));
+        assert_eq!(b.len(), tile_off);
+
+        // --- tile: uncompressed, one sample triple per pixel ---
+        for _ in 0..(w * h) {
+            b.extend_from_slice(&rgb);
+        }
+        b
+    }
+
+    /// `extract` really decodes a real XCF, pixels and all.
+    ///
+    /// WHY THIS EXISTS, and it is not a nicety: a `cargo mutants` run over this file scored
+    /// 9 caught against 18 MISSED, and one of the missed mutants was
+    /// `replace extract -> Option<DynamicImage> with None`. The whole parser could be
+    /// replaced by "return nothing" and every test here still passed, because they all
+    /// tested helpers (RLE, zlib, precision, budget arithmetic) and none of them ever fed
+    /// bytes to the front door. This does, so gutting `extract`, inverting its magic check,
+    /// or breaking its dimension guards now fails.
+    #[test]
+    fn extract_decodes_a_real_synthetic_xcf_down_to_the_pixels() {
+        let img = extract(&synthetic_xcf(2, 2, [200, 100, 50]))
+            .expect("a structurally valid XCF must decode");
+        assert_eq!((img.width(), img.height()), (2, 2));
+        let rgba = img.to_rgba8();
+        for px in rgba.pixels() {
+            assert_eq!(
+                px.0,
+                [200, 100, 50, 255],
+                "layer colour did not survive the composite"
+            );
+        }
+    }
+
+    /// The layer PROPERTY branches, driven with real bytes and asserted by their effect.
+    ///
+    /// `cargo mutants` flagged every one of these guards as un-killed: the opacity, float
+    /// opacity, visibility and offset arms could each be forced true or false and no test
+    /// noticed, because the only fixture in this file wrote an empty property list. They
+    /// parse attacker-supplied bytes, so "never exercised" is the wrong state for them.
+    ///
+    /// Each case asserts a VISIBLE consequence rather than that parsing merely succeeded:
+    /// a fully transparent composite is refused by `extract`'s own blank-tile check, so
+    /// "opacity 0 yields None" is an observation, not an implementation detail.
+    #[test]
+    fn layer_properties_are_parsed_and_actually_take_effect() {
+        let solid = [90u8, 160, 220];
+
+        // Opaque and visible: the control.
+        let opaque = synthetic_xcf_with_props(
+            2,
+            2,
+            solid,
+            &[
+                (6, 255u32.to_be_bytes().to_vec()), // PROP_OPACITY, fully opaque
+                (8, 1u32.to_be_bytes().to_vec()),   // PROP_VISIBLE, shown
+            ],
+        );
+        let img = extract(&opaque).expect("an opaque visible layer must render");
+        assert_eq!(img.to_rgba8().get_pixel(0, 0).0, [90, 160, 220, 255]);
+
+        // PROP_OPACITY of zero draws nothing, so the composite is blank and refused.
+        let transparent =
+            synthetic_xcf_with_props(2, 2, solid, &[(6, 0u32.to_be_bytes().to_vec())]);
+        assert!(
+            extract(&transparent).is_none(),
+            "a zero-opacity layer must not produce a visible tile"
+        );
+
+        // PROP_VISIBLE of zero does the same by a different route.
+        let hidden = synthetic_xcf_with_props(2, 2, solid, &[(8, 0u32.to_be_bytes().to_vec())]);
+        assert!(
+            extract(&hidden).is_none(),
+            "an invisible layer must not be composited"
+        );
+
+        // PROP_FLOAT_OPACITY overrides the integer one, so a 1.0 float rescues a 0 integer.
+        let float_wins = synthetic_xcf_with_props(
+            2,
+            2,
+            solid,
+            &[
+                (6, 0u32.to_be_bytes().to_vec()),
+                (33, 1.0f32.to_be_bytes().to_vec()),
+            ],
+        );
+        assert!(
+            extract(&float_wins).is_some(),
+            "PROP_FLOAT_OPACITY must override the integer opacity that precedes it"
+        );
+
+        // PROP_OFFSETS moves the layer. Pushed fully off a 2x2 canvas, nothing lands.
+        let mut off = Vec::new();
+        off.extend_from_slice(&8i32.to_be_bytes());
+        off.extend_from_slice(&8i32.to_be_bytes());
+        let shifted = synthetic_xcf_with_props(2, 2, solid, &[(15, off)]);
+        assert!(
+            extract(&shifted).is_none(),
+            "a layer offset entirely off-canvas must contribute no pixels"
+        );
+
+        // A TRUNCATED property payload must be ignored, not misread: the length guards on
+        // these arms are what mutation testing said were untested.
+        let short = synthetic_xcf_with_props(2, 2, solid, &[(6, vec![0u8, 0])]);
+        assert!(
+            extract(&short).is_some(),
+            "a 2-byte PROP_OPACITY is too short to honour, so the layer stays fully opaque"
+        );
+    }
+
+    /// A file that has the MAGIC but not a full header must be refused, not panic.
+    ///
+    /// `looks_like_xcf` is satisfied by 9 bytes, while the next line indexes `bytes[9..13]`
+    /// directly, so the `bytes.len() < 14` guard between them is the only thing standing
+    /// between a 9-to-13-byte file and a slice-out-of-range panic. Under `panic = "abort"`
+    /// in the shell that is the user's Explorer dying on a truncated download.
+    ///
+    /// Found by `cargo mutants`: changing that guard to `== 14` left every test passing,
+    /// because nothing here had ever fed it a short-but-magic file. Every length in the gap
+    /// is covered, not just one, since the failure is a boundary.
+    #[test]
+    fn a_file_with_the_magic_but_a_truncated_header_is_refused_without_panicking() {
+        for len in 9..=15usize {
+            let mut b = b"gimp xcf v011\0".to_vec();
+            b.truncate(len.min(14));
+            while b.len() < len {
+                b.push(0);
+            }
+            assert_eq!(b.len(), len);
+            // No unwinding to catch: the shell aborts on panic, so "did not panic" is the
+            // assertion, and reaching the next line at all is what proves it.
+            let got = extract(&b);
+            assert!(
+                got.is_none(),
+                "a {len}-byte file cannot contain an image, so it must be refused"
+            );
+        }
+    }
+
+    /// The same fixture, one field at a time, proves the header guards are load-bearing.
+    #[test]
+    fn extract_refuses_a_synthetic_xcf_whose_header_is_corrupted() {
+        let good = synthetic_xcf(2, 2, [10, 20, 30]);
+        assert!(extract(&good).is_some(), "control case must decode");
+
+        // Wrong magic.
+        let mut bad = good.clone();
+        bad[0] = b'G';
+        assert!(extract(&bad).is_none(), "magic check must reject");
+
+        // Zero width, which the dimension guard exists to catch.
+        let mut zero_w = good.clone();
+        zero_w[14..18].copy_from_slice(&0u32.to_be_bytes());
+        assert!(extract(&zero_w).is_none(), "a zero width must be refused");
+
+        // A width past MAX_DIM, the per-edge bomb guard.
+        let mut huge = good.clone();
+        huge[14..18].copy_from_slice(&(MAX_DIM + 1).to_be_bytes());
+        assert!(extract(&huge).is_none(), "past MAX_DIM must be refused");
+
+        // Truncated mid-tile: the reads are bounds-checked, so this is None, never a panic.
+        let truncated = &good[..good.len() - 3];
+        assert!(extract(truncated).is_none(), "a short file must be refused");
     }
 
     #[test]

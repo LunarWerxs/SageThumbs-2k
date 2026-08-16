@@ -10,6 +10,64 @@ use std::path::Path;
 
 use crate::{decode, formats, ocr, settings, strip, topdf, verbs};
 
+/// Ctrl+C -> graceful cancel for [`prebuild`], the one CLI verb long enough to need it
+/// (`prebuild.rs`'s module doc promises "v1 offers cancel (Ctrl+C) instead" of pause/resume).
+///
+/// A raw kernel32 import rather than pulling in the `windows` crate's `Win32_System_Console`
+/// feature for one call — the same tradeoff `decode.rs`'s `magick_gate` makes for its
+/// semaphore calls: kernel32 is always linked, so declaring the one function here avoids
+/// growing the feature list (and the generated bindings) for a single call site.
+mod ctrlc_cancel {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static CANCEL: AtomicBool = AtomicBool::new(false);
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+
+    const CTRL_C_EVENT: u32 = 0;
+
+    /// Runs on a dedicated OS thread Windows creates for it, NOT the main thread — so this
+    /// must stay to a single atomic store and nothing that could block or panic (panic=abort
+    /// would take the whole process down from a thread `run`'s cancel-check loop never sees).
+    /// Returning TRUE (handled) for Ctrl+C stops Windows from ALSO running its own terminate
+    /// action, which is what makes the graceful partial-report path in `run` reachable at all;
+    /// every other event (Break/Close/Logoff/Shutdown) returns FALSE so it keeps behaving like
+    /// there is no handler installed.
+    extern "system" fn on_ctrl(ctrl_type: u32) -> i32 {
+        if ctrl_type == CTRL_C_EVENT {
+            CANCEL.store(true, Ordering::SeqCst);
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Install the handler (once per process — a second `SetConsoleCtrlHandler(Some(_), TRUE)`
+    /// would just chain a duplicate) and reset the flag, so a second `prebuild` call in the
+    /// same process (tests; a future long-lived host) starts from "not cancelled" rather than
+    /// inheriting a stale Ctrl+C from a previous run.
+    pub(super) fn install() {
+        CANCEL.store(false, Ordering::SeqCst);
+        if !INSTALLED.swap(true, Ordering::SeqCst) {
+            // SAFETY: `on_ctrl` matches `HandlerRoutine`'s `extern "system" fn(u32) -> BOOL`
+            // signature exactly, and the handle/pointer types involved are `Option<fn>` and
+            // `i32`, not raw pointers this call could misuse.
+            unsafe {
+                SetConsoleCtrlHandler(Some(on_ctrl), 1);
+            }
+        }
+    }
+
+    /// The flag [`super::prebuild`] hands to `prebuild::run`'s `cancel` parameter.
+    pub(super) fn flag() -> &'static AtomicBool {
+        &CANCEL
+    }
+}
+
 /// `st2k devmode on|off|status`: toggle the developer-test-box flag (the HKCU `DevMachine`
 /// value). When ON, this machine's startup manifest request carries `&dev=1`. A plain
 /// machine-local flag, not an identifier; OFF on every real install.
@@ -285,6 +343,13 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         .trim()
         .parse()
         .map_err(|_| format!("bad size '{s}' (try 1MB / 500KB / 800000)"))?;
+    // f64::from_str accepts "inf"/"infinity"/"nan" (any case). Neither is caught by
+    // `v <= 0.0` (INFINITY > 0.0 is true; every NaN comparison is false), and the
+    // trailing `as u64` cast is Rust's SATURATING float->int cast — inf would
+    // silently become u64::MAX and nan would become 0 as a "compress target".
+    if !v.is_finite() {
+        return Err(format!("size must be a finite number: '{s}'"));
+    }
     if v <= 0.0 {
         return Err(format!("size must be positive: '{s}'"));
     }
@@ -395,9 +460,31 @@ pub fn parse_resize(s: Option<&str>) -> Result<verbs::Resize, String> {
     Ok(verbs::Resize::Fit(w.max(1), h.max(1)))
 }
 
+/// Is `p` a cloud-storage placeholder (OneDrive/Dropbox "free up space" file) whose
+/// content isn't actually on disk yet? Symlink metadata, so a reparse point/junction
+/// itself never triggers a download just to answer this.
+///
+/// `FILE_ATTRIBUTE_OFFLINE` | `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` |
+/// `FILE_ATTRIBUTE_RECALL_ON_OPEN` — the same trio `prebuild.rs`'s `OFFLINE_ATTRS`
+/// checks (and `doctor.rs` diagnoses). A OneDrive/Dropbox placeholder carries one
+/// of these; opening it to decode/convert DOWNLOADS the whole file, so `st2k batch`
+/// over a cloud-synced folder used to silently hydrate every placeholder it met —
+/// `prebuild` already guards against exactly this, `batch` did not. Shares
+/// `prebuild::OFFLINE_ATTRS` rather than a second hand-typed copy of the three flags
+/// (which is exactly how `doctor.rs`'s own copy once drifted); its own test pins them.
+fn is_cloud_placeholder(p: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(p)
+        .map(|m| m.file_attributes() & crate::prebuild::OFFLINE_ATTRS != 0)
+        .unwrap_or(false)
+}
+
 /// Expand `inputs` (files and/or directories) into a flat list of SUPPORTED image
-/// files (directories are scanned one level deep; unsupported extensions dropped).
-fn expand_inputs(inputs: &[String]) -> Vec<String> {
+/// files (directories are scanned one level deep; unsupported extensions dropped;
+/// cloud placeholders dropped too — see [`is_cloud_placeholder`]). Second element
+/// is how many were skipped as placeholders, so callers can tell the user rather
+/// than silently hydrating them.
+fn expand_inputs(inputs: &[String]) -> (Vec<String>, usize) {
     fn supported(p: &Path) -> bool {
         // `is_known` is ASCII-case-insensitive — no lowercase allocation needed.
         p.extension()
@@ -405,22 +492,34 @@ fn expand_inputs(inputs: &[String]) -> Vec<String> {
             .is_some_and(formats::is_known)
     }
     let mut out = Vec::new();
+    let mut skipped_offline = 0usize;
+    let mut consider = |candidate: &Path, owned: String| {
+        if !supported(candidate) {
+            return;
+        }
+        if is_cloud_placeholder(candidate) {
+            skipped_offline += 1;
+        } else {
+            out.push(owned);
+        }
+    };
     for i in inputs {
         let p = Path::new(i);
         if p.is_dir() {
             if let Ok(rd) = std::fs::read_dir(p) {
                 for e in rd.flatten() {
                     let ep = e.path();
-                    if ep.is_file() && supported(&ep) {
-                        out.push(ep.to_string_lossy().into_owned());
+                    if ep.is_file() {
+                        let s = ep.to_string_lossy().into_owned();
+                        consider(&ep, s);
                     }
                 }
             }
-        } else if p.is_file() && supported(p) {
-            out.push(i.clone());
+        } else if p.is_file() {
+            consider(p, i.clone());
         }
     }
-    out
+    (out, skipped_offline)
 }
 
 /// BULK process many inputs (files and/or folders) in ONE process, fanned out
@@ -461,11 +560,19 @@ pub fn prebuild(
         ..Default::default()
     };
 
+    // Wire up the graceful cancel `run`'s own doc promises ("v1 offers cancel (Ctrl+C)
+    // instead"): without a handler installed, Windows' default action on Ctrl+C is to kill the
+    // process outright, so a long prebuild had no way to stop early with a partial report — only
+    // `taskkill`, which loses the report entirely. `ctrlc_cancel::install` sets `CANCEL` and
+    // returns TRUE so the default terminate never runs; `run` checks the flag between files.
+    ctrlc_cancel::install();
+    let cancel = ctrlc_cancel::flag();
+
     // A drive walk can take a while before the first thumbnail; say what is happening rather
     // than looking hung.
     eprintln!("Scanning...");
     let last = std::sync::atomic::AtomicUsize::new(0);
-    let rep = pb::run(inputs, &opts, None, |done, total| {
+    let rep = pb::run(inputs, &opts, Some(cancel), |done, total| {
         // One line per percent, not per file: a 200k-file run would otherwise spend its time
         // writing to the console.
         let pct = done * 100 / total.max(1);
@@ -479,6 +586,9 @@ pub fn prebuild(
         "{} supported file(s) found\n  built    {}\n  cached   {}\n  failed   {}",
         rep.found, rep.built, rep.already, rep.failed
     );
+    if rep.cancelled {
+        out.push_str("\n  stopped early: Ctrl+C — the counts above are a partial report");
+    }
     if rep.skipped_offline > 0 {
         out.push_str(&format!(
             "\n  skipped  {} cloud placeholder(s) — extracting these would download them",
@@ -506,6 +616,39 @@ pub fn prebuild(
     Ok(out)
 }
 
+/// Atomically claim the first available `<stem>[ (n)].<ext>` path under `dir` by
+/// creating it with `create_new` — no separate "does it exist" check followed by a
+/// later write, so nothing (not the parallel pass below, not an external writer
+/// like a concurrent `st2k` invocation, Explorer, or a right-click verb) can land
+/// on the same name in between. `verbs::encode::slots::reserve` documents this
+/// exact TOCTOU race and fixes it the same way, but that module is private to
+/// `verbs` and unreachable from here, hence the local copy of the technique
+/// rather than a plain `exists()` loop (the bug this replaces).
+///
+/// The returned path is a real, empty, already-created file — the caller fills it
+/// in (a plain encoder save overwrites the empty placeholder).
+fn reserve_batch_output(dir: &Path, stem: &str, ext: &str) -> std::path::PathBuf {
+    let mut n = 0u32;
+    loop {
+        let cand = if n == 0 {
+            dir.join(format!("{stem}.{ext}"))
+        } else {
+            dir.join(format!("{stem} ({n}).{ext}"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&cand)
+        {
+            Ok(_) => return cand,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            // Couldn't create for another reason (permission / missing dir): hand
+            // the name back anyway — the encode pass surfaces the real error.
+            Err(_) => return cand,
+        }
+    }
+}
+
 pub fn batch(
     op: &str,
     inputs: &[String],
@@ -529,7 +672,7 @@ pub fn batch(
         "png".to_string()
     };
 
-    let files = expand_inputs(inputs);
+    let (files, skipped_offline) = expand_inputs(inputs);
     if files.is_empty() {
         return Err("no supported image files found in the inputs".to_string());
     }
@@ -537,9 +680,10 @@ pub fn batch(
         std::fs::create_dir_all(d).map_err(|e| format!("cannot create output dir {d}: {e}"))?;
     }
 
-    // Pre-compute collision-free output paths SERIALLY, so the parallel pass never
-    // races on a name (two sources with the same stem → `name`, `name (1)`, …).
-    let mut used = std::collections::HashSet::new();
+    // Reserve collision-free output paths SERIALLY and ATOMICALLY, so neither the
+    // parallel pass below nor an EXTERNAL writer (a concurrent `st2k` invocation,
+    // Explorer, a right-click verb) can land on the same name. See
+    // `reserve_batch_output` for why (and why not a plain `used`/`exists()` check).
     let mut pairs: Vec<(String, std::path::PathBuf)> = Vec::with_capacity(files.len());
     for f in &files {
         let src = Path::new(f);
@@ -551,26 +695,45 @@ pub fn batch(
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| std::path::PathBuf::from(".")),
         };
-        let mut out = dir.join(format!("{stem}.{ext}"));
-        let mut n = 1u32;
-        while used.contains(&out) || out.exists() {
-            out = dir.join(format!("{stem} ({n}).{ext}"));
-            n += 1;
-        }
-        used.insert(out.clone());
+        let out = reserve_batch_output(&dir, stem, &ext);
         pairs.push((f.clone(), out));
     }
 
     // Fan out: each (input, pre-reserved output) is independent → no naming race.
     let results = crate::parallel::map(&pairs, |_, (input, output)| -> bool {
         if is_convert {
-            verbs::convert_to(input, output, quality, None, resize).is_ok()
+            // `quality` is the only quality knob `batch` exposes; before this fix it
+            // was dropped for WebP specifically (`None` = lossless, unconditionally),
+            // so `batch convert --to webp --quality N` silently ignored N and always
+            // wrote a large lossless file. Reuse it as the WebP quality too.
+            let webp_quality = (ext == "webp").then_some(quality);
+            verbs::convert_to(input, output, quality, webp_quality, resize).is_ok()
         } else {
             thumbnail(input, &output.to_string_lossy(), size).is_ok()
         }
     });
+    // A failed encode never got past the reserved placeholder — clean up any that
+    // are still zero bytes (mirrors OutSlot's own drop behavior), so a failed batch
+    // item leaves nothing behind, same as before this fix reserved ahead of time.
+    for ((_, out), &ok) in pairs.iter().zip(results.iter()) {
+        if !ok {
+            let empty = std::fs::metadata(out)
+                .map(|m| m.len() == 0)
+                .unwrap_or(false);
+            if empty {
+                let _ = std::fs::remove_file(out);
+            }
+        }
+    }
     let done = results.iter().filter(|&&ok| ok).count();
     let total = files.len();
+    let offline_note = if skipped_offline > 0 {
+        format!(
+            "\n  skipped  {skipped_offline} cloud placeholder(s) — opening these would download them"
+        )
+    } else {
+        String::new()
+    };
     // Total failure must FAIL the command (nonzero exit for scripts/CI/MCP callers) — a
     // "0/12 succeeded" with exit code 0 was indistinguishable from a good run without
     // parsing English stdout. Partial success stays Ok but now names the failure count.
@@ -579,11 +742,11 @@ pub fn batch(
     }
     if done < total {
         return Ok(format!(
-            "{done}/{total} succeeded ({} failed)",
+            "{done}/{total} succeeded ({} failed){offline_note}",
             total - done
         ));
     }
-    Ok(format!("{done}/{total} succeeded"))
+    Ok(format!("{done}/{total} succeeded{offline_note}"))
 }
 
 /// `st2k upload-hosts [--open]` — show (or open) the user-editable upload-hosts config
@@ -651,7 +814,40 @@ pub fn list_formats(json: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialises the tests that touch the process-wide Ctrl+C `CANCEL` flag against each
+    /// other and against anything that reads it. One flag, many test threads, so any test
+    /// that WRITES it must hold this first.
+    static CANCEL_FLAG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use std::io::Write;
+
+    /// The flag part of the Ctrl+C wiring: `install` must start a fresh run from
+    /// "not cancelled" even if a previous run's Ctrl+C left it set — the actual OS-level
+    /// `SetConsoleCtrlHandler` registration and CTRL_C_EVENT delivery can't be exercised
+    /// in-process (there is no safe way to raise a real console control event against the
+    /// test runner itself), so this pins the one behaviour that IS a pure state check.
+    ///
+    /// SERIALISED, and it has to be: `CANCEL` is one process-wide flag that `cli::prebuild`
+    /// also reads, cargo runs this file's tests on many threads in one process, and this test
+    /// deliberately SETS the flag. Without the lock it can make a concurrent prebuild test see
+    /// a cancellation nobody asked for, which is a flake that would look like a real bug in
+    /// the cancel path. Same defect an audit found in the DPI-override tests, same fix.
+    #[test]
+    fn ctrlc_cancel_install_resets_the_flag() {
+        use std::sync::atomic::Ordering;
+        let _guard = CANCEL_FLAG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        ctrlc_cancel::flag().store(true, Ordering::SeqCst);
+        ctrlc_cancel::install();
+        assert!(
+            !ctrlc_cancel::flag().load(Ordering::SeqCst),
+            "install() must clear a flag left set by an earlier run"
+        );
+        // Leave the shared flag as we found it, so a test that runs after this one is not
+        // handed a stale cancellation.
+        ctrlc_cancel::flag().store(false, Ordering::SeqCst);
+    }
 
     #[test]
     fn cli_thumbnail_and_info_and_formats() {
@@ -707,5 +903,195 @@ mod tests {
         assert!(err.contains(&decode::limits::MAX_INPUT_BYTES.to_string()));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    /// `f64::from_str` accepts "inf"/"infinity"/"nan" (any case) and neither trips
+    /// the `v <= 0.0` guard (INFINITY > 0.0; every NaN comparison is false), so
+    /// without the `is_finite` check the trailing saturating `as u64` cast would
+    /// silently turn "inf" into `u64::MAX` and "nan" into `0` as a compress target.
+    #[test]
+    fn parse_size_rejects_non_finite_values() {
+        assert!(parse_size("inf").is_err());
+        assert!(parse_size("Infinity").is_err());
+        assert!(parse_size("-inf").is_err());
+        assert!(parse_size("nan").is_err());
+        assert!(parse_size("NaN").is_err());
+        // Still accepts ordinary sizes.
+        assert_eq!(parse_size("1MB"), Ok(1_000_000));
+        assert_eq!(parse_size("500KB"), Ok(500_000));
+    }
+
+    /// The exact A058 race: two callers reserving under the SAME (dir, stem, ext)
+    /// concurrently must never both walk away with the same path. A check-then-
+    /// create loop (`exists()` then open) can let two threads both pass the check
+    /// for the same candidate before either creates it; `create_new` cannot.
+    #[test]
+    fn reserve_batch_output_is_race_safe_under_concurrent_callers() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_toctou_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::sync::Arc::new(dir);
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let dir = dir.clone();
+                std::thread::spawn(move || reserve_batch_output(&dir, "race", "webp"))
+            })
+            .collect();
+        let mut got: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        got.sort();
+        let before = got.len();
+        got.dedup();
+        assert_eq!(
+            got.len(),
+            before,
+            "two concurrent callers claimed the SAME output path — the exact race this fix closes"
+        );
+
+        let _ = std::fs::remove_dir_all(&*dir);
+    }
+
+    /// A name a batch's OWN earlier iteration already claimed, and a name some
+    /// external writer created before `batch` ever ran, must both be skipped —
+    /// the reservation itself is what proves it, not the (now-removed) `used` set.
+    #[test]
+    fn reserve_batch_output_skips_names_already_on_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_reserve_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("img.webp"), b"external writer").unwrap();
+
+        let first = reserve_batch_output(&dir, "img", "webp");
+        assert_eq!(first, dir.join("img (1).webp"));
+        let second = reserve_batch_output(&dir, "img", "webp");
+        assert_eq!(second, dir.join("img (2).webp"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `batch convert --to webp --quality N` must actually vary output size with
+    /// N — before this fix `webp_quality` was hard-coded to `None` (lossless) no
+    /// matter what quality was requested. Gated like `verbs.rs`'s own
+    /// `lossy_webp_is_smaller_and_keeps_alpha`: without `webp-lossy`, WebP is
+    /// ALWAYS encoded losslessly regardless of `webp_quality`, so this can only
+    /// prove anything when the feature (which every release build enables) is on.
+    #[cfg(feature = "webp-lossy")]
+    #[test]
+    fn batch_convert_to_webp_honors_quality() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_webpq_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Genuine per-pixel noise (an integer hash, not a linear/periodic formula):
+        // a plain modular formula like `x*53 + y*17` has constant row/column
+        // differences, which a LOSSLESS predictive coder crushes to near-nothing —
+        // the opposite of what this test needs. Real noise is what quality-10
+        // LOSSY WebP shrinks a lot and lossless does not.
+        let img = image::RgbImage::from_fn(200, 200, |x, y| {
+            let i = y.wrapping_mul(200).wrapping_add(x);
+            let mut h = i.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
+            h ^= h >> 16;
+            h = h.wrapping_mul(0x045D_9F3B);
+            h ^= h >> 16;
+            image::Rgb([
+                (h & 0xFF) as u8,
+                ((h >> 8) & 0xFF) as u8,
+                ((h >> 16) & 0xFF) as u8,
+            ])
+        });
+        let src = dir.join("noise.png");
+        image::DynamicImage::ImageRgb8(img).save(&src).unwrap();
+
+        batch(
+            "convert",
+            &[src.to_str().unwrap().to_string()],
+            Some(dir.to_str().unwrap()),
+            256,
+            Some("webp"),
+            10, // aggressively lossy
+            verbs::Resize::None,
+        )
+        .unwrap();
+        let lossy_len = std::fs::metadata(dir.join("noise.webp")).unwrap().len();
+
+        // The single-file path with an explicit `None` webp_quality is the known-
+        // lossless baseline to compare against.
+        let lossless = dir.join("noise_lossless.webp");
+        verbs::convert_to(
+            src.to_str().unwrap(),
+            &lossless,
+            10,
+            None,
+            verbs::Resize::None,
+        )
+        .unwrap();
+        let lossless_len = std::fs::metadata(&lossless).unwrap().len();
+
+        assert!(
+            lossy_len < lossless_len,
+            "batch webp at quality 10 ({lossy_len} bytes) should be smaller than lossless \
+             ({lossless_len} bytes) — quality is not reaching the encoder"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A OneDrive/Dropbox "free up space" placeholder must be skipped, not
+    /// silently hydrated (downloaded) by opening it for a decode.
+    #[test]
+    fn expand_inputs_skips_cloud_placeholders() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_offline_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let normal = dir.join("normal.png");
+        std::fs::write(&normal, b"not a real png, just needs to exist").unwrap();
+        let placeholder = dir.join("cloud.png");
+        std::fs::write(&placeholder, b"placeholder").unwrap();
+
+        // FILE_ATTRIBUTE_OFFLINE, set directly rather than needing a real cloud
+        // provider to reproduce the flag.
+        unsafe {
+            use std::os::windows::ffi::OsStrExt;
+            use windows::core::PCWSTR;
+            use windows::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_OFFLINE};
+            let wide: Vec<u16> = placeholder
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_ATTRIBUTE_OFFLINE).unwrap();
+        }
+        assert!(is_cloud_placeholder(&placeholder));
+        assert!(!is_cloud_placeholder(&normal));
+
+        let (files, skipped) = expand_inputs(&[dir.to_str().unwrap().to_string()]);
+        assert_eq!(skipped, 1);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("normal.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

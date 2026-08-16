@@ -164,17 +164,13 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
 /// returns the light gray), so a dark menu would get a glaring white preview
 /// block. Detect the real menu theme from the registry instead.
 ///
-/// Reads `AppsUseLightTheme`, matching `bin/app/dark.rs` and `previewhandler.rs`.
-/// It used to read `SystemUsesLightTheme` — that key is the TASKBAR/Start theme,
-/// which is independent: "dark apps + light taskbar" is a common setup, and there
-/// it reported light while Explorer's menu was dark, so the preview tile was baked
-/// white-on-dark (reported from a pt-BR Win11 machine, v1.3.1).
+/// Reads `AppsUseLightTheme` via the shared [`crate::safety::apps_use_dark_theme`] probe,
+/// matching `bin/app/dark.rs` and `previewhandler.rs`. It used to read `SystemUsesLightTheme`
+/// — that key is the TASKBAR/Start theme, which is independent: "dark apps + light taskbar" is
+/// a common setup, and there it reported light while Explorer's menu was dark, so the preview
+/// tile was baked white-on-dark (reported from a pt-BR Win11 machine, v1.3.1).
 pub(crate) fn menu_dark() -> bool {
-    windows_registry::CURRENT_USER
-        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-        .and_then(|k| k.get_u32("AppsUseLightTheme"))
-        .map(|v| v == 0)
-        .unwrap_or(false)
+    crate::safety::apps_use_dark_theme()
 }
 
 /// The (bg, fg) baked into the preview tile so it matches the surrounding menu.
@@ -348,13 +344,70 @@ pub(crate) unsafe fn tile_size(p: &Preview) -> (i32, i32) {
 pub(crate) fn open_with_default(path: &str) {
     let wide = crate::wide(path);
     unsafe {
-        ShellExecuteW(
+        let ret = ShellExecuteW(
             None,
             windows::core::w!("open"),
             PCWSTR(wide.as_ptr()),
             None,
             None,
             SW_SHOWNORMAL,
+        );
+        // ShellExecuteW returns an HINSTANCE-like value > 32 on success; <= 32 is an
+        // error code (see `update.rs::launch_installer_silent`). A failed launch used
+        // to vanish silently — the preview tile just did nothing on click — matching
+        // the pattern `launch_app` already logs for the companion-EXE launch path.
+        let se_code = ret.0 as usize;
+        if !shell_execute_succeeded(se_code) {
+            crate::safety::log(&format!(
+                "open_with_default: ShellExecuteW failed for {path} (code {se_code})"
+            ));
+        }
+    }
+}
+
+/// True for a `ShellExecuteW` return value that indicates success (`> 32`); everything
+/// `<= 32` is one of its `SE_ERR_*` codes. Split out so `open_with_default`'s
+/// failure-logging branch has something to unit-test without actually launching a
+/// process (`ShellExecuteW` itself is not something a test should invoke).
+fn shell_execute_succeeded(code: usize) -> bool {
+    code > 32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_execute_return_code_threshold_is_32() {
+        // 0 and 2 (ERROR_FILE_NOT_FOUND) are documented SE_ERR_* failure codes.
+        assert!(!shell_execute_succeeded(0));
+        assert!(!shell_execute_succeeded(2));
+        assert!(!shell_execute_succeeded(32));
+        // Anything above 32 is a real HINSTANCE — success.
+        assert!(shell_execute_succeeded(33));
+        assert!(shell_execute_succeeded(0x1000));
+    }
+
+    /// `menu_dark` must report the APP theme, read from the key Windows actually puts it in.
+    ///
+    /// The earlier version of this test asserted `menu_dark() == safety::apps_use_dark_theme()`,
+    /// which an adversarial audit correctly called a tautology: `menu_dark`'s entire body IS
+    /// that call, so the assertion compared a function to itself and could never fail. The
+    /// defect worth pinning is the one this module actually shipped once, a private copy of the
+    /// read that consulted the WRONG value (`SystemUsesLightTheme`, which is the taskbar and
+    /// start menu, not apps). So the expectation is derived INDEPENDENTLY here, from the key by
+    /// name, and a re-added copy reading the wrong one now fails.
+    #[test]
+    fn menu_dark_reads_the_apps_theme_value_not_the_system_one() {
+        let expected = windows_registry::CURRENT_USER
+            .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            .and_then(|k| k.get_u32("AppsUseLightTheme"))
+            .map(|v| v == 0)
+            .unwrap_or(false);
+        assert_eq!(
+            menu_dark(),
+            expected,
+            "menu_dark disagrees with AppsUseLightTheme, so it is reading something else"
         );
     }
 }

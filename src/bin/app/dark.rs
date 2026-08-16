@@ -24,7 +24,6 @@ use windows::Win32::UI::Controls::{GetComboBoxInfo, SetWindowTheme, COMBOBOXINFO
 use windows::Win32::UI::WindowsAndMessaging::{
     WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
 };
-use windows_registry::CURRENT_USER;
 
 pub(crate) const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
@@ -144,7 +143,10 @@ pub(crate) fn CODE_COMMENT() -> COLORREF {
     tc(rgb(106, 153, 85), rgb(0, 128, 0))
 }
 
-/// True when the (effective) theme is dark. Reads `AppsUseLightTheme == 0`, cached.
+/// True when the (effective) theme is dark. Reads `AppsUseLightTheme == 0` via the shared
+/// [`sagethumbs2k_core::safety::apps_use_dark_theme`] probe (also used by
+/// `contextmenu::paint::menu_dark` and `previewhandler::theme_is_dark` — this used to be a
+/// third independent copy of the same registry read), cached for the process lifetime.
 /// `ST2K_THEME=light|dark` overrides the registry — a test/diagnostic hook so both
 /// skins can be exercised without flipping the OS theme.
 pub(crate) fn is_dark() -> bool {
@@ -157,11 +159,7 @@ pub(crate) fn is_dark() -> bool {
                 _ => {}
             }
         }
-        CURRENT_USER
-            .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-            .and_then(|k| k.get_u32("AppsUseLightTheme"))
-            .map(|v| v == 0)
-            .unwrap_or(false)
+        sagethumbs2k_core::safety::apps_use_dark_theme()
     })
 }
 
@@ -180,6 +178,10 @@ unsafe impl Sync for Uxtheme {}
 fn uxtheme() -> &'static Uxtheme {
     static U: OnceLock<Uxtheme> = OnceLock::new();
     U.get_or_init(|| unsafe {
+        // Deliberately no matching FreeLibrary: `uxtheme.dll` is a system DLL Explorer
+        // (or this process) keeps mapped for its own lifetime anyway, this cache lives
+        // for the whole process, and the fn pointers resolved below stay live in `U`
+        // until then. The OS unmaps the module on process exit regardless.
         let h: HMODULE = LoadLibraryW(w!("uxtheme.dll")).unwrap_or_default();
         let by_ord = |ord: u16| GetProcAddress(h, PCSTR(ord as usize as *const u8));
         Uxtheme {

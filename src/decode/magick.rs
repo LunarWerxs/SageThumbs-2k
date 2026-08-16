@@ -333,23 +333,21 @@ fn isobmff_box_at(bytes: &[u8], offset: usize) -> Option<([u8; 4], usize, usize)
     let header = bytes.get(offset..offset.checked_add(8)?)?;
     let size32 = u32::from_be_bytes(header[0..4].try_into().ok()?);
     let typ = header[4..8].try_into().ok()?;
-    let (size, header_len) = match size32 {
-        0 => (bytes.len().checked_sub(offset)?, 8), // extends to EOF
-        1 => {
-            let extended = bytes.get(offset.checked_add(8)?..offset.checked_add(16)?)?;
-            let size = u64::from_be_bytes(extended.try_into().ok()?);
-            (usize::try_from(size).ok()?, 16)
-        }
-        size => (size as usize, 8),
+    let extended = if size32 == 1 {
+        let raw = bytes.get(offset.checked_add(8)?..offset.checked_add(16)?)?;
+        Some(u64::from_be_bytes(raw.try_into().ok()?))
+    } else {
+        None
     };
-    if size < header_len {
-        return None;
-    }
-    let end = offset.checked_add(size)?;
-    if end > bytes.len() {
-        return None;
-    }
-    Some((typ, offset + header_len, end))
+    let (size, header_len) = crate::container::boxhdr::decode_box_size(
+        size32,
+        extended,
+        offset as u64,
+        bytes.len() as u64,
+    )?;
+    let size = usize::try_from(size).ok()?;
+    let header_len = usize::try_from(header_len).ok()?;
+    Some((typ, offset + header_len, offset + size))
 }
 
 fn is_mini_avif(bytes: &[u8]) -> bool {
@@ -427,6 +425,14 @@ fn decode_via_magick_spec(
     )
 }
 
+/// Worst-case bytes the decode path's stdout can legitimately carry: every call site
+/// caps geometry at [`MAGICK_MAX_EDGE_PX`] (4096) before asking magick to write a PNG,
+/// so 4096x4096 raw RGBA is the ceiling with only framing overhead on top. Same value
+/// and reasoning as `flv.rs`'s `FLASH_PNG_CAP` for its sibling out-of-process harness.
+/// Without this, a starved-but-alive magick child could stream unbounded bytes into
+/// this process for the whole CPU/wall budget window below.
+const MAGICK_PNG_CAP: usize = 64 * 1024 * 1024;
+
 /// As [`decode_via_magick_spec`], but with an explicit re-decode allocation
 /// budget — used by the PSD composite path, whose larger resize cap needs a
 /// matching `max_alloc` (see [`decode_psd_composite`]).
@@ -498,7 +504,7 @@ fn decode_via_magick_spec_alloc(
     });
 
     // Read stdout on its own thread; the main thread enforces the budget.
-    let Some(mut stdout) = child.stdout.take() else {
+    let Some(stdout) = child.stdout.take() else {
         crate::safety::log_debug("magick decode: child has no stdout pipe");
         let _ = child.kill();
         let _ = writer.join();
@@ -508,7 +514,11 @@ fn decode_via_magick_spec_alloc(
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
+        // Capped so a hostile/misbehaving child can't balloon our memory before the
+        // CPU/wall watchdog below gets a chance to kill it (see MAGICK_PNG_CAP).
+        let _ = stdout
+            .take((MAGICK_PNG_CAP + 1) as u64)
+            .read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
 
@@ -709,6 +719,34 @@ pub fn magick_output_supported(extension: &str) -> bool {
     output_coder(extension).is_some()
 }
 
+/// What the [`encode_via_magick`] watchdog loop should do after one process poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EncodeWait {
+    Continue,
+    TimedOut,
+    CpuExceeded,
+}
+
+/// Pure decision core of the encode watchdog loop: has the child exceeded its CPU
+/// budget, or only the wall-clock deadline? Split out of the loop so the CPU branch —
+/// the budget the decode path already enforces via `await_magick_output`, which the
+/// encode path used to lack entirely — is directly testable without spawning and
+/// starving a real magick process.
+fn encode_wait_decision(
+    cpu: Option<Duration>,
+    cpu_budget: Duration,
+    now: std::time::Instant,
+    deadline: std::time::Instant,
+) -> EncodeWait {
+    if cpu.is_some_and(|c| c > cpu_budget) {
+        EncodeWait::CpuExceeded
+    } else if now >= deadline {
+        EncodeWait::TimedOut
+    } else {
+        EncodeWait::Continue
+    }
+}
+
 /// ENCODE `img` to `out` via ImageMagick using the explicit `target_ext` coder.
 /// We feed magick a PNG on stdin and let it write the exotic target
 /// (PSD/DDS/JP2/…) to the file — so OUR decode pipeline handles every input
@@ -721,7 +759,7 @@ pub fn encode_via_magick(
     target_ext: &str,
     quality: Option<u8>,
 ) -> Result<()> {
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     // Self-defend: this is the single chokepoint for the magick-backed Convert
     // targets, so gate the capability here rather than trusting every caller to
@@ -770,14 +808,14 @@ pub fn encode_via_magick(
         let _ = stdin.write_all(&png); // drop closes the pipe → magick sees EOF
     });
 
-    // magick writes to the FILE, not stdout — so stdout closes when it exits.
-    // Reading it to EOF on a thread + recv_timeout enforces the same kill-deadline
-    // the decode path uses.
-    let mut stdout = child.stdout.take().ok_or_else(|| Error::from(E_FAIL))?;
+    // magick writes to the FILE, not stdout — so stdout closes when it exits. This
+    // thread only exists to observe that EOF (the actual bytes are never used), so
+    // drain it through the same capped helper stderr uses below: an unbounded
+    // read_to_end here had no cap at all, unlike the decode path's stdout read.
+    let stdout = child.stdout.take().ok_or_else(|| Error::from(E_FAIL))?;
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
-        let mut sink = Vec::new();
-        let _ = stdout.read_to_end(&mut sink);
+        let _ = drain_capped(stdout);
         let _ = tx.send(());
     });
 
@@ -787,6 +825,7 @@ pub fn encode_via_magick(
 
     let deadline = std::time::Instant::now() + MAGICK_TIMEOUT;
     let mut timed_out = rx.recv_timeout(MAGICK_TIMEOUT).is_err();
+    let mut cpu_exceeded = false;
     let mut wait_failed = false;
     let mut status = None;
 
@@ -795,15 +834,20 @@ pub fn encode_via_magick(
     // and stay alive. Poll the real process through the SAME wall-clock deadline
     // while the writer continues independently. Never join that writer until the
     // child has exited or been killed, or a full stdin pipe can hang us forever.
-    while !timed_out && status.is_none() {
+    while !timed_out && !cpu_exceeded && status.is_none() {
         match child.try_wait() {
             Ok(Some(value)) => status = Some(value),
             Ok(None) => {
                 let now = std::time::Instant::now();
-                if now >= deadline {
-                    timed_out = true;
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(10).min(deadline - now));
+                match encode_wait_decision(child_cpu_time(&child), MAGICK_CPU_BUDGET, now, deadline)
+                {
+                    EncodeWait::CpuExceeded => cpu_exceeded = true,
+                    EncodeWait::TimedOut => timed_out = true,
+                    EncodeWait::Continue => {
+                        std::thread::sleep(
+                            std::time::Duration::from_millis(10).min(deadline - now),
+                        );
+                    }
                 }
             }
             Err(_) => wait_failed = true,
@@ -812,7 +856,7 @@ pub fn encode_via_magick(
             break;
         }
     }
-    if timed_out || wait_failed {
+    if timed_out || cpu_exceeded || wait_failed {
         let _ = child.kill();
     }
     if status.is_none() {
@@ -822,8 +866,16 @@ pub fn encode_via_magick(
     let _ = reader.join();
     let err = errdrain.and_then(|h| h.join().ok()).unwrap_or_default();
 
-    if timed_out {
-        log_magick_failure("encode timed out", status, &err);
+    if timed_out || cpu_exceeded {
+        log_magick_failure(
+            if cpu_exceeded {
+                "encode exceeded its CPU budget"
+            } else {
+                "encode timed out"
+            },
+            status,
+            &err,
+        );
         let _ = std::fs::remove_file(out);
         return Err(Error::from(E_FAIL));
     }
@@ -857,12 +909,14 @@ pub fn encode_via_magick(
 mod tests {
     use super::{
         add_magick_limits, add_metafile_magick_limits, apply_magick_environment,
-        magick_output_supported, magick_stdin_spec, output_coder, MAX_ISOBMFF_TOP_LEVEL_BOXES,
-        METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT,
-        METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
+        encode_wait_decision, magick_output_supported, magick_stdin_spec, output_coder, EncodeWait,
+        MAGICK_CPU_BUDGET, MAGICK_PNG_CAP, MAX_ISOBMFF_TOP_LEVEL_BOXES, METAFILE_MAGICK_CPU_BUDGET,
+        METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT, METAFILE_MAGICK_TIMEOUT,
+        METAFILE_MAGICK_TIME_LIMIT,
     };
     use std::collections::HashMap;
     use std::process::Command;
+    use std::time::{Duration, Instant};
 
     fn isobmff_box(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let size = u32::try_from(8 + body.len()).unwrap();
@@ -1076,5 +1130,61 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A starved-but-alive encode child (near-zero CPU burned, wall deadline still far
+    /// off) must trip on CPU budget, not just coast until the wall ceiling. Before this
+    /// branch existed, `encode_via_magick`'s wait loop had no CPU check at all, so this
+    /// case fell through to `EncodeWait::Continue` regardless of `cpu`.
+    #[test]
+    fn encode_wait_trips_cpu_budget_before_the_wall_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(600); // wall ceiling nowhere close
+        let decision = encode_wait_decision(
+            Some(MAGICK_CPU_BUDGET + Duration::from_millis(1)),
+            MAGICK_CPU_BUDGET,
+            now,
+            deadline,
+        );
+        assert_eq!(decision, EncodeWait::CpuExceeded);
+    }
+
+    #[test]
+    fn encode_wait_keeps_polling_a_busy_but_within_budget_child() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(600);
+        let decision = encode_wait_decision(
+            Some(Duration::from_millis(1)),
+            MAGICK_CPU_BUDGET,
+            now,
+            deadline,
+        );
+        assert_eq!(decision, EncodeWait::Continue);
+    }
+
+    #[test]
+    fn encode_wait_falls_back_to_the_wall_ceiling_when_cpu_time_is_unknown() {
+        // `child_cpu_time` returns `None` when the OS won't say (see its own doc comment);
+        // the loop must still fail closed via the wall deadline rather than spin forever.
+        let now = Instant::now();
+        let deadline = now - Duration::from_millis(1); // already past
+        assert_eq!(
+            encode_wait_decision(None, MAGICK_CPU_BUDGET, now, deadline),
+            EncodeWait::TimedOut
+        );
+    }
+
+    /// The decode and encode magick harnesses now cap their stdout reads the same way
+    /// `flv.rs`'s sibling child harness caps its own (`FLASH_PNG_CAP`) — this pins the
+    /// value so it can't silently drift below what `-resize {MAGICK_MAX_EDGE_PX}x...>`
+    /// can legitimately produce.
+    #[test]
+    fn magick_png_cap_covers_the_geometry_ceiling() {
+        const MAGICK_MAX_EDGE_PX: u64 = 4096;
+        let worst_case_raw_rgba = MAGICK_MAX_EDGE_PX * MAGICK_MAX_EDGE_PX * 4;
+        assert!(
+            MAGICK_PNG_CAP as u64 >= worst_case_raw_rgba,
+            "MAGICK_PNG_CAP must cover a full {MAGICK_MAX_EDGE_PX}x{MAGICK_MAX_EDGE_PX} RGBA frame"
+        );
     }
 }

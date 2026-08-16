@@ -117,14 +117,24 @@ pub(super) fn is_remote_src(src: &str) -> bool {
     l.starts_with("http://") || l.starts_with("https://")
 }
 
-/// Does the markdown contain any heading (markdown `#`/setext OR a raw-HTML `<h1>`-`<h6>`)?
-/// Used ONCE at load time to decide whether the outline sidebar/toolbar-toggle exist at all.
-/// Parses with the SAME options as [`render`] so it agrees with what the render will list.
-pub(super) fn has_headings(md: &str) -> bool {
+/// The pulldown-cmark [`Options`] shared by every markdown pass over a document: the real
+/// render ([`parse::parse_blocks`]) and the pre-decide toolbar-visibility scans below
+/// ([`has_headings`], [`has_remote_images`]). One source of truth so a flag added here
+/// reaches the toolbar checks for free, instead of the same 3-line block silently drifting
+/// out of sync at one of the three call sites.
+pub(super) fn md_options() -> Options {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
+    opts
+}
+
+/// Does the markdown contain any heading (markdown `#`/setext OR a raw-HTML `<h1>`-`<h6>`)?
+/// Used ONCE at load time to decide whether the outline sidebar/toolbar-toggle exist at all.
+/// Parses with the SAME options as [`render`] so it agrees with what the render will list.
+pub(super) fn has_headings(md: &str) -> bool {
+    let opts = md_options();
     Parser::new_ext(md, opts).any(|ev| match ev {
         Event::Start(Tag::Heading { .. }) => true,
         Event::Html(s) | Event::InlineHtml(s) => html_has_heading(&s),
@@ -140,10 +150,7 @@ pub(super) fn has_headings(md: &str) -> bool {
 /// Raw `<img src="http…">` counts too, because README hero blocks are written in HTML and their
 /// badges are exactly the case this button exists for.
 pub(super) fn has_remote_images(md: &str) -> bool {
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_TABLES);
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    opts.insert(Options::ENABLE_TASKLISTS);
+    let opts = md_options();
     Parser::new_ext(md, opts).any(|ev| match ev {
         Event::Start(Tag::Image { dest_url, .. }) => is_remote_src(&dest_url),
         Event::Html(s) | Event::InlineHtml(s) => html_has_remote_img(&s),
@@ -616,6 +623,24 @@ use parse::{linkify_into, url_at};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real render, `has_headings`, and `has_remote_images` used to each build their
+    /// own copy of the same 3-line `Options` block, so a flag added to one could silently
+    /// desync from the other two (the toolbar would disagree with what actually renders).
+    /// Locks the shared [`md_options`] to exactly the flags the renderer needs.
+    #[test]
+    fn md_options_matches_the_flags_the_renderer_needs() {
+        let opts = md_options();
+        assert!(opts.contains(Options::ENABLE_TABLES));
+        assert!(opts.contains(Options::ENABLE_STRIKETHROUGH));
+        assert!(opts.contains(Options::ENABLE_TASKLISTS));
+        // Nothing else snuck in - a stray extra/missing bit here is exactly the kind of
+        // silent drift the shared helper exists to make impossible.
+        assert_eq!(
+            opts,
+            Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
+        );
+    }
 
     /// Collect linkified runs as (text, is_link, dest) triples for assertions.
     fn linkify(s: &str) -> Vec<(String, Option<String>)> {

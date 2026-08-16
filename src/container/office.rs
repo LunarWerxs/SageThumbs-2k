@@ -46,7 +46,10 @@ pub fn detect<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Kind> {
 /// application part prefixes (Word/PowerPoint/Excel/Visio) and the shared metadata folder.
 fn has_ooxml_part<R: Read + Seek>(zip: &mut ZipArchive<R>) -> bool {
     const PREFIXES: [&str; 5] = ["word/", "ppt/", "xl/", "visio/", "docProps/"];
-    (0..zip.len()).any(|i| {
+    // Bounded like every other listing scan in this module (`MAX_LIST_ENTRIES`): a crafted
+    // zip with an enormous central directory would otherwise make this walk proportionally
+    // slower than its siblings (apk.rs, epub.rs, project.rs, zipfmt.rs all clamp the same way).
+    (0..zip.len().min(super::MAX_LIST_ENTRIES)).any(|i| {
         zip.name_for_index(i)
             .is_some_and(|n| PREFIXES.iter().any(|p| n.starts_with(p)))
     })

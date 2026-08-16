@@ -6,6 +6,7 @@
 //! not to be a grammar.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, RECT, SIZE};
@@ -50,6 +51,33 @@ impl Colors {
             Tag::Keyword => self.keyword,
         }
     }
+}
+
+/// Per-line block-comment (`in_block`) state cached across repeated [`paint_lines`] calls for
+/// the SAME text buffer, so a scroll/resize/blink repaint — `paint_lines` runs on every
+/// `WM_PAINT`, not only when the document actually changes — doesn't have to re-lex the WHOLE
+/// file (up to 5 MB, entirely off-screen) just to recover this one running bool before it can
+/// draw the handful of lines actually visible.
+struct BlockCache {
+    /// Cheap "is this still the same document" fingerprint: the text buffer's address, length,
+    /// and language. The viewer keeps the loaded document in one stable buffer across repaints
+    /// and only replaces it (a fresh allocation → a new pointer) on an actual reload, so this is
+    /// good enough without hashing megabytes of text on every paint. A false MISS just costs one
+    /// extra full-file lex — today's behaviour, never wrong. A coincidental false HIT (freed
+    /// memory reused at the exact same address+length+language for a genuinely different buffer)
+    /// could only ever mis-seed `in_block` for one paint of a syntax-highlighted VIEW — a
+    /// cosmetic miscolour, not a correctness or safety issue; this window renders, it never lets
+    /// the user edit, so there is no "flush stale colours before a write" concern either.
+    key: (usize, usize, u8),
+    /// `in_block` at the START of each line (index = 0-based line number), one entry per line.
+    before: Vec<bool>,
+}
+
+thread_local! {
+    // Painting only ever happens on the viewer window's own UI thread (WM_PAINT is delivered
+    // there), so a thread-local needs no locking — unlike a process-wide cache, it also can't
+    // leak state between multiple viewer windows on different threads.
+    static BLOCK_CACHE: RefCell<Option<BlockCache>> = const { RefCell::new(None) };
 }
 
 /// Draw `text` as syntax-highlighted monospace lines starting at `(x, y0)`, one line per source
@@ -99,89 +127,126 @@ pub(super) unsafe fn paint_lines(
     let gutter_fg = crate::dark::HEADER_TEXT().0;
     let sel_bg = crate::dark::SEL_BG().0;
 
+    // Cache lookup: same buffer (address+length), same language → reuse the per-line `in_block`
+    // table instead of re-lexing lines this call won't even draw. Cloning the cached `Vec<bool>`
+    // (one byte per line — a few hundred KB even for a huge file) is far cheaper than re-running
+    // the tokenizer over every line, and side-steps holding the thread-local borrowed across the
+    // loop below (which also writes to it on a miss).
+    let key = (text.as_ptr() as usize, text.len(), lang as u8);
+    let cached_before: Option<Vec<bool>> = BLOCK_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|bc| (bc.key == key).then(|| bc.before.clone()))
+    });
+    // A MISS lexes every line unconditionally (identical to the old always-lex behaviour) and
+    // records the `in_block` state entering each one, so the NEXT call for this same buffer
+    // (the common case: a scroll or resize repaint of the document already on screen) can hit
+    // the cache instead. `seeded` is already true for a MISS: there is nothing to seed FROM.
+    let mut fresh_before: Vec<bool> = Vec::new();
+    let mut seeded = cached_before.is_none();
+
     let mut in_block = false;
     let mut y = y0;
     let mut line_no = 0usize;
     let mut line_start = 0usize; // raw byte offset of this line's first char in `text`
     for raw in text.split('\n') {
+        let line_no0 = line_no; // 0-based index, before the increment below
         line_no += 1;
-        let line = raw.strip_suffix('\r').unwrap_or(raw);
-        // `ExtTextOutW` doesn't expand tabs (unlike the plain path's DT_EXPANDTABS), so tab-indented
-        // code (Go, Makefiles) would collapse its indentation — expand per line, keeping the raw
-        // line addressable (selection offsets live in RAW bytes).
-        let disp: Cow<str> = if line.contains('\t') {
-            Cow::Owned(line.replace('\t', "    "))
-        } else {
-            Cow::Borrowed(line)
-        };
-        let runs = tokenize(&disp, &sp, &mut in_block); // always lex (block-comment state)
-        if y + line_h > clip_top && y < clip_bottom {
-            // Selection fill FIRST — the runs draw transparent-bk on top of it.
-            if let Some((s, e)) = sel {
-                paint_sel_line(
-                    hdc, line, line_start, s, e, code_x, code_right, y, line_h, char_w, sel_bg,
-                );
+        let visible = y + line_h > clip_top && y < clip_bottom;
+        // On a cache HIT, only lines that might actually be drawn need the real lexer — every
+        // other line's `in_block` contribution is already sitting in `cached_before`. On a MISS
+        // every line must still be lexed (to draw correctly AND to build the cache for next
+        // time), matching the function's old behaviour exactly.
+        let should_lex = cached_before.is_none() || visible;
+        if should_lex {
+            let line = raw.strip_suffix('\r').unwrap_or(raw);
+            // `ExtTextOutW` doesn't expand tabs (unlike the plain path's DT_EXPANDTABS), so
+            // tab-indented code (Go, Makefiles) would collapse its indentation — expand per
+            // line, keeping the raw line addressable (selection offsets live in RAW bytes).
+            let disp: Cow<str> = if line.contains('\t') {
+                Cow::Owned(line.replace('\t', "    "))
+            } else {
+                Cow::Borrowed(line)
+            };
+            match &cached_before {
+                Some(before) if !seeded => {
+                    // The first line we actually lex on a hit: jump `in_block` straight to the
+                    // cached state instead of the (never advanced) `false` default.
+                    in_block = before.get(line_no0).copied().unwrap_or(false);
+                    seeded = true;
+                }
+                None => fresh_before.push(in_block), // record state BEFORE this line, for the cache
+                _ => {}
             }
-            // One hit per drawn line: this is a mono grid, so hit-testing re-measures inside it
-            // for a char-precise offset (`text_x` = code_x, past the line-number gutter).
-            if let Some(k) = sink.as_deref_mut() {
-                k.hits.push(SelHit {
-                    rect: RECT {
-                        left: code_x,
+            let runs = tokenize(&disp, &sp, &mut in_block);
+            if visible {
+                // Selection fill FIRST — the runs draw transparent-bk on top of it.
+                if let Some((s, e)) = sel {
+                    paint_sel_line(
+                        hdc, line, line_start, s, e, code_x, code_right, y, line_h, char_w, sel_bg,
+                    );
+                }
+                // One hit per drawn line: this is a mono grid, so hit-testing re-measures inside
+                // it for a char-precise offset (`text_x` = code_x, past the line-number gutter).
+                if let Some(k) = sink.as_deref_mut() {
+                    k.hits.push(SelHit {
+                        rect: RECT {
+                            left: code_x,
+                            top: y,
+                            right: code_right,
+                            bottom: y + line_h,
+                        },
+                        start: k.base + line_start,
+                        end: k.base + line_start + line.len(),
+                        font: k.spec,
+                        text_x: code_x,
+                    });
+                }
+                // line number, right-aligned in [x, x+gutter_w-pad]
+                SetTextColor(hdc, COLORREF(gutter_fg));
+                let mut num: Vec<u16> = line_no.to_string().encode_utf16().collect();
+                let mut nr = RECT {
+                    left: x,
+                    top: y,
+                    right: x + gutter_w - gutter_pad,
+                    bottom: y + line_h,
+                };
+                DrawTextW(
+                    hdc,
+                    &mut num,
+                    &mut nr,
+                    DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX,
+                );
+                // code runs, starting past the gutter
+                let mut cx = code_x;
+                for (tag, s) in runs {
+                    if s.is_empty() {
+                        continue;
+                    }
+                    SetTextColor(hdc, COLORREF(colors.of(tag)));
+                    let w16: Vec<u16> = s.encode_utf16().collect();
+                    let clip = RECT {
+                        left: cx,
                         top: y,
                         right: code_right,
                         bottom: y + line_h,
-                    },
-                    start: k.base + line_start,
-                    end: k.base + line_start + line.len(),
-                    font: k.spec,
-                    text_x: code_x,
-                });
-            }
-            // line number, right-aligned in [x, x+gutter_w-pad]
-            SetTextColor(hdc, COLORREF(gutter_fg));
-            let mut num: Vec<u16> = line_no.to_string().encode_utf16().collect();
-            let mut nr = RECT {
-                left: x,
-                top: y,
-                right: x + gutter_w - gutter_pad,
-                bottom: y + line_h,
-            };
-            DrawTextW(
-                hdc,
-                &mut num,
-                &mut nr,
-                DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX,
-            );
-            // code runs, starting past the gutter
-            let mut cx = code_x;
-            for (tag, s) in runs {
-                if s.is_empty() {
-                    continue;
-                }
-                SetTextColor(hdc, COLORREF(colors.of(tag)));
-                let w16: Vec<u16> = s.encode_utf16().collect();
-                let clip = RECT {
-                    left: cx,
-                    top: y,
-                    right: code_right,
-                    bottom: y + line_h,
-                };
-                let _ = ExtTextOutW(
-                    hdc,
-                    cx,
-                    y,
-                    ETO_CLIPPED,
-                    Some(&clip as *const RECT),
-                    PCWSTR(w16.as_ptr()),
-                    w16.len() as u32,
-                    None,
-                );
-                let mut sz = SIZE::default();
-                let _ = GetTextExtentPoint32W(hdc, &w16, &mut sz);
-                cx += sz.cx;
-                if cx > code_right {
-                    break; // rest of the line is off the pane
+                    };
+                    let _ = ExtTextOutW(
+                        hdc,
+                        cx,
+                        y,
+                        ETO_CLIPPED,
+                        Some(&clip as *const RECT),
+                        PCWSTR(w16.as_ptr()),
+                        w16.len() as u32,
+                        None,
+                    );
+                    let mut sz = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &w16, &mut sz);
+                    cx += sz.cx;
+                    if cx > code_right {
+                        break; // rest of the line is off the pane
+                    }
                 }
             }
         }
@@ -189,6 +254,16 @@ pub(super) unsafe fn paint_lines(
         line_start += raw.len() + 1; // + the '\n' this line was split on
     }
     SelectObject(hdc, old);
+    if cached_before.is_none() {
+        // Built a complete table this call (a MISS lexes every line) — cache it for the next
+        // repaint of this same buffer.
+        BLOCK_CACHE.with(|c| {
+            *c.borrow_mut() = Some(BlockCache {
+                key,
+                before: fresh_before,
+            });
+        });
+    }
     y - y0
 }
 
@@ -468,7 +543,10 @@ fn lang_from_shebang(leading_text: &str) -> Lang {
 
 #[cfg(test)]
 mod tests {
-    use super::{col_at, disp_extent, lang_from_name_or_shebang, lang_from_shebang, word_at, Lang};
+    use super::{
+        col_at, disp_extent, lang_from_name_or_shebang, lang_from_shebang, paint_lines, word_at,
+        Lang,
+    };
 
     /// Every raw char boundary must round-trip: measure its x with `disp_extent` (the paint
     /// side, `GetTextExtentPoint32W`), feed that x back through `col_at` (the hit-test side,
@@ -512,6 +590,159 @@ mod tests {
             SelectObject(hdc, old);
             let _ = DeleteObject(font.into());
             ReleaseDC(None, hdc);
+        }
+    }
+
+    /// The whole point of the `BLOCK_CACHE`: a repaint that only shows a line DEEP inside an
+    /// unterminated block comment must still colour it as a comment, using the cached per-line
+    /// `in_block` table built on an earlier full pass — not silently default to "not in a
+    /// comment" for a line it never actually re-lexed. A bug in the cache/seed logic would show
+    /// up as that line being coloured `fg` (plain text) instead of the theme's comment colour.
+    #[test]
+    fn cached_in_block_state_survives_a_visible_range_that_skips_the_comment_open() {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{COLORREF, RECT};
+        use windows::Win32::Graphics::Gdi::{
+            CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush, DeleteDC,
+            DeleteObject, FillRect, GetDC, GetPixel, GetTextMetricsW, ReleaseDC, SelectObject,
+            SetBkMode, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, OUT_DEFAULT_PRECIS,
+            TEXTMETRICW, TRANSPARENT,
+        };
+
+        // Squared RGB distance between two 0x00BBGGRR COLORREFs — good enough to tell "closer to
+        // A than to B" apart without caring about exact anti-aliased blending.
+        fn dist2(a: u32, b: u32) -> i64 {
+            let ch = |c: u32, shift: u32| ((c >> shift) & 0xFF) as i64;
+            (0..3)
+                .map(|i| {
+                    let s = i * 8;
+                    (ch(a, s) - ch(b, s)).pow(2)
+                })
+                .sum()
+        }
+
+        unsafe {
+            let screen = GetDC(None);
+            let memdc = CreateCompatibleDC(Some(screen));
+            let bmp = CreateCompatibleBitmap(screen, 2000, 2000);
+            let old_bmp = SelectObject(memdc, bmp.into());
+            ReleaseDC(None, screen);
+
+            let face: Vec<u16> = "Consolas\0".encode_utf16().collect();
+            let font = CreateFontW(
+                -20,
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY,
+                Default::default(),
+                PCWSTR(face.as_ptr()),
+            );
+
+            let bg = CreateSolidBrush(COLORREF(0x0000_0000)); // black canvas
+            let full = RECT {
+                left: 0,
+                top: 0,
+                right: 2000,
+                bottom: 2000,
+            };
+            FillRect(memdc, &full, bg);
+            let _ = DeleteObject(bg.into());
+            // `paint_lines` itself never touches bk mode (its real caller sets this once for the
+            // whole pane) — without it, GDI's default OPAQUE mode paints every glyph cell's
+            // background in the DC's default bk colour (white) regardless of the glyph's own
+            // foreground colour, which would swamp the very distinction this test is checking.
+            SetBkMode(memdc, TRANSPARENT);
+
+            let old_font = SelectObject(memdc, font.into());
+            let mut tm = TEXTMETRICW::default();
+            let _ = GetTextMetricsW(memdc, &mut tm);
+            let line_h = tm.tmHeight + tm.tmExternalLeading;
+            SelectObject(memdc, old_font);
+
+            // Line 0: ordinary code. Line 1: opens a block comment that never closes anywhere
+            // in this text. Lines 2..30: plain letters (no keywords/strings/numbers) — content
+            // that tokenizes as `Tag::Plain` (the caller's `fg`) if NOT inside the comment, or
+            // one `Tag::Comment` run if it correctly is.
+            const DEEP_LINE: usize = 15; // 0-based; well past line 1's comment-open
+            let mut text = String::from("fn a() {}\n/* never closes\n");
+            for _ in 0..28 {
+                text.push_str("abcdefghijklmnop\n");
+            }
+            let fg = 0x00FF_FFFF; // white — Tag::Plain's colour in this call
+            let comment = crate::dark::CODE_COMMENT().0;
+
+            // First call: MISS. clip covers only line 0 (nothing past the comment-open is
+            // actually drawn), but a MISS still lexes EVERY line (unconditionally) to build the
+            // cache — see `paint_lines`' `should_lex`.
+            let _ = paint_lines(
+                memdc,
+                &text,
+                Lang::Rust,
+                4,
+                0,
+                1900,
+                0,
+                line_h,
+                font,
+                fg,
+                None,
+                None,
+            );
+
+            // Second call: HIT. clip covers ONLY `DEEP_LINE` — the first call never drew it, so
+            // if the cache/seed path is broken this is the ONLY chance to catch a wrong colour.
+            let y_top = DEEP_LINE as i32 * line_h;
+            let _ = paint_lines(
+                memdc,
+                &text,
+                Lang::Rust,
+                4,
+                0,
+                1900,
+                y_top,
+                y_top + line_h,
+                font,
+                fg,
+                None,
+                None,
+            );
+
+            // Sample a strip of pixels in the CODE column (past the line-number gutter — mirrors
+            // `paint_lines`' own `code_x` math exactly, so this can't accidentally land on a
+            // line-number digit instead of the actual code glyphs) and keep the one most
+            // different from the black background — i.e. the strongest "ink" sample — then
+            // check it reads as the comment colour, not `fg`.
+            let total_lines = text.split('\n').count().max(1);
+            let char_w = tm.tmAveCharWidth.max(1);
+            let digits = total_lines.to_string().len() as i32;
+            let code_x = 4 + digits * char_w + char_w * 2;
+            let mut best: Option<(i64, u32)> = None;
+            for dx in 0..(char_w * 6) {
+                let px = GetPixel(memdc, code_x + dx, y_top + line_h / 2);
+                let d = dist2(px.0, 0);
+                if best.is_none_or(|(bd, _)| d > bd) {
+                    best = Some((d, px.0));
+                }
+            }
+            let (_, sampled) = best.expect("sampled at least one pixel");
+            assert!(
+                dist2(sampled, comment) < dist2(sampled, fg),
+                "deep line must render as the CACHED comment state, not plain fg \
+                 (sampled {sampled:#08X}, comment {comment:#08X}, fg {fg:#08X})"
+            );
+
+            SelectObject(memdc, old_bmp);
+            let _ = DeleteObject(font.into());
+            let _ = DeleteObject(bmp.into());
+            let _ = DeleteDC(memdc);
         }
     }
 

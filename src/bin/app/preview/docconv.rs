@@ -114,7 +114,7 @@ fn delimited_table(text: &str, delim: u8) -> String {
             if !field.is_empty() || !row.is_empty() {
                 push_field(&mut row, &mut field);
                 total_rows += 1;
-                if rows.len() <= MAX_ROWS {
+                if rows.len() < MAX_ROWS {
                     rows.push(std::mem::take(&mut row));
                 } else {
                     row.clear();
@@ -133,7 +133,7 @@ fn delimited_table(text: &str, delim: u8) -> String {
     if !field.is_empty() || !row.is_empty() {
         push_field(&mut row, &mut field);
         total_rows += 1;
-        if rows.len() <= MAX_ROWS {
+        if rows.len() < MAX_ROWS {
             rows.push(row);
         }
     }
@@ -190,7 +190,7 @@ pub(super) fn md_cell(s: &str) -> String {
     let mut e = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
-            '\\' | '|' | '[' | ']' | '`' | '*' | '_' | '!' | '<' => {
+            '\\' | '|' | '[' | ']' | '`' | '*' | '_' | '!' | '<' | '~' => {
                 e.push('\\');
                 e.push(ch);
             }
@@ -213,6 +213,26 @@ fn utf8_len(b: u8) -> usize {
 
 // ---- Jupyter notebook -----------------------------------------------------------------------
 
+/// A code-fence string of backticks that `content` cannot close early. CommonMark ends a
+/// fence at the first line carrying at least as many backticks as opened it, so wrapping
+/// untrusted file content (cell source, cell output, raw cells, the not-a-notebook fallback)
+/// in a fixed ``` fence lets a bare ``` line inside that content close the block early and
+/// have everything after it render as LIVE markdown. Mirrors `dbdoc::longest_backtick_run`,
+/// which fixes the identical problem for the DDL fence there.
+fn fence_for(content: &str) -> String {
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    for c in content.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat(longest.max(2) + 1)
+}
+
 const MAX_CELLS: usize = 300;
 const MAX_OUTPUT_CHARS: usize = 8_000; // per cell, keeps a runaway training log readable
 const MAX_ATTACHMENTS: usize = 64; // bound the pasted-image decode work per notebook
@@ -228,10 +248,12 @@ fn ipynb_md(text: &str) -> Converted {
         attachments: Vec::new(),
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return plain(format!("```json\n{text}\n```"));
+        let fence = fence_for(text);
+        return plain(format!("{fence}json\n{text}\n{fence}"));
     };
     let Some(cells) = v.get("cells").and_then(|c| c.as_array()) else {
-        return plain(format!("```json\n{text}\n```"));
+        let fence = fence_for(text);
+        return plain(format!("{fence}json\n{text}\n{fence}"));
     };
     let lang = v
         .pointer("/metadata/kernelspec/language")
@@ -261,7 +283,8 @@ fn ipynb_md(text: &str) -> Converted {
             }
             "code" => {
                 if !src.trim().is_empty() {
-                    out.push_str(&format!("```{lang}\n{}\n```\n\n", src.trim_end()));
+                    let fence = fence_for(&src);
+                    out.push_str(&format!("{fence}{lang}\n{}\n{fence}\n\n", src.trim_end()));
                 }
                 if let Some(outputs) = cell.get("outputs").and_then(|o| o.as_array()) {
                     for o in outputs {
@@ -270,7 +293,8 @@ fn ipynb_md(text: &str) -> Converted {
                 }
             }
             "raw" if !src.trim().is_empty() => {
-                out.push_str(&format!("```\n{}\n```\n\n", src.trim_end()));
+                let fence = fence_for(&src);
+                out.push_str(&format!("{fence}\n{}\n{fence}\n\n", src.trim_end()));
             }
             _ => {}
         }
@@ -371,12 +395,16 @@ fn push_output(out: &mut String, o: &serde_json::Value) {
         return;
     }
     let clipped: String = t.chars().take(MAX_OUTPUT_CHARS).collect();
-    out.push_str("```\n");
+    let fence = fence_for(&clipped);
+    out.push_str(&fence);
+    out.push('\n');
     out.push_str(&clipped);
     if clipped.len() < t.len() {
         out.push_str("\n…");
     }
-    out.push_str("\n```\n\n");
+    out.push('\n');
+    out.push_str(&fence);
+    out.push_str("\n\n");
 }
 
 /// Drop ANSI escape sequences (Jupyter tracebacks are full of `\x1b[0;31m` colouring).
@@ -485,5 +513,59 @@ mod tests {
     #[test]
     fn ansi_stripped() {
         assert_eq!(strip_ansi("\u{1b}[0;31mred\u{1b}[0m plain"), "red plain");
+    }
+
+    /// `~~word~~` is live GFM strikethrough (the viewer enables ENABLE_STRIKETHROUGH), so an
+    /// untrusted cell containing it must render literally, not struck through.
+    #[test]
+    fn md_cell_escapes_tilde_to_prevent_strikethrough() {
+        assert_eq!(md_cell("~~word~~"), "\\~\\~word\\~\\~");
+    }
+
+    /// The row cap must engage at exactly MAX_ROWS kept rows (header + data), not
+    /// MAX_ROWS + 1. Feeding exactly MAX_ROWS data rows (MAX_ROWS + 1 total with the
+    /// header) must drop the last one and print a truncation note - the old `<=` kept
+    /// all of them with no note at all for this exact input.
+    #[test]
+    fn csv_row_cap_engages_at_max_rows_not_one_past_it() {
+        let mut text = String::from("h\n");
+        for i in 0..MAX_ROWS {
+            text.push_str(&i.to_string());
+            text.push('\n');
+        }
+        let md = delimited_table(&text, b',');
+        let shown = MAX_ROWS - 1; // one data row must have been dropped
+        let total = MAX_ROWS; // all MAX_ROWS data rows were seen
+        assert!(
+            md.contains(&format!("Showing the first {shown} of {total} rows.")),
+            "expected the cap to drop exactly one row and note it; md tail was: {}",
+            &md[md.len().saturating_sub(200)..]
+        );
+    }
+
+    /// A fixed 3-backtick fence around untrusted code-cell source is breakable: a source
+    /// containing its own ``` line closes the block early and lets the remainder (here a
+    /// fake heading + link) render as LIVE markdown instead of literal code. The fence must
+    /// outgrow the longest backtick run inside the content it wraps.
+    #[test]
+    fn code_cell_fence_outgrows_backticks_inside_it_so_content_cant_break_out() {
+        let nb = r##"{"cells":[
+            {"cell_type":"code","source":"print(1)\n```\n# pwned\n[click](https://evil)"}
+        ],"metadata":{"language_info":{"name":"python"}}}"##;
+        let md = ipynb_md(nb).md;
+        assert!(
+            md.contains("````python\nprint(1)\n```\n# pwned\n[click](https://evil)\n````\n\n"),
+            "the embedded ``` must not close the fence early; md was: {md}"
+        );
+    }
+
+    /// Same breakout, for the not-a-notebook JSON fallback: untrusted file bytes wrapped
+    /// verbatim in a fixed fence.
+    #[test]
+    fn ipynb_fallback_fence_outgrows_backticks_in_untrusted_text() {
+        let text = "not json\n```\nmalicious";
+        let md = ipynb_md(text).md;
+        assert!(md.starts_with("````json\n"), "md was: {md}");
+        assert!(md.ends_with("````"), "md was: {md}");
     }
 }

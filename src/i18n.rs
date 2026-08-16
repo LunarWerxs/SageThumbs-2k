@@ -46,13 +46,28 @@ fn lookup(idx: usize, key: &str) -> Option<&'static str> {
 const MISSING_KEY: &str = "\u{27e8}?\u{27e9}";
 
 /// Switch language by code (e.g. "fr", "zh-TW"). Returns false if unknown.
+///
+/// Case-folded, and — failing an exact match — falls back to the code's primary subtag
+/// (`"fr-CA"` still resolves to our `"fr"`). The override comes from a registry value a user
+/// can hand-edit (`HKCU\…\Lang`), so `"FR"` or a region-tagged variant we don't ship exactly
+/// must not silently fall all the way back to the system locale.
 pub(crate) fn set_locale(code: &str) -> bool {
-    if let Some(i) = LOCALES.iter().position(|(c, _)| *c == code) {
+    if let Some(i) = LOCALES
+        .iter()
+        .position(|(c, _)| c.eq_ignore_ascii_case(code))
+    {
         CURRENT.store(i, Ordering::Relaxed);
-        true
-    } else {
-        false
+        return true;
     }
+    let primary = code.split(['-', '_']).next().unwrap_or(code);
+    if let Some(i) = LOCALES
+        .iter()
+        .position(|(c, _)| c.eq_ignore_ascii_case(primary))
+    {
+        CURRENT.store(i, Ordering::Relaxed);
+        return true;
+    }
+    false
 }
 
 /// All available language codes, English first.
@@ -131,17 +146,20 @@ fn system_ui_code() -> Option<&'static str> {
         0x1f => "tr",
         0x22 => "uk",
         0x2a => "vi",
-        0x04 => {
-            // Chinese: sublang 0x01 == Traditional (TW); everything else Simplified.
-            if (langid >> 10) == 0x01 {
-                "zh-TW"
-            } else {
-                "zh-CN"
-            }
-        }
+        0x04 => zh_variant(langid),
         _ => return None,
     };
     Some(code)
+}
+
+/// Which Chinese locale a Windows LANGID's sublang maps to. Sublangs 0x01 (Taiwan), 0x03
+/// (Hong Kong) and 0x05 (Macao) are all Traditional-script; everything else (PRC mainland,
+/// Singapore) is Simplified.
+fn zh_variant(langid: u16) -> &'static str {
+    match langid >> 10 {
+        0x01 | 0x03 | 0x05 => "zh-TW",
+        _ => "zh-CN",
+    }
 }
 
 /// Native (autonym) display name for the language picker.
@@ -333,5 +351,40 @@ mod tests {
                 "en key {k} not found by binary search"
             );
         }
+    }
+
+    /// Hong Kong (0x03) and Macao (0x05) are Traditional-script sublangs, same as Taiwan
+    /// (0x01) — only PRC-mainland-style sublangs should fall to Simplified.
+    #[test]
+    fn zh_variant_covers_all_traditional_sublangs() {
+        for sublang in [0x01u16, 0x03, 0x05] {
+            assert_eq!(
+                zh_variant(sublang << 10),
+                "zh-TW",
+                "sublang {sublang:#x} should be Traditional"
+            );
+        }
+        assert_eq!(zh_variant(0x02 << 10), "zh-CN"); // PRC mainland
+    }
+
+    /// A hand-edited registry override is free-form text; the match must not silently
+    /// discard a locale we do ship just because of letter case.
+    #[test]
+    fn locale_override_matches_case_insensitively() {
+        assert!(set_locale("FR"), "uppercase override should match \"fr\"");
+        assert_eq!(LOCALES[CURRENT.load(Ordering::Relaxed)].0, "fr");
+        set_locale("en"); // restore the default so this doesn't leak into other tests
+    }
+
+    /// A region-tagged override we don't ship exactly (`"fr-CA"`) should still resolve to
+    /// its primary subtag rather than falling all the way back to the system locale.
+    #[test]
+    fn locale_override_falls_back_to_primary_subtag() {
+        assert!(
+            set_locale("fr-CA"),
+            "a region variant of a shipped locale should resolve via its primary subtag"
+        );
+        assert_eq!(LOCALES[CURRENT.load(Ordering::Relaxed)].0, "fr");
+        set_locale("en");
     }
 }

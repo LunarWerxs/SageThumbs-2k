@@ -17,6 +17,8 @@
 //! Everything is bounds-checked and runs under `panic = "abort"`: malformed input
 //! yields `None` and the shell falls back to the default icon.
 
+use super::util::{le16, le32};
+
 const SIG: &[u8] = b"Paint Shop Pro Image File\n\x1a";
 const BK: [u8; 4] = [0x7E, 0x42, 0x4B, 0x00]; // "~BK\0" block-header magic
 const COMPOSITE_IMAGE_BANK: u16 = 16;
@@ -110,7 +112,7 @@ struct Attrs {
 /// lands mid-chunk and every subsequent field is garbage.
 fn sub_blocks(b: &[u8], content: usize, end: usize) -> Vec<(u16, usize, usize)> {
     let mut out = Vec::new();
-    let Some(chunk) = read_u32(b, content) else {
+    let Some(chunk) = le32(b, content) else {
         return out;
     };
     let Some(mut p) = content.checked_add(chunk as usize) else {
@@ -134,16 +136,6 @@ fn sub_blocks(b: &[u8], content: usize, end: usize) -> Vec<(u16, usize, usize)> 
         p = next;
     }
     out
-}
-
-fn read_u32(b: &[u8], at: usize) -> Option<u32> {
-    let s = b.get(at..at + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
-}
-
-fn read_u16(b: &[u8], at: usize) -> Option<u16> {
-    let s = b.get(at..at + 2)?;
-    Some(u16::from_le_bytes([s[0], s[1]]))
 }
 
 /// Inflate a zlib stream, refusing to produce more than `limit` bytes so a compression bomb
@@ -177,11 +169,10 @@ pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
         match id {
             COMPOSITE_ATTRIBUTES => {
                 // chunk(4) w(4) h(4) depth(2) compression(2) planes(2) colors(4) type(2)
-                let (Some(w), Some(h)) = (read_u32(bytes, c + 4), read_u32(bytes, c + 8)) else {
+                let (Some(w), Some(h)) = (le32(bytes, c + 4), le32(bytes, c + 8)) else {
                     continue;
                 };
-                let (Some(depth), Some(compression)) =
-                    (read_u16(bytes, c + 12), read_u16(bytes, c + 14))
+                let (Some(depth), Some(compression)) = (le16(bytes, c + 12), le16(bytes, c + 14))
                 else {
                     continue;
                 };
@@ -223,7 +214,7 @@ pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
             .count();
         if let Some(&c) = jpegs.get(rank) {
             // The JPEG sub-block content is chunk(4) then the JPEG stream.
-            let chunk = read_u32(bytes, c)? as usize;
+            let chunk = le32(bytes, c)? as usize;
             let data = bytes.get(c + chunk..)?;
             let len = crate::container::jpeg_span_len(data, 0)?;
             let jpeg = data.get(..len)?;
@@ -262,16 +253,16 @@ fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<im
         match id {
             COLOR_BLOCK => {
                 // chunk(4) entryCount(4) then `count` BGRA quads (Windows RGBQUAD order).
-                let n = read_u32(b, c + 4)? as usize;
+                let n = le32(b, c + 4)? as usize;
                 if n > 0 && n <= 256 {
                     palette = b.get(c + 8..c + 8 + n * 4);
                 }
             }
             CHANNEL_BLOCK => {
                 // chunk(4) compressedLen(4) uncompressedLen(4) bitmapType(2) channelType(2)
-                let chunk = read_u32(b, c)? as usize;
-                let clen = read_u32(b, c + 4)? as usize;
-                let ctype = read_u16(b, c + 14)?;
+                let chunk = le32(b, c)? as usize;
+                let clen = le32(b, c + 4)? as usize;
+                let ctype = le16(b, c + 14)?;
                 let data = b.get(c + chunk..c + chunk.checked_add(clen)?)?;
                 let raw = match a.compression {
                     COMP_LZ77 => inflate_capped(data, px)?,
