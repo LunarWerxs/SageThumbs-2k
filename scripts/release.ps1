@@ -108,6 +108,11 @@ try {
     $changelog = Join-Path $root 'docs\CHANGELOG.md'
     $null = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $ver
     pwsh "$root\scripts\check-consistency.ps1"; if ($LASTEXITCODE) { throw "consistency check failed - fix before releasing" }
+    # The pre-release issue review (CLAUDE.md 6.2). Informational, never a gate - see the
+    # header of check-issues.ps1 for why gating would be wrong. It prints the OPEN issues AND,
+    # crucially, the CLOSED ones commented since the last release: v2.1.0 shipped while a long
+    # follow-up sat unread on closed issue #26, which `gh issue list --state open` cannot show.
+    pwsh "$root\scripts\check-issues.ps1"
 
     # 1) must be on main with a clean tree (so we release exactly what's committed).
     Write-Host "[2/6] clean-tree + branch guard" -ForegroundColor Green
