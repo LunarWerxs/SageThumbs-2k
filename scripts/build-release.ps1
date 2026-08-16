@@ -673,7 +673,7 @@ if ($Architecture -cne $hostArchNow) { $bundleCheckArgs['SkipSmoke'] = $true }
 
     # The staged regression RUNS the staged st2k.exe over the corpus, so it can only
     # execute when the staged binaries match the host. Cross-building ARM64 on an x64
-    # host would report all ~260 formats "broken" purely because the process cannot
+    # host would report every format "broken" purely because the process cannot
     # start. Skipping it here does not drop the gate: the arm64 CI job runs on native
     # ARM hardware and exercises the same binaries there. Never let this skip apply to
     # a same-architecture build, which is the case that catches real staging breakage.

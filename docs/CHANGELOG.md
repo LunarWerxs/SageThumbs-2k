@@ -90,6 +90,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **The File Types columns can be resized again.** Extension and Category were fixed at a
   width too narrow for their own labels in several languages, and widening the window did
   not help because only the Description column grew. Reported by @taylor-p-mason (#26).
+- **The Quick preview window could close when you pressed a selection key on an empty pane.**
+  Selecting text with the keyboard first asks which line is currently at the top of the view.
+  When the pane had no text in it there was no such line, and the calculation was asked for a
+  value between zero and minus one, which stops the program rather than answering "none". It
+  now answers "none". Only the preview window was ever affected by this; File Explorer itself
+  was not.
 - **Thumbnails are no longer randomly smaller than the files next to them.** Explorer centres
   a thumbnail rather than enlarging it, so any file whose source picture was smaller than the
   icon size drew as a visibly smaller tile. Photoshop files showed this worst, because the

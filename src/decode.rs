@@ -9,7 +9,7 @@
 //! Tier 2: Windows WIC for formats `image` can't read (HEIC/HEIF, AVIF, camera
 //!         RAW, JPEG 2000) via OS codecs the user already has.
 //! Tier 3: ImageMagick, shelled out as a subprocess (`magick - PNG:-`), for the
-//!         long tail of ~287 obscure/legacy formats nothing else covers. Run as
+//!         long tail of obscure/legacy formats nothing else covers. Run as
 //!         a CHILD PROCESS on purpose: a crash/hang on a malicious file is
 //!         contained there (with a kill-timeout) instead of taking down our
 //!         thumbnail host. Only fires when Tiers 1+2 both fail.

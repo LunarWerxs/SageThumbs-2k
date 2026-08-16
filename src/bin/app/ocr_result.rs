@@ -55,7 +55,7 @@ pub(crate) unsafe fn run_ocr(path: &str) {
 /// throwaway capture, and the difference is not cosmetic: that one DELETES its input.
 ///
 /// The bytes go through our own tiered decoder rather than straight into WinRT, so this works
-/// on all 326 supported formats — PSD, camera RAW, HEIC, DjVu, a Blender preview — not just the
+/// on every supported format (PSD, camera RAW, HEIC, DjVu, a Blender preview), not just the
 /// handful `BitmapDecoder` opens natively. `page` (0-based) picks the PDF page the viewer is
 /// actually showing, so a multi-page scan doesn't silently recognize page 1.
 pub(crate) unsafe fn run_ocr_keep(path: &str, page: Option<u32>) {

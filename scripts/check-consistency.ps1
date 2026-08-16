@@ -110,8 +110,10 @@ else {
   # would make this check cry wolf on prose that is correct by design. Verified both ways
   # before landing: zero hits on the tree as it stands, and all six README sites flagged when
   # the count is simulated stale. A guard that cannot fail is not a guard.
+  # SECURITY.md is in this list because it stated "315 file formats" for five releases: a
+  # PUBLIC security policy is the last place a number should be quietly wrong about scope.
   $proseRx = '(?i)\b(\d{3})(?!\+)\b(?:[^\r\n.]{0,30}?)\s(formats?|file types?|extensions?)\b'
-  foreach ($rel in 'README.md', 'docs\FEATURES.md') {
+  foreach ($rel in 'README.md', 'docs\FEATURES.md', '.github\SECURITY.md') {
     $p = Join-Path $root $rel
     if (-not (Test-Path $p)) { continue }
     foreach ($m in [regex]::Matches((Get-Content $p -Raw), $proseRx)) {

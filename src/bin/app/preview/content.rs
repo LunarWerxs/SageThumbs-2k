@@ -503,7 +503,7 @@ impl Drop for RenderData {
 }
 
 /// Decide how to present `path`: directory / unsupported → InfoCard; text/markdown (gated on
-/// the settings) → Text; any of the ~315 supported formats → Image; an unknown-but-textual
+/// the settings) → Text; any supported format → Image; an unknown-but-textual
 /// file → Text. Phase 3's text branch shows the file as readable monospace text; rendered
 /// GitHub-style Markdown + syntax highlighting (WebView2 + syntect) is a later enhancement.
 pub(super) fn classify(path: &str) -> ContentKind {
