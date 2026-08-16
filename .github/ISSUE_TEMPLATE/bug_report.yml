@@ -1,0 +1,119 @@
+name: Bug report
+description: Something's broken or behaving strangely.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time — genuinely. A few boxes below are marked required.
+        They're the ones that decide whether this gets fixed this week or sits here while
+        we guess, so they're worth the thirty seconds. Everything else is optional.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What's happening?
+      description: What you expected, and what you got instead.
+      placeholder: |
+        I expected thumbnails for my .heic photos in Explorer.
+        I get the generic white page icon instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How do we make it happen?
+      description: Rough steps are fine — we just need to be able to reproduce it.
+      placeholder: |
+        1. Open a folder of .heic files in Explorer
+        2. Switch to Large icons
+        3. No thumbnails, even after waiting
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of SageThumbs?
+      options:
+        - Thumbnails in Explorer
+        - The right-click menu
+        - Explorer's preview pane or Details pane
+        - Quick preview (pressing Space)
+        - Screenshot tool, OCR, or the colour picker
+        - The Settings window
+        - Convert / Resize / other file tools
+        - Installing, updating, or uninstalling
+        - st2k command line or the MCP server
+        - Something else, or not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Which SageThumbs 2K version?
+      description: Settings ▸ About shows it. "Latest" changes every few weeks, so the actual number helps.
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Which Windows?
+      description: Press Win+R, type `winver`, and copy the version and build line.
+      placeholder: "Windows 11 24H2, build 26100.2314"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      description: The portable zip genuinely can't do some things the installer can, so this changes the answer.
+      options:
+        - Installer (64-bit)
+        - Installer (ARM64)
+        - Portable zip
+        - winget
+        - Built it from source
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: other-software
+    attributes:
+      label: Is another program involved?
+      description: |
+        If the problem shows up inside or alongside something else — Everything, an antivirus,
+        Photoshop, a file manager — name it **and its version**. "Doesn't work with X" without
+        X's version is the single most common reason a report stalls.
+      placeholder: "Everything 1.5.0.1420b, or Bitdefender 27.0"
+
+  - type: input
+    id: filetypes
+    attributes:
+      label: Which file types?
+      description: If it's about specific files, their extensions.
+      placeholder: ".heic, .cr3"
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `st2k doctor`
+      description: |
+        Optional, but it usually answers the whole thing on its own. It's a read-only
+        self-check — it changes nothing. Open a terminal in your SageThumbs folder
+        (`C:\Program Files\SageThumbs2K`, or wherever you unzipped the portable copy) and run
+        `.\st2k.exe doctor`, then paste the result. It's automatically formatted as code.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, a sample file, or anything you think matters. Drag files straight in.

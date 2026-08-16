@@ -2,6 +2,49 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 2.1.0
+
+### Added
+
+- **Press Space to preview now works in [Everything](https://www.voidtools.com/) 1.4 as well as
+  1.5.** 1.4 never told anyone which result was selected, which is why it was unsupported: there
+  was nothing to read. It turns out its result list will answer if you ask it directly, so now we
+  ask. Click a result in 1.4 and tap Space and you get the same preview 1.5 users have had,
+  following you as you arrow down the hits. Installed or portable, under any instance name, and
+  whichever columns you have showing.
+
+- **Preview now works over a window running as administrator, using a hotkey.** Space cannot work
+  there and never could: Windows withholds keystrokes typed into an administrator window from
+  ordinary programs, so the keypress never reaches us. A **global hotkey is not affected** by
+  that, and reading which file you have selected was never affected either, so the only thing
+  that was ever missing was a way to ask. Now there is one. Bind a key to the new **"Quick preview
+  the selected file"** action in Settings, Quick action, and it previews the selected file
+  anywhere, including inside an Everything or Explorer window running as administrator.
+
+  Your hotkey has to include **Ctrl, Alt or Shift**, which is a Windows rule rather than ours: a
+  plain one-key shortcut is delivered like ordinary typing and gets blocked over an administrator
+  window exactly as Space does, while a combination comes through. **Ctrl+Space** is the natural
+  pick. This is also why Space itself can never be made to work there, however we ask for it.
+
+  This matters most for Everything 1.4, which asks for administrator the first time it indexes
+  your drives, so people end up there by accident and had no way forward at all.
+
+- **SageThumbs now TELLS you when Space cannot work, instead of doing nothing.** This used to be
+  the one failure that was completely silent: when the window in front runs as administrator,
+  Windows never delivers the keypress to us at all, so there is no swallowed key for us to notice
+  and complain about. So we stopped waiting for the key. The moment an Everything or Explorer
+  window running as administrator becomes active, you get a tray notification, **before you press
+  anything**, explaining why Space is doing nothing and what to use instead. **Click it and
+  Settings opens** so you can bind the hotkey right there. It repeats on a widening interval for
+  as long as the situation lasts, rather than telling you once and then leaving you to it.
+
+  **Space is still the default and has not changed.** Nothing needs configuring for the normal
+  case; the hotkey is only for people who choose to run as administrator.
+
+- **`st2k doctor` reports the same thing**, for when the notification was missed or the tray icon
+  is hidden: with the window open it names which program is running as administrator and the fix,
+  and it also tells you when Quick preview is simply switched off, which is its default.
+
 ## 2.0.0
 
 ### Added

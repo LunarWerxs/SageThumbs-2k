@@ -25,7 +25,7 @@ exr = { path = "crates/vendor/exr" }
 # build-release.ps1 reads this line; keep it in sync with
 # scripts/packaging/AppxManifest.xml's <Identity Version> when bumping a release.
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 rust-version = "1.93"   # sevenz-rust2 0.21.4 is the highest MSRV in the locked default graph
 
 [package]
@@ -365,6 +365,7 @@ features = [
     "Win32_System_Time", # SystemTimeToFileTime: EXIF DateTaken (YYYY:MM:DD…) -> FILETIME for the property handler
     "Win32_System_WindowsProgramming", # MulDiv for the app dialogs' DPI scaling
     "Win32_UI_HiDpi", # GetDpiForWindow + SystemParametersInfoForDpi (PerMonitorV2 layout scaling)
+    "Win32_UI_Accessibility", # SetWinEventHook(EVENT_SYSTEM_FOREGROUND): notice an ELEVATED window taking the foreground, the one Space-preview failure the keyboard hook can never see (its keys never arrive)
     "Win32_Storage_FileSystem", # Get/SetFileAttributesW for the folder-icon verb
     "Win32_Storage_Xps", # PrintWindow: render the Settings window to a PNG headlessly (the `--shot` verification mode)
     "Win32_UI_Shell",
@@ -381,6 +382,7 @@ features = [
     "Win32_Globalization",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_Diagnostics_Debug", # Read/WriteProcessMemory: read the focused row out of Everything 1.4's result list (it publishes no focus window, unlike 1.5)
     "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_UI_WindowsAndMessaging",

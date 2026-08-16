@@ -8,6 +8,7 @@
 //! (`--screenshot`) as a SEPARATE process so a capture can't take the tray down.
 //! A tray icon offers Capture / Settings / Quit. Single-instance (FindWindow).
 
+use core::ffi::c_void;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -24,8 +25,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_SHIFT,
 };
 use windows::Win32::UI::Shell::{
-    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
-    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO,
+    NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -78,8 +79,15 @@ const TRAY_RETRY_MS: u32 = 3000;
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 /// A newer release was found (lparam = `Box<String>` tag); posted from the check thread.
 const WM_UPDATE_FOUND: u32 = WM_APP + 3;
-/// The user clicked our update toast (Shell tray notification balloon).
+/// The user clicked one of our tray balloons.
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
+/// Which balloon is currently on screen, so a click does the right thing. The tray gives us one
+/// undifferentiated "the user clicked the balloon" message, so this is the only way to tell an
+/// update toast from the elevated-window warning.
+static LAST_BALLOON: AtomicU32 = AtomicU32::new(BALLOON_NONE);
+const BALLOON_NONE: u32 = 0;
+const BALLOON_UPDATE: u32 = 1;
+const BALLOON_ELEVATED: u32 = 2;
 
 pub(super) const CLASS: PCWSTR = w!("SageThumbs2KShotDaemon");
 
@@ -145,6 +153,11 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     // Quick preview: install the WH_KEYBOARD_LL "press Space to preview" hook if the feature
     // is enabled (no-op otherwise). Re-armed on the same triggers as the hotkeys (below).
     super::spacehook::rearm(hwnd);
+    // The foreground watcher that explains an elevated window (see `elevwarn`) installs HERE
+    // too, not only from `rearm_hotkeys`: that runs off the 60 s backstop timer, so relying on
+    // it alone left the first minute after logon silently unwatched — which is exactly when a
+    // user who just launched an elevated Everything is trying the feature.
+    super::elevwarn::rearm(hwnd);
 
     // Learn the shell's dynamic "TaskbarCreated" broadcast id BEFORE the tray add, so an
     // Explorer (re)start from here on always re-adds our icon (see the wndproc arm).
@@ -269,6 +282,9 @@ unsafe fn rearm_hotkeys(hwnd: HWND) {
     // it if the feature was just turned off in Settings via WM_RELOAD). Windows can silently
     // drop a slow LL hook across sleep/resume/session-change, exactly like a RegisterHotKey.
     super::spacehook::rearm(hwnd);
+    // And the watcher that explains the one failure that hook CANNOT report: an elevated
+    // foreground window, whose keystrokes never reach us at all (see `elevwarn`).
+    super::elevwarn::rearm(hwnd);
 }
 
 /// Build a NOTIFYICONDATAW for our tray entry (hWnd + uID identify it for ADD/DELETE).
@@ -381,11 +397,40 @@ unsafe fn kick_update_check(hwnd: HWND) {
 /// Pop a tray "update available" balloon (clickable → the releases page). A no-op if the
 /// tray icon is hidden, in which case the next Settings open still surfaces the update.
 unsafe fn show_update_toast(hwnd: HWND, tag: &str) {
+    LAST_BALLOON.store(BALLOON_UPDATE, Ordering::Relaxed);
     let mut nid = tray_data(hwnd, false);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
     let title = wide("SageThumbs 2K update available");
     let info = wide(&format!("Version {tag} is ready — click to download."));
+    for (d, s) in nid.szInfoTitle.iter_mut().zip(title.iter()) {
+        *d = *s;
+    }
+    for (d, s) in nid.szInfo.iter_mut().zip(info.iter()) {
+        *d = *s;
+    }
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+/// Pop a tray balloon explaining that Space cannot work over the window now in front.
+///
+/// The title names the program (Everything / File Explorer) so it is obvious WHICH window is the
+/// problem when several are open. A no-op if the tray icon is hidden, which is the accepted floor
+/// here: `st2k doctor` still reports it, and there is no other channel that does not steal focus
+/// from the very window the user is working in.
+unsafe fn show_elevated_warning(hwnd: HWND, kind: &str) {
+    // Always logged, not just under verbose: this is the answer to "I pressed Space and nothing
+    // happened", and a support reply should not depend on the user having had logging on before
+    // the thing they are reporting happened.
+    sagethumbs2k_core::safety::log(&format!(
+        "quick preview: {kind} is running elevated — its keystrokes never reach us, warning shown"
+    ));
+    LAST_BALLOON.store(BALLOON_ELEVATED, Ordering::Relaxed);
+    let mut nid = tray_data(hwnd, false);
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_WARNING;
+    let title = wide(&format!("{kind}: {}", crate::win::t("admin_warn_title")));
+    let info = wide(crate::win::t("admin_warn_body"));
     for (d, s) in nid.szInfoTitle.iter_mut().zip(title.iter()) {
         *d = *s;
     }
@@ -430,6 +475,15 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 crate::preview::request_close();
                 LRESULT(0)
             }
+            // A window we would have served just came to the foreground. If it is elevated,
+            // Space is already dead there and the user has no way to find that out, so say it
+            // now rather than letting them press a key that never reaches us.
+            m if m == super::elevwarn::WM_APP_CHECK_ELEVATED => {
+                if let Some(kind) = super::elevwarn::warning_for(HWND(wparam.0 as *mut c_void)) {
+                    show_elevated_warning(hwnd, kind);
+                }
+                LRESULT(0)
+            }
             WM_RELOAD => {
                 rearm_hotkeys(hwnd);
                 // Reconcile the tray icon with the (possibly just-changed) setting.
@@ -447,7 +501,11 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
                     show_tray_menu(hwnd);
                 } else if ev == NIN_BALLOONUSERCLICK {
-                    open_releases(); // clicked the "update available" toast
+                    // One message for every balloon, so route on which one we last raised.
+                    match LAST_BALLOON.swap(BALLOON_NONE, Ordering::Relaxed) {
+                        BALLOON_ELEVATED => spawn(None), // open Settings to bind a hotkey
+                        _ => open_releases(),            // the "update available" toast
+                    }
                 }
                 LRESULT(0)
             }
@@ -538,6 +596,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = KillTimer(Some(hwnd), REARM_TIMER_ID);
                 let _ = WTSUnRegisterSessionNotification(hwnd);
                 super::spacehook::uninstall(); // drop the Space hook with the daemon
+                super::elevwarn::uninstall(); // and its foreground watcher
                 remove_tray_icon(hwnd);
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);

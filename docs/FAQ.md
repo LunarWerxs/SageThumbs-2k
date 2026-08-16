@@ -73,18 +73,46 @@ helper, the same one the hotkeys use.
 
 ### It works in Explorer but not in Everything
 
-You need **Everything 1.5 or newer**. Version 1.4 does not publish which result is selected, so
-there is nothing for us to read, and Space stays a space there.
+**Click a result first.** While your cursor is still in Everything's search box, Space types a
+space, which is what it should do. The preview is only ever offered to the result list.
 
-Also click a result first. While your cursor is still in Everything's search box, Space types a
-space, which is what it should do.
+Both **Everything 1.4 and 1.5** work, installed or portable, under any instance name. If Space
+still does nothing after you have clicked a result, check the next question. An Everything
+running as administrator is by far the most common cause, and it looks exactly like this.
 
 ### It does not work when Everything runs as administrator
 
-**This one cannot be fixed from our side, and it is not going to be.** Windows deliberately
-stops a normal program from seeing keys typed into a program running as administrator. Our
-background helper is a normal program, so when an administrator window is in front, the keypress
-never reaches us. Nothing about the setting is wrong; the keystroke simply never arrives.
+**Space cannot work there, but a hotkey can.** Windows deliberately stops a normal program from
+seeing keys typed into a program running as administrator. Our background helper is a normal
+program, so when an administrator window is in front the keypress never reaches us. Nothing about
+your settings is wrong; the keystroke simply never arrives.
+
+A **global hotkey is different**. Windows matches the combination itself and hands it to us
+directly, and that still happens over an administrator window. Reading which file you have
+selected works there too. So the preview itself is fine, it is only the Space key that is lost.
+
+**The fix, if you want to keep running as administrator:** open Settings, Quick action, and bind a
+hotkey to **"Quick preview the selected file"**. That key then previews the selected file
+anywhere, including in an administrator window, exactly as Space does elsewhere.
+
+**Your hotkey must include Ctrl, Alt or Shift.** That is a Windows rule, not ours: a plain
+single-key shortcut is delivered like ordinary typing and gets blocked over an administrator
+window in exactly the same way Space does, while a combination is handled by Windows itself and
+comes through. **Ctrl+Space** is the natural pick if you want it to feel like Space.
+
+**The other fix** is to stop running as administrator, which also brings Space back:
+
+SageThumbs tells you this by itself, too. When an administrator window it would have served
+becomes active, a tray notification explains that Space cannot work there and what to do instead.
+**Click the notification** and it opens Settings so you can bind the hotkey there and then. It
+repeats on a widening interval while the situation lasts, so it never silently gives up on you.
+
+If you missed it, or you have hidden the tray icon, **run `st2k doctor` with the window open**:
+
+```
+[FAIL] Running as administrator    Everything is running as administrator, so Windows
+                                   never delivers the Space keypress to us
+```
 
 The supported way around it would require the whole app to be code-signed with a purchased
 certificate, and that is not something this project has. **The fix is to run Everything as a

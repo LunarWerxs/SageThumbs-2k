@@ -11,6 +11,7 @@
 //! `main.rs` only needs `mod screenshot;` and these entry points.
 
 mod daemon;
+mod elevwarn; // warns when an elevated window makes the Space hook deaf
 mod enable;
 #[cfg(feature = "hdr-capture")]
 mod hdr;

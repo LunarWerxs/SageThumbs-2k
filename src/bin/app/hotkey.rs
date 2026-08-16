@@ -30,6 +30,7 @@ pub(crate) const ACTIONS: &[(u32, &str)] = &[
     (8, "act_upload"),
     (9, "act_ocr"),
     (10, "act_ocr_screen"),
+    (11, "act_preview"),
 ];
 
 /// The translated label for an [`ACTIONS`] row's locale key.
@@ -45,6 +46,16 @@ enum Kind {
     /// The capture overlay in OCR mode: drag a region, its text goes to the clipboard.
     ScreenOcr,
     OpenSettings,
+    /// Quick preview of the selected file — the same viewer Space opens.
+    ///
+    /// This exists because it is the ONLY way to preview over a window running as
+    /// ADMINISTRATOR. Windows withholds keystrokes typed into an elevated window from ordinary
+    /// programs, so the Space hook never sees them (measured: an LL hook and `GetAsyncKeyState`
+    /// are both blind there). A `RegisterHotKey` binding is a different mechanism — the system
+    /// matches the combo itself and posts to us — and it DOES fire over an elevated window
+    /// (also measured). Reading the selection already works cross-integrity, so hotkey +
+    /// existing resolver = a preview that works where Space cannot.
+    Preview,
     /// Operates on the selected IMAGE files (Explorer selection, else an images-only picker).
     ImageVerb(VerbAction),
     /// Operates on the selected files of ANY type (Explorer selection, else an all-files picker).
@@ -68,6 +79,7 @@ fn kind_for(id: u32) -> Option<Kind> {
         // Same recognizer as 9, but the target is the SCREEN, not a selected file — so it
         // needs the capture overlay (in its no-editor OCR mode), not a file resolver.
         10 => Kind::ScreenOcr,
+        11 => Kind::Preview,
         _ => return None,
     })
 }
@@ -85,6 +97,12 @@ pub(crate) unsafe fn run_hotkey_action(hinst: HINSTANCE) {
         // over), so the spawn result is genuinely discardable here.
         Kind::OpenSettings => {
             let _ = crate::screenshot::spawn_self(&[]);
+        }
+        // No path argument: the viewer resolves the foreground selection itself, which is the
+        // same route the Space hook uses — only the trigger differs, and that is the whole
+        // point (a hotkey reaches us over an elevated window; a keystroke does not).
+        Kind::Preview => {
+            let _ = crate::screenshot::spawn_self(&["--preview"]);
         }
         Kind::ImageVerb(action) => run_on_selection(action, true),
         Kind::AnyFileVerb(action) => run_on_selection(action, false),

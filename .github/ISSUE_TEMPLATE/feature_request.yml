@@ -1,0 +1,43 @@
+name: Feature or improvement
+description: An idea for something SageThumbs should do, or do better.
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. Only two boxes are required here — we mostly want to understand
+        the problem you're hitting, because there's often a shorter route to it than the one
+        you'd expect.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not the solution. What are you doing when you wish this existed?
+      placeholder: |
+        I sort thousands of camera RAWs and I keep opening each one just to check
+        whether it's the shot I want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: Your idea, however rough.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Which SageThumbs 2K version are you on?
+      description: Settings ▸ About. Just so we don't suggest something you already have.
+      placeholder: "2.0.0"
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Another program that does this well, a mockup, a link — all useful.

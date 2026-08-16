@@ -1143,6 +1143,114 @@ fn probe_file(r: &mut Report, path: &str) {
 
 /// Build the whole report. Read-only; safe to run unelevated, and safe to paste. When
 /// `file` is given, a per-file probe section is appended (`st2k doctor <path>`).
+/// What to call a window class in a warning, for the classes whose keystrokes the Space preview
+/// has to see. `None` for anything the feature never serves.
+///
+/// Shared with the daemon's live watcher (`screenshot::elevwarn`) so the report and the warning
+/// can never disagree about which windows the feature covers.
+pub fn served_window_kind(cls: &str) -> Option<&'static str> {
+    match cls {
+        "CabinetWClass" | "ExploreWClass" => Some("File Explorer"),
+        _ if cls.starts_with("EVERYTHING") => Some("Everything"),
+        _ => None,
+    }
+}
+
+use crate::prebuild::process_is_elevated;
+
+unsafe extern "system" fn collect_elevated(
+    hwnd: windows::Win32::Foundation::HWND,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+    let found = &mut *(lparam.0 as *mut Vec<String>);
+    if !IsWindowVisible(hwnd).as_bool() {
+        return true.into();
+    }
+    let mut buf = [0u16; 128];
+    let n = GetClassNameW(hwnd, &mut buf);
+    if n <= 0 {
+        return true.into();
+    }
+    let cls = String::from_utf16_lossy(&buf[..n as usize]);
+    let Some(kind) = served_window_kind(&cls) else {
+        return true.into();
+    };
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid != 0 && process_is_elevated(pid) {
+        let entry = kind.to_string();
+        if !found.contains(&entry) {
+            found.push(entry);
+        }
+    }
+    true.into()
+}
+
+/// The windows open RIGHT NOW that the Space preview would serve but cannot, because they run
+/// elevated.
+fn elevated_served_windows() -> Vec<String> {
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
+    let mut found: Vec<String> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(collect_elevated),
+            LPARAM(core::ptr::addr_of_mut!(found) as isize),
+        );
+    }
+    found
+}
+
+/// Why "press Space to preview" can be doing nothing at all.
+///
+/// This is the ONE failure the feature cannot report for itself. Windows withholds keystrokes
+/// typed into an ELEVATED window from ordinary programs, and our keyboard hook is an ordinary
+/// program, so the keypress never arrives: there is no failed attempt to notice, only silence.
+/// Measured rather than assumed — a non-elevated low-level hook saw every key typed into a
+/// normal window and NONE of the keys typed into an elevated one.
+///
+/// So the situation is detected instead of the keypress. Everything is the usual culprit,
+/// because 1.4 asks for administrator the first time it indexes an NTFS drive and people
+/// understandably leave it that way.
+fn check_space_preview(r: &mut Report) {
+    r.head("Press Space to preview");
+    if !crate::settings::preview_enabled() {
+        r.line(
+            S::Info,
+            "Quick preview",
+            "off — this feature is off by default; turn it on in Settings, Quick preview",
+        );
+        return;
+    }
+    r.line(S::Ok, "Quick preview", "on");
+    let blocked = elevated_served_windows();
+    if blocked.is_empty() {
+        r.line(
+            S::Ok,
+            "Keystrokes reach us",
+            "no window open right now is running as administrator",
+        );
+        return;
+    }
+    for kind in &blocked {
+        r.fail_with_fix(
+            "Running as administrator",
+            &format!(
+                "{kind} is running as administrator, so Windows never delivers the Space \
+                 keypress to us and the preview cannot appear"
+            ),
+            &format!(
+                "Restart {kind} as a standard user. In Everything: Tools, Options, General, \
+                 untick 'Run as administrator', tick 'Everything Service', then exit and \
+                 restart it. This cannot be fixed from SageThumbs' side."
+            ),
+        );
+    }
+}
+
 pub fn report(file: Option<&str>) -> String {
     let mut r = Report::new();
 
@@ -1197,6 +1305,7 @@ pub fn report(file: Option<&str>) -> String {
     check_extensions(&mut r);
     check_displaced(&mut r);
     check_settings(&mut r);
+    check_space_preview(&mut r);
     check_engine(&mut r);
     if let Some(f) = file {
         probe_file(&mut r, f);

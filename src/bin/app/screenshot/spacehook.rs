@@ -168,12 +168,18 @@ unsafe fn foreground_qualifies(fg: HWND) -> bool {
         // user has clicked into the item view.
         "#32770" => crate::dialog_hook::is_file_dialog(fg),
         // Everything (voidtools). BOTH gates, and in this order: the class stem is the only
-        // stable part of its name, and only a build that publishes the focused result can
-        // answer the Space we are about to act on. Anything else and Space stays a space.
-        // (`is_typing` below still holds the search box — its `Edit` reports a caret.)
+        // stable part of its name, and only a build we can actually READ the focused result
+        // from can answer the Space we are about to act on. Anything else and Space stays a
+        // space. (`is_typing` below still holds the search box — its `Edit` reports a caret.)
+        //
+        // Two sources, because 1.5 and 1.4 differ: 1.5 publishes a hidden focus window, 1.4
+        // publishes nothing and is read out of its `SysListView32` instead. Both probes are
+        // plain `FindWindowEx` calls that send NO message, so this stays safe in an LL-hook
+        // callback; the cross-process reads happen later, on the daemon thread.
         _ => {
             crate::explorer_selection::is_everything_class(&cls)
-                && crate::explorer_selection::everything_focus_window(fg).is_some()
+                && (crate::explorer_selection::everything_focus_window(fg).is_some()
+                    || crate::explorer_selection::everything_result_list(fg).is_some())
         }
     }
 }

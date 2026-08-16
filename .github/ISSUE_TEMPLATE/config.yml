@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question, or just not sure what's going on
+    url: https://github.com/LunarWerxs/SageThumbs-2k/discussions
+    about: Not sure it's a bug? Ask in Discussions — no form, no pressure, and we answer there too.
+  - name: Read the FAQ first (it might be a two-minute fix)
+    url: https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/FAQ.md
+    about: Missing thumbnails, online-only files, antivirus warnings and the portable zip's limits are all covered here.
+  - name: Security problem
+    url: https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/SECURITY.md
+    about: Please report vulnerabilities privately rather than in a public issue.

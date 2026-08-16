@@ -1,0 +1,66 @@
+name: A file type has no thumbnail
+description: A format you'd like SageThumbs to show, or one that should work and doesn't.
+title: "[Format] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SageThumbs already covers 300+ formats — run `st2k formats` to see the live list.
+        If yours is on that list, it's a bug rather than a request, and the
+        [bug report form](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=bug_report.yml)
+        is the better fit.
+
+  - type: input
+    id: extension
+    attributes:
+      label: The file extension
+      placeholder: ".xyz"
+    validations:
+      required: true
+
+  - type: input
+    id: program
+    attributes:
+      label: What program makes these files?
+      description: Knowing the app (and roughly which version wrote the file) is usually how we find the format's layout.
+      placeholder: "Blender 4.2, or some scanner's proprietary output"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: What happens today?
+      options:
+        - No thumbnail at all — plain icon
+        - A thumbnail appears but it's wrong or broken
+        - It works in Explorer but not somewhere else in SageThumbs
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Which SageThumbs 2K version?
+      description: Settings ▸ About shows it.
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: A sample file
+      description: |
+        **This is the one that decides whether it can happen at all.** Without a real file
+        there's nothing to test against. Drag a small one in (zip it if GitHub rejects the
+        extension), or link one — as long as it's yours to share and has nothing private in it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Format documentation, or another tool that already shows these — both help.
