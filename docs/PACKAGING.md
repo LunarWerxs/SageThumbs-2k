@@ -51,8 +51,8 @@ fork, pushes a branch and opens the pull request against `microsoft/winget-pkgs`
 required scope. To submit (or re-submit) any published version by hand:
 
 ```powershell
-pwsh scripts\winget-submit.ps1 -Version 1.12.0          # submit
-pwsh scripts\winget-submit.ps1 -Version 1.12.0 -DryRun  # build the manifests and stop
+pwsh scripts\winget-submit.ps1 -Version <ver>          # submit
+pwsh scripts\winget-submit.ps1 -Version <ver> -DryRun  # build the manifests and stop
 ```
 
 It is idempotent and self-checking: it exits early if that version is already published
@@ -92,7 +92,7 @@ winget install RussellBanks.Komac
 komac new LunarWerxs.SageThumbs2K --version <ver> --urls <installer-url>
 ```
 
-**That step is already done** — `LunarWerxs.SageThumbs2K` was onboarded at v0.10.0. Komac is
+**That step is already done**: `LunarWerxs.SageThumbs2K` was onboarded at v0.10.0. Komac is
 only needed again if the package is ever re-created under a new ID.
 
 ---
