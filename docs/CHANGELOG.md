@@ -4,25 +4,6 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 2.0.0
 
-Most of this release is not the new formats. It is an audit of everything that was already
-there.
-
-SageThumbs builds thumbnails for files you never opened, and it does that inside Explorer
-itself. When a parser trips over a malformed file you do not get a broken picture, you get your
-desktop restarting. After nine releases of adding formats, the whole lot needed going over.
-
-Nine AI code reviews were run across the codebase, the last round five models reading all of it
-at once. Every finding was then checked against the source by hand: 264 were real and are fixed,
-17 were wrong and were thrown out. Some of what that turned up:
-
-- A malformed MP4 could make a size calculation wrap around and run off the end of the file.
-- A guard meant to reject absurdly large GIMP files would have rejected perfectly normal ones.
-- Photos with rotation information could thumbnail sideways on the faster path added below.
-- The fuzzing that is supposed to hammer every parser with junk had been running against empty
-  buffers on the build server, so it had been proving nothing.
-- Three tests could not fail no matter what the code did. They have been replaced with ones
-  that can.
-
 ### Added
 
 - **Flash video (`.flv`) files now get thumbnails.** Windows has no way to open an FLV at
@@ -121,6 +102,13 @@ at once. Every finding was then checked against the source by hand: 264 were rea
   preview Photoshop bakes into a PSD varies in size depending on the app and version that
   wrote it, so two PSDs side by side could get different tile sizes for no visible reason.
   Reported by @eddy593 (#25).
+- **A malformed MP4 could read past the end of the file.** A 64-bit box size could wrap
+  around, so the parser kept walking instead of stopping.
+- **Photos carrying rotation information could thumbnail sideways.** The two faster decode
+  paths skipped the rotation step the normal path applies.
+- **Nine AI code reviews were run over the whole codebase; 264 confirmed issues are fixed.**
+  Every file parser is now fuzzed on every build, which previously only happened on the
+  developer's own machine.
 
 
 ## 1.12.0
