@@ -586,6 +586,16 @@ pub fn prebuild(
         "{} supported file(s) found\n  built    {}\n  cached   {}\n  failed   {}",
         rep.found, rep.built, rep.already, rep.failed
     );
+    // `partial` belongs here for the same reason it exists at all: without it, built+cached+
+    // failed silently fails to add up to `found`, and the unexplained remainder is exactly the
+    // files that will re-extract on first browse. The GUI summary already shows it, so leaving
+    // the CLI out would reintroduce "the run says it finished" on the other surface.
+    if rep.partial > 0 {
+        out.push_str(&format!(
+            "\n  partial  {} — cached at some sizes but not all; those views still rebuild on first browse",
+            rep.partial
+        ));
+    }
     if rep.cancelled {
         out.push_str("\n  stopped early: Ctrl+C — the counts above are a partial report");
     }

@@ -43,6 +43,10 @@ pub struct Report {
     pub already: usize,
     /// The shell refused a thumbnail (unsupported, corrupt, handler not registered).
     pub failed: usize,
+    /// Cached at some requested sizes but not all — the view that reads a missing bucket will
+    /// still extract it on first browse. Counted separately so a run cannot claim to have
+    /// finished work it did not do.
+    pub partial: usize,
     /// Cloud placeholders left alone so we never trigger a multi-gigabyte rehydration.
     pub skipped_offline: usize,
     /// Directories the walk could not read (permissions, vanished mid-walk).
@@ -214,6 +218,12 @@ pub(crate) fn parsing_path(path: &str) -> String {
 enum Outcome {
     Built,
     Already,
+    /// Some size buckets are in the cache and at least one is NOT. The distinction matters
+    /// because the shell reads a SPECIFIC bucket for a given view: a file that built at 96 but
+    /// not at 256 looks finished in the summary and then re-extracts, slowly, the moment the
+    /// user opens the folder in Large Icons. Reported as "Built" it was a lie the run told
+    /// about itself (issue #26).
+    Partial,
     Failed,
 }
 
@@ -235,6 +245,24 @@ thread_local! {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
         Apartment(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok())
     };
+}
+
+/// The verdict for one file, given what happened across its size buckets.
+///
+/// `None` means "nothing landed at any size" and the caller logs + reports [`Outcome::Failed`];
+/// splitting it out keeps that logging in `one` while making the RULE testable without COM.
+///
+/// The rule that matters is the first arm. Before this, a file that built at 96 and failed at
+/// 256 reported as plain Built, so a run could say it had finished work it had not done, and
+/// the user found out only when Explorer re-extracted the missing bucket on first browse
+/// (issue #26). Partial is the honest answer.
+fn verdict(built: bool, already: bool, all_sizes_landed: bool) -> Option<Outcome> {
+    match (built || already, all_sizes_landed) {
+        (true, false) => Some(Outcome::Partial),
+        (true, true) if built => Some(Outcome::Built),
+        (true, true) => Some(Outcome::Already),
+        (false, _) => None,
+    }
 }
 
 /// Ask the shell for one file's thumbnail, which is what gets it into Windows' own cache.
@@ -259,6 +287,7 @@ fn one(path: &str, opts: &Options) -> Outcome {
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(abs.as_str()), None)?;
 
         let (mut built, mut already) = (false, false);
+        let mut missing: Vec<u32> = Vec::new();
         for &size in &opts.sizes {
             if !opts.rebuild_all {
                 // Probe first. This never extracts, so a library that is already built costs
@@ -284,14 +313,40 @@ fn one(path: &str, opts: &Options) -> Outcome {
                 // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
                 // unless someone has turned diagnostics on to find exactly this.
                 Err(e) => {
-                    crate::safety::log_debug(&format!("prebuild: {abs} size {size} not built: {e}"))
+                    crate::safety::log_debug(&format!(
+                        "prebuild: {abs} size {size} not built: {e}"
+                    ));
+                    missing.push(size);
                 }
             }
         }
-        if built {
-            Ok(Outcome::Built)
-        } else if already {
-            Ok(Outcome::Already)
+        // ONE retry for the sizes that did not land, after the rest of this file is done.
+        //
+        // The dominant failure here is a TIMEOUT, not a refusal: a PDF re-renders through the
+        // OS rasterizer once per bucket, and several worker threads do that at once against the
+        // same renderer, so a bucket can miss its budget purely because it was unlucky. By this
+        // point this file's other buckets have finished and released their share, which is
+        // exactly when a retry is most likely to succeed. Bounded to one pass so a genuinely
+        // unsupported file costs one extra cheap refusal, not an unbounded loop.
+        if !missing.is_empty() {
+            missing.retain(|&size| {
+                let mut bmp = None;
+                match cache.GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
+                    Ok(()) => {
+                        built = true;
+                        false // landed on the retry — no longer missing
+                    }
+                    Err(e) => {
+                        crate::safety::log_debug(&format!(
+                            "prebuild: {abs} size {size} still not built after retry: {e}"
+                        ));
+                        true
+                    }
+                }
+            });
+        }
+        if let Some(o) = verdict(built, already, missing.is_empty()) {
+            Ok(o)
         } else {
             // No size produced anything AND none was already cached. Worth a line even at
             // normal verbosity would be too much for a big run, so it stays debug-gated, but
@@ -463,7 +518,8 @@ pub fn run(
     // These calls serialise inside the shell; a wide pool only adds contention and makes the
     // machine unusable while it runs. 1..=4 is the whole useful range.
     let workers = opts.jobs.clamp(1, 4);
-    let (built, already, failed, skipped) = (
+    let (built, already, failed, partial, skipped) = (
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
@@ -485,6 +541,7 @@ pub fn run(
                 Outcome::Built => built.fetch_add(1, Ordering::Relaxed),
                 Outcome::Already => already.fetch_add(1, Ordering::Relaxed),
                 Outcome::Failed => failed.fetch_add(1, Ordering::Relaxed),
+                Outcome::Partial => partial.fetch_add(1, Ordering::Relaxed),
             };
         },
         || {
@@ -496,6 +553,7 @@ pub fn run(
     rep.built = built.into_inner();
     rep.already = already.into_inner();
     rep.failed = failed.into_inner();
+    rep.partial = partial.into_inner();
     rep.cancelled = skipped.into_inner() > 0;
     rep
 }
@@ -503,6 +561,40 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that landed at SOME sizes and missed others must not report as done. This is the
+    /// whole point of the Partial verdict: the old code collapsed it to Built, so a run claimed
+    /// 100% while Explorer still had to extract the missing bucket on first browse (issue #26).
+    #[test]
+    fn a_missed_size_is_never_reported_as_built() {
+        assert!(matches!(
+            verdict(true, false, false),
+            Some(Outcome::Partial)
+        ));
+        assert!(matches!(
+            verdict(false, true, false),
+            Some(Outcome::Partial)
+        ));
+        assert!(matches!(verdict(true, true, false), Some(Outcome::Partial)));
+    }
+
+    /// The clean outcomes still say what they always said, so the summary a user reads for a
+    /// healthy run is unchanged.
+    #[test]
+    fn a_complete_file_reports_built_or_already() {
+        assert!(matches!(verdict(true, false, true), Some(Outcome::Built)));
+        assert!(matches!(verdict(false, true, true), Some(Outcome::Already)));
+        // Built wins over already: some size needed real work, which is what happened.
+        assert!(matches!(verdict(true, true, true), Some(Outcome::Built)));
+    }
+
+    /// Nothing anywhere is the caller's Failed path, and it must stay distinguishable from
+    /// Partial — "we got some of it" and "we got none of it" are different user-facing answers.
+    #[test]
+    fn nothing_anywhere_is_not_a_partial() {
+        assert!(verdict(false, false, false).is_none());
+        assert!(verdict(false, false, true).is_none());
+    }
 
     /// PROVE THE PREMISE, don't assume it. Everything above rests on the claim that Windows
     /// really does turn our registered command into the argument `E:"` for a drive root. That

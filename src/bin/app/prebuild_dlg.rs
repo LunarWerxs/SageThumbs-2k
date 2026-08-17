@@ -82,6 +82,10 @@ struct Summary {
     built: usize,
     already: usize,
     failed: usize,
+    /// Built at some requested sizes but not all. Shown because the alternative is a run that
+    /// says it finished and then lets Explorer re-extract the missing bucket on first browse,
+    /// which is what issue #26 reported and could not be told apart from a clean run.
+    partial: usize,
     offline: usize,
     cancelled: bool,
 }
@@ -96,6 +100,9 @@ fn summary_text(s: &Summary) -> String {
         format!("{} {}", s.built, t("pb_built")),
         format!("{} {}", s.already, t("pb_cached")),
     ];
+    if s.partial > 0 {
+        parts.push(format!("{} {}", s.partial, t("pb_partial")));
+    }
     if s.failed > 0 {
         parts.push(format!("{} {}", s.failed, t("pb_failed")));
     }
@@ -218,6 +225,7 @@ fn spawn_worker(hwnd: HWND, folder: String) {
             built: rep.built,
             already: rep.already,
             failed: rep.failed,
+            partial: rep.partial,
             offline: rep.skipped_offline,
             cancelled: rep.cancelled,
         });

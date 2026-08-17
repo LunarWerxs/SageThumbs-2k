@@ -2,6 +2,38 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 2.1.1
+
+### Fixed
+
+- **Some AVI videos had a completely black thumbnail.** The affected files store empty filler
+  frames that carry no picture, and we were taking the first frame we could decode without ever
+  looking at it, so if one of those landed where the thumbnail is taken from, you got black,
+  even though your thumbnail-position setting was working perfectly. We now check whether a frame
+  actually has a picture in it and move on to the next one if it does not. A genuinely black
+  video still gets its black thumbnail, and dark scenes are unaffected: a frame only counts as
+  empty when EVERY pixel in it is black.
+
+- **"Build thumbnails here" could report 100% while some thumbnails were still missing.** A file
+  is built at several sizes, one per Explorer view, and the run marked a file done if ANY of them
+  worked. So a size that quietly failed left you with a finished-looking run and a folder that
+  still built its tiles on first open. PDFs showed this most, because each size re-renders the
+  page and several files render at once, so one could run out of time while the others succeeded.
+  A size that misses now gets one more attempt once the rest of that file is done, and anything
+  still missing is reported as **partly built** instead of counted as finished.
+
+- **Opening About started an update check even with automatic checking turned off.** The setting
+  correctly governed the check that happens when the app starts, but the About page ignored it
+  and checked every time it opened. It now respects the setting, and shows "Check for updates"
+  so you can still check whenever you want with one click. The button itself is unchanged: press
+  it and it checks, setting or no setting.
+
+- **Settings headings cut off the bottom of letters like "g".** The heading's height was a fixed
+  number rather than measured from the font, so it was always a few pixels short, and the taller
+  everything gets the more it takes off: at 300% display scaling it was losing around ten pixels.
+  It now measures the font. A heading too long for the space ends in an ellipsis rather than
+  running under the search box.
+
 ## 2.1.0
 
 ### Added

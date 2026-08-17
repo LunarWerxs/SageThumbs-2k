@@ -478,28 +478,93 @@ unsafe fn grab_reader(reader: &IMFSourceReader, seek: Seek) -> Option<DynamicIma
     // at/after the seek point.
     seek_to_fraction(reader, seek);
 
-    // Read decoded samples until one carries a buffer — skipping stream ticks / format-change
-    // notifications (a null sample with no end-of-stream flag). Bounded so a pathological
-    // file can't spin.
-    let mut sample: Option<IMFSample> = None;
-    for _ in 0..64 {
+    // Read decoded samples, skipping stream ticks / format-change notifications (a null sample
+    // with no end-of-stream flag), and skipping frames that decode to BLACK.
+    //
+    // The black skip is why this is a loop over IMAGES rather than "take the first sample that
+    // has a buffer". XviD packed-bitstream AVIs carry N-VOP placeholder frames — a real sample,
+    // with a real buffer, whose picture is empty — and landing on one produced a completely
+    // black thumbnail even though the user's offset setting was working correctly (issue #26).
+    // The same shape covers any file whose seek point happens to sit on a fade or a black lead-in.
+    //
+    // Bounded twice over: at most `MAX_SAMPLES` reads, and at most `MAX_DECODES` of those get
+    // converted, so a pathological file cannot spin and a long run of black frames cannot turn
+    // one thumbnail into sixty-four decodes. The FIRST black frame is kept as a fallback, so a
+    // genuinely black video still gets its (correct, black) thumbnail rather than none at all.
+    const MAX_SAMPLES: usize = 64;
+    const MAX_DECODES: usize = 8;
+
+    let mut fallback: Option<DynamicImage> = None;
+    let mut decodes = 0usize;
+    for _ in 0..MAX_SAMPLES {
         let mut flags: u32 = 0;
         let mut smp: Option<IMFSample> = None;
-        reader
+        // BREAK, never `?`. A read error this far in must not throw away a frame we already
+        // decoded: once `fallback` holds a black frame, propagating None would turn "we found
+        // only a black frame" into "we found nothing" and lose the thumbnail entirely. A
+        // truncated or malformed stream erroring on a later sample is exactly when that bites.
+        if reader
             .ReadSample(first_video, 0, None, Some(&mut flags), None, Some(&mut smp))
-            .ok()?;
+            .is_err()
+        {
+            break;
+        }
         if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
             break;
         }
-        if let Some(s) = smp {
-            sample = Some(s);
+        let Some(sample) = smp else { continue };
+        let Some(img) = image_from_sample(reader, first_video, &sample) else {
+            continue;
+        };
+        decodes += 1;
+        if !is_near_black(img.as_bytes()) {
+            return Some(img);
+        }
+        if fallback.is_none() {
+            fallback = Some(img);
+        }
+        if decodes >= MAX_DECODES {
             break;
         }
     }
-    let sample = sample?;
+    fallback
+}
 
-    // Geometry of the negotiated output frame.
-    let out = reader.GetCurrentMediaType(first_video).ok()?;
+/// How dark every sampled pixel must be for a frame to count as "black". Deliberately not zero:
+/// a real decoded black frame carries a little noise, and a 16-235 studio-range black lands
+/// around 16 rather than 0.
+const BLACK_LEVEL: u8 = 18;
+
+/// Whether an RGBA frame is entirely (near-)black, i.e. carries no picture worth showing.
+///
+/// Scans EVERY pixel and returns the moment it finds one that is not black. A strided sampler
+/// was tried first and rejected: a stride of N can step clean over a bright region up to N-1
+/// pixels wide, and the failure is asymmetric. Answering "black" makes the caller DISCARD the
+/// frame, so a wrong yes throws away the only picture we had, while a wrong no merely keeps
+/// today's behaviour. So this errs, deliberately, toward "there is a picture here".
+///
+/// The full scan is not the cost it looks like. A real picture exits on one of the first few
+/// pixels; only a genuinely black frame is read to the end, which is the rare case and a flat
+/// linear pass. Alpha is ignored: `copy_bgrx_to_rgba` forces it opaque, so it says nothing
+/// about the picture.
+fn is_near_black(rgba: &[u8]) -> bool {
+    if rgba.len() < 4 {
+        return false; // nothing to judge — don't call an unusable buffer black and skip it
+    }
+    !rgba
+        .chunks_exact(4)
+        .any(|px| px[0] > BLACK_LEVEL || px[1] > BLACK_LEVEL || px[2] > BLACK_LEVEL)
+}
+
+/// Convert one decoded Media Foundation sample into an image, using the reader's CURRENT output
+/// geometry. Read per sample rather than once up front because a format change mid-stream
+/// re-negotiates width/height/stride, and using stale geometry would shear the picture.
+unsafe fn image_from_sample(
+    reader: &IMFSourceReader,
+    stream: u32,
+    sample: &IMFSample,
+) -> Option<DynamicImage> {
+    let out = reader.GetCurrentMediaType(stream).ok()?;
     let size = out.GetUINT64(&MF_MT_FRAME_SIZE).ok()?;
     let w = (size >> 32) as u32;
     let h = (size & 0xFFFF_FFFF) as u32;
@@ -598,7 +663,73 @@ unsafe fn copy_bgrx_to_rgba(
 
 #[cfg(test)]
 mod tests {
+    use super::is_near_black;
     use std::path::Path;
+
+    /// Build an RGBA buffer of `n` pixels, every channel set to `v`.
+    fn flat(n: usize, v: u8) -> Vec<u8> {
+        let mut b = Vec::with_capacity(n * 4);
+        for _ in 0..n {
+            b.extend_from_slice(&[v, v, v, 255]);
+        }
+        b
+    }
+
+    /// THE case this exists for: an XviD packed-bitstream N-VOP placeholder decodes to a real
+    /// buffer with no picture in it. Accepting it is how issue #26 got an all-black thumbnail
+    /// while the user's offset setting was working perfectly.
+    #[test]
+    fn an_empty_frame_reads_as_black() {
+        assert!(is_near_black(&flat(4000, 0)));
+        // Studio-range black sits near 16, not 0, and carries a little decode noise.
+        assert!(is_near_black(&flat(4000, 16)));
+    }
+
+    /// A real picture must NEVER be discarded as black, or a legitimate dark frame would be
+    /// skipped and the thumbnail would come from somewhere the user did not ask for.
+    #[test]
+    fn a_real_picture_is_not_black() {
+        assert!(!is_near_black(&flat(4000, 200)));
+        // Just past the threshold, uniformly — the tightest true negative.
+        assert!(!is_near_black(&flat(4000, 19)));
+    }
+
+    /// A frame that is black almost everywhere but has real content somewhere is a PICTURE
+    /// (letterboxed, a fade-in with a logo, a dark scene). The sampler must find it, whichever
+    /// row it lands on — so probe every offset a single bright pixel could occupy.
+    #[test]
+    fn one_bright_region_anywhere_defeats_the_black_verdict() {
+        for offset in 0..400usize {
+            let mut b = flat(400, 0);
+            // Wrap rather than clamp, so the run is genuinely 120px wide at EVERY offset —
+            // clamping shortened it near the end and tested the harness, not the code.
+            for k in 0..120usize {
+                b[((offset + k) % 400) * 4] = 240;
+            }
+            assert!(
+                !is_near_black(&b),
+                "a 120px bright run at offset {offset} was called black"
+            );
+        }
+        // And the tightest possible case: ONE bright pixel, at every position. A strided
+        // sampler fails this; a full scan cannot.
+        for offset in 0..400usize {
+            let mut b = flat(400, 0);
+            b[offset * 4 + 1] = 240; // green channel, to prove it is not just red that counts
+            assert!(
+                !is_near_black(&b),
+                "a single bright pixel at offset {offset} was called black"
+            );
+        }
+    }
+
+    /// Degenerate buffers must not be called black: "black" makes us SKIP a frame, so a wrong
+    /// yes throws away the only picture we had. An empty buffer is unknown, not black.
+    #[test]
+    fn a_buffer_too_small_to_judge_is_not_called_black() {
+        assert!(!is_near_black(&[]));
+        assert!(!is_near_black(&[0, 0]));
+    }
 
     /// The block-caching stream must let Media Foundation decode a representative frame from
     /// containers we have no bespoke index parser for (AVI, WMV). Runs against the corpus

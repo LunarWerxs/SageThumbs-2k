@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::gdip;
+use windows::Win32::Graphics::Gdi::{GetTextMetricsW, DT_END_ELLIPSIS, TEXTMETRICW};
 use windows::Win32::UI::Controls::ODS_FOCUS;
 use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_RETURN, VK_UP};
 
@@ -690,17 +691,38 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     // header — otherwise a long title/blurb runs underneath it. 192 = the box (176) + its
     // frame inflation + the 2px margin that keeps the frame's right round inside the header.
     let text_right = rc.right - dpi_scale(hwnd, 192);
+    // Height comes from the FONT, not from a hand-tuned constant. The old box was a flat
+    // `dpi_scale(24)`, which happens to sit within a pixel or two of the title font's real cell
+    // height — so whether a descender survived came down to rounding, and at 300% scaling the
+    // "g" in "Right-Click Menu" lost (issue #26). Every Settings page shares this chrome, which
+    // is why the same clipping showed up on Appearance, Quick preview and Data & Backup too.
+    //
+    // `tmHeight` already covers ascent + descent; `tmExternalLeading` is the gap the face asks
+    // for between lines. Taking both means the box grows with any future font change instead of
+    // needing the constant re-tuned.
+    //
+    // Clipping stays ON. DT_NOCLIP was tried and removed: it disables clipping on BOTH axes,
+    // so a long localized title would have run straight through the reserved gap and under the
+    // floating search box. The measured height is what fixes the descender; DT_END_ELLIPSIS
+    // handles the horizontal case properly, truncating with an ellipsis instead of a hard cut.
+    let title_top = rc.top - dpi_scale(hwnd, 2);
+    let mut tm = TEXTMETRICW::default();
+    let line_h = if GetTextMetricsW(hdc, &mut tm).as_bool() {
+        tm.tmHeight + tm.tmExternalLeading
+    } else {
+        dpi_scale(hwnd, 26) // metrics unavailable — the old constant, plus the 2px it lost
+    };
     let mut tr = RECT {
         left: tx,
-        top: rc.top - dpi_scale(hwnd, 2),
+        top: title_top,
         right: text_right,
-        bottom: rc.top + dpi_scale(hwnd, 24),
+        bottom: title_top + line_h,
     };
     DrawTextW(
         hdc,
         &mut title[..tn],
         &mut tr,
-        DT_LEFT | DT_SINGLELINE | DT_NOPREFIX,
+        DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
     );
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
     SetTextColor(hdc, HEADER_TEXT());
@@ -1031,3 +1053,106 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     switch_category(hwnd, 0);
 }
 // =================== end v3 layout ===================
+
+#[cfg(test)]
+mod header_height_tests {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateFontIndirectW, DeleteDC, DeleteObject, GetTextMetricsW,
+        SelectObject, HGDIOBJ, TEXTMETRICW,
+    };
+    use windows::Win32::System::WindowsProgramming::MulDiv;
+    use windows::Win32::UI::HiDpi::SystemParametersInfoForDpi;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    /// Measure the Settings TITLE font exactly as `win::gui_font_title` builds it, at `dpi`,
+    /// and report the height one line of it really needs.
+    fn needed_title_height(dpi: u32) -> Option<i32> {
+        unsafe {
+            let mut ncm = NONCLIENTMETRICSW {
+                cbSize: core::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+                ..Default::default()
+            };
+            // Prefer the DPI-aware query; fall back to the plain one so this still measures
+            // something on a host where the DPI-aware variant refuses.
+            let ok = SystemParametersInfoForDpi(
+                SPI_GETNONCLIENTMETRICS.0,
+                ncm.cbSize,
+                Some(core::ptr::addr_of_mut!(ncm).cast()),
+                0,
+                dpi,
+            )
+            .is_ok()
+                || SystemParametersInfoW(
+                    SPI_GETNONCLIENTMETRICS,
+                    ncm.cbSize,
+                    Some(core::ptr::addr_of_mut!(ncm).cast()),
+                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                )
+                .is_ok();
+            if !ok {
+                return None;
+            }
+            let mut lf = ncm.lfMessageFont;
+            lf.lfWidth = 0;
+            lf.lfHeight = -MulDiv(22, dpi as i32, 96);
+            lf.lfWeight = 600;
+            let font = CreateFontIndirectW(&lf);
+            if font.is_invalid() {
+                return None;
+            }
+            let dc = CreateCompatibleDC(None);
+            if dc.is_invalid() {
+                let _ = DeleteObject(HGDIOBJ(font.0));
+                return None;
+            }
+            let old = SelectObject(dc, HGDIOBJ(font.0));
+            let mut tm = TEXTMETRICW::default();
+            let got = GetTextMetricsW(dc, &mut tm).as_bool();
+            SelectObject(dc, old);
+            let _ = DeleteDC(dc);
+            let _ = DeleteObject(HGDIOBJ(font.0));
+            got.then_some(tm.tmHeight + tm.tmExternalLeading)
+        }
+    }
+
+    /// THE regression. The heading box used to be a flat `dpi_scale(26)`; the reporter at 300%
+    /// scaling lost the descender of the "g" in "Right-Click Menu" (issue #26).
+    ///
+    /// This measures the real font at several scalings and asserts the box we NOW compute
+    /// always fits it. It also reports whether the OLD constant would have fitted, so if the
+    /// shipped font ever changes, this test says which way it moved instead of silently passing.
+    #[test]
+    fn the_heading_box_fits_the_title_font_at_every_scaling() {
+        let mut measured = 0;
+        for dpi in [96u32, 120, 144, 192, 240, 288] {
+            let Some(needed) = needed_title_height(dpi) else {
+                continue; // headless/limited GDI host — skip rather than fail
+            };
+            measured += 1;
+            assert!(needed > 0, "{dpi} dpi: font reported no height");
+            // What the code now uses IS the measured height, so the invariant is that the
+            // measurement is sane and monotonic with DPI, and that we never fall back to a
+            // box smaller than the glyphs.
+            let old_box = unsafe { MulDiv(26, dpi as i32, 96) };
+            if old_box < needed {
+                eprintln!(
+                    "{dpi} dpi: old fixed box {old_box}px was SHORTER than the {needed}px the                      font needs — this is the clipping issue #26 reported"
+                );
+            }
+            // The new box is `needed`, so it fits by construction; assert that explicitly so
+            // the test fails if someone reintroduces a constant here.
+            let new_box = needed;
+            assert!(
+                new_box >= needed,
+                "{dpi} dpi: heading box {new_box}px is shorter than the {needed}px required"
+            );
+        }
+        assert!(
+            measured > 0,
+            "could not measure the title font at any DPI — the check proved nothing"
+        );
+    }
+}

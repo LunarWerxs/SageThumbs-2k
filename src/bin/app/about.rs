@@ -82,6 +82,9 @@ const ICON: i32 = 20;
 
 /// The latest update-check outcome, shown by the status pill.
 enum Status {
+    /// Automatic checking is switched OFF and nobody has pressed anything, so we have not
+    /// looked and must not imply that we have. The pill still invites a manual check.
+    Idle,
     Checking,
     UpToDate,
     Available(String),
@@ -697,6 +700,7 @@ unsafe fn status_display(st: *mut About) -> (COLORREF, String) {
         return (rgb(150, 150, 150), t("about_checking").to_string());
     }
     match &(*st).status {
+        Status::Idle => (rgb(150, 150, 150), t("about_check_now").to_string()),
         Status::Checking => (rgb(150, 150, 150), t("about_checking").to_string()),
         Status::UpToDate => (rgb(63, 185, 80), t("about_uptodate").to_string()),
         Status::Available(tag) => (rgb(210, 153, 34), format!("{} {}", t("about_update"), tag)),
@@ -813,8 +817,13 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         match msg {
             WM_CREATE => {
                 let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+                // Opening a page is not a request to hit the network. If the user has turned
+                // "Automatically check for updates" off, respect it here too — this arm used to
+                // fire regardless, which is exactly what issue #26 reported. The manual pill
+                // click below still checks unconditionally, because that IS a request.
+                let auto = sagethumbs2k_core::settings::update_auto_check();
                 let state = Box::new(About {
-                    status: Status::Checking,
+                    status: if auto { Status::Checking } else { Status::Idle },
                     checking: false,
                     spin_frame: 0,
                     pending: None,
@@ -824,7 +833,9 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 });
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
                 build_about(hwnd, hinst);
-                begin_check(hwnd); // check on open, with the ≈2 s spinner
+                if auto {
+                    begin_check(hwnd); // check on open, with the ≈2 s spinner
+                }
                 LRESULT(0)
             }
             WM_DRAWITEM => {
