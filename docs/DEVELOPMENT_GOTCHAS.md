@@ -63,6 +63,19 @@ spend the allowance in order of what the viewer will actually see, and stop rath
   unrecognized colour name. Separately, `xc:rgb(30,60,210)` fails in magick's CLI because a
   bare parenthesis is its own image-stack operator; use hex.
 
+**A test that asserts an OS SERVICE rendered something needs a retry, not a single shot.**
+`topdf::combines_two_images_into_a_renderable_pdf` ends by asking `Windows.Data.Pdf` to render
+the PDF it just built. `pdf::render_page_counted` hands that to a dedicated MTA thread and
+gives up after a 30 s WALL CLOCK budget, so on a loaded machine the failure mode is "the OS
+never got scheduled", not "the PDF is wrong". It went red in CI exactly once, on a run where
+the lib suite took 442 s with the fuzzer saturating the runner, and passed on an immediate
+re-run of the identical commit. It retries three times now. That does not weaken what is
+asserted, only how many chances the OS gets to answer: verified by truncating the PDF, which
+still fails all three attempts in 0.7 s. Same rule `regression.ps1` already applies to the
+corpus sweep, and the same shape as the `with_watchdog` timing test the 2.0.0 pass had to fix.
+**Re-running a red CI job until it goes green is not a fix** - it is how a suite stops meaning
+anything. Find out which side of the wall clock the test is on, and say so in the test.
+
 **`scripts/compare-renders.py` is the gate that CAN see this class, and it is worth running
 before every release.** It renders a corpus with two builds and reports every sample whose
 PICTURE changed, so a decoder that succeeds at drawing the wrong thing is no longer invisible.

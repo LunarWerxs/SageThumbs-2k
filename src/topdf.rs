@@ -312,9 +312,29 @@ mod tests {
             "must embed JPEG via DCTDecode"
         );
         // End-to-end: the OS PDF engine (our own decode path) renders it.
+        //
+        // Retried, because this assertion is the one thing here that depends on getting CPU.
+        // `pdf::render_page_counted` hands the work to a dedicated MTA thread and gives up
+        // after a 30 s WALL CLOCK budget (`PDF_TIMEOUT`), so on a loaded machine the failure
+        // mode is "the OS never got scheduled", not "the PDF is wrong". It went red exactly
+        // once in CI, on a run where the lib suite took 442 s with the fuzzer saturating a
+        // 4-core runner, and passed on an immediate re-run of the identical commit.
+        //
+        // The retry does not weaken WHAT is asserted, only how many chances the OS gets to
+        // answer: a genuinely broken PDF fails all three attempts in milliseconds. It is the
+        // same "confirm on a calm retry before crying regression" rule `regression.ps1`
+        // already applies to the corpus sweep, and the sibling this codebase already paid
+        // for is `video::tests::with_watchdog_fires_only_when_f_outlives_the_timeout`, whose
+        // first fix raced the watchdog thread being scheduled at all.
+        let rendered = (0..3).any(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            decode::decode_full(&bytes).is_ok()
+        });
         assert!(
-            decode::decode_full(&bytes).is_ok(),
-            "combined PDF should render via Windows.Data.Pdf"
+            rendered,
+            "combined PDF should render via Windows.Data.Pdf (three attempts)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
