@@ -598,3 +598,66 @@ few minutes. The release script retries, reports "API reported success but best_
 still says …", and tells you to set it by hand. It usually does not need setting by hand:
 re-run the script a few minutes later and it reports "already correct". Believe the second
 reading, not the first.
+
+## ImageMagick can only be reached for formats it can SNIFF, and the rest were dead
+
+The magick tier hands the child an anonymous stdin stream (`magick - ... PNG:-`). That is
+deliberate and it is what keeps untrusted bytes off disk, but it silently caps what the tier
+can reach: ImageMagick picks a coder either from the content or from the FILE NAME, and a
+nameless stream leaves only the first. `magick identify sample.rla` works; the identical bytes
+on stdin come back "no decode delegate for this image format".
+
+Seven registered formats were on the wrong side of that line and had never once produced a
+thumbnail: Wavefront RLA, PSX TIM, MacPaint, Dr Halo CUT, Alias PIX, Garmin JNX, ZX Spectrum
+SCR. Camera RAW joins them whenever the embedded-preview tier finds no preview, because
+magick's `dng` coder is name-selected too.
+
+The membership test is mechanical, so use it rather than guessing. An extension is affected
+when `magick -list format` maps it to a reading coder that does NOT appear in
+`magick -list magic`:
+
+```powershell
+magick -list format | ... # ext -> coder
+magick -list magic  | ... # coders with a sniffable signature
+```
+
+`decode::decode_by_extension` is the last-resort retry, and three things about it are
+load-bearing:
+
+- **It runs only after every tier has already failed.** That ordering is the entire safety
+  argument for naming a coder: a wrong name costs nothing but the error the caller already had.
+  Never promote it ahead of detection.
+- **It stages a real temp file rather than forcing a `rla:-` coder prefix.** A prefix makes
+  magick read the pipe directly instead of spooling it, and the coders disagree about whether
+  they tolerate that: `rla:-` and `mdc:-` work, `tim:-` dies with "insufficient image data" on
+  a file `magick sample.tim` reads perfectly.
+- **Sniffable formats are excluded on purpose.** Force-routing one would bypass ImageMagick's
+  own detection and let a misleading extension decode bytes as something they are not.
+
+The path-shaped callers do NOT converge, which is how the first version of this fix reached
+nothing. The CLI, the MCP `view` tool and `decode_preview_path` had each grown a private copy
+of "read the file, then decode the bytes". They all go through
+`decode::decode_preview_capped_for_path` now. Grep for `read_preview_capped` before assuming a
+new decode entry point inherits anything.
+
+## A corpus with no sample for a format is a gate that says nothing about it
+
+`test-corpus\_no-real-sample.txt` lists the registered extensions with no sample of any kind,
+and `regression.ps1` prints it on every run so the PASS number is never read as full-format
+coverage. Fetching real samples for 31 of them found three shipped bugs in one afternoon, all
+in formats that had been green in every gate for the whole life of the project, because no
+gate had ever been given a file to try.
+
+`scripts\fetch-raw-samples.py` fills the camera-RAW half from raw.pixls.us (the repository
+darktable and RawTherapee test against). It is idempotent and prefers the smallest CC0 sample
+per extension, because the point is coverage of the format, not of a particular camera.
+
+What is NOT allowed is closing the gap with a renamed stand-in. The Paint Shop Pro variants are
+the tempting case: `.pspframe`, `.pspmask`, `.pspshape` and `.pspselection` all share `psp.rs`
+and its magic-based dispatch, so a renamed `.PspBrush` would pass immediately while proving
+nothing about a real frame or mask file. A sample that is not really the format turns a green
+gate into a lie, which is strictly worse than the honest gap the manifest already records.
+
+One real trap while generating samples: `magick in.png out.sf3` silently writes a PNG into a
+file named `.sf3`. Only `magick in.png SF3:out.sf3` invokes the SF3 writer. Always run
+`magick identify` on a generated fixture and check it reports the format you asked for.

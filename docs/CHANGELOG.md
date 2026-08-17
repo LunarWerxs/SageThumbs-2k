@@ -6,6 +6,25 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **A handful of registered formats could never show a thumbnail, on any version.**
+  Wavefront RLA, PlayStation TIM, MacPaint, Dr Halo CUT, Alias PIX, Garmin JNX and ZX Spectrum
+  SCREEN$ were all listed as supported and none of them ever worked.
+
+  The reason is the same for all of them. Most image formats begin with a few bytes that
+  identify them, so a decoder handed anonymous bytes can work out what it is looking at. These
+  formats do not. The only thing that says what they are is the file name, and the stage of our
+  pipeline that handles the obscure long tail was being given the bytes without the name, so it
+  always answered "I do not recognise this". Camera RAW files were caught by the same wall
+  whenever the camera had not stored a preview picture inside the file, which is why the
+  Minolta test file produced nothing at all.
+
+  When every other stage has already given up, that stage is now told the file's name too. All
+  seven formats decode, and a Minolta RAW with no built-in preview now gets a thumbnail
+  developed from the sensor data instead of nothing.
+
+  Formats that identify themselves are deliberately left alone, so nothing that worked before
+  can be pushed down a different path by a misleading file name.
+
 - **Layered GIMP files lost their upper layers, and some stopped showing a thumbnail at all.**
   Reported on 2026-08-17 as "xcf don't work anymore with new versions for big files", and that
   is exactly what was happening.

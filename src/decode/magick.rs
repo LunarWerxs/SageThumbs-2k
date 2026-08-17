@@ -249,6 +249,121 @@ pub(super) fn decode_via_magick_capped(
     decode_via_magick_spec(bytes, &pre_input, input, pre_ops, edge, budget)
 }
 
+/// Extensions whose ImageMagick coder is chosen by FILE NAME and never by
+/// content, so the stdin pipe above can never reach them.
+///
+/// `decode_via_magick_spec_alloc` hands magick a nameless stream. That is fine
+/// for the ~93 formats carrying a signature magick can sniff (`magick -list
+/// magic`) and is why this tier works at all. It is not fine for these:
+/// `magick identify sample.rla` succeeds only because the extension named the
+/// coder, and the identical bytes arriving on stdin come back "no decode
+/// delegate for this image format". Each of these was a registered, advertised
+/// format that could not thumbnail on any surface.
+///
+/// Membership comes from ImageMagick's own tables rather than taste: an entry
+/// belongs here when `magick -list format` maps it to a reading coder that has
+/// no `magick -list magic` signature AND no other tier of ours can read it.
+/// Formats that DO sniff are deliberately absent — naming a coder for those
+/// would bypass magick's own detection and could decode bytes as a format they
+/// are not.
+const NAME_SELECTED_EXTS: &[&str] = &["cut", "jnx", "mac", "pix", "rla", "scr", "tim"];
+
+/// Camera RAW, which rides magick's equally name-selected `dng` coder.
+///
+/// Separate from [`NAME_SELECTED_EXTS`] because the justification differs: RAW
+/// normally never reaches magick at all, since `tiers::largest_embedded_jpeg`
+/// lifts the camera's own preview out first and far more cheaply. This is the
+/// backstop for a RAW whose embedded preview is missing or unreadable, which is
+/// exactly what `sample.mdc` (Minolta) turned out to be — magick demosaics it
+/// fine, and before this it produced no thumbnail at all.
+///
+/// Mirrors `formats::RAW_EXTS`; a RAW extension missing here just keeps the old
+/// no-thumbnail behaviour, so the two lists drifting degrades rather than breaks.
+const RAW_CODER_EXTS: &[&str] = &[
+    "3fr", "arw", "bay", "cap", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "drf", "erf", "fff",
+    "iiq", "k25", "kdc", "mdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "ptx",
+    "pxn", "raf", "rmf", "rw2", "rwl", "sr2", "srf", "srw", "sti", "x3f",
+];
+
+/// Would [`decode_named_extension`] have a coder to offer for `ext`?
+pub(super) fn has_name_selected_coder(ext: &str) -> bool {
+    let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+    NAME_SELECTED_EXTS.contains(&ext.as_str()) || RAW_CODER_EXTS.contains(&ext.as_str())
+}
+
+/// An extension is only ever used to build a temp file NAME, so it must not be
+/// able to steer that name anywhere. Real extensions are short and alphanumeric;
+/// anything else is refused rather than escaped.
+fn safe_ext(ext: &str) -> Option<String> {
+    let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+    let ok = !ext.is_empty() && ext.len() <= 8 && ext.bytes().all(|b| b.is_ascii_alphanumeric());
+    ok.then_some(ext)
+}
+
+/// A temp file that deletes itself, named so ImageMagick's coder tables can see
+/// the extension. Process-id suffixed like every other temp path in this repo, so
+/// concurrent `cargo test` runs and a parallel `st2k batch` fan-out cannot collide.
+struct NamedTemp(std::path::PathBuf);
+
+impl NamedTemp {
+    fn create(bytes: &[u8], ext: &str) -> Option<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("st2k-coder-{}-{n}.{ext}", std::process::id()));
+        std::fs::write(&path, bytes).ok()?;
+        Some(Self(path))
+    }
+}
+
+impl Drop for NamedTemp {
+    fn drop(&mut self) {
+        // Best effort: a leftover file in %TEMP% is a nuisance, a panic here (in a
+        // `panic = "abort"` shell host) is a crash.
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Decode by handing ImageMagick a real file whose NAME carries `ext`, so its own
+/// coder tables pick the reader — the one thing the nameless stdin pipe cannot do.
+///
+/// LAST RESORT ONLY. Every caller runs this after the ordinary tiers have already
+/// declined, and that ordering is what makes naming a coder safe: when the name is
+/// wrong the decode simply fails and the caller returns the error it already had.
+///
+/// A temp file rather than a forced `rla:-` stdin spec, because a coder prefix makes
+/// magick read the pipe directly instead of spooling it, and the coders disagree about
+/// whether they tolerate that: `rla:-` and `mdc:-` work, while `tim:-` dies with
+/// "insufficient image data" on the very file `magick sample.tim` reads perfectly.
+/// Magick already spools stdin to a temp file of its own on the auto-detect path, so
+/// this adds no exposure the normal path does not already carry.
+pub(super) fn decode_named_extension(
+    bytes: &[u8],
+    ext: &str,
+    max_edge: Option<u32>,
+) -> Result<DynamicImage> {
+    let Some(ext) = safe_ext(ext).filter(|e| has_name_selected_coder(e)) else {
+        return Err(Error::from(E_FAIL));
+    };
+    let Some(temp) = NamedTemp::create(bytes, &ext) else {
+        crate::safety::log_debug("magick decode: could not stage a named temp file");
+        return Err(Error::from(E_FAIL));
+    };
+    let Some(spec) = temp.0.to_str() else {
+        return Err(Error::from(E_FAIL));
+    };
+    let capped = max_edge
+        .map(|e| e.clamp(1, MAGICK_MAX_EDGE_PX))
+        .map(|e| format!("{e}x{e}>"));
+    let edge = capped.as_deref().unwrap_or(MAGICK_MAX_EDGE);
+    // Empty stdin on purpose: the child reads the file, so shovelling the bytes down a
+    // pipe nobody drains would only duplicate the write (and, for a big RAW, the wait).
+    let out = decode_via_magick_spec(&[], &[], spec, &[], edge, RASTER_BUDGET);
+    drop(temp);
+    out
+}
+
 /// The `-density` (DPI) that renders an EMF's LONG edge up to [`METAFILE_MIN_PX`] when its natural
 /// (96-DPI) rasterization would be smaller — so a tiny clip-art EMF converts to a usable, crisp
 /// image instead of ~64px. Returns None (magick's default density) when it's already big enough or

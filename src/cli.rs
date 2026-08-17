@@ -205,7 +205,7 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
             // Cap the decode at the edge we're about to shrink to anyway — the streamed
             // path above already takes `edge`, and rendering ImageMagick's full 4096 first
             // costs seconds on a big scan for pixels this immediately discards.
-            decode::decode_preview_capped(&bytes, edge)
+            decode::decode_preview_capped_for_path(&bytes, edge, input)
                 .map_err(|_| format!("cannot decode {input}"))?
         }
     };
@@ -307,7 +307,8 @@ pub fn rotate(input: &str, by: &str) -> Result<String, String> {
 /// directly (HEIC/RAW/PSD/ebook covers/CAD previews/…), not just convert them to a file.
 pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
     let bytes = decode::read_preview_capped(input).map_err(|e| e.to_string())?;
-    let img = decode::decode_preview(&bytes).map_err(|_| format!("cannot decode {input}"))?;
+    let img = decode::decode_preview_capped_for_path(&bytes, 0, input)
+        .map_err(|_| format!("cannot decode {input}"))?;
     let img = if max_dim > 0 {
         img.thumbnail(max_dim, max_dim)
     } else {

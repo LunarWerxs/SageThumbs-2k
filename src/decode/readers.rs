@@ -292,7 +292,10 @@ pub fn decode_preview_path(path: &str, target_edge: u32) -> Result<DynamicImage>
         return Ok(img);
     }
     let bytes = read_preview_capped(path).map_err(|_| Error::from(E_FAIL))?;
-    decode_preview(&bytes)
+    // `..._for_path` rather than plain `decode_preview`: the few formats whose
+    // ImageMagick coder is name-selected are undecodable from bytes alone, and here
+    // we have the name. Identical behaviour for everything else.
+    super::decode_preview_capped_for_path(&bytes, 0, path)
 }
 
 /// Bounded head prefix that's ample for every [`crate::container::has_head_preview`]

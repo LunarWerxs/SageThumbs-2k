@@ -1982,3 +1982,108 @@ fn the_scaled_jpeg_fast_path_still_applies_exif_orientation() {
         out.height()
     );
 }
+
+/// A genuine, minimal PSX TIM: the 8-byte header (magic `0x10`, mode 2 = 16-bit
+/// direct colour, no CLUT) followed by one image block. Built in code rather than
+/// committed as a binary so the assertion runs on every machine, and verified
+/// against ImageMagick itself before it was written down: `magick identify` reports
+/// `TIM 4x4` and every pixel decodes to pure red.
+///
+/// TIM is the sharp end of the name-selected-coder problem. It carries no signature
+/// ImageMagick can sniff, so a nameless stream is undecodable — and unlike RLA/MDC
+/// it also refuses a forced `tim:-` coder prefix ("insufficient image data"), which
+/// is why [`decode_by_extension`] stages a real file instead.
+fn synthetic_tim() -> Vec<u8> {
+    const W: u16 = 4;
+    const H: u16 = 4;
+    const RED_BGR555: u16 = 0x001F;
+    let mut px = Vec::new();
+    for _ in 0..(W as usize * H as usize) {
+        px.extend_from_slice(&RED_BGR555.to_le_bytes());
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&0x10u32.to_le_bytes()); // TIM magic
+    out.extend_from_slice(&2u32.to_le_bytes()); // flags: 16-bit direct
+    out.extend_from_slice(&(12 + px.len() as u32).to_le_bytes()); // block length
+    out.extend_from_slice(&0u16.to_le_bytes()); // frame-buffer x
+    out.extend_from_slice(&0u16.to_le_bytes()); // frame-buffer y
+    out.extend_from_slice(&W.to_le_bytes());
+    out.extend_from_slice(&H.to_le_bytes());
+    out.extend_from_slice(&px);
+    out
+}
+
+/// The premise of the whole fallback: a TIM reaches the end of the tiers undecoded.
+/// If this ever starts passing, some tier learned to read TIM and
+/// [`decode_by_extension`] is no longer load-bearing for it — check before deleting.
+#[test]
+fn a_tim_is_declined_by_every_ordinary_tier() {
+    assert!(
+        decode_preview(&synthetic_tim()).is_err(),
+        "TIM has no sniffable signature, so the nameless tiers cannot decode it"
+    );
+}
+
+#[test]
+fn naming_the_coder_decodes_a_tim_to_the_right_colour() {
+    if !magick_available() {
+        // Loud, because a skip that reads as a pass is worse than no test at all.
+        eprintln!("SKIPPED naming_the_coder_decodes_a_tim_to_the_right_colour: no ImageMagick");
+        return;
+    }
+    let img = decode_by_extension(&synthetic_tim(), "tim", None)
+        .expect("naming the coder must let ImageMagick read a real TIM");
+    assert_eq!((img.width(), img.height()), (4, 4));
+    let px = img.to_rgba8();
+    let [r, g, b, _] = px.get_pixel(2, 2).0;
+    assert!(
+        r > 200 && g < 60 && b < 60,
+        "the TIM is pure red; got ({r},{g},{b}) — a decode that returns the wrong \
+         pixels is the failure this asserts against, not merely a decode that errors"
+    );
+}
+
+/// The routing gate. Naming a coder skips ImageMagick's own detection, so it is
+/// offered ONLY for the formats that cannot be sniffed at all. A sniffable format
+/// must never be force-routed, however plausible the extension looks.
+#[test]
+fn only_unsniffable_formats_are_offered_a_named_coder() {
+    for ext in [
+        "tim", "rla", "cut", "mac", "pix", "jnx", "scr", "nef", "mdc", "TIM", ".tim",
+    ] {
+        assert!(
+            extension_has_named_coder(ext),
+            "{ext} has a name-selected ImageMagick coder and no other tier"
+        );
+    }
+    for ext in [
+        "png", "jpg", "gif", "webp", "psd", "xcf", "bmp", "tiff", "svg", "rle",
+    ] {
+        assert!(
+            !extension_has_named_coder(ext),
+            "{ext} is sniffable — forcing a coder would bypass ImageMagick's detection"
+        );
+    }
+}
+
+/// The extension only ever becomes part of a temp file NAME, so it must not be able
+/// to steer that name. Refused, not escaped.
+#[test]
+fn a_crafted_extension_cannot_steer_the_staged_file() {
+    let tim = synthetic_tim();
+    for ext in [
+        "../../evil",
+        "a/b",
+        r"a\b",
+        "",
+        "tim.exe",
+        "waytoolongextension",
+        "ti m",
+        "t:m",
+    ] {
+        assert!(
+            decode_by_extension(&tim, ext, None).is_err(),
+            "{ext:?} must be refused outright"
+        );
+    }
+}

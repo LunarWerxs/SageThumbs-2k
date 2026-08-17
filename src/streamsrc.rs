@@ -610,7 +610,7 @@ unsafe fn stream_path(stream: &IStream) -> Option<String> {
 /// name be an absolute, currently-existing path.  Virtual shell sources often
 /// report only a display name; that is still enough for a conservative format
 /// gate, whereas [`stream_path`] intentionally rejects it for direct file I/O.
-unsafe fn stream_extension(stream: &IStream) -> Option<String> {
+pub(crate) unsafe fn stream_extension(stream: &IStream) -> Option<String> {
     let mut stat = STATSTG::default();
     stream.Stat(&mut stat, STATFLAG_DEFAULT).ok()?;
     if stat.pwcsName.is_null() {

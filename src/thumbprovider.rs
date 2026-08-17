@@ -141,7 +141,35 @@ impl ThumbnailProvider_Impl {
             StreamSource::Frame(frame) => decode::thumbnail_from_image(frame, cx),
             StreamSource::Bytes(bytes) => {
                 safety::log_debug(&format!("GetThumbnail: cx={cx} bytes={}", bytes.len()));
-                decode::decode_thumbnail_opts(&bytes, cx, cfg.use_embedded)?
+                match decode::decode_thumbnail_opts(&bytes, cx, cfg.use_embedded) {
+                    Ok(img) => img,
+                    // Every tier declined. A few registered formats (Wavefront RLA, PSX TIM,
+                    // MacPaint, Dr Halo CUT, …) have no signature ImageMagick can sniff, so the
+                    // nameless stdin pipe could never reach their coder and they thumbnailed
+                    // nowhere; same for a camera RAW carrying no embedded preview. The shell's
+                    // stream usually reports a leaf NAME even when it reports no usable path,
+                    // and that is enough to name the coder. Re-borrowing here rather than
+                    // reading the name up front keeps the succeeding path byte-identical.
+                    Err(e) => {
+                        let ext = {
+                            let borrow = self.stream.borrow();
+                            borrow
+                                .as_ref()
+                                .and_then(|s| unsafe { streamsrc::stream_extension(s) })
+                        };
+                        match ext.filter(|x| decode::extension_has_named_coder(x)) {
+                            Some(ext) => {
+                                safety::log_debug(&format!(
+                                    "GetThumbnail: tiers declined; retrying as .{ext}"
+                                ));
+                                let img = decode::decode_by_extension(&bytes, &ext, Some(cx))
+                                    .map_err(|_| e)?;
+                                decode::thumbnail_from_image(img, cx)
+                            }
+                            None => return Err(e),
+                        }
+                    }
+                }
             }
             StreamSource::Covers(covers) => {
                 safety::log_debug(&format!("GetThumbnail: cx={cx} covers={}", covers.len()));

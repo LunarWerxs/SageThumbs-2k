@@ -166,7 +166,9 @@ if ($failSet.Count) { Write-Host ("[regression] no-thumbnail ({0}): {1}" -f $fai
 # the PASS number is never read as full-format coverage.
 $noSampleFile = "$Corpus\_no-real-sample.txt"
 if (Test-Path $noSampleFile) {
-    $untested = @(Get-Content $noSampleFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    # `#` lines are commentary — the manifest has to be able to explain WHY a format has
+    # no sample, or the next reader assumes it was an oversight and adds a renamed stand-in.
+    $untested = @(Get-Content $noSampleFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
     if ($untested.Count) { Write-Host ("[regression] UNTESTED — no real sample ({0}): {1}" -f $untested.Count, ($untested -join ' ')) -ForegroundColor DarkYellow }
 }
 

@@ -499,6 +499,7 @@ pub(crate) use magick::looks_like_metafile;
 pub(crate) use magick::await_magick_output as await_child_output;
 #[cfg(test)]
 use magick::metafile_min_density;
+use magick::{decode_named_extension, has_name_selected_coder};
 use magick::{decode_psd_composite, decode_via_magick, decode_via_magick_capped};
 pub use magick::{encode_via_magick, magick_available, magick_output_supported};
 mod readers;
@@ -571,6 +572,64 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, None)
+}
+
+/// LAST-RESORT decode for a file every tier already declined, using the file-name
+/// extension the caller happens to know.
+///
+/// ImageMagick picks most coders by sniffing the bytes, which is what lets the magick
+/// tier feed it a nameless stdin stream. A handful of the formats we register have no
+/// signature to sniff — `magick identify sample.rla` works only because the extension
+/// named the coder — so those files reached magick and came straight back with "no
+/// decode delegate for this image format". They were registered, advertised, and could
+/// not thumbnail anywhere. Same for a camera RAW whose embedded preview is missing, which
+/// left magick's (equally name-selected) `dng` coder unreachable behind the same wall.
+///
+/// Ordering is the safety property: this runs only once the normal decode has failed, so
+/// a wrong guess costs nothing but the failure the caller already had. Callers that have
+/// no name — the shell hands some handlers a stream with no `pwcsName` — simply skip it
+/// and keep today's behaviour exactly.
+pub fn decode_by_extension(bytes: &[u8], ext: &str, max_edge: Option<u32>) -> Result<DynamicImage> {
+    decode_named_extension(bytes, ext, max_edge)
+}
+
+/// Whether [`decode_by_extension`] has anything to try for `ext`. Lets a caller skip
+/// staging a temp file for the overwhelming majority of formats, which sniff fine.
+pub fn extension_has_named_coder(ext: &str) -> bool {
+    has_name_selected_coder(ext)
+}
+
+/// The decode every caller that holds BOTH the bytes and the file name should use:
+/// [`decode_preview_capped`] (or [`decode_preview`] when `max_edge` is 0), then the
+/// [`decode_by_extension`] last resort if every tier declined.
+///
+/// It exists as one function because the path-shaped callers do not otherwise converge —
+/// the CLI, the MCP `view` tool and [`decode_preview_path`] each grew their own copy of
+/// "read the file, then decode the bytes", and a fallback bolted onto one of them reaches
+/// none of the others. The failing decode is what is returned on a failed retry, so no
+/// caller ever sees a worse error than it does today.
+pub fn decode_preview_capped_for_path(
+    bytes: &[u8],
+    max_edge: u32,
+    path: &str,
+) -> Result<DynamicImage> {
+    let first = if max_edge > 0 {
+        decode_preview_capped(bytes, max_edge)
+    } else {
+        decode_preview(bytes)
+    };
+    first.or_else(|e| {
+        let ext = std::path::Path::new(path)
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.to_ascii_lowercase());
+        match ext {
+            Some(ext) if extension_has_named_coder(&ext) => {
+                decode_by_extension(bytes, &ext, (max_edge > 0).then_some(max_edge)).map_err(|_| e)
+            }
+            _ => Err(e),
+        }
+    })
 }
 
 /// [`decode_preview`] that tells the external decoders the biggest image the caller can
