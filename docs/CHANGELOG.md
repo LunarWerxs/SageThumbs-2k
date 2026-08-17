@@ -2,6 +2,26 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 2.1.2
+
+### Fixed
+
+- **"Build thumbnails here" only ever pre-built the smallest icon size.** It prepares three
+  sizes, one for each of Explorer's Medium, Large and Extra-large views. It turns out Windows
+  renders only the **first** size it is asked for and fills the other two in from that one, and
+  we asked for the smallest first. So the two larger views were being filled from a 96-pixel
+  picture, which Windows then threw away and rebuilt from scratch the first time you actually
+  opened the folder in one of them. The run reported success, and for those two views it had
+  genuinely done nothing.
+
+  It now builds the largest size first, so the smaller ones come from it for free. In a 25-file
+  test, opening the folder at Extra-large afterwards dropped from 2.8 seconds to 0.1. Pre-building
+  still renders each file exactly once; it takes a little longer per file now, because that one
+  render is finally happening at the size that was actually needed.
+
+  This also corrects something the 2.1.1 notes said: the sizes were never each re-rendering the
+  file. There was only ever one render per file. It was just happening at the wrong size.
+
 ## 2.1.1
 
 ### Fixed

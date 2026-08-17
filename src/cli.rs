@@ -618,8 +618,9 @@ pub fn prebuild(
         .collect::<Vec<_>>()
         .join(", ");
     out.push_str(&format!(
-        "\n\nBuilt at {px} px. Explorer caches each icon size separately, and these are the \
-         buckets its Medium, Large and Extra-large views read. Windows caps the cache and \
+        "\n\nBuilt at {px} px — the buckets Explorer's Medium, Large and Extra-large views \
+         read. The largest is rendered once and the smaller views are derived from it, so the \
+         run costs one render per file rather than one per size. Windows caps the cache and \
          evicts the oldest entries, so very large runs can lose their earliest work — prefer \
          folders over whole drives."
     ));

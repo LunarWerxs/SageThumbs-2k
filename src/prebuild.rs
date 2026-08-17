@@ -61,10 +61,9 @@ pub struct Report {
 /// Knobs for [`run`]. Defaults match the CLI's defaults.
 pub struct Options {
     pub recurse: bool,
-    /// Edges in pixels, built per file. The shell caches SEPARATELY PER SIZE BUCKET, so this
-    /// is a list and not a number: building only 256 leaves Explorer's Medium-icons view
-    /// (96) empty, and the user still watches tiles build in exactly the situation this
-    /// feature exists to prevent. See [`DEFAULT_SIZES`].
+    /// Edges in pixels, **in the order they will be attempted**. [`run`] puts them in
+    /// [`build_order`] (largest first) before the workers ever see them, and that order is
+    /// load-bearing rather than cosmetic — read [`build_order`] before changing it.
     pub sizes: Vec<u32>,
     /// Skip the `WTS_INCACHEONLY` probe and extract every file.
     pub rebuild_all: bool,
@@ -79,6 +78,10 @@ pub struct Options {
 /// large. Details/List/Small icons draw no thumbnail at all, so there is nothing to prefill
 /// for them, and the giant buckets above 768 are only reached by a slider most people never
 /// touch — building those by default would multiply the run time for a view nobody is in.
+///
+/// Because one extraction fills every SMALLER bucket (see [`build_order`]), the entry that
+/// actually decides what this run costs and what it accomplishes is the LARGEST one. The other
+/// two cost a probe each and exist to verify the fill really happened.
 pub const DEFAULT_SIZES: [u32; 3] = [96, 256, 768];
 
 /// Windows' actual cache buckets. A request lands in the smallest bucket that fits it, so
@@ -115,6 +118,50 @@ pub fn normalize_sizes(requested: &[u32]) -> Vec<u32> {
         out.push(256);
     }
     out
+}
+
+/// The order buckets must be extracted in: **LARGEST FIRST**. This is the whole of the
+/// "pre-build didn't do anything for my folder" bug, and it is the opposite of what the code
+/// did for its entire life, so the reasoning is recorded rather than asserted.
+///
+/// # What the shell actually does, measured
+///
+/// One extraction fills EVERY smaller bucket. Asking `IThumbnailCache` for three sizes does
+/// NOT call [`crate::thumbprovider`] three times — it calls it exactly once, for whichever
+/// size is asked for first, and satisfies the rest by deriving from that one bitmap:
+///
+/// ```text
+/// requested 96,256,768  -> provider called once, cx=96   (768 bucket then holds 96x72)
+/// requested 768         -> provider called once, cx=768
+///   then 256, then 96   -> provider NOT called; both already satisfied
+/// ```
+///
+/// # Why ascending was silently broken
+///
+/// [`normalize_sizes`] sorts, so the shipped default `[96, 256, 768]` always extracted at 96
+/// and never at anything else. Windows would happily report the 256 and 768 buckets as
+/// "cached" — `WTS_INCACHEONLY` SUCCEEDS for them — so the run reported total success. But the
+/// only real thumbnail was 96 px, and the moment the user opened that folder in Large or
+/// Extra-large icons the shell threw the derived entry away and re-extracted from scratch:
+/// exactly the slow tile-by-tile build this feature exists to prevent, after a run that said
+/// it had prevented it. Verified by asking the shell the way Explorer does (no
+/// `SIIGBF_INCACHEONLY`): after an ascending pre-build it re-extracted at 768; after a
+/// descending one it served 768 from the cache and never touched the provider.
+///
+/// Note what this means for the honesty fix that shipped alongside it: [`Outcome::Partial`]
+/// could not have caught this, because nothing FAILED. Every probe succeeded and every
+/// extraction succeeded. The report was accurate about the calls it made and wrong about what
+/// they accomplished.
+///
+/// # The cost, stated plainly
+///
+/// Largest-first is SLOWER per file — one render at 768 costs more than one at 96 — and that
+/// is the correct trade, because the old speed was the speed of not doing the job. It is still
+/// ONE render per file, not one per bucket.
+fn build_order(sizes: &[u32]) -> Vec<u32> {
+    let mut v = sizes.to_vec();
+    v.sort_unstable_by(|a, b| b.cmp(a));
+    v
 }
 
 impl Default for Options {
@@ -322,12 +369,13 @@ fn one(path: &str, opts: &Options) -> Outcome {
         }
         // ONE retry for the sizes that did not land, after the rest of this file is done.
         //
-        // The dominant failure here is a TIMEOUT, not a refusal: a PDF re-renders through the
-        // OS rasterizer once per bucket, and several worker threads do that at once against the
-        // same renderer, so a bucket can miss its budget purely because it was unlucky. By this
-        // point this file's other buckets have finished and released their share, which is
-        // exactly when a retry is most likely to succeed. Bounded to one pass so a genuinely
-        // unsupported file costs one extra cheap refusal, not an unbounded loop.
+        // The dominant failure here is a TIMEOUT, not a refusal: several worker threads drive
+        // the OS rasterizer at once, so a bucket can miss its budget purely because it was
+        // unlucky. That matters more since `build_order` put the LARGEST bucket first — the
+        // expensive render is now the one that runs while contention is highest, and it is also
+        // the one whose loss costs the most (lose it and every smaller bucket is derived from
+        // whatever renders next instead). Bounded to one pass so a genuinely unsupported file
+        // costs one extra cheap refusal, not an unbounded loop.
         if !missing.is_empty() {
             missing.retain(|&size| {
                 let mut bmp = None;
@@ -506,10 +554,12 @@ pub fn run(
     }
 
     // Work against the normalised buckets, so two requested sizes that land in the same bucket
-    // don't extract the same thumbnail twice.
+    // don't extract the same thumbnail twice — and in BUILD ORDER, which is what makes the run
+    // fill the big buckets at all. `rep.sizes` stays ascending because that is the order the
+    // summary line reads naturally in; only the workers see the reordered list.
     let opts = Options {
         recurse: opts.recurse,
-        sizes: rep.sizes.clone(),
+        sizes: build_order(&rep.sizes),
         rebuild_all: opts.rebuild_all,
         jobs: opts.jobs,
         max_depth: opts.max_depth,
@@ -821,6 +871,56 @@ mod tests {
             DEFAULT_SIZES.to_vec(),
             "the shipped default must already be canonical, or every run pays to normalise it"
         );
+    }
+
+    /// THE REGRESSION THAT SHIPPED FOR THE WHOLE LIFE OF THIS FEATURE. One extraction fills
+    /// every smaller bucket, so whichever size is attempted FIRST is the only one that gets a
+    /// real render. Ascending order therefore built 96 and derived the rest, and Explorer threw
+    /// the derived entries away and re-extracted on first browse — after a run that reported
+    /// complete success. Largest-first is the fix; see `build_order` for the measurements.
+    #[test]
+    fn the_largest_bucket_is_always_extracted_first() {
+        assert_eq!(build_order(&[96, 256, 768]), vec![768, 256, 96]);
+        // The shipped default is the case that was broken, so pin it specifically rather than
+        // trusting the general property above.
+        let shipped = build_order(&normalize_sizes(&DEFAULT_SIZES));
+        assert_eq!(
+            shipped.first().copied(),
+            Some(768),
+            "the default run must extract at its LARGEST bucket first, or every bigger view \
+             re-extracts on first browse; got {shipped:?}"
+        );
+        // `normalize_sizes` sorts ascending, so a caller that forgets to reorder gets exactly
+        // the old bug back. Prove the two disagree, or this test proves nothing.
+        assert_ne!(
+            normalize_sizes(&DEFAULT_SIZES),
+            shipped,
+            "build_order must actually reorder; if these ever match, the guard is vacuous"
+        );
+    }
+
+    /// Reordering must not lose, duplicate or invent a bucket — the run would then report
+    /// sizes it never attempted.
+    #[test]
+    fn build_order_is_a_permutation_of_its_input() {
+        for req in [
+            vec![96u32, 256, 768],
+            vec![256],
+            vec![16, 32, 48, 96, 256, 768, 1280, 1920, 2560],
+            vec![],
+        ] {
+            let mut got = build_order(&req);
+            let mut want = req.clone();
+            got.sort_unstable();
+            want.sort_unstable();
+            assert_eq!(got, want, "build_order changed the SET for {req:?}");
+            // And every adjacent pair really is descending.
+            let ordered = build_order(&req);
+            assert!(
+                ordered.windows(2).all(|w| w[0] > w[1]),
+                "not descending: {ordered:?}"
+            );
+        }
     }
 
     /// A path that does not exist must come back unchanged rather than panicking — the walk
