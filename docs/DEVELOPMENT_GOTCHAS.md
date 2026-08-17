@@ -661,3 +661,26 @@ gate into a lie, which is strictly worse than the honest gap the manifest alread
 One real trap while generating samples: `magick in.png out.sf3` silently writes a PNG into a
 file named `.sf3`. Only `magick in.png SF3:out.sf3` invokes the SF3 writer. Always run
 `magick identify` on a generated fixture and check it reports the format you asked for.
+
+## Verifying a decode through the CLI does not verify it through Explorer
+
+The CLI knows the file name because it is sitting in argv. The shell hands the thumbnail
+provider an `IStream` and nothing else, and the name has to be asked for
+(`IStream::Stat` -> `pwcsName`), which a stream is under no obligation to supply. So any
+decode that depends on the NAME has two separate paths that can pass and fail independently,
+and `st2k thumbnail` proving one says nothing about the other. That is exactly the shape of
+`decode::decode_by_extension`: verified by CLI alone it looked finished, while the surface
+users actually see was untested.
+
+`test-installed-shell-surfaces.ps1 -ExtraSamples` closes it, driving real
+`IShellItemImageFactory::GetImage` calls against corpus files. Needs elevation for regsvr32;
+see the script header for the invocation.
+
+An entry may carry an expected colour (`sample.scr=255,0,0`), and it should whenever the
+answer is known. The first run without one produced a FALSE RED: a correct, pure-red ZX
+Spectrum screen was reported "effectively blank" because the existing check counts distinct
+colours, which is the right test for a photograph and the wrong one for a sample that is
+legitimately one flat colour. Asserting the colour is also strictly stronger, since it fails
+a handler that returns the WRONG picture, which colour variety cannot detect at all. Both
+directions were mutation-checked: a deliberately wrong expected colour fails with "is the
+WRONG picture: mean rgb=255,0,0 expected 0,0,255".

@@ -29,6 +29,17 @@
       pwsh scripts\test-installed-shell-surfaces.ps1 -TargetDir <dir with the built DLL>
       pwsh scripts\test-installed-shell-surfaces.ps1 -UseInstalled   # probe the installed
                                                                      # copy, register nothing
+
+  -ExtraSamples pushes corpus files through the Explorer thumbnail surface too, with an
+  optional expected colour. Run this after touching anything the SHELL path depends on
+  that the CLI does not - the stream name lookup in particular, which the CLI gets from
+  its own argv and the shell has to be asked for:
+
+      pwsh scripts\test-installed-shell-surfaces.ps1 -TargetDir D:\st2k-target\release `
+          -ExtraSamples ..\..\test-corpus\sample.rla, ..\..\test-corpus\sample.tim, `
+                        ..\..\test-corpus\sample.scr=255,0,0
+
+  Needs elevation (regsvr32), so drive it with Start-Process -Verb RunAs.
 #>
 [CmdletBinding()]
 param(
@@ -38,7 +49,19 @@ param(
     # NOTHING, so it is safe to run on a working desktop.
     [switch]$UseInstalled,
     # Where to drop the rendered proofs. Handy as a CI artifact when something fails.
-    [string]$ArtifactDir
+    [string]$ArtifactDir,
+    # Extra files to push through the Explorer thumbnail surface as well.
+    #
+    # The built-in TGA proves the handler LOADS and returns an image. It cannot prove
+    # anything about a format whose decode depends on the shell telling us the file's
+    # NAME - and that is a real, separate failure mode: the formats ImageMagick can only
+    # identify by extension (RLA, TIM, MacPaint, SCREEN$, ...) are decoded by naming the
+    # coder from the stream's reported name, which the CLI gets for free and the shell
+    # does not have to provide at all. Verified by CLI alone, that path looks fine while
+    # being dead in Explorer, which is the only surface users see.
+    #
+    # Empty by default so CI (which has no corpus) is unchanged.
+    [string[]]$ExtraSamples = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -111,6 +134,34 @@ function Assert-NonBlankImage([string]$path, [string]$what) {
     } finally { $bitmap.Dispose() }
 }
 
+# The colour-variety test above is the right check for a PHOTOGRAPH and the wrong one for a
+# sample that is legitimately one flat colour: it called a correct, pure-red ZX Spectrum
+# screen "effectively blank" on its first run. A gate that cries wolf gets ignored, so a
+# sample with a KNOWN answer is asserted against that answer instead of against variety.
+# This is also the stronger check of the two - it fails a handler that returns the wrong
+# picture, which colour variety cannot see at all.
+function Assert-ImageColour([string]$path, [string]$what, [int[]]$rgb) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$what produced no file" }
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [System.Drawing.Bitmap]::FromFile($path)
+    try {
+        # Mean of the whole tile, so a resample or a border cannot swing the verdict.
+        [long]$r = 0; [long]$g = 0; [long]$b = 0; [int]$n = 0
+        for ($y = 0; $y -lt $bitmap.Height; $y += [Math]::Max(1, [int]($bitmap.Height / 32))) {
+            for ($x = 0; $x -lt $bitmap.Width; $x += [Math]::Max(1, [int]($bitmap.Width / 32))) {
+                $px = $bitmap.GetPixel($x, $y)
+                $r += $px.R; $g += $px.G; $b += $px.B; $n++
+            }
+        }
+        $got = @([int]($r / $n), [int]($g / $n), [int]($b / $n))
+        $off = 0..2 | ForEach-Object { [Math]::Abs($got[$_] - $rgb[$_]) } | Measure-Object -Maximum
+        if ($off.Maximum -gt 24) {
+            throw ("$what is the WRONG picture: mean rgb={0} expected {1}" -f ($got -join ','), ($rgb -join ','))
+        }
+        Write-Host ("        $what -> {0}x{1}, mean rgb={2} (expected {3})" -f $bitmap.Width, $bitmap.Height, ($got -join ','), ($rgb -join ',')) -ForegroundColor DarkGray
+    } finally { $bitmap.Dispose() }
+}
+
 Write-Host "[shell-surfaces] target: $TargetDir" -ForegroundColor Cyan
 Write-Host "[shell-surfaces] artifacts: $ArtifactDir" -ForegroundColor DarkGray
 $registered = $false
@@ -165,6 +216,26 @@ try {
     }
     Check 'Preview-pane path (registered IPreviewHandler CLSID) renders it' {
         Assert-NonBlankImage $prev 'preview'
+    }
+
+    foreach ($entry in $ExtraSamples) {
+        # `path` or `path=R,G,B`. With a colour, the tile is checked against THAT rather
+        # than against colour variety - see Assert-ImageColour for why that matters.
+        $expect = $null
+        $spec = $entry
+        if ($entry -match '^(.*)=(\d+),(\d+),(\d+)$') {
+            $spec = $Matches[1]
+            $expect = @([int]$Matches[2], [int]$Matches[3], [int]$Matches[4])
+        }
+        $extra = (Resolve-Path -LiteralPath $spec).Path
+        $leaf = Split-Path $extra -Leaf
+        $extraThumb = Join-Path $ArtifactDir "extra-$leaf.png"
+        $extraPrev  = Join-Path $ArtifactDir "extra-$leaf.preview.png"
+        Check "Explorer thumbnail path renders $leaf" {
+            Invoke-ShellSurfaceProbe -Sample $extra -ThumbnailOut $extraThumb -PreviewOut $extraPrev
+            if ($expect) { Assert-ImageColour $extraThumb "thumbnail for $leaf" $expect }
+            else { Assert-NonBlankImage $extraThumb "thumbnail for $leaf" }
+        }
     }
 }
 finally {
