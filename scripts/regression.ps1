@@ -146,6 +146,19 @@ $fail = @($results | Where-Object { -not $_.Ok } | ForEach-Object Ext)
 $passSet = $pass | Sort-Object -Unique
 $failSet = $fail | Where-Object { $passSet -notcontains $_ } | Sort-Object -Unique
 
+# The per-FILE pass set, computed HERE rather than beside its own gate below, because
+# -UpdateBaseline exits as soon as it has written the extension baseline. Computing it later
+# meant -UpdateBaseline silently refreshed one baseline and left the other stale, which is the
+# exact "the gate reported success and did nothing" shape this whole pass is about.
+$fileBaselineFile = "$PSScriptRoot\regression-baseline-files.txt"
+$filePassSet  = @($results | Where-Object Ok | ForEach-Object { Split-Path $_.In -Leaf }) | Sort-Object
+$presentFiles = @($files | ForEach-Object { $_.Name })
+
+function Write-FileBaseline {
+    Set-Content -Path $fileBaselineFile -Value (($filePassSet | Sort-Object) -join "`n") -NoNewline -Encoding ascii
+    Write-Host ("[regression] per-file baseline written ({0} samples) -> {1}" -f $filePassSet.Count, $fileBaselineFile) -ForegroundColor Cyan
+}
+
 Write-Host ("[regression] PASS {0}/{1}" -f $pass.Count, $files.Count) -ForegroundColor Green
 if ($failSet.Count) { Write-Host ("[regression] no-thumbnail ({0}): {1}" -f $failSet.Count, ($failSet -join ' ')) -ForegroundColor Yellow }
 
@@ -196,6 +209,7 @@ function Test-CorpusSampleJunk {
 if ($UpdateBaseline) {
     Write-Baseline $passSet
     Write-Host ("[regression] baseline UPDATED ({0} extensions) -> {1}" -f $passSet.Count, $baselineFile) -ForegroundColor Cyan
+    Write-FileBaseline   # BOTH baselines, or the next run diffs against a stale one
     exit 0
 }
 
@@ -284,13 +298,8 @@ if ($regressed.Count) {
 #
 # No extra retry here: $results already reflects the sequential retry above, so a file that is
 # still failing has had its calm second chance. Junk samples are excluded the same way.
-$fileBaselineFile = "$PSScriptRoot\regression-baseline-files.txt"
-$filePassSet  = @($results | Where-Object Ok | ForEach-Object { Split-Path $_.In -Leaf }) | Sort-Object -Unique
-$presentFiles = @($files | ForEach-Object { $_.Name })
-
-if ($UpdateBaseline -or -not (Test-Path $fileBaselineFile)) {
-    Set-Content -Path $fileBaselineFile -Value (($filePassSet | Sort-Object) -join "`n") -NoNewline -Encoding ascii
-    Write-Host ("[regression] per-file baseline written ({0} samples) -> {1}" -f $filePassSet.Count, $fileBaselineFile) -ForegroundColor Cyan
+if (-not (Test-Path $fileBaselineFile)) {
+    Write-FileBaseline
 } else {
     $fileBaseline = Get-Content $fileBaselineFile | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     $fileNew  = @($filePassSet | Where-Object { $fileBaseline -notcontains $_ })

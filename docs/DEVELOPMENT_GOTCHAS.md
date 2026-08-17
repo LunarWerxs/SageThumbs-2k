@@ -44,6 +44,24 @@ spend the allowance in order of what the viewer will actually see, and stop rath
   fail. `scripts/make-xcf-fixture.py` now writes real GIMP-layout `.xcf` files at any canvas
   size and layer count (`--matrix` emits the standard set), so this is reproducible in a second
   without installing GIMP, and `build-corpus.ps1` section 9z emits four of them.
+- **The same exposure existed in every other multi-part format** and is now covered:
+  `scripts/make-decoy-fixtures.ps1` builds files whose first page / first frame / largest icon
+  is BLUE and whose every decoy behind it is RED, for PDF, TIFF, GIF, WebP and ICO, plus large
+  single-image PSD/PNG/JPEG/BMP for the size axis alone. Picking a page, a frame or an icon
+  size is a CHOICE, and a wrong choice still yields a perfectly good picture, which is the
+  whole bug class. The current decoder gets all nine right; the point is that this is now
+  asserted rather than assumed. **The generator self-checks** that each decoy fixture really
+  contains a decoy and deletes any that does not, for the same reason `fuzzseed.rs` asserts
+  every seed reaches its parser: a fixture that cannot fail is worse than no fixture. That
+  check earned its place immediately by catching two of its own flaws (magick cannot enumerate
+  PDF pages without Ghostscript, which this project deliberately does not ship, so PDFs are
+  counted from their own bytes; and a lossy WebP shifts a flat fill by a channel, so the colour
+  match is tolerant).
+- One trap worth stating on its own, because the error message points somewhere else entirely:
+  **PowerShell variables are case-insensitive**, so a path named `$right` silently overwrites a
+  colour named `$RIGHT`, and the only symptom is ImageMagick reporting your PNG path as an
+  unrecognized colour name. Separately, `xc:rgb(30,60,210)` fails in magick's CLI because a
+  bare parenthesis is its own image-stack operator; use hex.
 
 **`scripts/compare-renders.py` is the gate that CAN see this class, and it is worth running
 before every release.** It renders a corpus with two builds and reports every sample whose
