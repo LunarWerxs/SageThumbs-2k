@@ -94,3 +94,7 @@ Thumbs.db
 
 # Local AI memory for this repo. Deliberately NOT published.
 /.claude/memory/
+
+# Architect (local audit) - profile + reports stay machine-local
+/.arkitect/
+/tmp/
