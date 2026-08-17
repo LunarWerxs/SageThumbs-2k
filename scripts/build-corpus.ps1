@@ -823,6 +823,30 @@ if ($py -and (Test-Path $xcfGen)) {
     Write-Host "  (big .xcf samples: need python; skipped)" -ForegroundColor Yellow
 }
 
+# --- 9z2) ZX Spectrum SCREEN$, a format that only a NAMED coder can reach ------
+# A SCREEN$ is exactly 6912 bytes with no signature whatsoever: 6144 bytes of bitmap in the
+# machine's interleaved layout, then 768 attribute bytes (one per 8x8 cell, FLASH/BRIGHT/
+# PAPER/INK). Nothing about those bytes says "I am a picture", which is precisely why it is
+# worth having: ImageMagick can only decode it when the FILE NAME names the coder, so this
+# sample is the corpus proof for decode::decode_by_extension. Before that existed, `.scr` was
+# a registered, advertised format that had never once produced a thumbnail.
+#
+# Written here rather than downloaded because the format is fully specified and tiny, so this
+# IS a real SCREEN$ and not a stand-in. Every pixel set to INK, with BRIGHT red ink on black
+# paper, makes the whole 256x192 screen one known colour.
+$scrPath = Join-Path $OutDir 'sample.scr'
+$scr = New-Object byte[] 6912
+for ($i = 0; $i -lt 6144; $i++) { $scr[$i] = 0xFF }                 # bitmap: every pixel INK
+for ($i = 6144; $i -lt 6912; $i++) { $scr[$i] = 0x42 }              # BRIGHT | PAPER 0 | INK 2
+[System.IO.File]::WriteAllBytes($scrPath, $scr)
+$expectedColors += @(
+    '',
+    '# ZX Spectrum SCREEN$: no signature at all, so it is decodable ONLY when the extension',
+    '# names the coder. Renders red, or it never reached ImageMagick.',
+    "sample.scr`t255,0,0"
+)
+Write-Host "[corpus] sample.scr written (6912 bytes, solid BRIGHT red)"
+
 # Every OTHER multi-part format has the same exposure XCF had: choosing a page, a frame or an
 # icon size is a CHOICE, and a wrong choice still produces a perfectly good picture. These
 # fixtures make the right answer blue and every wrong one red, so the choice becomes testable.
@@ -855,7 +879,26 @@ Write-Host ("[corpus] _expected-colors.txt: {0} samples with a known correct col
 $have = Get-ChildItem $OutDir -File | Where-Object { $_.Name -notlike '_*' } |
     ForEach-Object { $_.Extension.TrimStart('.').ToLower() } | Sort-Object -Unique
 $noSample = @($exts | Sort-Object -Unique | Where-Object { $have -notcontains $_ })
-Set-Content -Path "$OutDir\_no-real-sample.txt" -Value ($noSample -join "`n") -Encoding ascii
+# The commentary is regenerated with the list, or the next rebuild silently strips it and the
+# reader after that assumes the gap is an oversight and "fixes" it with a renamed stand-in.
+$noSampleOut = @(
+    '# Registered extensions the corpus has NO sample of any kind for, so no gate in this repo',
+    '# says anything about them. regression.ps1 prints this list on every run precisely so the',
+    '# PASS number is never mistaken for full-format coverage.',
+    '#',
+    '# Lines starting with # are comments; everything else is one extension per line.',
+    '#',
+    '# Camera RAW is filled separately by `python scripts\fetch-raw-samples.py` (raw.pixls.us,',
+    '# smallest CC0 sample per extension, hundreds of MB) - run it if the RAW extensions show up',
+    '# here. Doing that in 2026-08 found three formats that had NEVER produced a thumbnail.',
+    '#',
+    '# NOTHING here is a candidate for a renamed stand-in: a sample that is not really the format',
+    '# makes the gate lie, which is strictly worse than the honest gap this file records. The',
+    '# Paint Shop Pro variants are the tempting case - they share psp.rs and its magic-based',
+    '# dispatch, so a renamed .PspBrush would pass while proving nothing about a real frame,',
+    '# mask, shape or selection file.'
+) + $noSample
+Set-Content -Path "$OutDir\_no-real-sample.txt" -Value ($noSampleOut -join "`n") -Encoding ascii
 Write-Host "[corpus] $($noSample.Count) formats have NO real sample (recorded in _no-real-sample.txt): $($noSample -join ' ')" -ForegroundColor Yellow
 
 $count = (Get-ChildItem $OutDir -File | Where-Object { $_.Name -notlike '_*' }).Count

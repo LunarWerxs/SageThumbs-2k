@@ -248,6 +248,7 @@ rla
 rle
 rw2
 rwl
+scr
 sf3
 sgi
 skb

@@ -290,6 +290,7 @@ sample.rla
 sample.rle
 sample.rw2
 sample.rwl
+sample.scr
 sample.sf3
 sample.sgi
 sample.skb

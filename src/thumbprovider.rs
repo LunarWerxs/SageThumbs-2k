@@ -151,12 +151,14 @@ impl ThumbnailProvider_Impl {
                     // and that is enough to name the coder. Re-borrowing here rather than
                     // reading the name up front keeps the succeeding path byte-identical.
                     Err(e) => {
-                        let ext = {
-                            let borrow = self.stream.borrow();
+                        // try_borrow, never borrow: this crate is `panic = "abort"`, so an
+                        // already-borrowed RefCell would take the host down rather than
+                        // decline a thumbnail. Failing to get the name just keeps `e`.
+                        let ext = self.stream.try_borrow().ok().and_then(|borrow| {
                             borrow
                                 .as_ref()
                                 .and_then(|s| unsafe { streamsrc::stream_extension(s) })
-                        };
+                        });
                         match ext.filter(|x| decode::extension_has_named_coder(x)) {
                             Some(ext) => {
                                 safety::log_debug(&format!(

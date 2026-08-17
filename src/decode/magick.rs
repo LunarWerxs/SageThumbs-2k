@@ -346,6 +346,12 @@ pub(super) fn decode_named_extension(
     let Some(ext) = safe_ext(ext).filter(|e| has_name_selected_coder(e)) else {
         return Err(Error::from(E_FAIL));
     };
+    // Check for magick BEFORE staging: on the compact (no-ImageMagick) install this
+    // path is reached for every one of these formats, and writing up to a few hundred
+    // MB to %TEMP% only to discover there is no decoder is pure waste.
+    if magick_exe().is_none() {
+        return Err(Error::from(E_FAIL));
+    }
     let Some(temp) = NamedTemp::create(bytes, &ext) else {
         crate::safety::log_debug("magick decode: could not stage a named temp file");
         return Err(Error::from(E_FAIL));
