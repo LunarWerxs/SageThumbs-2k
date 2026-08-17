@@ -64,6 +64,23 @@ mod tarfmt;
 mod util;
 // GIMP XCF (.xcf) — native decoder; ImageMagick can't read the modern v011 format.
 mod xcf;
+
+/// Decode a GIMP `.xcf` from a seekable source without buffering the file.
+///
+/// Exposed because `.xcf` is the one format where the whole-file ceiling is not a nuisance but
+/// a wall: it bakes in no preview to carve out of a prefix, and Windows has no codec for it, so
+/// every other oversized-file rescue declines and a big GIMP file gets the stock icon. Its own
+/// decoder is a walk over absolute file offsets, so it can read only the pieces it needs.
+pub(crate) fn xcf_from_reader<R: std::io::Read + std::io::Seek>(
+    src: R,
+) -> Option<image::DynamicImage> {
+    xcf::extract_seek(src)
+}
+
+/// Cheap magic test for the above, so a caller can route before it commits to a read.
+pub(crate) fn looks_like_xcf(bytes: &[u8]) -> bool {
+    xcf::looks_like_xcf(bytes)
+}
 // Waveform thumbnails for raw-PCM audio (WAV/AIFF) with no embedded cover art.
 mod waveform;
 mod zipfmt;

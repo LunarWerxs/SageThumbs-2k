@@ -294,6 +294,15 @@ if ($Release) {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-theme-shots.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'check-theme-shots.ps1 failed' }
     }
+    # Did this release change any PICTURE? Nothing else in the ladder can ask that: the
+    # render sweep only wants a non-empty PNG, so a decoder that succeeds at drawing the
+    # wrong thing passes everything (2.0.0's XCF layer budget did exactly that). Compares
+    # every corpus sample against the previous RELEASED build in dist\. Exit 2 = could not
+    # run (no python/Pillow, no baseline release), which is a skip, not a failure.
+    Stage 'render parity vs the last release' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-render-parity.ps1')
+        if ($LASTEXITCODE -eq 1) { throw 'check-render-parity.ps1 failed' }
+    }
 }
 
 # ---- elevated install + installed==built proof -----------------------------

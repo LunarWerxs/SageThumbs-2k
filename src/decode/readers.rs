@@ -49,12 +49,20 @@ pub fn is_exr_magic(head: &[u8]) -> bool {
 /// Is this file an OpenEXR? Cheap magic peek used to route a path/stream into the
 /// streaming scaled decoder BEFORE anything tries to buffer it.
 pub(super) fn file_is_exr(path: &str) -> bool {
+    file_head_is(path, exrscale::is_exr_magic)
+}
+
+/// Does the start of `path` satisfy `test`? Reads 16 bytes, never the file.
+///
+/// A short file simply fails the test rather than erroring: every magic this routes on is
+/// longer than the bytes a truncated file would supply.
+fn file_head_is(path: &str, test: impl Fn(&[u8]) -> bool) -> bool {
     use std::io::Read;
-    let mut magic = [0u8; 4];
+    let mut magic = [0u8; 16];
     std::fs::File::open(path)
         .and_then(|mut f| f.read_exact(&mut magic))
         .is_ok()
-        && exrscale::is_exr_magic(&magic)
+        && test(&magic)
 }
 
 /// Decode an OpenEXR from a seekable source to a display-ready 8-bit sRGB image at
@@ -79,6 +87,22 @@ pub fn exr_scaled_from_reader<R: Read + std::io::Seek>(
 /// past both the user's MaxSize and [`limits::MAX_INPUT_BYTES`] and so never
 /// reached a decoder at all.
 pub fn decode_preview_streamed(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    // GIMP `.xcf`: no baked preview to carve, and no OS codec, so both the prefix rescues and
+    // the WIC one below decline it. Its own decoder walks absolute file offsets and reads only
+    // the tiles it draws, so a file past the shared input ceiling still thumbnails. Files under
+    // the ceiling take this route too and get the identical picture; it is the same decoder.
+    if file_head_is(path, crate::container::looks_like_xcf) {
+        return match std::fs::File::open(path)
+            .ok()
+            .and_then(crate::container::xcf_from_reader)
+        {
+            Some(img) => Some(img),
+            None => {
+                crate::safety::log_debug("streamed XCF decode declined");
+                None
+            }
+        };
+    }
     if file_is_exr(path) {
         return match std::fs::File::open(path)
             .map_err(|_| Error::from(E_FAIL))

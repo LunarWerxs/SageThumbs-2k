@@ -2,6 +2,52 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Fixed
+
+- **Layered GIMP files lost their upper layers, and some stopped showing a thumbnail at all.**
+  Reported on 2026-08-17 as "xcf don't work anymore with new versions for big files", and that
+  is exactly what was happening.
+
+  2.0.0 added a limit on how much layer data a `.xcf` may be worth decoding, so that a
+  deliberately malformed file cannot claim thousands of full-size layers and tie up your
+  machine drawing them. The limit was sound. The order it was spent in was not: layers were
+  paid for from the bottom of the stack upward, so a file with more layers than the allowance
+  covers spent everything on the layers underneath and then quietly skipped the ones on top,
+  the only ones you can actually see. The thumbnail that came out looked completely normal and
+  was a picture of a half-finished image.
+
+  How big is "big"? Any file whose layers add up to more than a 16384 x 16384 image: twelve
+  full-canvas layers of a 6000 x 4000 picture, twenty-three of a 4000 x 3000 one, or just two
+  layers of a 12000 x 12000 canvas. Where the lower layers happened to be transparent (an
+  erased background, an empty base), everything drawn was invisible, the result was a blank
+  image, and the file fell back to the plain document icon. That is the "no thumbnail" half of
+  the report.
+
+  Layers are now paid for from the top down, so a file too big for the allowance gives up the
+  layers underneath whatever is covering them instead of the ones on top. Hidden layers, fully
+  transparent ones and layers parked off the edge of the canvas are no longer charged at all.
+  They cannot change the picture, so they now cost nothing, which leaves the whole allowance
+  for layers that are actually visible. Large layered files are also faster as a result: a
+  12000 x 12000 two-layer file went from 11.8 to 5.4 seconds, and now shows the right image.
+
+- **GIMP files over 256 MB now get a thumbnail. They never have before, on any version.**
+
+  There was a ceiling on how much of a file we will read into memory at once, and a `.xcf`
+  past it was simply refused. Most formats have a way around that: a photo has a small preview
+  baked into its header, and Windows can open a huge PNG or TIFF itself and shrink it while it
+  reads. A GIMP file has neither. It stores no preview at all, and Windows has no idea what an
+  `.xcf` is, so every one of those escape routes declined and the file kept the plain document
+  icon. Layered artwork is exactly the kind of file that gets that big, so this hit the people
+  most likely to have installed SageThumbs for GIMP support in the first place.
+
+  It now reads a `.xcf` the way the format is actually built: as a map of positions, jumping
+  to the layers it needs and pulling one 64-pixel tile at a time, so nothing is ever held in
+  memory but the piece being looked at. A 305 MB file that produced nothing now thumbnails in
+  3.2 seconds. Files under the old ceiling take the same route and produce the identical
+  picture, verified across the whole test corpus.
+
 ## 2.1.2
 
 ### Fixed

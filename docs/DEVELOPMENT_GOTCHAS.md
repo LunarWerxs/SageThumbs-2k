@@ -3,6 +3,67 @@
 Hard-won traps in this codebase. Each one cost real debugging time; none is
 obvious from reading the code.
 
+## A work budget that truncates a COMPOSITE has to spend top-down (shipped 2.0.0, fixed 2026-08-17)
+
+**Symptom.** A user reported "xcf don't work anymore with new versions for big files" against
+2.1.2. Both halves were real: layered GIMP files rendered a thumbnail of the wrong layer, and
+some rendered nothing at all. `st2k doctor <file>` said "Decode this file: FAILED" with every
+other line green, which is what the report looks like from the user's side.
+
+**Root cause.** `container/xcf.rs` gained a cap on total layer pixels, so a crafted file cannot
+declare thousands of full-size layers. The cap was fine. It was charged inside `decode_layer`,
+which the composite loop calls in drawing order, and drawing order is BOTTOM-first. So a file
+whose layers exceed the allowance spent it all on the layers underneath and skipped the visible
+ones on top. Worse, the exhausted case did not stop: `spend_layer` returning `None` left the
+budget untouched, so a smaller layer further up still fit and got drawn over the hole, making
+the output an arbitrary subset rather than a recognisably truncated one.
+
+**The general rule.** A budget that bounds a SEARCH (find a cover, walk a b-tree, resolve a
+manifest) can stop wherever it likes: running out means "not found", which is visibly a
+failure. A budget that bounds a COMPOSITE cannot, because running out still produces an image,
+and an image nobody can tell is wrong is worse than no image. If you bound compositing work,
+spend the allowance in order of what the viewer will actually see, and stop rather than skip.
+
+**Why nothing caught it.**
+
+- The budget had a unit test, it tested the ARITHMETIC (`spend_layer` at its boundary), and it
+  passed throughout. The defect was in which layers the arithmetic was spent on, which is only
+  observable in the pixels that come out.
+- `regression.ps1` could not see this bug class **at all**: it asserted a non-empty PNG was
+  produced, never what was in it, and an extension counted as passing if **ANY** sample with
+  that extension rendered. A correct-size PNG of the wrong image was a PASS, and so was a
+  broken big sample sitting beside a working small one. **Both holes are closed now:** it
+  runs three gates (per-extension, per-FILE, and a known-COLOUR check driven by
+  `_expected-colors.txt`), and all of them report before it exits, so one run gives the whole
+  list. Each was confirmed to go red against the shipped 2.1.2 binary and green against the
+  fix. **The general lesson is bigger than XCF: every gate in this repo asks whether something
+  HAPPENED, not whether it was RIGHT.** Clippy asks about syntax, the fuzzers ask that nothing
+  panicked, the render sweep asks for a non-empty file. If you add a decoder, add something
+  that asserts the OUTPUT, or it is not covered no matter how green the board is.
+- The corpus had two `.xcf` files, 1.8 KB and 206 KB. Nothing in the repo was big enough to
+  fail. `scripts/make-xcf-fixture.py` now writes real GIMP-layout `.xcf` files at any canvas
+  size and layer count (`--matrix` emits the standard set), so this is reproducible in a second
+  without installing GIMP, and `build-corpus.ps1` section 9z emits four of them.
+
+**`scripts/compare-renders.py` is the gate that CAN see this class, and it is worth running
+before every release.** It renders a corpus with two builds and reports every sample whose
+PICTURE changed, so a decoder that succeeds at drawing the wrong thing is no longer invisible.
+Point it at the previous release's portable `st2k.exe` (they are all in `dist\`) and require
+every difference to be one you meant. Two results from the day it was written, both of which
+would otherwise have been guesses: the 280-findings hardening pass changed **zero** pixels
+across 323 samples, so the XCF bug really was the only one of its kind in that commit; and
+replacing the XCF parser with a streaming one also changed zero, which is the only honest way
+to swap out a decoder that runs inside `explorer.exe`. Its `--expect` mode checks a file
+against the colour it is KNOWN to flatten to, which is what the generated `.xcf` fixtures and
+`test-corpus/_expected-colors.txt` exist to provide.
+
+**The check that does catch it** is in `xcf.rs`'s own tests: every layer of the fixture is a
+distinct flat colour, so the flattened result has a KNOWN value (the top layer's), and the
+budget is an argument to `extract_within` so an exhausted budget can be posed at 2x2 instead of
+at the 16384-square scale where reproducing it costs gigabytes. All four tests were confirmed
+red against the unfixed code before being kept. Copy that shape for anything that composites:
+assert the pixel, not the existence of a file.
+
 ## The menu preview MUST be an owner-drawn item (regression 1.3.2 → 1.3.6)
 
 **Symptom.** The right-click preview (thumbnail + filename + `3000 x 2000 px - 600 KB`)

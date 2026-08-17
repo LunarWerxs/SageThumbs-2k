@@ -21,6 +21,7 @@
 //! and every size is bounded; malformed input yields `None` (default icon), never a panic.
 
 use image::{DynamicImage, RgbaImage};
+use std::io::{Read, Seek, SeekFrom};
 
 /// Canvas / layer dimension ceiling. Derived from the decoder's shared bomb guard rather
 /// than repeated as a literal, so retuning that ceiling cannot leave this file behind.
@@ -44,8 +45,19 @@ const MAX_LAYERS: usize = 8192;
 /// to `MAX_PIXELS` by the per-edge `MAX_DIM` test above, and it is the OUTPUT, so it is
 /// always worth paying for. Only the layer pile is speculative work, so only it is budgeted.
 ///
-/// One full-size image worth of layer data, which is generous for any real layered XCF (they
-/// spend a small multiple of their canvas) and thousands of times short of a bomb.
+/// One full-size image worth of layer data, and **it is routinely not enough** — which is why
+/// what matters far more than this number is WHICH layers it buys. "A small multiple of their
+/// canvas" describes real files correctly and this value is one single canvas, so any file
+/// whose layers total more than `MAX_DIM`^2 must give some up: 12 full-canvas layers of a
+/// 6000x4000 image, or merely TWO of the 12000x12000 canvas the paragraph above defends.
+///
+/// A user reported exactly that on 2026-08-17 ("xcf don't work anymore with new versions for
+/// big files") and they were right. Spending the budget in layer-list order spent it BOTTOM-up,
+/// so an overrun dropped the TOP layers — the only ones a viewer is guaranteed to notice. A
+/// 15-layer file rendered its 11th layer as if it were the picture, and one whose lower layers
+/// were transparent composited to nothing at all and so returned `None`: no thumbnail, from a
+/// file that had rendered fine one release earlier. See [`select_layers`], which spends
+/// top-down instead, so an overrun now drops the layers underneath whatever is covering them.
 const MAX_LAYER_PIXELS: u64 = crate::decode::limits::MAX_PIXELS;
 
 /// The budget must never sit BELOW the declared-area ceiling the rest of the decoder admits,
@@ -59,25 +71,52 @@ const _: () = assert!(MAX_LAYER_PIXELS >= crate::decode::limits::MAX_PIXELS);
 const MAX_TILES: usize = 1 << 20;
 /// XCF tiles are a fixed 64×64 grid.
 const TILE: u32 = 64;
+/// Bytes read to parse ONE layer record. The record is dimensions, a name and a short property
+/// list, so this is orders of magnitude more than any real layer needs; it exists only to bound
+/// the read, and every parse inside it is bounds-checked as before.
+const LAYER_HEAD_WINDOW: usize = 1 << 20;
 
-/// Whether a `w` x `h` LAYER still fits the remaining budget, and what is left after it.
+/// Read up to `len` bytes at `off` into `buf`, replacing its contents.
 ///
-/// Split out as a pure function ON PURPOSE, following `pdf_raster_edge` and
-/// `acquire_decode_slot` in this codebase: the cases worth testing are at 16384-square
-/// scale, and materializing one to test it costs exactly the gigabyte-scale allocation the
-/// budget exists to refuse. A pure rule can be checked at its boundary for free, and
-/// `decode_layer` consulting it is then a one-line fact anyone can verify by eye.
-fn spend_layer(budget: u64, w: u32, h: u32) -> Option<u64> {
-    budget.checked_sub(u64::from(w) * u64::from(h))
+/// A SHORT read is not an error: the file may simply end there, and every parser downstream
+/// already treats running out of bytes as "malformed, decline". Returning the short buffer
+/// rather than failing is what lets a truncated file behave exactly as it did when the whole
+/// thing was in memory.
+fn read_at<R: Read + Seek>(r: &mut R, off: u64, len: usize, buf: &mut Vec<u8>) -> Option<()> {
+    r.seek(SeekFrom::Start(off)).ok()?;
+    buf.clear();
+    buf.resize(len, 0);
+    let mut got = 0;
+    while got < len {
+        match r.read(&mut buf[got..]) {
+            Ok(0) => break,
+            // A hostile reader claiming more than the slice it was handed would push `got`
+            // past the buffer; clamp it the way the IStream readers in `streamsrc` do.
+            Ok(n) => got += n.min(len - got),
+            Err(_) => return None,
+        }
+    }
+    buf.truncate(got);
+    (!buf.is_empty()).then_some(())
 }
 
-/// Does `b` open a GIMP XCF file? (All versions share the 9-byte signature.)
-pub fn looks_like_xcf(b: &[u8]) -> bool {
-    b.starts_with(b"gimp xcf ")
+/// The front of the file: everything needed before any pixel can be read.
+struct Prologue {
+    width: u32,
+    height: u32,
+    /// v011+ widened every file offset from 32-bit to 64-bit (large-file support).
+    wide: bool,
+    compression: u8,
+    prec: Precision,
+    colormap: Vec<[u8; 3]>,
+    layer_ptrs: Vec<u64>,
 }
 
-/// Decode an XCF into a flattened RGBA thumbnail, or `None` on any malformation.
-pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
+/// Parse the header, image property list and layer pointer list out of the front of a file.
+///
+/// `None` means either "not an XCF" or "the window ends mid-prologue"; the caller distinguishes
+/// them by growing the window, since a bigger read is the only thing that can fix the second.
+fn parse_prologue(bytes: &[u8]) -> Option<Prologue> {
     // Magic (9) + 4-char version + NUL = 14 bytes. "file" = v0, "v001".."v0NN".
     if !looks_like_xcf(bytes) || bytes.len() < 14 {
         return None;
@@ -90,13 +129,12 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     } else {
         return None;
     };
-    // v011+ widened every file offset from 32-bit to 64-bit (large-file support).
     let wide = version >= 11;
 
     let mut r = Rd { d: bytes, p: 14 };
     let width = r.u32()?;
     let height = r.u32()?;
-    let base_type = r.u32()?;
+    let _base_type = r.u32()?;
     // XCF 4+ carries an explicit precision word; older files are implicitly 8-bit gamma.
     let precision = if version >= 4 { r.u32()? } else { 150 };
     if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
@@ -126,10 +164,7 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
         }
     }
 
-    let prec = Precision::from_word(precision);
-
-    // Layer pointer list (terminated by a 0 pointer). GIMP writes it TOP-first, so we
-    // composite in REVERSE (bottom layer drawn first).
+    // Layer pointer list (terminated by a 0 pointer). GIMP writes it TOP-first.
     let mut layer_ptrs = Vec::new();
     loop {
         let ptr = r.ptr(wide)?;
@@ -139,39 +174,166 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
         if layer_ptrs.len() >= MAX_LAYERS {
             return None;
         }
-        layer_ptrs.push(ptr as usize);
+        layer_ptrs.push(ptr);
     }
     if layer_ptrs.is_empty() {
         return None;
     }
 
-    // One cumulative budget for the LAYER pile only. The canvas is the output and is already
-    // bounded to MAX_PIXELS by the per-edge check above, so charging it here would refuse
-    // legal images (see MAX_LAYER_PIXELS). The per-edge and per-count caps cannot bound the
-    // layer total on their own, which is what this is for.
-    let mut budget = MAX_LAYER_PIXELS;
+    Some(Prologue {
+        width,
+        height,
+        wide,
+        compression,
+        prec: Precision::from_word(precision),
+        colormap,
+        layer_ptrs,
+    })
+}
+
+/// Whether a `w` x `h` LAYER still fits the remaining budget, and what is left after it.
+///
+/// Split out as a pure function ON PURPOSE, following `pdf_raster_edge` and
+/// `acquire_decode_slot` in this codebase: the cases worth testing are at 16384-square
+/// scale, and materializing one to test it costs exactly the gigabyte-scale allocation the
+/// budget exists to refuse. A pure rule can be checked at its boundary for free, and
+/// [`select_layers`] consulting it is then a one-line fact anyone can verify by eye.
+///
+/// Its arithmetic was never the bug and its test never failed. What it could not say is
+/// WHICH layer should be charged first, and that is the whole of what went wrong.
+fn spend_layer(budget: u64, w: u32, h: u32) -> Option<u64> {
+    budget.checked_sub(u64::from(w) * u64::from(h))
+}
+
+/// Decide which layers the budget buys, given every layer's header and the canvas they land
+/// on. `heads` is in GIMP's own layer-list order, which is TOP-first; the returned flags line
+/// up with it one for one.
+///
+/// The order this walks in IS the fix. Charging in list order charges top-down, so a file
+/// that cannot afford all its layers gives up the BOTTOM ones — the ones whatever sits above
+/// them was already covering. Charging bottom-up (which is what compositing order made the
+/// obvious thing to do, and what shipped) gives up the top ones instead, and hands back a
+/// picture of a half-finished image with no indication anything is missing.
+///
+/// It stops at the first layer it cannot afford rather than skipping it and trying the next.
+/// Continuing would let a small lower layer be drawn while a larger one ABOVE it is missing,
+/// so the result would not be "the top of the image" or "the bottom of it" but an arbitrary
+/// subset — strictly harder to recognise as wrong than a plainly incomplete composite.
+///
+/// Layers that cannot put a pixel anywhere ([`LayerHead::draws_on`]) are free: they are
+/// skipped without being charged, so a file full of hidden layers — ordinary in GIMP, where
+/// hiding a layer is how you set it aside — spends its whole budget on what is actually
+/// visible instead of on work that gets thrown away.
+fn select_layers(mut budget: u64, heads: &[Option<LayerHead>], cw: u32, ch: u32) -> Vec<bool> {
+    let mut keep = vec![false; heads.len()];
+    for (slot, head) in keep.iter_mut().zip(heads) {
+        let Some(head) = head else { continue };
+        if !head.draws_on(cw, ch) {
+            continue;
+        }
+        match spend_layer(budget, head.lw, head.lh) {
+            Some(left) => {
+                budget = left;
+                *slot = true;
+            }
+            None => break,
+        }
+    }
+    keep
+}
+
+/// Does `b` open a GIMP XCF file? (All versions share the 9-byte signature.)
+pub fn looks_like_xcf(b: &[u8]) -> bool {
+    b.starts_with(b"gimp xcf ")
+}
+
+/// Decode an in-memory XCF into a flattened RGBA thumbnail, or `None` on any malformation.
+pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
+    extract_seek_within(std::io::Cursor::new(bytes), MAX_LAYER_PIXELS)
+}
+
+/// Decode an XCF from a SEEKABLE source without ever buffering the file.
+///
+/// This is what lets a `.xcf` past the thumbnail provider's whole-file ceiling
+/// ([`crate::decode::limits::MAX_INPUT_BYTES`], 256 MiB) thumbnail at all. XCF is the format
+/// where that ceiling bites hardest: GIMP bakes in no preview, so unlike PSD or `.blend` there
+/// is no thumbnail to carve out of the first few kilobytes, and Windows has no XCF codec, so
+/// the WIC rescue that saves an oversized PNG or TIFF cannot open one either. Every rescue in
+/// `streamsrc::stream_source` bowed out and a large GIMP file got the plain document icon on
+/// every version ever shipped.
+///
+/// It works because the format is a graph of ABSOLUTE file offsets: header, then a layer
+/// pointer list, then per layer a record pointing at a hierarchy pointing at a level pointing
+/// at one offset per 64x64 tile. Nothing requires the middle of the file to be in memory, only
+/// the piece being looked at, and the largest such piece is one tile.
+pub fn extract_seek<R: Read + Seek>(src: R) -> Option<DynamicImage> {
+    extract_seek_within(src, MAX_LAYER_PIXELS)
+}
+
+/// [`extract_seek`], with the layer budget as an argument.
+///
+/// The budget exists to bound a file that declares thousands of full-size layers, so every
+/// case worth testing about it is one where honouring the declaration costs gigabytes. Passing
+/// the budget in lets those cases be tested at two-by-two scale — an exhausted budget behaves
+/// the same whether it ran out after eleven 24-megapixel layers or after two 4-pixel ones —
+/// which is the difference between a test that runs on every `cargo test` and one nobody runs.
+///
+/// It is also the only honest way to test this at all. The shipped bug was invisible to a suite
+/// that checked the budget's ARITHMETIC (that test passed throughout) because the defect was in
+/// which layers the arithmetic was spent on, and that is only observable in the pixels that
+/// come out the far end.
+fn extract_seek_within<R: Read + Seek>(mut src: R, layer_budget: u64) -> Option<DynamicImage> {
+    let r = &mut src;
+    let mut win: Vec<u8> = Vec::new();
+
+    // The prologue — magic, canvas, image properties, layer pointer list — is one contiguous
+    // run at the front of the file, but its LENGTH is not knowable without parsing it: the
+    // property list carries the ICC profile and metadata parasites, which are usually a few KB
+    // and occasionally far more. So read a window and grow it until the parse fits, rather than
+    // guessing one size. Doubling three times covers any real file; past that we decline
+    // instead of reading unboundedly, which is the same answer this decoder has always given a
+    // file it cannot make sense of.
+    let mut pro = None;
+    for window in [256 << 10, 4 << 20, 64 << 20] {
+        read_at(r, 0, window, &mut win)?;
+        pro = parse_prologue(&win);
+        if pro.is_some() || win.len() < window {
+            break; // parsed, or the whole file is already in hand and a bigger read cannot help
+        }
+    }
+    let pro = pro?;
+    let (width, height, wide) = (pro.width, pro.height, pro.wide);
+
+    // Read every layer's HEADER first — dimensions, visibility, opacity, placement — without
+    // touching a pixel, then decide what the budget buys before anything is decoded. The
+    // canvas is not charged: it is the output and the per-edge check already bounds it to
+    // MAX_PIXELS, so charging it would refuse legal images (see MAX_LAYER_PIXELS). Only the
+    // layer pile is speculative, and the per-edge and per-count caps cannot bound its total on
+    // their own, which is what the budget is for.
+    let mut heads: Vec<Option<LayerHead>> = Vec::with_capacity(pro.layer_ptrs.len());
+    for &lptr in &pro.layer_ptrs {
+        heads.push(match read_at(r, lptr, LAYER_HEAD_WINDOW, &mut win) {
+            Some(()) => read_layer_head(&win, 0, wide),
+            None => None,
+        });
+    }
+    let keep = select_layers(layer_budget, &heads, width, height);
 
     // The flattened canvas, transparent to start.
     let mut canvas = RgbaImage::new(width, height);
 
-    for &lptr in layer_ptrs.iter().rev() {
-        if budget == 0 {
-            break; // spent: composite what we have rather than returning nothing
+    // Chosen top-down, drawn bottom-up: GIMP writes the list top-first, so `.rev()` puts the
+    // bottom layer on the canvas first and each one after it lands on top, as it should.
+    for (head, kept) in heads.iter().zip(&keep).rev() {
+        if !*kept {
+            continue;
         }
+        let Some(head) = head else {
+            continue;
+        };
         // Best-effort per layer: a single corrupt layer shouldn't lose the whole image.
-        if let Some(layer) = decode_layer(
-            bytes,
-            lptr,
-            wide,
-            compression,
-            prec,
-            &colormap,
-            base_type,
-            &mut budget,
-        ) {
-            if layer.visible && layer.opacity > 0.0 {
-                composite(&mut canvas, &layer);
-            }
+        if let Some(layer) = decode_layer(r, head, &pro, &mut win) {
+            composite(&mut canvas, &layer);
         }
     }
 
@@ -192,20 +354,49 @@ struct Layer {
     ox: i32,
     oy: i32,
     opacity: f32,
-    visible: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decode_layer(
-    d: &[u8],
-    off: usize,
-    wide: bool,
-    compression: u8,
-    prec: Precision,
-    colormap: &[[u8; 3]],
-    _base_type: u32,
-    budget: &mut u64,
-) -> Option<Layer> {
+/// Everything a layer's header declares about itself, read without touching one pixel.
+///
+/// Splitting this out is what lets the budget be spent on an informed choice: the decision of
+/// which layers to keep needs the size, visibility and placement of ALL of them, and every one
+/// of those facts sits in the header, ahead of the hierarchy pointer that leads to the tiles.
+struct LayerHead {
+    lw: u32,
+    lh: u32,
+    ltype: u32,
+    ox: i32,
+    oy: i32,
+    opacity: f32,
+    visible: bool,
+    /// Offset of the hierarchy record — where the pixels start, once we decide we want them.
+    hptr: u64,
+}
+
+impl LayerHead {
+    /// Can this layer put a single pixel on a `cw` x `ch` canvas?
+    ///
+    /// Hidden layers, fully transparent ones and layers parked entirely outside the canvas are
+    /// all ordinary in real GIMP files — hiding a layer is how you set one aside, and dragging
+    /// one off the edge is how you park it. None of them can change the flattened image, so
+    /// decoding them is pure waste, and charging them to the budget spends it on work that is
+    /// discarded while layers that DO draw go without.
+    fn draws_on(&self, cw: u32, ch: u32) -> bool {
+        if !self.visible || self.opacity <= 0.0 {
+            return false;
+        }
+        let (x0, y0) = (i64::from(self.ox), i64::from(self.oy));
+        let (x1, y1) = (x0 + i64::from(self.lw), y0 + i64::from(self.lh));
+        x1 > 0 && y1 > 0 && x0 < i64::from(cw) && y0 < i64::from(ch)
+    }
+}
+
+/// Read one layer's header: dimensions, type, property list, and the hierarchy pointer.
+///
+/// ONE parser serves both the budget pre-scan and the decode, so the two can never come to
+/// different conclusions about what a layer says it is — a drift that would show up as the
+/// decoder spending its allowance on one set of layers and then drawing another.
+fn read_layer_head(d: &[u8], off: usize, wide: bool) -> Option<LayerHead> {
     let mut r = Rd { d, p: off };
     let lw = r.u32()?;
     let lh = r.u32()?;
@@ -213,11 +404,6 @@ fn decode_layer(
     if lw == 0 || lh == 0 || lw > MAX_DIM || lh > MAX_DIM {
         return None;
     }
-    // Charge this layer to the shared budget BEFORE anything is allocated for it. A layer
-    // that does not fit ends the composite: with layers walked bottom-first, the ones already
-    // drawn are the ones underneath, so stopping yields a partial image rather than a wrong
-    // one, and `None` from this function is already the "skip this layer" path.
-    *budget = spend_layer(*budget, lw, lh)?;
     // Layer name: u32 length (incl. trailing NUL), then that many bytes. We skip it.
     let name_len = r.u32()? as usize;
     r.take(name_len)?;
@@ -255,28 +441,35 @@ fn decode_layer(
         }
     }
 
-    let hptr = r.ptr(wide)? as usize; // hierarchy
+    let hptr = r.ptr(wide)?; // hierarchy
     let _mask_ptr = r.ptr(wide)?; // layer mask — ignored for the thumbnail
 
-    let channels = layer_channels(ltype)?;
-    let px = decode_hierarchy(
-        d,
-        hptr,
-        wide,
-        compression,
-        prec,
-        colormap,
-        ltype,
-        channels,
+    Some(LayerHead {
         lw,
         lh,
-    )?;
-    Some(Layer {
-        px,
+        ltype,
         ox,
         oy,
         opacity,
         visible,
+        hptr,
+    })
+}
+
+/// Decode the pixels of a layer whose header has already been read and paid for.
+fn decode_layer<R: Read + Seek>(
+    r: &mut R,
+    head: &LayerHead,
+    pro: &Prologue,
+    win: &mut Vec<u8>,
+) -> Option<Layer> {
+    let channels = layer_channels(head.ltype)?;
+    let px = decode_hierarchy(r, head, pro, channels, win)?;
+    Some(Layer {
+        px,
+        ox: head.ox,
+        oy: head.oy,
+        opacity: head.opacity,
     })
 }
 
@@ -293,91 +486,97 @@ fn layer_channels(ltype: u32) -> Option<u32> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decode_hierarchy(
-    d: &[u8],
-    off: usize,
-    wide: bool,
-    compression: u8,
-    prec: Precision,
-    colormap: &[[u8; 3]],
-    ltype: u32,
+/// Read the hierarchy record, then decode its full-resolution level.
+fn decode_hierarchy<R: Read + Seek>(
+    r: &mut R,
+    head: &LayerHead,
+    pro: &Prologue,
     channels: u32,
-    lw: u32,
-    lh: u32,
+    win: &mut Vec<u8>,
 ) -> Option<RgbaImage> {
-    let mut r = Rd { d, p: off };
-    let _hw = r.u32()?;
-    let _hh = r.u32()?;
-    let bpp = r.u32()?; // bytes per pixel = channels * bytes_per_sample
+    // Two dimensions, a bytes-per-pixel word and the level pointer list: a couple of dozen
+    // bytes, and only the FIRST level pointer is ever read (the rest are downscaled mips we
+    // don't need, and modern GIMP writes none anyway).
+    read_at(r, head.hptr, 32, win)?;
+    let mut rd = Rd { d: win, p: 0 };
+    let _hw = rd.u32()?;
+    let _hh = rd.u32()?;
+    let bpp = rd.u32()?; // bytes per pixel = channels * bytes_per_sample
     if bpp == 0 || bpp > 64 || bpp % channels != 0 {
         return None;
     }
     let bps = bpp / channels; // bytes per sample
-                              // First level pointer is the full-resolution image; the rest are downscaled mips we
-                              // don't need. (The list is 0-terminated but we only read the first entry.)
-    let level_ptr = r.ptr(wide)? as usize;
-    decode_level(
-        d,
-        level_ptr,
-        wide,
-        compression,
-        prec,
-        colormap,
-        ltype,
-        channels,
-        bpp,
-        bps,
-        lw,
-        lh,
-    )
+    let level_ptr = rd.ptr(pro.wide)?;
+    decode_level(r, head, pro, level_ptr, bpp, bps, win)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decode_level(
-    d: &[u8],
-    off: usize,
-    wide: bool,
-    compression: u8,
-    prec: Precision,
-    colormap: &[[u8; 3]],
-    ltype: u32,
-    _channels: u32,
+/// Decode one level: its tile pointer list, then every tile in it.
+fn decode_level<R: Read + Seek>(
+    r: &mut R,
+    head: &LayerHead,
+    pro: &Prologue,
+    off: u64,
     bpp: u32,
     bps: u32,
-    lw: u32,
-    lh: u32,
+    win: &mut Vec<u8>,
 ) -> Option<RgbaImage> {
-    let mut r = Rd { d, p: off };
-    let level_w = r.u32()?;
-    let level_h = r.u32()?;
-    if level_w != lw || level_h != lh {
-        return None; // first level must match the layer size
-    }
-    let tiles_x = level_w.div_ceil(TILE);
-    let tiles_y = level_h.div_ceil(TILE);
+    let (lw, lh) = (head.lw, head.lh);
+    let tiles_x = lw.div_ceil(TILE);
+    let tiles_y = lh.div_ceil(TILE);
     let ntiles = (tiles_x as usize).checked_mul(tiles_y as usize)?;
     if ntiles == 0 || ntiles > MAX_TILES {
         return None;
     }
 
-    let mut out = RgbaImage::new(lw, lh);
-    let mut scratch = vec![0u8; (TILE * TILE) as usize * bpp as usize];
-
-    for ti in 0..ntiles {
-        let tptr = r.ptr(wide)? as usize;
+    // The level header plus one pointer per tile, read in one go. At MAX_TILES this is the
+    // largest single read the decoder makes, and it is still bounded and proportional to an
+    // image we have already agreed to draw.
+    let ptr_bytes = if pro.wide { 8 } else { 4 };
+    let list_len = 8usize.checked_add(ntiles.checked_mul(ptr_bytes)?)?;
+    read_at(r, off, list_len, win)?;
+    let mut rd = Rd { d: win, p: 0 };
+    if rd.u32()? != lw || rd.u32()? != lh {
+        return None; // first level must match the layer size
+    }
+    let mut tile_ptrs = Vec::with_capacity(ntiles);
+    for _ in 0..ntiles {
+        let tptr = rd.ptr(pro.wide)?;
         if tptr == 0 {
             return None; // fewer tile pointers than the grid demands → malformed
         }
+        tile_ptrs.push(tptr);
+    }
+
+    let mut out = RgbaImage::new(lw, lh);
+    let mut scratch = vec![0u8; (TILE * TILE) as usize * bpp as usize];
+
+    for (ti, tptr) in tile_ptrs.into_iter().enumerate() {
         let tx = (ti as u32 % tiles_x) * TILE;
         let ty = (ti as u32 / tiles_x) * TILE;
-        let tw = (level_w - tx).min(TILE);
-        let th = (level_h - ty).min(TILE);
+        let tw = (lw - tx).min(TILE);
+        let th = (lh - ty).min(TILE);
         let need = (tw * th * bpp) as usize;
+        // How many ENCODED bytes one tile can occupy. Uncompressed is exactly the pixel
+        // count; RLE's worst case is an opcode byte per literal byte, so twice that bounds
+        // it; zlib on incompressible input carries a small deflate overhead, which the same
+        // doubling covers. An over-generous window costs a short read and nothing else —
+        // every decoder below stops when its output is full, not when its input runs out.
+        let window = need.checked_mul(2)?.checked_add(64)?;
+        read_at(r, tptr, window, win)?;
         let buf = scratch.get_mut(..need)?;
-        decode_tile(d, tptr, compression, bpp, tw, th, buf)?;
+        decode_tile(win, 0, pro.compression, bpp, tw, th, buf)?;
         blit_tile(
-            &mut out, buf, tx, ty, tw, th, bpp, bps, ltype, prec, colormap,
+            &mut out,
+            buf,
+            tx,
+            ty,
+            tw,
+            th,
+            bpp,
+            bps,
+            head.ltype,
+            pro.prec,
+            &pro.colormap,
         );
     }
     Some(out)
@@ -746,6 +945,12 @@ impl<'a> Rd<'a> {
 mod tests {
     use super::*;
 
+    /// [`extract_seek_within`] over a byte slice, so the budget cases read as plainly as the
+    /// ordinary ones. The in-memory entry point takes exactly this route in production.
+    fn extract_within(bytes: &[u8], layer_budget: u64) -> Option<DynamicImage> {
+        extract_seek_within(std::io::Cursor::new(bytes), layer_budget)
+    }
+
     #[test]
     fn rejects_non_xcf() {
         assert!(extract(b"not an xcf file at all").is_none());
@@ -789,8 +994,12 @@ mod tests {
     ///
     /// An adversarial audit fairly pointed out that the arithmetic test below never touches
     /// the parser, so it could not tell "the budget is enforced" from "the budget exists as a
-    /// constant". `spend_layer` IS the decision `decode_layer` makes (one line), so pinning
+    /// constant". `spend_layer` IS the decision [`select_layers`] makes (one line), so pinning
     /// it pins the refusal without allocating the gigabytes the refusal prevents.
+    ///
+    /// The audit was righter than it knew, and this test is the cautionary half of the pair
+    /// below it: it kept passing through the entire life of a shipped bug, because a budget
+    /// can be enforced to the pixel and still be spent on the wrong layers.
     #[test]
     fn the_layer_budget_refuses_the_layer_that_would_overspend_it() {
         // A full-size layer fits once and leaves nothing, so a SECOND one is refused. That
@@ -1071,6 +1280,287 @@ mod tests {
         // Truncated mid-tile: the reads are bounds-checked, so this is None, never a panic.
         let truncated = &good[..good.len() - 3];
         assert!(extract(truncated).is_none(), "a short file must be refused");
+    }
+
+    /// One layer of a [`synthetic_xcf_stack`] fixture.
+    struct Spec {
+        rgba: [u8; 4],
+        visible: bool,
+        opacity: u8,
+    }
+
+    impl Spec {
+        /// An ordinary opaque layer of one flat colour.
+        fn solid(rgb: [u8; 3]) -> Self {
+            Spec {
+                rgba: [rgb[0], rgb[1], rgb[2], 255],
+                visible: true,
+                opacity: 255,
+            }
+        }
+
+        fn hidden(mut self) -> Self {
+            self.visible = false;
+            self
+        }
+
+        /// Present and enabled, but every pixel fully transparent — the shape a real file
+        /// takes when its lower layers are erased regions rather than background.
+        fn clear(mut self) -> Self {
+            self.rgba[3] = 0;
+            self
+        }
+    }
+
+    /// Build a structurally VALID multi-layer XCF: v011 (64-bit pointers), RGBA layers,
+    /// uncompressed tiles, every layer filling the whole canvas.
+    ///
+    /// `specs` is BOTTOM-first, so its LAST entry is the one a correct composite puts on top
+    /// and therefore the colour the thumbnail must show. GIMP writes the layer pointer list
+    /// top-first, so the list is emitted in reverse — the same orientation a real file has,
+    /// which is the detail the layer-selection order turns on.
+    ///
+    /// Offsets are computed rather than hand-counted because every pointer in this format is
+    /// absolute, so one inserted field silently invalidates a literal table.
+    fn synthetic_xcf_stack(w: u32, h: u32, specs: &[Spec]) -> Vec<u8> {
+        assert!(
+            w <= TILE && h <= TILE,
+            "the fixture writes ONE tile per layer, so it cannot exceed the tile grid"
+        );
+        fn u32b(v: u32) -> [u8; 4] {
+            v.to_be_bytes()
+        }
+        fn u64b(v: u64) -> [u8; 8] {
+            v.to_be_bytes()
+        }
+
+        let header = 14 + 4 * 4 + (4 + 4 + 1) + (4 + 4);
+        let ptr_list = 8 * specs.len() + 8;
+        // dims + type + name + PROP_OPACITY + PROP_VISIBLE + PROP_END + hierarchy + mask
+        let layer_rec = 4 + 4 + 4 + 4 + 1 + (4 + 4 + 4) * 2 + (4 + 4) + 8 + 8;
+        let hier_rec = 4 + 4 + 4 + 8;
+        let level_rec = 4 + 4 + 8;
+        let tile_len = (w * h * 4) as usize;
+        let per_layer = layer_rec + hier_rec + level_rec + tile_len;
+        let first_layer = header + ptr_list;
+        let layer_off = |i: usize| first_layer + i * per_layer;
+
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(b"gimp xcf v011\0");
+        b.extend_from_slice(&u32b(w));
+        b.extend_from_slice(&u32b(h));
+        b.extend_from_slice(&u32b(0)); // base type RGB
+        b.extend_from_slice(&u32b(150)); // 8-bit gamma
+        b.extend_from_slice(&u32b(17)); // PROP_COMPRESSION
+        b.extend_from_slice(&u32b(1));
+        b.push(0); // none
+        b.extend_from_slice(&u32b(0)); // PROP_END
+        b.extend_from_slice(&u32b(0));
+        assert_eq!(
+            b.len(),
+            header,
+            "header layout drifted from its computed size"
+        );
+
+        for i in (0..specs.len()).rev() {
+            b.extend_from_slice(&u64b(layer_off(i) as u64));
+        }
+        b.extend_from_slice(&u64b(0)); // end of layer list
+        assert_eq!(b.len(), first_layer);
+
+        for (i, spec) in specs.iter().enumerate() {
+            assert_eq!(b.len(), layer_off(i));
+            b.extend_from_slice(&u32b(w));
+            b.extend_from_slice(&u32b(h));
+            b.extend_from_slice(&u32b(1)); // RGBA, 4 channels
+            b.extend_from_slice(&u32b(1)); // name length (just the NUL)
+            b.push(0);
+            b.extend_from_slice(&u32b(6)); // PROP_OPACITY
+            b.extend_from_slice(&u32b(4));
+            b.extend_from_slice(&u32b(u32::from(spec.opacity)));
+            b.extend_from_slice(&u32b(8)); // PROP_VISIBLE
+            b.extend_from_slice(&u32b(4));
+            b.extend_from_slice(&u32b(u32::from(spec.visible)));
+            b.extend_from_slice(&u32b(0)); // PROP_END
+            b.extend_from_slice(&u32b(0));
+            b.extend_from_slice(&u64b((layer_off(i) + layer_rec) as u64));
+            b.extend_from_slice(&u64b(0)); // no layer mask
+
+            b.extend_from_slice(&u32b(w)); // hierarchy
+            b.extend_from_slice(&u32b(h));
+            b.extend_from_slice(&u32b(4)); // bpp = 4 channels x 1 byte
+            b.extend_from_slice(&u64b((layer_off(i) + layer_rec + hier_rec) as u64));
+
+            b.extend_from_slice(&u32b(w)); // level
+            b.extend_from_slice(&u32b(h));
+            b.extend_from_slice(&u64b(
+                (layer_off(i) + layer_rec + hier_rec + level_rec) as u64,
+            ));
+
+            for _ in 0..(w * h) {
+                b.extend_from_slice(&spec.rgba);
+            }
+        }
+        b
+    }
+
+    /// A budget that cannot buy every layer must buy the TOP ones.
+    ///
+    /// THE regression test for a bug that shipped in 2.0.0 and was reported by a user on
+    /// 2026-08-17 ("xcf don't work anymore with new versions for big files"). The budget was
+    /// spent in layer-list order, which is bottom-up, so a file with more layer area than the
+    /// allowance rendered its LOWER layers and silently discarded everything above them — a
+    /// thumbnail of a half-finished picture, indistinguishable to the viewer from the real one.
+    ///
+    /// It is driven through the real front door with real bytes, because that is the only
+    /// place this is visible: the arithmetic test above passed the entire time the bug was
+    /// live. The budget is an argument so the case can be posed at 2x2 instead of at the
+    /// 16384-square scale where it costs gigabytes to reproduce.
+    #[test]
+    fn a_budget_short_of_every_layer_keeps_the_top_ones_not_the_bottom_ones() {
+        let (red, green, blue) = ([200, 30, 30], [30, 190, 30], [30, 60, 210]);
+        let stack = synthetic_xcf_stack(
+            2,
+            2,
+            &[Spec::solid(red), Spec::solid(green), Spec::solid(blue)],
+        );
+
+        // The control: with room for all three, the top layer covers the other two.
+        let full = extract(&stack).expect("three opaque layers must composite");
+        assert_eq!(full.to_rgba8().get_pixel(0, 0).0, [30, 60, 210, 255]);
+
+        // Room for exactly ONE 2x2 layer. The answer must still be the top layer; the shipped
+        // bug returned `red` here, the bottom of the stack.
+        let starved = extract_within(&stack, 4).expect("a starved budget must still draw");
+        assert_eq!(
+            starved.to_rgba8().get_pixel(0, 0).0,
+            [30, 60, 210, 255],
+            "an exhausted budget must give up the layers UNDERNEATH, not the visible top"
+        );
+    }
+
+    /// The user's actual symptom: no thumbnail at all, from a file that has one.
+    ///
+    /// Lower layers that are fully transparent are ordinary (erased regions, empty
+    /// backgrounds). Spending the budget bottom-up on those left a canvas where nothing had
+    /// been drawn, and `extract`'s own blank-composite check then correctly turned that into
+    /// `None` — so a perfectly good image produced the default icon in Explorer. The failure
+    /// needs no exotic file, only a stack too big for the allowance.
+    #[test]
+    fn transparent_lower_layers_cannot_starve_the_visible_top_layer_into_nothing() {
+        let stack = synthetic_xcf_stack(
+            2,
+            2,
+            &[
+                Spec::solid([200, 30, 30]).clear(),
+                Spec::solid([30, 190, 30]).clear(),
+                Spec::solid([30, 60, 210]),
+            ],
+        );
+        let img = extract_within(&stack, 4)
+            .expect("the opaque top layer must be drawn, not skipped for two transparent ones");
+        assert_eq!(img.to_rgba8().get_pixel(0, 0).0, [30, 60, 210, 255]);
+    }
+
+    /// Layers that cannot draw must not be charged for the privilege.
+    ///
+    /// Hiding a layer is how GIMP users set one aside, so files carry piles of them. Charging
+    /// them spends the allowance on pixels that are decoded, composited nowhere, and dropped —
+    /// and on a tight budget it spends the whole allowance before reaching anything visible.
+    #[test]
+    fn hidden_and_off_canvas_layers_are_free() {
+        let hidden_below: Vec<Spec> = (0..4)
+            .map(|_| Spec::solid([200, 30, 30]).hidden())
+            .chain(std::iter::once(Spec::solid([30, 60, 210])))
+            .collect();
+        let img = extract_within(&synthetic_xcf_stack(2, 2, &hidden_below), 4)
+            .expect("four hidden layers must not consume a budget the visible one needs");
+        assert_eq!(img.to_rgba8().get_pixel(0, 0).0, [30, 60, 210, 255]);
+
+        // The same allowance, and the same rule, for a layer parked outside the canvas.
+        let head = |ox: i32| LayerHead {
+            lw: 2,
+            lh: 2,
+            ltype: 1,
+            ox,
+            oy: 0,
+            opacity: 1.0,
+            visible: true,
+            hptr: 0,
+        };
+        assert!(head(0).draws_on(2, 2), "a layer on the canvas draws");
+        assert!(
+            !head(2).draws_on(2, 2),
+            "a layer past the right edge cannot"
+        );
+        assert!(!head(-2).draws_on(2, 2), "nor one past the left edge");
+        assert!(head(-1).draws_on(2, 2), "but a straddling one still does");
+    }
+
+    /// A source that hands back only a few bytes per `read` must decode identically.
+    ///
+    /// This is the half of the streaming rescue with teeth. `read_at` loops until it has the
+    /// window it asked for, and a `Cursor` always fills a buffer in one call, so every other
+    /// test in this file exercises that loop exactly zero times. A COM `IStream` from the shell
+    /// has no such obligation and returns what it feels like, which is precisely the source
+    /// this path exists to serve: a partial read treated as the whole window would decode
+    /// garbage from a file that is perfectly fine.
+    #[test]
+    fn a_source_that_only_ever_returns_a_few_bytes_at_a_time_decodes_the_same_picture() {
+        /// Never returns more than 7 bytes, however much is asked for.
+        struct Dribble(std::io::Cursor<Vec<u8>>);
+
+        impl Read for Dribble {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = buf.len().min(7);
+                self.0.read(&mut buf[..n])
+            }
+        }
+        impl Seek for Dribble {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+
+        let stack = synthetic_xcf_stack(
+            8,
+            8,
+            &[Spec::solid([200, 30, 30]), Spec::solid([30, 60, 210])],
+        );
+        let whole = extract(&stack).expect("control: the fixture decodes");
+        let dribbled = extract_seek(Dribble(std::io::Cursor::new(stack)))
+            .expect("a short-reading source must not lose the image");
+        assert_eq!(
+            whole.to_rgba8().into_raw(),
+            dribbled.to_rgba8().into_raw(),
+            "a source that dribbles bytes must produce the identical picture"
+        );
+    }
+
+    /// Running out mid-stack STOPS; it does not skip the expensive layer and keep going.
+    ///
+    /// Skipping would let a small layer be drawn while a larger one ABOVE it is missing, so
+    /// the output would be neither the top of the image nor a plainly truncated version of it,
+    /// but an arbitrary subset — the one failure shape harder to recognise as wrong than a
+    /// missing layer.
+    #[test]
+    fn selection_stops_at_the_first_unaffordable_layer() {
+        let head = |lw: u32| {
+            Some(LayerHead {
+                lw,
+                lh: 1,
+                ltype: 1,
+                ox: 0,
+                oy: 0,
+                opacity: 1.0,
+                visible: true,
+                hptr: 0,
+            })
+        };
+        // Top-first: a 1px layer, then a 100px one, then another 1px. A budget of 2 buys the
+        // first, cannot buy the second, and must NOT skip ahead to the third.
+        let keep = select_layers(2, &[head(1), head(100), head(1)], 200, 1);
+        assert_eq!(keep, vec![true, false, false]);
     }
 
     #[test]

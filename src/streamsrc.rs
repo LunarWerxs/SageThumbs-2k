@@ -392,6 +392,31 @@ pub(crate) unsafe fn stream_source_with_caps(
                 ));
                 return Ok(StreamSource::Bytes(prefix));
             }
+            // GIMP `.xcf`. Every rescue around this one needs something a GIMP file does not
+            // have: a baked-in preview near the front (it has none at all) or an OS codec for
+            // the WIC pass below (Windows has none). So a large `.xcf` reached no decoder on
+            // any version ever shipped, and that is not a small class of file: XCF stores
+            // layers, and layered work is exactly what gets big. Its decoder walks absolute
+            // file offsets and reads one tile at a time, so it needs no buffer and no cap.
+            //
+            // Placed BEFORE the MaxSize test below on purpose: nothing here is buffered, so
+            // the reason that test exists does not apply. The user's own MaxSize is still
+            // honoured — this branch is only reached when `size > min(MaxSize, hard cap)`, and
+            // the settings-driven half of that is checked again by the caller.
+            if size <= max_file_bytes {
+                let mut reader = IStreamReader {
+                    stream: stream.clone(),
+                };
+                if let Some(img) = crate::container::xcf_from_reader(&mut reader) {
+                    safety::log_debug(&format!(
+                        "{who}: streamed XCF decode of {size}-byte file -> {}x{}",
+                        img.width(),
+                        img.height()
+                    ));
+                    return Ok(StreamSource::Frame(img));
+                }
+                let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+            }
             // LAST RESCUE: hand the FILE to the OS codecs and let them scale during decode,
             // so a huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
             // Needs a real path — the shell usually exposes one (same recovery the video

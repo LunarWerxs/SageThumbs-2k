@@ -7,10 +7,26 @@
       pwsh scripts\test-staged-regression.ps1      # test the exact staged runtime
 
   EXIT CODES (so this can fail a pipeline):
-    0  no regression  — every extension in the baseline still renders.
+    0  no regression  — every extension in the baseline still renders, every
+                        baselined SAMPLE still renders, and every sample with a
+                        known correct colour still has it.
     1  REGRESSION     — at least one previously-passing extension NEWLY fails
                         (a VALID sample is still in the corpus but no longer
-                        thumbnails, CONFIRMED on a calm sequential retry).
+                        thumbnails, CONFIRMED on a calm sequential retry), OR a
+                        previously-passing SAMPLE stopped rendering, OR a sample
+                        rendered the WRONG picture.
+
+  THREE GATES, and the last two exist because the first one alone shipped a bug.
+  "Did a non-empty PNG appear" is all the extension sweep can ask, and it asks it
+  per EXTENSION, so a hard sample can break while an easy one of the same format
+  keeps the row green. That is precisely how 2.0.0's XCF layer-budget bug shipped:
+  15-layer GIMP files rendered a valid thumbnail of the WRONG layer, and the two
+  corpus .xcf samples (1.8 KB and 206 KB) were far too small to be affected.
+    1. per-EXTENSION  — scripts\regression-baseline.txt        (format coverage)
+    2. per-FILE       — scripts\regression-baseline-files.txt  (a hard sample cannot
+                        hide behind an easy one of the same extension)
+    3. known COLOUR   — <corpus>\_expected-colors.txt          (the picture is right,
+                        not merely present; see make-xcf-fixture.py)
 
   FALSE-ALARM GUARD: the parallel render can race build-corpus.ps1 while it is
   (re)writing samples, and a failed network download can leave an HTML error page
@@ -258,6 +274,70 @@ if ($regressed.Count) {
     }
 }
 
+# --- PER-FILE regression (the "any sample counts" blind spot) -----------------
+# The extension gate above passes an extension if ANY sample of it rendered, which is right
+# for "do we still support this format" and useless for "did we break a HARDER file of it".
+# A big multi-layer .xcf can stop rendering entirely while the 1.8 KB one beside it keeps the
+# extension green — which is exactly what happened in 2.0.0 and why nothing caught it. So the
+# per-FILE pass set is baselined too, with the same policy as the extension one: new passes
+# are reported, losses fail the gate.
+#
+# No extra retry here: $results already reflects the sequential retry above, so a file that is
+# still failing has had its calm second chance. Junk samples are excluded the same way.
+$fileBaselineFile = "$PSScriptRoot\regression-baseline-files.txt"
+$filePassSet  = @($results | Where-Object Ok | ForEach-Object { Split-Path $_.In -Leaf }) | Sort-Object -Unique
+$presentFiles = @($files | ForEach-Object { $_.Name })
+
+if ($UpdateBaseline -or -not (Test-Path $fileBaselineFile)) {
+    Set-Content -Path $fileBaselineFile -Value (($filePassSet | Sort-Object) -join "`n") -NoNewline -Encoding ascii
+    Write-Host ("[regression] per-file baseline written ({0} samples) -> {1}" -f $filePassSet.Count, $fileBaselineFile) -ForegroundColor Cyan
+} else {
+    $fileBaseline = Get-Content $fileBaselineFile | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    $fileNew  = @($filePassSet | Where-Object { $fileBaseline -notcontains $_ })
+    $fileGone = @($fileBaseline | Where-Object { $presentFiles -notcontains $_ })
+    $fileLost = @($fileBaseline |
+        Where-Object { ($presentFiles -contains $_) -and ($filePassSet -notcontains $_) } |
+        Where-Object { -not (Test-CorpusSampleJunk (Join-Path $Corpus $_)) })
+
+    if ($fileNew.Count)  { Write-Host ("[regression] NEW per-file pass (run -UpdateBaseline to accept): {0}" -f ($fileNew -join ' ')) -ForegroundColor DarkCyan }
+    if ($fileGone.Count) { Write-Host ("[regression] baselined samples no longer in the corpus: {0}" -f ($fileGone -join ' ')) -ForegroundColor Yellow }
+    if ($fileLost.Count) {
+        Write-Host ("[regression] FAIL — {0} sample(s) that used to render no longer do: {1}" -f $fileLost.Count, ($fileLost -join ' ')) -ForegroundColor Red
+        Write-Host "[regression] (their EXTENSION may still pass on another sample — that is the point of this check.)" -ForegroundColor Red
+        # Recorded, not exited: the content gates below answer a DIFFERENT question, and a run
+        # that stops at the first red makes you re-run the whole corpus to discover the second.
+        $script:contentGateFailed = $true
+    }
+}
+
+# --- CONTENT guard: samples with a KNOWN correct colour -----------------------
+# Everything above asks only whether a non-empty PNG appeared. It cannot see a decoder that
+# renders successfully and renders the WRONG picture, which is the other half of how the 2.0.0
+# XCF bug stayed invisible: those files produced a perfectly valid thumbnail of the wrong
+# layer. The generated .xcf fixtures are built so the correct answer is a KNOWN centre pixel
+# (see make-xcf-fixture.py + build-corpus.ps1 section 9z), recorded in _expected-colors.txt.
+# Checked against the PNGs already rendered above, so this costs nothing but the comparison.
+$expectedColors = "$Corpus\_expected-colors.txt"
+if (Test-Path $expectedColors) {
+    $py = (Get-Command python -EA SilentlyContinue).Source
+    $hasPil = $false
+    if ($py) {
+        & $py -c "import PIL" 2>$null
+        $hasPil = ($LASTEXITCODE -eq 0)
+    }
+    if ($hasPil) {
+        & $py "$PSScriptRoot\compare-renders.py" --corpus $Corpus --expect $expectedColors --rendered $render
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[regression] FAIL — a sample rendered the WRONG picture (see above)." -ForegroundColor Red
+            $script:contentGateFailed = $true
+        } else {
+            Write-Host "[regression] known-colour samples all correct" -ForegroundColor Green
+        }
+    } else {
+        Write-Host "  (known-colour check: needs python + Pillow; SKIPPED)" -ForegroundColor Yellow
+    }
+}
+
 # CONTENT guard (beyond render-only): .dcm must decode with the RIGHT colours, not
 # just produce a non-empty thumbnail — the render sweep above can't see a hue or
 # contrast regression. Run isolated (child pwsh) so its `exit` can't short-circuit
@@ -273,8 +353,12 @@ if ($magick) {
 & pwsh @dicomArgs | Out-Host
 if ($LASTEXITCODE) {
     Write-Host "[regression] FAIL — DICOM content check failed (colour/contrast regressed)." -ForegroundColor Red
-    exit 1
+    $contentGateFailed = $true
 }
 
+if ($contentGateFailed) {
+    Write-Host "[regression] FAIL — see the red lines above; every content gate ran, so that list is complete." -ForegroundColor Red
+    exit 1
+}
 Write-Host ("[regression] OK — all {0} baseline extensions still render." -f $baseline.Count) -ForegroundColor Green
 exit 0
