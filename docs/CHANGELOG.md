@@ -19,6 +19,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   still renders each file exactly once; it takes a little longer per file now, because that one
   render is finally happening at the size that was actually needed.
 
+  **If you reported this as a PDF problem, this is your fix.** The bug was never specific to
+  PDFs; it affected every format equally. PDFs are just the slowest thing to render, so the
+  wasted work was obvious on them and invisible on a photo. Nothing about PDF handling itself
+  needed to change.
+
   This also corrects something the 2.1.1 notes said: the sizes were never each re-rendering the
   file. There was only ever one render per file. It was just happening at the wrong size.
 
