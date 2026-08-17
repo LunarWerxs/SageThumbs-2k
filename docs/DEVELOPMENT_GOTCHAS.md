@@ -684,3 +684,25 @@ legitimately one flat colour. Asserting the colour is also strictly stronger, si
 a handler that returns the WRONG picture, which colour variety cannot detect at all. Both
 directions were mutation-checked: a deliberately wrong expected colour fails with "is the
 WRONG picture: mean rgb=255,0,0 expected 0,0,255".
+
+## A test that races its siblings quietly stops testing anything
+
+The staging guard for the ImageMagick named-coder path picks its temp file name from a
+process-wide counter. The obvious test planted files at the next few counter values and
+asserted they were skipped rather than overwritten. It passed. It also passed when the fix was
+reverted, because sibling tests in the same process consume counter values in parallel, so the
+call under test usually landed well past the planted range and exercised nothing at all.
+
+Two things saved it, and both are cheap enough to do every time:
+
+- **Mutation-check any test written to prove a fix.** Revert the fix, run the test, require a
+  FAILURE. Passing on the broken code is the only evidence that matters; a green test on fixed
+  code proves nothing about whether the test can see the bug.
+- **Test the property on state you own, not on shared state.** The fix was restructured so the
+  exclusive-claim step takes an explicit path (`NamedTemp::claim`), and the test hands it a name
+  it created itself. No counter, no siblings, no race - and it now fails correctly the moment
+  the exclusivity is removed.
+
+The same shape bit the first version of the squat test in the other direction: it planted with a
+plain write, which TRUNCATED a name a sibling test legitimately owned, turning two unrelated
+green tests red. Both symptoms have one cause - a test reaching into state it does not own.

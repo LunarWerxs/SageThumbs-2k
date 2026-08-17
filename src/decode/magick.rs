@@ -277,8 +277,12 @@ const NAME_SELECTED_EXTS: &[&str] = &["cut", "jnx", "mac", "pix", "rla", "scr", 
 /// exactly what `sample.mdc` (Minolta) turned out to be — magick demosaics it
 /// fine, and before this it produced no thumbnail at all.
 ///
-/// Mirrors `formats::RAW_EXTS`; a RAW extension missing here just keeps the old
-/// no-thumbnail behaviour, so the two lists drifting degrades rather than breaks.
+/// A SUPERSET of `formats::RAW_EXTS`, not a mirror: `rmf` and `sti` are filed under
+/// Images in `FORMATS` but `magick -list format` routes both through the same `dng`
+/// module as the real camera RAW, so they belong here on decode grounds. Membership
+/// is about which coder reads the bytes, never about the Settings category.
+/// A RAW extension missing here just keeps the old no-thumbnail behaviour, so the
+/// lists drifting degrades rather than breaks.
 const RAW_CODER_EXTS: &[&str] = &[
     "3fr", "arw", "bay", "cap", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "drf", "erf", "fff",
     "iiq", "k25", "kdc", "mdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "ptx",
@@ -300,20 +304,60 @@ fn safe_ext(ext: &str) -> Option<String> {
     ok.then_some(ext)
 }
 
+/// How many names to try before giving up. Only a genuinely hostile or wedged
+/// %TEMP% can burn these, since the counter alone already makes a collision
+/// improbable; the loop exists so `create_new` cannot turn a squatted name into a
+/// permanent denial of the whole tier.
+const MAX_STAGE_ATTEMPTS: u32 = 8;
+
 /// A temp file that deletes itself, named so ImageMagick's coder tables can see
 /// the extension. Process-id suffixed like every other temp path in this repo, so
 /// concurrent `cargo test` runs and a parallel `st2k batch` fan-out cannot collide.
 struct NamedTemp(std::path::PathBuf);
 
 impl NamedTemp {
+    /// Claim `path` EXCLUSIVELY and fill it, or decline. Split out from [`Self::create`] so
+    /// the exclusivity property is testable on a name the test controls: driving it through
+    /// the shared counter instead made the test race its own siblings and quietly stop
+    /// exercising anything (it passed against the very behaviour it was meant to catch).
+    ///
+    /// `create_new`, never `File::create`. Windows' create-and-truncate follows hard links and
+    /// reparse points, so an existing name in `%TEMP%` would have our image bytes written
+    /// straight THROUGH it into whatever it really points at. The name is predictable - the pid
+    /// is public and the counter restarts at 0 each process - so refusing an existing name is
+    /// the guard, not the obscurity of the name.
+    fn claim(path: std::path::PathBuf, bytes: &[u8]) -> Option<Self> {
+        use std::io::Write;
+        let mut file = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .ok()?;
+        // The guard owns the path from HERE, BEFORE a single byte is written. Building it
+        // after the write meant a write that failed part-way - a large RAW meeting a full
+        // disk - returned early with the file already created and nothing to unlink it.
+        let guard = Self(path);
+        let wrote = file.write_all(bytes).is_ok();
+        // Close before handing the name to a child process that is about to open it.
+        drop(file);
+        wrote.then_some(guard)
+    }
+
     fn create(bytes: &[u8], ext: &str) -> Option<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("st2k-coder-{}-{n}.{ext}", std::process::id()));
-        std::fs::write(&path, bytes).ok()?;
-        Some(Self(path))
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        for _ in 0..MAX_STAGE_ATTEMPTS {
+            let n = SEQ.fetch_add(1, Ordering::Relaxed);
+            if let Some(staged) =
+                Self::claim(dir.join(format!("st2k-coder-{pid}-{n}.{ext}")), bytes)
+            {
+                return Some(staged);
+            }
+        }
+        crate::safety::log_debug("magick decode: could not claim a staging name in %TEMP%");
+        None
     }
 }
 
@@ -1307,5 +1351,125 @@ mod tests {
             MAGICK_PNG_CAP as u64 >= worst_case_raw_rgba,
             "MAGICK_PNG_CAP must cover a full {MAGICK_MAX_EDGE_PX}x{MAGICK_MAX_EDGE_PX} RGBA frame"
         );
+    }
+}
+
+/// Staging tests live here rather than in `decode/tests.rs` because they drive
+/// [`NamedTemp`] directly. Counting files in `%TEMP%` from the decode level looked like the
+/// obvious test and was RACY: the sibling tests stage their own files in the SAME process,
+/// so a pid filter does not separate them and the count moves under you. A test that fails
+/// depending on what else is running is worse than no test.
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    /// The invariant the leak fix is about: the guard owns the path from the moment the
+    /// file exists, so every exit unlinks it.
+    #[test]
+    fn the_staged_file_lives_exactly_as_long_as_its_guard() {
+        let guard = NamedTemp::create(b"payload", "rla").expect("staging must succeed in %TEMP%");
+        let path = guard.0.clone();
+        assert!(
+            path.is_file(),
+            "the staged file should exist while the guard does"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("staged file must be readable"),
+            b"payload",
+            "the staged bytes must be the ones handed to ImageMagick"
+        );
+        // create_new on the same name must now refuse — proof the file is really claimed,
+        // which is what stops a pre-planted hard link or reparse point being written through.
+        let second = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        assert!(
+            second.is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists),
+            "the staged name must be exclusively held"
+        );
+        drop(guard);
+        assert!(
+            !path.exists(),
+            "dropping the guard must remove the staged file, got a leftover at {path:?}"
+        );
+    }
+
+    /// The counter must hand out distinct names, or two concurrent decodes would fight over
+    /// one file and the first to finish would delete the other's input.
+    #[test]
+    fn concurrently_staged_files_never_share_a_name() {
+        let guards: Vec<_> = (0..8)
+            .map(|_| NamedTemp::create(b"x", "tim").expect("staging must succeed"))
+            .collect();
+        let mut paths: Vec<_> = guards.iter().map(|g| g.0.clone()).collect();
+        paths.sort();
+        let unique = paths.len();
+        paths.dedup();
+        assert_eq!(paths.len(), unique, "staged names collided: {paths:?}");
+        for g in &guards {
+            assert!(g.0.is_file(), "every staged file should exist: {:?}", g.0);
+        }
+        drop(guards);
+        for p in &paths {
+            assert!(!p.exists(), "leftover after drop: {p:?}");
+        }
+    }
+
+    /// The one with real teeth, and deterministic: the name is ours, so nothing else in the
+    /// process can consume it first.
+    ///
+    /// This is the assertion that fails against `File::create`, which maps to Windows
+    /// CREATE_ALWAYS: that follows hard links and reparse points and truncates whatever the
+    /// name resolves to, so a planted name in %TEMP% received our image bytes.
+    #[test]
+    fn a_squatted_name_is_refused_rather_than_written_through() {
+        const SENTINEL: &[u8] = b"do not clobber me";
+        let path = std::env::temp_dir().join(format!(
+            "st2k-coder-squat-{}-{:p}.rla",
+            std::process::id(),
+            &SENTINEL
+        ));
+        std::fs::write(&path, SENTINEL).expect("the test must be able to plant a file");
+
+        let claimed = NamedTemp::claim(path.clone(), b"image bytes that must not land here");
+        assert!(
+            claimed.is_none(),
+            "an already-existing name must be refused, not claimed"
+        );
+        assert_eq!(
+            std::fs::read(&path).ok().as_deref(),
+            Some(SENTINEL),
+            "the existing file was written THROUGH instead of being left alone"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The other half: a name nobody holds is claimed, filled, and released on drop.
+    #[test]
+    fn a_free_name_is_claimed_filled_and_released() {
+        let path = std::env::temp_dir().join(format!(
+            "st2k-coder-free-{}-{:p}.rla",
+            std::process::id(),
+            &MAX_STAGE_ATTEMPTS
+        ));
+        let _ = std::fs::remove_file(&path);
+        let guard =
+            NamedTemp::claim(path.clone(), b"payload").expect("a free name must be claimed");
+        assert_eq!(std::fs::read(&path).ok().as_deref(), Some(&b"payload"[..]));
+        drop(guard);
+        assert!(!path.exists(), "dropping the guard must remove {path:?}");
+    }
+
+    /// A refused extension must never reach the filesystem at all.
+    #[test]
+    fn a_refused_extension_stages_nothing() {
+        for ext in ["../../evil", "png", "", "waytoolongextension"] {
+            assert!(
+                decode_named_extension(b"whatever", ext, None).is_err(),
+                "{ext:?} must be refused"
+            );
+        }
     }
 }
