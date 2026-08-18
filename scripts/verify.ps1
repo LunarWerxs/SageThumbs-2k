@@ -37,7 +37,7 @@
      render" or "did it render the right picture", but "is it SLOW". A shipped AVIF regression
      (2026-08-18) passed regression.ps1's three gates AND perf.ps1's flat 3000 ms threshold
      while costing ~5x Microsoft's own AV1 codec, because nothing ever compared us to the OS.
-     check-decode-vs-native.ps1 does. NOT in CI: it needs test-corpus-real, a sibling of the
+     check-decode-speed.ps1 does. NOT in CI: it needs test-corpus-real, a sibling of the
      repo that is not in git, so it is a local/pre-release gate like perf.ps1.
    * Full-corpus regression.ps1 is NOT part of this ladder on purpose: run it only
      when FORMATS/decoders change broadly or before a release. For a scoped change,
@@ -290,9 +290,9 @@ if ($Samples) {
 # nor the separate dll/dlghook packages — a compile error reachable only under one of
 # those would pass this ladder locally and only surface after a CI round-trip.
 if ($Perf) {
-    Stage 'decode speed vs native Windows' {
-        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-decode-vs-native.ps1')
-        if ($LASTEXITCODE -ne 0) { throw 'check-decode-vs-native.ps1 failed' }
+    Stage 'decode speed (vs Windows, and vs ourselves)' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-decode-speed.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'check-decode-speed.ps1 failed' }
     }
 }
 

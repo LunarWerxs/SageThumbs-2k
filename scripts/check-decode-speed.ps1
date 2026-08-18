@@ -1,11 +1,22 @@
 <#
-  check-decode-vs-native.ps1 — for EVERY format Windows can decode on its own, prove we are
-  not dramatically slower than Windows is.
+  check-decode-speed.ps1 — is any format's thumbnail SLOW? Two gates, because one alone
+  leaves most of the product uncovered.
 
-      pwsh scripts\check-decode-vs-native.ps1                  # gate against the baseline
-      pwsh scripts\check-decode-vs-native.ps1 -UpdateBaseline  # accept current ratios
-      pwsh scripts\check-decode-vs-native.ps1 -Only avif,heic  # scope to some extensions
-      pwsh scripts\check-decode-vs-native.ps1 -Verbose2        # print every measured row
+      pwsh scripts\check-decode-speed.ps1                  # run both gates
+      pwsh scripts\check-decode-speed.ps1 -UpdateBaseline  # re-record BOTH baselines
+      pwsh scripts\check-decode-speed.ps1 -Only avif,heic  # scope to some extensions
+      pwsh scripts\check-decode-speed.ps1 -Verbose2        # print every measured row
+
+  GATE A — VS NATIVE. For every format Windows can also decode, are we slower than Windows?
+  GATE B — VS OURSELVES. For EVERY format, did this build get slower than the last one?
+
+  Gate B exists because Gate A alone was not "every one", and that gap is not small: of the
+  223 real-corpus samples, only 71 have a native WIC peer. The other 152 — DjVu, PSD, the
+  ebook/comic containers, the project-file previews, the whole ImageMagick long tail, i.e.
+  most of what makes this product worth installing — have no Windows equivalent to be
+  measured against, so Gate A is structurally blind to them. A format with no native peer
+  could get 10x slower and Gate A would still say OK. Gate B pins each sample against its own
+  recorded time instead, so "nothing to compare against" stops meaning "nothing is checked".
 
   WHY THIS EXISTS (2026-08-18). A user reported "AVIF thumbnailing is way slower than native
   W11 with the AV1 codec installed, or Icaros." It was true and it had shipped: `decode.rs`
@@ -64,13 +75,21 @@
        call something a regression.
 
   EXIT CODES:
-    0  every compared format is within its baselined ratio.
-    1  at least one format is materially slower than Windows without a baselined reason.
+    0  both gates pass (or the box was too loaded to judge — see guard 6).
+    1  a format is materially slower than Windows without a baselined reason (A), or slower
+       than its own recorded time (B).
 #>
 [CmdletBinding()]
 param(
     [string]$Corpus = "$PSScriptRoot\..\..\test-corpus-real",
-    [string]$Baseline = "$PSScriptRoot\decode-vs-native-baseline.txt",
+    [string]$Baseline = "$PSScriptRoot\decode-speed-vs-native.txt",
+    # Gate B's baseline: our OWN measured time per sample, for every format including the 152
+    # that have no native peer at all.
+    [string]$SpeedBaseline = "$PSScriptRoot\decode-speed-baseline.txt",
+    # How much slower than its own recorded time a sample may get before Gate B fails. Loose
+    # on purpose — this hunts a decoder falling off a fast path (the AVIF shape: 3-13x), not
+    # normal run-to-run wobble.
+    [double]$MaxSelfRatio = 2.5,
     [switch]$UpdateBaseline,
     [string[]]$Only,
     # Default tolerance for a format with no explicit baseline line. 3x is deliberately loose:
@@ -118,6 +137,18 @@ if (Test-Path $Baseline) {
         $ext = $parts[0].ToLowerInvariant().TrimStart('.')
         $allow[$ext]  = [double]$parts[1]
         $reason[$ext] = if ($why) { $why.Trim() } else { '' }
+    }
+}
+
+# Gate B baseline: "<sample filename> <ms>" — our own recorded decode time per sample.
+$speed = @{}
+if (Test-Path $SpeedBaseline) {
+    foreach ($line in Get-Content $SpeedBaseline) {
+        $t = $line.Trim()
+        if (-not $t -or $t.StartsWith('#')) { continue }
+        $parts = @($t -split '\s+')
+        if ($parts.Count -lt 2) { continue }
+        $speed[$parts[0]] = [double]$parts[1]
     }
 }
 
@@ -248,15 +279,42 @@ try {
             ("# calibration-reference {0}" -f $calBefore),
             ''
         ) + ($worst | Sort-Object ext | ForEach-Object { "{0,-8} {1,5} #" -f $_.ext, $_.ratio })
-        Set-Content -LiteralPath $Baseline -Value $lines -Encoding UTF8
-        Write-Host ("[vsnative] baseline written: {0} ({1} formats) — now write a REASON on each line." -f $Baseline, $worst.Count) -ForegroundColor Yellow
+        # NEVER clobber gate A's baseline: its whole value is the hand-written REASON on each
+        # line, and regenerating throws that away silently — which is the same class of quiet
+        # loss this check exists to stop. Refuse, and say how to do it on purpose.
+        if (Test-Path $Baseline) {
+            Write-Host ("[gate A] baseline left ALONE ({0}) - it carries hand-written reasons." -f $Baseline) -ForegroundColor DarkGray
+            Write-Host  "         Delete it first if you really mean to regenerate them." -ForegroundColor DarkGray
+        } else {
+            Set-Content -LiteralPath $Baseline -Value $lines -Encoding UTF8
+            Write-Host ("[gate A] baseline written: {0} ({1} formats) — now write a REASON on each line." -f $Baseline, $worst.Count) -ForegroundColor Yellow
+        }
+
+        # Gate B: every sample, including the 152 with no native peer at all.
+        $bLines = @(
+            '# decode-speed baseline — our OWN measured decode time (ms) per corpus sample, with',
+            '# the process-start floor already subtracted. Enforced by scripts\check-decode-speed.ps1.',
+            '#',
+            '# This is the half that covers the formats Windows CANNOT decode, which is most of them:',
+            '# 152 of these 223 samples have no native peer, so the vs-native gate is blind to them.',
+            '# A format here that falls off a fast path (the AVIF shape) shows up as its own number',
+            '# getting worse, with no need for anything to compare against.',
+            '#',
+            '# GENERATE ON A QUIET MACHINE, and re-generate deliberately: accepting a slower number',
+            '# here is accepting a slower product. Tolerance is -MaxSelfRatio (default 2.5x) plus an',
+            '# absolute floor, so ordinary wobble does not fail a build.',
+            ("# calibration-reference {0}" -f $calBefore),
+            ''
+        ) + ($rows | Sort-Object name | ForEach-Object { "{0,-28} {1,6}" -f $_.name, $_.mine })
+        Set-Content -LiteralPath $SpeedBaseline -Value $bLines -Encoding UTF8
+        Write-Host ("[gate B] baseline written: {0} ({1} samples)" -f $SpeedBaseline, $rows.Count) -ForegroundColor Yellow
         exit 0
     }
 
     # ---- guard 6: did the machine stay comparable for the whole sweep?
     $calAfter = Measure-Floor $floorSrc $probe
     $drift = [Math]::Abs($calAfter - $calBefore) / [double][Math]::Max($calBefore, $calAfter)
-    Write-Host ("[vsnative] calibration (process-start floor): {0} ms -> {1} ms ({2:P0} drift)" -f
+    Write-Host ("[speed] calibration (process-start floor): {0} ms -> {1} ms ({2:P0} drift)" -f
         $calBefore, $calAfter, $drift) -ForegroundColor DarkGray
 
     # Gate on the WORST sample per extension (a hard sample must not hide behind an easy one
@@ -279,7 +337,7 @@ try {
         $level = [Math]::Min($calBefore, $calAfter) / $calRef
         if ($level -gt $MaxCalibrationSlowdown) {
             $loaded = $true
-            Write-Host ("[vsnative] process-start is {0:N1}x the baseline reference ({1} ms) - box is busy" -f
+            Write-Host ("[speed] process-start is {0:N1}x the baseline reference ({1} ms) - box is busy" -f
                 $level, $calRef) -ForegroundColor Yellow
         }
     }
@@ -288,7 +346,7 @@ try {
         Write-Host ""
         $why = if ($loaded) { "this box is too loaded to compare a subprocess against an in-process decode" }
                else { "the machine's load moved {0:P0} mid-run (limit {1:P0})" -f $drift, $MaxCalibrationDrift }
-        Write-Host ("[vsnative] INCONCLUSIVE - {0}." -f $why) -ForegroundColor Yellow
+        Write-Host ("[speed] INCONCLUSIVE - {0}." -f $why) -ForegroundColor Yellow
         Write-Host  "           These readings are not comparable, so they are NOT a verdict:" -ForegroundColor Yellow
         $suspect | ForEach-Object { "             {0,-8} {1,5}x  {2}" -f $_.row.ext, $_.row.ratio, $_.row.name }
         Write-Host  "           Re-run on a quieter box before believing any of it." -ForegroundColor Yellow
@@ -298,7 +356,7 @@ try {
     # ---- guard 7: confirm each suspect ALONE, with more runs, before failing a build.
     $bad = @()
     if ($suspect) {
-        Write-Host ("[vsnative] confirming {0} suspect(s) with {1} runs each..." -f
+        Write-Host ("[gate A] confirming {0} suspect(s) with {1} runs each..." -f
             $suspect.Count, ($Runs * 3)) -ForegroundColor DarkGray
         $savedRuns = $Runs
         $script:Runs = $Runs * 3
@@ -326,7 +384,7 @@ try {
 
     if ($bad) {
         Write-Host ""
-        Write-Host ("[vsnative] {0} format(s) MATERIALLY SLOWER than Windows' own codec:" -f $bad.Count) -ForegroundColor Red
+        Write-Host ("[gate A] {0} format(s) MATERIALLY SLOWER than Windows' own codec:" -f $bad.Count) -ForegroundColor Red
         foreach ($b in $bad) {
             $r = $b.row
             "  {0,-8} {1,5}x  (ours {2} ms vs WIC {3} ms, +{4} ms)  allowed {5}x   {6}" -f
@@ -338,7 +396,70 @@ try {
         Write-Host ("  ({0})" -f $Baseline) -ForegroundColor DarkGray
         $exitCode = 1
     } else {
-        Write-Host "[vsnative] OK - no format is unaccountably slower than Windows." -ForegroundColor Green
+        Write-Host "[gate A] OK - no format is unaccountably slower than Windows." -ForegroundColor Green
+    }
+
+    # ===================================================================== GATE B
+    # Every sample against its OWN recorded time. This is the half that covers the 152 formats
+    # with no native peer — the ones gate A cannot see at all.
+    if ($speed.Count -eq 0) {
+        Write-Host ("[gate B] no baseline yet ({0}) - run -UpdateBaseline on a quiet box." -f $SpeedBaseline) -ForegroundColor Yellow
+    } else {
+        $bSuspect = @()
+        $unseen = @()
+        foreach ($r in $rows) {
+            if (-not $speed.ContainsKey($r.name)) { $unseen += $r.name; continue }
+            $was = [Math]::Max(1, $speed[$r.name])
+            if ($r.mine -lt $MinMs) { continue }                        # guard 3
+            $d = $r.mine - $was
+            if ($d -lt $MinDeltaMs) { continue }                        # guard 5
+            $ratio = [Math]::Round($r.mine / $was, 2)
+            if ($ratio -gt $MaxSelfRatio) {
+                $bSuspect += [pscustomobject]@{ name = $r.name; ext = $r.ext; now = $r.mine; was = $was; ratio = $ratio }
+            }
+        }
+
+        if ($bSuspect -and ($drift -gt $MaxCalibrationDrift -or $loaded)) {
+            Write-Host "[gate B] INCONCLUSIVE - box too loaded/unstable; these are NOT a verdict:" -ForegroundColor Yellow
+            $bSuspect | ForEach-Object { "             {0,-24} {1,5}x  ({2} ms, was {3})" -f $_.name, $_.ratio, $_.now, $_.was }
+        } elseif ($bSuspect) {
+            # guard 7: confirm alone, more runs.
+            Write-Host ("[gate B] confirming {0} suspect(s) with {1} runs each..." -f $bSuspect.Count, ($Runs * 3)) -ForegroundColor DarkGray
+            $savedRuns2 = $Runs
+            $script:Runs = $Runs * 3
+            $bBad = @()
+            foreach ($sp in $bSuspect) {
+                $again = Measure-St2k (Join-Path $Corpus $sp.name) (Join-Path $tmp 'confirmb.png')
+                if (-not $again.ok) { continue }
+                $net2 = [Math]::Max(1, $again.ms - $floor)
+                $ratio2 = [Math]::Round($net2 / $sp.was, 2)
+                if ($ratio2 -gt $MaxSelfRatio -and ($net2 - $sp.was) -ge $MinDeltaMs) {
+                    $bBad += [pscustomobject]@{ name = $sp.name; now = $net2; was = $sp.was; ratio = $ratio2 }
+                } else {
+                    Write-Host ("             {0,-24} cleared on retry ({1}x)" -f $sp.name, $ratio2) -ForegroundColor DarkGray
+                }
+            }
+            $script:Runs = $savedRuns2
+            if ($bBad) {
+                Write-Host ""
+                Write-Host ("[gate B] {0} sample(s) SLOWER THAN THEIR OWN BASELINE:" -f $bBad.Count) -ForegroundColor Red
+                $bBad | Sort-Object ratio -Descending | ForEach-Object {
+                    "  {0,-24} {1,5}x   {2} ms now, {3} ms baselined" -f $_.name, $_.ratio, $_.now, $_.was
+                }
+                Write-Host ""
+                Write-Host "  Something fell off a fast path. Fix it, or re-baseline DELIBERATELY:" -ForegroundColor Yellow
+                Write-Host ("    pwsh scripts\check-decode-speed.ps1 -UpdateBaseline   ({0})" -f $SpeedBaseline) -ForegroundColor Yellow
+                $exitCode = 1
+            } else {
+                Write-Host "[gate B] OK - nothing regressed against its own baseline." -ForegroundColor Green
+            }
+        } else {
+            Write-Host ("[gate B] OK - {0} samples within {1}x of their own baseline." -f $rows.Count, $MaxSelfRatio) -ForegroundColor Green
+        }
+        if ($unseen) {
+            Write-Host ("[gate B] {0} sample(s) not in the baseline (new formats?): {1}" -f
+                $unseen.Count, (($unseen | Select-Object -First 6) -join ', ')) -ForegroundColor DarkGray
+        }
     }
 }
 finally {
