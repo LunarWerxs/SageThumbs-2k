@@ -262,8 +262,20 @@ mod tests {
             .share_mode(0)
             .open(&ico_path)
             .unwrap();
+        // Release the lock ONE backoff interval after the code under test stages its temp
+        // file, because the rename is the very next statement. Anchoring to the CALL instead
+        // is wrong in both directions and this test has been wrong in both: a flat 140 ms
+        // against a ~200 ms retry budget is a 1.4x margin that loses whenever a release build
+        // runs beside the suite (it blocked a release), and simply shortening the hold made
+        // the test VACUOUS - the lock expired during setup, the rename never met a locked
+        // destination, and the test passed with retrying disabled entirely.
+        let staged = with_tmp_suffix(&ico_path);
         let lock_thread = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(140));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !staged.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
             drop(held);
         });
 
@@ -300,8 +312,20 @@ mod tests {
             .share_mode(0)
             .open(&ini_path)
             .unwrap();
+        // Release the lock ONE backoff interval after the code under test stages its temp
+        // file, because the rename is the very next statement. Anchoring to the CALL instead
+        // is wrong in both directions and this test has been wrong in both: a flat 140 ms
+        // against a ~200 ms retry budget is a 1.4x margin that loses whenever a release build
+        // runs beside the suite (it blocked a release), and simply shortening the hold made
+        // the test VACUOUS - the lock expired during setup, the rename never met a locked
+        // destination, and the test passed with retrying disabled entirely.
+        let staged = with_tmp_suffix(&ini_path);
         let lock_thread = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(140));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !staged.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
             drop(held);
         });
 

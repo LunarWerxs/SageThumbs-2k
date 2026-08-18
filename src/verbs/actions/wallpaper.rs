@@ -140,8 +140,23 @@ mod tests {
             .share_mode(0)
             .open(&dest)
             .unwrap();
+        // Release ONE backoff interval after the encode stages its temp file, because the
+        // rename is the very next statement. A flat 140 ms against a ~200 ms retry budget is
+        // a 1.4x margin, and the identical pattern in foldericon.rs lost that race during a
+        // release and blocked it. Anchoring to the staged file makes it deterministic without
+        // making it vacuous - shortening the hold instead would let the lock expire during
+        // setup, so the rename would never meet a locked destination at all.
+        let staged = {
+            let mut s = dest.clone().into_os_string();
+            s.push(".st2ktmp");
+            std::path::PathBuf::from(s)
+        };
         let lock_thread = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(140));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !staged.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
             drop(held);
         });
 

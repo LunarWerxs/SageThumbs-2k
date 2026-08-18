@@ -8,7 +8,10 @@ use std::time::Duration;
 /// short backoff before giving up. These consts are the retry POLICY in ONE place
 /// — they used to be hand-copied as `0..5` / `from_millis(40)` in four loops.
 const RENAME_RETRIES: u32 = 5;
-const RENAME_BACKOFF: Duration = Duration::from_millis(40);
+/// `pub(crate)` because the three "survives a transient lock" tests hold their lock for
+/// exactly one interval of it. Hard-coding a duration in those tests is what made them
+/// flaky enough to block a release; see DEVELOPMENT_GOTCHAS.
+pub(crate) const RENAME_BACKOFF: Duration = Duration::from_millis(40);
 
 /// Rename `from` → `to`, retrying past a transient lock. Returns the final
 /// `std::io::Result`: `Ok` on success, else the LAST error once the retries are

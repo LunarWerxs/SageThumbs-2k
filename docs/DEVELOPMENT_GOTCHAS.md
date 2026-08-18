@@ -706,3 +706,26 @@ Two things saved it, and both are cheap enough to do every time:
 The same shape bit the first version of the squat test in the other direction: it planted with a
 plain write, which TRUNCATED a name a sibling test legitimately owned, turning two unrelated
 green tests red. Both symptoms have one cause - a test reaching into state it does not own.
+
+## Anchor a "survives a transient lock" test to the RENAME, not to the call
+
+Three tests simulate an Explorer/thumbnail-cache lock by opening the destination with
+`share_mode(0)`, releasing it from a background thread, and asserting `fsutil::rename_retrying`
+retried past it. All three released after a flat 140 ms against a retry budget of
+`RENAME_RETRIES * RENAME_BACKOFF`, about 200 ms. That is a 1.4x margin, and this machine loses
+it whenever a release build runs beside the suite: the 2.2.0 release was blocked by exactly
+that, with both folder-icon tests red in the pre-push gate and green in isolation seconds later.
+
+**Shortening the hold is the obvious fix and it is WRONG.** The hold has to outlast the setup
+the code under test does before it reaches the rename. Cut it to one backoff and the lock has
+already expired by then, so the rename never meets a locked destination: the tests passed with
+retrying disabled entirely. That trades a flaky test for a fake one, which is strictly worse.
+
+The fix is to anchor the release to the staged temp file. Every one of these writers does
+`write(tmp)` then `rename_retrying(tmp, dest)` as the very next statement, so the lock thread
+polls for `tmp` to appear, then holds one backoff and releases. The lock is then guaranteed to
+be held on the first attempt and guaranteed to be gone well inside the budget, with no timer
+racing a timer.
+
+Verified in both directions, which is the only thing that makes any of this trustworthy: with
+`RENAME_RETRIES` forced to 1 all three tests fail; with the policy restored all three pass.
