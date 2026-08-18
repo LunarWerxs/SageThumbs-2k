@@ -1,0 +1,26 @@
+# decode-vs-native baseline — the MAXIMUM allowed (our decode time / native WIC decode time)
+# for a format Windows can also decode by itself. Enforced by scripts\check-decode-vs-native.ps1.
+#
+# Anything NOT listed here uses the script's -DefaultMaxRatio (3.0). So this file is short on
+# purpose: it is the list of places we are knowingly slower than Windows, and every one of them
+# has to justify itself in writing. An unexplained line is the invisible trade this whole check
+# exists to prevent — if you cannot write the reason, that is the answer.
+#
+# Current state (2026-08-18): across the 223-sample real corpus, 71 formats have a native WIC
+# peer and exactly ONE of them is slower than Windows. Most are far FASTER (camera RAW is
+# 50-100x faster than WIC, because we read the embedded preview instead of demosaicing).
+#
+# calibration-reference 30
+# ^ st2k's process-start floor (ms) on a QUIET box. A run measuring more than 2x this is
+#   reported INCONCLUSIVE rather than failing: our side of every comparison is a subprocess and
+#   WIC's side is in-process, so a loaded machine inflates us and not them, and an unguarded run
+#   really did report a 1 ms TIFF as 265 ms. Regenerate with -UpdateBaseline on an idle machine.
+
+avif       5.5 # DELIBERATE, AND A KNOWN DEFECT WE INTEND TO REMOVE — not a permanent allowance.
+               # decode.rs routes most AVIF around Microsoft's AV1 WIC codec to an ImageMagick
+               # subprocess, because that codec misreads the colour libaom writes (issue #9:
+               # 8-bit BT.601 and untagged files are off by ~39/255, high-bit-depth by ~11/255).
+               # Correct colour, ~5x the cost, and it is the ONLY format here losing to Windows.
+               # A user reported exactly this ("way slower than native W11 / Icaros") and they
+               # were right. The number is pinned at today's measured value so it cannot QUIETLY
+               # get worse; the goal is to delete this line, not to raise it. See docs/TODO.md.

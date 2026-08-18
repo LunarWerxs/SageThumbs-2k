@@ -171,11 +171,13 @@ fn add_metafile_magick_limits(cmd: &mut Command) {
 /// bytes to its stdin, read a PNG back from its stdout, decode that PNG with the
 /// safe `image` tier. Bounded by ImageMagick's own `-limit`s AND an external
 /// kill-timeout so a hostile/looping input can't hang or crash our host.
-pub(super) fn decode_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
-    decode_via_magick_capped(bytes, None)
-}
-
-/// [`decode_via_magick`] that asks magick for no more than `max_edge` px on the long side.
+///
+/// Asks magick for no more than `max_edge` px on the long side. `None` means the
+/// [`MAGICK_MAX_EDGE`] guard, i.e. full fidelity; every thumbnail caller passes its own
+/// target instead. There is deliberately NO uncapped convenience alias: one existed, and
+/// the AVIF/HEIC colour route reached for it by accident and rendered 4096 px for a 256 px
+/// tile. Making the cap an explicit argument at every call site is what stops that
+/// recurring.
 ///
 /// The default ceiling is [`MAGICK_MAX_EDGE`] (4096), a MEMORY guard rather than a quality
 /// floor: the result is downscaled to the caller's box straight afterwards. When the caller

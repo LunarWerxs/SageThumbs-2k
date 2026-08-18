@@ -392,7 +392,16 @@ fn decode_any_with_wic_target(
             "AVIF nclx colour"
         };
         crate::safety::log_debug(&format!("decode: routing around WIC ({why})"));
-        match decode_via_magick(bytes) {
+        // Ask magick for no more than the caller's target edge, exactly as the generic
+        // magick tier below already does. This route used to take the uncapped
+        // `decode_via_magick`, so a 256 px Explorer tile rendered the full 4096 px guard
+        // and threw almost all of it away — then PNG-encoded that surface and decoded it
+        // back. Measured on a 3000x2000 AVIF at a 256 px target: 10-bit 1261 ms -> 400 ms,
+        // 8-bit 638 ms -> 388 ms. Nothing about the colour fix needs the larger render:
+        // the ICC below is applied from the ORIGINAL container, not magick's output, and
+        // full-fidelity callers reach here with `wic_thumbnail_cx == None` (uncapped) as
+        // before.
+        match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
             // `decode_via_magick` passes `-strip`, so the profile magick would otherwise
             // have carried into its PNG output is gone by the time we read it back. Apply
             // it here from the ORIGINAL container instead, exactly as the WIC path does,
@@ -500,7 +509,7 @@ pub(crate) use magick::await_magick_output as await_child_output;
 #[cfg(test)]
 use magick::metafile_min_density;
 use magick::{decode_named_extension, has_name_selected_coder};
-use magick::{decode_psd_composite, decode_via_magick, decode_via_magick_capped};
+use magick::{decode_psd_composite, decode_via_magick_capped};
 pub use magick::{encode_via_magick, magick_available, magick_output_supported};
 mod readers;
 mod svg;

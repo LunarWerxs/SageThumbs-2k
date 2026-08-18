@@ -13,6 +13,9 @@
                                                           #   job scripts (mirrors CI in full)
       pwsh scripts\verify.ps1 -Samples "archive-*"        # + render matching corpus samples,
                                                           #   asserting _expected-fail.txt
+      pwsh scriptserify.ps1 -Perf                       # + are we slower than Windows' own
+                                                          #   codec on any format? (needs the
+                                                          #   release st2k + test-corpus-real)
       pwsh scripts\verify.ps1 -Release                    # + the same 3 builds ci.yml runs (~3 min)
       pwsh scripts\verify.ps1 -Release -Install           # + elevated dev install + hash check
 
@@ -30,6 +33,12 @@
    * -Samples asserts EXPECTATIONS, not just exit codes: samples listed in
      <corpus>\_expected-fail.txt MUST fail (stock icon is their correct result);
      everything else matched MUST render. No more hand-written per-file loops.
+   * -Perf answers the ONE question the correctness gates structurally cannot: not "did it
+     render" or "did it render the right picture", but "is it SLOW". A shipped AVIF regression
+     (2026-08-18) passed regression.ps1's three gates AND perf.ps1's flat 3000 ms threshold
+     while costing ~5x Microsoft's own AV1 codec, because nothing ever compared us to the OS.
+     check-decode-vs-native.ps1 does. NOT in CI: it needs test-corpus-real, a sibling of the
+     repo that is not in git, so it is a local/pre-release gate like perf.ps1.
    * Full-corpus regression.ps1 is NOT part of this ladder on purpose: run it only
      when FORMATS/decoders change broadly or before a release. For a scoped change,
      -Samples over the affected files is the whole point.
@@ -52,7 +61,10 @@ param(
     # contracts, email-rule, registration-symmetry, release-size, release-pipeline,
     # installer-lint, msix-integrity, vendored-exr) and check-locale-keys (which
     # verify covers but ci.yml's consistency job still does not). ~1-2 min warm.
-    [switch]$Lint
+    [switch]$Lint,
+    # Decode SPEED, measured against the OS: for every format WIC can also decode, is our
+    # decode materially slower than Windows'? Needs the RELEASE st2k and test-corpus-real.
+    [switch]$Perf
 )
 
 $ErrorActionPreference = 'Stop'
@@ -277,6 +289,13 @@ if ($Samples) {
 # no -p split) does NOT exercise webp-lossy/html-preview/hdr-capture/dll-i18n-subset,
 # nor the separate dll/dlghook packages — a compile error reachable only under one of
 # those would pass this ladder locally and only surface after a CI round-trip.
+if ($Perf) {
+    Stage 'decode speed vs native Windows' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-decode-vs-native.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'check-decode-vs-native.ps1 failed' }
+    }
+}
+
 if ($Release) {
     Stage 'release: production EXEs' {
         cargo build --release --locked --quiet -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture 2>&1 | Write-Host

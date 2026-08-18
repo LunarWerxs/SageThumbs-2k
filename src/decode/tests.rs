@@ -933,7 +933,7 @@ fn magick_subprocess_decodes() {
     // Feed a PNG straight to the ImageMagick tier (bypassing the image-first
     // tier) to prove the stdin->stdout subprocess plumbing works end-to-end.
     let png = png_bytes(50, 40, [30, 200, 90, 255]);
-    let img = decode_via_magick(&png).expect("magick should decode the PNG");
+    let img = decode_via_magick_capped(&png, None).expect("magick should decode the PNG");
     assert_eq!((img.width(), img.height()), (50, 40));
 }
 
