@@ -105,11 +105,15 @@ $refs = @($refIn) + @($refSub | Where-Object { $_ })
 
 $chunkSize = 20
 $refSamples = @()
+$loadSamples = @()
 $done = 0
 $sorted = @($all | Sort-Object { $_.Extension }, Name)
 for ($i = 0; $i -lt $sorted.Count; $i += $chunkSize) {
     $chunk = $sorted[$i..([Math]::Min($i + $chunkSize - 1, $sorted.Count - 1))]
     $refSamples += , (Measure-Drift $refs $Runs $Size)
+    # One cheap reading per chunk, so the header can say what state the box was in.
+    $loadSamples += (Get-CimInstance Win32_Processor |
+        Measure-Object -Property LoadPercentage -Average).Average
     $mineChunk = Measure-Decode ($chunk.FullName) $Runs $Size
     foreach ($f in $chunk) {
         if (-not $mineChunk.ContainsKey($f.Name)) { continue }   # undecodable is regression.ps1's beat
@@ -133,6 +137,11 @@ for ($i = 0; $i -lt $sorted.Count; $i += $chunkSize) {
 # to refuse, because a long report on a working machine will always see SOME spread and the
 # ratio column survives it. Only an extreme spread means the run measured the load instead.
 $refFirsts = @($refSamples | ForEach-Object { $_ | Select-Object -First 1 } | Where-Object { $_ })
+$loadMean = if ($loadSamples.Count) {
+    ($loadSamples | Measure-Object -Average).Average
+} else {
+    0
+}
 $drift = if ($refFirsts.Count -ge 2) {
     $lo = ($refFirsts | Measure-Object -Minimum).Minimum
     $hi = ($refFirsts | Measure-Object -Maximum).Maximum
@@ -178,6 +187,11 @@ $md += "| OS | $os |"
 $md += "| Codec extensions | $(if ($codecs) { $codecs -join ', ' } else { 'none detected' }) |"
 $md += "| Runs per sample | $Runs (fastest kept) |"
 $md += "| Machine load spread during run | $('{0:P0}' -f $drift) |"
+# LEVEL, not just spread. Drift answers "did the machine change mid-run", which a box that is
+# BUSY THROUGHOUT answers with a reassuring 3% while every reading in the table is inflated.
+# Anyone comparing this file against another run needs to know which state it was taken in, and
+# nothing else in the header says so.
+$md += "| Machine load during run (mean of samples) | $('{0:N0}%' -f $loadMean) |"
 $md += ""
 $md += "## How to read it"
 $md += ""

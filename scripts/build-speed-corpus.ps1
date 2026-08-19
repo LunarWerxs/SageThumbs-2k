@@ -89,6 +89,24 @@ foreach ($tier in $tiers.Keys) {
     $src[$tier] = $p
 }
 
+# FORMATS A SYNTHESISED FILE CANNOT REPRESENT, and therefore must not be measured as if it
+# could. This is the same failure the AVIF override below fixes, taken to its conclusion: if
+# ImageMagick's output for a format lands on a DIFFERENT decode path than any file a user
+# actually has, then a row for it is not a slow format, it is a wrong measurement - and a wrong
+# measurement in a published baseline is worse than a missing one, because someone will act on
+# it. Each of these keeps its real-corpus `single` row, which IS representative.
+$notRepresentative = [ordered]@{
+    psd = 'magick writes no image-resource block, so there is no baked preview (resource 1036). Every real Photoshop file has one and our thumbnail path reads it; a synthesised PSD measures the ImageMagick composite fallback instead, at 40x the cost.'
+    psb = 'same as psd.'
+    svg = 'a vector file has no pixel count, so the tiers are meaningless, and magick renders the raster source into an 89 MB blob no illustrator produces.'
+    svgz = 'same as svg.'
+    ai   = 'same as svg: a page-description format, sized by content rather than by pixels.'
+    pdf  = 'same as svg.'
+    eps  = 'same as svg.'
+    emf  = 'same as svg.'
+    wmf  = 'same as svg.'
+}
+
 # PER-FORMAT OVERRIDES, for the handful where ImageMagick's DEFAULT output is not what the
 # world actually ships. A speed baseline built from unrepresentative files answers the wrong
 # question, and this one already did once: magick writes AVIF as 12-bit, profile 2, with no
@@ -107,6 +125,15 @@ $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
 
 $made = 0; $skipped = 0; $rejected = @()
 foreach ($ext in $exts) {
+    if ($notRepresentative.Contains($ext)) {
+        # Reported, never silent: a format missing from the matrix must be a KNOWN gap with a
+        # written reason, exactly like a line in decode-speed-vs-native.txt.
+        $rejected += ("{0} (not representative: {1})" -f $ext, $notRepresentative[$ext])
+        foreach ($tier in $tiers.Keys) {
+            Remove-Item -LiteralPath (Join-Path $OutDir "$ext-$tier.$ext") -Force -ErrorAction SilentlyContinue
+        }
+        continue
+    }
     foreach ($tier in $tiers.Keys) {
         $out = Join-Path $OutDir "$ext-$tier.$ext"
         if (-not $Rebuild -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
