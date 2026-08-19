@@ -64,7 +64,11 @@ param(
     [switch]$Lint,
     # Decode SPEED, measured against the OS: for every format WIC can also decode, is our
     # decode materially slower than Windows'? Needs the RELEASE st2k and test-corpus-real.
-    [switch]$Perf
+    [switch]$Perf,
+    # Pass -Accept to the render-parity stage, for a release that MEANS to change a picture
+    # (e.g. a colour fix): the differences are still printed, the run does not fail on them.
+    # The default stays strict, so an unintended picture change keeps failing the ladder.
+    [switch]$AcceptParity
 )
 
 $ErrorActionPreference = 'Stop'
@@ -319,7 +323,9 @@ if ($Release) {
     # every corpus sample against the previous RELEASED build in dist\. Exit 2 = could not
     # run (no python/Pillow, no baseline release), which is a skip, not a failure.
     Stage 'render parity vs the last release' {
-        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-render-parity.ps1')
+        $parityArgs = @()
+        if ($AcceptParity) { $parityArgs += '-Accept' }
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-render-parity.ps1') @parityArgs
         if ($LASTEXITCODE -eq 1) { throw 'check-render-parity.ps1 failed' }
     }
 }
