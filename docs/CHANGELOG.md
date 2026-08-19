@@ -41,6 +41,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   only the last step to the high-quality filter, which is about **5x to 16x faster** with no
   visible difference (measured at under one part in 255 on deliberately difficult content).
 
+- **HDR images (.hdr) thumbnail about 4x faster.** A high-dynamic-range photo was having its
+  brightness curve applied to all twelve million pixels before anything was shrunk down to a
+  thumbnail. It now shrinks first, which is both quicker (about 600 ms to about 160 ms) and
+  slightly more accurate, since averaging brightness before compressing it is the correct
+  order. OpenEXR files have always worked this way; .hdr now matches them.
+
 - **Big GIFs and big DDS textures thumbnail several times faster.** Both were doing the full
   amount of work for a full-size picture and then shrinking it. A 12-megapixel GIF took about
   306 ms against Windows' 50 ms; it now takes about 47 ms, which is fractionally faster than

@@ -147,11 +147,16 @@ const WORST_DELTA_CEILING: u32 = 16;
 /// at all is that the box filter's stopband is poor: finishing with a real filter is what
 /// keeps the result sharp rather than blocky.
 ///
+/// Every sample type is handled: 8-bit, 16-bit, and the 32-bit linear floats an HDR decode
+/// produces. The float arms matter for a reason the integer ones do not - the caller reduces
+/// BEFORE tone-mapping, so the averaging happens in linear light, which is both the physically
+/// correct order and what [`super::exrscale::decode_scaled`] has always done for OpenEXR.
+///
 /// Every integer sample type is handled, 8-bit and 16-bit alike. 16-bit is not an exotic
 /// corner here: ImageMagick, scanners and most PNG/TIFF writers produce it by default, and it
 /// is the WORST case, because the single-pass filter then does all that work on twice the
 /// data. Float buffers are left alone; they reach this point already tone-mapped.
-fn pre_reduce(img: DynamicImage, cx: u32) -> DynamicImage {
+pub(super) fn pre_reduce(img: DynamicImage, cx: u32) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
     // The largest whole-number step that still leaves the filter its gap. Truncated, so
     // the gap is a floor and never a hope: a step is taken only when the result genuinely
@@ -196,6 +201,14 @@ fn pre_reduce(img: DynamicImage, cx: u32) -> DynamicImage {
         DynamicImage::ImageRgba16(b) => {
             let out = box_reduce_u16(b.as_raw(), w, h, 4, k);
             DynamicImage::ImageRgba16(rebuilt(b, nw, nh, out))
+        }
+        DynamicImage::ImageRgb32F(b) => {
+            let out = box_reduce_f32(b.as_raw(), w, h, 3, k);
+            DynamicImage::ImageRgb32F(rebuilt(b, nw, nh, out))
+        }
+        DynamicImage::ImageRgba32F(b) => {
+            let out = box_reduce_f32(b.as_raw(), w, h, 4, k);
+            DynamicImage::ImageRgba32F(rebuilt(b, nw, nh, out))
         }
         other => other,
     }
@@ -259,6 +272,38 @@ macro_rules! box_reduce {
 
 box_reduce!(box_reduce_u8, u8, u32);
 box_reduce!(box_reduce_u16, u16, u64);
+
+/// The float twin of [`box_reduce`]. Written out rather than folded into the macro because the
+/// mean is a plain division here: there is no rounding term, and clamping a linear-light HDR
+/// value to an integer range is exactly what must NOT happen before the tone map runs.
+fn box_reduce_f32(src: &[f32], w: usize, h: usize, ch: usize, k: usize) -> Vec<f32> {
+    let nw = w.div_ceil(k);
+    let nh = h.div_ceil(k);
+    let mut out = vec![0f32; nw * nh * ch];
+    for oy in 0..nh {
+        let y0 = oy * k;
+        let y1 = (y0 + k).min(h);
+        for ox in 0..nw {
+            let x0 = ox * k;
+            let x1 = (x0 + k).min(w);
+            let mut acc = [0f32; 4];
+            for y in y0..y1 {
+                let row = &src[(y * w + x0) * ch..(y * w + x1) * ch];
+                for px in row.chunks_exact(ch) {
+                    for (a, v) in acc.iter_mut().zip(px) {
+                        *a += *v;
+                    }
+                }
+            }
+            let n = ((x1 - x0) * (y1 - y0)).max(1) as f32;
+            let d = (oy * nw + ox) * ch;
+            for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
+                *o = a / n;
+            }
+        }
+    }
+    out
+}
 
 /// Fit within a `cx`-by-`cx` box, preserving aspect ratio. Large images shrink with
 /// Lanczos3; tiny pixel-art / icons are integer-upscaled with Nearest so they render
@@ -618,6 +663,44 @@ mod fit_tests {
                 "{w}x{h}: single-pass {one:.1} ms | box {boxed:.1} ms | box+filter {two:.1} ms"
             );
         }
+    }
+
+    /// The float arms exist so the caller can reduce BEFORE tone-mapping, which is only correct
+    /// if the reduction stays in linear light and in full float range. A path that clamped to
+    /// [0,1], or that dropped to 8 bits on the way, would quietly destroy exactly the highlight
+    /// detail an HDR file is kept for - and it would do it invisibly, since the tone map that
+    /// runs afterwards compresses the range anyway.
+    #[test]
+    fn float_buffers_are_reduced_in_linear_light_and_full_range() {
+        let mut buf = image::ImageBuffer::<image::Rgb<f32>, Vec<f32>>::new(1024, 1024);
+        for (x, _y, p) in buf.enumerate_pixels_mut() {
+            // Red ramps far ABOVE 1.0 (a real Radiance sun is thousands); green is a constant
+            // well above white; blue stays sub-unit so a clamp in either direction shows up.
+            *p = image::Rgb([x as f32 * 10.0, 4096.0, 0.25]);
+        }
+        let reduced = pre_reduce(DynamicImage::ImageRgb32F(buf), 256);
+        assert_eq!((reduced.width(), reduced.height()), (512, 512));
+        let DynamicImage::ImageRgb32F(out) = reduced else {
+            panic!("a float image must stay float through the reduction");
+        };
+        // 1024 / (256 * 3 / 2) = 2, so output column 1 is the mean of source columns 2 and 3:
+        // (20 + 30) / 2 = 25. Arithmetic mean, in linear light, not clamped.
+        let px = out.get_pixel(1, 0).0;
+        assert!(
+            (px[0] - 25.0).abs() < 1e-3,
+            "red must be the linear mean of 20 and 30, got {}",
+            px[0]
+        );
+        assert!(
+            (px[1] - 4096.0).abs() < 1e-3,
+            "a constant far above 1.0 must survive unclamped, got {}",
+            px[1]
+        );
+        assert!(
+            (px[2] - 0.25).abs() < 1e-6,
+            "a sub-unit constant must survive exactly, got {}",
+            px[2]
+        );
     }
 
     /// A reduction must not upscale, must not fire when there is nothing to win, and must

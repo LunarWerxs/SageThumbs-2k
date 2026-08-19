@@ -384,6 +384,18 @@ fn decode_any_with_wic_target(
                 img,
                 DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
             ) {
+                // REDUCE FIRST, when the caller only wants a tile. A 12 MP Radiance file is
+                // 144 MB of float and the tone map then runs over every one of those pixels
+                // to produce a 256 px thumbnail. Averaging in LINEAR light before the curve
+                // is also the physically correct order, and it is not a new idea here:
+                // `exrscale::decode_scaled` has always box-averaged OpenEXR into the target
+                // grid and handed the caller a small float image to tone-map. This gives the
+                // formats that reach the `image` tier (Radiance .hdr, float PNM, jxl HDR) the
+                // same treatment. Full-fidelity callers pass `None` and are untouched.
+                let img = match wic_thumbnail_cx {
+                    Some(cx) => pre_reduce(img, cx),
+                    None => img,
+                };
                 return Ok(tone_map_float(&img));
             }
             return Ok(img);
