@@ -78,6 +78,73 @@ pub(super) fn tone_map_float(img: &DynamicImage) -> DynamicImage {
     DynamicImage::ImageRgba8(out)
 }
 
+/// The ICC profile a JPEG carries in its APP2 segments, reassembled, or `None` if it has none.
+///
+/// WIC does NOT surface it. Its JPEG decoder answers `GetColorContexts` with an Exif-flag
+/// context rather than a profile one, so [`super::wic::wic_icc`] correctly returns `None` and
+/// the scaled JPEG fast path handed back RAW wide-gamut numbers: an AdobeRGB file whose sRGB
+/// rendering is rgb(8,200,5) came out as rgb(113,199,48), which is the same class of bug as
+/// issue #9, in a different codec. The `image` tier never had it, because the crate's decoder
+/// exposes `icc_profile()` and we already apply it - which is exactly why nothing caught this
+/// until a JPEG small enough to have stayed on that tier was routed away from it.
+///
+/// The profile is split across as many APP2 segments as it needs (each capped at 64 KB), each
+/// prefixed `ICC_PROFILE\0` plus a 1-based chunk number and the chunk count. A profile is only
+/// returned when EVERY declared chunk is present, so a truncated read - the callers pass a
+/// bounded head, not the whole file - yields nothing rather than a corrupt profile.
+pub(super) fn jpeg_icc(b: &[u8]) -> Option<Vec<u8>> {
+    const ID: &[u8] = b"ICC_PROFILE\0";
+    /// Well past any real profile (a big CMYK one is ~2 MB) and far short of a bomb.
+    const MAX_ICC: usize = 8 * 1024 * 1024;
+    if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
+        return None;
+    }
+    let mut chunks: Vec<(u8, &[u8])> = Vec::new();
+    let mut declared = 0u8;
+    let mut i = 2usize;
+    while i + 4 <= b.len() {
+        if b[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = b[i + 1];
+        // Standalone markers carry no length payload.
+        if marker == 0xFF || marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+            i += 2;
+            continue;
+        }
+        // SOS: the entropy-coded scan starts here and every APP segment is behind us.
+        if marker == 0xDA {
+            break;
+        }
+        let len = ((b[i + 2] as usize) << 8) | b[i + 3] as usize;
+        if len < 2 {
+            break;
+        }
+        let Some(payload) = b.get(i + 4..i + 2 + len) else {
+            break;
+        };
+        if marker == 0xE2 && payload.len() > ID.len() + 2 && payload.starts_with(ID) {
+            chunks.push((payload[ID.len()], &payload[ID.len() + 2..]));
+            declared = declared.max(payload[ID.len() + 1]);
+        }
+        i += 2 + len;
+    }
+    if chunks.is_empty() || chunks.len() != declared as usize {
+        return None;
+    }
+    chunks.sort_by_key(|(seq, _)| *seq);
+    let total: usize = chunks.iter().map(|(_, d)| d.len()).sum();
+    if total == 0 || total > MAX_ICC {
+        return None;
+    }
+    let mut out = Vec::with_capacity(total);
+    for (_, d) in chunks {
+        out.extend_from_slice(d);
+    }
+    Some(out)
+}
+
 /// Quick check: a JPEG whose frame header declares 4 components (CMYK / YCCK). Walks the
 /// markers only (no pixel decode), so it's cheap to run on every JPEG before the image tier.
 pub(super) fn is_cmyk_jpeg(b: &[u8]) -> bool {

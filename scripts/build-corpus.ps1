@@ -950,6 +950,82 @@ if ($ffmpeg601) {
     Write-Host "[corpus] ffmpeg not found - skipping the BT.601 AVIF fixture" -ForegroundColor Yellow
 }
 
+
+# --- 9z5) WIDE-GAMUT JPEG, with a KNOWN colour that a DROPPED ICC PROFILE destroys ----
+# JPEG is the most common format there is and the corpus had not one colour-managed sample,
+# which is how a real bug lived here undetected: WIC's JPEG decoder answers GetColorContexts
+# with an Exif-flag context rather than a profile one, so the scaled JPEG fast path handed back
+# RAW AdobeRGB numbers. rgb(60,150,200) is chosen because its round trip through AdobeRGB is
+# EXACT while the unmanaged numbers are (97,149,197) - a 37-level red error, far outside
+# compare-renders.py's +/-8. Colour management now reads the APP2 chain itself (decode/color.rs
+# jpeg_icc), and this fixture is what stops it being dropped again.
+$jpegIcc = Join-Path $OutDir 'sample-jpeg-adobergb.jpg'
+$colorDir = Join-Path $env:SystemRoot 'System32\spool\drivers\color'
+$srgbIcc = Join-Path $colorDir 'sRGB Color Space Profile.icm'
+$adobeIcc = Join-Path $colorDir 'AdobeRGB1998.icc'
+if ((Test-Path $srgbIcc) -and (Test-Path $adobeIcc)) {
+    & magick -size 320x240 'xc:rgb(60,150,200)' -profile $srgbIcc -profile $adobeIcc `
+        -sampling-factor 1x1 -quality 100 $jpegIcc 2>$null
+    # Self-check (the fuzzseed discipline), BOTH halves: the file must really carry a profile,
+    # and its unmanaged numbers must really be wrong - a fixture that passes either way proves
+    # nothing.
+    if (Test-Path $jpegIcc) {
+        $jb = [System.IO.File]::ReadAllBytes($jpegIcc)
+        $sig = [System.Text.Encoding]::ASCII.GetBytes('ICC_PROFILE')
+        $hasIcc = $false
+        for ($i = 0; $i -lt $jb.Length - $sig.Length; $i++) {
+            $m = $true
+            for ($j = 0; $j -lt $sig.Length; $j++) { if ($jb[$i + $j] -ne $sig[$j]) { $m = $false; break } }
+            if ($m) { $hasIcc = $true; break }
+        }
+        $rawPx = & magick $jpegIcc -strip -format '%[fx:int(255*p{10,10}.r+0.5)]' info: 2>$null
+        $wrongEnough = ([int]$rawPx - 60) -gt 8
+        if ($hasIcc -and $wrongEnough) {
+            $expectedColors += @(
+                '',
+                '# AdobeRGB-tagged JPEG, flat rgb(60,150,200) in sRGB. Ignoring the profile renders',
+                '# (97,149,197). WIC does not surface a JPEG ICC, so decode/color.rs reads APP2.',
+                "sample-jpeg-adobergb.jpg`t60,150,200"
+            )
+            Write-Host "[corpus] sample-jpeg-adobergb.jpg written (AdobeRGB, unmanaged red $rawPx)"
+        } else {
+            Remove-Item -LiteralPath $jpegIcc -Force -ErrorAction SilentlyContinue
+            Write-Host "[corpus] sample-jpeg-adobergb.jpg REJECTED (icc=$hasIcc unmanagedRed=$rawPx) - a fixture that cannot fail is worse than none" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "[corpus] Windows colour profiles not found - skipping the wide-gamut JPEG fixture" -ForegroundColor Yellow
+}
+
+# --- 9z6) PROGRESSIVE JPEG ------------------------------------------------------------
+# The JPEG variant two decoders are most likely to disagree on, and the corpus had none - so
+# routing JPEG to the OS codec was verified only against baseline files. Flat colour, so it
+# joins the known-colour gate rather than only the renders-at-all one.
+$jpegProg = Join-Path $OutDir 'sample-jpeg-progressive.jpg'
+& magick -size 320x240 'xc:rgb(200,120,40)' -interlace Plane -sampling-factor 1x1 `
+    -quality 100 $jpegProg 2>$null
+if (Test-Path $jpegProg) {
+    # Self-check: SOF2 (0xFFC2) is what makes it progressive. Without it this is just another
+    # baseline JPEG and the fixture proves nothing.
+    $pb = [System.IO.File]::ReadAllBytes($jpegProg)
+    $isProg = $false
+    for ($i = 0; $i -lt $pb.Length - 1; $i++) {
+        if ($pb[$i] -eq 0xFF -and $pb[$i + 1] -eq 0xC2) { $isProg = $true; break }
+    }
+    if ($isProg) {
+        $expectedColors += @(
+            '',
+            '# Progressive JPEG (SOF2), flat rgb(200,120,40). Pins that the OS-codec fast path',
+            '# reads the progressive scan the same way the pure-Rust tier does.',
+            "sample-jpeg-progressive.jpg`t200,120,40"
+        )
+        Write-Host "[corpus] sample-jpeg-progressive.jpg written (SOF2)"
+    } else {
+        Remove-Item -LiteralPath $jpegProg -Force -ErrorAction SilentlyContinue
+        Write-Host "[corpus] sample-jpeg-progressive.jpg REJECTED (no SOF2) - a fixture that cannot fail is worse than none" -ForegroundColor Yellow
+    }
+}
+
 # Every OTHER multi-part format has the same exposure XCF had: choosing a page, a frame or an
 # icon size is a CHOICE, and a wrong choice still produces a perfectly good picture. These
 # fixtures make the right answer blue and every wrong one red, so the choice becomes testable.

@@ -1259,6 +1259,75 @@ fn gif_wic_routing_takes_only_the_plain_single_frame_case() {
     }
 }
 
+/// The JPEG APP2 ICC reassembler. A real profile usually arrives in ONE chunk, so the corpus
+/// fixture exercises only the easy path; the multi-chunk cases below are the ones that decide
+/// whether a big profile comes back whole, in order, or not at all. Getting this wrong is not a
+/// crash, it is a wrong-coloured thumbnail, which is the failure this whole area keeps having.
+#[test]
+fn jpeg_icc_reassembles_every_chunk_or_returns_nothing() {
+    use super::color::jpeg_icc;
+
+    /// A JPEG made only of the APP2 segments given, then SOS. `chunks` is (seq, total, body).
+    fn jpeg_with_icc(chunks: &[(u8, u8, &[u8])]) -> Vec<u8> {
+        let mut b = vec![0xFF, 0xD8];
+        for (seq, total, body) in chunks {
+            let len = 2 + 12 + 2 + body.len();
+            b.extend_from_slice(&[0xFF, 0xE2]);
+            b.extend_from_slice(&(len as u16).to_be_bytes());
+            b.extend_from_slice(b"ICC_PROFILE\0");
+            b.push(*seq);
+            b.push(*total);
+            b.extend_from_slice(body);
+        }
+        b.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02]); // SOS, ends the marker walk
+        b
+    }
+
+    // One chunk: the ordinary case, and the one the corpus fixture covers.
+    assert_eq!(
+        jpeg_icc(&jpeg_with_icc(&[(1, 1, b"profile-bytes")])).as_deref(),
+        Some(&b"profile-bytes"[..])
+    );
+
+    // Several chunks are concatenated IN SEQUENCE ORDER, not in the order they appear. A
+    // writer is entitled to emit them in any order and some do.
+    assert_eq!(
+        jpeg_icc(&jpeg_with_icc(&[
+            (2, 3, b"-two"),
+            (1, 3, b"one"),
+            (3, 3, b"-three")
+        ]))
+        .as_deref(),
+        Some(&b"one-two-three"[..])
+    );
+
+    // A MISSING chunk yields nothing at all. Returning the parts we happened to have would
+    // hand moxcms a corrupt profile, and a corrupt profile is a wrong picture rather than a
+    // skipped correction - which is exactly the failure mode to avoid. This is also what
+    // protects the callers that pass a bounded head rather than the whole file.
+    assert!(jpeg_icc(&jpeg_with_icc(&[(1, 3, b"one"), (2, 3, b"-two")])).is_none());
+
+    // No APP2 at all, not a JPEG, and empty input: all None, never a panic.
+    assert!(jpeg_icc(&jpeg_with_icc(&[])).is_none());
+    assert!(jpeg_icc(b"\x89PNG\r\n\x1a\n").is_none());
+    assert!(jpeg_icc(&[]).is_none());
+
+    // Every truncation of a valid two-chunk file yields either NOTHING or the WHOLE profile,
+    // never a partial one, and never a panic. (A cut that lands after the last APP2 but before
+    // the scan legitimately still has every chunk, so "always None" would be the wrong
+    // assertion - the invariant is all-or-nothing, not nothing.)
+    let whole = jpeg_with_icc(&[(1, 2, b"first-half"), (2, 2, b"second-half")]);
+    for cut in 0..whole.len() {
+        match jpeg_icc(&whole[..cut]) {
+            None => {}
+            Some(got) => assert_eq!(
+                got, b"first-halfsecond-half",
+                "a file truncated to {cut} bytes returned a PARTIAL profile"
+            ),
+        }
+    }
+}
+
 /// The BMP WIC-eligibility sniffer. Every branch is a routing decision that could change what
 /// the user SEES, so every branch is pinned.
 #[test]

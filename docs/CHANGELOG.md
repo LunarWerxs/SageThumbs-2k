@@ -4,6 +4,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Fixed
+
+- **Wide-gamut JPEG photos could thumbnail in the wrong colours.** A photo saved in AdobeRGB or
+  Display P3 carries a colour profile describing how its numbers should be read. On the faster
+  decoding path Windows does not hand that profile over, so the numbers were used as-is and the
+  thumbnail came out visibly off - most likely on camera photos, which are exactly the files
+  that tend to be wide-gamut. SageThumbs now reads the profile out of the file itself. Every
+  other viewer already showed these correctly, so only the thumbnail was wrong.
+
 ### Improved
 
 - **AVIF thumbnails are dramatically faster - now across every common variant.** A user told us (fairly) that our AVIF was much

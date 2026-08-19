@@ -368,7 +368,15 @@ pub(super) unsafe fn wic_decode_frame(
     // AVIF/HEIC keep their profile in the ISOBMFF `colr` box — WIC's AV1/HEVC codecs do
     // NOT surface it via GetColorContexts (verified: count=0) — so read it ourselves first;
     // fall back to a WIC color context for the other WIC formats (RAW/JXR).
-    let icc = isobmff_color_icc(container_bytes).or_else(|| wic_icc(factory, frame));
+    //
+    // JPEG is the same story in a different container: WIC answers with an Exif-flag context
+    // rather than a profile one, so an AdobeRGB or Display P3 photo came through this path as
+    // RAW wide-gamut numbers. Read the APP2 chain ourselves. It is checked BEFORE the WIC
+    // context for the same reason the ISOBMFF box is: the file's own bytes are the source of
+    // truth, and the codec's answer is the fallback.
+    let icc = isobmff_color_icc(container_bytes)
+        .or_else(|| jpeg_icc(container_bytes))
+        .or_else(|| wic_icc(factory, frame));
     Ok(apply_icc_to_srgb(DynamicImage::ImageRgba8(img), icc))
 }
 
