@@ -11,6 +11,7 @@ countdown.PspTube
 huge.jp2
 sample (edited).png
 sample-avif-10bit.avif
+sample-avif-601.avif
 sample-avif-alpha.avif
 sample-bc4.dds
 sample-bc4s.dds

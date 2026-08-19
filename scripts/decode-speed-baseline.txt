@@ -10,6 +10,7 @@
 # here is accepting a slower product.
 
 sample-avif-10bit.avif          19.560
+sample-avif-601.avif             8.000
 sample.3dm                      15.266
 sample.3fr                      16.472
 sample.3mf                      22.807

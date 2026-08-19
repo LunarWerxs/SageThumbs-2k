@@ -915,6 +915,233 @@ fn webp_wic_routing_excludes_exactly_the_risky_cases() {
     assert!(!webp_prefers_wic(b""));
 }
 
+/// The BT.601-AVIF Media Foundation path, minus Media Foundation: the eligibility gates,
+/// the YUV maths, and the mini-MP4 all verify without the codec, so CI (which has no AV1
+/// extension) still pins everything except the decode itself. The decode is pinned by the
+/// corpus fixture `sample-avif-601.avif` + `_expected-colors.txt` on machines that have it.
+#[test]
+fn avif_mf_eligibility_takes_exactly_the_measured_buckets() {
+    use super::avifmf::eligible_bt601_still;
+
+    fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + body.len()).unwrap();
+        [&size.to_be_bytes()[..], &typ[..], body].concat()
+    }
+    // A configurable AVIF skeleton: ipco with av1C(s), optional nclx, ispe, optional auxC.
+    struct Cfg {
+        matrix: Option<u16>,
+        primaries: u16,
+        av1c_count: usize,
+        profile_byte: u8, // av1C byte 1: seq_profile in the top 3 bits
+        flags2: u8,       // av1C byte 2: high_bitdepth bit 6, monochrome bit 4
+        aux_c: bool,
+    }
+    fn avif(c: &Cfg) -> Vec<u8> {
+        let mut props = Vec::new();
+        let mut ispe = vec![0u8; 4];
+        ispe.extend_from_slice(&320u32.to_be_bytes());
+        ispe.extend_from_slice(&240u32.to_be_bytes());
+        props.push(bx(b"ispe", &ispe));
+        for _ in 0..c.av1c_count {
+            props.push(bx(b"av1C", &[0x81, c.profile_byte, c.flags2, 0x00]));
+        }
+        if let Some(m) = c.matrix {
+            let mut nclx = b"nclx".to_vec();
+            nclx.extend_from_slice(&c.primaries.to_be_bytes());
+            nclx.extend_from_slice(&2u16.to_be_bytes());
+            nclx.extend_from_slice(&m.to_be_bytes());
+            nclx.push(0x00);
+            props.push(bx(b"colr", &nclx));
+        }
+        if c.aux_c {
+            props.push(bx(
+                b"auxC",
+                b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0",
+            ));
+        }
+        let iprp = bx(b"iprp", &bx(b"ipco", &props.concat()));
+        let meta = bx(b"meta", &[&[0u8; 4][..], &iprp].concat());
+        [bx(b"ftyp", b"avif\0\0\0\0mif1"), meta].concat()
+    }
+    let base = Cfg {
+        matrix: Some(6),
+        primaries: 1,
+        av1c_count: 1,
+        profile_byte: 0x00,
+        flags2: 0x0c,
+        aux_c: false,
+    };
+
+    // The three eligible matrices: explicit BT.601 (5/6) and unspecified (2, decoded as 601
+    // by the ecosystem reference — measured, worst error 1).
+    for m in [2u16, 5, 6] {
+        let c = Cfg {
+            matrix: Some(m),
+            ..base
+        };
+        assert!(
+            eligible_bt601_still(&avif(&c)).is_some(),
+            "matrix {m} is a measured BT.601 bucket and must be eligible"
+        );
+    }
+    // The dims come from ispe, verbatim.
+    let s = eligible_bt601_still(&avif(&base)).unwrap();
+    assert_eq!((s.width, s.height), (320, 240));
+    assert!(!s.full_range, "range bit clear must read as limited");
+
+    // Everything below must DECLINE (fall back to ImageMagick, never decode wrongly):
+    let cases: &[(&str, Cfg)] = &[
+        (
+            "BT.709 belongs to the WIC fast path, not here",
+            Cfg {
+                matrix: Some(1),
+                ..base
+            },
+        ),
+        (
+            "BT.2020 and friends stay with magick's full CICP handling",
+            Cfg {
+                matrix: Some(9),
+                ..base
+            },
+        ),
+        (
+            "no colr box at all is not a licence to guess",
+            Cfg {
+                matrix: None,
+                ..base
+            },
+        ),
+        (
+            "wide-gamut primaries stay with magick",
+            Cfg {
+                primaries: 12,
+                ..base
+            },
+        ),
+        (
+            "a second av1C means an auxiliary (alpha) item - magick composites those",
+            Cfg {
+                av1c_count: 2,
+                ..base
+            },
+        ),
+        (
+            "an auxC property is an alpha plane even with one av1C visible",
+            Cfg {
+                aux_c: true,
+                ..base
+            },
+        ),
+        (
+            "High profile (4:4:4) is outside the Main-profile gate",
+            Cfg {
+                profile_byte: 0x20,
+                ..base
+            },
+        ),
+        (
+            "high bit depth belongs to the WIC+curve path",
+            Cfg {
+                flags2: 0x4c,
+                ..base
+            },
+        ),
+        (
+            "monochrome is untested territory - decline",
+            Cfg {
+                flags2: 0x1c,
+                ..base
+            },
+        ),
+    ];
+    for (why, c) in cases {
+        assert!(eligible_bt601_still(&avif(c)).is_none(), "{why}");
+    }
+    // Full-range flag reaches the conversion.
+    let mut f = avif(&base);
+    let i = f.windows(4).position(|w| w == b"nclx").unwrap();
+    f[i + 10] = 0x80;
+    assert!(eligible_bt601_still(&f).unwrap().full_range);
+}
+
+/// The YUV maths against published BT.601 anchor vectors, both ranges. Wrong coefficients
+/// here would ship exactly the colour shift this path exists to eliminate.
+#[test]
+fn avif_mf_yuv_conversion_matches_bt601_anchors() {
+    use super::avifmf::nv12_to_srgb_bt601;
+    use crate::video::Nv12Frame;
+
+    // One 2x2 frame, all four pixels the same YUV triple.
+    fn frame(y: u8, cb: u8, cr: u8) -> Nv12Frame {
+        Nv12Frame {
+            data: vec![y, y, y, y, cb, cr],
+            width: 2,
+            height: 2,
+            stride: 2,
+        }
+    }
+    // (y, cb, cr, full_range, expected rgb, tolerance)
+    type Anchor = (u8, u8, u8, bool, (i32, i32, i32), i32);
+    let anchors: &[Anchor] = &[
+        (16, 128, 128, false, (0, 0, 0), 0),        // limited black
+        (235, 128, 128, false, (255, 255, 255), 0), // limited white
+        (126, 128, 128, false, (128, 128, 128), 1), // limited mid grey
+        (82, 90, 240, false, (255, 0, 0), 2),       // limited saturated red
+        (145, 54, 34, false, (0, 255, 0), 2),       // limited saturated green
+        (41, 240, 110, false, (0, 0, 255), 2),      // limited saturated blue
+        (0, 128, 128, true, (0, 0, 0), 0),          // full black
+        (255, 128, 128, true, (255, 255, 255), 0),  // full white
+        (200, 128, 128, true, (200, 200, 200), 0),  // full grey passes through untouched
+    ];
+    for &(y, cb, cr, full, (er, eg, eb), tol) in anchors {
+        let img = nv12_to_srgb_bt601(&frame(y, cb, cr), 2, 2, full).unwrap();
+        let px = img.to_rgba8().get_pixel(0, 0).0;
+        for (got, want) in px[..3].iter().zip([er, eg, eb]) {
+            assert!(
+                (i32::from(*got) - want).abs() <= tol,
+                "yuv({y},{cb},{cr}) full={full}: got {:?}, wanted ({er},{eg},{eb}) +/-{tol}",
+                &px[..3]
+            );
+        }
+        assert_eq!(px[3], 255, "this path never carries alpha");
+    }
+}
+
+/// The one-frame MP4 the path builds must be one OUR OWN mp4 parser recognises as av01 —
+/// a cheap structural round-trip that needs no codec.
+#[test]
+fn avif_mf_mini_mp4_roundtrips_through_the_mp4_parser() {
+    use super::avifmf::{build_av01_mp4, Av1Still};
+    let still = Av1Still {
+        av1c: {
+            let body = [0x81u8, 0x00, 0x0c, 0x00];
+            let mut b = 12u32.to_be_bytes().to_vec();
+            b.extend_from_slice(b"av1C");
+            b.extend_from_slice(&body);
+            b
+        },
+        colr: {
+            let mut payload = b"nclx".to_vec();
+            payload.extend_from_slice(&[0, 1, 0, 2, 0, 6, 0]);
+            let mut b = (8 + payload.len() as u32).to_be_bytes().to_vec();
+            b.extend_from_slice(b"colr");
+            b.extend_from_slice(&payload);
+            b
+        },
+        width: 64,
+        height: 48,
+        full_range: false,
+    };
+    let mini = build_av01_mp4(&still, &[0u8; 32]).expect("muxer must accept a plain still");
+    let fourcc = crate::mp4::video_codec_fourcc(&mut std::io::Cursor::new(&mini));
+    assert_eq!(
+        fourcc.as_ref(),
+        Some(b"av01"),
+        "the mini-MP4 must advertise an av01 track our own parser can read back"
+    );
+}
+
 #[test]
 fn detects_cmyk_jpeg_by_component_count() {
     // Minimal JPEG: SOI + SOF0 declaring `nf` components + EOI. CMYK/YCCK are 4-component.

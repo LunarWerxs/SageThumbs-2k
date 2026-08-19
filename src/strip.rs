@@ -23,7 +23,9 @@ use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEITEM, SHCNF_PATHW};
 use crate::verbs::read_capped;
 
 mod ddsinfo;
-mod isobmff;
+// `pub(crate)`: the decode tier reuses this hardened item parser to locate the primary
+// AV1 payload of a BT.601 AVIF (decode/avifmf.rs) — same bounds discipline, one parser.
+pub(crate) mod isobmff;
 mod jumbf;
 mod svgmeta;
 mod webpmeta;

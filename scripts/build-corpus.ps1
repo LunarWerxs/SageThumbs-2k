@@ -903,6 +903,53 @@ if ($ffmpeg) {
     Write-Host "[corpus] ffmpeg not found - skipping the 10-bit AVIF fixture" -ForegroundColor Yellow
 }
 
+# --- 9z4) 8-bit BT.601 AVIF, with a KNOWN colour a wrong MATRIX destroys -------------
+# The other half of the AVIF colour story (9z3 is the 10-bit transfer curve). avifenc and
+# ffmpeg default to BT.601 colour for 8-bit AVIF; Microsoft's converters assume BT.709 and
+# clip, shifting saturated colour by up to 39/255. decode/avifmf.rs decodes these through
+# the OS AV1 decoder's raw YUV and applies the correct matrix itself. This fixture is flat
+# rgb(0,255,0) because saturated green shifts hardest: the wrong matrix renders ~(0,216,0),
+# comfortably outside compare-renders.py's +/-8 tolerance, while both correct paths (Media
+# Foundation and the ImageMagick fallback) land within 1.
+$avif601 = Join-Path $OutDir 'sample-avif-601.avif'
+$ffmpeg601 = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+if ($ffmpeg601) {
+    $flat601 = Join-Path $env:TEMP ("st2k-avif601-{0}.png" -f $PID)
+    & magick -size 320x240 'xc:rgb(0,255,0)' $flat601 2>$null
+    if (Test-Path $flat601) {
+        & $ffmpeg601 -hide_banner -loglevel error -y -i $flat601 -c:v libaom-av1 -still-picture 1 `
+            -cpu-used 6 -crf 4 -pix_fmt yuv420p -colorspace smpte170m -color_primaries bt709 `
+            -color_trc bt709 $avif601 2>$null
+        Remove-Item -LiteralPath $flat601 -Force -ErrorAction SilentlyContinue
+    }
+    # Self-check (the fuzzseed discipline): it must really be 8-bit Main-profile with a
+    # matrix-6 nclx, or it exercises a different branch and goes green proving nothing.
+    if (Test-Path $avif601) {
+        $b = [System.IO.File]::ReadAllBytes($avif601)
+        $ok = $false
+        for ($i = 0; $i -lt $b.Length - 18; $i++) {
+            if ($b[$i] -eq 0x6E -and $b[$i+1] -eq 0x63 -and $b[$i+2] -eq 0x6C -and $b[$i+3] -eq 0x78) {
+                # nclx: primaries u16, transfer u16, matrix u16
+                if ($b[$i+8] -eq 0 -and $b[$i+9] -eq 6) { $ok = $true }
+            }
+        }
+        if ($ok) {
+            $expectedColors += @(
+                '',
+                '# 8-bit BT.601 AVIF (avifenc/ffmpeg-default colour), flat rgb(0,255,0). The wrong',
+                '# matrix renders ~(0,216,0); the correct paths land within 1. See decode/avifmf.rs.',
+                "sample-avif-601.avif`t0,255,0"
+            )
+            Write-Host "[corpus] sample-avif-601.avif written (8-bit, 4:2:0, nclx matrix 6)"
+        } else {
+            Remove-Item -LiteralPath $avif601 -Force -ErrorAction SilentlyContinue
+            Write-Host "[corpus] sample-avif-601.avif REJECTED (no matrix-6 nclx) - a fixture that cannot fail is worse than none" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "[corpus] ffmpeg not found - skipping the BT.601 AVIF fixture" -ForegroundColor Yellow
+}
+
 # Every OTHER multi-part format has the same exposure XCF had: choosing a page, a frame or an
 # icon size is a CHOICE, and a wrong choice still produces a perfectly good picture. These
 # fixtures make the right answer blue and every wrong one red, so the choice becomes testable.

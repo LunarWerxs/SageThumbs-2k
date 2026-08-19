@@ -6,7 +6,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Improved
 
-- **AVIF thumbnails are dramatically faster.** A user told us (fairly) that our AVIF was much
+- **AVIF thumbnails are dramatically faster - now across every common variant.** A user told us (fairly) that our AVIF was much
   slower than Windows' own thumbnails. Two causes, both fixed. First, the AVIF path was
   rendering a full-size image and then shrinking it, throwing nearly all the work away; it now
   renders straight to the size the thumbnail needs. Second, 10- and 12-bit AVIF (most HDR and
@@ -14,6 +14,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   it was avoiding turns out to be exactly reversible, so those files now decode on the fast
   path and get corrected in place. The net effect on a 6-megapixel 10-bit AVIF: about fifty
   times faster than 2.2.0, with slightly MORE accurate colour.
+
+  The last slow case fell too: 8-bit AVIF carrying the colour signalling that `avifenc` and
+  `ffmpeg` write by default (which Windows' own decoder pipeline misreads, and which we
+  therefore used to hand to a slower external decoder to keep colours right). Those files now
+  decode through Windows' AV1 decoder directly while SageThumbs applies the correct colour
+  conversion itself: same accurate colour, roughly 10-40x faster depending on size. Only an
+  AVIF with no colour information at all still takes the careful slow path.
 
 - **WebP thumbnails are ~4x faster when the Windows WebP codec is installed** (it ships with
   Windows 11). Still images now use the system codec, which is much quicker than our built-in

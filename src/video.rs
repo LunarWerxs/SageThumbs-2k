@@ -224,6 +224,99 @@ pub fn frame_from_bytes(bytes: &[u8]) -> Option<DynamicImage> {
     frame_from_owned_bytes(bytes.to_vec())
 }
 
+/// A decoded frame in the codec's own NV12 layout, colour conversion NOT applied.
+pub struct Nv12Frame {
+    /// The full contiguous NV12 buffer: `height` rows of Y, then `height/2` rows of
+    /// interleaved UV, each row `stride` bytes.
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+}
+
+/// Decode the first frame and hand back the RAW NV12 pixels — no video processor, no
+/// RGB conversion. For callers that must own the YUV→RGB matrix themselves.
+///
+/// Exists because of the 8-bit BT.601 AVIF path (`decode/avifmf.rs`): both the WIC HEIF
+/// glue AND Media Foundation's video processor convert those with BT.709 coefficients
+/// (measured: identical wrong numbers from each, worst channel 39/255), so the ONLY
+/// component that can be trusted with the matrix is us, fed by the decoder's untouched
+/// output. The source reader is created WITHOUT `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING`
+/// on purpose: the AV1 decoder MFT emits NV12 natively, and enabling the processor would
+/// put the component this function exists to bypass back into the chain.
+pub fn nv12_frame_from_owned_bytes(owned: Vec<u8>) -> Option<Nv12Frame> {
+    if !media_foundation_available() {
+        return None;
+    }
+    grab_budgeted(move || unsafe {
+        let _session = MfSession::start()?;
+        let stream = SHCreateMemStream(Some(&owned))?;
+        let bs = MFCreateMFByteStreamOnStream(&stream).ok()?;
+        let reader = MFCreateSourceReaderFromByteStream(&bs, None).ok()?;
+        let first = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+
+        let want = MFCreateMediaType().ok()?;
+        want.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).ok()?;
+        want.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).ok()?;
+        reader.SetCurrentMediaType(first, None, &want).ok()?;
+
+        let cur = reader.GetCurrentMediaType(first).ok()?;
+        let frame_size = cur.GetUINT64(&MF_MT_FRAME_SIZE).ok()?;
+        let (w, h) = ((frame_size >> 32) as u32, frame_size as u32);
+        if w == 0 || h == 0 || (w as u64) * (h as u64) > crate::decode::limits::MAX_PIXELS {
+            return None;
+        }
+        let stride = cur.GetUINT32(&MF_MT_DEFAULT_STRIDE).unwrap_or(w);
+        // A negative default stride means bottom-up, which NV12 never is; treat as w.
+        let stride = if (stride as i32) < 0 {
+            w
+        } else {
+            stride.max(w)
+        };
+
+        // First real sample only: a one-sample mini-MP4 has nothing to skip, and this
+        // path's callers build exactly that. Bounded like grab_reader's read loop.
+        for _ in 0..16 {
+            let mut flags: u32 = 0;
+            let mut smp: Option<IMFSample> = None;
+            if reader
+                .ReadSample(first, 0, None, Some(&mut flags), None, Some(&mut smp))
+                .is_err()
+            {
+                return None;
+            }
+            if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
+                return None;
+            }
+            let Some(sample) = smp else { continue };
+            let Ok(buf) = sample.ConvertToContiguousBuffer() else {
+                continue;
+            };
+            let mut ptr = std::ptr::null_mut();
+            let mut len = 0u32;
+            if buf.Lock(&mut ptr, None, Some(&mut len)).is_err() {
+                continue;
+            }
+            // NV12: `h` rows of Y then `h/2` rows of UV, `stride` bytes each. A short
+            // buffer means the stride guess is wrong — refuse rather than misread.
+            let need = (stride as usize) * (h as usize) * 3 / 2;
+            let data = if (len as usize) >= need {
+                Some(std::slice::from_raw_parts(ptr, need).to_vec())
+            } else {
+                None
+            };
+            let _ = buf.Unlock();
+            return data.map(|data| Nv12Frame {
+                data,
+                width: w,
+                height: h,
+                stride,
+            });
+        }
+        None
+    })
+}
+
 /// As [`frame_from_bytes`], but takes ownership of the buffer instead of cloning it —
 /// `grab_budgeted`'s `'static` bound needs an owned buffer to move onto its worker thread
 /// either way, so a caller that already has one should hand it over directly.
@@ -417,9 +510,10 @@ const MAX_SEEK_HNS: i64 = 3 * 10_000_000;
 /// inputs and initializes its own (MTA) COM apartment for the MF / WIC components; on
 /// timeout the receiver is dropped and the worker simply finishes and exits (a leaked
 /// thread in a disposable host is acceptable — same trade as `decode_svg` / `pdf`).
-fn grab_budgeted<F>(f: F) -> Option<DynamicImage>
+fn grab_budgeted<T, F>(f: F) -> Option<T>
 where
-    F: FnOnce() -> Option<DynamicImage> + Send + 'static,
+    T: Send + 'static,
+    F: FnOnce() -> Option<T> + Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

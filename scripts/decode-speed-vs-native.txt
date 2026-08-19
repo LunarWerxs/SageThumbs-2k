@@ -16,24 +16,20 @@
 # with the pure-Rust tier as the unchanged fallback). Most are far FASTER — camera RAW by
 # 50-100x, because we read the embedded preview instead of demosaicing.
 
-avif       6.0 # ONLY the 8-bit BT.601 / untagged case is still slow, and it is a deliberate
-               # correctness trade, not an oversight. Microsoft's AV1 WIC codec decodes those
-               # with the wrong YUV matrix (worst channel 39/255) and CLIPS while converting, so
-               # the error is unrecoverable after the fact - measured, the exact inverse 3x3 only
-               # recovers 39 -> 20 and damages correctly-decoded files (1 -> 22). Those keep
-               # paying for an ImageMagick subprocess.
+avif       6.0 # ONLY an AVIF with NO colour information at all still pays for the ImageMagick
+               # subprocess - and that is now the whole allowance. As of 2026-08-19 every
+               # TAGGED 8-bit colour case (explicit BT.601 matrix 5/6, avifenc's default, and
+               # "unspecified" matrix 2, plain ffmpeg's default) decodes through the OS AV1
+               # decoder's raw NV12 with our own BT.601 matrix (decode/avifmf.rs): measured
+               # worst channel error 1-2 against the pre-encode truth, ~8 ms on ordinary sizes
+               # and ~98 ms on a 6 MP file, against ~390-1261 ms via the subprocess it replaced.
+               # High-bit-depth AVIF rides WIC + the inverse transfer curve (2026-08-18), and
+               # 8-bit BT.709 always rode plain WIC.
                #
-               # HIGH-BIT-DEPTH AVIF IS NO LONGER IN THIS BUCKET (fixed 2026-08-18). WIC's
-               # 10/12-bit error was a pure transfer curve, so decode/color.rs inverts it
-               # in-process: that path went 1261 ms -> ~25 ms and now measures FASTER than raw
-               # WIC (0.85x), with worst channel error 11 -> 1. The number above was 5.5 before
-               # that landed. Retire this line entirely if the 8-bit case ever gets an
-               # in-process AV1 decoder (see docs/TODO.md).
-               #
-               # WHY 6.0 AND NOT 4.5: this is the one remaining path that still SPAWNS a
-               # process, so it keeps a run-to-run spread the in-process measurements no longer
-               # have - observed 4.0x to 5.6x across clean runs at 3% drift. 4.5 was set from a
-               # single favourable reading and produced reds on honest runs. Pinning a ceiling
-               # below the real spread does not make the product faster, it just teaches people
-               # to ignore the gate. Gate B still pins the ABSOLUTE time, so this cannot drift
-               # upward unnoticed.
+               # The remaining magick case is a file whose container carries no colr box AND
+               # whose matrix therefore cannot be known without parsing the AV1 sequence
+               # header: guessing would risk exactly the wrong-colour bug this whole chain
+               # exists to prevent, so those keep correct-but-slow. The corpus's own
+               # sample.avif is one (real-world they are rare - every major producer writes
+               # nclx). Retire this line if a bitstream-level colour probe ever lands.
+               # Gate B still pins the ABSOLUTE time, so this cannot drift upward unnoticed.

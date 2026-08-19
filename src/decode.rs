@@ -423,6 +423,17 @@ fn decode_any_with_wic_target(
             "AVIF nclx colour"
         };
         crate::safety::log_debug(&format!("decode: routing around WIC ({why})"));
+        // The 8-bit BT.601 bucket first tries the OS's own AV1 decoder via Media Foundation
+        // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
+        // the ~180 ms this route used to cost. Narrowly gated and best-effort — anything it
+        // declines (alpha, wide gamut, MF absent, decode failure) proceeds to magick exactly
+        // as before, so this can only ever be faster, never different.
+        if wic_avif_color {
+            if let Some(img) = avifmf::decode_bt601_avif(bytes) {
+                crate::safety::log_debug("decode: tier `avif-mf` decoded the BT.601 AVIF");
+                return Ok(img);
+            }
+        }
         // Ask magick for no more than the caller's target edge, exactly as the generic
         // magick tier below already does. This route used to take the uncapped
         // `decode_via_magick`, so a 256 px Explorer tile rendered the full 4096 px guard
@@ -525,6 +536,7 @@ fn decode_any_with_wic_target(
     Err(last_err)
 }
 
+mod avifmf;
 mod color;
 mod dds;
 mod jp2;

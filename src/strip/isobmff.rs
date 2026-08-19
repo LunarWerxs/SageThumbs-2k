@@ -23,7 +23,7 @@
 
 /// A metadata item found in the `meta` box.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Item {
+pub(crate) struct Item {
     pub id: u32,
     /// The `infe` item type: `Exif`, `mime` (XMP), `tmap` (gain map), `av01`, ...
     pub kind: [u8; 4],
@@ -85,7 +85,7 @@ fn be_n(b: &[u8], o: usize, n: usize) -> Option<u64> {
 
 /// Everything `meta` declares, with locations filled in from `iloc` where we can
 /// read them unambiguously. Empty for a non-ISOBMFF file.
-pub(super) fn items(bytes: &[u8]) -> Vec<Item> {
+pub(crate) fn items(bytes: &[u8]) -> Vec<Item> {
     if bytes.get(4..8) != Some(b"ftyp") {
         return Vec::new();
     }
@@ -409,7 +409,7 @@ mod tests {
             iinf_body.extend_from_slice(i);
         }
         let iinf = bx(b"iinf", &iinf_body);
-        let ftyp = bx(b"ftyp", b"heic    heic");
+        let ftyp = bx(b"ftyp", b"heic\x00\x00\x00\x00heic");
 
         // iloc version 1, 4-byte offsets and lengths, no base offset, no index.
         let build_iloc = |offsets: &[usize]| {
@@ -464,7 +464,7 @@ mod tests {
         }
         (file, spots)
     }
-    const EXIF_PAYLOAD: &[u8] = b"II* secret-camera-data";
+    const EXIF_PAYLOAD: &[u8] = b"II*\x00secret-camera-data";
     const XMP_PAYLOAD: &[u8] = b"<x:xmpmeta>gps";
 
     #[test]

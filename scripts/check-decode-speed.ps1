@@ -54,11 +54,15 @@
     4. Gate A compares only where WIC ACTUALLY DECODES. The 149 formats where we are the only
        decoder have no native baseline to be slower than, and are reported as "no native peer",
        never as a pass or a failure.
-    5. DRIFT, checked TWICE. A fixed reference file is re-timed after the sweep and again after
-       the confirmation pass; if either moved past -MaxDrift the box changed under us and the
-       run is INCONCLUSIVE (warn, exit 0) rather than a verdict. Both checks are load-bearing:
-       a run that drifted 29% "confirmed" a 377 ms AVIF against its true ~150 ms, because the
-       retry simply re-measured the same background load.
+    5. DRIFT, checked TWICE and in BOTH execution worlds. Two reference files - one decoded
+       in-process, one through the ImageMagick subprocess - are re-timed after the sweep and
+       again after the confirmation pass; the WORST drift of the pair judges the run, and past
+       -MaxDrift it is INCONCLUSIVE (warn, exit 0) rather than a verdict. Both worlds are
+       load-bearing: subprocess decodes inflate ~3x under background load while in-process
+       ones barely move, so a run once read "drift 1%" while five magick-tier formats sat at
+       2.5-2.9x their baselines - pure load, which then "confirmed" under the same load. And
+       both CHECKS are load-bearing: a 29% drift run once "confirmed" a 377 ms AVIF against
+       its true ~150 ms because the retry re-measured the same spike.
     6. CONFIRMATION. Anything that trips is re-measured with 3x the runs, and only a repeat
        breach fails — the same false-alarm guard regression.ps1 uses.
 
@@ -188,8 +192,27 @@ if ($Only) {
 if (-not $files) { throw "no samples matched" }
 
 # Guard 5: a fixed reference file, timed before and after, detects the box moving under us.
+# TWO drift references, one per execution world. An in-process decode barely moves under
+# background load while a SUBPROCESS decode inflates ~3x (spawn + magick init x contention),
+# so a single in-process reference is blind to exactly the load that invents regressions in
+# the magick-tier formats. Measured 2026-08-19: a run at "drift 1%" (in-process ref stable)
+# simultaneously showed five magick formats at 2.5-2.9x their baselines, all load, all of
+# which then "confirmed" because the retry re-ran under the same sustained load. The magick
+# reference is any sample of a known subprocess format; absent (scoped -Only runs), the
+# in-process reference alone still guards.
 $refFile = ($files | Sort-Object Name | Select-Object -First 1).FullName
-$driftBefore = (Measure-Decode @($refFile) ($Runs * 2)).Values | Select-Object -First 1
+$magickRef = ($files | Where-Object {
+    $_.Extension.ToLowerInvariant().TrimStart('.') -in @('xpm', 'sun', 'miff', 'fits', 'cal', 'pcx')
+} | Sort-Object Name | Select-Object -First 1).FullName
+function Measure-Drift([string[]]$refs, [int]$runs) {
+    $vals = @()
+    foreach ($r in $refs) {
+        if ($r) { $vals += (Measure-Decode @($r) $runs).Values | Select-Object -First 1 }
+    }
+    return $vals
+}
+$refs = @($refFile) + @($magickRef | Where-Object { $_ })
+$driftBefore = Measure-Drift $refs ($Runs * 2)
 
 $mine = Measure-Decode ($files.FullName) $Runs
 $rows = @()
@@ -203,10 +226,18 @@ foreach ($f in $files) {
     }
 }
 
-$driftAfter = (Measure-Decode @($refFile) ($Runs * 2)).Values | Select-Object -First 1
-$drift = if ($driftBefore -and $driftAfter) {
-    [Math]::Abs($driftAfter - $driftBefore) / [Math]::Max($driftBefore, $driftAfter)
-} else { 0 }
+$driftAfter = Measure-Drift $refs ($Runs * 2)
+function Worst-Drift($before, $after) {
+    $w = 0.0
+    for ($i = 0; $i -lt [Math]::Min($before.Count, $after.Count); $i++) {
+        if ($before[$i] -and $after[$i]) {
+            $d = [Math]::Abs($after[$i] - $before[$i]) / [Math]::Max($before[$i], $after[$i])
+            if ($d -gt $w) { $w = $d }
+        }
+    }
+    return $w
+}
+$drift = Worst-Drift $driftBefore $driftAfter
 
 $compared = @($rows | Where-Object { $null -ne $_.ratio })
 $noPeer   = @($rows | Where-Object { $null -eq $_.ratio })
@@ -295,10 +326,8 @@ if ($confirmNames) {
 # AVIF number was 377 ms against a true ~150 ms, i.e. the retry re-measured the same load
 # rather than clearing it.
 if ($confirmNames) {
-    $driftConfirm = (Measure-Decode @($refFile) ($Runs * 2)).Values | Select-Object -First 1
-    $cDrift = if ($driftBefore -and $driftConfirm) {
-        [Math]::Abs($driftConfirm - $driftBefore) / [Math]::Max($driftBefore, $driftConfirm)
-    } else { 0 }
+    $driftConfirm = Measure-Drift $refs ($Runs * 2)
+    $cDrift = Worst-Drift $driftBefore $driftConfirm
     if ($cDrift -gt $MaxDrift) {
         Write-Host ("[speed] INCONCLUSIVE - the box moved {0:P0} during confirmation; NOT a verdict." -f $cDrift) -ForegroundColor Yellow
         Write-Host  "         Re-run on a quieter box." -ForegroundColor Yellow
