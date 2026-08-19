@@ -28,6 +28,19 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   **AVIF is down to ~39 ms and BMP to ~20 ms**, which makes both faster than or equal to Windows.
   Colours are unchanged.
 
+- **JPEG photos thumbnail up to 20x faster.** SageThumbs can ask the JPEG decoder for a small
+  version directly instead of decoding every pixel and shrinking afterwards, but it was only
+  doing that for files over 512 KB. A JPEG's size depends on its quality, not its megapixels, so
+  a 6-megapixel photo saved at ordinary quality missed out while a smaller one at high quality
+  did not. That limit is gone: a typical photo now goes from about 75 ms to about 5 ms, and the
+  thumbnails come out identical.
+
+- **Every large image thumbnails several times faster, in any format.** Shrinking a big picture
+  down to a 256-pixel tile was costing more than decoding it in the first place - about 800 ms
+  for a 12-megapixel image. It now does the bulk of the shrinking in one cheap pass and leaves
+  only the last step to the high-quality filter, which is about **5x to 16x faster** with no
+  visible difference (measured at under one part in 255 on deliberately difficult content).
+
 - **Big GIFs and big DDS textures thumbnail several times faster.** Both were doing the full
   amount of work for a full-size picture and then shrinking it. A 12-megapixel GIF took about
   306 ms against Windows' 50 ms; it now takes about 47 ms, which is fractionally faster than

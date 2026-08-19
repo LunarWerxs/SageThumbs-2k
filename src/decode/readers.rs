@@ -207,19 +207,33 @@ pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage
 /// JPEG is one (the `image` crate takes it). The other found so far is the full-resolution JPEG
 /// carved out of a camera RAW, which `tiers::decode_raw_preview` now routes here directly.
 ///
-/// `MIN_SCALED_BYTES` keeps small files on the pure-Rust tier: creating a WIC factory and a
-/// decoder costs a COM round trip that a small JPEG's whole decode does not justify.
+/// THERE IS NO SIZE FLOOR, and there used to be: files under 512 KiB were kept on the
+/// pure-Rust tier on the reasoning that a COM round trip costs more than a small JPEG's whole
+/// decode. [`scaled_pre_pass_sweep_by_format`] — the measurement harness banked in this repo
+/// for exactly this question — says otherwise, and by a wide margin:
 ///
-/// Split out from [`wic_scaled_from_bytes_if_codec_scales`] so the routing decision — too
-/// small, not JPEG, or CMYK/YCCK — is unit-testable without a live WIC/COM round trip.
+/// * A DECLINED probe costs **0.0 to 0.4 ms**. That is the entire price the floor was paying
+///   to avoid, on every file, and it is not a price worth a decision.
+/// * Every file the floor excluded won, and won large: a 1081x1280 JPEG at 93 KB went
+///   19.5 ms -> 1.5 ms (**13x**), a 3000x2000 at 347 KB went 79.3 ms -> 4.5 ms (**17.7x**),
+///   and even a 320x240 at 60 KB went 3.0 ms -> 0.8 ms. A JPEG's byte count is a function of
+///   its QUALITY, not its pixel count, so a 6 MP photo saved at q60 sat under the floor and
+///   paid full price while a 1.4 MP one at q92 sailed over it.
+/// * The pictures agree. Mean absolute per-channel difference against the shipping decode is
+///   0.3 to 0.8 out of 255 across the sweep, i.e. resampling noise between two conformant
+///   IDCTs, not a different image.
+///
+/// So the gate is now the codec's OWN answer: [`codec_scales_natively`] declines anything
+/// already at or under the target and anything whose codec will not reduce, which is the real
+/// question the byte count was standing in for.
+///
+/// Split out from [`wic_scaled_from_bytes_if_codec_scales`] so the routing decision — not
+/// JPEG, or CMYK/YCCK — is unit-testable without a live WIC/COM round trip.
 fn scaled_prepass_declines(bytes: &[u8]) -> bool {
-    /// Below this, a full decode is already fast enough that the probe could cost more than it
-    /// saves. Above it, the halving is worth a COM round trip several times over.
-    const MIN_SCALED_BYTES: usize = 512 * 1024;
     // CMYK/YCCK JPEGs need `decode_with_image`'s is_cmyk_jpeg intercept for correct color
     // (embedded CMYK ICC); this pre-pass hands the bytes to plain WIC, which converts CMYK
     // naively. Declining them here keeps the color-managed tier reachable regardless of size.
-    bytes.len() < MIN_SCALED_BYTES || !bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || is_cmyk_jpeg(bytes)
+    !bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || is_cmyk_jpeg(bytes)
 }
 
 pub fn wic_scaled_from_bytes_if_codec_scales(
@@ -457,34 +471,44 @@ mod tests {
 
     /// A064 / A083: the DCT-scaled fast path used to gate only on size + JPEG magic, so a
     /// CMYK/YCCK JPEG over the size floor skipped `is_cmyk_jpeg`'s color-managed tier and
-    /// went through WIC's naive CMYK->RGB instead. Pad PAST the floor with the CMYK-shaped
-    /// header still leading, so this exercises the CMYK arm of the OR, not the size one.
+    /// went through WIC's naive CMYK->RGB instead. The size floor is gone now (see
+    /// [`scaled_prepass_declines`]), which makes the CMYK arm the ONLY thing standing between
+    /// a CMYK JPEG and WIC's naive conversion - so it is checked at both ends of the size
+    /// range, not just past a floor that no longer exists.
     #[test]
     fn scaled_prepass_declines_cmyk_jpeg_even_when_large_enough_to_qualify() {
+        let small_cmyk = jpeg_with_components(4);
+        assert!(
+            scaled_prepass_declines(&small_cmyk),
+            "a small CMYK JPEG must be declined too - the floor that used to catch it is gone"
+        );
+        let mut small_rgb = jpeg_with_components(3);
+        small_rgb.resize(40 * 1024, 0);
+        assert!(
+            !scaled_prepass_declines(&small_rgb),
+            "a small non-CMYK JPEG must now QUALIFY: removing the floor is the whole change"
+        );
+
         let mut cmyk = jpeg_with_components(4);
         cmyk.resize(600 * 1024, 0);
-        assert!(
-            cmyk.len() >= 512 * 1024,
-            "fixture must clear the size floor, or this proves nothing about the CMYK gate"
-        );
         assert!(
             is_cmyk_jpeg(&cmyk),
             "fixture must actually look CMYK to the shared detector"
         );
         assert!(
             scaled_prepass_declines(&cmyk),
-            "a CMYK JPEG over the size floor must still be declined by the fast-path gate"
+            "a large CMYK JPEG must still be declined by the fast-path gate"
         );
 
         // Sanity: an otherwise-identical 3-component (non-CMYK) header of the SAME size must
         // NOT be declined — proves the assertion above is about component count, not merely
-        // about being large and JPEG-shaped.
+        // about being JPEG-shaped.
         let mut rgb_like = jpeg_with_components(3);
         rgb_like.resize(600 * 1024, 0);
         assert!(!is_cmyk_jpeg(&rgb_like));
         assert!(
             !scaled_prepass_declines(&rgb_like),
-            "a non-CMYK JPEG over the size floor must still qualify for the fast path"
+            "a large non-CMYK JPEG must still qualify for the fast path"
         );
     }
 

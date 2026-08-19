@@ -838,13 +838,16 @@ pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, S
                     Err(_) => None,
                 },
             };
-            // Fit to the target box too: that is real per-thumbnail work, and leaving it out
-            // would flatter exactly the formats that decode huge and shrink hard.
+            // Fit to the target box too, THROUGH THE PROVIDER'S OWN FIT rather than a cheaper
+            // stand-in. That is real per-thumbnail work - on a 12 MP image the reduction costs
+            // about as much as the decode did - and measuring a different one would flatter
+            // exactly the formats that decode huge and shrink hard, which is what this whole
+            // measurement exists to catch.
             let decoded = decoded.map(|img| {
                 if size > 0 {
-                    img.thumbnail(size, size)
+                    decode::thumbnail_from_image(img, size).rgba.len()
                 } else {
-                    img
+                    (img.width() as usize) * (img.height() as usize)
                 }
             });
             let elapsed = t0.elapsed().as_micros();
