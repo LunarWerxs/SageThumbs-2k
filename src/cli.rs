@@ -859,18 +859,11 @@ pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, S
             .unwrap_or(input);
         match (ok, best) {
             (true, Some(us)) => {
-                out.push_str(&format!(
-                    "{name}	{:.3}
-",
-                    us as f64 / 1000.0
-                ));
+                out.push_str(&format!("{name}\t{:.3}\n", us as f64 / 1000.0));
             }
             // A file we cannot decode is reported, not silently dropped: a format that stops
             // decoding must not look like a format that got faster.
-            _ => out.push_str(&format!(
-                "{name}	FAIL
-"
-            )),
+            _ => out.push_str(&format!("{name}\tFAIL\n")),
         }
     }
     Ok(out)

@@ -345,6 +345,26 @@ fn decode_any_with_wic_target(
             Err(e) => crate::safety::log_debug(&format!("decode tier `dds` failed: {e}")),
         }
     }
+    // Still WebP prefers the OS codec when this is a bounded thumbnail ask: Windows' WebP
+    // codec decodes ~3.8x faster than the pure-Rust tier (measured on a 1279x1280 sample:
+    // ~27 ms vs ~103 ms, and the cost is the decode itself — flat whether the target is 64 px
+    // or 1024 px). STRICTLY a fast path in FRONT of the existing one: the codec is an optional
+    // Store extension, so any failure — absent codec included — falls straight through to the
+    // `image` tier unchanged, which is also what keeps the Compact install and codec-less
+    // machines exactly as they were. Animated WebP is excluded because FRAME CHOICE is a
+    // decoder decision (`sample-decoy-frames.webp` pins first-frame selection to the verified
+    // path), and ICC-tagged WebP is excluded so colour management stays where it is verified
+    // today. Full-fidelity callers (`wic_thumbnail_cx == None`, e.g. Convert) are excluded on
+    // purpose: their output bytes must not change decoder mid-release for a speed win the
+    // non-interactive path doesn't need.
+    if wic_thumbnail_cx.is_some() && webp_prefers_wic(bytes) {
+        match wic_fallback(bytes, wic_thumbnail_cx) {
+            Ok(img) => return Ok(img),
+            Err(e) => crate::safety::log_debug(&format!(
+                "decode: WIC WebP fast path unavailable, using the image tier: {e}"
+            )),
+        }
+    }
     match decode_with_image(bytes) {
         Ok(img) => {
             // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
@@ -582,6 +602,38 @@ pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
 /// PREVIEW-fidelity decode — used by the thumbnail provider and the in-menu
 /// preview, where a container's embedded preview is exactly what we want (fast,
 /// no subprocess). SVG is rasterized; raster formats get EXIF orientation.
+/// Is this a STILL, non-ICC WebP that the OS codec should decode ahead of the `image` tier?
+///
+/// The gate is deliberately narrow, and each exclusion is load-bearing:
+/// * `VP8 `/`VP8L` directly after the RIFF header — a simple still with no feature flags at
+///   all — is always eligible.
+/// * `VP8X` is eligible only with the ANIMATION and ICC bits clear. Animated WebP must stay
+///   on the pure-Rust path because which frame becomes the thumbnail is the DECODER's choice
+///   and `sample-decoy-frames.webp` pins that choice; ICC-tagged WebP stays because colour
+///   management is verified on the current path and unverified through WIC.
+/// * Anything unparseable is ineligible, so a truncated or lying header simply keeps the
+///   existing tier order.
+///
+/// VP8X flags byte (WebP container spec): `RR I L E X A R` — bit 5 ICC, bit 4 alpha,
+/// bit 3 EXIF, bit 2 XMP, bit 1 animation. Alpha/EXIF/XMP stay eligible: WIC preserves the
+/// alpha plane through the same 32bppRGBA conversion every other WIC format uses, and EXIF
+/// orientation is applied by our own pipeline from the file bytes, identically on either
+/// decode path.
+fn webp_prefers_wic(bytes: &[u8]) -> bool {
+    if bytes.len() < 21 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return false;
+    }
+    match &bytes[12..16] {
+        b"VP8 " | b"VP8L" => true,
+        b"VP8X" => {
+            const ICC: u8 = 0x20;
+            const ANIM: u8 = 0x02;
+            bytes[20] & (ICC | ANIM) == 0
+        }
+        _ => false,
+    }
+}
+
 pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     // PSD/PSB with transparency: Photoshop's baked-in preview (resource 1036) is a
     // JPEG — no alpha — so a background-removed document would thumbnail with a flat

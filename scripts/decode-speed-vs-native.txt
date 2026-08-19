@@ -11,7 +11,9 @@
 # 3 ms difference would produce a flaky red that gets the whole check ignored.
 #
 # State on 2026-08-18, over the 224-sample real corpus: 75 formats have a native WIC peer and
-# exactly TWO of them are meaningfully slower than Windows. Most are far FASTER — camera RAW by
+# exactly ONE of them is meaningfully slower than Windows (WebP was the second, fixed
+# 2026-08-18: still WebP now routes through the OS codec when installed, ~103 ms -> ~22 ms,
+# with the pure-Rust tier as the unchanged fallback). Most are far FASTER — camera RAW by
 # 50-100x, because we read the embedded preview instead of demosaicing.
 
 avif       6.0 # ONLY the 8-bit BT.601 / untagged case is still slow, and it is a deliberate
@@ -35,17 +37,3 @@ avif       6.0 # ONLY the 8-bit BT.601 / untagged case is still slow, and it is 
                # below the real spread does not make the product faster, it just teaches people
                # to ignore the gate. Gate B still pins the ABSOLUTE time, so this cannot drift
                # upward unnoticed.
-
-webp       4.0 # Our WebP is the pure-Rust `image` decoder; Windows uses the Store WebP codec
-               # extension, which is roughly 3.5-4x faster (measured 1279x1280: ~103 ms vs
-               # ~27 ms). The cost is the DECODE, not our downscale - our time is flat at
-               # ~91-103 ms whether the target is 64 px or 1024 px.
-               #
-               # NOT "fixed" by moving WebP to the WIC tier first, which is why this is a
-               # baselined line and not a code change. Three reasons: the OS WebP codec is a
-               # Store extension that need not be installed (the pure-Rust path is what makes
-               # WebP work on a Compact install and on a machine without it); tier order here
-               # is deliberate architecture, pure-Rust before OS codecs; and the corpus has
-               # sample-decoy-frames.webp precisely because FRAME SELECTION on an animated WebP
-               # is a choice a different decoder can silently make differently. Reordering for
-               # ~75 ms would risk that gate. Worth revisiting only as an explicit decision.

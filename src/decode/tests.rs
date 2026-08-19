@@ -873,6 +873,48 @@ fn high_depth_curve_is_monotonic_and_keeps_endpoints() {
     }
 }
 
+/// The WebP WIC-eligibility sniffer. Every branch is a routing decision with a correctness
+/// stake, so every branch is pinned: an animated WebP through WIC could pick a different
+/// FRAME, and an ICC WebP through WIC would skip verified colour management.
+#[test]
+fn webp_wic_routing_excludes_exactly_the_risky_cases() {
+    use super::webp_prefers_wic;
+
+    fn webp(fourcc: &[u8; 4], flags: Option<u8>) -> Vec<u8> {
+        let mut b = b"RIFF\x00\x01\x00\x00WEBP".to_vec();
+        b.extend_from_slice(fourcc);
+        b.extend_from_slice(&10u32.to_le_bytes()); // chunk size
+        b.push(flags.unwrap_or(0));
+        b.extend_from_slice(&[0u8; 12]); // rest of the VP8X payload / stub data
+        b
+    }
+
+    // Simple stills: no feature flags exist at all, so nothing to be wrong about.
+    assert!(webp_prefers_wic(&webp(b"VP8 ", None)));
+    assert!(webp_prefers_wic(&webp(b"VP8L", None)));
+
+    // Extended stills: alpha, EXIF and XMP are fine (alpha survives the shared 32bppRGBA
+    // conversion; EXIF orientation is our own pipeline's job either way).
+    assert!(webp_prefers_wic(&webp(b"VP8X", Some(0x10)))); // alpha
+    assert!(webp_prefers_wic(&webp(b"VP8X", Some(0x0C)))); // EXIF | XMP
+
+    // The two exclusions this sniffer exists for.
+    assert!(
+        !webp_prefers_wic(&webp(b"VP8X", Some(0x02))),
+        "animated WebP must stay on the pure-Rust path: frame choice is pinned there"
+    );
+    assert!(
+        !webp_prefers_wic(&webp(b"VP8X", Some(0x30))),
+        "ICC-tagged WebP must stay on the verified colour-management path"
+    );
+
+    // Not WebP, unknown first chunk, truncated: decline, keeping the existing tier order.
+    assert!(!webp_prefers_wic(b"RIFF\x00\x00\x00\x00WAVEfmt "));
+    assert!(!webp_prefers_wic(&webp(b"ANMF", None)));
+    assert!(!webp_prefers_wic(&b"RIFF\x00\x01\x00\x00WEBPVP8X"[..]));
+    assert!(!webp_prefers_wic(b""));
+}
+
 #[test]
 fn detects_cmyk_jpeg_by_component_count() {
     // Minimal JPEG: SOI + SOF0 declaring `nf` components + EOI. CMYK/YCCK are 4-component.
