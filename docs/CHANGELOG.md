@@ -22,6 +22,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   conversion itself: same accurate colour, roughly 10-40x faster depending on size. Only an
   AVIF with no colour information at all still takes the careful slow path.
 
+- **Large images thumbnail much faster.** Two formats were doing far more work than the picture
+  needed: a 12-megapixel AVIF took about 180 ms and a 12-megapixel BMP about 259 ms, against
+  Windows' own 65 ms and 22 ms. Both now do only the work the thumbnail size actually requires -
+  **AVIF is down to ~39 ms and BMP to ~20 ms**, which makes both faster than or equal to Windows.
+  Colours are unchanged.
+
 - **WebP thumbnails are ~4x faster when the Windows WebP codec is installed** (it ships with
   Windows 11). Still images now use the system codec, which is much quicker than our built-in
   decoder; animated WebP and machines without the codec keep the previous behaviour, so

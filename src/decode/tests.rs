@@ -1095,7 +1095,7 @@ fn avif_mf_yuv_conversion_matches_bt601_anchors() {
         (200, 128, 128, true, (200, 200, 200), 0),  // full grey passes through untouched
     ];
     for &(y, cb, cr, full, (er, eg, eb), tol) in anchors {
-        let img = nv12_to_srgb_bt601(&frame(y, cb, cr), 2, 2, full).unwrap();
+        let img = nv12_to_srgb_bt601(&frame(y, cb, cr), 2, 2, full, None).unwrap();
         let px = img.to_rgba8().get_pixel(0, 0).0;
         for (got, want) in px[..3].iter().zip([er, eg, eb]) {
             assert!(
@@ -1105,6 +1105,51 @@ fn avif_mf_yuv_conversion_matches_bt601_anchors() {
             );
         }
         assert_eq!(px[3], 255, "this path never carries alpha");
+    }
+}
+
+/// Target-aware subsampling: asking for a small thumbnail must convert FEWER pixels, without
+/// changing what those pixels are. This is the fix for the 12 MP AVIF running 2.95x Windows.
+#[test]
+fn avif_mf_conversion_subsamples_for_a_small_target() {
+    use super::avifmf::nv12_to_srgb_bt601;
+    use crate::video::Nv12Frame;
+
+    // A 1200x900 flat mid-grey frame: flat so subsampling cannot change the answer.
+    let (w, h) = (1200usize, 900usize);
+    let mut data = vec![126u8; w * h];
+    data.resize(w * h + w * h / 2, 128u8);
+    let frame = Nv12Frame {
+        data,
+        width: w as u32,
+        height: h as u32,
+        stride: w as u32,
+    };
+
+    // No target: full resolution, as the full-fidelity callers still get.
+    let full = nv12_to_srgb_bt601(&frame, w as u32, h as u32, false, None).unwrap();
+    assert_eq!((full.width(), full.height()), (1200, 900));
+
+    // A 100 px target wants >= 300 px of intermediate, so step = 1200/300 = 4.
+    let small = nv12_to_srgb_bt601(&frame, w as u32, h as u32, false, Some(100)).unwrap();
+    assert_eq!(
+        (small.width(), small.height()),
+        (300, 225),
+        "must subsample to >= 3x the target edge, not to the target itself (that would alias)"
+    );
+
+    // Never UPSAMPLE, and never subsample when the source is already small enough.
+    let big_target = nv12_to_srgb_bt601(&frame, w as u32, h as u32, false, Some(4096)).unwrap();
+    assert_eq!((big_target.width(), big_target.height()), (1200, 900));
+
+    // The colour is identical either way - this is a work reduction, not a quality change.
+    for img in [&full, &small] {
+        let px = img.to_rgba8().get_pixel(1, 1).0;
+        assert!(
+            px[..3].iter().all(|c| (i32::from(*c) - 128).abs() <= 1),
+            "subsampling must not shift colour; got {:?}",
+            &px[..3]
+        );
     }
 }
 
@@ -1140,6 +1185,63 @@ fn avif_mf_mini_mp4_roundtrips_through_the_mp4_parser() {
         Some(b"av01"),
         "the mini-MP4 must advertise an av01 track our own parser can read back"
     );
+}
+
+/// The BMP WIC-eligibility sniffer. Every branch is a routing decision that could change what
+/// the user SEES, so every branch is pinned.
+#[test]
+fn bmp_wic_routing_excludes_the_ambiguous_cases() {
+    use super::bmp_prefers_wic;
+
+    /// A BMP head: BITMAPFILEHEADER(14) + BITMAPINFOHEADER(40), enough for the sniffer.
+    fn bmp(dib_size: u32, bitcount: u16, compression: u32) -> Vec<u8> {
+        let mut b = b"BM".to_vec();
+        b.extend_from_slice(&0u32.to_le_bytes()); // file size
+        b.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        b.extend_from_slice(&54u32.to_le_bytes()); // pixel offset
+        b.extend_from_slice(&dib_size.to_le_bytes());
+        b.extend_from_slice(&64u32.to_le_bytes()); // width
+        b.extend_from_slice(&64u32.to_le_bytes()); // height
+        b.extend_from_slice(&1u16.to_le_bytes()); // planes
+        b.extend_from_slice(&bitcount.to_le_bytes());
+        b.extend_from_slice(&compression.to_le_bytes());
+        b.resize(64, 0);
+        b
+    }
+
+    // The plain memory layouts this optimisation is for.
+    for bits in [1u16, 4, 8, 16, 24] {
+        assert!(
+            bmp_prefers_wic(&bmp(40, bits, 0)),
+            "{bits}-bit BI_RGB is a plain layout and must take the fast path"
+        );
+    }
+    assert!(
+        bmp_prefers_wic(&bmp(40, 16, 3)),
+        "BI_BITFIELDS is still a plain layout"
+    );
+    // A BITMAPV5HEADER is just a longer header over the same layout.
+    assert!(bmp_prefers_wic(&bmp(124, 24, 0)));
+
+    // 32-bit: the alpha byte is alpha in some writers and garbage in others, so the two
+    // decoders are entitled to disagree. Stay on the pinned one.
+    assert!(
+        !bmp_prefers_wic(&bmp(40, 32, 0)),
+        "32-bit BMP alpha is ambiguous - it must not change decoder for a speed win"
+    );
+    // Compressed variants are their own decoders with their own quirks.
+    for comp in [1u32, 2, 4, 5] {
+        assert!(
+            !bmp_prefers_wic(&bmp(40, 8, comp)),
+            "compression {comp} is not the plain layout this targets"
+        );
+    }
+    // A BITMAPCOREHEADER (12) has no compression field at all - decline rather than misread.
+    assert!(!bmp_prefers_wic(&bmp(12, 24, 0)));
+    // Not a BMP, and truncated.
+    assert!(!bmp_prefers_wic(b"RIFF\x00\x00\x00\x00WEBPVP8 "));
+    assert!(!bmp_prefers_wic(&bmp(40, 24, 0)[..20]));
+    assert!(!bmp_prefers_wic(b""));
 }
 
 #[test]

@@ -345,6 +345,13 @@ fn decode_any_with_wic_target(
             Err(e) => crate::safety::log_debug(&format!("decode tier `dds` failed: {e}")),
         }
     }
+    // Two formats prefer the OS codec for a bounded thumbnail ask, for the same underlying
+    // reason: WIC SCALES WHILE IT DECODES, and the pure-Rust tier cannot — it materialises
+    // the whole image and then shrinks it. That costs nothing on a small file and a great
+    // deal on a large one, which is exactly what the size-tiered speed baseline exists to
+    // show: BMP measured 2.3 ms at 0.08 MP but 258.6 ms at 12 MP against Windows' 22.1 ms
+    // (11.7x), the single worst ratio in the whole matrix.
+    //
     // Still WebP prefers the OS codec when this is a bounded thumbnail ask: Windows' WebP
     // codec decodes ~3.8x faster than the pure-Rust tier (measured on a 1279x1280 sample:
     // ~27 ms vs ~103 ms, and the cost is the decode itself — flat whether the target is 64 px
@@ -357,11 +364,11 @@ fn decode_any_with_wic_target(
     // today. Full-fidelity callers (`wic_thumbnail_cx == None`, e.g. Convert) are excluded on
     // purpose: their output bytes must not change decoder mid-release for a speed win the
     // non-interactive path doesn't need.
-    if wic_thumbnail_cx.is_some() && webp_prefers_wic(bytes) {
+    if wic_thumbnail_cx.is_some() && (webp_prefers_wic(bytes) || bmp_prefers_wic(bytes)) {
         match wic_fallback(bytes, wic_thumbnail_cx) {
             Ok(img) => return Ok(img),
             Err(e) => crate::safety::log_debug(&format!(
-                "decode: WIC WebP fast path unavailable, using the image tier: {e}"
+                "decode: WIC fast path unavailable, using the image tier: {e}"
             )),
         }
     }
@@ -429,7 +436,7 @@ fn decode_any_with_wic_target(
         // declines (alpha, wide gamut, MF absent, decode failure) proceeds to magick exactly
         // as before, so this can only ever be faster, never different.
         if wic_avif_color {
-            if let Some(img) = avifmf::decode_bt601_avif(bytes) {
+            if let Some(img) = avifmf::decode_bt601_avif(bytes, wic_thumbnail_cx) {
                 crate::safety::log_debug("decode: tier `avif-mf` decoded the BT.601 AVIF");
                 return Ok(img);
             }
@@ -631,6 +638,45 @@ pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
 /// alpha plane through the same 32bppRGBA conversion every other WIC format uses, and EXIF
 /// orientation is applied by our own pipeline from the file bytes, identically on either
 /// decode path.
+/// Is this a plain uncompressed BMP that the OS codec should decode ahead of the `image` tier?
+///
+/// BMP is the extreme case of "cheap to decode, expensive to materialise": there is no
+/// decompression to speak of, so essentially the whole cost is turning 12 MP into pixels we
+/// then throw away. WIC scales during the read; the `image` tier cannot. Measured on the
+/// 12 MP tier: 258.6 ms ours against 22.1 ms Windows, and 2.3 ms against 0.6 ms at 0.08 MP —
+/// the gap is entirely a function of size, which is why only the bounded-thumbnail callers
+/// take this path and the full-fidelity ones are untouched.
+///
+/// The gate excludes the two places BMP decoders legitimately disagree, because a faster
+/// thumbnail is worth nothing if it is a DIFFERENT thumbnail:
+///
+/// * **32-bit BMPs.** The fourth byte is alpha in some writers and padding full of garbage in
+///   others; the format never settled it. `image` and WIC are entitled to read those files
+///   differently, so they stay on the decoder whose output is already pinned by the corpus.
+/// * **Compressed BMPs** (RLE4/RLE8, embedded JPEG/PNG). `BI_RGB` and `BI_BITFIELDS` are the
+///   plain memory layouts this optimisation is about; the rest are their own decoders with
+///   their own quirks, and they are never the large files this exists to speed up.
+///
+/// Anything unparseable is ineligible, so a truncated or lying header simply keeps the
+/// existing tier order.
+fn bmp_prefers_wic(bytes: &[u8]) -> bool {
+    // BITMAPFILEHEADER is 14 bytes, then the DIB header: size(4) width(4) height(4) planes(2)
+    // bitcount(2) compression(4). A BITMAPCOREHEADER (12) has no compression field and no
+    // 32-bit form, so it is excluded by the header-size check rather than special-cased.
+    if bytes.len() < 54 || &bytes[0..2] != b"BM" {
+        return false;
+    }
+    let dib_size = u32::from_le_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
+    if dib_size < 40 {
+        return false;
+    }
+    let bitcount = u16::from_le_bytes([bytes[28], bytes[29]]);
+    let compression = u32::from_le_bytes([bytes[30], bytes[31], bytes[32], bytes[33]]);
+    const BI_RGB: u32 = 0;
+    const BI_BITFIELDS: u32 = 3;
+    matches!(bitcount, 1 | 4 | 8 | 16 | 24) && matches!(compression, BI_RGB | BI_BITFIELDS)
+}
+
 fn webp_prefers_wic(bytes: &[u8]) -> bool {
     if bytes.len() < 21 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
         return false;

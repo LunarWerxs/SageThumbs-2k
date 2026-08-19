@@ -136,59 +136,13 @@ if (Test-Path $SpeedBaseline) {
 }
 
 # ---------------------------------------------------------------- measurement
-# One process, every file. Returns @{ name = ms }.
-function Measure-Decode([string[]]$paths, [int]$runs) {
-    if (-not $paths) { return @{} }
-    $out = @{}
-    # Chunked so the command line cannot overflow on a big corpus.
-    for ($i = 0; $i -lt $paths.Count; $i += 60) {
-        $chunk = $paths[$i..([Math]::Min($i + 59, $paths.Count - 1))]
-        $argv = @('bench-decode') + $chunk + @('--size', $Size, '--runs', $runs)
-        foreach ($line in (& $st2k @argv 2>$null)) {
-            $p = $line -split "`t"
-            if ($p.Count -ge 2 -and $p[1] -ne 'FAIL') { $out[$p[0]] = [double]$p[1] }
-        }
-    }
-    return $out
-}
-
-# WIC, in-process, image cache BYPASSED (a cached BitmapFrame returns in ~3 ms and would make
-# Windows look impossibly fast — this measurement was wrong once before it was fixed).
-$wicOpt = [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreImageCache
-function Measure-Wic([string]$path, [int]$runs) {
-    $best = [double]::MaxValue
-    try { $bytes = [IO.File]::ReadAllBytes($path) } catch { return $null }
-    for ($i = 0; $i -lt $runs; $i++) {
-        $ms = New-Object IO.MemoryStream (,$bytes)
-        try {
-            $sw = [Diagnostics.Stopwatch]::StartNew()
-            $fr = [System.Windows.Media.Imaging.BitmapFrame]::Create($ms, $wicOpt, 'OnLoad')
-            $cv = New-Object System.Windows.Media.Imaging.FormatConvertedBitmap `
-                    $fr, ([System.Windows.Media.PixelFormats]::Bgra32), $null, 0
-            $stride = [int]($cv.PixelWidth * 4)
-            $buf = New-Object byte[] ($stride * $cv.PixelHeight)
-            $cv.CopyPixels($buf, $stride, 0)      # force a REAL decode, not a lazy handle
-            $sw.Stop()
-            $e = $sw.Elapsed.TotalMilliseconds
-            if ($e -lt $best) { $best = $e }
-        } catch {
-            return $null                          # WIC cannot open it: no native peer
-        } finally { $ms.Dispose() }
-    }
-    return [Math]::Round($best, 3)
-}
+# Shared with scripts\speed-report.ps1 — one definition of "how do we time a decode", so the
+# numbers the report publishes are the same ones this gate enforces.
+. "$PSScriptRoot\decode-speed-lib.ps1"
 
 $exitCode = 0
 
-$skipNames = @('contact.png', 'README.md')
-$files = Get-ChildItem $Corpus -File | Where-Object {
-    $_.Extension -and $_.Name -notin $skipNames -and -not $_.Name.StartsWith('_') -and
-    $_.Extension.ToLowerInvariant() -notin @('.md', '.txt')
-}
-if ($Only) {
-    $want = $Only | ForEach-Object { $_.ToLowerInvariant().TrimStart('.') }
-    $files = $files | Where-Object { $want -contains $_.Extension.ToLowerInvariant().TrimStart('.') }
-}
+$files = Get-SpeedSamples $Corpus $Only
 if (-not $files) { throw "no samples matched" }
 
 # Guard 5: a fixed reference file, timed before and after, detects the box moving under us.
@@ -204,17 +158,10 @@ $refFile = ($files | Sort-Object Name | Select-Object -First 1).FullName
 $magickRef = ($files | Where-Object {
     $_.Extension.ToLowerInvariant().TrimStart('.') -in @('xpm', 'sun', 'miff', 'fits', 'cal', 'pcx')
 } | Sort-Object Name | Select-Object -First 1).FullName
-function Measure-Drift([string[]]$refs, [int]$runs) {
-    $vals = @()
-    foreach ($r in $refs) {
-        if ($r) { $vals += (Measure-Decode @($r) $runs).Values | Select-Object -First 1 }
-    }
-    return $vals
-}
 $refs = @($refFile) + @($magickRef | Where-Object { $_ })
-$driftBefore = Measure-Drift $refs ($Runs * 2)
+$driftBefore = Measure-Drift $refs ($Runs * 2) $Size
 
-$mine = Measure-Decode ($files.FullName) $Runs
+$mine = Measure-Decode ($files.FullName) $Runs $Size
 $rows = @()
 foreach ($f in $files) {
     if (-not $mine.ContainsKey($f.Name)) { continue }   # undecodable is regression.ps1's job
@@ -226,7 +173,7 @@ foreach ($f in $files) {
     }
 }
 
-$driftAfter = Measure-Drift $refs ($Runs * 2)
+$driftAfter = Measure-Drift $refs ($Runs * 2) $Size
 function Worst-Drift($before, $after) {
     $w = 0.0
     for ($i = 0; $i -lt [Math]::Min($before.Count, $after.Count); $i++) {
@@ -237,7 +184,7 @@ function Worst-Drift($before, $after) {
     }
     return $w
 }
-$drift = Worst-Drift $driftBefore $driftAfter
+$drift = Get-WorstDrift $driftBefore $driftAfter
 
 $compared = @($rows | Where-Object { $null -ne $_.ratio })
 $noPeer   = @($rows | Where-Object { $null -eq $_.ratio })
@@ -318,7 +265,7 @@ $confirmNames = @($aSuspect.row.name) + @($bSuspect.name) | Sort-Object -Unique
 $again = @{}
 if ($confirmNames) {
     Write-Host ("[speed] confirming {0} suspect(s) at {1} runs..." -f $confirmNames.Count, ($Runs * 3)) -ForegroundColor DarkGray
-    $again = Measure-Decode (@($confirmNames | ForEach-Object { Join-Path $Corpus $_ })) ($Runs * 3)
+    $again = Measure-Decode (@($confirmNames | ForEach-Object { Join-Path $Corpus $_ })) ($Runs * 3) $Size
 }
 
 # The confirmation pass is only worth anything if the box held still FOR it. Re-time the
@@ -326,8 +273,8 @@ if ($confirmNames) {
 # AVIF number was 377 ms against a true ~150 ms, i.e. the retry re-measured the same load
 # rather than clearing it.
 if ($confirmNames) {
-    $driftConfirm = Measure-Drift $refs ($Runs * 2)
-    $cDrift = Worst-Drift $driftBefore $driftConfirm
+    $driftConfirm = Measure-Drift $refs ($Runs * 2) $Size
+    $cDrift = Get-WorstDrift $driftBefore $driftConfirm
     if ($cDrift -gt $MaxDrift) {
         Write-Host ("[speed] INCONCLUSIVE - the box moved {0:P0} during confirmation; NOT a verdict." -f $cDrift) -ForegroundColor Yellow
         Write-Host  "         Re-run on a quieter box." -ForegroundColor Yellow
