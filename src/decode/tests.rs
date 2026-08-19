@@ -686,7 +686,7 @@ fn heic_auxiliary_alpha_box_walk() {
 /// is too, so a future WIC that behaves differently cannot silently reintroduce the shift.
 #[test]
 fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
-    use super::color::avif_wic_misreads_color;
+    use super::color::{avif_wic_verdict, AvifWicVerdict};
 
     fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let size = u32::try_from(8 + body.len()).unwrap();
@@ -718,30 +718,46 @@ fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
 
     // The ONE measured-correct case, and the only one that keeps the cheap WIC path:
     // ordinary 8-bit BT.709, which is what Chrome and Squoosh emit. Measured error 1-3.
-    assert!(
-        !avif_wic_misreads_color(&avif(false, Some(1))),
+    assert_eq!(
+        avif_wic_verdict(&avif(false, Some(1))),
+        AvifWicVerdict::Trusted,
         "8-bit BT.709 is measurably correct through WIC and must stay on the fast path"
     );
     // Identity leaves RGB alone, so there is no conversion for WIC to get wrong.
-    assert!(!avif_wic_misreads_color(&avif(false, Some(0))));
+    assert_eq!(
+        avif_wic_verdict(&avif(false, Some(0))),
+        AvifWicVerdict::Trusted
+    );
 
     // avifenc's DEFAULT matrix. Greys hold, saturated colour shifts. Measured error 19.
-    assert!(
-        avif_wic_misreads_color(&avif(false, Some(6))),
-        "8-bit BT.601 (avifenc's default) must route to ImageMagick"
+    assert_eq!(
+        avif_wic_verdict(&avif(false, Some(6))),
+        AvifWicVerdict::Untrusted,
+        "8-bit BT.601 (avifenc's default) must route to ImageMagick: WIC clips while converting          with the wrong matrix, so the error is NOT recoverable after the fact"
     );
-    // High bit depth is wrong for EVERY matrix and range: mid grey 128 reads as 139.
+    // High bit depth WITH an nclx box is wrong for every matrix in the same way — a transfer
+    // curve, not a matrix error (mid grey 128 reads as 138). That is invertible in-process, so
+    // it must NOT cost a subprocess.
     for matrix in [0u16, 1, 6, 9] {
-        assert!(
-            avif_wic_misreads_color(&avif(true, Some(matrix))),
-            "10/12-bit AVIF must route to ImageMagick regardless of matrix ({matrix})"
+        assert_eq!(
+            avif_wic_verdict(&avif(true, Some(matrix))),
+            AvifWicVerdict::NeedsHighDepthCurve,
+            "10/12-bit AVIF with colour signalling is curve-correctable, not magick-bound              (matrix {matrix})"
         );
     }
+    // ...but high bit depth with NO colour box at all fails a DIFFERENT way (a full-vs-limited
+    // range error, 0 -> 15 and 255 -> 233) which this curve does not fix. It stays on magick.
+    assert_eq!(
+        avif_wic_verdict(&avif(true, None)),
+        AvifWicVerdict::Untrusted,
+        "high-bit-depth AVIF with no nclx fails on RANGE, not transfer - the curve must not claim it"
+    );
     // No colour signalling at all: WIC assumes BT.709 where libaom encoded BT.601.
     // Measured error 19 at 8-bit, so an absent nclx is NOT a licence to trust WIC.
-    assert!(
-        avif_wic_misreads_color(&avif(false, None)),
-        "an AVIF with no nclx box must route to ImageMagick"
+    assert_eq!(
+        avif_wic_verdict(&avif(false, None)),
+        AvifWicVerdict::Untrusted,
+        "an 8-bit AVIF with no nclx box must route to ImageMagick"
     );
 
     // HEIC carries hvcC, not av1C, and is routed by the auxiliary-alpha rule instead.
@@ -760,15 +776,101 @@ fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
         let meta = bx(b"meta", &[&[0u8; 4][..], &bx(b"iprp", &ipco)].concat());
         [bx(b"ftyp", b"heic\0\0\0\0mif1"), meta].concat()
     };
-    assert!(
-        !avif_wic_misreads_color(&heic),
+    assert_eq!(
+        avif_wic_verdict(&heic),
+        AvifWicVerdict::Trusted,
         "HEIC is not an AVIF and must not be routed by this rule"
     );
     // Not ISOBMFF at all, and a truncated container: decline rather than chew through it.
-    assert!(!avif_wic_misreads_color(b"not an isobmff file at all"));
+    assert_eq!(
+        avif_wic_verdict(b"not an isobmff file at all"),
+        AvifWicVerdict::Trusted
+    );
     let mut truncated = avif(true, Some(6));
     truncated.truncate(12);
-    assert!(!avif_wic_misreads_color(&truncated));
+    assert_eq!(avif_wic_verdict(&truncated), AvifWicVerdict::Trusted);
+}
+
+/// The inverse of the transfer WIC applies to high-bit-depth AV1. Pinned against the MEASURED
+/// curve, not against itself: the right-hand column is what Microsoft's AV1 codec 2.0.24.0
+/// actually returned for a 17-step grey ramp encoded at 10-bit, so this test fails if the
+/// correction stops undoing the thing it was built to undo.
+#[test]
+fn high_depth_curve_undoes_what_wic_measurably_does() {
+    use super::color::undo_wic_high_depth_curve;
+    use image::{DynamicImage, Rgba, RgbaImage};
+
+    // (true value, what WIC handed back for it). Measured on a 10-bit AVIF grey ramp.
+    const MEASURED: [(u8, u8); 17] = [
+        (0, 0),
+        (16, 29),
+        (32, 46),
+        (48, 62),
+        (64, 77),
+        (80, 93),
+        (96, 108),
+        (112, 123),
+        (128, 138),
+        (143, 153),
+        (159, 167),
+        (175, 182),
+        (191, 197),
+        (207, 211),
+        (223, 225),
+        (239, 240),
+        (255, 254),
+    ];
+
+    let mut img = RgbaImage::new(MEASURED.len() as u32, 1);
+    for (x, (_, wic)) in MEASURED.iter().enumerate() {
+        // Alpha deliberately mid-range: the curve must leave it ALONE, or every semi-
+        // transparent pixel silently changes opacity.
+        img.put_pixel(x as u32, 0, Rgba([*wic, *wic, *wic, 128]));
+    }
+    let fixed = undo_wic_high_depth_curve(DynamicImage::ImageRgba8(img)).to_rgba8();
+
+    let mut worst = 0i32;
+    for (x, (truth, _)) in MEASURED.iter().enumerate() {
+        let px = fixed.get_pixel(x as u32, 0).0;
+        assert_eq!(
+            px[3], 128,
+            "alpha must pass through the colour curve untouched"
+        );
+        assert_eq!(
+            px[0], px[1],
+            "the curve must be per-channel identical on a grey"
+        );
+        worst = worst.max((i32::from(px[0]) - i32::from(*truth)).abs());
+    }
+    // Uncorrected, this ramp is off by up to 14. The analytic inverse tracks the measured
+    // curve to within 2, so anything above that means the correction has drifted.
+    assert!(
+        worst <= 2,
+        "high-bit-depth correction left a worst-channel error of {worst} (expected <= 2)"
+    );
+}
+
+/// The curve must be monotonic and keep the endpoints, or it would crush highlights/shadows
+/// and shift the black/white points of every corrected thumbnail.
+#[test]
+fn high_depth_curve_is_monotonic_and_keeps_endpoints() {
+    use super::color::undo_wic_high_depth_curve;
+    use image::{DynamicImage, Rgba, RgbaImage};
+
+    let mut img = RgbaImage::new(256, 1);
+    for v in 0u32..256 {
+        let b = v as u8;
+        img.put_pixel(v, 0, Rgba([b, b, b, 255]));
+    }
+    let out = undo_wic_high_depth_curve(DynamicImage::ImageRgba8(img)).to_rgba8();
+    assert_eq!(out.get_pixel(0, 0).0[0], 0, "black must stay black");
+    assert_eq!(out.get_pixel(255, 0).0[0], 255, "white must stay white");
+    for v in 1u32..256 {
+        assert!(
+            out.get_pixel(v, 0).0[0] >= out.get_pixel(v - 1, 0).0[0],
+            "curve must be monotonic; it is not at {v}"
+        );
+    }
 }
 
 #[test]

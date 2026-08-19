@@ -53,6 +53,9 @@ const VALUE_FLAGS: &[&str] = &[
     "--by",
     "--max-size",
     "--jobs",
+    // bench-decode's repeat count. It MUST be here or its value is parsed as an input path:
+    // `--runs 3` left a bare "3" in the positionals, which then reported as `3<TAB>FAIL`.
+    "--runs",
 ];
 
 /// Flags that take NO value — excluded from `pos` on their own, without consuming the
@@ -222,6 +225,18 @@ fn run(args: &[String]) -> Result<String, String> {
             cli::pdf(out, &inputs)
         }
         "info" => cli::info(need(&pos, 0)?, has_flag(rest, "--json")),
+        // Dev/measurement verb (undocumented in --help, like the app EXE's --bench-* modes):
+        // time the decode of many files inside ONE process, so the numbers carry no per-file
+        // process-start noise. Used by scripts\check-decode-speed.ps1.
+        "bench-decode" => {
+            let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
+            if inputs.is_empty() {
+                return Err("bench-decode needs at least one input file".to_string());
+            }
+            let size = flag_num(rest, "--size", 256u32)?;
+            let runs = flag_num(rest, "--runs", 3u32)?;
+            cli::bench_decode(&inputs, size, runs)
+        }
         "formats" => Ok(cli::list_formats(has_flag(rest, "--json"))),
         // Read-only; never fails, so it always prints a report rather than an error —
         // a user running this already has something broken. An optional file path adds a
@@ -362,6 +377,22 @@ mod tests {
         let rest = args(&["-r", "C:\\folder"]);
         assert_eq!(as_strs(&positionals(&rest)), vec!["C:\\folder"]);
         assert!(has_flag(&rest, "-r"));
+    }
+
+    #[test]
+    fn every_value_flag_consumes_its_value_rather_than_leaking_it_as_an_input() {
+        // A value-taking flag missing from VALUE_FLAGS does not error — its VALUE quietly
+        // becomes a positional, i.e. a bogus input path. `bench-decode --runs 3` reported a
+        // file literally named "3" as a decode FAILURE before `--runs` was registered. This
+        // walks the whole list so the next flag added cannot repeat it.
+        for f in VALUE_FLAGS {
+            let rest = args(&[f, "7", "in.png"]);
+            assert_eq!(
+                as_strs(&positionals(&rest)),
+                vec!["in.png"],
+                "{f} did not consume its value; it leaked into the positionals"
+            );
+        }
     }
 
     #[test]

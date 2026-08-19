@@ -323,7 +323,7 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
     walk(bytes, 0)
 }
 
-/// Does this AVIF need ImageMagick because Microsoft's AV1 WIC codec gets its colour wrong?
+/// How far can Microsoft's AV1 WIC codec be trusted with this AVIF's colour?
 ///
 /// Issue #9. WIC (AV1 Video Extension 2.0.24.0) misreads the colour signalling that libaom
 /// writes, so `avifenc` and `ffmpeg` output decodes with visibly shifted colour while libavif
@@ -341,18 +341,39 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 /// | no `nclx`, 10/12-bit | 1, correct |
 ///
 /// Note the shape of that: WIC is wrong in four of the five cases and the two correct ones do
-/// not share a rule. So this is a WHITELIST, not a blacklist. We keep the cheap WIC path only
-/// for the one case that is both measurably correct AND overwhelmingly common (ordinary 8-bit
-/// BT.709 web AVIF, what Chrome and Squoosh emit), and hand everything else to ImageMagick.
-/// Anything unparseable or unrecognised also goes to ImageMagick, so a WIC version that changes
-/// its behaviour cannot silently reintroduce the bug.
+/// not share a rule. So this is a WHITELIST, not a blacklist. Anything unparseable or
+/// unrecognised is Untrusted too, so a WIC version that changes its behaviour cannot silently
+/// reintroduce the bug.
+///
+/// REVISED 2026-08-18 — the failures are not all the same KIND, and separating them took most
+/// of the AVIF slowness away. Re-measured against the same targets:
+///
+/// | file | WIC error | kind | verdict |
+/// |---|---|---|---|
+/// | `nclx`, 8-bit, `matrix=0/1` (BT.709/identity) | 1 | none | `Trusted` |
+/// | `nclx`, 8-bit, `matrix=6` (BT.601, avifenc's default) | 39 | YUV matrix, **clipped** | `Untrusted` |
+/// | no `colr` at all, 8-bit | 39 | assumes BT.709 over BT.601 | `Untrusted` |
+/// | `nclx`, 10/12-bit, ANY matrix or range | 11-14 | TRANSFER curve | `NeedsHighDepthCurve` |
+/// | no `colr` at all, 10/12-bit | 22 | full-vs-limited RANGE | `Untrusted` |
+///
+/// The high-bit-depth row is the one that matters commercially: it is every HDR and camera
+/// AVIF, it was the most expensive bucket, and its error turns out to be a pure per-channel
+/// transfer curve (WIC applies the BT.709 EOTF and re-encodes sRGB — for high bit depth ONLY;
+/// the 8-bit path with byte-identical tags does not, which is what makes it a codec bug rather
+/// than a mis-tagged file). A curve is exactly invertible, so those now stay on the cheap WIC
+/// path and are corrected by [`undo_wic_high_depth_curve`]: measured 1261 ms -> 200 ms end to
+/// end, with worst channel error 11 -> 1. Faster AND more accurate than the subprocess.
+///
+/// The 8-bit matrix errors genuinely cannot be undone — WIC CLIPS while converting, so the
+/// inverse 3x3 recovers only 39 -> 20 and damages correct files (1 -> 22). Measured, not
+/// assumed. Those keep paying for ImageMagick until there is an in-process AV1 decoder.
 ///
 /// Callers use this exactly like [`isobmff_has_hevc_aux_alpha`]: prefer ImageMagick when the
 /// external tier is available, and fall back to WIC when it is not, so the Compact install
 /// keeps the thumbnail it has today rather than losing it.
-pub(super) fn avif_wic_misreads_color(bytes: &[u8]) -> bool {
+pub(super) fn avif_wic_verdict(bytes: &[u8]) -> AvifWicVerdict {
     if bytes.get(4..8) != Some(b"ftyp") {
-        return false;
+        return AvifWicVerdict::Trusted;
     }
     struct Found {
         matrix: Option<u16>,
@@ -417,11 +438,88 @@ pub(super) fn avif_wic_misreads_color(bytes: &[u8]) -> bool {
     walk(bytes, 0, &mut found);
 
     if !found.is_av1 {
-        return false; // HEIC and friends carry `hvcC`, and are not ours to route.
+        // HEIC and friends carry `hvcC`, and are not ours to route.
+        return AvifWicVerdict::Trusted;
     }
-    // The single trusted case: an explicit BT.709 (or identity) matrix at 8 bits.
-    let wic_is_trustworthy = !found.high_bitdepth && matches!(found.matrix, Some(0) | Some(1));
-    !wic_is_trustworthy
+    // The measurably-correct case: an explicit BT.709 (or identity) matrix at 8 bits.
+    if !found.high_bitdepth && matches!(found.matrix, Some(0) | Some(1)) {
+        return AvifWicVerdict::Trusted;
+    }
+    // High bit depth WITH colour signalling: WIC's only error here is the transfer function,
+    // which is exactly invertible. `matrix.is_some()` is precisely "an nclx `colr` box was
+    // present" — and it has to be, because an AVIF with NO `colr` at all fails differently
+    // (a full-vs-limited RANGE error: 0 reads as 15 and 255 as 233, worst channel 22) and that
+    // one is NOT this curve. Measured, both of them; see the doc comment above.
+    if found.high_bitdepth && found.matrix.is_some() {
+        return AvifWicVerdict::NeedsHighDepthCurve;
+    }
+    AvifWicVerdict::Untrusted
+}
+
+/// What Microsoft's AV1 WIC codec can be trusted with for a given AVIF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AvifWicVerdict {
+    /// WIC is measurably right. Take the cheap in-process path unchanged.
+    Trusted,
+    /// WIC decodes the pixels correctly but hands back the WRONG TRANSFER: for high-bit-depth
+    /// AV1 (and ONLY high-bit-depth — the 8-bit path with identical tags does not do this,
+    /// which is what makes it a codec inconsistency rather than a mis-tagged file) it applies
+    /// the BT.709 EOTF and re-encodes with the sRGB OETF. That is a pure per-channel curve,
+    /// so it is exactly invertible by [`undo_wic_high_depth_curve`] — no subprocess needed.
+    NeedsHighDepthCurve,
+    /// WIC gets this one wrong in a way we cannot undo after the fact, so prefer ImageMagick.
+    /// The 8-bit BT.601/untagged case lives here: it is a genuine YUV MATRIX error (worst
+    /// channel 39/255) and WIC CLIPS while converting, so the information is gone by the time
+    /// we see it. Measured: the exact inverse 3x3 only recovers 39 -> 20, and it damages
+    /// correctly-decoded files (1 -> 22). Do not be tempted to "fix" this one in RGB.
+    Untrusted,
+}
+
+/// Undo the transfer WIC applies to high-bit-depth AV1 (see [`AvifWicVerdict::NeedsHighDepthCurve`]).
+///
+/// WIC gives us `sRGB_OETF(BT709_EOTF(v))`; this applies the exact inverse,
+/// `BT709_OETF(sRGB_EOTF(v))`. Verified against a 17-step grey ramp and, independently, a
+/// six-patch colour target the LUT was NOT derived from: worst channel error 11 -> 1 on real
+/// files, and the analytic model tracks the measured curve to within 2/255 across the range.
+/// The uncorrected error is a mid-grey lift of ~13/255 (128 reads as 138), which is visible.
+///
+/// A 256-entry table, so this is a byte lookup per channel — microseconds on a thumbnail,
+/// against the ~250 ms an ImageMagick subprocess costs to avoid the same problem.
+fn high_depth_curve_lut() -> &'static [u8; 256] {
+    static LUT: std::sync::OnceLock<[u8; 256]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0u8; 256];
+        for (v, out) in lut.iter_mut().enumerate() {
+            let x = v as f64 / 255.0;
+            // sRGB EOTF: undo what WIC encoded with, back to linear light.
+            let linear = if x <= 0.040_45 {
+                x / 12.92
+            } else {
+                ((x + 0.055) / 1.055).powf(2.4)
+            };
+            // BT.709 OETF: re-apply what WIC decoded away.
+            let back = if linear < 0.018 {
+                4.5 * linear
+            } else {
+                1.099 * linear.powf(0.45) - 0.099
+            };
+            *out = (back * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+        lut
+    })
+}
+
+pub(super) fn undo_wic_high_depth_curve(img: DynamicImage) -> DynamicImage {
+    let lut = high_depth_curve_lut();
+    let mut rgba = img.to_rgba8();
+    for px in rgba.pixels_mut() {
+        // Colour channels only: alpha is not transfer-encoded, and running it through the
+        // curve would quietly make every semi-transparent pixel wrong.
+        px.0[0] = lut[px.0[0] as usize];
+        px.0[1] = lut[px.0[1] as usize];
+        px.0[2] = lut[px.0[2] as usize];
+    }
+    DynamicImage::ImageRgba8(rgba)
 }
 
 /// Does this ISOBMFF image advertise an HEVC auxiliary alpha item?

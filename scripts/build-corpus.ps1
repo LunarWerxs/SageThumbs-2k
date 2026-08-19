@@ -847,6 +847,62 @@ $expectedColors += @(
 )
 Write-Host "[corpus] sample.scr written (6912 bytes, solid BRIGHT red)"
 
+# --- 9z3) HIGH-BIT-DEPTH AVIF, with a KNOWN colour that a wrong TRANSFER destroys ------
+# Microsoft's AV1 WIC codec decodes 10/12-bit AVIF through the wrong transfer function: it
+# applies the BT.709 EOTF and re-encodes sRGB, which lifts midtones and shadows (a true 48
+# comes back as 62, a true 128 as 138). It does NOT do this at 8 bits with byte-identical
+# tags, which is what makes it a codec bug rather than a mis-tagged file. decode/color.rs
+# inverts that curve in-process instead of paying an ImageMagick subprocess to avoid it
+# (1261 ms -> 200 ms, and worst channel error 11 -> 1).
+#
+# None of that was testable before: the corpus's only .avif is 8-bit, so it exercises a
+# COMPLETELY different branch and every gate was blind to the high-bit-depth path.
+#
+# The colour is a dark grey ON PURPOSE. Uncorrected it renders ~62 against a true 48 - an
+# error of 14, comfortably outside compare-renders.py's +/-8 tolerance - whereas mid-grey
+# would only miss by 10 and a bright patch by 1, i.e. would pass while broken.
+$avifHi = Join-Path $OutDir 'sample-avif-10bit.avif'
+$ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+if ($ffmpeg) {
+    $flatSrc = Join-Path $env:TEMP ("st2k-avif10-{0}.png" -f $PID)
+    & magick -size 320x240 'xc:rgb(48,48,48)' $flatSrc 2>$null
+    if (Test-Path $flatSrc) {
+        & $ffmpeg -hide_banner -loglevel error -y -i $flatSrc -c:v libaom-av1 -still-picture 1 `
+            -cpu-used 6 -crf 0 -pix_fmt yuv444p10le -colorspace bt709 -color_primaries bt709 `
+            -color_trc bt709 $avifHi 2>$null
+        Remove-Item $flatSrc -ErrorAction SilentlyContinue
+    }
+    # SELF-CHECK, the same discipline as fuzzseed's every_seed_reaches_its_parser: a fixture
+    # that does not actually carry the properties under test is worse than no fixture, because
+    # it goes green forever while proving nothing. It must be high-bit-depth (av1C bit 6) AND
+    # carry an nclx colr box, or decode/color.rs routes it somewhere else entirely.
+    if (Test-Path $avifHi) {
+        $b = [System.IO.File]::ReadAllBytes($avifHi)
+        $hasNclx = $false; $hiDepth = $false
+        for ($i = 0; $i -lt $b.Length - 8; $i++) {
+            if ($b[$i] -eq 0x63 -and $b[$i+1] -eq 0x6F -and $b[$i+2] -eq 0x6C -and $b[$i+3] -eq 0x72 -and
+                $b[$i+4] -eq 0x6E -and $b[$i+5] -eq 0x63 -and $b[$i+6] -eq 0x6C -and $b[$i+7] -eq 0x78) { $hasNclx = $true }
+            if ($b[$i] -eq 0x61 -and $b[$i+1] -eq 0x76 -and $b[$i+2] -eq 0x31 -and $b[$i+3] -eq 0x43) {
+                if ((($b[$i+6] -shr 6) -band 1) -eq 1) { $hiDepth = $true }     # av1C byte 2, high_bitdepth
+            }
+        }
+        if ($hasNclx -and $hiDepth) {
+            $expectedColors += @(
+                '',
+                '# 10-bit AVIF, flat rgb(48,48,48). Windows AV1 WIC returns ~62 for this through the',
+                '# wrong transfer curve; decode/color.rs inverts it. Renders 48 or the correction broke.',
+                "sample-avif-10bit.avif`t48,48,48"
+            )
+            Write-Host "[corpus] sample-avif-10bit.avif written (10-bit, nclx, flat rgb(48,48,48))"
+        } else {
+            Remove-Item $avifHi -ErrorAction SilentlyContinue
+            Write-Host "[corpus] sample-avif-10bit.avif REJECTED (hiDepth=$hiDepth nclx=$hasNclx) - a fixture that cannot fail is worse than none" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "[corpus] ffmpeg not found - skipping the 10-bit AVIF fixture" -ForegroundColor Yellow
+}
+
 # Every OTHER multi-part format has the same exposure XCF had: choosing a page, a frame or an
 # icon size is a CHOICE, and a wrong choice still produces a perfectly good picture. These
 # fixtures make the right answer blue and every wrong one red, so the choice becomes testable.

@@ -801,6 +801,81 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
 }
 
 /// List every supported input extension (with category + description).
+/// Time the DECODE of many files inside ONE process, and print `name<TAB>ms` per file.
+///
+/// Exists because measuring decode speed by timing `st2k thumbnail` once per file measures
+/// PROCESS STARTUP as much as decoding. On a loaded machine that floor swings 28 -> 187 ms,
+/// and it is not symmetric with what it gets compared against (Windows' own WIC decode, which
+/// is in-process), so a busy box invents regressions in whichever formats happen to be slow.
+/// The shell extension does not pay a spawn per thumbnail either, so the per-file spawn was
+/// never part of what we actually wanted to measure.
+///
+/// Reports the MINIMUM of `runs`, which is the right statistic under background load: the
+/// fastest observation is the one least polluted by other work. Decode only — no PNG is
+/// written, since encoding the output is not what any of this is trying to measure.
+///
+/// A dev/measurement verb, deliberately undocumented in `--help`, like the app EXE's
+/// `--bench-*` modes.
+pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, String> {
+    use std::time::Instant;
+
+    let edge = if size > 0 {
+        size
+    } else {
+        decode::EXR_PATH_EDGE
+    };
+    let runs = runs.max(1);
+    let mut out = String::new();
+    for input in inputs {
+        let mut best: Option<u128> = None;
+        let mut ok = false;
+        for _ in 0..runs {
+            let t0 = Instant::now();
+            let decoded = match decode::decode_preview_streamed(input, edge) {
+                Some(img) => Some(img),
+                None => match decode::read_preview_capped(input) {
+                    Ok(bytes) => decode::decode_preview_capped_for_path(&bytes, edge, input).ok(),
+                    Err(_) => None,
+                },
+            };
+            // Fit to the target box too: that is real per-thumbnail work, and leaving it out
+            // would flatter exactly the formats that decode huge and shrink hard.
+            let decoded = decoded.map(|img| {
+                if size > 0 {
+                    img.thumbnail(size, size)
+                } else {
+                    img
+                }
+            });
+            let elapsed = t0.elapsed().as_micros();
+            if decoded.is_some() {
+                ok = true;
+                best = Some(best.map_or(elapsed, |b: u128| b.min(elapsed)));
+            }
+        }
+        let name = Path::new(input)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(input);
+        match (ok, best) {
+            (true, Some(us)) => {
+                out.push_str(&format!(
+                    "{name}	{:.3}
+",
+                    us as f64 / 1000.0
+                ));
+            }
+            // A file we cannot decode is reported, not silently dropped: a format that stops
+            // decoding must not look like a format that got faster.
+            _ => out.push_str(&format!(
+                "{name}	FAIL
+"
+            )),
+        }
+    }
+    Ok(out)
+}
+
 pub fn list_formats(json: bool) -> String {
     if json {
         let items: Vec<_> = formats::FORMATS

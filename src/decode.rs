@@ -382,7 +382,18 @@ fn decode_any_with_wic_target(
     //  * AVIF: the AV1 codec misreads the `nclx` colour box that libaom writes by default,
     //    shifting colour on exactly the files `avifenc`/`ffmpeg` produce (issue #9).
     let wic_hevc_alpha = isobmff_has_hevc_aux_alpha(bytes);
-    let wic_avif_color = !wic_hevc_alpha && color::avif_wic_misreads_color(bytes);
+    // Three outcomes, not two. Most high-bit-depth AVIF used to land in the ImageMagick bucket
+    // purely because the old predicate was a bool: WIC's error there is a pure transfer curve
+    // we can invert in-process for microseconds, so it now stays on the cheap path and gets
+    // corrected afterwards (~400 ms -> ~114 ms, and worst channel error 11 -> 1, i.e. BETTER
+    // colour than the subprocess route it replaces). Only the genuinely unrecoverable case —
+    // the 8-bit matrix error, where WIC clips as it converts — still pays for magick.
+    let avif_verdict = if wic_hevc_alpha {
+        color::AvifWicVerdict::Trusted
+    } else {
+        color::avif_wic_verdict(bytes)
+    };
+    let wic_avif_color = matches!(avif_verdict, color::AvifWicVerdict::Untrusted);
     let magick_attempted = external && (wic_hevc_alpha || wic_avif_color);
     let mut preferred_magick_error = None;
     if magick_attempted {
@@ -417,6 +428,14 @@ fn decode_any_with_wic_target(
     }
     match wic_fallback(bytes, wic_thumbnail_cx) {
         Ok(img) => {
+            // High-bit-depth AVIF: WIC handed back the right pixels through the wrong transfer.
+            // Invert it here rather than paying a subprocess to avoid it.
+            let img = if matches!(avif_verdict, color::AvifWicVerdict::NeedsHighDepthCurve) {
+                crate::safety::log_debug("decode: undoing WIC's high-bit-depth AV1 transfer curve");
+                color::undo_wic_high_depth_curve(img)
+            } else {
+                img
+            };
             // Reaching WIC after we deliberately tried to avoid it means the thumbnail is
             // about to be produced by the codec we KNOW misreads this file, so say so
             // rather than returning a quietly wrong picture. A wrong-coloured tile still

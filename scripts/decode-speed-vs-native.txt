@@ -1,26 +1,51 @@
 # decode-vs-native baseline — the MAXIMUM allowed (our decode time / native WIC decode time)
-# for a format Windows can also decode by itself. Enforced by scripts\check-decode-vs-native.ps1.
+# for a format Windows can also decode by itself. Enforced by scripts\check-decode-speed.ps1.
 #
 # Anything NOT listed here uses the script's -DefaultMaxRatio (3.0). So this file is short on
 # purpose: it is the list of places we are knowingly slower than Windows, and every one of them
 # has to justify itself in writing. An unexplained line is the invisible trade this whole check
 # exists to prevent — if you cannot write the reason, that is the answer.
 #
-# Current state (2026-08-18): across the 223-sample real corpus, 71 formats have a native WIC
-# peer and exactly ONE of them is slower than Windows. Most are far FASTER (camera RAW is
-# 50-100x faster than WIC, because we read the embedded preview instead of demosaicing).
+# Ratios are only GATED where the cost is real (>=25 ms of our own time AND >=40 ms slower than
+# WIC). That is why sample.ico at 7.8x is not here: it is 3.5 ms against 0.4 ms, and gating a
+# 3 ms difference would produce a flaky red that gets the whole check ignored.
 #
-# calibration-reference 30
-# ^ st2k's process-start floor (ms) on a QUIET box. A run measuring more than 2x this is
-#   reported INCONCLUSIVE rather than failing: our side of every comparison is a subprocess and
-#   WIC's side is in-process, so a loaded machine inflates us and not them, and an unguarded run
-#   really did report a 1 ms TIFF as 265 ms. Regenerate with -UpdateBaseline on an idle machine.
+# State on 2026-08-18, over the 224-sample real corpus: 75 formats have a native WIC peer and
+# exactly TWO of them are meaningfully slower than Windows. Most are far FASTER — camera RAW by
+# 50-100x, because we read the embedded preview instead of demosaicing.
 
-avif       5.5 # DELIBERATE, AND A KNOWN DEFECT WE INTEND TO REMOVE — not a permanent allowance.
-               # decode.rs routes most AVIF around Microsoft's AV1 WIC codec to an ImageMagick
-               # subprocess, because that codec misreads the colour libaom writes (issue #9:
-               # 8-bit BT.601 and untagged files are off by ~39/255, high-bit-depth by ~11/255).
-               # Correct colour, ~5x the cost, and it is the ONLY format here losing to Windows.
-               # A user reported exactly this ("way slower than native W11 / Icaros") and they
-               # were right. The number is pinned at today's measured value so it cannot QUIETLY
-               # get worse; the goal is to delete this line, not to raise it. See docs/TODO.md.
+avif       6.0 # ONLY the 8-bit BT.601 / untagged case is still slow, and it is a deliberate
+               # correctness trade, not an oversight. Microsoft's AV1 WIC codec decodes those
+               # with the wrong YUV matrix (worst channel 39/255) and CLIPS while converting, so
+               # the error is unrecoverable after the fact - measured, the exact inverse 3x3 only
+               # recovers 39 -> 20 and damages correctly-decoded files (1 -> 22). Those keep
+               # paying for an ImageMagick subprocess.
+               #
+               # HIGH-BIT-DEPTH AVIF IS NO LONGER IN THIS BUCKET (fixed 2026-08-18). WIC's
+               # 10/12-bit error was a pure transfer curve, so decode/color.rs inverts it
+               # in-process: that path went 1261 ms -> ~25 ms and now measures FASTER than raw
+               # WIC (0.85x), with worst channel error 11 -> 1. The number above was 5.5 before
+               # that landed. Retire this line entirely if the 8-bit case ever gets an
+               # in-process AV1 decoder (see docs/TODO.md).
+               #
+               # WHY 6.0 AND NOT 4.5: this is the one remaining path that still SPAWNS a
+               # process, so it keeps a run-to-run spread the in-process measurements no longer
+               # have - observed 4.0x to 5.6x across clean runs at 3% drift. 4.5 was set from a
+               # single favourable reading and produced reds on honest runs. Pinning a ceiling
+               # below the real spread does not make the product faster, it just teaches people
+               # to ignore the gate. Gate B still pins the ABSOLUTE time, so this cannot drift
+               # upward unnoticed.
+
+webp       4.0 # Our WebP is the pure-Rust `image` decoder; Windows uses the Store WebP codec
+               # extension, which is roughly 3.5-4x faster (measured 1279x1280: ~103 ms vs
+               # ~27 ms). The cost is the DECODE, not our downscale - our time is flat at
+               # ~91-103 ms whether the target is 64 px or 1024 px.
+               #
+               # NOT "fixed" by moving WebP to the WIC tier first, which is why this is a
+               # baselined line and not a code change. Three reasons: the OS WebP codec is a
+               # Store extension that need not be installed (the pure-Rust path is what makes
+               # WebP work on a Compact install and on a machine without it); tier order here
+               # is deliberate architecture, pure-Rust before OS codecs; and the corpus has
+               # sample-decoy-frames.webp precisely because FRAME SELECTION on an animated WebP
+               # is a choice a different decoder can silently make differently. Reordering for
+               # ~75 ms would risk that gate. Worth revisiting only as an explicit decision.
