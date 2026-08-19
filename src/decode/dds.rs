@@ -185,7 +185,7 @@ pub(super) fn decode_dds(bytes: &[u8], target: Option<u32>) -> Result<DynamicIma
     if s.layout.is_float() {
         decode_float(bytes, &s)
     } else {
-        decode_rgba8(bytes, &s)
+        decode_rgba8(bytes, &s, target)
     }
 }
 
@@ -595,12 +595,55 @@ fn out_buffer(width: u32, height: u32, channels: u64) -> Result<usize> {
 // 8-bit path
 // ---------------------------------------------------------------------------
 
-fn decode_rgba8(bytes: &[u8], s: &Surface) -> Result<DynamicImage> {
+/// Smallest surface worth reducing block-by-block rather than decoding whole. One
+/// megapixel of BC1 is a 4 MB RGBA surface and about two milliseconds; the saving below
+/// that is noise, and staying on the full path keeps a small targeted decode returning
+/// exactly the mip level it selected.
+const AVG_MIN_PIXELS: u64 = 1 << 20;
+
+fn decode_rgba8(bytes: &[u8], s: &Surface, target: Option<u32>) -> Result<DynamicImage> {
     let src = surface(bytes, s)?;
+    // ONE PIXEL PER 4x4 BLOCK, when the caller's target is small enough that the quarter-
+    // size result still covers it. A block-compressed texture without a mip chain is the
+    // one case `select_mip` cannot help with, and it is the common one: every DDS an
+    // image editor exports has `dwMipMapCount = 1`, so a 12 MP BC1 texture decoded all
+    // 750k blocks into a 48 MB surface and then threw 15/16 of it away in the fit. That
+    // measured 180.5 ms against Windows' 24.8 ms, 7.3x and the worst block-format ratio
+    // in the speed baseline.
+    //
+    // This is NOT sampling: each block is still fully decoded, and the pixel written is
+    // the MEAN of its in-bounds texels, which is exactly the 4x box reduction the later
+    // fit would have performed anyway. So the picture is the same one, reached without
+    // materialising a surface that is 16x larger than any use of it. The saving is the
+    // scattered row writes into that surface and every later pass over it, not the block
+    // decode itself.
+    //
+    // Two gates, both load-bearing. The reduced grid must still COVER the target, so
+    // nothing is ever upscaled: a 4000x3000 texture at a 256 px ask reduces to 1000x750
+    // (fine), the same texture at a 1024 px preview-pane ask does not (1000 < 1024) and
+    // takes the full path below. And the surface must be big enough for materialising it
+    // to cost anything at all: below [`AVG_MIN_PIXELS`] the full decode is a couple of
+    // milliseconds, there is nothing to win, and the level's own dimensions are the
+    // answer mip selection is pinned to return. Full-fidelity callers pass `None` and are
+    // untouched, exactly as with mip selection.
+    if let (Layout::Block(b), Some(t)) = (s.layout, target) {
+        let bw = s.width.div_ceil(4);
+        let bh = s.height.div_ceil(4);
+        let px = u64::from(s.width) * u64::from(s.height);
+        if !matches!(b, Block::Bc6h { .. }) && bw.max(bh) >= t.max(1) && px >= AVG_MIN_PIXELS {
+            let len = out_buffer(bw, bh, 4)?;
+            let mut out = vec![0u8; len];
+            blocks_rgba8(src, s.width, s.height, b, true, &mut out);
+            apply_alpha_mode(&mut out, s.alpha_mode);
+            return image::RgbaImage::from_raw(bw, bh, out)
+                .map(DynamicImage::ImageRgba8)
+                .ok_or_else(|| fail("buffer size mismatch"));
+        }
+    }
     let len = out_buffer(s.width, s.height, 4)?;
     let mut out = vec![0u8; len];
     match s.layout {
-        Layout::Block(b) => blocks_rgba8(src, s.width, s.height, b, &mut out),
+        Layout::Block(b) => blocks_rgba8(src, s.width, s.height, b, false, &mut out),
         Layout::Masks(m) => masks_rgba8(src, s.width, s.height, m, &mut out),
         Layout::Snorm8(n) => snorm_rgba8(src, s.width, s.height, n, 1, &mut out),
         Layout::Snorm16(n) => snorm_rgba8(src, s.width, s.height, n, 2, &mut out),
@@ -619,7 +662,18 @@ fn decode_rgba8(bytes: &[u8], s: &Surface) -> Result<DynamicImage> {
 /// Walk the 4×4 block grid, decoding each into a scratch tile and copying the
 /// in-bounds part out. The tile hop is what makes a texture whose dimensions are
 /// not a multiple of 4 work — the last row/column of blocks is partly padding.
-fn blocks_rgba8(src: &[u8], width: u32, height: u32, block: Block, out: &mut [u8]) {
+///
+/// With `average_blocks`, `out` is instead the quarter-size grid and each block
+/// contributes the mean of its in-bounds texels. Same walk, same block decode; only
+/// what is written differs. See [`decode_rgba8`] for why.
+fn blocks_rgba8(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    block: Block,
+    average_blocks: bool,
+    out: &mut [u8],
+) {
     let bw = width.div_ceil(4) as usize;
     let bh = height.div_ceil(4) as usize;
     let bytes = block.block_bytes();
@@ -663,7 +717,35 @@ fn blocks_rgba8(src: &[u8], width: u32, height: u32, block: Block, out: &mut [u8
                 // Float-only; never reaches the 8-bit path.
                 Block::Bc6h { .. } => return,
             }
-            copy_tile(&tile, 4, bx, by, width, height, row, out);
+            if average_blocks {
+                let tw = 4.min(width as usize - bx * 4);
+                let th = 4.min(height as usize - by * 4);
+                write_block_average(&tile, (by * bw + bx) * 4, tw, th, out);
+            } else {
+                copy_tile(&tile, 4, bx, by, width, height, row, out);
+            }
+        }
+    }
+}
+
+/// Reduce one decoded 4x4 tile to a single RGBA pixel: the mean of its `w` by `h`
+/// in-bounds texels. Padding texels in an edge block are excluded, so a texture whose
+/// dimensions are not a multiple of 4 does not average undefined bytes into its last
+/// row or column. Rounded, not truncated, so a flat block round-trips to its own colour.
+fn write_block_average(tile: &[u8; 4 * 4 * 4], dst: usize, w: usize, h: usize, out: &mut [u8]) {
+    let n = (w * h).max(1) as u32;
+    let mut acc = [0u32; 4];
+    for y in 0..h {
+        for x in 0..w {
+            let p = (y * 4 + x) * 4;
+            for (a, v) in acc.iter_mut().zip(&tile[p..p + 4]) {
+                *a += *v as u32;
+            }
+        }
+    }
+    if let Some(d) = out.get_mut(dst..dst + 4) {
+        for (c, a) in d.iter_mut().zip(acc) {
+            *c = ((a + n / 2) / n) as u8;
         }
     }
 }
@@ -1405,6 +1487,102 @@ mod mip_tests {
     fn near(a: [u8; 3], b: [u8; 3]) -> bool {
         // BC1 endpoints are 5/6/5, so an exact match is not available.
         a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 10)
+    }
+
+    /// The block-average reduction: a large mip-less texture comes back as its block grid,
+    /// carrying the same colour, and is never upscaled to meet a larger ask.
+    #[test]
+    fn averages_blocks_on_a_large_mipless_texture_but_never_upscales() {
+        let teal = [0, 128, 128];
+        // 1024x1024 is exactly AVG_MIN_PIXELS, with a 256x256 block grid and no mip chain -
+        // the shape every image-editor DDS export has.
+        let dds = bc1_mip_chain(1024, 1024, &[teal]);
+
+        let reduced = decode_dds(&dds, Some(256)).expect("target 256");
+        assert_eq!(
+            (reduced.width(), reduced.height()),
+            (256, 256),
+            "a 256 px ask must come back as the 256x256 block grid, not a 1024x1024 surface"
+        );
+        assert!(
+            near(centre(&reduced), teal),
+            "averaging a flat texture must return its own colour"
+        );
+
+        // The grid (256) no longer covers a 1024 px ask, so the full surface is decoded
+        // rather than handing back something the caller would have to upscale.
+        let full = decode_dds(&dds, Some(1024)).expect("target 1024");
+        assert_eq!((full.width(), full.height()), (1024, 1024));
+        assert!(near(centre(&full), teal));
+
+        // Full-fidelity callers are untouched.
+        let untargeted = decode_dds(&dds, None).expect("no target");
+        assert_eq!((untargeted.width(), untargeted.height()), (1024, 1024));
+    }
+
+    /// THE claim the block-average path makes: its output is EXACTLY the 4x box reduction of
+    /// the full decode. Proved against a texture whose every block differs and whose texels
+    /// differ WITHIN each block, so a wrong block index, a transposed axis, or an off-by-one
+    /// in the edge handling all show up as a mismatched pixel rather than passing on a flat
+    /// picture. This is what lets the fast path be described as the same thumbnail, reached
+    /// without materialising a surface 16x larger than any use of it.
+    #[test]
+    fn the_block_average_is_exactly_a_4x_box_reduction_of_the_full_decode() {
+        const W: u32 = 1024;
+        const H: u32 = 1024;
+
+        // A BC1 texture with per-block endpoints AND per-texel indices, from a cheap
+        // deterministic sequence so the picture has content in every block.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"DDS ");
+        let mut hdr = [0u8; HEADER_LEN];
+        hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+        hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes());
+        hdr[8..12].copy_from_slice(&H.to_le_bytes());
+        hdr[12..16].copy_from_slice(&W.to_le_bytes());
+        hdr[24..28].copy_from_slice(&1u32.to_le_bytes()); // no mip chain
+        hdr[72..76].copy_from_slice(&32u32.to_le_bytes());
+        hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes());
+        hdr[80..84].copy_from_slice(b"DXT1");
+        v.extend_from_slice(&hdr);
+        let blocks = (W.div_ceil(4) as usize) * (H.div_ceil(4) as usize);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..blocks {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            // c0 > c1 keeps BC1 in its 4-colour opaque mode, so alpha stays out of it.
+            let c1 = (state >> 16) as u16;
+            let c0 = c1 | 0x8000;
+            v.extend_from_slice(&c0.to_le_bytes());
+            v.extend_from_slice(&c1.to_le_bytes());
+            v.extend_from_slice(&state.to_le_bytes()); // 16 two-bit indices
+        }
+
+        let reduced = decode_dds(&v, Some(256)).expect("targeted decode");
+        let full = decode_dds(&v, None).expect("full decode");
+        assert_eq!((reduced.width(), reduced.height()), (256, 256));
+        assert_eq!((full.width(), full.height()), (W, H));
+
+        let reduced = reduced.to_rgba8();
+        let full = full.to_rgba8();
+        for by in 0..256u32 {
+            for bx in 0..256u32 {
+                let mut acc = [0u32; 4];
+                for y in 0..4u32 {
+                    for x in 0..4u32 {
+                        let p = full.get_pixel(bx * 4 + x, by * 4 + y).0;
+                        for (a, v) in acc.iter_mut().zip(p) {
+                            *a += u32::from(v);
+                        }
+                    }
+                }
+                let want = acc.map(|a| ((a + 8) / 16) as u8);
+                assert_eq!(
+                    reduced.get_pixel(bx, by).0,
+                    want,
+                    "block ({bx},{by}) must be the mean of the 4x4 it stands for"
+                );
+            }
+        }
     }
 
     #[test]

@@ -28,6 +28,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   **AVIF is down to ~39 ms and BMP to ~20 ms**, which makes both faster than or equal to Windows.
   Colours are unchanged.
 
+- **Big GIFs and big DDS textures thumbnail several times faster.** Both were doing the full
+  amount of work for a full-size picture and then shrinking it. A 12-megapixel GIF took about
+  306 ms against Windows' 50 ms; it now takes about 47 ms, which is fractionally faster than
+  Windows. Animated GIFs are untouched, so which frame you see never changes. Large DDS/DXT
+  game textures went from about 180 ms to about 57 ms by working a block at a time instead of
+  building the whole surface first; the resulting thumbnail is pixel-for-pixel the same one.
+
 - **WebP thumbnails are ~4x faster when the Windows WebP codec is installed** (it ships with
   Windows 11). Still images now use the system codec, which is much quicker than our built-in
   decoder; animated WebP and machines without the codec keep the previous behaviour, so

@@ -1187,6 +1187,78 @@ fn avif_mf_mini_mp4_roundtrips_through_the_mp4_parser() {
     );
 }
 
+/// The GIF WIC-eligibility sniffer. It walks the block chain, so every branch is pinned
+/// against a real (if minimal) GIF rather than a header stub.
+#[test]
+fn gif_wic_routing_takes_only_the_plain_single_frame_case() {
+    use super::gif_prefers_wic;
+
+    /// A complete, structurally valid GIF: header, 2-entry global table, optional extra
+    /// blocks, then `frames` image descriptors and the trailer.
+    fn gif(w: u16, h: u16, frames: &[(u16, u16, u16, u16)], extension: bool) -> Vec<u8> {
+        let mut b = b"GIF89a".to_vec();
+        b.extend_from_slice(&w.to_le_bytes());
+        b.extend_from_slice(&h.to_le_bytes());
+        b.push(0x80); // global colour table, 2 entries
+        b.push(0); // background index
+        b.push(0); // aspect ratio
+        b.extend_from_slice(&[0, 0, 0, 255, 255, 255]);
+        if extension {
+            b.extend_from_slice(&[0x21, 0xF9, 0x04, 0, 0, 0, 0, 0x00]);
+        }
+        for (left, top, fw, fh) in frames {
+            b.push(0x2C);
+            b.extend_from_slice(&left.to_le_bytes());
+            b.extend_from_slice(&top.to_le_bytes());
+            b.extend_from_slice(&fw.to_le_bytes());
+            b.extend_from_slice(&fh.to_le_bytes());
+            b.push(0); // no local colour table
+            b.push(2); // LZW minimum code size
+            b.extend_from_slice(&[2, 0x44, 0x01, 0x00]); // one sub-block, then terminator
+        }
+        b.push(0x3B);
+        b
+    }
+
+    let full = [(0u16, 0u16, 64u16, 64u16)];
+    assert!(
+        gif_prefers_wic(&gif(64, 64, &full, false)),
+        "a plain single-frame GIF is what this fast path exists for"
+    );
+    assert!(
+        gif_prefers_wic(&gif(64, 64, &full, true)),
+        "a graphic control extension is normal on a still and must not disqualify it"
+    );
+
+    // Animation: which frame becomes the thumbnail is the decoder's choice, so it stays on
+    // the decoder whose choice the corpus already pins.
+    assert!(
+        !gif_prefers_wic(&gif(64, 64, &[full[0], full[0]], false)),
+        "a two-frame GIF must not change decoder"
+    );
+    // A frame that does not cover the canvas: the image tier composites it onto the full
+    // canvas, WIC returns the frame at its own size. Two different pictures.
+    assert!(
+        !gif_prefers_wic(&gif(64, 64, &[(0, 0, 32, 32)], false)),
+        "an undersized frame renders differently through WIC"
+    );
+    assert!(
+        !gif_prefers_wic(&gif(64, 64, &[(8, 8, 64, 64)], false)),
+        "an offset frame renders differently through WIC"
+    );
+
+    // Not a GIF, and truncations at each structural step: all ineligible, never a panic.
+    assert!(!gif_prefers_wic(b"not a gif at all"));
+    assert!(!gif_prefers_wic(&[]));
+    let whole = gif(64, 64, &full, true);
+    for cut in 0..whole.len() {
+        assert!(
+            !gif_prefers_wic(&whole[..cut]),
+            "a GIF truncated to {cut} bytes must be ineligible, not eligible or a panic"
+        );
+    }
+}
+
 /// The BMP WIC-eligibility sniffer. Every branch is a routing decision that could change what
 /// the user SEES, so every branch is pinned.
 #[test]
