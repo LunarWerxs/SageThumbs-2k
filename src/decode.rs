@@ -602,6 +602,10 @@ use thumb::*;
 use tiers::*;
 use wic::*;
 
+/// Direct fuzz entry points for the DDS block decoder. Re-exported by name so `crate::fuzz`
+/// can reach it without widening `dds`'s own visibility.
+#[cfg(test)]
+pub(crate) use dds::fuzzapi as dds_fuzzapi;
 pub(crate) use readers::effective_input_cap;
 pub use readers::{
     decode_preview_path, decode_preview_streamed, exr_scaled_from_reader, is_exr_magic,

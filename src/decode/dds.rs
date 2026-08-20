@@ -168,6 +168,96 @@ fn le32(b: &[u8], off: usize) -> Option<u32> {
     ))
 }
 
+/// Direct entry points for the mutation fuzzer, plus the structurally valid seeds it needs.
+///
+/// **The DDS decoder had NO fuzz target at all before 2026-08-19**, which is the same gap the
+/// APK parsers had and for a related reason: the only DDS the harness carried was an 8-byte
+/// magic stub (a bare eight-byte magic stub), and a mutation of eight bytes cannot get past
+/// `parse_header` to the part that reads attacker-controlled block data. Every mutation died at
+/// the door and the suite stayed green testing nothing.
+///
+/// This matters more here than the byte count suggests. `blocks_rgba8` and `block_mean_fast`
+/// index a compressed payload using a width, a height and a mip offset that all come OUT OF THE
+/// FILE, and they run IN-PROCESS inside `explorer.exe` under `panic = "abort"` (the classic
+/// right-click preview tile reaches DDS through the cheap tiers). A slice panic here is the
+/// user's shell dying on a downloaded texture.
+///
+/// Both targets exist because they are different code: `Some(target)` selects a mip level and
+/// takes the block-average path, `None` decodes the full surface. Only the first reaches
+/// [`block_mean_fast`].
+#[cfg(test)]
+pub(crate) mod fuzzapi {
+    use super::*;
+
+    /// The targeted decode: mip selection plus the block-average fast path.
+    pub(crate) fn decode_targeted(b: &[u8]) {
+        let _ = decode_dds(b, Some(256));
+    }
+
+    /// The untargeted decode: level 0, full expansion, and the float (BC6H) arm.
+    pub(crate) fn decode_untargeted(b: &[u8]) {
+        let _ = decode_dds(b, None);
+    }
+
+    /// A structurally valid DDS the mutator can meaningfully damage. `fourcc` picks the block
+    /// format, so BC1's punch-through alpha, BC3's interpolated alpha and BC7's mode parsing
+    /// each get a seed that actually reaches them. `mips` writes a real chain, so the mip walk
+    /// (offsets accumulated from file-supplied sizes) is reachable too. `dxgi` is read only
+    /// for the `DX10` FourCC, which is the only route to BC6H (the float arm) and BC7.
+    pub(crate) fn seed(fourcc: &[u8; 4], dxgi: u32, w: u32, h: u32, mips: u32) -> Vec<u8> {
+        let block_bytes = if fourcc == b"DXT1" || dxgi == 71 {
+            8
+        } else {
+            16
+        };
+        let mut v = Vec::from(*b"DDS ");
+        let mut hdr = [0u8; HEADER_LEN];
+        hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+        hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes());
+        hdr[8..12].copy_from_slice(&h.to_le_bytes());
+        hdr[12..16].copy_from_slice(&w.to_le_bytes());
+        hdr[24..28].copy_from_slice(&mips.max(1).to_le_bytes());
+        hdr[72..76].copy_from_slice(&32u32.to_le_bytes());
+        hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+        hdr[80..84].copy_from_slice(fourcc);
+        v.extend_from_slice(&hdr);
+        if fourcc == b"DX10" {
+            // DDS_HEADER_DXT10: the 20 bytes `parse_header` requires before the payload.
+            // Without them a DX10 seed dies at "truncated DX10 header" and BC7/BC6H, the two
+            // block families with the most parsing to get wrong, would never be reached.
+            let mut ext = [0u8; DXT10_LEN];
+            ext[0..4].copy_from_slice(&dxgi.to_le_bytes()); // dxgiFormat
+            ext[4..8].copy_from_slice(&3u32.to_le_bytes()); // TEXTURE2D
+            ext[12..16].copy_from_slice(&1u32.to_le_bytes()); // arraySize
+            v.extend_from_slice(&ext);
+        }
+
+        // Varied payload, not a flat colour: a mutation of a flat block is far likelier to
+        // land somewhere that changes nothing, and the index histogram in `block_mean_fast`
+        // only has more than one bin to weight when the indices differ.
+        let (mut lw, mut lh) = (w, h);
+        let mut n = 0u32;
+        for _ in 0..mips.max(1) {
+            let blocks = (lw.div_ceil(4) as usize) * (lh.div_ceil(4) as usize);
+            for _ in 0..blocks {
+                for _ in 0..block_bytes {
+                    n = n.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    v.push((n >> 24) as u8);
+                }
+            }
+            lw = lw.div_ceil(2).max(1);
+            lh = lh.div_ceil(2).max(1);
+        }
+        v
+    }
+
+    /// The seed self-check's half: a seed that its own parser rejects is worse than no seed,
+    /// because the fuzzer mutates it happily while every iteration dies at the header.
+    pub(crate) fn seed_decodes(b: &[u8]) -> bool {
+        decode_dds(b, Some(256)).is_ok()
+    }
+}
+
 /// Decode a DDS to RGBA8, or to `Rgb32F`/`Rgba32F` for the HDR layouts (BC6H and
 /// the float/shared-exponent uncompressed ones), which the caller tone-maps.
 ///
@@ -2026,5 +2116,48 @@ mod dds_cost_tests {
         println!("  (b) block mean, expand then average  : {:>8.2?}", slow);
         println!("  (c) full 12 MP expansion, for scale  : {:>8.2?}", expand);
         println!("  (d) fit 1000x750 -> 256              : {:>8.2?}", fit);
+    }
+}
+
+#[cfg(test)]
+mod dds_fuzzseed_tests {
+    use super::*;
+
+    /// **The load-bearing half of adding a fuzz seed.** A seed its own parser REJECTS is worse
+    /// than no seed at all: the fuzzer mutates it happily, every iteration dies at the header,
+    /// and the suite stays green having tested nothing. That is exactly the state the DDS
+    /// decoder was in until 2026-08-19, when its only seed was an eight-byte magic stub.
+    ///
+    /// This is the same discipline as `container::fuzzseed::every_seed_reaches_its_parser`,
+    /// and it is why the DX10 seeds carry a real `DDS_HEADER_DXT10`: without those 20 bytes
+    /// they die on "truncated DX10 header" and BC7 and BC6H go untested.
+    #[test]
+    fn every_dds_fuzz_seed_really_decodes() {
+        for (label, fourcc, dxgi) in [
+            ("dxt1", b"DXT1", 0u32),
+            ("dxt5", b"DXT5", 0),
+            ("bc7", b"DX10", 98),
+            ("bc6h", b"DX10", 95),
+        ] {
+            let s = fuzzapi::seed(fourcc, dxgi, 64, 64, 1);
+            assert!(
+                fuzzapi::seed_decodes(&s),
+                "the {label} fuzz seed does not decode, so mutating it tests nothing"
+            );
+        }
+        // The mip-chain seed, which exists to reach `select_mip`'s offset arithmetic.
+        let chain = fuzzapi::seed(b"DXT1", 0, 128, 128, 5);
+        assert!(
+            fuzzapi::seed_decodes(&chain),
+            "the mip-chain seed must decode"
+        );
+
+        // And it must really CARRY a chain: a header claiming 5 mips with only level 0 behind
+        // it would decode fine and never exercise the walk.
+        let one = fuzzapi::seed(b"DXT1", 0, 128, 128, 1);
+        assert!(
+            chain.len() > one.len(),
+            "the mip-chain seed must actually contain more levels than a single-level one"
+        );
     }
 }

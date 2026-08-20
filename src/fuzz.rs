@@ -167,12 +167,22 @@ fn all_targets() -> Vec<Target> {
 /// or the SPS bit reader.
 fn inner_targets() -> Vec<Target> {
     use crate::container::apk_fuzzapi as apk;
+    use crate::decode::dds_fuzzapi as dds;
     use crate::flv::fuzzapi as flv;
     vec![
         ("apk::manifest_icon", apk::manifest_icon),
         ("apk::arsc_resolve", apk::arsc_resolve),
         ("apk::string_pool", apk::string_pool),
         ("apk::type_chunk", apk::type_chunk),
+        // The DDS block decoder, which had NO target at all until 2026-08-19. It indexes a
+        // compressed payload using a width, height and mip offset that all come out of the
+        // file, and the classic right-click preview tile reaches it IN-PROCESS inside
+        // explorer.exe under `panic = "abort"`. The only DDS the harness carried was an
+        // eight-byte magic stub, which cannot survive `parse_header`, so every mutation died
+        // at the door. Both arms are listed because they are different code: the targeted one
+        // selects a mip and takes the block-average fast path, the other expands level 0.
+        ("dds::decode_targeted", dds::decode_targeted),
+        ("dds::decode_untargeted", dds::decode_untargeted),
         ("flv::sps_dims", flv::sps_dims),
         ("flv::parse_sps", flv::parse_sps),
         (
@@ -961,6 +971,30 @@ fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         // The audio-shaped seeds `audio_art_from_reader` had NONE of before: WAV/AIFF
         // PCM (drives `container::waveform`'s chunk walk) and ASF/WMA (drives
         // `container::audio::asf`'s GUID-object walk + `WM/Picture` parse).
+        // Structurally valid DDS surfaces, so a mutation reaches the block reader instead of
+        // dying at the header. One per block family that parses differently: DXT1's
+        // punch-through alpha, DXT5's interpolated alpha, BC7's mode/partition parsing, and a
+        // real mip CHAIN, whose level offsets accumulate from file-supplied sizes.
+        (
+            "dds-dxt1",
+            crate::decode::dds_fuzzapi::seed(b"DXT1", 0, 64, 64, 1),
+        ),
+        (
+            "dds-dxt5",
+            crate::decode::dds_fuzzapi::seed(b"DXT5", 0, 64, 64, 1),
+        ),
+        (
+            "dds-bc7",
+            crate::decode::dds_fuzzapi::seed(b"DX10", 98, 64, 64, 1),
+        ),
+        (
+            "dds-bc6h",
+            crate::decode::dds_fuzzapi::seed(b"DX10", 95, 64, 64, 1),
+        ),
+        (
+            "dds-mips",
+            crate::decode::dds_fuzzapi::seed(b"DXT1", 0, 128, 128, 5),
+        ),
         ("wav-pcm", synthetic_wav()),
         ("aiff-pcm", synthetic_aiff()),
         ("asf-wm-picture", synthetic_asf()),
@@ -1273,6 +1307,25 @@ fn parsers_survive_mutation_of_synthetic_seeds() {
     // milliseconds. What must NOT be traded away for time is the exhaustive truncation sweep:
     // short-read and off-by-one panics are what a prefix walk finds, and it is deterministic
     // rather than sampled.
+    //
+    // ⚠ MEASURED 2026-08-19: THE NUMBERS ABOVE ARE STALE BY ABOUT 20x. This gate costs ~255 s,
+    // not the ~10-16 s the paragraph above describes, and it is by far the largest single item
+    // in `cargo test --lib` (695 tests, ~300 s total). It grew there honestly, one seed and one
+    // target at a time, each addition cheap on its own: the cost is the CROSS PRODUCT, seeds x
+    // targets x (mutations + an exhaustive truncation sweep), so every new seed also pays for
+    // every existing target and vice versa.
+    //
+    // Adding the DDS targets on 2026-08-19 cost 19 s of that (255 -> 274, measured against a
+    // clean HEAD worktree rather than guessed), which is a fair price for the first fuzz
+    // coverage a block decoder that runs in-process in explorer.exe has ever had.
+    //
+    // The trade is left ALONE deliberately rather than bought back by lowering the mutation
+    // count again: this is a security gate over untrusted input, and quietly weakening it to
+    // hit a number written in a comment is the wrong direction. If four minutes becomes
+    // intolerable, the honest lever is moving whole SEED FAMILIES to the deep session (which
+    // is `#[ignore]`d and already exists for exactly this), not thinning what remains. Whoever
+    // does that should re-measure both halves; the figures here are what a loaded dev box read
+    // on 2026-08-19.
     let failures = run_all(&seeds, 600, 0x5A5A_1234_9E37_79B9);
     assert!(
         failures.is_empty(),
