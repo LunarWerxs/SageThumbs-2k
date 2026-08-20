@@ -42,15 +42,34 @@ features = ["flash-video", "vp9-video", "html-preview", "webp-lossy"]
 # Scan the committed Cargo.lock against the RustSec advisory DB. Anything with a
 # known vulnerability or an unmaintained/yanked status fails the build.
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# No `ignore` entries: the default graph currently has no known-unfixable
-# advisory. If one ever appears that genuinely cannot be patched, add it here
-# with a dated comment explaining why — never blanket-ignore.
+# Every `ignore` entry carries a dated comment saying why it cannot simply be fixed, and
+# what would let it be removed — never blanket-ignore, and never an undated one.
 ignore = [
     # paste 1.0.15 is UNMAINTAINED (RUSTSEC-2024-0436) — not a vulnerability, just no
     # longer updated. A tiny, stable proc-macro pulled transitively by `lofty` (the
     # audio-tag reader); no maintained drop-in exists and it compiles fine. Remove this
     # when lofty stops depending on it, or escalate if a real vuln is ever filed. (2026-06-14)
     "RUSTSEC-2024-0436",
+    # arrayref 0.3.9 was YANKED from crates.io on/around 2026-08-20. Not a vulnerability -
+    # `cargo deny check advisories` is clean and no RUSTSEC entry exists; a yank is a
+    # publisher action, and this one broke every push in the repo overnight without a line of
+    # our code changing.
+    #
+    # We do not depend on it directly. It arrives through resvg -> tiny-skia (and
+    # tiny-skia-path via usvg), both of which pin it, so the fix has to come from upstream.
+    #
+    # AND THE OBVIOUS FIX IS WORSE, WHICH IS THE REASON THIS ENTRY EXISTS RATHER THAN A BUMP.
+    # `cargo update -p arrayref --precise 0.3.10` moves two lines and then re-resolves the
+    # whole graph: +477 lockfile lines, pulling ring, untrusted, rustls-webpki and two
+    # webpki-roots into the DEFAULT graph, none of which are in the lock today and none of
+    # which we build. That trips the licence policy (ISC and CDLA-Permissive-2.0 are not on
+    # the allowlist), so trading a yank warning for a TLS stack and a licence failure is a
+    # bad deal on a shell extension that does no networking.
+    #
+    # REMOVE THIS when resvg/tiny-skia release against a non-yanked arrayref, and re-run
+    # `cargo deny check` to confirm the graph did not grow. Re-check at the next dependency
+    # sweep; escalate immediately if an actual advisory is ever filed against 0.3.9. (2026-08-20)
+    "arrayref@0.3.9",
 ]
 # Yanked crates in the lockfile should fail (the lock is committed, so this
 # catches a bad pin landing in the repo).
