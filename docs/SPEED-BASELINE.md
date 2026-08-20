@@ -14,7 +14,8 @@ measures the hardware rather than the software.
 | OS | Microsoft Windows 11 Pro (build 26200) |
 | Codec extensions | AV1VideoExtension 2.0.24.0, HEIFImageExtension 1.2.36.0, HEVCVideoExtension 2.5.28.0, RawImageExtension 2.5.24.0, WebpImageExtension 1.2.31.0 |
 | Runs per sample | 5 (fastest kept) |
-| Machine load spread during run | 22% |
+| Machine load spread during run | 29% |
+| Machine load during run (mean of samples) | 67% |
 
 ## How to read it
 
@@ -34,398 +35,387 @@ measures the hardware rather than the software.
 
 ## Summary
 
-* 385 samples measured across 230 formats.
-* 103 have a Windows equivalent; **42 of those are at least as fast as Windows**.
-* 282 have no Windows equivalent at all — for those, this is the only record that exists.
-* Median ratio where a comparison exists: **1.37x**.
+* 374 samples measured across 230 formats.
+* 103 have a Windows equivalent; **44 of those are at least as fast as Windows**.
+* 271 have no Windows equivalent at all — for those, this is the only record that exists.
+* Median ratio where a comparison exists: **1.21x**.
 
 ## Every format
 
 | Format | Size | File | Ours (ms) | Windows (ms) | x |
 |---|---|---:|---:|---:|---:|
-| 3dm | single | 48 KB | 2.9 | 0.0 |  |
-| 3fr | single | 39.6 MB | 13.1 | 1,123.1 | 0.01x |
-| 3mf | single | 2.1 MB | 20.5 | 0.0 |  |
-| aac | single | 162 KB | 11.1 | 0.0 |  |
-| af | single | 24 KB | 4.0 | 0.0 |  |
-| afdesign | single | 24 KB | 4.0 | 0.0 |  |
-| afphoto | single | 24 KB | 4.1 | 0.0 |  |
-| afpub | single | 24 KB | 4.0 | 0.0 |  |
-| ai | small | 205 KB | 27.1 | 0.0 |  |
-| ai | medium | 4.9 MB | 104.5 | 0.0 |  |
-| ai | large | 30.5 MB | 291.4 | 0.0 |  |
-| aif | single | 409 KB | 11.2 | 0.0 |  |
-| aiff | single | 409 KB | 11.4 | 0.0 |  |
-| ape | single | 203 KB | 10.9 | 0.0 |  |
-| apng | small | 145 KB | 2.4 | 1.4 | 1.7x |
-| apng | medium | 3.4 MB | 42.6 | 29.8 | 1.43x |
-| apng | large | 21.1 MB | 270.1 | 178.1 | 1.52x |
-| arw | single | 12.6 MB | 13.2 | 314.7 | 0.04x |
-| avci | single | 2.7 MB | 21.4 | 14.5 | 1.47x |
-| avif | small | 4 KB | 6.7 | 9.2 | 0.73x |
-| avif | medium | 56 KB | 22.8 | 36.4 | 0.63x |
-| avif | large | 249 KB | 41.3 | 55.2 | 0.75x |
-| azw | single | 106 KB | 9.9 | 0.0 |  |
-| azw3 | single | 106 KB | 10.2 | 0.0 |  |
-| blend | single | 445 KB | 2.1 | 0.0 |  |
-| bmp | small | 225 KB | 1.4 | 0.8 | 1.85x |
-| bmp | medium | 5.5 MB | 4.4 | 5.8 | 0.76x |
-| bmp | large | 34.3 MB | 23.0 | 26.7 | 0.86x |
-| bw | single | 2.3 MB | 22.7 | 18.4 | 1.23x |
-| cal | small | 6 KB | 58.6 | 0.0 |  |
-| cal | medium | 99 KB | 273.6 | 0.0 |  |
-| cal | large | 682 KB | 1,393.3 | 0.0 |  |
-| cals | small | 6 KB | 59.5 | 0.0 |  |
-| cals | medium | 99 KB | 274.1 | 0.0 |  |
-| cals | large | 682 KB | 1,410.3 | 0.0 |  |
-| cb7 | single | 4.7 MB | 96.5 | 0.0 |  |
+| 3dm | single | 48 KB | 2.4 | 0.0 |  |
+| 3fr | single | 39.6 MB | 22.3 | 1,459.1 | 0.02x |
+| 3mf | single | 2.1 MB | 27.9 | 0.0 |  |
+| aac | single | 162 KB | 38.7 | 0.0 |  |
+| af | single | 24 KB | 18.6 | 0.0 |  |
+| afdesign | single | 24 KB | 19.8 | 0.0 |  |
+| afphoto | single | 24 KB | 26.1 | 0.0 |  |
+| afpub | single | 24 KB | 27.3 | 0.0 |  |
+| ai | single | 2.6 MB | 99.4 | 0.0 |  |
+| aif | single | 409 KB | 39.2 | 0.0 |  |
+| aiff | single | 409 KB | 38.5 | 0.0 |  |
+| ape | single | 203 KB | 37.8 | 0.0 |  |
+| apng | small | 145 KB | 12.2 | 1.6 | 7.74x |
+| apng | medium | 3.4 MB | 51.0 | 32.4 | 1.57x |
+| apng | large | 21.1 MB | 183.6 | 214.3 | 0.86x |
+| arw | single | 12.6 MB | 16.9 | 414.3 | 0.04x |
+| avci | single | 2.7 MB | 34.4 | 17.6 | 1.95x |
+| avif | small | 4 KB | 17.5 | 7.2 | 2.44x |
+| avif | medium | 56 KB | 36.6 | 35.5 | 1.03x |
+| avif | large | 249 KB | 56.1 | 72.7 | 0.77x |
+| azw | single | 106 KB | 21.8 | 0.0 |  |
+| azw3 | single | 106 KB | 22.9 | 0.0 |  |
+| blend | single | 445 KB | 6.1 | 0.0 |  |
+| bmp | small | 225 KB | 0.3 | 0.9 | 0.34x |
+| bmp | medium | 5.5 MB | 3.5 | 5.5 | 0.63x |
+| bmp | large | 34.3 MB | 20.1 | 21.3 | 0.95x |
+| bw | single | 2.3 MB | 30.0 | 17.0 | 1.77x |
+| cal | small | 6 KB | 59.3 | 0.0 |  |
+| cal | medium | 99 KB | 264.6 | 0.0 |  |
+| cal | large | 682 KB | 1,397.0 | 0.0 |  |
+| cals | small | 6 KB | 58.4 | 0.0 |  |
+| cals | medium | 99 KB | 269.3 | 0.0 |  |
+| cals | large | 682 KB | 1,453.3 | 0.0 |  |
+| cb7 | single | 4.7 MB | 101.2 | 0.0 |  |
 | cbr | single | 0 KB | 3.0 | 0.0 |  |
-| cbt | single | 4.7 MB | 20.4 | 0.0 |  |
-| cbz | single | 5.4 MB | 26.0 | 0.0 |  |
-| cdr | single | 71 KB | 2.3 | 0.0 |  |
-| cdt | single | 71 KB | 2.3 | 0.0 |  |
-| cin | small | 452 KB | 67.4 | 0.0 |  |
-| cin | medium | 11.0 MB | 94.7 | 0.0 |  |
-| cin | large | 68.7 MB | 318.4 | 0.0 |  |
-| clip | single | 3.1 MB | 12.9 | 0.0 |  |
-| cr2 | single | 7.4 MB | 69.7 | 313.3 | 0.22x |
-| cr3 | single | 11.7 MB | 55.4 | 782.1 | 0.07x |
-| crw | single | 5.5 MB | 49.6 | 361.8 | 0.14x |
-| cur | small | 309 KB | 2.9 | 0.6 | 4.91x |
-| cut | single | 2.7 MB | 27.4 | 18.1 | 1.52x |
-| dcm | single | 667 KB | 17.7 | 10.7 | 1.66x |
-| dcr | single | 13.3 MB | 516.7 | 446.7 | 1.16x |
-| dcx | small | 236 KB | 57.8 | 0.0 |  |
-| dcx | medium | 5.5 MB | 116.1 | 0.0 |  |
-| dcx | large | 34.5 MB | 481.3 | 0.0 |  |
-| dds | small | 38 KB | 1.5 | 0.6 | 2.68x |
-| dds | medium | 938 KB | 24.3 | 6.0 | 4.08x |
-| dds | large | 5.7 MB | 139.7 | 25.6 | 5.46x |
-| dib | single | 2.3 MB | 64.1 | 0.0 |  |
-| djv | single | 207 KB | 157.1 | 0.0 |  |
-| djvu | single | 207 KB | 159.9 | 0.0 |  |
-| dng | single | 21.6 MB | 8.9 | 148.0 | 0.06x |
-| doc | single | 58 KB | 489.6 | 0.0 |  |
-| docm | single | 36 KB | 3.3 | 0.0 |  |
-| docx | single | 39 KB | 3.6 | 0.0 |  |
-| dot | single | 58 KB | 511.3 | 0.0 |  |
-| dotm | single | 25 KB | 3.4 | 0.0 |  |
-| dotx | single | 14 KB | 1.9 | 0.0 |  |
-| dpx | small | 458 KB | 63.4 | 0.0 |  |
-| dpx | medium | 11.0 MB | 96.8 | 0.0 |  |
-| dpx | large | 68.7 MB | 289.7 | 0.0 |  |
-| dwg | single | 569 KB | 1.5 | 0.0 |  |
-| dxt1 | small | 38 KB | 2.1 | 0.5 | 4.7x |
-| dxt1 | medium | 938 KB | 25.1 | 5.5 | 4.6x |
-| dxt1 | large | 5.7 MB | 180.5 | 24.8 | 7.27x |
-| dxt5 | small | 38 KB | 1.5 | 0.4 | 3.33x |
-| dxt5 | medium | 938 KB | 27.5 | 4.8 | 5.79x |
-| dxt5 | large | 5.7 MB | 163.9 | 25.3 | 6.47x |
-| emf | single | 4.3 MB | 168.5 | 0.0 |  |
-| emz | single | 3.4 MB | 174.8 | 0.0 |  |
-| eps | single | 45 KB | 1.3 | 0.0 |  |
-| epub | single | 2.8 MB | 29.5 | 0.0 |  |
-| erf | single | 9.5 MB | 4.7 | 237.2 | 0.02x |
-| exr | small | 454 KB | 5.7 | 0.0 |  |
-| exr | medium | 11.0 MB | 10.9 | 0.0 |  |
-| exr | large | 68.7 MB | 18.9 | 0.0 |  |
-| farbfeld | small | 600 KB | 3.9 | 0.0 |  |
-| farbfeld | medium | 14.6 MB | 94.5 | 0.0 |  |
-| farbfeld | large | 91.6 MB | 534.2 | 0.0 |  |
-| fb2 | single | 3.7 MB | 53.3 | 0.0 |  |
-| fbz | single | 2.8 MB | 68.9 | 0.0 |  |
-| fcstd | single | 2.7 MB | 30.1 | 0.0 |  |
-| ff | small | 600 KB | 4.0 | 0.0 |  |
-| ff | medium | 14.6 MB | 101.2 | 0.0 |  |
-| ff | large | 91.6 MB | 617.6 | 0.0 |  |
-| fff | single | 81.5 MB | 75.0 | 1,646.9 | 0.05x |
-| fits | small | 453 KB | 57.0 | 0.0 |  |
-| fits | medium | 11.0 MB | 158.0 | 0.0 |  |
-| fits | large | 68.7 MB | 622.8 | 0.0 |  |
-| fl32 | small | 900 KB | 59.9 | 0.0 |  |
-| fl32 | medium | 22.0 MB | 139.1 | 0.0 |  |
-| fl32 | large | 137.3 MB | 589.2 | 0.0 |  |
-| flac | single | 189 KB | 12.5 | 0.0 |  |
-| flv | small | 37 KB | 37.1 | 0.0 |  |
-| flv | medium | 187 KB | 244.8 | 0.0 |  |
-| flv | large | 493 KB | 1,160.0 | 0.0 |  |
-| fts | small | 453 KB | 68.0 | 0.0 |  |
-| fts | medium | 11.0 MB | 168.1 | 0.0 |  |
-| fts | large | 68.7 MB | 580.3 | 0.0 |  |
-| gco | single | 1.3 MB | 21.5 | 0.0 |  |
-| gcode | single | 1.3 MB | 23.6 | 0.0 |  |
-| gif | small | 60 KB | 6.8 | 0.5 | 14.66x |
-| gif | medium | 1.3 MB | 44.4 | 8.1 | 5.45x |
-| gif | large | 9.4 MB | 306.5 | 50.5 | 6.07x |
-| hdp | single | 338 KB | 5.2 | 16.8 | 0.31x |
-| hdr | small | 265 KB | 4.2 | 0.0 |  |
-| hdr | medium | 6.3 MB | 117.6 | 0.0 |  |
-| hdr | large | 39.8 MB | 721.4 | 0.0 |  |
-| heic | single | 2.3 MB | 24.4 | 18.6 | 1.31x |
-| heif | single | 980 KB | 15.9 | 8.7 | 1.83x |
-| icb | small | 225 KB | 2.2 | 0.0 |  |
-| icb | medium | 5.5 MB | 28.4 | 0.0 |  |
-| icb | large | 34.3 MB | 154.8 | 0.0 |  |
-| icns | single | 2.1 MB | 20.1 | 14.7 | 1.37x |
-| ico | small | 309 KB | 1.8 | 0.4 | 4.16x |
-| icon | small | 309 KB | 2.2 | 0.5 | 4.7x |
-| iiq | single | 11.1 MB | 9.2 | 4.8 | 1.92x |
-| indd | single | 1.1 MB | 7.5 | 0.0 |  |
-| j2c | small | 339 KB | 127.1 | 0.0 |  |
-| j2c | medium | 8.1 MB | 206.7 | 0.0 |  |
-| j2c | large | 50.7 MB | 295.0 | 0.0 |  |
-| j2k | small | 339 KB | 119.1 | 0.0 |  |
-| j2k | medium | 8.1 MB | 201.5 | 0.0 |  |
-| j2k | large | 50.7 MB | 342.5 | 0.0 |  |
-| jbig | single | 2.7 MB | 38.2 | 20.8 | 1.84x |
-| jfif | single | 2.3 MB | 30.4 | 18.5 | 1.65x |
-| jng | small | 58 KB | 5.1 | 0.0 |  |
-| jng | medium | 1.2 MB | 12.8 | 0.0 |  |
-| jng | large | 7.5 MB | 66.1 | 0.0 |  |
-| jnx | single | 2.3 MB | 20.1 | 15.5 | 1.29x |
-| jp2 | small | 339 KB | 118.3 | 0.0 |  |
-| jp2 | medium | 8.1 MB | 159.3 | 0.0 |  |
-| jp2 | large | 50.7 MB | 269.6 | 0.0 |  |
-| jpc | small | 339 KB | 117.8 | 0.0 |  |
-| jpc | medium | 8.1 MB | 201.7 | 0.0 |  |
-| jpc | large | 50.7 MB | 309.3 | 0.0 |  |
-| jpe | small | 58 KB | 5.4 | 0.8 | 6.84x |
-| jpe | medium | 1.2 MB | 13.1 | 14.8 | 0.88x |
-| jpe | large | 7.5 MB | 65.8 | 95.0 | 0.69x |
-| jpeg | small | 58 KB | 5.6 | 0.9 | 6.48x |
-| jpeg | medium | 1.2 MB | 14.4 | 14.8 | 0.97x |
-| jpeg | large | 7.5 MB | 64.2 | 101.7 | 0.63x |
-| jpg | small | 58 KB | 5.7 | 0.9 | 6.29x |
-| jpg | medium | 1.2 MB | 16.5 | 16.6 | 0.99x |
-| jpg | large | 7.5 MB | 64.2 | 96.9 | 0.66x |
-| jpm | small | 339 KB | 96.8 | 0.0 |  |
-| jpm | medium | 8.1 MB | 197.8 | 0.0 |  |
-| jpm | large | 50.7 MB | 327.0 | 0.0 |  |
-| jps | small | 58 KB | 4.5 | 0.9 | 5.23x |
-| jps | medium | 1.2 MB | 11.9 | 16.1 | 0.74x |
-| jps | large | 7.5 MB | 58.2 | 96.0 | 0.61x |
-| jxl | small | 1 KB | 31.4 | 0.0 |  |
-| jxl | medium | 9 KB | 429.8 | 0.0 |  |
-| jxl | large | 50 KB | 1,931.0 | 0.0 |  |
-| jxr | single | 338 KB | 4.2 | 13.5 | 0.31x |
-| k25 | single | 824 KB | 2.3 | 41.7 | 0.05x |
-| kdc | single | 824 KB | 2.1 | 41.5 | 0.05x |
-| key | single | 79 KB | 2.9 | 0.0 |  |
-| kra | single | 2.3 MB | 37.0 | 0.0 |  |
-| m4a | single | 199 KB | 14.5 | 0.0 |  |
-| m4b | single | 199 KB | 13.2 | 0.0 |  |
-| m4v | small | 7 KB | 45.4 | 0.0 |  |
-| m4v | medium | 126 KB | 92.2 | 0.0 |  |
-| m4v | large | 604 KB | 357.4 | 0.0 |  |
-| mac | single | 2.7 MB | 24.6 | 15.6 | 1.57x |
-| mat | small | 225 KB | 44.1 | 0.0 |  |
-| mat | medium | 5.5 MB | 95.0 | 0.0 |  |
-| mat | large | 34.3 MB | 380.9 | 0.0 |  |
-| max | single | 304 KB | 39.7 | 0.0 |  |
-| mdc | single | 824 KB | 2.1 | 54.2 | 0.04x |
-| mef | single | 34.9 MB | 12.1 | 0.0 |  |
-| miff | small | 451 KB | 57.4 | 0.0 |  |
-| miff | medium | 11.0 MB | 76.3 | 0.0 |  |
-| miff | large | 68.7 MB | 227.6 | 0.0 |  |
-| mkv | small | 7 KB | 31.4 | 0.0 |  |
-| mkv | medium | 126 KB | 91.9 | 0.0 |  |
-| mkv | large | 604 KB | 374.6 | 0.0 |  |
-| mng | small | 439 KB | 50.1 | 0.0 |  |
-| mng | medium | 10.6 MB | 111.9 | 0.0 |  |
-| mng | large | 67.1 MB | 459.3 | 0.0 |  |
-| mobi | single | 106 KB | 12.7 | 0.0 |  |
-| mos | single | 7.1 MB | 136.9 | 180.6 | 0.76x |
-| mov | small | 7 KB | 31.2 | 0.0 |  |
-| mov | medium | 126 KB | 73.7 | 0.0 |  |
-| mov | large | 604 KB | 372.3 | 0.0 |  |
-| mp3 | single | 153 KB | 13.5 | 0.0 |  |
-| mp4 | small | 7 KB | 45.7 | 0.0 |  |
-| mp4 | medium | 126 KB | 91.2 | 0.0 |  |
-| mp4 | large | 604 KB | 349.7 | 0.0 |  |
-| mpc | single | 155 KB | 12.3 | 0.0 |  |
-| mpo | single | 980 KB | 14.6 | 9.2 | 1.59x |
-| mrw | single | 9.5 MB | 118.0 | 142.2 | 0.83x |
-| nef | single | 373 KB | 132.8 | 57.8 | 2.3x |
-| nrw | single | 20.6 MB | 14.3 | 431.7 | 0.03x |
-| numbers | single | 13 KB | 1.9 | 0.0 |  |
-| odf | single | 980 KB | 17.1 | 0.0 |  |
-| odg | single | 2.3 MB | 39.2 | 0.0 |  |
-| odp | single | 2.8 MB | 33.7 | 0.0 |  |
-| ods | single | 667 KB | 18.2 | 0.0 |  |
-| odt | single | 2.7 MB | 27.0 | 0.0 |  |
-| oga | single | 207 KB | 18.1 | 0.0 |  |
-| ogg | single | 207 KB | 16.9 | 0.0 |  |
-| opus | single | 211 KB | 15.7 | 0.0 |  |
-| ora | single | 980 KB | 16.5 | 0.0 |  |
-| orf | single | 7.1 MB | 134.0 | 162.6 | 0.82x |
-| otp | single | 2.7 MB | 24.7 | 0.0 |  |
-| ots | single | 2.1 MB | 23.4 | 0.0 |  |
-| ott | single | 2.3 MB | 39.8 | 0.0 |  |
-| pages | single | 36 KB | 7.3 | 0.0 |  |
-| pam | small | 450 KB | 1.6 | 0.0 |  |
-| pam | medium | 11.0 MB | 23.5 | 0.0 |  |
-| pam | large | 68.7 MB | 252.8 | 0.0 |  |
-| pbm | small | 9 KB | 1.9 | 0.0 |  |
-| pbm | medium | 234 KB | 31.8 | 0.0 |  |
-| pbm | large | 1.4 MB | 175.9 | 0.0 |  |
-| pcd | small | 770 KB | 260.2 | 0.0 |  |
-| pcd | medium | 770 KB | 331.8 | 0.0 |  |
-| pcd | large | 770 KB | 281.1 | 0.0 |  |
-| pcx | small | 232 KB | 62.2 | 0.0 |  |
-| pcx | medium | 5.5 MB | 209.9 | 0.0 |  |
-| pcx | large | 34.5 MB | 939.0 | 0.0 |  |
-| pdb | small | 24 KB | 57.6 | 0.0 |  |
-| pdb | medium | 509 KB | 94.1 | 0.0 |  |
-| pdb | large | 3.3 MB | 215.4 | 0.0 |  |
-| pdf | small | 205 KB | 33.0 | 0.0 |  |
-| pdf | medium | 4.9 MB | 123.5 | 0.0 |  |
-| pdf | large | 30.5 MB | 356.5 | 0.0 |  |
-| pef | single | 41.9 MB | 34.1 | 1,469.5 | 0.02x |
-| pes | single | 2.3 MB | 21.2 | 15.6 | 1.35x |
-| pfm | small | 900 KB | 53.3 | 0.0 |  |
-| pfm | medium | 22.0 MB | 141.6 | 0.0 |  |
-| pfm | large | 137.3 MB | 575.7 | 0.0 |  |
-| pgm | small | 150 KB | 1.5 | 0.0 |  |
-| pgm | medium | 3.7 MB | 19.2 | 0.0 |  |
-| pgm | large | 22.9 MB | 121.3 | 0.0 |  |
-| pgx | small | 150 KB | 42.7 | 0.0 |  |
-| pgx | medium | 3.7 MB | 55.7 | 0.0 |  |
-| pgx | large | 22.9 MB | 124.1 | 0.0 |  |
-| phm | small | 450 KB | 51.3 | 0.0 |  |
-| phm | medium | 11.0 MB | 90.2 | 0.0 |  |
-| phm | large | 68.7 MB | 300.1 | 0.0 |  |
-| pix | single | 667 KB | 19.1 | 9.1 | 2.1x |
-| png | small | 439 KB | 3.3 | 2.6 | 1.24x |
-| png | medium | 10.6 MB | 61.9 | 39.2 | 1.58x |
-| png | large | 67.1 MB | 352.0 | 233.1 | 1.51x |
-| pnm | small | 450 KB | 1.4 | 0.0 |  |
-| pnm | medium | 11.0 MB | 25.4 | 0.0 |  |
-| pnm | large | 68.7 MB | 148.2 | 0.0 |  |
-| pot | single | 58 KB | 442.8 | 0.0 |  |
-| potm | single | 39 KB | 2.7 | 0.0 |  |
-| potx | single | 16 KB | 2.6 | 0.0 |  |
-| ppm | small | 450 KB | 1.6 | 0.0 |  |
-| ppm | medium | 11.0 MB | 24.7 | 0.0 |  |
-| ppm | large | 68.7 MB | 121.8 | 0.0 |  |
-| pps | single | 58 KB | 443.1 | 0.0 |  |
-| ppsm | single | 17 KB | 3.2 | 0.0 |  |
-| ppsx | single | 17 KB | 2.4 | 0.0 |  |
-| ppt | single | 58 KB | 441.3 | 0.0 |  |
-| pptm | single | 25 KB | 2.9 | 0.0 |  |
-| pptx | single | 14 KB | 2.0 | 0.0 |  |
-| prc | single | 106 KB | 10.9 | 0.0 |  |
-| procreate | single | 2.8 MB | 30.6 | 0.0 |  |
-| psb | small | 887 KB | 62.8 | 0.0 |  |
-| psb | medium | 21.2 MB | 163.9 | 0.0 |  |
-| psb | large | 135.2 MB | 699.1 | 0.0 |  |
-| psd | small | 886 KB | 62.1 | 0.0 |  |
-| psd | medium | 21.2 MB | 167.6 | 0.0 |  |
-| psd | large | 135.2 MB | 681.3 | 0.0 |  |
-| ptif | small | 591 KB | 1.6 | 1.3 | 1.17x |
-| ptif | medium | 14.6 MB | 22.6 | 32.9 | 0.69x |
-| ptif | large | 91.5 MB | 142.0 | 124.4 | 1.14x |
-| pub | single | 58 KB | 460.8 | 0.0 |  |
-| pwp | single | 2.1 MB | 25.3 | 14.1 | 1.79x |
-| qoi | small | 282 KB | 3.9 | 0.0 |  |
-| qoi | medium | 6.8 MB | 59.6 | 0.0 |  |
-| qoi | large | 42.5 MB | 367.4 | 0.0 |  |
-| raf | single | 8.1 MB | 48.0 | 126.0 | 0.38x |
-| ras | small | 225 KB | 58.7 | 0.0 |  |
-| ras | medium | 5.5 MB | 77.0 | 0.0 |  |
-| ras | large | 34.3 MB | 199.1 | 0.0 |  |
-| rla | single | 2.7 MB | 33.3 | 22.1 | 1.5x |
-| rle | single | 2.3 MB | 26.3 | 16.4 | 1.6x |
-| rmf | single | 980 KB | 16.2 | 10.7 | 1.51x |
-| rw2 | single | 11.7 MB | 16.4 | 436.4 | 0.04x |
-| rwl | single | 14.4 MB | 15.9 | 526.5 | 0.03x |
-| scr | single | 2.3 MB | 24.3 | 15.8 | 1.53x |
-| sct | single | 2.1 MB | 23.8 | 15.4 | 1.55x |
-| sf3 | small | 450 KB | 49.4 | 0.0 |  |
-| sf3 | medium | 11.0 MB | 86.5 | 0.0 |  |
-| sf3 | large | 68.7 MB | 289.5 | 0.0 |  |
-| sfw | single | 667 KB | 15.9 | 9.3 | 1.71x |
-| sgi | small | 450 KB | 57.2 | 0.0 |  |
-| sgi | medium | 11.0 MB | 91.3 | 0.0 |  |
-| sgi | large | 68.7 MB | 278.6 | 0.0 |  |
-| sketch | single | 667 KB | 17.4 | 0.0 |  |
-| skp | single | 335 KB | 2.0 | 0.0 |  |
-| spx | single | 196 KB | 18.5 | 0.0 |  |
-| sr2 | single | 20.1 MB | 25.4 | 267.7 | 0.09x |
-| srf | single | 16.6 MB | 22.9 | 286.9 | 0.08x |
-| srw | single | 23.5 MB | 16.7 | 760.3 | 0.02x |
-| sti | single | 2.3 MB | 27.9 | 14.9 | 1.87x |
-| sun | small | 225 KB | 50.5 | 0.0 |  |
-| sun | medium | 5.5 MB | 95.2 | 0.0 |  |
-| sun | large | 34.3 MB | 195.0 | 0.0 |  |
-| svg | small | 565 KB | 8.8 | 0.0 |  |
-| svg | medium | 13.6 MB | 157.3 | 0.0 |  |
-| svg | large | 85.4 MB | 972.5 | 0.0 |  |
-| svgz | small | 430 KB | 9.9 | 0.0 |  |
-| svgz | medium | 10.3 MB | 192.9 | 0.0 |  |
-| tga | small | 225 KB | 1.9 | 0.0 |  |
-| tga | medium | 5.5 MB | 21.8 | 0.0 |  |
-| tga | large | 34.3 MB | 121.3 | 0.0 |  |
-| tif | single | 3.2 MB | 11.4 | 8.8 | 1.3x |
-| tiff | small | 450 KB | 1.5 | 0.8 | 1.93x |
-| tiff | medium | 11.0 MB | 21.8 | 19.1 | 1.14x |
-| tiff | large | 68.7 MB | 134.9 | 72.8 | 1.85x |
-| tiff64 | small | 450 KB | 50.6 | 0.0 |  |
-| tiff64 | medium | 11.0 MB | 83.0 | 0.0 |  |
-| tiff64 | large | 68.7 MB | 242.1 | 0.0 |  |
-| tim | single | 2.7 MB | 28.6 | 18.5 | 1.54x |
-| tm2 | single | 2.3 MB | 22.3 | 15.6 | 1.43x |
-| vda | small | 225 KB | 2.1 | 0.0 |  |
-| vda | medium | 5.5 MB | 23.3 | 0.0 |  |
-| vda | large | 34.3 MB | 132.0 | 0.0 |  |
-| vicar | small | 79 KB | 51.5 | 0.0 |  |
-| vicar | medium | 1.8 MB | 65.1 | 0.0 |  |
-| vicar | large | 11.4 MB | 114.2 | 0.0 |  |
-| viff | small | 226 KB | 45.2 | 0.0 |  |
-| viff | medium | 5.5 MB | 84.9 | 0.0 |  |
-| viff | large | 34.3 MB | 328.8 | 0.0 |  |
-| vips | small | 450 KB | 50.9 | 0.0 |  |
-| vips | medium | 11.0 MB | 92.4 | 0.0 |  |
-| vips | large | 68.7 MB | 338.0 | 0.0 |  |
-| vsd | single | 46 KB | 55.9 | 0.0 |  |
-| vsdm | single | 61 KB | 60.0 | 0.0 |  |
-| vsdx | single | 61 KB | 62.8 | 0.0 |  |
-| vst | small | 225 KB | 2.0 | 0.0 |  |
-| vst | medium | 5.5 MB | 20.6 | 0.0 |  |
-| vst | large | 34.3 MB | 125.3 | 0.0 |  |
-| wav | single | 409 KB | 11.6 | 0.0 |  |
-| wdp | single | 338 KB | 3.5 | 11.6 | 0.3x |
-| webm | small | 31 KB | 5.7 | 0.0 |  |
-| webm | medium | 683 KB | 58.7 | 0.0 |  |
-| webm | large | 4.0 MB | 260.5 | 0.0 |  |
-| webp | small | 32 KB | 3.0 | 2.1 | 1.43x |
-| webp | medium | 757 KB | 42.8 | 43.1 | 0.99x |
-| webp | large | 4.6 MB | 254.8 | 261.3 | 0.98x |
-| wma | single | 103 KB | 21.1 | 0.0 |  |
-| wmf | single | 6.5 MB | 155.2 | 0.0 |  |
-| wmv | small | 26 KB | 138.3 | 0.0 |  |
-| wmv | medium | 194 KB | 139.8 | 0.0 |  |
-| wmv | large | 372 KB | 272.9 | 0.0 |  |
-| wpg | small | 79 KB | 44.6 | 0.0 |  |
-| wpg | medium | 1.9 MB | 76.1 | 0.0 |  |
-| wpg | large | 11.8 MB | 194.3 | 0.0 |  |
-| wv | single | 244 KB | 11.7 | 0.0 |  |
-| x3f | single | 12.6 MB | 13.1 | 302.8 | 0.04x |
-| xbm | small | 59 KB | 53.3 | 0.0 |  |
-| xbm | medium | 1.4 MB | 64.0 | 0.0 |  |
-| xbm | large | 8.9 MB | 157.0 | 0.0 |  |
-| xcf | single | 2.3 MB | 19.7 | 12.8 | 1.54x |
-| xd | single | 2.3 MB | 30.8 | 0.0 |  |
-| xls | single | 58 KB | 518.1 | 0.0 |  |
-| xlsb | single | 17 KB | 3.3 | 0.0 |  |
-| xlsm | single | 17 KB | 3.4 | 0.0 |  |
-| xlsx | single | 16 KB | 3.2 | 0.0 |  |
-| xlt | single | 58 KB | 479.9 | 0.0 |  |
-| xltm | single | 36 KB | 4.3 | 0.0 |  |
-| xltx | single | 39 KB | 4.1 | 0.0 |  |
-| xpm | small | 155 KB | 140.9 | 0.0 |  |
-| xpm | medium | 3.7 MB | 329.0 | 0.0 |  |
-| xpm | large | 22.9 MB | 1,469.3 | 0.0 |  |
-| xv | small | 226 KB | 232.5 | 0.0 |  |
-| xv | medium | 5.5 MB | 254.4 | 0.0 |  |
-| xv | large | 34.3 MB | 645.2 | 0.0 |  |
+| cbt | single | 4.7 MB | 32.0 | 0.0 |  |
+| cbz | single | 5.4 MB | 36.2 | 0.0 |  |
+| cdr | single | 71 KB | 7.7 | 0.0 |  |
+| cdt | single | 71 KB | 7.2 | 0.0 |  |
+| cin | small | 452 KB | 60.9 | 0.0 |  |
+| cin | medium | 11.0 MB | 91.9 | 0.0 |  |
+| cin | large | 68.7 MB | 333.2 | 0.0 |  |
+| clip | single | 3.1 MB | 19.1 | 0.0 |  |
+| cr2 | single | 7.4 MB | 9.1 | 388.4 | 0.02x |
+| cr3 | single | 11.7 MB | 10.1 | 924.3 | 0.01x |
+| crw | single | 5.5 MB | 6.1 | 289.4 | 0.02x |
+| cur | small | 309 KB | 1.7 | 0.4 | 4.28x |
+| cut | single | 2.7 MB | 35.2 | 14.9 | 2.36x |
+| dcm | single | 667 KB | 28.3 | 14.0 | 2.02x |
+| dcr | single | 13.3 MB | 523.4 | 502.7 | 1.04x |
+| dcx | small | 236 KB | 63.9 | 0.0 |  |
+| dcx | medium | 5.5 MB | 118.4 | 0.0 |  |
+| dcx | large | 34.5 MB | 444.9 | 0.0 |  |
+| dds | small | 38 KB | 10.3 | 0.3 | 35.36x |
+| dds | medium | 938 KB | 21.4 | 4.8 | 4.46x |
+| dds | large | 5.7 MB | 49.4 | 22.6 | 2.19x |
+| dib | single | 2.3 MB | 67.1 | 0.0 |  |
+| djv | single | 207 KB | 153.4 | 0.0 |  |
+| djvu | single | 207 KB | 153.9 | 0.0 |  |
+| dng | single | 21.6 MB | 12.6 | 140.1 | 0.09x |
+| doc | single | 58 KB | 468.7 | 0.0 |  |
+| docm | single | 36 KB | 10.7 | 0.0 |  |
+| docx | single | 39 KB | 2.4 | 0.0 |  |
+| dot | single | 58 KB | 468.9 | 0.0 |  |
+| dotm | single | 25 KB | 10.3 | 0.0 |  |
+| dotx | single | 14 KB | 8.7 | 0.0 |  |
+| dpx | small | 458 KB | 54.2 | 0.0 |  |
+| dpx | medium | 11.0 MB | 89.3 | 0.0 |  |
+| dpx | large | 68.7 MB | 272.3 | 0.0 |  |
+| dwg | single | 569 KB | 5.9 | 0.0 |  |
+| dxt1 | small | 38 KB | 10.1 | 0.3 | 38.73x |
+| dxt1 | medium | 938 KB | 15.1 | 4.6 | 3.31x |
+| dxt1 | large | 5.7 MB | 43.0 | 22.4 | 1.92x |
+| dxt5 | small | 38 KB | 9.3 | 0.4 | 22.86x |
+| dxt5 | medium | 938 KB | 15.6 | 4.9 | 3.2x |
+| dxt5 | large | 5.7 MB | 44.7 | 22.9 | 1.95x |
+| emf | single | 4.3 MB | 168.6 | 0.0 |  |
+| emz | single | 3.4 MB | 185.9 | 0.0 |  |
+| eps | single | 45 KB | 7.7 | 0.0 |  |
+| epub | single | 2.8 MB | 39.7 | 0.0 |  |
+| erf | single | 9.5 MB | 10.3 | 212.8 | 0.05x |
+| exr | small | 454 KB | 12.2 | 0.0 |  |
+| exr | medium | 11.0 MB | 15.4 | 0.0 |  |
+| exr | large | 68.7 MB | 23.4 | 0.0 |  |
+| farbfeld | small | 600 KB | 13.1 | 0.0 |  |
+| farbfeld | medium | 14.6 MB | 100.6 | 0.0 |  |
+| farbfeld | large | 91.6 MB | 458.1 | 0.0 |  |
+| fb2 | single | 3.7 MB | 67.7 | 0.0 |  |
+| fbz | single | 2.8 MB | 93.9 | 0.0 |  |
+| fcstd | single | 2.7 MB | 39.9 | 0.0 |  |
+| ff | small | 600 KB | 13.7 | 0.0 |  |
+| ff | medium | 14.6 MB | 110.6 | 0.0 |  |
+| ff | large | 91.6 MB | 598.4 | 0.0 |  |
+| fff | single | 81.5 MB | 113.8 | 2,113.1 | 0.05x |
+| fits | small | 453 KB | 58.5 | 0.0 |  |
+| fits | medium | 11.0 MB | 156.6 | 0.0 |  |
+| fits | large | 68.7 MB | 653.1 | 0.0 |  |
+| fl32 | small | 900 KB | 53.3 | 0.0 |  |
+| fl32 | medium | 22.0 MB | 139.9 | 0.0 |  |
+| fl32 | large | 137.3 MB | 573.3 | 0.0 |  |
+| flac | single | 189 KB | 45.4 | 0.0 |  |
+| flv | small | 37 KB | 46.9 | 0.0 |  |
+| flv | medium | 187 KB | 249.6 | 0.0 |  |
+| flv | large | 493 KB | 1,093.3 | 0.0 |  |
+| fts | small | 453 KB | 59.6 | 0.0 |  |
+| fts | medium | 11.0 MB | 153.2 | 0.0 |  |
+| fts | large | 68.7 MB | 581.8 | 0.0 |  |
+| gco | single | 1.3 MB | 41.5 | 0.0 |  |
+| gcode | single | 1.3 MB | 36.0 | 0.0 |  |
+| gif | small | 60 KB | 3.6 | 0.6 | 5.92x |
+| gif | medium | 1.3 MB | 9.1 | 8.4 | 1.08x |
+| gif | large | 9.4 MB | 54.1 | 59.2 | 0.91x |
+| hdp | single | 338 KB | 3.7 | 13.8 | 0.27x |
+| hdr | small | 265 KB | 12.9 | 0.0 |  |
+| hdr | medium | 6.3 MB | 48.8 | 0.0 |  |
+| hdr | large | 39.8 MB | 207.7 | 0.0 |  |
+| heic | single | 2.3 MB | 37.2 | 15.0 | 2.47x |
+| heif | single | 980 KB | 27.2 | 10.0 | 2.71x |
+| icb | small | 225 KB | 10.4 | 0.0 |  |
+| icb | medium | 5.5 MB | 22.8 | 0.0 |  |
+| icb | large | 34.3 MB | 68.6 | 0.0 |  |
+| icns | single | 2.1 MB | 24.5 | 15.7 | 1.56x |
+| ico | small | 309 KB | 1.2 | 0.4 | 3.03x |
+| icon | small | 309 KB | 1.3 | 0.4 | 3.45x |
+| iiq | single | 11.1 MB | 12.1 | 5.2 | 2.32x |
+| indd | single | 1.1 MB | 5.9 | 0.0 |  |
+| j2c | small | 339 KB | 133.3 | 0.0 |  |
+| j2c | medium | 8.1 MB | 188.6 | 0.0 |  |
+| j2c | large | 50.7 MB | 313.1 | 0.0 |  |
+| j2k | small | 339 KB | 133.0 | 0.0 |  |
+| j2k | medium | 8.1 MB | 220.4 | 0.0 |  |
+| j2k | large | 50.7 MB | 362.2 | 0.0 |  |
+| jbig | single | 2.7 MB | 48.4 | 22.1 | 2.19x |
+| jfif | single | 2.3 MB | 41.2 | 18.7 | 2.2x |
+| jng | small | 58 KB | 1.5 | 0.0 |  |
+| jng | medium | 1.2 MB | 12.9 | 0.0 |  |
+| jng | large | 7.5 MB | 66.7 | 0.0 |  |
+| jnx | single | 2.3 MB | 26.2 | 14.7 | 1.79x |
+| jp2 | small | 339 KB | 135.7 | 0.0 |  |
+| jp2 | medium | 8.1 MB | 178.4 | 0.0 |  |
+| jp2 | large | 50.7 MB | 297.4 | 0.0 |  |
+| jpc | small | 339 KB | 125.0 | 0.0 |  |
+| jpc | medium | 8.1 MB | 205.5 | 0.0 |  |
+| jpc | large | 50.7 MB | 339.6 | 0.0 |  |
+| jpe | small | 58 KB | 1.3 | 1.0 | 1.34x |
+| jpe | medium | 1.2 MB | 12.8 | 15.2 | 0.84x |
+| jpe | large | 7.5 MB | 63.3 | 89.6 | 0.71x |
+| jpeg | small | 58 KB | 1.0 | 0.9 | 1.05x |
+| jpeg | medium | 1.2 MB | 13.2 | 15.8 | 0.84x |
+| jpeg | large | 7.5 MB | 62.4 | 93.1 | 0.67x |
+| jpg | small | 58 KB | 1.2 | 0.8 | 1.56x |
+| jpg | medium | 1.2 MB | 14.0 | 15.8 | 0.89x |
+| jpg | large | 7.5 MB | 64.3 | 94.8 | 0.68x |
+| jpm | small | 339 KB | 130.1 | 0.0 |  |
+| jpm | medium | 8.1 MB | 207.0 | 0.0 |  |
+| jpm | large | 50.7 MB | 342.1 | 0.0 |  |
+| jps | small | 58 KB | 0.9 | 0.9 | 1.02x |
+| jps | medium | 1.2 MB | 10.9 | 15.5 | 0.7x |
+| jps | large | 7.5 MB | 64.0 | 91.0 | 0.7x |
+| jxl | small | 1 KB | 35.0 | 0.0 |  |
+| jxl | medium | 9 KB | 295.1 | 0.0 |  |
+| jxl | large | 50 KB | 25.8 | 0.0 |  |
+| jxr | single | 338 KB | 2.4 | 14.5 | 0.17x |
+| k25 | single | 824 KB | 4.5 | 41.0 | 0.11x |
+| kdc | single | 824 KB | 4.4 | 43.0 | 0.1x |
+| key | single | 79 KB | 2.0 | 0.0 |  |
+| kra | single | 2.3 MB | 36.8 | 0.0 |  |
+| m4a | single | 199 KB | 2.1 | 0.0 |  |
+| m4b | single | 199 KB | 2.1 | 0.0 |  |
+| m4v | small | 7 KB | 45.9 | 0.0 |  |
+| m4v | medium | 126 KB | 88.8 | 0.0 |  |
+| m4v | large | 604 KB | 248.4 | 0.0 |  |
+| mac | single | 2.7 MB | 32.3 | 15.6 | 2.07x |
+| mat | small | 225 KB | 52.5 | 0.0 |  |
+| mat | medium | 5.5 MB | 101.2 | 0.0 |  |
+| mat | large | 34.3 MB | 358.8 | 0.0 |  |
+| max | single | 304 KB | 54.4 | 0.0 |  |
+| mdc | single | 824 KB | 4.3 | 41.7 | 0.1x |
+| mef | single | 34.9 MB | 16.8 | 0.0 |  |
+| miff | small | 451 KB | 61.8 | 0.0 |  |
+| miff | medium | 11.0 MB | 79.9 | 0.0 |  |
+| miff | large | 68.7 MB | 233.0 | 0.0 |  |
+| mkv | small | 7 KB | 45.4 | 0.0 |  |
+| mkv | medium | 126 KB | 90.4 | 0.0 |  |
+| mkv | large | 604 KB | 249.5 | 0.0 |  |
+| mng | small | 439 KB | 54.7 | 0.0 |  |
+| mng | medium | 10.6 MB | 114.7 | 0.0 |  |
+| mng | large | 67.1 MB | 443.1 | 0.0 |  |
+| mobi | single | 106 KB | 26.1 | 0.0 |  |
+| mos | single | 7.1 MB | 147.2 | 157.3 | 0.94x |
+| mov | small | 7 KB | 27.8 | 0.0 |  |
+| mov | medium | 126 KB | 68.1 | 0.0 |  |
+| mov | large | 604 KB | 290.0 | 0.0 |  |
+| mp3 | single | 153 KB | 42.2 | 0.0 |  |
+| mp4 | small | 7 KB | 47.6 | 0.0 |  |
+| mp4 | medium | 126 KB | 90.6 | 0.0 |  |
+| mp4 | large | 604 KB | 300.1 | 0.0 |  |
+| mpc | single | 155 KB | 38.7 | 0.0 |  |
+| mpo | single | 980 KB | 27.7 | 8.5 | 3.24x |
+| mrw | single | 9.5 MB | 106.4 | 149.6 | 0.71x |
+| nef | single | 373 KB | 5.5 | 62.8 | 0.09x |
+| nrw | single | 20.6 MB | 12.1 | 423.7 | 0.03x |
+| numbers | single | 13 KB | 7.7 | 0.0 |  |
+| odf | single | 980 KB | 28.7 | 0.0 |  |
+| odg | single | 2.3 MB | 38.8 | 0.0 |  |
+| odp | single | 2.8 MB | 37.2 | 0.0 |  |
+| ods | single | 667 KB | 22.1 | 0.0 |  |
+| odt | single | 2.7 MB | 30.8 | 0.0 |  |
+| oga | single | 207 KB | 40.7 | 0.0 |  |
+| ogg | single | 207 KB | 41.9 | 0.0 |  |
+| opus | single | 211 KB | 40.2 | 0.0 |  |
+| ora | single | 980 KB | 28.5 | 0.0 |  |
+| orf | single | 7.1 MB | 120.7 | 167.9 | 0.72x |
+| otp | single | 2.7 MB | 35.9 | 0.0 |  |
+| ots | single | 2.1 MB | 34.1 | 0.0 |  |
+| ott | single | 2.3 MB | 35.0 | 0.0 |  |
+| pages | single | 36 KB | 9.9 | 0.0 |  |
+| pam | small | 450 KB | 8.9 | 0.0 |  |
+| pam | medium | 11.0 MB | 22.1 | 0.0 |  |
+| pam | large | 68.7 MB | 61.8 | 0.0 |  |
+| pbm | small | 9 KB | 9.3 | 0.0 |  |
+| pbm | medium | 234 KB | 21.0 | 0.0 |  |
+| pbm | large | 1.4 MB | 58.6 | 0.0 |  |
+| pcd | small | 770 KB | 51.8 | 0.0 |  |
+| pcd | medium | 770 KB | 55.1 | 0.0 |  |
+| pcd | large | 770 KB | 52.6 | 0.0 |  |
+| pcx | small | 232 KB | 46.7 | 0.0 |  |
+| pcx | medium | 5.5 MB | 91.7 | 0.0 |  |
+| pcx | large | 34.5 MB | 361.9 | 0.0 |  |
+| pdb | small | 24 KB | 48.1 | 0.0 |  |
+| pdb | medium | 509 KB | 71.6 | 0.0 |  |
+| pdb | large | 3.3 MB | 152.0 | 0.0 |  |
+| pdf | single | 2.6 MB | 115.6 | 0.0 |  |
+| pef | single | 41.9 MB | 30.4 | 1,188.6 | 0.03x |
+| pes | single | 2.3 MB | 36.1 | 13.4 | 2.68x |
+| pfm | small | 900 KB | 52.8 | 0.0 |  |
+| pfm | medium | 22.0 MB | 135.8 | 0.0 |  |
+| pfm | large | 137.3 MB | 593.0 | 0.0 |  |
+| pgm | small | 150 KB | 8.7 | 0.0 |  |
+| pgm | medium | 3.7 MB | 15.9 | 0.0 |  |
+| pgm | large | 22.9 MB | 32.1 | 0.0 |  |
+| pgx | small | 150 KB | 43.2 | 0.0 |  |
+| pgx | medium | 3.7 MB | 58.6 | 0.0 |  |
+| pgx | large | 22.9 MB | 113.7 | 0.0 |  |
+| phm | small | 450 KB | 51.7 | 0.0 |  |
+| phm | medium | 11.0 MB | 89.3 | 0.0 |  |
+| phm | large | 68.7 MB | 283.5 | 0.0 |  |
+| pix | single | 667 KB | 30.0 | 9.4 | 3.19x |
+| png | small | 439 KB | 12.5 | 1.9 | 6.65x |
+| png | medium | 10.6 MB | 62.1 | 37.7 | 1.65x |
+| png | large | 67.1 MB | 299.5 | 230.1 | 1.3x |
+| pnm | small | 450 KB | 11.2 | 0.0 |  |
+| pnm | medium | 11.0 MB | 28.7 | 0.0 |  |
+| pnm | large | 68.7 MB | 77.2 | 0.0 |  |
+| pot | single | 58 KB | 456.6 | 0.0 |  |
+| potm | single | 39 KB | 2.2 | 0.0 |  |
+| potx | single | 16 KB | 8.6 | 0.0 |  |
+| ppm | small | 450 KB | 9.1 | 0.0 |  |
+| ppm | medium | 11.0 MB | 21.6 | 0.0 |  |
+| ppm | large | 68.7 MB | 65.0 | 0.0 |  |
+| pps | single | 58 KB | 448.7 | 0.0 |  |
+| ppsm | single | 17 KB | 7.1 | 0.0 |  |
+| ppsx | single | 17 KB | 6.9 | 0.0 |  |
+| ppt | single | 58 KB | 463.5 | 0.0 |  |
+| pptm | single | 25 KB | 10.6 | 0.0 |  |
+| pptx | single | 14 KB | 9.2 | 0.0 |  |
+| prc | single | 106 KB | 26.2 | 0.0 |  |
+| procreate | single | 2.8 MB | 47.8 | 0.0 |  |
+| psb | single | 132 KB | 7.2 | 0.0 |  |
+| psd | single | 30 KB | 6.2 | 0.0 |  |
+| ptif | small | 591 KB | 10.1 | 1.5 | 6.92x |
+| ptif | medium | 14.6 MB | 28.6 | 33.6 | 0.85x |
+| ptif | large | 91.5 MB | 114.4 | 110.6 | 1.03x |
+| pub | single | 58 KB | 474.2 | 0.0 |  |
+| pwp | single | 2.1 MB | 29.7 | 15.4 | 1.92x |
+| qoi | small | 282 KB | 10.2 | 0.0 |  |
+| qoi | medium | 6.8 MB | 64.3 | 0.0 |  |
+| qoi | large | 42.5 MB | 299.7 | 0.0 |  |
+| raf | single | 8.1 MB | 7.6 | 125.2 | 0.06x |
+| ras | small | 225 KB | 54.0 | 0.0 |  |
+| ras | medium | 5.5 MB | 74.8 | 0.0 |  |
+| ras | large | 34.3 MB | 206.3 | 0.0 |  |
+| rla | single | 2.7 MB | 36.6 | 19.0 | 1.92x |
+| rle | single | 2.3 MB | 29.4 | 18.5 | 1.59x |
+| rmf | single | 980 KB | 27.2 | 8.8 | 3.09x |
+| rw2 | single | 11.7 MB | 11.4 | 425.6 | 0.03x |
+| rwl | single | 14.4 MB | 12.1 | 500.6 | 0.02x |
+| scr | single | 2.3 MB | 25.9 | 22.7 | 1.14x |
+| sct | single | 2.1 MB | 24.2 | 17.0 | 1.43x |
+| sf3 | small | 450 KB | 55.2 | 0.0 |  |
+| sf3 | medium | 11.0 MB | 87.4 | 0.0 |  |
+| sf3 | large | 68.7 MB | 271.5 | 0.0 |  |
+| sfw | single | 667 KB | 24.6 | 10.2 | 2.42x |
+| sgi | small | 450 KB | 54.7 | 0.0 |  |
+| sgi | medium | 11.0 MB | 92.8 | 0.0 |  |
+| sgi | large | 68.7 MB | 290.8 | 0.0 |  |
+| sketch | single | 667 KB | 25.6 | 0.0 |  |
+| skp | single | 335 KB | 0.7 | 0.0 |  |
+| spx | single | 196 KB | 44.4 | 0.0 |  |
+| sr2 | single | 20.1 MB | 13.0 | 290.4 | 0.04x |
+| srf | single | 16.6 MB | 12.0 | 315.8 | 0.04x |
+| srw | single | 23.5 MB | 22.1 | 820.1 | 0.03x |
+| sti | single | 2.3 MB | 29.6 | 16.0 | 1.85x |
+| sun | small | 225 KB | 62.6 | 0.0 |  |
+| sun | medium | 5.5 MB | 77.8 | 0.0 |  |
+| sun | large | 34.3 MB | 201.8 | 0.0 |  |
+| svg | single | 1 KB | 21.4 | 0.0 |  |
+| svgz | single | 0 KB | 21.3 | 0.0 |  |
+| tga | small | 225 KB | 10.4 | 0.0 |  |
+| tga | medium | 5.5 MB | 27.9 | 0.0 |  |
+| tga | large | 34.3 MB | 81.4 | 0.0 |  |
+| tif | single | 3.2 MB | 21.8 | 12.3 | 1.77x |
+| tiff | small | 450 KB | 11.3 | 0.9 | 11.9x |
+| tiff | medium | 11.0 MB | 27.5 | 18.2 | 1.51x |
+| tiff | large | 68.7 MB | 93.5 | 77.4 | 1.21x |
+| tiff64 | small | 450 KB | 54.6 | 0.0 |  |
+| tiff64 | medium | 11.0 MB | 92.3 | 0.0 |  |
+| tiff64 | large | 68.7 MB | 265.0 | 0.0 |  |
+| tim | single | 2.7 MB | 36.9 | 20.9 | 1.77x |
+| tm2 | single | 2.3 MB | 29.3 | 16.9 | 1.74x |
+| vda | small | 225 KB | 9.8 | 0.0 |  |
+| vda | medium | 5.5 MB | 23.0 | 0.0 |  |
+| vda | large | 34.3 MB | 65.3 | 0.0 |  |
+| vicar | small | 79 KB | 54.7 | 0.0 |  |
+| vicar | medium | 1.8 MB | 67.7 | 0.0 |  |
+| vicar | large | 11.4 MB | 115.8 | 0.0 |  |
+| viff | small | 226 KB | 59.5 | 0.0 |  |
+| viff | medium | 5.5 MB | 99.9 | 0.0 |  |
+| viff | large | 34.3 MB | 376.6 | 0.0 |  |
+| vips | small | 450 KB | 55.3 | 0.0 |  |
+| vips | medium | 11.0 MB | 103.8 | 0.0 |  |
+| vips | large | 68.7 MB | 371.6 | 0.0 |  |
+| vsd | single | 46 KB | 64.3 | 0.0 |  |
+| vsdm | single | 61 KB | 75.9 | 0.0 |  |
+| vsdx | single | 61 KB | 69.7 | 0.0 |  |
+| vst | small | 225 KB | 9.8 | 0.0 |  |
+| vst | medium | 5.5 MB | 28.7 | 0.0 |  |
+| vst | large | 34.3 MB | 81.7 | 0.0 |  |
+| wav | single | 409 KB | 38.7 | 0.0 |  |
+| wdp | single | 338 KB | 2.7 | 14.4 | 0.19x |
+| webm | small | 31 KB | 11.7 | 0.0 |  |
+| webm | medium | 683 KB | 52.9 | 0.0 |  |
+| webm | large | 4.0 MB | 221.5 | 0.0 |  |
+| webp | small | 32 KB | 2.4 | 2.4 | 0.99x |
+| webp | medium | 757 KB | 48.9 | 47.5 | 1.03x |
+| webp | large | 4.6 MB | 250.6 | 296.2 | 0.85x |
+| wma | single | 103 KB | 46.0 | 0.0 |  |
+| wmf | single | 6.5 MB | 163.7 | 0.0 |  |
+| wmv | small | 26 KB | 13.3 | 0.0 |  |
+| wmv | medium | 194 KB | 60.8 | 0.0 |  |
+| wmv | large | 372 KB | 263.2 | 0.0 |  |
+| wpg | small | 79 KB | 51.0 | 0.0 |  |
+| wpg | medium | 1.9 MB | 79.3 | 0.0 |  |
+| wpg | large | 11.8 MB | 207.0 | 0.0 |  |
+| wv | single | 244 KB | 43.3 | 0.0 |  |
+| x3f | single | 12.6 MB | 16.2 | 383.0 | 0.04x |
+| xbm | small | 59 KB | 54.9 | 0.0 |  |
+| xbm | medium | 1.4 MB | 71.7 | 0.0 |  |
+| xbm | large | 8.9 MB | 168.3 | 0.0 |  |
+| xcf | single | 2.3 MB | 26.1 | 13.6 | 1.92x |
+| xd | single | 2.3 MB | 39.4 | 0.0 |  |
+| xls | single | 58 KB | 470.4 | 0.0 |  |
+| xlsb | single | 17 KB | 8.1 | 0.0 |  |
+| xlsm | single | 17 KB | 7.6 | 0.0 |  |
+| xlsx | single | 16 KB | 8.8 | 0.0 |  |
+| xlt | single | 58 KB | 479.0 | 0.0 |  |
+| xltm | single | 36 KB | 13.0 | 0.0 |  |
+| xltx | single | 39 KB | 2.3 | 0.0 |  |
+| xpm | small | 155 KB | 54.2 | 0.0 |  |
+| xpm | medium | 3.7 MB | 200.0 | 0.0 |  |
+| xpm | large | 22.9 MB | 1,005.7 | 0.0 |  |
+| xv | small | 226 KB | 50.7 | 0.0 |  |
+| xv | medium | 5.5 MB | 91.5 | 0.0 |  |
+| xv | large | 34.3 MB | 358.9 | 0.0 |  |
 
