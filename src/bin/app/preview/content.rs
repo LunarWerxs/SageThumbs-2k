@@ -1530,11 +1530,8 @@ pub(super) unsafe fn spawn_md_img(hwnd: HWND, src: String, gen: u64) {
                 .and_then(|b| decode_preview_budgeted(std::sync::Arc::new(b)))
                 .map(|img| {
                     // Same display-cap policy as local markdown images (bounds the cached DIB).
-                    let img = if img.width() > 2048 || img.height() > 4096 {
-                        img.thumbnail(2048, 4096)
-                    } else {
-                        img
-                    };
+                    // `reduce_to_fit` never enlarges, so it carries its own no-op case.
+                    let img = sagethumbs2k_core::decode::reduce_to_fit(img, 2048, 4096);
                     let rgba = img.to_rgba8();
                     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
                     DecodedRgba::full(w, h, rgba.into_raw())

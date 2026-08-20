@@ -326,11 +326,45 @@ fn box_reduce_f32(src: &[f32], w: usize, h: usize, ch: usize, k: usize) -> Vec<f
 /// It is also the same failure the file-size cap was raised to avoid (see
 /// `settings::DEFAULT_MAX_FILE_MB`): an undersized bitmap is one the shell can neither draw
 /// crisply nor durably cache, so it re-extracts on every refresh.
+/// Shrink to fit inside `nw` x `nh`, preserving aspect ratio, and NEVER enlarge.
+///
+/// **This is the one reduction in the product.** It used to be two: the shell extension came
+/// through [`fit_to_box`] (Lanczos3, with the integer box pre-pass), while `cli::thumbnail`,
+/// `cli::view_png`, the right-click preview tile and the Quick preview's display cap each
+/// finished with `DynamicImage::thumbnail` — a cheaper box average. Since every visual gate in
+/// the repo drives the CLI, the picture they validated was not the picture Explorer drew, and
+/// the gap was measured at its WORST on the corpus's own 512x384 samples: mean 4.37 and worst
+/// 21 channel levels, against the +/-8 `compare-renders.py` calls a match. See
+/// `fit_tests::the_gates_reduce_a_thumbnail_the_way_the_shell_extension_does`, which is now a
+/// pixel-equality check rather than a tolerance.
+///
+/// Non-square on purpose: the right-click tile fits 220x88 and the Quick preview caps at
+/// 2048x4096, so a `cx`-only entry point would have left those two on the old filter and kept
+/// half the problem. `pre_reduce` is sized from the aspect-preserving OUTPUT rather than from
+/// `nw`/`nh` directly, because on a non-square box only the output says what the real
+/// reduction ratio is.
+///
+/// It does not enlarge, which is what lets the CLI share it: `fit_to_box` deliberately fills
+/// the box for the shell (issue #25 — Explorer centres an undersized tile instead of scaling
+/// it), and `st2k thumbnail` deliberately does not, since `--size` there is a CEILING and
+/// handing back an upscaled file would be inventing pixels the user did not ask for.
+pub fn reduce_to_fit(img: DynamicImage, nw: u32, nh: u32) -> DynamicImage {
+    let (nw, nh) = (nw.max(1), nh.max(1));
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 || (w <= nw && h <= nh) {
+        return img;
+    }
+    let scale = (f64::from(nw) / f64::from(w)).min(f64::from(nh) / f64::from(h));
+    let ow = ((f64::from(w) * scale).round() as u32).max(1);
+    let oh = ((f64::from(h) * scale).round() as u32).max(1);
+    pre_reduce(img, ow.max(oh)).resize(nw, nh, FilterType::Lanczos3)
+}
+
 pub(super) fn fit_to_box(img: DynamicImage, cx: u32) -> Decoded {
     let (w, h) = (img.width(), img.height());
     let long = w.max(h);
     let img = if w > cx || h > cx {
-        pre_reduce(img, cx).resize(cx, cx, FilterType::Lanczos3)
+        reduce_to_fit(img, cx, cx)
     } else if w > 0 && h > 0 && long <= NEAREST_UPSCALE_MAX && long * 2 <= cx {
         // Tiny sprite/icon: scale by the largest integer factor that fits, with Nearest
         // (integer + Nearest = perfectly crisp pixels, no blur). Checked BEFORE the general
@@ -762,11 +796,10 @@ mod fit_tests {
     /// the MCP `view` tool — drives the CLI. So a green parity run is only evidence about the
     /// shipped picture to the extent that these two agree.
     ///
-    /// Making them ONE reduction changes the CLI's output for every downscaled sample and so
-    /// needs a deliberate parity re-accept; that is a decision, not a cleanup, and it is not
-    /// taken here. Measuring the gap is neither, and the measurement is what says how much the
-    /// decision is worth. **It came out the opposite way round from the guess, which is why it
-    /// was worth taking rather than reasoning about** (mean / worst channel difference):
+    /// **They are ONE reduction now** ([`reduce_to_fit`]), so this test asserts EQUALITY. What
+    /// follows is the measurement that justified the change, kept because it is the evidence
+    /// for a decision that cost ~355 re-accepted parity baselines, and because **it came out
+    /// the opposite way round from the guess** (mean / worst channel difference, before):
     ///
     /// ```text
     /// 4000x3000 -> 256   15.6x   mean 0.85   worst  5
@@ -782,73 +815,75 @@ mod fit_tests {
     /// filter exactly where the reduction is large. At 2x nothing pre-reduces, so it is a clean
     /// 2x2 box average against Lanczos3's sharpening lobes at full strength.
     ///
-    /// **The corpus is 512x384, so the parity gate runs at the worst row in that table.** A
+    /// **The corpus is 512x384, so the parity gate ran at the worst row in that table.** A
     /// worst-pixel difference of 21 is over the +/-8 per-channel band `compare-renders.py`
-    /// calls a match, so a green parity run does NOT currently stand in for the picture
-    /// Explorer draws — at any size, but least of all the one it tests. That is the concrete
-    /// argument for unifying the two, and the reason this is written down rather than assumed
-    /// either way.
+    /// calls a match — i.e. a green parity run was not evidence about the shipped picture at
+    /// any size, and least of all at the one it tests. That is what made unifying them worth
+    /// the baseline churn rather than a tidy-up to defer.
     ///
-    /// Until then this test is the only thing looking at the provider's reduction at all: if a
-    /// future change pulls it further from the one every gate validates, it fails here instead
-    /// of shipping unseen.
+    /// The CLI's picture got BETTER, not merely different: Lanczos3 plus the integer pre-pass
+    /// is the sharper reduction, and it is also faster on anything large, since the pre-pass is
+    /// what took the fit from 815 ms to 52 ms at 12 MP. The MCP `view` tool, the contact
+    /// sheets, the right-click preview tile and the Quick preview's display cap all moved with
+    /// it, so there is no cheap-filter surface left to drift.
     #[test]
     fn the_gates_reduce_a_thumbnail_the_way_the_shell_extension_does() {
-        // How far the CLI's reduction may sit from the provider's, in 8-bit channel levels.
-        // Headroom over the MEASURED numbers below, not a target: this pins today's gap so a
-        // future change to either reduction has to widen it deliberately. It is NOT an
-        // assertion that the gap is small enough — see the doc comment; at the corpus's own
-        // size it is not.
-        const CROSS_MEAN_CEILING: f64 = 6.0;
-        const CROSS_WORST_CEILING: u32 = 32;
-
         for (w, h, cx) in [
             (4000u32, 3000u32, 256u32), // a 12 MP camera photo at Explorer's largest tile
             (4000, 3000, 96),           // ...and at Medium icons, a 41x reduction
             (1600, 1200, 256),          // a phone photo
             (800, 600, 256),            // barely over the box, so nothing pre-reduces
             (512, 384, 256),            // the corpus's own size — all the parity gate ever sees
+            (513, 385, 256),            // odd edges, where the two filters' rounding differed
         ] {
             let img = photographic(w, h);
             let shell = fit_to_box(img.clone(), cx);
-            let cli = img.thumbnail(cx, cx).to_rgba8();
+            let cli = reduce_to_fit(img, cx, cx).to_rgba8();
 
-            // A disagreement about the SIZE would be a different and much worse bug than a
-            // disagreement about the pixels: the tile would be the wrong shape, and no
-            // per-pixel tolerance could describe it.
             assert_eq!(
                 (shell.width, shell.height),
                 cli.dimensions(),
-                "{w}x{h} into a {cx} box: the two reductions disagree on the output SIZE"
+                "{w}x{h} into a {cx} box: the two paths disagree on the output SIZE"
             );
-
-            // Alpha is opaque on both sides (neither source has any), so including it would
-            // divide the mean by four and flatter the comparison.
-            let (mut sum, mut worst, mut n) = (0u64, 0u32, 0u64);
-            for (a, b) in shell.rgba.chunks_exact(4).zip(cli.as_raw().chunks_exact(4)) {
-                for (x, y) in a[..3].iter().zip(&b[..3]) {
-                    let d = u32::from(x.abs_diff(*y));
-                    sum += u64::from(d);
-                    worst = worst.max(d);
-                    n += 1;
-                }
-            }
-            let mean = sum as f64 / n.max(1) as f64;
-            // Printed, not only asserted: the ceilings below are only honest while someone can
-            // see what the live gap actually is (`cargo test -- --nocapture`). A ceiling nobody
-            // can compare against drifts into a number that permits anything.
-            println!("  {w}x{h} -> {cx}: mean {mean:.3}, worst {worst}");
+            // EQUALITY, not a tolerance. Both paths now run `reduce_to_fit`, so any difference
+            // at all means one of them has grown a step the other does not have — which is the
+            // exact state this test was written to end. A tolerance here would let that drift
+            // back in one level at a time.
             assert!(
-                mean <= CROSS_MEAN_CEILING,
-                "{w}x{h} into a {cx} box: the CLI's picture is {mean:.3} levels from the \
-                 shell extension's on average, over the {CROSS_MEAN_CEILING} allowed — the \
-                 visual gates no longer stand in for the picture Explorer draws"
-            );
-            assert!(
-                worst <= CROSS_WORST_CEILING,
-                "{w}x{h} into a {cx} box: one channel differs by {worst} between the CLI's \
-                 picture and the shell extension's, over the {CROSS_WORST_CEILING} allowed"
+                shell.rgba == *cli.as_raw(),
+                "{w}x{h} into a {cx} box: the CLI's picture and the shell extension's are no \
+                 longer identical, so the visual gates have stopped standing in for the \
+                 picture Explorer actually draws"
             );
         }
+    }
+
+    /// The other half of the contract, and the reason the two paths could not simply be the
+    /// same call: `fit_to_box` ENLARGES a small source to fill the shell's box (issue #25 —
+    /// Explorer centres an undersized tile rather than scaling it, so a small PSD preview drew
+    /// as a smaller tile than the file beside it), while `st2k thumbnail --size` is a CEILING
+    /// and must hand back the source untouched rather than invent pixels.
+    ///
+    /// Sharing one reduction is only safe while that asymmetry is deliberate, so it is pinned
+    /// here rather than left to be rediscovered by whoever unifies the next call site.
+    #[test]
+    fn the_shared_reduction_never_enlarges_even_though_the_shell_tile_does() {
+        for (w, h, cx) in [(64u32, 48u32, 256u32), (200, 150, 256), (256, 256, 256)] {
+            let kept = reduce_to_fit(photographic(w, h), cx, cx);
+            assert_eq!(
+                (kept.width(), kept.height()),
+                (w, h),
+                "{w}x{h} already fits a {cx} box - the shared reduction must return it untouched"
+            );
+        }
+        // ...while the shell's own fit still fills the box, from the same source.
+        let filled = fit_to_box(photographic(200, 150), 256);
+        assert_eq!((filled.width, filled.height), (256, 192));
+
+        // Non-square, the case the right-click tile (220x88) and the Quick preview (2048x4096)
+        // need: reduction is governed by whichever axis is tighter, and the other is not
+        // stretched to meet its own limit.
+        let wide = reduce_to_fit(photographic(2000, 1000), 220, 88);
+        assert_eq!((wide.width(), wide.height()), (176, 88));
     }
 }

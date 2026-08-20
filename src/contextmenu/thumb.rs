@@ -127,7 +127,19 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<std::sync::mpsc::Receiver<O
                     crate::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
                 // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
                 // normal/tall ones stay capped at the 88px height.
-                let thumb = img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX);
+                //
+                // SHRINKING goes through the one shared reduction, so this tile is the same
+                // picture the thumbnail provider draws instead of a second, softer filter.
+                // ENLARGING deliberately stays on `DynamicImage::thumbnail`: the shared
+                // reduction never enlarges, so routing the small case through it would leave a
+                // 32px icon drawn 32px wide in a menu that has always filled the 88px cell.
+                // That is a visible layout change, not a quality one, so it is not smuggled in
+                // with a filter swap.
+                let thumb = if img.width() > PREVIEW_WIDE || img.height() > PREVIEW_BOX {
+                    crate::decode::reduce_to_fit(img, PREVIEW_WIDE, PREVIEW_BOX)
+                } else {
+                    img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX)
+                };
                 let rgba = thumb.to_rgba8();
                 let (w, h) = (rgba.width() as i32, rgba.height() as i32);
                 Some(MenuThumb {

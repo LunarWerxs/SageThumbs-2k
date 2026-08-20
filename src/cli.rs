@@ -157,6 +157,31 @@ pub fn devmode(sub: &str) -> Result<String, String> {
 }
 
 /// Render any supported image to `output` (format from its extension) at most
+/// The CLI's fit-to-size, kept deliberately SEPARATE from the shell extension's `fit_to_box`.
+///
+/// Shrinking uses the one shared reduction, so `st2k thumbnail` and the MCP `view` tool now
+/// produce the SAME pixels the thumbnail provider does - which is the whole point, since every
+/// visual gate in this repo drives this path and used to validate a picture Explorer never
+/// drew (see `decode::thumb`'s `the_gates_reduce_a_thumbnail_the_way_the_shell_extension_does`).
+///
+/// ENLARGING is left exactly as it was, `DynamicImage::thumbnail`, and that is not an oversight.
+/// `--size` has always FILLED the box here: a 72x72 APK icon asked for at 256 came back 256x256,
+/// verified against the shipped 2.1.2 binary. Routing the small case through the shared
+/// reduction (which never enlarges) would have returned 72x72 instead - a better picture by
+/// most arguments, and a silent change to the OUTPUT DIMENSIONS of a shipped CLI that scripts
+/// and the MCP tool depend on. Improving the filter is not a licence to change the contract, so
+/// the two are decided separately: shrink better, enlarge identically.
+fn fit_for_cli(img: image::DynamicImage, max_dim: u32) -> image::DynamicImage {
+    if max_dim == 0 {
+        return img;
+    }
+    if img.width() > max_dim || img.height() > max_dim {
+        decode::reduce_to_fit(img, max_dim, max_dim)
+    } else {
+        img.thumbnail(max_dim, max_dim)
+    }
+}
+
 /// `max_dim` px on the long edge (`0` = full size). The headline verb: produces
 /// previews for the formats Windows itself can't.
 pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, String> {
@@ -173,11 +198,7 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
     // decode if it isn't really an archive (renamed file) so the magic-dispatch
     // tiers still get their shot.
     if let Some(img) = archive_thumbnail(input) {
-        let out = if max_dim > 0 {
-            img.thumbnail(max_dim, max_dim)
-        } else {
-            img
-        };
+        let out = fit_for_cli(img, max_dim);
         out.save(output).map_err(|e| e.to_string())?;
         return Ok(output.to_string());
     }
@@ -209,11 +230,7 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
                 .map_err(|_| format!("cannot decode {input}"))?
         }
     };
-    let out = if max_dim > 0 {
-        img.thumbnail(max_dim, max_dim)
-    } else {
-        img
-    };
+    let out = fit_for_cli(img, max_dim);
     out.save(output).map_err(|e| e.to_string())?;
     Ok(output.to_string())
 }
@@ -309,11 +326,7 @@ pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
     let bytes = decode::read_preview_capped(input).map_err(|e| e.to_string())?;
     let img = decode::decode_preview_capped_for_path(&bytes, 0, input)
         .map_err(|_| format!("cannot decode {input}"))?;
-    let img = if max_dim > 0 {
-        img.thumbnail(max_dim, max_dim)
-    } else {
-        img
-    };
+    let img = fit_for_cli(img, max_dim);
     let mut out = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;

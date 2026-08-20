@@ -609,7 +609,9 @@ pub use readers::{
     wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, COLOR_HEAD_BYTES, EXR_PATH_EDGE,
     HEAD_PREVIEW_BYTES,
 };
-pub use thumb::{decode_thumbnail_opts, thumbnail_from_covers, thumbnail_from_image};
+pub use thumb::{
+    decode_thumbnail_opts, reduce_to_fit, thumbnail_from_covers, thumbnail_from_image,
+};
 pub(crate) use tiers::{largest_embedded_jpeg, MIN_RAW_PREVIEW};
 
 /// FULL-FIDELITY decode — what the Convert/Resize/Copy/Image-info verbs (and
