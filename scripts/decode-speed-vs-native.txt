@@ -10,11 +10,53 @@
 # WIC). That is why sample.ico at 7.8x is not here: it is 3.5 ms against 0.4 ms, and gating a
 # 3 ms difference would produce a flaky red that gets the whole check ignored.
 #
-# State on 2026-08-18, over the 224-sample real corpus: 75 formats have a native WIC peer and
-# exactly ONE of them is meaningfully slower than Windows (WebP was the second, fixed
-# 2026-08-18: still WebP now routes through the OS codec when installed, ~103 ms -> ~22 ms,
-# with the pure-Rust tier as the unchanged fallback). Most are far FASTER — camera RAW by
-# 50-100x, because we read the embedded preview instead of demosaicing.
+# State on 2026-08-19, over 297 samples (the 224-sample real corpus PLUS the 12 MP tier of
+# test-corpus-speed, which gate A started sweeping that day): 91 have a native WIC peer, and
+# TWO decoders among them are meaningfully slower than Windows — the AVIF no-colour-box case
+# below, and the DDS family, which only became visible at all once a 12 MP sample existed to
+# measure. Most are far FASTER: camera RAW by 50-100x, because we read the embedded preview
+# instead of demosaicing, and after 2026-08-19's work JPEG runs ~0.22x, BMP ~0.46x, GIF ~0.82x
+# and PNG at 12 MP ~0.99x.
+#
+# Earlier state, kept because it dates the entries: on 2026-08-18 the real corpus alone showed
+# 75 peers and exactly ONE slower format (WebP was the second, fixed that day — WebP now routes
+# through the OS codec when installed, ~103 ms -> ~22 ms, with the pure-Rust tier as the
+# unchanged fallback).
+
+# dds / dxt1 / dxt5 are ONE decoder (src/decode/dds.rs) under three extensions, so they carry
+# one reason between them and should be retired together. They only became gateable at all on
+# 2026-08-19, when gate A started sweeping the 12 MP tier: the real corpus's own samples are
+# 16-19 ms against 3-5 ms of WIC, which is a 4-5x ratio over a ~13 ms difference, i.e. below
+# -MinDeltaMs and correctly ignored as noise. A format whose only sample is too small to judge
+# was not being judged.
+dds        5.0 # A 12 MP block-compressed texture: ~76-98 ms against WIC's ~21-27 ms. Held rather
+               # than routed to the OS codec, because WIC'S DDS DECODER STOPS AT DXT1/3/5 -
+               # it rejects BC4, BC5, BC6H and BC7 outright (see the header of
+               # src/decode/dds.rs), i.e. every format a modern engine actually ships. Handing
+               # DDS to WIC would buy this ratio by dropping four of the seven block formats
+               # back to a default icon, which is a worse product for a faster number.
+               #
+               # It is already the cheap version of itself: a mipless block-compressed surface
+               # writes ONE pixel per 4x4 block (the mean of its texels) instead of decoding
+               # 12 MP and shrinking, which took it 180 ms -> 57 ms on 2026-08-19. What is
+               # left is the block decode: 750k BC1 blocks still expand all 16 texels through
+               # `bcdec_rs` purely to be averaged. A BC1/BC3 mean is computable from the two
+               # endpoints plus an index histogram without expanding anything, and BC7 is not
+               # - so this comes down when DDS is worth another pass, not before.
+               #
+               # 5.0, not 3.3: the ratio moves with load because WIC and our tier do not
+               # contend identically, and a gate that reds out on background noise gets
+               # ignored. Observed across three runs the same afternoon, same binary, same
+               # files: 2.3x quiet, 3.2-4.0x at 85% CPU, 4.1-4.6x at 18% drift. The ABSOLUTE
+               # time is still pinned by gate B on the real-corpus sample, so this cannot
+               # drift upward unnoticed. Retire or tighten all three if the endpoint-mean
+               # lands.
+
+dxt1       5.0 # Same decoder and same reason as `dds` above - a .dxt1 IS a DDS file. 98 ms
+               # against WIC's 22 ms at 12 MP.
+
+dxt5       5.0 # Same decoder and same reason as `dds` above - a .dxt5 IS a DDS file. 93 ms
+               # against WIC's 22 ms at 12 MP.
 
 avif       6.0 # ONLY an AVIF with NO colour information at all still pays for the ImageMagick
                # subprocess - and that is now the whole allowance. As of 2026-08-19 every

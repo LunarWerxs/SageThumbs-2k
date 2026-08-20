@@ -30,6 +30,31 @@
   against, so Gate A is structurally blind to them. Gate B pins each sample against its own
   recorded time, so "nothing to compare against" stops meaning "nothing is checked".
 
+  ── WHY GATE A GETS THE TIERED CORPUS, AND GATE B DOES NOT (2026-08-19) ─────────────────────
+  Both gates ran only on the real corpus: ONE sample per format, at whatever size that sample
+  happened to be. Every routing mistake found in 2026-08-19's sweep was therefore invisible to
+  this script and was found by the REPORT instead — BMP at 11.7x native, GIF at 6.1x, DDS at
+  7.3x, AVIF at 3.0x, all of them at 12 MP and all of them unremarkable at 0.08 MP, because
+  the thing that goes wrong (materialise every pixel, then shrink) costs nothing until there
+  are pixels to materialise. A gate that cannot see the size where the bug lives is not
+  guarding the fix.
+
+  So Gate A now also sweeps `test-corpus-speed`, whose whole purpose is one identical picture
+  at small / medium / large, so that the 12 MP sample governs its format and a fast small one
+  cannot hide behind it.
+
+  That last part was NOT free, and it is the reason to read the GATE A block below before
+  changing it: the "worst sample per extension" rule picked the worst ratio and only THEN
+  applied the noise floors, so the first thing this corpus did was prove the gate could hold a
+  slow format and report a clean run. Fixed there.
+
+  Gate B deliberately does NOT, and the reason is a practical one. Gate B compares against a
+  RECORDED number, so it needs a baseline captured on an IDLE machine — and a development box
+  running builds is not reliably idle, which is why the baseline this file enforces goes stale
+  and stays stale. Gate A needs no baseline at all: it times WIC and us in the same process, in the
+  same run, under the same load, so the LOAD DIVIDES OUT of the ratio. That is what makes it
+  the half that still works on a busy box, and the half worth extending.
+
   ── MEASUREMENT, and why it is done this way ────────────────────────────────────────────────
   Timing is `st2k bench-decode`, which decodes every file inside ONE process and reports
   per-file milliseconds. The earlier version of this script spawned `st2k thumbnail` once per
@@ -103,6 +128,15 @@ param(
     # reduction available here and the whole sweep is ~100 s, so buying stability is worth it.
     [int]$Runs = 5,
     [int]$Size = 256,
+    # The SIZE-TIERED corpus (scripts\build-speed-corpus.ps1), swept by GATE A ONLY. See the
+    # "WHY GATE A GETS THE TIERED CORPUS" note below. Absent = skipped, loudly, since it is
+    # 3.3 GB and deliberately not in git.
+    [string]$TieredCorpus = "$PSScriptRoot\..\..\test-corpus-speed",
+    # Which tiers to fold in. `large` is the default because every routing mistake found so
+    # far lived at 12 MP and vanished at 0.08 MP; `all` triples the sweep for the two tiers
+    # that have never yet been the one to catch something.
+    [ValidateSet('none', 'large', 'medium', 'all')]
+    [string]$Tiered = 'large',
     [switch]$Verbose2
 )
 $ErrorActionPreference = 'Stop'
@@ -143,7 +177,39 @@ if (Test-Path $SpeedBaseline) {
 $exitCode = 0
 
 $files = Get-SpeedSamples $Corpus $Only
-if (-not $files) { throw "no samples matched" }
+$tieredNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+# The size-tiered corpus, gate A only. It is regenerable and 3.3 GB, so it is NOT in git and a
+# clean checkout simply will not have it — SKIP LOUDLY rather than silently, because a skipped
+# check that reads like a passing one is the failure mode this whole file exists to avoid.
+if ($Tiered -ne 'none') {
+    $wantTiers = if ($Tiered -eq 'all') { @('small', 'medium', 'large') } else { @($Tiered) }
+    if (Test-Path $TieredCorpus) {
+        $extra = @(Get-SpeedSamples $TieredCorpus $Only | Where-Object {
+            # `<ext>-<tier>.<ext>`, the layout build-speed-corpus.ps1 writes.
+            $tier = ($_.BaseName -split '-')[-1]
+            $wantTiers -contains $tier.ToLowerInvariant()
+        })
+        # `bench-decode` reports per FILE NAME, and so does the baseline, so two corpora
+        # sharing a name would silently overwrite each other's timing and the gate would
+        # judge one file's number against the other's. Today the layouts cannot collide
+        # (`<ext>-<tier>.<ext>` against `sample-*.<ext>`); this refuses rather than trusts it.
+        $realNames = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]@($files.Name), [StringComparer]::OrdinalIgnoreCase)
+        $clash = @($extra | Where-Object { $realNames.Contains($_.Name) })
+        if ($clash) {
+            Write-Host ("[speed] {0} tiered sample(s) share a NAME with the real corpus and were dropped: {1}" -f
+                $clash.Count, (($clash.Name | Select-Object -First 4) -join ', ')) -ForegroundColor Yellow
+            $extra = @($extra | Where-Object { -not $realNames.Contains($_.Name) })
+        }
+        foreach ($e in $extra) { [void]$tieredNames.Add($e.Name) }
+        $files = @($files) + $extra
+        Write-Host ("[speed] + {0} size-tiered sample(s) ({1}) for gate A" -f $extra.Count, ($wantTiers -join '/')) -ForegroundColor DarkGray
+    } else {
+        Write-Host ("[speed] NO size-tiered corpus at {0} - gate A sees only whatever size each real sample happens to be." -f $TieredCorpus) -ForegroundColor Yellow
+        Write-Host  "        Build it with scripts\build-speed-corpus.ps1 (or pass -Tiered none to stop asking)." -ForegroundColor DarkGray
+    }
+}
 
 # Guard 5: a fixed reference file, timed before and after, detects the box moving under us.
 # TWO drift references, one per execution world. An in-process decode barely moves under
@@ -154,8 +220,24 @@ if (-not $files) { throw "no samples matched" }
 # which then "confirmed" because the retry re-ran under the same sustained load. The magick
 # reference is any sample of a known subprocess format; absent (scoped -Only runs), the
 # in-process reference alone still guards.
-$refFile = ($files | Sort-Object Name | Select-Object -First 1).FullName
-$magickRef = ($files | Where-Object {
+#
+# Checked AFTER the tiered merge, not before: a `-Only` scoped to a format that exists only in
+# the tiered corpus has real work to do, and throwing on the real corpus alone refused it.
+if (-not $files) { throw "no samples matched" }
+#
+# Both references are drawn from the REAL corpus only. Drift is a comparison of one run's
+# reference against the same run's later reading, so it is meaningless if -Tiered can change
+# WHICH file that is: a tiered name sorts ahead of every `sample-*.ext`, so including them
+# would silently swap the reference and make two runs' drift figures incomparable.
+$refPool = @($files | Where-Object { -not $tieredNames.Contains($_.Name) })
+# No real-corpus sample means no drift reference, and `Get-WorstDrift` over nothing returns
+# 0.0 — which reads as "the box held perfectly still" and would let guard 5 wave through a run
+# it never actually checked. Say so instead.
+if (-not $refPool) {
+    Write-Host "[speed] no real-corpus sample in scope - NO DRIFT REFERENCE, so guard 5 cannot judge this run." -ForegroundColor Yellow
+}
+$refFile = ($refPool | Sort-Object Name | Select-Object -First 1).FullName
+$magickRef = ($refPool | Where-Object {
     $_.Extension.ToLowerInvariant().TrimStart('.') -in @('xpm', 'sun', 'miff', 'fits', 'cal', 'pcx')
 } | Sort-Object Name | Select-Object -First 1).FullName
 $refs = @($refFile) + @($magickRef | Where-Object { $_ })
@@ -168,22 +250,16 @@ foreach ($f in $files) {
     $w = Measure-Wic $f.FullName $Runs
     $rows += [pscustomobject]@{
         name = $f.Name; ext = $f.Extension.ToLowerInvariant().TrimStart('.')
+        # Carried per row so the confirmation pass and the gate-A re-measure can find the file
+        # again. They used to rebuild the path as `Join-Path $Corpus $name`, which is only true
+        # while every sample lives in ONE directory.
+        path = $f.FullName; tiered = $tieredNames.Contains($f.Name)
         mine = $mine[$f.Name]; wic = $w
         ratio = if ($null -ne $w -and $w -gt 0) { [Math]::Round($mine[$f.Name] / $w, 2) } else { $null }
     }
 }
 
 $driftAfter = Measure-Drift $refs ($Runs * 2) $Size
-function Worst-Drift($before, $after) {
-    $w = 0.0
-    for ($i = 0; $i -lt [Math]::Min($before.Count, $after.Count); $i++) {
-        if ($before[$i] -and $after[$i]) {
-            $d = [Math]::Abs($after[$i] - $before[$i]) / [Math]::Max($before[$i], $after[$i])
-            if ($d -gt $w) { $w = $d }
-        }
-    }
-    return $w
-}
 $drift = Get-WorstDrift $driftBefore $driftAfter
 
 $compared = @($rows | Where-Object { $null -ne $_.ratio })
@@ -209,6 +285,10 @@ if ($UpdateBaseline) {
     if (Test-Path $Baseline) {
         Write-Host ("[gate A] baseline left ALONE ({0}) - it carries hand-written reasons." -f (Split-Path $Baseline -Leaf)) -ForegroundColor DarkGray
     }
+    # Real corpus only. The tiered samples are a gate-A input; recording them here would put
+    # every tiered sample into a file whose whole contract is "captured on an idle box",
+    # and gate B would then start failing on the corpus that is hardest to measure quietly.
+    $bRows = @($rows | Where-Object { -not $_.tiered })
     $bLines = @(
         '# decode-speed baseline — our OWN decode time (ms) per corpus sample, measured by',
         '# `st2k bench-decode` (one process, min of N runs). Enforced by check-decode-speed.ps1.',
@@ -221,9 +301,9 @@ if ($UpdateBaseline) {
         '# GENERATE ON AN IDLE MACHINE, and regenerate DELIBERATELY: accepting a slower number',
         '# here is accepting a slower product.',
         ''
-    ) + ($rows | Sort-Object name | ForEach-Object { "{0,-28} {1,9:N3}" -f $_.name, $_.mine })
+    ) + ($bRows | Sort-Object name | ForEach-Object { "{0,-28} {1,9:N3}" -f $_.name, $_.mine })
     Set-Content -LiteralPath $SpeedBaseline -Value $bLines -Encoding UTF8
-    Write-Host ("[gate B] baseline written: {0} ({1} samples)" -f $SpeedBaseline, $rows.Count) -ForegroundColor Yellow
+    Write-Host ("[gate B] baseline written: {0} ({1} samples)" -f $SpeedBaseline, $bRows.Count) -ForegroundColor Yellow
     exit 0
 }
 
@@ -232,9 +312,24 @@ if ($UpdateBaseline) {
 # format — the lesson regression.ps1's per-FILE gate encodes.
 $aSuspect = @()
 foreach ($g in ($compared | Group-Object ext)) {
-    $w = $g.Group | Sort-Object ratio -Descending | Select-Object -First 1
-    if ($w.mine -lt $MinMs) { continue }
-    if (($w.mine - $w.wic) -lt $MinDeltaMs) { continue }
+    # THE FLOORS COME FIRST, THEN THE PICK. Doing it the other way round — take the worst
+    # ratio, then test it against -MinMs / -MinDeltaMs — lets a sample that is EXEMPT shadow
+    # one that is not, and skips the whole format in silence.
+    #
+    # Not hypothetical; it is what adding the tiered corpus found on its first run. `sample.dds`
+    # is 15.3 ms against 2.7 ms of WIC: a 5.61x ratio, and 12.6 ms of absolute difference, so
+    # the floors correctly say "too small to be the hunt". It also sorts FIRST on ratio, so it
+    # was the row the floors were applied to — and `continue` then dropped dds entirely,
+    # including `dds-large.dds` at 75.6 ms vs 19.1 ms, a 3.97x with 56 ms behind it and no
+    # baselined line to excuse it. The gate reported "no format is unaccountably slower than
+    # Windows" while holding exactly such a format in its hand.
+    #
+    # This was always reachable — any format with two samples of very different sizes could hit
+    # it — but the real corpus has one sample per format, so it needed the tiered corpus to
+    # become the normal case rather than a latent one.
+    $eligible = @($g.Group | Where-Object { $_.mine -ge $MinMs -and ($_.mine - $_.wic) -ge $MinDeltaMs })
+    if (-not $eligible) { continue }
+    $w = $eligible | Sort-Object ratio -Descending | Select-Object -First 1
     $max = if ($allow.ContainsKey($g.Name)) { $allow[$g.Name] } else { $DefaultMaxRatio }
     if ($w.ratio -gt $max) { $aSuspect += [pscustomobject]@{ row = $w; max = $max } }
 }
@@ -242,6 +337,10 @@ foreach ($g in ($compared | Group-Object ext)) {
 # ============================================================================ GATE B
 $bSuspect = @(); $unseen = @()
 foreach ($r in $rows) {
+    # Tiered samples are gate A's, and only gate A's — they have no recorded time and are not
+    # given one (see -UpdateBaseline above). Skipping them here also keeps them out of
+    # `$unseen`, which would otherwise report every tiered sample as a "new format?" each run.
+    if ($r.tiered) { continue }
     if (-not $speed.ContainsKey($r.name)) { $unseen += $r.name; continue }
     $was = [Math]::Max(0.001, $speed[$r.name])
     if ($r.mine -lt $MinMs) { continue }
@@ -261,11 +360,17 @@ if (($aSuspect -or $bSuspect) -and $drift -gt $MaxDrift) {
 }
 
 # Guard 6: confirm everything that tripped, with 3x the runs, in one more process.
+# Paths come from the rows, never from `Join-Path $Corpus $name` — with two corpora in play a
+# rebuilt path is wrong for every tiered sample, and `Measure-Decode` answers a missing file by
+# simply omitting it, so the suspect would fall through to its ORIGINAL reading and "confirm"
+# itself. A silent self-confirmation is the worst shape a false red can take.
+$byName = @{}
+foreach ($r in $rows) { $byName[$r.name] = $r.path }
 $confirmNames = @($aSuspect.row.name) + @($bSuspect.name) | Sort-Object -Unique
 $again = @{}
 if ($confirmNames) {
     Write-Host ("[speed] confirming {0} suspect(s) at {1} runs..." -f $confirmNames.Count, ($Runs * 3)) -ForegroundColor DarkGray
-    $again = Measure-Decode (@($confirmNames | ForEach-Object { Join-Path $Corpus $_ })) ($Runs * 3) $Size
+    $again = Measure-Decode (@($confirmNames | ForEach-Object { $byName[$_] })) ($Runs * 3) $Size
 }
 
 # The confirmation pass is only worth anything if the box held still FOR it. Re-time the
@@ -285,7 +390,7 @@ if ($confirmNames) {
 $aBad = @()
 foreach ($sp in $aSuspect) {
     $now = if ($again.ContainsKey($sp.row.name)) { $again[$sp.row.name] } else { $sp.row.mine }
-    $w = Measure-Wic (Join-Path $Corpus $sp.row.name) ($Runs * 3)
+    $w = Measure-Wic $sp.row.path ($Runs * 3)
     if ($null -eq $w -or $w -le 0) { continue }
     $ratio = [Math]::Round($now / $w, 2)
     if ($ratio -gt $sp.max -and ($now - $w) -ge $MinDeltaMs) {
@@ -329,7 +434,8 @@ if ($speed.Count -eq 0) {
     Write-Host "  Something fell off a fast path. Fix it, or re-baseline DELIBERATELY." -ForegroundColor Yellow
     $exitCode = 1
 } else {
-    Write-Host ("[gate B] OK - {0} samples within {1}x of their own baseline." -f $rows.Count, $MaxSelfRatio) -ForegroundColor Green
+    Write-Host ("[gate B] OK - {0} samples within {1}x of their own baseline." -f
+        @($rows | Where-Object { -not $_.tiered }).Count, $MaxSelfRatio) -ForegroundColor Green
 }
 if ($unseen) {
     Write-Host ("[gate B] {0} sample(s) not in the baseline (new formats?): {1}" -f

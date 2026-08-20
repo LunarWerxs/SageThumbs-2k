@@ -38,7 +38,10 @@
      (2026-08-18) passed regression.ps1's three gates AND perf.ps1's flat 3000 ms threshold
      while costing ~5x Microsoft's own AV1 codec, because nothing ever compared us to the OS.
      check-decode-speed.ps1 does. NOT in CI: it needs test-corpus-real, a sibling of the
-     repo that is not in git, so it is a local/pre-release gate like perf.ps1.
+     repo that is not in git, so it is a local/pre-release gate like perf.ps1. It also folds
+     in the 12 MP tier of test-corpus-speed when that corpus exists (gate A only, since a
+     ratio needs no recorded baseline and so survives a busy box) — which is the size where
+     every routing mistake found so far actually lived. Missing corpus = a loud skip.
    * Full-corpus regression.ps1 is NOT part of this ladder on purpose: run it only
      when FORMATS/decoders change broadly or before a release. For a scoped change,
      -Samples over the affected files is the whole point.
