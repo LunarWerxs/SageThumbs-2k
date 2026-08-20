@@ -9,7 +9,7 @@ measures the hardware rather than the software.
 
 | | |
 |---|---|
-| Version | 2.2.0 |
+| Version | 2.3.0 |
 | CPU | AMD Ryzen 9 7950X 16-Core Processor |
 | OS | Microsoft Windows 11 Pro (build 26200) |
 | Codec extensions | AV1VideoExtension 2.0.24.0, HEIFImageExtension 1.2.36.0, HEVCVideoExtension 2.5.28.0, RawImageExtension 2.5.24.0, WebpImageExtension 1.2.31.0 |

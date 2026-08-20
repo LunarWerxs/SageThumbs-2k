@@ -2,7 +2,7 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 2.3.0
 
 ### Fixed
 
@@ -24,11 +24,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   where the small version would be too coarse, still decode in full. Lossless .jxl files are
   unaffected, as they do not carry that small version.
 
-- **DDS / DXT game textures thumbnail about 2.7x faster.** A large compressed texture used to
-  be unpacked pixel by pixel just to work out the average colour of each little block. It now
-  works that average out directly from the block, which is the same answer with far less work
-  (about 90 ms down to 33 ms for a 12-megapixel texture). The picture is identical, not merely
-  similar - that is checked automatically against the old method on tens of thousands of
+- **DDS / DXT game textures thumbnail about 5x faster.** A large compressed texture used to be
+  unpacked in full, pixel by pixel, just to work out the average colour of each little block.
+  Two changes removed that work: the thumbnail is now built a block at a time instead of
+  assembling the whole surface first, and each block's average is worked out directly from the
+  block's own endpoints rather than by expanding its sixteen texels. Together they take a
+  12-megapixel texture from about 180 ms to about 33 ms. The picture is not merely similar but
+  identical, which is checked automatically against the old method on tens of thousands of
   blocks.
 
 - **The command line tool, the AI tools and the right-click preview now produce the same
@@ -77,12 +79,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   slightly more accurate, since averaging brightness before compressing it is the correct
   order. OpenEXR files have always worked this way; .hdr now matches them.
 
-- **Big GIFs and big DDS textures thumbnail several times faster.** Both were doing the full
-  amount of work for a full-size picture and then shrinking it. A 12-megapixel GIF took about
-  306 ms against Windows' 50 ms; it now takes about 47 ms, which is fractionally faster than
-  Windows. Animated GIFs are untouched, so which frame you see never changes. Large DDS/DXT
-  game textures went from about 180 ms to about 57 ms by working a block at a time instead of
-  building the whole surface first; the resulting thumbnail is pixel-for-pixel the same one.
+- **Big GIFs thumbnail several times faster.** A large GIF was decoded at full size and then
+  shrunk, doing the full amount of work for a picture nobody ever sees at that size. A
+  12-megapixel GIF took about 306 ms against Windows' 50 ms; it now takes about 47 ms, which is
+  fractionally faster than Windows. Animated GIFs are untouched, so which frame you see never
+  changes.
 
 - **WebP thumbnails are ~4x faster when the Windows WebP codec is installed** (it ships with
   Windows 11). Still images now use the system codec, which is much quicker than our built-in
