@@ -430,3 +430,19 @@ codegen-units = 1
 # an in-process shell extension. There's no scripted enforcement of the convention beyond
 # clippy's arithmetic lints + code review; a real audit tool for "unchecked arithmetic on
 # attacker-influenced values" is a static-analysis project of its own, not a Cargo.toml key.
+
+# `clippy::chunks_exact_to_as_chunks` is new in Rust 1.98 (2026-08-18). `rust-toolchain.toml`
+# floats `stable` on purpose, so it appeared in CI on a commit that did not touch any of the 37
+# sites it fires on, across container parsers, decode hot loops and tests alike.
+#
+# ALLOWED DELIBERATELY, AND NOT FOR TASTE: clippy's OWN `--fix` for this lint emits code that
+# does not compile. It rewrites `chunks_exact_mut(N)` to the immutable `as_chunks::<N>()`
+# instead of `as_chunks_mut::<N>()`, which fails E0594 at four sites (measured 2026-08-20, then
+# reverted). A lint whose machine-applicable suggestion is wrong is not one to apply by hand to
+# 37 places in a just-shipped decoder either.
+#
+# `as_chunks` IS the better construct and it does compile at our 1.93 MSRV (checked), so this is
+# a deferral rather than a rejection. Do the migration on its own, verified against the corpus,
+# and delete this key.
+[lints.clippy]
+chunks_exact_to_as_chunks = "allow"
