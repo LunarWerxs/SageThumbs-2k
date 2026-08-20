@@ -71,6 +71,18 @@ foreach ($name in $crates.Keys) {
     $ver = $crates[$name]
     $src = Join-Path $registry.FullName "$name-$ver"
     if (-not (Test-Path $src)) {
+        # Same reasoning as the missing-registry case above, and it is the case that actually
+        # bit: CI's consistency job HAS a registry directory (other crates put one there) but
+        # has never fetched these, so testing only for the directory let this throw and turned
+        # a green tree red. A check that fails for a reason unrelated to the tree is worse than
+        # one that does not run.
+        if ($Check) {
+            Write-Host "[vendor-jxl] SKIPPED - $name $ver is not in this machine's cargo source cache," -ForegroundColor Yellow
+            Write-Host "             so the committed vendor tree was NOT compared against pristine + patches." -ForegroundColor Yellow
+            Write-Host "             Run 'cargo fetch' first to make this check real." -ForegroundColor DarkGray
+            if ($Check -and (Test-Path $dest)) { Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue }
+            exit 0
+        }
         throw "pristine source not found: $src`n  Run 'cargo fetch' at the pinned version, or pass -$($name.Split('-')[1]) <version>."
     }
     $out = Join-Path $dest $name

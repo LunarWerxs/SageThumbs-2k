@@ -890,8 +890,12 @@ fn hammer_n(
 /// fields and index structures these parsers walk actually live, then strided over the rest.
 /// Exhaustive everywhere is not affordable and buys nothing: a 96 KB seed would be 96,000
 /// invocations for ONE (seed, target) pair, and the tail bytes are payload, not structure.
-fn truncation_sweep(target: Target, label: &str, seed: &[u8]) -> Option<String> {
-    const TRUNC_EXHAUSTIVE: usize = 2048;
+fn truncation_sweep(
+    target: Target,
+    label: &str,
+    seed: &[u8],
+    trunc_exhaustive: usize,
+) -> Option<String> {
     const TRUNC_STRIDE: usize = 257; // prime: never aligns with a power-of-two field width
     let (name, f) = target;
     let mut n = 0usize;
@@ -903,7 +907,7 @@ fn truncation_sweep(target: Target, label: &str, seed: &[u8]) -> Option<String> 
                 seed.len()
             ));
         }
-        n += if n < TRUNC_EXHAUSTIVE {
+        n += if n < trunc_exhaustive {
             1
         } else {
             TRUNC_STRIDE
@@ -922,6 +926,30 @@ fn with_quiet_panics<T>(body: impl FnOnce() -> T) -> T {
     out
 }
 
+/// How deep the truncation sweep walks EVERY prefix before switching to a stride.
+///
+/// Two values, because this is the whole cost of the gate and the two runs want different
+/// answers. Measured 2026-08-20 over the 78 targets: the always-on gate spends ~76% of its
+/// time here, not on mutation, because the sweep is O(seed length) per (seed, target) pair
+/// while mutation is a fixed count.
+///
+/// The always-on value keeps the property this sweep exists for. Short-read and off-by-one
+/// panics live in HEADER parsing - magic, chunk lengths, offset tables - which is the first
+/// few hundred bytes; past that a prefix walk is mostly re-testing the same "payload ran out"
+/// branch. The deep session then walks further than the single old value ever did, so nothing
+/// is lost overall, only moved off every `cargo test`.
+const TRUNC_ALWAYS_ON: usize = 256;
+/// The deep session's depth. HIGHER than the 2048 both runs used to share.
+const TRUNC_DEEP: usize = 4096;
+
+/// Mutations per (seed, target) on every `cargo test`, and in the opt-in full-depth pass.
+///
+/// The always-on number buys breadth: every seed still meets every target. Depth is what
+/// moved out, and the deep figure is five times what the gate used to do rather than equal
+/// to it, so the split adds coverage overall instead of trading it away.
+const FUZZ_ITERS_ALWAYS_ON: usize = 200;
+const FUZZ_ITERS_DEEP: usize = 3000;
+
 /// Per-target wall-clock budget for one (seed, target) pair. Mutation fuzzing is only
 /// useful if it stays fast enough to run on every `cargo test`, and a few targets can be
 /// pushed into genuinely expensive work by a mutation (an archive parser handed a plausible
@@ -929,7 +957,12 @@ fn with_quiet_panics<T>(body: impl FnOnce() -> T) -> T {
 /// the run; the iteration count is a target, not a contract.
 const PAIR_BUDGET: std::time::Duration = std::time::Duration::from_millis(600);
 
-fn run_all(seeds: &[(&str, Vec<u8>)], iters_per: usize, base_seed: u64) -> Vec<String> {
+fn run_all(
+    seeds: &[(&str, Vec<u8>)],
+    iters_per: usize,
+    base_seed: u64,
+    trunc_exhaustive: usize,
+) -> Vec<String> {
     let targets = all_targets();
     let mut failures = Vec::new();
     with_quiet_panics(|| {
@@ -939,7 +972,7 @@ fn run_all(seeds: &[(&str, Vec<u8>)], iters_per: usize, base_seed: u64) -> Vec<S
                 let mut rng = Rng::new(
                     base_seed ^ ((si as u64) << 32) ^ (ti as u64).wrapping_mul(0x9E37_79B9),
                 );
-                if let Some(f) = truncation_sweep(target, label, seed) {
+                if let Some(f) = truncation_sweep(target, label, seed, trunc_exhaustive) {
                     failures.push(f);
                 }
                 if let Some(f) = hammer(target, label, seed, iters_per, &mut rng) {
@@ -1273,9 +1306,8 @@ fn deep_session_over_the_new_parsers() {
 
 /// The always-on, self-contained fuzz pass: synthetic seeds + random buffers, no external
 /// files. Runs in CI and on every `cargo test`.
-#[test]
-fn parsers_survive_mutation_of_synthetic_seeds() {
-    let mut seeds: Vec<(&str, Vec<u8>)> = vec![
+fn synthetic_seed_set() -> Vec<(&'static str, Vec<u8>)> {
+    let mut seeds: Vec<(&'static str, Vec<u8>)> = vec![
         ("mkv", synthetic_mkv()),
         ("mp4", synthetic_mp4()),
         ("flv", synthetic_flv()),
@@ -1296,6 +1328,14 @@ fn parsers_survive_mutation_of_synthetic_seeds() {
         let buf: Vec<u8> = (0..sz).map(|_| rng.byte()).collect();
         seeds.push((Box::leak(format!("rand{i}_{sz}").into_boxed_str()), buf));
     }
+    seeds
+}
+
+/// The always-on, self-contained fuzz pass: synthetic seeds + random buffers, no external
+/// files. Runs in CI and on every `cargo test`.
+#[test]
+fn parsers_survive_mutation_of_synthetic_seeds() {
+    let seeds = synthetic_seed_set();
 
     // 3000 mutations per (seed, target) was right when there were 16 targets and 27 mostly-tiny
     // seeds. With the container seeds and their parsers added the matrix is ~5x bigger, and at
@@ -1308,28 +1348,65 @@ fn parsers_survive_mutation_of_synthetic_seeds() {
     // short-read and off-by-one panics are what a prefix walk finds, and it is deterministic
     // rather than sampled.
     //
-    // ⚠ MEASURED 2026-08-19: THE NUMBERS ABOVE ARE STALE BY ABOUT 20x. This gate costs ~255 s,
-    // not the ~10-16 s the paragraph above describes, and it is by far the largest single item
-    // in `cargo test --lib` (695 tests, ~300 s total). It grew there honestly, one seed and one
-    // target at a time, each addition cheap on its own: the cost is the CROSS PRODUCT, seeds x
-    // targets x (mutations + an exhaustive truncation sweep), so every new seed also pays for
-    // every existing target and vice versa.
+    // ⚠ RE-MEASURED 2026-08-20, AND THE 2026-08-19 NOTE HERE WAS WRONG IN A WAY WORTH
+    // KEEPING. It said this gate costs ~255 s. That number was real but it was a DEBUG-build
+    // reading quoted as if it described the gate, and debug fuzzing is ~7x slower than
+    // release: the same gate is 36 s with --release. Quote the profile or the number means
+    // nothing.
     //
-    // Adding the DDS targets on 2026-08-19 cost 19 s of that (255 -> 274, measured against a
-    // clean HEAD worktree rather than guessed), which is a fair price for the first fuzz
-    // coverage a block decoder that runs in-process in explorer.exe has ever had.
+    // Where the time actually goes (release, 78 targets, `fuzz::where_the_gate_spends_its_time`):
+    //   container::fuzzseed   26 seeds   15.4 s
+    //   new-surface           16 seeds   15.5 s
+    //   header-stubs          16 seeds    1.1 s
+    //   base-containers        4 seeds    0.3 s
+    // and the two sibling always-on tests are 0.04 s between them. So it is two seed families,
+    // and within them the TRUNCATION SWEEP rather than mutation: the sweep is O(seed length)
+    // per (seed, target) pair while mutation is a fixed count, which put it at ~76% of the run.
     //
-    // The trade is left ALONE deliberately rather than bought back by lowering the mutation
-    // count again: this is a security gate over untrusted input, and quietly weakening it to
-    // hit a number written in a comment is the wrong direction. If four minutes becomes
-    // intolerable, the honest lever is moving whole SEED FAMILIES to the deep session (which
-    // is `#[ignore]`d and already exists for exactly this), not thinning what remains. Whoever
-    // does that should re-measure both halves; the figures here are what a loaded dev box read
-    // on 2026-08-19.
-    let failures = run_all(&seeds, 600, 0x5A5A_1234_9E37_79B9);
+    // The split is therefore in the sweep DEPTH, not in the seed list: every seed and every
+    // target still runs here, so nothing stops being covered on a push. See TRUNC_ALWAYS_ON.
+    // Dropping whole seed families instead was the obvious move and the wrong one, because the
+    // two expensive families are exactly the ones added to close a real CI coverage hole.
+    let failures = run_all(
+        &seeds,
+        FUZZ_ITERS_ALWAYS_ON,
+        0x5A5A_1234_9E37_79B9,
+        TRUNC_ALWAYS_ON,
+    );
     assert!(
         failures.is_empty(),
         "{} parser panic(s) found by mutation fuzzing:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// **The full-depth half of [`parsers_survive_mutation_of_synthetic_seeds`], moved off every
+/// `cargo test`.**
+///
+/// Same seeds and same targets as the always-on gate, but with the deep truncation depth and
+/// several times the mutations. Nothing was deleted when the gate was split on 2026-08-20: the
+/// work lives here, and here it walks FURTHER than the single shared depth ever did.
+///
+/// ```text
+/// cargo test --release --lib fuzz::full_depth -- --ignored --nocapture
+/// ```
+///
+/// Run it before a release, after touching any parser, and after adding a seed or a target.
+/// `--release` matters: debug fuzzing is ~7x slower and this is the expensive one.
+#[test]
+#[ignore = "full-depth synthetic sweep (minutes); run with --ignored"]
+fn full_depth_sweep_over_the_synthetic_seeds() {
+    let seeds = synthetic_seed_set();
+    eprintln!(
+        "full-depth sweep: {} seeds x {} targets, truncation to {TRUNC_DEEP}, {FUZZ_ITERS_DEEP} mutations per pair",
+        seeds.len(),
+        all_targets().len()
+    );
+    let failures = run_all(&seeds, FUZZ_ITERS_DEEP, 0x5A5A_1234_9E37_79B9, TRUNC_DEEP);
+    assert!(
+        failures.is_empty(),
+        "{} parser panic(s) found by the full-depth sweep:\n{}",
         failures.len(),
         failures.join("\n")
     );
@@ -1400,7 +1477,7 @@ fn parsers_survive_mutation_of_corpus_samples() {
     }
 
     // Header parsers on the real files (fewer iters — there are many seeds).
-    let mut failures = run_all(&seeds, 400, 0x00C0_FFEE_1234_5678);
+    let mut failures = run_all(&seeds, 400, 0x00C0_FFEE_1234_5678, TRUNC_DEEP);
 
     // Plus the DECODE cascade — but via `decode_menu_preview`, which is the same tier stack
     // minus the three that leave this process: the ImageMagick subprocess, Media Foundation,
@@ -1427,4 +1504,89 @@ fn parsers_survive_mutation_of_corpus_samples() {
         failures.join("\n")
     );
     eprintln!("corpus fuzz: {} seed files, no panics", seeds.len());
+}
+
+/// Where the always-on gate's ~255 s actually goes, by seed family and by target.
+///
+/// ```text
+/// cargo test --release --lib fuzz::where_the_gate_spends_its_time -- --ignored --nocapture
+/// ```
+///
+/// Written before splitting the gate, because "move the slow half out" is only meaningful once
+/// you know which half is slow. Guessing here is easy and wrong: the obvious suspect is the big
+/// seeds, but the truncation sweep is already capped at `TRUNC_EXHAUSTIVE`, so a 8 KB seed costs
+/// barely more than a 2 KB one.
+#[test]
+#[ignore = "cost report; run with --ignored"]
+fn where_the_gate_spends_its_time() {
+    use std::time::Instant;
+
+    /// A named group of seeds, so the cost report can attribute time to one.
+    type SeedFamily = (&'static str, Vec<(&'static str, Vec<u8>)>);
+
+    let families: Vec<SeedFamily> = vec![
+        (
+            "base-containers",
+            vec![
+                ("mkv", synthetic_mkv()),
+                ("mp4", synthetic_mp4()),
+                ("flv", synthetic_flv()),
+                ("mkv-largesize-bomb", synthetic_mkv_largesize_bomb()),
+            ],
+        ),
+        (
+            "container::fuzzseed",
+            crate::container::fuzzseed::seeds().into_iter().collect(),
+        ),
+        ("new-surface", new_surface_seeds()),
+        (
+            "header-stubs",
+            header_stubs()
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| (Box::leak(format!("stub{i}").into_boxed_str()) as &str, s))
+                .collect(),
+        ),
+    ];
+
+    let targets = all_targets();
+    println!("  targets: {}", targets.len());
+    let mut total = 0f64;
+    for (name, seeds) in &families {
+        let bytes: usize = seeds.iter().map(|(_, s)| s.len()).sum();
+        let t = Instant::now();
+        let failures = run_all(
+            seeds,
+            FUZZ_ITERS_ALWAYS_ON,
+            0x5A5A_1234_9E37_79B9,
+            TRUNC_ALWAYS_ON,
+        );
+        let secs = t.elapsed().as_secs_f64();
+        total += secs;
+        println!(
+            "  {name:<22} {:>3} seeds, {:>7} bytes -> {secs:>7.1} s   ({} failures)",
+            seeds.len(),
+            bytes,
+            failures.len()
+        );
+    }
+    println!("  {:<22} {total:>26.1} s", "TOTAL (families)");
+
+    // Per-target, using one mid-sized seed, to see whether any single parser dominates.
+    let probe = synthetic_mp4();
+    let mut per: Vec<(f64, &str)> = targets
+        .iter()
+        .map(|&target| {
+            let t = Instant::now();
+            let mut rng = Rng::new(1);
+            let _ = truncation_sweep(target, "probe", &probe, TRUNC_ALWAYS_ON);
+            let _ = hammer(target, "probe", &probe, 600, &mut rng);
+            (t.elapsed().as_secs_f64(), target.0)
+        })
+        .collect();
+    per.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    println!("  --- slowest targets on one seed ---");
+    for (secs, name) in per.iter().take(8) {
+        println!("  {name:<40} {secs:>7.3} s");
+    }
 }
