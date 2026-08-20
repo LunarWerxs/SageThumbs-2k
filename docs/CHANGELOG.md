@@ -15,6 +15,18 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Improved
 
+- **DDS / DXT game textures thumbnail about 2.7x faster.** A large compressed texture used to
+  be unpacked pixel by pixel just to work out the average colour of each little block. It now
+  works that average out directly from the block, which is the same answer with far less work
+  (about 90 ms down to 33 ms for a 12-megapixel texture). The picture is identical, not merely
+  similar - that is checked automatically against the old method on tens of thousands of
+  blocks.
+
+- **The command line tool, the AI tools and the right-click preview now produce the same
+  quality picture as Explorer's thumbnails.** They had been using a cheaper, slightly softer
+  way of shrinking images than the thumbnails themselves. They all share the better one now, so
+  a preview looks the same wherever you see it. Image sizes are unchanged.
+
 - **AVIF thumbnails are dramatically faster - now across every common variant.** A user told us (fairly) that our AVIF was much
   slower than Windows' own thumbnails. Two causes, both fixed. First, the AVIF path was
   rendering a full-size image and then shrinking it, throwing nearly all the work away; it now

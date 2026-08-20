@@ -687,6 +687,21 @@ fn blocks_rgba8(
             let Some(blk) = src.get(off..off + bytes) else {
                 return;
             };
+            // A FULL block whose mean is all the caller wants never needs its sixteen texels.
+            // Edge blocks fall through to the decode below: their average covers only the
+            // in-bounds texels, which an index histogram cannot distinguish. Byte-identical
+            // either way — pinned by
+            // `dds_mean_tests::the_fast_block_mean_matches_a_full_decode_exactly`.
+            let whole_block = (bx + 1) * 4 <= width as usize && (by + 1) * 4 <= height as usize;
+            if average_blocks && whole_block {
+                if let Some(mean) = block_mean_fast(blk, block) {
+                    let dst = (by * bw + bx) * 4;
+                    if let Some(d) = out.get_mut(dst..dst + 4) {
+                        d.copy_from_slice(&mean);
+                    }
+                    continue;
+                }
+            }
             match block {
                 Block::Bc1 => bcdec_rs::bc1(blk, &mut tile, 16),
                 Block::Bc2 => bcdec_rs::bc2(blk, &mut tile, 16),
@@ -726,6 +741,175 @@ fn blocks_rgba8(
             }
         }
     }
+}
+
+/// The four RGBA colours a BC1/BC2/BC3 colour block resolves to.
+///
+/// **This mirrors `bcdec_rs::color_block` exactly, and it has to.** The whole point of
+/// [`block_mean_fast`] is to produce a byte-identical answer without expanding sixteen
+/// texels, so every magic constant here is copied from that function rather than re-derived
+/// from the "2/3 of c0 plus 1/3 of c1" description — those are fixed-point reciprocals with
+/// their own rounding, and a plausible-looking recomputation lands a level or two off on
+/// most blocks. `dds_mean_tests::the_fast_block_mean_matches_a_full_decode_exactly` is what
+/// keeps that true; treat a failure there as "the fast path is wrong", never as "the
+/// tolerance needs widening".
+///
+/// `only_opaque` is BC2/BC3, whose colour block has no punch-through index because the alpha
+/// arrives separately.
+fn color_palette(cb: &[u8], only_opaque: bool) -> [[u8; 4]; 4] {
+    let c0 = u16::from_le_bytes([cb[0], cb[1]]);
+    let c1 = u16::from_le_bytes([cb[2], cb[3]]);
+    let (r0, g0, b0) = (
+        (c0 as u32 >> 11) & 0x1F,
+        (c0 as u32 >> 5) & 0x3F,
+        c0 as u32 & 0x1F,
+    );
+    let (r1, g1, b1) = (
+        (c1 as u32 >> 11) & 0x1F,
+        (c1 as u32 >> 5) & 0x3F,
+        c1 as u32 & 0x1F,
+    );
+
+    let expand = |r: u32, g: u32, b: u32| {
+        [
+            ((r * 527 + 23) >> 6) as u8,
+            ((g * 259 + 33) >> 6) as u8,
+            ((b * 527 + 23) >> 6) as u8,
+            255,
+        ]
+    };
+    let mut pal = [[0u8; 4]; 4];
+    pal[0] = expand(r0, g0, b0);
+    pal[1] = expand(r1, g1, b1);
+
+    if c0 > c1 || only_opaque {
+        pal[2] = [
+            (((2 * r0 + r1) * 351 + 61) >> 7) as u8,
+            (((2 * g0 + g1) * 2763 + 1039) >> 11) as u8,
+            (((2 * b0 + b1) * 351 + 61) >> 7) as u8,
+            255,
+        ];
+        pal[3] = [
+            (((r0 + r1 * 2) * 351 + 61) >> 7) as u8,
+            (((g0 + g1 * 2) * 2763 + 1039) >> 11) as u8,
+            (((b0 + b1 * 2) * 351 + 61) >> 7) as u8,
+            255,
+        ];
+    } else {
+        // BC1A: one interpolated colour and one fully transparent index.
+        pal[2] = [
+            (((r0 + r1) * 1053 + 125) >> 8) as u8,
+            (((g0 + g1) * 4145 + 1019) >> 11) as u8,
+            (((b0 + b1) * 1053 + 125) >> 8) as u8,
+            255,
+        ];
+        pal[3] = [0; 4];
+    }
+    pal
+}
+
+/// The mean of a FULL 4x4 BC1/BC2/BC3 block, computed from its endpoints and an index
+/// histogram instead of expanding all sixteen texels and averaging them.
+///
+/// This is the block-average fast path's own fast path. Reducing a mipless 12 MP texture to
+/// one pixel per block already avoids materialising 12 MP (2026-08-19), but it still ran every
+/// block through `bcdec_rs` to build sixteen RGBA pixels that were immediately summed and
+/// thrown away — 64 bytes written and read back per block, 750k times, for four numbers.
+/// Here the palette is built once per block (identical arithmetic, see [`color_palette`]) and
+/// each entry is multiplied by how many texels select it.
+///
+/// `None` for anything else: BC4/BC5 are cheap already (one or two channels, no palette), and
+/// BC7's colour comes from one of eight partitioned modes with per-subset endpoints, so there
+/// is no small palette to weight — it keeps the full decode. Edge blocks also return here
+/// through the caller, because a partial block must average only its in-bounds texels and the
+/// histogram cannot see which those are.
+fn block_mean_fast(blk: &[u8], block: Block) -> Option<[u8; 4]> {
+    let (cb, only_opaque) = match block {
+        Block::Bc1 => (blk.get(0..8)?, false),
+        // BC2/BC3 put the alpha block first; the colour block is the second half.
+        Block::Bc2 | Block::Bc3 => (blk.get(8..16)?, true),
+        _ => return None,
+    };
+    let pal = color_palette(cb, only_opaque);
+    let mut indices = u32::from_le_bytes([cb[4], cb[5], cb[6], cb[7]]);
+    // HISTOGRAM FIRST, then four weighted adds — not sixteen four-channel accumulations.
+    // The obvious shape (`for each texel { acc += pal[idx] }`) measured THREE TIMES SLOWER
+    // than simply expanding the block through `bcdec_rs`, because sixteen fresh array
+    // iterators per block defeat the vectoriser. Counting into four bins and multiplying
+    // once per palette entry is the same arithmetic with a sixteenth of the loop overhead.
+    let mut hist = [0u32; 4];
+    for _ in 0..16 {
+        hist[(indices & 3) as usize] += 1;
+        indices >>= 2;
+    }
+    let mut acc = [0u32; 4];
+    for (n, colour) in hist.iter().zip(&pal) {
+        acc[0] += n * u32::from(colour[0]);
+        acc[1] += n * u32::from(colour[1]);
+        acc[2] += n * u32::from(colour[2]);
+        acc[3] += n * u32::from(colour[3]);
+    }
+
+    // BC2/BC3 overwrite alpha per texel, so the palette's 255s are discarded rather than
+    // averaged in.
+    match block {
+        Block::Bc2 => {
+            acc[3] = (0..4)
+                .map(|i| {
+                    let a = u16::from_le_bytes([blk[i * 2], blk[i * 2 + 1]]);
+                    (0..4)
+                        .map(|j| u32::from((a >> (4 * j)) & 0x0F) * 17)
+                        .sum::<u32>()
+                })
+                .sum();
+        }
+        Block::Bc3 => {
+            let (a0, a1) = (u32::from(blk[0]), u32::from(blk[1]));
+            // Written out rather than derived from a loop counter, transcribed line for line
+            // from `bcdec_rs::smooth_alpha_block`. A first attempt DID compute the weights
+            // from the index and had both branches off by one; the equality test caught it,
+            // but a table that can simply be compared against the source cannot drift at all.
+            let alpha: [u32; 8] = if a0 > a1 {
+                [
+                    a0,
+                    a1,
+                    (6 * a0 + a1 + 1) / 7,
+                    (5 * a0 + 2 * a1 + 1) / 7,
+                    (4 * a0 + 3 * a1 + 1) / 7,
+                    (3 * a0 + 4 * a1 + 1) / 7,
+                    (2 * a0 + 5 * a1 + 1) / 7,
+                    (a0 + 6 * a1 + 1) / 7,
+                ]
+            } else {
+                [
+                    a0,
+                    a1,
+                    (4 * a0 + a1 + 1) / 5,
+                    (3 * a0 + 2 * a1 + 1) / 5,
+                    (2 * a0 + 3 * a1 + 1) / 5,
+                    (a0 + 4 * a1 + 1) / 5,
+                    0x00,
+                    0xFF,
+                ]
+            };
+            let mut bits = u64::from_le_bytes(blk.get(0..8)?.try_into().ok()?) >> 16;
+            let mut sum = 0u32;
+            for _ in 0..16 {
+                sum += alpha[(bits & 0x07) as usize];
+                bits >>= 3;
+            }
+            acc[3] = sum;
+        }
+        _ => {}
+    }
+
+    // Same rounding as `write_block_average` with n = 16, so a flat block round-trips.
+    Some([
+        ((acc[0] + 8) / 16) as u8,
+        ((acc[1] + 8) / 16) as u8,
+        ((acc[2] + 8) / 16) as u8,
+        ((acc[3] + 8) / 16) as u8,
+    ])
 }
 
 /// Reduce one decoded 4x4 tile to a single RGBA pixel: the mean of its `w` by `h`
@@ -1647,5 +1831,200 @@ mod mip_tests {
         dds[4 + 24..4 + 28].copy_from_slice(&20u32.to_le_bytes());
         let img = decode_dds(&dds, Some(1)).expect("must not fail on a lying header");
         assert_eq!((img.width(), img.height()), (64, 64));
+    }
+}
+
+#[cfg(test)]
+mod dds_mean_tests {
+    use super::*;
+
+    /// The reference: what the block average WAS, i.e. decode all sixteen texels through
+    /// `bcdec_rs` and average them. [`block_mean_fast`] must agree with this byte for byte,
+    /// on every block, or it is not an optimisation but a silent change to every DDS
+    /// thumbnail in the product.
+    fn slow_mean(blk: &[u8], block: Block) -> [u8; 4] {
+        let mut tile = [0u8; 4 * 4 * 4];
+        match block {
+            Block::Bc1 => bcdec_rs::bc1(blk, &mut tile, 16),
+            Block::Bc2 => bcdec_rs::bc2(blk, &mut tile, 16),
+            Block::Bc3 => bcdec_rs::bc3(blk, &mut tile, 16),
+            _ => unreachable!("only the palette formats have a fast path"),
+        }
+        let mut out = [0u8; 4];
+        write_block_average(&tile, 0, 4, 4, &mut out);
+        out
+    }
+
+    /// Deterministic pseudo-random blocks: a fixed-seed LCG, so a failure reproduces exactly
+    /// rather than "sometimes on CI".
+    fn blocks(seed: u32, n: usize, len: usize) -> Vec<Vec<u8>> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                (0..len)
+                    .map(|_| {
+                        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        (s >> 24) as u8
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_fast_block_mean_matches_a_full_decode_exactly() {
+        for (block, len) in [(Block::Bc1, 8), (Block::Bc2, 16), (Block::Bc3, 16)] {
+            // Random blocks cover the ordinary case, including both BC1 endpoint orderings
+            // and both BC3 alpha modes, since the seed bytes hit each about half the time.
+            for blk in blocks(0x9E37_79B9, 20_000, len) {
+                assert_eq!(
+                    block_mean_fast(&blk, block),
+                    Some(slow_mean(&blk, block)),
+                    "{block:?}: fast mean disagrees with the full decode for {blk:02X?}"
+                );
+            }
+
+            // The boundaries a random sweep hits rarely or never. c0 == c1 is the flat block
+            // AND the BC1A branch at once; all-zero and all-ones are the extremes; the two
+            // endpoint orderings are the branch this whole function turns on.
+            let mut edge: Vec<Vec<u8>> = vec![vec![0x00; len], vec![0xFF; len]];
+            for (c0, c1) in [(0x0000u16, 0x0000u16), (0xFFFF, 0x0000), (0x0000, 0xFFFF)] {
+                for idx in [0x0000_0000u32, 0xFFFF_FFFF, 0x1B1B_1B1B] {
+                    let mut b = vec![0u8; len];
+                    let off = if len == 16 { 8 } else { 0 };
+                    b[off..off + 2].copy_from_slice(&c0.to_le_bytes());
+                    b[off + 2..off + 4].copy_from_slice(&c1.to_le_bytes());
+                    b[off + 4..off + 8].copy_from_slice(&idx.to_le_bytes());
+                    edge.push(b);
+                }
+            }
+            for blk in edge {
+                assert_eq!(
+                    block_mean_fast(&blk, block),
+                    Some(slow_mean(&blk, block)),
+                    "{block:?}: fast mean disagrees on a boundary block {blk:02X?}"
+                );
+            }
+        }
+    }
+
+    /// The formats that deliberately have NO fast path must say so, rather than returning a
+    /// wrong answer. BC7's colour comes from partitioned per-subset endpoints, so there is no
+    /// four-entry palette to weight; BC4/BC5 are already one or two channels.
+    #[test]
+    fn the_formats_without_a_palette_decline_the_fast_path() {
+        for block in [
+            Block::Bc4 { signed: false },
+            Block::Bc5 { signed: false },
+            Block::Bc6h { signed: false },
+            Block::Bc7,
+        ] {
+            assert!(
+                block_mean_fast(&[0xAB; 16], block).is_none(),
+                "{block:?} has no palette and must not claim a fast mean"
+            );
+        }
+    }
+
+    /// A short buffer must decline, not panic. `blocks_rgba8` already bounds-checks its slice,
+    /// but this function indexes its own sub-ranges and runs on untrusted bytes in-process.
+    #[test]
+    fn a_truncated_block_declines_instead_of_panicking() {
+        for len in 0..16usize {
+            let b = vec![0xA5u8; len];
+            for block in [Block::Bc1, Block::Bc2, Block::Bc3] {
+                let _ = block_mean_fast(&b, block);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dds_cost_tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// Where a 12 MP DDS thumbnail's time ACTUALLY goes. Not a gate - a measuring stick, so
+    /// the next person to "optimise DDS" aims at the part that costs something.
+    ///
+    ///     cargo test --release --lib decode::dds::dds_cost_tests -- --ignored --nocapture
+    ///
+    /// It exists because a plausible optimisation bought nothing: replacing the per-block
+    /// `bcdec_rs` expansion with an endpoint+histogram mean (byte-identical, and still in the
+    /// tree) moved a 4000x3000 DXT1 by under a millisecond. The block loop was simply not
+    /// where the time was, and three runs of the speed gate could not tell me that.
+    #[test]
+    #[ignore]
+    fn where_a_twelve_megapixel_dds_spends_its_time() {
+        const W: u32 = 4000;
+        const H: u32 = 3000;
+        let (bw, bh) = (W.div_ceil(4) as usize, H.div_ceil(4) as usize);
+
+        // A synthetic BC1 surface with real per-block variation, so nothing is degenerate.
+        let mut src = vec![0u8; bw * bh * 8];
+        let mut s = 0x9E37_79B9u32;
+        for b in src.iter_mut() {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *b = (s >> 24) as u8;
+        }
+
+        let mut out = vec![0u8; bw * bh * 4];
+
+        // MIN OF N, AND EVERY BUFFER TOUCHED FIRST. The first shape of this test timed each
+        // variant ONCE, in order, and made the cheaper algorithm look 2.4x slower - the first
+        // call reads all 6 MB of `src` cold while the second finds it in cache, and
+        // `vec![0u8; _]` hands back lazily-mapped pages so the first writer pays every page
+        // fault too. Warm, then take the best of several.
+        fn best_of<F: FnMut()>(mut f: F) -> std::time::Duration {
+            f();
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed());
+            }
+            best
+        }
+
+        // (a) what ships: one pixel per block, straight from endpoints + an index histogram.
+        let fast = best_of(|| blocks_rgba8(&src, W, H, Block::Bc1, true, &mut out));
+
+        // (b) THE PATH IT REPLACED, and the only honest comparison: expand all sixteen texels
+        // through `bcdec_rs`, then average them. Reproduced here rather than kept behind a
+        // flag in the shipping function - comparing against the bare expansion instead was
+        // what made the first attempt look like a regression when it was not being measured
+        // against its own alternative at all.
+        let mut avg_out = vec![0u8; bw * bh * 4];
+        let slow = best_of(|| {
+            let mut tile = [0u8; 4 * 4 * 4];
+            for by in 0..bh {
+                for bx in 0..bw {
+                    let off = (by * bw + bx) * 8;
+                    bcdec_rs::bc1(&src[off..off + 8], &mut tile, 16);
+                    write_block_average(&tile, (by * bw + bx) * 4, 4, 4, &mut avg_out);
+                }
+            }
+        });
+        assert_eq!(
+            out, avg_out,
+            "the two averaging paths must agree byte for byte"
+        );
+
+        // (c) for scale: expanding the whole 12 MP surface, which is what both of the above
+        // exist to avoid.
+        let mut full = vec![0u8; W as usize * H as usize * 4];
+        let expand = best_of(|| blocks_rgba8(&src, W, H, Block::Bc1, false, &mut full));
+
+        let img = image::RgbaImage::from_raw(bw as u32, bh as u32, out.clone())
+            .map(DynamicImage::ImageRgba8)
+            .expect("block-average buffer");
+        let fit = best_of(|| {
+            let _ = super::super::thumb::thumbnail_from_image(img.clone(), 256);
+        });
+
+        println!("  (a) block mean, endpoints+histogram : {:>8.2?}", fast);
+        println!("  (b) block mean, expand then average  : {:>8.2?}", slow);
+        println!("  (c) full 12 MP expansion, for scale  : {:>8.2?}", expand);
+        println!("  (d) fit 1000x750 -> 256              : {:>8.2?}", fit);
     }
 }
