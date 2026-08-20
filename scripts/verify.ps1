@@ -13,7 +13,7 @@
                                                           #   job scripts (mirrors CI in full)
       pwsh scripts\verify.ps1 -Samples "archive-*"        # + render matching corpus samples,
                                                           #   asserting _expected-fail.txt
-      pwsh scriptserify.ps1 -Perf                       # + are we slower than Windows' own
+      pwsh scripts\verify.ps1 -Perf                       # + are we slower than Windows' own
                                                           #   codec on any format? (needs the
                                                           #   release st2k + test-corpus-real)
       pwsh scripts\verify.ps1 -Release                    # + the same 3 builds ci.yml runs (~3 min)
@@ -187,7 +187,8 @@ if ($Lint) {
             'test-release-pipeline.ps1',
             'test-installer-lint.ps1',
             'test-msix-integrity.ps1',
-            'check-vendored-exr.ps1'
+            'check-vendored-exr.ps1',
+            'vendor-jxl.ps1'
         )) {
             & pwsh -NoProfile -File (Join-Path $PSScriptRoot $scriptName)
             if ($LASTEXITCODE -ne 0) { throw "$scriptName failed" }

@@ -399,6 +399,12 @@ jobs:
       - name: vendored exr provenance and local-resolution check
         shell: pwsh
         run: ./scripts/check-vendored-exr.ps1
+      # The jxl vendor tree is GENERATED from crates.io sources plus crates/vendor/jxl-patches,
+      # so this catches a hand-edit that the next regeneration would silently discard. It skips
+      # loudly when the registry cache is absent, since this job does not build.
+      - name: vendored jxl tree matches pristine + patches
+        shell: pwsh
+        run: ./scripts/vendor-jxl.ps1 -Check
       # The reply-address rule exists three times (Pascal / Rust / JS) because it runs in three
       # runtimes; this holds them to one shared table. The Pascal leg needs ISCC, which this
       # runner does not have, so it reports SKIP here and is covered by the release pipeline.

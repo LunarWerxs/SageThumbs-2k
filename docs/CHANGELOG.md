@@ -15,6 +15,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Improved
 
+- **Large JPEG XL images thumbnail about 70x faster.** A 12-megapixel .jxl took over a second
+  and a half; it now takes about a fortieth of that. JPEG XL stores a small version of the
+  picture inside the file, ahead of all the fine detail, and the decoder was building the whole
+  full-size image anyway before shrinking it down. It now stops at the small one when a
+  thumbnail is all that was asked for. Nothing about the picture changes that you could see -
+  it matches a full decode to within about four levels out of 255 - and small images, or ones
+  where the small version would be too coarse, still decode in full. Lossless .jxl files are
+  unaffected, as they do not carry that small version.
+
 - **DDS / DXT game textures thumbnail about 2.7x faster.** A large compressed texture used to
   be unpacked pixel by pixel just to work out the average colour of each little block. It now
   works that average out directly from the block, which is the same answer with far less work

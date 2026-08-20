@@ -20,6 +20,18 @@ resolver = "2"
 # in crates/vendor/exr/SAGETHUMBS-PATCH.md. Remove this override after upstream ships the fix.
 [patch.crates-io]
 exr = { path = "crates/vendor/exr" }
+# JPEG XL, patched for 1:8 LF-only rendering (a 12 MP .jxl thumbnailed in ~2 s because a
+# thumbnail cost a full-resolution decode; the LF image is a complete 8x-downsampled picture
+# that the decoder already builds before any HF work). Submitted upstream as
+# tirr-c/jxl-oxide#505 - DROP THIS AND THE crates/vendor COPIES once a release contains it.
+#
+# The copies here are GENERATED, not hand-edited. `scripts/vendor-jxl.ps1` re-extracts the
+# pristine crates.io sources and re-applies crates/vendor/jxl-patches/*.patch, so bumping the
+# version is: change the version in that script, run it, and it either succeeds or names the
+# hunks that no longer apply. Do NOT edit crates/vendor/jxl-render or jxl-oxide by hand; the
+# next run overwrites it and the change is lost with nothing to say so.
+jxl-render = { path = "crates/vendor/jxl-render" }
+jxl-oxide = { path = "crates/vendor/jxl-oxide" }
 
 # Shared version for the rlib (`sagethumbs2k`) + the cdylib wrapper (`sagethumbs2k-dll`),
 # build-release.ps1 reads this line; keep it in sync with

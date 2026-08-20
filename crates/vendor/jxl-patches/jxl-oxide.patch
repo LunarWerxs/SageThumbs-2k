@@ -1,0 +1,117 @@
+diff -ruN pristine/jxl-oxide/src/integration/image.rs patched/jxl-oxide/src/integration/image.rs
+--- pristine/jxl-oxide/src/integration/image.rs	2006-07-23 20:21:28.000000000 -0500
++++ patched/jxl-oxide/src/integration/image.rs	2026-08-20 00:42:21.062813000 -0500
+@@ -77,6 +77,32 @@
+         Self::init(builder, reader)
+     }
+ 
++    /// Renders VarDCT frames at 1:8 from the LF image alone.
++    ///
++    /// See [`JxlImage::set_lf_only`]. [`dimensions`][image::ImageDecoder::dimensions] follows
++    /// this, so `DynamicImage::from_decoder` allocates the reduced buffer rather than a
++    /// full-size one the render can never fill.
++    ///
++    /// **Loads up to the first keyframe before returning, which is why this can fail.** Whether
++    /// the request applies at all depends on that frame: modular frames have no LF image, and
++    /// the reduction factor includes the frame's own `upsampling`. Without the header,
++    /// `dimensions()` has nothing to answer from and falls back to the full size, while the
++    /// render still comes back reduced - and the two disagreeing is not a wrong picture but a
++    /// panic in `stream_to_buf`, whose length assertion is the only thing standing between a
++    /// mismatched buffer and a memory error.
++    pub fn set_lf_only(&mut self, lf_only: bool) -> ImageResult<()> {
++        if lf_only {
++            self.load_until_first_keyframe().map_err(|e| {
++                ImageError::Decoding(DecodingError::new(
++                    ImageFormatHint::PathExtension("jxl".into()),
++                    e,
++                ))
++            })?;
++        }
++        self.image.set_lf_only(lf_only);
++        Ok(())
++    }
++
+     /// Initializes a decoder which reads from given image stream, with custom thread pool.
+     pub fn with_thread_pool(reader: R, pool: crate::JxlThreadPool) -> ImageResult<Self> {
+         let builder = JxlImage::builder()
+@@ -255,7 +281,12 @@
+ 
+ impl<R: Read> image::ImageDecoder for JxlDecoder<R> {
+     fn dimensions(&self) -> (u32, u32) {
+-        (self.image.width(), self.image.height())
++        // `render_size`, not `width`/`height`: under `set_lf_only` a VarDCT frame renders at
++        // 1:8 (times its own upsampling), and the `image` crate sizes its output buffer from
++        // this. Reporting the full size there fails the decode with a length mismatch.
++        self.image
++            .render_size(0)
++            .unwrap_or((self.image.width(), self.image.height()))
+     }
+ 
+     fn color_type(&self) -> image::ColorType {
+diff -ruN pristine/jxl-oxide/src/lib.rs patched/jxl-oxide/src/lib.rs
+--- pristine/jxl-oxide/src/lib.rs	2006-07-23 20:21:28.000000000 -0500
++++ patched/jxl-oxide/src/lib.rs	2026-08-20 00:18:50.220004400 -0500
+@@ -702,6 +702,49 @@
+         self.ctx
+             .request_color_encoding(ColorEncodingWithProfile::new(color_encoding))
+     }
++
++    /// Requests that VarDCT frames be rendered at 1:8 from the LF image alone.
++    ///
++    /// Skips HF coefficient parsing, the inverse DCT, the restoration filters and upsampling.
++    /// This is an APPROXIMATION intended for previews and thumbnails. Modular frames ignore
++    /// the request and render at 1:1, so read the size from [`JxlImage::render_size`] rather
++    /// than assuming the image was reduced.
++    #[inline]
++    pub fn set_lf_only(&mut self, lf_only: bool) {
++        self.ctx.request_lf_only(lf_only);
++    }
++
++    /// Whether 1:8 LF-only rendering is requested.
++    #[inline]
++    pub fn lf_only(&self) -> bool {
++        self.ctx.lf_only()
++    }
++
++    /// The dimensions a render of `keyframe_index` will actually produce.
++    ///
++    /// Equals [`width`][Self::width] by [`height`][Self::height] unless
++    /// [`set_lf_only`][Self::set_lf_only] is in effect AND the keyframe is VarDCT.
++    pub fn render_size(&self, keyframe_index: usize) -> Option<(u32, u32)> {
++        let frame = self.ctx.keyframe(keyframe_index)?;
++        let (w, h) = (self.width(), self.height());
++        Some(match Self::lf_shift(self.ctx.lf_only(), frame.header()) {
++            Some(shift) => (w.div_ceil(1 << shift), h.div_ceil(1 << shift)),
++            None => (w, h),
++        })
++    }
++
++    /// How far an LF-only render reduces this frame, as a bit shift, or `None` if it does not.
++    ///
++    /// **The factor is 8 times the frame's own `upsampling`, not a flat 8.** The LF image is an
++    /// eighth of the CODED frame while every public dimension describes the FINAL image, so on
++    /// a frame with `upsampling = 2` the two differ by another factor of two, and assuming 8
++    /// puts the whole picture in the top-left quadrant of a buffer four times too large.
++    fn lf_shift(lf_only: bool, frame_header: &FrameHeader) -> Option<u32> {
++        if !lf_only || frame_header.encoding != jxl_frame::header::Encoding::VarDct {
++            return None;
++        }
++        Some(3 + frame_header.upsampling.trailing_zeros())
++    }
+ }
+ 
+ /// # Rendering to image buffers
+@@ -721,7 +764,12 @@
+             .apply_orientation(&self.image_header);
+         let frame = self.ctx.keyframe(keyframe_index).unwrap();
+         let frame_header = frame.header();
+-        let target_frame_region = image_region.translate(-frame_header.x0, -frame_header.y0);
++        let mut target_frame_region = image_region.translate(-frame_header.x0, -frame_header.y0);
++        // An LF-only render produced a reduced buffer, so the region that selects pixels out of
++        // it must be scaled to match, or it addresses rows the buffer does not have.
++        if let Some(shift) = Self::lf_shift(self.ctx.lf_only(), frame_header) {
++            target_frame_region = target_frame_region.downsample(shift);
++        }
+ 
+         let is_cmyk = self.ctx.requested_color_encoding().is_cmyk();
+         let result = Render {

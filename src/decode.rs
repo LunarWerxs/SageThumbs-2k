@@ -311,7 +311,7 @@ fn decode_any_with_wic_target(
     // thumbnail on a clean install. On failure we still fall through to the tiers
     // below (a machine with a full ImageMagick could yet decode it).
     if is_jxl(bytes) {
-        match decode_jxl(bytes) {
+        match decode_jxl(bytes, wic_thumbnail_cx) {
             Ok(img) => return Ok(img),
             Err(e) => crate::safety::log_debug(&format!("decode tier `jxl` failed: {e}")),
         }

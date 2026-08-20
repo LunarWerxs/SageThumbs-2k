@@ -1,0 +1,231 @@
+diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
+--- pristine/jxl-render/src/image.rs	2006-07-23 20:21:28.000000000 -0500
++++ patched/jxl-render/src/image.rs	2026-08-20 00:18:50.206133700 -0500
+@@ -592,6 +592,36 @@
+         self.color_channels = count;
+     }
+ 
++    /// Appends one grid per extra channel, matching the colour channels' region, and fills
++    /// the alpha channels opaque.
++    ///
++    /// For the 1:8 LF-only render, whose image carries colour channels ONLY. A VarDCT frame's
++    /// extra channels are modular-coded at full resolution and have no 1:8 representation to
++    /// decode, so there is nothing to downsample. Filling alpha opaque is the same answer the
++    /// incomplete-frame fallback already gives.
++    pub(crate) fn append_opaque_extra_channels(
++        &mut self,
++        ec_info: &[jxl_image::ExtraChannelInfo],
++    ) -> Result<()> {
++        if ec_info.is_empty() || self.buffer.len() > self.color_channels {
++            return Ok(());
++        }
++        let Some(&(region, _)) = self.regions.first() else {
++            return Ok(());
++        };
++        let tracker = self.tracker.clone();
++        for _ in ec_info {
++            let buffer = AlignedGrid::<f32>::with_alloc_tracker(
++                region.width as usize,
++                region.height as usize,
++                tracker.as_ref(),
++            )?;
++            self.append_channel(ImageBuffer::F32(buffer), region);
++        }
++        self.fill_opaque_alpha(ec_info);
++        Ok(())
++    }
++
+     pub(crate) fn fill_opaque_alpha(&mut self, ec_info: &[jxl_image::ExtraChannelInfo]) {
+         for (ec_idx, ec_info) in ec_info.iter().enumerate() {
+             if !matches!(ec_info.ty, jxl_image::ExtraChannelType::Alpha { .. }) {
+diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
+--- pristine/jxl-render/src/lib.rs	2006-07-23 20:21:28.000000000 -0500
++++ patched/jxl-render/src/lib.rs	2026-08-20 00:18:17.109927400 -0500
+@@ -55,6 +55,7 @@
+     cms: Box<dyn ColorManagementSystem + Send + Sync>,
+     cached_transform: Mutex<Option<ColorTransform>>,
+     force_wide_buffers: bool,
++    lf_only: bool,
+ }
+ 
+ impl std::fmt::Debug for RenderContext {
+@@ -179,6 +180,7 @@
+             loading_render_cache_narrow: None,
+             loading_region: None,
+             requested_image_region: full_image_region,
++            lf_only: false,
+             embedded_icc: self.embedded_icc,
+             requested_color_encoding,
+             cms: Box::new(jxl_color::NullCms),
+@@ -238,6 +240,22 @@
+     pub fn image_region(&self) -> Region {
+         self.requested_image_region
+     }
++
++    /// Renders VarDCT frames at 1:8 from the LF image alone, skipping HF coefficient parsing,
++    /// the inverse DCT, the restoration filters and upsampling.
++    #[inline]
++    pub fn request_lf_only(&mut self, lf_only: bool) {
++        if self.lf_only != lf_only {
++            self.lf_only = lf_only;
++            self.reset_cache();
++        }
++    }
++
++    /// Whether 1:8 LF-only rendering is requested.
++    #[inline]
++    pub fn lf_only(&self) -> bool {
++        self.lf_only
++    }
+ }
+ 
+ impl RenderContext {
+@@ -492,6 +510,7 @@
+         image_region: Region,
+         prev_frame_visibility: (usize, usize),
+         pool: &JxlThreadPool,
++        lf_only: bool,
+     ) -> FrameRender<S> {
+         if let Some(lf) = &reference_frames.lf {
+             tracing::trace!(idx = lf.frame.idx, "Spawn LF frame renderer");
+@@ -526,6 +545,7 @@
+             image_region,
+             pool.clone(),
+             prev_frame_visibility,
++            lf_only,
+         );
+         match result {
+             Ok(grid) => FrameRender::Done(grid),
+@@ -548,6 +568,7 @@
+         let prev_frame_visibility = self.get_previous_frames_visibility(&frame);
+ 
+         let pool = self.pool.clone();
++        let lf_only = self.lf_only;
+         Arc::new(move |state, image_region| {
+             Self::do_render(
+                 &frame,
+@@ -556,6 +577,7 @@
+                 image_region,
+                 prev_frame_visibility,
+                 &pool,
++                lf_only,
+             )
+         })
+     }
+@@ -782,6 +804,7 @@
+                 image_region,
+                 prev_frame_visibility,
+                 &self.pool,
++                self.lf_only,
+             );
+ 
+             match state {
+@@ -844,6 +867,7 @@
+                 image_region,
+                 prev_frame_visibility,
+                 &self.pool,
++                self.lf_only,
+             );
+ 
+             match state {
+diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
+--- pristine/jxl-render/src/render.rs	2006-07-23 20:21:28.000000000 -0500
++++ patched/jxl-render/src/render.rs	2026-08-20 00:18:17.116371200 -0500
+@@ -18,6 +18,7 @@
+     image_region: Region,
+     pool: JxlThreadPool,
+     frame_visibility: (usize, usize),
++    lf_only: bool,
+ ) -> Result<ImageWithRegion> {
+     let frame_region = util::image_region_to_frame(frame, image_region, false);
+     tracing::debug!(
+@@ -43,6 +44,9 @@
+     let color_padded_region = util::pad_color_region(image_header, frame_header, frame_region)
+         .intersection(full_frame_region);
+ 
++    // Modular frames have no LF image, so they ignore the request and render at 1:1.
++    let lf_only = lf_only && frame_header.encoding == Encoding::VarDct;
++
+     let mut fb = match frame_header.encoding {
+         Encoding::Modular => modular::render_modular(frame, cache, color_padded_region, &pool)?,
+         Encoding::VarDct => {
+@@ -52,6 +56,7 @@
+                 cache,
+                 color_padded_region,
+                 &pool,
++                lf_only,
+             );
+             match (result, reference_frames.lf) {
+                 (Ok(grid), _) => grid,
+@@ -67,6 +72,14 @@
+         }
+     };
+ 
++    if lf_only {
++        // The LF image is the finished 1:8 result; every stage below assumes 1:1 geometry.
++        // It carries colour channels only, so give it the extra channels the caller's pixel
++        // format promises, with alpha opaque.
++        fb.append_opaque_extra_channels(&image_header.metadata.ec_info)?;
++        return Ok(fb);
++    }
++
+     if frame_header.do_ycbcr {
+         fb.upsample_jpeg(color_padded_region, image_header.metadata.bit_depth)?;
+     }
+diff -ruN pristine/jxl-render/src/vardct/mod.rs patched/jxl-render/src/vardct/mod.rs
+--- pristine/jxl-render/src/vardct/mod.rs	2006-07-23 20:21:28.000000000 -0500
++++ patched/jxl-render/src/vardct/mod.rs	2026-08-20 00:18:17.125650300 -0500
+@@ -51,6 +51,7 @@
+     cache: &mut RenderCache<S>,
+     region: Region,
+     pool: &JxlThreadPool,
++    lf_only: bool,
+ ) -> Result<ImageWithRegion> {
+     let span = tracing::span!(tracing::Level::TRACE, "Render VarDCT");
+     let _guard = span.enter();
+@@ -148,8 +149,8 @@
+     let group_dim = frame_header.group_dim();
+ 
+     let result = std::sync::RwLock::new(Result::Ok(()));
+-    let (mut fb, lf_xyb) = pool.scope(|scope| -> Result<_> {
+-        if hf_global.is_none() {
++    let (fb, lf_xyb) = pool.scope(|scope| -> Result<_> {
++        if hf_global.is_none() && !lf_only {
+             scope.spawn(|_| {
+                 let ret = tracing::trace_span!("Parse HfGlobal").in_scope(|| -> Result<_> {
+                     *hf_global = frame.try_parse_hf_global(Some(lf_global)).transpose()?;
+@@ -203,7 +204,11 @@
+             lf_xyb
+         };
+ 
+-        let fb = {
++        // Not allocated at all when only the LF image is wanted: on a 66 MP frame this is
++        // three f32 planes of ~264 MB, which would dwarf what the path saves.
++        let fb = if lf_only {
++            None
++        } else {
+             let shifts_cbycr: [_; 3] = std::array::from_fn(|idx| {
+                 ChannelShift::from_jpeg_upsampling(frame_header.jpeg_upsampling, idx)
+             });
+@@ -218,13 +223,20 @@
+                     AlignedGrid::with_alloc_tracker(width as usize, height as usize, tracker)?;
+                 fb.append_channel_shifted(ImageBuffer::F32(buffer), modular_region, shift);
+             }
+-            fb
++            Some(fb)
+         };
+ 
+         Ok((fb, lf_xyb))
+     })?;
+     result.into_inner().unwrap()?;
+ 
++    if lf_only {
++        // Dequantized, chroma-from-luma corrected and adaptively smoothed: a complete 1:8
++        // image. Everything below parses HF coefficients and runs the inverse DCT.
++        return Ok(lf_xyb);
++    }
++    let mut fb = fb.expect("framebuffer is only skipped for lf_only, which returned above");
++
+     let hf_global = cache.hf_global.as_ref();
+     let lf_groups = &mut cache.lf_groups;
+ 

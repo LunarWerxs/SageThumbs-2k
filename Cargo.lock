@@ -751,8 +751,6 @@ dependencies = [
 [[package]]
 name = "jxl-oxide"
 version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d36c662923f47586880211f3bc7c0d83fb3a9b410d278c7bde93450748abeef3"
 dependencies = [
  "brotli-decompressor",
  "bytemuck",
@@ -781,8 +779,6 @@ dependencies = [
 [[package]]
 name = "jxl-render"
 version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d34386bfdb6a19b5a30cc9beb4d475d537422c31ae8c39bb69640fcce3fcaf19"
 dependencies = [
  "bytemuck",
  "jxl-bitstream",
