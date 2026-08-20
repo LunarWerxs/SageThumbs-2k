@@ -296,3 +296,10 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Say "winget PR opened: $prUrl" 'Green'
+
+# The checkout is ~730 MB and nothing ever deleted it, so every release since this script
+# replaced the GitHub Action has left one behind in TEMP for good. Measured on 2.3.0: 726.5 MB.
+# Only the clone goes. The generated manifests in $dest are kept because they are small and
+# they are exactly what was submitted, and every FAILURE path above keeps the clone too: if the
+# PR could not be opened, that local branch is the thing worth inspecting.
+Remove-Item $clone -Recurse -Force -ErrorAction SilentlyContinue
