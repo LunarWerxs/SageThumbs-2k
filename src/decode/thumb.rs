@@ -754,4 +754,101 @@ mod fit_tests {
         assert_eq!(out.get_pixel(1, 0).0[0], 160);
         assert_eq!(out.get_pixel(1, 0).0[1], 30_000);
     }
+
+    /// **This repo reduces a thumbnail in TWO places, and only one of them is what Explorer
+    /// draws.** `cli::thumbnail` (and `view_png`, and the batch verb) finish with
+    /// `DynamicImage::thumbnail`; the shell extension finishes with [`fit_to_box`]. Every
+    /// visual gate there is — `check-render-parity.ps1`, `regression.ps1`, the contact sheets,
+    /// the MCP `view` tool — drives the CLI. So a green parity run is only evidence about the
+    /// shipped picture to the extent that these two agree.
+    ///
+    /// Making them ONE reduction changes the CLI's output for every downscaled sample and so
+    /// needs a deliberate parity re-accept; that is a decision, not a cleanup, and it is not
+    /// taken here. Measuring the gap is neither, and the measurement is what says how much the
+    /// decision is worth. **It came out the opposite way round from the guess, which is why it
+    /// was worth taking rather than reasoning about** (mean / worst channel difference):
+    ///
+    /// ```text
+    /// 4000x3000 -> 256   15.6x   mean 0.85   worst  5
+    /// 4000x3000 ->  96   41.7x   mean 1.68   worst  7
+    /// 1600x1200 -> 256    6.3x   mean 2.12   worst 12
+    ///  800x600  -> 256    3.1x   mean 4.39   worst 23
+    ///  512x384  -> 256    2.0x   mean 4.37   worst 21   <-- every sample the gate has
+    /// ```
+    ///
+    /// The two reductions AGREE on a big camera photo and DISAGREE on a small one. That is
+    /// structural, not noise: past a 2x step [`pre_reduce`] does the bulk as a box average and
+    /// leaves Lanczos3 only the last 1.5x, so the provider's path converges on the CLI's box
+    /// filter exactly where the reduction is large. At 2x nothing pre-reduces, so it is a clean
+    /// 2x2 box average against Lanczos3's sharpening lobes at full strength.
+    ///
+    /// **The corpus is 512x384, so the parity gate runs at the worst row in that table.** A
+    /// worst-pixel difference of 21 is over the +/-8 per-channel band `compare-renders.py`
+    /// calls a match, so a green parity run does NOT currently stand in for the picture
+    /// Explorer draws — at any size, but least of all the one it tests. That is the concrete
+    /// argument for unifying the two, and the reason this is written down rather than assumed
+    /// either way.
+    ///
+    /// Until then this test is the only thing looking at the provider's reduction at all: if a
+    /// future change pulls it further from the one every gate validates, it fails here instead
+    /// of shipping unseen.
+    #[test]
+    fn the_gates_reduce_a_thumbnail_the_way_the_shell_extension_does() {
+        // How far the CLI's reduction may sit from the provider's, in 8-bit channel levels.
+        // Headroom over the MEASURED numbers below, not a target: this pins today's gap so a
+        // future change to either reduction has to widen it deliberately. It is NOT an
+        // assertion that the gap is small enough — see the doc comment; at the corpus's own
+        // size it is not.
+        const CROSS_MEAN_CEILING: f64 = 6.0;
+        const CROSS_WORST_CEILING: u32 = 32;
+
+        for (w, h, cx) in [
+            (4000u32, 3000u32, 256u32), // a 12 MP camera photo at Explorer's largest tile
+            (4000, 3000, 96),           // ...and at Medium icons, a 41x reduction
+            (1600, 1200, 256),          // a phone photo
+            (800, 600, 256),            // barely over the box, so nothing pre-reduces
+            (512, 384, 256),            // the corpus's own size — all the parity gate ever sees
+        ] {
+            let img = photographic(w, h);
+            let shell = fit_to_box(img.clone(), cx);
+            let cli = img.thumbnail(cx, cx).to_rgba8();
+
+            // A disagreement about the SIZE would be a different and much worse bug than a
+            // disagreement about the pixels: the tile would be the wrong shape, and no
+            // per-pixel tolerance could describe it.
+            assert_eq!(
+                (shell.width, shell.height),
+                cli.dimensions(),
+                "{w}x{h} into a {cx} box: the two reductions disagree on the output SIZE"
+            );
+
+            // Alpha is opaque on both sides (neither source has any), so including it would
+            // divide the mean by four and flatter the comparison.
+            let (mut sum, mut worst, mut n) = (0u64, 0u32, 0u64);
+            for (a, b) in shell.rgba.chunks_exact(4).zip(cli.as_raw().chunks_exact(4)) {
+                for (x, y) in a[..3].iter().zip(&b[..3]) {
+                    let d = u32::from(x.abs_diff(*y));
+                    sum += u64::from(d);
+                    worst = worst.max(d);
+                    n += 1;
+                }
+            }
+            let mean = sum as f64 / n.max(1) as f64;
+            // Printed, not only asserted: the ceilings below are only honest while someone can
+            // see what the live gap actually is (`cargo test -- --nocapture`). A ceiling nobody
+            // can compare against drifts into a number that permits anything.
+            println!("  {w}x{h} -> {cx}: mean {mean:.3}, worst {worst}");
+            assert!(
+                mean <= CROSS_MEAN_CEILING,
+                "{w}x{h} into a {cx} box: the CLI's picture is {mean:.3} levels from the \
+                 shell extension's on average, over the {CROSS_MEAN_CEILING} allowed — the \
+                 visual gates no longer stand in for the picture Explorer draws"
+            );
+            assert!(
+                worst <= CROSS_WORST_CEILING,
+                "{w}x{h} into a {cx} box: one channel differs by {worst} between the CLI's \
+                 picture and the shell extension's, over the {CROSS_WORST_CEILING} allowed"
+            );
+        }
+    }
 }
