@@ -248,10 +248,26 @@ gh api -X POST "repos/$Fork/merge-upstream" -f branch=master 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) { Say '  merge-upstream did not fast-forward - continuing anyway' 'Yellow' }
 
 $clone = Join-Path $work 'winget-pkgs'
-# A full winget-pkgs clone is enormous; a depth-1 single-branch clone is seconds.
-git clone --depth 1 --single-branch --branch master "https://github.com/$Fork.git" $clone 2>&1 |
+# A stalled fetch used to hang here FOREVER with no output. On 2026-08-20 it sat 34 minutes
+# having transferred nothing, so a finished release looked hung rather than broken, which is
+# the same silent-failure shape this script was written to end. Fail fast instead.
+$env:GIT_HTTP_LOW_SPEED_LIMIT = '1000'
+$env:GIT_HTTP_LOW_SPEED_TIME = '60'
+# winget-pkgs is enormous, and `--depth 1` is the WRONG way to shrink it: the server has to
+# compute a shallow boundary across ~1M commits, which on 2026-08-20 delivered ~50 KB/s while
+# this same machine pulled a release asset from the same host at 17 MB/s. A BLOBLESS SPARSE
+# clone asks only for objects the server already has packed: 45 s, measured.
+#
+# `--sparse` is LOAD-BEARING and must never be traded for `--no-checkout`. Sparse still
+# populates the WHOLE index (649047 entries), so the commit below adds three files. With an
+# empty index that same commit becomes a mass DELETE of every manifest in the repository,
+# aimed straight at a public PR against microsoft/winget-pkgs. Verified before shipping:
+# 3 added, 0 deleted, 0 modified.
+git clone --filter=blob:none --sparse --single-branch --branch master "https://github.com/$Fork.git" $clone 2>&1 |
     Out-Null
-if ($LASTEXITCODE -ne 0) { Die "could not clone $Fork." }
+if ($LASTEXITCODE -ne 0) { Die "could not clone $Fork (a stall aborts after 60 s under 1 KB/s)." }
+git -C $clone sparse-checkout set $PkgPath 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Die "could not narrow the sparse checkout to $PkgPath." }
 
 $branch = "$PkgId-$Version-$(git -C $clone rev-parse --short HEAD)"
 git -C $clone checkout -b $branch 2>&1 | Out-Null
