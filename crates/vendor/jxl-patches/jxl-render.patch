@@ -1,6 +1,6 @@
 diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
 --- pristine/jxl-render/src/image.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/image.rs	2026-08-20 00:18:50.206133700 -0500
++++ patched/jxl-render/src/image.rs	2026-08-20 12:46:43.465797900 -0500
 @@ -592,6 +592,36 @@
          self.color_channels = count;
      }
@@ -40,8 +40,39 @@ diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
              if !matches!(ec_info.ty, jxl_image::ExtraChannelType::Alpha { .. }) {
 diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
 --- pristine/jxl-render/src/lib.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/lib.rs	2026-08-20 00:18:17.109927400 -0500
-@@ -55,6 +55,7 @@
++++ patched/jxl-render/src/lib.rs	2026-08-20 12:47:43.411220700 -0500
+@@ -6,7 +6,10 @@
+     ColorEncodingWithProfile, ColorManagementSystem, ColorTransform, ColourEncoding, ColourSpace,
+     EnumColourEncoding, RenderingIntent, TransferFunction,
+ };
+-use jxl_frame::{Frame, FrameContext, header::FrameType};
++use jxl_frame::{
++    Frame, FrameContext,
++    header::{Encoding, FrameHeader, FrameType},
++};
+ use jxl_grid::AllocTracker;
+ use jxl_image::{ImageHeader, ImageMetadata};
+ use jxl_modular::Sample;
+@@ -31,6 +34,18 @@
+ pub use region::Region;
+ use state::*;
+ 
++/// Whether a requested LF-only render applies to `frame_header`.
++///
++/// Frames that do not cover the canvas exactly are refused. The reduction applies to the frame,
++/// while callers size buffers from the image, so the two must describe the same rectangle.
++pub fn lf_only_applies(image_header: &ImageHeader, frame_header: &FrameHeader) -> bool {
++    frame_header.encoding == Encoding::VarDct
++        && frame_header.x0 == 0
++        && frame_header.y0 == 0
++        && frame_header.width == image_header.size.width
++        && frame_header.height == image_header.size.height
++}
++
+ /// Render context that tracks loaded and rendered frames.
+ pub struct RenderContext {
+     image_header: Arc<ImageHeader>,
+@@ -55,6 +70,7 @@
      cms: Box<dyn ColorManagementSystem + Send + Sync>,
      cached_transform: Mutex<Option<ColorTransform>>,
      force_wide_buffers: bool,
@@ -49,7 +80,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  }
  
  impl std::fmt::Debug for RenderContext {
-@@ -179,6 +180,7 @@
+@@ -179,6 +195,7 @@
              loading_render_cache_narrow: None,
              loading_region: None,
              requested_image_region: full_image_region,
@@ -57,7 +88,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              embedded_icc: self.embedded_icc,
              requested_color_encoding,
              cms: Box::new(jxl_color::NullCms),
-@@ -238,6 +240,22 @@
+@@ -238,6 +255,22 @@
      pub fn image_region(&self) -> Region {
          self.requested_image_region
      }
@@ -80,7 +111,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  }
  
  impl RenderContext {
-@@ -492,6 +510,7 @@
+@@ -492,6 +525,7 @@
          image_region: Region,
          prev_frame_visibility: (usize, usize),
          pool: &JxlThreadPool,
@@ -88,7 +119,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
      ) -> FrameRender<S> {
          if let Some(lf) = &reference_frames.lf {
              tracing::trace!(idx = lf.frame.idx, "Spawn LF frame renderer");
-@@ -526,6 +545,7 @@
+@@ -526,6 +560,7 @@
              image_region,
              pool.clone(),
              prev_frame_visibility,
@@ -96,7 +127,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
          );
          match result {
              Ok(grid) => FrameRender::Done(grid),
-@@ -548,6 +568,7 @@
+@@ -548,6 +583,7 @@
          let prev_frame_visibility = self.get_previous_frames_visibility(&frame);
  
          let pool = self.pool.clone();
@@ -104,7 +135,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
          Arc::new(move |state, image_region| {
              Self::do_render(
                  &frame,
-@@ -556,6 +577,7 @@
+@@ -556,6 +592,7 @@
                  image_region,
                  prev_frame_visibility,
                  &pool,
@@ -112,7 +143,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              )
          })
      }
-@@ -782,6 +804,7 @@
+@@ -782,6 +819,7 @@
                  image_region,
                  prev_frame_visibility,
                  &self.pool,
@@ -120,7 +151,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              );
  
              match state {
-@@ -844,6 +867,7 @@
+@@ -844,6 +882,7 @@
                  image_region,
                  prev_frame_visibility,
                  &self.pool,
@@ -130,7 +161,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              match state {
 diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
 --- pristine/jxl-render/src/render.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/render.rs	2026-08-20 00:18:17.116371200 -0500
++++ patched/jxl-render/src/render.rs	2026-08-20 12:46:43.467579400 -0500
 @@ -18,6 +18,7 @@
      image_region: Region,
      pool: JxlThreadPool,
@@ -139,17 +170,18 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
  ) -> Result<ImageWithRegion> {
      let frame_region = util::image_region_to_frame(frame, image_region, false);
      tracing::debug!(
-@@ -43,6 +44,9 @@
+@@ -43,6 +44,10 @@
      let color_padded_region = util::pad_color_region(image_header, frame_header, frame_region)
          .intersection(full_frame_region);
  
-+    // Modular frames have no LF image, so they ignore the request and render at 1:1.
-+    let lf_only = lf_only && frame_header.encoding == Encoding::VarDct;
++    // Modular frames have no LF image, and a frame that does not cover the canvas would
++    // reduce to a size the caller's buffer does not match.
++    let lf_only = lf_only && crate::lf_only_applies(image_header, frame_header);
 +
      let mut fb = match frame_header.encoding {
          Encoding::Modular => modular::render_modular(frame, cache, color_padded_region, &pool)?,
          Encoding::VarDct => {
-@@ -52,6 +56,7 @@
+@@ -52,6 +57,7 @@
                  cache,
                  color_padded_region,
                  &pool,
@@ -157,7 +189,7 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
              );
              match (result, reference_frames.lf) {
                  (Ok(grid), _) => grid,
-@@ -67,6 +72,14 @@
+@@ -67,6 +73,14 @@
          }
      };
  
@@ -174,7 +206,7 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
      }
 diff -ruN pristine/jxl-render/src/vardct/mod.rs patched/jxl-render/src/vardct/mod.rs
 --- pristine/jxl-render/src/vardct/mod.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/vardct/mod.rs	2026-08-20 00:18:17.125650300 -0500
++++ patched/jxl-render/src/vardct/mod.rs	2026-08-20 12:46:43.468158600 -0500
 @@ -51,6 +51,7 @@
      cache: &mut RenderCache<S>,
      region: Region,

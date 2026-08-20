@@ -727,7 +727,7 @@ impl JxlImage {
     pub fn render_size(&self, keyframe_index: usize) -> Option<(u32, u32)> {
         let frame = self.ctx.keyframe(keyframe_index)?;
         let (w, h) = (self.width(), self.height());
-        Some(match Self::lf_shift(self.ctx.lf_only(), frame.header()) {
+        Some(match self.lf_shift(frame.header()) {
             Some(shift) => (w.div_ceil(1 << shift), h.div_ceil(1 << shift)),
             None => (w, h),
         })
@@ -739,8 +739,8 @@ impl JxlImage {
     /// eighth of the CODED frame while every public dimension describes the FINAL image, so on
     /// a frame with `upsampling = 2` the two differ by another factor of two, and assuming 8
     /// puts the whole picture in the top-left quadrant of a buffer four times too large.
-    fn lf_shift(lf_only: bool, frame_header: &FrameHeader) -> Option<u32> {
-        if !lf_only || frame_header.encoding != jxl_frame::header::Encoding::VarDct {
+    fn lf_shift(&self, frame_header: &FrameHeader) -> Option<u32> {
+        if !self.ctx.lf_only() || !jxl_render::lf_only_applies(&self.image_header, frame_header) {
             return None;
         }
         Some(3 + frame_header.upsampling.trailing_zeros())
@@ -767,7 +767,7 @@ impl JxlImage {
         let mut target_frame_region = image_region.translate(-frame_header.x0, -frame_header.y0);
         // An LF-only render produced a reduced buffer, so the region that selects pixels out of
         // it must be scaled to match, or it addresses rows the buffer does not have.
-        if let Some(shift) = Self::lf_shift(self.ctx.lf_only(), frame_header) {
+        if let Some(shift) = self.lf_shift(frame_header) {
             target_frame_region = target_frame_region.downsample(shift);
         }
 

@@ -42,6 +42,13 @@ out of 255, and visually indistinguishable.
   buffer.
 - Extra channels have no 1:8 representation to decode, so alpha is filled opaque - the same
   answer jxl-oxide's existing incomplete-frame fallback gives.
+- `jxl_render::lf_only_applies` is the ONE predicate for whether the mode applies, used by the
+  renderer and by `render_size` alike, so the size that gets reported and the render that
+  actually happens cannot disagree. **It refuses frames that do not cover the canvas exactly.**
+  A frame may be cropped or letterboxed, and the reduction applies to the FRAME while every
+  public dimension describes the IMAGE, so the two only agree when the frame is the whole
+  canvas. Added 2026-08-20 from upstream review; no conformance file and no corpus sample
+  triggers it, which is precisely why it had to be caught by reading rather than by a red test.
 
 **Modular (lossless) frames have no LF image and are unaffected.** They ignore the request and
 render at 1:1, which is why `decode_jxl` reads the size back rather than assuming.

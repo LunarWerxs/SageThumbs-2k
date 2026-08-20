@@ -44,8 +44,9 @@ pub(crate) fn render_frame<S: Sample>(
     let color_padded_region = util::pad_color_region(image_header, frame_header, frame_region)
         .intersection(full_frame_region);
 
-    // Modular frames have no LF image, so they ignore the request and render at 1:1.
-    let lf_only = lf_only && frame_header.encoding == Encoding::VarDct;
+    // Modular frames have no LF image, and a frame that does not cover the canvas would
+    // reduce to a size the caller's buffer does not match.
+    let lf_only = lf_only && crate::lf_only_applies(image_header, frame_header);
 
     let mut fb = match frame_header.encoding {
         Encoding::Modular => modular::render_modular(frame, cache, color_padded_region, &pool)?,

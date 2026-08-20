@@ -96,8 +96,16 @@ foreach ($name in $crates.Keys) {
     # so the first two path components are the diff's own scaffolding.
     Push-Location $out
     try {
-        & git apply --verbose -p2 $patch 2>&1 | ForEach-Object { Write-Verbose $_ }
-        if ($LASTEXITCODE -ne 0) {
+        # CAPTURE THE EXIT CODE BEFORE ANYTHING ELSE RUNS. Piping git's output straight into
+        # another command leaves `$LASTEXITCODE` describing the pipeline rather than git, and on
+        # 2026-08-20 that reported "patch applied" for a patch that had NOT applied. The copy
+        # above had already replaced the tree with pristine sources, so the vendored crates
+        # silently lost the entire feature and still looked freshly generated. A vendoring
+        # script that can quietly un-patch the tree is worse than no script.
+        $applyOut = & git apply --verbose -p2 $patch 2>&1
+        $applyRc = $LASTEXITCODE
+        $applyOut | ForEach-Object { Write-Verbose $_ }
+        if ($applyRc -ne 0) {
             Write-Host "[vendor-jxl] $name $ver - PATCH DID NOT APPLY" -ForegroundColor Red
             Write-Host "             The upstream source moved under the patch. Re-check the hunks:" -ForegroundColor Yellow
             Write-Host "               git apply -p2 --reject $patch" -ForegroundColor Yellow

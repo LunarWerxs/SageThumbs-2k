@@ -2,3 +2,9 @@
 # rewriting LF to CRLF on Windows checkouts before those hashes are verified.
 # Upstream also contains intentional whitespace that must remain byte-identical.
 /crates/vendor/exr/** -text -whitespace
+
+# `git apply` matches patch context BYTE for byte, and the pristine crates.io sources these
+# describe are LF. On a Windows checkout with core.autocrlf=true Git would hand the script a
+# CRLF patch, every context line would miss, and vendor-jxl.ps1 would fail on a clean clone
+# for a reason that has nothing to do with the tree. Keep them exactly as committed.
+/crates/vendor/jxl-patches/*.patch -text
