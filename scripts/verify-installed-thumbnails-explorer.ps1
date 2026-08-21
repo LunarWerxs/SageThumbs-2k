@@ -42,7 +42,7 @@ param(
     # Corpus directory holding the samples. Defaults to the repo's sibling test-corpus.
     [string]$CorpusPath,
     # Directory holding the freshly built DLL, for the installed==built hash assertion.
-    [string]$BuiltDir = 'D:\st2k-target\release',
+    [string]$BuiltDir = 'D:\.DevScratch\build-cache\st2k-target\release',
     # Keep the scratch directory (and its captures) for inspection.
     [switch]$Keep
 )

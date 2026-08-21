@@ -156,7 +156,7 @@ foreach ($f in @("$PkgId.yaml", "$PkgId.locale.en-US.yaml")) {
 # goes stale every time FORMATS gains an entry. Never hard-code it (CLAUDE.md §8): ask the
 # built binary. If there is no built st2k.exe, leave the inherited number alone rather than
 # guessing - a slightly stale count is much better than a wrong one.
-$st2k = 'D:\st2k-target\release\st2k.exe'
+$st2k = 'D:\.DevScratch\build-cache\st2k-target\release\st2k.exe'
 if (Test-Path $st2k) {
     $first = (& $st2k formats 2>$null | Select-Object -First 1)
     if ($first -match '^(\d+) supported input formats') {

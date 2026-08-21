@@ -77,7 +77,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root   = Split-Path $PSScriptRoot -Parent                     # project root (Cargo.toml)
 $corpus = Join-Path (Split-Path $root -Parent) 'test-corpus'   # sibling of project root
-$target = 'D:\st2k-target'                                     # fixed in .cargo\config.toml
+$target = 'D:\.DevScratch\build-cache\st2k-target'                                     # fixed in .cargo\config.toml
 Set-Location $root
 
 $script:timings = @()

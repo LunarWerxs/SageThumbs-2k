@@ -25,7 +25,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ExePath = (Join-Path 'D:\st2k-target\release' 'SageThumbs2K.exe'),
+    [string]$ExePath = (Join-Path 'D:\.DevScratch\build-cache\st2k-target\release' 'SageThumbs2K.exe'),
     [switch]$Keep
 )
 

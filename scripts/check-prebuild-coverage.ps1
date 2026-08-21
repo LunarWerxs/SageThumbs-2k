@@ -29,7 +29,7 @@
 
 .EXAMPLE
     pwsh scripts\check-prebuild-coverage.ps1
-    pwsh scripts\check-prebuild-coverage.ps1 -Exe D:\st2k-target\release\st2k.exe
+    pwsh scripts\check-prebuild-coverage.ps1 -Exe D:\.DevScratch\build-cache\st2k-target\release\st2k.exe
 #>
 [CmdletBinding()]
 param(

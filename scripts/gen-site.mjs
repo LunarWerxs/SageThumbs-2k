@@ -8,7 +8,7 @@
 //
 // Run before deploying the site (the site lives at sagethumbs2k.github.io):
 //   node scripts/gen-site.mjs [path\to\st2k.exe]
-// st2k.exe resolution order: arg -> $ST2K -> D:\st2k-target\release -> installed -> PATH.
+// st2k.exe resolution order: arg -> $ST2K -> D:\.DevScratch\build-cache\st2k-target\release -> installed -> PATH.
 // Idempotent: running it twice is a no-op. CRLF-preserving.
 
 import fs from 'node:fs';
@@ -24,7 +24,7 @@ function findSt2k() {
   const cands = [
     process.argv[2],
     process.env.ST2K,
-    'D:/st2k-target/release/st2k.exe',
+    'D:/.DevScratch/build-cache/st2k-target/release/st2k.exe',
     path.join(ROOT, 'target', 'release', 'st2k.exe'),
     'C:/Program Files/SageThumbs2K/st2k.exe',
     'st2k',

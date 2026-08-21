@@ -14,13 +14,13 @@ against the previous release's portable `st2k.exe` (they are all in `dist\\`) an
 difference to be one you meant:
 
   python scripts/compare-renders.py --corpus ..\\test-corpus --out D:\\rendercmp ^
-      --old D:\\old\\st2k.exe --new D:\\st2k-target\\release\\st2k.exe
+      --old D:\\old\\st2k.exe --new D:\\.DevScratch\\build-cache\\st2k-target\\release\\st2k.exe
 
 A second mode checks a rendered colour against what the file is KNOWN to flatten to, which is
 what `make-xcf-fixture.py` builds its files to make possible:
 
   python scripts/compare-renders.py --corpus ..\\test-corpus --out D:\\rendercmp ^
-      --new D:\\st2k-target\\release\\st2k.exe --expect expected-colors.txt
+      --new D:\\.DevScratch\\build-cache\\st2k-target\\release\\st2k.exe --expect expected-colors.txt
 
 `expected-colors.txt` is `filename<TAB>r,g,b` per line; blank lines and `#` comments ignored.
 """
