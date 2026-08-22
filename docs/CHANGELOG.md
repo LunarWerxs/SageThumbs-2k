@@ -29,6 +29,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   file went from **49 seconds to 1.8**, and nothing in a folder of fifteen now takes more than
   two seconds. Narrow tables, and Markdown tables generally, look exactly as they did.
 
+- **The Quick preview could stop responding on a large CSV or database file, so that Windows
+  called it "not responding" and you had to end the task.** It was not crashing: the table was
+  being laid out on the same thread that answers Windows, and on a big enough file that took
+  longer than the few seconds Windows waits before declaring a window hung. The table work above
+  is far quicker now, so it stays responsive. Database files (`.db`, `.sqlite` and friends) are
+  drawn by the same code and were affected the same way; a 7 MB one went from over five seconds
+  to well under one.
+
 - **Hasselblad RAW photos took well over a second each to thumbnail.** A `.fff` or `.3fr` file
   carries a ready-made preview picture, but SageThumbs was ignoring it and decoding the entire
   raw sensor image instead, every time. It now uses the camera's own preview whenever that
