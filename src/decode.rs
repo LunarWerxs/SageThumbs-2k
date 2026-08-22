@@ -139,16 +139,18 @@ pub(crate) mod limits {
     ///     huge OS-decodable formats (camera RAW, large HEIC) still thumbnail.
     pub const MAX_ALLOC: u64 = 512 * 1024 * 1024;
 
-    /// PSD/PSB composite re-decode allocation cap. The composite is resized by
-    /// magick to PSD_COMPOSITE_EDGE and re-decoded by the `image` tier; a near-
+    /// Full-fidelity re-decode allocation cap, shared by the paths whose whole point
+    /// is keeping the real pixels: the PSD/PSB composite and the RAW re-read through
+    /// a name-selected coder (`decode_full_for_path`). The image is resized by
+    /// magick to FULL_FIDELITY_EDGE and re-decoded by the `image` tier; a near-
     /// square image at that edge needs more than the default MAX_ALLOC, so this
     /// OUR-own-resized-PNG case gets a matched, larger budget. See
     /// `decode_psd_composite` for the agreement math.
-    pub const PSD_COMPOSITE_MAX_ALLOC: u64 = 16_384 * 16_384 * 4 + (16 << 20);
+    pub const FULL_FIDELITY_MAX_ALLOC: u64 = 16_384 * 16_384 * 4 + (16 << 20);
 
-    /// ImageMagick `-resize` edge for the PSD/PSB full composite (shrink-only).
-    /// Kept at MAX_DIM so the composite path and the bomb guard agree.
-    pub const PSD_COMPOSITE_EDGE: &str = "16384x16384>";
+    /// ImageMagick `-resize` edge for full-fidelity decodes (shrink-only).
+    /// Kept at MAX_DIM so these paths and the bomb guard agree.
+    pub const FULL_FIDELITY_EDGE: &str = "16384x16384>";
 
     /// Hard ceiling on the whole-file bytes we'll buffer in memory for ONE decode
     /// or file-verb. The thumbnail provider (its stream cap) and the path-reading
@@ -980,8 +982,9 @@ pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
     // Only take the re-read when it is a MEANINGFUL improvement, because it is not free: the
     // named coder demosaics the sensor data and that costs seconds.
     //
-    // Measured with the bundled binary, converting to PNG:
-    //   .mef  192x144  -> 3078x4096   16x taller, 8.3 s   <- the reported bug
+    // Measured with the bundled binary, converting to PNG (native since 2.3.2; the first
+    // version of this fix went through the 4096 memory guard and gave 3078x4096 for the mef):
+    //   .mef  192x144  -> 4016x5344   native,     8.6 s   <- the reported bug
     //   .iiq  304x220  -> 3658x2740   12x wider,  6.5 s   <- the reported bug
     //   .cr2 1936x1288 -> 1944x1296   0.4% bigger, 4.4 s  <- NOT worth it
     //
@@ -994,14 +997,31 @@ pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
         u64::from(full.width().max(full.height())) * 2
             >= u64::from(small.width().max(small.height())) * u64::from(WORTH_THE_WAIT)
     };
-    match decode_by_extension(bytes, &ext, None) {
+    // Native resolution first, then the 4096-capped variant. The native path's PNG hand-back
+    // can exceed the child-output cap past roughly 40 MP (a Phase One IQ4 is 150), and when it
+    // does, falling straight to `small` would REGRESS such files below what the capped decode
+    // already delivers. The retry costs seconds, but only on exactly the rare giant where the
+    // alternative is handing back a 304px preview of a 150 MP photograph.
+    match magick::decode_named_extension_native(bytes, &ext) {
         Ok(full) if big_enough(&full) => {
             crate::safety::log_debug(
                 "decode: full-fidelity RAW re-read through the named coder for its extension",
             );
             Ok(full)
         }
-        _ => Ok(small),
+        // Succeeded, just not meaningfully bigger. The capped variant of the SAME decode can
+        // only be smaller still, so retrying it would spend seconds to learn nothing — which
+        // is exactly what it did on a .cr2 before this arm existed (6.5 s against 4.4 s).
+        Ok(_) => Ok(small),
+        Err(_) => match decode_by_extension(bytes, &ext, None) {
+            Ok(full) if big_enough(&full) => {
+                crate::safety::log_debug(
+                    "decode: RAW re-read fell back to the capped named-coder decode",
+                );
+                Ok(full)
+            }
+            _ => Ok(small),
+        },
     }
 }
 

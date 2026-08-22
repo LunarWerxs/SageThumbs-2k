@@ -41,9 +41,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   the photograph.** A Mamiya `.mef` came out **192x144** and a Phase One `.iiq` **304x220**,
   when the real pictures are 4016x5344 and 3658x2740. These formats hide the real photo where
   the usual decoder cannot see it without knowing the file's name, so SageThumbs was silently
-  handing you the thumbnail. Convert and Resize now re-read those files properly. Thumbnails
-  were always correct and are unchanged, pixel for pixel, and still just as fast. Formats that
-  were already converting correctly keep their quick path, so nothing else got slower.
+  handing you the thumbnail. Convert and Resize now re-read those files at their full native
+  resolution - the `.mef` really does come out 4016x5344. Thumbnails were always correct and
+  are unchanged, pixel for pixel, and still just as fast. Formats that were already converting
+  correctly keep their quick path, so nothing else got slower.
 
 ### Added
 

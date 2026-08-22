@@ -398,6 +398,36 @@ pub(super) fn decode_named_extension(
     ext: &str,
     max_edge: Option<u32>,
 ) -> Result<DynamicImage> {
+    let capped = max_edge
+        .map(|e| e.clamp(1, MAGICK_MAX_EDGE_PX))
+        .map(|e| format!("{e}x{e}>"));
+    decode_named_extension_spec(
+        bytes,
+        ext,
+        capped.as_deref().unwrap_or(MAGICK_MAX_EDGE),
+        TILE_CAPS,
+    )
+}
+
+/// As [`decode_named_extension`], at NATIVE resolution: the resize cap is the MAX_DIM bomb
+/// guard (shrink-only), not the 4096 memory guard, with the matching re-decode allocation.
+/// Exactly the pairing [`decode_psd_composite`] uses, and for the same reason — this is a
+/// full-fidelity path, and the whole point is keeping the real pixels. A Mamiya `.mef`
+/// through the 4096 guard came out 3078x4096; through this it is its native 4016x5344.
+///
+/// Only `decode_full_for_path` calls it, and that caller falls back to the capped variant on
+/// failure: past roughly 65-90 MP the 16-bit PNG magick hands back can exceed
+/// [`FULL_FIDELITY_PNG_CAP`], and a medium-format back at 4096 beats one at nothing.
+pub(super) fn decode_named_extension_native(bytes: &[u8], ext: &str) -> Result<DynamicImage> {
+    decode_named_extension_spec(bytes, ext, limits::FULL_FIDELITY_EDGE, FULL_FIDELITY_CAPS)
+}
+
+fn decode_named_extension_spec(
+    bytes: &[u8],
+    ext: &str,
+    edge: &str,
+    caps: DecodeCaps,
+) -> Result<DynamicImage> {
     let Some(ext) = safe_ext(ext).filter(|e| has_name_selected_coder(e)) else {
         return Err(Error::from(E_FAIL));
     };
@@ -414,13 +444,9 @@ pub(super) fn decode_named_extension(
     let Some(spec) = temp.0.to_str() else {
         return Err(Error::from(E_FAIL));
     };
-    let capped = max_edge
-        .map(|e| e.clamp(1, MAGICK_MAX_EDGE_PX))
-        .map(|e| format!("{e}x{e}>"));
-    let edge = capped.as_deref().unwrap_or(MAGICK_MAX_EDGE);
     // Empty stdin on purpose: the child reads the file, so shovelling the bytes down a
     // pipe nobody drains would only duplicate the write (and, for a big RAW, the wait).
-    let out = decode_via_magick_spec(&[], &[], spec, &[], edge, RASTER_BUDGET);
+    let out = decode_via_magick_spec_alloc(&[], &[], spec, &[], edge, caps, RASTER_BUDGET);
     drop(temp);
     out
 }
@@ -565,7 +591,7 @@ fn ftyp_describes_mini_avif(body: &[u8]) -> bool {
 /// section), not a layer. Capped at MAX_DIM (bomb guard, shrink-only `>`) instead
 /// of the thumbnail tier's 4096 — the whole point is keeping the real pixels.
 ///
-/// The re-decode of magick's PNG runs with [`limits::PSD_COMPOSITE_MAX_ALLOC`]
+/// The re-decode of magick's PNG runs with [`limits::FULL_FIDELITY_MAX_ALLOC`]
 /// (not the default 512 MiB): the resize cap is MAX_DIM, so a near-square
 /// composite at ~16384² needs ~1 GiB and would otherwise be silently rejected by
 /// the `image` tier — making a >~134 MP PSD fall back to its 160px baked-in
@@ -577,8 +603,8 @@ pub(super) fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
         &[],
         "-[0]",
         &[],
-        limits::PSD_COMPOSITE_EDGE,
-        limits::PSD_COMPOSITE_MAX_ALLOC,
+        limits::FULL_FIDELITY_EDGE,
+        FULL_FIDELITY_CAPS,
         RASTER_BUDGET,
     )
 }
@@ -597,7 +623,7 @@ fn decode_via_magick_spec(
     budget: MagickBudget,
 ) -> Result<DynamicImage> {
     decode_via_magick_spec_alloc(
-        bytes, pre_input, input, pre_ops, max_edge, MAX_ALLOC, budget,
+        bytes, pre_input, input, pre_ops, max_edge, TILE_CAPS, budget,
     )
 }
 
@@ -609,18 +635,58 @@ fn decode_via_magick_spec(
 /// this process for the whole CPU/wall budget window below.
 const MAGICK_PNG_CAP: usize = 64 * 1024 * 1024;
 
-/// As [`decode_via_magick_spec`], but with an explicit re-decode allocation
-/// budget — used by the PSD composite path, whose larger resize cap needs a
-/// matching `max_alloc` (see [`decode_psd_composite`]).
+/// Child-output cap for the FULL-FIDELITY paths (the PSD composite and the native RAW
+/// re-read), whose resize edge is MAX_DIM rather than 4096.
+///
+/// [`MAGICK_PNG_CAP`] is sized for the 4096 tier and a full-fidelity decode blows straight
+/// through it: the bundled magick is a Q16 build, so it writes 16-BIT PNGs, and the measured
+/// hand-back for a 21 MP Mamiya `.mef` at native size is **107 MB**. Under the 64 MiB cap that
+/// decode silently "failed" and the caller fell back to the 4096 result — the native path
+/// shipped and did nothing.
+///
+/// 512 MiB (the same figure as `limits::MAX_ALLOC`) bounds our transient the same way, and
+/// covers 16-bit photographic PNGs up to roughly 65-90 MP. It is a MEMORY bound, not a
+/// geometry guarantee: a 150 MP Phase One back can legitimately exceed it, and when it does
+/// the caller's capped retry still delivers the 4096 version rather than nothing.
+const FULL_FIDELITY_PNG_CAP: usize = 512 * 1024 * 1024;
+
+/// The two memory bounds a magick child decode runs under, raised IN STEP for the
+/// full-fidelity paths: `max_alloc` bounds the `image`-tier re-decode of the PNG the
+/// child hands back, `png_cap` bounds the hand-back itself. One struct because passing
+/// them separately is how they drift apart — the native RAW path shipped with the alloc
+/// raised and the PNG cap still at the 4096 tier's 64 MiB, so its 107 MB hand-back
+/// "failed" and the feature silently did nothing.
+#[derive(Clone, Copy)]
+struct DecodeCaps {
+    max_alloc: u64,
+    png_cap: usize,
+}
+
+/// Ordinary raster decodes: the 4096-edge tier's budgets.
+const TILE_CAPS: DecodeCaps = DecodeCaps {
+    max_alloc: MAX_ALLOC,
+    png_cap: MAGICK_PNG_CAP,
+};
+
+/// Full-fidelity decodes (PSD composite, native RAW re-read): the MAX_DIM edge with the
+/// matching re-decode allocation and child-output cap (see [`FULL_FIDELITY_PNG_CAP`]).
+const FULL_FIDELITY_CAPS: DecodeCaps = DecodeCaps {
+    max_alloc: limits::FULL_FIDELITY_MAX_ALLOC,
+    png_cap: FULL_FIDELITY_PNG_CAP,
+};
+
+/// As [`decode_via_magick_spec`], but with explicit memory caps — used by the
+/// full-fidelity paths, whose larger resize edge needs both raised in step.
 fn decode_via_magick_spec_alloc(
     bytes: &[u8],
     pre_input: &[&str],
     input: &str,
     pre_ops: &[&str],
     max_edge: &str,
-    max_alloc: u64,
+    caps: DecodeCaps,
     budget: MagickBudget,
 ) -> Result<DynamicImage> {
+    let DecodeCaps { max_alloc, png_cap } = caps;
     let Some(exe) = magick_exe() else {
         crate::safety::log_debug("magick decode: ImageMagick not available");
         return Err(Error::from(E_FAIL));
@@ -692,9 +758,7 @@ fn decode_via_magick_spec_alloc(
         let mut buf = Vec::new();
         // Capped so a hostile/misbehaving child can't balloon our memory before the
         // CPU/wall watchdog below gets a chance to kill it (see MAGICK_PNG_CAP).
-        let _ = stdout
-            .take((MAGICK_PNG_CAP + 1) as u64)
-            .read_to_end(&mut buf);
+        let _ = stdout.take((png_cap + 1) as u64).read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
 
@@ -1086,9 +1150,9 @@ mod tests {
     use super::{
         add_magick_limits, add_metafile_magick_limits, apply_magick_environment,
         encode_wait_decision, magick_output_supported, magick_stdin_spec, output_coder, EncodeWait,
-        MAGICK_CPU_BUDGET, MAGICK_PNG_CAP, MAX_ISOBMFF_TOP_LEVEL_BOXES, METAFILE_MAGICK_CPU_BUDGET,
-        METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT, METAFILE_MAGICK_TIMEOUT,
-        METAFILE_MAGICK_TIME_LIMIT,
+        FULL_FIDELITY_PNG_CAP, MAGICK_CPU_BUDGET, MAGICK_PNG_CAP, MAX_ISOBMFF_TOP_LEVEL_BOXES,
+        METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT,
+        METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
     };
     use std::collections::HashMap;
     use std::process::Command;
@@ -1361,6 +1425,20 @@ mod tests {
         assert!(
             MAGICK_PNG_CAP as u64 >= worst_case_raw_rgba,
             "MAGICK_PNG_CAP must cover a full {MAGICK_MAX_EDGE_PX}x{MAGICK_MAX_EDGE_PX} RGBA frame"
+        );
+    }
+
+    /// The full-fidelity cap must comfortably cover the MEASURED hand-back that broke the
+    /// native RAW path: the bundled Q16 magick writes 16-BIT PNGs, and a 21 MP Mamiya `.mef`
+    /// at native size is 107 MB — silently "failing" under the 64 MiB tier cap, so the whole
+    /// feature shipped and did nothing. Pinned at 2x that so a merely-bigger camera does not
+    /// re-open the same hole one model later.
+    #[test]
+    fn full_fidelity_png_cap_covers_the_measured_native_raw() {
+        let measured_mef_native_png: usize = 107_389_077;
+        assert!(
+            FULL_FIDELITY_PNG_CAP >= 2 * measured_mef_native_png,
+            "FULL_FIDELITY_PNG_CAP must cover a native medium-format 16-bit PNG with headroom"
         );
     }
 }
