@@ -42,6 +42,9 @@ pub(super) const WM_APP_PDFTILE: u32 = WM_APP + 10;
 /// opening a long document never delays first paint; the view simply becomes scrollable when
 /// it lands, and stays a single-page pager if it never does.
 pub(super) const WM_APP_PDFDOC: u32 = WM_APP + 11;
+/// One rendered page THUMBNAIL for the side strip (`WM_APP + 12`); same payload shape as
+/// `WM_APP_PDFTILE`, separate message because it feeds the strip's own cache at its own width.
+pub(super) const WM_APP_PDFSTRIP: u32 = WM_APP + 12;
 /// A fetched remote markdown image (`WM_APP + 9`); LPARAM = `Box<(gen, src, Option<DecodedRgba>)>`.
 pub(super) const WM_APP_MDIMG: u32 = WM_APP + 9;
 /// Follow-selection switch posted from the poll thread (`WM_APP + 2`); LPARAM = `Box<String>` path.
@@ -805,6 +808,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 LRESULT(0)
             }
+            WM_APP_PDFSTRIP => {
+                let boxed = Box::from_raw(lparam.0 as *mut super::pdfview::TilePayload);
+                let (gen, page, width, decoded) = *boxed;
+                let st = &*state(hwnd);
+                let bg = letterbox_bg(st);
+                let mut slot = st.pdf_doc.borrow_mut();
+                if let Some(doc) = slot.as_mut() {
+                    if gen == doc.gen {
+                        match decoded.and_then(|(w, h, rgba)| content::make_render(w, h, &rgba, bg))
+                        {
+                            Some(rd) => doc.put_strip_tile(page, width, rd),
+                            None => doc.clear_strip_pending(page),
+                        }
+                        drop(slot);
+                        let sr = strip_rect(hwnd);
+                        let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
+                    }
+                }
+                LRESULT(0)
+            }
             WM_APP_PDFINFO => {
                 let boxed = Box::from_raw(lparam.0 as *mut (u64, u32));
                 let (gen, count) = *boxed;
@@ -992,6 +1015,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let (x, y) = lparam_xy(lparam);
                 if let Some(i) = hit_button(hwnd, x, y) {
                     do_action(hwnd, BTNS[i]);
+                } else if super::pdfview::strip_click(hwnd, x, y) {
+                    // A page thumbnail was clicked; it already scrolled there.
                 } else {
                     let st = &*state(hwnd);
                     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);

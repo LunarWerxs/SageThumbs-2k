@@ -188,10 +188,29 @@ pub(in crate::preview) unsafe fn content_rect(hwnd: HWND) -> RECT {
     } else {
         0
     };
+    // The PDF page-thumbnail strip takes a slice off the RIGHT, on the same principle as the
+    // find bar above: subtract it HERE and paint, scroll clamping, hit-testing and the child
+    // window rects all inherit the narrower content area without knowing the strip exists.
+    // Zero for everything that is not a multi-page PDF, so every other window is unchanged.
+    let strip = crate::preview::pdfview::strip_width(hwnd);
     RECT {
         left: 0,
         top: cap + find_h,
-        right: r.right,
+        right: (r.right - strip).max(0),
         bottom: r.bottom,
+    }
+}
+
+/// The strip's own rect: the slice `content_rect` gave up, or an empty rect when there is none.
+pub(in crate::preview) unsafe fn strip_rect(hwnd: HWND) -> RECT {
+    let strip = crate::preview::pdfview::strip_width(hwnd);
+    let content = content_rect(hwnd);
+    let mut r = RECT::default();
+    let _ = GetClientRect(hwnd, &mut r);
+    RECT {
+        left: r.right - strip,
+        top: content.top,
+        right: r.right,
+        bottom: content.bottom,
     }
 }

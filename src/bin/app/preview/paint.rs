@@ -176,6 +176,16 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
                 content_bg,
                 crate::dark::BTN_FACE().0,
             );
+            // The page-thumbnail strip lives in the slice `content_rect` gave up, so it paints
+            // after the pages and can never overlap them.
+            if scrolled_pdf {
+                super::pdfview::paint_strip(
+                    hwnd,
+                    hdc,
+                    crate::dark::DARK_BG().0,
+                    crate::dark::BTN_FACE().0,
+                );
+            }
             let frames = st.frames.borrow();
             if scrolled_pdf {
                 // already drawn

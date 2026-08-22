@@ -4,6 +4,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **A page-thumbnail strip beside multi-page PDFs in the Quick preview.** Small pictures of
+  every page run down the right-hand side, numbered, with the page you are reading outlined.
+  Click one to jump straight to it. It appears only for documents with more than one page, hides
+  itself on a narrow window where the room is better spent on the page itself, and can be turned
+  off. Thumbnails are drawn as they come into view and kept small, so a long document does not
+  pay for pages you never look at.
+
 ### Fixed
 
 - **The mouse wheel did nothing on a PDF in the Quick preview.** Continuous scrolling shipped in

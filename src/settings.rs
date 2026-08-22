@@ -1429,6 +1429,15 @@ pub fn preview_arrow_nav() -> bool {
     get_dword("PreviewArrowNav", 0) != 0
 }
 
+/// Show the page-thumbnail strip beside a multi-page PDF in the Quick preview. Default ON.
+///
+/// A switch rather than always-on because the strip costs a sixth of the window, and someone
+/// reading a two-page letter wants the page, not a contact sheet of it. It hides itself on a
+/// narrow window regardless (see `pdfview::strip_width`).
+pub fn preview_pdf_strip() -> bool {
+    get_dword("PreviewPdfStrip", 1) != 0
+}
+
 /// Which skin SageThumbs' OWN windows use, independent of the Windows app-colour setting.
 ///
 /// `0` follow Windows (the default and the behaviour every version before this had), `1` light,
