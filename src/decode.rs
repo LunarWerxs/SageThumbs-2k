@@ -374,7 +374,31 @@ fn decode_any_with_wic_target(
             )),
         }
     }
+    // A TIFF whose IFD0 says `NewSubfileType = reduced-resolution` is a container whose
+    // MAIN image lives elsewhere (SubIFDs), and the `image` crate only ever decodes IFD0.
+    // Letting the first tier answer from it is how six camera-RAW formats thumbnailed from
+    // a postage stamp — and a Kodak `.dcr` from a black placeholder — while WIC decoded the
+    // same files at full resolution. So we keep the decode as a LAST-RESORT stash and let
+    // the real tiers run: nothing that rendered before can stop rendering, it just stops
+    // winning. See `streamsrc::tiff_ifd0_is_reduced`.
+    let mut reduced_ifd0: Option<DynamicImage> = None;
     match decode_with_image(bytes) {
+        // The float exclusion is not fussiness: a 32-bit-float TIFF has to go through the
+        // tone map below to become 8-bit sRGB at all, and stashing one would hand a caller
+        // linear floats where it expects pixels. No camera-RAW preview IFD is float, so this
+        // costs the fix nothing and closes the one shape that would break.
+        Ok(img)
+            if crate::streamsrc::tiff_ifd0_is_reduced(bytes)
+                && !matches!(
+                    img,
+                    DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+                ) =>
+        {
+            crate::safety::log_debug(
+                "decode tier `image`: TIFF IFD0 is reduced-resolution — held as fallback",
+            );
+            reduced_ifd0 = Some(img);
+        }
         Ok(img) => {
             // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
             // be saved as PNG/JPEG or turned into an 8-bit DIB directly. Tone-map
@@ -538,6 +562,12 @@ fn decode_any_with_wic_target(
                 }
             }
         }
+    }
+    // The reduced-resolution IFD0 held back above. Every real decoder has now failed or is
+    // absent, and a small genuine preview beats both the byte-scan carve below and a blank
+    // tile — so this is where it is finally spent.
+    if let Some(img) = reduced_ifd0 {
+        return Ok(img);
     }
     // Last resort (CHEAP — a linear byte scan + image-tier decode, no subprocess, so the
     // menu path runs it too): every real decoder failed (or is absent — e.g. a clean
@@ -1102,6 +1132,30 @@ fn decode_preview_with_raw_order(
         // `streamsrc`, so the CLI, the preview and Explorer all agree.
         if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
             return decode_image_with_raw_order(&cover, raw_preview, wic_thumbnail_cx);
+        }
+    }
+    // GIMP `.xcf` FIRST, and only when the caller told us how big a picture it can use.
+    // `extract_cover` reaches the same decoder, but its signature carries no target, so it
+    // flattens the full canvas — measured at 5.7 s of layer decode plus 4.6 s of compositing
+    // for one 6000x4000 file with 15 layers, all of it to produce a 256 px tile. Handing the
+    // target in drops that to milliseconds. Falls through to `extract_cover` below when there
+    // is no target (the full-fidelity callers), so the picture they get is unchanged.
+    if wic_thumbnail_cx.is_some() && crate::container::looks_like_xcf(bytes) {
+        if let Some(img) = crate::container::xcf_from_bytes_scaled(bytes, wic_thumbnail_cx) {
+            return Ok(img);
+        }
+    }
+    // DjVu, for a related but narrower reason than the XCF route above. It does NOT render
+    // smaller for a smaller tile - a DjVu costs what its JB2 mask and IW44 background cost
+    // regardless, and shrinking the render only coarsens the picture. What the target decides
+    // is whether the file's baked TH44 thumbnail can serve this request: encoders cap it at
+    // 128 px, so it answers Explorer's icon and list views (16/32/48/96) in about two
+    // milliseconds against nearly two hundred for a render, and must be rendered past for
+    // anything bigger. `extract_cover` carries no target and so has to assume the largest.
+    // Falls through to it when there is no target, which is what Convert wants anyway.
+    if wic_thumbnail_cx.is_some() && crate::container::looks_like_djvu(bytes) {
+        if let Some(img) = crate::container::djvu_from_bytes_scaled(bytes, wic_thumbnail_cx) {
+            return Ok(img);
         }
     }
     // Ebook / comic-archive cover extraction (EPUB, CBZ, MOBI, FB2, CB7, CBR,

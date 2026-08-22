@@ -65,17 +65,21 @@ fn asf_header_buf<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Front-cover (or first) album art from an ASF/WMA `WM/Picture` attribute.
-/// `None` for non-ASF input or no embedded picture.
+/// Best album art from an ASF/WMA `WM/Picture` attribute — the front cover, and the
+/// LARGEST one when a file carries several. `None` for non-ASF input or no picture.
+///
+/// `WM/Picture` carries the ID3 picture-type byte verbatim, so this shares
+/// [`super::id3_pic_rank`] with the ID3 reader; type 1/2 are file icons and must never
+/// beat the sleeve. See `audio::lofty_cover` for the case that found this.
 pub(super) fn asf_cover<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     let buf = asf_header_buf(r)?;
     let mut pics: Vec<(u8, Vec<u8>)> = Vec::new();
     walk_objects(&buf, 0, &mut |guid, payload| {
         collect_pictures(guid, payload, &mut pics)
     });
+    // `min_by_key` keeps the first of a tie, so a single-picture file is unchanged.
     pics.iter()
-        .find(|(t, _)| *t == 3)
-        .or_else(|| pics.first())
+        .min_by_key(|(t, img)| (super::id3_pic_rank(*t), std::cmp::Reverse(img.len())))
         .map(|(_, img)| img.clone())
 }
 

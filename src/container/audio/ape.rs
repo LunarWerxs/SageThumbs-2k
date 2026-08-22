@@ -37,7 +37,13 @@ pub(super) fn apev2_cover<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
 
 /// Walk APEv2 items (`u32 size, u32 flags, key\0, value[size]`) for a cover-art
 /// binary item; its value is `description\0imagedata`.
+///
+/// Front beats back, and inside one kind the bigger image wins. The old code returned
+/// the FIRST item whose key was either, so a file listing "Cover Art (Back)" before the
+/// front one thumbnailed as its back cover. Same defect the other three readers had; see
+/// `audio::lofty_cover`.
 fn parse_apev2_cover(buf: &[u8], count: usize) -> Option<Vec<u8>> {
+    let mut best: Option<(u8, Vec<u8>)> = None;
     let mut p = 0usize;
     for _ in 0..count.min(512) {
         let vsize = le32(buf, p)? as usize;
@@ -50,19 +56,36 @@ fn parse_apev2_cover(buf: &[u8], count: usize) -> Option<Vec<u8>> {
         p = p.checked_add(1)?; // skip the key's NUL
         let value = buf.get(p..p.checked_add(vsize)?)?;
         p += vsize;
-        if key.eq_ignore_ascii_case(b"cover art (front)")
-            || key.eq_ignore_ascii_case(b"cover art (back)")
-        {
-            let nul = value.iter().position(|&b| b == 0)?; // description\0image
-            let img = value.get(nul + 1..)?;
-            if crate::container::looks_like_raster(img)
-                && img.len() as u64 <= crate::container::MAX_COVER
+        let rank = if key.eq_ignore_ascii_case(b"cover art (front)") {
+            Some(0u8)
+        } else if key.eq_ignore_ascii_case(b"cover art (back)") {
+            Some(1u8)
+        } else {
+            None
+        };
+        if let Some(rank) = rank {
+            // description\0image — a malformed item is skipped, not fatal: the tag may
+            // still hold a good one further down.
+            if let Some(img) = value
+                .iter()
+                .position(|&b| b == 0)
+                .and_then(|nul| value.get(nul + 1..))
             {
-                return Some(img.to_vec());
+                if crate::container::looks_like_raster(img)
+                    && img.len() as u64 <= crate::container::MAX_COVER
+                {
+                    let better = match &best {
+                        None => true,
+                        Some((r, cur)) => rank < *r || (rank == *r && img.len() > cur.len()),
+                    };
+                    if better {
+                        best = Some((rank, img.to_vec()));
+                    }
+                }
             }
         }
     }
-    None
+    best.map(|(_, img)| img)
 }
 
 // ── ASF / WMA album art ──────────────────────────────────────────────────────

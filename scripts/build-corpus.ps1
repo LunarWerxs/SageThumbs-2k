@@ -1,4 +1,4 @@
-# Builds a test corpus: one sample file per supported format, so thumbnail
+﻿# Builds a test corpus: one sample file per supported format, so thumbnail
 # rendering can be regression-checked (see regression.ps1) without hunting for
 # files. Most formats are generated from a distinctive base image via the FULL
 # ImageMagick; containers/project files are built synthetically or downloaded.
@@ -666,7 +666,18 @@ $aliasMap = [ordered]@{
     skp      = @('skb'); emf = @('emg'); exr = @('cxr'); cdr = @('cmx')
     afpub    = @('aftemplate'); indd = @('indt'); pspimage = @('psp')
     cbz      = @('phz'); pcd = @('ph')
-    orf      = @('ori'); iiq = @('bay', 'cap'); dcr = @('drf', 'dcs'); pef = @('ptx'); dng = @('pxn')
+    orf      = @('ori')
+    # NO camera-RAW cross-format aliases here. `iiq = bay, cap`, `dcr = drf, dcs`,
+    # `pef = ptx` and `dng = pxn` used to live on this line and were REMOVED 2026-08-21.
+    # Every one of them copied one vendor's sensor dump under another vendor's extension,
+    # and because our decoders are content-sniffed the copy renders through the ORIGINAL
+    # format's path and proves exactly nothing about the extension it is pretending to be.
+    # `_no-real-sample.txt`'s own preamble forbids this in as many words. `sample.pxn` was
+    # the only one still on disk (a byte-for-byte copy of `sample.dng`, itself a stub that
+    # decodes to solid black), so the "we render PXN" row of the gate was asserting a black
+    # square; the other four were already gone and these lines would have recreated them on
+    # the next rebuild. `orf = ori` STAYS: those two ARE the same Olympus format under two
+    # extensions, which is the only kind of alias that is honest.
 }
 $aliasN = 0
 foreach ($b in $aliasMap.Keys) {
@@ -821,6 +832,33 @@ if ($py -and (Test-Path $xcfGen)) {
     Write-Host "[corpus] big layered .xcf samples written"
 } else {
     Write-Host "  (big .xcf samples: need python; skipped)" -ForegroundColor Yellow
+}
+
+# --- 9z1) DjVu samples that are not an ordinary scan --------------------------
+# The corpus had one real .djvu (a DjVuLibre-encoded layered scan, copied to .djv) and that
+# single shape hid two shipping bugs until 2.3.1:
+#
+#   * a DjVuPhoto page - INFO + BG44, no mask, the right profile for a photograph or a
+#     grayscale scan - came back a FLAT GREY RECTANGLE at every size Explorer asks for, on
+#     any page past roughly 4267 px on the long edge. That is a letter scan at 400 dpi. It
+#     is a perfectly valid PNG of nothing, so gates 1-3 all passed it;
+#   * a file carrying a baked TH44 thumbnail was answered WITH that thumbnail whatever was
+#     asked for, and encoders cap TH44 at 128 px, so Explorer's 768 px view got a 128 px
+#     picture to stretch.
+#
+# Neither can be reproduced with the real sample, and nobody publishes either shape as a
+# test file. They are written by the repo's own decoder crate rather than by a
+# make-*-fixture.py like the GIMP ones, because writing DjVu means an IW44 wavelet coder
+# and a ZP arithmetic coder and we already link one:
+#
+#   cargo test --release --lib write_djvu_corpus_fixtures -- --ignored --nocapture
+#
+# (see src\container\djvu.rs). They need no entry in _expected-colors.txt: what makes them
+# testable is gate 4, check-render-sanity.ps1, which flags a tile with no detail in it.
+foreach ($djvuFixture in @('sample-djvu-photo.djvu', 'sample-djvu-thumbnail.djvu')) {
+    if (-not (Test-Path (Join-Path $OutDir $djvuFixture))) {
+        Write-Host "  ($djvuFixture missing - regenerate with: cargo test --release --lib write_djvu_corpus_fixtures -- --ignored)" -ForegroundColor Yellow
+    }
 }
 
 # --- 9z2) ZX Spectrum SCREEN$, a format that only a NAMED coder can reach ------

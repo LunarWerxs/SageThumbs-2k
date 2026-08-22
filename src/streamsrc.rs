@@ -33,6 +33,9 @@ use archive::*;
 use headprev::*;
 use mp4remux::*;
 use rawsniff::*;
+// The decode hub needs one of the sniffs directly: a TIFF whose IFD0 is only a
+// reduced-resolution copy must not be answered by the `image` tier. See its doc comment.
+pub(crate) use rawsniff::tiff_ifd0_is_reduced;
 
 // The whole-file read ceiling, shared with the path-reading verbs via
 // `decode::limits::MAX_INPUT_BYTES` (one DoS budget, not two copies).
@@ -407,7 +410,12 @@ pub(crate) unsafe fn stream_source_with_caps(
                 let mut reader = IStreamReader {
                     stream: stream.clone(),
                 };
-                if let Some(img) = crate::container::xcf_from_reader(&mut reader) {
+                // The caller's target goes IN, so the flatten happens on a reduced grid. A
+                // big layered XCF is precisely the file that reaches this branch, and it is
+                // also the one that used to spend seconds building a full-resolution canvas
+                // nobody would look at.
+                if let Some(img) = crate::container::xcf_from_reader(&mut reader, Some(target_edge))
+                {
                     safety::log_debug(&format!(
                         "{who}: streamed XCF decode of {size}-byte file -> {}x{}",
                         img.width(),
@@ -993,6 +1001,83 @@ mod tests {
             image::load_from_memory(got).is_ok(),
             "must return a full JPEG"
         );
+    }
+
+    /// A minimal TIFF whose IFD0 carries `NewSubfileType` (tag 0xFE) with `value`.
+    fn tiff_with_new_subfile_type(value: u32, little: bool, long_type: bool) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(if little { b"II\x2A\0" } else { b"MM\0\x2A" });
+        let put32 = |b: &mut Vec<u8>, v: u32| {
+            b.extend_from_slice(&if little {
+                v.to_le_bytes()
+            } else {
+                v.to_be_bytes()
+            })
+        };
+        let put16 = |b: &mut Vec<u8>, v: u16| {
+            b.extend_from_slice(&if little {
+                v.to_le_bytes()
+            } else {
+                v.to_be_bytes()
+            })
+        };
+        put32(&mut b, 8); // IFD0 at offset 8
+        put16(&mut b, 1); // one entry
+        put16(&mut b, 0x00FE); // NewSubfileType
+        put16(&mut b, if long_type { 4 } else { 3 });
+        put32(&mut b, 1); // count
+        if long_type {
+            put32(&mut b, value);
+        } else {
+            // A SHORT is left-justified in the 4-byte value field, in BOTH endiannesses.
+            put16(&mut b, value as u16);
+            put16(&mut b, 0);
+        }
+        put32(&mut b, 0); // next IFD: none
+        b
+    }
+
+    /// Camera RAW containers (Hasselblad 3fr, Kodak dcr/kdc, Epson erf, Phase One fff,
+    /// Nikon nef) put a small preview in IFD0 and the sensor data in SubIFDs, flagging IFD0
+    /// `NewSubfileType = 1`. The `image` crate only ever decodes IFD0, so before this the
+    /// FIRST tier answered from a postage stamp — and for a Kodak DCS760C `.dcr`, from a
+    /// near-black placeholder, which is how a good photo thumbnailed as a black tile.
+    #[test]
+    fn reduced_resolution_ifd0_is_recognised_in_both_endiannesses_and_widths() {
+        for little in [true, false] {
+            for long_type in [true, false] {
+                assert!(
+                    tiff_ifd0_is_reduced(&tiff_with_new_subfile_type(1, little, long_type)),
+                    "reduced flag missed (little={little}, long={long_type})"
+                );
+                // 2 = a PAGE of a multi-page document, 4 = a transparency mask. Neither is a
+                // reduced copy, and matching them would cost a normal multi-page TIFF its
+                // fast tier.
+                for other in [0u32, 2, 4] {
+                    assert!(
+                        !tiff_ifd0_is_reduced(&tiff_with_new_subfile_type(
+                            other, little, long_type
+                        )),
+                        "NewSubfileType={other} must not read as reduced"
+                    );
+                }
+            }
+        }
+        // Bit 0 set alongside other bits still means reduced.
+        assert!(tiff_ifd0_is_reduced(&tiff_with_new_subfile_type(
+            3, true, true
+        )));
+    }
+
+    #[test]
+    fn reduced_resolution_check_declines_non_tiff_and_truncation() {
+        assert!(!tiff_ifd0_is_reduced(b""));
+        assert!(!tiff_ifd0_is_reduced(b"not a tiff at all"));
+        assert!(!tiff_ifd0_is_reduced(b"II\x2B\0")); // BigTIFF: different IFD layout, declines
+        let full = tiff_with_new_subfile_type(1, true, true);
+        for cut in 0..full.len() {
+            let _ = tiff_ifd0_is_reduced(&full[..cut]); // must not panic at any prefix
+        }
     }
 
     #[test]

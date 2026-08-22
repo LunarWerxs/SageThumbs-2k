@@ -2,6 +2,75 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 2.3.1
+
+### Fixed
+
+- **Scanned DjVu documents could thumbnail as a plain grey rectangle, or lose every
+  photograph on the page.** DjVu stores a page as two layers: the text and line art on top,
+  and a compressed photographic background underneath. When a page was larger than roughly
+  4200 pixels on its long edge, which is any ordinary letter or A4 page scanned at 400 dpi or
+  better, the background layer was dropped and never drawn. On a photo-only DjVu, which has
+  nothing but that layer, the result was a tile of flat grey with nothing in it at all. On a
+  normal scanned page the text still appeared, so it looked fine at a glance while every
+  photograph on it had quietly vanished. Both are fixed, at every page size.
+
+- **DjVu files that carry a built-in thumbnail showed that thumbnail even when it was far too
+  small.** Some DjVu files store a small preview picture inside them, and every program that
+  writes one caps it at 128 pixels. SageThumbs used it whatever size had been asked for, so
+  Explorer's large-icon view got a 128-pixel picture stretched up to fill a 768-pixel tile,
+  and opening the file in Convert or Resize gave you 128 pixels of a page that might be five
+  thousand. It is now used only when it is genuinely big enough for what was asked, which
+  keeps it nearly free for the small icon and list views and draws the real page for anything
+  larger.
+
+- **Large layered GIMP files took up to ten seconds to show a thumbnail, and very large ones
+  showed nothing at all.** SageThumbs was building the whole picture at full size before
+  shrinking it down to a tile: a 12000x12000 file needed half a gigabyte of memory to produce
+  a 256-pixel thumbnail, and a 15-layer file spent ten seconds on work that was then thrown
+  away. It now builds the picture at the size actually being asked for, which is **ten to
+  seventeen times faster** on those files, and reads each piece of the file at its real length
+  rather than a worst-case guess. The thumbnail itself is unchanged, pixel for pixel. Opening
+  a GIMP file in Convert or Resize still gives you the full-size image.
+
+- **Music files could show a blank or tiny thumbnail instead of their album art.** A tagged
+  audio file is allowed to carry more than one picture, and plenty do - the sleeve plus a
+  small "file icon" some tagging programs add, or a leftover from whatever wrote the file
+  first. SageThumbs took whichever picture came first in the tag, so the sleeve lost to
+  anything sitting in front of it. It now looks for the one actually marked as the front
+  cover, and picks the largest when a file has several. Applies to every audio format we
+  read art from: MP3, FLAC, WAV, M4A, OGG, Opus, WMA, APE, WavPack, DSD and the rest.
+
+- **Some camera RAW photos thumbnailed as a black square, and others from a postage stamp.**
+  Several RAW formats are TIFF files underneath, and they keep a small preview at the front
+  with the real photo further in. The fastest of our decoders reads only that front section,
+  so it was answering with the preview and nothing better ever got a turn. A Kodak .dcr came
+  out solid black, because the front section of those files is a blank placeholder, and
+  .3fr, .erf, .fff and .kdc were being blown up from previews as small as 96 pixels wide.
+  These files now say plainly when their opening section is only a stand-in, and we skip
+  straight to a decoder that reads the real photo. Nothing that produced a thumbnail before
+  has stopped: the small preview is still there as a last resort if no other decoder can
+  read the file at all.
+
+  **Converting, resizing or reading the details of one of these now gives you the real
+  photo** rather than the small preview, which for .3fr means 7247x5444 instead of 320x240,
+  and for .kdc means 768x512 instead of 96x64. Also affects .nef, whose thumbnail already
+  looked right because its preview happened to be big enough for a tile.
+
+- **Adobe InDesign documents and templates thumbnailed as a thin strip of the page over a
+  blank grey panel.** InDesign keeps the page preview as a picture tucked inside the
+  document's metadata, but an `.indd` file is a database rather than a straight run of
+  bytes: every save writes a fresh copy of that metadata and leaves the older copies behind
+  in the file, torn up and partly overwritten by whatever else got saved on top of them.
+  SageThumbs was reading straight through those leftovers, so unrelated pieces of the
+  document ended up glued into the middle of the picture. The result still looked like a
+  valid image from the outside, and it was the biggest one in the file, so it was the one
+  that got picked - and it drew as the first few rows of the real page followed by nothing.
+  It now stops reading a preview the moment the file stops being metadata, and it only
+  accepts a picture that is genuinely complete from beginning to end. Documents saved
+  without a preview (InDesign's "Save Preview Images with Documents" setting turned off)
+  show the normal Adobe icon, which is the correct outcome and was already the case.
+
 ## 2.3.0
 
 ### Fixed

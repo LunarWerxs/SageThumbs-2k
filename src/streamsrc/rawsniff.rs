@@ -110,6 +110,85 @@ pub(super) fn looks_like_raw_container(head: &[u8], raw_extension: bool) -> bool
             && (&head[8..12] == b"crx " || &head[8..12] == b"cr3 "))
 }
 
+/// Does this TIFF's IFD0 declare itself a REDUCED-RESOLUTION copy of another image in
+/// the file (`NewSubfileType` bit 0, tag 0xFE = 1)?
+///
+/// **This is the TIFF spec saying "I am not the main picture", and the `image` crate
+/// always decodes IFD0.** Camera RAW is where it bites: a Hasselblad `.3fr`, Kodak
+/// `.dcr`/`.kdc`, Epson `.erf`, Phase One `.fff` and Nikon `.nef` all put a small
+/// preview in IFD0 and the sensor data in SubIFDs. `image` decodes IFD0 happily, and
+/// because it is the FIRST tier nothing better ever ran: a 768x512 Kodak KDC
+/// thumbnailed from a 96x64 stamp, and a Kodak DCS760C `.dcr` from a 380x252
+/// placeholder that is **essentially black** — a black tile for a perfectly good photo,
+/// with every gate in the repo green (found 2026-08-21 by cross-checking the corpus
+/// against an independent decoder).
+///
+/// Deliberately NOT the same question as [`tiff_has_raw_ifd_marker`]: that one looks for
+/// CFA/DNG tags in IFD0 to recognise a RAW from a nameless shell stream, and these files
+/// keep their CFA tags in the SubIFDs, which is exactly why it did not catch them.
+///
+/// Value 2 (a page of a multi-page document) and 4 (transparency mask) are NOT reduced
+/// copies and must not match, or a normal multi-page TIFF would lose its fast tier.
+/// It walks IFD0 the same shape as its sibling below rather than sharing a helper: that
+/// one is fuzzed, load-bearing for the shell's nameless-stream routing, and asks a
+/// different question. Twenty checked lines cost less than restructuring it.
+pub(crate) fn tiff_ifd0_is_reduced(head: &[u8]) -> bool {
+    // NOT extended to Phase One `.iiq` (TIFF + `IIII` at offset 8) or to a `SubIFDs` tag,
+    // though both would be easy and both look right on paper. Measured A/B on 2026-08-21:
+    // neither changes a single pixel, because those two formats already render the camera's
+    // own embedded preview and the tiers that would run instead cannot do better (WIC
+    // refuses `.mef` outright and hands back the same small preview for `.iiq`). Adding a
+    // routing rule that provably does nothing is how a decoder accretes risk for free.
+    let little = match head.get(..4) {
+        Some(b"II\x2A\0") => true,
+        Some(b"MM\0\x2A") => false,
+        _ => return false, // BigTIFF's IFD layout differs; not worth a second walker.
+    };
+    let num = |offset: usize, wide: bool| -> Option<u32> {
+        let n = if wide { 4 } else { 2 };
+        let raw = head.get(offset..offset.checked_add(n)?)?;
+        Some(match (wide, little) {
+            (true, true) => u32::from_le_bytes(raw.try_into().ok()?),
+            (true, false) => u32::from_be_bytes(raw.try_into().ok()?),
+            (false, true) => u16::from_le_bytes(raw.try_into().ok()?) as u32,
+            (false, false) => u16::from_be_bytes(raw.try_into().ok()?) as u32,
+        })
+    };
+    let Some(ifd) = num(4, true).map(|v| v as usize) else {
+        return false;
+    };
+    let Some(count) = num(ifd, false).map(|v| (v as usize).min(4096)) else {
+        return false;
+    };
+    for index in 0..count {
+        let Some(entry) = index
+            .checked_mul(12)
+            .and_then(|off| ifd.checked_add(2)?.checked_add(off))
+        else {
+            return false;
+        };
+        if num(entry, false) != Some(0x00FE) {
+            continue;
+        }
+        // NewSubfileType is LONG (type 4) by the spec, but SHORT (3) is written in the
+        // wild; anything else is malformed and ignored. Bit 0 set = reduced-resolution.
+        let Some(type_offset) = entry.checked_add(2) else {
+            return false;
+        };
+        let wide = match num(type_offset, false) {
+            Some(4) => true,
+            Some(3) => false,
+            _ => continue,
+        };
+        // A SHORT is left-justified in the 4-byte value field in BOTH endiannesses, so
+        // reading the first two bytes is right either way (same as the sibling scanner).
+        if let Some(v) = entry.checked_add(8).and_then(|o| num(o, wide)) {
+            return v & 1 == 1;
+        }
+    }
+    false
+}
+
 pub(super) fn tiff_has_raw_ifd_marker(head: &[u8]) -> bool {
     let little = match head.get(..4) {
         Some(b"II\x2A\0") => true,

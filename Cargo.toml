@@ -37,7 +37,7 @@ jxl-oxide = { path = "crates/vendor/jxl-oxide" }
 # build-release.ps1 reads this line; keep it in sync with
 # scripts/packaging/AppxManifest.xml's <Identity Version> when bumping a release.
 [workspace.package]
-version = "2.3.0"
+version = "2.3.1"
 rust-version = "1.93"   # sevenz-rust2 0.21.4 is the highest MSRV in the locked default graph
 
 [package]

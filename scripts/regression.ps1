@@ -27,6 +27,14 @@
                         hide behind an easy one of the same extension)
     3. known COLOUR   — <corpus>\_expected-colors.txt          (the picture is right,
                         not merely present; see make-xcf-fixture.py)
+    4. BROKEN-PICTURE — scripts\check-render-sanity.ps1        (added 2026-08-21. Gate 3
+                        is right but needs a curated expectation per sample, so it
+                        covers 18 of 364. This one needs none: it flags a flat band of
+                        the decoder's no-data grey over non-flat content, and a render
+                        with no detail where ImageMagick — which shares no code with us
+                        — gets a real picture. Those are the InDesign strip-over-grey
+                        bug and the Kodak .dcr black tile, both of which sat in this
+                        corpus rendering wrong with gates 1-3 green.)
 
   FALSE-ALARM GUARD: the parallel render can race build-corpus.ps1 while it is
   (re)writing samples, and a failed network download can leave an HTML error page
@@ -347,6 +355,19 @@ if (Test-Path $expectedColors) {
     } else {
         Write-Host "  (known-colour check: needs python + Pillow; SKIPPED)" -ForegroundColor Yellow
     }
+}
+
+# --- CONTENT guard: BROKEN-PICTURE signatures, no per-sample expectation ------
+# The gate above is right but only covers the ~18 samples someone curated a colour for. This
+# one asks every render whether it carries a signature only a broken decode produces — a flat
+# band of the decoder's no-data fill at the bottom, or no detail at all where an INDEPENDENT
+# decoder finds a real picture. Both shipped: the InDesign preview that drew a strip of page
+# over grey, and the Kodak .dcr that thumbnailed black. Both were in this corpus the whole
+# time with every gate green. Costs only the comparison; it reads the PNGs rendered above.
+& pwsh -NoProfile -File "$PSScriptRoot\check-render-sanity.ps1" -Corpus $Corpus -Rendered $render
+if ($LASTEXITCODE -eq 1) {
+    Write-Host "[regression] FAIL — a render carries a broken-picture signature (see above)." -ForegroundColor Red
+    $script:contentGateFailed = $true
 }
 
 # CONTENT guard (beyond render-only): .dcm must decode with the RIGHT colours, not

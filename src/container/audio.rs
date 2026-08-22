@@ -103,8 +103,44 @@ impl Seek for BudgetedReader<'_> {
     }
 }
 
-/// Front-cover (or first) album art via lofty's tag reader. `None` if the format
-/// is unidentified, untagged, or carries no picture.
+/// Rank an ID3 `APIC` picture-type byte: LOWER is a better thumbnail. Shared by the
+/// hand-rolled ID3 and ASF readers, which use the same numbering (`WM/Picture` carries
+/// the ID3 type byte verbatim), and mirrored by [`lofty_pic_rank`] for lofty's enum.
+///
+/// The ranking is what stops a junk picture winning. Types **1 and 2 are literally
+/// "32x32 file icon" and "other file icon"** — a tagger is entitled to put a favicon
+/// there, and picking it renders a music file as a 32 px smudge. Everything that is not
+/// a cover or an icon (band logo, artist photo, leaflet) ranks between the two: better
+/// than an icon, worse than the actual sleeve.
+pub(super) fn id3_pic_rank(t: u8) -> u8 {
+    match t {
+        3 => 0,     // Cover (front) — what a thumbnail wants
+        0 => 1,     // Other — unlabelled art, usually the cover anyway
+        1 | 2 => 3, // file icons — last resort, never over real art
+        _ => 2,     // back cover / leaflet / logo / artist / …
+    }
+}
+
+/// [`id3_pic_rank`] for lofty's typed enum.
+fn lofty_pic_rank(t: PictureType) -> u8 {
+    match t {
+        PictureType::CoverFront => 0,
+        PictureType::Other => 1,
+        PictureType::Icon | PictureType::OtherIcon => 3,
+        _ => 2,
+    }
+}
+
+/// Best album art via lofty's tag reader — the front cover, and the LARGEST one when a
+/// file carries several. `None` if the format is unidentified, untagged, or has no
+/// picture.
+///
+/// **Taking the first picture is a real bug, not a tidiness point** (found 2026-08-21).
+/// A tag can hold any number of them, and the corpus `.flac`/`.wav` both carry a 1x1
+/// white PNG ahead of the real 512x384 sleeve, so "first" rendered every such file as a
+/// blank white tile. Real-world files hit this constantly: ID3 type 1 is a 32x32 file
+/// icon and plenty of taggers write one alongside the cover. So: rank by picture type,
+/// then take the biggest inside the winning rank.
 fn lofty_cover(reader: &mut dyn super::ReadSeek) -> Option<Vec<u8>> {
     reader.seek(SeekFrom::Start(0)).ok()?;
     let bounded = BudgetedReader {
@@ -122,11 +158,14 @@ fn lofty_cover(reader: &mut dyn super::ReadSeek) -> Option<Vec<u8>> {
         .read()
         .ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
-    let pics = tag.pictures();
-    let pic = pics
-        .iter()
-        .find(|p| p.pic_type() == PictureType::CoverFront)
-        .or_else(|| pics.first())?;
+    // `min_by_key` keeps the FIRST of any tie, so a file with one picture — or several
+    // equally-ranked, equally-sized ones — behaves exactly as it did before.
+    let pic = tag.pictures().iter().min_by_key(|p| {
+        (
+            lofty_pic_rank(p.pic_type()),
+            std::cmp::Reverse(p.data().len()),
+        )
+    })?;
     let data = pic.data();
     // The art may itself be WebP/AVIF/JXL; the downstream image tiers decode what
     // they can and fall back to the default icon otherwise — we just bound size.
@@ -230,6 +269,25 @@ mod tests {
         s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
+    /// A `WM/Picture` byte-array value of an explicit picture TYPE wrapping `image`.
+    fn wm_picture_typed(ptype: u8, image: &[u8]) -> Vec<u8> {
+        let mut v = vec![ptype];
+        v.extend_from_slice(&(image.len() as u32).to_le_bytes());
+        v.extend_from_slice(&utf16("image/jpeg")); // MIME
+        v.extend_from_slice(&[0, 0]); // NUL
+        v.extend_from_slice(&[0, 0]); // empty description + NUL
+        v.extend_from_slice(image);
+        v
+    }
+
+    /// A JPEG-shaped blob of a given length, so "which picture won" is decided by size
+    /// rather than by content.
+    fn fake_jpeg_of(len: usize) -> Vec<u8> {
+        let mut v = FAKE_JPEG.to_vec();
+        v.resize(len.max(FAKE_JPEG.len()), 0x5A);
+        v
+    }
+
     /// A `WM/Picture` byte-array value (front cover) wrapping `image`.
     fn wm_picture(image: &[u8]) -> Vec<u8> {
         let mut v = vec![3u8]; // picture type 3 = front cover
@@ -315,27 +373,198 @@ mod tests {
     }
 
     /// A minimal `.dsf`: the 28-byte `DSD ` header pointing at a trailing ID3v2.4 tag
-    /// whose single `APIC` frame (front cover) wraps `image`.
-    fn dsf_with_cover(image: &[u8]) -> Vec<u8> {
-        let mut apic = vec![0u8]; // text encoding: latin1
-        apic.extend_from_slice(b"image/jpeg\0"); // MIME
-        apic.push(3); // picture type: front cover
-        apic.push(0); // empty description (latin1 NUL)
-        apic.extend_from_slice(image);
-        let mut frame = b"APIC".to_vec();
-        frame.extend_from_slice(&synchsafe_bytes(apic.len() as u32));
-        frame.extend_from_slice(&[0, 0]); // frame flags
-        frame.extend_from_slice(&apic);
+    /// carrying one `APIC` frame per `(picture type, image)` pair, in order.
+    fn dsf_with_pics(pics: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let mut frames = Vec::new();
+        for (ptype, image) in pics {
+            let mut apic = vec![0u8]; // text encoding: latin1
+            apic.extend_from_slice(b"image/jpeg\0"); // MIME
+            apic.push(*ptype);
+            apic.push(0); // empty description (latin1 NUL)
+            apic.extend_from_slice(image);
+            frames.extend_from_slice(b"APIC");
+            frames.extend_from_slice(&synchsafe_bytes(apic.len() as u32));
+            frames.extend_from_slice(&[0, 0]); // frame flags
+            frames.extend_from_slice(&apic);
+        }
         let mut id3 = b"ID3".to_vec();
         id3.extend_from_slice(&[4, 0, 0]); // v2.4.0, no flags
-        id3.extend_from_slice(&synchsafe_bytes(frame.len() as u32));
-        id3.extend_from_slice(&frame);
+        id3.extend_from_slice(&synchsafe_bytes(frames.len() as u32));
+        id3.extend_from_slice(&frames);
         let mut f = b"DSD ".to_vec();
         f.extend_from_slice(&28u64.to_le_bytes()); // DSD chunk size
         f.extend_from_slice(&(28 + id3.len() as u64).to_le_bytes()); // total file size
         f.extend_from_slice(&28u64.to_le_bytes()); // metadata pointer → right after the header
         f.extend_from_slice(&id3);
         f
+    }
+
+    fn dsf_with_cover(image: &[u8]) -> Vec<u8> {
+        dsf_with_pics(&[(3, image.to_vec())])
+    }
+
+    /// A file whose only content is an APEv2 tag: `items…` then the 32-byte footer.
+    fn apev2_file(items: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (key, value) in items {
+            body.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes()); // flags: UTF-8/binary bits unused here
+            body.extend_from_slice(key.as_bytes());
+            body.push(0);
+            body.extend_from_slice(value);
+        }
+        let mut f = vec![0u8; 8]; // a little "audio" ahead of the tag
+        f.extend_from_slice(&body);
+        f.extend_from_slice(b"APETAGEX");
+        f.extend_from_slice(&2000u32.to_le_bytes()); // version
+        f.extend_from_slice(&((body.len() + 32) as u32).to_le_bytes()); // items + footer
+        f.extend_from_slice(&(items.len() as u32).to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes()); // flags
+        f.extend_from_slice(&[0u8; 8]); // reserved
+        f
+    }
+
+    /// An APEv2 cover item value: `description\0image`.
+    fn ape_cover_value(image: &[u8]) -> Vec<u8> {
+        let mut v = b"cover.jpg\0".to_vec();
+        v.extend_from_slice(image);
+        v
+    }
+
+    // ── Picking the RIGHT picture when a file carries several ──────────────────
+    // Every one of these fails on the code that shipped in 2.3.0, which took the first
+    // type-3 picture and otherwise the first picture of any type. The corpus `.flac` and
+    // `.wav` both carry a 1x1 white PNG ahead of the real sleeve, so both thumbnailed as a
+    // blank white tile; ID3 type 1 is a 32x32 "file icon" and taggers do write one.
+
+    #[test]
+    fn picture_type_ranking_puts_the_cover_first_and_file_icons_last() {
+        // front cover < other < anything else < the two file-icon types
+        assert!(id3_pic_rank(3) < id3_pic_rank(0));
+        assert!(id3_pic_rank(0) < id3_pic_rank(4)); // 4 = back cover
+        assert!(id3_pic_rank(4) < id3_pic_rank(1)); // 1 = 32x32 file icon
+        assert_eq!(id3_pic_rank(1), id3_pic_rank(2));
+    }
+
+    #[test]
+    fn id3_cover_beats_a_bigger_file_icon() {
+        let icon = fake_jpeg_of(4096);
+        let cover = fake_jpeg_of(64);
+        let f = dsf_with_pics(&[(1, icon), (3, cover.clone())]);
+        assert_eq!(
+            extract(&f),
+            Some(cover),
+            "a 32x32 file icon is never the cover"
+        );
+    }
+
+    #[test]
+    fn id3_picks_the_largest_of_several_front_covers() {
+        let small = fake_jpeg_of(32);
+        let big = fake_jpeg_of(4096);
+        // Small one FIRST — the shipped code returned it and never looked further.
+        let f = dsf_with_pics(&[(3, small), (3, big.clone())]);
+        assert_eq!(extract(&f), Some(big));
+    }
+
+    #[test]
+    fn id3_falls_back_to_the_largest_untyped_picture_when_no_cover_exists() {
+        let small = fake_jpeg_of(32);
+        let big = fake_jpeg_of(2048);
+        let f = dsf_with_pics(&[(0, small), (0, big.clone())]);
+        assert_eq!(extract(&f), Some(big));
+    }
+
+    #[test]
+    fn asf_cover_picks_the_largest_front_cover_not_the_first() {
+        let small = fake_jpeg_of(32);
+        let big = fake_jpeg_of(4096);
+        let mut ecd = ecd_payload("WM/Picture", &wm_picture_typed(3, &small));
+        // Two attributes in one Extended Content Description object.
+        let second = ecd_payload("WM/Picture", &wm_picture_typed(3, &big));
+        ecd[0..2].copy_from_slice(&2u16.to_le_bytes()); // attribute count
+        ecd.extend_from_slice(&second[2..]);
+        let file = asf_file(&asf_object(ASF_ECD_GUID, &ecd));
+        assert_eq!(asf_cover(&mut Cursor::new(file)), Some(big));
+    }
+
+    #[test]
+    fn asf_cover_never_picks_a_file_icon_over_a_cover() {
+        let icon = fake_jpeg_of(4096);
+        let cover = fake_jpeg_of(64);
+        let mut ecd = ecd_payload("WM/Picture", &wm_picture_typed(1, &icon));
+        let second = ecd_payload("WM/Picture", &wm_picture_typed(3, &cover));
+        ecd[0..2].copy_from_slice(&2u16.to_le_bytes());
+        ecd.extend_from_slice(&second[2..]);
+        let file = asf_file(&asf_object(ASF_ECD_GUID, &ecd));
+        assert_eq!(asf_cover(&mut Cursor::new(file)), Some(cover));
+    }
+
+    #[test]
+    fn apev2_front_cover_beats_a_back_cover_listed_first() {
+        let back = fake_jpeg_of(4096);
+        let front = fake_jpeg_of(64);
+        let f = apev2_file(&[
+            ("Cover Art (Back)", ape_cover_value(&back)),
+            ("Cover Art (Front)", ape_cover_value(&front)),
+        ]);
+        assert_eq!(apev2_cover(&mut Cursor::new(f)), Some(front));
+    }
+
+    #[test]
+    fn apev2_picks_the_largest_front_cover() {
+        let small = fake_jpeg_of(32);
+        let big = fake_jpeg_of(4096);
+        let f = apev2_file(&[
+            ("Cover Art (Front)", ape_cover_value(&small)),
+            ("Cover Art (Front)", ape_cover_value(&big)),
+        ]);
+        assert_eq!(apev2_cover(&mut Cursor::new(f)), Some(big));
+    }
+
+    /// Every real audio sample in the corpus must yield a cover that DECODES and is a
+    /// real picture rather than a stamp. This is the assertion the 1x1 bug walked past:
+    /// `extract` returned `Some`, the thumbnail rendered, and it was a blank white tile.
+    /// Skipped when the corpus isn't present (it is a sibling of the repo; CI has none).
+    #[test]
+    fn corpus_audio_covers_are_real_pictures() {
+        let dir = std::path::Path::new("../test-corpus");
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut checked = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_audio = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                crate::formats::category(&e.to_ascii_lowercase()) == crate::formats::Category::Audio
+            });
+            if !is_audio {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if !looks_like_audio(&bytes) {
+                continue; // not a tagged container we claim
+            }
+            let Some(cover) = extract(&bytes) else {
+                continue; // no embedded art is a legitimate outcome
+            };
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let img = image::load_from_memory(&cover)
+                .unwrap_or_else(|e| panic!("{name}: cover does not decode: {e}"));
+            assert!(
+                img.width() > 8 && img.height() > 8,
+                "{name}: cover is {}x{} — a stamp, not the sleeve",
+                img.width(),
+                img.height()
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 0 || !dir.exists(),
+            "corpus present but no audio checked"
+        );
     }
 
     /// DSD `.dsf` carries its cover in a trailing ID3v2 tag that lofty can't read; the

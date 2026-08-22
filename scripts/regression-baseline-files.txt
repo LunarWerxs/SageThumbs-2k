@@ -33,6 +33,8 @@ sample-decoy-frames.webp
 sample-decoy-multipage.pdf
 sample-decoy-multipage.tif
 sample-decoy-sizes.ico
+sample-djvu-photo.djvu
+sample-djvu-thumbnail.djvu
 sample-epsi.eps
 sample-gimp3.xcf
 sample-h264.flv
@@ -284,7 +286,6 @@ sample.psp
 sample.pspimage
 sample.ptif
 sample.pub
-sample.pxn
 sample.qoi
 sample.qt
 sample.raf

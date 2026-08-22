@@ -237,7 +237,6 @@ pspimage
 psptube
 ptif
 pub
-pxn
 qoi
 qt
 raf

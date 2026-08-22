@@ -94,7 +94,7 @@ pub fn decode_preview_streamed(path: &str, target_edge: u32) -> Option<DynamicIm
     if file_head_is(path, crate::container::looks_like_xcf) {
         return match std::fs::File::open(path)
             .ok()
-            .and_then(crate::container::xcf_from_reader)
+            .and_then(|f| crate::container::xcf_from_reader(f, Some(target_edge)))
         {
             Some(img) => Some(img),
             None => {

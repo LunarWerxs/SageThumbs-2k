@@ -34,10 +34,18 @@ pub(super) fn dsf_cover<R: Read + Seek>(reader: &mut R) -> Option<Vec<u8>> {
     id3v2_front_cover(&body, major)
 }
 
-/// Scan ID3v2 frames for an `APIC` picture, preferring the front cover (type 3).
+/// Scan ID3v2 frames for the best `APIC` picture: the front cover, and the LARGEST one
+/// when a tag carries several.
+///
+/// It used to return the first type-3 frame and otherwise the first frame of any type.
+/// Both halves lose to junk art — type 1 IS a "32x32 file icon" and taggers do write one
+/// — so ranking by [`super::id3_pic_rank`] and then by size is the whole fix. See the
+/// note on `audio::lofty_cover` for the case that found it.
 fn id3v2_front_cover(body: &[u8], major: u8) -> Option<Vec<u8>> {
     let mut pos = 0usize;
-    let mut fallback: Option<Vec<u8>> = None;
+    // (rank, size) of the best picture so far; strictly better replaces it, so a tie
+    // keeps the earlier frame exactly as the old first-wins behaviour did.
+    let mut best: Option<(u8, Vec<u8>)> = None;
     while pos + 10 <= body.len() {
         let id = &body[pos..pos + 4];
         if id == [0, 0, 0, 0] {
@@ -57,15 +65,20 @@ fn id3v2_front_cover(body: &[u8], major: u8) -> Option<Vec<u8>> {
         }
         if id == b"APIC" {
             if let Some((ptype, img)) = parse_apic(&body[start..end]) {
-                if ptype == 3 {
-                    return Some(img); // front cover — best match
+                let rank = super::id3_pic_rank(ptype);
+                let better = match &best {
+                    None => true,
+                    // Lower rank always wins; inside one rank, the bigger image does.
+                    Some((r, cur)) => rank < *r || (rank == *r && img.len() > cur.len()),
+                };
+                if better {
+                    best = Some((rank, img));
                 }
-                fallback.get_or_insert(img);
             }
         }
         pos = end;
     }
-    fallback
+    best.map(|(_, img)| img)
 }
 
 /// Parse one `APIC` frame body: `encoding(u8), mime(latin1\0), pic_type(u8),

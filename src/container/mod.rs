@@ -71,15 +71,51 @@ mod xcf;
 /// a wall: it bakes in no preview to carve out of a prefix, and Windows has no codec for it, so
 /// every other oversized-file rescue declines and a big GIMP file gets the stock icon. Its own
 /// decoder is a walk over absolute file offsets, so it can read only the pieces it needs.
+///
+/// `target_edge` is the longest side the caller can actually use. Passing it lets the decoder
+/// flatten on a REDUCED grid instead of building the full canvas and throwing it away, which
+/// on a big layered file is the difference between ten seconds and twenty milliseconds. `None`
+/// keeps the full-resolution path for callers that want real pixels.
 pub(crate) fn xcf_from_reader<R: std::io::Read + std::io::Seek>(
     src: R,
+    target_edge: Option<u32>,
 ) -> Option<image::DynamicImage> {
-    xcf::extract_seek(src)
+    xcf::extract_seek(src, target_edge)
+}
+
+/// [`xcf_from_reader`] for bytes already in hand.
+pub(crate) fn xcf_from_bytes_scaled(
+    bytes: &[u8],
+    target_edge: Option<u32>,
+) -> Option<image::DynamicImage> {
+    xcf::extract_scaled(bytes, target_edge)
 }
 
 /// Cheap magic test for the above, so a caller can route before it commits to a read.
 pub(crate) fn looks_like_xcf(bytes: &[u8]) -> bool {
     xcf::looks_like_xcf(bytes)
+}
+
+/// Decode a DjVu cover for a caller that knows the longest side it can use.
+///
+/// Unlike [`xcf_from_bytes_scaled`] this is NOT about doing less work: a DjVu render costs what
+/// its JB2 mask and IW44 background cost, whatever size they are composited into, and shrinking
+/// the render only degrades the picture (see `djvu::RENDER_CAP`). The target is here to answer
+/// one question the decoder cannot answer without it - is the file's baked TH44 thumbnail big
+/// enough to serve THIS request? It is capped at 128 px, so it answers a 96 px icon view for
+/// almost nothing and must be rendered past for anything larger. `extract_cover` carries no
+/// target, so it has to assume the largest, which is right for Convert and wasteful for a
+/// 96 px tile. `None` here means the same.
+pub(crate) fn djvu_from_bytes_scaled(
+    bytes: &[u8],
+    target_edge: Option<u32>,
+) -> Option<image::DynamicImage> {
+    djvu::extract_scaled(bytes, target_edge)
+}
+
+/// Cheap magic test for the above (IFF85 "AT&TFORM"), so a caller can route before it commits.
+pub(crate) fn looks_like_djvu(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"AT&TFORM")
 }
 // Waveform thumbnails for raw-PCM audio (WAV/AIFF) with no embedded cover art.
 mod waveform;
@@ -275,7 +311,7 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
         return rar::extract(bytes).map(CoverOut::Bytes);
     }
     // DjVu (IFF85 magic "AT&TFORM").
-    if bytes.starts_with(b"AT&TFORM") {
+    if looks_like_djvu(bytes) {
         return djvu::extract(bytes).map(CoverOut::Image);
     }
     // GIMP XCF: native flatten-to-thumbnail. Takes priority over the magick tier on
@@ -642,6 +678,113 @@ pub(crate) use util::{jpeg_sof_is_decodable, jpeg_span, jpeg_span_len};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The assertion every gate in this repo was missing, applied to every extractor at
+    /// once.** `extract_cover` returning `Some` proves nothing: the InDesign carver returned
+    /// a spliced JPEG that started `FFD8FF`, ended `FFD9`, was the largest candidate in the
+    /// file, and decoded to a few rows of page over flat grey. It shipped, because the render
+    /// sweep asked for a non-empty PNG and got one. So: run the real dispatcher over every
+    /// real corpus sample and require that whatever comes back ACTUALLY DECODES.
+    ///
+    /// One test rather than 26 per-module ones on purpose. It goes through
+    /// [`extract_cover`], so a new format is covered the moment its magic is wired into the
+    /// dispatch, with no second list to keep in step.
+    ///
+    /// Skipped when the corpus is absent (it is a sibling of the repo and CI never checks it
+    /// out). That is a real gap, not a pretend one — see `container::fuzzseed`, which exists
+    /// because of the same absence.
+    /// Split into a gate and a sweep for the same reason the fuzzer is: the whole corpus at
+    /// 64 MiB costs ~204 s in a debug build, which is more than the rest of `cargo test`
+    /// put together. At 8 MiB it is a few seconds and still covers EVERY cover-bearing
+    /// sample — the files above that line are camera RAW, which the container dispatcher
+    /// declines on magic and never carves anyway.
+    #[test]
+    fn every_corpus_cover_actually_decodes() {
+        corpus_covers_decode(8 * 1024 * 1024);
+    }
+
+    /// The same assertion with the ceiling lifted. Run before a release, and after touching
+    /// any extractor that handles large containers:
+    ///   cargo test --release --lib every_corpus_cover -- --ignored
+    #[test]
+    #[ignore = "slow sweep — run on demand with --ignored"]
+    fn every_corpus_cover_actually_decodes_full() {
+        corpus_covers_decode(u64::MAX);
+    }
+
+    fn corpus_covers_decode(max_read: u64) {
+        // GIMP XCF is excluded from the fast gate and ONLY from the fast gate. `extract_cover`
+        // carries no target edge, so it reaches the XCF decoder's FULL-RESOLUTION path by
+        // design — the one Convert/Resize want. That path costs 18 s, 45 s, 68 s and 80 s on
+        // the four layer fixtures in a debug build (211 s of the 219 s this sweep first took,
+        // fifty times the next slowest sample), because they are deliberately pathological:
+        // a 12000x12000 canvas, a 15-layer 6000x4000 stack. Real thumbnails do NOT take this
+        // route any more; `decode_image_with_raw_order` hands the decoder its target and gets
+        // the same picture 17x faster. And these four already carry a STRICTER assertion than
+        // this one: `_expected-colors.txt` pins the exact colour each must flatten to, which
+        // is how the 2.0.0 wrong-layer bug was caught. The `--ignored` sweep still runs them.
+        let slow_by_design = max_read != u64::MAX;
+
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-corpus");
+        let Ok(entries) = std::fs::read_dir(&corpus) else {
+            return;
+        };
+        let (mut checked, mut covers) = (0usize, 0usize);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('_') || !path.is_file() {
+                continue;
+            }
+            if entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > max_read {
+                continue;
+            }
+            if slow_by_design && name.to_ascii_lowercase().ends_with(".xcf") {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            checked += 1;
+            let started = std::time::Instant::now();
+            let cover = extract_cover(&bytes);
+            let elapsed = started.elapsed();
+            // Kept, not scaffolding: this print is how the XCF cost above was found at all.
+            // Run with `-- --nocapture` if this sweep ever starts dragging again.
+            if elapsed.as_millis() > 1000 {
+                eprintln!("  SLOW {name}: {} ms in extract_cover", elapsed.as_millis());
+            }
+            let Some(cover) = cover else {
+                continue; // "this container has no embedded cover" is a fine answer
+            };
+            covers += 1;
+            let (w, h) = match cover {
+                CoverOut::Image(img) => (img.width(), img.height()),
+                CoverOut::Bytes(raw) => {
+                    // A Windows metafile is an accepted cover (Visio ships one) and the
+                    // `image` crate cannot read it — that tier is WIC/magick. Assert what IS
+                    // checkable here: that it is the format it claims to be.
+                    if crate::decode::looks_like_metafile(&raw) {
+                        continue;
+                    }
+                    let img = image::load_from_memory(&raw).unwrap_or_else(|e| {
+                        panic!("{name}: extract_cover handed back bytes that do not decode: {e}")
+                    });
+                    (img.width(), img.height())
+                }
+            };
+            assert!(
+                w > 1 && h > 1,
+                "{name}: cover decoded to {w}x{h} — that is not a picture"
+            );
+        }
+        assert!(
+            checked == 0 || covers > 0,
+            "read {checked} corpus samples and not one produced a cover — the dispatch is broken"
+        );
+    }
 
     /// `real_or_decoded_dims` is the shared chain that replaced three hand-copied versions of
     /// "try `real_dims`, else fall back to a full decode" (`strip::read_info_impl`,
