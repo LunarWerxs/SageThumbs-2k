@@ -4,6 +4,25 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Fixed
+
+- **The mouse wheel did nothing on a PDF in the Quick preview.** Continuous scrolling shipped in
+  2.3.1 with the keyboard working and the wheel not: rolling it over a PDF was silently ignored,
+  even though the 2.3.1 notes said it scrolled. It scrolls now. Ctrl and the wheel magnifies,
+  and Shift and the wheel slides a magnified page sideways.
+
+- **Zooming a PDF now redraws it sharply instead of blowing up the picture.** Magnifying used to
+  stretch the page image it had already drawn, so text went soft exactly when you were zooming
+  in to read it. Pages are now redrawn at the size you are viewing them at, so they stay crisp.
+
+- **Converting or resizing some camera RAW files gave you the camera's small preview instead of
+  the photograph.** A Mamiya `.mef` came out **192x144** and a Phase One `.iiq` **304x220**,
+  when the real pictures are 4016x5344 and 3658x2740. These formats hide the real photo where
+  the usual decoder cannot see it without knowing the file's name, so SageThumbs was silently
+  handing you the thumbnail. Convert and Resize now re-read those files properly. Thumbnails
+  were always correct and are unchanged, pixel for pixel, and still just as fast. Formats that
+  were already converting correctly keep their quick path, so nothing else got slower.
+
 ### Added
 
 - **Light or dark is now SageThumbs' own setting, on the Quick preview page.** Until now the

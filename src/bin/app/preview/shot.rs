@@ -73,6 +73,45 @@ pub(super) unsafe fn run_shot(
         );
         crate::win::pump_msgs(8);
     }
+    if let Some(notches) = opts.wheel {
+        // The REAL message path: SendMessageW straight into the viewer's wndproc, with the
+        // modifier keys genuinely held down, so this exercises the routing a user's wheel goes
+        // through rather than the function it eventually calls. That distinction is not
+        // academic - 2.3.1 shipped a PDF whose wheel was inert, and it passed every test
+        // because they all called the scroll function directly.
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_SHIFT,
+        };
+        let mods: &[u8] = match (opts.wheel_ctrl, opts.wheel_shift) {
+            (true, true) => &[VK_CONTROL.0 as u8, VK_SHIFT.0 as u8],
+            (true, false) => &[VK_CONTROL.0 as u8],
+            (false, true) => &[VK_SHIFT.0 as u8],
+            (false, false) => &[],
+        };
+        for &vk in mods {
+            keybd_event(vk, 0, Default::default(), 0);
+        }
+        let step = if notches < 0 { -120 } else { 120 };
+        for _ in 0..notches.abs() {
+            SendMessageW(
+                hwnd,
+                WM_MOUSEWHEEL,
+                Some(WPARAM(((step as i16 as u16 as usize) << 16) & 0xFFFF_0000)),
+                Some(LPARAM(0)),
+            );
+        }
+        for &vk in mods {
+            keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+        }
+        // Zooming DROPS every tile and re-renders at the new width, and those arrive on worker
+        // threads. One pump captures the moment where the pages are still blank placeholders,
+        // which reads as "zoom broke the view" when it only means the shot was too quick.
+        for _ in 0..150 {
+            crate::win::pump_msgs(8);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     if let Some(scroll) = opts.scroll {
         // A continuously scrolled PDF takes `--scroll` through its REAL scroll path, clamp and
         // all, so a shot proves the layout at that position rather than just that page one

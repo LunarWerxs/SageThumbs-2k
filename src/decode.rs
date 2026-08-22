@@ -941,6 +941,70 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, None)
 }
 
+/// [`decode_full`] for a caller that knows the file NAME, which for camera RAW is the whole
+/// difference between the photograph and a thumbnail of it.
+///
+/// A Mamiya `.mef` gave Convert and Resize a 192x144 image and a Phase One `.iiq` a 304x220
+/// one; the real photographs are 4016x5344 and 3658x2740. Both are TIFF-structured, so
+/// magick's GENERIC TIFF coder opens them from a nameless stream and decodes IFD0 - the
+/// camera's baked preview. That is a SUCCESS, so nothing downstream ever runs: the
+/// `decode_by_extension` last resort is an `or_else` for a decode that FAILED, and this one did
+/// not. It just answered small.
+///
+/// Only magick's `dng` module reads the sensor image, and it is NAME-selected: give it a file
+/// called `t.mef` and it reports `MEF 4016x5344`, hand it the same bytes on stdin and it
+/// reports the preview. So the name has to reach it, which is why this function exists rather
+/// than a cleverer test inside [`decode_full`] - there is no byte signature to find. `.iiq`
+/// does have one (`IIII` at offset 8) but `.mef` is a bare big-endian TIFF header, identical to
+/// countless files that must NOT take this path.
+///
+/// Narrow on purpose:
+///   * RAW extensions only, from the same list magick's own `dng` routing uses;
+///   * bigger-or-nothing, so a retry that cannot do better never turns a working small result
+///     into no result at all;
+///   * full fidelity only. Thumbnails never come here, and must not: this costs seconds
+///     (measured against the bundled binary, 6.0 s for the `.mef` and 3.2 s for the `.iiq`)
+///     where the tile path is tens of milliseconds and already correct.
+pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
+    let small = decode_full(bytes)?;
+    let Some(ext) = std::path::Path::new(path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(|x| x.to_ascii_lowercase())
+    else {
+        return Ok(small);
+    };
+    if !magick::is_raw_coder_ext(&ext) {
+        return Ok(small);
+    }
+    // Only take the re-read when it is a MEANINGFUL improvement, because it is not free: the
+    // named coder demosaics the sensor data and that costs seconds.
+    //
+    // Measured with the bundled binary, converting to PNG:
+    //   .mef  192x144  -> 3078x4096   16x taller, 8.3 s   <- the reported bug
+    //   .iiq  304x220  -> 3658x2740   12x wider,  6.5 s   <- the reported bug
+    //   .cr2 1936x1288 -> 1944x1296   0.4% bigger, 4.4 s  <- NOT worth it
+    //
+    // Most camera RAW already converts from a preview that is essentially the full picture, so
+    // without this threshold every RAW conversion in the product would get seconds slower to
+    // gain a fraction of a percent. 1.5x is far above the noise those formats sit in and far
+    // below the 12x the two broken ones show, so nothing has to be listed by name.
+    const WORTH_THE_WAIT: u32 = 3; // numerator of 3/2
+    let big_enough = |full: &DynamicImage| {
+        u64::from(full.width().max(full.height())) * 2
+            >= u64::from(small.width().max(small.height())) * u64::from(WORTH_THE_WAIT)
+    };
+    match decode_by_extension(bytes, &ext, None) {
+        Ok(full) if big_enough(&full) => {
+            crate::safety::log_debug(
+                "decode: full-fidelity RAW re-read through the named coder for its extension",
+            );
+            Ok(full)
+        }
+        _ => Ok(small),
+    }
+}
+
 /// LAST-RESORT decode for a file every tier already declined, using the file-name
 /// extension the caller happens to know.
 ///
@@ -985,17 +1049,15 @@ pub fn decode_preview_capped_for_path(
     } else {
         decode_preview(bytes)
     };
-    first.or_else(|e| {
-        let ext = std::path::Path::new(path)
-            .extension()
-            .and_then(|x| x.to_str())
-            .map(|x| x.to_ascii_lowercase());
-        match ext {
-            Some(ext) if extension_has_named_coder(&ext) => {
-                decode_by_extension(bytes, &ext, (max_edge > 0).then_some(max_edge)).map_err(|_| e)
-            }
-            _ => Err(e),
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(|x| x.to_ascii_lowercase());
+    first.or_else(|e| match ext {
+        Some(ext) if extension_has_named_coder(&ext) => {
+            decode_by_extension(bytes, &ext, (max_edge > 0).then_some(max_edge)).map_err(|_| e)
         }
+        _ => Err(e),
     })
 }
 

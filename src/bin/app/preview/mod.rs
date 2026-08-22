@@ -752,6 +752,14 @@ pub(crate) struct ShotOpts {
     /// Scroll the text/Markdown pane down `N` device px before capturing (`--scroll N`) —
     /// lets a long document's middle/bottom be shot-verified headlessly.
     pub scroll: Option<i32>,
+    /// `--wheel N [--ctrl|--shift]`: post N REAL `WM_MOUSEWHEEL` notches into the viewer's own
+    /// window procedure before capturing. Distinct from `--scroll`, which calls the scroll
+    /// function directly: 2.3.1 shipped a PDF whose wheel did nothing precisely because every
+    /// test bypassed the message that a user actually sends. Negative scrolls down, matching
+    /// the sign Windows uses.
+    pub wheel: Option<i32>,
+    pub wheel_ctrl: bool,
+    pub wheel_shift: bool,
     /// Force a text-pane selection over the raw byte range `A..B` before capturing
     /// (`--sel A,B`) — lets the selection highlight be shot-verified headlessly.
     pub sel: Option<(usize, usize)>,

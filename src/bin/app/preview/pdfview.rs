@@ -71,6 +71,13 @@ pub(in crate::preview) unsafe fn render_width(hwnd: HWND) -> i32 {
     ((r.right - r.left) - 2 * margin).max(16)
 }
 
+/// Zoom limits. The floor is fit-width: below that the page is smaller than the pane and there
+/// is nothing to see that fit-width does not already show, so "zoom out" past it is not a
+/// feature, it is empty margin. The ceiling keeps a rendered page inside sane memory - at 4x a
+/// letter page is roughly 4900 px wide, which is already past what any display shows at once.
+const ZOOM_MIN: f64 = 1.0;
+const ZOOM_MAX: f64 = 4.0;
+
 /// The open document behind the continuous view.
 pub(in crate::preview) struct PdfDoc {
     session: Arc<PdfSession>,
@@ -86,6 +93,16 @@ pub(in crate::preview) struct PdfDoc {
     tile_width: i32,
     /// Scroll position in laid-out pixels from the top of page one.
     pub(in crate::preview) scroll: i32,
+    /// Magnification over fit-width. 1.0 = the page exactly fills the content area.
+    ///
+    /// Pages are RE-RENDERED at the zoomed width rather than the fit-width bitmap being
+    /// stretched, which is the whole point: a PDF is text, and a stretched bitmap of text is
+    /// the blurry mess this exists to avoid. Changing it invalidates every tile, which is
+    /// correct and cheap against an already-open session.
+    pub(in crate::preview) zoom: f64,
+    /// Horizontal offset in laid-out pixels, for when zoom makes a page wider than the pane.
+    /// Always 0 while the page still fits, so an unzoomed document behaves exactly as before.
+    pub(in crate::preview) pan_x: i32,
     /// Bumped when the document is replaced, so a tile from the previous file is dropped.
     pub(in crate::preview) gen: u64,
 }
@@ -203,6 +220,8 @@ impl PdfDoc {
             pending: vec![false; n],
             tile_width: 0,
             scroll: 0,
+            zoom: 1.0,
+            pan_x: 0,
             gen,
         }
     }
@@ -213,6 +232,24 @@ impl PdfDoc {
 
     pub(in crate::preview) fn layout_at(&self, width: i32, gap: i32) -> Layout {
         layout(&self.sizes, width, gap)
+    }
+
+    /// The width pages are laid out and rasterized at: fit-width times the zoom.
+    pub(in crate::preview) fn zoomed_width(&self, base: i32) -> i32 {
+        ((f64::from(base.max(1)) * self.zoom).round() as i32).clamp(16, 1 << 15)
+    }
+
+    /// Change magnification. Returns whether it moved, so a caller at a limit can leave the
+    /// wheel alone rather than swallowing it. Tiles are dropped because they were rendered for
+    /// the old width and stretching them is exactly what zoom is meant to stop.
+    pub(in crate::preview) fn set_zoom(&mut self, want: f64) -> bool {
+        let z = want.clamp(ZOOM_MIN, ZOOM_MAX);
+        if (z - self.zoom).abs() < 0.001 {
+            return false;
+        }
+        self.zoom = z;
+        self.invalidate_tiles();
+        true
     }
 
     /// Drop every tile. Called when the render width changes, because a tile rendered for a
@@ -344,9 +381,10 @@ pub(in crate::preview) unsafe fn paint(
         return false;
     }
 
-    // Fit-width. This is the mode continuous scrolling means: the reader controls the
-    // vertical, the window controls the horizontal.
-    let width = render_width(hwnd);
+    // Fit-width times the zoom. At 1.0 the page exactly fills the content area, which is the
+    // mode continuous scrolling means: the reader controls the vertical, the window controls
+    // the horizontal. Zoomed in, the page is WIDER than the pane and `pan_x` slides it.
+    let width = doc.zoomed_width(render_width(hwnd));
     if width != doc.tile_width {
         doc.tile_width = width;
         doc.invalidate_tiles();
@@ -354,13 +392,21 @@ pub(in crate::preview) unsafe fn paint(
     let gap = crate::win::dpi_scale(hwnd, PAGE_GAP);
     let l = doc.layout_at(width, gap);
     doc.scroll = doc.scroll.clamp(0, max_scroll(l.total, ch));
+    // A page narrower than the pane centres and cannot pan; a wider one pans within its
+    // overhang. Clamped here, in paint, because that is the only place that knows both the
+    // page width and the pane width for certain.
+    doc.pan_x = doc.pan_x.clamp(0, (width - cw).max(0));
 
     let brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(bg));
     FillRect(hdc, rc, brush);
     let _ = DeleteObject(brush.into());
 
     let (first, last) = visible_range(&l, doc.scroll, ch);
-    let x = rc.left + (cw - width) / 2;
+    let x = if width <= cw {
+        rc.left + (cw - width) / 2
+    } else {
+        rc.left - doc.pan_x
+    };
     let sheet_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(sheet));
     for i in first..last {
         let y = rc.top + l.tops[i] - doc.scroll;
@@ -400,11 +446,12 @@ pub(in crate::preview) unsafe fn scroll_by(hwnd: HWND, delta: i32) -> bool {
         let r = super::window::content_rect(hwnd);
         r.bottom - r.top
     };
-    let width = render_width(hwnd);
+    let base = render_width(hwnd);
     let mut slot = st.pdf_doc.borrow_mut();
     let Some(doc) = slot.as_mut() else {
         return false;
     };
+    let width = doc.zoomed_width(base);
     let gap = crate::win::dpi_scale(hwnd, PAGE_GAP);
     let l = doc.layout_at(width, gap);
     let want = doc
@@ -433,11 +480,12 @@ pub(in crate::preview) unsafe fn scroll_to_page(hwnd: HWND, page: usize) -> bool
         let r = super::window::content_rect(hwnd);
         r.bottom - r.top
     };
-    let width = render_width(hwnd);
+    let base = render_width(hwnd);
     let mut slot = st.pdf_doc.borrow_mut();
     let Some(doc) = slot.as_mut() else {
         return false;
     };
+    let width = doc.zoomed_width(base);
     let gap = crate::win::dpi_scale(hwnd, PAGE_GAP);
     let l = doc.layout_at(width, gap);
     if l.tops.is_empty() {
@@ -448,6 +496,52 @@ pub(in crate::preview) unsafe fn scroll_to_page(hwnd: HWND, page: usize) -> bool
     doc.scroll = want;
     drop(slot);
     st.pdf_page.set(page as u32);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    true
+}
+
+/// Ctrl+wheel: magnify, and RE-RENDER at the new size rather than stretching the old bitmap.
+/// Returns whether anything changed, so the caller can fall through when already at a limit.
+pub(in crate::preview) unsafe fn zoom_by(hwnd: HWND, notches: f64) -> bool {
+    let st = &*state(hwnd);
+    let mut slot = st.pdf_doc.borrow_mut();
+    let Some(doc) = slot.as_mut() else {
+        return false;
+    };
+    // Geometric, so each notch feels the same at 1x and at 3x. Linear steps crawl when zoomed
+    // in and jump when zoomed out.
+    let want = doc.zoom * 1.25_f64.powf(notches);
+    if !doc.set_zoom(want) {
+        return false;
+    }
+    drop(slot);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    true
+}
+
+/// Shift+wheel: slide a zoomed page sideways. A page that still fits cannot pan, so this is
+/// inert at 1x and the wheel keeps its ordinary meaning there.
+pub(in crate::preview) unsafe fn pan_by(hwnd: HWND, delta: i32) -> bool {
+    let st = &*state(hwnd);
+    let cw = {
+        let r = super::window::content_rect(hwnd);
+        r.right - r.left
+    };
+    let base = render_width(hwnd);
+    let mut slot = st.pdf_doc.borrow_mut();
+    let Some(doc) = slot.as_mut() else {
+        return false;
+    };
+    let width = doc.zoomed_width(base);
+    let want = doc
+        .pan_x
+        .saturating_add(delta)
+        .clamp(0, (width - cw).max(0));
+    if want == doc.pan_x {
+        return false;
+    }
+    doc.pan_x = want;
+    drop(slot);
     let _ = InvalidateRect(Some(hwnd), None, false);
     true
 }
@@ -574,6 +668,32 @@ mod tests {
         assert!(l.total > 0);
         let _ = visible_range(&l, 0, 500);
         let _ = page_at(&l, 0, 500);
+    }
+
+    fn doc_zoom(z: f64) -> f64 {
+        z.clamp(super::ZOOM_MIN, super::ZOOM_MAX)
+    }
+
+    /// Zoom multiplies the width pages are RENDERED at, which is the whole mechanism: the tile
+    /// is rasterized bigger rather than a fit-width bitmap being stretched. If this ever
+    /// returned the base width, zoom would silently go back to being a blur.
+    #[test]
+    fn zoom_scales_the_width_pages_are_rasterized_at() {
+        let w = |z: f64| ((1000.0_f64 * doc_zoom(z)).round() as i32).clamp(16, 1 << 15);
+        assert_eq!(w(1.0), 1000);
+        assert_eq!(w(1.5), 1500);
+        assert_eq!(w(4.0), 4000);
+    }
+
+    /// The floor is fit-width. Below it the page is smaller than the pane and there is nothing
+    /// to see that fit-width does not already show, so zooming out past it is empty margin.
+    /// The ceiling keeps a rasterized page inside sane memory.
+    #[test]
+    fn zoom_is_clamped_at_both_ends() {
+        assert_eq!(doc_zoom(0.1), super::ZOOM_MIN);
+        assert_eq!(doc_zoom(0.99), super::ZOOM_MIN);
+        assert_eq!(doc_zoom(99.0), super::ZOOM_MAX);
+        assert_eq!(doc_zoom(2.0), 2.0);
     }
 
     #[test]

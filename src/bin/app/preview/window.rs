@@ -641,6 +641,33 @@ fn nav_key_action(multipage_pdf: bool, vk: u16) -> Option<NavKey> {
     None
 }
 
+/// What one wheel notch means over a continuously scrolled PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WheelAction {
+    /// Move the document up or down (the bare wheel).
+    Scroll,
+    /// Magnify and re-render (Ctrl).
+    Zoom,
+    /// Slide a zoomed page sideways (Shift).
+    Pan,
+}
+
+/// Route the wheel over a scrolled PDF. Pure, and split out of `WM_MOUSEWHEEL` for exactly the
+/// reason [`nav_key_action`] is: 2.3.1 shipped with the wheel doing NOTHING over a PDF because
+/// the routing lived inside the wndproc where no test could see it, the fall-through landed on
+/// `zoom_at_cursor` (which drives state the tiled paint never reads), and every test I had
+/// drove the keyboard or called the scroll function directly. A pure function makes the
+/// decision assertable; the tests below would have failed on the shipped build.
+fn pdf_wheel_action(ctrl: bool, shift: bool) -> WheelAction {
+    if ctrl {
+        WheelAction::Zoom
+    } else if shift {
+        WheelAction::Pan
+    } else {
+        WheelAction::Scroll
+    }
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         // Any message dispatched before GWLP_USERDATA is set (the synchronous WM_NCCREATE /
@@ -1143,6 +1170,36 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
                 let st = &*state(hwnd);
                 match st.kind.get() {
+                    // A continuously scrolled PDF takes the wheel for SCROLLING, which is what
+                    // the wheel means in every document reader; Ctrl+wheel magnifies and
+                    // Shift+wheel slides a zoomed page sideways.
+                    //
+                    // 2.3.1 SHIPPED WITHOUT THIS. The continuous view landed with the keyboard
+                    // wired up and the wheel still falling through to `zoom_at_cursor`, which
+                    // drives `st.zoom`/`st.pan` on a single `RenderData` that the tiled paint
+                    // path never reads - so the wheel did precisely nothing over a PDF while
+                    // the release notes said it scrolled. Arrow keys worked, which is exactly
+                    // why the tests I had (key-driven navigation, and a shot that calls the
+                    // scroll function directly) all passed. Test the INPUT PATH, not the thing
+                    // it calls.
+                    ContentKind::Image if super::pdfview::active(hwnd) => {
+                        // Three lines a notch, the same step the text pane uses.
+                        let step = -delta * crate::win::dpi_scale(hwnd, 54) / 120;
+                        match pdf_wheel_action(
+                            GetKeyState(VK_CONTROL.0 as i32) < 0,
+                            GetKeyState(VK_SHIFT.0 as i32) < 0,
+                        ) {
+                            WheelAction::Zoom => {
+                                super::pdfview::zoom_by(hwnd, f64::from(delta) / 120.0);
+                            }
+                            WheelAction::Pan => {
+                                super::pdfview::pan_by(hwnd, step);
+                            }
+                            WheelAction::Scroll => {
+                                super::pdfview::scroll_by(hwnd, step);
+                            }
+                        }
+                    }
                     ContentKind::Image => zoom_at_cursor(hwnd, delta, lparam),
                     ContentKind::Text | ContentKind::Markdown => scroll_text(hwnd, delta),
                     // A244: the wheel was dead over video/audio content — every other media
@@ -1610,8 +1667,8 @@ pub(super) use scroll::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        nav_key_action, scroll_from_thumb_offset, scroll_thumb_geometry, sort_paths_like_explorer,
-        text_scroll_limits, wheel_notches, NavKey,
+        nav_key_action, pdf_wheel_action, scroll_from_thumb_offset, scroll_thumb_geometry,
+        sort_paths_like_explorer, text_scroll_limits, wheel_notches, NavKey, WheelAction,
     };
     use std::path::PathBuf;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -1649,6 +1706,29 @@ mod tests {
         assert_eq!(wheel_notches(0, -60), (0, -60));
         assert_eq!(wheel_notches(-60, -60), (-1, 0));
         assert_eq!(wheel_notches(45, -45), (0, 0));
+    }
+
+    /// The wheel over a PDF. 2.3.1 shipped with this doing nothing at all: the routing sat
+    /// inside the wndproc, fell through to the ordinary image zoom, and that drives state the
+    /// tiled PDF paint never reads. Every test I had drove the keyboard or called the scroll
+    /// function directly, so all of them passed against a build where rolling the wheel on a
+    /// PDF was inert while the release notes promised it scrolled.
+    #[test]
+    fn a_bare_wheel_over_a_pdf_scrolls_the_document() {
+        assert_eq!(pdf_wheel_action(false, false), WheelAction::Scroll);
+    }
+
+    /// The modifiers, and the precedence between them. Ctrl wins over Shift, so a hand resting
+    /// on both gets the magnifier rather than a sideways jolt.
+    #[test]
+    fn ctrl_magnifies_and_shift_slides_sideways() {
+        assert_eq!(pdf_wheel_action(true, false), WheelAction::Zoom);
+        assert_eq!(pdf_wheel_action(false, true), WheelAction::Pan);
+        assert_eq!(
+            pdf_wheel_action(true, true),
+            WheelAction::Zoom,
+            "Ctrl beats Shift; both held must not pan"
+        );
     }
 
     /// The regression this whole split exists for. A multi-page PDF used to swallow ←/→ for

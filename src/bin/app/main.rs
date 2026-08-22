@@ -362,6 +362,9 @@ fn main() {
                             play: args.iter().any(|a| a == "--play"),
                             dpi: val("--dpi").and_then(|s| s.parse().ok()),
                             scroll: val("--scroll").and_then(|s| s.parse().ok()),
+                            wheel: val("--wheel").and_then(|s| s.parse().ok()),
+                            wheel_ctrl: args.iter().any(|a| a == "--ctrl"),
+                            wheel_shift: args.iter().any(|a| a == "--shift"),
                             sel: val("--sel").and_then(|s| {
                                 let (a, b) = s.split_once(',')?;
                                 Some((a.trim().parse().ok()?, b.trim().parse().ok()?))

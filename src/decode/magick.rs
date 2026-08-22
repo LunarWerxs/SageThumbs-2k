@@ -291,6 +291,15 @@ const RAW_CODER_EXTS: &[&str] = &[
     "pxn", "raf", "rmf", "rw2", "rwl", "sr2", "srf", "srw", "sti", "x3f",
 ];
 
+/// Is `ext` a camera RAW that magick reads through its name-selected `dng` coder?
+///
+/// Exposed so the full-fidelity path can ask "would the named coder do better than the generic
+/// tier here", which is a different question from [`has_name_selected_coder`]: that one also
+/// covers signature-less non-RAW formats like `.rla`, where there is no second opinion to seek.
+pub(crate) fn is_raw_coder_ext(ext: &str) -> bool {
+    RAW_CODER_EXTS.contains(&ext)
+}
+
 /// Would [`decode_named_extension`] have a coder to offer for `ext`?
 pub(super) fn has_name_selected_coder(ext: &str) -> bool {
     let ext = ext.trim_start_matches('.').to_ascii_lowercase();

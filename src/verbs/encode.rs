@@ -129,7 +129,7 @@ pub(crate) fn edit_output_ext(source_ext: &str) -> &str {
 /// Returns the output path on success.
 pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
     let bytes = read_capped(path)?;
-    let img = decode::decode_full(&bytes)?;
+    let img = decode::decode_full_for_path(&bytes, path)?;
 
     let slot = unique_output(Path::new(path), target.ext);
 
@@ -222,7 +222,7 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
     // Pixel fallback: keep the extension only when a real writer exists. Exotic
     // writable formats go through Magick; decoder-only/unknown inputs get an
     // honest PNG sibling instead of PNG bytes disguised by the source suffix.
-    let img = decode::decode_full(&bytes)?;
+    let img = decode::decode_full_for_path(&bytes, path)?;
     let out_img = match t {
         Transform::Right90 => img.rotate90(),
         Transform::Left90 => img.rotate270(),
@@ -359,7 +359,7 @@ fn neutralize_lossless_jpeg_orientation(bytes: Vec<u8>) -> Vec<u8> {
 /// keeping the original format. Never upscales. Returns the output path.
 pub fn resize_file(path: &str, r: Resize) -> Result<PathBuf> {
     let bytes = read_capped(path)?;
-    let img = apply_resize(decode::decode_full(&bytes)?, r);
+    let img = apply_resize(decode::decode_full_for_path(&bytes, path)?, r);
     let src = Path::new(path);
     let ext = src
         .extension()
@@ -606,7 +606,7 @@ pub fn convert_file_opts_named(
     tag: Option<&str>,
 ) -> Result<PathBuf> {
     let bytes = read_capped(path)?;
-    let mut img = apply_resize(decode::decode_full(&bytes)?, opts.resize);
+    let mut img = apply_resize(decode::decode_full_for_path(&bytes, path)?, opts.resize);
     if matches!(opts.target.format, ImageFormat::Jpeg) {
         img = flatten_onto_white(&img);
     }
@@ -682,7 +682,7 @@ pub fn convert_to(
     // input path is missing or hostile.
     let format = native_output_format(&ext).ok_or_else(|| Error::from(E_FAIL))?;
     let bytes = read_capped(input)?;
-    let mut img = apply_resize(decode::decode_full(&bytes)?, resize);
+    let mut img = apply_resize(decode::decode_full_for_path(&bytes, input)?, resize);
     if matches!(format, ImageFormat::Jpeg) {
         img = flatten_onto_white(&img);
     }
@@ -719,7 +719,7 @@ pub fn convert_to_magick(
         return Err(Error::from(E_FAIL));
     }
     let bytes = read_capped(input)?;
-    let img = apply_resize(decode::decode_full(&bytes)?, resize);
+    let img = apply_resize(decode::decode_full_for_path(&bytes, input)?, resize);
     write_atomic(out, |tmp| {
         decode::encode_via_magick(&img, tmp, target_ext, quality)
     })?;
@@ -809,7 +809,7 @@ pub fn shrink_for_email(path: &str, size: EmailSize) -> Result<PathBuf> {
     let bytes = read_capped(path)?;
     let edge = size.max_edge();
     let img = flatten_onto_white(&apply_resize(
-        decode::decode_full(&bytes)?,
+        decode::decode_full_for_path(&bytes, path)?,
         Resize::Fit(edge, edge),
     ));
     let src = Path::new(path);
