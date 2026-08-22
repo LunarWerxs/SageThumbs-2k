@@ -394,6 +394,16 @@ fn decode_any_with_wic_target(
                     DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
                 ) =>
         {
+            // Big enough for this tile AND not a blank placeholder: answer from it now and
+            // skip the real decoders. This is the difference between a Hasselblad thumbnail
+            // costing 1.3 seconds and costing nothing. See `reduced_ifd0_serves` for why the
+            // content test is not optional.
+            if reduced_ifd0_serves(&img, wic_thumbnail_cx) {
+                crate::safety::log_debug(
+                    "decode tier `image`: reduced-resolution IFD0 covers this tile and has content — using it",
+                );
+                return Ok(img);
+            }
             crate::safety::log_debug(
                 "decode tier `image`: TIFF IFD0 is reduced-resolution — held as fallback",
             );
@@ -585,6 +595,74 @@ fn decode_any_with_wic_target(
         }
     }
     Err(last_err)
+}
+
+/// Below this luminance standard deviation, a reduced-resolution IFD0 is a PLACEHOLDER, not a
+/// preview, and must not be allowed to answer a request.
+///
+/// Measured across every corpus RAW that carries one
+/// (`reduced_ifd0_evidence::what_every_raw_sample_holds_in_its_reduced_ifd0`):
+///
+/// ```text
+///   sample.dcr    380x252   luma sd   0.91   <- Kodak's BLANK placeholder
+///   sample.nef    320x218   luma sd  36.47   <- the least detailed REAL preview
+///   sample.kdc     96x64    luma sd  41.76
+///   sample.3fr    320x240   luma sd  59.23
+///   sample.erf    160x120   luma sd  62.80
+///   sample.fff   1217x913   luma sd  74.23
+/// ```
+///
+/// 8.0 sits about nine times above the placeholder and four times below the faintest real
+/// preview, which is as wide a gap as a threshold in this repo has ever had. It is deliberately
+/// nowhere near the middle: being wrong towards "decode it properly" costs a second, and being
+/// wrong towards "ship the placeholder" is the black-tile bug all over again.
+const REDUCED_IFD0_MIN_SD: f64 = 8.0;
+
+/// May a held-back reduced-resolution IFD0 answer THIS request outright, skipping the real
+/// decoders entirely?
+///
+/// Only when BOTH hold, and the second one is the whole reason this is a function rather than a
+/// size comparison inline:
+///
+/// 1. **It covers the tile without being enlarged.** A thumbnail request carries its target
+///    edge; a full-fidelity caller (Convert, Resize, Image-info) passes `None` and is never
+///    served from here, because their output is the real image at real resolution. Enlarging a
+///    320 px preview into a 768 px tile is exactly the bug 2.3.1 fixed, so the long edge must
+///    already reach the target.
+/// 2. **It actually contains a picture.** SIZE IS NOT EVIDENCE OF CONTENT. A Kodak `.dcr` ships
+///    a 380x252 IFD0 that is blank, comfortably bigger than a 96 or 256 px tile, and returning
+///    it gives a black square. That file is why the reduced IFD0 became a last resort in the
+///    first place, and skipping the content test would reintroduce it verbatim.
+///
+/// What this buys: `.fff` (1217x913) answers all three of Explorer's sizes from the preview
+/// instead of a full Hasselblad decode, and `.3fr` (320x240) answers the 96 and 256 px views,
+/// still decoding properly for 768. Those two were the slowest formats in the product at
+/// roughly 1300 ms and 1150 ms.
+fn reduced_ifd0_serves(img: &DynamicImage, target_edge: Option<u32>) -> bool {
+    let Some(cx) = target_edge else {
+        return false; // full-fidelity caller: never
+    };
+    let long_edge = img.width().max(img.height());
+    if cx == 0 || long_edge < cx {
+        return false;
+    }
+    luma_sd(img) >= REDUCED_IFD0_MIN_SD
+}
+
+/// Standard deviation of luminance: the one number that separates a picture from a rectangle of
+/// one colour. Flat fill scores 0.00.
+pub fn luma_sd(img: &DynamicImage) -> f64 {
+    let g = img.to_luma8();
+    let n = g.len() as f64;
+    if n == 0.0 {
+        return 0.0;
+    }
+    let mean = g.iter().map(|&p| f64::from(p)).sum::<f64>() / n;
+    (g.iter()
+        .map(|&p| (f64::from(p) - mean).powi(2))
+        .sum::<f64>()
+        / n)
+        .sqrt()
 }
 
 mod avifmf;
@@ -1363,3 +1441,159 @@ mod hub_tests {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod reduced_ifd0_gate {
+    //! The picture-quality decision in [`super::reduced_ifd0_serves`], pinned.
+    //!
+    //! This repo has been bitten by a threshold before, so the tests below assert BOTH sides of
+    //! it and the corpus ones name the exact files the numbers came from. A change that makes
+    //! the black Kodak tile ship again fails here, loudly, by name.
+
+    use super::{reduced_ifd0_serves, DynamicImage};
+    use image::{Rgb, RgbImage};
+
+    /// A flat rectangle: exactly what a placeholder IFD0 is.
+    fn flat(w: u32, h: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, Rgb([18, 18, 18])))
+    }
+
+    /// Something with real detail in it, at a comparable size.
+    fn detailed(w: u32, h: u32) -> DynamicImage {
+        let mut img = RgbImage::new(w, h);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            let v = if (x / 7 + y / 5) % 2 == 0 { 15u8 } else { 240 };
+            *p = Rgb([v, v.wrapping_add(x as u8), v]);
+        }
+        DynamicImage::ImageRgb8(img)
+    }
+
+    /// The bug this guards. A blank IFD0 that is BIGGER than the tile must still be refused;
+    /// accepting it is the black square a Kodak `.dcr` used to thumbnail as.
+    #[test]
+    fn a_blank_placeholder_is_refused_however_big_it_is() {
+        for cx in [96u32, 256, 768] {
+            assert!(
+                !reduced_ifd0_serves(&flat(380, 252), Some(cx)),
+                "a flat 380x252 placeholder must never answer a {cx} px tile"
+            );
+        }
+        assert!(!reduced_ifd0_serves(&flat(4000, 3000), Some(256)));
+    }
+
+    #[test]
+    fn a_real_preview_answers_a_tile_it_covers() {
+        assert!(reduced_ifd0_serves(&detailed(320, 240), Some(96)));
+        assert!(reduced_ifd0_serves(&detailed(320, 240), Some(256)));
+    }
+
+    /// Never enlarge. Serving a 320 px preview into a 768 px tile is the 2.3.1 bug.
+    #[test]
+    fn a_preview_smaller_than_the_tile_is_refused() {
+        assert!(!reduced_ifd0_serves(&detailed(320, 240), Some(768)));
+        assert!(!reduced_ifd0_serves(&detailed(320, 240), Some(321)));
+        assert!(
+            reduced_ifd0_serves(&detailed(320, 240), Some(320)),
+            "exactly covering the tile is covered, not short"
+        );
+    }
+
+    /// Convert, Resize and Image-info pass `None` and must always get the real decode.
+    #[test]
+    fn a_full_fidelity_caller_is_never_served_a_preview() {
+        assert!(!reduced_ifd0_serves(&detailed(4000, 3000), None));
+    }
+
+    /// The real files, by name. Skipped when the corpus is absent (CI never checks it out).
+    #[test]
+    fn the_corpus_raws_land_on_the_side_the_measurement_says() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-corpus");
+        // (file, tile, must this be served from IFD0?)
+        let cases = [
+            // The placeholder. Bigger than both small tiles and still worthless.
+            ("sample.dcr", 96u32, false),
+            ("sample.dcr", 256, false),
+            // Hasselblad: 1217x913 of real preview covers every size Explorer asks for.
+            ("sample.fff", 96, true),
+            ("sample.fff", 256, true),
+            ("sample.fff", 768, true),
+            // Hasselblad 3FR: 320x240 covers the two small views, not the large one.
+            ("sample.3fr", 96, true),
+            ("sample.3fr", 256, true),
+            ("sample.3fr", 768, false),
+        ];
+        for (name, cx, want) in cases {
+            let Ok(bytes) = std::fs::read(corpus.join(name)) else {
+                continue; // no corpus here
+            };
+            assert!(
+                crate::streamsrc::tiff_ifd0_is_reduced(&bytes),
+                "{name} no longer reports a reduced-resolution IFD0; this test is now blind"
+            );
+            let img = super::decode_with_image(&bytes)
+                .unwrap_or_else(|e| panic!("{name} IFD0 did not decode: {e}"));
+            let got = reduced_ifd0_serves(&img, Some(cx));
+            assert_eq!(
+                got,
+                want,
+                "{name} at {cx} px: served-from-IFD0 was {got}, expected {want} (luma sd {:.2}, {}x{})",
+                super::luma_sd(&img),
+                image::GenericImageView::width(&img),
+                image::GenericImageView::height(&img)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod reduced_ifd0_evidence {
+    //! The measurement behind [`super::reduced_ifd0_has_content`]'s threshold.
+    //!
+    //! Run it, do not trust it from memory:
+    //!
+    //!   cargo test --release --lib reduced_ifd0_evidence -- --ignored --nocapture
+
+    #[test]
+    #[ignore = "prints corpus measurements; needs ../test-corpus"]
+    fn what_every_raw_sample_holds_in_its_reduced_ifd0() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-corpus");
+        let Ok(rd) = std::fs::read_dir(&corpus) else {
+            eprintln!("no corpus at {}", corpus.display());
+            return;
+        };
+        let mut rows: Vec<String> = Vec::new();
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(bytes) = std::fs::read(&p) else {
+                continue;
+            };
+            if !crate::streamsrc::tiff_ifd0_is_reduced(&bytes) {
+                continue;
+            }
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            match super::decode_with_image(&bytes) {
+                Ok(img) => rows.push(format!(
+                    "{name:<20} {:>5}x{:<5} luma sd {:>7.2}",
+                    image::GenericImageView::width(&img),
+                    image::GenericImageView::height(&img),
+                    super::luma_sd(&img)
+                )),
+                Err(e) => rows.push(format!("{name:<20} IFD0 did not decode: {e}")),
+            }
+        }
+        rows.sort();
+        eprintln!("\nreduced-resolution IFD0 across the corpus:\n");
+        for r in &rows {
+            eprintln!("  {r}");
+        }
+        eprintln!("\n{} sample(s)\n", rows.len());
+    }
+}

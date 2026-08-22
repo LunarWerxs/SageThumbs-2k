@@ -18,6 +18,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **Hasselblad RAW photos took well over a second each to thumbnail.** A `.fff` or `.3fr` file
+  carries a ready-made preview picture, but SageThumbs was ignoring it and decoding the entire
+  raw sensor image instead, every time. It now uses the camera's own preview whenever that
+  preview is genuinely large enough for the size being asked for, and decodes properly when it
+  is not. A `.3fr` thumbnail went from **1191 ms to 22 ms** at Explorer's medium icon size and
+  from 1218 ms to 28 ms at large; a `.fff` went from **1635 ms to 44 ms**, and even the biggest
+  view from 1663 ms to 175 ms. The picture is the same one earlier versions showed, and it is
+  slightly sharper, because it is the camera's preview at its own size rather than a shrunken
+  full decode.
+
+  This does NOT bring back the black-square bug fixed earlier in this release. Some cameras,
+  Kodak among them, store a blank placeholder in that slot rather than a real preview, and being
+  large is not the same as having a picture in it. The preview is now checked for actual content
+  before it is used, and a blank one is ignored exactly as it is today.
+
 - **In the Space-bar Quick preview, a PDF with more than one page trapped the arrow keys.**
   The left and right arrows turned pages instead of moving to the next file, and because
   paging stops at the first and last page, there was then no key at all that would take you
