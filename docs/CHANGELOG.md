@@ -6,6 +6,19 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **Ctrl+F now searches inside a multi-page PDF in the Quick preview.** Type a word and the
+  viewer jumps to the page it is on; Enter or F3 walks through the rest, and the bar counts them
+  the way it already does for text files. Windows' PDF engine hands us pictures of pages and no
+  text at all, so SageThumbs reads the words off the rendered pages itself, using the text
+  recognition Windows already ships. Nothing new is downloaded or installed for it.
+
+  Reading a long document takes a moment, so the bar says how far it has got: matches appear as
+  their pages are read rather than after a silent wait, and a document longer than 200 pages
+  keeps showing how many of its pages were actually searched instead of pretending it read all
+  of them. If the machine has no text recognition available at all, it says so rather than
+  reporting an empty result. Matches are shown by jumping to the page, not by highlighting the
+  word on it.
+
 - **A page-thumbnail strip beside multi-page PDFs in the Quick preview.** Small pictures of
   every page run down the right-hand side, numbered, with the page you are reading outlined.
   Click one to jump straight to it. It appears only for documents with more than one page, hides

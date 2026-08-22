@@ -157,6 +157,21 @@ pub(super) unsafe fn run_shot(
         for c in q.chars() {
             super::find::on_char(hwnd, c as u32);
         }
+        // A PDF's text is READ off its rendered pages on worker threads, so a search over one is
+        // not finished when the last character is typed - it has barely started. Without this,
+        // every shot of a PDF search would capture the same "no results yet" frame and prove
+        // nothing at all about whether the search works.
+        if super::pdfview::active(hwnd) {
+            for _ in 0..600 {
+                crate::win::pump_msgs(8);
+                if let Some(ix) = super::pdfview::index_snapshot(hwnd) {
+                    if ix.total > 0 && ix.done >= ix.total {
+                        break;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
         let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
         crate::win::pump_msgs(8);
     }

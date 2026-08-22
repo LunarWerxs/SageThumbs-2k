@@ -45,6 +45,11 @@ pub(super) const WM_APP_PDFDOC: u32 = WM_APP + 11;
 /// One rendered page THUMBNAIL for the side strip (`WM_APP + 12`); same payload shape as
 /// `WM_APP_PDFTILE`, separate message because it feeds the strip's own cache at its own width.
 pub(super) const WM_APP_PDFSTRIP: u32 = WM_APP + 12;
+/// One page's recognized TEXT for the Ctrl+F index (`WM_APP + 13`);
+/// LPARAM = `Box<(gen, page, Option<String>)>`. `None` is a recognizer failure, not an empty
+/// page, and the two are counted apart so an unavailable OCR engine is never reported as a
+/// document with nothing in it.
+pub(super) const WM_APP_PDFTEXT: u32 = WM_APP + 13;
 /// A fetched remote markdown image (`WM_APP + 9`); LPARAM = `Box<(gen, src, Option<DecodedRgba>)>`.
 pub(super) const WM_APP_MDIMG: u32 = WM_APP + 9;
 /// Follow-selection switch posted from the poll thread (`WM_APP + 2`); LPARAM = `Box<String>` path.
@@ -825,6 +830,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         let sr = strip_rect(hwnd);
                         let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
                     }
+                }
+                LRESULT(0)
+            }
+            WM_APP_PDFTEXT => {
+                let boxed = Box::from_raw(lparam.0 as *mut super::pdfview::TextPayload);
+                let (gen, page, text) = *boxed;
+                let st = &*state(hwnd);
+                // Matched against the DOCUMENT's generation for the same reason WM_APP_PDFTILE is:
+                // this text belongs to a document, and a page of the previous file's text landing
+                // in this one's index would send Ctrl+F to a page that says something else.
+                let grew = {
+                    let mut slot = st.pdf_doc.borrow_mut();
+                    match slot.as_mut() {
+                        Some(doc) if gen == doc.gen => doc.put_page_text(page, text.as_deref()),
+                        _ => false,
+                    }
+                };
+                if grew {
+                    // Re-run an open search over the page that just arrived. Deliberately does not
+                    // move the view unless the search had nothing at all before: pages land every
+                    // ~130 ms, and a view that jumped on each one would be unusable to read.
+                    super::find::on_pdf_index_progress(hwnd);
                 }
                 LRESULT(0)
             }

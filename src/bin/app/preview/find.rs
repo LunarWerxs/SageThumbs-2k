@@ -13,6 +13,22 @@
 //!   wrong place, which is a much worse bug than "Straße does not match STRASSE".
 //! - **The folded haystack is cached** and only rebuilt when the document changes, so typing into
 //!   the box re-scans but never re-allocates the document.
+//!
+//! # Searching a PDF, which has no selection document at all
+//!
+//! A multi-page PDF in the continuous view is searchable too, and it does NOT fit the model
+//! above: there is no selection document, there are no on-screen character rects, and the text
+//! does not exist until [`super::pdfview`] has read it off the rasterized pages. So the PDF path
+//! shares the query, the hit list and the stepping, and diverges at the two ends:
+//!
+//! - the haystack comes from the document's own index rather than `selection::with_doc`, and it
+//!   GROWS while a search is open, page by page;
+//! - a hit is turned into a page number and scrolled to, instead of into a selection range. There
+//!   is no character highlight on a rasterized page, and pretending otherwise would mean drawing
+//!   a box somewhere plausible rather than somewhere true.
+//!
+//! Because the index arrives gradually, the bar has to say so. A search box that reports "No
+//! results" for a document it has read a third of is worse than one that admits it is not ready.
 
 use std::cell::RefCell;
 
@@ -24,7 +40,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use super::selection;
-use super::window::{state, ViewerState};
+use super::window::state;
 
 /// Height of the find bar in 96-dpi design px (DPI-scaled at use).
 pub(in crate::preview) const FIND_H: i32 = 30;
@@ -45,6 +61,21 @@ pub(in crate::preview) struct FindState {
     hay_gen: u64,
     /// Whether `hay_gen` has ever been set (generation 0 is a legitimate value).
     primed: bool,
+    /// The haystack came from a PDF's text index, not from a selection document. Every place the
+    /// two models differ branches on this.
+    pdf: bool,
+    /// Byte offset where each indexed page's text starts, for turning a hit into a page.
+    pdf_starts: Vec<usize>,
+    /// How many pages have been read, how many will be, how many the recognizer failed on, and
+    /// how long the document really is. Copied out of the document so the bar can paint its own
+    /// state without borrowing it.
+    pdf_done: usize,
+    pdf_total: usize,
+    pdf_failed: usize,
+    pdf_pages: usize,
+    /// Pages the cached haystack was built from. The PDF index grows while a search is open, so
+    /// the generation alone is not enough to tell a stale haystack from a current one.
+    hay_pages: usize,
 }
 
 impl FindState {
@@ -60,6 +91,20 @@ impl FindState {
             "{}/{}",
             self.cur.map(|i| i + 1).unwrap_or(0),
             self.hits.len()
+        )
+    }
+
+    /// What the bar should say about how much of a PDF it has actually read, or `None` when the
+    /// question does not arise (a text pane, or a document read end to end).
+    fn note(&self) -> Option<String> {
+        if !self.pdf {
+            return None;
+        }
+        super::pdfview::index_note(
+            self.pdf_done,
+            self.pdf_total,
+            self.pdf_failed,
+            self.pdf_pages,
         )
     }
 }
@@ -85,15 +130,22 @@ pub(in crate::preview) unsafe fn bar_rect(hwnd: HWND) -> RECT {
 }
 
 /// Whether the current content has something to search.
-pub(in crate::preview) unsafe fn available(st: &ViewerState) -> bool {
-    selection::selectable(st.kind.get())
+///
+/// A multi-page PDF qualifies only once its session is open, which is what makes its text
+/// reachable at all. That is a few hundred milliseconds after the first page appears, so Ctrl+F
+/// pressed in that gap does nothing and works on the next press; the alternative, opening a bar
+/// that can never find anything, is the "silently reports no results" failure this module's docs
+/// already warn about for Markdown.
+pub(in crate::preview) unsafe fn available(hwnd: HWND) -> bool {
+    let st = &*state(hwnd);
+    selection::selectable(st.kind.get()) || super::pdfview::active(hwnd)
 }
 
 /// Ctrl+F. Opens the bar on a searchable pane; pressing it again while open steps to the next
 /// match, which is what a browser does and what muscle memory expects.
 pub(in crate::preview) unsafe fn toggle(hwnd: HWND) {
     let st = &*state(hwnd);
-    if !available(st) {
+    if !available(hwnd) {
         return;
     }
     let already = st.find.borrow().open;
@@ -102,6 +154,9 @@ pub(in crate::preview) unsafe fn toggle(hwnd: HWND) {
         return;
     }
     st.find.borrow_mut().open = true;
+    // Reading a PDF's text costs real CPU, so it starts HERE rather than when the document opens:
+    // the work someone asked for, not the work they might.
+    super::pdfview::start_indexing(hwnd);
     research(hwnd);
     // The pane just got shorter, so the content has to re-lay out, not just repaint the strip.
     let _ = InvalidateRect(Some(hwnd), None, false);
@@ -157,7 +212,7 @@ pub(in crate::preview) unsafe fn on_key(hwnd: HWND, vk: u16, shift: bool) -> boo
     let st = &*state(hwnd);
     // F3 works even with the bar closed, so a search survives Esc and can be resumed.
     if vk == VK_F3.0 {
-        if st.find.borrow().query.is_empty() || !available(st) {
+        if st.find.borrow().query.is_empty() || !available(hwnd) {
             return false;
         }
         if !st.find.borrow().open {
@@ -193,7 +248,17 @@ pub(in crate::preview) unsafe fn on_key(hwnd: HWND, vk: u16, shift: bool) -> boo
 unsafe fn research(hwnd: HWND) {
     let st = &*state(hwnd);
     ensure_hay(hwnd);
-    let from = resume_from(st.sel.get());
+    // A PDF has no selection to resume past, so it resumes from the top of the page being read.
+    // That keeps a refined query on the page the reader is already looking at instead of throwing
+    // them back to page one on every keystroke.
+    let from = {
+        let f = st.find.borrow();
+        if f.pdf {
+            pdf_resume_from(&f.pdf_starts, st.pdf_page.get() as usize)
+        } else {
+            resume_from(st.sel.get())
+        }
+    };
     {
         let mut f = st.find.borrow_mut();
         f.hits.clear();
@@ -224,6 +289,15 @@ fn resume_from(sel: Option<(usize, usize)>) -> usize {
     sel.map(|(a, b)| a.max(b)).unwrap_or(0)
 }
 
+/// The byte offset a fresh search of a PDF should resume from: the top of the page on screen.
+///
+/// A page not yet read has no offset, and the honest answer there is 0 rather than the end of
+/// what has been read: the pages before it ARE searched, and skipping them would hide matches
+/// the index already holds.
+fn pdf_resume_from(starts: &[usize], page: usize) -> usize {
+    starts.get(page).copied().unwrap_or(0)
+}
+
 /// Move to the next/previous match, wrapping at both ends.
 unsafe fn step(hwnd: HWND, forward: bool) {
     let st = &*state(hwnd);
@@ -247,6 +321,30 @@ unsafe fn step(hwnd: HWND, forward: bool) {
 /// panes already paint `st.sel`, and Ctrl+C already copies it.
 unsafe fn goto_current(hwnd: HWND) {
     let st = &*state(hwnd);
+    // A PDF's hit is a page, not a range. There is nothing to select on a rasterized page and no
+    // character rects to highlight one with, so the jump IS the whole answer; drawing a box at a
+    // plausible-looking position would be inventing information the renderer never gave us.
+    // (Windows' OCR does return word bounding boxes, so a real highlight is possible later, but
+    // it is a second feature and not one to fake in the meantime.)
+    let pdf_page = {
+        let f = st.find.borrow();
+        if f.pdf {
+            Some(
+                f.cur
+                    .and_then(|i| f.hits.get(i))
+                    .map(|o| super::pdfview::page_for_offset(&f.pdf_starts, *o)),
+            )
+        } else {
+            None
+        }
+    };
+    if let Some(page) = pdf_page {
+        st.sel.set(None);
+        if let Some(page) = page {
+            super::pdfview::scroll_to_page(hwnd, page);
+        }
+        return;
+    }
     let range = {
         let f = st.find.borrow();
         match f.cur.and_then(|i| f.hits.get(i)).copied() {
@@ -276,9 +374,35 @@ unsafe fn goto_current(hwnd: HWND) {
 unsafe fn ensure_hay(hwnd: HWND) {
     let st = &*state(hwnd);
     let gen = st.decode_gen.get();
+    // A PDF's haystack is its text index, which GROWS while the bar is open, so it is keyed on
+    // how many pages have been read as well as on the generation.
+    //
+    // The mode question is asked FIRST, and separately from whether the snapshot could be taken.
+    // Reading a failed snapshot as "not a PDF" would drop the search into the text path, which
+    // for a PDF finds nothing at all - a much worse answer than a haystack one page out of date.
+    if super::pdfview::active(hwnd) {
+        let Some(ix) = super::pdfview::index_snapshot(hwnd) else {
+            return;
+        };
+        let mut f = st.find.borrow_mut();
+        if f.primed && f.pdf && f.hay_gen == gen && f.hay_pages == ix.done {
+            return;
+        }
+        f.hay = ix.hay;
+        f.pdf_starts = ix.starts;
+        f.pdf_done = ix.done;
+        f.pdf_total = ix.total;
+        f.pdf_failed = ix.failed;
+        f.pdf_pages = ix.pages;
+        f.pdf = true;
+        f.hay_gen = gen;
+        f.hay_pages = ix.done;
+        f.primed = true;
+        return;
+    }
     {
         let f = st.find.borrow();
-        if f.primed && f.hay_gen == gen {
+        if f.primed && !f.pdf && f.hay_gen == gen {
             return;
         }
     }
@@ -297,7 +421,10 @@ unsafe fn ensure_hay(hwnd: HWND) {
     }
     let mut f = st.find.borrow_mut();
     f.hay = folded;
+    f.pdf = false;
+    f.pdf_starts.clear();
     f.hay_gen = gen;
+    f.hay_pages = 0;
     f.primed = true;
 }
 
@@ -323,11 +450,54 @@ pub(in crate::preview) unsafe fn refresh(hwnd: HWND) {
     }
     // The bar can outlive the kind that justified it (←/→ from a document onto an image). Close it
     // rather than leaving a dead strip permanently eating the content area.
-    if !available(st) {
+    if !available(hwnd) {
         close(hwnd);
         return;
     }
     research(hwnd);
+}
+
+/// One more page of a PDF's text has been read while a search is open.
+///
+/// Re-scans and repaints, and deliberately does NOT move the view: pages land every ~130 ms, and
+/// a document that scrolled itself on each one would be impossible to read while it indexed. The
+/// single exception is a search that had nothing at all, where the first match arriving IS the
+/// answer the user is waiting for.
+pub(in crate::preview) unsafe fn on_pdf_index_progress(hwnd: HWND) {
+    let st = &*state(hwnd);
+    if !st.find.borrow().open {
+        return;
+    }
+    ensure_hay(hwnd);
+    let jump = {
+        let mut f = st.find.borrow_mut();
+        // Pages are appended in order, so an existing match keeps its offset even as the haystack
+        // grows. Re-find it BY OFFSET rather than by index: a hit is only ever appended after the
+        // ones already found, but tying the current match to a position in a growing vector is
+        // exactly the kind of assumption that quietly stops being true.
+        let held = f.cur.and_then(|i| f.hits.get(i)).copied();
+        let hits: Vec<usize> = if f.query.is_empty() {
+            Vec::new()
+        } else {
+            let needle = f.query.to_ascii_lowercase();
+            f.hay.match_indices(&needle).map(|(i, _)| i).collect()
+        };
+        f.hits = hits;
+        match held {
+            Some(off) => {
+                f.cur = f.hits.iter().position(|o| *o == off);
+                false
+            }
+            None => {
+                f.cur = (!f.hits.is_empty()).then_some(0);
+                f.cur.is_some()
+            }
+        }
+    };
+    if jump {
+        goto_current(hwnd);
+    }
+    let _ = InvalidateRect(Some(hwnd), None, false);
 }
 
 /// Paint the bar: the typed query with a caret on the left, the match counter on the right.
@@ -353,6 +523,11 @@ pub(in crate::preview) unsafe fn paint(hwnd: HWND, hdc: HDC, text: u32, subtle: 
     let oldf = SelectObject(hdc, font.into());
     SetBkMode(hdc, TRANSPARENT);
 
+    // How much of a PDF has actually been read, when that is not all of it. Painted before the
+    // query so the query's own box can be shortened to make room rather than being drawn over.
+    let note = f.note();
+    let note_w = if note.is_some() { sc(230) } else { 0 };
+
     // Query, with a block caret so an empty box still looks like somewhere you can type.
     SetTextColor(hdc, COLORREF(text));
     let shown = format!("Find: {}|", f.query);
@@ -360,7 +535,7 @@ pub(in crate::preview) unsafe fn paint(hwnd: HWND, hdc: HDC, text: u32, subtle: 
     let mut tr = RECT {
         left: r.left + sc(10),
         top: r.top,
-        right: r.right - sc(110),
+        right: r.right - sc(110) - note_w,
         bottom: r.bottom,
     };
     DrawTextW(
@@ -369,6 +544,25 @@ pub(in crate::preview) unsafe fn paint(hwnd: HWND, hdc: HDC, text: u32, subtle: 
         &mut tr,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
+
+    // The index note sits between the query and the counter, in the subtle colour: it is context
+    // for the count beside it, not a result of its own.
+    if let Some(note) = note {
+        SetTextColor(hdc, COLORREF(subtle));
+        let mut nw: Vec<u16> = note.encode_utf16().collect();
+        let mut nr = RECT {
+            left: r.right - sc(106) - note_w,
+            top: r.top,
+            right: r.right - sc(116),
+            bottom: r.bottom,
+        };
+        DrawTextW(
+            hdc,
+            &mut nw,
+            &mut nr,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    }
 
     // Counter, right-aligned. `subtle` unless the search found nothing, which is worth noticing.
     let counter = f.counter();
@@ -398,7 +592,21 @@ pub(in crate::preview) fn new_state() -> RefCell<FindState> {
 
 #[cfg(test)]
 mod tests {
-    use super::resume_from;
+    use super::{pdf_resume_from, resume_from};
+
+    /// A PDF has no selection, so a re-search resumes from the top of the page on screen. The
+    /// point is that refining a query does not throw a reader on page twelve back to page one.
+    #[test]
+    fn a_pdf_search_resumes_from_the_page_being_read() {
+        let starts = vec![0, 40, 90, 150];
+        assert_eq!(pdf_resume_from(&starts, 0), 0);
+        assert_eq!(pdf_resume_from(&starts, 2), 90);
+        // A page the index has not reached yet resumes from the START, not from the end of what
+        // has been read: the earlier pages ARE searched, and skipping them would hide matches the
+        // index is already holding.
+        assert_eq!(pdf_resume_from(&starts, 9), 0);
+        assert_eq!(pdf_resume_from(&[], 3), 0);
+    }
 
     /// `sel` is stored unordered as (anchor, focus), the anchor being wherever the drag
     /// started. The old code read the raw first tuple element (the anchor) directly: for a

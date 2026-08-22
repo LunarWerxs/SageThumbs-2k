@@ -23,6 +23,7 @@
 //! pages arrive. Pages rasterize lazily as they scroll into view, and a page still in flight
 //! draws as a plain sheet rather than a hole.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
@@ -42,6 +43,11 @@ use super::window::{state, ContentKind, WM_APP_PDFTILE};
 /// Named because both the sender and the `WM_APP_PDFTILE` handler must agree on it exactly, and
 /// a tuple written out twice is a tuple that eventually disagrees with itself.
 pub(in crate::preview) type TilePayload = (u64, usize, i32, Option<(i32, i32, Vec<u8>)>);
+
+/// What the text indexer posts back for one page: the generation, the page, and its recognized
+/// text. `None` means the recognizer FAILED on that page, which is a different thing from a page
+/// that genuinely holds no text and is counted separately (see [`PdfIndex::failed`]).
+pub(in crate::preview) type TextPayload = (u64, usize, Option<String>);
 
 /// Gap between pages, in unscaled pixels. Enough to read as a break between sheets without
 /// wasting a scroll's worth of empty space on a small window.
@@ -65,6 +71,128 @@ const STRIP_W: i32 = 116;
 /// Below this client width the strip is not shown at all. A narrow popup has no room to give up
 /// a sixth of itself, and a reader would rather have the page.
 const STRIP_MIN_CLIENT: i32 = 520;
+
+/// Never read more than this many pages of one document.
+///
+/// **Measured, in a live window**: a 210 page document indexes its first 200 in ~82 s, or ~410 ms
+/// a page. That is four times what one page costs in isolation (~100 ms, see
+/// [`sagethumbs2k_core::pdf::OCR_RENDER_WIDTH`]) because the same session thread is also drawing
+/// the pages and thumbnails the reader is looking at, and the reader wins those.
+///
+/// So this is a bound on the WORST case rather than a target: nearly every PDF anyone presses
+/// Space on is far short of it, and the search is usable throughout because matches appear as
+/// their pages land. Past the cap the find bar keeps saying how many of the document's pages it
+/// read, so a partial index is never presented as a whole one.
+pub(in crate::preview) const MAX_INDEX_PAGES: usize = 200;
+
+/// The searchable text of a PDF, built one page at a time in the background.
+///
+/// `Windows.Data.Pdf` rasterizes and exposes no text layer at all, so the text has to be READ off
+/// the rendered page by [`sagethumbs2k_core::ocr`]. That is the in-box `Windows.Media.Ocr`
+/// engine, so this costs no bundled bytes and no new dependency, which is what makes it the right
+/// trade here: a pure-Rust extractor would be more accurate on a born-digital PDF but would have
+/// to earn room in the installer's size budget.
+#[derive(Default)]
+pub(in crate::preview) struct PdfIndex {
+    /// ASCII-folded text of every page read so far, one page after another, each ended with a
+    /// newline so a word cannot straddle a page boundary and match across two pages.
+    ///
+    /// Folded on the way in for the same reason `find` folds its own haystack: ASCII folding is
+    /// the one case that cannot change a string's byte length, so an offset found here still
+    /// names the same character.
+    hay: String,
+    /// Byte offset in `hay` where each page begins. Position `i` IS page `i`, because pages are
+    /// appended strictly in order; that is what makes offset-to-page a plain binary search rather
+    /// than a table that has to be kept sorted.
+    starts: Vec<usize>,
+    /// How many pages this index will ever hold: `min(page_count, MAX_INDEX_PAGES)`. Zero until
+    /// indexing is actually asked for, which is what [`index_note`] reads to tell "nobody has
+    /// searched this document" apart from "there is nothing in it".
+    total: usize,
+    /// Pages the recognizer FAILED on, as opposed to pages that hold no text. All of them failing
+    /// means the engine is unavailable (no OCR language pack), and reporting that as "No results"
+    /// would be a lie about the document.
+    failed: usize,
+    /// Whether the background worker has been started, so a second Ctrl+F does not start a second.
+    started: bool,
+}
+
+impl PdfIndex {
+    /// Append one page's text. Returns whether it was accepted: only the NEXT page in order is,
+    /// because `starts` being a plain ascending vector is what the offset lookup stands on.
+    fn push(&mut self, page: usize, text: Option<&str>) -> bool {
+        if page != self.starts.len() || page >= self.total {
+            return false;
+        }
+        self.starts.push(self.hay.len());
+        match text {
+            Some(t) => self.hay.push_str(&t.to_ascii_lowercase()),
+            None => self.failed += 1,
+        }
+        // Always a separator, even for a failed or empty page, so every page occupies at least
+        // one byte and no two pages can share a start offset.
+        self.hay.push('\n');
+        true
+    }
+
+    fn done(&self) -> usize {
+        self.starts.len()
+    }
+}
+
+/// Which page the byte offset `off` falls on, given each page's start offset.
+///
+/// Pure, and the one piece of arithmetic that decides whether Ctrl+F lands on the right page. The
+/// offsets are strictly ascending (every page contributes at least its newline), so the answer is
+/// the last start at or before `off`.
+pub(in crate::preview) fn page_for_offset(starts: &[usize], off: usize) -> usize {
+    starts.partition_point(|&s| s <= off).saturating_sub(1)
+}
+
+/// What the find bar should say about the state of the index, or `None` when there is nothing
+/// worth saying because every page of the document has been read.
+///
+/// Pure so the wording rules are testable, and they are the fiddly part of this feature: a search
+/// box that reports "No results" for a document it has only read a third of, or for one whose
+/// text could not be recognized at all, is worse than one that admits it is not ready.
+///
+/// `pages` is the document's REAL page count, not the capped index size, and that is deliberate:
+/// on a document past [`MAX_INDEX_PAGES`] the note stays up forever saying how many of the pages
+/// were actually read, rather than quietly presenting a partial search as a complete one.
+pub(in crate::preview) fn index_note(
+    done: usize,
+    total: usize,
+    failed: usize,
+    pages: usize,
+) -> Option<String> {
+    if total == 0 {
+        return None; // nobody has searched this document yet
+    }
+    if done >= total && failed == total {
+        // Every page came back an error, so there is no OCR engine here. Saying "No results"
+        // would blame the document for a missing Windows language pack.
+        return Some(crate::win::t("find_no_text").to_string());
+    }
+    if done < pages {
+        return Some(
+            crate::win::t("find_indexing")
+                .replace("{done}", &done.to_string())
+                .replace("{total}", &pages.to_string()),
+        );
+    }
+    None
+}
+
+/// Everything the find bar needs about the index, copied out. Copied rather than borrowed on
+/// purpose: `find` runs a search and then scrolls, and scrolling borrows the document again.
+pub(in crate::preview) struct IndexSnapshot {
+    pub hay: String,
+    pub starts: Vec<usize>,
+    pub done: usize,
+    pub total: usize,
+    pub failed: usize,
+    pub pages: usize,
+}
 
 /// How wide the thumbnail strip is for THIS window, or 0 when it should not appear.
 ///
@@ -155,8 +283,20 @@ pub(in crate::preview) struct PdfDoc {
     strip_width: i32,
     /// First page shown in the strip, so a long document can scroll its own contact sheet.
     pub(in crate::preview) strip_top: usize,
+    /// The document's searchable text, read in the background when someone presses Ctrl+F.
+    index: PdfIndex,
+    /// Set when this document is dropped, so a text index still grinding through a two hundred
+    /// page file stops instead of burning a minute of CPU on a file the reader has left. Shared
+    /// with the worker, which checks it between pages.
+    cancel: Arc<AtomicBool>,
     /// Bumped when the document is replaced, so a tile from the previous file is dropped.
     pub(in crate::preview) gen: u64,
+}
+
+impl Drop for PdfDoc {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Where every page sits in the scrolled document, at a given render width.
@@ -278,7 +418,26 @@ impl PdfDoc {
             strip_pending: vec![false; n],
             strip_width: 0,
             strip_top: 0,
+            index: PdfIndex::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
             gen,
+        }
+    }
+
+    /// Install one page's recognized text. Returns whether the index moved, so the caller only
+    /// re-runs an open search when there is something new to search.
+    pub(in crate::preview) fn put_page_text(&mut self, page: usize, text: Option<&str>) -> bool {
+        self.index.push(page, text)
+    }
+
+    fn snapshot(&self) -> IndexSnapshot {
+        IndexSnapshot {
+            hay: self.index.hay.clone(),
+            starts: self.index.starts.clone(),
+            done: self.index.done(),
+            total: self.index.total,
+            failed: self.index.failed,
+            pages: self.sizes.len(),
         }
     }
 
@@ -428,6 +587,79 @@ pub(in crate::preview) unsafe fn spawn_open(hwnd: HWND, path: String, gen: u64) 
         .is_err()
         {
             drop(Box::from_raw(raw));
+        }
+    });
+}
+
+/// The index as it stands, or `None` when there is no open document.
+pub(in crate::preview) unsafe fn index_snapshot(hwnd: HWND) -> Option<IndexSnapshot> {
+    let st = super::window::state(hwnd);
+    if st.is_null() {
+        return None;
+    }
+    let slot = (*st).pdf_doc.try_borrow().ok()?;
+    slot.as_ref().map(PdfDoc::snapshot)
+}
+
+/// Start reading the document's text, if nobody has yet.
+///
+/// Deliberately LAZY: this runs on the first Ctrl+F, not when the document opens. Reading a two
+/// hundred page file costs ~26 s of CPU, and the overwhelming majority of PDFs anyone presses
+/// Space on are looked at, not searched. The same reasoning already governs page prefetch a few
+/// lines up: do the work someone asked for, not the work they might.
+///
+/// One page at a time, through the session that is already open. The session serialises renders
+/// on its own thread, so an index render delays a visible page by one page's render at worst, and
+/// the ~130 ms of recognition that follows happens off that thread entirely, which is when the
+/// scrolling reader's own tiles get through.
+pub(in crate::preview) unsafe fn start_indexing(hwnd: HWND) {
+    let st = super::window::state(hwnd);
+    if st.is_null() {
+        return;
+    }
+    let started = {
+        let mut slot = (*st).pdf_doc.borrow_mut();
+        let Some(doc) = slot.as_mut() else {
+            return;
+        };
+        if doc.index.started {
+            return;
+        }
+        doc.index.started = true;
+        doc.index.total = doc.page_count().min(MAX_INDEX_PAGES);
+        (
+            Arc::clone(&doc.session),
+            Arc::clone(&doc.cancel),
+            doc.gen,
+            doc.index.total,
+        )
+    };
+    let (session, cancel, gen, total) = started;
+    let hwnd_raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
+        for page in 0..total {
+            if cancel.load(Ordering::Relaxed) {
+                return; // the reader moved on; the rest of the document is not worth reading
+            }
+            let text = session
+                .render_to_width(page, sagethumbs2k_core::pdf::OCR_RENDER_WIDTH)
+                .and_then(|png| sagethumbs2k_core::ocr::recognize_bytes(png).ok());
+            let payload: Box<TextPayload> = Box::new((gen, page, text));
+            let raw = Box::into_raw(payload);
+            if PostMessageW(
+                Some(hwnd),
+                super::window::WM_APP_PDFTEXT,
+                WPARAM(0),
+                LPARAM(raw as isize),
+            )
+            .is_err()
+            {
+                // The window is gone. Free the payload and stop, rather than reading two hundred
+                // pages for nobody.
+                drop(Box::from_raw(raw));
+                return;
+            }
         }
     });
 }
@@ -1000,6 +1232,110 @@ mod tests {
         assert_eq!(super::strip_page_at(10, 0, 0, 4), None);
         assert_eq!(super::strip_page_at(10, -3, 0, 4), None);
         assert_eq!(super::strip_page_at(10, 100, 0, 0), None);
+    }
+
+    /// Build an index over `pages` of text, the way the worker does.
+    fn indexed(pages: &[Option<&str>]) -> PdfIndex {
+        let mut ix = PdfIndex {
+            total: pages.len(),
+            ..Default::default()
+        };
+        for (i, p) in pages.iter().enumerate() {
+            assert!(ix.push(i, *p), "page {i} was refused");
+        }
+        ix
+    }
+
+    /// The property the whole search rests on: a match found in the concatenated text has to name
+    /// the page it is really on. Getting this wrong scrolls the reader to the wrong page, which is
+    /// glaring in use and completely invisible in a screenshot.
+    #[test]
+    fn an_offset_maps_back_to_the_page_it_came_from() {
+        let ix = indexed(&[Some("alpha"), Some("bravo"), Some("charlie")]);
+        // "alpha\nbravo\ncharlie\n" - starts at 0, 6, 12.
+        assert_eq!(ix.starts, vec![0, 6, 12]);
+        for (off, want) in [(0, 0), (4, 0), (5, 0), (6, 1), (11, 1), (12, 2), (18, 2)] {
+            assert_eq!(
+                page_for_offset(&ix.starts, off),
+                want,
+                "offset {off} should be on page {want}"
+            );
+        }
+        // And the real thing: search the folded text and land on the right page.
+        let at = ix.hay.find("bravo").expect("the word is in there");
+        assert_eq!(page_for_offset(&ix.starts, at), 1);
+    }
+
+    /// Every page occupies at least its own separator, so no two pages can share a start offset.
+    /// If a blank page took zero bytes, a match on the page AFTER it could resolve to the blank
+    /// one, depending on which side the search landed.
+    #[test]
+    fn a_page_with_no_text_still_takes_up_a_position() {
+        let ix = indexed(&[Some(""), None, Some("tail")]);
+        assert_eq!(ix.starts, vec![0, 1, 2]);
+        assert_eq!(ix.failed, 1, "a recognizer error is not an empty page");
+        assert_eq!(page_for_offset(&ix.starts, 2), 2);
+        assert_eq!(page_for_offset(&ix.starts, ix.hay.find("tail").unwrap()), 2);
+    }
+
+    /// Text is folded on the way in, and folding must not move a byte - the same property the
+    /// find bar's own haystack depends on. A Unicode fold would shift every offset after the
+    /// first non-ASCII character and send the reader to the wrong page.
+    #[test]
+    fn folding_the_page_text_never_moves_an_offset() {
+        let ix = indexed(&[Some("Grüße WORLD"), Some("İstanbul Report")]);
+        assert_eq!(ix.starts[1], "Grüße WORLD".len() + 1);
+        assert!(
+            ix.hay.contains("world"),
+            "the fold is applied on the way in"
+        );
+        assert_eq!(
+            page_for_offset(&ix.starts, ix.hay.find("report").unwrap()),
+            1
+        );
+    }
+
+    /// Pages must arrive in order, because the whole offset lookup is "position in the vector is
+    /// the page number". A worker that skipped or repeated one has to be refused, not absorbed.
+    #[test]
+    fn a_page_out_of_order_is_refused_rather_than_corrupting_the_map() {
+        let mut ix = PdfIndex {
+            total: 4,
+            ..Default::default()
+        };
+        assert!(ix.push(0, Some("first")));
+        assert!(!ix.push(2, Some("skipped one")), "a gap must be refused");
+        assert!(!ix.push(0, Some("again")), "a repeat must be refused");
+        assert!(ix.push(1, Some("second")));
+        assert_eq!(ix.done(), 2);
+        // And nothing may be pushed past the size the index was opened for.
+        assert!(ix.push(2, Some("third")));
+        assert!(ix.push(3, Some("fourth")));
+        assert!(!ix.push(4, Some("past the cap")));
+    }
+
+    /// The honesty rules, which are the part of this feature that is easy to get subtly wrong.
+    #[test]
+    fn the_progress_note_says_what_is_actually_known() {
+        // Nobody has searched yet: no note at all.
+        assert_eq!(index_note(0, 0, 0, 40), None);
+        // Part way through, the note names the document's real length.
+        let n = index_note(12, 40, 0, 40).expect("mid-index says so");
+        assert!(n.contains("12") && n.contains("40"), "got {n:?}");
+        // Finished, with text found: nothing to say.
+        assert_eq!(index_note(40, 40, 0, 40), None);
+        // Finished, but the document is LONGER than the cap. The note must stay up: a search of
+        // 200 pages of a 437 page file presented as a finished search is the lie this prevents.
+        let n = index_note(200, 200, 0, 437).expect("a capped index must keep saying so");
+        assert!(n.contains("200") && n.contains("437"), "got {n:?}");
+        // Every page failed, so there is no recognizer here. That is not "no results".
+        let n = index_note(40, 40, 40, 40).expect("an unavailable engine must be admitted");
+        assert!(
+            !n.contains("40"),
+            "the failure note is not a progress count"
+        );
+        // Some pages failed but others worked: the document really was searched.
+        assert_eq!(index_note(40, 40, 3, 40), None);
     }
 
     #[test]

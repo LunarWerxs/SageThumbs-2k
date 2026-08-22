@@ -108,6 +108,43 @@ struct Job {
 /// needs no layout at all.
 pub const MAX_SESSION_PAGES: usize = 4096;
 
+/// Pixel width a page is rasterized at when it is going to be READ rather than looked at.
+///
+/// `Windows.Data.Pdf` exposes no text layer at all, so the Quick preview's Ctrl+F gets a PDF's
+/// text by rendering each page and running [`crate::ocr`] over it. This width is what decides
+/// whether that works.
+///
+/// **Measured, not assumed.** `tests::what_the_recognizer_reads_at_each_render_width` prints the
+/// table below: one US Letter page carrying a 48 pt heading and a line of 14 pt body text.
+///
+/// ```text
+///   width   14pt is   heading   body      elapsed
+///     200     4.6 px  yes       NO         199 ms
+///     300     6.9 px  yes       NO          22 ms
+///     400     9.2 px  NO        yes         28 ms
+///     600    13.7 px  yes       yes         29 ms
+///     800    18.3 px  yes       yes         45 ms
+///    1000    22.9 px  yes       yes         34 ms
+///    2000    45.8 px  yes       yes         99 ms
+///    3200    73.2 px  yes       yes        255 ms
+/// ```
+///
+/// So 600 px would already read THIS page, and at a third of the cost. The width is nonetheless
+/// 2000, for two reasons the fixture cannot show:
+///
+/// 1. **14 pt is not what documents are set in.** Ordinary body text is 9 to 11 pt. At 2000 px
+///    that lands at 29 to 36 px, which is past the ~26 px `ocr`'s own measurements call clean. At
+///    1000 px the same text is 15 to 18 px, which is the range the engine returns the EMPTY
+///    STRING for - indistinguishable, to a reader, from a document with no text in it.
+/// 2. **Below ~900 px `ocr` enlarges the bitmap itself**, so a small render is not actually the
+///    saving it looks like; it moves the work rather than removing it, and it is the reason the
+///    400 px row can read the body text while failing on the heading.
+///
+/// The remaining cost is ~100 ms a page of background work, which buys a margin over the whole
+/// range of type sizes a real document might use. That is the right side to be wrong on: this
+/// runs behind a search box, and a search that finds nothing is worse than one that is slow.
+pub const OCR_RENDER_WIDTH: u32 = 2000;
+
 impl PdfSession {
     /// Open `bytes` and read every page's size. `None` if the document will not load (encrypted,
     /// malformed, the API missing) or has more than [`MAX_SESSION_PAGES`] pages.
@@ -398,6 +435,196 @@ mod tests {
         out
     }
 
+    /// Build a valid multi-page PDF where page `i` carries `headings[i]` in 48 pt and the same
+    /// line of ordinary 14 pt body text on every page.
+    ///
+    /// The body line is the point of the fixture, not decoration. A 48 pt heading is legible at
+    /// almost any render width (it survives even at 200 px, see the table on
+    /// [`super::OCR_RENDER_WIDTH`]), so a heading-only fixture would keep passing while the width
+    /// fell far enough to stop reading real documents. The 14 pt line fails from 300 px down,
+    /// which is what makes this fixture able to fail at all.
+    ///
+    /// It does NOT pin the width to its current value: 600 px reads this page perfectly well.
+    /// The argument for 2000 is about type sizes smaller than any fixture can prove from the
+    /// inside, and it lives on the constant.
+    ///
+    /// Same hand-written-to-the-spec approach as [`solid_colour_pdf`], and the same reason: a
+    /// fixture produced by our own PDF writer would share its assumptions.
+    pub(super) fn text_pdf(headings: &[&str]) -> Vec<u8> {
+        assert!(!headings.is_empty(), "a PDF needs at least one page");
+        let n = headings.len();
+        let mut out: Vec<u8> = Vec::new();
+        let mut offsets: Vec<usize> = Vec::new();
+        // 1 = catalog, 2 = page tree, 3 = the font, then a (page, contents) pair each. Written in
+        // ascending object order so the xref built from `offsets` lines up by position.
+        let page_obj = |i: usize| 4 + i * 2;
+        let obj = |out: &mut Vec<u8>, offsets: &mut Vec<usize>, body: String| {
+            offsets.push(out.len());
+            out.extend_from_slice(body.as_bytes());
+        };
+
+        out.extend_from_slice(b"%PDF-1.4\n");
+        obj(
+            &mut out,
+            &mut offsets,
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".into(),
+        );
+        let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", page_obj(i))).collect();
+        obj(
+            &mut out,
+            &mut offsets,
+            format!(
+                "2 0 obj\n<< /Type /Pages /Kids [{}] /Count {n} >>\nendobj\n",
+                kids.join(" ")
+            ),
+        );
+        // Helvetica is one of the 14 standard PDF fonts, so nothing has to be embedded and the
+        // fixture stays a few kilobytes.
+        obj(
+            &mut out,
+            &mut offsets,
+            "3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".into(),
+        );
+        for (i, heading) in headings.iter().enumerate() {
+            let (po, co) = (page_obj(i), page_obj(i) + 1);
+            obj(
+                &mut out,
+                &mut offsets,
+                format!(
+                    "{po} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                     /Contents {co} 0 R /Resources << /Font << /F1 3 0 R >> >> >>\nendobj\n"
+                ),
+            );
+            let stream = format!(
+                "BT /F1 48 Tf 60 640 Td ({heading}) Tj ET\n\
+                 BT /F1 14 Tf 60 560 Td ({BODY_LINE}) Tj ET\n"
+            );
+            obj(
+                &mut out,
+                &mut offsets,
+                format!(
+                    "{co} 0 obj\n<< /Length {} >>\nstream\n{stream}endstream\nendobj\n",
+                    stream.len()
+                ),
+            );
+        }
+
+        let xref_at = out.len();
+        let total = offsets.len() + 1;
+        out.extend_from_slice(format!("xref\n0 {total}\n0000000000 65535 f \n").as_bytes());
+        for off in &offsets {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {total} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
+    /// The 14 pt line every page of [`text_pdf`] carries. A pangram, so the recognizer is asked
+    /// for a spread of letter shapes rather than one lucky word.
+    const BODY_LINE: &str = "the quick brown fox jumps over the lazy dog";
+
+    /// The whole Ctrl+F chain, end to end: an open session rasterizes a page, the in-box
+    /// recognizer reads it, and what comes back is that page's own words.
+    ///
+    /// This is the test that would catch the feature rotting silently. Every part of the search
+    /// above this - the offsets, the page map, the progress note - is pure and unit-tested, and
+    /// all of it would keep passing perfectly while returning nothing at all, because the thing
+    /// that actually produces the text is two OS APIs talking to each other.
+    #[test]
+    fn body_text_survives_the_trip_through_a_rendered_page() {
+        let headings = ["ALPHA", "BRAVO", "CHARLIE"];
+        let pdf = text_pdf(&headings);
+        let s = super::PdfSession::open(&pdf).expect("session opens");
+        assert_eq!(s.page_count(), headings.len());
+
+        let png = s
+            .render_to_width(1, super::OCR_RENDER_WIDTH)
+            .expect("page renders");
+        let text = match crate::ocr::recognize_bytes(png) {
+            Ok(t) => t,
+            Err(e) => {
+                // No OCR language pack on this machine. Say so loudly rather than passing
+                // quietly: a green run that gated nothing is worse than a red one.
+                eprintln!(
+                    "SKIPPED body_text_survives_the_trip_through_a_rendered_page: this machine \
+                     has no usable OCR engine ({e:?}), so PDF text search cannot be gated here"
+                );
+                return;
+            }
+        };
+        assert!(
+            !text.trim().is_empty(),
+            "the recognizer works but read nothing off a page of plain Helvetica"
+        );
+        let up = text.to_uppercase();
+        assert!(
+            up.contains("BRAVO"),
+            "page 2's heading did not survive the round trip: {text:?}"
+        );
+        assert!(
+            up.contains("QUICK") && up.contains("BROWN"),
+            "14 pt body text did not survive at {} px, which is the width every PDF search \
+             renders at. Anything at or below 300 px fails this line (see the table on \
+             OCR_RENDER_WIDTH), so a width that dropped that far would silently return no \
+             results for every real document: {text:?}",
+            super::OCR_RENDER_WIDTH
+        );
+
+        // And every page must read as ITSELF. A search hit is turned into a page number, so a
+        // page that reads as its neighbour scrolls the reader somewhere the word is not.
+        for (i, want) in headings.iter().enumerate() {
+            let png = s
+                .render_to_width(i, super::OCR_RENDER_WIDTH)
+                .unwrap_or_else(|| panic!("page {i} renders"));
+            let got = crate::ocr::recognize_bytes(png)
+                .unwrap_or_default()
+                .to_uppercase();
+            assert!(
+                got.contains(want),
+                "page {i} should carry {want}, read {got:?}"
+            );
+            for other in headings.iter().filter(|o| *o != want) {
+                assert!(
+                    !got.contains(other),
+                    "page {i} also read as {other}, so pages are not distinguishable"
+                );
+            }
+        }
+    }
+
+    /// Prints what the recognizer actually reads off a page at each render width, which is where
+    /// [`super::OCR_RENDER_WIDTH`]'s value comes from. Run by hand:
+    ///
+    ///   cargo test --lib what_the_recognizer_reads_at_each_render_width -- --ignored --nocapture
+    #[test]
+    #[ignore = "prints a measurement table"]
+    fn what_the_recognizer_reads_at_each_render_width() {
+        let pdf = text_pdf(&["ALPHA"]);
+        let s = super::PdfSession::open(&pdf).expect("session opens");
+        eprintln!("  width   body px   heading   body      elapsed");
+        for width in [200u32, 300, 400, 600, 800, 1000, 1600, 2000, 2400, 3200] {
+            let t0 = std::time::Instant::now();
+            let png = s.render_to_width(0, width).expect("renders");
+            let text = crate::ocr::recognize_bytes(png).unwrap_or_default();
+            let ms = t0.elapsed().as_millis();
+            let up = text.to_uppercase();
+            // 14 pt on a 612 pt page: how tall the body glyphs land once rendered at this width.
+            let body_px = 14.0 * f64::from(width) / 612.0;
+            eprintln!(
+                "  {width:>5}   {body_px:>7.1}   {:<7}   {:<7}   {ms:>4} ms",
+                if up.contains("ALPHA") { "yes" } else { "NO" },
+                if up.contains("QUICK") && up.contains("BROWN") {
+                    "yes"
+                } else {
+                    "NO"
+                },
+            );
+        }
+    }
+
     /// The four pages the corpus fixture and the unit tests both use. Page 0 is the corpus's
     /// standard "right answer" blue, so the existing thumbnail colour gate covers this file
     /// for free; the rest are far enough apart that no rounding can confuse them.
@@ -542,6 +769,44 @@ mod tests {
     fn a_session_declines_something_that_is_not_a_pdf() {
         assert!(super::PdfSession::open(b"this is not a PDF at all").is_none());
         assert!(super::PdfSession::open(&[]).is_none());
+    }
+
+    /// Writes a searchable multi-page PDF for driving the viewer headlessly, so a `--shot` of
+    /// Ctrl+F over a PDF is reproducible rather than depending on whatever file was to hand:
+    ///
+    ///   ST2K_FIXTURE_OUT=D:\tmp\searchable.pdf cargo test --lib write_searchable_pdf_fixture \
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "writes a searchable PDF fixture on demand"]
+    fn write_searchable_pdf_fixture() {
+        let out =
+            std::env::var("ST2K_FIXTURE_OUT").expect("set ST2K_FIXTURE_OUT to the path to write");
+        // ST2K_FIXTURE_PAGES makes a document longer than the search's own page cap, which is
+        // the only way to see the "read this many of that many pages" note stay up.
+        let n: usize = std::env::var("ST2K_FIXTURE_PAGES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4);
+        const NAMES: [&str; 8] = [
+            "ALPHA", "BRAVO", "CHARLIE", "DELTA", "ECHO", "FOXTROT", "GOLF", "HOTEL",
+        ];
+        let owned: Vec<String> = (0..n.max(1))
+            .map(|i| {
+                if n <= NAMES.len() {
+                    NAMES[i].to_string()
+                } else {
+                    format!("{} {}", NAMES[i % NAMES.len()], i + 1)
+                }
+            })
+            .collect();
+        let headings: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let pdf = text_pdf(&headings);
+        std::fs::write(&out, &pdf).unwrap();
+        eprintln!(
+            "wrote {out} ({} bytes, {} pages)",
+            pdf.len(),
+            headings.len()
+        );
     }
 
     /// Writes the corpus fixture. Run by hand after changing `PAGES`; `build-corpus.ps1`
