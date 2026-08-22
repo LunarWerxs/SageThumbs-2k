@@ -739,7 +739,17 @@ function Get-ReleaseChangelogSection {
     if ($section.Length -lt 80 -or $section -notmatch '(?m)^-[ ]+\S') {
         throw "changelog section $Version is too short or has no release-note bullets"
     }
-    if ($section -match '(?i)\b(?:TODO|TBD|PLACEHOLDER|CHANGEME)\b') {
+    # Unfilled TEMPLATE MARKERS, not the English word. `TODO`, `TBD` and `CHANGEME` never appear
+    # in real release prose, so those stay case-insensitive. `placeholder` DOES appear: this
+    # product thumbnails images, and "some cameras store a blank placeholder in that slot rather
+    # than a real preview" is an accurate sentence about a real Kodak bug, written in 2.3.1's
+    # notes. Matching it blocked a release whose notes were finished and correct, which is a gate
+    # crying wolf - and a gate that cries wolf gets worked around, which is worse than not having
+    # one. So `placeholder` only counts when written as a MARKER: shouted in capitals, or wrapped
+    # in the brackets a template uses. `TODO: replace this placeholder` still fails, on the TODO.
+    if ($section -match '(?i)\b(?:TODO|TBD|CHANGEME)\b' -or
+        $section -cmatch '\bPLACEHOLDER\b' -or
+        $section -match '(?i)[<\[{]{1,2}\s*placeholder\s*[>\]}]{1,2}') {
         throw "changelog section $Version still contains placeholder text"
     }
     return $section

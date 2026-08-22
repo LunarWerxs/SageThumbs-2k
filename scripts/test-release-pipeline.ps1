@@ -89,6 +89,44 @@ try {
         Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
     }
 
+    # Every shape a real unfilled template takes must still fail closed.
+    foreach ($marker in @(
+            '- TBD before we ship this.',
+            '- CHANGEME: write the notes.',
+            '- PLACEHOLDER - fill this in.',
+            '- <placeholder> goes here.',
+            '- [placeholder] goes here.',
+            '- {{placeholder}} goes here.')) {
+        @"
+# Changelog
+
+## 9.8.7
+
+$marker
+Some more filler so the section clears the minimum length check that runs before this one.
+"@ | Set-Content -LiteralPath $changelog -Encoding utf8
+        Assert-Fails "template marker still fails closed: $marker" {
+            Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
+        }
+    }
+
+    # And the false positive that blocked a finished 2.3.1: `placeholder` is ordinary domain
+    # prose in a thumbnailing product. A gate that rejects correct release notes gets worked
+    # around, which is worse than not having one.
+    @'
+# Changelog
+
+## 9.8.7
+
+- **Some camera RAW photos thumbnailed as a black square.** Some cameras, Kodak among them,
+  store a blank placeholder in that slot rather than a real preview, and being large is not the
+  same as having a picture in it. The preview is now checked for content before it is used.
+'@ | Set-Content -LiteralPath $changelog -Encoding utf8
+    Assert-Passes 'the word placeholder in ordinary release prose is not a template marker' {
+        $sec = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
+        if ($sec -notmatch 'blank placeholder') { throw 'section did not round-trip' }
+    }
+
     Assert-Fails 'manifest relative path cannot escape repository' {
         Get-ReleasePathUnderRoot -Root $root -RelativePath '..\outside.exe'
     }
