@@ -236,9 +236,25 @@ pub(in crate::preview) unsafe fn strip_width(hwnd: HWND) -> i32 {
 /// document arrives asynchronously, so "a key press before the first paint" is not a corner
 /// case, it is what happens when someone holds Down while a PDF opens.
 pub(in crate::preview) unsafe fn render_width(hwnd: HWND) -> i32 {
-    let r = super::window::content_rect(hwnd);
+    render_width_in(hwnd, &super::window::content_rect(hwnd))
+}
+
+/// [`render_width`] for a content rect the caller already holds.
+///
+/// This split exists for one caller and one trap: [`paint`] runs with the document cell
+/// mutably borrowed, and `content_rect` consults [`strip_width`], whose `try_borrow` FAILS
+/// under that borrow and reports no strip. So paint asking `render_width(hwnd)` mid-borrow
+/// got a width ~116 px wider than every scroll path computed, the two layouts disagreed, and
+/// every jump-to-page landed ~300 px short of the page it named - systematically, and only
+/// while the strip was visible. Paint must derive the width from the rect it was HANDED
+/// (computed before the borrow), and sharing this one function with `render_width` is what
+/// keeps the two from drifting apart again.
+pub(in crate::preview) unsafe fn render_width_in(
+    hwnd: HWND,
+    content: &windows::Win32::Foundation::RECT,
+) -> i32 {
     let margin = crate::win::dpi_scale(hwnd, 8);
-    ((r.right - r.left) - 2 * margin).max(16)
+    ((content.right - content.left) - 2 * margin).max(16)
 }
 
 /// Zoom limits. The floor is fit-width: below that the page is smaller than the pane and there
@@ -687,7 +703,11 @@ pub(in crate::preview) unsafe fn paint(
     // Fit-width times the zoom. At 1.0 the page exactly fills the content area, which is the
     // mode continuous scrolling means: the reader controls the vertical, the window controls
     // the horizontal. Zoomed in, the page is WIDER than the pane and `pan_x` slides it.
-    let width = doc.zoomed_width(render_width(hwnd));
+    //
+    // From `rc`, NOT `render_width(hwnd)`: the document cell is mutably borrowed here, which
+    // makes `strip_width`'s try_borrow fail and report no strip, so the hwnd route measures a
+    // WIDER content area than the one this function was handed - see `render_width_in`.
+    let width = doc.zoomed_width(render_width_in(hwnd, rc));
     if width != doc.tile_width {
         doc.tile_width = width;
         doc.invalidate_tiles();
