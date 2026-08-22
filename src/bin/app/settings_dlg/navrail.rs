@@ -217,6 +217,9 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_HOLD_PEEK),
             Switch(ID_PREVIEW_CLOSE_FOCUS),
             Switch(ID_PREVIEW_TOPMOST),
+            // Light/dark for SageThumbs' own windows. Sits with preview BEHAVIOUR rather than
+            // under "Also preview" below, which is a list of content-type opt-ins.
+            Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),
             // "Also preview": behavior above, content-type opt-ins below — the split
             // matches how the decision is actually made ("turn it on" vs "and also my
             // markdown files"), instead of eight equal-looking rows.
@@ -233,6 +236,10 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_HOLD_PEEK),
             Switch(ID_PREVIEW_CLOSE_FOCUS),
             Switch(ID_PREVIEW_TOPMOST),
+            // Keep in step with the `html-preview` variant above: this page exists twice and a
+            // control added to only one of them is invisible in whichever build you are not
+            // looking at. That is exactly how this line came to be missing the first time.
+            Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),
             Head(ID_LBL_PREVIEW_KINDS),
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),

@@ -149,6 +149,10 @@ pub(super) const ID_PREVIEW_ENABLED: i32 = 1203;
 pub(super) const ID_PREVIEW_HOLD_PEEK: i32 = 1204;
 pub(super) const ID_PREVIEW_CLOSE_FOCUS: i32 = 1205;
 pub(super) const ID_PREVIEW_TOPMOST: i32 = 1206;
+/// "Appearance:" on the Quick preview page: light/dark for SageThumbs' own windows, instead of
+/// following the Windows app-colour setting. Label + combo, like `ID_LBL_PREVIEW`/`ID_MENU_PREVIEW`.
+pub(super) const ID_LBL_APP_THEME: i32 = 1235;
+pub(super) const ID_APP_THEME: i32 = 1236;
 // Phase 3: preview text/code + render markdown.
 pub(super) const ID_PREVIEW_TEXT: i32 = 1207;
 pub(super) const ID_PREVIEW_MARKDOWN: i32 = 1208;

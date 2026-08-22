@@ -444,6 +444,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_HIDE_TYPE_OVERLAY, "tip_hide_type_overlay"),
     (ID_ENABLE_MENU, "tip_enable_menu"),
     (ID_MENU_PREVIEW, "tip_menu_preview"),
+    (ID_APP_THEME, "tip_app_theme"),
     (ID_SHOT_TOOL, "tip_shot_tool"),
     (ID_MENU_QUICK, "tip_menu_quick"),
     (ID_MENU_CHECKER, "tip_menu_checker"),

@@ -25,6 +25,14 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_C_ARCHIVE_SHEET, settings::archive_collage());
     check(hwnd, ID_MENU_QUICK, settings::menu_quick_verbs());
     check(hwnd, ID_MENU_CHECKER, settings::preview_checker());
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
+        SendMessageW(
+            c,
+            CB_SETCURSEL,
+            Some(WPARAM(settings::app_theme() as usize)),
+            None,
+        );
+    }
     check(hwnd, ID_FOLDER_PREBUILD, settings::folder_prebuild_verb());
     check(hwnd, ID_PRESERVE_DATE, settings::preserve_file_date());
     check(hwnd, ID_KEEP_METADATA, settings::keep_metadata_on_convert());
@@ -119,6 +127,10 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_C_ARCHIVE_SHEET, true);
     check(hwnd, ID_MENU_QUICK, true);
     check(hwnd, ID_MENU_CHECKER, true);
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
+        // 0 = follow Windows: the pre-existing behaviour, so "Defaults" restores it.
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(0)), None);
+    }
     check(hwnd, ID_FOLDER_PREBUILD, true); // defaults ON — see settings::folder_prebuild_verb
     check(hwnd, ID_PRESERVE_DATE, false);
     check(hwnd, ID_KEEP_METADATA, true); // losing capture data by accident is the worse default
@@ -349,6 +361,12 @@ pub(super) unsafe fn banner_rotator(hwnd: HWND) -> Option<(HWND, *mut SponsorRot
 /// Persist all settings (and re-register formats if the list changed). Apply-only
 /// — does NOT close the window, so the user can save and keep tweaking.
 pub(super) unsafe fn apply_settings(hwnd: HWND) {
+    // The theme resolves ONCE per process and the brushes are cached from it (see
+    // `dark::is_dark`), so a running Quick preview cannot repaint itself in the new skin. The
+    // viewer is single-instance and cheap to start, so retiring it is the honest fix: the next
+    // Space press brings up a fresh one already wearing the new theme. Only on an actual
+    // CHANGE, or every Apply would close a preview the user is reading.
+    let theme_before = settings::app_theme();
     let _ = settings::set_dword("EnableThumbs", checked(hwnd, ID_ENABLE_THUMBS) as u32);
     let _ = settings::set_dword("UseEmbedded", checked(hwnd, ID_USE_EMBEDDED) as u32);
     // The format badge is baked INTO the bitmap the shell caches, so flipping it changes
@@ -432,6 +450,14 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     if let Ok(prev) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
         let sel = SendMessageW(prev, CB_GETCURSEL, None, None).0.clamp(0, 2);
         let _ = settings::set_dword("MenuPreview", sel as u32);
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
+        // CB_ERR is -1 (nothing selected); clamp instead of storing it.
+        let sel = SendMessageW(c, CB_GETCURSEL, None, None).0.clamp(0, 2);
+        let _ = settings::set_app_theme(sel as u32);
+        if sel as u32 != theme_before {
+            crate::preview::request_close();
+        }
     }
     if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
         // CB_ERR is -1 (no selection); clamp to a real index rather than storing it.
@@ -805,6 +831,14 @@ pub(super) fn custom_action_hk_combo_index(packed: u32, vk: u32) -> usize {
 /// (`ID_LANG` is deliberately not here: `apply_settings` never reads it, so Save can't revert
 /// it — see `mod.rs`'s live `CBN_SELCHANGE` handling instead.)
 pub(super) unsafe fn seed_combo_selections(hwnd: HWND) {
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
+        SendMessageW(
+            c,
+            CB_SETCURSEL,
+            Some(WPARAM(settings::app_theme() as usize)),
+            None,
+        );
+    }
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
         SendMessageW(
             c,

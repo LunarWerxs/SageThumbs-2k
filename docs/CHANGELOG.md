@@ -2,6 +2,19 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Added
+
+- **Light or dark is now SageThumbs' own setting, on the Quick preview page.** Until now the
+  preview and the Settings window followed Windows' app colour setting, so wanting a dark
+  preview on an otherwise light desktop meant changing the whole system. There is now a
+  "Theme" choice with Follow Windows, Light and Dark. Follow Windows is the default and is
+  exactly what every earlier version did, so nothing changes unless you pick something. The
+  Explorer right-click menu and the preview pane still follow Windows on purpose: those are
+  drawn inside Explorer's own window, and disagreeing with the shell around them would look
+  broken rather than themed. Suggested by a user.
+
 ## 2.3.1
 
 ### Added

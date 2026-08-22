@@ -159,6 +159,14 @@ pub(crate) fn is_dark() -> bool {
                 _ => {}
             }
         }
+        // The user's own choice wins over the OS, when they made one. `0` means "follow
+        // Windows", which is the default and what every version before this did, so an
+        // untouched install reads the registry exactly as it always has.
+        match sagethumbs2k_core::settings::app_theme() {
+            1 => return false,
+            2 => return true,
+            _ => {}
+        }
         sagethumbs2k_core::safety::apps_use_dark_theme()
     })
 }

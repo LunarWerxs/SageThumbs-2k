@@ -1429,6 +1429,30 @@ pub fn preview_arrow_nav() -> bool {
     get_dword("PreviewArrowNav", 0) != 0
 }
 
+/// Which skin SageThumbs' OWN windows use, independent of the Windows app-colour setting.
+///
+/// `0` follow Windows (the default and the behaviour every version before this had), `1` light,
+/// `2` dark. Requested by a user who wanted the Quick preview dark while the rest of Windows
+/// stayed light, which previously meant flipping the whole OS.
+///
+/// This governs the app's windows only: Quick preview, Settings, Convert, the screenshot
+/// editor. The Explorer context menu and the preview PANE live inside Explorer's process and
+/// keep following Windows, because they are drawn into someone else's UI and disagreeing with
+/// the surrounding shell would look broken rather than themed.
+pub fn app_theme() -> u32 {
+    get_dword("AppTheme", 0).min(2)
+}
+
+/// Persist the app skin. Out-of-range values are refused rather than clamped: the only writer
+/// is a three-item combo, so anything else means a caller bug or a hand-edited registry, and
+/// silently storing 7 as "dark" would hide it.
+pub fn set_app_theme(mode: u32) -> windows_registry::Result<()> {
+    if mode > 2 {
+        return Ok(());
+    }
+    set_dword_tracking_default("AppTheme", mode, 0)
+}
+
 /// Persist the ←/→ meaning for video playback.
 pub fn set_preview_arrow_nav(on: bool) -> windows_registry::Result<()> {
     set_dword("PreviewArrowNav", on as u32)

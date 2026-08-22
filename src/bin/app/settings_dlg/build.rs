@@ -111,6 +111,21 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     dark_theme_combo(prev);
     restyle::dark_combo_subclass(prev, ID_MENU_PREVIEW);
 
+    let theme = lc.combo(t("lbl_app_theme"), ID_LBL_APP_THEME, 160, ID_APP_THEME);
+    for key in ["theme_system", "theme_light", "theme_dark"] {
+        let w = wide(t(key));
+        SendMessageW(theme, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    SendMessageW(
+        theme,
+        CB_SETCURSEL,
+        Some(WPARAM(settings::app_theme() as usize)),
+        None,
+    );
+    SendMessageW(theme, CB_SETDROPPEDWIDTH, Some(WPARAM(230)), None);
+    dark_theme_combo(theme);
+    restyle::dark_combo_subclass(theme, ID_APP_THEME);
+
     let shot_tool = lc.combo(t("lbl_shot_tool"), ID_LBL_SHOT_TOOL, 160, ID_SHOT_TOOL);
     // Option order comes from Tool::DEFAULTABLE, so the dropdown and the stored index can
     // never drift apart: the array IS the wire format.

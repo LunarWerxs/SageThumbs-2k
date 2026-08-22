@@ -76,6 +76,7 @@ const ALLOW: &[(&str, Kind)] = &[
     ("MenuPreview", Kind::Dword),
     ("MenuQuickVerbs", Kind::Dword),
     ("PreviewChecker", Kind::Dword),
+    ("AppTheme", Kind::Dword),
     ("FormatBadge", Kind::Dword),
     ("FormatBadgeStyle", Kind::Dword),
     ("ThumbChecker", Kind::Dword),
