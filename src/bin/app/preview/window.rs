@@ -586,6 +586,46 @@ unsafe fn open_preview_link(hwnd: HWND, url: &str) {
     );
 }
 
+/// What a bare (unmodified) navigation key means in the viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavKey {
+    /// Flip to a sibling file in the folder.
+    File(i32),
+    /// Turn a page inside the current multi-page document.
+    Page(i32),
+}
+
+/// Route one navigation keypress. Pure, and split out of `WM_KEYDOWN` on purpose: the bug it
+/// exists to prevent lived inside the wndproc, where no test could reach it.
+///
+/// **←/→ ALWAYS mean "next / previous FILE", on every kind of content.** They used to mean
+/// "next / previous PAGE" while a multi-page PDF was showing, which made such a PDF a keyboard
+/// dead end. `goto_pdf_page` clamps at both ends and returns early when the page does not
+/// change, nothing fell through to `nav_sibling`, and Home/End are inert on an `Image`, so once
+/// the popup landed on a multi-page PDF the only way to reach the next file was to close it and
+/// re-open on something else. Every real-world PDF has more than one page and therefore hit
+/// this; the corpus's `sample.pdf` has exactly one, which is why it stayed invisible.
+///
+/// Paging lives on ↑/↓ and PgUp/PgDn instead, matching Quick Look. PgUp/PgDn keep flipping
+/// FILES everywhere else, which is what they did before and what the non-PDF viewer expects.
+fn nav_key_action(multipage_pdf: bool, vk: u16) -> Option<NavKey> {
+    if multipage_pdf {
+        if vk == VK_NEXT.0 || vk == VK_DOWN.0 {
+            return Some(NavKey::Page(1));
+        }
+        if vk == VK_PRIOR.0 || vk == VK_UP.0 {
+            return Some(NavKey::Page(-1));
+        }
+    }
+    if vk == VK_RIGHT.0 || vk == VK_NEXT.0 {
+        return Some(NavKey::File(1));
+    }
+    if vk == VK_LEFT.0 || vk == VK_PRIOR.0 {
+        return Some(NavKey::File(-1));
+    }
+    None
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         // Any message dispatched before GWLP_USERDATA is set (the synchronous WM_NCCREATE /
@@ -1151,27 +1191,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     selection::scroll_by(hwnd, to);
                     return LRESULT(0);
                 }
-                if st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1 {
-                    // Multi-page PDF: arrows page within the document.
-                    if vk == VK_NEXT.0 || vk == VK_RIGHT.0 || vk == VK_DOWN.0 {
-                        goto_pdf_page(hwnd, 1);
+                let multipage_pdf = st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1;
+                match nav_key_action(multipage_pdf, vk) {
+                    Some(NavKey::Page(delta)) => {
+                        goto_pdf_page(hwnd, delta);
                         return LRESULT(0);
                     }
-                    if vk == VK_PRIOR.0 || vk == VK_LEFT.0 || vk == VK_UP.0 {
-                        goto_pdf_page(hwnd, -1);
+                    Some(NavKey::File(delta)) => {
+                        nav_sibling(hwnd, delta);
                         return LRESULT(0);
                     }
-                } else {
-                    // Otherwise ←/→ (and PgUp/PgDn) flip through the folder, QuickLook-style,
-                    // without closing the popup.
-                    if vk == VK_RIGHT.0 || vk == VK_NEXT.0 {
-                        nav_sibling(hwnd, 1);
-                        return LRESULT(0);
-                    }
-                    if vk == VK_LEFT.0 || vk == VK_PRIOR.0 {
-                        nav_sibling(hwnd, -1);
-                        return LRESULT(0);
-                    }
+                    None => {}
                 }
                 // Esc leaves full-screen first (even when the daemon hook owns lifecycle keys).
                 if vk == VK_ESCAPE.0 && st.fullscreen.get().is_some() {
@@ -1497,10 +1527,13 @@ pub(super) use scroll::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        scroll_from_thumb_offset, scroll_thumb_geometry, sort_paths_like_explorer,
-        text_scroll_limits, wheel_notches,
+        nav_key_action, scroll_from_thumb_offset, scroll_thumb_geometry, sort_paths_like_explorer,
+        text_scroll_limits, wheel_notches, NavKey,
     };
     use std::path::PathBuf;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        VK_DOWN, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
+    };
 
     #[test]
     fn every_scroll_path_shares_the_same_limits() {
@@ -1533,6 +1566,61 @@ mod tests {
         assert_eq!(wheel_notches(0, -60), (0, -60));
         assert_eq!(wheel_notches(-60, -60), (-1, 0));
         assert_eq!(wheel_notches(45, -45), (0, 0));
+    }
+
+    /// The regression this whole split exists for. A multi-page PDF used to swallow ←/→ for
+    /// paging, and since `goto_pdf_page` clamps at both ends there was then NO key at all that
+    /// reached the next file: the popup was a dead end until you closed it. Asserted for BOTH
+    /// states of the flag, because the bug was precisely that one state behaved differently.
+    #[test]
+    fn left_right_always_move_between_files_even_on_a_multipage_pdf() {
+        for multipage_pdf in [false, true] {
+            assert_eq!(
+                nav_key_action(multipage_pdf, VK_RIGHT.0),
+                Some(NavKey::File(1)),
+                "→ must reach the next FILE (multipage_pdf = {multipage_pdf})"
+            );
+            assert_eq!(
+                nav_key_action(multipage_pdf, VK_LEFT.0),
+                Some(NavKey::File(-1)),
+                "← must reach the previous FILE (multipage_pdf = {multipage_pdf})"
+            );
+        }
+    }
+
+    /// Paging still has to work, or the fix above would just have deleted the feature.
+    #[test]
+    fn a_multipage_pdf_pages_on_up_down_and_pgup_pgdn() {
+        assert_eq!(nav_key_action(true, VK_DOWN.0), Some(NavKey::Page(1)));
+        assert_eq!(nav_key_action(true, VK_NEXT.0), Some(NavKey::Page(1)));
+        assert_eq!(nav_key_action(true, VK_UP.0), Some(NavKey::Page(-1)));
+        assert_eq!(nav_key_action(true, VK_PRIOR.0), Some(NavKey::Page(-1)));
+    }
+
+    /// Off a multi-page PDF nothing changed: PgUp/PgDn keep flipping files, and ↑/↓ stay
+    /// unclaimed so scrolling and the default handling still get them.
+    #[test]
+    fn ordinary_content_keeps_its_previous_key_meanings() {
+        assert_eq!(nav_key_action(false, VK_NEXT.0), Some(NavKey::File(1)));
+        assert_eq!(nav_key_action(false, VK_PRIOR.0), Some(NavKey::File(-1)));
+        assert_eq!(nav_key_action(false, VK_UP.0), None);
+        assert_eq!(nav_key_action(false, VK_DOWN.0), None);
+    }
+
+    /// Whatever the content, there is always a way out of the current file. A future edit that
+    /// claims ←/→ for anything else fails here rather than shipping another dead end.
+    #[test]
+    fn no_content_state_can_trap_the_keyboard() {
+        for multipage_pdf in [false, true] {
+            let escapes = [VK_RIGHT.0, VK_LEFT.0, VK_NEXT.0, VK_PRIOR.0]
+                .into_iter()
+                .filter(|&vk| matches!(nav_key_action(multipage_pdf, vk), Some(NavKey::File(_))))
+                .count();
+            assert!(
+                escapes >= 2,
+                "multipage_pdf = {multipage_pdf}: only {escapes} keys still reach another file"
+            );
+        }
     }
 
     #[test]

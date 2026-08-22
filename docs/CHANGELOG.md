@@ -6,6 +6,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **In the Space-bar Quick preview, a PDF with more than one page trapped the arrow keys.**
+  The left and right arrows turned pages instead of moving to the next file, and because
+  paging stops at the first and last page, there was then no key at all that would take you
+  to another document. The only way out was to close the preview and open it again on
+  something else. Left and right now always move between files, on every kind of content,
+  and pages are turned with up and down or Page Up and Page Down, the same as Quick Look on
+  a Mac. Single-page PDFs were never affected, which is why this went unnoticed for so long.
+
 - **Scanned DjVu documents could thumbnail as a plain grey rectangle, or lose every
   photograph on the page.** DjVu stores a page as two layers: the text and line art on top,
   and a compressed photographic background underneath. When a page was larger than roughly
