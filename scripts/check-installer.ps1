@@ -58,6 +58,73 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
     }
 }
 
+# --- Unescaped braces in a command a directive hands to a shell -------------------------
+#
+# Inno reads '{' as the start of one of ITS OWN constants, so a PowerShell block written into
+# a Parameters: value - `catch{...}`, `if(...){...}` - is read as a constant named "catch" and
+# ISCC ABORTS with "Unknown constant". '{{' is how Inno spells a literal brace; a closing '}'
+# needs no escape.
+#
+# This is why the rule exists rather than being theoretical: the 2026-08-22 rewrite of the
+# modern-menu registration (which made upgrades 2x faster) shipped with bare PowerShell braces
+# and broke the release build outright. NOTHING caught it until a full ISCC compile four
+# minutes into build-release.ps1, because every other check reads the file as text and the
+# braces are perfectly valid text. This one reads it as Inno does.
+#
+# The allowlist is Inno's documented constant set as this installer uses it. A NEW legitimate
+# constant will fail here; that is intended, and the message says to add it. Failing on an
+# unknown name is the only version of this check that cannot be fooled by a PowerShell block
+# whose first word happens to look like a constant.
+$innoConstants = @(
+    'app', 'autopf', 'autopf32', 'autopf64', 'code', 'commonappdata', 'commondesktop',
+    'commondocs', 'commonpf', 'commonprograms', 'commonstartmenu', 'dao', 'dotnet40',
+    'drive', 'fonts', 'group', 'hwnd', 'ini', 'language', 'localappdata', 'log', 'olddata',
+    'param', 'reg', 'sd', 'src', 'srcexe', 'sys', 'sysnative', 'syswow64', 'tmp',
+    'uninstallexe', 'userappdata', 'userdesktop', 'userdocs', 'userprograms', 'usersendto',
+    'userstartmenu', 'win', 'wizardhwnd'
+)
+for ($i = 0; $i -lt $lines.Count; $i++) {
+    $line = $lines[$i]
+    # An .iss comment may legitimately DISCUSS a brace (the note beside the registration line
+    # does exactly that), so comments are not code.
+    if ($line.TrimStart().StartsWith(';')) { continue }
+    # Only directives whose value is handed to a shell or the filesystem. Restricting the scan
+    # keeps the rule away from [Code], [Messages] and everything else that uses braces for its
+    # own reasons.
+    if ($line -notmatch '(?i)(^|\s)(Filename|Parameters|WorkingDir|StatusMsg|IconFilename)\s*:') {
+        continue
+    }
+    $idx = 0
+    while ($idx -lt $line.Length) {
+        $open = $line.IndexOf('{', $idx)
+        if ($open -lt 0) { break }
+        if ($open + 1 -lt $line.Length -and $line[$open + 1] -eq '{') {
+            $idx = $open + 2   # an escaped literal brace, which is the correct spelling
+            continue
+        }
+        $close = $line.IndexOf('}', $open + 1)
+        $inner = if ($close -gt $open) {
+            $line.Substring($open + 1, $close - $open - 1)
+        } else {
+            $line.Substring($open + 1)
+        }
+        # '#' is a preprocessor value, '%' an environment variable, '\' a path separator
+        # constant - all legitimate opens that are not names.
+        $isSpecial = $inner.StartsWith('#') -or $inner.StartsWith('%') -or $inner.StartsWith('\')
+        $name = ($inner -split ':', 2)[0]
+        if (-not $isSpecial -and $innoConstants -notcontains $name.ToLowerInvariant()) {
+            $shown = if ($name.Length -gt 34) { $name.Substring(0, 34) + '...' } else { $name }
+            $violations.Add(
+                "  installer.iss:$($i + 1): '{$shown' is not an Inno constant. If it is a " +
+                "literal brace (a PowerShell block, say), write '{{'; ISCC otherwise aborts " +
+                "with `"Unknown constant`". If it IS a constant, add it to `$innoConstants " +
+                "in check-installer.ps1."
+            )
+        }
+        $idx = $open + 1
+    }
+}
+
 $requiredUpgradeCleanup = @(
     'Type: filesandordirs; Name: "{app}\modules"',
     'Type: files; Name: "{app}\magick.exe"',

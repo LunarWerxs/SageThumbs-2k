@@ -223,8 +223,16 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 ;
 ; Single quotes only - no double quote appears anywhere inside the command - so the Inno
 ; string below needs no nested "" escaping that could go wrong.
+;
+; EVERY PowerShell BRACE IS DOUBLED, and it has to be. Inno reads `{` as the start of one of
+; its own constants, so a PowerShell block like `catch{...}` is read as a constant named
+; "catch" and the compile ABORTS with `Unknown constant`. `{{` is how Inno spells a literal
+; brace; a closing `}` needs no escape. `{app}` stays single because it really is a constant.
+; This is not theoretical: the first version of this line shipped with bare braces and broke
+; the release build outright, which nothing but a full installer compile catches - hence
+; `installer_iss::powershell_braces_are_escaped_for_inno`, which now catches it in a second.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 '{app}\SageThumbs2K.cer').Thumbprint; if(-not(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t))){Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null}; try{Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion}"""; \
+  Parameters: "-NoProfile -Command ""$t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 '{app}\SageThumbs2K.cer').Thumbprint; if(-not(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t))){{Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null}; try{{Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion}"""; \
   StatusMsg: "Registering the modern context menu (this can take a moment)..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
 ; UPGRADE ONLY: suppress the first-run welcome window. Someone who already had SageThumbs
 ; installed has long since decided about Quick preview and the capture hotkey, and greeting

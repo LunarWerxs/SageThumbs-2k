@@ -269,6 +269,31 @@ try {
         Invoke-InstallerLint -IssPath $unsafeForm
     }
 
+    # A PowerShell block in a Parameters: value with BARE braces. Inno reads '{' as the start of
+    # one of its own constants, so ISCC aborts the whole compile with "Unknown constant" - which
+    # is exactly what the 2026-08-22 registration rewrite did, and nothing caught it until a full
+    # release build four minutes in. The mutation writes the real failure, not an invented one.
+    $bareBraces = Join-Path $scratch 'bare-braces.iss'
+    Set-Content -LiteralPath $bareBraces -Value (
+        $source + "`r`n[Run]`r`n" +
+        'Filename: "powershell.exe"; Parameters: "-NoProfile -Command ' +
+        '""try{Add-AppxPackage -Path ''{app}\x.msix''}catch{Write-Host bad}"""' + "`r`n"
+    ) -Encoding utf8
+    Assert-LintFails 'unescaped PowerShell braces in a Parameters value' {
+        Invoke-InstallerLint -IssPath $bareBraces
+    }
+
+    # And the correct spelling must PASS, or the rule would just ban shell commands outright.
+    $escapedBraces = Join-Path $scratch 'escaped-braces.iss'
+    Set-Content -LiteralPath $escapedBraces -Value (
+        $source + "`r`n[Run]`r`n" +
+        'Filename: "powershell.exe"; Parameters: "-NoProfile -Command ' +
+        '""try{{Add-AppxPackage -Path ''{app}\x.msix''}catch{{Write-Host ok}"""' + "`r`n"
+    ) -Encoding utf8
+    Assert-LintPasses 'correctly escaped braces beside a real {app} constant' {
+        Invoke-InstallerLint -IssPath $escapedBraces
+    }
+
     Write-Host "[installer-lint-test] ALL GREEN ($script:passed cases)" -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $scratch) {
