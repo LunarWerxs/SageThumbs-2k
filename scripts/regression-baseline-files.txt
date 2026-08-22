@@ -41,6 +41,7 @@ sample-h264.flv
 sample-heic-alpha.heic
 sample-jpeg-adobergb.jpg
 sample-jpeg-progressive.jpg
+sample-multipage.pdf
 sample-pdn35.pdn
 sample-unicode.cbz
 sample-vp6.flv

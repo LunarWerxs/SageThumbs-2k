@@ -28,6 +28,7 @@ mod loader;
 mod markdown;
 mod mdhtml;
 mod paint;
+mod pdfview;
 mod selection;
 mod shot;
 mod toolbar;

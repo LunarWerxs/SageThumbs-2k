@@ -4,6 +4,18 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 2.3.1
 
+### Added
+
+- **The Space-bar Quick preview now scrolls continuously through a PDF, instead of showing one
+  page at a time.** Roll the wheel, or use the up and down arrows, and the document flows past
+  the way it does in a real reader: the end of one page, the gap, then the start of the next.
+  Page Up and Page Down jump a screenful, Home and End go to the ends of the document, and the
+  page counter in the title bar follows whichever page you are actually looking at. Ctrl and the
+  wheel still zooms, and left and right still move to the next and previous FILE. Pages are drawn
+  as they come into view, so a long document opens as fast as it always did rather than making
+  you wait for all of it, and the scroll bar is the right length from the very first frame
+  because the page sizes are read before anything is drawn.
+
 ### Fixed
 
 - **In the Space-bar Quick preview, a PDF with more than one page trapped the arrow keys.**

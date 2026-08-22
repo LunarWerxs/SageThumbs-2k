@@ -164,8 +164,22 @@ pub(super) unsafe fn paint_into(hwnd: HWND, hdc: HDC) {
             // The fit view is drawn from a codec-scaled decode. If this zoom (or a resize) has
             // outgrown it, ask for the real pixels; they arrive asynchronously and repaint.
             super::window::ensure_full_for_zoom(hwnd, &content_rc);
+            // A multi-page PDF whose session opened scrolls continuously instead of showing
+            // one page at a time. Returns false for everything else (and for a PDF whose
+            // session never landed), which falls through to the single-image path below,
+            // unchanged. The caption is painted by the shared code after this match either
+            // way, so the page indicator and buttons behave identically in both modes.
+            let scrolled_pdf = super::pdfview::paint(
+                hwnd,
+                hdc,
+                &content_rc,
+                content_bg,
+                crate::dark::BTN_FACE().0,
+            );
             let frames = st.frames.borrow();
-            if let Some(rd) = frames.get(st.cur_frame.get()) {
+            if scrolled_pdf {
+                // already drawn
+            } else if let Some(rd) = frames.get(st.cur_frame.get()) {
                 content::paint_image(
                     hdc,
                     &content_rc,

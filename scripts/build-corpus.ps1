@@ -861,6 +861,39 @@ foreach ($djvuFixture in @('sample-djvu-photo.djvu', 'sample-djvu-thumbnail.djvu
     }
 }
 
+# --- 9z1b) A PDF with more than one page ---------------------------------------
+# The corpus's ordinary PDF, sample.pdf, has exactly ONE page, and every real-world PDF has
+# more than one. That single shape hid a shipping bug until 2.3.1: the Quick preview gave all
+# six arrow/page keys to page-turning whenever a document had multiple pages, and since paging
+# clamps at both ends, landing on such a PDF trapped the keyboard with no way to any other
+# file. sample.pdf exercised the opposite branch, so it passed forever.
+#
+# sample-decoy-multipage.pdf is NOT a substitute. Its two pages are flat blue and flat red and
+# its whole job is proving we thumbnail page ONE; a flat page cannot tell you whether page 3
+# is really page 3, and gate 4 would flag it as detail-free if it were ever asked to.
+#
+# So this is a four-page file, each page a different solid colour, written by the repo's own
+# test code to the PDF spec (NOT by our own topdf writer - a fixture written by the code under
+# test shares its assumptions, and the pair would then agree with each other while both being
+# wrong about PDF):
+#
+#   cargo test --release --lib write_pdf_corpus_fixture -- --ignored --nocapture
+#
+# (see src\pdf.rs). Page one is the same blue every decoy fixture uses, so the existing
+# thumbnail colour gate covers it with no special case; pages two to four are what
+# pdf::tests::every_page_of_a_multipage_pdf_renders_as_itself asserts against.
+$multiPdf = Join-Path $OutDir 'sample-multipage.pdf'
+if (Test-Path $multiPdf) {
+    $expectedColors += @(
+        '',
+        '# Four-page PDF, page one flat rgb(30,60,210). Pins that a MULTI-page document still',
+        '# thumbnails from page ONE, which is the half sample.pdf could never test.',
+        "sample-multipage.pdf`t30,60,210"
+    )
+} else {
+    Write-Host "  (sample-multipage.pdf missing - regenerate with: cargo test --release --lib write_pdf_corpus_fixture -- --ignored)" -ForegroundColor Yellow
+}
+
 # --- 9z2) ZX Spectrum SCREEN$, a format that only a NAMED coder can reach ------
 # A SCREEN$ is exactly 6912 bytes with no signature whatsoever: 6144 bytes of bitmap in the
 # machine's interleaved layout, then 768 attribute bytes (one per 8x8 cell, FLASH/BRIGHT/

@@ -74,6 +74,14 @@ pub(super) unsafe fn run_shot(
         crate::win::pump_msgs(8);
     }
     if let Some(scroll) = opts.scroll {
+        // A continuously scrolled PDF takes `--scroll` through its REAL scroll path, clamp and
+        // all, so a shot proves the layout at that position rather than just that page one
+        // drew. This is the only headless way to see the scrolling view: it needs the session
+        // to have landed, which means `--wait-ms` first.
+        if super::pdfview::active(hwnd) {
+            super::pdfview::scroll_by(hwnd, scroll);
+            crate::win::pump_msgs(8);
+        }
         // Scroll the text/Markdown pane before capture (an overshoot just shows the bottom —
         // the wheel handler's clamp doesn't run here, but paint clips like any big scroll).
         let stp = super::window::state(hwnd);

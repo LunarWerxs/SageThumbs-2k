@@ -45,6 +45,9 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
     st.pdf_page.set(0);
     st.pdf_pages.set(0);
+    // Dropping the old document also ends its session thread and releases the file, so a
+    // reload never leaves a previous PDF parsed in the background.
+    *st.pdf_doc.borrow_mut() = None;
     st.zoom.set(1.0); // reset zoom/pan/scroll for the new file
     st.full_pending.set(false); // any full-resolution request was for the PREVIOUS file
     st.pan.set((0, 0));
@@ -128,6 +131,10 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
             if is_pdf(path) {
                 // PDF: render page 0 via the OS renderer + fetch the page count (for nav).
                 content::spawn_decode_pdf(hwnd, path.to_string(), 0, gen);
+                // Second, and second on purpose: parsing the whole document for the
+                // continuous view must never delay page one appearing. If it never lands
+                // (encrypted, malformed, enormous) the viewer stays the single-page pager.
+                super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
             } else {
                 content::spawn_decode(hwnd, path.to_string(), gen);
             }
@@ -252,6 +259,11 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
             }
             return; // already sized/shown
         } else if is_pdf(path) {
+            // The re-show path gets the continuous view too, so a viewer that was already open
+            // scrolls exactly like one opened fresh. Asynchronous, so a headless shot that does
+            // not pump captures the single-page render below and is byte-identical to before;
+            // `--wait-ms` is what lets a shot wait for the scrolling view on purpose.
+            super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
             // Render the requested page + the page count so the ◀ ▶ pager + "N / M" show.
             let pg = opts.pdf_page.unwrap_or(0);
             let done = sagethumbs2k_core::decode::read_capped(path)

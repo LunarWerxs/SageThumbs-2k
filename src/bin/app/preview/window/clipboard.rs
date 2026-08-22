@@ -138,6 +138,17 @@ pub(in crate::preview) unsafe fn goto_pdf_page(hwnd: HWND, delta: i32) {
     if pages <= 1 || st.kind.get() != ContentKind::Image {
         return;
     }
+    // When the document is scrolling continuously, "next page" is a place to scroll TO, not a
+    // different bitmap to render. Routing the toolbar's pager through the same scroll keeps the
+    // two in step: clicking the arrow and dragging the wheel end up at the same position, and
+    // the caption is derived from the scroll either way rather than from a second counter that
+    // could disagree with it.
+    if crate::preview::pdfview::active(hwnd) {
+        let cur = st.pdf_page.get() as i64;
+        let want = (cur + i64::from(delta)).clamp(0, i64::from(pages) - 1) as usize;
+        crate::preview::pdfview::scroll_to_page(hwnd, want);
+        return;
+    }
     // i64 math: `pages` is capped at ingestion, but never trust it enough to wrap an i32.
     let new = (st.pdf_page.get() as i64 + delta as i64).clamp(0, pages as i64 - 1) as u32;
     if new == st.pdf_page.get() {

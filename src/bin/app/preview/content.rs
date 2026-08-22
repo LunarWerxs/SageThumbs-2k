@@ -1894,6 +1894,38 @@ pub(super) fn fit_scale(iw: i32, ih: i32, cw: i32, ch: i32) -> f64 {
 /// Paint the image `rd` into `rc`, letterboxed with `bg`, at `zoom`x the aspect-fit scale and
 /// offset by `pan` (device px). `zoom == 1.0`, `pan == (0,0)` is the plain aspect-fit centered
 /// draw. Ported from `previewhandler::draw` (fill = letterbox, then `HALFTONE` `StretchBlt`).
+/// Blit `rd` into EXACTLY `rc`, no fit, no zoom, no centring.
+///
+/// The continuous PDF view has already decided where every page goes and how big it is, so
+/// `paint_image`'s aspect-fit would fight that layout rather than serve it. A PDF page is
+/// always opaque, and the tile was rasterized at the width it is being drawn at, so this is a
+/// 1:1 blit in the normal case and only stretches during the frame between a window resize and
+/// the re-rendered tiles landing.
+pub(super) unsafe fn blit_exact(hdc: HDC, rc: &RECT, rd: &RenderData) {
+    let (dw, dh) = (rc.right - rc.left, rc.bottom - rc.top);
+    if dw <= 0 || dh <= 0 || rd.bw <= 0 || rd.bh <= 0 {
+        return;
+    }
+    let memdc = CreateCompatibleDC(Some(hdc));
+    let old = SelectObject(memdc, rd.hbmp.into());
+    SetStretchBltMode(hdc, HALFTONE);
+    let _ = StretchBlt(
+        hdc,
+        rc.left,
+        rc.top,
+        dw,
+        dh,
+        Some(memdc),
+        0,
+        0,
+        rd.bw,
+        rd.bh,
+        SRCCOPY,
+    );
+    SelectObject(memdc, old);
+    let _ = DeleteDC(memdc);
+}
+
 pub(super) unsafe fn paint_image(
     hdc: HDC,
     rc: &RECT,

@@ -33,6 +33,15 @@ pub(super) const WM_APP_RENDER: u32 = WM_APP + 1;
 pub(super) const WM_APP_ANIM: u32 = WM_APP + 7;
 /// PDF page count posted from the worker (`WM_APP + 8`); LPARAM = `Box<(gen, page_count)>`.
 pub(super) const WM_APP_PDFINFO: u32 = WM_APP + 8;
+/// One rasterized PDF page for the continuous view (`WM_APP + 10`);
+/// LPARAM = `Box<(gen, page, width, Option<(w, h, rgba)>)>`. Posted even on FAILURE, so the
+/// page's in-flight flag is cleared and it can be retried rather than staying blank forever.
+pub(super) const WM_APP_PDFTILE: u32 = WM_APP + 10;
+/// The opened PDF session for the continuous view (`WM_APP + 11`);
+/// LPARAM = `Box<(gen, PdfSession)>`. Arrives AFTER the first page is already on screen, so
+/// opening a long document never delays first paint; the view simply becomes scrollable when
+/// it lands, and stays a single-page pager if it never does.
+pub(super) const WM_APP_PDFDOC: u32 = WM_APP + 11;
 /// A fetched remote markdown image (`WM_APP + 9`); LPARAM = `Box<(gen, src, Option<DecodedRgba>)>`.
 pub(super) const WM_APP_MDIMG: u32 = WM_APP + 9;
 /// Follow-selection switch posted from the poll thread (`WM_APP + 2`); LPARAM = `Box<String>` path.
@@ -178,6 +187,11 @@ pub(super) struct ViewerState {
     /// PDF page navigation: current 0-based page + total page count (0 = not a multi-page PDF).
     pub(super) pdf_page: Cell<u32>,
     pub(super) pdf_pages: Cell<u32>,
+    /// The open document behind CONTINUOUS scrolling, when this file is a multi-page PDF whose
+    /// session opened. `None` for everything else, and for a PDF whose session failed, which is
+    /// what makes the fallback to single-page paging automatic rather than a separate mode
+    /// somebody has to remember to select. See `preview::pdfview`.
+    pub(super) pdf_doc: RefCell<Option<super::pdfview::PdfDoc>>,
     pub(super) card: RefCell<Option<infocard::InfoCard>>,
     pub(super) text: RefCell<Option<String>>,
     pub(super) video: RefCell<Option<super::video::VideoPlayer>>,
@@ -426,6 +440,7 @@ pub(super) unsafe fn create_viewer(
         cur_frame: Cell::new(0),
         pdf_page: Cell::new(0),
         pdf_pages: Cell::new(0),
+        pdf_doc: RefCell::new(None),
         card: RefCell::new(None),
         text: RefCell::new(None),
         video: RefCell::new(None),
@@ -712,6 +727,54 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     };
                     st.md_imgs.borrow_mut().insert(src, slot);
                     let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
+            }
+            WM_APP_PDFDOC => {
+                let boxed =
+                    Box::from_raw(lparam.0 as *mut (u64, sagethumbs2k_core::pdf::PdfSession));
+                let (gen, session) = *boxed;
+                let st = &*state(hwnd);
+                // A session for a file we have already navigated away from is dropped here,
+                // which also ends its worker thread and releases the document.
+                if gen == st.decode_gen.get() && st.kind.get() == ContentKind::Image {
+                    let doc = super::pdfview::PdfDoc::new(session, gen);
+                    // Open the continuous view at the page the pager is already on, so a
+                    // `--pdf-page N` shot or a restored position is not silently reset to one.
+                    *st.pdf_doc.borrow_mut() = Some(doc);
+                    let page = st.pdf_page.get() as usize;
+                    if page > 0 {
+                        super::pdfview::scroll_to_page(hwnd, page);
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
+            }
+            WM_APP_PDFTILE => {
+                let boxed = Box::from_raw(lparam.0 as *mut super::pdfview::TilePayload);
+                let (gen, page, width, decoded) = *boxed;
+                let st = &*state(hwnd);
+                let bg = letterbox_bg(st);
+                let mut slot = st.pdf_doc.borrow_mut();
+                // Matched against the DOCUMENT's own generation, not `decode_gen`. The two are
+                // equal today (the only other bump, in `goto_pdf_page`, is unreachable while the
+                // continuous view is live), but a tile belongs to a document, and asking the
+                // question that way means a future generation bump somewhere else cannot
+                // silently stop every page from ever arriving.
+                if let Some(doc) = slot.as_mut() {
+                    if gen == doc.gen {
+                        match decoded.and_then(|(w, h, rgba)| content::make_render(w, h, &rgba, bg))
+                        {
+                            Some(rd) => doc.put_tile(page, width, rd),
+                            // The page did not rasterize. Clearing the flag is the whole point
+                            // of posting on failure: without it the sheet stays blank and no
+                            // later paint ever asks for it again.
+                            None => doc.clear_pending(page),
+                        }
+                        drop(slot);
+                        let cr = content_rect(hwnd);
+                        let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
+                    }
                 }
                 LRESULT(0)
             }
@@ -1190,6 +1253,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     };
                     selection::scroll_by(hwnd, to);
                     return LRESULT(0);
+                }
+                // A continuously scrolled PDF owns the vertical keys: Up/Down nudge, PgUp/PgDn
+                // move a viewport, Home/End jump to the ends. Left/Right are NOT here, and
+                // must never be: they stay file navigation on every kind of content.
+                if super::pdfview::active(hwnd) && !ctrl && !shift {
+                    let line = crate::win::dpi_scale(hwnd, 64);
+                    let page = super::pdfview::viewport_step(hwnd);
+                    let delta = match vk {
+                        v if v == VK_DOWN.0 => Some(line),
+                        v if v == VK_UP.0 => Some(-line),
+                        v if v == VK_NEXT.0 => Some(page),
+                        v if v == VK_PRIOR.0 => Some(-page),
+                        v if v == VK_HOME.0 => Some(i32::MIN / 2),
+                        v if v == VK_END.0 => Some(i32::MAX / 2),
+                        _ => None,
+                    };
+                    if let Some(d) = delta {
+                        super::pdfview::scroll_by(hwnd, d);
+                        return LRESULT(0);
+                    }
                 }
                 let multipage_pdf = st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1;
                 match nav_key_action(multipage_pdf, vk) {
