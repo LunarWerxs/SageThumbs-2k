@@ -23,12 +23,26 @@ pub(super) unsafe fn draw_table(
     c: &MdColors,
     links: &mut Vec<LinkHit>,
     sel: &mut TblSel,
+    vis: (i32, i32),
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let ncols = header
+    let all_cols = header
         .len()
         .max(rows.iter().map(|r| r.len()).max().unwrap_or(0))
         .max(1);
+    // A column narrower than a few characters is not a column, it is a vertical stack of single
+    // letters. The old code squeezed every column in however many there were, and a 201-column
+    // CSV export came out at about six pixels each: the header literally read "c/o/l/0" going
+    // DOWNWARDS, and every cell in the file wrapped to one character per line. That is
+    // unreadable, and it is also why it was slow, because the row-height pass then has to lay
+    // out every character of every cell. Both symptoms are the same defect.
+    //
+    // So there is a readable floor, and columns past what fits at that floor are reported rather
+    // than drawn. Same philosophy as the MAX_ROWS / MAX_COLS caps this file already has: a
+    // preview shows you what a file is, and a promise it cannot keep is worth less than an
+    // honest limit.
+    let ncols = columns_that_fit(all_cols, avail, 2 * sc(6) + sc(46));
+    let dropped_cols = all_cols - ncols;
     let vpad = sc(6);
     let fonts = Fonts::new(hwnd, BODY_PX, false, false);
     let hfonts = Fonts::new(hwnd, BODY_PX, true, false);
@@ -47,11 +61,47 @@ pub(super) unsafe fn draw_table(
 
     // Step 1: each column's natural (unwrapped) TEXT width. Padding is deliberately NOT folded
     // in yet — how much padding the table can afford depends on this total.
+    //
+    // MEASURED FROM THE WIDEST FEW CELLS PER COLUMN, not from every cell. `run_block` is a full
+    // inline layout pass (font select, tokenise, measure each word, allocate), around 37 us a
+    // call, and this loop used to run it on EVERY cell on EVERY paint. A CSV export with 6,666
+    // rows and 80 columns is 427,000 cells, so this step alone was ~16 seconds, and steps 4 and
+    // 5 below each did it again: a real 5 MB CSV took 49 SECONDS to appear. Arrowing through a
+    // folder of them was the symptom.
+    //
+    // Character count is a free proxy for width, so the candidates are picked by that and only
+    // the top few per column are actually measured. It is a proxy, not a guarantee (`WWWW` is
+    // wider than `iiiiii`), which is exactly why it takes the top SEVERAL rather than the single
+    // longest: for a column to come out narrow, every one of the widest seven by character count
+    // would have to be unusually narrow characters AND some shorter cell unusually wide ones.
+    // The cost of being wrong is a column that wraps a cell it need not have, never clipped or
+    // overlapping text (step 5 clips every cell to its own column regardless).
+    const WIDTH_SAMPLES: usize = 7;
     let mut nat_text = vec![0i32; ncols];
     let mut scratch: Vec<LinkHit> = Vec::new();
-    for (row, is_hdr) in &all {
-        let f = if *is_hdr { &hfonts } else { &fonts };
-        for (ci, cell) in row.iter().enumerate().take(ncols) {
+    let cell_chars = |cell: &[Run]| -> usize { cell.iter().map(|r| r.text.chars().count()).sum() };
+    for (ci, nat) in nat_text.iter_mut().enumerate() {
+        // The header always counts: it is a different (bold) font and it is the row a narrow
+        // column is most visibly wrong for.
+        let mut cands: Vec<(usize, usize)> = Vec::new(); // (chars, index into `all`)
+        for (ri, (row, _)) in all.iter().enumerate() {
+            if let Some(cell) = row.get(ci) {
+                cands.push((cell_chars(cell), ri));
+            }
+        }
+        cands.sort_unstable_by_key(|&(chars, _)| std::cmp::Reverse(chars));
+        let hdr_first = if all.first().map(|(_, h)| *h).unwrap_or(false) {
+            Some(0usize)
+        } else {
+            None
+        };
+        for ri in hdr_first
+            .into_iter()
+            .chain(cands.iter().take(WIDTH_SAMPLES).map(|&(_, ri)| ri))
+        {
+            let (row, is_hdr) = all[ri];
+            let Some(cell) = row.get(ci) else { continue };
+            let f = if is_hdr { &hfonts } else { &fonts };
             let (_, w) = run_block(
                 hdc,
                 cell,
@@ -65,7 +115,7 @@ pub(super) unsafe fn draw_table(
                 &mut scratch,
                 None,
             );
-            nat_text[ci] = nat_text[ci].max(w);
+            *nat = (*nat).max(w);
         }
     }
 
@@ -101,18 +151,54 @@ pub(super) unsafe fn draw_table(
     let cell_w = |ci: usize| (colw[ci] - 2 * hpad).max(sc(8));
 
     // Step 4: row heights (wrap each cell at its column width).
-    let line_h_probe = {
+    //
+    // Every row's height is needed, even for rows far off screen, because the rows below cannot
+    // be placed without it. What is NOT needed is a full layout pass per cell: the overwhelming
+    // majority of CSV cells are short and obviously fit on one line, and for those the answer is
+    // just the line height.
+    //
+    // `max_char_w` is the widest glyph in the font, so `chars * max_char_w` is an upper bound on
+    // any string's width in it. When that bound already fits the column, the cell CANNOT wrap and
+    // needs no measuring at all — a conservative test, so it is never wrong in the direction that
+    // matters. Only cells that might wrap pay for `run_block`. `line_lead` and the `sc(3)` in
+    // `line_h_probe` are the same value, so a single-line cell's measured height is exactly
+    // `line_h_probe` and the fast path is not an approximation.
+    let (line_h_probe, max_char_w) = {
         let old = SelectObject(hdc, fonts.reg.into());
         let mut tm = TEXTMETRICW::default();
         let _ = GetTextMetricsW(hdc, &mut tm);
+        SelectObject(hdc, hfonts.reg.into());
+        let mut htm = TEXTMETRICW::default();
+        let _ = GetTextMetricsW(hdc, &mut htm);
         SelectObject(hdc, old);
-        (tm.tmHeight + tm.tmExternalLeading + sc(3)).max(1)
+        (
+            (tm.tmHeight + tm.tmExternalLeading + sc(3)).max(1),
+            // Bold header glyphs are wider, and a cell may hold bold or code runs whichever row
+            // it is in, so the bound uses the widest of the two fonts.
+            tm.tmMaxCharWidth.max(htm.tmMaxCharWidth).max(1),
+        )
     };
     let mut row_h: Vec<i32> = Vec::new();
     for (row, is_hdr) in &all {
         let f = if *is_hdr { &hfonts } else { &fonts };
         let mut h = line_h_probe;
         for (ci, cell) in row.iter().enumerate().take(ncols) {
+            // Upper bound on this cell's unwrapped width, with no GDI call and no allocation.
+            // `code_pad` is added per run because an inline-code run draws a padded pill.
+            let bound = cell
+                .iter()
+                .map(|r| {
+                    r.text.chars().count() as i64 * i64::from(max_char_w)
+                        + if r.code {
+                            2 * i64::from(ctx.code_pad)
+                        } else {
+                            0
+                        }
+                })
+                .sum::<i64>();
+            if bound <= i64::from(cell_w(ci)) {
+                continue; // cannot wrap, so it is exactly one line and `h` already covers it
+            }
             let (ny, _) = run_block(
                 hdc,
                 cell,
@@ -137,6 +223,20 @@ pub(super) unsafe fn draw_table(
     for (ri, (row, is_hdr)) in all.iter().enumerate() {
         let f = if *is_hdr { &hfonts } else { &fonts };
         let h = row_h[ri];
+        // Rows entirely above or below the pane are not drawn. GDI would clip them anyway, but
+        // clipping happens AFTER the layout work, and the layout work is the whole cost: a
+        // 6,666-row table has about forty rows on screen and was laying out all of them, every
+        // paint. Links and selection rects are collected only for what is drawn, which is the
+        // same rule the text-block skip in the caller already follows (only visible links can be
+        // clicked, only visible selection can be seen).
+        if y + h <= vis.0 || y >= vis.1 {
+            y += h;
+            hline(hdc, x0, x0 + table_w, y, c.border);
+            if !is_hdr {
+                body_i += 1; // the zebra stripe must not shift when a row is skipped
+            }
+            continue;
+        }
         if !is_hdr {
             // GitHub zebra: every 2nd body row gets the subtle fill.
             if body_i % 2 == 1 {
@@ -202,6 +302,37 @@ pub(super) unsafe fn draw_table(
         let _ = LineTo(hdc, x, y);
         SelectObject(hdc, op);
         let _ = DeleteObject(HGDIOBJ(pen.0));
+    }
+    // Say what was left out. Silently dropping columns would be the same sin as silently
+    // truncating rows, and the number is the only way a reader can tell this is a preview
+    // limit rather than the file's real shape.
+    if dropped_cols > 0 {
+        let note = vec![Run {
+            text: format!(
+                "+{dropped_cols} more column{} not shown (too narrow to read at this window width)",
+                if dropped_cols == 1 { "" } else { "s" }
+            ),
+            bold: false,
+            italic: true,
+            code: false,
+            strike: false,
+            link: None,
+        }];
+        let nctx = ctx_for(hwnd, c, c.muted);
+        let (ny, _) = run_block(
+            hdc,
+            &note,
+            &fonts,
+            x0,
+            y + sc(4),
+            avail,
+            0,
+            false,
+            &nctx,
+            &mut scratch,
+            None,
+        );
+        y = ny + sc(2);
     }
     fonts.free();
     hfonts.free();
@@ -278,9 +409,20 @@ pub(super) struct TblSel<'a> {
     pub(super) bg: u32,
 }
 
+/// How many of a table's `all_cols` columns can be shown at `avail` px without any of them
+/// falling below `readable` px.
+///
+/// Always at least one: a single unreadably narrow column still beats an empty pane, and the
+/// per-cell clip in `draw_table` keeps it tidy either way.
+fn columns_that_fit(all_cols: usize, avail: i32, readable: i32) -> usize {
+    let readable = readable.max(1);
+    let fits = (avail / readable).max(1) as usize;
+    all_cols.min(fits).max(1)
+}
+
 #[cfg(test)]
 mod table_tests {
-    use super::fair_widths;
+    use super::{columns_that_fit, fair_widths};
 
     /// The invariant the whole CSV overflow bug came down to: the widths the grid is drawn from
     /// must span exactly the space the table was given — never a pixel more.
@@ -351,5 +493,43 @@ mod table_tests {
         assert_eq!(out[0], 50);
         assert_eq!(out[2], 30);
         assert_eq!(out[1], 320);
+    }
+    /// A table that fits is untouched. This is every ordinary Markdown table and most CSVs, and
+    /// it is the case a column cap must not change.
+    #[test]
+    fn a_table_that_already_fits_keeps_every_column() {
+        assert_eq!(columns_that_fit(3, 1200, 58), 3);
+        assert_eq!(columns_that_fit(20, 1200, 58), 20);
+        // Exactly filling the pane is fitting, not overflowing.
+        assert_eq!(columns_that_fit(20, 20 * 58, 58), 20);
+    }
+
+    /// The case this exists for. A 201-column CSV used to be squeezed into about six pixels a
+    /// column, which rendered every cell as a vertical stack of single characters.
+    #[test]
+    fn a_table_too_wide_to_read_is_cut_to_what_fits() {
+        assert_eq!(columns_that_fit(201, 1200, 58), 20);
+        assert_eq!(columns_that_fit(80, 1200, 58), 20);
+        assert_eq!(columns_that_fit(52, 1200, 58), 20);
+    }
+
+    /// Never zero columns, whatever the window is doing. A pane can legitimately be narrower
+    /// than one readable column while a resize is in flight, and returning 0 would divide by
+    /// zero in the layout and paint nothing at all.
+    #[test]
+    fn there_is_always_at_least_one_column() {
+        assert_eq!(columns_that_fit(50, 10, 58), 1);
+        assert_eq!(columns_that_fit(50, 0, 58), 1);
+        assert_eq!(columns_that_fit(50, -400, 58), 1);
+        assert_eq!(columns_that_fit(1, 1200, 58), 1);
+        assert_eq!(columns_that_fit(0, 1200, 58), 1);
+    }
+
+    /// A zero or negative readable floor would divide by zero. It comes from DPI scaling, which
+    /// is not something this function gets to assume about.
+    #[test]
+    fn a_nonsense_readable_floor_cannot_divide_by_zero() {
+        assert_eq!(columns_that_fit(10, 1200, 0), 10);
+        assert_eq!(columns_that_fit(10, 1200, -5), 10);
     }
 }

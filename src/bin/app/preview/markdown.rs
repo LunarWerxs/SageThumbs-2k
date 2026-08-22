@@ -569,7 +569,18 @@ pub(super) unsafe fn render(
                     bg: c.sel,
                 };
                 y = draw_table(
-                    hwnd, hdc, header, rows, aligns, x0, y, full_w, c, links, &mut tsel,
+                    hwnd,
+                    hdc,
+                    header,
+                    rows,
+                    aligns,
+                    x0,
+                    y,
+                    full_w,
+                    c,
+                    links,
+                    &mut tsel,
+                    (rc.top, rc.bottom),
                 );
                 y += sc(14);
             }

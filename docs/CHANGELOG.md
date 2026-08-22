@@ -18,6 +18,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **Wide CSV files were unreadable in the Quick preview, and painfully slow with it.** A
+  spreadsheet export with a lot of columns was squeezed into the window however many columns it
+  had, so a 201-column file got about six pixels per column and every value came out as a
+  vertical stack of single letters: the header literally read "c/o/l/0" downwards. That is also
+  why it was slow, because the preview then had to lay out every character of every cell to work
+  out how tall each row was. Columns now have a readable minimum width, and any that do not fit
+  are reported under the table ("+29 more columns not shown") instead of being crushed. Arrowing
+  through a folder of CSVs is between **11 and 27 times faster**: a 5 MB, 6,666-row, 80-column
+  file went from **49 seconds to 1.8**, and nothing in a folder of fifteen now takes more than
+  two seconds. Narrow tables, and Markdown tables generally, look exactly as they did.
+
 - **Hasselblad RAW photos took well over a second each to thumbnail.** A `.fff` or `.3fr` file
   carries a ready-made preview picture, but SageThumbs was ignoring it and decoding the entire
   raw sensor image instead, every time. It now uses the camera's own preview whenever that
