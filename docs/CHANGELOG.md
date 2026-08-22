@@ -15,6 +15,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   drawn inside Explorer's own window, and disagreeing with the shell around them would look
   broken rather than themed. Suggested by a user.
 
+### Changed
+
+- **Installing is quicker at the "Registering the modern context menu" step.** That step
+  unregistered the existing Windows 11 menu package and registered it again from scratch every
+  single time, which is two deployments where one will do, and it is the step people saw the
+  installer appear to hang on. It now registers directly and only falls back to the remove and
+  retry when that fails, and it skips re-importing the signing certificate when the same one is
+  already trusted. Measured at **1,162 ms before and 552 ms after** on a warm machine. It is
+  also safer: the old order tore down the working menu before anything else, so any later
+  failure left you with no modern menu at all.
+
 ## 2.3.1
 
 ### Added
