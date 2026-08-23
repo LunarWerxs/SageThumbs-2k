@@ -7,7 +7,7 @@ piece of information you need is assembled here.
 ## Before anything: run the check, it decides for you
 
 ```powershell
-pwsh scriptsv-defender-check.ps1
+pwsh scripts\av-defender-check.ps1
 ```
 
 It scans every installer in `dist\` with the REAL local Defender engine and prints CLEAN or,
