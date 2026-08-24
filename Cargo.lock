@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k"
-version = "2.4.0"
+version = "2.4.1"
 dependencies = [
  "base64",
  "bcdec_rs",
@@ -1297,14 +1297,14 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k-dlghook"
-version = "2.4.0"
+version = "2.4.1"
 dependencies = [
  "windows",
 ]
 
 [[package]]
 name = "sagethumbs2k-dll"
-version = "2.4.0"
+version = "2.4.1"
 dependencies = [
  "sagethumbs2k",
  "windows-core",

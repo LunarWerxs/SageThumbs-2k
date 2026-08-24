@@ -67,14 +67,29 @@ def find_exe(argv: list[str]) -> Path:
 
 
 def format_count(exe: Path) -> int:
-    """The LIVE format count, from the CLI beside the app - never a number typed in here."""
-    for cli in (exe.with_name("st2k.exe"), Path(r"C:\Program Files\SageThumbs2K\st2k.exe")):
-        if cli.is_file():
-            out = subprocess.run(
-                [str(cli), "formats", "--json"], capture_output=True, text=True, check=True
-            ).stdout
-            return len(json.loads(out))
-    sys.exit("st2k.exe not found beside the app - cannot read the live format count")
+    """The LIVE format count, from the `st2k.exe` sitting BESIDE the app being screenshotted.
+
+    The sibling requirement is the whole point and is not a convenience. An earlier version
+    fell back to `C:\\Program Files\\SageThumbs2K\\st2k.exe` when the sibling was missing,
+    which silently reads a DIFFERENT, possibly older install: the header would then advertise
+    one build's format count over four panels captured from another. That is exactly the
+    hand-maintained drift this script exists to end, so it refuses instead.
+
+    It bites under the project's own normal build too: `cargo build --release --bin
+    SageThumbs2K` produces no `st2k.exe` at all, so on a clean target dir the fallback would
+    have fired every time.
+    """
+    cli = exe.with_name("st2k.exe")
+    if not cli.is_file():
+        sys.exit(
+            f"no st2k.exe beside {exe}\n"
+            "  The format count must come from the SAME build as the screenshots.\n"
+            "  Build it (cargo build --release) or point arg 1 at an install that has both."
+        )
+    out = subprocess.run(
+        [str(cli), "formats", "--json"], capture_output=True, text=True, check=True
+    ).stdout
+    return len(json.loads(out))
 
 
 def demo_files(scratch: Path) -> dict[str, Path]:

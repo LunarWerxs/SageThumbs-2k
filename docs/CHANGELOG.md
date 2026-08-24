@@ -2,7 +2,7 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 2.4.1
 
 ### Fixed
 

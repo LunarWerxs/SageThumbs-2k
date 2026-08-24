@@ -119,6 +119,7 @@ fn assemble(m: &Mail) -> String {
 // ---------------------------------------------------------------------------------------
 
 fn eml_to_markdown(bytes: &[u8]) -> Option<String> {
+    let bytes = &undouble_line_endings(bytes)[..];
     let (headers, body_off) = split_headers(bytes)?;
     // "Looks like mail" gate: a From/To/Subject/Date/Received header must exist, or this is
     // some other colon-delimited text file (YAML, HTTP logs) that should keep its text view.
@@ -143,6 +144,43 @@ fn eml_to_markdown(bytes: &[u8]) -> Option<String> {
     }))
 }
 
+/// Collapse `\r\r\n` back to `\r\n`, but ONLY when EVERY line ending in the file is doubled.
+///
+/// A mail copied by anything that rewrites `\n` as `\r\n` on already-CRLF content arrives with
+/// doubled endings throughout. `split_headers` strips one CR (which is what RFC 822 says a line
+/// ending is), so the blank line separating the headers from the body arrives as a lone `\r`,
+/// is not empty, and reads as another header. The walk then eats the whole message hunting a
+/// separator that never comes, and the file falls through to the raw-source view: the mail
+/// renders as MIME soup. Any tool that copies mail in text mode does this.
+///
+/// **This is deliberately whole-file, not per-line, and the difference is a real bug.** The
+/// obvious fix is to strip every trailing CR inside the loop, and it is wrong: a line of three
+/// bare CRs sitting in the middle of a header block then trims to empty and is taken as the
+/// separator, so every header after it is lost into the body. The old single-strip code handled
+/// that input correctly. Requiring the doubling to be UNIFORM keeps every other input, valid or
+/// malformed, on byte-identical behaviour to before, and fixes only the case that is genuinely
+/// a transport artifact. Borrowed when there is nothing to do, so the common path allocates
+/// nothing.
+fn undouble_line_endings(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let crlf = bytes.windows(2).filter(|w| w == b"\r\n").count();
+    let doubled = bytes.windows(3).filter(|w| w == b"\r\r\n").count();
+    if doubled == 0 || doubled != crlf {
+        return std::borrow::Cow::Borrowed(bytes);
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"\r\r\n") {
+            out.extend_from_slice(b"\r\n");
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Split raw mail into (unfolded header lines, body offset). Headers end at the first blank
 /// line; folded continuations (leading space/tab) are joined onto their header.
 fn split_headers(bytes: &[u8]) -> Option<(Vec<String>, usize)> {
@@ -151,20 +189,10 @@ fn split_headers(bytes: &[u8]) -> Option<(Vec<String>, usize)> {
     loop {
         let end = bytes[i..].iter().position(|&b| b == b'\n').map(|p| i + p)?;
         let line = &bytes[i..end];
-        // Trim EVERY trailing CR, not just one. A mail that has been through a text-mode
-        // copy (anything that rewrites `\n` as `\r\n` on already-CRLF content) arrives with
-        // `\r\r\n` endings, and stripping a single CR leaves a lone `\r` on the blank line
-        // that separates the headers from the body. That line then reads as another header,
-        // the walk eats the whole message looking for a separator that never comes, and the
-        // file falls through to the raw-source view — the mail renders as MIME soup rather
-        // than as mail. Real mailers never emit this; scripts and naive copies do.
-        let line = {
-            let mut l = line;
-            while let Some(rest) = l.strip_suffix(b"\r") {
-                l = rest;
-            }
-            l
-        };
+        // Exactly ONE trailing CR, because that is what a line ending IS. Do not "improve"
+        // this into a loop that strips them all: see `undouble_line_endings`, which handles
+        // the doubled-ending transport artifact without changing this rule.
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.is_empty() {
             return Some((headers, end + 1));
         }
@@ -1049,6 +1077,54 @@ mod tests {
         assert!(
             !md.contains("Subject: Doubled"),
             "the raw header block leaked into the body, so the split still went wrong: {md}"
+        );
+    }
+
+    /// A stray all-CR line inside the header block must NOT be taken as the separator.
+    ///
+    /// This is the regression the obvious version of the doubled-CR fix caused, caught by an
+    /// adversarial review before it shipped. Stripping every trailing CR per line turns a line
+    /// of three bare CRs into an empty one, which ends the header block early and dumps every
+    /// header after it into the body as literal text. `undouble_line_endings` exists precisely
+    /// so the per-line rule can stay strict: the doubling has to be uniform across the whole
+    /// file before anything is rewritten, and this input's endings are mixed.
+    #[test]
+    fn a_stray_all_cr_line_does_not_end_the_header_block() {
+        let eml = b"From: a@b.com\r\n\r\r\r\nSubject: hi\r\n\r\nBody text.\r\n";
+        let md = eml_to_markdown(eml).expect("still mail");
+        assert!(
+            md.contains("# hi"),
+            "Subject was lost: a stray CR line ended the header block early: {md}"
+        );
+        assert!(md.contains("a@b.com"), "From was lost: {md}");
+        assert!(md.contains("Body text."), "body missing: {md}");
+        assert!(
+            !md.contains("Subject: hi"),
+            "the Subject header leaked into the body as literal text: {md}"
+        );
+    }
+
+    /// The rewrite must fire ONLY on uniformly doubled endings, and must be a no-op otherwise.
+    #[test]
+    fn undoubling_is_scoped_to_uniformly_doubled_files() {
+        use std::borrow::Cow;
+        let plain = b"From: a\r\nTo: b\r\n\r\nbody\r\n";
+        assert!(
+            matches!(undouble_line_endings(plain), Cow::Borrowed(_)),
+            "a normal CRLF mail must not be copied at all"
+        );
+        let mixed = b"From: a\r\n\r\r\r\nTo: b\r\n";
+        assert!(
+            matches!(undouble_line_endings(mixed), Cow::Borrowed(_)),
+            "mixed endings must be left exactly as they are"
+        );
+        let lf_only = b"From: a\nTo: b\n\nbody\n";
+        assert!(matches!(undouble_line_endings(lf_only), Cow::Borrowed(_)));
+        let doubled = b"From: a\r\r\nTo: b\r\r\n\r\r\nbody\r\r\n";
+        assert_eq!(
+            &undouble_line_endings(doubled)[..],
+            b"From: a\r\nTo: b\r\n\r\nbody\r\n",
+            "a uniformly doubled file must collapse to exactly the single-CR form"
         );
     }
 
