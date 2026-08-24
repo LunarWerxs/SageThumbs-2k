@@ -2,6 +2,16 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Fixed
+
+- **A plain-text email no longer writes itself into the preview's contents list.** A line in a
+  message starting with `#` was being read as a document heading, so it showed up huge and added
+  itself to the outline down the side of the window. That line now shows as the text it is.
+  Quoted reply text and numbered lists still render properly, because there they really are what
+  they look like.
+
 ## 2.4.1
 
 ### Fixed

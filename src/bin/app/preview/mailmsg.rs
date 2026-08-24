@@ -108,10 +108,35 @@ fn assemble(m: &Mail) -> String {
         }
         // Escaped body text + a two-space HARD break, so the mail's own line structure
         // survives markdown's paragraph reflow. A blank source line stays a blank line.
-        out.push_str(&md_cell(line));
+        out.push_str(&escape_leading_hash(&md_cell(line)));
         out.push_str("  \n");
     }
     out
+}
+
+/// Escape a line-leading `#` so a plain-text mail body cannot become a HEADING.
+///
+/// `md_cell` escapes every INLINE metacharacter, which is what keeps a hostile message inert,
+/// but it deliberately does not touch line-leading block constructs: it is shared with the CSV
+/// and database views, where a cell sits inside a table row and cannot start a block at all.
+/// A mail body IS at top level, so `# 1. Take the box out of rotation` rendered as an H1 and,
+/// worse, was collected into the preview's outline sidebar. An email is not a document; its own
+/// text must not be able to write entries into the contents list.
+///
+/// Only `#`. The other line-leading constructs make the render BETTER and are left alone: `>`
+/// turning quoted reply text into a blockquote is exactly right, and `-` / `1.` lists read as
+/// lists because that is what they are.
+fn escape_leading_hash(line: &str) -> std::borrow::Cow<'_, str> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if line[indent..].starts_with('#') {
+        let mut s = String::with_capacity(line.len() + 1);
+        s.push_str(&line[..indent]);
+        s.push('\\');
+        s.push_str(&line[indent..]);
+        std::borrow::Cow::Owned(s)
+    } else {
+        std::borrow::Cow::Borrowed(line)
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1077,6 +1102,44 @@ mod tests {
         assert!(
             !md.contains("Subject: Doubled"),
             "the raw header block leaked into the body, so the split still went wrong: {md}"
+        );
+    }
+
+    /// A plain-text body must not write itself into the document structure.
+    ///
+    /// Found on a real capture: an email whose body was `# 1. Take the box out of rotation`
+    /// rendered as a giant heading AND put its own lines into the preview's outline sidebar.
+    /// The subject is the only thing entitled to be a heading here.
+    #[test]
+    fn a_hash_in_the_body_does_not_become_a_heading() {
+        let eml = b"From: ops@example.com\r\n\
+                    Subject: Deploy checklist\r\n\
+                    \r\n\
+                    # 1. Take the box out of rotation\r\n\
+                       ## indented too\r\n\
+                    > we discussed this on Friday\r\n\
+                    - a real list\r\n";
+        let md = eml_to_markdown(eml).expect("mail parses");
+        assert!(md.contains("# Deploy checklist"), "subject heading: {md}");
+        assert!(
+            md.contains("\\# 1. Take the box out of rotation"),
+            "a body line starting with # was left as a heading: {md}"
+        );
+        assert!(
+            md.contains("\\## indented too"),
+            "an indented # was left as a heading: {md}"
+        );
+        // Exactly one real heading in the document: the subject.
+        let headings = md.lines().filter(|l| l.starts_with("# ")).count();
+        assert_eq!(headings, 1, "the body added headings to the outline: {md}");
+        // The constructs that IMPROVE the render stay untouched.
+        assert!(
+            md.contains("> we discussed this on Friday"),
+            "quoted reply text should still render as a blockquote: {md}"
+        );
+        assert!(
+            md.contains("- a real list"),
+            "a list should still render as a list: {md}"
         );
     }
 
