@@ -57,7 +57,7 @@ mod win;
 use core::ffi::c_void;
 
 use windows::core::w;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE};
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -373,6 +373,7 @@ fn main() {
                             wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
                             source: args.iter().any(|a| a == "--source"),
                             toggle_source: args.iter().any(|a| a == "--toggle-source"),
+                            toggle_theme: args.iter().any(|a| a == "--toggle-theme"),
                             size: val("--size").and_then(|s| {
                                 let (w, h) = s.split_once(['x', 'X'])?;
                                 Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
@@ -637,6 +638,12 @@ fn main() {
         // FindWindow check alone races (two Start Menu double-clicks can both pass it
         // before either has created a window). Held (leaked) for the life of the
         // Settings window on purpose; dropping it early would let a third launch in.
+        // `--tab N` on the NORMAL launch, not just inside `--shot`: the Quick preview viewer's
+        // caption gear opens Settings straight on the Quick preview page. It used to be parsed
+        // only by the headless capture path, so passing it to a real launch silently opened
+        // page 0 (CLAUDE.md SS6.1.1 records a probe that was fooled by exactly that).
+        let want_tab = wanted_tab(&args);
+
         let single_instance = CreateMutexW(None, true, w!("SageThumbs2K.App.Single"));
         if single_instance.is_ok() && GetLastError() == ERROR_ALREADY_EXISTS {
             // Another instance is already up (or mid-boot) — activate ITS window
@@ -651,6 +658,21 @@ fn main() {
                     // foreground grab is refused the window stays hidden behind
                     // whatever is in front, and the menu item reads as dead.
                     crate::win::force_foreground(existing);
+                    // Settings was ALREADY open, possibly on another page. Raising it without
+                    // switching would make the viewer's gear look dead to anyone who had it
+                    // open on, say, File types. This is the same WM_COMMAND its own nav item
+                    // sends, so the two paths cannot diverge.
+                    if let Some(tab) = want_tab {
+                        let _ = PostMessageW(
+                            Some(existing),
+                            WM_COMMAND,
+                            WPARAM(
+                                ((STN_CLICKED as usize) << 16)
+                                    | (settings_dlg::NAV_ID_BASE as usize + tab),
+                            ),
+                            LPARAM(0),
+                        );
+                    }
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -730,6 +752,12 @@ fn main() {
             dark_titlebar(hwnd);
         }
 
+        // Land on the requested page before the window is shown, so it never flashes General
+        // first. The layout builder ends with `switch_category(hwnd, 0)`; this re-selects.
+        if let Some(tab) = want_tab {
+            settings_dlg::show_category(hwnd, tab);
+        }
+
         let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
@@ -749,9 +777,21 @@ fn main() {
     }
 }
 
+/// The Settings page `--tab N` asks for, or `None` when the flag is absent, malformed, or names
+/// a page that does not exist. Out-of-range is deliberately `None` rather than clamped: a number
+/// past the end means the caller's idea of the page list disagrees with this build's, and
+/// silently landing on the last page would hide that.
+fn wanted_tab(args: &[String]) -> Option<usize> {
+    args.iter()
+        .position(|a| a == "--tab")
+        .and_then(|p| args.get(p + 1))
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&t| t < settings_dlg::NAV_CATEGORY_COUNT)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::update_piggyback_wanted;
+    use super::{update_piggyback_wanted, wanted_tab};
 
     fn argv(rest: &[&str]) -> Vec<String> {
         std::iter::once("SageThumbs2K.exe".to_string())
@@ -798,5 +838,28 @@ mod tests {
                 "{excluded:?} must NOT fire the update check"
             );
         }
+    }
+
+    /// `--tab N` backs the Quick preview caption's Settings gear, so a launch that carries it
+    /// has to land on that page. It was parsed only inside `--shot` until 2026-08-24, which
+    /// meant a normal launch silently opened page 0 and a live probe reported a clean pass
+    /// against a control that did not exist.
+    #[test]
+    fn tab_flag_selects_a_real_settings_page() {
+        let quick = crate::settings_dlg::quick_preview_page();
+        assert_eq!(
+            wanted_tab(&argv(&["--tab", &quick.to_string()])),
+            Some(quick)
+        );
+        assert_eq!(wanted_tab(&argv(&["--tab", "0"])), Some(0));
+        // Absent, malformed, or with nothing after it: open normally, never panic.
+        assert_eq!(wanted_tab(&argv(&[])), None);
+        assert_eq!(wanted_tab(&argv(&["--tab"])), None);
+        assert_eq!(wanted_tab(&argv(&["--tab", "not-a-number"])), None);
+        assert_eq!(wanted_tab(&argv(&["--tab", "-1"])), None);
+        // Past the end is REFUSED rather than clamped: it means the caller's page list and
+        // this build's disagree, and quietly opening the last page would hide that.
+        let past_end = crate::settings_dlg::NAV_CATEGORY_COUNT;
+        assert_eq!(wanted_tab(&argv(&["--tab", &past_end.to_string()])), None);
     }
 }

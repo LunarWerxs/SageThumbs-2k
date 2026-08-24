@@ -31,21 +31,35 @@ const _: () = assert!(
     ID_NAV_BASE as usize + NCAT <= ID_PANE_HEADER as usize,
     "a new Settings category pushed the nav ids onto ID_PANE_HEADER: move ID_PANE_HEADER up"
 );
+/// The locale KEY for category `ci`'s label. This match is the category ORDER, and it is the
+/// only copy of it: [`nav_label`] translates it and [`category_index`] searches it, so a caller
+/// that wants "the Quick preview page" asks by name and cannot be silently re-pointed at a
+/// different page when one is inserted above it. (`--tab` numbers in docs have drifted exactly
+/// that way before — see CLAUDE.md §6.)
+pub(super) fn nav_key(ci: usize) -> &'static str {
+    match ci {
+        0 => "nav_general",
+        1 => "nav_appearance",
+        2 => "nav_filetypes",
+        3 => "nav_ebook",
+        4 => "nav_menu",
+        5 => "nav_screenshots",
+        6 => "nav_quickaction",
+        7 => "nav_advanced",
+        8 => "nav_quickpreview",
+        _ => "nav_databackup",
+    }
+}
+
 /// Localized nav-rail / page-header label for category `ci`. Pulls from `t()` so a
 /// live language switch re-texts it (the nav statics + pane header re-read this).
 pub(super) fn nav_label(ci: usize) -> &'static str {
-    match ci {
-        0 => t("nav_general"),
-        1 => t("nav_appearance"),
-        2 => t("nav_filetypes"),
-        3 => t("nav_ebook"),
-        4 => t("nav_menu"),
-        5 => t("nav_screenshots"),
-        6 => t("nav_quickaction"),
-        7 => t("nav_advanced"),
-        8 => t("nav_quickpreview"),
-        _ => t("nav_databackup"),
-    }
+    t(nav_key(ci))
+}
+
+/// The category index whose label key is `key`, or `None` if no page carries it.
+pub(super) fn category_index(key: &str) -> Option<usize> {
+    (0..NCAT).find(|&ci| nav_key(ci) == key)
 }
 
 /// One row in a category's content pane. Ids reference controls already created by
@@ -187,6 +201,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Pair(ID_LBL_SHOT_HK, ID_SHOT_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_TOOL, ID_SHOT_TOOL, 156, 200),
+            Pair(ID_LBL_SHOT_DELAY, ID_SHOT_DELAY, 156, 200),
             // Service state + Restart, moved back here from Advanced 2026-08-06. A hotkey only
             // fires while the helper is resident, so "is it running / put it back" is part of
             // this feature, not a system setting. Being on Advanced made it unfindable by the
@@ -1060,6 +1075,33 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     switch_category(hwnd, 0);
 }
 // =================== end v3 layout ===================
+
+#[cfg(test)]
+mod nav_key_tests {
+    use super::*;
+
+    /// Every category must be findable by its own key, and no key may be duplicated — a
+    /// duplicate would make `category_index` return the FIRST page carrying it, silently
+    /// sending "open Settings on Quick preview" somewhere else.
+    #[test]
+    fn every_category_is_findable_by_its_own_key() {
+        for ci in 0..NCAT {
+            assert_eq!(
+                category_index(nav_key(ci)),
+                Some(ci),
+                "category {ci} ({}) is not findable by its own key",
+                nav_key(ci)
+            );
+        }
+    }
+
+    /// The Quick preview page is what the viewer's caption gear opens. If it ever stops
+    /// existing under this key, that button would quietly open page 0 instead.
+    #[test]
+    fn the_quick_preview_page_exists() {
+        assert!(category_index("nav_quickpreview").is_some());
+    }
+}
 
 #[cfg(test)]
 mod header_height_tests {

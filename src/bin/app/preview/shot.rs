@@ -140,6 +140,14 @@ pub(super) unsafe fn run_shot(
         super::window::do_action(hwnd, super::window::Btn::Source);
         crate::win::pump_msgs(8);
     }
+    if opts.toggle_theme {
+        // Same reasoning as `--toggle-source`: press the REAL button so the capture proves the
+        // whole path - the palette override, the re-applied window frame, and the reload that
+        // rebuilds the letterboxed bitmap - rather than a window that merely opened in the
+        // other skin.
+        super::window::do_action(hwnd, super::window::Btn::Theme);
+        crate::win::pump_msgs(8);
+    }
     if let Some(sel) = opts.sel {
         // Force a text-pane selection before capture (verifies the highlight headlessly).
         let stp = super::window::state(hwnd);

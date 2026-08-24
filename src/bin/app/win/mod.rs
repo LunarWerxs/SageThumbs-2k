@@ -133,6 +133,41 @@ pub(crate) fn icon_font_face() -> &'static str {
     })
 }
 
+/// An icon-font handle at `em` device pixels. Both toolbars build theirs through here so the
+/// face AND the rendering mode are decided once. Caller owns and deletes it.
+///
+/// **`ANTIALIASED_QUALITY`, deliberately, not `CLEARTYPE_QUALITY`.** ClearType renders through
+/// the display's RGB sub-pixels, which is why text looks sharper with it and why an ICON looks
+/// worse: measured off the real caption toolbar, 73-97% of every glyph's pixels carried an
+/// orange or blue colour cast, against 0% for the hand-drawn OCR mark beside them. That
+/// difference is what reads as "the other icons are blurry". Greyscale AA drops the fringing to
+/// zero and more than doubles the fully-covered pixels (22% -> 52%) at exactly the same glyph
+/// size, on the same machine with ClearType left on system-wide.
+///
+/// `NONANTIALIASED_QUALITY` was measured too and is a trap: 100% solid pixels, but circles turn
+/// polygonal and the gear and the sun's rays go lumpy. Curves need the anti-aliasing; what they
+/// never needed was the COLOUR.
+///
+/// (This is also the fringing CLAUDE.md warns about when sampling rendered pixels - it is why a
+/// colour sampler can read grey anti-aliased text as syntax highlighting.)
+pub(crate) unsafe fn icon_font(em: i32) -> windows::Win32::Graphics::Gdi::HFONT {
+    use windows::Win32::Graphics::Gdi::{
+        CreateFontIndirectW, ANTIALIASED_QUALITY, DEFAULT_CHARSET, LOGFONTW,
+    };
+    let mut lf = LOGFONTW {
+        lfHeight: -em,
+        lfWeight: 400,
+        lfQuality: ANTIALIASED_QUALITY,
+        lfCharSet: DEFAULT_CHARSET,
+        ..Default::default()
+    };
+    let face = wide(icon_font_face());
+    for (i, c) in face.iter().take(lf.lfFaceName.len() - 1).enumerate() {
+        lf.lfFaceName[i] = *c;
+    }
+    CreateFontIndirectW(&lf)
+}
+
 /// Whether GDI can honour `face`, i.e. it resolves to itself rather than being substituted.
 ///
 /// `CreateFontIndirectW` NEVER fails for a missing face - it hands back a substituted font,

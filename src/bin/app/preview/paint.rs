@@ -45,6 +45,12 @@ unsafe fn fill(hdc: HDC, rc: &RECT, color: u32) {
 }
 
 pub(super) unsafe fn paint(hwnd: HWND) {
+    // Re-point the tooltip rects at the layout this paint is about to draw, BEFORE `BeginPaint`
+    // — the sync sends messages to the tooltip control, and nothing should do that between
+    // BeginPaint and EndPaint. It is a `Vec` compare and returns immediately unless a button
+    // actually moved. See `toolbar::update_tooltips`.
+    let st = &*state(hwnd);
+    super::toolbar::update_tooltips(hwnd, st.tip.get());
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
     if !hdc.is_invalid() {
@@ -742,40 +748,53 @@ pub(super) unsafe fn mono_font(hwnd: HWND) -> HFONT {
     )
 }
 
-/// An icon-font handle at toolbar size (crisp, ClearType-AA glyphs instead of hand-drawn GDI
-/// lines). The FACE is whichever icon font this machine actually has -
-/// `crate::win::icon_font_face` - because `Segoe Fluent Icons` is Windows 11 only and its
+/// The caption toolbar's icon-font em, in device px. Named because the hand-drawn OCR mark
+/// has to be sized off the SAME number as the font glyphs beside it (see
+/// [`crate::gdip::ocr_glyph`]) — passing the button rect instead is what made that one mark
+/// come out half again as big as everything else.
+///
+/// **16, not 15, and the difference is measured.** These outlines are unhinted (Material
+/// Symbols ships no instructions and autohinting them was tried and made things very slightly
+/// WORSE), so nothing snaps the strokes to the pixel grid and how much of a glyph lands on
+/// whole pixels depends on where its stem widths happen to fall at a given size. Sweeping em
+/// 13..24 through real GDI, the share of fully-covered pixels goes 40, 50, 52, **58**, 48, 52,
+/// 53, 55, 58, 71: 16 is a local peak and 17 falls off a cliff. It holds at the scaled sizes
+/// too (125% -> em 20 at 55%, 150% -> em 24 at 71%, both ahead of what 15 scales to).
+///
+/// It also collapses a difference that had no reason to exist: the screenshot editor's action
+/// bar already drew at 16, so both toolbars now share one em, and `ocr_glyph`'s `7/4 em` lands
+/// its cell on exactly the 28 px that mark was designed against.
+pub(super) fn icon_em(hwnd: HWND) -> i32 {
+    crate::win::dpi_scale(hwnd, 16)
+}
+
+/// An icon-font handle at toolbar size. The FACE is whichever icon font this machine actually
+/// has - `crate::win::icon_font_face` - because `Segoe Fluent Icons` is Windows 11 only and its
 /// absence is silent: GDI substitutes a text font and every glyph becomes an empty box, which
 /// is precisely what Windows 10 users saw (issue #21). Caller owns + deletes it.
 pub(super) unsafe fn icon_font(hwnd: HWND) -> HFONT {
-    use windows::Win32::Graphics::Gdi::{
-        CreateFontIndirectW, CLEARTYPE_QUALITY, DEFAULT_CHARSET, LOGFONTW,
-    };
-    let mut lf = LOGFONTW {
-        lfHeight: -crate::win::dpi_scale(hwnd, 15),
-        lfWeight: 400,
-        lfQuality: CLEARTYPE_QUALITY,
-        lfCharSet: DEFAULT_CHARSET,
-        ..Default::default()
-    };
-    let face = crate::win::wide(crate::win::icon_font_face());
-    for (i, c) in face.iter().take(lf.lfFaceName.len() - 1).enumerate() {
-        lf.lfFaceName[i] = *c;
-    }
-    CreateFontIndirectW(&lf)
+    crate::win::icon_font(icon_em(hwnd))
 }
 
-/// The Segoe Fluent Icons codepoint for each toolbar button.
+/// The icon-font codepoint for each toolbar button (the bundled face maps Material Symbols
+/// onto these Segoe codepoints — see `scripts/build-icon-font.py`).
 pub(super) fn btn_glyph(btn: Btn, pinned: bool) -> u16 {
     match btn {
-        Btn::Toc => 0xE8FD,           // BulletedList (outline)
-        Btn::MdImages => 0xEB9F,      // Picture (web images on/off)
-        Btn::Source => 0xE943,        // Code (`</>`) — view source
-        Btn::PdfPrev => 0xE76B,       // ChevronLeft
-        Btn::PdfNext => 0xE76C,       // ChevronRight
-        Btn::Pin if pinned => 0xE840, // Pinned (filled)
-        Btn::Pin => 0xE718,           // Pin
-        Btn::Copy => 0xE8C8,          // Copy
+        Btn::Toc => 0xE8FD,      // BulletedList (outline)
+        Btn::MdImages => 0xEB9F, // Picture (web images on/off)
+        Btn::Source => 0xE943,   // Code (`</>`) — view source
+        Btn::PdfPrev => 0xE76B,  // ChevronLeft
+        Btn::PdfNext => 0xE76C,  // ChevronRight
+        // The theme button shows the theme it will switch TO, which is the convention every
+        // light/dark toggle uses: a sun while you are in the dark skin, a moon while light.
+        // Drawing the CURRENT state instead reads as a status light, and users click it
+        // expecting the mode already shown.
+        Btn::Theme if crate::dark::is_dark() => 0xE706, // light_mode (sun)
+        Btn::Theme => 0xE708,                           // dark_mode (moon)
+        Btn::Settings => 0xE713,                        // gear
+        Btn::Pin if pinned => 0xE840,                   // Pinned (filled)
+        Btn::Pin => 0xE718,                             // Pin
+        Btn::Copy => 0xE8C8,                            // Copy
         // Never reached: `draw_button` short-circuits Ocr to the vector mark above. Kept so
         // this match stays exhaustive (and harmless if someone routes it back through a font).
         Btn::Ocr => 0xE8D2,      // Font ("A")
@@ -823,7 +842,7 @@ pub(super) unsafe fn draw_button(
     // OCR has no icon-font glyph — it's the shared vector mark, so it matches the same
     // button in the screenshot editor's action bar exactly.
     if matches!(btn, Btn::Ocr) {
-        crate::gdip::ocr_glyph(hdc, *r, COLORREF(color));
+        crate::gdip::ocr_glyph(hdc, *r, COLORREF(color), icon_em(hwnd));
         return;
     }
     let old = SelectObject(hdc, icon.into());

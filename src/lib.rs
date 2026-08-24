@@ -27,6 +27,10 @@ mod command;
 mod container;
 /// Archive entry listing for the Quick preview viewer (no extraction).
 pub use container::list_archive;
+// The read-only CFB reader, for the app EXE's Outlook-.msg preview (`preview::mailmsg`).
+// Hidden like `ocr`: an implementation detail shared across the workspace, not API.
+#[doc(hidden)]
+pub use container::ole;
 /// True document dimensions for containers whose extracted cover is only a small baked-in
 /// preview (PSD/PSB). The Quick preview uses it to decide whether the fast preview it just
 /// painted is worth replacing with the real composite — see `preview::content`.

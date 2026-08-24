@@ -291,6 +291,44 @@ Read this before doing either again.
   "highlighting," confirm the file's detected language/highlight mode independently (a `Plain`-
   classified file has no highlighter running at all, whatever a color sampler reports).
 
+- **That same fringing is why icon fonts must NOT use `CLEARTYPE_QUALITY`.** ClearType renders
+  through the display's RGB sub-pixels: it is why text looks sharper and why an ICON looks
+  worse, because an icon has no stems for the hinting to pay off against and the colour is all
+  you are left with. Measured on the Quick preview caption toolbar, 73-97% of every glyph's
+  pixels carried an orange or blue cast against 0% for the hand-drawn OCR mark beside them, and
+  a user reported it as "the OCR icon is crystal clear and all the others are blurry". Both
+  toolbars now build their font through `win::icon_font`, which sets `ANTIALIASED_QUALITY`:
+  fringing 74% -> 0% and fully-covered pixels 29% -> 58% across the whole bar, at exactly the
+  same glyph size, on a machine with ClearType still on system-wide.
+
+  `NONANTIALIASED_QUALITY` was measured too, and it is the trap: 100% solid pixels, but circles
+  turn polygonal and the gear and the sun's rays go lumpy. Curves need the anti-aliasing; what
+  they never needed was the colour. **Text keeps ClearType** - this rule is about icons only.
+
+  The measurement, not the reasoning, is what settled this: `lfQuality` x em size is a small
+  grid and a rebuild-and-squint costs ~2.5 minutes per cell. Drive GDI directly instead
+  (`AddFontResourceExW` + `CreateFontIndirectW` + `DrawTextW` into a DIB section, then count
+  pixels whose R/G/B disagree). The whole grid answers in seconds and the answer is a number.
+
+- **The bundled icon font is UNHINTED, and autohinting it was tried and REJECTED on the
+  measurement.** Material Symbols ships no instructions (0 of 35 glyphs carry bytecode), so
+  nothing snaps a stroke to the pixel grid and a 14 px glyph with a ~1.2 px stroke cannot be
+  fully crisp -- that residual softness is the floor for an outline font at that size, not a
+  bug to hunt. `ttfautohint --symbol` hints all 35 and costs +6 KB, but its algorithm looks for
+  stems, blue zones and an x-height, and an arbitrary icon has none: fully-covered pixels went
+  52% -> 50% at em 15 and 58% -> 51% at em 16, i.e. slightly WORSE, and the sun and pin visibly
+  softened. Do not re-propose it without new numbers.
+
+  What DID pay was picking the em: sweeping 13..24 gives 40, 50, 52, **58**, 48, 52, 53, 55,
+  58, 71 percent solid, so **16 is a local peak and 17 falls off a cliff**. `preview::paint::
+  icon_em` is 16 for that reason (and it matches the screenshot bar, which already drew at 16).
+  If the bundled font is ever regenerated with different outlines, RE-RUN THE SWEEP -- the peak
+  is a property of where those particular stem widths land, not a constant.
+
+  The remaining alternative, pre-rasterized bitmaps per scale factor, is worse in practice, not
+  better: pixel-perfect at 100% and 200% and wrong at 125%, 150% and 175%, which is what most
+  laptops actually run at, plus ~30 icons x 5 scales to keep in step by hand.
+
 **Testing the full-screen screenshot editor with Windows UI automation:**
 
 - **`WS_EX_TOOLWINDOW` makes the editor undiscoverable.** The Windows automation bridge first

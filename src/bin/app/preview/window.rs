@@ -69,6 +69,10 @@ pub(super) const SETTLE_CLOSE_MS: u64 = 400;
 // Layout, 96-dpi design px.
 pub(super) const CAPTION_H: i32 = 36;
 pub(super) const BTN_W: i32 = 38;
+/// The narrowest a toolbar cell is allowed to get when the caption cannot fit the visible set at
+/// [`BTN_W`] (see `toolbar::button_rects`). Wide enough to still hold a ~14 px glyph with a
+/// pixel of air either side, so a crowded caption reads as tight rather than as broken.
+pub(super) const MIN_BTN_W: i32 = 22;
 pub(super) const PAD: i32 = 6;
 pub(super) const MIN_W: i32 = 400;
 pub(super) const MIN_H: i32 = 200;
@@ -115,6 +119,11 @@ pub(super) enum Btn {
     Source,
     PdfPrev,
     PdfNext,
+    /// Flip THIS window between the light and dark skin, without touching the app-wide Theme
+    /// setting. Requested for the case the setting cannot serve: a dark photograph or a bright
+    /// scan reads better against the opposite background from the one you normally want.
+    /// Session-only, like [`Btn::Source`] — a fresh preview opens in the configured theme.
+    Theme,
     Pin,
     Copy,
     /// Read the text out of the picture you're looking at (OCR) and put it on the clipboard.
@@ -125,16 +134,21 @@ pub(super) enum Btn {
     Upload,
     Open,
     OpenWith,
+    /// Open Settings on its **Quick preview** page — the options that govern this window are
+    /// otherwise several clicks away in a program you reach from a right-click menu.
+    Settings,
     Close,
 }
 
 /// All buttons, in left-to-right caption order (rightmost drawn is Close).
-pub(super) const BTNS: [Btn; 13] = [
+pub(super) const BTNS: [Btn; 15] = [
     Btn::Toc,
     Btn::MdImages,
     Btn::Source,
     Btn::PdfPrev,
     Btn::PdfNext,
+    // Theme sits with the other VIEW controls, left of the file actions.
+    Btn::Theme,
     Btn::Pin,
     Btn::Copy,
     Btn::Ocr,
@@ -142,6 +156,9 @@ pub(super) const BTNS: [Btn; 13] = [
     Btn::Upload,
     Btn::OpenWith,
     Btn::Open,
+    // Settings then Close: the gear is an app action, and Close stays hard right where a
+    // window's close button belongs.
+    Btn::Settings,
     Btn::Close,
 ];
 
@@ -222,6 +239,11 @@ pub(super) struct ViewerState {
     pub(super) hot: Cell<Option<usize>>, // index into BTNS currently hovered
     /// The caption toolbar's tooltip control (one RECT tool per button); `HWND::default()` if none.
     pub(super) tip: Cell<HWND>,
+    /// The rects currently registered with `tip`, in tool-id order (see `toolbar::tool_rects`).
+    /// The paint path compares against this and only re-points the tooltip control when the
+    /// toolbar layout actually moved — see `toolbar::update_tooltips` for the bug this shape
+    /// exists to make impossible.
+    pub(super) tip_rects: RefCell<Vec<RECT>>,
     /// Whether the 500 ms follow-selection poll thread has been started (daemon mode only).
     pub(super) poll_started: Cell<bool>,
     // ----- Phase 4 viewer polish -----
@@ -463,6 +485,7 @@ pub(super) unsafe fn create_viewer(
         decode_gen: Cell::new(0),
         hot: Cell::new(None),
         tip: Cell::new(HWND::default()),
+        tip_rects: RefCell::new(Vec::new()),
         poll_started: Cell::new(false),
         zoom: Cell::new(1.0),
         full_pending: Cell::new(false),
@@ -863,7 +886,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     // Cap the UNTRUSTED count (a crafted PDF can report > i32::MAX pages, which
                     // would wrap the nav math negative and panic a clamp — panic=abort).
                     st.pdf_pages.set(count.min(1_000_000));
-                    update_tooltips(hwnd, st.tip.get()); // the pager buttons just (dis)appeared
                     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
@@ -892,7 +914,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // The visible height changed. Clamp immediately using the last measured document
                 // height; the next paint clamps once more if Markdown reflow changes that height.
                 let _ = clamp_text_scroll(hwnd);
-                update_tooltips(hwnd, st.tip.get()); // buttons are right-anchored — re-track them
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }

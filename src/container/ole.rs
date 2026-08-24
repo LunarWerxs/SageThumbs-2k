@@ -56,8 +56,19 @@ fn follow(start: u32, fat: &[u32], max_hops: usize) -> Option<Vec<u32>> {
 }
 
 /// Read the named stream (`name` compared against the directory's UTF-16 name), or
-/// None if absent / malformed.
+/// None if absent / malformed. First match wins when several directory entries share the
+/// name (they can — the scan is flat, not hierarchical).
 pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
+    read_streams(bytes, name, 1).and_then(|mut v| v.pop())
+}
+
+/// EVERY stream whose directory entry carries `name`, up to `max` of them, in directory
+/// order. The scan is deliberately FLAT (no storage-tree walk), which is exactly what makes
+/// this useful for Outlook `.msg` files: each attachment storage holds a stream with the
+/// SAME name (`__substg1.0_3707001F`, the long filename), so "all streams named X" is "one
+/// entry per attachment" without implementing red-black-tree traversal over hostile input.
+/// `None` = not a compound file / malformed; an empty Vec = valid file, no such stream.
+pub fn read_streams(bytes: &[u8], name: &str, max: usize) -> Option<Vec<Vec<u8>>> {
     if !looks_like_ole(bytes) {
         return None;
     }
@@ -113,7 +124,7 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
     for s in follow(first_dir, &fat, MAX_SECTORS)? {
         dir.extend_from_slice(read_sector(bytes, s, sector_size)?);
     }
-    let mut target: Option<(u32, u64)> = None;
+    let mut targets: Vec<(u32, u64)> = Vec::new();
     let mut root: Option<(u32, u64)> = None;
     for e in dir.chunks_exact(128) {
         let etype = e[66];
@@ -126,81 +137,103 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
             root = Some((start, size));
         }
         let name_len = le16(e, 64)? as usize; // bytes incl null terminator
-        if (2..=64).contains(&name_len) {
+        if (2..=64).contains(&name_len) && targets.len() < max {
             let chars = (name_len / 2).saturating_sub(1);
             let nm: String = (0..chars)
                 .filter_map(|c| char::from_u32(u16::from_le_bytes([e[c * 2], e[c * 2 + 1]]) as u32))
                 .collect();
             if nm == name {
-                target = Some((start, size));
+                targets.push((start, size));
             }
         }
     }
-    let (tstart, tsize) = target?;
-    let tsize = (tsize.min(MAX_STREAM as u64)) as usize;
-    if tsize == 0 {
-        return None;
-    }
+    let mut results: Vec<Vec<u8>> = Vec::with_capacity(targets.len());
+    // The mini-stream and mini-FAT are shared by every small stream; built at most once,
+    // on first need.
+    let mut ministream_cache: Option<Vec<u8>> = None;
+    let mut minifat_cache: Option<Vec<u32>> = None;
+    for (tstart, tsize) in targets {
+        let tsize = (tsize.min(MAX_STREAM as u64)) as usize;
+        if tsize == 0 {
+            continue;
+        }
 
-    // --- Big stream → main FAT; small stream → mini-FAT inside the root stream.
-    if tsize as u64 >= mini_cutoff {
-        // Cap the walk at the sector count the declared size actually needs (plus
-        // slack): a self-looping chain then dies in a handful of hops instead of
-        // the flat MAX_SECTORS ceiling.
-        let cap = tsize.div_ceil(sector_size).saturating_add(2);
-        let mut out = Vec::with_capacity(tsize);
-        for s in follow(tstart, &fat, cap)? {
-            out.extend_from_slice(read_sector(bytes, s, sector_size)?);
-            if out.len() >= tsize {
-                break;
+        // --- Big stream → main FAT; small stream → mini-FAT inside the root stream.
+        if tsize as u64 >= mini_cutoff {
+            // Cap the walk at the sector count the declared size actually needs (plus
+            // slack): a self-looping chain then dies in a handful of hops instead of
+            // the flat MAX_SECTORS ceiling.
+            let cap = tsize.div_ceil(sector_size).saturating_add(2);
+            let mut out = Vec::with_capacity(tsize);
+            for s in follow(tstart, &fat, cap)? {
+                out.extend_from_slice(read_sector(bytes, s, sector_size)?);
+                if out.len() >= tsize {
+                    break;
+                }
             }
+            out.truncate(tsize);
+            results.push(out);
+        } else {
+            let ministream: &Vec<u8> = match &mut ministream_cache {
+                Some(m) => m,
+                None => {
+                    let (rstart, rsize) = root?;
+                    let rsize = (rsize.min(MAX_STREAM as u64)) as usize;
+                    let root_cap = rsize.div_ceil(sector_size).saturating_add(2);
+                    let mut m = Vec::with_capacity(rsize);
+                    for s in follow(rstart, &fat, root_cap)? {
+                        m.extend_from_slice(read_sector(bytes, s, sector_size)?);
+                        if m.len() >= rsize {
+                            break;
+                        }
+                    }
+                    m.truncate(rsize);
+                    // `insert` hands back a borrow of the value just stored — the
+                    // shell-surface unwrap ban's preferred spelling of this cache idiom.
+                    ministream_cache.insert(m)
+                }
+            };
+            // The mini-FAT too is per-FILE: build it once, reuse for every small target.
+            let minifat: &Vec<u32> = match &mut minifat_cache {
+                Some(m) => m,
+                None => {
+                    let mut minifat: Vec<u32> = Vec::new();
+                    // The mini-FAT's own sector count isn't known ahead of the walk either.
+                    for s in follow(first_minifat, &fat, MAX_SECTORS)? {
+                        let sec = read_sector(bytes, s, sector_size)?;
+                        for i in 0..sector_size / 4 {
+                            minifat.push(le32(sec, i * 4)?);
+                        }
+                        if minifat.len() > MAX_SECTORS {
+                            return None;
+                        }
+                    }
+                    minifat_cache.insert(minifat)
+                }
+            };
+            // Walk via the same hop-bounded follow() the FAT/root-stream chains use
+            // (not an out.len()-growth bound): when the root stream is empty and
+            // minifat self-loops, growth-based termination never trips because a
+            // zero-length ministream slice is appended every iteration forever.
+            // follow() bounds on hop count and index range instead, so it always
+            // terminates regardless of what the mini-stream itself contains, and the
+            // size-derived cap kills a cycle in a handful of hops rather than 4M.
+            let mini_cap = tsize.div_ceil(mini_size).saturating_add(2);
+            let mut out = Vec::with_capacity(tsize);
+            for idx in follow(tstart, minifat, mini_cap)? {
+                let idx = idx as usize;
+                let o = idx.checked_mul(mini_size)?;
+                let end = o.checked_add(mini_size)?.min(ministream.len());
+                out.extend_from_slice(ministream.get(o..end)?);
+                if out.len() >= tsize {
+                    break;
+                }
+            }
+            out.truncate(tsize);
+            results.push(out);
         }
-        out.truncate(tsize);
-        Some(out)
-    } else {
-        let (rstart, rsize) = root?;
-        let rsize = (rsize.min(MAX_STREAM as u64)) as usize;
-        let root_cap = rsize.div_ceil(sector_size).saturating_add(2);
-        let mut ministream = Vec::with_capacity(rsize);
-        for s in follow(rstart, &fat, root_cap)? {
-            ministream.extend_from_slice(read_sector(bytes, s, sector_size)?);
-            if ministream.len() >= rsize {
-                break;
-            }
-        }
-        ministream.truncate(rsize);
-        let mut minifat: Vec<u32> = Vec::new();
-        // The mini-FAT's own sector count isn't known ahead of the walk either.
-        for s in follow(first_minifat, &fat, MAX_SECTORS)? {
-            let sec = read_sector(bytes, s, sector_size)?;
-            for i in 0..sector_size / 4 {
-                minifat.push(le32(sec, i * 4)?);
-            }
-            if minifat.len() > MAX_SECTORS {
-                return None;
-            }
-        }
-        // Walk via the same hop-bounded follow() the FAT/root-stream chains use
-        // (not an out.len()-growth bound): when the root stream is empty and
-        // minifat self-loops, growth-based termination never trips because a
-        // zero-length ministream slice is appended every iteration forever.
-        // follow() bounds on hop count and index range instead, so it always
-        // terminates regardless of what the mini-stream itself contains, and the
-        // size-derived cap kills a cycle in a handful of hops rather than 4M.
-        let mini_cap = tsize.div_ceil(mini_size).saturating_add(2);
-        let mut out = Vec::with_capacity(tsize);
-        for idx in follow(tstart, &minifat, mini_cap)? {
-            let idx = idx as usize;
-            let o = idx.checked_mul(mini_size)?;
-            let end = o.checked_add(mini_size)?.min(ministream.len());
-            out.extend_from_slice(ministream.get(o..end)?);
-            if out.len() >= tsize {
-                break;
-            }
-        }
-        out.truncate(tsize);
-        Some(out)
     }
+    Some(results)
 }
 
 #[cfg(test)]

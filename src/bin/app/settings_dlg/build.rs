@@ -170,6 +170,26 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     dark_theme_combo(shot_tool);
     restyle::dark_combo_subclass(shot_tool, ID_SHOT_TOOL);
 
+    // Delay before a capture freezes the screen. Option order comes from
+    // settings::SHOT_DELAY_STEPS — the array is the wire format, so the dropdown and the
+    // stored seconds cannot drift apart.
+    let delay = lc.combo(t("lbl_shot_delay"), ID_LBL_SHOT_DELAY, 160, ID_SHOT_DELAY);
+    for key in ["delay_off", "delay_1", "delay_2", "delay_3", "delay_5"] {
+        let w = wide(t(key));
+        SendMessageW(delay, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    SendMessageW(
+        delay,
+        CB_SETCURSEL,
+        Some(WPARAM(
+            shot_delay_combo_index(settings::screenshot_delay_sec()) as usize,
+        )),
+        None,
+    );
+    SendMessageW(delay, CB_SETDROPPEDWIDTH, Some(WPARAM(230)), None);
+    dark_theme_combo(delay);
+    restyle::dark_combo_subclass(delay, ID_SHOT_DELAY);
+
     let combo = lc.combo(t("lbl_language"), ID_LBL_LANG, 260, ID_LANG);
     fill_lang_combo(combo);
     // The closed box is narrow, but the dropdown is wider so long native language

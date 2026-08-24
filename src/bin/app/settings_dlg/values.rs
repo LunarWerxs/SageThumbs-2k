@@ -172,6 +172,10 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
             None,
         );
     }
+    if let Ok(delay) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
+        // Index 0 is "Off" — SHOT_DELAY_STEPS[0] is the getter's default, pinned by test.
+        SendMessageW(delay, CB_SETCURSEL, Some(WPARAM(0)), None);
+    }
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
         // Factory order + every item shown (rebuilds the rows, dividers included).
         let rows = default_menu_rows(|_| true);
@@ -463,6 +467,14 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
         // CB_ERR is -1 (no selection); clamp to a real index rather than storing it.
         let sel = SendMessageW(tool, CB_GETCURSEL, None, None).0.max(0);
         let _ = settings::set_screenshot_default_tool(sel as u32);
+    }
+    if let Ok(delay) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
+        let sel = SendMessageW(delay, CB_GETCURSEL, None, None).0.max(0) as usize;
+        let secs = settings::SHOT_DELAY_STEPS
+            .get(sel)
+            .copied()
+            .unwrap_or_default();
+        let _ = settings::set_screenshot_delay_sec(secs);
     }
     let _ = settings::set_dword("ContainerSort", checked(hwnd, ID_C_SORT) as u32);
     let _ = settings::set_dword(
@@ -783,6 +795,19 @@ pub(super) fn shot_tool_combo_index(raw: u32) -> u32 {
     } else {
         settings::DEFAULT_SHOT_TOOL
     }
+}
+
+/// Combo index for the capture-delay picker: the position of the stored seconds in
+/// [`settings::SHOT_DELAY_STEPS`], degrading to 0 ("Off") for a value the dropdown does not
+/// offer — same discipline as [`shot_tool_combo_index`], so a hand-edited registry value can
+/// neither blank the combo nor claim a delay the capture will not honour. (The GETTER clamps
+/// to 0..=10, so a stored 7 is honoured at capture time but displays as Off — acceptable for
+/// a value only reachable by hand-editing the registry.)
+pub(super) fn shot_delay_combo_index(raw_secs: u32) -> u32 {
+    settings::SHOT_DELAY_STEPS
+        .iter()
+        .position(|&s| s == raw_secs)
+        .unwrap_or(0) as u32
 }
 
 /// Combo index matching a packed `(mods << 8 | vk)` hotkey against [`SHOT_PRESETS`], or `0`
@@ -1127,6 +1152,19 @@ mod combo_reseed_tests {
     /// MATH is, and it's the part that would silently select the wrong entry if it drifted from
     /// `build_controls`'s seeding (the bug this whole fix exists for: Import writing a value
     /// nothing then re-selects, so a stale on-screen index gets read back and saved over it).
+    #[test]
+    fn shot_delay_index_maps_the_steps_and_degrades_to_off() {
+        // Every offered step maps to its own slot...
+        for (i, &secs) in settings::SHOT_DELAY_STEPS.iter().enumerate() {
+            assert_eq!(shot_delay_combo_index(secs), i as u32);
+        }
+        // ...anything else (hand-edited registry) shows as Off rather than blanking the combo.
+        assert_eq!(shot_delay_combo_index(4), 0);
+        assert_eq!(shot_delay_combo_index(u32::MAX), 0);
+        // And "Off" IS the getter's default: a fresh install and pressing Defaults agree.
+        assert_eq!(settings::SHOT_DELAY_STEPS[0], 0);
+    }
+
     #[test]
     fn shot_tool_index_falls_back_out_of_range() {
         assert_eq!(shot_tool_combo_index(0), 0);

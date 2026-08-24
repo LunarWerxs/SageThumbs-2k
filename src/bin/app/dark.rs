@@ -29,8 +29,9 @@ pub(crate) const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
 }
 
-/// Pick the dark or light value for the current theme. `is_dark()` is constant for
-/// the life of the process, so callers (and the cached brushes) resolve once.
+/// Pick the dark or light value for the current theme. Resolved per call: the Quick preview's
+/// caption toggle can flip [`is_dark`] for its own thread at runtime (see [`set_theme_override`]),
+/// so anything that caches a colour has to be keyed by theme, not resolved once.
 #[inline]
 fn tc(dark: COLORREF, light: COLORREF) -> COLORREF {
     if is_dark() {
@@ -143,6 +144,27 @@ pub(crate) fn CODE_COMMENT() -> COLORREF {
     tc(rgb(106, 153, 85), rgb(0, 128, 0))
 }
 
+thread_local! {
+    /// A runtime light/dark override for THIS thread, or `None` to follow the setting/OS.
+    ///
+    /// Set by the Quick preview's caption theme button: a user reading a dark photograph in a
+    /// light-themed install wants THAT preview dark, without flipping the whole app. It is
+    /// deliberately per-thread rather than per-process — the viewer owns its UI thread, so an
+    /// override cannot reach the Settings or About windows, which are separate processes today
+    /// and would be separate threads even if that changed.
+    ///
+    /// It is also deliberately NOT persisted, matching the view-source toggle: a fresh preview
+    /// opens in the theme the user actually chose in Settings.
+    static THEME_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Force this thread's effective theme (`Some(true)` = dark, `None` = follow the setting/OS).
+/// The caller is responsible for redrawing and for re-applying anything the theme was baked
+/// into — a window frame ([`titlebar_theme`]) and any already-composited bitmap.
+pub(crate) fn set_theme_override(dark: Option<bool>) {
+    THEME_OVERRIDE.with(|c| c.set(dark));
+}
+
 /// True when the (effective) theme is dark. Reads `AppsUseLightTheme == 0` via the shared
 /// [`sagethumbs2k_core::safety::apps_use_dark_theme`] probe (also used by
 /// `contextmenu::paint::menu_dark` and `previewhandler::theme_is_dark` — this used to be a
@@ -150,6 +172,9 @@ pub(crate) fn CODE_COMMENT() -> COLORREF {
 /// `ST2K_THEME=light|dark` overrides the registry — a test/diagnostic hook so both
 /// skins can be exercised without flipping the OS theme.
 pub(crate) fn is_dark() -> bool {
+    if let Some(forced) = THEME_OVERRIDE.with(|c| c.get()) {
+        return forced;
+    }
     static DARK: OnceLock<bool> = OnceLock::new();
     *DARK.get_or_init(|| {
         if let Ok(v) = std::env::var("ST2K_THEME") {
@@ -226,7 +251,14 @@ pub(crate) unsafe fn dark_control(h: HWND, theme: PCWSTR) {
 
 /// Dark title bar via DWM.
 pub(crate) unsafe fn dark_titlebar(h: HWND) {
-    let on = BOOL(1);
+    titlebar_theme(h, true);
+}
+
+/// Set (or CLEAR) the DWM dark-frame attribute. The clearing direction is what the Quick
+/// preview's theme toggle needs: the attribute is applied once at window creation, so without
+/// an explicit `false` a window that started dark keeps a dark frame around a light client.
+pub(crate) unsafe fn titlebar_theme(h: HWND, dark: bool) {
+    let on = BOOL(i32::from(dark));
     let _ = DwmSetWindowAttribute(
         h,
         DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -235,25 +267,33 @@ pub(crate) unsafe fn dark_titlebar(h: HWND) {
     );
 }
 
-unsafe fn cached_brush(color: COLORREF, slot: &'static OnceLock<usize>) -> HBRUSH {
+/// Brushes are cached PER THEME, not once: [`is_dark`] can be overridden at runtime for a
+/// thread, and a single-slot cache would hand a dark brush to a light window (or the reverse)
+/// for the rest of the process. Two slots is the whole fix; the theme is a bool.
+unsafe fn cached_brush(color: COLORREF, slots: &'static [OnceLock<usize>; 2]) -> HBRUSH {
+    let slot = &slots[usize::from(is_dark())];
     HBRUSH(*slot.get_or_init(|| CreateSolidBrush(color).0 as usize) as *mut c_void)
 }
-/// Window-background brush for the current theme (cached; theme is constant per run).
+/// A fresh pair of empty brush slots (light, dark).
+const fn brush_slots() -> [OnceLock<usize>; 2] {
+    [OnceLock::new(), OnceLock::new()]
+}
+/// Window-background brush for the current theme.
 pub(crate) unsafe fn dark_bg_brush() -> HBRUSH {
-    static B: OnceLock<usize> = OnceLock::new();
+    static B: [OnceLock<usize>; 2] = brush_slots();
     cached_brush(DARK_BG(), &B)
 }
 /// Edit/listbox-fill brush for the current theme.
 pub(crate) unsafe fn dark_ctl_brush() -> HBRUSH {
-    static B: OnceLock<usize> = OnceLock::new();
+    static B: [OnceLock<usize>; 2] = brush_slots();
     cached_brush(DARK_CTL_BG(), &B)
 }
 pub(crate) unsafe fn dark_menu_brush() -> HBRUSH {
-    static B: OnceLock<usize> = OnceLock::new();
+    static B: [OnceLock<usize>; 2] = brush_slots();
     cached_brush(tc(rgb(43, 43, 43), rgb(249, 249, 249)), &B)
 }
 pub(crate) unsafe fn dark_menu_sel_brush() -> HBRUSH {
-    static B: OnceLock<usize> = OnceLock::new();
+    static B: [OnceLock<usize>; 2] = brush_slots();
     cached_brush(tc(rgb(62, 62, 66), rgb(0, 120, 215)), &B)
 }
 

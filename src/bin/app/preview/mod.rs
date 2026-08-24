@@ -25,6 +25,7 @@ mod font;
 mod highlight;
 mod infocard;
 mod loader;
+mod mailmsg;
 mod markdown;
 mod mdhtml;
 mod paint;
@@ -776,6 +777,12 @@ pub(crate) struct ShotOpts {
     /// real click path (`do_action` → `toggle_source` → reload) rather than presetting the mode
     /// like `--source` does. Combine with `--source` to verify toggling back to rendered.
     pub toggle_source: bool,
+    /// PRESS the light/dark toolbar button once after loading (`--toggle-theme`), driving the
+    /// real click path (`do_action` -> `toggle_theme` -> palette override + reload). Without it
+    /// the toggle would be verifiable only by clicking, and its whole job is that everything the
+    /// previous theme was baked into gets rebuilt - which a still of a window that merely
+    /// STARTED in the other theme cannot show.
+    pub toggle_theme: bool,
     /// RESIZE the window to `W`x`H` after loading (`--size WxH`), exactly as dragging the frame
     /// does (a real `SetWindowPos` → `WM_SIZE`), then capture. This is how "does the content
     /// re-flow when the window gets wider" is verified headlessly instead of on the desktop.

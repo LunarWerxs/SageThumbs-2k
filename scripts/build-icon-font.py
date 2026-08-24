@@ -88,6 +88,13 @@ GLYPHS = [
     ("open_in_new", 0xE8A7),           # Open
     ("open_in_browser", 0xE7AC),       # OpenWith
     ("close", 0xE711),                 # Close, shared with the screenshot editor
+    ("settings", 0xE713),              # Settings, jumps to Settings > Quick preview
+    # The theme toggle draws ONE of these, whichever it would switch TO: a sun while the
+    # viewer is dark, a moon while it is light. Both must exist or the button goes blank in
+    # one of its two states. The codepoints are Segoe's Brightness / QuietHours, which are a
+    # sun and a moon there too, so the OS-font fallback chain still reads correctly.
+    ("light_mode", 0xE706),            # Theme, switch to light
+    ("dark_mode", 0xE708),             # Theme, switch to dark
     # video transport (preview/transport.rs)
     ("play_arrow", 0xE768),
     ("pause", 0xE769),
@@ -113,6 +120,33 @@ GLYPHS = [
 # instance and grafted in - at the app's existing "pinned" codepoint.
 PIN_MATERIAL_NAME = "push_pin"
 PIN_FILLED_OUT = 0xE840
+
+# ---------------------------------------------------------------------------
+# OPTICAL NORMALIZATION - why the outlines get scaled instead of shipped as-is
+# ---------------------------------------------------------------------------
+# Material draws every icon inside a 24dp grid but lets each one use as much of that grid as
+# its own shape wants: `info` is a circle filling 20dp, `close` is an X inset to 14dp. Read one
+# at a time that is a deliberate optical choice. Read as a ROW of eight in a 38px toolbar it is
+# just uneven - measured off a real capture of the Quick preview caption, the ink boxes ranged
+# from 9 px (close) to 14 px (push_pin), a 1.55x spread, which is what a user sees and calls
+# "the icons are different sizes".
+#
+# So each glyph is scaled about the grid centre until its LONGEST side reaches TARGET. The
+# clamp is the whole subtlety: a uniform scale takes the stroke weight with it, so pushing a
+# thin mark like `chevron_right` (12dp tall) all the way to 20dp would make it the BOLDEST
+# thing on the bar while fixing its size - trading one kind of unevenness for a worse one.
+# MAX_SCALE stops short of that, which leaves the genuinely small marks (chevrons, skip) a
+# little smaller than the solid ones, exactly as they should be.
+NORM_TARGET = 800  # font units at 960 upm = 20dp, the largest extent Material itself uses
+NORM_MAX_SCALE = 1.30  # never bolden a thin mark past this to make it "match"
+NORM_MIN_SCALE = 0.92  # and never shrink a wide one to nothing
+NORM_CENTER = (480, 480)  # the 24dp grid's centre in font units - scale about this, not the bbox
+
+# Codepoints that MUST come out at the same scale as each other. The pin is one button in two
+# states: an outline pin and a filled one. They are separate glyphs from separate instances, so
+# nothing but this makes them agree - and a pin that changed SIZE when you pinned the window
+# would read as the toolbar twitching.
+SCALE_GROUPS = [(0xE718, PIN_FILLED_OUT)]
 
 
 def load_codepoints(src: Path) -> dict[str, int]:
@@ -151,6 +185,77 @@ def build_instance(src: Path, fill: int, unicodes: list[int], remap: dict[int, i
     font.save(buf)
     buf.seek(0)
     return buf
+
+
+def glyph_bounds(glyph_set, glyph_name):
+    """(xMin, yMin, xMax, yMax) of a glyph's ink, or None when it draws nothing."""
+    from fontTools.pens.boundsPen import BoundsPen
+
+    pen = BoundsPen(glyph_set)
+    glyph_set[glyph_name].draw(pen)
+    return pen.bounds
+
+
+def normalize_optical_sizes(font) -> list[tuple[int, str, float, int]]:
+    """Scale each glyph about the grid centre so the set reads as one size. See NORM_* above.
+
+    Returns one (codepoint, glyph name, scale, new longest side) row per glyph, for the report
+    the caller prints - a silent geometry pass is exactly the kind of change that should be
+    visible in the build output.
+    """
+    from fontTools.misc.transform import Transform
+    from fontTools.pens.recordingPen import DecomposingRecordingPen
+    from fontTools.pens.transformPen import TransformPen
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    cmap = font.getBestCmap()
+    cx, cy = NORM_CENTER
+    # Snapshot the glyph set ONCE, before any outline is replaced: every measurement and every
+    # decompose below must see the ORIGINAL outlines, or a glyph read after its own rewrite
+    # would be measured (or a component resolved) against already-scaled contours.
+    gs = font.getGlyphSet()
+
+    # Pass 1: the scale each glyph wants on its own.
+    scales: dict[str, float] = {}
+    for cp, name in cmap.items():
+        b = glyph_bounds(gs, name)
+        if b is None:
+            continue
+        longest = max(b[2] - b[0], b[3] - b[1])
+        if longest <= 0:
+            continue
+        scales[name] = min(max(NORM_TARGET / longest, NORM_MIN_SCALE), NORM_MAX_SCALE)
+
+    # Pass 2: force the grouped codepoints onto one shared scale (the smaller of the two, so a
+    # grouped glyph can only ever come out at or under its own target - never overshoot it).
+    for group in SCALE_GROUPS:
+        names = [cmap[cp] for cp in group if cp in cmap and cmap[cp] in scales]
+        if len(names) > 1:
+            shared = min(scales[n] for n in names)
+            for n in names:
+                scales[n] = shared
+
+    # Pass 3: rewrite the outlines. Decomposing first means a composite glyph is flattened to
+    # contours rather than scaled twice (once as the component, once by its own transform).
+    glyf = font["glyf"]
+    report = []
+    for cp, name in sorted(cmap.items()):
+        b = glyph_bounds(gs, name)
+        s = scales.get(name)
+        if b is None or s is None:
+            continue
+        if abs(s - 1.0) >= 1e-9:
+            rec = DecomposingRecordingPen(gs)
+            gs[name].draw(rec)
+            out = TTGlyphPen(None)
+            # Translate to the grid centre, scale, translate back - so a glyph keeps the
+            # position it was drawn at instead of drifting toward the origin as it grows.
+            t = Transform().translate(cx, cy).scale(s, s).translate(-cx, -cy)
+            rec.replay(TransformPen(out, t))
+            glyf[name] = out.glyph()
+            glyf[name].recalcBounds(glyf)
+        report.append((cp, name, s, round(max(b[2] - b[0], b[3] - b[1]) * s)))
+    return report
 
 
 def rename_face(font, name: str) -> None:
@@ -205,6 +310,9 @@ def main() -> int:
     pb.write_bytes(b.read())
     try:
         merged = Merger().merge([str(pa), str(pb)])
+        # AFTER the merge, so the two pin instances are normalized together (see SCALE_GROUPS)
+        # rather than each against its own part-font.
+        norm = normalize_optical_sizes(merged)
         rename_face(merged, FACE_NAME)
         merged.save(str(OUT_TTF))
     finally:
@@ -222,9 +330,22 @@ def main() -> int:
         print("MISSING GLYPHS: " + ", ".join(missing), file=sys.stderr)
         return 1
 
+    # The normalization is a silent geometry change to a committed binary asset, so print what
+    # it did: which glyphs moved, by how much, and where the longest side landed. A row that
+    # sits AT a clamp is the one to look at if the toolbar ever reads uneven again.
+    print(f"\noptical normalization  target={NORM_TARGET}  "
+          f"clamp=[{NORM_MIN_SCALE}, {NORM_MAX_SCALE}]  centre={NORM_CENTER}")
+    for cp, name, s, longest in norm:
+        flag = ""
+        if abs(s - NORM_MAX_SCALE) < 1e-9:
+            flag = "  <- at MAX clamp (stayed smaller on purpose)"
+        elif abs(s - NORM_MIN_SCALE) < 1e-9:
+            flag = "  <- at MIN clamp"
+        print(f"  U+{cp:04X} {name:<12} x{s:.3f} -> {longest:>4}{flag}")
+
     OUT_LICENSE.write_text(LICENSE_TEXT, encoding="utf-8")
     size = os.path.getsize(OUT_TTF)
-    print(f"wrote {OUT_TTF.relative_to(REPO)}  {size:,} bytes  {len(cmap)} glyphs")
+    print(f"\nwrote {OUT_TTF.relative_to(REPO)}  {size:,} bytes  {len(cmap)} glyphs")
     print(f"wrote {OUT_LICENSE.relative_to(REPO)}")
     return 0
 

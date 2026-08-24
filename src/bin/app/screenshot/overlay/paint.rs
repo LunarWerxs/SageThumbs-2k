@@ -61,12 +61,15 @@ pub(super) unsafe fn shot_paint(hwnd: HWND) {
     let sel = match s.sel {
         Some(r) => r,
         None if s.sel_dragging => tools::norm(s.sel_anchor, s.cur),
-        None => RECT {
+        // Idle with a window under the cursor: preview that window's rect exactly as a
+        // drag-in-progress paints — bright inside the dim, framed below — so "a click
+        // captures THIS" is shown rather than explained.
+        None => s.win_hint.unwrap_or(RECT {
             left: 0,
             top: 0,
             right: 0,
             bottom: 0,
-        },
+        }),
     };
     if sel.right > sel.left && sel.bottom > sel.top {
         let _ = BitBlt(

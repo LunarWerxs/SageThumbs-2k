@@ -8,8 +8,8 @@
 use windows::Win32::Foundation::{COLORREF, RECT};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, FrameRect,
-    SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, DEFAULT_CHARSET, DT_CALCRECT,
-    DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, LOGFONTW, TRANSPARENT,
+    SelectObject, SetBkMode, SetTextColor, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_SINGLELINE,
+    DT_VCENTER, HDC, HFONT, HGDIOBJ, LOGFONTW, TRANSPARENT,
 };
 
 use crate::dark::rgb;
@@ -333,7 +333,7 @@ pub(super) unsafe fn draw(
                     gdip::drop_brush(b);
                 });
             }
-            Button::Ocr => draw_ocr_glyph(hdc, *r),
+            Button::Ocr => draw_ocr_glyph(hdc, *r, dpi),
             _ => {
                 if let Some(ch) = button_glyph(*btn) {
                     let old = SelectObject(hdc, HGDIOBJ(icon.0));
@@ -361,18 +361,7 @@ pub(super) unsafe fn draw(
 /// that is Windows 11 only, and GDI substitutes silently rather than failing, so on Windows 10
 /// every font-glyph button rendered as an empty box (issue #21).
 unsafe fn icon_font(dpi: i32) -> HFONT {
-    let mut lf = LOGFONTW {
-        lfHeight: -dpi_scale_dpi(16, dpi),
-        lfWeight: 400,
-        lfQuality: CLEARTYPE_QUALITY,
-        lfCharSet: DEFAULT_CHARSET,
-        ..Default::default()
-    };
-    let face = wide(crate::win::icon_font_face());
-    for (i, c) in face.iter().take(lf.lfFaceName.len() - 1).enumerate() {
-        lf.lfFaceName[i] = *c;
-    }
-    CreateFontIndirectW(&lf)
+    crate::win::icon_font(dpi_scale_dpi(16, dpi))
 }
 
 /// The Segoe Fluent Icons codepoint for a button with a clean glyph (the action
@@ -398,10 +387,10 @@ fn button_glyph(btn: Button) -> Option<u16> {
 /// The OCR button's icon: a scan frame (four corner brackets) around two text lines —
 /// the conventional "read the text in this area" mark. Drawn as a vector rather than a
 /// font glyph because Segoe Fluent has no unambiguous OCR codepoint, and a wrong one
-/// would render as a tofu box. Sized like the other vector glyphs (design px around the
-/// cell centre, deliberately unscaled so it matches them at every DPI).
-unsafe fn draw_ocr_glyph(hdc: HDC, r: RECT) {
-    gdip::ocr_glyph(hdc, r, rgb(232, 232, 232));
+/// would render as a tofu box. Sized off the same icon-font em the neighbouring glyph
+/// buttons draw with, so it reads as one of them at every DPI.
+unsafe fn draw_ocr_glyph(hdc: HDC, r: RECT, dpi: i32) {
+    gdip::ocr_glyph(hdc, r, rgb(232, 232, 232), dpi_scale_dpi(16, dpi));
 }
 
 /// AA vector glyphs for the geometric tools (no font glyph exists for plain shapes).

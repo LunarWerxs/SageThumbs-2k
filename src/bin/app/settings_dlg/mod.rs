@@ -446,6 +446,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_MENU_PREVIEW, "tip_menu_preview"),
     (ID_APP_THEME, "tip_app_theme"),
     (ID_SHOT_TOOL, "tip_shot_tool"),
+    (ID_SHOT_DELAY, "tip_shot_delay"),
     (ID_MENU_QUICK, "tip_menu_quick"),
     (ID_MENU_CHECKER, "tip_menu_checker"),
     (ID_FOLDER_PREBUILD, "tip_folder_prebuild"),
@@ -1001,6 +1002,26 @@ pub(super) unsafe fn on_resize(hwnd: HWND, client_h: i32) {
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 
+/// How many Settings pages exist — the bound `--tab N` is validated against.
+pub(crate) const NAV_CATEGORY_COUNT: usize = navrail::NCAT;
+/// Control id of the FIRST nav-rail item; page `n`'s item is `NAV_ID_BASE + n`.
+pub(crate) const NAV_ID_BASE: i32 = navrail::ID_NAV_BASE;
+
+/// Show Settings page `ci`. The wrapper exists so `main`'s `--tab` can reach the nav rail
+/// without `navrail`'s internals becoming crate-visible.
+///
+/// # Safety
+/// `hwnd` must be a live Settings window whose controls have been built.
+pub(crate) unsafe fn show_category(hwnd: HWND, ci: usize) {
+    switch_category(hwnd, ci);
+}
+
+/// The nav-rail index of the **Quick preview** page, for `--tab`. Resolved by NAME through
+/// `navrail::category_index` rather than written as a literal, so inserting a Settings page
+/// cannot re-point the Quick preview viewer's caption gear at somebody else's page.
+pub(crate) fn quick_preview_page() -> usize {
+    navrail::category_index("nav_quickpreview").unwrap_or(0)
+}
 pub(crate) extern "system" fn wndproc(
     hwnd: HWND,
     msg: u32,

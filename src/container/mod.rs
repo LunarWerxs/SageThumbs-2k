@@ -50,7 +50,7 @@ mod ilbm;
 mod max;
 mod mobi;
 mod office;
-mod ole;
+pub mod ole;
 mod pdn;
 mod project;
 mod psd;

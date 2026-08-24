@@ -94,7 +94,14 @@ tip_enable_menu = "Додає підменю SageThumbs 2K (Перетворит
 tip_app_theme = "Світла або темна тема для власних вікон SageThumbs замість стеження за налаштуванням кольору застосунків Windows. Застосовується під час наступного відкриття вікна."
 tip_menu_preview = "Де показувати попередній перегляд у контекстному меню: вимкнено, у підменю чи в головному меню."
 lbl_shot_tool = "Починати з:"
+lbl_shot_delay = "Затримка перед захопленням:"
+delay_off = "Вимкнено"
+delay_1 = "1 секунда"
+delay_2 = "2 секунди"
+delay_3 = "3 секунди"
+delay_5 = "5 секунд"
 tip_shot_tool = "Яким інструментом малювання відкривається редактор знімків екрана. Типово стрілка, адже вказати на зняте — звична причина щось підписати."
+tip_shot_delay = "Стільки чекає після натискання клавіші, перш ніж заморозити екран, рахуючи назад біля курсора. Достатньо, щоб відкрити меню або викликати підказку, яку ви справді хотіли захопити на знімку. Esc під час відліку скасовує."
 tool_arrow = "Стрілка"
 tool_rect = "Прямокутник"
 tool_ellipse = "Еліпс"
@@ -202,6 +209,7 @@ ttf_done_copied = "Скопійовано {done} файлів у теки за �
 # Eyedropper (screen color picker) hint
 eye_hint = "Натисніть Пробіл (або клацніть), щоб скопіювати · Esc"
 eye_hint_stash = "Ctrl+Пробіл додає до списку · Пробіл копіює все"
+eye_hint_extras = "Tab: формат · 1-9: останній колір"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "Сховати значок в області сповіщень"
@@ -252,6 +260,9 @@ tip_preview_text = "Показувати текстові файли та фай
 tip_preview_markdown = "Переглядати файли Markdown (.md) у стилі GitHub: заголовки, списки, таблиці, блоки коду та жирний/курсив/посилання в тексті."
 preview_tip_prev = "Попередня сторінка"
 preview_tip_next = "Наступна сторінка"
+preview_tip_theme_light = "Світле тло"
+preview_tip_theme_dark = "Темне тло"
+preview_tip_settings = "Налаштування швидкого перегляду"
 preview_tip_pin = "Закріпити зверху"
 preview_tip_copy = "Копіювати шлях до файлу"
 preview_tip_ocr = "Копіювати текст (OCR)"
@@ -260,6 +271,15 @@ preview_tip_upload = "Завантажити та скопіювати поси�
 preview_tip_openwith = "Відкрити за допомогою…"
 preview_tip_open = "Відкрити"
 preview_tip_close = "Закрити"
+# Quick preview email view (.eml / Outlook .msg)
+mail_from = "Від"
+mail_to = "Кому"
+mail_cc = "Копія"
+mail_date = "Дата"
+mail_attachments = "Вкладення"
+mail_no_subject = "(без теми)"
+mail_unnamed_attachment = "(вкладення без назви)"
+mail_truncated = "повідомлення обрізано"
 preview_tip_toc = "Структура"
 preview_tip_source = "Переглянути код"
 

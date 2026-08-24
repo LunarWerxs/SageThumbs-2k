@@ -94,7 +94,14 @@ tip_enable_menu = "เพิ่มเมนูย่อย SageThumbs 2K (แป
 tip_app_theme = "ธีมสว่างหรือมืดสำหรับหน้าต่างของ SageThumbs เอง แทนที่จะทำตามการตั้งค่าสีของแอปใน Windows จะมีผลเมื่อเปิดหน้าต่างครั้งถัดไป"
 tip_menu_preview = "ตำแหน่งของตัวอย่างในเมนูคลิกขวา: ปิด, ในเมนูย่อย หรือในเมนูหลัก"
 lbl_shot_tool = "เริ่มด้วย:"
+lbl_shot_delay = "หน่วงเวลาก่อนจับภาพ:"
+delay_off = "ปิด"
+delay_1 = "1 วินาที"
+delay_2 = "2 วินาที"
+delay_3 = "3 วินาที"
+delay_5 = "5 วินาที"
 tip_shot_tool = "เครื่องมือวาดที่เลือกไว้แล้วเมื่อเปิดตัวแก้ไขภาพหน้าจอ ค่าเริ่มต้นคือลูกศร เพราะการชี้ไปยังสิ่งที่จับภาพไว้คือเหตุผลปกติของการใส่คำอธิบาย"
+tip_shot_delay = "รอนานเท่านี้หลังกดปุ่มลัดก่อนจับภาพหน้าจอ พร้อมนับถอยหลังข้างเคอร์เซอร์ นานพอให้เปิดเมนูหรือเรียกทูลทิปที่คุณต้องการให้ติดอยู่ในภาพ กด Esc ระหว่างนับถอยหลังเพื่อยกเลิก"
 tool_arrow = "ลูกศร"
 tool_rect = "สี่เหลี่ยม"
 tool_ellipse = "วงรี"
@@ -197,6 +204,7 @@ ttf_done_copied = "คัดลอกแล้ว {done} ไฟล์ลงโ�
 # Eyedropper (screen color picker) hint
 eye_hint = "กด Space (หรือคลิก) เพื่อคัดลอก · Esc"
 eye_hint_stash = "Ctrl+Space เพิ่มลงรายการ · Space คัดลอกทั้งหมด"
+eye_hint_extras = "Tab: รูปแบบ · 1-9: สีล่าสุด"
 
 # Settings: tray toggle / menu-items checklist / preserve-date (0.3.2)
 chk_hide_tray = "ซ่อนไอคอนถาดระบบ"
@@ -247,6 +255,9 @@ tip_preview_text = "แสดงไฟล์ข้อความและโค
 tip_preview_markdown = "แสดงตัวอย่างไฟล์ Markdown (.md) ในรูปแบบสไตล์ GitHub ได้แก่ หัวข้อ รายการ ตาราง บล็อกโค้ด และตัวหนา/ตัวเอียง/ลิงก์ในเนื้อหา"
 preview_tip_prev = "หน้าก่อนหน้า"
 preview_tip_next = "หน้าถัดไป"
+preview_tip_theme_light = "พื้นหลังสว่าง"
+preview_tip_theme_dark = "พื้นหลังมืด"
+preview_tip_settings = "การตั้งค่าการแสดงตัวอย่างด่วน"
 preview_tip_pin = "ปักหมุดไว้บนสุด"
 preview_tip_copy = "คัดลอกที่อยู่ไฟล์"
 preview_tip_ocr = "คัดลอกข้อความ (OCR)"
@@ -255,6 +266,15 @@ preview_tip_upload = "อัปโหลดและคัดลอกลิง�
 preview_tip_openwith = "เปิดด้วย…"
 preview_tip_open = "เปิด"
 preview_tip_close = "ปิด"
+# Quick preview email view (.eml / Outlook .msg)
+mail_from = "จาก"
+mail_to = "ถึง"
+mail_cc = "สำเนา"
+mail_date = "วันที่"
+mail_attachments = "ไฟล์แนบ"
+mail_no_subject = "(ไม่มีหัวเรื่อง)"
+mail_unnamed_attachment = "(ไฟล์แนบไม่มีชื่อ)"
+mail_truncated = "ข้อความถูกตัดทอน"
 preview_tip_toc = "เค้าร่าง"
 preview_tip_source = "ดูซอร์สโค้ด"
 

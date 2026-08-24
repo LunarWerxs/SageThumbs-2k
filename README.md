@@ -10,7 +10,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 [![Windows 11](https://img.shields.io/badge/Windows%2011-0078D6?logo=windows11&logoColor=white)](#-install)
 [![Built with Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=222)](#-how-it-works)
-![Formats](https://img.shields.io/badge/formats-331-2ea44f)
+![Formats](https://img.shields.io/badge/formats-334-2ea44f)
 [![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?sort=semver)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
@@ -43,17 +43,17 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 </div>
 
-SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 331 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
+SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 334 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
 
 ---
 
 ## TL;DR
 
-- 🖼️ Explorer thumbnails for **331 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
+- 🖼️ Explorer thumbnails for **334 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
 - 🛡️ **A corrupt or malicious file can't crash Explorer**: runs out-of-process, panic-guarded, with a sandboxed decoder.
 - ⚡ **Fast even on big files**: camera RAW thumbnails from its embedded preview instead of a slow demosaic (3–13× quicker), and no format is allowed to hang a folder.
 - 🧰 **Right-click toolkit:** convert, resize, lossless rotate, combine-to-PDF/CBZ, system-wide eyedropper, OCR, and more; all non-destructive, and **multi-file jobs run in parallel across every core**.
-- 👁️ **Press Space to preview** any file, QuickLook-style: an instant full-size popup with **video & audio playback**, **syntax-highlighted** code, **rendered Markdown**, **multi-page PDF** paging, **font specimens**, **archive listings**, **SQLite databases** (tables, columns and rows, read-only), arrow-key folder browsing and full-screen (F11). Works in Explorer, on the Desktop, in **[Everything](https://www.voidtools.com/) search results**, and inside any app's **Open/Save dialog**.
+- 👁️ **Press Space to preview** any file, QuickLook-style: an instant full-size popup with **video & audio playback**, **syntax-highlighted** code, **rendered Markdown**, **multi-page PDF** paging, **font specimens**, **archive listings**, **SQLite databases** (tables, columns and rows, read-only), **email files** (.eml and Outlook .msg: headers, body and the attachment list, with nothing fetched from the web), **3D-print models** (STL/OBJ/PLY, shaded), arrow-key folder browsing and full-screen (F11). Works in Explorer, on the Desktop, in **[Everything](https://www.voidtools.com/) search results**, and inside any app's **Open/Save dialog**.
 - 🔤 **Copy text off your screen**: drag a region and the words land on your clipboard, in an editable window so you can fix a misread. Uses Windows' own recognizer, so it adds nothing to the download.
 - 🎛️ **Make the menu yours**: **drag-reorder** (and show/hide) every right-click entry *and* its dividers; the context menu mirrors your layout exactly.
 - 🎨 **Redesigned Settings**: a Win11-style category nav rail with toggle switches, a **search box that finds any setting on any page**, system-following **dark mode**, **36 languages**.
@@ -85,7 +85,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 
 |  |  |
 |---|---|
-| 🖼️ **331 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
+| 🖼️ **334 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
 | 📚 **Ebooks & comics** | EPUB, MOBI/AZW (Kindle), FB2, CBZ/CB7/CBR/CBT: real covers in Explorer (a native-Rust [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) port). Plain ZIP/RAR/7Z archives within the configured file-size limit get a contact-sheet thumbnail of the images inside, too |
 | 🎨 **Art / CAD / 3D / design** | PSD/PSB, Affinity, Clip Studio, Krita, OpenRaster, Blender, 3MF, FreeCAD, G-code, **SketchUp, Rhino, AutoCAD DWG, 3ds Max, Adobe XD, InDesign, Visio, CorelDRAW, Fusion 360 (.f3d)**: preview pulled straight from inside the file (no host app needed) |
 | 📄 **DjVu** | Pure-Rust, zero-GPL decode via [`djvu-rs`](https://crates.io/crates/djvu-rs); scanned books show their text |
@@ -95,7 +95,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 | ⚡ **Parallel batch** | Multi-file Convert / Resize / Rotate / Strip and Combine-to-PDF fan out across **all CPU cores** (6–15× faster): a tiny dependency-free scoped thread pool, no rayon bloat in the shell DLL |
 | 🎛️ **Make the menu yours** | The Settings "Menu items" list lets you **drag-reorder** every right-click entry *and* its group dividers: the menu mirrors your layout exactly (WYSIWYG). Tick items off to hide them, or hit **Reset order** for the default |
 | 🤖 **CLI + MCP server** | `st2k.exe`: `thumbnail · convert · batch · rotate · ocr · pdf · …` as a scriptable/AI-agent toolbox (`st2k --mcp`); **`batch`** parallel-processes whole folders in one process. The MCP server adds **`view`** (decode any supported format to a PNG block so an AI agent can *see* the file) and **`compress`** tools |
-| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 331 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
+| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 334 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
 | 🎨 **Colour management** | Embedded **ICC** profiles and wide-gamut images (**Display P3 / Adobe RGB**) render in correct sRGB instead of over-saturated; AVIF/HEIC read their `colr` box (incl. the iPhone-HEIC CICP Display-P3 signal), and **CMYK JPEGs** are colour-managed through their embedded profile; pure-Rust, no C deps |
 | 🔧 **Repair file associations** | One button in **Settings ▸ Diagnostics** re-registers SageThumbs for every enabled format when another app has hijacked the thumbnails, then clears the thumbnail cache |
 | 🛡️ **Crash-isolated** | Out-of-process, `catch_unwind` under `panic = "abort"`, sandboxed ImageMagick child (CPU-time budget + kill-timeout), decompression-bomb guards |
@@ -116,17 +116,17 @@ There's a checklist of little utilities people reinstall on every new Windows bo
 
 | Instead of installing... | You already have it |
 |---|---|
-| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **331 formats**, crash-isolated so a corrupt file can't hang Explorer |
-| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 331 formats (reading pane and Open dialogs) |
+| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **334 formats**, crash-isolated so a corrupt file can't hang Explorer |
+| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 334 formats (reading pane and Open dialogs) |
 | A **Space-bar preview** app (QuickLook, Seer) | Tap Space for an instant full-size preview, macOS-style: video plays, code is syntax-highlighted, Markdown renders, PDFs page, SQLite databases open as tables **(new)** |
 | An **EXIF / metadata viewer** (ExifToolGUI, Opanda IExif) | EXIF, GPS, dimensions and audio tags as **sortable Explorer columns** |
 | A **batch converter** (XnConvert, IrfanView + plugins, ImageMagick) | Right-click **Convert** to ~29 formats (AVIF, JPEG XL, PSD, DDS, EXR...), batched across every core |
 | A **resizer** (PowerToys Image Resizer) | Right-click **Resize** presets and **Shrink for email** |
 | **jpegtran**, or IrfanView's lossless-rotate plugin | **Lossless JPEG rotate / flip**, zero re-encode |
-| A **color picker** (PowerToys, Just Color Picker, Instant Eyedropper) | A **system-wide eyedropper** with a 10x loupe; Space copies `#RRGGBB` |
+| A **color picker** (PowerToys, Just Color Picker, Instant Eyedropper) | A **system-wide eyedropper** with a 10x loupe; copies **hex, rgb(), hsl() or hsv()** (Tab switches) and keeps your **last 10 picks** a keypress away |
 | A **metadata scrubber** (ExifCleaner, BatchPurifier) | Right-click **Strip metadata** (EXIF/IPTC/XMP/GPS), keeps your ICC profile |
-| A **screenshot + annotate** app (ShareX, Greenshot, Snagit) | Built-in **region capture** with an annotation editor and quick-save |
-| An **OCR** tool (Capture2Text, PowerToys Text Extractor) | **Copy text (OCR)** four ways: right-click a file, **Ctrl+T** in the screenshot editor, the Quick preview toolbar, or a one-key hotkey / tray click that goes straight to drag-a-region-get-the-text **(new)** |
+| A **screenshot + annotate** app (ShareX, Greenshot, Snagit) | Built-in capture: **drag a region or click a window**, an optional **countdown delay** for menus and tooltips, an annotation editor and quick-save |
+| An **OCR** tool (Capture2Text, PowerToys Text Extractor) | **Copy text (OCR)** four ways: right-click a file, **Ctrl+T** in the screenshot editor, the Quick preview toolbar, or a one-key hotkey / tray click that goes straight to drag-a-region-get-the-text; **captured tables keep their columns** (tabs, so they paste into Excel as cells) |
 | An **image uploader** (ShareX, Imgur apps) | **Upload (copy link)** to a keyless host, no account |
 | A **PDF / CBZ maker** (PDF24, manual 7-Zip) | **Combine into PDF** or **CBZ**, natural-sorted |
 | **ImageMagick** for scripts and AI agents | `st2k.exe`: a full CLI **and an MCP server**, so agents get an image toolbox with zero extra installs |
@@ -212,7 +212,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 ## 🗂 Supported formats
 
 <details open>
-<summary><strong>331 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
+<summary><strong>334 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
 
 - **RAW**: 3fr, arw, cr2/cr3/crw, dng, erf, iiq, mef, mrw, nef/nrw, orf, pef, raf, rw2, sr2/srw, x3f, …
 - **Pro / scientific**: dcm (DICOM), dpx, cin, exr, fits, hdr, pfm
@@ -299,7 +299,7 @@ in Settings works around that, because Windows delivers hotkeys differently than
 
 ### How many formats does it support, and can more be added?
 
-331 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
+334 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
 `st2k formats` for the live, per-category count. New formats are considered when they can be
 read without a heavy dependency, many "project" file formats bake in a preview image that's
 cheap to extract. Request one through Send Feedback in the app or a GitHub issue.

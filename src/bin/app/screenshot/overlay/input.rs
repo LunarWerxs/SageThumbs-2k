@@ -34,6 +34,97 @@ pub(super) fn pt(lparam: LPARAM) -> POINT {
     }
 }
 
+/// The top-level window under client point `p`, as a client-space rect clamped to the
+/// overlay — or `None` over the bare desktop. Drives the click-a-window capture: hovering
+/// previews this rect, a sub-threshold "drag" (a click) selects it.
+///
+/// Walks the REAL z-order (`GetTopWindow` + `GW_HWNDNEXT`) rather than `WindowFromPoint`,
+/// which would always answer with the fullscreen overlay itself. The windows behind the
+/// overlay still exist and still answer geometry queries; only their pixels are frozen in
+/// our snapshot — which is exactly what makes the preview truthful: the rect is where the
+/// window WAS at freeze time, and background windows cannot move while a topmost overlay
+/// owns the foreground.
+///
+/// Skips, in the order they bite: our own overlay, invisible windows, minimized windows
+/// (their rect is a parked -32000 fiction), DWM-cloaked windows (UWP apps suspended on
+/// another virtual desktop LOOK visible to `IsWindowVisible` but draw nothing — a hint
+/// that selects an invisible window would capture whatever is behind it), and the desktop
+/// shell pair (Progman/WorkerW — "the desktop" is not a window pick, drag instead).
+/// The rect is `DWMWA_EXTENDED_FRAME_BOUNDS` — the visual bounds — because `GetWindowRect`
+/// includes the invisible resize borders Windows 10+ draws the drop shadow in, which reads
+/// as "the capture grabbed a margin of the window behind it".
+unsafe fn window_under(
+    overlay: HWND,
+    vx: i32,
+    vy: i32,
+    vw: i32,
+    vh: i32,
+    p: POINT,
+) -> Option<RECT> {
+    use windows::Win32::Graphics::Dwm::{
+        DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetTopWindow, GetWindow, IsIconic, IsWindowVisible, GW_HWNDNEXT,
+    };
+    let screen = POINT {
+        x: p.x + vx,
+        y: p.y + vy,
+    };
+    let mut h = GetTopWindow(None).ok()?;
+    loop {
+        let next = || GetWindow(h, GW_HWNDNEXT).ok();
+        if h == overlay || !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+            h = next()?;
+            continue;
+        }
+        let mut cloaked: u32 = 0;
+        let _ = DwmGetWindowAttribute(
+            h,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut _ as *mut core::ffi::c_void,
+            core::mem::size_of::<u32>() as u32,
+        );
+        if cloaked != 0 {
+            h = next()?;
+            continue;
+        }
+        let mut r = RECT::default();
+        if DwmGetWindowAttribute(
+            h,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut r as *mut _ as *mut core::ffi::c_void,
+            core::mem::size_of::<RECT>() as u32,
+        )
+        .is_err()
+            && GetWindowRect(h, &mut r).is_err()
+        {
+            h = next()?;
+            continue;
+        }
+        if screen.x < r.left || screen.x >= r.right || screen.y < r.top || screen.y >= r.bottom {
+            h = next()?;
+            continue;
+        }
+        // First HIT in z-order decides — either it's a real window (answer) or the desktop
+        // shell (no hint at all; everything below it is covered by it anyway).
+        let mut cls = [0u16; 16];
+        let n = GetClassNameW(h, &mut cls) as usize;
+        let name = String::from_utf16_lossy(&cls[..n.min(cls.len())]);
+        if name == "Progman" || name == "WorkerW" {
+            return None;
+        }
+        // Back to client space, clamped to the overlay (a window can hang off-screen).
+        let c = RECT {
+            left: (r.left - vx).clamp(0, vw),
+            top: (r.top - vy).clamp(0, vh),
+            right: (r.right - vx).clamp(0, vw),
+            bottom: (r.bottom - vy).clamp(0, vh),
+        };
+        return (c.right > c.left && c.bottom > c.top).then_some(c);
+    }
+}
+
 pub(super) extern "system" fn shot_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -253,6 +344,31 @@ pub(super) extern "system" fn shot_wndproc(
                     }
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
+                // Before any selection exists, track the WINDOW under the cursor so a bare
+                // click can capture it (the hint paints as a live preview). Not while the
+                // Eyedropper is armed — there a click means "sample this pixel", and a
+                // window highlight would promise something the click won't do.
+                if s.sel.is_none() && !s.sel_dragging {
+                    let hint = if s.tool == Tool::Eyedropper || s.automation.is_some() {
+                        None
+                    } else {
+                        window_under(hwnd, s.vx, s.vy, s.vw, s.vh, p)
+                    };
+                    let changed = match (s.win_hint, hint) {
+                        (None, None) => false,
+                        (Some(a), Some(b)) => {
+                            a.left != b.left
+                                || a.top != b.top
+                                || a.right != b.right
+                                || a.bottom != b.bottom
+                        }
+                        _ => true,
+                    };
+                    if changed {
+                        s.win_hint = hint;
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
                 // Track which toolbar button we're hovering (only when idle), and
                 // (re)arm the hover-delay timer so the tooltip pops after a beat.
                 let idle = !s.sel_dragging && s.draw_from.is_none() && s.move_from.is_none();
@@ -292,7 +408,18 @@ pub(super) extern "system" fn shot_wndproc(
                             let _ = DestroyWindow(hwnd);
                             return LRESULT(0);
                         }
+                    } else if let Some(w) = s.win_hint.take() {
+                        // A CLICK (a "drag" under the threshold) with a window highlighted:
+                        // the window IS the region. Same commit as a drag ending — including
+                        // OCR mode, where clicking a dialog reads the text out of it.
+                        s.sel = Some(w);
+                        if s.ocr_mode {
+                            finish_ocr(s);
+                            let _ = DestroyWindow(hwnd);
+                            return LRESULT(0);
+                        }
                     }
+                    s.win_hint = None;
                 } else if s.typing_drag {
                     s.typing_drag = false;
                     s.move_from = None; // done repositioning the active text box
@@ -877,6 +1004,7 @@ mod tests {
             born: 0, // 0, not "now" — tests must not trip the just-opened SETTLE_CLOSE_MS guard
             automation: None,
             ocr_mode: false,
+            win_hint: None,
         })
     }
 

@@ -21,6 +21,8 @@ use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITH
 use crate::pdf::block_op;
 use crate::verbs::read_capped;
 
+mod table;
+
 /// Recognize text in the image at `path` and put it on the clipboard. Errors
 /// (no text found, no OCR language pack, unreadable image) leave the clipboard
 /// untouched.
@@ -202,17 +204,45 @@ fn recognize(bytes: &[u8]) -> Result<String> {
     // paragraph or code block comes back as one run-on line. Rebuild it from `Lines` so the
     // layout survives to the clipboard/stdout; fall back to `Text()` if the view is empty or
     // unreadable (single-line images land on the same string either way).
+    //
+    // TABLES go one step further: when the word geometry says the capture is a table (the
+    // same wide gutter lining up across three or more lines — see `table::assemble`), cells
+    // are joined with TABS so the text pastes straight into a spreadsheet as columns. The
+    // detection is deliberately conservative; anything it declines renders through the plain
+    // per-line path below, byte-identical to what this produced before tables existed.
+    let mut word_lines: Vec<Vec<table::WordBox>> = Vec::new();
     let mut out = String::new();
     if let Ok(lines) = result.Lines() {
         let n = lines.Size().unwrap_or(0);
         for i in 0..n {
-            if let Ok(text) = lines.GetAt(i).and_then(|l| l.Text()) {
+            let Ok(line) = lines.GetAt(i) else { continue };
+            if let Ok(words) = line.Words() {
+                let mut row = Vec::new();
+                for j in 0..words.Size().unwrap_or(0) {
+                    if let Ok(word) = words.GetAt(j) {
+                        if let (Ok(text), Ok(r)) = (word.Text(), word.BoundingRect()) {
+                            row.push(table::WordBox {
+                                text: text.to_string(),
+                                x: r.X,
+                                y: r.Y,
+                                w: r.Width,
+                                h: r.Height,
+                            });
+                        }
+                    }
+                }
+                word_lines.push(row);
+            }
+            if let Ok(text) = line.Text() {
                 if !out.is_empty() {
                     out.push('\n');
                 }
                 out.push_str(&text.to_string());
             }
         }
+    }
+    if let Some(tsv) = table::assemble(&word_lines) {
+        return Ok(tsv);
     }
     if out.is_empty() {
         out = result.Text()?.to_string();

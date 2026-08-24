@@ -2,6 +2,79 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## 2.4.0
+
+### Added
+
+- **Email files preview.** Press Space on an exported email, an `.eml` from almost any mail
+  program or an Outlook `.msg`, and it opens like a message: subject, from, to, date, the
+  list of attachment names, and the text of the mail. Attachments are listed, never opened,
+  and nothing in the message is fetched from the internet. Web addresses in a message show
+  exactly as written, so a link can't pretend to be something it isn't.
+
+- **3D-print model thumbnails and preview (STL, OBJ, PLY).** These files carry no picture
+  inside them, so SageThumbs draws one: the model, shaded, from a consistent three-quarter
+  angle, with a transparent background in Explorer like any other thumbnail. A folder of
+  models becomes scannable at a glance instead of a wall of identical icons. Works in the
+  Space-bar preview too, at full window size.
+
+- **Click a window to capture it.** In the screenshot tool, hovering now highlights the
+  window under the cursor; a single click captures exactly that window, cleanly at its
+  visible edges. Dragging a region works exactly as before. Works in the one-key OCR mode
+  too: click a dialog to read the text out of it.
+
+- **A capture delay.** Settings ▸ Screenshots gains "Delay before capture" (off, 1, 2, 3 or
+  5 seconds): press the hotkey, and a small countdown ticks beside the cursor before the
+  screen freezes: long enough to open the menu or summon the tooltip you actually wanted
+  in the picture. Esc during the countdown cancels.
+
+- **The colour picker learned formats and memory.** Tab switches what a pick copies:
+  #RRGGBB, rgb(), hsl() or hsv(), shown live on the loupe, and the choice is remembered.
+  Your last ten picks appear as a swatch row; pressing 1–9 copies one of them again, so
+  yesterday's brand colour is a keypress, not a hunt for a pixel that still shows it.
+
+- **Screenshot OCR keeps table columns.** When the text in a capture lines up as a table,
+  a price list, a bank statement, an Explorer details view, the copied text now uses tabs
+  between the columns, so pasting into Excel puts every cell where it belongs. Ordinary
+  text is completely unaffected; the detection only trusts a column it sees on three or
+  more lines.
+
+- **A light/dark button on the Quick preview window itself.** The Theme setting decides what
+  every preview opens as; this switches the one you are looking at, without changing that
+  setting or any other window. A dark photograph often reads better on a dark background even
+  when you keep the rest of the app light, and the reverse is true of a scanned page. The button
+  shows the background it will give you: a sun while you are dark, a moon while you are light.
+  The choice lasts until you close the window, so the next preview opens the way you
+  configured it. Requested by a user, who is the reason it exists.
+
+- **A settings button on the Quick preview window.** The gear opens Settings directly on its
+  Quick preview page, instead of leaving you to find the window and then the right page in it.
+  If Settings is already open on another page, it comes to the front on the right one.
+
+### Fixed
+
+- **The Quick preview toolbar's tooltips could describe the button next door.** On any picture,
+  the tooltips sat one button to the right of where they belonged: hovering "Copy file path"
+  said "Keep on top", and the pin at the far left had no tooltip at all. The toolbar gains its
+  text-recognition button only once the picture has finished loading, and the tooltips were
+  positioned before that happened and never moved afterwards. They are now placed from the same
+  layout the toolbar is drawn from, so they cannot describe a different button than the one
+  under the pointer.
+
+- **The Quick preview toolbar icons were noticeably different sizes.** They came from a set that
+  draws each icon to its own proportions, so a circle filled its space while a cross sat well
+  inside its own, a 50% difference across one row. The bundled icons are now sized to match
+  each other. The text-recognition icon was the worst of them, drawn half again as large as
+  everything beside it because it was sized from the button rather than from the other icons;
+  it now matches them at every display scale, in the screenshot editor too.
+
+- **The toolbar icons looked soft, with faint orange and blue edges.** They were being drawn
+  the way Windows draws text, which sharpens letters by using the red, green and blue stripes
+  inside each pixel. That trick does nothing for a picture of a gear and leaves colour on its
+  edges instead: three quarters of the pixels in every icon carried a colour tint. They are
+  drawn as plain shapes now, which removes the tint completely and roughly doubles how many
+  pixels land solid. Same change in the screenshot editor's toolbar. Text is unaffected.
+
 ## 2.3.2
 
 ### Added

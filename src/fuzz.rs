@@ -168,6 +168,7 @@ fn all_targets() -> Vec<Target> {
 fn inner_targets() -> Vec<Target> {
     use crate::container::apk_fuzzapi as apk;
     use crate::decode::dds_fuzzapi as dds;
+    use crate::decode::mesh_fuzzapi as mesh;
     use crate::flv::fuzzapi as flv;
     vec![
         ("apk::manifest_icon", apk::manifest_icon),
@@ -183,6 +184,16 @@ fn inner_targets() -> Vec<Target> {
         // selects a mip and takes the block-average fast path, the other expands level 0.
         ("dds::decode_targeted", dds::decode_targeted),
         ("dds::decode_untargeted", dds::decode_untargeted),
+        // The 3D-mesh parsers (STL/OBJ/PLY, 2026-08-24). Geometry from untrusted bytes,
+        // reached by the isolated thumbnail host for three newly-registered extensions —
+        // the exact profile this harness exists for. `parse_mesh_sniffed` covers the
+        // sniffers + dispatch; the per-format entries keep a mutation that breaks one
+        // sniffer from silently un-fuzzing that parser.
+        ("mesh::sniffed", mesh::sniffed),
+        ("mesh::binary_stl", mesh::binary_stl),
+        ("mesh::ascii_stl", mesh::ascii_stl),
+        ("mesh::obj", mesh::obj),
+        ("mesh::ply", mesh::ply),
         ("flv::sps_dims", flv::sps_dims),
         ("flv::parse_sps", flv::parse_sps),
         (
@@ -987,6 +998,82 @@ fn run_all(
 /// Seeds for the surfaces this release added: the VP9 container walk, the Flash-codec tag
 /// walk, and the APK / H.264 sub-parsers that a verifying container hides from any whole-file
 /// mutation. Shared by the always-on gate and the deep session so the two cannot diverge.
+/// A 12-triangle unit cube as binary STL — a structurally VALID mesh so mutations reach
+/// the vertex reads, not just the length-equation sniff.
+fn mesh_seed_stl() -> Vec<u8> {
+    let mut out = vec![0u8; 80];
+    out.extend_from_slice(&12u32.to_le_bytes());
+    let q: [[f32; 3]; 8] = [
+        [0., 0., 0.],
+        [1., 0., 0.],
+        [1., 1., 0.],
+        [0., 1., 0.],
+        [0., 0., 1.],
+        [1., 0., 1.],
+        [1., 1., 1.],
+        [0., 1., 1.],
+    ];
+    let faces: [[usize; 3]; 12] = [
+        [0, 1, 2],
+        [0, 2, 3],
+        [4, 5, 6],
+        [4, 6, 7],
+        [0, 1, 5],
+        [0, 5, 4],
+        [3, 2, 6],
+        [3, 6, 7],
+        [0, 3, 7],
+        [0, 7, 4],
+        [1, 2, 6],
+        [1, 6, 5],
+    ];
+    for f in faces {
+        out.extend_from_slice(&[0u8; 12]);
+        for &vi in &f {
+            for c in q[vi] {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&[0u8; 2]);
+    }
+    out
+}
+
+fn mesh_seed_obj() -> Vec<u8> {
+    b"v 0 0 0
+v 1 0 0
+v 0.5 1 0
+v 0.5 0.5 1
+f 1 2 3
+f 1 2 4
+f 2 3 4
+f 1 3 4
+"
+    .to_vec()
+}
+
+fn mesh_seed_ply() -> Vec<u8> {
+    b"ply
+format ascii 1.0
+element vertex 4
+property float x
+property float y
+property float z
+element face 4
+property list uchar int vertex_indices
+end_header
+0 0 0
+1 0 0
+0.5 1 0
+0.5 0.5 1
+3 0 1 2
+3 0 1 3
+3 1 2 3
+3 0 2 3
+"
+    .to_vec()
+}
+
 fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
     use crate::container::fuzzseed as fs;
     const ICON: &str = "res/mipmap/ic_launcher.png";
@@ -999,6 +1086,9 @@ fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("axml-raw", fs::apk_axml(ICON)),
         ("arsc-raw", fs::apk_arsc(ICON)),
         ("respool-raw", fs::apk_pool_utf8(&["", "application", ICON])),
+        ("stl-cube", mesh_seed_stl()),
+        ("obj-tetra", mesh_seed_obj()),
+        ("ply-tetra", mesh_seed_ply()),
         ("h264-avcc", h264_avcc()),
         ("h264-sps", H264_SPS.to_vec()),
         // The audio-shaped seeds `audio_art_from_reader` had NONE of before: WAV/AIFF

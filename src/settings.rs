@@ -1260,6 +1260,65 @@ pub fn screenshot_hide_tray() -> bool {
 
 // ---- Screenshot save destination (Ctrl+S in the capture overlay) --------
 
+/// The eyedropper's clipboard format: 0 hex `#RRGGBB` (the default and the historical
+/// behaviour), 1 `rgb(r, g, b)`, 2 `hsl(...)`, 3 `hsv(...)`. Cycled with Tab inside the
+/// overlay and remembered here, so a designer who lives in HSL sets it once. No Settings
+/// row on purpose — the choice belongs in the tool, at the moment you can see the value.
+pub fn eyedropper_format() -> u32 {
+    get_dword("EyeFormat", 0).min(3)
+}
+/// Persist the eyedropper's clipboard format.
+pub fn set_eyedropper_format(f: u32) -> windows_registry::Result<()> {
+    set_dword("EyeFormat", f.min(3))
+}
+
+/// The eyedropper's pick history: up to 10 colours as comma-joined `RRGGBB` hex, most
+/// recent first. Shown as a swatch row in the loupe on the NEXT session and recallable
+/// with the 1–9 keys — re-grabbing yesterday's brand colour without hunting for a pixel
+/// that still shows it.
+pub fn eyedropper_history() -> Vec<(u8, u8, u8)> {
+    let Some(s) = get_string_opt("EyeHistory") else {
+        return Vec::new();
+    };
+    s.split(',')
+        .filter_map(|t| {
+            let t = t.trim();
+            if t.len() != 6 {
+                return None;
+            }
+            let v = u32::from_str_radix(t, 16).ok()?;
+            Some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+        })
+        .take(10)
+        .collect()
+}
+/// Persist the eyedropper pick history (most recent first; the cap is applied here so no
+/// caller can grow the value without bound).
+pub fn set_eyedropper_history(h: &[(u8, u8, u8)]) -> windows_registry::Result<()> {
+    let joined: Vec<String> = h
+        .iter()
+        .take(10)
+        .map(|&(r, g, b)| format!("{r:02X}{g:02X}{b:02X}"))
+        .collect();
+    set_string("EyeHistory", &joined.join(","))
+}
+
+/// Seconds to wait before a capture freezes the screen (0 = immediately, the default and
+/// the historical behaviour). The wait is what lets a hover-only menu, a tooltip, or a
+/// dropdown be summoned INTO the capture — the moment the overlay appears, focus moves and
+/// those dismiss themselves, so without a delay they are uncapturable.
+pub fn screenshot_delay_sec() -> u32 {
+    get_dword("ShotDelaySec", 0).min(10)
+}
+/// Persist the capture delay. See [`screenshot_delay_sec`].
+pub fn set_screenshot_delay_sec(s: u32) -> windows_registry::Result<()> {
+    set_dword("ShotDelaySec", s.min(10))
+}
+/// The Settings combo's wire format: option index -> stored seconds. The array IS the
+/// mapping (same discipline as `Tool::DEFAULTABLE`), so the dropdown and the stored value
+/// cannot drift apart.
+pub const SHOT_DELAY_STEPS: [u32; 5] = [0, 1, 2, 3, 5];
+
 /// When ON, Ctrl+S (and the Save button) in the capture overlay auto-saves the PNG to
 /// [`screenshot_save_dir`] (default: the Desktop). When OFF, Ctrl+S prompts for a
 /// location each time. OFF by default — the capture asks where to save unless the user

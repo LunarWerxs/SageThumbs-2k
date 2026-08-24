@@ -21,7 +21,9 @@ use windows::Win32::Graphics::Gdi::{
     PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_SPACE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, VK_CONTROL, VK_ESCAPE, VK_SPACE, VK_TAB,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::rgb;
@@ -30,7 +32,7 @@ use crate::win::{app_icon, gui_font, set_clipboard_text, t, wide};
 const EYE_K: i32 = 7; // half-window: a (2K+1)² block of screen pixels in the loupe
 const EYE_SPAN: i32 = 2 * EYE_K + 1; // 15 px sampled across
 const EYE_MAG: i32 = 150; // magnified loupe size (px) → 10× zoom
-const EYE_LBL: i32 = 64; // loupe label strip (px): hex row + stash row + hint row
+const EYE_LBL: i32 = 78; // loupe label strip (px): value row + swatch row + two hint rows
 /// Stash swatch size and how many fit on the row before the count takes over.
 const EYE_SW: i32 = 12;
 const EYE_SW_MAX: i32 = 11;
@@ -52,8 +54,97 @@ static EYE_LAST_Y: AtomicI32 = AtomicI32::new(-10000);
 /// last one's leftovers.
 static EYE_STASH: Mutex<Vec<(u8, u8, u8)>> = Mutex::new(Vec::new());
 
+/// Picks from PREVIOUS sessions (most recent first, capped at 10, persisted via settings).
+/// Shown as the swatch row while the stash is empty; the 1–9 keys copy an entry directly,
+/// which is the point — re-grabbing a colour you picked yesterday without hunting for a
+/// pixel that still shows it.
+static EYE_HISTORY: Mutex<Vec<(u8, u8, u8)>> = Mutex::new(Vec::new());
+
+/// The clipboard format Tab cycles through (index into [`fmt_color`]'s match; persisted).
+static EYE_FMT: AtomicI32 = AtomicI32::new(0);
+
 fn hex_of((r, g, b): (u8, u8, u8)) -> String {
     format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+/// RGB → (hue 0..360, saturation 0..1, lightness 0..1). Textbook; kept exact enough that
+/// round numbers come out round (pure red is `hsl(0, 100%, 50%)`, not 99.6%).
+fn rgb_to_hsl((r, g, b): (u8, u8, u8)) -> (f64, f64, f64) {
+    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if max == min {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } * 60.0;
+    (h, s, l)
+}
+
+/// RGB → (hue 0..360, saturation 0..1, value 0..1).
+fn rgb_to_hsv((r, g, b): (u8, u8, u8)) -> (f64, f64, f64) {
+    let (h, _, _) = rgb_to_hsl((r, g, b));
+    let (rf, gf, bf) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let s = if max == 0.0 { 0.0 } else { (max - min) / max };
+    (h, s, max)
+}
+
+/// The colour formatted for the ACTIVE format: 0 hex (the historical behaviour and the
+/// default), 1 CSS `rgb()`, 2 `hsl()`, 3 `hsv()`. Everything that reaches the clipboard —
+/// single pick, stash list, history recall — and the loupe's value row go through here, so
+/// what you read is always what you get.
+fn fmt_color(fmt: i32, c: (u8, u8, u8)) -> String {
+    match fmt {
+        1 => format!("rgb({}, {}, {})", c.0, c.1, c.2),
+        2 => {
+            let (h, s, l) = rgb_to_hsl(c);
+            format!(
+                "hsl({}, {}%, {}%)",
+                h.round() as i32 % 360,
+                (s * 100.0).round() as i32,
+                (l * 100.0).round() as i32
+            )
+        }
+        3 => {
+            let (h, s, v) = rgb_to_hsv(c);
+            format!(
+                "hsv({}, {}%, {}%)",
+                h.round() as i32 % 360,
+                (s * 100.0).round() as i32,
+                (v * 100.0).round() as i32
+            )
+        }
+        _ => hex_of(c),
+    }
+}
+
+/// Record picks into the persistent history: most recent first, deduplicated, capped by the
+/// settings writer. Called on every commit path, so the history is what you actually took
+/// with you, not what you hovered.
+fn eye_remember(picked: &[(u8, u8, u8)]) {
+    let Ok(mut h) = EYE_HISTORY.lock() else {
+        return;
+    };
+    for &c in picked.iter().rev() {
+        h.retain(|&e| e != c);
+        h.insert(0, c);
+    }
+    h.truncate(10);
+    let _ = sagethumbs2k_core::settings::set_eyedropper_history(&h);
 }
 
 /// Is a modifier held? Ctrl means "add to the list and keep picking".
@@ -74,13 +165,24 @@ unsafe fn eye_finish(pick: Option<(u8, u8, u8)>) {
     if all.is_empty() {
         return;
     }
-    let text: Vec<String> = all.into_iter().map(hex_of).collect();
+    eye_remember(&all);
+    let fmt = EYE_FMT.load(Ordering::Relaxed);
+    let text: Vec<String> = all.into_iter().map(|c| fmt_color(fmt, c)).collect();
     set_clipboard_text(&text.join("\r\n"));
 }
 
 pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     if let Ok(mut st) = EYE_STASH.lock() {
         st.clear();
+    }
+    // The remembered format + past picks. Loaded here rather than lazily so the loupe's very
+    // first paint already shows both.
+    EYE_FMT.store(
+        sagethumbs2k_core::settings::eyedropper_format() as i32,
+        Ordering::Relaxed,
+    );
+    if let Ok(mut h) = EYE_HISTORY.lock() {
+        *h = sagethumbs2k_core::settings::eyedropper_history();
     }
     // Snapshot the whole virtual screen into a memory DC.
     let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -157,6 +259,13 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
     let ph = GetSystemMetrics(SM_CYSCREEN);
     if pw <= 0 || ph <= 0 {
         return false;
+    }
+    // The headless asset must not vary with this machine's remembered format or history —
+    // force the defaults (hex, no swatch row) so the capture is as deterministic as a live
+    // screen grab can be.
+    EYE_FMT.store(0, Ordering::Relaxed);
+    if let Ok(mut h) = EYE_HISTORY.lock() {
+        h.clear();
     }
     // Snapshot the primary monitor into a memory DC (same as run_eyedropper, but bounded).
     let screen = GetDC(None);
@@ -325,6 +434,32 @@ extern "system" fn eyedropper_wndproc(
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
+            // Tab cycles the clipboard format (hex → rgb → hsl → hsv) and remembers it. The
+            // value row re-renders in the new format immediately, so the choice is made while
+            // LOOKING at the number it produces rather than in a settings page.
+            WM_KEYDOWN if wparam.0 == VK_TAB.0 as usize => {
+                let fmt = (EYE_FMT.load(Ordering::Relaxed) + 1) % 4;
+                EYE_FMT.store(fmt, Ordering::Relaxed);
+                let _ = sagethumbs2k_core::settings::set_eyedropper_format(fmt as u32);
+                let cx = EYE_LAST_X.load(Ordering::Relaxed);
+                let cy = EYE_LAST_Y.load(Ordering::Relaxed);
+                let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(cx, cy)), false);
+                LRESULT(0)
+            }
+            // 1–9 copy that history swatch (1 = most recent) and close — the "give me
+            // yesterday's brand colour again" path. Ignored when the digit names no entry,
+            // so a stray keypress can't close the tool with nothing copied.
+            WM_KEYDOWN if (0x31..=0x39).contains(&wparam.0) => {
+                let idx = wparam.0 - 0x31;
+                let c = EYE_HISTORY.lock().ok().and_then(|h| h.get(idx).copied());
+                if let Some(c) = c {
+                    eye_remember(&[c]); // recalling promotes it back to most-recent
+                    let fmt = EYE_FMT.load(Ordering::Relaxed);
+                    set_clipboard_text(&fmt_color(fmt, c));
+                    let _ = DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
             WM_PAINT => {
                 eye_paint(hwnd);
                 LRESULT(0)
@@ -462,9 +597,10 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
 
     SelectObject(hdc, HGDIOBJ(gui_font().0));
     SetBkMode(hdc, TRANSPARENT);
-    // Hex (row 1).
+    // Value (row 1), rendered in the ACTIVE clipboard format so Tab's effect is visible on
+    // the number itself, not announced elsewhere.
     SetTextColor(hdc, rgb(240, 240, 240));
-    let mut hex = wide(&format!("#{r:02X}{g:02X}{b:02X}"));
+    let mut hex = wide(&fmt_color(EYE_FMT.load(Ordering::Relaxed), (r, g, b)));
     let hn = hex.len().saturating_sub(1);
     let mut hr = RECT {
         left: bx + 28,
@@ -478,17 +614,35 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
         &mut hr,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE,
     );
-    // Stash row: the colours collected so far, oldest first.
+    // Swatch row: the session's stash while one is building, else the persistent HISTORY
+    // (most recent leftmost — matching the 1–9 keys, so the row doubles as their legend).
     let stash = EYE_STASH.lock().map(|s| s.clone()).unwrap_or_default();
-    if !stash.is_empty() {
+    let history = if stash.is_empty() {
+        EYE_HISTORY.lock().map(|h| h.clone()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let row: Vec<(u8, u8, u8)> = if stash.is_empty() {
+        history
+    } else {
+        // Stash draws oldest-first (the order they'll copy in), reversed below like before.
+        stash.clone()
+    };
+    if !row.is_empty() {
         let y = by + EYE_MAG + 24;
-        for (i, &c) in stash
-            .iter()
-            .rev()
-            .take(EYE_SW_MAX as usize)
-            .rev()
-            .enumerate()
-        {
+        // The stash keeps its historical oldest-first presentation; history is already
+        // most-recent-first and must stay that way to match the digit keys.
+        let ordered: Vec<(u8, u8, u8)> = if stash.is_empty() {
+            row.iter().take(EYE_SW_MAX as usize).copied().collect()
+        } else {
+            row.iter()
+                .rev()
+                .take(EYE_SW_MAX as usize)
+                .rev()
+                .copied()
+                .collect()
+        };
+        for (i, &c) in ordered.iter().enumerate() {
             let x = bx + 6 + i as i32 * (EYE_SW + 1);
             let cell = RECT {
                 left: x,
@@ -521,7 +675,9 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
         }
     }
 
-    // Hint (row 3).
+    // Hints (rows 3 + 4). The first line keeps its historical text (and all 36 existing
+    // translations); the second names what this session added — the format cycle and the
+    // history recall keys.
     SetTextColor(hdc, rgb(150, 150, 150));
     let mut hint = wide(t(if stash.is_empty() {
         "eye_hint"
@@ -531,14 +687,28 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
     let hin = hint.len().saturating_sub(1);
     let mut hir = RECT {
         left: bx + 6,
-        top: by + EYE_MAG + 42,
+        top: by + EYE_MAG + 40,
         right: bx + EYE_MAG,
-        bottom: by + EYE_MAG + EYE_LBL,
+        bottom: by + EYE_MAG + 58,
     };
     DrawTextW(
         hdc,
         &mut hint[..hin],
         &mut hir,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+    let mut hint2 = wide(t("eye_hint_extras"));
+    let h2n = hint2.len().saturating_sub(1);
+    let mut h2r = RECT {
+        left: bx + 6,
+        top: by + EYE_MAG + 58,
+        right: bx + EYE_MAG,
+        bottom: by + EYE_MAG + EYE_LBL,
+    };
+    DrawTextW(
+        hdc,
+        &mut hint2[..h2n],
+        &mut h2r,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE,
     );
 
@@ -563,6 +733,42 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The four formats a pick can copy as. Exactness on the primaries matters: a designer
+    /// checking a pure colour reads "100%", and "99%" reads as a broken converter.
+    #[test]
+    fn formats_render_the_primaries_exactly() {
+        let red = (255u8, 0u8, 0u8);
+        assert_eq!(fmt_color(0, red), "#FF0000");
+        assert_eq!(fmt_color(1, red), "rgb(255, 0, 0)");
+        assert_eq!(fmt_color(2, red), "hsl(0, 100%, 50%)");
+        assert_eq!(fmt_color(3, red), "hsv(0, 100%, 100%)");
+        // Greys have no hue and zero saturation in both models.
+        let grey = (128u8, 128u8, 128u8);
+        assert_eq!(fmt_color(2, grey), "hsl(0, 0%, 50%)");
+        assert_eq!(fmt_color(3, grey), "hsv(0, 0%, 50%)");
+    }
+
+    /// An out-of-range format index must fall back to hex, never panic — the value comes
+    /// from the registry, which anything can have scribbled on.
+    #[test]
+    fn unknown_format_is_hex() {
+        assert_eq!(fmt_color(17, (1, 2, 3)), "#010203");
+        assert_eq!(fmt_color(-1, (1, 2, 3)), "#010203");
+    }
+
+    /// Hue must land in the right sextant for each channel-dominant colour (the `rem_euclid`
+    /// in the red branch is what keeps a red with a touch of blue from going negative).
+    #[test]
+    fn hue_sextants() {
+        assert_eq!(rgb_to_hsl((255, 255, 0)).0.round() as i32, 60); // yellow
+        assert_eq!(rgb_to_hsl((0, 255, 0)).0.round() as i32, 120); // green
+        assert_eq!(rgb_to_hsl((0, 255, 255)).0.round() as i32, 180); // cyan
+        assert_eq!(rgb_to_hsl((0, 0, 255)).0.round() as i32, 240); // blue
+        assert_eq!(rgb_to_hsl((255, 0, 255)).0.round() as i32, 300); // magenta
+        let h = rgb_to_hsl((255, 0, 10)).0;
+        assert!(h > 350.0, "red-with-blue hue wrapped wrong: {h}");
+    }
 
     /// Regression for the unclamped `StretchBlt` source: near any edge of the
     /// snapshot, `sx`/`sy` must stay in `[0, v - EYE_SPAN]` so the source rect never

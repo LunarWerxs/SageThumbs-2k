@@ -98,3 +98,10 @@ Thumbs.db
 # Architect (local audit) - profile + reports stay machine-local
 /.arkitect/
 /tmp/
+
+# Upstream Material Symbols variable font, downloaded on demand by
+# scripts/build-icon-font.py. ~10 MB of input to a generator whose ~5 KB OUTPUT is what
+# gets committed (assets/icons/SageThumbs2K-Icons.ttf), so a normal build and CI never
+# need it. Untracked and un-ignored, it sat in the tree waiting for a `git add -A`.
+/.icon-font-src.ttf
+/.icon-font-src.codepoints

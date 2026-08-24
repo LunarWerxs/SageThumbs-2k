@@ -693,6 +693,7 @@ use magick::metafile_min_density;
 use magick::{decode_named_extension, has_name_selected_coder};
 use magick::{decode_psd_composite, decode_via_magick_capped};
 pub use magick::{encode_via_magick, magick_available, magick_output_supported};
+mod mesh;
 mod readers;
 mod svg;
 mod thumb;
@@ -707,6 +708,9 @@ mod wic;
 // "does not re-export anything public enough" lint on the `pub(super)` items).
 use color::*;
 use dds::*;
+use mesh::*;
+// The mesh parsers, by name, for the fuzz harness (`src/fuzz.rs` hits each format's
+// entry point directly, like the container parsers).
 use svg::*;
 use thumb::*;
 use tiers::*;
@@ -716,6 +720,8 @@ use wic::*;
 /// can reach it without widening `dds`'s own visibility.
 #[cfg(test)]
 pub(crate) use dds::fuzzapi as dds_fuzzapi;
+#[cfg(test)]
+pub(crate) use mesh::fuzzapi as mesh_fuzzapi;
 pub(crate) use readers::effective_input_cap;
 pub use readers::{
     decode_preview_path, decode_preview_streamed, exr_scaled_from_reader, is_exr_magic,
@@ -1373,6 +1379,14 @@ fn decode_image_with_raw_order(
     let (svg_img, inner) = decode_svg_if_svg(bytes);
     if let Some(img) = svg_img {
         return Ok(img); // vector; no EXIF orientation
+    }
+    // 3D meshes (STL/OBJ/PLY): sniffed and RENDERED up front, mirroring the SVG shape —
+    // these are geometry, not pixels, so no raster tier can touch them. Runs only in the
+    // isolated hosts and the CLI (this prelude); `decode_menu_preview` deliberately skips
+    // it, like video/PDF/magick — a 2M-triangle rasterization has no place in-process
+    // inside explorer.exe, so the classic-menu tile stays caption-only for meshes.
+    if let Some(img) = decode_mesh_sniffed(bytes) {
+        return Ok(img); // rendered; no EXIF to apply
     }
     // `inner` is only `Some` when `bytes` was gzip-wrapped and inflated but wasn't SVG
     // (e.g. `.emz`) — decode THAT, so a gzip-in-gzip payload still can't recurse.

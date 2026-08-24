@@ -204,6 +204,9 @@ pub const FORMATS: &[(&str, &str)] = &[
     // Art / CAD / 3D-print project files — we extract their embedded preview.
     ("kra", "Krita document"),
     ("3mf", "3D Manufacturing Format"),
+    ("stl", "Stereolithography 3D model"),
+    ("obj", "Wavefront 3D model"),
+    ("ply", "Polygon File Format 3D model"),
     ("fcstd", "FreeCAD document"),
     ("f3d", "Autodesk Fusion 360 archive"),
     ("gcode", "3D-printer G-code (sliced)"),

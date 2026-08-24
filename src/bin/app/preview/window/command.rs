@@ -61,7 +61,6 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
             SetTimer(Some(hwnd), TOC_TIMER_ID, 15, None);
             let _ = sagethumbs2k_core::settings::set_preview_toc_open(open); // persist ("pin")
             let _ = InvalidateRect(Some(hwnd), None, false);
-            update_tooltips(hwnd, st.tip.get());
         }
         Btn::MdImages => {
             // Flip whether web-hosted images are fetched, remember it, and re-render this document
@@ -76,6 +75,14 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
             }
         }
         Btn::Source => toggle_source(hwnd),
+        Btn::Theme => toggle_theme(hwnd),
+        Btn::Settings => {
+            // Straight to the page whose options govern THIS window. The index is resolved by
+            // name (`quick_preview_page`), never written as a literal — Settings pages have been
+            // inserted before and every hard-coded number silently pointed one page off.
+            let page = crate::settings_dlg::quick_preview_page().to_string();
+            crate::preview::spawn_self(&["--tab", &page]);
+        }
         Btn::PdfPrev => goto_pdf_page(hwnd, -1),
         Btn::PdfNext => goto_pdf_page(hwnd, 1),
         Btn::Close => request_close(hwnd),
@@ -180,6 +187,39 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
                     SW_SHOWNORMAL,
                 );
             }
+        }
+    }
+}
+
+/// Flip THIS viewer between the light and dark skin (toolbar button). Session-only: it sets a
+/// per-thread override in `dark`, so the app-wide Theme setting and every other window are
+/// untouched, and the next preview opens in the configured theme.
+///
+/// Three things have to move together, and skipping any one leaves a half-themed window:
+///
+/// 1. the palette (`dark::set_theme_override`, which every `dark::*` colour reads per call);
+/// 2. the window FRAME, whose DWM dark attribute was set once at creation and does not follow;
+/// 3. anything the OLD theme was already baked INTO — chiefly the letterbox background
+///    composited into the decoded bitmap (`window::letterbox_bg`) and the Markdown inline-image
+///    DIBs. Those are rebuilt by reloading, the same discipline [`toggle_source`] uses, because
+///    `load` already tears exactly that state down.
+///
+/// Video is the one exception to the reload: its picture is a swap chain the palette never
+/// touches, and re-loading it would restart playback from zero — a plainly worse answer to
+/// "make the background darker" than repainting the chrome around it.
+pub(in crate::preview) unsafe fn toggle_theme(hwnd: HWND) {
+    let st = &*state(hwnd);
+    let dark = !crate::dark::is_dark();
+    crate::dark::set_theme_override(Some(dark));
+    crate::dark::titlebar_theme(hwnd, dark);
+    // Same `Ref`-lifetime trap `toggle_source` documents: hoist the clone into its own `let`,
+    // never an `if let` scrutinee, or `load`'s `borrow_mut` panics and `panic=abort` kills the
+    // viewer outright.
+    let path = st.path.borrow().clone();
+    match path {
+        Some(p) if st.kind.get() != ContentKind::Video => request_load(hwnd, &p),
+        _ => {
+            let _ = InvalidateRect(Some(hwnd), None, false);
         }
     }
 }

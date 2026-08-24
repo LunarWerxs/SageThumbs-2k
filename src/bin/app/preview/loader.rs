@@ -7,7 +7,6 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self, RenderData};
 use super::infocard;
-use super::toolbar::update_tooltips;
 use super::transport::video_rect;
 #[cfg(feature = "html-preview")]
 use super::window::content_rect;
@@ -89,7 +88,6 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
             ensure_shown(hwnd);
             let _ = InvalidateRect(Some(hwnd), None, false);
             set_title(hwnd);
-            update_tooltips(hwnd, st.tip.get());
             super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
             return;
         }
@@ -105,7 +103,20 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
         ensure_shown(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, false);
         set_title(hwnd);
-        update_tooltips(hwnd, st.tip.get());
+        super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
+        return;
+    }
+    // Email (.eml / Outlook .msg): headers + body + attachment list, through the markdown
+    // pipeline. Same hook shape as the DB view above; a file that isn't really mail falls
+    // through to exactly what it did before.
+    if let Some(md) = mail_markdown(path) {
+        *st.text.borrow_mut() = Some(md);
+        st.md_has_headings.set(true);
+        st.md_remote_ok.set(false); // bodies are flattened to text; nothing remote to fetch
+        st.kind.set(ContentKind::Markdown);
+        ensure_shown(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+        set_title(hwnd);
         super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
         return;
     }
@@ -114,7 +125,6 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
         ensure_shown(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, false);
         set_title(hwnd);
-        update_tooltips(hwnd, st.tip.get());
         super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
         return;
     }
@@ -211,9 +221,6 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
         }
     }
     set_title(hwnd);
-    // The PDF pager may have just vanished (pdf_pages reset above), re-packing the buttons —
-    // re-point the tooltip rects so they can't linger over the wrong button.
-    update_tooltips(hwnd, st.tip.get());
     super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
 }
 
@@ -357,6 +364,14 @@ pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind
         st.kind.set(ContentKind::Markdown);
         return;
     }
+    // Email view (same render as the async `load` path).
+    if let Some(md) = mail_markdown(path) {
+        *st.text.borrow_mut() = Some(md);
+        st.md_has_headings.set(true);
+        st.md_remote_ok.set(false);
+        st.kind.set(ContentKind::Markdown);
+        return;
+    }
     // Font specimen (same render as the async `load` path).
     if super::font::is_font_ext(&ext_of(path)) && render_font_to_state(st, path) {
         return;
@@ -472,7 +487,6 @@ unsafe fn try_load_web(hwnd: HWND, path: &str) -> bool {
             ensure_shown(hwnd);
             let _ = InvalidateRect(Some(hwnd), None, false);
             set_title(hwnd);
-            update_tooltips(hwnd, st.tip.get());
             super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
             true
         }
@@ -526,7 +540,6 @@ unsafe fn create_web(hwnd: HWND, url: &str, mode: super::webview::Mode) -> bool 
         Some(h) => {
             *st.webview.borrow_mut() = Some(h);
             set_title(hwnd);
-            update_tooltips(hwnd, st.tip.get());
             super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
         }
         None => {
@@ -646,7 +659,6 @@ pub(super) unsafe fn show_source(hwnd: HWND, path: &str) -> bool {
     ensure_shown(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
     set_title(hwnd);
-    update_tooltips(hwnd, st.tip.get());
     super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
     true
 }
@@ -659,6 +671,16 @@ fn db_markdown(path: &str) -> Option<String> {
         return None;
     }
     super::dbdoc::to_markdown(path)
+}
+
+/// The email view for `path`, or `None` if it isn't mail we can parse (wrong extension,
+/// Text toggle off, or the bytes aren't RFC-822/OLE) — same gate discipline as
+/// [`db_markdown`], one helper so `load` and `load_static` cannot diverge.
+fn mail_markdown(path: &str) -> Option<String> {
+    if !super::mailmsg::is_mail_ext(&ext_of(path)) || !sagethumbs2k_core::settings::preview_text() {
+        return None;
+    }
+    super::mailmsg::to_markdown(path)
 }
 
 /// Lowercase extension of `path` (no dot).

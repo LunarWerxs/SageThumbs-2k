@@ -175,33 +175,66 @@ pub(crate) unsafe fn stroke_round(
     let _ = GdipDeletePath(p);
 }
 
-/// The **OCR** mark: a viewfinder of four corner brackets around two text lines, scaled to
-/// fit `r` (`scale` = 1 at 96 DPI). Shared by the screenshot editor's action bar and the
-/// Quick preview's caption toolbar so the same feature carries the same icon in both places.
+/// The **OCR** mark: a viewfinder of four corner brackets around two text lines, sized off
+/// `em` — the device-pixel em of the icon font the surrounding buttons draw with. Shared by
+/// the screenshot editor's action bar and the Quick preview's caption toolbar so the same
+/// feature carries the same icon in both places.
 ///
 /// Drawn as a vector rather than a Segoe Fluent glyph because the icon font has no
 /// unambiguous OCR codepoint, and a wrong one renders as a tofu box. The corners are left
 /// OPEN on purpose — a closed rectangle reads as the screenshot editor's Rect tool.
-pub(crate) unsafe fn ocr_glyph(hdc: HDC, r: windows::Win32::Foundation::RECT, ink: COLORREF) {
+///
+/// **It is sized off the FONT, not off the button, and that is the whole point.** Scaling it
+/// to the button cell is what made it the odd one out: the preview's caption buttons are
+/// 38×36 against the screenshot bar's 28, so the same mark came out at 22×20 device px in a
+/// row of 9–14 px font glyphs — measured off a real capture, and exactly the "the icons are
+/// different sizes" the toolbar was reported for.
+///
+/// `cell = 7/4 em` is the screenshot bar's own proportion (a 28 px cell against its 16 px icon
+/// font) turned into a rule, so THAT toolbar renders byte-identically and only the preview
+/// moves. It lands the mark's height on `0.875 em` — alongside the `0.833 em` the bundled
+/// font's glyphs are normalized to (`scripts/build-icon-font.py`, `NORM_TARGET` / 960 upm).
+/// Matching the mark's HEIGHT rather than its width is deliberate: it is a wide viewfinder, so
+/// equalizing widths shrinks it until the corner brackets and the two text lines inside them
+/// collapse into a smudge (tried, measured at 14×12, and plainly worse than the bug).
+///
+/// Every segment of this mark is axis-aligned, so it is drawn as FILLED RECTANGLES rather than
+/// stroked lines. A 1 px anti-aliased stroke spreads its coverage across two pixel rows and
+/// never fully lands on either: measured against a real capture, the stroked version reached a
+/// peak ink value of 182 with not one fully-covered pixel, while the font glyphs on the same
+/// toolbar peak at 232 — so the button read as greyed-out next to its neighbours. Filled rects
+/// on integer bounds are exact, and cost nothing in a shape with no diagonals or curves.
+pub(crate) unsafe fn ocr_glyph(
+    hdc: HDC,
+    r: windows::Win32::Foundation::RECT,
+    ink: COLORREF,
+    em: i32,
+) {
     let cx = (r.left + r.right) / 2;
     let cy = (r.top + r.bottom) / 2;
-    // Scale off the cell so the mark keeps its proportions in the preview's larger caption
-    // buttons; the 28 px screenshot cell is the design size, i.e. scale 1.
-    let cell = (r.right - r.left).min(r.bottom - r.top).max(1);
+    // `em` already carries the DPI (callers pass a dpi-scaled font height), so the mark scales
+    // with the toolbar without consulting the DPI a second time.
+    let cell = (em * 7 / 4).max(8);
     let s = |v: i32| (v * cell / 28).max(1);
+    let (hw, hh, arm, wt) = (s(8), s(7), s(5), s(1));
+    let (left, right, top, bottom) = (cx - hw, cx + hw, cy - hh, cy + hh);
     with_aa(hdc, |g| {
-        let p = pen(ink, 1);
-        for (sx, dx) in [(cx - s(8), 1), (cx + s(8), -1)] {
-            for (sy, dy) in [(cy - s(7), 1), (cy + s(7), -1)] {
-                line(g, p, sx, sy, sx + s(5) * dx, sy);
-                line(g, p, sx, sy, sx, sy + s(5) * dy);
+        let b = brush(ink);
+        // Four corner brackets, each an L of two bars drawn INSIDE the frame's bounds so the
+        // mark's real extent is exactly 2*hw by 2*hh whatever the stroke weight rounds to.
+        for &(x_out, x_in) in &[(left, left), (right - arm, right - wt)] {
+            for &(y_out, y_in) in &[(top, top), (bottom - arm, bottom - wt)] {
+                fill_rect(g, b, x_out, y_in, arm, wt); // horizontal arm
+                fill_rect(g, b, x_in, y_out, wt, arm); // vertical arm
             }
         }
-        drop_pen(p);
-        // Two text lines inside it, the second short like the end of a paragraph.
-        let t = pen_round(ink, s(2));
-        line(g, t, cx - s(4), cy - s(2), cx + s(4), cy - s(2));
-        line(g, t, cx - s(4), cy + s(2), cx + s(1), cy + s(2));
-        drop_pen(t);
+        // Two text lines inside it, the second short like the end of a paragraph. Their
+        // SEPARATION is s(3) while their WEIGHT is s(2): deriving both from s(2) put a 1 px
+        // line one pixel above another 1 px line at the size this now draws, and the pair
+        // merged into a single smudge that read as a scribble rather than as text.
+        let tw = s(2);
+        fill_rect(g, b, cx - s(4), cy - s(3) - tw / 2, s(4) * 2, tw);
+        fill_rect(g, b, cx - s(4), cy + s(3) - tw / 2, s(4) + s(1), tw);
+        drop_brush(b);
     });
 }

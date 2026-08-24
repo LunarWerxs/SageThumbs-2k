@@ -87,6 +87,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_ENABLE_MENU, "chk_enable_menu"),
         (ID_LBL_PREVIEW, "lbl_menu_preview"),
         (ID_LBL_SHOT_TOOL, "lbl_shot_tool"),
+        (ID_LBL_SHOT_DELAY, "lbl_shot_delay"),
         (ID_MENU_QUICK, "chk_menu_quick"),
         (ID_MENU_CHECKER, "chk_menu_checker"),
         (ID_LBL_APP_THEME, "lbl_app_theme"),
