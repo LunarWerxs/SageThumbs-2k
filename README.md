@@ -43,6 +43,8 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 </div>
 
+SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 331 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
+
 ---
 
 ## TL;DR
@@ -253,6 +255,57 @@ cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.ex
 
 ---
 
+## FAQ
+
+### Is SageThumbs 2K free?
+
+Yes, for personal use, under the [PolyForm Noncommercial License 1.0.0](#-license). Commercial
+use needs a separate license (open an issue to arrange one). There's no ads, no paywall, and no
+subscription tier, just a single free download built and maintained by one person.
+
+### What are the system requirements?
+
+Windows 11, 64-bit. It ships as a native x64 installer, plus a separately built native ARM64
+installer for Windows on Arm with the same format coverage. There's also a portable zip for
+per-user use with no admin rights. No other software is required: the installer bundles
+everything it needs, including the ImageMagick engine used for the more obscure formats.
+
+### Does it replace File Explorer, or install its own file browser?
+
+Neither. It's a shell extension that plugs into the existing File Explorer: same windows, same
+navigation, just real thumbnails, a right-click toolkit, and a Space-bar preview added on top.
+Nothing about how you browse files changes.
+
+### Why did Windows or my antivirus flag the installer?
+
+SmartScreen's "Windows protected your PC" screen is normal for a new, unsigned indie installer
+with no download history yet; click **More info, Run anyway**. Antivirus false positives happen
+because it's a shell extension that loads into `explorer.exe`, which is unusual for most
+software even though it's exactly what a thumbnail handler is supposed to do.
+
+### How is it different from the original SageThumbs, or a tool like MysticThumbs?
+
+It's a clean-room rebuild of the classic, decade-abandoned SageThumbs (2004-2017, GPLv2, no
+GFL reused), written from scratch in memory-safe Rust. Compared to a codec-pack style
+thumbnailer like MysticThumbs, its thumbnail provider runs out-of-process and panic-guarded, so
+a corrupt or hostile file can't take down Explorer the way an in-process crash can.
+
+### Does the Space-bar preview work with the Everything search tool?
+
+Yes, both Everything 1.4 and 1.5, installed or portable. Click a result first, since Space typed
+into the search box just types a space. If Everything itself runs as administrator, Windows
+blocks the keypress from reaching any normal program; binding a hotkey with Ctrl, Alt, or Shift
+in Settings works around that, because Windows delivers hotkeys differently than typed keys.
+
+### How many formats does it support, and can more be added?
+
+331 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
+`st2k formats` for the live, per-category count. New formats are considered when they can be
+read without a heavy dependency, many "project" file formats bake in a preview image that's
+cheap to extract. Request one through Send Feedback in the app or a GitHub issue.
+
+---
+
 ## 📜 License
 
 **[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license** ([open an issue](https://github.com/LunarWerxs/SageThumbs-2k/issues) to arrange one). © 2026 Lunarwerx.
@@ -271,5 +324,8 @@ With thanks to the projects that shaped specific features:
 - [**Calibre**](https://calibre-ebook.com/): reference for ebook formats and cover extraction.
 
 <div align="center">
+
+Made by [LunarWerx Studios](https://lunarwerx.com): also see [RepoYeti](https://repoyeti.com), [QuickDictate](https://quickdictate.lunarwerx.com), and [WatchArr](https://watcharr.lunarwerx.com).
+
 <sub>Made with 🦀 for people who have too many weird files.</sub>
 </div>
