@@ -47,9 +47,15 @@ fn cleanup(case: &str) {
 fn shot(dir: &Path, doc: &Path, tag: &str, extra: &[&str]) -> Png {
     let out = dir.join(format!("{tag}.png"));
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_SageThumbs2K"));
+    // The baseline theme is pinned via the diagnostic env override, NOT read from the
+    // machine. The first pushed version assumed the runner's Windows was in dark mode —
+    // true on the dev box, false on every GitHub runner, so CI went red on both jobs while
+    // the suite was green locally (there is no `--shot ... --dark` FLAG; an unrecognized
+    // arg is silently ignored and the shot follows `dark::is_dark()`).
+    cmd.env("ST2K_THEME", "dark");
     cmd.arg("--shot")
         .arg(&out)
-        .args(["--window", "preview", "--dark", "--file"])
+        .args(["--window", "preview", "--file"])
         .arg(doc)
         .args(extra);
     let status = cmd.status().expect("spawn SageThumbs2K --shot");
