@@ -87,4 +87,19 @@ Shot "--shot `"$qv`" --window preview --file `"$src`"" $qv
 Copy-Item $qv (Join-Path $siteimg 'preview-quicklook.png') -Force
 Write-Host "  -> mirrored to site\img\preview-quicklook.png"
 
+# The four-up hero collage (README + the site's Quick preview section). It lives in Python
+# because it composites, and it is called from here so there is ONE command that refreshes
+# every generated asset. It was hand-made until 2026-08-24, and by then it was advertising
+# "316 formats" over a caption toolbar that no longer existed — nothing could see either.
+# Skipped, not failed, when Pillow is absent: a missing optional dep must not take down the
+# assets that do not need it.
+Write-Host 'Generating Quick preview hero collage...'
+& python -c 'import PIL' 2>$null
+if ($LASTEXITCODE -eq 0) {
+    & python (Join-Path $PSScriptRoot 'make-collage.py') $exe
+    if ($LASTEXITCODE -ne 0) { throw "make-collage.py failed (exit $LASTEXITCODE)" }
+} else {
+    Write-Host '  SKIPPED - Pillow not installed (pip install pillow)' -ForegroundColor Yellow
+}
+
 Write-Host 'Done.' -ForegroundColor Green

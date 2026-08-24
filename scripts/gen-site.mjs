@@ -56,7 +56,14 @@ const ORDER = [
   ['arc', 'Archive', 'Archive', '#7d8ca3'],
 ];
 const ARIA = { img: 'image', doc: 'document', raw: 'camera raw', vid: 'video', aud: 'audio', ebk: 'ebook and comics', arc: 'archive' };
-const CR = '\r\n';
+// Line endings are DETECTED from the page, not assumed. This used to be a hard-coded
+// '\r\n', and both the generated block and the end-of-region search below depended on it -
+// so once the deployed index.html came back as LF-only (which is what a `git pull` of the
+// deploy repo hands you), the region search found nothing and the whole script died with
+// "could not locate the format-wall region". The format wall then silently stopped tracking
+// `st2k formats`, which is the one thing this file exists to prevent.
+const EXISTING = fs.readFileSync(SITE, 'utf8');
+const CR = EXISTING.includes('\r\n') ? '\r\n' : '\n';
 const by = {};
 for (const x of formats) (by[x.category] = by[x.category] || []).push(x);
 
@@ -80,10 +87,10 @@ for (const [dc, cat, label, color] of ORDER) {
 const block = `    <div class="bar reveal" role="img" aria-label="Format coverage by category: ${aria.join(', ')}">${CR}${spans.join(CR)}${CR}    </div>${CR}    <div class="fmtwall reveal">${CR}${groups.join(CR)}${CR}    </div>`;
 
 // ---- splice + scalar syncs -------------------------------------------------
-let html = fs.readFileSync(SITE, 'utf8');
+let html = EXISTING;
 const before = html;
 const startIdx = html.indexOf('    <div class="bar reveal"');
-const endIdx = html.indexOf('\r\n  </div>\r\n</section>', startIdx);
+const endIdx = html.indexOf(CR + '  </div>' + CR + '</section>', startIdx);
 if (startIdx < 0 || endIdx < 0) throw new Error('could not locate the format-wall region in site/index.html');
 const region = html.slice(startIdx, endIdx);
 if (!region.includes('fmtwall')) throw new Error('safety: located region does not look like the format wall');

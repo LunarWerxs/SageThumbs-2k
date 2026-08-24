@@ -151,7 +151,20 @@ fn split_headers(bytes: &[u8]) -> Option<(Vec<String>, usize)> {
     loop {
         let end = bytes[i..].iter().position(|&b| b == b'\n').map(|p| i + p)?;
         let line = &bytes[i..end];
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        // Trim EVERY trailing CR, not just one. A mail that has been through a text-mode
+        // copy (anything that rewrites `\n` as `\r\n` on already-CRLF content) arrives with
+        // `\r\r\n` endings, and stripping a single CR leaves a lone `\r` on the blank line
+        // that separates the headers from the body. That line then reads as another header,
+        // the walk eats the whole message looking for a separator that never comes, and the
+        // file falls through to the raw-source view — the mail renders as MIME soup rather
+        // than as mail. Real mailers never emit this; scripts and naive copies do.
+        let line = {
+            let mut l = line;
+            while let Some(rest) = l.strip_suffix(b"\r") {
+                l = rest;
+            }
+            l
+        };
         if line.is_empty() {
             return Some((headers, end + 1));
         }
@@ -787,5 +800,529 @@ mod tests {
     #[test]
     fn cp1252_maps_the_smart_quotes() {
         assert_eq!(cp1252(&[0x93, 0x94, 0x96]), "“”–");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // `.msg` — a real compound file to test against, and the adversarial half
+    // -----------------------------------------------------------------------------------
+    //
+    // Everything above this line tests `.eml`. The `.msg` half shipped in 2.4.0 with none,
+    // which is the wrong way round: `.eml` is text this module mostly re-splits, while
+    // `.msg` is a binary container walked with file-supplied sector numbers, and it is the
+    // half a hostile file would be written in.
+    //
+    // The builder below writes a compound file the way Outlook does, rather than the way
+    // this reader happens to read: every string lives in the MINISTREAM (real MAPI strings
+    // are tens of bytes, far under the 4 KB cutoff), the body spans TWO mini sectors so the
+    // miniFAT is a chain and not a single hop, and both attachment entries carry the SAME
+    // stream name, which is the thing `read_streams` exists for.
+
+    const SECTOR: usize = 512;
+    const MINI: usize = 64;
+    const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
+    const FREESECT: u32 = 0xFFFF_FFFF;
+
+    /// A minimal but genuine `.msg`: `streams` is `(directory name, UTF-16 contents)`, in
+    /// directory order. Duplicate names are allowed and are the point.
+    fn build_msg(streams: &[(&str, &str)]) -> Vec<u8> {
+        // --- ministream: each stream starts on a mini-sector boundary, chained in the miniFAT.
+        let mut ministream: Vec<u8> = Vec::new();
+        let mut minifat: Vec<u32> = Vec::new();
+        let mut placed: Vec<(u32, u64)> = Vec::new(); // (first mini sector, byte length)
+        for (_, value) in streams {
+            let bytes: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let first = (ministream.len() / MINI) as u32;
+            let sectors = bytes.len().div_ceil(MINI).max(1);
+            for i in 0..sectors {
+                minifat.push(if i + 1 == sectors {
+                    ENDOFCHAIN
+                } else {
+                    first + i as u32 + 1
+                });
+            }
+            placed.push((first, bytes.len() as u64));
+            ministream.extend_from_slice(&bytes);
+            ministream.resize(ministream.len().div_ceil(MINI) * MINI, 0);
+        }
+        let ministream_len = ministream.len().max(SECTOR);
+        ministream.resize(ministream_len.div_ceil(SECTOR) * SECTOR, 0);
+        let ministream_sectors = ministream.len() / SECTOR;
+
+        // --- directory: the root entry plus one entry per stream, four to a 512-byte sector.
+        let dir_entries = streams.len() + 1;
+        let dir_sectors = dir_entries.div_ceil(4);
+
+        // --- sector map. 0 = FAT, then directory, then miniFAT, then the ministream.
+        let first_dir = 1u32;
+        let first_minifat = first_dir + dir_sectors as u32;
+        let first_ministream = first_minifat + 1;
+        let total_sectors = 1 + dir_sectors + 1 + ministream_sectors;
+        assert!(
+            total_sectors <= SECTOR / 4,
+            "fixture outgrew its single FAT"
+        );
+
+        let mut fat = vec![FREESECT; SECTOR / 4];
+        fat[0] = ENDOFCHAIN;
+        for i in 0..dir_sectors {
+            let s = first_dir as usize + i;
+            fat[s] = if i + 1 == dir_sectors {
+                ENDOFCHAIN
+            } else {
+                (s + 1) as u32
+            };
+        }
+        fat[first_minifat as usize] = ENDOFCHAIN;
+        for i in 0..ministream_sectors {
+            let s = first_ministream as usize + i;
+            fat[s] = if i + 1 == ministream_sectors {
+                ENDOFCHAIN
+            } else {
+                (s + 1) as u32
+            };
+        }
+
+        let mut header = vec![0u8; SECTOR];
+        header[0..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+        header[0x18..0x1A].copy_from_slice(&3u16.to_le_bytes());
+        header[0x1C..0x1E].copy_from_slice(&0xFFFEu16.to_le_bytes());
+        header[0x1E..0x20].copy_from_slice(&9u16.to_le_bytes()); // 512-byte sectors
+        header[0x20..0x22].copy_from_slice(&6u16.to_le_bytes()); // 64-byte mini sectors
+        header[0x2C..0x30].copy_from_slice(&1u32.to_le_bytes());
+        header[0x30..0x34].copy_from_slice(&first_dir.to_le_bytes());
+        header[0x38..0x3C].copy_from_slice(&4096u32.to_le_bytes());
+        header[0x3C..0x40].copy_from_slice(&first_minifat.to_le_bytes());
+        header[0x40..0x44].copy_from_slice(&1u32.to_le_bytes());
+        header[0x44..0x48].copy_from_slice(&ENDOFCHAIN.to_le_bytes());
+        header[0x4C..0x50].copy_from_slice(&0u32.to_le_bytes()); // DIFAT[0] -> the FAT
+        for i in 1..109usize {
+            let o = 0x4C + i * 4;
+            header[o..o + 4].copy_from_slice(&FREESECT.to_le_bytes());
+        }
+
+        let mut dir = vec![0u8; dir_sectors * SECTOR];
+        {
+            let mut entry = |slot: usize, name: &str, kind: u8, start: u32, size: u64| {
+                let base = slot * 128;
+                let utf16: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+                for (i, c) in utf16.iter().enumerate() {
+                    dir[base + i * 2..base + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
+                }
+                dir[base + 64..base + 66]
+                    .copy_from_slice(&((utf16.len() * 2) as u16).to_le_bytes());
+                dir[base + 66] = kind;
+                dir[base + 67] = 1;
+                for off in [68, 72, 76] {
+                    dir[base + off..base + off + 4].copy_from_slice(&FREESECT.to_le_bytes());
+                }
+                dir[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
+                dir[base + 120..base + 128].copy_from_slice(&size.to_le_bytes());
+            };
+            entry(
+                0,
+                "Root Entry",
+                5,
+                first_ministream,
+                (ministream_sectors * SECTOR) as u64,
+            );
+            for (i, ((name, _), (start, size))) in streams.iter().zip(&placed).enumerate() {
+                entry(i + 1, name, 2, *start, *size);
+            }
+        }
+        dir[76..80].copy_from_slice(&1u32.to_le_bytes()); // root's child -> the first stream
+
+        let mut minifat_sector = vec![0u8; SECTOR];
+        for i in 0..SECTOR / 4 {
+            let v = minifat.get(i).copied().unwrap_or(FREESECT);
+            minifat_sector[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let mut fat_sector = vec![0u8; SECTOR];
+        for (i, v) in fat.iter().enumerate() {
+            fat_sector[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+
+        [header, fat_sector, dir, minifat_sector, ministream].concat()
+    }
+
+    /// The ordinary `.msg` the module claims to render, end to end.
+    ///
+    /// Both attachment entries share one stream name, so a reader that used `read_stream`
+    /// (first match wins) would silently list ONE — a wrong answer that looks right.
+    #[test]
+    fn msg_renders_headers_body_and_both_attachments() {
+        let msg = build_msg(&[
+            ("__substg1.0_0037001F", "Quarterly numbers"),
+            (
+                "__substg1.0_1000001F",
+                "Figures attached. Ask if anything looks off.",
+            ),
+            ("__substg1.0_0C1A001F", "Ada Lovelace"),
+            ("__substg1.0_5D01001F", "ada@example.com"),
+            ("__substg1.0_0E04001F", "Alan Turing"),
+            ("__substg1.0_3707001F", "report.pdf"),
+            ("__substg1.0_3707001F", "photo.jpg"),
+        ]);
+        let md = msg_to_markdown(&msg).expect("a real .msg parses");
+        assert!(md.contains("# Quarterly numbers"), "subject: {md}");
+        // `<` is a markdown metacharacter, so `md_cell` escapes it — the rendered From line
+        // is `Ada Lovelace \<ada@example.com>`, not the raw address form.
+        assert!(
+            md.contains("Ada Lovelace \\<ada@example.com>"),
+            "from: {md}"
+        );
+        assert!(md.contains("Alan Turing"), "to: {md}");
+        assert!(md.contains("Figures attached."), "body: {md}");
+        assert!(md.contains("report.pdf"), "first attachment: {md}");
+        assert!(
+            md.contains("photo.jpg"),
+            "SECOND attachment missing — `read_streams` collected only one: {md}"
+        );
+    }
+
+    /// A `.msg` whose strings are markdown must arrive inert, exactly as the `.eml` side does.
+    ///
+    /// The `.msg` path builds `Mail` itself instead of going through the header parser, so
+    /// this is a genuinely separate route to `assemble` and could have been missed there.
+    /// The attachment NAME is the sharpest case: it is attacker-chosen, it is rendered inside
+    /// backticks, and a name containing a backtick would otherwise escape the code span.
+    #[test]
+    fn hostile_msg_strings_cannot_inject_markdown() {
+        let msg = build_msg(&[
+            ("__substg1.0_0037001F", "[click me](https://evil.example)"),
+            ("__substg1.0_1000001F", "<img src=x onerror=alert(1)>"),
+            ("__substg1.0_3707001F", "a`b](https://evil.example)!x"),
+        ]);
+        let md = msg_to_markdown(&msg).expect("hostile .msg still parses");
+        // Assert on the ESCAPED forms, not on the absence of the raw ones: `\<img` still
+        // *contains* `<img` as a substring, so a naive `!contains` here passes and fails for
+        // the wrong reasons in both directions.
+        assert!(
+            md.contains("\\[click me\\](https://evil.example)"),
+            "the subject's link was not escaped: {md}"
+        );
+        assert!(
+            md.contains("\\<img src=x onerror=alert(1)>"),
+            "the body's HTML was not escaped: {md}"
+        );
+        assert!(
+            md.contains("a\\`b\\](https://evil.example)\\!x"),
+            "the attachment name was not escaped: {md}"
+        );
+        // And the real assertion: with the escapes removed, nothing may reach the output as
+        // a bare markdown metacharacter — which is what actually makes a link or a tag live.
+        for (line_no, line) in md.lines().enumerate() {
+            let bare = line
+                .replace("\\[", "")
+                .replace("\\]", "")
+                .replace("\\`", "")
+                .replace("\\<", "")
+                .replace("\\!", "")
+                .replace("\\*", "")
+                .replace("\\_", "")
+                .replace("\\~", "")
+                .replace("\\\\", "");
+            assert!(
+                !bare.contains(']') && !bare.contains('<'),
+                "line {line_no} still carries an unescaped metacharacter: {line}"
+            );
+        }
+    }
+
+    /// Doubled carriage returns must still parse as mail.
+    ///
+    /// Found by writing a demo `.eml` from a Python script on Windows: text mode rewrites the
+    /// `\n` of an already-CRLF string, so every ending became `\r\r\n`. Stripping one CR left
+    /// the header/body separator as a lone `\r`, which is not an empty line — so the walk read
+    /// the entire message as headers, found no separator, and the preview fell back to raw
+    /// MIME source. Any tool that copies mail in text mode does this.
+    #[test]
+    fn mail_with_doubled_carriage_returns_still_parses() {
+        let eml = b"From: Ada <ada@example.com>\r\r\n\
+                    Subject: Doubled\r\r\n\
+                    \r\r\n\
+                    First line.\r\r\n\
+                    Second line.\r\r\n";
+        let md = eml_to_markdown(eml).expect("\\r\\r\\n mail must still be recognised as mail");
+        assert!(md.contains("# Doubled"), "subject: {md}");
+        assert!(md.contains("ada@example.com"), "from: {md}");
+        assert!(md.contains("First line."), "body: {md}");
+        assert!(
+            !md.contains("Subject: Doubled"),
+            "the raw header block leaked into the body, so the split still went wrong: {md}"
+        );
+    }
+
+    /// `<script>` and `<style>` bodies must vanish with their tags, not merely lose the tags.
+    ///
+    /// Stripping only the angle brackets would leave the script SOURCE as body text, which
+    /// reads as gibberish at best and as attacker-authored prose at worst.
+    #[test]
+    fn html_script_and_style_content_never_reaches_the_body() {
+        let eml = b"Subject: Newsletter\r\n\
+                    Content-Type: text/html\r\n\
+                    \r\n\
+                    <html><head><title>SECRETTITLE</title></head>\
+                    <body><script>var SECRETSCRIPT=1;</script>\
+                    <style>.a{color:SECRETSTYLE}</style>\
+                    <p>Real body text.</p></body></html>\r\n";
+        let md = eml_to_markdown(eml).expect("html mail parses");
+        assert!(md.contains("Real body text."), "body lost: {md}");
+        for needle in ["SECRETSCRIPT", "SECRETSTYLE", "SECRETTITLE"] {
+            assert!(!md.contains(needle), "{needle} leaked into the body: {md}");
+        }
+    }
+
+    /// Pathological multipart must TERMINATE, and quickly.
+    ///
+    /// Three separate exhaustion shapes in one file: nesting far past the depth limit, a
+    /// boundary that is never closed, and thousands of parts. The wall-clock bound is the
+    /// assertion that matters — a preview that takes a minute is a hang to the person who
+    /// pressed Space, and this runs on the UI's load path.
+    #[test]
+    fn pathological_multipart_terminates_quickly() {
+        let mut deep =
+            String::from("Subject: deep\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n");
+        for d in 0..40 {
+            deep.push_str(&format!(
+                "--b{d}\r\nContent-Type: multipart/mixed; boundary=b{}\r\n\r\n",
+                d + 1
+            ));
+        }
+        deep.push_str("--b40\r\nContent-Type: text/plain\r\n\r\nbottom\r\n--b40--\r\n");
+
+        let unterminated =
+            "Subject: open\r\nContent-Type: multipart/mixed; boundary=zz\r\n\r\n--zz\r\n\
+             Content-Type: text/plain\r\n\r\nno closing delimiter ever arrives"
+                .to_string();
+
+        let mut many =
+            String::from("Subject: many\r\nContent-Type: multipart/mixed; boundary=p\r\n\r\n");
+        for i in 0..5_000 {
+            many.push_str(&format!(
+                "--p\r\nContent-Type: text/plain\r\n\r\npart {i}\r\n"
+            ));
+        }
+        many.push_str("--p--\r\n");
+
+        let started = std::time::Instant::now();
+        for (label, body) in [
+            ("nested", deep),
+            ("unterminated", unterminated),
+            ("many parts", many),
+        ] {
+            let _ = eml_to_markdown(body.as_bytes());
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "{label} multipart took too long to reject"
+            );
+        }
+    }
+
+    /// A header block that is mostly headers must not blow up the preview either.
+    ///
+    /// Real spam does carry hundreds of `Received:` lines, and folded continuations mean one
+    /// logical header can be arbitrarily long.
+    #[test]
+    fn absurd_header_blocks_are_bounded() {
+        let started = std::time::Instant::now();
+
+        // Under the 500-header cap, plus ONE logical header folded across 5,000 physical
+        // lines. Folding does not grow the header COUNT, so the cap never sees it — the only
+        // thing bounding that string is the 16 MB read cap, and this proves it still renders.
+        let mut ok = String::from("Subject: floods\r\n");
+        for i in 0..400 {
+            ok.push_str(&format!("X-Pad-{i}: {i}\r\n"));
+        }
+        ok.push_str("X-Folded: start\r\n");
+        for _ in 0..5_000 {
+            ok.push_str("\tcontinuation\r\n");
+        }
+        ok.push_str("\r\nbody\r\n");
+        let md = eml_to_markdown(ok.as_bytes()).expect("400 headers is still mail");
+        assert!(md.contains("# floods"), "{md}");
+
+        // Past the cap, `split_headers` declines — and declining is CORRECT here. The file
+        // falls through to the plain-text view rather than being rendered as mail, which is
+        // what a 20,000-header file deserves. What matters is that it decides fast.
+        let mut flood = String::from("Subject: too many\r\n");
+        for i in 0..20_000 {
+            flood.push_str(&format!("X-Pad-{i}: {i}\r\n"));
+        }
+        flood.push_str("\r\nbody\r\n");
+        assert!(
+            eml_to_markdown(flood.as_bytes()).is_none(),
+            "a 20,000-header block should fall through to the text view, not render as mail"
+        );
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "header flood took too long"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Mutation fuzzing
+    // -----------------------------------------------------------------------------------
+    //
+    // The lib crate's `src/fuzz.rs` cannot reach these: mail parsing lives in the app binary,
+    // so its harness has no path to `eml_to_markdown`. Rather than leave the two newest
+    // untrusted-input parsers in the build unfuzzed, the loop is reproduced here in the small
+    // — same idea as `fuzz.rs`, deliberately much cheaper, because these are the only two
+    // targets and both reject in microseconds.
+    //
+    // The seeds are STRUCTURALLY VALID on purpose. A mutation of random bytes never gets past
+    // `looks_like_ole` or the "does this look like mail" gate, so a run against garbage
+    // measures the gate and nothing behind it.
+
+    /// One fuzz target: its name for the failure message, the entry point, and its seed.
+    type FuzzTarget<'a> = (&'a str, fn(&[u8]), &'a [u8]);
+
+    struct Rng(u64);
+
+    impl Rng {
+        // Named `next_u64`, not `next`: an inherent `next` on a non-iterator trips
+        // clippy::should_implement_trait, and `-D warnings` makes that a build failure.
+        fn next_u64(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: usize) -> usize {
+            if n == 0 {
+                0
+            } else {
+                (self.next_u64() % n as u64) as usize
+            }
+        }
+    }
+
+    /// One mutation of `seed`: flip a byte, splice a run, truncate, or grow.
+    fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
+        let mut b = seed.to_vec();
+        if b.is_empty() {
+            return b;
+        }
+        match rng.below(6) {
+            0 => {
+                let i = rng.below(b.len());
+                b[i] = (rng.next_u64() & 0xFF) as u8;
+            }
+            1 => {
+                let i = rng.below(b.len());
+                b[i] ^= 1 << rng.below(8);
+            }
+            2 => {
+                let i = rng.below(b.len());
+                let v = (rng.next_u64() & 0xFF) as u8;
+                let n = rng.below(32).min(b.len() - i);
+                b[i..i + n].fill(v);
+            }
+            3 => {
+                let cut = rng.below(b.len());
+                b.truncate(cut);
+            }
+            4 => {
+                let i = rng.below(b.len());
+                let n = rng.below(64);
+                let filler: Vec<u8> = (0..n).map(|_| (rng.next_u64() & 0xFF) as u8).collect();
+                b.splice(i..i, filler);
+            }
+            _ => {
+                // Interesting integers where a length or a sector number might live.
+                let i = rng.below(b.len().saturating_sub(4).max(1));
+                let v: u32 = *[0u32, 1, 0x7FFF_FFFF, 0xFFFF_FFFE, 0xFFFF_FFFF]
+                    .get(rng.below(5))
+                    .unwrap_or(&0);
+                if i + 4 <= b.len() {
+                    b[i..i + 4].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        b
+    }
+
+    /// The two mail parsers under mutation. A panic here is fatal in the shipped build —
+    /// the preview app is `panic = "abort"`, so this is a crash, not a failed preview.
+    #[test]
+    fn mutation_fuzz_over_eml_and_msg_never_panics() {
+        let eml_seed = b"From: Ada <ada@example.com>\r\n\
+             To: Alan <alan@example.com>\r\n\
+             Subject: =?utf-8?B?SGVsbG8gd29ybGQ=?=\r\n\
+             Date: Mon, 1 Jan 2024 12:00:00 +0000\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"outer\"\r\n\
+             \r\n\
+             --outer\r\n\
+             Content-Type: multipart/alternative; boundary=\"inner\"\r\n\
+             \r\n\
+             --inner\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             Content-Transfer-Encoding: quoted-printable\r\n\
+             \r\n\
+             Hello =E2=80=94 there.\r\n\
+             --inner\r\n\
+             Content-Type: text/html; charset=iso-8859-1\r\n\
+             \r\n\
+             <html><body><p>Hello</p></body></html>\r\n\
+             --inner--\r\n\
+             --outer\r\n\
+             Content-Type: application/pdf; name=\"report.pdf\"\r\n\
+             Content-Disposition: attachment; filename=\"report.pdf\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             \r\n\
+             JVBERi0xLjQKJcTl8uXrp/Og0MTGCg==\r\n\
+             --outer--\r\n"
+            .to_vec();
+        let msg_seed = build_msg(&[
+            ("__substg1.0_0037001F", "Quarterly numbers"),
+            ("__substg1.0_1000001F", "Figures attached, ask if unclear."),
+            ("__substg1.0_0C1A001F", "Ada Lovelace"),
+            ("__substg1.0_5D01001F", "ada@example.com"),
+            ("__substg1.0_3707001F", "report.pdf"),
+            ("__substg1.0_3707001F", "photo.jpg"),
+            ("__properties_version1.0", "not really a property table"),
+        ]);
+
+        let targets: [FuzzTarget; 2] = [
+            ("eml_to_markdown", |b| drop(eml_to_markdown(b)), &eml_seed),
+            ("msg_to_markdown", |b| drop(msg_to_markdown(b)), &msg_seed),
+        ];
+
+        let mut rng = Rng(0x5EED_1234_ABCD_9876);
+        for (name, f, seed) in targets {
+            // Every prefix first — truncation is the most productive single class for the
+            // short-read panics these two parsers are exposed to.
+            for cut in 0..seed.len().min(2_048) {
+                let input = &seed[..cut];
+                if let Err(e) = std::panic::catch_unwind(|| f(input)) {
+                    panic!("PANIC in {name} on the {cut}-byte prefix: {}", pmsg(&*e));
+                }
+            }
+            for it in 0..20_000u32 {
+                let input = mutate(&mut rng, seed);
+                let head: String = input
+                    .iter()
+                    .take(32)
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if let Err(e) = std::panic::catch_unwind(|| f(&input)) {
+                    panic!(
+                        "PANIC in {name} at iteration {it} ({} bytes): {}\n  head: {head}",
+                        input.len(),
+                        pmsg(&*e)
+                    );
+                }
+            }
+        }
+    }
+
+    /// A panic payload as a printable string.
+    fn pmsg(e: &(dyn std::any::Any + Send)) -> String {
+        e.downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".into())
     }
 }

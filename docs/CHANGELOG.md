@@ -2,6 +2,16 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Fixed
+
+- **An email that has been copied around now still previews as an email.** Some tools rewrite
+  line endings when they copy a file, which doubles the invisible marker that separates an
+  email's headers from its message. SageThumbs was strict about that marker, so a mail that had
+  been through such a tool opened as raw source text instead of as a message. It now reads
+  either form.
+
 ## 2.4.0
 
 ### Added
