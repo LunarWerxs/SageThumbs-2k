@@ -316,10 +316,17 @@ try {
     $arm64Artifact = @($releaseArtifacts | Where-Object Architecture -ceq 'arm64')
     if ($arm64Artifact.Count -gt 1) { throw 'release artifact table has more than one ARM64 installer' }
     if ($arm64Artifact.Count -eq 1) {
+        # PARENTHESES ARE LOAD-BEARING. In PowerShell the comma binds TIGHTER than `+`, so
+        # `@( '', 'a' + $x + 'b' )` parses as `('', 'a') + $x + 'b'` and yields FOUR elements,
+        # not two. Add-Content then writes each on its own line, which is why every ARM64
+        # release note from at least 2.4.0 to 2.4.1 published as a code span split across three
+        # lines: the label, then the filename, then the closing backticks. Cosmetic, public,
+        # and invisible until someone read the rendered page rather than the script.
+        # Single backticks to match the x64 lines that export-release-notes.ps1 writes above.
         Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-            '',
-            '- **ARM64 installer:** ``' + $arm64Artifact[0].Setup.Name + '``',
-            '- **ARM64 SHA-256:** ``' + (Get-ReleaseSha256 -Path $arm64Artifact[0].Setup.FullName) + '``'
+            ''
+            ('- **ARM64 installer:** `' + $arm64Artifact[0].Setup.Name + '`')
+            ('- **ARM64 SHA-256:** `' + (Get-ReleaseSha256 -Path $arm64Artifact[0].Setup.FullName) + '`')
         )
     }
 
@@ -353,11 +360,14 @@ try {
         'and the **Windows 11 right-click menu** (the compact one).'
     )
     foreach ($artifact in $releaseArtifacts) {
+        # Parenthesised for the same reason as the ARM64 block above: the comma binds tighter
+        # than `+`, so without these each line published as FIVE separate lines, splitting a
+        # code span across the architecture name and the filename.
         Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-            '',
-            '- **' + $artifact.Architecture + ' portable:** ``' + $artifact.Portable.Name + '``',
-            '- **' + $artifact.Architecture + ' portable SHA-256:** ``' +
-                (Get-ReleaseSha256 -Path $artifact.Portable.FullName) + '``'
+            ''
+            ('- **' + $artifact.Architecture + ' portable:** `' + $artifact.Portable.Name + '`')
+            ('- **' + $artifact.Architecture + ' portable SHA-256:** `' +
+                (Get-ReleaseSha256 -Path $artifact.Portable.FullName) + '`')
         )
     }
 
