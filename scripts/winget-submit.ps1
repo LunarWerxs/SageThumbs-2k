@@ -296,6 +296,12 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Say "winget PR opened: $prUrl" 'Green'
+# Opening the PR is NOT the end of the submission. Validation runs for roughly an hour on
+# Microsoft's side and can still fail there: v2.3.0's arm64 installer was blocked by Defender
+# on the validation VM, and we only found out from a notification five days later. Name the
+# follow-up command here so the answer is never left to an inbox.
+Say "  follow it: pwsh scripts\check-winget.ps1 -Version $Version -Watch" 'Cyan'
+Say "  or later:  pwsh scripts\check-winget.ps1" 'Cyan'
 
 # The checkout is ~730 MB and nothing ever deleted it, so every release since this script
 # replaced the GitHub Action has left one behind in TEMP for good. Measured on 2.3.0: 726.5 MB.

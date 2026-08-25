@@ -113,6 +113,12 @@ try {
     # crucially, the CLOSED ones commented since the last release: v2.1.0 shipped while a long
     # follow-up sat unread on closed issue #26, which `gh issue list --state open` cannot show.
     pwsh "$root\scripts\check-issues.ps1"
+    # The other half of "what happened after we last shipped": winget-submit.ps1 opens a PR and
+    # exits, so a submission that FAILS validation is invisible here until a notification lands
+    # days later. v2.3.0 and v2.3.1 both sat open and failing for days that way. Informational
+    # for the same reason check-issues is: a stale failing PR for a superseded version must
+    # never block the release that supersedes it.
+    pwsh "$root\scripts\check-winget.ps1"
 
     # 1) must be on main with a clean tree (so we release exactly what's committed).
     Write-Host "[2/6] clean-tree + branch guard" -ForegroundColor Green
