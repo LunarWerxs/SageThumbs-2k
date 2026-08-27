@@ -417,6 +417,13 @@ jobs:
       - name: registration claims shared slots non-destructively
         shell: pwsh
         run: ./scripts/check-registration-symmetry.ps1
+      # `mod X;` with no tracked file. This is the one class CI genuinely discovers FIRST, because
+      # every local gate compiles the working tree where the untracked file still exists - which is
+      # exactly how 02d730a published a `main` that did not compile. Running it here as well is
+      # cheap and makes the failure name the missing files instead of showing five E0583s.
+      - name: every module declaration has a tracked file
+        shell: pwsh
+        run: ./scripts/check-untracked-mods.ps1
 
   # The patched dependency is excluded from the application workspace, so its
   # own tests do not run under `cargo test --workspace`. Keep the focused,

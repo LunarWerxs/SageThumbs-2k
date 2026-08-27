@@ -168,6 +168,14 @@ if ($Lint) {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-email-rule.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'check-email-rule.ps1 failed' }
     }
+    # A `mod X;` whose file was never `git add`ed. Every other stage in this ladder compiles the
+    # WORKING TREE, where that file is sitting right there, so all of them are green while the
+    # pushed commit does not build for anyone who clones it. It has happened twice (02d730a here,
+    # 393c38c in QuickDictate) and CI was the only thing that noticed, one round trip too late.
+    Stage 'untracked module files' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-untracked-mods.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'check-untracked-mods.ps1 failed' }
+    }
     # Taking a shared `shellex` slot without recording who held it wipes another product's
     # thumbnail registration for good. Nothing else can see that: it compiles, it tests green,
     # and it only shows up on a stranger's machine. See check-registration-symmetry.ps1.
