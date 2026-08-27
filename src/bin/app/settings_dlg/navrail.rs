@@ -886,6 +886,14 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     let client_w = (cr.right - cr.left) * 96 / dpi;
     let client_h = (cr.bottom - cr.top) * 96 / dpi;
     let footer_y = client_h - 40;
+    // The sign-in banner takes its strip out of the bottom of the pane, and the window was
+    // created exactly that much taller to pay for it - so `content_bottom` lands back where
+    // `footer_y` would have been without a banner, and every page keeps the rhythm it had.
+    //
+    // Everything that lays out PAGE CONTENT (the list that fills to the bottom, and the assert
+    // that each fixed page still clears the footer) uses `content_bottom`; only the footer row
+    // itself uses `footer_y`.
+    let content_bottom = footer_y - nudge::extra_height();
 
     let sc = |v: i32| dpi_scale(hwnd, v);
     let place = |id: i32, x: i32, y: i32, w: i32, h: i32| -> Option<HWND> {
@@ -1032,7 +1040,7 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
                     }
                 }
                 Row::ListFill(id) => {
-                    let h = (footer_y - 8 - y).max(60);
+                    let h = (content_bottom - 8 - y).max(60);
                     if let Some(c) = place(id, PANE_X, y, PANE_W, h) {
                         // Square list corners poked out of the pane's rounded look
                         // (report: "a little edge of the table poking into the
@@ -1052,12 +1060,25 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
         // must retain visible breathing room above it.
         if ci != 2 {
             debug_assert!(
-                y <= footer_y - 12,
+                y <= content_bottom - 12,
                 "settings category {ci} reaches the footer ({y} > {})",
-                footer_y - 12
+                content_bottom - 12
             );
         }
     }
+
+    // The sign-in banner, in the strip between the pane and the footer. Page-independent chrome
+    // like the footer, so it is placed here rather than inside any category's row list - and it
+    // is therefore visible whichever page the user navigates to.
+    nudge::place(
+        hwnd,
+        content_bottom + 8,
+        PANE_X,
+        PANE_W,
+        |id, x, y, w, h| {
+            place(id, x, y, w, h);
+        },
+    );
 
     // Footer (always visible).
     place(ID_ABOUT, 16, footer_y, 90, 28);

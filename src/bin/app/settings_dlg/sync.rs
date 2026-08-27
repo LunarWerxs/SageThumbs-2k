@@ -132,10 +132,20 @@ pub(super) unsafe fn on_sync_click(hwnd: HWND) {
         {
             return;
         }
-        set_sync_button(hwnd, t("sync_btn_signing_in"), false);
-        set_sync_status(hwnd, Some((t("sync_state_connecting").to_string(), false)));
-        spawn_sync(hwnd, SyncOp::Connect);
+        begin_connect(hwnd);
     }
+}
+
+/// Kick off a sign-in, with no confirmation of its own.
+///
+/// Split out of [`on_sync_click`] so the sign-in banner can start the SAME flow without asking a
+/// second time — the banner has already said what signing in does, and a confirm dialog on top of
+/// a card the user just read is one dialog too many. Extracted rather than copied so the two
+/// entry points cannot drift into setting different UI states before the same worker runs.
+pub(super) unsafe fn begin_connect(hwnd: HWND) {
+    set_sync_button(hwnd, t("sync_btn_signing_in"), false);
+    set_sync_status(hwnd, Some((t("sync_state_connecting").to_string(), false)));
+    spawn_sync(hwnd, SyncOp::Connect);
 }
 
 /// Run a connect/disconnect on a worker thread (they block on the network), posting the
@@ -205,6 +215,10 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
     match event {
         SyncEvent::Connected(Ok(who)) => {
             refresh_sync_ui(hwnd);
+            // However they got here — the banner, the sync button, or credentials this machine
+            // already had — the sign-in campaign is finished. Retire it so it is never asked
+            // again, including if they later sign out.
+            crate::nudge::mark_signed_in();
             msg(
                 hwnd,
                 &t("sync_signed_in").replace("{who}", &who),

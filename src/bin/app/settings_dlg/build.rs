@@ -711,6 +711,38 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         hinst,
     );
 
+    // ===== The "you could be signed in" banner (see `settings_dlg/nudge.rs`) =====
+    //
+    // Created only when the engine has actually decided to ask, which is rare by design - so on
+    // almost every run these four controls do not exist and `GetDlgItem` simply fails for them,
+    // which every caller already tolerates. `apply_v3_layout` reserves the strip and positions
+    // them; the window was created taller by exactly that strip.
+    //
+    // ORDER IS LOAD-BEARING: the card is an owner-draw STATIC and the buttons sit on top of it.
+    // A new child goes to the top of the sibling z-order, so the buttons must be created AFTER
+    // the card or the card would paint over them.
+    if nudge::showing() {
+        ctl(
+            hwnd,
+            STATIC,
+            "",
+            WINDOW_STYLE(SS_OWNERDRAW),
+            0,
+            0,
+            10,
+            10,
+            ID_NUDGE_CARD,
+            hinst,
+        );
+        for (id, label) in [
+            (ID_NUDGE_ACTION, nudge::action_label()),
+            (ID_NUDGE_LATER, nudge::LATER_LABEL.to_string()),
+            (ID_NUDGE_NEVER, nudge::NEVER_LABEL.to_string()),
+        ] {
+            ctl(hwnd, BUTTON, &label, WS_TABSTOP, 0, 0, 10, 10, id, hinst);
+        }
+    }
+
     // ===== Bottom row: About + credit (left), inline with Save / Cancel (right) =====
     ctl(
         hwnd,

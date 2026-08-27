@@ -8,6 +8,12 @@ use super::*;
 /// its controls have realized + painted. Shared by `run_shot` (one pane → PNG) and
 /// `run_shot_gif` (all panes → animated GIF).
 pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) -> Option<HWND> {
+    // Ask the sign-in engine, exactly as a real launch does. It does NOT force a banner into
+    // existence: with no stored history the gate is shut, this returns false, and the capture
+    // honestly shows the window without one. Seed the `SignInNudge` registry value with a
+    // long-time user's history to shoot the banner. Sizing has to happen AFTER asking, because
+    // the banner adds a strip between the pane and the footer.
+    nudge::decide();
     let hwnd = crate::win::create_shot_window(
         hinst,
         dark,
@@ -15,7 +21,7 @@ pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) ->
         Some(wndproc),
         "SageThumbs 2K — Settings",
         772,
-        588,
+        588 + nudge::extra_height(),
     )?;
     // Let the controls — the ListView especially — realize + paint before we drive panes.
     crate::win::pump_msgs(20);

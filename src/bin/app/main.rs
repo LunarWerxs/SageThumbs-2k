@@ -40,6 +40,17 @@ mod gdip;
 mod hotkey;
 mod http;
 mod image_info;
+/// The "you could be signed in" prompt: app glue (persistence, identity, the decision).
+mod nudge;
+/// The shared LunarWerx decision engine, vendored VERBATIM. Never edit it here — see `nudge.rs`.
+///
+/// `dead_code` is allowed for exactly that reason: this is a byte-for-byte copy of
+/// `packages/connections-connect/ports/nudge.rs` and it carries the whole API every LunarWerx app
+/// might use. SageThumbs uses a subset. Trimming the rest would make the copy stop matching
+/// upstream, which is the one property that lets a `diff` prove this app has not drifted into
+/// asking differently from the others.
+#[allow(dead_code, reason = "verbatim vendored copy; see the module doc above")]
+mod nudge_engine;
 mod oauth;
 mod ocr_result;
 mod prebuild_dlg;
@@ -726,9 +737,21 @@ fn main() {
         // change. (The old `dpi_for_system()` + CW_USEDEFAULT used the LOGIN primary DPI,
         // which mismatched the actual monitor and clipped the toggles / fields / footer.)
         let (mon_dpi, work) = win::cursor_monitor_metrics();
+        // Count this opening of the Settings window and let the sign-in engine decide whether
+        // this is one of the rare moments it speaks up. It has to happen BEFORE the window is
+        // created, because the answer changes how tall the window is: the banner sits in a strip
+        // between the pane and the footer, and the page layout below it runs once and cannot be
+        // re-run. See `settings_dlg::nudge`.
+        nudge::start_session();
+        let nudge_strip = if settings_dlg::decide_sign_in_nudge() {
+            settings_dlg::sign_in_nudge_height()
+        } else {
+            0
+        };
+
         // v3 nav-rail + content-pane shell: fixed 772×588 (96-dpi design), DPI-scaled.
         let win_w = win::dpi_scale_dpi(772, mon_dpi);
-        let win_h = win::dpi_scale_dpi(588, mon_dpi);
+        let win_h = win::dpi_scale_dpi(588 + nudge_strip, mon_dpi);
         let x = work.left + ((work.right - work.left) - win_w).max(0) / 2;
         let y = work.top + ((work.bottom - work.top) - win_h).max(0) / 2;
         let hwnd = CreateWindowExW(

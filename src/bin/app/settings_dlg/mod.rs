@@ -80,6 +80,22 @@ mod helpers;
 mod localize;
 mod menuitems;
 mod navrail;
+/// The "you could be signed in" banner: its pixels, its clicks, and where it sits.
+mod nudge;
+
+/// Ask the sign-in engine whether to show its banner in the window about to be built.
+///
+/// Must be called BEFORE the window is created, because the answer changes how tall it is: the
+/// banner lives in a strip between the pane and the footer, and the page layout below it runs
+/// exactly once. Returns whether a banner will be shown.
+pub(crate) fn decide_sign_in_nudge() -> bool {
+    nudge::decide()
+}
+
+/// Design-pixel height the banner strip adds to the window. Pair with [`decide_sign_in_nudge`].
+pub(crate) fn sign_in_nudge_height() -> i32 {
+    nudge::STRIP_H
+}
 mod search;
 mod shot;
 mod sync;
@@ -1244,6 +1260,9 @@ pub(crate) extern "system" fn wndproc(
                     // a selection change rather than a click — see `DEPENDENT_ON_COMBO`.
                     ID_CORNER_MARK if notify == CBN_SELCHANGE => sync_dependent_switches(hwnd),
                     ID_SYNC_BTN => on_sync_click(hwnd),
+                    ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_NEVER => {
+                        nudge::on_command(hwnd, id);
+                    }
                     ID_SHOT_SET_DIR => {
                         // Pick the Ctrl+S save folder; persist immediately + refresh the
                         // display. (The toggle next to it is saved with the other settings
@@ -1441,6 +1460,8 @@ pub(crate) extern "system" fn wndproc(
                     let cid = d.CtlID as i32;
                     if d.CtlID == ID_LEFT_MASK as u32 {
                         scroll::draw_left_mask(hwnd, d);
+                    } else if cid == ID_NUDGE_CARD {
+                        nudge::draw_card(hwnd, d);
                     } else if cid == ID_PANE_HEADER {
                         draw_pane_header(hwnd, d);
                     } else if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&cid) {

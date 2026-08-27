@@ -312,7 +312,7 @@ unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     let pressed = (cd.uItemState.0 & CDIS_SELECTED.0) != 0;
     let focus = (cd.uItemState.0 & CDIS_FOCUS.0) != 0;
     let disabled = (cd.uItemState.0 & windows::Win32::UI::Controls::CDIS_DISABLED.0) != 0;
-    let accent = id == ID_SELECT_ALL || id == IDOK;
+    let accent = id == ID_SELECT_ALL || id == IDOK || id == ID_NUDGE_ACTION;
 
     fill(hdc, &rc, DARK_BG());
 

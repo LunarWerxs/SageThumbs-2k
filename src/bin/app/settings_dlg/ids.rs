@@ -272,6 +272,21 @@ pub(super) const LEFT_VIEW_TOP: i32 = 6;
 pub(super) const LEFT_VIEW_BOTTOM: i32 = 442;
 pub(super) const LEFT_RIGHT_EDGE: i32 = 340; // x past which a control is "right column" (not scrolled)
 
+// ===== The "you could be signed in" banner (see `settings_dlg/nudge.rs`) =====
+//
+// One owner-draw card plus its three answers. Created only when the engine has actually decided
+// to ask, so on the overwhelming majority of runs these controls do not exist at all - which is
+// also why they sit outside every page's row list: the banner is page-independent chrome, like
+// the footer, not a row on the General page.
+//
+// 1240+ because the constants above run to 1238 despite the "1203+ is free" comment further up,
+// which was written when it was true. The duplicate-id test at the bottom of this file is what
+// actually enforces this; it parses every constant here and panics on a collision.
+pub(super) const ID_NUDGE_CARD: i32 = 1240;
+pub(super) const ID_NUDGE_ACTION: i32 = 1241;
+pub(super) const ID_NUDGE_LATER: i32 = 1242;
+pub(super) const ID_NUDGE_NEVER: i32 = 1243;
+
 #[cfg(test)]
 mod tests {
     /// Every control id in this file must be unique.
