@@ -2,7 +2,19 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## 2.5.0
+
+### Added
+
+- **A sign-in suggestion in Settings.** If you have had SageThumbs a week and used it a few times,
+  opening Settings may show a small card explaining that signing in with a Connections account
+  carries your settings to your other machines. Dismissing it with **"Not now"** hides it for the
+  rest of the day; from the fourth time you see it, a **"Remind me in a month"** button appears
+  beside that, and you can pick it as often as you like. It never appears more than once a day, it
+  only ever appears as Settings opens rather than interrupting what you are doing, closing the
+  window counts the same as "Not now", and it is translated into all 36 languages SageThumbs
+  speaks. Nothing about it changes how thumbnails work, and signing in remains entirely optional:
+  every feature works exactly the same without an account.
 
 ### Changed
 
