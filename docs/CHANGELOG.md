@@ -4,7 +4,35 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Changed
+
+- **You now choose what goes in the corner of a thumbnail, and setup asks you once.** Only one
+  thing fits in a thumbnail's bottom-right corner, and until now two separate tick boxes were
+  quietly fighting over it: turning on the format badge without also finding the second box let
+  Windows stamp the associated program's icon straight on top of it. Those two boxes are gone,
+  replaced by a single choice on the Appearance page, and the installer asks it on a first
+  install: **Windows' file-type icon** (what Explorer does on its own, and still the default),
+  **a SageThumbs format mark** (PSD, JXL, AVIF... so you can tell formats apart at a glance), or
+  **nothing at all**. Upgrading keeps whatever your old tick boxes were set to, and you can
+  change it any time in Settings.
+
 ### Fixed
+
+- **More EPS files show a thumbnail.** An EPS can carry a small built-in preview picture, and
+  SageThumbs reads that rather than running the PostScript. It was being thrown away whenever the
+  file had a blank line just after it, which some programs write and others don't, so whether your
+  EPS files worked came down to which program made them. Note that an EPS saved with **no**
+  preview at all still cannot be shown: drawing one would mean running the PostScript, which
+  SageThumbs deliberately never does. If your EPS files show nothing, re-save them with the
+  "include preview" option ticked.
+
+- **Quick preview button tooltips no longer describe the state you just left.** The light/dark
+  button showed a moon while its tooltip still read "Light background", and it stayed wrong for
+  as long as the window was open, because a tooltip's text was only ever set once when the window
+  opened. Every tooltip now updates with the button it belongs to. Four more that had the same
+  problem were fixed at the same time: the pin now offers to stop keeping the window on top once
+  it is pinned, view-source offers the rendered view once you are looking at source, and mute and
+  repeat both say what clicking them will actually do.
 
 - **A plain-text email no longer writes itself into the preview's contents list.** A line in a
   message starting with `#` was being read as a document heading, so it showed up huge and added

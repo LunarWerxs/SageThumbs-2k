@@ -139,10 +139,15 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // the overlay + video-cover rows exiled to File types. One page ends the
             // scavenger hunt and frees both donors.
             Head(ID_LBL_TILE_LOOK),
-            Switch(ID_FORMAT_BADGE),
+            // The corner question first, because it is the one real decision on this page and
+            // the style switch under it is meaningless until it is answered.
+            // Wider than the 156 the other combos use: its options are noun phrases naming a
+            // thing ("Windows' file-type icon"), not one-word modes like "Light"/"Dark", and at
+            // 156 the closed box clipped the SageThumbs option mid-word. There is ~220px of
+            // clear gap between this label and the field, so the extra 60 costs nothing.
+            Pair(ID_LBL_CORNER_MARK, ID_CORNER_MARK, 216, 200),
             Switch(ID_BADGE_ICON),
             Switch(ID_THUMB_CHECKER),
-            Switch(ID_HIDE_TYPE_OVERLAY),
             Switch(ID_VIDEO_COVER_ART),
             // Reads as the follow-up to the switch above: "or, if you'd rather have a frame,
             // here is which one." General could not take it (that page is already within a
@@ -489,12 +494,13 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
                 || s::jpeg_quality() != s::DEFAULT_JPEG as u8
                 || s::png_level() != s::DEFAULT_PNG
         }
-        // Appearance: every switch on the page, all default-off except the icon style.
+        // Appearance: every control on the page, all default-off except the icon style. The
+        // corner mark is one tri-state now, so ANY non-default value counts once — asking
+        // `format_badge() || hide_type_overlay()` would double-count the same choice.
         1 => {
-            s::format_badge()
+            s::corner_mark() != s::CornerMark::default()
                 || !s::format_badge_icon()
                 || s::thumb_checker()
-                || s::hide_type_overlay()
                 || s::prefer_cover_art()
                 || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
         }

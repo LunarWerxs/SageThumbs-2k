@@ -5,11 +5,14 @@ use super::*;
 pub(super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, settings::thumbnails_enabled());
     check(hwnd, ID_USE_EMBEDDED, settings::use_embedded());
-    check(hwnd, ID_FORMAT_BADGE, settings::format_badge());
+    set_combo(
+        hwnd,
+        ID_CORNER_MARK,
+        settings::corner_mark().as_dword() as usize,
+    );
     check(hwnd, ID_BADGE_ICON, settings::format_badge_icon());
     check(hwnd, ID_THUMB_CHECKER, settings::thumb_checker());
     check(hwnd, ID_VIDEO_COVER_ART, settings::prefer_cover_art());
-    check(hwnd, ID_HIDE_TYPE_OVERLAY, settings::hide_type_overlay());
     update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, settings::menu_enabled());
     check(hwnd, ID_MENU_ALL_TYPES, settings::menu_all_file_types());
@@ -104,10 +107,15 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
 pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, true);
     check(hwnd, ID_USE_EMBEDDED, true); // ON by default — see settings::use_embedded
-    check(hwnd, ID_FORMAT_BADGE, false); // OFF by default — it alters the picture
+                                        // Leave the corner to Windows: our mark alters the picture the user asked to see, and
+                                        // hiding Explorer's writes into other programs' ProgID keys. Neither without being asked.
+    set_combo(
+        hwnd,
+        ID_CORNER_MARK,
+        settings::CornerMark::default().as_dword() as usize,
+    );
     check(hwnd, ID_BADGE_ICON, true); // ...but when it IS on, colour beats three letters
     check(hwnd, ID_THUMB_CHECKER, false); // real alpha is the better default
-    check(hwnd, ID_HIDE_TYPE_OVERLAY, false); // writes into other programs' ProgID keys
     update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, true);
     check(hwnd, ID_MENU_ALL_TYPES, false);
@@ -295,7 +303,6 @@ pub(super) unsafe fn update_save_dir_enabled(hwnd: HWND) {
 /// wall of equal-looking checkboxes back into the 3-4 real decisions each page contains:
 /// a page shows its hierarchy instead of asking the user to infer it from the tooltips.
 pub(super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
-    (ID_FORMAT_BADGE, &[ID_BADGE_ICON]),
     (
         ID_ENABLE_MENU,
         &[ID_MENU_ALL_TYPES, ID_MENU_QUICK, ID_MENU_CHECKER],
@@ -327,11 +334,44 @@ pub(super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
     ),
 ];
 
+/// The same idea for a parent that is a COMBO rather than a checkbox, as
+/// (combo, the selection index that enables the children, children).
+///
+/// The badge STYLE row is the case that needed it: its parent stopped being "is the badge on"
+/// and became "which of three things is in the corner", and only one of those three has a style
+/// to pick. Encoding it as an index rather than a bool keeps this table honest about that —
+/// there is no "on" to test, only a specific answer.
+pub(super) const DEPENDENT_ON_COMBO: &[(i32, u32, &[i32])] = &[(
+    ID_CORNER_MARK,
+    sagethumbs2k_core::settings::CornerMark::Badge.as_dword(),
+    &[ID_BADGE_ICON],
+)];
+
 /// Is `id` a dependent (child) switch? The layout indents these.
 pub(super) fn is_dependent_switch(id: i32) -> bool {
     DEPENDENT_SWITCHES
         .iter()
         .any(|(_, kids)| kids.contains(&id))
+        || DEPENDENT_ON_COMBO
+            .iter()
+            .any(|(_, _, kids)| kids.contains(&id))
+}
+
+/// A combo's current selection, clamped into `0..=max` so a control that does not exist (or an
+/// empty one, which reports `CB_ERR` = -1) reads as the first option rather than as garbage.
+pub(super) unsafe fn combo_sel(hwnd: HWND, id: i32, max: i32) -> i32 {
+    match GetDlgItem(Some(hwnd), id) {
+        Ok(c) => SendMessageW(c, CB_GETCURSEL, None, None).0 as i32,
+        Err(_) => 0,
+    }
+    .clamp(0, max)
+}
+
+/// Select `sel` in a combo, if that combo exists on this dialog.
+pub(super) unsafe fn set_combo(hwnd: HWND, id: i32, sel: usize) {
+    if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel)), None);
+    }
 }
 
 /// Grey every dependent switch whose parent is off (and un-grey when it comes back on).
@@ -339,12 +379,19 @@ pub(super) fn is_dependent_switch(id: i32) -> bool {
 /// stored setting keeps its value, so toggling a parent off and on loses nothing.
 pub(super) unsafe fn sync_dependent_switches(hwnd: HWND) {
     for &(parent, kids) in DEPENDENT_SWITCHES {
-        let on = checked(hwnd, parent);
-        for &kid in kids {
-            if let Ok(c) = GetDlgItem(Some(hwnd), kid) {
-                let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(c, on);
-                let _ = InvalidateRect(Some(c), None, true);
-            }
+        grey_kids(hwnd, kids, checked(hwnd, parent));
+    }
+    for &(combo, wants, kids) in DEPENDENT_ON_COMBO {
+        grey_kids(hwnd, kids, combo_sel(hwnd, combo, 2) as u32 == wants);
+    }
+}
+
+/// Enable-or-grey one parent's children, and repaint them so the change is visible now.
+unsafe fn grey_kids(hwnd: HWND, kids: &[i32], on: bool) {
+    for &kid in kids {
+        if let Ok(c) = GetDlgItem(Some(hwnd), kid) {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(c, on);
+            let _ = InvalidateRect(Some(c), None, true);
         }
     }
 }
@@ -377,7 +424,7 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // nothing the user can see until the thumbnail cache is discarded. Detect the change
     // here and purge, otherwise the first thing every user reports is "I ticked it and
     // nothing happened". Only on an actual change — never make Apply nuke the cache.
-    let badge_now = checked(hwnd, ID_FORMAT_BADGE);
+    let mark_now = settings::CornerMark::from_dword(combo_sel(hwnd, ID_CORNER_MARK, 2) as u32);
     let icon_now = checked(hwnd, ID_BADGE_ICON);
     let checker_now = checked(hwnd, ID_THUMB_CHECKER);
     // Cover-art-versus-frame decides WHICH PICTURE the tile is, so it belongs to this set
@@ -387,20 +434,22 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // Every one of these is baked into the cached bitmap, so they share the badge's
     // purge-on-change rule. Compute the OR before writing, or the comparison reads back
     // the value we just stored and never fires.
-    let badge_changed = badge_now != settings::format_badge()
+    let mark_was = settings::corner_mark();
+    let overlay_was = settings::hide_type_overlay();
+    let badge_changed = mark_now != mark_was
         || icon_now != settings::format_badge_icon()
         || checker_now != settings::thumb_checker()
         || cover_now != settings::prefer_cover_art();
-    let _ = settings::set_format_badge(badge_now);
+    let _ = settings::set_corner_mark(mark_now);
     let _ = settings::set_format_badge_icon(icon_now);
     let _ = settings::set_thumb_checker(checker_now);
     let _ = settings::set_prefer_cover_art(cover_now);
-    // Not a bitmap change (Explorer draws the overlay itself, on top of what it cached),
-    // so this one needs no purge — but it DOES need the registry written and the shell
-    // told, which `typeoverlay::sync` does for every hooked format.
-    let overlay_now = checked(hwnd, ID_HIDE_TYPE_OVERLAY);
-    if overlay_now != settings::hide_type_overlay() {
-        let _ = settings::set_hide_type_overlay(overlay_now);
+    // The corner mark's OTHER half. Explorer draws its own overlay on top of what it cached,
+    // so suppressing it is not a bitmap change and needs no purge — but it DOES need the
+    // per-ProgID registry written and the shell told, which `typeoverlay::sync` does for every
+    // hooked format. Read AFTER the write, so this compares against the value that now stands.
+    let overlay_now = settings::hide_type_overlay();
+    if overlay_now != overlay_was {
         sagethumbs2k_core::typeoverlay::sync(overlay_now);
     }
     // Same shape as the overlay above: a registry-only change the shell reads directly, so it

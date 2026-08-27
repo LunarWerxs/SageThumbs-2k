@@ -3,8 +3,8 @@
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::UI::Controls::{
-    TTF_SUBCLASS, TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTS_ALWAYSTIP, TTS_NOPREFIX,
-    TTTOOLINFOW,
+    TTF_SUBCLASS, TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
+    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -66,21 +66,32 @@ pub(super) fn cell_width(full: i32, min: i32, avail: i32, visible: usize) -> i32
     }
 }
 
-/// Localized tooltip label for a toolbar button.
-pub(super) fn btn_tip(b: Btn) -> &'static str {
+/// Localized tooltip label for a toolbar button, for the state the button is CURRENTLY in.
+///
+/// **A toggle's tip names what the click WILL DO, never the state you are already in.** That is
+/// the same convention [`super::paint::btn_glyph`] draws by, and the two have to agree or the
+/// button says one thing and shows another. `pinned` / `src_view` are passed in rather than read
+/// off the window so this stays a pure function the tests can drive through every combination —
+/// which is the only way BOTH strings of a two-state button ever get checked.
+pub(super) fn btn_tip(b: Btn, pinned: bool, src_view: bool) -> &'static str {
     crate::win::t(match b {
+        // "Outline" NAMES the panel the button opens, the way `Settings` names a dialog — it is
+        // not an imperative that goes stale in the other state, so it stays one string.
         Btn::Toc => "preview_tip_toc",
         // Reuses the string the Settings checkbox used before this moved into the
-        // window, so all 36 translations carried straight over.
+        // window, so all 36 translations carried straight over. Its text already describes
+        // BOTH states ("Off: … On: …"), so it needs no second key either.
         Btn::MdImages => "tip_preview_md_remote",
+        Btn::Source if src_view => "preview_tip_source_rendered",
         Btn::Source => "preview_tip_source",
         Btn::PdfPrev => "preview_tip_prev",
         Btn::PdfNext => "preview_tip_next",
-        // One key, two meanings — the button flips, so the tip has to say which way it goes
+        // One button, two meanings — it flips, so the tip has to say which way it goes
         // or it describes the state you are already in.
         Btn::Theme if crate::dark::is_dark() => "preview_tip_theme_light",
         Btn::Theme => "preview_tip_theme_dark",
         Btn::Settings => "preview_tip_settings",
+        Btn::Pin if pinned => "preview_tip_unpin",
         Btn::Pin => "preview_tip_pin",
         Btn::Copy => "preview_tip_copy",
         Btn::Ocr => "preview_tip_ocr",
@@ -90,6 +101,46 @@ pub(super) fn btn_tip(b: Btn) -> &'static str {
         Btn::Open => "preview_tip_open",
         Btn::Close => "preview_tip_close",
     })
+}
+
+/// Every registered tool's tooltip TEXT, in the same tool-id order as [`tool_rects`].
+///
+/// Reads the two toggle states the caption's tips depend on (pin, view-source) and the two the
+/// transport strip's do (mute, repeat) out of the window, so one call describes the whole bar as
+/// it stands right now. [`update_tooltips`] compares this against what is registered.
+pub(super) unsafe fn tool_texts(hwnd: HWND) -> Vec<&'static str> {
+    let st = state(hwnd);
+    let (pinned, src_view) = if st.is_null() {
+        (false, false)
+    } else {
+        ((*st).pinned.get(), (*st).src_view.get())
+    };
+    // The transport strip's own toggles live on the video engine, which is absent for anything
+    // that is not a playing video/track — and then its rects are empty and its tips unreachable,
+    // so the "off" wording is the right answer rather than merely a harmless one.
+    //
+    // `try_borrow`, not `borrow`. This runs at the top of every `paint`, and the four places that
+    // take `video.borrow_mut()` all DROP the previous engine, whose `Drop` destroys a child
+    // window. A panic here would take the viewer out. Unlike the `strip_width` case that taught
+    // this repo to distrust try_borrow fallbacks (see the memory: a fallback that changed
+    // GEOMETRY laid PDFs out at the wrong width), a wrong answer here only affects tooltip TEXT
+    // and is self-correcting — the next paint diffs against what we stored and re-sends it.
+    let (muted, looping) = if st.is_null() {
+        (false, false)
+    } else {
+        (*st).video.try_borrow().map_or((false, false), |v| {
+            v.as_ref()
+                .map_or((false, false), |v| (v.muted(), v.looping()))
+        })
+    };
+    let mut out = Vec::with_capacity(BTNS.len() + TBTNS.len());
+    for &b in BTNS.iter() {
+        out.push(btn_tip(b, pinned, src_view));
+    }
+    for &t in TBTNS.iter() {
+        out.push(super::transport::tbtn_tip(t, muted, looping));
+    }
+    out
 }
 
 /// Create the caption toolbar's tooltip control: one RECT tool per button, `TTF_SUBCLASS` so the
@@ -117,21 +168,14 @@ pub(super) unsafe fn create_tooltips(hwnd: HWND, hinst: HINSTANCE) -> HWND {
     // past BTNS.len()). Hidden buttons and a hidden strip get an EMPTY rect so their tip can never
     // trigger; [`update_tooltips`] re-points every rect when the layout changes.
     let rects = tool_rects(hwnd);
-    for (idx, &b) in BTNS.iter().enumerate() {
-        add_tool(tip, hwnd, idx, rects[idx], btn_tip(b));
-    }
-    for i in 0..TBTNS.len() {
-        add_tool(
-            tip,
-            hwnd,
-            BTNS.len() + i,
-            rects[BTNS.len() + i],
-            super::transport::tbtn_tip(TBTNS[i]),
-        );
+    let texts = tool_texts(hwnd);
+    for (idx, text) in texts.iter().enumerate() {
+        add_tool(tip, hwnd, idx, rects[idx], text);
     }
     let st = state(hwnd);
     if !st.is_null() {
         *(*st).tip_rects.borrow_mut() = rects;
+        *(*st).tip_texts.borrow_mut() = texts;
     }
     tip
 }
@@ -190,8 +234,20 @@ unsafe fn add_tool(tip: HWND, hwnd: HWND, id: usize, rect: RECT, text: &str) {
     );
 }
 
-/// Re-point every tooltip tool at its control's current rect, if the layout moved since the last
-/// call. No-op if the tip control wasn't created (the headless shot never makes one).
+/// Whether the tooltip control's registered TEXTS still describe `now`.
+///
+/// The twin of [`tooltip_layout_changed`], and the reason it exists is a shipped bug: the tips
+/// were registered ONCE at window creation and never re-sent, while three of them are chosen from
+/// runtime state. Clicking the light/dark button flipped the glyph on the next paint and left the
+/// tooltip describing the theme you had just LEFT — reported by a user as "the moon says light
+/// background", which it did, permanently, from the first click onward.
+pub(super) fn tooltip_text_changed(cached: &[&str], now: &[&str]) -> bool {
+    cached.len() != now.len() || cached.iter().zip(now).any(|(a, b)| a != b)
+}
+
+/// Re-point every tooltip tool at its control's current rect, and re-send any tip whose TEXT the
+/// window's state has changed, if either moved since the last call. No-op if the tip control
+/// wasn't created (the headless shot never makes one).
 ///
 /// **Called from the PAINT path, and that is the fix, not an optimisation.** A caption button
 /// appears or disappears from several places — a decode landing (`Btn::Ocr` needs
@@ -211,14 +267,43 @@ pub(super) unsafe fn update_tooltips(hwnd: HWND, tip: HWND) {
     if st.is_null() {
         return;
     }
+    // Rects and texts move for DIFFERENT reasons — a resize moves every rect and no text, a
+    // theme click changes one text and no rect — so they are compared and sent independently.
+    // Folding them into one guard would make either change re-send the other for nothing.
     let rects = tool_rects(hwnd);
-    if !tooltip_layout_changed(&(*st).tip_rects.borrow(), &rects) {
-        return;
+    if tooltip_layout_changed(&(*st).tip_rects.borrow(), &rects) {
+        for (idx, r) in rects.iter().enumerate() {
+            move_tool(tip, hwnd, idx, *r);
+        }
+        *(*st).tip_rects.borrow_mut() = rects;
     }
-    for (idx, r) in rects.iter().enumerate() {
-        move_tool(tip, hwnd, idx, *r);
+    let texts = tool_texts(hwnd);
+    if tooltip_text_changed(&(*st).tip_texts.borrow(), &texts) {
+        for (idx, text) in texts.iter().enumerate() {
+            set_tool_text(tip, hwnd, idx, text);
+        }
+        *(*st).tip_texts.borrow_mut() = texts;
     }
-    *(*st).tip_rects.borrow_mut() = rects;
+}
+
+/// Re-send one registered tool's text. comctl32 copies it, same as on add, so the wide temporary
+/// is fine — but it must OUTLIVE the `SendMessageW`, which is why it is a named local.
+unsafe fn set_tool_text(tip: HWND, hwnd: HWND, id: usize, text: &str) {
+    let text = crate::win::wide(text);
+    let mut ti = TTTOOLINFOW {
+        cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_SUBCLASS,
+        hwnd,
+        uId: id,
+        lpszText: PWSTR(text.as_ptr() as *mut u16),
+        ..Default::default()
+    };
+    SendMessageW(
+        tip,
+        TTM_UPDATETIPTEXTW,
+        Some(WPARAM(0)),
+        Some(LPARAM(&mut ti as *mut _ as isize)),
+    );
 }
 
 /// Re-point one registered tool at a new rect.
@@ -265,23 +350,97 @@ mod tests {
         // strings unchecked — and WHICH one gets checked would depend on how the machine
         // running the test happens to be themed. That is a test whose result turns on
         // something other than the code.
+        // Every combination of the two caption toggles whose tip depends on them, under both
+        // skins: eight passes, so all of Theme's, Pin's and Source's strings are reached. A
+        // single pass leaves one string of each pair unchecked, and WHICH one would depend on
+        // how the machine running the test happens to be themed.
         for dark in [false, true] {
             crate::dark::set_theme_override(Some(dark));
-            let mut seen: Vec<&str> = Vec::new();
-            for &b in BTNS.iter() {
-                let tip = btn_tip(b);
-                assert!(
-                    !tip.is_empty() && !tip.starts_with('\u{27e8}'),
-                    "a preview toolbar button has no translated tooltip (missing locale key)"
-                );
-                assert!(
-                    !seen.contains(&tip),
-                    "two preview toolbar buttons share the tooltip {tip:?}"
-                );
-                seen.push(tip);
+            for pinned in [false, true] {
+                for src_view in [false, true] {
+                    let mut seen: Vec<&str> = Vec::new();
+                    for &b in BTNS.iter() {
+                        let tip = btn_tip(b, pinned, src_view);
+                        assert!(
+                            !tip.is_empty() && !tip.starts_with('\u{27e8}'),
+                            "a preview toolbar button has no translated tooltip \
+                             (missing locale key) at dark={dark} pinned={pinned} src={src_view}"
+                        );
+                        assert!(
+                            !seen.contains(&tip),
+                            "two preview toolbar buttons share the tooltip {tip:?}"
+                        );
+                        seen.push(tip);
+                    }
+                }
             }
         }
         crate::dark::set_theme_override(None);
+    }
+
+    /// The transport strip's two toggles must have both of their strings, and they must differ
+    /// from each other — same gate as the caption bar's, which the strip never had.
+    #[test]
+    fn every_transport_toggle_has_a_string_for_both_states() {
+        use super::super::transport::{tbtn_tip, TBTNS};
+        for muted in [false, true] {
+            for looping in [false, true] {
+                let mut seen: Vec<&str> = Vec::new();
+                for &t in TBTNS.iter() {
+                    let tip = tbtn_tip(t, muted, looping);
+                    assert!(
+                        !tip.is_empty() && !tip.starts_with('\u{27e8}'),
+                        "a transport control has no translated tooltip \
+                         (missing locale key) at muted={muted} looping={looping}"
+                    );
+                    assert!(
+                        !seen.contains(&tip),
+                        "two transport controls share the tooltip {tip:?}"
+                    );
+                    seen.push(tip);
+                }
+            }
+        }
+    }
+
+    /// A toggle's tooltip must actually CHANGE when the toggle flips, or re-sending it is
+    /// pointless and the shipped bug is still there in a different shape.
+    ///
+    /// This is the regression test for the reported one: the moon icon kept saying
+    /// "Light background" after the first click of the theme button.
+    #[test]
+    fn a_flipped_toggle_reports_a_different_tooltip() {
+        crate::dark::set_theme_override(Some(true));
+        let theme_dark_skin = btn_tip(Btn::Theme, false, false);
+        crate::dark::set_theme_override(Some(false));
+        let theme_light_skin = btn_tip(Btn::Theme, false, false);
+        crate::dark::set_theme_override(None);
+        assert_ne!(
+            theme_dark_skin, theme_light_skin,
+            "the light/dark button must name the theme it switches TO, so its tip has to flip"
+        );
+        assert_ne!(
+            btn_tip(Btn::Pin, false, false),
+            btn_tip(Btn::Pin, true, false),
+            "the pin's tip must say `unpin` once pinned, not repeat the state you are in"
+        );
+        assert_ne!(
+            btn_tip(Btn::Source, false, false),
+            btn_tip(Btn::Source, false, true),
+            "view-source must not still offer `view source` while you are looking at source"
+        );
+        // …and the change has to be VISIBLE to the tooltip control, which only re-reads what we
+        // send it. This is the comparison `update_tooltips` gates the re-send on.
+        assert!(tooltip_text_changed(
+            &[btn_tip(Btn::Pin, false, false)],
+            &[btn_tip(Btn::Pin, true, false)]
+        ));
+        assert!(!tooltip_text_changed(
+            &[btn_tip(Btn::Pin, true, false)],
+            &[btn_tip(Btn::Pin, true, false)]
+        ));
+        // Length mismatch is the first-paint case: nothing registered yet.
+        assert!(tooltip_text_changed(&[], &["x"]));
     }
 
     /// The crowded caption must fit, and the ordinary one must not change.

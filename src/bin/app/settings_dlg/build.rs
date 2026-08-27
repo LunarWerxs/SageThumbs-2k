@@ -36,13 +36,9 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     }
     lc.checkbox(t("chk_enable_thumbs"), cb, 300, ID_ENABLE_THUMBS);
     lc.checkbox(t("chk_prefer_embedded"), cb, 300, ID_USE_EMBEDDED);
-    lc.checkbox(t("chk_format_badge"), cb, 300, ID_FORMAT_BADGE);
     lc.checkbox(t("chk_badge_icon"), cb, 300, ID_BADGE_ICON);
     lc.checkbox(t("chk_thumb_checker"), cb, 300, ID_THUMB_CHECKER);
     lc.checkbox(t("chk_video_cover_art"), cb, 300, ID_VIDEO_COVER_ART);
-    // Created here with the other thumbnail switches; `navrail::cat_rows` is what decides
-    // which PAGE it lands on (File types), so creation order carries no meaning.
-    lc.checkbox(t("chk_hide_type_overlay"), cb, 320, ID_HIDE_TYPE_OVERLAY);
     // Headers the v3 layout places, not this legacy column: File types' two sections,
     // the menu page's verb-behavior split, and Quick preview's content-type split.
     lc.header(t("grp_tile_look"), hdr, ID_LBL_TILE_LOOK, false);
@@ -110,6 +106,41 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     SendMessageW(prev, CB_SETDROPPEDWIDTH, Some(WPARAM(230)), None);
     dark_theme_combo(prev);
     restyle::dark_combo_subclass(prev, ID_MENU_PREVIEW);
+
+    // The corner of the tile: Explorer's own type icon, our format mark, or nothing. One
+    // three-way choice, because those three are mutually exclusive answers to one question and
+    // the two checkboxes it replaced could be set to a combination that produced neither
+    // (see `settings::CornerMark`). Option order IS the stored value — `CornerMark::as_dword`.
+    // Created at the width `navrail::cat_rows` also lays it out at, so the two agree if anyone
+    // reads only one of them; the layout is what actually wins.
+    let corner = lc.combo(
+        t("lbl_corner_mark"),
+        ID_LBL_CORNER_MARK,
+        216,
+        ID_CORNER_MARK,
+    );
+    for key in [
+        "corner_mark_system",
+        "corner_mark_badge",
+        "corner_mark_none",
+    ] {
+        let w = wide(t(key));
+        SendMessageW(
+            corner,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    SendMessageW(
+        corner,
+        CB_SETCURSEL,
+        Some(WPARAM(settings::corner_mark().as_dword() as usize)),
+        None,
+    );
+    SendMessageW(corner, CB_SETDROPPEDWIDTH, Some(WPARAM(280)), None);
+    dark_theme_combo(corner);
+    restyle::dark_combo_subclass(corner, ID_CORNER_MARK);
 
     let theme = lc.combo(t("lbl_app_theme"), ID_LBL_APP_THEME, 160, ID_APP_THEME);
     for key in ["theme_system", "theme_light", "theme_dark"] {

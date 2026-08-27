@@ -845,16 +845,26 @@ pub fn thumb_settings() -> ThumbSettings {
         Some(_) => None,
         None => CURRENT_USER.open(hkcu_root()).ok(),
     };
-    let g = |name: &str, default: u32| {
+    // `gopt` is the primitive; `g` is it with a default applied. Both are needed because
+    // `CornerMark` has to tell ABSENT from 0 to know whether to fall back to the legacy pair,
+    // and doing that with a sentinel default would make 0 (the real "system icon" value)
+    // indistinguishable from "never set".
+    let gopt = |name: &str| -> Option<u32> {
         if let Some(ini) = ini.as_ref() {
-            return ini
-                .get(name)
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(default);
+            return ini.get(name).and_then(|v| v.parse().ok());
         }
-        key.as_ref()
-            .and_then(|k| k.get_u32(name).ok())
-            .unwrap_or(default)
+        key.as_ref().and_then(|k| k.get_u32(name).ok())
+    };
+    let g = |name: &str, default: u32| gopt(name).unwrap_or(default);
+    // Same derivation as `corner_mark()`, off this one snapshot rather than re-opening the key.
+    // It has to agree with that function exactly, which is what
+    // `thumb_settings_agrees_with_the_individual_accessors` asserts.
+    let mark = match gopt("CornerMark") {
+        Some(v) => crate::settings::CornerMark::from_dword(v),
+        None => crate::settings::CornerMark::from_legacy(
+            g("FormatBadge", 0) != 0,
+            g("HideTypeOverlay", 0) != 0,
+        ),
     };
     let mb = g("MaxSize", DEFAULT_MAX_FILE_MB) as u64;
     ThumbSettings {
@@ -865,7 +875,7 @@ pub fn thumb_settings() -> ThumbSettings {
             g("Height", DEFAULT_THUMB_SIZE),
         ),
         use_embedded: g("UseEmbedded", 1) != 0,
-        format_badge: g("FormatBadge", 0) != 0,
+        format_badge: mark == crate::settings::CornerMark::Badge,
         badge_style: crate::badge::BadgeStyle::from_dword(g(
             "FormatBadgeStyle",
             DEFAULT_BADGE_STYLE,
@@ -880,13 +890,96 @@ pub fn thumb_settings() -> ThumbSettings {
 /// colour does that faster than three letters. `0` selects the older plain text chip.
 const DEFAULT_BADGE_STYLE: u32 = 1;
 
-/// `FormatBadge` — corner format badge on thumbnails. Default OFF.
-pub fn format_badge() -> bool {
-    get_dword("FormatBadge", 0) != 0
+/// What ends up in the BOTTOM-RIGHT CORNER of a thumbnail we produced — the one place where
+/// two different things want to draw, and only one of them can win.
+///
+/// # Why this is one setting and not two checkboxes
+///
+/// It used to be two independent booleans, `FormatBadge` (draw our mark) and `HideTypeOverlay`
+/// (stop Explorer drawing its own file-type icon), and they address the SAME 20 px of tile.
+/// Ticking only the first produced the combination nobody wants: Explorer stamps the associated
+/// program's icon straight on top of our badge, in that exact corner (see [`crate::badge`] and
+/// [`crate::typeoverlay`], whose doc comments each name the other). The user had to find a
+/// second, differently-worded checkbox on the same page to get a clean result, and the pairing
+/// was never stated anywhere. One three-way choice cannot express the broken combination at all.
+///
+/// Which mark you get, not whether a decoration is "on": every value here is a real answer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CornerMark {
+    /// Leave the corner to Windows: Explorer draws the file's own type icon there, exactly as
+    /// it does for a file we never touched. The default, and byte-for-byte what an install did
+    /// before this setting existed.
+    #[default]
+    SystemIcon,
+    /// Our own format mark — [`crate::badge::BadgeStyle`] (`FormatBadgeStyle`) then picks the
+    /// plain text chip or the category-coloured page. Explorer's overlay is suppressed so it
+    /// cannot paint over it.
+    Badge,
+    /// Nothing in the corner at all: no mark of ours, and Explorer's own icon suppressed too.
+    /// The bare picture.
+    None,
 }
 
-pub fn set_format_badge(on: bool) -> windows_registry::Result<()> {
-    set_dword("FormatBadge", u32::from(on))
+impl CornerMark {
+    /// `CornerMark`: 0 = system icon, 1 = our badge, 2 = nothing. An unknown value falls to the
+    /// default rather than to a blank corner — a value we cannot read is not consent to hide
+    /// what Windows would otherwise show.
+    pub const fn from_dword(v: u32) -> Self {
+        match v {
+            1 => Self::Badge,
+            2 => Self::None,
+            _ => Self::SystemIcon,
+        }
+    }
+
+    /// `const` so a table can name a variant's stored value directly — see the settings
+    /// dialog's `DEPENDENT_ON_COMBO`, where the enum IS the combo's option order.
+    pub const fn as_dword(self) -> u32 {
+        match self {
+            Self::SystemIcon => 0,
+            Self::Badge => 1,
+            Self::None => 2,
+        }
+    }
+
+    /// The value an install that predates `CornerMark` should read as, from the two booleans it
+    /// does have. Used ONLY when `CornerMark` is absent, so an upgrade keeps whatever the user
+    /// had rather than silently reverting to the default.
+    ///
+    /// `badge` wins over `overlay_hidden` because a user who asked for our mark asked for a
+    /// mark; the fact that the old two-checkbox UI let Explorer scribble on it was the bug, not
+    /// the request.
+    pub fn from_legacy(badge: bool, overlay_hidden: bool) -> Self {
+        match (badge, overlay_hidden) {
+            (true, _) => Self::Badge,
+            (false, true) => Self::None,
+            (false, false) => Self::SystemIcon,
+        }
+    }
+}
+
+/// `CornerMark` — see [`CornerMark`]. Falls back to the pre-2.5 pair when it has never been
+/// written, so an upgrading install keeps the corner it already had.
+pub fn corner_mark() -> CornerMark {
+    match get_dword_opt("CornerMark") {
+        Some(v) => CornerMark::from_dword(v),
+        // The legacy pair is READ here and never written again. Leaving the old values in place
+        // rather than deleting them costs nothing (this branch stops being reached the moment
+        // `CornerMark` exists) and keeps a downgrade working.
+        None => CornerMark::from_legacy(
+            get_dword("FormatBadge", 0) != 0,
+            get_dword("HideTypeOverlay", 0) != 0,
+        ),
+    }
+}
+
+pub fn set_corner_mark(m: CornerMark) -> windows_registry::Result<()> {
+    set_dword("CornerMark", m.as_dword())
+}
+
+/// Whether to stamp our own format badge — true for exactly one [`CornerMark`] value.
+pub fn format_badge() -> bool {
+    corner_mark() == CornerMark::Badge
 }
 
 /// `FormatBadgeStyle` — icon (default) or plain text for that badge.
@@ -960,15 +1053,15 @@ pub fn video_offset_frac() -> f64 {
     f64::from(video_offset_pct()) / 100.0
 }
 
-/// `HideTypeOverlay` — suppress Explorer's own file-type icon on the thumbnails of the
-/// formats we hook. Default OFF, because it writes into other programs' ProgID keys (see
-/// [`crate::typeoverlay`]) and that should never happen without being asked for.
+/// Whether to suppress Explorer's own file-type icon on the thumbnails of the formats we hook
+/// — derived from [`CornerMark`], because it IS half of that one decision.
+///
+/// True for both non-default values: our badge needs the corner to itself, and "nothing" means
+/// nothing. It stays FALSE by default, which matters beyond tidiness: applying it writes into
+/// other programs' ProgID keys (see [`crate::typeoverlay`]), and that should never happen
+/// without being asked for.
 pub fn hide_type_overlay() -> bool {
-    get_dword("HideTypeOverlay", 0) != 0
-}
-
-pub fn set_hide_type_overlay(on: bool) -> windows_registry::Result<()> {
-    set_dword("HideTypeOverlay", u32::from(on))
+    corner_mark() != CornerMark::SystemIcon
 }
 
 /// `FolderPrebuildVerb` — the folder right-click entry that pre-builds thumbnails. Default ON,

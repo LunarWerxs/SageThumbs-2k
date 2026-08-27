@@ -449,13 +449,16 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   block (max file size, max thumbnail size, JPEG quality, PNG compression), and the language
   picker. On a portable copy the per-user Explorer registration switch sits at the top.
 - **Appearance** (new in 1.9.0): every "what does the tile look like" switch in one place, having
-  previously been split between General and File types. **Stamp the format in the thumbnail's
-  corner** (as a colour-coded file mark, one colour per kind of file, or as plain text),
+  previously been split between General and File types. **What goes in the corner of a
+  thumbnail** is one three-way choice, because only one thing fits there: *Windows' file-type
+  icon* (the default, and what Explorer draws unaided: the associated program's icon, or a blank
+  page once that program has been uninstalled), *a SageThumbs format mark* (the file's format
+  stamped in the corner, as a colour-coded file mark with one colour per kind of file, or as
+  plain text), or *nothing*. Picking either of the last two also stops Explorer painting over the
+  corner, which the two separate switches this replaced could not guarantee. **The installer
+  asks this once on a first install**, and it is changeable here at any time. Alongside it:
   **paint a checkerboard behind transparent thumbnails** (off by default; Explorer normally
-  shows the folder background through them), **hide Windows' own file-type icon on thumbnails**
-  (Windows stamps the associated program's icon into the bottom-right corner, on top of the
-  format badge, and draws a blank page there when that program has been uninstalled), and
-  **use a video's cover art instead of a frame**.
+  shows the folder background through them) and **use a video's cover art instead of a frame**.
 - **File types:** purely the per-format list, with search, bulk select and **Defaults**.
 - **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders

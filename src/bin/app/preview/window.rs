@@ -244,6 +244,12 @@ pub(super) struct ViewerState {
     /// toolbar layout actually moved — see `toolbar::update_tooltips` for the bug this shape
     /// exists to make impossible.
     pub(super) tip_rects: RefCell<Vec<RECT>>,
+    /// The tooltip TEXTS currently registered with `tip`, in the same tool-id order.
+    /// Three of the bar's tips are chosen from state that changes while the window is open
+    /// (theme, pin, view-source, mute, repeat), and comctl32 keeps its own copy of whatever was
+    /// last sent — so without this the tip would still describe the state the user just left.
+    /// See `toolbar::tooltip_text_changed` for the bug that shipped.
+    pub(super) tip_texts: RefCell<Vec<&'static str>>,
     /// Whether the 500 ms follow-selection poll thread has been started (daemon mode only).
     pub(super) poll_started: Cell<bool>,
     // ----- Phase 4 viewer polish -----
@@ -486,6 +492,7 @@ pub(super) unsafe fn create_viewer(
         hot: Cell::new(None),
         tip: Cell::new(HWND::default()),
         tip_rects: RefCell::new(Vec::new()),
+        tip_texts: RefCell::new(Vec::new()),
         poll_started: Cell::new(false),
         zoom: Cell::new(1.0),
         full_pending: Cell::new(false),

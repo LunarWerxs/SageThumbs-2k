@@ -436,12 +436,12 @@ pub(super) unsafe fn menu_row_param(list: HWND, row: i32) -> isize {
 pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_ENABLE_THUMBS, "tip_enable_thumbs"),
     (ID_USE_EMBEDDED, "tip_prefer_embedded"),
-    (ID_FORMAT_BADGE, "tip_format_badge"),
+    (ID_LBL_CORNER_MARK, "tip_corner_mark"),
+    (ID_CORNER_MARK, "tip_corner_mark"),
     (ID_BADGE_ICON, "tip_badge_icon"),
     (ID_THUMB_CHECKER, "tip_thumb_checker"),
     (ID_VIDEO_COVER_ART, "tip_video_cover_art"),
     (ID_LBL_VIDEO_OFFSET, "tip_video_offset"),
-    (ID_HIDE_TYPE_OVERLAY, "tip_hide_type_overlay"),
     (ID_ENABLE_MENU, "tip_enable_menu"),
     (ID_MENU_PREVIEW, "tip_menu_preview"),
     (ID_APP_THEME, "tip_app_theme"),
@@ -1237,12 +1237,12 @@ pub(crate) extern "system" fn wndproc(
                     ID_SHOT_QUICK_ENABLE => update_quick_enabled(hwnd),
                     ID_CUSTOM_ACTION_ENABLE => update_custom_action_enabled(hwnd),
                     ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
-                    // Parent switches with greyed dependents (badge style, the menu rows,
-                    // the Quick-preview rows): one table drives them all — see
-                    // `DEPENDENT_SWITCHES`.
-                    ID_FORMAT_BADGE | ID_ENABLE_MENU | ID_PREVIEW_ENABLED => {
-                        sync_dependent_switches(hwnd)
-                    }
+                    // Parent switches with greyed dependents (the menu rows, the Quick-preview
+                    // rows): one table drives them all — see `DEPENDENT_SWITCHES`.
+                    ID_ENABLE_MENU | ID_PREVIEW_ENABLED => sync_dependent_switches(hwnd),
+                    // The badge-style row's parent is a COMBO, not a checkbox, so it arrives as
+                    // a selection change rather than a click — see `DEPENDENT_ON_COMBO`.
+                    ID_CORNER_MARK if notify == CBN_SELCHANGE => sync_dependent_switches(hwnd),
                     ID_SYNC_BTN => on_sync_click(hwnd),
                     ID_SHOT_SET_DIR => {
                         // Pick the Ctrl+S save folder; persist immediately + refresh the

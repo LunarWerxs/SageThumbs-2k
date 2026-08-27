@@ -395,10 +395,98 @@ begin
     Result := '{#AppExe}';
 end;
 
+// ---- the one install-time question: what goes in a thumbnail's corner -------------------
+//
+// This is NOT a return of the Full/Compact [Components] page removed in 2026-08-12 (see the
+// [Setup] comment). That one made the product's headline claim - "all {#FmtCount} formats" -
+// conditional on a checkbox nobody understood, and a Compact user hitting an undecodable file
+// had no way to know why. Every answer HERE ships the identical, complete product; the choice
+// is cosmetic, reversible from Settings, and has a safe default that is exactly what Windows
+// does unaided. Asking it at install is the point: only one thing can occupy that corner, and
+// people who wanted a different one were never going to go looking for a setting to find out
+// they could have it.
+//
+// Option ORDER is the stored value - it must stay in step with `settings::CornerMark`
+// (0 = Windows' own type icon, 1 = our format mark, 2 = nothing).
+var
+  CornerPage: TInputOptionWizardPage;
+
+function CornerMarkAlreadyChosen: Boolean;
+begin
+  Result := RegValueExists(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark');
+end;
+
+// What to preselect. An upgrader from the two-checkbox era has no CornerMark yet, so derive it
+// from the pair it replaced - the same mapping `CornerMark::from_legacy` uses, for the same
+// reason: an upgrade must not silently move the corner they already chose.
+function CornerMarkInitial: Integer;
+var
+  V: Cardinal;
+begin
+  if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark', V) then
+  begin
+    if V > 2 then
+      Result := 0
+    else
+      Result := Integer(V);
+    Exit;
+  end;
+  if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'FormatBadge', V) and (V <> 0) then
+  begin
+    Result := 1;
+    Exit;
+  end;
+  if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'HideTypeOverlay', V) and (V <> 0) then
+  begin
+    Result := 2;
+    Exit;
+  end;
+  Result := 0;
+end;
+
+procedure InitializeWizard;
+begin
+  CornerPage := CreateInputOptionPage(wpSelectDir,
+    'Thumbnail corner',
+    'What should sit in the corner of a thumbnail?',
+    'Only one thing fits in a thumbnail''s bottom-right corner, so pick which.'
+      + ' You can change this at any time in SageThumbs 2K Settings.',
+    True,   // exclusive: radio buttons, not checkboxes
+    False);
+  CornerPage.Add('Windows'' file-type icon' + #13#10
+    + 'What Explorer draws on its own: the icon of whichever program opens that file.');
+  CornerPage.Add('A SageThumbs format mark' + #13#10
+    + 'The file''s format (PSD, JXL, AVIF...) instead, so you can tell formats apart at a glance.');
+  CornerPage.Add('Nothing' + #13#10
+    + 'Leave the picture bare.');
+  CornerPage.SelectedValueIndex := CornerMarkInitial;
+end;
+
+// Do not re-ask somebody who has already answered - an upgrade should be quiet. A first
+// install has no value yet, so the page shows exactly once in a machine's life unless the
+// user clears the setting.
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = CornerPage.ID) and CornerMarkAlreadyChosen;
+end;
+
+// Written at ssInstall, NOT ssPostInstall, and the ordering is load-bearing: the [Run]
+// regsvr32 entry runs BETWEEN those two steps, and `register()` reads this value to decide
+// whether to suppress Explorer's per-ProgID overlay. Writing it afterwards would store the
+// answer and apply half of it.
+procedure ApplyCornerMarkChoice;
+begin
+  if not WizardSilent then
+    RegWriteDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark',
+      Cardinal(CornerPage.SelectedValueIndex));
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Stale: String;
 begin
+  if CurStep = ssInstall then
+    ApplyCornerMarkChoice;
   if CurStep = ssPostInstall then
   begin
     Stale := StaleAfterInstall;

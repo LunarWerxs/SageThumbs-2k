@@ -110,7 +110,23 @@ fn epsi_preview(bytes: &[u8]) -> Option<DynamicImage> {
     for row in packed.chunks_exact(row_bytes).rev() {
         unpack_row(row, width as usize, depth, &mut grey)?;
     }
-    let (end, _) = take_line(rest);
+    // Skip blank lines before the terminator. ImageMagick's `epi:` coder writes one, and this
+    // check used to demand `%%EndPreview` on the VERY next line - so a preview whose 4800 bytes
+    // had all been read correctly was thrown away on the strength of an empty line, and every
+    // EPS that tool produces silently had no thumbnail. The corpus sample passed throughout
+    // because Adobe does not write the blank line, which is exactly how it went unnoticed.
+    //
+    // Still terminator-checked rather than dropped: reaching `%%EndPreview` is what proves the
+    // hex ran to the end of a real preview instead of us having stopped in the middle of one.
+    let mut end;
+    loop {
+        let (line, next) = take_line(rest);
+        rest = next;
+        end = line;
+        if !end.trim_ascii().is_empty() || rest.is_empty() {
+            break;
+        }
+    }
     if end != b"%%EndPreview" || grey.len() as u64 != pixels {
         return None;
     }
@@ -317,6 +333,52 @@ mod tests {
             image::load_from_memory(&got).is_ok(),
             "preview should decode as TIFF"
         );
+    }
+
+    /// A blank line between the last preview row and `%%EndPreview` must not throw the preview
+    /// away. **ImageMagick's `epi:` coder writes exactly that**, so before this every EPS that
+    /// tool produced silently had no thumbnail while the curated corpus sample passed - Adobe
+    /// does not write the blank line, which is precisely why nothing caught it.
+    ///
+    /// Asserted on real CONTENT and a 1-BIT depth, not on "something came back": the corpus only
+    /// ever exercised 8-bit, and the pixels prove the row order and the inverted EPSI polarity
+    /// still hold on the path this fix reopened.
+    #[test]
+    fn a_blank_line_before_end_preview_does_not_discard_it() {
+        // 8x2, 1bpp. Rows are bottom-up in EPSI, and sample 0 is WHITE, so the stored top row
+        // (0xFF) is all-black and the stored bottom row (0x00) is all-white once unpacked.
+        let rows = ["00", "FF"];
+        let clean = epsi(8, 2, 1, &rows);
+        let mut blank = clean.clone();
+        // The only difference: one empty line ahead of the terminator.
+        let at = blank
+            .windows(b"%%EndPreview".len())
+            .position(|w| w == b"%%EndPreview")
+            .expect("terminator");
+        blank.splice(at..at, *b"\n");
+
+        let a = epsi_preview(&clean).expect("preview without the blank line");
+        let b = epsi_preview(&blank).expect("a blank line must not discard a complete preview");
+        assert_eq!(a.to_luma8().into_raw(), b.to_luma8().into_raw());
+
+        let px = b.to_luma8();
+        assert_eq!((px.width(), px.height()), (8, 2));
+        assert_eq!(px.get_pixel(0, 0).0[0], 0, "top row is the LAST stored row");
+        assert_eq!(px.get_pixel(0, 1).0[0], 255, "sample 0 is white in EPSI");
+    }
+
+    /// The terminator is still REQUIRED - skipping blanks must not become "stop caring where the
+    /// preview ends", or a truncated file would hand back half an image as if it were whole.
+    #[test]
+    fn a_preview_that_never_terminates_is_still_refused() {
+        let mut truncated = epsi(8, 2, 1, &["00", "FF"]);
+        let at = truncated
+            .windows(b"%%EndPreview".len())
+            .position(|w| w == b"%%EndPreview")
+            .expect("terminator");
+        truncated.truncate(at);
+        truncated.extend_from_slice(b"\n\n\n%%Trailer\n");
+        assert!(epsi_preview(&truncated).is_none());
     }
 
     #[test]

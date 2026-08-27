@@ -170,16 +170,19 @@ pub(super) const ID_PREVIEW_URL_LIVE: i32 = 1210;
 pub(super) const ID_FOLDER_PREBUILD: i32 = 1211;
 // Generic-archive (.zip/.rar/.7z) contact-sheet thumbnails (Ebook/comic tab).
 pub(super) const ID_C_ARCHIVE_SHEET: i32 = 1212;
-pub(super) const ID_FORMAT_BADGE: i32 = 1213;
+/// "In the corner of a thumbnail:" — the one three-way choice that replaced the old
+/// `FormatBadge` + `HideTypeOverlay` checkbox pair. Both of those addressed the SAME corner of
+/// the tile and the combination people naturally reached for (badge on, overlay not hidden)
+/// let Explorer paint its icon straight over our mark. See `settings::CornerMark`.
+pub(super) const ID_LBL_CORNER_MARK: i32 = 1244;
+pub(super) const ID_CORNER_MARK: i32 = 1245;
 /// Badge STYLE: ticked = the category-coloured icon, unticked = the older plain text chip.
-/// Only meaningful while `ID_FORMAT_BADGE` is ticked, and greyed out when it isn't.
+/// Only meaningful while `ID_CORNER_MARK` is on "our own mark", and greyed out when it isn't.
 pub(super) const ID_BADGE_ICON: i32 = 1216;
 /// Burn the transparency checkerboard into Explorer thumbnails. Separate from
 /// `ID_MENU_CHECKER`, which is the same idea for the two PREVIEW surfaces — different
 /// surfaces, different mechanisms, so one switch could not honestly drive both.
 pub(super) const ID_THUMB_CHECKER: i32 = 1217;
-/// Stop Explorer stamping the associated program's icon over our thumbnails (issue #18).
-pub(super) const ID_HIDE_TYPE_OVERLAY: i32 = 1218;
 /// Show a video's embedded poster instead of a frame from the film. Cover art is used as a
 /// FALLBACK regardless of this switch (a file whose codec Windows lacks has no frame at all);
 /// this makes it the PREFERENCE, which is what a ripped-film library wants.

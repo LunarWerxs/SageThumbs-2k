@@ -140,6 +140,18 @@ pub fn register(dll_path: &str) -> Result<()> {
     // re-running registration after a move is also what repoints it.
     crate::foldermenu::sync(settings::folder_prebuild_verb());
 
+    // Explorer's own type-icon overlay, for the same reason and by the same argument: it is one
+    // half of the `CornerMark` choice (see `settings::CornerMark`), the installer can offer that
+    // choice but cannot apply this half of it (suppression is per-ProgID, resolved from the
+    // format list this crate owns), and a normal install never opens Settings. Registration is
+    // the one moment that knows every hooked format, which is exactly why `unregister` already
+    // calls `typeoverlay::remove_all` as its mirror image.
+    //
+    // Doing nothing is the default answer, not a no-op: `hide_type_overlay()` is false for
+    // `CornerMark::SystemIcon`, and `sync(false)` REMOVES any suppression we previously wrote
+    // rather than skipping. That is what makes switching back to Windows' icon work.
+    crate::typeoverlay::sync(settings::hide_type_overlay());
+
     notify_shell();
     Ok(())
 }

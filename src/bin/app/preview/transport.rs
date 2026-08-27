@@ -78,14 +78,24 @@ pub(super) const TBTNS: [TBtn; 7] = [
     TBtn::Speed,
 ];
 
-/// Localized tooltip for a transport control.
-pub(super) fn tbtn_tip(b: TBtn) -> &'static str {
+/// Localized tooltip for a transport control, for the state it is CURRENTLY in.
+///
+/// Same convention as the caption toolbar's [`super::toolbar::btn_tip`]: a toggle's tip names
+/// what the click WILL DO. The speaker and the repeat mark both change appearance with their
+/// state (crossed-out glyph, accent tint), so a fixed "Mute" / "Repeat" told half the users the
+/// opposite of what the button was about to do.
+///
+/// `Play` needs no pair: its one string already covers both directions.
+pub(super) fn tbtn_tip(b: TBtn, muted: bool, looping: bool) -> &'static str {
     crate::win::t(match b {
         TBtn::Prev => "preview_tip_prevfile",
         TBtn::Play => "preview_tip_playpause",
         TBtn::Next => "preview_tip_nextfile",
+        TBtn::Mute if muted => "preview_tip_unmute",
         TBtn::Mute => "preview_tip_mute",
+        TBtn::Loop if looping => "preview_tip_loop_off",
         TBtn::Loop => "preview_tip_loop",
+        // Its text spells out what BOTH settings do, so it does not go stale either way.
         TBtn::Arrows => "tip_preview_arrow_nav",
         TBtn::Speed => "preview_tip_speed",
     })
