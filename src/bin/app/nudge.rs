@@ -212,8 +212,45 @@ pub(crate) fn start_session() {
 pub(crate) fn consider(trigger: &str) -> Option<Ask> {
     let cfg = config();
     let signed_in = crate::sync_client::is_signed_in();
-    with_state(|s| s.consider(&cfg, trigger, signed_in, now_ms()))
+    with_state(|s| s.consider(&cfg, trigger, signed_in, now_ms())).map(localize)
 }
+
+/// Swap the engine's English copy for the active locale's.
+///
+/// The engine's `copy_for` is English string literals by construction, and it is vendored
+/// VERBATIM — so the only place this can happen without forking it is here, on the way out.
+/// Both halves then get to be true at once: `nudge_engine.rs` stays byte-identical with the
+/// copy QuickDictate carries, and a Turkish user gets a Turkish card instead of an English
+/// advert sitting in an otherwise fully translated window.
+///
+/// ONLY the three copy fields are touched. `url` carries attribution, and `campaign` /
+/// `trigger` / `ordinal` are what [`record`] settles the state machine with; rewriting any of
+/// them here would make the engine and the app disagree about what was asked.
+fn localize(mut ask: Ask) -> Ask {
+    // Mirrors the engine's own key selection: a discover ask uses discover copy whatever
+    // trigger fired it, because telling someone already signed in to sign in is the one
+    // mistake the campaign split exists to prevent.
+    let specific = ask.campaign != Campaign::Discover && ask.trigger == TRIGGER_SETTINGS;
+    let (head, body) = if specific {
+        ("nudge_head", "nudge_body")
+    } else {
+        // Everything else gets the GENERIC pair, translated. The engine has six copy variants
+        // and SageThumbs can reach exactly one of them — `consider` is called once, from the
+        // settings window, and `Config::discover` is off by default — so translating the other
+        // five into 36 languages would be 360 strings no user can ever see. The cost of that
+        // choice is bounded on purpose: a trigger added later renders translated generic copy,
+        // never English, which is the failure this whole change exists to remove.
+        ("nudge_head_generic", "nudge_body_generic")
+    };
+    ask.headline = crate::win::t(head).replace("{app}", APP_NAME);
+    ask.body = crate::win::t(body).replace("{app}", APP_NAME);
+    ask.action_label = crate::win::t("nudge_action").to_string();
+    ask
+}
+
+/// The one trigger SageThumbs fires. Named so [`localize`]'s key choice and the call site in
+/// `settings_dlg::nudge::decide` cannot drift apart into a silent fall back to generic copy.
+pub(crate) const TRIGGER_SETTINGS: &str = "settings-changed";
 
 /// Report what the user did with the ask that is on screen.
 pub(crate) fn record(outcome: Outcome) {
@@ -230,6 +267,94 @@ pub(crate) fn mark_signed_in() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An ask carrying obviously-English engine copy, so a test can tell "the locale answered"
+    /// apart from "the engine's string came through untouched".
+    fn engine_ask(trigger: &str, campaign: Campaign) -> Ask {
+        Ask {
+            campaign,
+            trigger: trigger.to_string(),
+            ordinal: 1,
+            headline: "ENGINE HEADLINE".into(),
+            body: "ENGINE BODY".into(),
+            action_label: "ENGINE ACTION".into(),
+            url: "https://example.invalid/attribution".into(),
+        }
+    }
+
+    /// The three copy fields come from the locale; everything else is the engine's and must
+    /// arrive at [`record`] exactly as it left `consider`. Rewriting `trigger` or `campaign`
+    /// here would make the state machine settle a different ask than the one on screen, and
+    /// `url` is what ties a signup back to the app and the moment.
+    #[test]
+    fn localize_replaces_the_copy_and_nothing_else() {
+        let before = engine_ask(TRIGGER_SETTINGS, Campaign::SignIn);
+        let after = localize(before.clone());
+
+        assert_ne!(after.headline, before.headline, "headline stayed English");
+        assert_ne!(after.body, before.body, "body stayed English");
+        assert_ne!(
+            after.action_label, before.action_label,
+            "action label stayed English"
+        );
+
+        assert_eq!(after.url, before.url);
+        assert_eq!(after.trigger, before.trigger);
+        assert_eq!(after.campaign, before.campaign);
+        assert_eq!(after.ordinal, before.ordinal);
+    }
+
+    /// The whole point of the constant: if the trigger string and [`localize`]'s key choice
+    /// ever drift apart, the banner silently drops to the generic copy and still looks fine.
+    /// Compares against a trigger that is MEANT to be generic, so the test states the
+    /// difference rather than pinning a translated string it would have to be updated with.
+    #[test]
+    fn the_settings_trigger_selects_its_own_copy() {
+        let specific = localize(engine_ask(TRIGGER_SETTINGS, Campaign::SignIn));
+        let generic = localize(engine_ask(
+            "a-trigger-this-app-does-not-fire",
+            Campaign::SignIn,
+        ));
+        assert_ne!(
+            specific.headline, generic.headline,
+            "the settings trigger fell through to the generic copy"
+        );
+    }
+
+    /// Discover keys off the CAMPAIGN, mirroring the engine: someone already signed in must
+    /// never be told to sign in, whichever trigger happened to fire.
+    #[test]
+    fn discover_ignores_the_trigger() {
+        let discover = localize(engine_ask(TRIGGER_SETTINGS, Campaign::Discover));
+        let generic = localize(engine_ask("whatever", Campaign::SignIn));
+        assert_eq!(discover.headline, generic.headline);
+        assert_eq!(discover.body, generic.body);
+    }
+
+    /// Every `{app}` slot must be filled. An unsubstituted one puts literal braces on screen,
+    /// which is worse than the English string this change replaced. Runs across all three key
+    /// paths and whatever language the test machine happens to be in.
+    #[test]
+    fn no_placeholder_reaches_the_screen() {
+        for (trigger, campaign) in [
+            (TRIGGER_SETTINGS, Campaign::SignIn),
+            ("power-user", Campaign::SignIn),
+            ("anything", Campaign::Discover),
+        ] {
+            let ask = localize(engine_ask(trigger, campaign));
+            for (what, s) in [
+                ("headline", &ask.headline),
+                ("body", &ask.body),
+                ("action_label", &ask.action_label),
+            ] {
+                assert!(
+                    !s.contains('{') && !s.contains('}'),
+                    "{trigger}: {what} kept a placeholder: {s}"
+                );
+                assert!(!s.is_empty(), "{trigger}: {what} is empty");
+            }
+        }
+    }
 
     /// Every enum the stored shape carries must survive a round trip. A silent mismatch would
     /// reset the ladder on every launch, and nothing in the UI would show it.

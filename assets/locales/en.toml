@@ -534,3 +534,14 @@ oauth_failed_body = "Something went wrong. Please try again in SageThumbs 2K."
 sync_signed_in = "Signed in as {who}.\n\nYour settings now sync across your PCs. Anything synced from another device has been applied, so reopen Settings to see it reflected here."
 sync_signin_failed = "Couldn't sign in: {error}"
 oauth_signed_in_title = "Signed in"
+
+# Sign-in banner (settings_dlg/nudge.rs). The generic pair is the fallback for any
+# trigger the shared engine grows later, so a new trigger degrades to translated copy
+# rather than to English. {app} is the brand and is never translated.
+nudge_head = "Keep these settings everywhere"
+nudge_body = "Sign in with Connections and your {app} settings follow you to every machine you use."
+nudge_head_generic = "Sign in with Connections"
+nudge_body_generic = "Keep your {app} settings across every machine you use."
+nudge_action = "Sign in"
+nudge_later = "Not now"
+nudge_never = "Don't ask again"

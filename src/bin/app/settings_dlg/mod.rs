@@ -94,7 +94,7 @@ pub(crate) fn decide_sign_in_nudge() -> bool {
 
 /// Design-pixel height the banner strip adds to the window. Pair with [`decide_sign_in_nudge`].
 pub(crate) fn sign_in_nudge_height() -> i32 {
-    nudge::STRIP_H
+    nudge::strip_h()
 }
 mod search;
 mod shot;

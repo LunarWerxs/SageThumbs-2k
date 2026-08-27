@@ -34,30 +34,66 @@ use std::cell::RefCell;
 use super::*;
 use crate::gdip;
 use crate::nudge_engine::{Ask, Cadence, Outcome};
-use windows::Win32::Graphics::Gdi::DT_WORDBREAK;
+use windows::Win32::Graphics::Gdi::{DT_CALCRECT, DT_WORDBREAK};
 
 /// Design-pixel height of the whole strip, including the gaps above and below the card.
 ///
 /// The window is created this much taller when a banner is live, so the content pane keeps
 /// precisely the room it has without one.
-pub(super) const STRIP_H: i32 = CARD_H + 16;
+pub(super) fn strip_h() -> i32 {
+    card_h() + 16
+}
 
-/// The card itself inside that strip.
+/// The card itself inside that strip: headline, the wrapped body, then the button row.
 ///
-/// Sized for the real copy rather than guessed: headline, TWO wrapped lines of body at the card's
-/// full width, then the button row. The first cut was 76 and stacked the same content, which
-/// clipped the body mid-sentence - a failure that is invisible in the code and obvious only in a
-/// capture, which is the whole reason `scripts/nudge-shot.ps1` exists.
-const CARD_H: i32 = 116;
+/// MEASURED, not a constant, and that is the whole point. The first cut was a fixed 76, which
+/// clipped the English body mid-sentence; it was then fixed to a constant 116, sized to that
+/// sentence. Both are the same mistake at different sizes, and the second only looks right
+/// because English is the language it was measured in. The body is translated into 36 languages
+/// and several of them are a third longer, so a height that fits English is a height that clips
+/// German - a failure invisible in the code, invisible to every test, and visible only in a
+/// capture of a locale nobody thought to capture. Measuring the copy that will actually be drawn
+/// removes the entire class.
+///
+/// [`BODY_H_MIN`] keeps it from going the other way: a terse translation must not shrink the card
+/// below the design.
+fn card_h() -> i32 {
+    CARD_H_MEMO.with(|c| {
+        let memo = c.get();
+        if memo > 0 {
+            return memo;
+        }
+        let h = BODY_TOP + body_h() + BTN_H + 18;
+        c.set(h);
+        h
+    })
+}
+
+/// Where the body starts inside the card, below the headline.
+const BODY_TOP: i32 = 36;
+/// The two wrapped lines the English sentence needs — the floor for every locale.
+const BODY_H_MIN: i32 = 36;
 
 const BTN_H: i32 = 26;
+/// Floors for the three buttons, in design px: what the English labels need. A translated label
+/// is routinely wider ("Nicht mehr fragen", "Больше не спрашивать"), and a BUTTON control clips
+/// what does not fit without saying so, so these are a minimum and never the answer.
 const BTN_W_ACTION: i32 = 92;
 const BTN_W_LATER: i32 = 80;
 const BTN_W_NEVER: i32 = 116;
+/// Breathing room either side of a measured label.
+const BTN_PAD: i32 = 22;
+/// Gap between two buttons in the row.
+const BTN_GAP: i32 = 8;
 const PAD: i32 = 14;
 
-pub(super) const LATER_LABEL: &str = "Not now";
-pub(super) const NEVER_LABEL: &str = "Don't ask again";
+pub(super) fn later_label() -> &'static str {
+    t("nudge_later")
+}
+
+pub(super) fn never_label() -> &'static str {
+    t("nudge_never")
+}
 
 thread_local! {
     /// The ask on screen, or `None` when the engine declined to ask (the usual case).
@@ -66,17 +102,84 @@ thread_local! {
     /// that reads this runs on it, so there is no lock to forget and no cross-thread state to
     /// reason about.
     static ASK: RefCell<Option<Ask>> = const { RefCell::new(None) };
+
+    /// Memo for [`card_h`]. 0 means "not measured yet"; [`decide`] clears it, because reopening
+    /// Settings after the language picker changed the language must re-measure a different
+    /// sentence.
+    static CARD_H_MEMO: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }
 
 /// Ask the engine, once, before the window is created. Returns whether a banner will be shown,
 /// which is what the caller uses to decide how tall to make the window.
 pub(crate) fn decide() -> bool {
-    // `settings-changed` selects the copy and rides the attribution link. It is the honest trigger
-    // here: the user opened the settings window, and settings are exactly what an account keeps.
-    let ask = crate::nudge::consider("settings-changed");
+    // The trigger selects the copy and rides the attribution link. It is the honest one here: the
+    // user opened the settings window, and settings are exactly what an account keeps.
+    let ask = crate::nudge::consider(crate::nudge::TRIGGER_SETTINGS);
     let showing = ask.is_some();
     ASK.with(|a| *a.borrow_mut() = ask);
+    CARD_H_MEMO.with(|c| c.set(0));
     showing
+}
+
+/// Height of the body text, in design px, for the copy that is actually going to be drawn.
+fn body_h() -> i32 {
+    let body = ASK.with(|a| a.borrow().as_ref().map(|ask| ask.body.clone()));
+    match body {
+        Some(b) => unsafe { measure_body_h(&b) },
+        None => BODY_H_MIN,
+    }
+}
+
+/// Measure the wrapped body at the card's real inner width, in 96-dpi design px.
+///
+/// Measured with the 96-dpi [`crate::win::gui_font`] against a SCREEN DC, and both halves of that
+/// are deliberate. Every number in this file is a design pixel that the layout pass then scales,
+/// so measuring at design scale is what keeps one answer right at 100%, 125% and 150%. And it has
+/// to be a screen DC because there is no window yet: this measurement is what decides how tall to
+/// create it.
+unsafe fn measure_body_h(body: &str) -> i32 {
+    let hdc = GetDC(None);
+    if hdc.is_invalid() {
+        return BODY_H_MIN;
+    }
+    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font().0));
+    let mut text = wide(body);
+    let n = text.len().saturating_sub(1);
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: navrail::PANE_W - 2 * PAD,
+        bottom: 0,
+    };
+    // Same flags `draw_card` draws with, or the measurement would be of a different layout than
+    // the one that ends up on screen.
+    DrawTextW(
+        hdc,
+        &mut text[..n],
+        &mut rc,
+        DT_CALCRECT | DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
+    );
+    SelectObject(hdc, old);
+    ReleaseDC(None, hdc);
+    (rc.bottom - rc.top).max(BODY_H_MIN)
+}
+
+/// Width for one button, in design px: whatever its label needs, never less than the English
+/// floor. Measured on `hwnd` at its real DPI and converted back to design px, because that is the
+/// unit [`place`] hands to the layout pass.
+unsafe fn btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
+    let hdc = GetDC(Some(hwnd));
+    if hdc.is_invalid() {
+        return floor;
+    }
+    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font_for(hwnd).0));
+    let text = wide(label);
+    let n = text.len().saturating_sub(1);
+    let mut sz = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &text[..n], &mut sz);
+    SelectObject(hdc, old);
+    ReleaseDC(Some(hwnd), hdc);
+    (crate::win::dpi_unscale(hwnd, sz.cx) + BTN_PAD).max(floor)
 }
 
 /// Whether a banner is live for this window.
@@ -87,20 +190,44 @@ pub(super) fn showing() -> bool {
 /// How much taller the settings window is because of the banner (design px; 0 when there is none).
 pub(crate) fn extra_height() -> i32 {
     if showing() {
-        STRIP_H
+        strip_h()
     } else {
         0
     }
 }
 
-/// The primary button's label, which the engine chooses per campaign.
+/// The primary button's label, which the engine chooses per campaign and `crate::nudge` then
+/// translates.
 pub(super) fn action_label() -> String {
     ASK.with(|a| {
         a.borrow()
             .as_ref()
             .map(|ask| ask.action_label.clone())
-            .unwrap_or_else(|| "Sign in".into())
+            .unwrap_or_else(|| t("nudge_action").to_string())
     })
+}
+
+/// The three buttons and their design-px widths, in the right-to-left order [`place`] lays them
+/// out, each sized to the label it will actually carry.
+///
+/// The clamp is the other half of the job: if three long labels together would overrun the card,
+/// they are scaled back to fit rather than the leftmost one silently sliding off the edge. With
+/// `PANE_W` at 528 there is roughly 200 design px of slack over the English row, so the clamp is a
+/// backstop for a language nobody has looked at, not a path anything is expected to take.
+unsafe fn button_row(hwnd: HWND, pane_w: i32) -> [(i32, i32); 3] {
+    let mut row = [
+        (ID_NUDGE_ACTION, btn_w(hwnd, &action_label(), BTN_W_ACTION)),
+        (ID_NUDGE_LATER, btn_w(hwnd, later_label(), BTN_W_LATER)),
+        (ID_NUDGE_NEVER, btn_w(hwnd, never_label(), BTN_W_NEVER)),
+    ];
+    let avail = pane_w - 2 * PAD - 2 * BTN_GAP;
+    let total: i32 = row.iter().map(|(_, w)| *w).sum();
+    if total > avail && total > 0 {
+        for (_, w) in row.iter_mut() {
+            *w = (*w * avail) / total;
+        }
+    }
+    row
 }
 
 /// Position the card and its three buttons. `strip_top` is the top of the reserved strip in design
@@ -118,20 +245,17 @@ pub(super) unsafe fn place(
     if !showing() {
         return;
     }
-    put(ID_NUDGE_CARD, pane_x, strip_top, pane_w, CARD_H);
+    let card_h = card_h();
+    put(ID_NUDGE_CARD, pane_x, strip_top, pane_w, card_h);
 
     // Right-aligned inside the card, bottom row, laid out right-to-left from the card's inner edge
     // so the primary action is the one nearest the corner the eye lands on.
-    let by = strip_top + CARD_H - BTN_H - 12;
+    let by = strip_top + card_h - BTN_H - 12;
     let mut right = pane_x + pane_w - PAD;
-    for (id, w) in [
-        (ID_NUDGE_ACTION, BTN_W_ACTION),
-        (ID_NUDGE_LATER, BTN_W_LATER),
-        (ID_NUDGE_NEVER, BTN_W_NEVER),
-    ] {
+    for (id, w) in button_row(hwnd, pane_w) {
         right -= w;
         put(id, right, by, w, BTN_H);
-        right -= 8;
+        right -= BTN_GAP;
 
         // Raise each button above the card EXPLICITLY. The buttons overlap an owner-draw STATIC
         // and the layout pass positions everything with SWP_NOZORDER, so whichever way the shell

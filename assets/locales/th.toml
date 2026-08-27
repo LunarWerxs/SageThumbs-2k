@@ -508,3 +508,11 @@ oauth_failed_title = "ลงชื่อเข้าใช้ไม่สำเ�
 oauth_close_tab = "คุณปิดแท็บนี้และกลับไปที่ SageThumbs 2K ได้"
 oauth_failed_body = "มีบางอย่างผิดพลาด ลองใหม่อีกครั้งใน SageThumbs 2K"
 oauth_signed_in_title = "ลงชื่อเข้าใช้แล้ว"
+
+nudge_head = "เก็บการตั้งค่าเหล่านี้ไว้ทุกที่"
+nudge_body = "ลงชื่อเข้าใช้ด้วย Connections แล้วการตั้งค่า {app} ของคุณจะติดตามไปยังทุกเครื่องที่คุณใช้"
+nudge_head_generic = "ลงชื่อเข้าใช้ด้วย Connections"
+nudge_body_generic = "เก็บการตั้งค่า {app} ของคุณไว้ในทุกเครื่องที่คุณใช้"
+nudge_action = "ลงชื่อเข้าใช้"
+nudge_later = "ไว้ทีหลัง"
+nudge_never = "ไม่ต้องถามอีก"

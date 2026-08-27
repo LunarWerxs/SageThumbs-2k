@@ -736,8 +736,8 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         );
         for (id, label) in [
             (ID_NUDGE_ACTION, nudge::action_label()),
-            (ID_NUDGE_LATER, nudge::LATER_LABEL.to_string()),
-            (ID_NUDGE_NEVER, nudge::NEVER_LABEL.to_string()),
+            (ID_NUDGE_LATER, nudge::later_label().to_string()),
+            (ID_NUDGE_NEVER, nudge::never_label().to_string()),
         ] {
             ctl(hwnd, BUTTON, &label, WS_TABSTOP, 0, 0, 10, 10, id, hinst);
         }
