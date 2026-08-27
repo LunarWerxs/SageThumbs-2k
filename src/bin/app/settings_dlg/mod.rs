@@ -1260,7 +1260,7 @@ pub(crate) extern "system" fn wndproc(
                     // a selection change rather than a click — see `DEPENDENT_ON_COMBO`.
                     ID_CORNER_MARK if notify == CBN_SELCHANGE => sync_dependent_switches(hwnd),
                     ID_SYNC_BTN => on_sync_click(hwnd),
-                    ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_NEVER => {
+                    ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH => {
                         nudge::on_command(hwnd, id);
                     }
                     ID_SHOT_SET_DIR => {

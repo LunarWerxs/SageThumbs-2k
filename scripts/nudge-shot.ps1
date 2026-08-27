@@ -10,8 +10,8 @@
 #
 # Two things worth knowing:
 #
-#   * Every capture CONSUMES an ask. The engine allows three in a lifetime, so the seed is
-#     rewritten before each one; without that the second run would silently show nothing.
+#   * Every capture CONSUMES an ask, and the daily gap would gate the next one, so the seed is
+#     rewritten before each capture; without that the second run would silently show nothing.
 #   * It writes `SignInNudge` under HKCU\Software\SageThumbs2K and restores whatever was there
 #     (usually: removes it) afterwards, so a capture leaves the machine as it found it.
 #
@@ -32,7 +32,11 @@ param(
     [string] $Theme = 'dark',
     # A locale code from assets/locales (e.g. de, ru, ja, ar). Empty = whatever this machine
     # is set to. Restored afterwards like SignInNudge is.
-    [string] $Lang = ''
+    [string] $Lang = '',
+    # How many asks this user has ALREADY seen. The month-long dismissal only exists from the
+    # fourth ask on, so -AskCount 3 is how you capture the three-button banner and the default 0
+    # captures the two-button one. Anything else is a layout nobody ships.
+    [int]    $AskCount = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,11 +62,13 @@ if ($Lang) {
     Set-ItemProperty -Path $key -Name 'Lang' -Value $Lang
 }
 
-# A long-time user's history: installed a month ago, several sessions, never asked.
+# A long-time user's history: installed a month ago, several sessions, and $AskCount asks already
+# behind them. `last_ask_at` stays null so the next one is never gated on the daily gap; the count
+# is what decides whether the month-long dismissal is on the card.
 [int64]$now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 [int64]$installed = $now - (30 * 86400000)
 $seed = '{"v":1,"installed_at":' + $installed + ',"session_count":6,"last_ask_at":null,' +
-        '"ask_count":0,"consecutive_declines":0,"cadence":"default","stopped":null,' +
+        '"ask_count":' + $AskCount + ',"consecutive_declines":0,"cadence":"default","stopped":null,' +
         '"pending_ask":null,"converted":[]}'
 Set-ItemProperty -Path $key -Name $name -Value $seed
 
@@ -76,12 +82,13 @@ try {
     # was never on screen.
     $after = (Get-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue).$name
     $state = $after | ConvertFrom-Json
-    if ($state.ask_count -lt 1) {
+    if ($state.ask_count -le $AskCount) {
         Write-Warning "[nudge-shot] the engine did not ask -- this PNG shows NO banner. Signed in, or the gate is still shut."
         exit 1
     }
     $lang = if ($Lang) { $Lang } else { 'system' }
-    Write-Host "[nudge-shot] $Theme, $lang, page $Tab, ask #$($state.ask_count) -> $Out ($((Get-Item $Out).Length) bytes)"
+    $buttons = if ($state.ask_count -gt 3) { '3 buttons' } else { '2 buttons' }
+    Write-Host "[nudge-shot] $Theme, $lang, page $Tab, ask #$($state.ask_count) ($buttons) -> $Out ($((Get-Item $Out).Length) bytes)"
 }
 finally {
     $env:ST2K_THEME = $null

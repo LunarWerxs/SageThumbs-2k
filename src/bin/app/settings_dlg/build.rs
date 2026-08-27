@@ -734,11 +734,17 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
             ID_NUDGE_CARD,
             hinst,
         );
-        for (id, label) in [
+        let mut buttons = vec![
             (ID_NUDGE_ACTION, nudge::action_label()),
             (ID_NUDGE_LATER, nudge::later_label().to_string()),
-            (ID_NUDGE_NEVER, nudge::never_label().to_string()),
-        ] {
+        ];
+        // The month-long dismissal only exists from the fourth ask on, and the engine is what
+        // decides that (`Ask::can_snooze_month`). Not creating the control at all - rather than
+        // creating and hiding it - keeps `place` and the tab order honest without a special case.
+        if nudge::showing_month() {
+            buttons.push((ID_NUDGE_MONTH, nudge::month_label().to_string()));
+        }
+        for (id, label) in buttons {
             ctl(hwnd, BUTTON, &label, WS_TABSTOP, 0, 0, 10, 10, id, hinst);
         }
     }

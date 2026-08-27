@@ -21,13 +21,24 @@
 //! made when the Settings window opens — a moment that IS about changing settings, which is what
 //! the account keeps — and holds for that window's lifetime.
 //!
-//! ## What the three buttons mean
+//! ## What the buttons mean
 //!
 //! Identical to the web banner every other LunarWerx app shows (`nudge-banner.ts`) and to
-//! QuickDictate's: "Not now" is engagement and does NOT count toward the two-strike stop; "Don't
-//! ask again" is a real opt-out offered on the FIRST ask, never withheld until the third; and
-//! closing the window without answering counts as a decline, which the engine settles at the next
-//! launch rather than here.
+//! QuickDictate's. There are TWO on the first three asks - the action and "Not now" - and a third
+//! from the fourth ask on, "Remind me in a month".
+//!
+//! Closing the window without answering is the same as "Not now": the engine settles it at the
+//! next launch and it buys exactly the same interval.
+//!
+//! **There is deliberately no permanent opt-out**, and the engine has no state that could express
+//! one (owner decision, 2026-08-27 - the reasoning, including what it costs, is in
+//! `nudge_engine.rs`'s header). The month button is the escape hatch and it is unlimited, so a
+//! user who never wants this spends one click a month. Do not add a "Don't ask again" back without
+//! that conversation; a button here would have nothing to call.
+//!
+//! Whether the third button exists is [`crate::nudge_engine::Ask::can_snooze_month`], never a rule
+//! re-derived here - three apps each counting to four separately is three chances to disagree, and
+//! a wrong answer still renders a perfectly valid-looking banner.
 
 use std::cell::RefCell;
 
@@ -75,12 +86,12 @@ const BODY_TOP: i32 = 36;
 const BODY_H_MIN: i32 = 36;
 
 const BTN_H: i32 = 26;
-/// Floors for the three buttons, in design px: what the English labels need. A translated label
-/// is routinely wider ("Nicht mehr fragen", "Больше не спрашивать"), and a BUTTON control clips
-/// what does not fit without saying so, so these are a minimum and never the answer.
+/// Floors for the buttons, in design px: what the English labels need. A translated label is
+/// routinely wider ("Me le rappeler dans un mois", "Emlékeztessen egy hónap múlva"), and a BUTTON
+/// control clips what does not fit without saying so, so these are a minimum and never the answer.
 const BTN_W_ACTION: i32 = 92;
 const BTN_W_LATER: i32 = 80;
-const BTN_W_NEVER: i32 = 116;
+const BTN_W_MONTH: i32 = 116;
 /// Breathing room either side of a measured label.
 const BTN_PAD: i32 = 22;
 /// Gap between two buttons in the row.
@@ -91,8 +102,14 @@ pub(super) fn later_label() -> &'static str {
     t("nudge_later")
 }
 
-pub(super) fn never_label() -> &'static str {
-    t("nudge_never")
+pub(super) fn month_label() -> &'static str {
+    t("nudge_month")
+}
+
+/// Whether THIS ask offers the month-long dismissal - the engine's answer, never a count done
+/// here. False for the first three asks, true from the fourth on.
+pub(super) fn showing_month() -> bool {
+    ASK.with(|a| a.borrow().as_ref().is_some_and(|ask| ask.can_snooze_month))
 }
 
 thread_local! {
@@ -214,13 +231,16 @@ pub(super) fn action_label() -> String {
 /// they are scaled back to fit rather than the leftmost one silently sliding off the edge. With
 /// `PANE_W` at 528 there is roughly 200 design px of slack over the English row, so the clamp is a
 /// backstop for a language nobody has looked at, not a path anything is expected to take.
-unsafe fn button_row(hwnd: HWND, pane_w: i32) -> [(i32, i32); 3] {
-    let mut row = [
+unsafe fn button_row(hwnd: HWND, pane_w: i32) -> Vec<(i32, i32)> {
+    let mut row = vec![
         (ID_NUDGE_ACTION, btn_w(hwnd, &action_label(), BTN_W_ACTION)),
         (ID_NUDGE_LATER, btn_w(hwnd, later_label(), BTN_W_LATER)),
-        (ID_NUDGE_NEVER, btn_w(hwnd, never_label(), BTN_W_NEVER)),
     ];
-    let avail = pane_w - 2 * PAD - 2 * BTN_GAP;
+    if showing_month() {
+        row.push((ID_NUDGE_MONTH, btn_w(hwnd, month_label(), BTN_W_MONTH)));
+    }
+    let gaps = (row.len().saturating_sub(1)) as i32 * BTN_GAP;
+    let avail = pane_w - 2 * PAD - gaps;
     let total: i32 = row.iter().map(|(_, w)| *w).sum();
     if total > avail && total > 0 {
         for (_, w) in row.iter_mut() {
@@ -280,11 +300,13 @@ pub(super) unsafe fn place(
 /// itself, so the card simply disappears and leaves the gap it was occupying rather than
 /// reflowing the page under the user's cursor.
 unsafe fn hide(hwnd: HWND) {
+    // ID_NUDGE_MONTH exists only on the fourth ask onward; `GetDlgItem` simply fails for a
+    // control that was never created, which every caller here already tolerates.
     for id in [
         ID_NUDGE_CARD,
         ID_NUDGE_ACTION,
         ID_NUDGE_LATER,
-        ID_NUDGE_NEVER,
+        ID_NUDGE_MONTH,
     ] {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             let _ = ShowWindow(c, SW_HIDE);
@@ -382,12 +404,12 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     );
 }
 
-/// Handle a click on one of the three buttons. Returns whether the id belonged to the banner.
+/// Handle a click on one of the banner's buttons. Returns whether the id belonged to the banner.
 pub(super) unsafe fn on_command(hwnd: HWND, id: i32) -> bool {
     let outcome = match id {
         ID_NUDGE_ACTION => Outcome::Accepted,
         ID_NUDGE_LATER => Outcome::Snoozed,
-        ID_NUDGE_NEVER => Outcome::SetCadence(Cadence::Never),
+        ID_NUDGE_MONTH => Outcome::SetCadence(Cadence::Monthly),
         _ => return false,
     };
     crate::nudge::record(outcome);

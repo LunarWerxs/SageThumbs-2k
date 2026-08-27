@@ -41,16 +41,19 @@ fn cadence_name(c: Cadence) -> &'static str {
     match c {
         Cadence::Default => "default",
         Cadence::Monthly => "monthly",
-        Cadence::Never => "never",
     }
 }
 
 fn cadence_from(name: &str) -> Cadence {
     match name {
         "monthly" => Cadence::Monthly,
-        "never" => Cadence::Never,
-        // Anything unrecognized — a hand-edit, a value from a future build — falls back to the
-        // ladder, the quietest of the three that still asks.
+        // `"never"` was a real cadence until 2026-08-27 and the engine has no such state now.
+        // It never shipped, so the only copies are on our own dev machines - but somebody there
+        // did click it, and reading their explicit "leave me alone" as the DAILY default would be
+        // the rudest possible interpretation. Monthly is the quietest cadence that still exists,
+        // so that is what an old opt-out becomes.
+        "never" => Cadence::Monthly,
+        // Anything else — a hand-edit, a value from a future build — falls back to the default.
         _ => Cadence::Default,
     }
 }
@@ -72,20 +75,24 @@ fn campaign_from(name: &str) -> Option<Campaign> {
 
 fn stop_name(r: StopReason) -> &'static str {
     match r {
-        StopReason::UserOptedOut => "user-opted-out",
         StopReason::LadderExhausted => "ladder-exhausted",
-        StopReason::Declined => "declined",
     }
 }
 
-fn stop_from(name: &str) -> StopReason {
-    match name {
-        "user-opted-out" => StopReason::UserOptedOut,
-        "ladder-exhausted" => StopReason::LadderExhausted,
-        // An unreadable stop reason is still a stop. Guessing "not stopped" would resurrect an
-        // engine the user had already silenced — the worst thing this file could do.
-        _ => StopReason::Declined,
-    }
+/// Whether a stored `stopped` word came from a build where stopping was permanent.
+///
+/// Nothing has to be recognised here beyond "there was one". The engine used to record three
+/// reasons; with this app's config it can now reach none of them (`repeat_ms` is `Some`, so the
+/// ladder never runs out), so ANY stored value is legacy by definition.
+///
+/// The state it describes is a promise we no longer make, and there are only two honest ways to
+/// treat it: keep them silenced forever, which the owner has explicitly ruled out, or resurrect
+/// them into daily prompts, which is the rudest possible reading of somebody who pressed a button
+/// that said "don't ask again". [`from_json`] does neither - it converts the stop into the MONTHLY
+/// cadence, which is the quietest thing the engine can still do and about as close to the original
+/// bargain as a design without "forever" allows.
+fn was_stopped(v: &Value) -> bool {
+    v.get("stopped").and_then(Value::as_str).is_some()
 }
 
 fn to_json(s: &NudgeState) -> Value {
@@ -120,6 +127,14 @@ fn from_json(v: &Value) -> Option<NudgeState> {
         return None;
     }
     let num = |key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let stored_cadence = cadence_from(v.get("cadence").and_then(Value::as_str).unwrap_or(""));
+    // A legacy permanent stop becomes a monthly cadence rather than either extreme. See
+    // [`was_stopped`] for why that is the only defensible reading.
+    let cadence = if was_stopped(v) {
+        Cadence::Monthly
+    } else {
+        stored_cadence
+    };
     Some(NudgeState {
         version,
         installed_at,
@@ -127,8 +142,8 @@ fn from_json(v: &Value) -> Option<NudgeState> {
         last_ask_at: v.get("last_ask_at").and_then(Value::as_u64),
         ask_count: num("ask_count") as u32,
         consecutive_declines: num("consecutive_declines") as u32,
-        cadence: cadence_from(v.get("cadence").and_then(Value::as_str).unwrap_or("")),
-        stopped: v.get("stopped").and_then(Value::as_str).map(stop_from),
+        cadence,
+        stopped: None,
         pending_ask: v.get("pending_ask").and_then(|p| {
             Some(PendingAsk {
                 at: p.get("at")?.as_u64()?,
@@ -278,6 +293,7 @@ mod tests {
             headline: "ENGINE HEADLINE".into(),
             body: "ENGINE BODY".into(),
             action_label: "ENGINE ACTION".into(),
+            can_snooze_month: false,
             url: "https://example.invalid/attribution".into(),
         }
     }
@@ -360,19 +376,52 @@ mod tests {
     /// reset the ladder on every launch, and nothing in the UI would show it.
     #[test]
     fn enum_names_round_trip() {
-        for c in [Cadence::Default, Cadence::Monthly, Cadence::Never] {
+        for c in [Cadence::Default, Cadence::Monthly] {
             assert_eq!(cadence_from(cadence_name(c)), c);
         }
         for c in [Campaign::SignIn, Campaign::Discover] {
             assert_eq!(campaign_from(campaign_name(c)), Some(c));
         }
-        for r in [
-            StopReason::UserOptedOut,
-            StopReason::LadderExhausted,
-            StopReason::Declined,
+        // StopReason has one variant and this app can no longer reach it, so there is nothing
+        // left to round-trip - `stop_name` is still exercised by the state round trip below.
+    }
+
+    /// A state stored by a build that still had a permanent opt-out must come back as the
+    /// MONTHLY cadence: quiet, but not silenced forever. Both halves matter and neither is
+    /// obvious, which is why this is asserted rather than left to the reader of `was_stopped`.
+    #[test]
+    fn a_legacy_permanent_stop_becomes_monthly() {
+        for (cadence, stopped) in [
+            ("never", "user-opted-out"),
+            ("default", "declined"),
+            ("default", "ladder-exhausted"),
         ] {
-            assert_eq!(stop_from(stop_name(r)), r);
+            let raw = json!({
+                "v": 1,
+                "installed_at": 1_000_u64,
+                "session_count": 9,
+                "cadence": cadence,
+                "stopped": stopped,
+            });
+            let state = from_json(&raw).expect("parses");
+            assert_eq!(
+                state.cadence,
+                Cadence::Monthly,
+                "cadence={cadence} stopped={stopped}"
+            );
+            assert_eq!(
+                state.stopped, None,
+                "a stop that can no longer be earned must not be carried forward"
+            );
         }
+    }
+
+    /// A plain `"never"` cadence with no stop recorded is the same promise by a different route,
+    /// and gets the same answer.
+    #[test]
+    fn a_legacy_never_cadence_becomes_monthly() {
+        let raw = json!({ "v": 1, "installed_at": 1_000_u64, "cadence": "never" });
+        assert_eq!(from_json(&raw).expect("parses").cadence, Cadence::Monthly);
     }
 
     /// A full state must survive serialization unchanged. Written as one round trip rather than
@@ -386,7 +435,8 @@ mod tests {
         state.last_ask_at = Some(900);
         state.consecutive_declines = 1;
         state.cadence = Cadence::Monthly;
-        state.stopped = Some(StopReason::LadderExhausted);
+        // `stopped` is deliberately NOT round-tripped - see `was_stopped`. It is left `None` here
+        // so this stays a test of the fields that DO survive; the conversion has its own test.
         state.pending_ask = Some(PendingAsk {
             at: 950,
             trigger: "settings-changed".into(),

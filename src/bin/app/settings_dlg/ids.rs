@@ -285,7 +285,7 @@ pub(super) const LEFT_RIGHT_EDGE: i32 = 340; // x past which a control is "right
 pub(super) const ID_NUDGE_CARD: i32 = 1240;
 pub(super) const ID_NUDGE_ACTION: i32 = 1241;
 pub(super) const ID_NUDGE_LATER: i32 = 1242;
-pub(super) const ID_NUDGE_NEVER: i32 = 1243;
+pub(super) const ID_NUDGE_MONTH: i32 = 1243;
 
 #[cfg(test)]
 mod tests {

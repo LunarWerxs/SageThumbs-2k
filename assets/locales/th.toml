@@ -515,4 +515,4 @@ nudge_head_generic = "ลงชื่อเข้าใช้ด้วย Connec
 nudge_body_generic = "เก็บการตั้งค่า {app} ของคุณไว้ในทุกเครื่องที่คุณใช้"
 nudge_action = "ลงชื่อเข้าใช้"
 nudge_later = "ไว้ทีหลัง"
-nudge_never = "ไม่ต้องถามอีก"
+nudge_month = "เตือนอีกครั้งในอีกหนึ่งเดือน"

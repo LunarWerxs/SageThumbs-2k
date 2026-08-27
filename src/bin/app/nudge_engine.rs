@@ -30,24 +30,53 @@
 //!   - Nothing is asked before the app has been installed a week AND used a few times.
 //!   - Asks fire on a MOMENT (`consider()` at a value event), never on a timer. There is no clock
 //!     in here that goes off by itself.
-//!   - The ladder decays: three asks in a lifetime, 30 then 90 days apart, then silence forever.
-//!   - Two asks closed or ignored back to back and it stops permanently.
-//!   - "Never" is real, and is offered on the first ask rather than withheld.
+//!   - Once the gate opens it asks at most once a DAY, and it keeps asking. There is no lifetime
+//!     cap and no permanent opt-out: a dismissal buys a day, and it comes back tomorrow.
+//!   - From the FOURTH ask on, a dismissal is worth a MONTH instead of a day, and every ask after
+//!     that is worth a month too. `Ask::can_snooze_month` tells the UI when to offer it, so every
+//!     app draws that button at the same moment without re-deriving the rule.
+//!   - Ignoring an ask counts as a dismissal. It never stops the engine; nothing does.
 //!   - Neither campaign ever asks for money.
+//!
+//! ## The trade this file used to make, and no longer does
+//!
+//! Until 2026-08-27 the rules above read the other way round: three asks in a lifetime 30 and 90
+//! days apart, a permanent stop after two ignored in a row, and a "Never" button offered on the
+//! FIRST ask. That design optimised for never being resented; this one optimises for being seen,
+//! and it is a deliberate owner decision (Michael, 2026-08-27: *"I don't want that option. I want
+//! them to have to dismiss it. At least once a day. After the third time. We can allow them to
+//! dismiss... For a month. Not forever."*).
+//!
+//! **Do not "restore" the old behaviour as a cleanup.** The cost is real and is accepted knowingly:
+//! a promotional prompt with no permanent off is, by the plain meaning of the word, nagware, and
+//! this file's own comments used to say so. Two guardrails survive that decision and are the reason
+//! it is defensible rather than merely aggressive: the WEEK-AND-SEVERAL-SESSIONS gate is untouched,
+//! so nobody meets it early; and the month escape is unlimited, so a user who never wants it can
+//! spend one click a month forever and never see it otherwise. If either of those is ever weakened,
+//! this stops being a nudge.
+//!
+//! Nothing had shipped when this changed - QuickDictate's released tags carry no nudge files, the
+//! web banner was not wired to a live surface, and SageThumbs 2.5.0 was not cut - so no user was
+//! ever shown a "Never" button and no promise was withdrawn. That is why `Cadence::Never` and the
+//! decline-stop are DELETED rather than merely hidden: there is no persisted state in the wild that
+//! needs them, and an engine that cannot express "forever" cannot regress into it.
 
 use std::collections::BTreeSet;
 
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// How often this user has agreed to hear about it. Only ever changed by the user choosing.
+///
+/// There are exactly two, and there is deliberately no third. A `Never` variant existed until
+/// 2026-08-27; it is gone rather than hidden, so that no future UI can reintroduce a permanent
+/// opt-out by simply drawing a button for a state the engine still understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cadence {
-    /// The decaying three-ask ladder.
+    /// Daily, indefinitely.
     Default,
-    /// The user explicitly asked to keep hearing it, so this one has no lifetime cap.
+    /// A dismissal taken from the fourth ask on. Buys a month, and every ask after it is monthly
+    /// too - so a user who never wants this spends one click a month and is otherwise left alone.
     Monthly,
-    /// Terminal.
-    Never,
 }
 
 /// Which pitch is being made. Deliberately never combined in one message: they are aimed at people
@@ -63,11 +92,14 @@ pub enum Campaign {
 /// Why the engine will never ask again. Recorded so support can answer "why did it stop?".
 ///
 /// Conversion is deliberately absent: signing in finishes the sign-in CAMPAIGN, not the engine.
+///
+/// **With the shipped defaults this is unreachable, and that is the point** - `Config::repeat_ms`
+/// is `Some`, so the ladder never runs out. It survives for an app that deliberately opts into a
+/// finite ladder by setting `repeat_ms: None`. `UserOptedOut` and `Declined` are gone: a user
+/// choice and an ignored prompt must not be able to end the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
-    UserOptedOut,
     LadderExhausted,
-    Declined,
 }
 
 /// What the user did with an ask.
@@ -75,11 +107,13 @@ pub enum StopReason {
 pub enum Outcome {
     /// Took the action. Retires that campaign.
     Accepted,
-    /// "Later" - engagement, not refusal, so it does NOT count toward the decline limit.
+    /// "Later" - engagement rather than refusal. It buys the same interval a decline does; the
+    /// difference is only in the counter support reads.
     Snoozed,
     /// Closed, dismissed, or ignored. Two in a row stops the engine.
     Declined,
-    /// Picked a cadence. `Never` stops the engine immediately.
+    /// Picked a cadence. In practice that is the month-long dismissal, offered from the fourth
+    /// ask on; nothing here can stop the engine.
     SetCadence(Cadence),
 }
 
@@ -93,6 +127,13 @@ pub struct Ask {
     pub headline: String,
     pub body: String,
     pub action_label: String,
+    /// Whether the UI should offer the month-long dismissal beside the ordinary one.
+    ///
+    /// True from `Config::snooze_after` asks onward (the fourth, by default). Decided HERE rather
+    /// than in each app so every surface grows the button at the same moment - the alternative is
+    /// three UIs each re-deriving "is this the fourth one" and one of them getting it wrong, which
+    /// nothing would catch because the wrong answer still renders a valid banner.
+    pub can_snooze_month: bool,
     /// Carries attribution, so a signup can be traced to the app and the moment that produced it.
     pub url: String,
 }
@@ -110,10 +151,19 @@ pub struct Config {
     pub min_age_ms: u64,
     /// Sessions before the first ask. Default 3.
     pub min_sessions: u32,
-    /// Gaps before each ask; its LENGTH is the lifetime cap. Default [0, 30d, 90d].
+    /// Gaps before each of the OPENING asks. Default `[0]` - ask as soon as the gate opens.
+    ///
+    /// It no longer bounds the lifetime; `repeat_ms` decides what happens once it is spent.
     pub ladder_ms: Vec<u64>,
-    /// Consecutive declines before a permanent stop. Default 2.
-    pub decline_limit: u32,
+    /// Gap for every ask after `ladder_ms` is spent. `Some(1 day)` by default, so it asks daily
+    /// and forever. `None` restores the old finite ladder, and is the ONLY way to reach
+    /// [`StopReason::LadderExhausted`].
+    pub repeat_ms: Option<u64>,
+    /// The 1-based ask ordinal from which the month-long dismissal is offered. Default 3, so the
+    /// first three asks can only be dismissed for a day and the fourth onward for a month.
+    ///
+    /// Read as "after this many asks", which is why the comparison is `ordinal > snooze_after`.
+    pub snooze_after: u32,
     /// Run the discover campaign at signed-in users. Off by default.
     pub discover: bool,
     /// Base for the attribution link. The app slug is appended as a path segment.
@@ -128,8 +178,9 @@ impl Config {
             app_version: None,
             min_age_ms: 7 * DAY_MS,
             min_sessions: 3,
-            ladder_ms: vec![0, 30 * DAY_MS, 90 * DAY_MS],
-            decline_limit: 2,
+            ladder_ms: vec![0],
+            repeat_ms: Some(DAY_MS),
+            snooze_after: 3,
             discover: false,
             link_base: "https://connections.icu/link".to_string(),
         }
@@ -206,17 +257,20 @@ impl NudgeState {
 
     /// Count a session and settle any ask the last one left unanswered.
     ///
-    /// The app quitting on a visible prompt is the most common outcome there is. Treating it as
-    /// neutral would let an ignored ask repeat forever, which is the exact nagware failure this
-    /// engine exists to avoid - so it is a decline.
-    pub fn start_session(&mut self, config: &Config, now: u64) {
+    /// The app quitting on a visible prompt is the most common outcome there is, and it is counted
+    /// as a dismissal - the same as pressing the ordinary dismiss button, no better and no worse.
+    /// It buys the same day (or month) and it does NOT end anything. The counter it keeps is for
+    /// support to read; nothing branches on it.
+    ///
+    /// `config` is unused now that declines cannot stop the engine. It stays in the signature
+    /// because every vendored copy and both spec suites call it this way, and because an app that
+    /// sets `repeat_ms: None` still needs the shape to be identical across the port and the
+    /// TypeScript original.
+    pub fn start_session(&mut self, _config: &Config, now: u64) {
         self.sanitize(now);
         self.session_count = self.session_count.saturating_add(1);
         if self.pending_ask.take().is_some() {
             self.consecutive_declines = self.consecutive_declines.saturating_add(1);
-            if self.consecutive_declines >= config.decline_limit {
-                self.stop(StopReason::Declined);
-            }
         }
     }
 
@@ -229,7 +283,7 @@ impl NudgeState {
         now: u64,
     ) -> Option<Ask> {
         self.sanitize(now);
-        if self.stopped.is_some() || self.cadence == Cadence::Never || self.pending_ask.is_some() {
+        if self.stopped.is_some() || self.pending_ask.is_some() {
             return None;
         }
 
@@ -285,13 +339,19 @@ impl NudgeState {
             headline,
             body,
             action_label,
+            // `>` not `>=`: `snooze_after` counts asks already spent, so the default 3 means the
+            // first three offer a day and the FOURTH is the first to offer a month.
+            can_snooze_month: ordinal > config.snooze_after,
             url: build_link(config, trigger, campaign, ordinal),
         })
     }
 
     /// Report what the user did. A second report for the same ask is ignored, so a UI where
     /// "close" also fires after the action cannot corrupt the ladder.
-    pub fn record(&mut self, config: &Config, outcome: Outcome) {
+    ///
+    /// `config` is unused now that no outcome can stop the engine; it stays in the signature so
+    /// the port and the TypeScript original keep the same shape across every vendored copy.
+    pub fn record(&mut self, _config: &Config, outcome: Outcome) {
         // Take the pending ask and KEEP it: acceptance retires the campaign that was actually on
         // screen, and the only record of which one that was is the ask itself. Assuming SignIn
         // here would silently retire the wrong campaign whenever a discover ask was accepted.
@@ -307,36 +367,24 @@ impl NudgeState {
             Outcome::Snoozed => self.consecutive_declines = 0,
             Outcome::Declined => {
                 self.consecutive_declines = self.consecutive_declines.saturating_add(1);
-                if self.consecutive_declines >= config.decline_limit {
-                    self.stop(StopReason::Declined);
-                }
             }
             Outcome::SetCadence(cadence) => {
                 self.cadence = cadence;
                 self.consecutive_declines = 0;
-                if cadence == Cadence::Never {
-                    self.stop(StopReason::UserOptedOut);
-                }
             }
         }
     }
 
     /// Set the cadence from a settings screen, with no ask on screen.
     ///
-    /// This also UN-stops an engine that stopped on declines or an opt-out: a user who goes
-    /// looking for the control has changed their mind, and it is the one case where continuing to
-    /// stay silent would be the wrong answer.
+    /// It also UN-stops a stopped engine: a user who goes looking for the control has changed
+    /// their mind, and continuing to stay silent would be the wrong answer. With the shipped
+    /// defaults nothing can be stopped in the first place, so that branch only matters to an app
+    /// that chose a finite ladder.
     pub fn set_cadence(&mut self, cadence: Cadence) {
         self.cadence = cadence;
         self.consecutive_declines = 0;
-        if cadence == Cadence::Never {
-            self.stop(StopReason::UserOptedOut);
-        } else if matches!(
-            self.stopped,
-            Some(StopReason::Declined) | Some(StopReason::UserOptedOut)
-        ) {
-            self.stopped = None;
-        }
+        self.stopped = None;
     }
 
     /// Record that the user signed in, however they got there - including through the app's own
@@ -347,11 +395,18 @@ impl NudgeState {
     }
 
     /// The gap that must have elapsed since the last ask, or `None` if there is no next rung.
+    ///
+    /// `None` is only reachable when an app sets `repeat_ms: None`; with the shipped defaults the
+    /// ladder is spent after the first ask and every one after it uses `repeat_ms`.
     fn next_gap(&self, config: &Config) -> Option<u64> {
         if self.cadence == Cadence::Monthly {
             return Some(30 * DAY_MS);
         }
-        config.ladder_ms.get(self.ask_count as usize).copied()
+        config
+            .ladder_ms
+            .get(self.ask_count as usize)
+            .copied()
+            .or(config.repeat_ms)
     }
 
     /// Idempotent: the FIRST reason is kept, since it is the true one.
@@ -521,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn spaces_the_second_ask_thirty_days_out_and_the_third_ninety_more() {
+    fn asks_once_a_day_and_the_ladder_never_runs_out() {
         let config = config();
         let mut state = NudgeState::new(START);
         let mut now = open_gate(&mut state, &config);
@@ -530,67 +585,105 @@ mod tests {
             .expect("first");
         state.record(&config, Outcome::Snoozed);
 
-        now += 29 * DAY_MS;
+        // Same day: dismissing bought the rest of it, however many sessions happen meanwhile.
+        now += 23 * 60 * 60 * 1000;
         state.start_session(&config, now);
-        let decision = state.consider(&config, "settings-changed", false, now);
-        assert!(decision.is_none(), "one day short");
-
-        now += 2 * DAY_MS;
-        state.start_session(&config, now);
-        assert_eq!(
+        assert!(
             state
                 .consider(&config, "settings-changed", false, now)
-                .expect("second")
-                .ordinal,
-            2
+                .is_none(),
+            "an hour short of a day"
         );
-        state.record(&config, Outcome::Snoozed);
 
-        now += 89 * DAY_MS;
-        state.start_session(&config, now);
-        let decision = state.consider(&config, "settings-changed", false, now);
-        assert!(decision.is_none(), "one day short again");
-
-        now += 2 * DAY_MS;
-        state.start_session(&config, now);
-        assert_eq!(
-            state
+        // A hundred days, one ask each. The old engine stopped after three; this one does not
+        // stop, which is the entire behavioural change and the thing most likely to be
+        // "simplified" back by someone reading the old comments.
+        now -= 23 * 60 * 60 * 1000;
+        for expected in 2..=100u32 {
+            now += DAY_MS + 1;
+            state.start_session(&config, now);
+            let ask = state
                 .consider(&config, "settings-changed", false, now)
-                .expect("third")
-                .ordinal,
-            3
-        );
-        state.record(&config, Outcome::Snoozed);
-
-        now += 1000 * DAY_MS;
-        state.start_session(&config, now);
-        let decision = state.consider(&config, "settings-changed", false, now);
-        assert!(decision.is_none());
-        assert_eq!(state.stopped, Some(StopReason::LadderExhausted));
+                .unwrap_or_else(|| panic!("ask {expected} should have fired"));
+            assert_eq!(ask.ordinal, expected);
+            state.record(&config, Outcome::Snoozed);
+        }
+        assert_eq!(state.stopped, None);
     }
 
     #[test]
-    fn stops_permanently_after_two_asks_closed_in_a_row() {
+    fn nothing_stops_it_however_many_asks_are_closed() {
+        let config = config();
+        let mut state = NudgeState::new(START);
+        let mut now = open_gate(&mut state, &config);
+
+        // Twenty in a row closed without answering - the old engine died on the second.
+        for _ in 0..20 {
+            state
+                .consider(&config, "settings-changed", false, now)
+                .expect("an ask");
+            state.record(&config, Outcome::Declined);
+            now += DAY_MS + 1;
+            state.start_session(&config, now);
+        }
+        assert_eq!(state.stopped, None);
+        assert!(state
+            .consider(&config, "settings-changed", false, now)
+            .is_some());
+    }
+
+    #[test]
+    fn the_month_dismissal_appears_only_after_the_third_ask() {
+        let config = config();
+        let mut state = NudgeState::new(START);
+        let mut now = open_gate(&mut state, &config);
+        for ordinal in 1..=6u32 {
+            if ordinal > 1 {
+                now += DAY_MS + 1;
+                state.start_session(&config, now);
+            }
+            let ask = state
+                .consider(&config, "settings-changed", false, now)
+                .unwrap_or_else(|| panic!("ask {ordinal}"));
+            assert_eq!(ask.ordinal, ordinal);
+            assert_eq!(
+                ask.can_snooze_month,
+                ordinal > 3,
+                "ask {ordinal} offered the month option: {}",
+                ask.can_snooze_month
+            );
+            state.record(&config, Outcome::Snoozed);
+        }
+    }
+
+    #[test]
+    fn the_month_dismissal_buys_a_month_and_then_asks_again() {
         let config = config();
         let mut state = NudgeState::new(START);
         let mut now = open_gate(&mut state, &config);
         state
             .consider(&config, "settings-changed", false, now)
-            .expect("first");
-        state.record(&config, Outcome::Declined);
+            .expect("an ask");
+        state.record(&config, Outcome::SetCadence(Cadence::Monthly));
 
-        now += 31 * DAY_MS;
+        now += 29 * DAY_MS;
         state.start_session(&config, now);
-        state
-            .consider(&config, "settings-changed", false, now)
-            .expect("second");
-        state.record(&config, Outcome::Declined);
+        assert!(
+            state
+                .consider(&config, "settings-changed", false, now)
+                .is_none(),
+            "a day short of the month"
+        );
 
-        assert_eq!(state.stopped, Some(StopReason::Declined));
-        now += 500 * DAY_MS;
+        now += 2 * DAY_MS;
         state.start_session(&config, now);
-        let decision = state.consider(&config, "settings-changed", false, now);
-        assert!(decision.is_none());
+        assert!(
+            state
+                .consider(&config, "settings-changed", false, now)
+                .is_some(),
+            "the month is a snooze, not an opt-out"
+        );
+        assert_eq!(state.stopped, None);
     }
 
     #[test]
@@ -642,21 +735,26 @@ mod tests {
         assert_eq!(state.consecutive_declines, 0);
     }
 
+    /// There is no permanent off, and this test exists so that adding one back fails loudly
+    /// rather than passing quietly. Two and a half years of monthly dismissals still leave the
+    /// engine willing to ask - which is the deal: unlimited escapes, none of them final.
     #[test]
-    fn never_is_honoured_forever() {
+    fn there_is_no_way_to_switch_it_off_for_good() {
         let config = config();
         let mut state = NudgeState::new(START);
-        let now = open_gate(&mut state, &config);
-        state
+        let mut now = open_gate(&mut state, &config);
+        for _ in 0..30 {
+            state
+                .consider(&config, "settings-changed", false, now)
+                .expect("an ask");
+            state.record(&config, Outcome::SetCadence(Cadence::Monthly));
+            now += 31 * DAY_MS;
+            state.start_session(&config, now);
+        }
+        assert_eq!(state.stopped, None);
+        assert!(state
             .consider(&config, "settings-changed", false, now)
-            .expect("an ask");
-        state.record(&config, Outcome::SetCadence(Cadence::Never));
-
-        let later = now + 900 * DAY_MS;
-        state.start_session(&config, later);
-        let decision = state.consider(&config, "settings-changed", false, later);
-        assert!(decision.is_none());
-        assert_eq!(state.stopped, Some(StopReason::UserOptedOut));
+            .is_some());
     }
 
     #[test]
@@ -697,21 +795,24 @@ mod tests {
     }
 
     #[test]
-    fn a_settings_screen_reopens_a_declined_engine() {
-        let config = config();
+    fn a_settings_screen_reopens_an_exhausted_engine() {
+        // Only an app that opted into a finite ladder can be stopped at all, so that is the one
+        // this has to be written against now.
+        let mut config = config();
+        config.ladder_ms = vec![0];
+        config.repeat_ms = None;
         let mut state = NudgeState::new(START);
         let mut now = open_gate(&mut state, &config);
         state
             .consider(&config, "settings-changed", false, now)
             .expect("first");
-        state.record(&config, Outcome::Declined);
+        state.record(&config, Outcome::Snoozed);
         now += 31 * DAY_MS;
         state.start_session(&config, now);
-        state
+        assert!(state
             .consider(&config, "settings-changed", false, now)
-            .expect("second");
-        state.record(&config, Outcome::Declined);
-        assert_eq!(state.stopped, Some(StopReason::Declined));
+            .is_none());
+        assert_eq!(state.stopped, Some(StopReason::LadderExhausted));
 
         state.set_cadence(Cadence::Monthly);
         assert_eq!(state.stopped, None);
@@ -851,59 +952,71 @@ mod tests {
         let mut state = NudgeState::new(START);
         state.version = 99;
         state.ask_count = 7;
-        state.cadence = Cadence::Never;
+        state.cadence = Cadence::Monthly;
         state.sanitize(START);
         assert_eq!(state.cadence, Cadence::Default);
         assert_eq!(state.ask_count, 0);
     }
 
     #[test]
-    fn an_app_can_choose_its_own_gate_and_ladder() {
+    fn an_app_can_choose_its_own_gate_and_cadence() {
         let mut config = config();
         config.min_sessions = 1;
         config.min_age_ms = 0;
-        config.ladder_ms = vec![0, DAY_MS];
+        config.repeat_ms = Some(7 * DAY_MS);
+        config.snooze_after = 1;
         let mut state = NudgeState::new(START);
 
         state.start_session(&config, START);
-        assert_eq!(
-            state
-                .consider(&config, "power-user", false, START)
-                .expect("first")
-                .ordinal,
-            1
-        );
+        let first = state
+            .consider(&config, "power-user", false, START)
+            .expect("first");
+        assert_eq!(first.ordinal, 1);
+        assert!(!first.can_snooze_month, "snooze_after counts asks SPENT");
         state.record(&config, Outcome::Snoozed);
 
         let mut now = START + 2 * DAY_MS;
         state.start_session(&config, now);
-        assert_eq!(
-            state
-                .consider(&config, "power-user", false, now)
-                .expect("second")
-                .ordinal,
-            2
+        assert!(
+            state.consider(&config, "power-user", false, now).is_none(),
+            "a weekly cadence is not a daily one"
         );
+
+        now += 6 * DAY_MS;
+        state.start_session(&config, now);
+        let second = state
+            .consider(&config, "power-user", false, now)
+            .expect("second");
+        assert_eq!(second.ordinal, 2);
+        assert!(second.can_snooze_month);
+    }
+
+    /// The finite ladder is still reachable, for an app that wants one - it is just no longer the
+    /// default, and `repeat_ms: None` is the only way to ask for it.
+    #[test]
+    fn an_app_can_still_choose_a_ladder_that_ends() {
+        let mut config = config();
+        config.ladder_ms = vec![0, DAY_MS];
+        config.repeat_ms = None;
+        let mut state = NudgeState::new(START);
+        let mut now = open_gate(&mut state, &config);
+        state
+            .consider(&config, "settings-changed", false, now)
+            .expect("first");
+        state.record(&config, Outcome::Snoozed);
+
+        now += 2 * DAY_MS;
+        state.start_session(&config, now);
+        state
+            .consider(&config, "settings-changed", false, now)
+            .expect("second");
         state.record(&config, Outcome::Snoozed);
 
         now += 400 * DAY_MS;
         state.start_session(&config, now);
-        assert!(
-            state.consider(&config, "power-user", false, now).is_none(),
-            "a two-rung ladder is spent"
-        );
-    }
-
-    #[test]
-    fn one_decline_stops_it_when_the_app_demands_that() {
-        let mut config = config();
-        config.decline_limit = 1;
-        let mut state = NudgeState::new(START);
-        let now = open_gate(&mut state, &config);
-        state
+        assert!(state
             .consider(&config, "settings-changed", false, now)
-            .expect("an ask");
-        state.record(&config, Outcome::Declined);
-        assert_eq!(state.stopped, Some(StopReason::Declined));
+            .is_none());
+        assert_eq!(state.stopped, Some(StopReason::LadderExhausted));
     }
 }
