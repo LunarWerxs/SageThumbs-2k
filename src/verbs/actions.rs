@@ -379,9 +379,9 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
     }
 }
 
-/// `VerbAction::Convert` — counts over ALL paths (no image filter), so the attempted
+/// `VerbAction::Convert` - counts over ALL paths (no image filter), so the attempted
 /// count matches its denominator. Each file is converted on the batch pool (routed to
-/// the st2k helper per file for crash isolation when present, else in-process —
+/// the st2k helper per file for crash isolation when present, else in-process -
 /// `convert_one(None, …)` IS `convert_file`). Results come back IN ORDER, so the first
 /// success matches the old first-in-iteration reveal target. The global magick cap
 /// bounds memory across the fanned-out st2k children.
@@ -409,7 +409,7 @@ fn handle_convert(paths: &[String], target: Target) -> ActionReport {
     r
 }
 
-/// `VerbAction::Transform` — routed per file to `st2k rotate` on the batch pool (else
+/// `VerbAction::Transform` - routed per file to `st2k rotate` on the batch pool (else
 /// in-process `transform_file`); `transform_one` returns the produced path, so the
 /// ordered results give the same count + first-reveal as the old loop.
 fn handle_transform(paths: &[String], t: Transform) -> ActionReport {
@@ -431,7 +431,7 @@ fn handle_transform(paths: &[String], t: Transform) -> ActionReport {
     r
 }
 
-/// `VerbAction::Clipboard` — clipboard holds one image. Use the first *image* in the
+/// `VerbAction::Clipboard` - clipboard holds one image. Use the first *image* in the
 /// selection (not `paths.first()`): the menu gate only requires *some* image, so for a
 /// mixed selection the first item may be a non-image.
 fn handle_clipboard(paths: &[String]) -> ActionReport {
@@ -447,7 +447,7 @@ fn handle_clipboard(paths: &[String]) -> ActionReport {
     }
 }
 
-/// `VerbAction::Wallpaper` — one wallpaper. Use the first *image* in the selection (see
+/// `VerbAction::Wallpaper` - one wallpaper. Use the first *image* in the selection (see
 /// [`handle_clipboard`]).
 fn handle_wallpaper(paths: &[String], mode: WallpaperMode) -> ActionReport {
     match paths.iter().find(|p| is_image(p.as_str())) {
@@ -481,7 +481,7 @@ fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
     let out = slot.path().to_path_buf();
     match crate::topdf::combine_to_pdf(&imgs, &out, crate::settings::jpeg_quality()) {
         // `dropped` is how many of `imgs` were undecodable and so silently excluded
-        // from the PDF by `combine_to_pdf_paged`. This used to be invisible here — any
+        // from the PDF by `combine_to_pdf_paged`. This used to be invisible here - any
         // `Ok(_)` reported a flat `applied(1, 1)` ("1 of 1 succeeded") no matter how many
         // of a 10-image combine actually made it into the PDF. Report the REAL counts
         // instead, so a partial combine surfaces via the normal `surface()` message box
@@ -545,7 +545,7 @@ fn handle_ocr(paths: &[String]) -> ActionReport {
     }
 }
 
-/// `VerbAction::StripMetadata` — per-image, on the batch pool. Routed per file to
+/// `VerbAction::StripMetadata` - per-image, on the batch pool. Routed per file to
 /// `st2k strip` (helper-if-present), else in-process `strip::strip_metadata`;
 /// `strip_one` returns the same success bool, so attempted/done/note are identical to
 /// the old sequential loop.
@@ -567,7 +567,7 @@ fn handle_strip_metadata(paths: &[String]) -> ActionReport {
     r
 }
 
-/// `VerbAction::ResizeImg` — per-image, on the batch pool. Routed per file to
+/// `VerbAction::ResizeImg` - per-image, on the batch pool. Routed per file to
 /// `st2k convert --resize` (helper-if-present), else in-process `resize_file`; ordered
 /// results give the same attempted/done/note + first-reveal as the old loop.
 fn handle_resize_img(paths: &[String], r: Resize) -> ActionReport {
@@ -593,7 +593,7 @@ fn handle_resize_img(paths: &[String], r: Resize) -> ActionReport {
     rep
 }
 
-/// `VerbAction::ShrinkForEmail` — per-image, on the batch pool. Routed per file to
+/// `VerbAction::ShrinkForEmail` - per-image, on the batch pool. Routed per file to
 /// `st2k convert --resize` (helper-if-present), else in-process `shrink_for_email`;
 /// ordered results give the same attempted/done/note + first-reveal as the old loop.
 fn handle_shrink_for_email(paths: &[String], size: EmailSize) -> ActionReport {
@@ -619,8 +619,8 @@ fn handle_shrink_for_email(paths: &[String], size: EmailSize) -> ActionReport {
     rep
 }
 
-/// `VerbAction::CompressToSize` — per-image, IN-PROCESS (not routed through the st2k
-/// helper — `helper.rs` is outside this change's file ownership, so no `compress_one`
+/// `VerbAction::CompressToSize` - per-image, IN-PROCESS (not routed through the st2k
+/// helper - `helper.rs` is outside this change's file ownership, so no `compress_one`
 /// routing shim exists; see the module doc's routing list). Runs on the batch pool like
 /// the other per-image verbs above.
 fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport {
@@ -645,7 +645,7 @@ fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport
     rep
 }
 
-/// `VerbAction::SetFolderIcon` — one folder icon. Use the first *image* in the
+/// `VerbAction::SetFolderIcon` - one folder icon. Use the first *image* in the
 /// selection.
 fn handle_set_folder_icon(paths: &[String]) -> ActionReport {
     match paths.iter().find(|p| is_image(p.as_str())) {
@@ -660,7 +660,7 @@ fn handle_set_folder_icon(paths: &[String]) -> ActionReport {
     }
 }
 
-/// `VerbAction::FilesToFolder` — operates on ALL selected files (any type), not just
+/// `VerbAction::FilesToFolder` - operates on ALL selected files (any type), not just
 /// images. One file → a folder named after it (no prompt); many → the name-prompt
 /// dialog in the companion app.
 fn handle_files_to_folder(paths: &[String]) -> ActionReport {
@@ -700,7 +700,7 @@ fn handle_sort_by_dimensions(paths: &[String]) -> ActionReport {
     }
 }
 
-/// `VerbAction::TagsToFolders` — audio-only; the dialog (destination/template/
+/// `VerbAction::TagsToFolders` - audio-only; the dialog (destination/template/
 /// copy-move) lives in the companion app. No audio in the selection → nothing to do.
 fn handle_tags_to_folders(paths: &[String]) -> ActionReport {
     let audio: Vec<String> = paths

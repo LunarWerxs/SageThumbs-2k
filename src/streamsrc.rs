@@ -212,7 +212,7 @@ pub(crate) unsafe fn stream_source_with_caps(
 }
 
 /// The video tiers of the [`stream_source_with_caps`] cascade. `None` means "not a
-/// video, or OggS ambiguously falling through" — the caller continues to the
+/// video, or OggS ambiguously falling through" - the caller continues to the
 /// audio-art path below exactly as before; `Some(result)` means the cascade is
 /// already resolved (a decoded frame, a cover-art rescue, or a hard failure).
 unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamSource>> {
@@ -226,7 +226,7 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     //
     // `tried_cover_art` remembers whether this pass ran: if it did and found nothing,
     // the fallback rescue below (after every frame tier also fails) must not call
-    // `vcodec::cover_art` a second time — the stream hasn't changed, so it would just
+    // `vcodec::cover_art` a second time - the stream hasn't changed, so it would just
     // re-scan the same moov to the same null answer. That third full scan (cover_art,
     // keyframe_mini_mp4, cover_art again) was the actual A032 cost on a HEVC-with-no-
     // cover-and-no-OS-codec file.
@@ -256,31 +256,31 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     // fallback nobody needs to keep fast. They are the whole story. Measured after
     // removal, through the real provider on a 163 MB 1080p clip: 1.2 s with the index at
     // the END and 1.7 s with it at the front, in a DEBUG build.
-    // WHERE in the video: the user's `VideoOffset` (30 % unless changed — see
+    // WHERE in the video: the user's `VideoOffset` (30 % unless changed - see
     // `settings::video_offset_frac`). Read ONCE here so every tier below seeks to the same
     // mark; a per-tier read could disagree if the setting changed mid-decode, and the
     // fallbacks would then show a different frame from the tier that was meant to run.
     let at = crate::settings::video_offset_frac();
     // Tiers, each fast or a fast miss:
     //   1. SMART TARGETED READ (MP4/MOV): parse the moov index, build a tiny
-    //      one-keyframe MP4 for the sync sample nearest the mark, decode that —
+    //      one-keyframe MP4 for the sync sample nearest the mark, decode that -
     //      single-digit MB (index + one keyframe), a representative frame, and
     //      it works regardless of moov position (faststart or moov-at-end);
-    //   2. SMART TARGETED READ (Matroska/WebM): the EBML analog — read the Cues
+    //   2. SMART TARGETED READ (Matroska/WebM): the EBML analog - read the Cues
     //      index, build a tiny one-cluster MKV for the keyframe nearest the mark;
     //  2b. FLV (H.264 only): walk the head tags for the AVC config + first keyframe
-    //      and remux them into a mini-MP4 — MF has no FLV demuxer, so no later tier
+    //      and remux them into a mini-MP4 - MF has no FLV demuxer, so no later tier
     //      can open the container at all (it has no index, so `at` can't be honoured);
     //  2c. FLV (VP6 / Sorenson Spark): decode the first keyframe OUT OF PROCESS via
-    //      the sibling st2k.exe — Windows has no decoder for these at all;
+    //      the sibling st2k.exe - Windows has no decoder for these at all;
     //   3. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
     //      demuxer seek the real index over a block-caching IStream that
     //      coalesces its reads (no per-format parser, any container MF decodes);
     //   4. a faststart MP4 / small / unindexed video decodes from its head prefix;
-    //   5. a big *non*-faststart MP4 (moov at the very end) is remuxed —
+    //   5. a big *non*-faststart MP4 (moov at the very end) is remuxed -
     //      head frames + tail moov stitched into a small valid MP4.
     // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek. They read a
-    // bounded head prefix, so they CANNOT honour a late offset — there are no bytes there
+    // bounded head prefix, so they CANNOT honour a late offset - there are no bytes there
     // to seek into. That is a property of the fallback, not a bug to fix here.
     let frame = crate::mp4::keyframe_mini_mp4(
         &mut IStreamReader {
@@ -306,7 +306,7 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     })
     .or_else(|| {
         // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
-        //     decoded out of process by the sibling st2k.exe (`flv::flash_frame` — the
+        //     decoded out of process by the sibling st2k.exe (`flv::flash_frame` - the
         //     pure-Rust Flash decoders panic on hostile input and must never run inside
         //     the shell host). Self-gated on the FLV magic + codec id; bounded head read.
         crate::flv::flash_frame(&mut IStreamReader {
@@ -316,7 +316,7 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     .or_else(|| {
         // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
         // seek reads cheap (the old shell-IStream meltdown was thousands
-        // of tiny marshaled reads — here they coalesce into a few big ones).
+        // of tiny marshaled reads - here they coalesce into a few big ones).
         stream_size(stream).and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
     })
     .or_else(|| video_prefix(stream).and_then(crate::video::frame_from_owned_bytes))
@@ -344,9 +344,9 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
         ));
         return Some(Ok(StreamSource::Frame(frame)));
     }
-    // No decodable frame. OggS is ambiguous — an audio-only .ogg/.opus matches
+    // No decodable frame. OggS is ambiguous - an audio-only .ogg/.opus matches
     // the video magic too, so fall THROUGH to the album-art path below instead of
-    // failing. A genuine video container the OS can't decode stops here — after one
+    // failing. A genuine video container the OS can't decode stops here - after one
     // last rescue: Matroska attached cover art. The usual reason NO tier decoded is
     // a missing OS codec (HEVC/AV1 are Store add-ons, not inbox), and library rips
     // routinely attach a poster, so show the film instead of a blank tile. Bounded:
@@ -357,7 +357,7 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
                 stream: stream.clone(),
             }) {
                 safety::log_debug(&format!(
-                    "{who}: video frame undecodable — using attached cover art ({} bytes)",
+                    "{who}: video frame undecodable - using attached cover art ({} bytes)",
                     cover.len()
                 ));
                 return Some(Ok(StreamSource::Bytes(cover)));
@@ -366,11 +366,11 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
         safety::log_debug(&format!("{who}: video with no decodable frame"));
         return Some(Err(Error::from(E_FAIL)));
     }
-    safety::log_debug(&format!("{who}: OggS not video — trying album art"));
+    safety::log_debug(&format!("{who}: OggS not video - trying album art"));
     None
 }
 
-/// OPENEXR — decode scaled straight off the (seekable) stream. A 12K VFX render
+/// OPENEXR - decode scaled straight off the (seekable) stream. A 12K VFX render
 /// pass is hundreds of MB on disk, so the bounded whole-file read below refuses it
 /// outright and the file gets the stock icon; and even well under the cap, the
 /// `image` tier's full-resolution float decode costs orders of magnitude more
@@ -404,7 +404,7 @@ unsafe fn try_exr_source(stream: &IStream, who: &str, target_edge: u32) -> Optio
 
 /// CAMERA-RAW embedded-preview fast path (see the callsite comment in
 /// [`stream_source_with_caps`]). `Ok(None)` means "no fast-path preview here,
-/// continue the cascade below" — a miss, not an error.
+/// continue the cascade below" - a miss, not an error.
 unsafe fn try_raw_preview_fast(
     stream: &IStream,
     max_file_bytes: u64,
@@ -438,7 +438,7 @@ unsafe fn try_raw_preview_fast(
 
 /// The oversized-file branch of the tail size match in [`stream_source_with_caps`]:
 /// a streamed archive cover, a head-preview prefix, a streamed XCF flatten, and
-/// finally the OS-codec (WIC) rescue reading straight off the stream — each tried
+/// finally the OS-codec (WIC) rescue reading straight off the stream - each tried
 /// in turn before giving up on a file too big to buffer.
 unsafe fn oversized_rescue(
     stream: &IStream,
@@ -467,7 +467,7 @@ unsafe fn oversized_rescue(
     //
     // Placed BEFORE the MaxSize test below on purpose: nothing here is buffered, so
     // the reason that test exists does not apply. The user's own MaxSize is still
-    // honoured — this branch is only reached when `size > min(MaxSize, hard cap)`, and
+    // honoured - this branch is only reached when `size > min(MaxSize, hard cap)`, and
     // the settings-driven half of that is checked again by the caller.
     if size <= max_file_bytes {
         let mut reader = IStreamReader {

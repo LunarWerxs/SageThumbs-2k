@@ -430,7 +430,7 @@ fn decode_any_with_wic_target(
 
 /// JPEG XL: our own pure-Rust tier, FIRST and signature-gated. The `image` crate and
 /// WIC don't decode jxl, and build-release.ps1 strips the jxl coder out of the bundled
-/// magick — so without this an ADVERTISED format silently fails to thumbnail on a
+/// magick - so without this an ADVERTISED format silently fails to thumbnail on a
 /// clean install. On failure the caller falls through to the tiers below (a machine
 /// with a full ImageMagick could yet decode it).
 fn try_jxl_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
@@ -446,10 +446,10 @@ fn try_jxl_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicIm
     }
 }
 
-/// DDS: our own tier, magic-gated, ahead of `image` because it OWNS the format —
+/// DDS: our own tier, magic-gated, ahead of `image` because it OWNS the format -
 /// BC1–BC7 (incl. BC6H HDR) plus the uncompressed layouts, all pure Rust. The `image`
 /// crate stops at DXT1/3/5, WIC's DDS codec stops at the same three, and ImageMagick
-/// (FULL install only) can't read BC4/BC5-signed/BC6H/float DDS at all — so before
+/// (FULL install only) can't read BC4/BC5-signed/BC6H/float DDS at all - so before
 /// this, BC7 (what every modern game texture uses) needed a 20 s subprocess and BC6H
 /// worked nowhere. Failure falls through to the tiers below, so no DDS that
 /// thumbnailed before can regress. See `dds.rs`.
@@ -481,7 +481,7 @@ fn try_dds_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicIm
 }
 
 /// Two formats prefer the OS codec for a bounded thumbnail ask, for the same
-/// underlying reason: WIC SCALES WHILE IT DECODES, and the pure-Rust tier cannot — it
+/// underlying reason: WIC SCALES WHILE IT DECODES, and the pure-Rust tier cannot - it
 /// materialises the whole image and then shrinks it. That costs nothing on a small
 /// file and a great deal on a large one, which is exactly what the size-tiered speed
 /// baseline exists to show: BMP measured 2.3 ms at 0.08 MP but 258.6 ms at 12 MP
@@ -489,9 +489,9 @@ fn try_dds_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicIm
 ///
 /// Still WebP prefers the OS codec when this is a bounded thumbnail ask: Windows' WebP
 /// codec decodes ~3.8x faster than the pure-Rust tier (measured on a 1279x1280 sample:
-/// ~27 ms vs ~103 ms, and the cost is the decode itself — flat whether the target is 64 px
+/// ~27 ms vs ~103 ms, and the cost is the decode itself - flat whether the target is 64 px
 /// or 1024 px). STRICTLY a fast path in FRONT of the existing one: the codec is an optional
-/// Store extension, so any failure — absent codec included — falls straight through to the
+/// Store extension, so any failure - absent codec included - falls straight through to the
 /// `image` tier unchanged, which is also what keeps the Compact install and codec-less
 /// machines exactly as they were. Animated WebP is excluded because FRAME CHOICE is a
 /// decoder decision (`sample-decoy-frames.webp` pins first-frame selection to the verified
@@ -546,19 +546,19 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
             // content test is not optional.
             if reduced_ifd0_serves(&img, wic_thumbnail_cx) {
                 crate::safety::log_debug(
-                    "decode tier `image`: reduced-resolution IFD0 covers this tile and has content — using it",
+                    "decode tier `image`: reduced-resolution IFD0 covers this tile and has content - using it",
                 );
                 return ImageTierOutcome::Decoded(img);
             }
             crate::safety::log_debug(
-                "decode tier `image`: TIFF IFD0 is reduced-resolution — held as fallback",
+                "decode tier `image`: TIFF IFD0 is reduced-resolution - held as fallback",
             );
             ImageTierOutcome::ReducedIfd0(img)
         }
         Ok(img) => {
             // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
             // be saved as PNG/JPEG or turned into an 8-bit DIB directly. Tone-map
-            // it to 8-bit sRGB ourselves (native Rust) — no ImageMagick subprocess,
+            // it to 8-bit sRGB ourselves (native Rust) - no ImageMagick subprocess,
             // so EXR/HDR also work on the compact (no-magick) install.
             if matches!(
                 img,
@@ -638,8 +638,8 @@ fn route_isobmff_wic_quirks(
     // purely because the old predicate was a bool: WIC's error there is a pure transfer curve
     // we can invert in-process for microseconds, so it now stays on the cheap path and gets
     // corrected afterwards (~400 ms -> ~114 ms, and worst channel error 11 -> 1, i.e. BETTER
-    // colour than the subprocess route it replaces). Only the genuinely unrecoverable case —
-    // the 8-bit matrix error, where WIC clips as it converts — still pays for magick.
+    // colour than the subprocess route it replaces). Only the genuinely unrecoverable case -
+    // the 8-bit matrix error, where WIC clips as it converts - still pays for magick.
     let avif_verdict = if wic_hevc_alpha {
         color::AvifWicVerdict::Trusted
     } else {
@@ -662,7 +662,7 @@ fn route_isobmff_wic_quirks(
     crate::safety::log_debug(&format!("decode: routing around WIC ({why})"));
     // The 8-bit BT.601 bucket first tries the OS's own AV1 decoder via Media Foundation
     // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
-    // the ~180 ms this route used to cost. Narrowly gated and best-effort — anything it
+    // the ~180 ms this route used to cost. Narrowly gated and best-effort - anything it
     // declines (alpha, wide gamut, MF absent, decode failure) proceeds to magick exactly
     // as before, so this can only ever be faster, never different.
     if wic_avif_color {
@@ -674,7 +674,7 @@ fn route_isobmff_wic_quirks(
     // Ask magick for no more than the caller's target edge, exactly as the generic
     // magick tier below already does. This route used to take the uncapped
     // `decode_via_magick`, so a 256 px Explorer tile rendered the full 4096 px guard
-    // and threw almost all of it away — then PNG-encoded that surface and decoded it
+    // and threw almost all of it away - then PNG-encoded that surface and decoded it
     // back. Measured on a 3000x2000 AVIF at a 256 px target: 10-bit 1261 ms -> 400 ms,
     // 8-bit 638 ms -> 388 ms. Nothing about the colour fix needs the larger render:
     // the ICC below is applied from the ORIGINAL container, not magick's output, and
@@ -685,7 +685,7 @@ fn route_isobmff_wic_quirks(
         // have carried into its PNG output is gone by the time we read it back. Apply
         // it here from the ORIGINAL container instead, exactly as the WIC path does,
         // or a wide-gamut file routed here would come out in raw Adobe RGB / P3
-        // numbers — the same "decoded right, then threw the profile away" fault that
+        // numbers - the same "decoded right, then threw the profile away" fault that
         // was fixed for JPEG XL in 1.7.1.
         Ok(img) => Ok(apply_icc_to_srgb(img, color::isobmff_color_icc(bytes))),
         Err(e) => {
@@ -699,11 +699,11 @@ fn route_isobmff_wic_quirks(
     }
 }
 
-/// Last resort (CHEAP — a linear byte scan + image-tier decode, no subprocess, so the
-/// menu path runs it too): every real decoder failed (or is absent — e.g. a clean
+/// Last resort (CHEAP - a linear byte scan + image-tier decode, no subprocess, so the
+/// menu path runs it too): every real decoder failed (or is absent - e.g. a clean
 /// compact install with no Microsoft RAW Image Extension and no bundled ImageMagick).
-/// If the file still embeds ANY decodable JPEG — a camera RAW's small EXIF thumbnail, a
-/// document preview — show that rather than a blank tile. Strictly additive: only
+/// If the file still embeds ANY decodable JPEG - a camera RAW's small EXIF thumbnail, a
+/// document preview - show that rather than a blank tile. Strictly additive: only
 /// reached AFTER every higher-fidelity tier above has failed, so it can't downgrade a
 /// good result.
 fn try_embedded_jpeg_last_resort(bytes: &[u8]) -> Option<DynamicImage> {

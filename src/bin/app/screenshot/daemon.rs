@@ -529,7 +529,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
-/// `WM_HOTKEY` — dispatch by which of the three registered hotkey ids fired.
+/// `WM_HOTKEY` - dispatch by which of the three registered hotkey ids fired.
 unsafe fn on_hotkey(wparam: WPARAM) {
     match wparam.0 as i32 {
         HOTKEY_ID => spawn(Some("--screenshot")),
@@ -546,7 +546,7 @@ unsafe fn on_check_elevated(hwnd: HWND, wparam: WPARAM) {
     }
 }
 
-/// `WM_RELOAD` — posted by the Settings window when the user picks a different capture
+/// `WM_RELOAD` - posted by the Settings window when the user picks a different capture
 /// hotkey: re-read + re-register it, and reconcile the tray icon with the (possibly
 /// just-changed) hide-tray setting.
 unsafe fn on_reload(hwnd: HWND) {
@@ -558,7 +558,7 @@ unsafe fn on_reload(hwnd: HWND) {
     }
 }
 
-/// `WM_TRAY` — the notify-icon callback: double-click captures, right-click/context menu
+/// `WM_TRAY` - the notify-icon callback: double-click captures, right-click/context menu
 /// opens the tray menu, and a balloon click routes on which balloon we last raised.
 unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
     let ev = (lparam.0 & 0xffff) as u32;
@@ -575,7 +575,7 @@ unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-/// `WM_TIMER` — dispatch by timer id: the periodic update check, the hotkey re-arm
+/// `WM_TIMER` - dispatch by timer id: the periodic update check, the hotkey re-arm
 /// backstop, and the tray-icon add retry (logon race).
 unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) {
     match wparam.0 {
@@ -583,7 +583,7 @@ unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) {
         // Catch-all backstop: re-assert the hotkey registrations in case some
         // unforeseen event silently dropped them while we kept running.
         REARM_TIMER_ID => rearm_hotkeys(hwnd),
-        // The taskbar rejected our icon earlier (logon race) — try again until
+        // The taskbar rejected our icon earlier (logon race) - try again until
         // it takes, unless the user hid the icon meanwhile.
         TRAY_RETRY_TIMER_ID => {
             if sagethumbs2k_core::settings::screenshot_hide_tray() {
@@ -596,14 +596,14 @@ unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) {
     }
 }
 
-/// `WM_POWERBROADCAST` — only on RESUME (never on suspend, so we never release the
+/// `WM_POWERBROADCAST` - only on RESUME (never on suspend, so we never release the
 /// chord right before sleeping, which would leave it unregistered until wake).
 unsafe fn on_powerbroadcast(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     let ev = wparam.0 as u32;
     if ev == PBT_APMRESUMEAUTOMATIC || ev == PBT_APMRESUMESUSPEND {
         rearm_hotkeys(hwnd);
     }
-    LRESULT(1) // TRUE — grant the power-state change
+    LRESULT(1) // TRUE - grant the power-state change
 }
 
 /// The taskbar-created broadcast: re-add the tray icon (unless the user hid it).
@@ -621,7 +621,7 @@ unsafe fn on_update_found(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-/// `WM_COMMAND` — the tray menu's item ids.
+/// `WM_COMMAND` - the tray menu's item ids.
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) {
     match wparam.0 & 0xffff {
         IDM_CAPTURE => spawn(Some("--screenshot")),
@@ -638,14 +638,14 @@ unsafe fn on_command(hwnd: HWND, wparam: WPARAM) {
             // (so it won't relaunch at next logon) AND close the daemon (quit posts
             // WM_CLOSE → WM_DESTROY, which removes the tray icon + unregisters the
             // hotkeys). Unlike `set_enabled(false)`, `quit` stops even when a custom
-            // hotkey is bound — an explicit "stop everything".
+            // hotkey is bound - an explicit "stop everything".
             super::quit();
         }
         _ => {}
     }
 }
 
-/// `WM_DESTROY` — tear down timers, session notifications, hooks, tray icon and
+/// `WM_DESTROY` - tear down timers, session notifications, hooks, tray icon and
 /// hotkeys, then post the quit message.
 unsafe fn on_destroy(hwnd: HWND) {
     let _ = KillTimer(Some(hwnd), UPDATE_TIMER_ID);

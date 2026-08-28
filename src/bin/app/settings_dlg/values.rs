@@ -434,7 +434,7 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
 
     // The badge lives INSIDE the cached bitmap, so a toggle is invisible until the shell's
     // thumbnail cache is discarded. Do it for the user, and only when the value actually
-    // changed — an unrelated Apply must never blow away everyone's cached tiles.
+    // changed - an unrelated Apply must never blow away everyone's cached tiles.
     if badge_changed {
         let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
     }
@@ -521,7 +521,7 @@ unsafe fn apply_menu_item_list_order(hwnd: HWND) {
         return;
     };
     // Persist BOTH per-item visibility AND the row order (drag-to-reorder), reading
-    // each row's lParam so a reordered list — items AND divider rows — saves
+    // each row's lParam so a reordered list - items AND divider rows - saves
     // correctly: item rows write their key + checkbox; divider rows write the
     // separator token at their position.
     let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
@@ -541,7 +541,7 @@ unsafe fn apply_menu_item_list_order(hwnd: HWND) {
 
 /// The preview-mode combo (Explorer icon/classic/menu-preview toggle) and the app theme
 /// combo. The theme resolves once per process, so a running Quick preview can't repaint
-/// itself in a new skin — retire it on an actual change so the next Space press opens a
+/// itself in a new skin - retire it on an actual change so the next Space press opens a
 /// fresh one already wearing it.
 unsafe fn apply_menu_preview_and_theme(hwnd: HWND) {
     if let Ok(prev) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
@@ -596,7 +596,7 @@ unsafe fn apply_container_settings(hwnd: HWND) {
 /// These go through `set_dword_tracking_default`, which stores a value only when it
 /// differs from the default and DELETES it when it matches. This dialog writes every
 /// setting on every OK whether or not it was touched, so a plain `set_dword` here would
-/// pin each value at whatever the default was on the day the user first clicked OK — and
+/// pin each value at whatever the default was on the day the user first clicked OK - and
 /// no later default change could reach them. `MaxSize` is why that matters: it shipped
 /// defaulting to exactly the engine's buffering ceiling, which made the oversized-file
 /// rescue unreachable, and the repair is a raised DEFAULT that only lands on users whose
@@ -604,7 +604,7 @@ unsafe fn apply_container_settings(hwnd: HWND) {
 ///
 /// Deliberately NOT applied to the checkboxes on this page. Their defaults are product
 /// decisions that do not get retuned, and each polarity would have to be re-derived by hand
-/// from its accessor — getting one wrong silently INVERTS a setting for every user who ever
+/// from its accessor - getting one wrong silently INVERTS a setting for every user who ever
 /// pressed OK, which is a far worse failure than the one being fixed.
 unsafe fn apply_tuning_numbers(hwnd: HWND) {
     let mut ok = Default::default();
@@ -720,7 +720,7 @@ unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
     }
 }
 
-/// Quick preview's master toggle + behavior prefs, then the screenshot enable checkbox —
+/// Quick preview's master toggle + behavior prefs, then the screenshot enable checkbox -
 /// `set_enabled` reconciles the daemon (start/stop + re-register) against everything
 /// written above, so it must run last.
 unsafe fn apply_quick_preview_and_screenshot_enable(hwnd: HWND) {
@@ -750,7 +750,7 @@ unsafe fn apply_quick_preview_and_screenshot_enable(hwnd: HWND) {
 
 /// Per-format enable/disable flags: collect the changes against the (possibly filtered)
 /// list model, persist them, then run the elevated re-register that rewrites the HKCR
-/// shell hooks to match — rolling the flags back if that elevation is declined or fails,
+/// shell hooks to match - rolling the flags back if that elevation is declined or fails,
 /// so the persisted settings stay consistent with the (unchanged) hooks. Otherwise the two
 /// silently diverge and, because change-detection reads HKCU, never reconcile.
 unsafe fn apply_format_flags(hwnd: HWND) {
@@ -774,7 +774,7 @@ unsafe fn apply_format_flags(hwnd: HWND) {
     for &(ext, want, _) in &changes {
         let _ = settings::set_format_enabled(ext, want);
     }
-    // Only Ok counts — any other outcome means the HKCR hooks do NOT match the flags
+    // Only Ok counts - any other outcome means the HKCR hooks do NOT match the flags
     // we just wrote, so roll the flags back rather than leave the UI lying.
     if !matches!(reregister_elevated(), Reg::Ok) {
         for &(ext, _, old) in &changes {

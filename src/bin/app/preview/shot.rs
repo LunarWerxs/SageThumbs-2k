@@ -160,7 +160,7 @@ unsafe fn apply_wheel(hwnd: HWND, wheel: Option<i32>, ctrl: bool, shift: bool) {
 /// `--scroll N`: a continuously scrolled PDF takes it through its REAL scroll path, clamp
 /// and all, so a shot proves the layout at that position rather than just that page one
 /// drew (needs the session to have landed, i.e. `--wait-ms` first); the text/Markdown pane
-/// gets its scroll offset poked directly (an overshoot just shows the bottom — the wheel
+/// gets its scroll offset poked directly (an overshoot just shows the bottom - the wheel
 /// handler's clamp doesn't run here, but paint clips like any big scroll).
 unsafe fn apply_scroll(hwnd: HWND, scroll: Option<i32>) {
     let Some(scroll) = scroll else {
@@ -224,7 +224,7 @@ unsafe fn apply_find(hwnd: HWND, find: Option<&str>) {
 }
 
 /// `ST2K_MD_BENCH`: repaint several times so the Markdown layout cache's cold(1st)-vs-
-/// warm(rest) timings print — each `paint_into` re-runs `markdown::render`, which
+/// warm(rest) timings print - each `paint_into` re-runs `markdown::render`, which
 /// self-times under the same env var. This is the only way to measure the SCROLL speedup,
 /// since one PrintWindow capture is a single (cold) paint.
 unsafe fn bench_repaint_if_requested(hwnd: HWND) {
