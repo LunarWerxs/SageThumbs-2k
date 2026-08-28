@@ -165,6 +165,38 @@ and `cargo clippy --bin SageThumbs2K -- -D warnings` both clean, and `cargo fmt 
 edits left over-width, plus a blank-line fix for a doc comment that picked up a
 `doc_lazy_continuation` clippy lint once moved from a plain `//` comment to a `///` one).
 
+**Tranche 14 (2026-08-28): the next 8 worst rows cleared**, worst first: `extract_cover`
+(container/mod.rs), the ebook/comic content-sniff dispatcher, was a single 30-branch if-chain;
+grouped into four category helpers (`try_generic_archive_cover`, `try_creative_app_cover`,
+`try_ebook_and_cad_cover`, `try_misc_cover`) tried in order via `.or_else()` chaining, preserving
+the exact original priority (APK-before-zip, PSD-falls-through-to-magick, etc.) since each helper
+still tries its own members in the same sequence internally; `start_convert` (convert.rs) split
+into `resolve_convert_outdir` (the placeholder-vs-explicit-folder read), `convert_one_file` (one
+source's whole job list) and `produce_convert_job` (one resize job's dispatch by target kind);
+`convert_wndproc` (convert.rs), a batch-dialog message dispatcher, split into
+`on_convert_create`/`on_convert_command`/`on_convert_progress`/`on_convert_done`, same
+wndproc-dispatcher method as prior tranches; `neutralize_lossless_jpeg_orientation`
+(verbs/encode.rs) had its nested `normalize` fn (itself the bulk of the complexity, since a nested
+`fn`'s body counts toward its enclosing function under this scanner) hoisted to module scope as
+`zero_out_ifd0_orientation`; `parse_wav` (container/waveform.rs) split into `scan_wav_chunks` (the
+RIFF chunk walk) and `parse_wav_fmt_chunk` (one `fmt ` chunk's field read), with a malformed `fmt`
+chunk still fatal to the whole scan via propagated `?`, matching the original; `size_of`
+(mp4.rs, `SampleSizes`) split its two match arms into `stsz_size_of`/`stz2_size_of`; `video_key`
+(preview/window.rs) split into `video_key_seek`/`video_key_volume`/`video_key_toggle`, tried via
+`||` short-circuit in the same priority the original flat match checked keys in; `first_run_wndproc`
+(first_run.rs) split into `on_first_run_create`/`on_first_run_command` plus a hoisted
+`is_dim_caption` predicate (was a 7-way inline `||` chain), same wndproc-dispatcher method. No
+behavior change anywhere in this tranche. Verified per file (scoped `cargo test`, or `cargo build`
+alone for the three files with no unit tests of their own, convert.rs, first_run.rs,
+preview/window.rs) and at the end: `cargo test --lib` (753 passed, 0 failed, 18 ignored, matching
+baseline) and `cargo test --bin SageThumbs2K --features html-preview` (363 passed, matching tranche
+13's baseline), `cargo clippy --workspace --all-targets --features html-preview -- -D warnings`
+clean (after adding `WavFmt`/`WavData` type aliases for a clippy::type_complexity hit on
+`scan_wav_chunks`'s return type, and `#[allow(clippy::too_many_arguments)]` on
+`produce_convert_job`, same pattern already used elsewhere in these files), and `cargo fmt --all
+--check` clean (after one `cargo fmt --all` pass to reflow `resolve_convert_outdir`'s
+over-width `is_placeholder` line).
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -470,15 +502,15 @@ before the next release is still recommended.
 |x| 40 | 13 | `collect_leaf_pages` | src/container/clip.rs:183 |
 |x| 39 | 24 | `run_capture_inner` | src/bin/app/screenshot/overlay.rs:424 |
 |x| 38 | 25 | `display_name` | src/bin/app/preview/font.rs:52 |
-| | 38 | 23 | `start_convert` | src/bin/app/convert.rs:633 |
-| | 38 | 36 | `extract_cover` | src/container/mod.rs:291 |
-| | 38 | 22 | `convert_wndproc` | src/bin/app/convert.rs:1042 |
-| | 38 | 15 | `neutralize_lossless_jpeg_orientation` | src/verbs/encode.rs:273 |
-| | 38 | 21 | `parse_wav` | src/container/waveform.rs:106 |
+|x| 38 | 23 | `start_convert` | src/bin/app/convert.rs:633 |
+|x| 38 | 36 | `extract_cover` | src/container/mod.rs:291 |
+|x| 38 | 22 | `convert_wndproc` | src/bin/app/convert.rs:1042 |
+|x| 38 | 15 | `neutralize_lossless_jpeg_orientation` | src/verbs/encode.rs:273 |
+|x| 38 | 21 | `parse_wav` | src/container/waveform.rs:106 |
 |x| 37 | 14 | `isobmff_color_icc` | src/decode/color.rs:340 |
-| | 37 | 14 | `size_of` | src/mp4.rs:425 |
-| | 37 | 32 | `video_key` | src/bin/app/preview/window.rs:1532 |
-| | 37 | 20 | `first_run_wndproc` | src/bin/app/first_run.rs:516 |
+|x| 37 | 14 | `size_of` | src/mp4.rs:425 |
+|x| 37 | 32 | `video_key` | src/bin/app/preview/window.rs:1532 |
+|x| 37 | 20 | `first_run_wndproc` | src/bin/app/first_run.rs:516 |
 | | 37 | 24 | `to_sfnt` | src/bin/app/preview/woff.rs:39 |
 | | 37 | 18 | `load_static` | src/bin/app/preview/loader.rs:341 |
 | | 37 | 15 | `parse_iloc` | src/strip/isobmff.rs:174 |
