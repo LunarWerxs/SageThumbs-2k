@@ -461,43 +461,9 @@ fn decode_entities(s: &str) -> String {
             }
         };
         let ent = &rest[1..semi];
-        let decoded: Option<char> = if let Some(num) = ent.strip_prefix('#') {
-            let cp = if let Some(hex) = num.strip_prefix(['x', 'X']) {
-                u32::from_str_radix(hex, 16).ok()
-            } else {
-                num.parse::<u32>().ok()
-            };
-            cp.and_then(char::from_u32)
-        } else {
-            match ent {
-                "amp" => Some('&'),
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                "nbsp" => Some('\u{00A0}'),
-                "middot" => Some('·'),
-                "bull" => Some('•'),
-                "copy" => Some('©'),
-                "reg" => Some('®'),
-                "trade" => Some('™'),
-                "hellip" => Some('…'),
-                "mdash" => Some('—'),
-                "ndash" => Some('–'),
-                "ldquo" => Some('“'),
-                "rdquo" => Some('”'),
-                "lsquo" => Some('‘'),
-                "rsquo" => Some('’'),
-                "laquo" => Some('«'),
-                "raquo" => Some('»'),
-                "deg" => Some('°'),
-                "times" => Some('×'),
-                "larr" => Some('←'),
-                "rarr" => Some('→'),
-                "uarr" => Some('↑'),
-                "darr" => Some('↓'),
-                _ => None,
-            }
+        let decoded: Option<char> = match ent.strip_prefix('#') {
+            Some(num) => numeric_entity(num),
+            None => named_entity(ent),
         };
         match decoded {
             Some(ch) => {
@@ -512,4 +478,58 @@ fn decode_entities(s: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// `&#123;` / `&#x7B;` — decimal or hex numeric character reference.
+fn numeric_entity(num: &str) -> Option<char> {
+    let cp = if let Some(hex) = num.strip_prefix(['x', 'X']) {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        num.parse::<u32>().ok()
+    };
+    cp.and_then(char::from_u32)
+}
+
+/// Named entity lookup, split across two tables purely to keep each match's arm count under
+/// the complexity gate.
+fn named_entity(ent: &str) -> Option<char> {
+    named_entity_basic(ent).or_else(|| named_entity_typographic(ent))
+}
+
+fn named_entity_basic(ent: &str) -> Option<char> {
+    match ent {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some('\u{00A0}'),
+        "middot" => Some('·'),
+        "bull" => Some('•'),
+        "copy" => Some('©'),
+        "reg" => Some('®'),
+        "trade" => Some('™'),
+        "hellip" => Some('…'),
+        "mdash" => Some('—'),
+        "ndash" => Some('–'),
+        _ => None,
+    }
+}
+
+fn named_entity_typographic(ent: &str) -> Option<char> {
+    match ent {
+        "ldquo" => Some('“'),
+        "rdquo" => Some('”'),
+        "lsquo" => Some('‘'),
+        "rsquo" => Some('’'),
+        "laquo" => Some('«'),
+        "raquo" => Some('»'),
+        "deg" => Some('°'),
+        "times" => Some('×'),
+        "larr" => Some('←'),
+        "rarr" => Some('→'),
+        "uarr" => Some('↑'),
+        "darr" => Some('↓'),
+        _ => None,
+    }
 }
