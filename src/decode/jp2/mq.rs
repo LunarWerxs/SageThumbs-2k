@@ -361,6 +361,7 @@ fn refinement_pass(
 
 /// Decode the sign of a newly-significant sample and record it: shared by the
 /// per-sample cleanup decode and the run-length-selected row.
+#[allow(clippy::too_many_arguments)]
 fn mark_significant(
     mq: &mut MqDecoder,
     flags: &mut [u8],
