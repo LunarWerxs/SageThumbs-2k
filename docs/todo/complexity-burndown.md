@@ -197,6 +197,49 @@ clean (after adding `WavFmt`/`WavData` type aliases for a clippy::type_complexit
 --check` clean (after one `cargo fmt --all` pass to reflow `resolve_convert_outdir`'s
 over-width `is_placeholder` line).
 
+**Tranche 15 (2026-08-28): the next 9 worst rows cleared**, worst first: `to_sfnt`
+(preview/woff.rs), the WOFF-to-sfnt reconstructor, split into `read_woff_table` (one
+table-directory entry's read/decompress), `read_woff_tables` (the sorted-by-tag walk), and
+`assemble_sfnt` (header + directory + data write), with the local `Table` struct hoisted to
+module scope as `WoffTable`; `load_static` (preview/loader.rs), the headless-shot sync-decode
+dispatcher, split into `try_static_source_view`/`try_static_archive_listing`/
+`try_static_db_markdown`/`try_static_mail_markdown` (one per content-specific hook, same shape
+as `load`'s existing `try_show_*` helpers) plus `apply_static_image`/
+`apply_static_text_or_markdown`/`apply_static_content_kind` for the final by-kind dispatch;
+`parse_iloc` (strip/isobmff.rs) split into `parse_iloc_sizes` (version + field-width read),
+`parse_iloc_count`, and `parse_iloc_item` (one entry, returning the offset-past-entry paired
+with its optional `IlocEntry` type alias); `parse_keyframe_header` (bin/vdec/vp9.rs), a VP9
+bitstream-header parse whose ~20 bit-reader calls each count as a branch under this scanner,
+split into `parse_frame_marker_and_profile`/`verify_keyframe_flags`/`parse_color_config`/
+`parse_frame_size`, one per spec-section field group, each with its own small `take` closure;
+`extract_best` (container/psp.rs) split into `collect_composite_parts` (the sub-block walk),
+`best_composite` (the largest-by-pixel-area rank), and `extract_jpeg_composite`/
+`extract_plane_composite` per storage-kind branch; `feed` (preview/mdhtml.rs), the raw-HTML
+tokenizer's state-machine loop, split into `advance_in_comment`/`advance_in_skip_tag`/
+`advance_at_lt`/`advance_text`, one per loop state, each returning `ControlFlow<(), usize>`
+(`Break` when the fragment ends mid-state, matching the original's early `return`) so `feed`
+itself became a thin four-way dispatch; `cue_points` (mkv.rs) split its triple-nested
+CuePoint/CueTrackPositions/child walk into `cue_track_position` (one CueTrackPositions
+occurrence's video-track-position-if-matched plus any-track fallback) and `parse_cue_point`
+(one CuePoint, combining possibly-several such occurrences exactly as the original's
+`get_or_insert`/`is_none()` guards did); `strip` (strip/svgmeta.rs) split into
+`try_drop_element` (the top-level metadata-element cut, falling through to the normal path on
+"not a candidate" or "never closed", same as the original's nested `if let`) and `step_depth`
+(the nesting-depth tracker); `blocks_rgba8` (decode/dds.rs), the BC1-7 block-grid walk, split
+into `try_fast_block_mean` (the whole-block mean shortcut), `decode_block_tile` (the per-format
+match, returning `false` for BC6H to abort the whole walk exactly as the original's bare
+`return` did), and `write_decoded_block` (mean vs. tile-copy write). No behavior change
+anywhere in this tranche. Verified per file (scoped `cargo test`, or `cargo build`/`cargo
+check` alone for mdhtml.rs, which has no unit tests of its own) and at the end: `cargo test
+--lib` (753 passed, 0 failed, 18 ignored, matching baseline), `cargo test --bin SageThumbs2K
+--features html-preview` (363 passed, matching tranche 14's baseline), `cargo test --bin
+st2k` (22 passed, matching baseline), `cargo clippy --workspace --all-targets --features
+html-preview -- -D warnings` clean (after adding an `IlocEntry` type alias for a
+`clippy::type_complexity` hit on `parse_iloc_item`'s return type, and
+`#[allow(clippy::too_many_arguments)]` on `try_fast_block_mean`, same pattern already used
+elsewhere in these files), and `cargo fmt --all --check` clean (after one `cargo fmt --all`
+pass to reflow several signatures/expressions the edits left over-width).
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -511,15 +554,15 @@ before the next release is still recommended.
 |x| 37 | 14 | `size_of` | src/mp4.rs:425 |
 |x| 37 | 32 | `video_key` | src/bin/app/preview/window.rs:1532 |
 |x| 37 | 20 | `first_run_wndproc` | src/bin/app/first_run.rs:516 |
-| | 37 | 24 | `to_sfnt` | src/bin/app/preview/woff.rs:39 |
-| | 37 | 18 | `load_static` | src/bin/app/preview/loader.rs:341 |
-| | 37 | 15 | `parse_iloc` | src/strip/isobmff.rs:174 |
-| | 37 | 28 | `parse_keyframe_header` | src/bin/vdec/vp9.rs:185 |
-| | 37 | 23 | `extract_best` | src/container/psp.rs:157 |
-| | 36 | 14 | `feed` | src/bin/app/preview/mdhtml.rs:17 |
-| | 36 | 15 | `cue_points` | src/mkv.rs:718 |
-| | 36 | 13 | `strip` | src/strip/svgmeta.rs:26 |
-| | 35 | 17 | `blocks_rgba8` | src/decode/dds.rs:759 |
+|x| 37 | 24 | `to_sfnt` | src/bin/app/preview/woff.rs:39 |
+|x| 37 | 18 | `load_static` | src/bin/app/preview/loader.rs:341 |
+|x| 37 | 15 | `parse_iloc` | src/strip/isobmff.rs:174 |
+|x| 37 | 28 | `parse_keyframe_header` | src/bin/vdec/vp9.rs:185 |
+|x| 37 | 23 | `extract_best` | src/container/psp.rs:157 |
+|x| 36 | 14 | `feed` | src/bin/app/preview/mdhtml.rs:17 |
+|x| 36 | 15 | `cue_points` | src/mkv.rs:718 |
+|x| 36 | 13 | `strip` | src/strip/svgmeta.rs:26 |
+|x| 35 | 17 | `blocks_rgba8` | src/decode/dds.rs:759 |
 | | 35 | 23 | `eligible_bt601_still` | src/decode/avifmf.rs:162 |
 | | 35 | 21 | `fuzz_extract_cover` | src/container/mod.rs:1107 |
 | | 34 | 15 | `reference` | src/decode/jp2/dwt.rs:260 |
