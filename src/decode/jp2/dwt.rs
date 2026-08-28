@@ -255,65 +255,80 @@ mod tests {
     /// three-buffer algorithm serves as an oracle, compared bit-for-bit against the in-place
     /// version across varied signals, origins, and both the reversible and irreversible paths
     /// — a wrong aliasing assumption here would show up as silently wrong pixels, not a panic.
-    #[test]
-    fn filtr_1d_matches_the_original_three_buffer_algorithm() {
-        fn reference(sig: &[f32], i0: usize, reversible: bool) -> Vec<f32> {
-            let n = sig.len();
-            let i0i = i0 as isize;
-            if n <= 1 {
-                let mut out = sig.to_vec();
-                if n == 1 && !i0.is_multiple_of(2) {
-                    out[0] /= 2.0;
-                    if reversible {
-                        out[0] = out[0].trunc();
-                    }
-                }
-                return out;
-            }
-            if reversible {
-                let src = sig.to_vec();
-                let mut even = src.clone();
-                for (k, slot) in even.iter_mut().enumerate() {
-                    let i = i0i + k as isize;
-                    if i % 2 == 0 {
-                        let a = ext(&src, i0i, i - 1);
-                        let b = ext(&src, i0i, i + 1);
-                        *slot = src[k] - ((a + b + 2.0) / 4.0).floor();
-                    }
-                }
-                let mut out = even.clone();
-                for (k, slot) in out.iter_mut().enumerate() {
-                    let i = i0i + k as isize;
-                    if i % 2 != 0 {
-                        let a = ext(&even, i0i, i - 1);
-                        let b = ext(&even, i0i, i + 1);
-                        *slot = src[k] + ((a + b) / 2.0).floor();
-                    }
-                }
-                out
-            } else {
-                let mut sig = sig.to_vec();
-                for (k, s) in sig.iter_mut().enumerate() {
-                    let i = i0i + k as isize;
-                    *s = if i % 2 == 0 { *s * K } else { *s / K };
-                }
-                for (even_step, coef) in
-                    [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)]
-                {
-                    let src = sig.to_vec();
-                    for (k, s) in sig.iter_mut().enumerate() {
-                        let i = i0i + k as isize;
-                        if (i % 2 == 0) == even_step {
-                            let a = ext(&src, i0i, i - 1);
-                            let b = ext(&src, i0i, i + 1);
-                            *s = src[k] - coef * (a + b);
-                        }
-                    }
-                }
-                sig
+    /// A221's reversible-branch reference oracle: reconstructs `filtr_1d`'s reversible pass
+    /// via the original three-buffer algorithm (a separate `even`/`out` buffer per lifting
+    /// step, no in-place aliasing), so it can be compared bit-for-bit against the in-place
+    /// version below.
+    fn reference_reversible(sig: &[f32], i0: usize) -> Vec<f32> {
+        let i0i = i0 as isize;
+        let src = sig.to_vec();
+        let mut even = src.clone();
+        for (k, slot) in even.iter_mut().enumerate() {
+            let i = i0i + k as isize;
+            if i % 2 == 0 {
+                let a = ext(&src, i0i, i - 1);
+                let b = ext(&src, i0i, i + 1);
+                *slot = src[k] - ((a + b + 2.0) / 4.0).floor();
             }
         }
+        let mut out = even.clone();
+        for (k, slot) in out.iter_mut().enumerate() {
+            let i = i0i + k as isize;
+            if i % 2 != 0 {
+                let a = ext(&even, i0i, i - 1);
+                let b = ext(&even, i0i, i + 1);
+                *slot = src[k] + ((a + b) / 2.0).floor();
+            }
+        }
+        out
+    }
 
+    /// A221's irreversible-branch reference oracle: the original four-lifting-step 9/7
+    /// algorithm, each step reading from a fresh copy of `sig` rather than aliasing it.
+    fn reference_irreversible(sig: &[f32], i0: usize) -> Vec<f32> {
+        let i0i = i0 as isize;
+        let mut sig = sig.to_vec();
+        for (k, s) in sig.iter_mut().enumerate() {
+            let i = i0i + k as isize;
+            *s = if i % 2 == 0 { *s * K } else { *s / K };
+        }
+        for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
+            let src = sig.to_vec();
+            for (k, s) in sig.iter_mut().enumerate() {
+                let i = i0i + k as isize;
+                if (i % 2 == 0) == even_step {
+                    let a = ext(&src, i0i, i - 1);
+                    let b = ext(&src, i0i, i + 1);
+                    *s = src[k] - coef * (a + b);
+                }
+            }
+        }
+        sig
+    }
+
+    /// The A221 reference oracle: the `n <= 1` edge case is shared by both the reversible and
+    /// irreversible original algorithms, so it lives here rather than duplicated in both.
+    fn reference(sig: &[f32], i0: usize, reversible: bool) -> Vec<f32> {
+        let n = sig.len();
+        if n <= 1 {
+            let mut out = sig.to_vec();
+            if n == 1 && !i0.is_multiple_of(2) {
+                out[0] /= 2.0;
+                if reversible {
+                    out[0] = out[0].trunc();
+                }
+            }
+            return out;
+        }
+        if reversible {
+            reference_reversible(sig, i0)
+        } else {
+            reference_irreversible(sig, i0)
+        }
+    }
+
+    #[test]
+    fn filtr_1d_matches_the_original_three_buffer_algorithm() {
         let signals: &[&[f32]] = &[
             &[1.0, -2.5, 3.25, 0.0, 7.0, -4.0],
             &[10.0, 20.0, 30.0, 40.0, 50.0],

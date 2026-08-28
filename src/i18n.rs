@@ -225,14 +225,63 @@ mod tests {
     ///
     /// This scans the lib sources rather than trusting that comment. `src/bin/` is excluded:
     /// those are the EXEs, which link the FULL table and may use any key.
-    #[test]
-    fn lib_side_translation_keys_all_survive_the_dll_subset() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    /// Scan one file's text for literal `t("…")` calls, appending a `menu_`-rename offender
+    /// for every real, non-`menu_` translation key found. Returns how many literal
+    /// translation-key calls it recognized (including ones that already pass).
+    fn scan_file_t_calls(
+        text: &str,
+        display_path: &std::path::Path,
+        offenders: &mut Vec<String>,
+    ) -> usize {
+        let mut checked = 0usize;
+        // Match the literal-key form `t("…")`. The dynamic form `t(title)` is covered
+        // separately by `every_menu_title_is_a_menu_key` in verbs.
+        for (i, _) in text.match_indices("t(\"") {
+            // Require the char before `t` to be a non-identifier one, so this does not fire
+            // on `format!("…{}", other_fn_that("x"))`-style names ending in `t` (e.g.
+            // `set(`, `get(`, `insert(`).
+            if i > 0 && text.as_bytes()[i - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            if i > 0 && text.as_bytes()[i - 1] == b'_' {
+                continue;
+            }
+            let rest = &text[i + 3..];
+            let Some(end) = rest.find('"') else { continue };
+            let key = &rest[..end];
+            // Only judge things that are actually translation keys: every key in en.toml is
+            // snake_case ASCII. Anything else is some other `…t("…")`.
+            if key.is_empty()
+                || !key
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            {
+                continue;
+            }
+            if lookup(0, key).is_none() {
+                continue; // not a translation key at all
+            }
+            checked += 1;
+            if !key.starts_with("menu_") {
+                offenders.push(format!(
+                    "{}: t(\"{key}\") — rename the key to `menu_{key}` in every \
+                     assets/locales/*.toml, or the shipped DLL renders it as ⟨?⟩",
+                    display_path.display(),
+                ));
+            }
+        }
+        checked
+    }
+
+    /// Walk `src` (minus `src/bin/`, which gets the full locale table) and scan every `.rs`
+    /// file for lib-side literal `t("…")` calls. Returns the total recognized-call count and
+    /// the accumulated `menu_`-rename offenders.
+    fn scan_lib_t_calls(src: &std::path::Path) -> (usize, Vec<String>) {
         let mut checked = 0usize;
         let mut offenders: Vec<String> = Vec::new();
 
-        // Walk src/ minus src/bin/. Small tree, plain recursion, no dev-dependency needed.
-        let mut stack = vec![src.clone()];
+        // Small tree, plain recursion, no dev-dependency needed.
+        let mut stack = vec![src.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
@@ -248,45 +297,18 @@ mod tests {
                     let Ok(text) = std::fs::read_to_string(&p) else {
                         continue;
                     };
-                    // Match the literal-key form `t("…")`. The dynamic form `t(title)` is
-                    // covered separately by `every_menu_title_is_a_menu_key` in verbs.
-                    for (i, _) in text.match_indices("t(\"") {
-                        // Require the char before `t` to be a non-identifier one, so this does
-                        // not fire on `format!("…{}", other_fn_that("x"))`-style names ending
-                        // in `t` (e.g. `set(`, `get(`, `insert(`).
-                        if i > 0 && text.as_bytes()[i - 1].is_ascii_alphanumeric() {
-                            continue;
-                        }
-                        if i > 0 && text.as_bytes()[i - 1] == b'_' {
-                            continue;
-                        }
-                        let rest = &text[i + 3..];
-                        let Some(end) = rest.find('"') else { continue };
-                        let key = &rest[..end];
-                        // Only judge things that are actually translation keys: every key in
-                        // en.toml is snake_case ASCII. Anything else is some other `…t("…")`.
-                        if key.is_empty()
-                            || !key
-                                .bytes()
-                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-                        {
-                            continue;
-                        }
-                        if lookup(0, key).is_none() {
-                            continue; // not a translation key at all
-                        }
-                        checked += 1;
-                        if !key.starts_with("menu_") {
-                            offenders.push(format!(
-                                "{}: t(\"{key}\") — rename the key to `menu_{key}` in every \
-                                 assets/locales/*.toml, or the shipped DLL renders it as ⟨?⟩",
-                                p.strip_prefix(&src).unwrap_or(&p).display(),
-                            ));
-                        }
-                    }
+                    let rel = p.strip_prefix(src).unwrap_or(&p).to_path_buf();
+                    checked += scan_file_t_calls(&text, &rel, &mut offenders);
                 }
             }
         }
+        (checked, offenders)
+    }
+
+    #[test]
+    fn lib_side_translation_keys_all_survive_the_dll_subset() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let (checked, offenders) = scan_lib_t_calls(&src);
 
         assert!(
             offenders.is_empty(),
