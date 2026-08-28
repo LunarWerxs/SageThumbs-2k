@@ -140,6 +140,34 @@ pub(crate) fn jpeg_sof_is_decodable(sof: u8) -> bool {
 /// markers parse to a clean EOI without a frame header keeps measuring the same length it
 /// always did. Only a caller that CARES what kind of frame it found consults the marker, and
 /// then absence means "unknown", not "reject".
+/// Skip a length-prefixed marker segment: reads its big-endian length (the field covers
+/// its own 2 bytes) and returns the position right after the segment. `None` if the length
+/// field is unreadable or claims less than its own 2 bytes.
+fn skip_length_prefixed_segment(data: &[u8], p: usize) -> Option<usize> {
+    let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
+    if len < 2 {
+        return None;
+    }
+    p.checked_add(len)
+}
+
+/// Skip the entropy-coded scan data after an SOS header, honoring FF-stuffing and restart
+/// markers (`FF 00` and `FF D0..D7` are DATA, not the next real marker). Returns the
+/// position of the next real `0xFF` marker byte.
+fn skip_entropy_coded_scan(data: &[u8], mut p: usize) -> Option<usize> {
+    loop {
+        if *data.get(p)? == 0xFF {
+            let n = *data.get(p + 1)?;
+            if n == 0x00 || (0xD0..=0xD7).contains(&n) {
+                p = p.checked_add(2)?; // byte-stuffed FF / restart marker
+                continue;
+            }
+            return Some(p); // a real marker (EOI, or next scan) — outer loop handles it
+        }
+        p = p.checked_add(1)?;
+    }
+}
+
 pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> {
     if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
         return None;
@@ -164,38 +192,16 @@ pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> 
             // describes and a later thumbnail SOF must not overwrite it.
             0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
                 sof.get_or_insert(marker);
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
+                p = skip_length_prefixed_segment(data, p)?;
             }
             0xDA => {
                 // Start-of-scan: skip its header by length, then the entropy data.
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
-                loop {
-                    if *data.get(p)? == 0xFF {
-                        let n = *data.get(p + 1)?;
-                        if n == 0x00 || (0xD0..=0xD7).contains(&n) {
-                            p = p.checked_add(2)?; // byte-stuffed FF / restart marker
-                            continue;
-                        }
-                        break; // a real marker (EOI, or next scan) — outer loop handles it
-                    }
-                    p = p.checked_add(1)?;
-                }
+                p = skip_length_prefixed_segment(data, p)?;
+                p = skip_entropy_coded_scan(data, p)?;
             }
             0x01 | 0xD0..=0xD7 => {} // standalone markers, no payload
             _ => {
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
+                p = skip_length_prefixed_segment(data, p)?;
             }
         }
     }
