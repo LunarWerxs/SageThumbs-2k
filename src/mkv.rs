@@ -721,6 +721,49 @@ fn info_duration(info_data: &[u8]) -> (Option<f64>, u64) {
     (duration, scale)
 }
 
+/// One CueTrackPositions child: `(this track's position if it's the video track, this track's
+/// cluster position as the any-track fallback)`.
+fn cue_track_position(cd: &[u8], video_track: Option<u64>) -> (Option<u64>, Option<u64>) {
+    let mut track = None;
+    let mut cpos = None;
+    for (tid, _, td) in children(cd) {
+        match tid {
+            ID_CUE_TRACK => track = Some(ebml_uint(td)),
+            ID_CUE_CLUSTER_POSITION => cpos = Some(ebml_uint(td)),
+            _ => {}
+        }
+    }
+    let Some(cpos) = cpos else {
+        return (None, None);
+    };
+    let video_pos = (video_track.is_none() || track == video_track).then_some(cpos);
+    (video_pos, Some(cpos))
+}
+
+/// One CuePoint's `(cue_time, cluster_segment_position)`, preferring the video track's
+/// CueTrackPositions (falling back to the first track's, across possibly several occurrences).
+fn parse_cue_point(cp: &[u8], video_track: Option<u64>) -> Option<(u64, u64)> {
+    let mut time = None;
+    let mut pos = None; // video-track position
+    let mut first_pos = None; // any-track fallback
+    for (cid, _, cd) in children(cp) {
+        match cid {
+            ID_CUE_TIME => time = Some(ebml_uint(cd)),
+            ID_CUE_TRACK_POSITIONS => {
+                let (video_pos, any_pos) = cue_track_position(cd, video_track);
+                if let Some(any_pos) = any_pos {
+                    first_pos.get_or_insert(any_pos);
+                }
+                if pos.is_none() {
+                    pos = video_pos;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some((time?, pos.or(first_pos)?))
+}
+
 /// `(cue_time, cluster_segment_position)` for each CuePoint, preferring the video track's
 /// CueTrackPositions (falling back to the first). Sorted ascending by time.
 fn cue_points(cues_data: &[u8], video_track: Option<u64>) -> Vec<(u64, u64)> {
@@ -732,34 +775,8 @@ fn cue_points(cues_data: &[u8], video_track: Option<u64>) -> Vec<(u64, u64)> {
         if id != ID_CUE_POINT {
             continue;
         }
-        let mut time = None;
-        let mut pos = None; // video-track position
-        let mut first_pos = None; // any-track fallback
-        for (cid, _, cd) in children(cp) {
-            match cid {
-                ID_CUE_TIME => time = Some(ebml_uint(cd)),
-                ID_CUE_TRACK_POSITIONS => {
-                    let mut track = None;
-                    let mut cpos = None;
-                    for (tid, _, td) in children(cd) {
-                        match tid {
-                            ID_CUE_TRACK => track = Some(ebml_uint(td)),
-                            ID_CUE_CLUSTER_POSITION => cpos = Some(ebml_uint(td)),
-                            _ => {}
-                        }
-                    }
-                    if let Some(cpos) = cpos {
-                        first_pos.get_or_insert(cpos);
-                        if (video_track.is_none() || track == video_track) && pos.is_none() {
-                            pos = Some(cpos);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let (Some(t), Some(p)) = (time, pos.or(first_pos)) {
-            out.push((t, p));
+        if let Some(entry) = parse_cue_point(cp, video_track) {
+            out.push(entry);
         }
     }
     out.sort_by_key(|&(t, _)| t);

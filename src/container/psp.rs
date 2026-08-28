@@ -154,18 +154,14 @@ fn inflate_capped(data: &[u8], limit: usize) -> Option<Vec<u8>> {
     (!out.is_empty()).then_some(out)
 }
 
-/// Decode the best composite image in the bank: the largest by pixel area, whether it is stored
-/// as JPEG (returned as bytes for the normal decoder) or as raw/LZ77 channel planes (decoded
-/// here). `None` if the file has no usable composite, in which case the caller falls back to
-/// [`extract`]'s bounded JPEG carve.
-pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
-    if !looks_like_psp(bytes) {
-        return None;
-    }
-    let (lo, hi) = composite_bank_range(bytes)?;
-
-    // Attributes come first, in order, one per composite; the image blocks follow in the SAME
-    // order. Pair them by index rather than by any id, which is how the format expresses it.
+/// Walk the composite bank's sub-blocks, collecting its attributes (one per composite, in
+/// order) plus the JPEG and raw-plane image blocks that follow in that SAME order. Pairing by
+/// index rather than by any id is how the format expresses which attributes go with which block.
+fn collect_composite_parts(
+    bytes: &[u8],
+    lo: usize,
+    hi: usize,
+) -> (Vec<Attrs>, Vec<usize>, Vec<(usize, usize)>) {
     let mut attrs: Vec<Attrs> = Vec::new();
     let mut jpegs: Vec<usize> = Vec::new(); // index into `blocks` order
     let mut planes: Vec<(usize, usize)> = Vec::new(); // (content, len) of composite image blocks
@@ -192,8 +188,12 @@ pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
             _ => {}
         }
     }
+    (attrs, jpegs, planes)
+}
 
-    // Rank every composite we could actually produce, largest first.
+/// Rank every composite we could actually produce, largest by pixel area first, and return its
+/// attributes-index plus attributes. `None` if none has a usable (nonzero, in-bounds) pixel area.
+fn best_composite(attrs: &[Attrs]) -> Option<(usize, Attrs)> {
     let mut best: Option<(usize, usize)> = None; // (pixels, attrs index)
     for (i, a) in attrs.iter().enumerate() {
         let px = (a.w as usize).checked_mul(a.h as usize)?;
@@ -205,37 +205,70 @@ pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
         }
     }
     let (_, want) = best?;
-    let a = *attrs.get(want)?;
+    Some((want, *attrs.get(want)?))
+}
 
-    // A JPEG composite: hand the bytes back and let the normal tier decode them. `jpegs` and
-    // `planes` are each in bank order, and attributes are too, so the Nth attributes entry of a
-    // given storage kind lines up with the Nth block of that kind.
-    if a.compression == COMP_JPEG {
-        let rank = attrs
-            .iter()
-            .take(want)
-            .filter(|x| x.compression == COMP_JPEG)
-            .count();
-        if let Some(&c) = jpegs.get(rank) {
-            // The JPEG sub-block content is chunk(4) then the JPEG stream.
-            let chunk = le32(bytes, c)? as usize;
-            let data = bytes.get(c + chunk..)?;
-            let len = crate::container::jpeg_span_len(data, 0)?;
-            let jpeg = data.get(..len)?;
-            if jpeg.len() >= 64 && jpeg.len() as u64 <= crate::container::MAX_COVER {
-                return Some(crate::container::CoverOut::Bytes(jpeg.to_vec()));
-            }
-        }
-        return None;
+/// The JPEG-composite case of [`extract_best`]: locate the `want`th JPEG-compressed attributes
+/// entry's matching sub-block and hand its bytes back for the normal JPEG decoder.
+fn extract_jpeg_composite(
+    bytes: &[u8],
+    attrs: &[Attrs],
+    jpegs: &[usize],
+    want: usize,
+) -> Option<crate::container::CoverOut> {
+    let rank = attrs
+        .iter()
+        .take(want)
+        .filter(|x| x.compression == COMP_JPEG)
+        .count();
+    let &c = jpegs.get(rank)?;
+    // The JPEG sub-block content is chunk(4) then the JPEG stream.
+    let chunk = le32(bytes, c)? as usize;
+    let data = bytes.get(c + chunk..)?;
+    let len = crate::container::jpeg_span_len(data, 0)?;
+    let jpeg = data.get(..len)?;
+    if jpeg.len() >= 64 && jpeg.len() as u64 <= crate::container::MAX_COVER {
+        Some(crate::container::CoverOut::Bytes(jpeg.to_vec()))
+    } else {
+        None
     }
+}
 
+/// The raw/LZ77-plane case of [`extract_best`]: locate the `want`th non-JPEG attributes entry's
+/// matching image block and decode its channel planes.
+fn extract_plane_composite(
+    bytes: &[u8],
+    attrs: &[Attrs],
+    planes: &[(usize, usize)],
+    want: usize,
+    a: &Attrs,
+) -> Option<crate::container::CoverOut> {
     let rank = attrs
         .iter()
         .take(want)
         .filter(|x| x.compression != COMP_JPEG)
         .count();
     let &(pc, plen) = planes.get(rank)?;
-    decode_channels(bytes, pc, plen, &a).map(crate::container::CoverOut::Image)
+    decode_channels(bytes, pc, plen, a).map(crate::container::CoverOut::Image)
+}
+
+/// Decode the best composite image in the bank: the largest by pixel area, whether it is stored
+/// as JPEG (returned as bytes for the normal decoder) or as raw/LZ77 channel planes (decoded
+/// here). `None` if the file has no usable composite, in which case the caller falls back to
+/// [`extract`]'s bounded JPEG carve.
+pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
+    if !looks_like_psp(bytes) {
+        return None;
+    }
+    let (lo, hi) = composite_bank_range(bytes)?;
+    let (attrs, jpegs, planes) = collect_composite_parts(bytes, lo, hi);
+    let (want, a) = best_composite(&attrs)?;
+
+    if a.compression == COMP_JPEG {
+        extract_jpeg_composite(bytes, &attrs, &jpegs, want)
+    } else {
+        extract_plane_composite(bytes, &attrs, &planes, want, &a)
+    }
 }
 
 /// Decode one Composite Image Block's channel planes into an RGB image.
