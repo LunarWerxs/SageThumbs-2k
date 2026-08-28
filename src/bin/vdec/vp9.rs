@@ -178,12 +178,9 @@ impl Bits<'_> {
     }
 }
 
-/// Parse the fixed-layout head of a VP9 KEYFRAME's uncompressed header (spec §6.2):
-/// frame marker, profile, sync code, color config, frame size. Anything that is not a
-/// plain keyframe — `show_existing_frame`, an inter frame, a bad sync code — is an error:
-/// the parent only ever sends keyframes, so those are corruption, not cases to handle.
-fn parse_keyframe_header(d: &[u8]) -> Result<KeyHeader, String> {
-    let mut b = Bits { d, pos: 0 };
+/// The frame marker + profile prologue (spec §6.2): the two fields common to every VP9
+/// frame, keyframe or not.
+fn parse_frame_marker_and_profile(b: &mut Bits) -> Result<u8, String> {
     let mut take = |n: u32| b.f(n).ok_or("truncated VP9 header");
     if take(2)? != 2 {
         return Err("not a VP9 frame (bad frame marker)".into());
@@ -194,6 +191,14 @@ fn parse_keyframe_header(d: &[u8]) -> Result<KeyHeader, String> {
     if profile == 3 {
         take(1)?; // reserved_zero
     }
+    Ok(profile)
+}
+
+/// The keyframe-only flags + sync code (spec §6.2). Anything that is not a plain,
+/// decodable keyframe (`show_existing_frame`, an inter frame, a bad sync code) is an
+/// error: the parent only ever sends keyframes, so those are corruption, not cases to handle.
+fn verify_keyframe_flags(b: &mut Bits) -> Result<(), String> {
+    let mut take = |n: u32| b.f(n).ok_or("truncated VP9 header");
     if take(1)? == 1 {
         return Err("show_existing_frame — not a decodable keyframe".into());
     }
@@ -205,6 +210,13 @@ fn parse_keyframe_header(d: &[u8]) -> Result<KeyHeader, String> {
     if take(24)? != 0x49_83_42 {
         return Err("bad VP9 frame sync code".into());
     }
+    Ok(())
+}
+
+/// The `color_config` field (spec §7.2.2): color space and range, plus the profile-1/3-only
+/// subsampling/reserved bits this module does not otherwise use.
+fn parse_color_config(b: &mut Bits, profile: u8) -> Result<(u8, bool), String> {
+    let mut take = |n: u32| b.f(n).ok_or("truncated VP9 header");
     if profile >= 2 {
         take(1)?; // ten_or_twelve_bit (the decoder re-derives bit depth itself)
     }
@@ -221,8 +233,25 @@ fn parse_keyframe_header(d: &[u8]) -> Result<KeyHeader, String> {
         }
         true // CS_RGB is always full range
     };
+    Ok((color_space, color_range))
+}
+
+/// `frame_width_minus_1` / `frame_height_minus_1` (spec §6.2).
+fn parse_frame_size(b: &mut Bits) -> Result<(u32, u32), String> {
+    let mut take = |n: u32| b.f(n).ok_or("truncated VP9 header");
     let width = take(16)? + 1;
     let height = take(16)? + 1;
+    Ok((width, height))
+}
+
+/// Parse the fixed-layout head of a VP9 KEYFRAME's uncompressed header (spec §6.2):
+/// frame marker, profile, sync code, color config, frame size.
+fn parse_keyframe_header(d: &[u8]) -> Result<KeyHeader, String> {
+    let mut b = Bits { d, pos: 0 };
+    let profile = parse_frame_marker_and_profile(&mut b)?;
+    verify_keyframe_flags(&mut b)?;
+    let (color_space, color_range) = parse_color_config(&mut b, profile)?;
+    let (width, height) = parse_frame_size(&mut b)?;
     Ok(KeyHeader {
         width,
         height,

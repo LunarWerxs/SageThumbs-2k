@@ -168,6 +168,91 @@ fn parse_infe(b: &[u8]) -> Option<Item> {
     })
 }
 
+/// `iloc`'s fixed fields (version + per-field byte widths) ahead of the item loop.
+struct IlocSizes {
+    ver: u8,
+    osz: usize,
+    lsz: usize,
+    bsz: usize,
+    isz: usize,
+}
+
+fn parse_iloc_sizes(b: &[u8]) -> Option<IlocSizes> {
+    let ver = b.first().copied()?;
+    if ver > 2 {
+        return None;
+    }
+    let sizes = b.get(4..6)?;
+    let (osz, lsz) = ((sizes[0] >> 4) as usize, (sizes[0] & 0xF) as usize);
+    let (bsz, isz) = ((sizes[1] >> 4) as usize, (sizes[1] & 0xF) as usize);
+    Some(IlocSizes {
+        ver,
+        osz,
+        lsz,
+        bsz,
+        isz,
+    })
+}
+
+/// Read `item_count` (16-bit pre-v2, 32-bit from v2 on), returning it with the offset just past it.
+fn parse_iloc_count(b: &[u8], p: usize, ver: u8) -> Option<(u32, usize)> {
+    if ver < 2 {
+        Some((be16(b, p)? as u32, p + 2))
+    } else {
+        Some((be32(b, p)?, p + 4))
+    }
+}
+
+/// One `iloc` entry's payload: `item_id` paired with its absolute `(offset, length)`.
+type IlocEntry = (u32, (usize, usize));
+
+/// Parse one `iloc` item entry starting at `p`. Returns the offset just past the entry, plus,
+/// when the item is a single plain-file-offset extent that lands inside `buf`, its
+/// [`IlocEntry`]. `None` aborts the whole `iloc` parse (malformed layout), matching the
+/// original's per-field `?`.
+fn parse_iloc_item(
+    b: &[u8],
+    mut p: usize,
+    sizes: &IlocSizes,
+    buf_len: usize,
+) -> Option<(usize, Option<IlocEntry>)> {
+    let id = if sizes.ver < 2 {
+        let v = be16(b, p)?;
+        p += 2;
+        v as u32
+    } else {
+        let v = be32(b, p)?;
+        p += 4;
+        v
+    };
+    let mut method = 0u16;
+    if sizes.ver >= 1 {
+        let v = be16(b, p)?;
+        method = v & 0xF;
+        p += 2;
+    }
+    p += 2; // data_reference_index
+    let base = be_n(b, p, sizes.bsz)?;
+    p += sizes.bsz;
+    let extents = be16(b, p)?;
+    p += 2;
+    let mut only: Option<(usize, usize)> = None;
+    for e in 0..extents {
+        if sizes.ver >= 1 {
+            p += sizes.isz;
+        }
+        let (eo, el) = (be_n(b, p, sizes.osz)?, be_n(b, p + sizes.osz, sizes.lsz)?);
+        p += sizes.osz + sizes.lsz;
+        // Construction method 0 is a plain file offset. 1 (idat) and 2 (item)
+        // point somewhere we are not prepared to rewrite safely.
+        if e == 0 && extents == 1 && method == 0 {
+            only = Some(((base + eo) as usize, el as usize));
+        }
+    }
+    let entry = only.filter(|(o, l)| o.checked_add(*l).is_some_and(|end| end <= buf_len));
+    Some((p, entry.map(|e| (id, e))))
+}
+
 /// `iloc` → `(item_id, (absolute_offset, length))`, for the single-extent,
 /// file-offset items we are prepared to touch. Anything else is simply absent
 /// from the map, which the caller treats as "refuse".
@@ -176,75 +261,21 @@ fn parse_iloc(buf: &[u8], off: usize, len: usize) -> Vec<(u32, (usize, usize))> 
     let Some(b) = buf.get(off..off + len) else {
         return out;
     };
-    let Some(ver) = b.first().copied() else {
+    let Some(sizes) = parse_iloc_sizes(b) else {
         return out;
     };
-    if ver > 2 {
+    let Some((count, mut p)) = parse_iloc_count(b, 6, sizes.ver) else {
         return out;
-    }
-    let Some(sizes) = b.get(4..6) else { return out };
-    let (osz, lsz) = ((sizes[0] >> 4) as usize, (sizes[0] & 0xF) as usize);
-    let (bsz, isz) = ((sizes[1] >> 4) as usize, (sizes[1] & 0xF) as usize);
-    let mut p = 6usize;
-    let count = if ver < 2 {
-        let c = match be16(b, p) {
-            Some(c) => c as u32,
-            None => return out,
-        };
-        p += 2;
-        c
-    } else {
-        let c = match be32(b, p) {
-            Some(c) => c,
-            None => return out,
-        };
-        p += 4;
-        c
     };
     for _ in 0..count {
-        let id = if ver < 2 {
-            let Some(v) = be16(b, p) else { return out };
-            p += 2;
-            v as u32
-        } else {
-            let Some(v) = be32(b, p) else { return out };
-            p += 4;
-            v
-        };
-        let mut method = 0u16;
-        if ver >= 1 {
-            let Some(v) = be16(b, p) else { return out };
-            method = v & 0xF;
-            p += 2;
-        }
-        p += 2; // data_reference_index
-        let Some(base) = be_n(b, p, bsz) else {
-            return out;
-        };
-        p += bsz;
-        let Some(extents) = be16(b, p) else {
-            return out;
-        };
-        p += 2;
-        let mut only: Option<(usize, usize)> = None;
-        for e in 0..extents {
-            if ver >= 1 {
-                p += isz;
+        match parse_iloc_item(b, p, &sizes, buf.len()) {
+            Some((next_p, entry)) => {
+                p = next_p;
+                if let Some(e) = entry {
+                    out.push(e);
+                }
             }
-            let (Some(eo), Some(el)) = (be_n(b, p, osz), be_n(b, p + osz, lsz)) else {
-                return out;
-            };
-            p += osz + lsz;
-            // Construction method 0 is a plain file offset. 1 (idat) and 2 (item)
-            // point somewhere we are not prepared to rewrite safely.
-            if e == 0 && extents == 1 && method == 0 {
-                only = Some(((base + eo) as usize, el as usize));
-            }
-        }
-        if let Some((o, l)) = only {
-            if o.checked_add(l).is_some_and(|end| end <= buf.len()) {
-                out.push((id, (o, l)));
-            }
+            None => return out,
         }
     }
     out
