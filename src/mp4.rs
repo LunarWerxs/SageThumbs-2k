@@ -467,18 +467,12 @@ impl SampleSizes<'_> {
 /// Resolve sample `target` (0-based) to its absolute file byte offset via `stsc`
 /// (sample→chunk) + `stco`/`co64` (chunk→offset), summing the sizes of earlier samples sharing
 /// its chunk. Returns `(byte_offset, sample_description_index)`.
-fn sample_location(
-    stsc: &[u8],
-    (chunks, is64): (&[u8], bool),
-    sizes: &SampleSizes,
-    target: u64,
-) -> Option<(u64, u32)> {
-    let chunk_body = full_box_body(chunks);
-    let num_chunks = g32(chunk_body, 0)? as u64;
+/// Walk `stsc` (sample→chunk) run-length entries to find the 1-based chunk holding `target`,
+/// plus that chunk's `sample_description_index` and the index of its first sample. Returns
+/// `(chunk1, first_sample_of_chunk, desc)`.
+fn locate_chunk_for_sample(stsc: &[u8], num_chunks: u64, target: u64) -> Option<(u64, u64, u32)> {
     let n = g32(stsc, 0)? as usize;
-
     let mut first_sample_of_run = 0u64;
-    let mut hit = None;
     for i in 0..n {
         let base = 4 + i * 12;
         let first_chunk = g32(stsc, base)? as u64; // 1-based
@@ -504,24 +498,24 @@ fn sample_location(
             let chunk_in_run = into / spc;
             let chunk1 = first_chunk + chunk_in_run; // 1-based chunk holding `target`
             let first_sample_of_chunk = first_sample_of_run + chunk_in_run * spc;
-            hit = Some((chunk1, first_sample_of_chunk, desc));
-            break;
+            return Some((chunk1, first_sample_of_chunk, desc));
         }
         // checked_add: `samples_in_run` comes from a checked_mul above and can approach
         // u64::MAX across many stsc entries, unlike the other u32-bounded terms in this
         // function, so this accumulator is the one term that genuinely needs the guard.
         first_sample_of_run = first_sample_of_run.checked_add(samples_in_run)?;
     }
-    let (chunk1, first_sample_of_chunk, desc) = hit?;
-    if chunk1 == 0 || chunk1 > num_chunks {
-        return None;
-    }
-    let cidx = (chunk1 - 1) as usize;
-    let mut offset = if is64 {
-        g64(chunk_body, 4 + cidx * 8)?
-    } else {
-        g32(chunk_body, 4 + cidx * 4)? as u64
-    };
+    None
+}
+
+/// Accumulate the byte offset of `target` within its chunk by summing the sizes of the samples
+/// ahead of it, starting from `chunk_start`. Capped: see `MAX_SAMPLE_WALK` below.
+fn walk_to_sample_offset(
+    sizes: &SampleSizes,
+    first_sample_of_chunk: u64,
+    target: u64,
+    chunk_start: u64,
+) -> Option<u64> {
     // Walk the samples ahead of `target` inside its chunk to accumulate their sizes. This is the
     // one unbounded loop left in the index walk, and it is fully attacker-controlled: a single
     // ~8-byte `stts` entry with count = 0xFFFFFFFF pushes `target` into the billions, and with a
@@ -534,11 +528,34 @@ fn sample_location(
     if target.saturating_sub(first_sample_of_chunk) > MAX_SAMPLE_WALK {
         return None;
     }
+    let mut offset = chunk_start;
     let mut s = first_sample_of_chunk;
     while s < target {
         offset = offset.checked_add(sizes.size_of(s)?)?;
         s += 1;
     }
+    Some(offset)
+}
+
+fn sample_location(
+    stsc: &[u8],
+    (chunks, is64): (&[u8], bool),
+    sizes: &SampleSizes,
+    target: u64,
+) -> Option<(u64, u32)> {
+    let chunk_body = full_box_body(chunks);
+    let num_chunks = g32(chunk_body, 0)? as u64;
+    let (chunk1, first_sample_of_chunk, desc) = locate_chunk_for_sample(stsc, num_chunks, target)?;
+    if chunk1 == 0 || chunk1 > num_chunks {
+        return None;
+    }
+    let cidx = (chunk1 - 1) as usize;
+    let chunk_start = if is64 {
+        g64(chunk_body, 4 + cidx * 8)?
+    } else {
+        g32(chunk_body, 4 + cidx * 4)? as u64
+    };
+    let offset = walk_to_sample_offset(sizes, first_sample_of_chunk, target, chunk_start)?;
     Some((offset, if desc == 0 { 1 } else { desc }))
 }
 

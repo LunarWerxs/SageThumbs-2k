@@ -24,6 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::ControlFlow;
 
 use super::content::human_size;
 use super::docconv::md_cell;
@@ -418,92 +419,24 @@ impl<R: Read + Seek> Db<R> {
             w.truncated = true;
             return;
         };
-        // Page 1 carries the 100-byte file header before its b-tree header.
-        let hdr = if n == 1 { 100 } else { 0 };
-        let (Some(&ptype), Some(&ch), Some(&cl)) =
-            (page.get(hdr), page.get(hdr + 3), page.get(hdr + 4))
-        else {
+        let Some((interior, table, ncells, ptr_base)) = page_header(n, &page) else {
             w.truncated = true;
             return;
         };
-        if !matches!(ptype, 0x02 | 0x05 | 0x0A | 0x0D) {
-            w.truncated = true;
-            return;
-        }
-        let ncells = u16::from_be_bytes([ch, cl]) as usize;
-        let interior = matches!(ptype, 0x02 | 0x05);
-        let table = matches!(ptype, 0x05 | 0x0D);
-        let ptr_base = hdr + if interior { 12 } else { 8 };
 
         for c in 0..ncells {
             let po = ptr_base + c * 2;
-            let (Some(&a), Some(&b)) = (page.get(po), page.get(po + 1)) else {
-                w.truncated = true;
+            if self
+                .walk_cell(&page, po, interior, table, w, depth)
+                .is_break()
+            {
                 return;
-            };
-            let mut off = u16::from_be_bytes([a, b]) as usize;
-
-            // Interior cells lead with their left-child pointer; that subtree sorts BEFORE this
-            // cell, so it is visited first.
-            if interior {
-                match page
-                    .get(off..off + 4)
-                    .and_then(|s| s.try_into().ok())
-                    .map(u32::from_be_bytes)
-                {
-                    Some(child) if child != 0 => self.walk(child, w, depth + 1),
-                    _ => w.truncated = true,
-                }
-                off += 4;
-                // An interior TABLE cell's remaining payload is just the rowid key — no row.
-                // An interior INDEX cell carries a real row (half a WITHOUT ROWID table lives
-                // in them), so that one falls through to the record read below.
-                if table {
-                    continue;
-                }
             }
-            let Some((plen, n1)) = varint(&page, off) else {
-                w.truncated = true;
-                return;
-            };
-            off += n1;
-            let mut rowid = 0i64;
-            if table {
-                let Some((rid, n2)) = varint(&page, off) else {
-                    w.truncated = true;
-                    return;
-                };
-                rowid = rid as i64;
-                off += n2;
-            }
-            w.total += 1;
-            // Past the display cap only the COUNT matters, and counting costs no payload
-            // assembly — this is what keeps a million-row table cheap to summarise.
-            if w.rows.len() >= w.max_rows {
-                continue;
-            }
-            let plen = plen as usize;
-            if plen == 0 || plen > MAX_PAYLOAD {
-                continue;
-            }
-            let local = local_size(plen, self.usable, table);
-            let Some(rec) = self.payload(&page, off, plen, local) else {
-                continue;
-            };
-            let mut vals = decode_record(&rec, self.enc, MAX_COLS);
-            if let Some(i) = w.rowid_alias {
-                // The INTEGER PRIMARY KEY column reads as NULL in the record; the real value is
-                // the cell's rowid.
-                if vals.get(i) == Some(&Val::Null) {
-                    vals[i] = Val::Int(rowid);
-                }
-            }
-            w.rows.push(vals);
         }
         // The right-most subtree sorts after every cell on this page.
         if interior {
             match page
-                .get(hdr + 8..hdr + 12)
+                .get(ptr_base - 4..ptr_base)
                 .and_then(|s| s.try_into().ok())
                 .map(u32::from_be_bytes)
             {
@@ -512,6 +445,105 @@ impl<R: Read + Seek> Db<R> {
             }
         }
     }
+
+    /// One cell of a b-tree page: for an interior node, its left-child pointer (visited before
+    /// the cell's own key, since that subtree sorts first); for a leaf (or a WITHOUT-ROWID
+    /// interior cell, which carries a real row too), its record. `ControlFlow::Break` means the
+    /// caller should return from `walk` immediately, matching this cell's original early
+    /// `return`s on a malformed page; `Continue` matches its `continue`s and its normal fall-through.
+    fn walk_cell(
+        &mut self,
+        page: &[u8],
+        po: usize,
+        interior: bool,
+        table: bool,
+        w: &mut Walk,
+        depth: usize,
+    ) -> ControlFlow<()> {
+        let (Some(&a), Some(&b)) = (page.get(po), page.get(po + 1)) else {
+            w.truncated = true;
+            return ControlFlow::Break(());
+        };
+        let mut off = u16::from_be_bytes([a, b]) as usize;
+
+        // Interior cells lead with their left-child pointer; that subtree sorts BEFORE this
+        // cell, so it is visited first.
+        if interior {
+            match page
+                .get(off..off + 4)
+                .and_then(|s| s.try_into().ok())
+                .map(u32::from_be_bytes)
+            {
+                Some(child) if child != 0 => self.walk(child, w, depth + 1),
+                _ => w.truncated = true,
+            }
+            off += 4;
+            // An interior TABLE cell's remaining payload is just the rowid key — no row. An
+            // interior INDEX cell carries a real row (half a WITHOUT ROWID table lives in them),
+            // so that one falls through to the record read below.
+            if table {
+                return ControlFlow::Continue(());
+            }
+        }
+        let Some((plen, n1)) = varint(page, off) else {
+            w.truncated = true;
+            return ControlFlow::Break(());
+        };
+        off += n1;
+        let mut rowid = 0i64;
+        if table {
+            let Some((rid, n2)) = varint(page, off) else {
+                w.truncated = true;
+                return ControlFlow::Break(());
+            };
+            rowid = rid as i64;
+            off += n2;
+        }
+        w.total += 1;
+        // Past the display cap only the COUNT matters, and counting costs no payload assembly —
+        // this is what keeps a million-row table cheap to summarise.
+        if w.rows.len() >= w.max_rows {
+            return ControlFlow::Continue(());
+        }
+        let plen = plen as usize;
+        if plen == 0 || plen > MAX_PAYLOAD {
+            return ControlFlow::Continue(());
+        }
+        let local = local_size(plen, self.usable, table);
+        let Some(rec) = self.payload(page, off, plen, local) else {
+            return ControlFlow::Continue(());
+        };
+        let mut vals = decode_record(&rec, self.enc, MAX_COLS);
+        if let Some(i) = w.rowid_alias {
+            // The INTEGER PRIMARY KEY column reads as NULL in the record; the real value is the
+            // cell's rowid.
+            if vals.get(i) == Some(&Val::Null) {
+                vals[i] = Val::Int(rowid);
+            }
+        }
+        w.rows.push(vals);
+        ControlFlow::Continue(())
+    }
+}
+
+/// Validate a b-tree page's header and return `(interior, table, ncells, ptr_base)`, or `None`
+/// if `n`'s page type/header is malformed. Page 1 carries the 100-byte file header before its
+/// b-tree header, hence the `n == 1` offset.
+fn page_header(n: u32, page: &[u8]) -> Option<(bool, bool, usize, usize)> {
+    let hdr = if n == 1 { 100 } else { 0 };
+    let (Some(&ptype), Some(&ch), Some(&cl)) =
+        (page.get(hdr), page.get(hdr + 3), page.get(hdr + 4))
+    else {
+        return None;
+    };
+    if !matches!(ptype, 0x02 | 0x05 | 0x0A | 0x0D) {
+        return None;
+    }
+    let ncells = u16::from_be_bytes([ch, cl]) as usize;
+    let interior = matches!(ptype, 0x02 | 0x05);
+    let table = matches!(ptype, 0x05 | 0x0D);
+    let ptr_base = hdr + if interior { 12 } else { 8 };
+    Some((interior, table, ncells, ptr_base))
 }
 
 // ---- Schema ---------------------------------------------------------------------------------
