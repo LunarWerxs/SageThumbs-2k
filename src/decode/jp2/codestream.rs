@@ -480,11 +480,21 @@ impl<'a> ParseState<'a> {
         Ok(())
     }
 
+    fn handle_cod(&mut self, r: &mut Reader, seg_end: usize) -> Result<(), Jp2Error> {
+        self.cod = Some(parse_cod(r, seg_end)?);
+        Ok(())
+    }
+
     fn handle_coc(&mut self, r: &mut Reader, seg_end: usize) -> Result<(), Jp2Error> {
         let (idx, c) = parse_coc(r, seg_end, self.ncomp(), self.cod.as_ref())?;
         if let Some(slot) = self.cod_comp.get_mut(idx) {
             *slot = Some(c);
         }
+        Ok(())
+    }
+
+    fn handle_qcd(&mut self, r: &mut Reader, seg_end: usize) -> Result<(), Jp2Error> {
+        self.qcd = Some(parse_qcd(r, seg_end)?);
         Ok(())
     }
 
@@ -516,7 +526,105 @@ fn validate_coc_matches_cod(cod_comp: &[Option<Cod>], cod: &Cod) -> Result<(), J
     Ok(())
 }
 
+/// What the marker loop should do next: stop (ran out of codestream, or hit EOC), or
+/// process the segment at `[seg_start, seg_end)` whose 2-byte marker code is `marker`.
+enum NextSegment {
+    Done,
+    Segment {
+        marker: u16,
+        seg_start: usize,
+        seg_end: usize,
+    },
+}
+
+/// Read one marker + its length-prefixed segment bounds, or report the loop is done.
+/// Every remaining marker `parse` cares about is length-prefixed.
+fn read_next_segment(r: &mut Reader, cs: &[u8]) -> Result<NextSegment, Jp2Error> {
+    if r.p >= cs.len() {
+        return Ok(NextSegment::Done);
+    }
+    let marker = r.u16()?;
+    if marker == self::marker::EOC {
+        return Ok(NextSegment::Done);
+    }
+    if marker == self::marker::SOD {
+        return Err(Jp2Error::Malformed("SOD outside a tile-part"));
+    }
+    let seg_start = r.p;
+    let len = r.u16()? as usize;
+    if len < 2 {
+        return Err(Jp2Error::Malformed("marker length < 2"));
+    }
+    let seg_end = seg_start
+        .checked_add(len)
+        .ok_or(Jp2Error::Malformed("marker overflow"))?;
+    if seg_end > cs.len() {
+        return Err(Jp2Error::Truncated);
+    }
+    Ok(NextSegment::Segment {
+        marker,
+        seg_start,
+        seg_end,
+    })
+}
+
+/// What `parse`'s loop should do after handling one segment.
+enum MarkerOutcome {
+    /// Advance the cursor to the segment's end and keep looping.
+    Advance,
+    /// The cursor was already repositioned (by `index_tile_part`); keep looping without
+    /// touching it.
+    SkipAdvance,
+    /// Desynchronized; stop indexing tiles.
+    Stop,
+}
+
+/// Apply one marker segment to `state`. Each marker's own fallible parse propagates
+/// through a single `?` at the end, rather than one per arm, keeping this dispatch's
+/// branch count to "one arm per marker type" instead of "one arm plus one propagation
+/// each".
+fn handle_marker<'a>(
+    state: &mut ParseState<'a>,
+    r: &mut Reader<'a>,
+    cs: &'a [u8],
+    marker: u16,
+    seg_start: usize,
+    seg_end: usize,
+) -> Result<MarkerOutcome, Jp2Error> {
+    match marker {
+        self::marker::SIZ => state.handle_siz(r).map(|_| MarkerOutcome::Advance),
+        self::marker::COD => state.handle_cod(r, seg_end).map(|_| MarkerOutcome::Advance),
+        self::marker::COC => state.handle_coc(r, seg_end).map(|_| MarkerOutcome::Advance),
+        self::marker::QCD => state.handle_qcd(r, seg_end).map(|_| MarkerOutcome::Advance),
+        self::marker::QCC => state.handle_qcc(r, seg_end).map(|_| MarkerOutcome::Advance),
+        self::marker::SOT => {
+            index_tile_part(r, cs, seg_start, seg_end, &mut state.tiles).map(|sot| match sot {
+                SotOutcome::Continue => MarkerOutcome::SkipAdvance,
+                SotOutcome::Desync => MarkerOutcome::Stop,
+            })
+        }
+        _ => Ok(MarkerOutcome::Advance),
+    }
+}
+
+/// Unwrap the four headers `parse` requires, and validate COC against COD.
+fn finish_parse(state: ParseState<'_>) -> Result<Codestream<'_>, Jp2Error> {
+    let cod = state.cod.ok_or(Jp2Error::Malformed("no COD"))?;
+    validate_coc_matches_cod(&state.cod_comp, &cod)?;
+    Ok(Codestream {
+        siz: state.siz.ok_or(Jp2Error::Malformed("no SIZ"))?,
+        cod,
+        qcd: state.qcd.ok_or(Jp2Error::Malformed("no QCD"))?,
+        cod_comp: state.cod_comp,
+        qcd_comp: state.qcd_comp,
+        tiles: state.tiles,
+    })
+}
+
 /// Parse the main header and index every tile-part payload. Does NOT decode any pixels.
+/// Each segment type's own parsing lives in a `ParseState` method or a `parse_*` helper;
+/// this is the marker-loop dispatch (`read_next_segment` / `handle_marker`) plus the
+/// final header unwrap (`finish_parse`).
 pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
     let mut r = Reader { d: cs, p: 0 };
     if r.u16()? != marker::SOC {
@@ -526,57 +634,22 @@ pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
     let mut state = ParseState::new();
 
     loop {
-        if r.p >= cs.len() {
-            break;
+        let (m, seg_start, seg_end) = match read_next_segment(&mut r, cs)? {
+            NextSegment::Done => break,
+            NextSegment::Segment {
+                marker,
+                seg_start,
+                seg_end,
+            } => (marker, seg_start, seg_end),
+        };
+        match handle_marker(&mut state, &mut r, cs, m, seg_start, seg_end)? {
+            MarkerOutcome::Advance => r.p = seg_end,
+            MarkerOutcome::SkipAdvance => {}
+            MarkerOutcome::Stop => break,
         }
-        let m = r.u16()?;
-        if m == marker::EOC {
-            break;
-        }
-        if m == marker::SOD {
-            return Err(Jp2Error::Malformed("SOD outside a tile-part"));
-        }
-        // Every remaining marker we care about is length-prefixed.
-        let seg_start = r.p;
-        let len = r.u16()? as usize;
-        if len < 2 {
-            return Err(Jp2Error::Malformed("marker length < 2"));
-        }
-        let seg_end = seg_start
-            .checked_add(len)
-            .ok_or(Jp2Error::Malformed("marker overflow"))?;
-        if seg_end > cs.len() {
-            return Err(Jp2Error::Truncated);
-        }
-
-        match m {
-            marker::SIZ => state.handle_siz(&mut r)?,
-            marker::COD => state.cod = Some(parse_cod(&mut r, seg_end)?),
-            marker::COC => state.handle_coc(&mut r, seg_end)?,
-            marker::QCD => state.qcd = Some(parse_qcd(&mut r, seg_end)?),
-            marker::QCC => state.handle_qcc(&mut r, seg_end)?,
-            marker::SOT => {
-                match index_tile_part(&mut r, cs, seg_start, seg_end, &mut state.tiles)? {
-                    SotOutcome::Continue => continue,
-                    SotOutcome::Desync => break,
-                }
-            }
-            _ => {}
-        }
-        r.p = seg_end;
     }
 
-    let cod = state.cod.ok_or(Jp2Error::Malformed("no COD"))?;
-    validate_coc_matches_cod(&state.cod_comp, &cod)?;
-
-    Ok(Codestream {
-        siz: state.siz.ok_or(Jp2Error::Malformed("no SIZ"))?,
-        cod,
-        qcd: state.qcd.ok_or(Jp2Error::Malformed("no QCD"))?,
-        cod_comp: state.cod_comp,
-        qcd_comp: state.qcd_comp,
-        tiles: state.tiles,
-    })
+    finish_parse(state)
 }
 
 /// Validate the SIZ image/tile grid: a sane component count, non-empty image and tile

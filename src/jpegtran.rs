@@ -605,26 +605,86 @@ fn parse_sos_selectors(d: &[u8], i: usize, comps: &mut [Comp]) -> Option<usize> 
     Some(i + 2 + len)
 }
 
+/// Accumulated header-parse state for `parse_headers`'s main loop.
+#[derive(Default)]
+struct HeaderAccum {
+    pre_frame: Vec<u8>,       // APPn/COM kept verbatim, before the frame
+    dqt: Vec<(u8, [u8; 64])>, // (table id, 64 zig-zag quant values)
+    // At most 8 Huffman tables: 2 classes (DC=0/AC=1) × 4 ids. A fixed array drops
+    // the HashMap + its hashing for a code-size win in this opt-level="z" cdylib.
+    huff: [[Option<HuffDec>; 4]; 2],
+    restart_interval: usize,
+    width: usize,
+    height: usize,
+    comps: Vec<Comp>,
+}
+
+impl HeaderAccum {
+    fn handle_sof0(&mut self, d: &[u8], i: usize) -> Option<usize> {
+        let (w, h, c, next) = parse_sof0(d, i)?;
+        self.width = w;
+        self.height = h;
+        self.comps = c;
+        Some(next)
+    }
+    fn handle_dri(&mut self, d: &[u8], i: usize) -> Option<usize> {
+        let (ri, next) = parse_dri(d, i)?;
+        self.restart_interval = ri;
+        Some(next)
+    }
+}
+
+/// What `parse_headers`'s loop should do after handling one marker.
+enum HeaderMarkerOutcome {
+    /// Keep scanning from this new offset.
+    Advance(usize),
+    /// SOS reached: scan data starts here.
+    ScanStart(usize),
+}
+
+/// Apply one marker to `hdr`. Every arm's own fallible parse propagates through a
+/// single `?` at the end (via `.map`/`.and_then`), rather than one per arm, keeping this
+/// dispatch's branch count to "one arm per marker type" instead of "one arm plus one
+/// propagation each".
+fn handle_header_marker(
+    hdr: &mut HeaderAccum,
+    d: &[u8],
+    i: usize,
+    marker: u8,
+) -> Option<HeaderMarkerOutcome> {
+    match marker {
+        0xD8 | 0xD9 => None, // unexpected SOI/EOI here
+        0xC0 => hdr.handle_sof0(d, i).map(HeaderMarkerOutcome::Advance),
+        0xC1..=0xCF if marker != 0xC4 && marker != 0xC8 && marker != 0xCC => {
+            None // progressive / arithmetic / other SOF: unsupported
+        }
+        0xC4 => parse_dht(d, i, &mut hdr.huff).map(HeaderMarkerOutcome::Advance),
+        0xDB => parse_dqt(d, i, &mut hdr.dqt).map(HeaderMarkerOutcome::Advance),
+        0xE0..=0xEF | 0xFE => {
+            parse_appn_or_com(d, i, &mut hdr.pre_frame).map(HeaderMarkerOutcome::Advance)
+        }
+        0xDD => hdr.handle_dri(d, i).map(HeaderMarkerOutcome::Advance),
+        0xDA => parse_sos_selectors(d, i, &mut hdr.comps).map(HeaderMarkerOutcome::ScanStart),
+        0xC8 | 0xCC => None, // JPG / DAC
+        _ => {
+            let len = be16(d, i + 2);
+            // else: malformed length, bail rather than spin
+            (len >= 2).then(|| HeaderMarkerOutcome::Advance(i + 2 + len))
+        }
+    }
+}
+
 /// Parse everything from just after SOI up to the SOS scan data. Every segment
 /// length below comes straight from the (untrusted) file, so all slicing is
 /// bounds-checked with `.get(..)?` / explicit `> d.len()` guards: a malformed
 /// JPEG returns None and the caller falls back to a lossy re-encode.
 /// (`be16(d, i+2)` is always safe here — the loop guard keeps `i+4 <= d.len()`.)
 ///
-/// Each segment type's own parsing lives in a `parse_*` helper above; this
-/// function is just the marker dispatch loop.
+/// Each segment type's own parsing lives in a `parse_*` helper above, or a
+/// `HeaderAccum` method; this function is just the marker dispatch loop.
 fn parse_headers(d: &[u8]) -> Option<ParsedHeader> {
     let mut i = 2usize;
-
-    let mut pre_frame: Vec<u8> = Vec::new(); // APPn/COM kept verbatim, before the frame
-    let mut dqt: Vec<(u8, [u8; 64])> = Vec::new(); // (table id, 64 zig-zag quant values)
-                                                   // At most 8 Huffman tables: 2 classes (DC=0/AC=1) × 4 ids. A fixed array drops
-                                                   // the HashMap + its hashing for a code-size win in this opt-level="z" cdylib.
-    let mut huff: [[Option<HuffDec>; 4]; 2] = Default::default();
-    let mut restart_interval = 0usize;
-    let mut width = 0usize;
-    let mut height = 0usize;
-    let mut comps: Vec<Comp> = Vec::new();
+    let mut hdr = HeaderAccum::default();
     let mut scan_start = 0usize;
 
     while i + 4 <= d.len() {
@@ -632,53 +692,27 @@ fn parse_headers(d: &[u8]) -> Option<ParsedHeader> {
             return None;
         }
         let marker = d[i + 1];
-        match marker {
-            0xD8 | 0xD9 => return None, // unexpected SOI/EOI here
-            0xC0 => {
-                let (w, h, c, next) = parse_sof0(d, i)?;
-                width = w;
-                height = h;
-                comps = c;
-                i = next;
-            }
-            0xC1..=0xCF if marker != 0xC4 && marker != 0xC8 && marker != 0xCC => {
-                return None; // progressive / arithmetic / other SOF — unsupported
-            }
-            0xC4 => i = parse_dht(d, i, &mut huff)?,
-            0xDB => i = parse_dqt(d, i, &mut dqt)?,
-            0xE0..=0xEF | 0xFE => i = parse_appn_or_com(d, i, &mut pre_frame)?,
-            0xDD => {
-                let (ri, next) = parse_dri(d, i)?;
-                restart_interval = ri;
-                i = next;
-            }
-            0xDA => {
-                scan_start = parse_sos_selectors(d, i, &mut comps)?;
+        match handle_header_marker(&mut hdr, d, i, marker)? {
+            HeaderMarkerOutcome::Advance(next) => i = next,
+            HeaderMarkerOutcome::ScanStart(next) => {
+                scan_start = next;
                 break;
-            }
-            0xC8 | 0xCC => return None, // JPG / DAC
-            _ => {
-                let len = be16(d, i + 2);
-                if len < 2 {
-                    return None; // malformed length — bail rather than spin
-                }
-                i += 2 + len; // skip any other segment
             }
         }
     }
 
-    if width == 0 || height == 0 || comps.is_empty() || scan_start == 0 {
+    if hdr.width == 0 || hdr.height == 0 || hdr.comps.is_empty() || scan_start == 0 {
         return None;
     }
 
     Some(ParsedHeader {
-        pre_frame,
-        dqt,
-        huff,
-        restart_interval,
-        width,
-        height,
-        comps,
+        pre_frame: hdr.pre_frame,
+        dqt: hdr.dqt,
+        huff: hdr.huff,
+        restart_interval: hdr.restart_interval,
+        width: hdr.width,
+        height: hdr.height,
+        comps: hdr.comps,
         scan_start,
     })
 }
