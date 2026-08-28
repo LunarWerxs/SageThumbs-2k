@@ -47,7 +47,7 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
 }
 
 /// One block-stream record's header: `(code, block length, header size)`. A `None` here is a
-/// hard abort of the whole search (truncated/corrupt block stream) — same as the equivalent
+/// hard abort of the whole search (truncated/corrupt block stream), same as the equivalent
 /// reads used to be inlined in [`extract`] via `?`, before the ENDB/TEST checks that follow.
 fn read_block_header(
     bytes: &[u8],
@@ -77,8 +77,8 @@ fn read_block_header(
 ///
 /// The outer `Option` mirrors what a `?` failure here used to mean inside [`extract`] itself: a
 /// hard abort of the WHOLE search (truncated/corrupt data), not just this block. `None` means
-/// that; `Some(None)` is a soft miss — this block's own declared dimensions or length don't
-/// check out — and the caller keeps scanning for another `TEST` block; `Some(Some(img))` is the
+/// that; `Some(None)` is a soft miss, this block's own declared dimensions or length don't
+/// check out, and the caller keeps scanning for another `TEST` block; `Some(Some(img))` is the
 /// thumbnail.
 fn decode_test_block(
     bytes: &[u8],

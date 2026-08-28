@@ -680,7 +680,7 @@ fn type_chunk_value(chunk: &[u8], hs: usize, entry_idx: u16) -> Option<(u16, u8,
     Some((density, dtype, data))
 }
 
-/// The TYPE chunk's entry-offset table: sparse (`{idx, offset/4}` u16 pairs, matched by `idx` —
+/// The TYPE chunk's entry-offset table: sparse (`{idx, offset/4}` u16 pairs, matched by `idx`,
 /// NOT positional) when `SPARSE_FLAG` is set, else dense (a positional `u32` offset per entry,
 /// `NO_ENTRY` meaning "absent here"). Returns the byte offset (already ×4) of `entry_idx`'s
 /// entry within the entries area, or `None` if it isn't present in this chunk.

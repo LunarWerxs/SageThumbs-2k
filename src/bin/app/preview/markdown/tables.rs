@@ -277,7 +277,7 @@ unsafe fn measure_row_heights(
 
 /// [`draw_table`] step 5: the zebra fill + text for every row, skipping rows entirely above or
 /// below `vis` (GDI would clip them anyway, but clipping happens AFTER the layout work, and the
-/// layout work is the whole cost — see the row-height comment). Returns the y just past the last
+/// layout work is the whole cost, see the row-height comment). Returns the y just past the last
 /// row, for the grid/note steps that follow.
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_table_rows(

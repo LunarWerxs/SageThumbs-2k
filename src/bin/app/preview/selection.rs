@@ -350,10 +350,10 @@ unsafe fn ensure_visible_text(hwnd: HWND, st: &ViewerState, c: RECT, m: i32, off
 
 /// [`ensure_visible`]'s Markdown-pane arm.
 ///
-/// Markdown only has rects for what it PAINTED, so an off-screen target has nothing to aim at —
+/// Markdown only has rects for what it PAINTED, so an off-screen target has nothing to aim at,
 /// and `md_focus_hit`'s nearest-hit fallback would return an already visible token and "succeed"
 /// without scrolling anywhere. Document start/end are exact jumps; otherwise the target is at
-/// most a line or two away (a char/word hop), so walk toward it — each scroll repaints
+/// most a line or two away (a char/word hop), so walk toward it: each scroll repaints
 /// synchronously, which records fresh rects.
 unsafe fn ensure_visible_markdown(hwnd: HWND, st: &ViewerState, c: RECT, off: usize) {
     let len = with_doc(st, |d| d.len()).unwrap_or(0);

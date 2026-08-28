@@ -129,7 +129,7 @@ pub fn strip_metadata(path: &str) -> Result<()> {
 }
 
 /// JPEG arm of [`strip_metadata`]: drop EXIF/IPTC/XMP/COM (APP1/APP13/COM), plus any C2PA
-/// "Content Credentials" JUMBF box (APP11) — see [`jumbf`]. ICC (APP2) is deliberately kept.
+/// "Content Credentials" JUMBF box (APP11), see [`jumbf`]. ICC (APP2) is deliberately kept.
 fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
     let mut jpeg = Jpeg::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
     // C2PA / Content Credentials: a JUMBF box spread over APP11 segments. Only the
@@ -172,7 +172,7 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
 }
 
 /// PNG arm of [`strip_metadata`]: drop EXIF/text/time chunks plus any C2PA chunk. iCCP (color
-/// profile) is intentionally NOT removed — stripping it shifts colors on wide-gamut displays.
+/// profile) is intentionally NOT removed, stripping it shifts colors on wide-gamut displays.
 fn strip_png(input: Bytes) -> Result<Vec<u8>> {
     let mut png = Png::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
     for k in [b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"] {

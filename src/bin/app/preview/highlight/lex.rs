@@ -200,7 +200,7 @@ enum BlockOpen {
     NoMatch,
     /// Closed on this line; scanning resumes at the returned index.
     Closed(usize),
-    /// No close on this line — the comment (and `in_block`) carries into the next line.
+    /// No close on this line, the comment (and `in_block`) carries into the next line.
     ToEol,
 }
 
@@ -273,7 +273,7 @@ fn try_block_comment_open<'a>(
 
 /// A string literal opening at `i` (a quote char in `sp.strings`), if any: consumes to the
 /// closing quote (or end of line) and classifies it as `Keyword` when immediately followed by
-/// `:` (an object KEY / property — colours like QuickLook's blue property names) or `Str`
+/// `:` (an object KEY / property, colours like QuickLook's blue property names) or `Str`
 /// otherwise. Returns the scan position just past the token.
 fn try_string_literal<'a>(
     line: &'a str,
@@ -316,7 +316,7 @@ fn try_string_literal<'a>(
 }
 
 /// A number literal starting at `i`, if any: consumes the run of alphanumeric/`.`/`_` bytes
-/// (loose on purpose — good enough to colour `0x1F`, `1_000`, `3.14e10` as one run without a
+/// (loose on purpose, good enough to colour `0x1F`, `1_000`, `3.14e10` as one run without a
 /// real numeric grammar). Returns the scan position just past the token.
 fn try_number_literal<'a>(
     line: &'a str,
@@ -343,7 +343,7 @@ fn try_number_literal<'a>(
 
 /// An identifier starting at `i`, if any: scans the run of ident chars regardless, and only when
 /// it's a recognized keyword flushes the pending Plain run and pushes a `Keyword` token (a
-/// non-keyword identifier stays folded into the surrounding Plain run — few runs per line).
+/// non-keyword identifier stays folded into the surrounding Plain run, few runs per line).
 /// Returns `(new scan position, new pending-Plain-run start)`.
 fn try_identifier<'a>(
     line: &'a str,
