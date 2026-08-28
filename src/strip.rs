@@ -289,7 +289,27 @@ fn head_prefix(path: &str) -> Option<Vec<u8>> {
 }
 
 fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
-    use exif::{In, Reader, Tag, Value};
+    use exif::Reader;
+    let mut info = resolve_image_dimensions(path, bounded);
+
+    let Ok(file) = std::fs::File::open(path) else {
+        return info;
+    };
+    let mut buf = std::io::BufReader::new(file);
+    let Ok(exif) = Reader::new().read_from_container(&mut buf) else {
+        return info;
+    };
+    apply_exif_metadata(&mut info, &exif);
+    info
+}
+
+/// Width/height/bit-depth for the "Image info" dialog, tried cheapest-first: the `image` crate's
+/// own header decode (which also gives bits-per-pixel for free), then a small container-header
+/// probe for formats it can't read (PSD, EPS, HEIC/RAW), then — for explicit (non-bounded)
+/// callers only — a full-file decode and finally a video-frame fallback. Property-handler
+/// callers pass `bounded: true` and intentionally stop after headers, so a Details-pane request
+/// can never materialize the entire file or start an ImageMagick/WIC decode.
+fn resolve_image_dimensions(path: &str, bounded: bool) -> ImageInfo {
     use image::ImageDecoder;
     let mut info = ImageInfo::default();
 
@@ -303,10 +323,6 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
             info.bit_depth = dec.color_type().bits_per_pixel() as u32;
         }
     }
-    // Formats the image crate cannot probe (PSD, EPS, HEIC/RAW, containers) get a small
-    // container-header probe next. Explicit callers may then use the full-fidelity fallback;
-    // property-handler callers intentionally stop after headers, so a Details-pane request can
-    // never materialize the entire file or start an ImageMagick/WIC decode.
     if info.width == 0 && info.height == 0 {
         // Header-only dims first: `real_dims` needs the PSD's fixed 26-byte header,
         // so probing a small head prefix answers a folder-of-big-PSDs Details pane
@@ -319,52 +335,53 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
         }
     }
     if info.width == 0 && info.height == 0 && !bounded {
-        let bytes = std::fs::read(path).ok();
-        if let Some(bytes) = bytes {
-            if let Some((w, h)) = crate::container::real_or_decoded_dims(&bytes) {
-                info.width = w;
-                info.height = h;
-            }
-        }
-        // VIDEO last resort for explicit callers only — `frame_from_path` can spawn a long-lived
-        // Media Foundation worker, so it is never part of the in-shell property path.
-        if info.width == 0 && info.height == 0 {
-            let ext = Path::new(path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-                .unwrap_or_default();
-            if matches!(
-                crate::formats::category(&ext),
-                crate::formats::Category::Video
-            ) {
-                if let Some(img) = crate::video::frame_from_path(path) {
-                    info.width = img.width();
-                    info.height = img.height();
-                }
-            }
-        }
-        if info.width == 0 && info.height == 0 {
-            // All probes (image-crate header, container canvas, full decode, video frame)
-            // failed — leave a breadcrumb so a "shows no dimensions" report is diagnosable
-            // instead of silently surfacing the 0×0 sentinel.
-            crate::safety::log_debug(&format!(
-                "read_info: could not determine dimensions for {path}"
-            ));
+        resolve_dims_via_full_decode(path, &mut info);
+    }
+    info
+}
+
+/// The explicit-caller-only fallback tier: decode the whole file, then (for video) grab a
+/// frame. `frame_from_path` can spawn a long-lived Media Foundation worker, so it is never part
+/// of the in-shell property path — only reached here, past the `!bounded` gate.
+fn resolve_dims_via_full_decode(path: &str, info: &mut ImageInfo) {
+    if let Ok(bytes) = std::fs::read(path) {
+        if let Some((w, h)) = crate::container::real_or_decoded_dims(&bytes) {
+            info.width = w;
+            info.height = h;
         }
     }
+    if info.width == 0 && info.height == 0 {
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if matches!(
+            crate::formats::category(&ext),
+            crate::formats::Category::Video
+        ) {
+            if let Some(img) = crate::video::frame_from_path(path) {
+                info.width = img.width();
+                info.height = img.height();
+            }
+        }
+    }
+    if info.width == 0 && info.height == 0 {
+        // All probes (image-crate header, container canvas, full decode, video frame)
+        // failed — leave a breadcrumb so a "shows no dimensions" report is diagnosable
+        // instead of silently surfacing the 0×0 sentinel.
+        crate::safety::log_debug(&format!(
+            "read_info: could not determine dimensions for {path}"
+        ));
+    }
+}
 
-    let Ok(file) = std::fs::File::open(path) else {
-        return info;
-    };
-    let mut buf = std::io::BufReader::new(file);
-    let Ok(exif) = Reader::new().read_from_container(&mut buf) else {
-        return info;
-    };
-
+/// Fill in make/model/capture-time/DPI/GPS from a decoded EXIF container.
+fn apply_exif_metadata(info: &mut ImageInfo, exif: &exif::Exif) {
+    use exif::{In, Tag, Value};
     let txt = |t: Tag| {
         exif.get_field(t, In::PRIMARY)
-            .map(|f| f.display_value().with_unit(&exif).to_string())
+            .map(|f| f.display_value().with_unit(exif).to_string())
     };
     // Make/Model must NOT go through `display_value`: it renders an ASCII field
     // wrapped in literal double quotes, so Explorer's "Camera maker" column showed
@@ -407,12 +424,11 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
         info.dpi_y = to_dpi(y);
     }
 
-    let lat = gps_dms(&exif, Tag::GPSLatitude, Tag::GPSLatitudeRef, b'S');
-    let lon = gps_dms(&exif, Tag::GPSLongitude, Tag::GPSLongitudeRef, b'W');
+    let lat = gps_dms(exif, Tag::GPSLatitude, Tag::GPSLatitudeRef, b'S');
+    let lon = gps_dms(exif, Tag::GPSLongitude, Tag::GPSLongitudeRef, b'W');
     if let (Some(la), Some(lo)) = (lat, lon) {
         info.gps = Some((la, lo));
     }
-    info
 }
 
 /// Decimal-degrees GPS from the DMS EXIF tags (module-level so the verbose reader can
@@ -440,8 +456,6 @@ fn gps_dms(exif: &exif::Exif, coord: exif::Tag, refr: exif::Tag, neg_ref: u8) ->
 /// the terse struct the CLI uses). Returns a ready-to-display multi-line string with LF
 /// endings (the dialog converts to CRLF for the edit control).
 pub fn read_info_verbose(path: &str) -> String {
-    use exif::Reader;
-    use image::ImageDecoder;
     use std::fmt::Write as _;
 
     let p = std::path::Path::new(path);
@@ -449,6 +463,28 @@ pub fn read_info_verbose(path: &str) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "{name}\n{path}\n");
 
+    write_file_section(&mut s, path, p);
+    write_image_section(&mut s, path);
+    let had_exif = write_exif_section(&mut s, path);
+    let had_extra = write_extra_facts_section(&mut s, path);
+
+    // Provenance metadata is neither EXIF nor XMP, so it belongs on its own row.
+    // Presence only - we do not verify the signature or the claim behind it.
+    let credentials = has_content_credentials(path);
+    if credentials {
+        let _ = writeln!(
+            s,
+            "\nContent Credentials (C2PA): present  (removable with Strip metadata)"
+        );
+    }
+    if !had_exif && !credentials && !had_extra {
+        let _ = writeln!(s, "(none)");
+    }
+    s
+}
+
+fn write_file_section(s: &mut String, path: &str, p: &Path) {
+    use std::fmt::Write as _;
     let _ = writeln!(s, "── File ──");
     if let Ok(meta) = std::fs::metadata(path) {
         let len = meta.len();
@@ -464,7 +500,11 @@ pub fn read_info_verbose(path: &str) -> String {
         let _ = writeln!(s, "Type: .{lc}  ({:?})", crate::formats::category(&lc));
     }
     let _ = writeln!(s);
+}
 
+fn write_image_section(s: &mut String, path: &str) {
+    use image::ImageDecoder;
+    use std::fmt::Write as _;
     let _ = writeln!(s, "── Image ──");
     let (mut w, mut h) = (0u32, 0u32);
     if let Ok(rdr) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
@@ -500,7 +540,12 @@ pub fn read_info_verbose(path: &str) -> String {
         let _ = writeln!(s, "Dimensions: unavailable");
     }
     let _ = writeln!(s);
+}
 
+/// Returns whether an EXIF container was actually found and read.
+fn write_exif_section(s: &mut String, path: &str) -> bool {
+    use exif::Reader;
+    use std::fmt::Write as _;
     let _ = writeln!(s, "── EXIF / metadata ──");
     let mut had_exif = false;
     if let Ok(file) = std::fs::File::open(path) {
@@ -528,8 +573,13 @@ pub fn read_info_verbose(path: &str) -> String {
             }
         }
     }
-    // Facts EXIF has no field for. Each is best-effort: the file is read once,
-    // and anything unrecognised simply contributes no row.
+    had_exif
+}
+
+/// Facts EXIF has no field for. Each is best-effort: the file is read once, and anything
+/// unrecognised simply contributes no row. Returns whether any row was written.
+fn write_extra_facts_section(s: &mut String, path: &str) -> bool {
+    use std::fmt::Write as _;
     let mut extra: Vec<(String, String)> = Vec::new();
     if let Ok(bytes) = std::fs::read(path) {
         if has_gain_map(&bytes) {
@@ -553,26 +603,14 @@ pub fn read_info_verbose(path: &str) -> String {
             extra.extend(xmpinfo::facts(&pkt).into_iter().map(|(l, v)| (l.into(), v)));
         }
     }
-    if !extra.is_empty() {
+    let had_extra = !extra.is_empty();
+    if had_extra {
         let _ = writeln!(s);
         for (label, value) in &extra {
             let _ = writeln!(s, "{label}: {value}");
         }
     }
-
-    // Provenance metadata is neither EXIF nor XMP, so it belongs on its own row.
-    // Presence only - we do not verify the signature or the claim behind it.
-    let credentials = has_content_credentials(path);
-    if credentials {
-        let _ = writeln!(
-            s,
-            "\nContent Credentials (C2PA): present  (removable with Strip metadata)"
-        );
-    }
-    if !had_exif && !credentials && extra.is_empty() {
-        let _ = writeln!(s, "(none)");
-    }
-    s
+    had_extra
 }
 
 /// Capture metadata for the EXIF batch-rename verb: when the shot was taken and
