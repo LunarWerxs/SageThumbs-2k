@@ -105,6 +105,10 @@ struct Attrs {
     compression: u16,
 }
 
+/// A composite block's palette (borrowed from the source bytes) plus its up-to-4 decoded
+/// channel planes, indexed by channel type (`CHAN_COMPOSITE`/`RED`/`GREEN`/`BLUE`).
+type ChannelPlanes<'a> = (Option<&'a [u8]>, [Option<Vec<u8>>; 4]);
+
 /// Iterate a block's sub-blocks, skipping its leading info chunk.
 ///
 /// LOAD-BEARING: a bank/composite block's content begins with a `u32` chunk length that
@@ -241,15 +245,22 @@ pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
 /// `BLUE` planes). Compression is LZ77 (zlib) or none. RLE is deliberately unhandled — no
 /// sample exercising it exists, and guessing at a codec that nothing verifies is worse than
 /// falling through to the JPEG carve.
-fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<image::DynamicImage> {
-    let px = (a.w as usize).checked_mul(a.h as usize)?;
-    if px == 0 || px > MAX_PIXELS {
-        return None;
-    }
+/// Walk the composite block's sub-blocks and collect its palette (8-bit paletted composites)
+/// and its up-to-4 decoded channel planes (`CHAN_COMPOSITE`/`RED`/`GREEN`/`BLUE`, indexed by
+/// channel type). A channel simply absent from the file is left `None` in the returned array
+/// — [`render_rgb`]'s depth-specific match decides whether that's fatal. `None` only for a
+/// hard parse failure: a truncated/oversized plane, or an RLE/unknown-compression channel
+/// this decoder doesn't attempt (the caller falls back to the JPEG carve for those).
+fn collect_channel_planes<'a>(
+    b: &'a [u8],
+    content: usize,
+    end: usize,
+    a: &Attrs,
+    px: usize,
+) -> Option<ChannelPlanes<'a>> {
     let mut palette: Option<&[u8]> = None;
     let mut chan: [Option<Vec<u8>>; 4] = [None, None, None, None];
-
-    for (id, c, sub_len) in sub_blocks(b, content, content.checked_add(len)?) {
+    for (id, c, _sub_len) in sub_blocks(b, content, end) {
         match id {
             COLOR_BLOCK => {
                 // chunk(4) entryCount(4) then `count` BGRA quads (Windows RGBQUAD order).
@@ -275,12 +286,24 @@ fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<im
                 if let Some(slot) = chan.get_mut(ctype as usize) {
                     *slot = Some(raw);
                 }
-                let _ = sub_len;
             }
             _ => {}
         }
     }
+    Some((palette, chan))
+}
 
+/// Render the collected channel planes to interleaved RGB per the block's bit depth: 8-bit
+/// indexes `palette` (BGRA quads; missing/short entries render black rather than panicking),
+/// 24/32-bit reads the RED/GREEN/BLUE planes directly. Sub-byte (1/4-bit) greyscale packing
+/// and any other depth are declined — no sample exercising them exists, and guessing at a
+/// codec nothing verifies is worse than falling back to the JPEG carve.
+fn render_rgb(
+    a: &Attrs,
+    px: usize,
+    palette: Option<&[u8]>,
+    chan: &[Option<Vec<u8>>; 4],
+) -> Option<Vec<u8>> {
     let mut rgb = vec![0u8; px.checked_mul(3)?];
     match a.depth {
         8 => {
@@ -288,7 +311,6 @@ fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<im
             let pal = palette?;
             for i in 0..px {
                 let e = idx[i] as usize * 4;
-                // BGRA in the file; missing/short entries render black rather than panicking.
                 let (bl, g, r) = (
                     pal.get(e).copied().unwrap_or(0),
                     pal.get(e + 1).copied().unwrap_or(0),
@@ -309,10 +331,20 @@ fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<im
                 rgb[i * 3 + 2] = bl[i];
             }
         }
-        // Greyscale composites index no palette; replicate the single plane.
         1 | 4 => return None, // sub-byte packing, no sample to verify against
         _ => return None,
     }
+    Some(rgb)
+}
+
+fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<image::DynamicImage> {
+    let px = (a.w as usize).checked_mul(a.h as usize)?;
+    if px == 0 || px > MAX_PIXELS {
+        return None;
+    }
+    let end = content.checked_add(len)?;
+    let (palette, chan) = collect_channel_planes(b, content, end, a, px)?;
+    let rgb = render_rgb(a, px, palette, &chan)?;
     image::RgbImage::from_raw(a.w, a.h, rgb).map(image::DynamicImage::ImageRgb8)
 }
 

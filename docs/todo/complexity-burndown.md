@@ -193,8 +193,8 @@ before the next release is still recommended.
 |x| 92 | 52 | `run` | src/bin/cli.rs:140 |
 |x| 92 | 37 | `keyframe_mini_mp4` | src/flv.rs:56 |
 |x| 88 | 32 | `QueryContextMenu` | src/contextmenu/com.rs:52 |
-| | 84 | 23 | `parse_packet` | src/decode/jp2/packet.rs:217 |
-| | 76 | 32 | `decode_channels` | src/container/psp.rs:244 |
+|x| 84 | 23 | `parse_packet` | src/decode/jp2/packet.rs:217 |
+|x| 76 | 32 | `decode_channels` | src/container/psp.rs:244 |
 | | 76 | 43 | `daemon_wndproc` | src/bin/app/screenshot/daemon.rs:456 |
 | | 75 | 42 | `decode_any_with_wic_target` | src/decode.rs:292 |
 | | 74 | 47 | `dispatch` | src/bin/app/preview/mdhtml.rs:217 |

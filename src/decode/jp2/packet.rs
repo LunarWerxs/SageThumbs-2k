@@ -203,6 +203,84 @@ pub(super) struct PrecBand {
     pub blocks: Vec<BlockState>,
 }
 
+/// Decode a first-inclusion code-block's zero-bitplane count: an open-ended tag tree whose
+/// threshold rises until the value is known (Annex B.10.5). Codestreams never legitimately
+/// run past 74 bitplanes, so that's the malformed-input backstop.
+fn decode_zero_bitplanes(
+    br: &mut BitReader,
+    imsb: &mut TagTree,
+    bx: usize,
+    by: usize,
+) -> Result<u32, Jp2Error> {
+    let mut t = 1;
+    loop {
+        if let Some(v) = imsb.decode(br, bx, by, t)? {
+            return Ok(v);
+        }
+        t += 1;
+        if t > 74 {
+            return Err(Jp2Error::Malformed("zero-bitplane run too long"));
+        }
+    }
+}
+
+/// Grow `lblock` by the number of leading 1 bits (Annex B.10.7).
+fn grow_lblock(br: &mut BitReader, lblock: &mut u32) -> Result<(), Jp2Error> {
+    while br.bit()? == 1 {
+        *lblock += 1;
+        if *lblock > 32 {
+            return Err(Jp2Error::Malformed("lblock overflow"));
+        }
+    }
+    Ok(())
+}
+
+/// One code-block's inclusion/length data within a packet header, updating its persistent
+/// [`BlockState`]. `None` when this block is not included in this packet (the caller's walk
+/// just moves on). Split out of [`parse_packet`] so the triple-nested band/row/column walk
+/// stays a thin loop over this per-block decision.
+fn parse_block_contribution(
+    br: &mut BitReader,
+    pb: &mut PrecBand,
+    bx: usize,
+    by: usize,
+    layer: u32,
+) -> Result<Option<BlockContribution>, Jp2Error> {
+    let si = by * pb.nbx + bx;
+    let st = &mut pb.blocks[si];
+    let included = if st.included {
+        br.bit()? == 1
+    } else {
+        matches!(pb.incl.decode(br, bx, by, layer + 1)?, Some(v) if v <= layer)
+    };
+    if !included {
+        return Ok(None);
+    }
+    let first = !st.included;
+    if first {
+        st.zero_bitplanes = decode_zero_bitplanes(br, &mut pb.imsb, bx, by)?;
+        st.included = true;
+    }
+    let passes = read_pass_count(br)?;
+    grow_lblock(br, &mut st.lblock)?;
+    // Segment length: lblock + floor(log2(passes)) bits. Valid for the styles this decoder
+    // accepts (no TERMALL/BYPASS, which split into per-segment lengths — those styles are
+    // declined before we get here).
+    let bits = st.lblock + (32 - passes.leading_zeros()).saturating_sub(1);
+    if bits > 32 {
+        return Err(Jp2Error::Malformed("segment length too wide"));
+    }
+    let len = br.bits(bits)? as usize;
+    st.passes_so_far += passes;
+    Ok(Some(BlockContribution {
+        cblk_x: bx,
+        cblk_y: by,
+        passes,
+        len,
+        zero_bitplanes: st.zero_bitplanes,
+    }))
+}
+
 /// Parse ONE packet header covering ALL of `bands` (1 band at resolution 0, else 3).
 ///
 /// The shape openjpeg's `opj_t2_read_packet_header` makes explicit, and the shape our first
@@ -227,61 +305,9 @@ pub(super) fn parse_packet(
     for (bi, pb) in bands.iter_mut().enumerate() {
         for by in 0..pb.nby {
             for bx in 0..pb.nbx {
-                let si = by * pb.nbx + bx;
-                let st = &mut pb.blocks[si];
-                let included = if st.included {
-                    br.bit()? == 1
-                } else {
-                    matches!(pb.incl.decode(br, bx, by, layer + 1)?, Some(v) if v <= layer)
-                };
-                if !included {
-                    continue;
+                if let Some(c) = parse_block_contribution(br, pb, bx, by, layer)? {
+                    out.push((bi, c));
                 }
-                let first = !st.included;
-                if first {
-                    // Zero bitplanes, coded as a tag tree with an open-ended threshold.
-                    let mut t = 1;
-                    let zb = loop {
-                        match pb.imsb.decode(br, bx, by, t)? {
-                            Some(v) => break v,
-                            None => {
-                                t += 1;
-                                if t > 74 {
-                                    return Err(Jp2Error::Malformed("zero-bitplane run too long"));
-                                }
-                            }
-                        }
-                    };
-                    st.zero_bitplanes = zb;
-                    st.included = true;
-                }
-                let passes = read_pass_count(br)?;
-                // Lblock grows by the number of leading 1 bits.
-                while br.bit()? == 1 {
-                    st.lblock += 1;
-                    if st.lblock > 32 {
-                        return Err(Jp2Error::Malformed("lblock overflow"));
-                    }
-                }
-                // Segment length: lblock + floor(log2(passes)) bits. Valid for the styles
-                // this decoder accepts (no TERMALL/BYPASS, which split into per-segment
-                // lengths — those styles are declined before we get here).
-                let bits = st.lblock + (32 - passes.leading_zeros()).saturating_sub(1);
-                if bits > 32 {
-                    return Err(Jp2Error::Malformed("segment length too wide"));
-                }
-                let len = br.bits(bits)? as usize;
-                out.push((
-                    bi,
-                    BlockContribution {
-                        cblk_x: bx,
-                        cblk_y: by,
-                        passes,
-                        len,
-                        zero_bitplanes: st.zero_bitplanes,
-                    },
-                ));
-                st.passes_so_far += passes;
             }
         }
     }
