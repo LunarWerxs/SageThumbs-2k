@@ -347,6 +347,19 @@ fn parse_header(bytes: &[u8]) -> Result<Surface> {
         return Err(fail(format!("refusing {width}x{height}")));
     }
     let pf_flags = le32(bytes, OFF_PF_FLAGS).ok_or_else(|| fail("truncated pixel format"))?;
+    let (layout, data, alpha_mode) = resolve_pixel_layout(bytes, pf_flags)?;
+    Ok(Surface {
+        width,
+        height,
+        layout,
+        data,
+        alpha_mode,
+    })
+}
+
+/// Resolve the pixel layout, data offset, and alpha mode from the pixel-format block: a
+/// DX10 extension header, a classic FourCC, or raw RGBA bitmasks.
+fn resolve_pixel_layout(bytes: &[u8], pf_flags: u32) -> Result<(Layout, usize, u32)> {
     let fourcc = bytes
         .get(OFF_PF_FOURCC..OFF_PF_FOURCC + 4)
         .ok_or_else(|| fail("truncated FourCC"))?;
@@ -366,13 +379,7 @@ fn parse_header(bytes: &[u8]) -> Result<Surface> {
     } else {
         Layout::Masks(mask_layout(bytes, pf_flags)?)
     };
-    Ok(Surface {
-        width,
-        height,
-        layout,
-        data,
-        alpha_mode,
-    })
+    Ok((layout, data, alpha_mode))
 }
 
 fn ascii(fourcc: &[u8]) -> String {

@@ -291,19 +291,36 @@ pub(super) unsafe fn scrub_mouse_down(hwnd: HWND, x: i32, y: i32) {
     let spk = crate::win::dpi_scale(hwnd, 22);
     // File switching must not run while `st.video` is borrowed: `nav_sibling` reloads, which tears
     // the player down. Note which way was clicked, drop the borrow, then act.
-    let nav = if x >= p.prev.left && x < p.prev.right {
-        Some(-1)
-    } else if x >= p.next.left && x < p.next.right {
-        Some(1)
-    } else {
-        None
-    };
-    if let Some(delta) = nav {
+    if let Some(delta) = nav_arrow_hit(x, &p) {
         drop(vb);
         super::window::nav_sibling(hwnd, delta);
         return;
     }
     let _ = spk;
+    dispatch_scrub_click(hwnd, st, v, x, &p);
+    let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
+}
+
+/// Which sibling-nav arrow (if either) was clicked: -1 previous / 1 next / None neither.
+fn nav_arrow_hit(x: i32, p: &Parts) -> Option<i32> {
+    if x >= p.prev.left && x < p.prev.right {
+        Some(-1)
+    } else if x >= p.next.left && x < p.next.right {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Dispatch a click on the transport strip proper (play · speed · arrows · loop · volume ·
+/// mute · seek track), once the sibling-nav zones have already been ruled out.
+unsafe fn dispatch_scrub_click(
+    hwnd: HWND,
+    st: &super::window::ViewerState,
+    v: &super::video::VideoPlayer,
+    x: i32,
+    p: &Parts,
+) {
     if x >= p.play.left && x < p.play.right {
         v.toggle_play();
     } else if x >= p.speed.left && x < p.speed.right {
@@ -332,7 +349,6 @@ pub(super) unsafe fn scrub_mouse_down(hwnd: HWND, x: i32, y: i32) {
         apply_seek(v, x, &p.track);
         let _ = SetCapture(hwnd);
     }
-    let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
 }
 
 /// Format seconds as `m:ss` (or `0:00` when unknown / NaN).
