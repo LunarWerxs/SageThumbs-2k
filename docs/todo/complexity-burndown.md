@@ -60,6 +60,34 @@ the next release**, for this row and for any future wndproc split in this file.
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
 cleared by a burndown tranche; see git log for the commits.
 
+**Tranche 9 (2026-08-28): the next 9 worst rows cleared**, worst first: `paint_into`
+(preview/paint.rs) split into `paint_content` (a thin `ContentKind` match) plus one
+`paint_content_*` helper per arm, and `paint_caption`/`paint_caption_title`/
+`paint_caption_toolbar` for the caption strip; `tokenize` (preview/highlight/lex.rs) split into
+one `try_*` helper per token kind (carried block comment, line comment, block comment open,
+string, number, identifier), tried in order from a thin scan loop; `load_sync`
+(preview/loader.rs) split into `load_sync_play_video`/`load_sync_pdf`/`load_sync_frame` per
+branch; `draw_table` (preview/markdown/tables.rs) split into its five documented steps as named
+helpers (`measure_natural_col_widths`, `measure_row_heights`, `draw_table_rows`,
+`draw_table_grid`, `draw_dropped_col_note`); `list_subclass` (settings_dlg/list.rs) split its
+`WM_NOTIFY` arm into `on_notify` (dispatch) plus `on_notify_header_endtrack` and
+`on_notify_header_customdraw`, same wndproc-dispatcher method as prior tranches;
+`strip_metadata` (strip.rs) split its JPEG/PNG match arms into `strip_jpeg`/`strip_png`;
+`extract` (container/blend.rs) split into `read_block_header` and `decode_test_block`, this
+scanner counts the `?` operator as a branch, and the original had ~16 of them inline;
+`decode_test_block`'s outer `Option` preserves the exact original short-circuit semantics (a
+failure there used to abort the whole search via `?`, not just skip one block) via
+`Option<Option<_>>`, documented at the helper; `ensure_visible` (preview/selection.rs) split into
+`ensure_visible_text`/`ensure_visible_markdown` per `ContentKind` arm; `type_chunk_value`
+(container/apk.rs) split into `find_entry_offset` (the sparse/dense entry-offset table lookup)
+and `read_res_value` (the `Res_value` read at that offset). No behavior change anywhere in this
+tranche. Verified per file (scoped `cargo test`) and at the end: `cargo test --lib` (753 passed,
+0 failed, 18 ignored, matching baseline) and `cargo test --bin SageThumbs2K --features
+html-preview` (363 passed, matching tranche 8's baseline), `cargo clippy --lib -- -D warnings`
+and `cargo clippy --bin SageThumbs2K [--features html-preview] -- -D warnings` all clean (two
+owner-draw helpers and one grid helper picked up `#[allow(clippy::too_many_arguments)]`, same
+pattern already used elsewhere in these files), and `cargo fmt --all --check` clean.
+
 **Tranche 1 (2026-08-28): 8 of 8 planned rows cleared**, in order: `transform` (jpegtran.rs),
 `decode_tile` (jp2/mod.rs), `decode_code_block` (jp2/mq.rs), `read_streams` (ole.rs),
 `isobmff_has_hevc_aux_alpha` (color.rs), `parse` (jp2/codestream.rs), `parse_ply` (mesh.rs),
@@ -257,15 +285,15 @@ before the next release is still recommended.
 |x| 66 | 30 | `stamp` | src/badge.rs:161 |
 |x| 66 | 38 | `run_shot` | src/bin/app/preview/shot.rs:13 |
 |x| 65 | 30 | `create` | src/bin/app/preview/webview.rs:43 |
-| | 64 | 28 | `paint_into` | src/bin/app/preview/paint.rs:141 |
-| | 64 | 28 | `tokenize` | src/bin/app/preview/highlight/lex.rs:199 |
-| | 63 | 20 | `load_sync` | src/bin/app/preview/loader.rs:229 |
-| | 62 | 27 | `draw_table` | src/bin/app/preview/markdown/tables.rs:14 |
-| | 62 | 29 | `list_subclass` | src/bin/app/settings_dlg/list.rs:429 |
-| | 61 | 28 | `strip_metadata` | src/strip.rs:95 |
-| | 59 | 25 | `extract` | src/container/blend.rs:16 |
-| | 58 | 22 | `ensure_visible` | src/bin/app/preview/selection.rs:323 |
-| | 57 | 33 | `type_chunk_value` | src/container/apk.rs:668 |
+|x| 64 | 28 | `paint_into` | src/bin/app/preview/paint.rs:141 |
+|x| 64 | 28 | `tokenize` | src/bin/app/preview/highlight/lex.rs:199 |
+|x| 63 | 20 | `load_sync` | src/bin/app/preview/loader.rs:229 |
+|x| 62 | 27 | `draw_table` | src/bin/app/preview/markdown/tables.rs:14 |
+|x| 62 | 29 | `list_subclass` | src/bin/app/settings_dlg/list.rs:429 |
+|x| 61 | 28 | `strip_metadata` | src/strip.rs:95 |
+|x| 59 | 25 | `extract` | src/container/blend.rs:16 |
+|x| 58 | 22 | `ensure_visible` | src/bin/app/preview/selection.rs:323 |
+|x| 57 | 33 | `type_chunk_value` | src/container/apk.rs:668 |
 | | 57 | 27 | `extract` | src/container/mobi.rs:10 |
 | | 56 | 26 | `delimited_table` | src/bin/app/preview/docconv.rs:72 |
 | | 55 | 23 | `popup_wndproc` | src/bin/app/settings_dlg/menuitems.rs:110 |
