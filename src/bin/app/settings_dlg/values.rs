@@ -412,12 +412,37 @@ pub(super) unsafe fn banner_rotator(hwnd: HWND) -> Option<(HWND, *mut SponsorRot
 /// Persist all settings (and re-register formats if the list changed). Apply-only
 /// — does NOT close the window, so the user can save and keep tweaking.
 pub(super) unsafe fn apply_settings(hwnd: HWND) {
-    // The theme resolves ONCE per process and the brushes are cached from it (see
-    // `dark::is_dark`), so a running Quick preview cannot repaint itself in the new skin. The
-    // viewer is single-instance and cheap to start, so retiring it is the honest fix: the next
-    // Space press brings up a fresh one already wearing the new theme. Only on an actual
-    // CHANGE, or every Apply would close a preview the user is reading.
-    let theme_before = settings::app_theme();
+    let badge_changed = apply_thumbnail_and_badge_settings(hwnd);
+    apply_menu_and_misc_toggles(hwnd);
+    apply_menu_item_list_order(hwnd);
+    apply_menu_preview_and_theme(hwnd);
+    apply_screenshot_tool_prefs(hwnd);
+    apply_container_settings(hwnd);
+    apply_tuning_numbers(hwnd);
+    let _ = settings::set_lang(selected_lang(hwnd).unwrap_or(""));
+    apply_screenshot_hotkeys(hwnd);
+    apply_quick_preview_and_screenshot_enable(hwnd);
+    apply_format_flags(hwnd);
+
+    // Nudge the shell to drop its cached file-association / context-menu state so a
+    // menu toggle (e.g. MenuQuickVerbs, per-item visibility, the reorder) takes
+    // effect on the NEXT right-click instead of silently waiting for an Explorer
+    // restart. The classic IContextMenu handler reads settings live, so this flushes
+    // the shell's association cache around it; the modern packaged verbs re-query
+    // GetState per menu-build, so they pick the change up on the next open too.
+    notify_shell_assoc_changed();
+
+    // The badge lives INSIDE the cached bitmap, so a toggle is invisible until the shell's
+    // thumbnail cache is discarded. Do it for the user, and only when the value actually
+    // changed — an unrelated Apply must never blow away everyone's cached tiles.
+    if badge_changed {
+        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+    }
+}
+
+/// The thumbnail-generation + format-badge settings, returning whether anything baked into
+/// the cached bitmap changed (the caller purges the shell's thumbnail cache only then).
+unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
     let _ = settings::set_dword("EnableThumbs", checked(hwnd, ID_ENABLE_THUMBS) as u32);
     let _ = settings::set_dword("UseEmbedded", checked(hwnd, ID_USE_EMBEDDED) as u32);
     // The format badge is baked INTO the bitmap the shell caches, so flipping it changes
@@ -452,6 +477,13 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     if overlay_now != overlay_was {
         sagethumbs2k_core::typeoverlay::sync(overlay_now);
     }
+    badge_changed
+}
+
+/// The remaining simple flag/dword toggles: folder prebuild verb, menu enable flags,
+/// file-date/metadata preservation, PDF layout, verbose logging, and the update-check
+/// schedule.
+unsafe fn apply_menu_and_misc_toggles(hwnd: HWND) {
     // Same shape as the overlay above: a registry-only change the shell reads directly, so it
     // needs writing and syncing but no thumbnail purge.
     let folder_verb_now = checked(hwnd, ID_FOLDER_PREBUILD);
@@ -481,29 +513,42 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // task running (and turning it back ON after an install where task creation failed
     // would never bring it back). Best-effort: the launch-time piggyback covers either way.
     crate::update::sync_update_task();
-    if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
-        // Persist BOTH per-item visibility AND the row order (drag-to-reorder), reading
-        // each row's lParam so a reordered list — items AND divider rows — saves
-        // correctly: item rows write their key + checkbox; divider rows write the
-        // separator token at their position.
-        let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
-        let mut order: Vec<&'static str> = Vec::with_capacity(count as usize);
-        for row in 0..count {
-            let param = menu_row_param(mlist, row);
-            if param == list::SEP_PARAM {
-                order.push(MENU_SEP_TOKEN);
-            } else if param >= 0 && (param as usize) < MENU_ITEM_TOGGLES.len() {
-                let key = MENU_ITEM_TOGGLES[param as usize].1;
-                let _ = settings::set_menu_item_shown(key, is_checked(mlist, row));
-                order.push(key);
-            }
+}
+
+/// Persist the context-menu item list's per-item visibility AND row order.
+unsafe fn apply_menu_item_list_order(hwnd: HWND) {
+    let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) else {
+        return;
+    };
+    // Persist BOTH per-item visibility AND the row order (drag-to-reorder), reading
+    // each row's lParam so a reordered list — items AND divider rows — saves
+    // correctly: item rows write their key + checkbox; divider rows write the
+    // separator token at their position.
+    let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
+    let mut order: Vec<&'static str> = Vec::with_capacity(count as usize);
+    for row in 0..count {
+        let param = menu_row_param(mlist, row);
+        if param == list::SEP_PARAM {
+            order.push(MENU_SEP_TOKEN);
+        } else if param >= 0 && (param as usize) < MENU_ITEM_TOGGLES.len() {
+            let key = MENU_ITEM_TOGGLES[param as usize].1;
+            let _ = settings::set_menu_item_shown(key, is_checked(mlist, row));
+            order.push(key);
         }
-        let _ = settings::set_menu_order(&order);
     }
+    let _ = settings::set_menu_order(&order);
+}
+
+/// The preview-mode combo (Explorer icon/classic/menu-preview toggle) and the app theme
+/// combo. The theme resolves once per process, so a running Quick preview can't repaint
+/// itself in a new skin — retire it on an actual change so the next Space press opens a
+/// fresh one already wearing it.
+unsafe fn apply_menu_preview_and_theme(hwnd: HWND) {
     if let Ok(prev) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
         let sel = SendMessageW(prev, CB_GETCURSEL, None, None).0.clamp(0, 2);
         let _ = settings::set_dword("MenuPreview", sel as u32);
     }
+    let theme_before = settings::app_theme();
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
         // CB_ERR is -1 (nothing selected); clamp instead of storing it.
         let sel = SendMessageW(c, CB_GETCURSEL, None, None).0.clamp(0, 2);
@@ -512,6 +557,10 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
             crate::preview::request_close();
         }
     }
+}
+
+/// Screenshot default tool + capture delay combos.
+unsafe fn apply_screenshot_tool_prefs(hwnd: HWND) {
     if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
         // CB_ERR is -1 (no selection); clamp to a real index rather than storing it.
         let sel = SendMessageW(tool, CB_GETCURSEL, None, None).0.max(0);
@@ -525,6 +574,11 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
             .unwrap_or_default();
         let _ = settings::set_screenshot_delay_sec(secs);
     }
+}
+
+/// The four container-format checkboxes (sort, prefer cover, skip scanlation, archive
+/// contact sheet).
+unsafe fn apply_container_settings(hwnd: HWND) {
     let _ = settings::set_dword("ContainerSort", checked(hwnd, ID_C_SORT) as u32);
     let _ = settings::set_dword(
         "ContainerPreferCover",
@@ -535,20 +589,24 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
         checked(hwnd, ID_C_SKIP_SCAN) as u32,
     );
     let _ = settings::set_dword("ArchiveCollage", checked(hwnd, ID_C_ARCHIVE_SHEET) as u32);
+}
 
-    // The three TUNING NUMBERS go through `set_dword_tracking_default`, which stores them only
-    // when they differ from the default and DELETES them when they match. This dialog writes
-    // every setting on every OK whether or not it was touched, so a plain `set_dword` here
-    // pinned each value at whatever the default was on the day the user first clicked OK — and
-    // no later default change could reach them. `MaxSize` is why that matters: it shipped
-    // defaulting to exactly the engine's buffering ceiling, which made the oversized-file
-    // rescue unreachable, and the repair is a raised DEFAULT that only lands on users whose
-    // value is absent. See `settings::set_dword_tracking_default`.
-    //
-    // Deliberately NOT applied to the checkboxes on this page. Their defaults are product
-    // decisions that do not get retuned, and each polarity would have to be re-derived by hand
-    // from its accessor — getting one wrong silently INVERTS a setting for every user who ever
-    // pressed OK, which is a far worse failure than the one being fixed.
+/// The numeric tuning fields (MaxSize, thumbnail size, video offset, JPEG/PNG quality).
+///
+/// These go through `set_dword_tracking_default`, which stores a value only when it
+/// differs from the default and DELETES it when it matches. This dialog writes every
+/// setting on every OK whether or not it was touched, so a plain `set_dword` here would
+/// pin each value at whatever the default was on the day the user first clicked OK — and
+/// no later default change could reach them. `MaxSize` is why that matters: it shipped
+/// defaulting to exactly the engine's buffering ceiling, which made the oversized-file
+/// rescue unreachable, and the repair is a raised DEFAULT that only lands on users whose
+/// value is absent. See `settings::set_dword_tracking_default`.
+///
+/// Deliberately NOT applied to the checkboxes on this page. Their defaults are product
+/// decisions that do not get retuned, and each polarity would have to be re-derived by hand
+/// from its accessor — getting one wrong silently INVERTS a setting for every user who ever
+/// pressed OK, which is a far worse failure than the one being fixed.
+unsafe fn apply_tuning_numbers(hwnd: HWND) {
     let mut ok = Default::default();
     let max_mb = GetDlgItemInt(hwnd, ID_MAXSIZE, Some(&mut ok), false);
     let _ = settings::set_dword_tracking_default(
@@ -598,13 +656,13 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
             settings::DEFAULT_PNG
         },
     );
+}
 
-    // Persist the UI-language choice ("" = follow the system language).
-    let _ = settings::set_lang(selected_lang(hwnd).unwrap_or(""));
-
-    // Screenshot capture service: persist the chosen hotkey, then enable/disable the
-    // daemon (HKCU autostart + the running tray helper). If it stays enabled and a
-    // daemon is already running with a different chord, nudge it to re-register.
+/// Screenshot capture service: hotkey, quick hotkey, hide-tray, save-dir, and the
+/// user-assignable custom-action hotkey. Written BEFORE `set_enabled()` runs (see
+/// [`apply_quick_preview_and_screenshot_enable`]) so the daemon reconcile sees the new
+/// state.
+unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
     // Read the packed chord back via CB_GETITEMDATA, not by re-deriving it from
     // the selected index into SHOT_PRESETS: `build_controls` stashes the real
     // packed value on every item, including the trailing "unknown chord" item it
@@ -660,6 +718,12 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
         };
         let _ = settings::set_custom_action_hotkey(packed);
     }
+}
+
+/// Quick preview's master toggle + behavior prefs, then the screenshot enable checkbox —
+/// `set_enabled` reconciles the daemon (start/stop + re-register) against everything
+/// written above, so it must run last.
+unsafe fn apply_quick_preview_and_screenshot_enable(hwnd: HWND) {
     // Quick preview: persist the master toggle + behavior prefs. Written BEFORE
     // set_enabled() below so the daemon reconcile — which keeps the daemon resident
     // whenever Quick preview is enabled (via daemon_wanted) — sees the new state and
@@ -682,13 +746,14 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     // AND Quick preview persisted just above — so it covers the "daemon needed only for a
     // custom hotkey / Quick preview" cases too.
     crate::screenshot::set_enabled(shot_on);
+}
 
-    // Per-format flags. Collect the changes first; persist them, then run the
-    // elevated re-register that rewrites the HKCR shell hooks to match. If that
-    // elevation is declined or fails, roll the HKCU flags back so the persisted
-    // settings stay consistent with the (unchanged) hooks — otherwise the two
-    // silently diverge and, because change-detection reads HKCU, never reconcile.
-    // Save from the model (the list may be filtered, so its rows are a subset).
+/// Per-format enable/disable flags: collect the changes against the (possibly filtered)
+/// list model, persist them, then run the elevated re-register that rewrites the HKCR
+/// shell hooks to match — rolling the flags back if that elevation is declined or fails,
+/// so the persisted settings stay consistent with the (unchanged) hooks. Otherwise the two
+/// silently diverge and, because change-detection reads HKCU, never reconcile.
+unsafe fn apply_format_flags(hwnd: HWND) {
     let mut changes: Vec<(&'static str, bool, bool)> = Vec::new();
     FMT_STATE.with(|st| {
         let st = st.borrow();
@@ -703,33 +768,19 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
             }
         }
     });
-    if !changes.is_empty() {
-        for &(ext, want, _) in &changes {
-            let _ = settings::set_format_enabled(ext, want);
-        }
-        // Only Ok counts — any other outcome means the HKCR hooks do NOT match the flags
-        // we just wrote, so roll the flags back rather than leave the UI lying.
-        if !matches!(reregister_elevated(), Reg::Ok) {
-            for &(ext, _, old) in &changes {
-                let _ = settings::set_format_enabled(ext, old);
-            }
-            message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
-        }
+    if changes.is_empty() {
+        return;
     }
-
-    // Nudge the shell to drop its cached file-association / context-menu state so a
-    // menu toggle (e.g. MenuQuickVerbs, per-item visibility, the reorder) takes
-    // effect on the NEXT right-click instead of silently waiting for an Explorer
-    // restart. The classic IContextMenu handler reads settings live, so this flushes
-    // the shell's association cache around it; the modern packaged verbs re-query
-    // GetState per menu-build, so they pick the change up on the next open too.
-    notify_shell_assoc_changed();
-
-    // The badge lives INSIDE the cached bitmap, so a toggle is invisible until the shell's
-    // thumbnail cache is discarded. Do it for the user, and only when the value actually
-    // changed — an unrelated Apply must never blow away everyone's cached tiles.
-    if badge_changed {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+    for &(ext, want, _) in &changes {
+        let _ = settings::set_format_enabled(ext, want);
+    }
+    // Only Ok counts — any other outcome means the HKCR hooks do NOT match the flags
+    // we just wrote, so roll the flags back rather than leave the UI lying.
+    if !matches!(reregister_elevated(), Reg::Ok) {
+        for &(ext, _, old) in &changes {
+            let _ = settings::set_format_enabled(ext, old);
+        }
+        message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
     }
 }
 
