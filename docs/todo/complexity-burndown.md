@@ -54,7 +54,6 @@ drag/resize/keys/toolbar/PDF paging/video transport by hand) is still recommende
 the next release**, for this row and for any future wndproc split in this file.
 
 - `shot_wndproc` src/bin/app/screenshot/overlay/input.rs:128 (cognitive 480, CC 124)
-- `wndproc` src/bin/app/settings_dlg/mod.rs:1041 (cognitive 402, CC 146)
 
 ## Queue
 
@@ -127,11 +126,33 @@ three bin/lib targets, 0 failed), `cargo clippy --bin SageThumbs2K -- -D warning
 fmt --all --check`, all clean. Same preflight-only caveat as tranche 3: a human UI
 click-through before the next release is still recommended.
 
+**Tranche 5 (2026-08-28): `wndproc` (settings_dlg/mod.rs), the third and last of the three
+giant Win32 dispatchers, cleared.** Split the message dispatcher into a thin chain of
+message-category dispatchers (lifecycle/app messages, command-or-notify, paint/draw, timer-or-
+scroll, each an `Option<LRESULT>` fall-through, same pattern the top-level `wndproc` now
+uses) plus named handlers for every nontrivial message arm. `WM_COMMAND`'s ~30-arm inner match
+was itself over the gate even as a single extracted function, so it was further split into
+`on_command_dialog`/`on_command_shot`/`on_command_sync_nav`/`on_command_admin` (grouped by
+concern: dialog chrome, screenshot controls, sync/nav/nudge, admin buttons), with
+`on_select_clear_all`/`on_search_filter_changed`/`on_shot_set_dir`/`on_shot_restart`/
+`on_banner_click` pulled out of their arms for the same reason. `WM_NOTIFY` became
+`on_notify_begindrag`/`on_notify_customdraw`/`on_notify_itemchanged`/`on_notify_link_or_tip`,
+and `WM_DRAWITEM`'s owner-draw-static branch became `on_drawitem_static`. The pre-match
+`WM_CTLCOLORSTATIC` special-casing (four live-state color overrides ahead of the generic
+`dark_ctlcolor`) became its own `special_ctlcolor`, checked first, exactly as before. Same
+message routing, same `LRESULT`s (including every `DefWindowProcW` fallthrough), same unsafe
+blocks, no behavior change intended. Verified with `cargo test --bin SageThumbs2K settings_dlg`
+(the module's own 27 `settings_dlg::*` tests pass), `cargo test --lib` (753 passed, 0 failed,
+18 ignored, matching the tranche 1/2 baseline exactly) and `cargo test --bin SageThumbs2K` (362
+passed, 0 failed), `cargo clippy --bin SageThumbs2K -- -D warnings`, and `cargo fmt --all
+--check`, all clean. Same preflight-only caveat as tranches 3 and 4: a human UI click-through
+before the next release is still recommended.
+
 | done | cog | CC | function | location |
 |---|---|---|---|---|
 |x| 579 | 205 | `wndproc` | src/bin/app/preview/window.rs:709 |
 |x| 480 | 124 | `shot_wndproc` | src/bin/app/screenshot/overlay/input.rs:128 |
-| | 402 | 146 | `wndproc` | src/bin/app/settings_dlg/mod.rs:1041 |
+|x| 402 | 146 | `wndproc` | src/bin/app/settings_dlg/mod.rs:1041 |
 | | 208 | 77 | `main` | src/bin/app/main.rs:195 |
 |x| 207 | 86 | `transform` | src/jpegtran.rs:461 |
 |x| 203 | 73 | `decode_tile` | src/decode/jp2/mod.rs:257 |

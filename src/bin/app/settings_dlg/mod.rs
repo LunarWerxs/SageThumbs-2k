@@ -1045,638 +1045,809 @@ pub(crate) extern "system" fn wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-        // The Quick-save hotkey label stays ENABLED (a disabled static draws an
-        // etched/blurry look in dark mode) but reads as greyed when instant
-        // screenshot is off — paint its text dim here instead of the normal color.
-        if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-            && GetDlgItem(Some(hwnd), ID_LBL_SHOT_QUICK_HK).is_ok_and(|l| l.0 as isize == lparam.0)
-            && !checked(hwnd, ID_SHOT_QUICK_ENABLE)
-        {
-            return crate::dark::dark_ctlcolor_dim(wparam);
-        }
-        // The save-folder display greys with the "Save to a set folder" toggle (same as
-        // the quick-hotkey label — a disabled static draws etched in dark mode).
-        if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-            && GetDlgItem(Some(hwnd), ID_SHOT_DIR).is_ok_and(|l| l.0 as isize == lparam.0)
-            && !checked(hwnd, ID_SHOT_USE_DIR)
-        {
-            return crate::dark::dark_ctlcolor_dim(wparam);
-        }
-        // The hotkey-service status word: green when running/started, red otherwise.
-        if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-            && GetDlgItem(Some(hwnd), ID_SHOT_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
-        {
-            let hdc = HDC(wparam.0 as *mut c_void);
-            // Decided from the typed state SHOT_STATUS_GREEN was set to alongside the text
-            // (see set_shot_status), not by sniffing the (eventually localized) label for
-            // English words, which broke silently in every non-English build.
-            let running = SHOT_STATUS_GREEN.with(|g| g.get());
-            let col = if running {
-                COLORREF(0x0059_C734)
-            } else {
-                COLORREF(0x004D_48E5)
-            }; // green / red
-            SetTextColor(hdc, col);
-            windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-            SetBkMode(hdc, TRANSPARENT);
-            return LRESULT(dark_bg_brush().0 as isize);
-        }
-        // The Settings-sync status line: green in a healthy synced state, else a muted grey
-        // (the signed-out invite / a transient "Connecting…"). Mirrors the hotkey-service
-        // badge above. The state is asked for directly rather than sniffed out of the
-        // control's text: that used to match the English word "Synced", which would have
-        // gone grey in all 35 translations the moment the line was localized, with nothing
-        // failing to say so.
-        if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-            && GetDlgItem(Some(hwnd), ID_SYNC_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
-        {
-            if sync::sync_status_is_green() {
-                let hdc = HDC(wparam.0 as *mut c_void);
-                SetTextColor(hdc, COLORREF(0x0059_C734)); // green
-                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-                SetBkMode(hdc, TRANSPARENT);
-                return LRESULT(dark_bg_brush().0 as isize);
-            }
-            return crate::dark::dark_ctlcolor_dim(wparam);
-        }
-        if let Some(r) = dark_ctlcolor(msg, wparam) {
+        if let Some(r) = special_ctlcolor(hwnd, msg, wparam, lparam) {
             return r;
         }
-        match msg {
-            WM_CREATE => {
-                // Bring up GDI+ for this window's lifetime so the dark-mode owner-draw can
-                // render its toggle switches / icons / rounded buttons anti-aliased.
-                GDIP_TOKEN.with(|t| t.set(crate::gdip::startup()));
-                let hinst: HINSTANCE =
-                    windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
-                        .unwrap()
-                        .into();
-                build_controls(hwnd, hinst);
-                // Keep the hotkey-service status line live (so a self-heal on open,
-                // or a later stop, is reflected without reopening).
-                let _ = SetTimer(Some(hwnd), TIMER_SHOT_STATUS, 1000, None);
-                // Lazy, throttled, background update check: it never blocks this window
-                // opening, hits GitHub at most once a day (cached on disk in between), and
-                // stays silent unless a newer release exists — then it posts WM_APP_UPDATE
-                // to quietly nudge (no popup). See `update::lazy_check`.
-                let target = hwnd.0 as isize;
-                crate::update::lazy_check(move |tag| {
-                    let raw = Box::into_raw(Box::new(tag));
-                    let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                        Some(HWND(target as *mut core::ffi::c_void)),
-                        crate::update::WM_APP_UPDATE,
-                        WPARAM(0),
-                        LPARAM(raw as isize),
-                    );
-                    if posted.is_err() {
-                        // The window vanished before delivery — reclaim the boxed tag.
-                        drop(Box::from_raw(raw));
-                    }
-                });
-                // If already signed in for settings sync, pull the cloud copy in the
-                // background (applies to HKCU; takes effect for new thumbnails). No-op and
-                // zero network when signed out.
-                spawn_sync_pull(hwnd);
-                LRESULT(0)
+        if let Some(r) = on_lifecycle_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+        if let Some(r) = on_command_or_notify_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+        if let Some(r) = on_paint_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+        if let Some(r) = on_timer_or_scroll_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
+/// The dialog's WM_CTLCOLORSTATIC overrides that key off LIVE control state (a
+/// dependent checkbox, a running/synced status word) rather than just window class —
+/// `dark_ctlcolor` handles the class-generic theming. Checked once, before the main
+/// message dispatch; `None` means fall through to it. `Some` short-circuits the whole
+/// wndproc, exactly like the pre-match block this replaces.
+unsafe fn special_ctlcolor(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    // The Quick-save hotkey label stays ENABLED (a disabled static draws an
+    // etched/blurry look in dark mode) but reads as greyed when instant
+    // screenshot is off — paint its text dim here instead of the normal color.
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_LBL_SHOT_QUICK_HK).is_ok_and(|l| l.0 as isize == lparam.0)
+        && !checked(hwnd, ID_SHOT_QUICK_ENABLE)
+    {
+        return Some(crate::dark::dark_ctlcolor_dim(wparam));
+    }
+    // The save-folder display greys with the "Save to a set folder" toggle (same as
+    // the quick-hotkey label — a disabled static draws etched in dark mode).
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_SHOT_DIR).is_ok_and(|l| l.0 as isize == lparam.0)
+        && !checked(hwnd, ID_SHOT_USE_DIR)
+    {
+        return Some(crate::dark::dark_ctlcolor_dim(wparam));
+    }
+    // The hotkey-service status word: green when running/started, red otherwise.
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_SHOT_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+    {
+        let hdc = HDC(wparam.0 as *mut c_void);
+        // Decided from the typed state SHOT_STATUS_GREEN was set to alongside the text
+        // (see set_shot_status), not by sniffing the (eventually localized) label for
+        // English words, which broke silently in every non-English build.
+        let running = SHOT_STATUS_GREEN.with(|g| g.get());
+        let col = if running {
+            COLORREF(0x0059_C734)
+        } else {
+            COLORREF(0x004D_48E5)
+        }; // green / red
+        SetTextColor(hdc, col);
+        windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+        SetBkMode(hdc, TRANSPARENT);
+        return Some(LRESULT(dark_bg_brush().0 as isize));
+    }
+    // The Settings-sync status line: green in a healthy synced state, else a muted grey
+    // (the signed-out invite / a transient "Connecting…"). Mirrors the hotkey-service
+    // badge above. The state is asked for directly rather than sniffed out of the
+    // control's text: that used to match the English word "Synced", which would have
+    // gone grey in all 35 translations the moment the line was localized, with nothing
+    // failing to say so.
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_SYNC_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+    {
+        if sync::sync_status_is_green() {
+            let hdc = HDC(wparam.0 as *mut c_void);
+            SetTextColor(hdc, COLORREF(0x0059_C734)); // green
+            windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+            SetBkMode(hdc, TRANSPARENT);
+            return Some(LRESULT(dark_bg_brush().0 as isize));
+        }
+        return Some(crate::dark::dark_ctlcolor_dim(wparam));
+    }
+    dark_ctlcolor(msg, wparam)
+}
+
+/// Window-lifecycle + app-posted messages: creation, teardown, resize limits, the
+/// background update/sync callbacks, and the sponsor feed arriving. `None` means the
+/// message isn't one of these — fall through to the next dispatch group.
+unsafe fn on_lifecycle_msg(
+    hwnd: HWND,
+    msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    match msg {
+        WM_CREATE => Some(on_create(hwnd)),
+        crate::update::WM_APP_UPDATE => Some(on_update_available(hwnd, lparam)),
+        WM_APP_SYNC => Some(on_app_sync(hwnd, lparam)),
+        WM_GETMINMAXINFO => Some(on_getminmaxinfo(lparam)),
+        WM_SIZE => {
+            let client_h = ((lparam.0 >> 16) & 0xFFFF) as i32;
+            on_resize(hwnd, client_h);
+            Some(LRESULT(0))
+        }
+        WM_APP_SPONSORS => Some(on_app_sponsors(hwnd, lparam)),
+        WM_DPICHANGED => {
+            wm_dpichanged(hwnd, lparam);
+            Some(LRESULT(0))
+        }
+        WM_CLOSE => {
+            crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
+            let _ = DestroyWindow(hwnd);
+            Some(LRESULT(0))
+        }
+        WM_DESTROY => Some(on_destroy(hwnd)),
+        _ => None,
+    }
+}
+
+unsafe fn on_create(hwnd: HWND) -> LRESULT {
+    // Bring up GDI+ for this window's lifetime so the dark-mode owner-draw can
+    // render its toggle switches / icons / rounded buttons anti-aliased.
+    GDIP_TOKEN.with(|t| t.set(crate::gdip::startup()));
+    let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+        .unwrap()
+        .into();
+    build_controls(hwnd, hinst);
+    // Keep the hotkey-service status line live (so a self-heal on open,
+    // or a later stop, is reflected without reopening).
+    let _ = SetTimer(Some(hwnd), TIMER_SHOT_STATUS, 1000, None);
+    // Lazy, throttled, background update check: it never blocks this window
+    // opening, hits GitHub at most once a day (cached on disk in between), and
+    // stays silent unless a newer release exists — then it posts WM_APP_UPDATE
+    // to quietly nudge (no popup). See `update::lazy_check`.
+    let target = hwnd.0 as isize;
+    crate::update::lazy_check(move |tag| {
+        let raw = Box::into_raw(Box::new(tag));
+        let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(HWND(target as *mut core::ffi::c_void)),
+            crate::update::WM_APP_UPDATE,
+            WPARAM(0),
+            LPARAM(raw as isize),
+        );
+        if posted.is_err() {
+            // The window vanished before delivery — reclaim the boxed tag.
+            drop(Box::from_raw(raw));
+        }
+    });
+    // If already signed in for settings sync, pull the cloud copy in the
+    // background (applies to HKCU; takes effect for new thumbnails). No-op and
+    // zero network when signed out.
+    spawn_sync_pull(hwnd);
+    LRESULT(0)
+}
+
+unsafe fn on_update_available(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    // A lazy background check found a newer release. Reclaim the boxed tag and
+    // NON-intrusively relabel the "Check for updates" button into a quiet nudge
+    // (no popup); clicking it still opens the About box, whose status pill shows the
+    // update and offers the one-click install.
+    let tag = if lparam.0 != 0 {
+        *Box::from_raw(lparam.0 as *mut String)
+    } else {
+        String::new()
+    };
+    if let Ok(btn) = GetDlgItem(Some(hwnd), ID_CHECK_UPDATES) {
+        let label = if tag.is_empty() {
+            wide("Update available")
+        } else {
+            wide(&format!("Update to v{tag}"))
+        };
+        let _ = SetWindowTextW(btn, PCWSTR(label.as_ptr()));
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_app_sync(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    // A background sync op (sign-in / pull / disconnect) finished on a worker
+    // thread. Reclaim the boxed event and update the UI on this message thread.
+    if lparam.0 != 0 {
+        let event = *Box::from_raw(lparam.0 as *mut SyncEvent);
+        handle_sync_event(hwnd, event);
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_getminmaxinfo(lparam: LPARAM) -> LRESULT {
+    // Lock the WIDTH (vertical resize only) + a minimum height = the design
+    // size. (No-op until the first WM_SIZE captures the design dimensions.)
+    if let Some((w, h0)) = RESIZE.with(|s| s.borrow().as_ref().map(|st| (st.win_w, st.win_h0))) {
+        let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+        mmi.ptMinTrackSize.x = w;
+        mmi.ptMaxTrackSize.x = w;
+        mmi.ptMinTrackSize.y = h0;
+    }
+    LRESULT(0)
+}
+
+/// The sponsor feed arrived from the download thread: take ownership, show
+/// the first sponsor (replacing the placeholder), and start the timers.
+unsafe fn on_app_sponsors(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    if let Ok(banner) = GetDlgItem(Some(hwnd), ID_BANNER) {
+        let rot = lparam.0 as *mut SponsorRotator;
+        if !rot.is_null() {
+            // Swap in the new feed, freeing any prior one.
+            let prev = GetWindowLongPtrW(banner, GWLP_USERDATA) as *mut SponsorRotator;
+            let _ = KillTimer(Some(hwnd), TIMER_ROTATE);
+            SetWindowLongPtrW(banner, GWLP_USERDATA, rot as isize);
+            let r = &*rot;
+            // Free the bitmap currently in the static ONLY on the first
+            // swap (prev null = it still holds the embedded placeholder).
+            // A later feed's frames are rotator-owned and freed by
+            // drop_sponsor_rotator below, so freeing them here too would
+            // double-free that GDI object.
+            show_current_image(hwnd, banner, r, prev.is_null());
+            if r.rotates() {
+                let _ = SetTimer(Some(hwnd), TIMER_ROTATE, r.rotate_ms, None);
             }
-            crate::update::WM_APP_UPDATE => {
-                // A lazy background check found a newer release. Reclaim the boxed tag and
-                // NON-intrusively relabel the "Check for updates" button into a quiet nudge
-                // (no popup); clicking it still opens the About box, whose status pill shows the
-                // update and offers the one-click install.
-                let tag = if lparam.0 != 0 {
-                    *Box::from_raw(lparam.0 as *mut String)
-                } else {
-                    String::new()
-                };
-                if let Ok(btn) = GetDlgItem(Some(hwnd), ID_CHECK_UPDATES) {
-                    let label = if tag.is_empty() {
-                        wide("Update available")
-                    } else {
-                        wide(&format!("Update to v{tag}"))
-                    };
-                    let _ = SetWindowTextW(btn, PCWSTR(label.as_ptr()));
+            if !prev.is_null() {
+                // The banner tooltip pulls its text by pointer from the
+                // shown sponsor (callback-driven). If a hint for the *prev*
+                // feed is on screen, dismiss it (TTM_POP) before freeing
+                // that feed — otherwise it would point at freed memory.
+                let tip = HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut c_void);
+                if !tip.is_invalid() {
+                    SendMessageW(tip, TTM_POP, None, None);
                 }
-                LRESULT(0)
+                drop_sponsor_rotator(prev);
             }
-            WM_APP_SYNC => {
-                // A background sync op (sign-in / pull / disconnect) finished on a worker
-                // thread. Reclaim the boxed event and update the UI on this message thread.
-                if lparam.0 != 0 {
-                    let event = *Box::from_raw(lparam.0 as *mut SyncEvent);
-                    handle_sync_event(hwnd, event);
-                }
-                LRESULT(0)
+        }
+    } else {
+        drop_sponsor_rotator(lparam.0 as *mut SponsorRotator); // window gone
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
+    let _ = KillTimer(Some(hwnd), TIMER_SHOT_STATUS);
+    // Stop + free the sponsor rotation (both timers + every sponsor's bitmaps).
+    if let Ok(banner) = GetDlgItem(Some(hwnd), ID_BANNER) {
+        let _ = KillTimer(Some(hwnd), TIMER_BANNER);
+        let _ = KillTimer(Some(hwnd), TIMER_ROTATE);
+        let rot = GetWindowLongPtrW(banner, GWLP_USERDATA) as *mut SponsorRotator;
+        if !rot.is_null() {
+            SetWindowLongPtrW(banner, GWLP_USERDATA, 0);
+            drop_sponsor_rotator(rot);
+        } else {
+            // No sponsor feed ever installed (the gate passed — the manifest
+            // listed sponsors — but every image download/decode failed, so
+            // WM_APP_SPONSORS never posted a rotator). The banner still holds
+            // the embedded placeholder set in build_controls; a STATIC does
+            // NOT free a STM_SETIMAGE bitmap, so reclaim it here or it leaks
+            // one GDI bitmap per opened Settings window.
+            let prev = SendMessageW(
+                banner,
+                STM_SETIMAGE,
+                Some(WPARAM(IMAGE_BITMAP.0 as usize)),
+                Some(LPARAM(0)),
+            );
+            if prev.0 != 0 {
+                let _ = DeleteObject(HGDIOBJ(prev.0 as *mut c_void));
             }
-            WM_GETMINMAXINFO => {
-                // Lock the WIDTH (vertical resize only) + a minimum height = the design
-                // size. (No-op until the first WM_SIZE captures the design dimensions.)
-                if let Some((w, h0)) =
-                    RESIZE.with(|s| s.borrow().as_ref().map(|st| (st.win_w, st.win_h0)))
-                {
-                    let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
-                    mmi.ptMinTrackSize.x = w;
-                    mmi.ptMaxTrackSize.x = w;
-                    mmi.ptMinTrackSize.y = h0;
-                }
-                LRESULT(0)
-            }
-            WM_SIZE => {
-                let client_h = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                on_resize(hwnd, client_h);
-                LRESULT(0)
-            }
-            WM_COMMAND => {
-                let id = (wparam.0 & 0xFFFF) as i32;
-                let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
-                match id {
-                    IDOK => {
-                        apply_settings(hwnd); // Save = apply only, keep the window open
-                        spawn_sync_push(hwnd); // if signed in, mirror the change to the cloud
-                    }
-                    IDCANCEL => {
-                        crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
-                        let _ = DestroyWindow(hwnd);
-                    }
-                    ID_SELECT_ALL | ID_CLEAR_ALL => {
-                        // Affects the currently-shown (filtered) rows; the model
-                        // syncs via LVN_ITEMCHANGED, so off-screen formats are kept.
-                        if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
-                            let on = id == ID_SELECT_ALL;
-                            let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
-                            for i in 0..count {
-                                set_check(list, i, on);
-                            }
-                        }
-                    }
-                    // Settings-wide search: filter on every keystroke, jump on pick.
-                    ID_SEARCH_GLOBAL if notify == EN_CHANGE => search::on_change(hwnd),
-                    ID_SEARCH_RESULTS if notify == LBN_SELCHANGE => search::on_pick(hwnd),
-                    ID_SEARCH if notify == EN_CHANGE => {
-                        if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
-                            let text = get_edit_text(hwnd, ID_SEARCH);
-                            // EN_CHANGE fires on every keystroke, and populate_list
-                            // deletes + reinserts all FORMATS rows. Skip that whole rebuild
-                            // when the NORMALIZED filter hasn't actually changed (a no-op
-                            // edit, case-only change, or trailing whitespace).
-                            let needle = text.trim().to_lowercase();
-                            let changed = LAST_FILTER.with(|f| {
-                                let mut f = f.borrow_mut();
-                                if f.as_deref() == Some(needle.as_str()) {
-                                    false
-                                } else {
-                                    *f = Some(needle);
-                                    true
-                                }
-                            });
-                            if changed {
-                                populate_list(list, &text);
-                            }
-                        }
-                    }
-                    ID_DEFAULTS => reset_formats(hwnd), // file-type list only (see its tip)
-                    ID_RESET_ALL => load_defaults(hwnd), // whole dialog → factory defaults
-                    ID_MENU_RESET => {
-                        if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
-                            list::reset_menu_order(mlist);
-                        }
-                    }
-                    // The checklist itself lives in a popup editor now — room it never
-                    // had on the page, and the page gets its breathing space back.
-                    ID_MENU_ITEMS_EDIT => menuitems::open(hwnd),
-                    // Instant-screenshot checkbox: enable/disable its hotkey picker live —
-                    // and re-grey its dependent rows (Quick screenshot / save-folder toggle).
-                    ID_SHOT_ENABLE => {
-                        refresh_shot_status(hwnd);
-                        sync_dependent_switches(hwnd);
-                    }
-                    ID_SHOT_QUICK_ENABLE => update_quick_enabled(hwnd),
-                    ID_CUSTOM_ACTION_ENABLE => update_custom_action_enabled(hwnd),
-                    ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
-                    // Parent switches with greyed dependents (the menu rows, the Quick-preview
-                    // rows): one table drives them all — see `DEPENDENT_SWITCHES`.
-                    ID_ENABLE_MENU | ID_PREVIEW_ENABLED => sync_dependent_switches(hwnd),
-                    // The badge-style row's parent is a COMBO, not a checkbox, so it arrives as
-                    // a selection change rather than a click — see `DEPENDENT_ON_COMBO`.
-                    ID_CORNER_MARK if notify == CBN_SELCHANGE => sync_dependent_switches(hwnd),
-                    ID_SYNC_BTN => on_sync_click(hwnd),
-                    ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH => {
-                        nudge::on_command(hwnd, id);
-                    }
-                    ID_SHOT_SET_DIR => {
-                        // Pick the Ctrl+S save folder; persist immediately + refresh the
-                        // display. (The toggle next to it is saved with the other settings
-                        // on the Save button.)
-                        if let Some(dir) = crate::win::pick_folder(hwnd) {
-                            let _ = settings::set_screenshot_save_dir(&dir);
-                            set_shot_dir_label(hwnd);
-                        }
-                    }
-                    ID_SHOT_RESTART => {
-                        // (Re)start the tray daemon: ensure the autostart entry + a
-                        // live daemon, then re-register the current hotkey. Tick the
-                        // Enable box to match, and show an optimistic status (the
-                        // daemon was just spawned; the true state shows on reopen).
-                        crate::screenshot::set_enabled(true);
-                        crate::screenshot::reload_hotkey();
-                        check(hwnd, ID_SHOT_ENABLE, true);
-                        set_shot_status(hwnd, "Started", true);
-                        // check() above is a raw BM_SETCHECK, not a click: it never sends
-                        // WM_COMMAND, so the normal ID_SHOT_ENABLE handler (which greys/ungreys
-                        // ID_SHOT_QUICK_ENABLE / ID_SHOT_USE_DIR) never runs on its own here.
-                        sync_dependent_switches(hwnd);
-                    }
-                    ID_LANG if notify == CBN_SELCHANGE => on_lang_change(hwnd),
-                    ID_ABOUT => show_about(hwnd),
-                    ID_OPEN_LOG => open_diagnostics_log(),
-                    ID_EDIT_UPLOAD_HOSTS => crate::screenshot::open_hosts_config(),
-                    ID_EXPORT => export_settings_to_file(hwnd),
-                    ID_IMPORT => import_settings_from_file(hwnd),
-                    ID_REBUILD_CACHE => rebuild_thumbnail_cache(hwnd),
-                    ID_REPAIR_ASSOC => repair_associations(hwnd),
-                    // Owned modal, like the feedback box: Settings stays open behind it.
-                    ID_RUN_DOCTOR => crate::doctor_report::run_doctor_report(Some(hwnd)),
-                    ID_PORTABLE_REG => toggle_portable_registration(hwnd),
-                    ID_CHECK_UPDATES => show_about(hwnd),
-                    nav if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&nav)
-                        && notify == STN_CLICKED =>
-                    {
-                        switch_category(hwnd, (nav - ID_NAV_BASE) as usize);
-                    }
-                    ID_BANNER if notify == STN_CLICKED => {
-                        // Open the currently-shown sponsor's link (or the product page
-                        // if no sponsor feed loaded).
-                        let mut url = None;
-                        if let Some((_, rot)) = banner_rotator(hwnd) {
-                            let r = &*rot;
-                            if let Some(sponsor) = r.sponsors.get(r.cur) {
-                                url = Some(wstr_to_string(&sponsor.link));
-                            }
-                        }
-                        match url {
-                            Some(u) if !u.is_empty() => open_url(&u),
-                            _ => open_url(URL_PRODUCT),
-                        }
-                    }
-                    _ => {}
-                }
-                LRESULT(0)
-            }
-            // A footer SysLink or the banner tooltip is asking for its rotating text.
-            WM_NOTIFY => {
-                let nmhdr = lparam.0 as *const NMHDR;
-                let code = (*nmhdr).code;
-                // Drag-to-reorder the "Menu items" checklist: begin on LVN_BEGINDRAG.
-                if code == windows::Win32::UI::Controls::LVN_BEGINDRAG
-                    && (*nmhdr).hwndFrom
-                        == GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST).unwrap_or_default()
-                {
-                    let nmlv = lparam.0 as *const NMLISTVIEW;
-                    list::begin_menu_drag((*nmhdr).hwndFrom, (*nmlv).iItem);
-                    return LRESULT(0);
-                }
-                // Dark-mode modern restyle: own the paint of the format list, the
-                // push buttons and the checkboxes via NM_CUSTOMDRAW. Light mode
-                // returns nothing here, so the native themed look is unchanged.
-                if code == NM_CUSTOMDRAW {
-                    let from = (*nmhdr).hwndFrom;
-                    if from == GetDlgItem(Some(hwnd), ID_LIST).unwrap_or_default() {
-                        return LRESULT(restyle::draw_list_item(lparam.0 as *mut NMLVCUSTOMDRAW));
-                    }
-                    if is_button_class(from) {
-                        return LRESULT(restyle::draw_button_cd(
-                            hwnd,
-                            lparam.0 as *const NMCUSTOMDRAW,
-                        ));
-                    }
-                    // SysLink credit etc. — let it draw itself.
-                    return LRESULT(CDRF_DODEFAULT as isize);
-                }
-                // A FORMAT row's checkbox toggled → sync the model (FMT_STATE). Gate on
-                // the source being the format list: the Menu-items checklist is also a
-                // checkbox ListView and must NOT feed FMT_STATE (its state is read
-                // directly in apply_settings).
-                if code == LVN_ITEMCHANGED
-                    && (*nmhdr).hwndFrom == GetDlgItem(Some(hwnd), ID_LIST).unwrap_or_default()
-                    && !POPULATING.with(|p| p.get())
-                {
-                    let nmlv = lparam.0 as *const NMLISTVIEW;
-                    if ((*nmlv).uChanged.0 & LVIF_STATE.0) != 0 {
-                        let oldc = (*nmlv).uOldState & 0x3000;
-                        let newc = (*nmlv).uNewState & 0x3000;
-                        if oldc != newc {
-                            let idx = (*nmlv).lParam.0 as usize;
-                            let on = newc == CHECKED;
-                            FMT_STATE.with(|s| {
-                                if let Some(v) = s.borrow_mut().get_mut(idx) {
-                                    *v = on;
-                                }
-                            });
-                        }
-                    }
-                    return LRESULT(0);
-                }
-                if code == NM_CLICK || code == NM_RETURN {
-                    let link = lparam.0 as *const NMLINK;
-                    let url = wstr_to_string(&(*link).item.szUrl);
-                    if !url.is_empty() {
-                        open_url(&url);
-                    }
-                } else if code == TTN_GETDISPINFOW {
-                    // Banner hover: hand back the current sponsor's tooltip. The buffer
-                    // lives in the SponsorRotator (stable until WM_DESTROY frees it).
-                    if let Some((banner, rot)) = banner_rotator(hwnd) {
-                        if (*nmhdr).idFrom == banner.0 as usize {
-                            let r = &*rot;
-                            if let Some(sponsor) = r.sponsors.get(r.cur) {
-                                let di = lparam.0 as *mut NMTTDISPINFOW;
-                                (*di).lpszText = PWSTR(sponsor.tip.as_ptr() as *mut u16);
-                            }
-                        }
-                    }
-                }
-                LRESULT(0)
-            }
-            // Right-click / Shift+F10 on the format list → bulk check/uncheck menu.
-            WM_CONTEXTMENU
-                if HWND(wparam.0 as *mut c_void)
-                    == GetDlgItem(Some(hwnd), ID_LIST).unwrap_or_default() =>
-            {
-                list::list_context_menu(HWND(wparam.0 as *mut c_void), hwnd, lparam);
-                LRESULT(0)
-            }
-            // Owner-drawn dark context-menu items (light text on dark).
-            WM_MEASUREITEM => {
-                let m = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
-                if m.CtlID == ID_SEARCH_RESULTS as u32 {
-                    search::measure_row(hwnd, m);
-                    return LRESULT(1);
-                }
-                if m.CtlType == ODT_MENU {
-                    let label = wide(list::ctx_menu_label(m.itemID as usize));
-                    let n = label.len().saturating_sub(1);
-                    let hdc = GetDC(Some(hwnd));
-                    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
-                    let mut sz = SIZE::default();
-                    let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
-                    SelectObject(hdc, old);
-                    ReleaseDC(Some(hwnd), hdc);
-                    m.itemWidth = (sz.cx + 30) as u32;
-                    m.itemHeight = 26;
-                    LRESULT(1)
-                } else {
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-            }
-            WM_DRAWITEM => {
-                let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
-                if d.CtlID == ID_SEARCH_RESULTS as u32 {
-                    search::draw_row(hwnd, d);
-                    return LRESULT(1);
-                }
-                if d.CtlType == ODT_MENU {
-                    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
-                    let bg = if selected {
-                        dark_menu_sel_brush()
-                    } else {
-                        dark_menu_brush()
-                    };
-                    FillRect(d.hDC, &d.rcItem, bg);
-                    SetBkMode(d.hDC, TRANSPARENT);
-                    SetTextColor(d.hDC, DARK_TEXT());
-                    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
-                    let mut label = wide(list::ctx_menu_label(d.itemID as usize));
-                    let n = label.len().saturating_sub(1);
-                    let mut rc = d.rcItem;
-                    rc.left += 14;
-                    DrawTextW(
-                        d.hDC,
-                        &mut label[..n],
-                        &mut rc,
-                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-                    );
-                    LRESULT(1)
-                } else if d.CtlType == ODT_STATIC {
-                    let cid = d.CtlID as i32;
-                    if d.CtlID == ID_LEFT_MASK as u32 {
-                        scroll::draw_left_mask(hwnd, d);
-                    } else if cid == ID_NUDGE_CARD {
-                        nudge::draw_card(hwnd, d);
-                    } else if cid == ID_PANE_HEADER {
-                        draw_pane_header(hwnd, d);
-                    } else if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&cid) {
-                        let active =
-                            NAV.with(|n| n.borrow().active) == (cid - ID_NAV_BASE) as usize;
-                        draw_nav_item(hwnd, d, active);
-                    } else {
-                        // The owner-drawn section headers (uppercase label + divider).
-                        restyle::draw_section_header(hwnd, d);
-                    }
-                    LRESULT(1)
-                } else {
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-            }
-            // Hand cursor over the clickable banner (so it reads as clickable).
-            WM_SETCURSOR
-                if HWND(wparam.0 as *mut c_void)
-                    == GetDlgItem(Some(hwnd), ID_BANNER).unwrap_or_default() =>
-            {
-                let _ = SetCursor(LoadCursorW(None, IDC_HAND).ok());
-                LRESULT(1)
-            }
-            // The sponsor feed arrived from the download thread: take ownership, show
-            // the first sponsor (replacing the placeholder), and start the timers.
-            WM_APP_SPONSORS => {
-                if let Ok(banner) = GetDlgItem(Some(hwnd), ID_BANNER) {
-                    let rot = lparam.0 as *mut SponsorRotator;
-                    if !rot.is_null() {
-                        // Swap in the new feed, freeing any prior one.
-                        let prev = GetWindowLongPtrW(banner, GWLP_USERDATA) as *mut SponsorRotator;
-                        let _ = KillTimer(Some(hwnd), TIMER_ROTATE);
-                        SetWindowLongPtrW(banner, GWLP_USERDATA, rot as isize);
-                        let r = &*rot;
-                        // Free the bitmap currently in the static ONLY on the first
-                        // swap (prev null = it still holds the embedded placeholder).
-                        // A later feed's frames are rotator-owned and freed by
-                        // drop_sponsor_rotator below, so freeing them here too would
-                        // double-free that GDI object.
-                        show_current_image(hwnd, banner, r, prev.is_null());
-                        if r.rotates() {
-                            let _ = SetTimer(Some(hwnd), TIMER_ROTATE, r.rotate_ms, None);
-                        }
-                        if !prev.is_null() {
-                            // The banner tooltip pulls its text by pointer from the
-                            // shown sponsor (callback-driven). If a hint for the *prev*
-                            // feed is on screen, dismiss it (TTM_POP) before freeing
-                            // that feed — otherwise it would point at freed memory.
-                            let tip = HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut c_void);
-                            if !tip.is_invalid() {
-                                SendMessageW(tip, TTM_POP, None, None);
-                            }
-                            drop_sponsor_rotator(prev);
-                        }
-                    }
-                } else {
-                    drop_sponsor_rotator(lparam.0 as *mut SponsorRotator); // window gone
-                }
-                LRESULT(0)
-            }
-            // Keep the hotkey-service status line honest while the dialog is open.
-            WM_TIMER if wparam.0 == TIMER_SHOT_STATUS => {
-                refresh_shot_status(hwnd);
-                LRESULT(0)
-            }
-            // Advance the current image's GIF animation one frame (frames are reused
-            // each loop, so don't free the prior one; WM_DESTROY frees them all).
-            WM_TIMER if wparam.0 == TIMER_BANNER => {
-                if let Some((banner, rot)) = banner_rotator(hwnd) {
-                    let r = &mut *rot;
-                    let (cur, imgi) = (r.cur, r.img);
-                    let nframes = r
-                        .sponsors
-                        .get(cur)
-                        .and_then(|a| a.images.get(imgi))
-                        .map_or(0, |im| im.frames.len());
-                    if nframes > 1 {
-                        r.frame = (r.frame + 1) % nframes;
-                        let f = r.sponsors[cur].images[imgi].frames[r.frame];
-                        SendMessageW(
-                            banner,
-                            STM_SETIMAGE,
-                            Some(WPARAM(IMAGE_BITMAP.0 as usize)),
-                            Some(LPARAM(f)),
-                        );
-                    }
-                }
-                LRESULT(0)
-            }
-            // Rotate to the next sponsor / image: advance the rotator, then show the
-            // new art (raw STM_SETIMAGE so the prior bitmap survives — the rotator
-            // still owns it). The tooltip pulls the fresh text on the next hover.
-            WM_TIMER if wparam.0 == TIMER_ROTATE => {
-                if let Some((banner, rot)) = banner_rotator(hwnd) {
-                    (*rot).advance();
-                    show_current_image(hwnd, banner, &*rot, false);
-                }
-                LRESULT(0)
-            }
-            // All background painting is owned by WM_PAINT (double-buffered below), so
-            // suppress the default erase: returning 1 stops DefWindowProcW from filling
-            // the invalid band with the class brush as a SEPARATE deferred frame — that
-            // erase-then-paint two-step is the white/gray flash on a fast left scroll.
-            WM_ERASEBKGND => LRESULT(1),
-            // Paint the dialog background + the "chrome" (rounded list card / input +
-            // dropdown field frames behind their controls / hairline dividers) into an
-            // off-screen buffer, then blit once — so the fill and the chrome land in the
-            // SAME frame instead of flashing the bare background between them. The blit is
-            // clipped to non-child pixels by WS_CLIPCHILDREN, so the child controls keep
-            // their own (SetWindowPos-preserved) pixels and aren't briefly overpainted.
-            // The fill brush MIRRORS the class hbrBackground (main.rs) exactly so light
-            // mode is byte-identical to before (COLOR_BTNFACE, not the 243 surface tone).
-            WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                let pr = ps.rcPaint;
-                let (pw, ph) = (pr.right - pr.left, pr.bottom - pr.top);
-                if pw > 0 && ph > 0 {
-                    let br = if is_dark() {
-                        dark_bg_brush()
-                    } else {
-                        HBRUSH(16isize as *mut c_void)
-                    };
-                    let mem = CreateCompatibleDC(Some(hdc));
-                    let bmp = CreateCompatibleBitmap(hdc, pw, ph);
-                    // Under GDI handle exhaustion either call can come back invalid, so mirror
-                    // preview/paint.rs's fallback rather than blitting from an unset default
-                    // bitmap (which would paint garbage/black instead of the real chrome).
-                    if !mem.is_invalid() && !bmp.is_invalid() {
-                        let old = SelectObject(mem, HGDIOBJ(bmp.0));
-                        // Map client coords onto the dirty-rect-sized buffer so paint_chrome
-                        // (which works in client coords) draws into the right place.
-                        let _ = SetViewportOrgEx(mem, -pr.left, -pr.top, None);
-                        FillRect(mem, &pr, br);
-                        restyle::paint_chrome(hwnd, mem);
-                        let _ = SetViewportOrgEx(mem, 0, 0, None);
-                        let _ = BitBlt(hdc, pr.left, pr.top, pw, ph, Some(mem), 0, 0, SRCCOPY);
-                        SelectObject(mem, old);
-                    } else {
-                        // Buffer alloc failed: paint straight to the window DC (correct,
-                        // just flickers on a fast scroll instead of blitting garbage).
-                        FillRect(hdc, &pr, br);
-                        restyle::paint_chrome(hwnd, hdc);
-                    }
-                    if !bmp.is_invalid() {
-                        let _ = DeleteObject(HGDIOBJ(bmp.0));
-                    }
-                    if !mem.is_invalid() {
-                        let _ = DeleteDC(mem);
-                    }
-                }
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
-            }
-            // Left-column scrolling (dark mode): the scrollbar + the mouse wheel.
-            WM_VSCROLL => {
-                scroll::on_vscroll(hwnd, wparam, lparam);
-                LRESULT(0)
-            }
-            WM_MOUSEWHEEL => {
-                let wheel = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
-                let pos = scroll::SCROLL.with(|s| s.borrow().pos);
-                scroll::scroll_to(hwnd, pos - wheel / 120 * dpi_scale(hwnd, 42));
-                LRESULT(0)
-            }
-            WM_DPICHANGED => {
-                wm_dpichanged(hwnd, lparam);
-                LRESULT(0)
-            }
-            WM_CLOSE => {
-                crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
-                let _ = DestroyWindow(hwnd);
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                let _ = KillTimer(Some(hwnd), TIMER_SHOT_STATUS);
-                // Stop + free the sponsor rotation (both timers + every sponsor's bitmaps).
-                if let Ok(banner) = GetDlgItem(Some(hwnd), ID_BANNER) {
-                    let _ = KillTimer(Some(hwnd), TIMER_BANNER);
-                    let _ = KillTimer(Some(hwnd), TIMER_ROTATE);
-                    let rot = GetWindowLongPtrW(banner, GWLP_USERDATA) as *mut SponsorRotator;
-                    if !rot.is_null() {
-                        SetWindowLongPtrW(banner, GWLP_USERDATA, 0);
-                        drop_sponsor_rotator(rot);
-                    } else {
-                        // No sponsor feed ever installed (the gate passed — the manifest
-                        // listed sponsors — but every image download/decode failed, so
-                        // WM_APP_SPONSORS never posted a rotator). The banner still holds
-                        // the embedded placeholder set in build_controls; a STATIC does
-                        // NOT free a STM_SETIMAGE bitmap, so reclaim it here or it leaks
-                        // one GDI bitmap per opened Settings window.
-                        let prev = SendMessageW(
-                            banner,
-                            STM_SETIMAGE,
-                            Some(WPARAM(IMAGE_BITMAP.0 as usize)),
-                            Some(LPARAM(0)),
-                        );
-                        if prev.0 != 0 {
-                            let _ = DeleteObject(HGDIOBJ(prev.0 as *mut c_void));
-                        }
-                    }
-                }
-                scroll::SCROLL.with(|s| *s.borrow_mut() = scroll::ScrollData::default());
-                GDIP_TOKEN.with(|t| {
-                    let tok = t.replace(0);
-                    if tok != 0 {
-                        crate::gdip::shutdown(tok);
-                    }
-                });
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+    scroll::SCROLL.with(|s| *s.borrow_mut() = scroll::ScrollData::default());
+    GDIP_TOKEN.with(|t| {
+        let tok = t.replace(0);
+        if tok != 0 {
+            crate::gdip::shutdown(tok);
+        }
+    });
+    PostQuitMessage(0);
+    LRESULT(0)
+}
+
+/// WM_COMMAND (button clicks / menu picks / control notifications) and WM_NOTIFY (list
+/// custom-draw, drag-reorder, tooltips) — plus the format list's context menu, which is
+/// keyed off the same target control as the format list's other notifications.
+unsafe fn on_command_or_notify_msg(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    match msg {
+        WM_COMMAND => Some(on_command(hwnd, wparam)),
+        // A footer SysLink or the banner tooltip is asking for its rotating text.
+        WM_NOTIFY => Some(on_notify(hwnd, lparam)),
+        // Right-click / Shift+F10 on the format list → bulk check/uncheck menu.
+        WM_CONTEXTMENU
+            if HWND(wparam.0 as *mut c_void)
+                == GetDlgItem(Some(hwnd), ID_LIST).unwrap_or_default() =>
+        {
+            list::list_context_menu(HWND(wparam.0 as *mut c_void), hwnd, lparam);
+            Some(LRESULT(0))
+        }
+        _ => None,
+    }
+}
+
+unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    let id = (wparam.0 & 0xFFFF) as i32;
+    let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+    on_command_dialog(hwnd, id, notify);
+    on_command_shot(hwnd, id);
+    on_command_sync_nav(hwnd, id, notify);
+    on_command_admin(hwnd, id);
+    LRESULT(0)
+}
+
+/// Core dialog chrome: Save/Cancel, the file-type list's bulk toggles + search + reset,
+/// and the menu-items list's reset/editor.
+unsafe fn on_command_dialog(hwnd: HWND, id: i32, notify: u32) {
+    match id {
+        IDOK => {
+            apply_settings(hwnd); // Save = apply only, keep the window open
+            spawn_sync_push(hwnd); // if signed in, mirror the change to the cloud
+        }
+        IDCANCEL => {
+            crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
+            let _ = DestroyWindow(hwnd);
+        }
+        ID_SELECT_ALL | ID_CLEAR_ALL => on_select_clear_all(hwnd, id),
+        // Settings-wide search: filter on every keystroke, jump on pick.
+        ID_SEARCH_GLOBAL if notify == EN_CHANGE => search::on_change(hwnd),
+        ID_SEARCH_RESULTS if notify == LBN_SELCHANGE => search::on_pick(hwnd),
+        ID_SEARCH if notify == EN_CHANGE => on_search_filter_changed(hwnd),
+        ID_DEFAULTS => reset_formats(hwnd), // file-type list only (see its tip)
+        ID_RESET_ALL => load_defaults(hwnd), // whole dialog → factory defaults
+        ID_MENU_RESET => {
+            if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
+                list::reset_menu_order(mlist);
+            }
+        }
+        // The checklist itself lives in a popup editor now — room it never
+        // had on the page, and the page gets its breathing space back.
+        ID_MENU_ITEMS_EDIT => menuitems::open(hwnd),
+        _ => {}
+    }
+}
+
+/// Affects the currently-shown (filtered) rows; the model
+/// syncs via LVN_ITEMCHANGED, so off-screen formats are kept.
+unsafe fn on_select_clear_all(hwnd: HWND, id: i32) {
+    if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
+        let on = id == ID_SELECT_ALL;
+        let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
+        for i in 0..count {
+            set_check(list, i, on);
+        }
+    }
+}
+
+unsafe fn on_search_filter_changed(hwnd: HWND) {
+    if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
+        let text = get_edit_text(hwnd, ID_SEARCH);
+        // EN_CHANGE fires on every keystroke, and populate_list
+        // deletes + reinserts all FORMATS rows. Skip that whole rebuild
+        // when the NORMALIZED filter hasn't actually changed (a no-op
+        // edit, case-only change, or trailing whitespace).
+        let needle = text.trim().to_lowercase();
+        let changed = LAST_FILTER.with(|f| {
+            let mut f = f.borrow_mut();
+            if f.as_deref() == Some(needle.as_str()) {
+                false
+            } else {
+                *f = Some(needle);
+                true
+            }
+        });
+        if changed {
+            populate_list(list, &text);
+        }
+    }
+}
+
+/// The screenshot-tool controls: instant-screenshot / quick-save / custom-action
+/// enable toggles, the save-folder picker + toggle, and the restart button.
+unsafe fn on_command_shot(hwnd: HWND, id: i32) {
+    match id {
+        // Instant-screenshot checkbox: enable/disable its hotkey picker live —
+        // and re-grey its dependent rows (Quick screenshot / save-folder toggle).
+        ID_SHOT_ENABLE => {
+            refresh_shot_status(hwnd);
+            sync_dependent_switches(hwnd);
+        }
+        ID_SHOT_QUICK_ENABLE => update_quick_enabled(hwnd),
+        ID_CUSTOM_ACTION_ENABLE => update_custom_action_enabled(hwnd),
+        ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
+        ID_SHOT_SET_DIR => on_shot_set_dir(hwnd),
+        ID_SHOT_RESTART => on_shot_restart(hwnd),
+        ID_EDIT_UPLOAD_HOSTS => crate::screenshot::open_hosts_config(),
+        _ => {}
+    }
+}
+
+/// Pick the Ctrl+S save folder; persist immediately + refresh the
+/// display. (The toggle next to it is saved with the other settings
+/// on the Save button.)
+unsafe fn on_shot_set_dir(hwnd: HWND) {
+    if let Some(dir) = crate::win::pick_folder(hwnd) {
+        let _ = settings::set_screenshot_save_dir(&dir);
+        set_shot_dir_label(hwnd);
+    }
+}
+
+/// (Re)start the tray daemon: ensure the autostart entry + a
+/// live daemon, then re-register the current hotkey. Tick the
+/// Enable box to match, and show an optimistic status (the
+/// daemon was just spawned; the true state shows on reopen).
+unsafe fn on_shot_restart(hwnd: HWND) {
+    crate::screenshot::set_enabled(true);
+    crate::screenshot::reload_hotkey();
+    check(hwnd, ID_SHOT_ENABLE, true);
+    set_shot_status(hwnd, "Started", true);
+    // check() above is a raw BM_SETCHECK, not a click: it never sends
+    // WM_COMMAND, so the normal ID_SHOT_ENABLE handler (which greys/ungreys
+    // ID_SHOT_QUICK_ENABLE / ID_SHOT_USE_DIR) never runs on its own here.
+    sync_dependent_switches(hwnd);
+}
+
+/// Dependent-switch fan-out (menu rows, Quick-preview rows), the sync button, the
+/// sign-in nudge card, the language combo, the nav rail, and the sponsor banner.
+unsafe fn on_command_sync_nav(hwnd: HWND, id: i32, notify: u32) {
+    match id {
+        // Parent switches with greyed dependents (the menu rows, the Quick-preview
+        // rows): one table drives them all — see `DEPENDENT_SWITCHES`.
+        ID_ENABLE_MENU | ID_PREVIEW_ENABLED => sync_dependent_switches(hwnd),
+        // The badge-style row's parent is a COMBO, not a checkbox, so it arrives as
+        // a selection change rather than a click — see `DEPENDENT_ON_COMBO`.
+        ID_CORNER_MARK if notify == CBN_SELCHANGE => sync_dependent_switches(hwnd),
+        ID_SYNC_BTN => on_sync_click(hwnd),
+        ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH => {
+            nudge::on_command(hwnd, id);
+        }
+        ID_LANG if notify == CBN_SELCHANGE => on_lang_change(hwnd),
+        nav if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&nav) && notify == STN_CLICKED => {
+            switch_category(hwnd, (nav - ID_NAV_BASE) as usize);
+        }
+        ID_BANNER if notify == STN_CLICKED => on_banner_click(hwnd),
+        _ => {}
+    }
+}
+
+/// Open the currently-shown sponsor's link (or the product page if no sponsor
+/// feed loaded).
+unsafe fn on_banner_click(hwnd: HWND) {
+    let mut url = None;
+    if let Some((_, rot)) = banner_rotator(hwnd) {
+        let r = &*rot;
+        if let Some(sponsor) = r.sponsors.get(r.cur) {
+            url = Some(wstr_to_string(&sponsor.link));
+        }
+    }
+    match url {
+        Some(u) if !u.is_empty() => open_url(&u),
+        _ => open_url(URL_PRODUCT),
+    }
+}
+
+/// The admin/diagnostics buttons: About, log, import/export, cache rebuild,
+/// association repair, the doctor report, portable registration, update check.
+unsafe fn on_command_admin(hwnd: HWND, id: i32) {
+    match id {
+        ID_ABOUT => show_about(hwnd),
+        ID_OPEN_LOG => open_diagnostics_log(),
+        ID_EXPORT => export_settings_to_file(hwnd),
+        ID_IMPORT => import_settings_from_file(hwnd),
+        ID_REBUILD_CACHE => rebuild_thumbnail_cache(hwnd),
+        ID_REPAIR_ASSOC => repair_associations(hwnd),
+        // Owned modal, like the feedback box: Settings stays open behind it.
+        ID_RUN_DOCTOR => crate::doctor_report::run_doctor_report(Some(hwnd)),
+        ID_PORTABLE_REG => toggle_portable_registration(hwnd),
+        ID_CHECK_UPDATES => show_about(hwnd),
+        _ => {}
+    }
+}
+
+unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let nmhdr = lparam.0 as *const NMHDR;
+    if let Some(r) = on_notify_begindrag(hwnd, nmhdr, lparam) {
+        return r;
+    }
+    // Dark-mode modern restyle: own the paint of the format list, the
+    // push buttons and the checkboxes via NM_CUSTOMDRAW. Light mode
+    // returns nothing here, so the native themed look is unchanged.
+    if (*nmhdr).code == NM_CUSTOMDRAW {
+        return on_notify_customdraw(hwnd, lparam);
+    }
+    if let Some(r) = on_notify_itemchanged(hwnd, nmhdr, lparam) {
+        return r;
+    }
+    on_notify_link_or_tip(hwnd, nmhdr, lparam)
+}
+
+/// Drag-to-reorder the "Menu items" checklist: begin on LVN_BEGINDRAG.
+unsafe fn on_notify_begindrag(hwnd: HWND, nmhdr: *const NMHDR, lparam: LPARAM) -> Option<LRESULT> {
+    if (*nmhdr).code == windows::Win32::UI::Controls::LVN_BEGINDRAG
+        && (*nmhdr).hwndFrom == GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST).unwrap_or_default()
+    {
+        let nmlv = lparam.0 as *const NMLISTVIEW;
+        list::begin_menu_drag((*nmhdr).hwndFrom, (*nmlv).iItem);
+        return Some(LRESULT(0));
+    }
+    None
+}
+
+unsafe fn on_notify_customdraw(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let nmhdr = lparam.0 as *const NMHDR;
+    let from = (*nmhdr).hwndFrom;
+    if from == GetDlgItem(Some(hwnd), ID_LIST).unwrap_or_default() {
+        return LRESULT(restyle::draw_list_item(lparam.0 as *mut NMLVCUSTOMDRAW));
+    }
+    if is_button_class(from) {
+        return LRESULT(restyle::draw_button_cd(
+            hwnd,
+            lparam.0 as *const NMCUSTOMDRAW,
+        ));
+    }
+    // SysLink credit etc. — let it draw itself.
+    LRESULT(CDRF_DODEFAULT as isize)
+}
+
+/// A FORMAT row's checkbox toggled → sync the model (FMT_STATE). Gate on
+/// the source being the format list: the Menu-items checklist is also a
+/// checkbox ListView and must NOT feed FMT_STATE (its state is read
+/// directly in apply_settings).
+unsafe fn on_notify_itemchanged(
+    hwnd: HWND,
+    nmhdr: *const NMHDR,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    if (*nmhdr).code != LVN_ITEMCHANGED
+        || (*nmhdr).hwndFrom != GetDlgItem(Some(hwnd), ID_LIST).unwrap_or_default()
+        || POPULATING.with(|p| p.get())
+    {
+        return None;
+    }
+    let nmlv = lparam.0 as *const NMLISTVIEW;
+    if ((*nmlv).uChanged.0 & LVIF_STATE.0) != 0 {
+        let oldc = (*nmlv).uOldState & 0x3000;
+        let newc = (*nmlv).uNewState & 0x3000;
+        if oldc != newc {
+            let idx = (*nmlv).lParam.0 as usize;
+            let on = newc == CHECKED;
+            FMT_STATE.with(|s| {
+                if let Some(v) = s.borrow_mut().get_mut(idx) {
+                    *v = on;
+                }
+            });
+        }
+    }
+    Some(LRESULT(0))
+}
+
+unsafe fn on_notify_link_or_tip(hwnd: HWND, nmhdr: *const NMHDR, lparam: LPARAM) -> LRESULT {
+    let code = (*nmhdr).code;
+    if code == NM_CLICK || code == NM_RETURN {
+        let link = lparam.0 as *const NMLINK;
+        let url = wstr_to_string(&(*link).item.szUrl);
+        if !url.is_empty() {
+            open_url(&url);
+        }
+    } else if code == TTN_GETDISPINFOW {
+        // Banner hover: hand back the current sponsor's tooltip. The buffer
+        // lives in the SponsorRotator (stable until WM_DESTROY frees it).
+        if let Some((banner, rot)) = banner_rotator(hwnd) {
+            if (*nmhdr).idFrom == banner.0 as usize {
+                let r = &*rot;
+                if let Some(sponsor) = r.sponsors.get(r.cur) {
+                    let di = lparam.0 as *mut NMTTDISPINFOW;
+                    (*di).lpszText = PWSTR(sponsor.tip.as_ptr() as *mut u16);
+                }
+            }
+        }
+    }
+    LRESULT(0)
+}
+
+/// Owner-draw + cursor messages: the dark context-menu items, the format-list /
+/// nudge-card / nav-rail / section-header owner-draw statics, the banner's hand
+/// cursor, and the double-buffered WM_PAINT.
+unsafe fn on_paint_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    match msg {
+        // Owner-drawn dark context-menu items (light text on dark).
+        WM_MEASUREITEM => Some(on_measureitem(hwnd, msg, wparam, lparam)),
+        WM_DRAWITEM => Some(on_drawitem(hwnd, msg, wparam, lparam)),
+        // Hand cursor over the clickable banner (so it reads as clickable).
+        WM_SETCURSOR
+            if HWND(wparam.0 as *mut c_void)
+                == GetDlgItem(Some(hwnd), ID_BANNER).unwrap_or_default() =>
+        {
+            let _ = SetCursor(LoadCursorW(None, IDC_HAND).ok());
+            Some(LRESULT(1))
+        }
+        // All background painting is owned by WM_PAINT (double-buffered below), so
+        // suppress the default erase: returning 1 stops DefWindowProcW from filling
+        // the invalid band with the class brush as a SEPARATE deferred frame — that
+        // erase-then-paint two-step is the white/gray flash on a fast left scroll.
+        WM_ERASEBKGND => Some(LRESULT(1)),
+        WM_PAINT => Some(on_paint(hwnd)),
+        _ => None,
+    }
+}
+
+unsafe fn on_measureitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let m = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
+    if m.CtlID == ID_SEARCH_RESULTS as u32 {
+        search::measure_row(hwnd, m);
+        return LRESULT(1);
+    }
+    if m.CtlType == ODT_MENU {
+        let label = wide(list::ctx_menu_label(m.itemID as usize));
+        let n = label.len().saturating_sub(1);
+        let hdc = GetDC(Some(hwnd));
+        let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
+        let mut sz = SIZE::default();
+        let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
+        SelectObject(hdc, old);
+        ReleaseDC(Some(hwnd), hdc);
+        m.itemWidth = (sz.cx + 30) as u32;
+        m.itemHeight = 26;
+        LRESULT(1)
+    } else {
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
+unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
+    if d.CtlID == ID_SEARCH_RESULTS as u32 {
+        search::draw_row(hwnd, d);
+        return LRESULT(1);
+    }
+    if d.CtlType == ODT_MENU {
+        return on_drawitem_menu(d);
+    }
+    if d.CtlType == ODT_STATIC {
+        on_drawitem_static(hwnd, d);
+        return LRESULT(1);
+    }
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+unsafe fn on_drawitem_menu(d: &DRAWITEMSTRUCT) -> LRESULT {
+    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
+    let bg = if selected {
+        dark_menu_sel_brush()
+    } else {
+        dark_menu_brush()
+    };
+    FillRect(d.hDC, &d.rcItem, bg);
+    SetBkMode(d.hDC, TRANSPARENT);
+    SetTextColor(d.hDC, DARK_TEXT());
+    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
+    let mut label = wide(list::ctx_menu_label(d.itemID as usize));
+    let n = label.len().saturating_sub(1);
+    let mut rc = d.rcItem;
+    rc.left += 14;
+    DrawTextW(
+        d.hDC,
+        &mut label[..n],
+        &mut rc,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+    LRESULT(1)
+}
+
+unsafe fn on_drawitem_static(hwnd: HWND, d: &DRAWITEMSTRUCT) {
+    let cid = d.CtlID as i32;
+    if d.CtlID == ID_LEFT_MASK as u32 {
+        scroll::draw_left_mask(hwnd, d);
+    } else if cid == ID_NUDGE_CARD {
+        nudge::draw_card(hwnd, d);
+    } else if cid == ID_PANE_HEADER {
+        draw_pane_header(hwnd, d);
+    } else if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&cid) {
+        let active = NAV.with(|n| n.borrow().active) == (cid - ID_NAV_BASE) as usize;
+        draw_nav_item(hwnd, d, active);
+    } else {
+        // The owner-drawn section headers (uppercase label + divider).
+        restyle::draw_section_header(hwnd, d);
+    }
+}
+
+/// Paint the dialog background + the "chrome" (rounded list card / input +
+/// dropdown field frames behind their controls / hairline dividers) into an
+/// off-screen buffer, then blit once — so the fill and the chrome land in the
+/// SAME frame instead of flashing the bare background between them. The blit is
+/// clipped to non-child pixels by WS_CLIPCHILDREN, so the child controls keep
+/// their own (SetWindowPos-preserved) pixels and aren't briefly overpainted.
+/// The fill brush MIRRORS the class hbrBackground (main.rs) exactly so light
+/// mode is byte-identical to before (COLOR_BTNFACE, not the 243 surface tone).
+unsafe fn on_paint(hwnd: HWND) -> LRESULT {
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(hwnd, &mut ps);
+    let pr = ps.rcPaint;
+    let (pw, ph) = (pr.right - pr.left, pr.bottom - pr.top);
+    if pw > 0 && ph > 0 {
+        let br = if is_dark() {
+            dark_bg_brush()
+        } else {
+            HBRUSH(16isize as *mut c_void)
+        };
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, pw, ph);
+        // Under GDI handle exhaustion either call can come back invalid, so mirror
+        // preview/paint.rs's fallback rather than blitting from an unset default
+        // bitmap (which would paint garbage/black instead of the real chrome).
+        if !mem.is_invalid() && !bmp.is_invalid() {
+            let old = SelectObject(mem, HGDIOBJ(bmp.0));
+            // Map client coords onto the dirty-rect-sized buffer so paint_chrome
+            // (which works in client coords) draws into the right place.
+            let _ = SetViewportOrgEx(mem, -pr.left, -pr.top, None);
+            FillRect(mem, &pr, br);
+            restyle::paint_chrome(hwnd, mem);
+            let _ = SetViewportOrgEx(mem, 0, 0, None);
+            let _ = BitBlt(hdc, pr.left, pr.top, pw, ph, Some(mem), 0, 0, SRCCOPY);
+            SelectObject(mem, old);
+        } else {
+            // Buffer alloc failed: paint straight to the window DC (correct,
+            // just flickers on a fast scroll instead of blitting garbage).
+            FillRect(hdc, &pr, br);
+            restyle::paint_chrome(hwnd, hdc);
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+        }
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
+    }
+    let _ = EndPaint(hwnd, &ps);
+    LRESULT(0)
+}
+
+/// The three WM_TIMER chords (status refresh / GIF frame advance / sponsor rotate)
+/// plus the left-column scrollbar + mouse wheel.
+unsafe fn on_timer_or_scroll_msg(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    match msg {
+        // Keep the hotkey-service status line honest while the dialog is open.
+        WM_TIMER if wparam.0 == TIMER_SHOT_STATUS => {
+            refresh_shot_status(hwnd);
+            Some(LRESULT(0))
+        }
+        WM_TIMER if wparam.0 == TIMER_BANNER => Some(on_timer_banner(hwnd)),
+        WM_TIMER if wparam.0 == TIMER_ROTATE => Some(on_timer_rotate(hwnd)),
+        // Left-column scrolling (dark mode): the scrollbar + the mouse wheel.
+        WM_VSCROLL => {
+            scroll::on_vscroll(hwnd, wparam, lparam);
+            Some(LRESULT(0))
+        }
+        WM_MOUSEWHEEL => {
+            let wheel = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
+            let pos = scroll::SCROLL.with(|s| s.borrow().pos);
+            scroll::scroll_to(hwnd, pos - wheel / 120 * dpi_scale(hwnd, 42));
+            Some(LRESULT(0))
+        }
+        _ => None,
+    }
+}
+
+/// Advance the current image's GIF animation one frame (frames are reused
+/// each loop, so don't free the prior one; WM_DESTROY frees them all).
+unsafe fn on_timer_banner(hwnd: HWND) -> LRESULT {
+    if let Some((banner, rot)) = banner_rotator(hwnd) {
+        let r = &mut *rot;
+        let (cur, imgi) = (r.cur, r.img);
+        let nframes = r
+            .sponsors
+            .get(cur)
+            .and_then(|a| a.images.get(imgi))
+            .map_or(0, |im| im.frames.len());
+        if nframes > 1 {
+            r.frame = (r.frame + 1) % nframes;
+            let f = r.sponsors[cur].images[imgi].frames[r.frame];
+            SendMessageW(
+                banner,
+                STM_SETIMAGE,
+                Some(WPARAM(IMAGE_BITMAP.0 as usize)),
+                Some(LPARAM(f)),
+            );
+        }
+    }
+    LRESULT(0)
+}
+
+/// Rotate to the next sponsor / image: advance the rotator, then show the
+/// new art (raw STM_SETIMAGE so the prior bitmap survives — the rotator
+/// still owns it). The tooltip pulls the fresh text on the next hover.
+unsafe fn on_timer_rotate(hwnd: HWND) -> LRESULT {
+    if let Some((banner, rot)) = banner_rotator(hwnd) {
+        (*rot).advance();
+        show_current_image(hwnd, banner, &*rot, false);
+    }
+    LRESULT(0)
 }
 
 #[cfg(test)]
