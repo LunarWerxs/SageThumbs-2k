@@ -111,7 +111,21 @@ fn parse_tag(s: &str, i: usize) -> Option<HtmlTag> {
     }
     let name = s[name_start..j].to_ascii_lowercase();
 
-    // attributes until the closing '>', honoring quotes
+    let (attrs, end) = parse_tag_attrs(s, j)?;
+    Some(HtmlTag {
+        end,
+        closing,
+        name,
+        attrs,
+    })
+}
+
+/// Parse the attribute list of a tag, starting right after its name, up to and including the
+/// closing `>`. Returns the attrs and the byte index just past that `>`. `None` on an
+/// unterminated tag (ran off the end of `s` before finding `>`).
+fn parse_tag_attrs(s: &str, start: usize) -> Option<(Vec<(String, String)>, usize)> {
+    let bytes = s.as_bytes();
+    let mut j = start;
     let mut attrs = Vec::new();
     loop {
         while j < bytes.len() && bytes[j].is_ascii_whitespace() {
@@ -119,65 +133,72 @@ fn parse_tag(s: &str, i: usize) -> Option<HtmlTag> {
         }
         match bytes.get(j) {
             None => return None, // unterminated tag
-            Some(b'>') => {
-                return Some(HtmlTag {
-                    end: j + 1,
-                    closing,
-                    name,
-                    attrs,
-                })
-            }
+            Some(b'>') => return Some((attrs, j + 1)),
             Some(b'/') => {
                 j += 1; // self-closing slash — the '>' comes next
                 continue;
             }
             _ => {}
         }
-        // attribute name
-        let an_start = j;
-        while j < bytes.len()
-            && !bytes[j].is_ascii_whitespace()
-            && !matches!(bytes[j], b'=' | b'>' | b'/')
-        {
-            j += 1;
-        }
-        if j == an_start {
+        let (aname, aval, next) = parse_one_attr(s, j);
+        if next == j {
             j += 1; // stray char — skip it
             continue;
         }
-        let aname = s[an_start..j].to_ascii_lowercase();
+        j = next;
+        attrs.push((aname, aval));
+    }
+}
+
+/// Parse one `name` or `name="value"` (or `name='value'`, or unquoted) attribute starting at
+/// `j`. Returns the attribute name, its (entity-decoded) value, and the byte index just past
+/// it. When `j` is not the start of a valid attribute name, returns `j` unchanged as `next`
+/// so the caller's stray-char skip applies.
+fn parse_one_attr(s: &str, j: usize) -> (String, String, usize) {
+    let bytes = s.as_bytes();
+    let an_start = j;
+    let mut j = j;
+    while j < bytes.len()
+        && !bytes[j].is_ascii_whitespace()
+        && !matches!(bytes[j], b'=' | b'>' | b'/')
+    {
+        j += 1;
+    }
+    if j == an_start {
+        return (String::new(), String::new(), an_start);
+    }
+    let aname = s[an_start..j].to_ascii_lowercase();
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    let mut aval = String::new();
+    if bytes.get(j) == Some(&b'=') {
+        j += 1;
         while j < bytes.len() && bytes[j].is_ascii_whitespace() {
             j += 1;
         }
-        let mut aval = String::new();
-        if bytes.get(j) == Some(&b'=') {
-            j += 1;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        match bytes.get(j) {
+            Some(&q) if q == b'"' || q == b'\'' => {
                 j += 1;
-            }
-            match bytes.get(j) {
-                Some(&q) if q == b'"' || q == b'\'' => {
+                let v_start = j;
+                while j < bytes.len() && bytes[j] != q {
                     j += 1;
-                    let v_start = j;
-                    while j < bytes.len() && bytes[j] != q {
-                        j += 1;
-                    }
-                    aval = decode_entities(&s[v_start..j.min(bytes.len())]);
-                    if j < bytes.len() {
-                        j += 1; // past the closing quote
-                    }
                 }
-                _ => {
-                    let v_start = j;
-                    while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'>' {
-                        j += 1;
-                    }
-                    aval = decode_entities(&s[v_start..j]);
+                aval = decode_entities(&s[v_start..j.min(bytes.len())]);
+                if j < bytes.len() {
+                    j += 1; // past the closing quote
                 }
+            }
+            _ => {
+                let v_start = j;
+                while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'>' {
+                    j += 1;
+                }
+                aval = decode_entities(&s[v_start..j]);
             }
         }
-        attrs.push((aname, aval));
     }
+    (aname, aval, j)
 }
 
 fn attr<'a>(t: &'a HtmlTag, name: &str) -> Option<&'a str> {
