@@ -126,6 +126,25 @@ three bin/lib targets, 0 failed), `cargo clippy --bin SageThumbs2K -- -D warning
 fmt --all --check`, all clean. Same preflight-only caveat as tranche 3: a human UI
 click-through before the next release is still recommended.
 
+**Tranche 7 (2026-08-28): 6 more of the next-worst rows cleared.** `run` (cli.rs) split
+into `run_thumbnail`/`run_convert`/`run_batch`/`run_prebuild`/`run_rotate`/`run_compress`/
+`run_bench_decode`/`run_register` per-verb helpers plus a `prebuild_sizes` helper, leaving
+`run` a thin per-verb dispatcher; `QueryContextMenu` (contextmenu/com.rs) split into
+`selection_kinds`/`command_budget`/`insert_quick_verb_groups`/`insert_sagethumbs_submenu`;
+`parse_packet` (jp2/packet.rs) split into `parse_block_contribution` (the triple-nested
+walk's per-block body) plus `decode_zero_bitplanes`/`grow_lblock`; `decode_channels`
+(container/psp.rs) split into `collect_channel_planes` (the sub-block walk) and `render_rgb`
+(the depth-specific render), with a `ChannelPlanes` type alias for the intermediate tuple;
+`dispatch` (preview/mdhtml.rs) split into `dispatch_inline`/`dispatch_block`/
+`dispatch_list_table` category handlers (leaf-toggle tags, paired open/close block tags,
+lists + HTML table tags) tried in sequence; `recognize` (ocr.rs) split into
+`decode_source`/`decode_to_bitmap`/`create_ocr_engine`/`collect_lines`/`line_word_boxes`.
+No behavior change anywhere in this tranche. Verified per file (scoped `cargo test`) and at
+the end: `cargo test --lib` (753 passed, 0 failed, 18 ignored, matching baseline) and
+`cargo test --bin SageThumbs2K` (362 passed, matching tranche 5's baseline), `cargo clippy
+--lib -- -D warnings` and `cargo clippy --bin SageThumbs2K -- -D warnings` both clean, `cargo
+fmt --all --check` clean.
+
 **Tranche 6 (2026-08-28): 9 of the next-worst rows cleared** (`main`/`run_shot_mode` split
 (main.rs), `run_block` (inline.rs), `handle_key` (overlay/input.rs), `about_wndproc` (about.rs),
 `parse_sps` + `keyframe_mini_mp4` (flv.rs), `apply_v3_layout` (navrail.rs), `jpeg_span`
@@ -197,8 +216,8 @@ before the next release is still recommended.
 |x| 76 | 32 | `decode_channels` | src/container/psp.rs:244 |
 | | 76 | 43 | `daemon_wndproc` | src/bin/app/screenshot/daemon.rs:456 |
 | | 75 | 42 | `decode_any_with_wic_target` | src/decode.rs:292 |
-| | 74 | 47 | `dispatch` | src/bin/app/preview/mdhtml.rs:217 |
-| | 72 | 37 | `recognize` | src/ocr.rs:130 |
+|x| 74 | 47 | `dispatch` | src/bin/app/preview/mdhtml.rs:217 |
+|x| 72 | 37 | `recognize` | src/ocr.rs:130 |
 | | 69 | 37 | `stream_source_with_caps` | src/streamsrc.rs:105 |
 | | 68 | 33 | `render` | src/bin/app/preview/markdown.rs:265 |
 | | 68 | 40 | `apply_settings` | src/bin/app/settings_dlg/values.rs:414 |

@@ -11,9 +11,9 @@ use windows::core::{Error, Result, HSTRING};
 use windows::Globalization::Language;
 use windows::Graphics::Imaging::{
     BitmapAlphaMode, BitmapDecoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform,
-    ColorManagementMode, ExifOrientationMode,
+    ColorManagementMode, ExifOrientationMode, SoftwareBitmap,
 };
-use windows::Media::Ocr::OcrEngine;
+use windows::Media::Ocr::{OcrEngine, OcrLine, OcrResult};
 use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
@@ -127,8 +127,8 @@ const OCR_TARGET_MIN_DIM: u32 = 900;
 /// nothing, so this is a safety rail against turning a thin strip into a huge allocation.
 const OCR_MAX_UPSCALE: u32 = 4;
 
-fn recognize(bytes: &[u8]) -> Result<String> {
-    // Load the bytes into a WinRT stream and decode to a SoftwareBitmap.
+/// Load `bytes` into a WinRT in-memory stream and open a `BitmapDecoder` on it.
+fn decode_source(bytes: &[u8]) -> Result<BitmapDecoder> {
     let stream = InMemoryRandomAccessStream::new()?;
     {
         let writer = DataWriter::CreateDataWriter(&stream)?;
@@ -137,7 +137,97 @@ fn recognize(bytes: &[u8]) -> Result<String> {
         writer.DetachStream()?;
     }
     stream.Seek(0)?;
-    let decoder = block_op(&BitmapDecoder::CreateAsync(&stream)?)?;
+    block_op(&BitmapDecoder::CreateAsync(&stream)?)
+}
+
+/// Decode `decoder` to a Bgra8 `SoftwareBitmap`, upscaling by `scale` first when it's > 1
+/// (see [`upscale_factor`] for why small screen text needs this). `Fant` is WIC's
+/// high-quality (windowed-sinc-ish) downscaler/upscaler; plain Linear leaves the
+/// anti-aliased stems mushier.
+fn decode_to_bitmap(
+    decoder: &BitmapDecoder,
+    pw: u32,
+    ph: u32,
+    scale: u32,
+) -> Result<SoftwareBitmap> {
+    if scale > 1 {
+        let transform = BitmapTransform::new()?;
+        transform.SetScaledWidth(pw * scale)?;
+        transform.SetScaledHeight(ph * scale)?;
+        transform.SetInterpolationMode(BitmapInterpolationMode::Fant)?;
+        block_op(&decoder.GetSoftwareBitmapTransformedAsync(
+            BitmapPixelFormat::Bgra8,
+            BitmapAlphaMode::Premultiplied,
+            &transform,
+            ExifOrientationMode::RespectExifOrientation,
+            ColorManagementMode::ColorManageToSRgb,
+        )?)
+    } else {
+        block_op(&decoder.GetSoftwareBitmapConvertedAsync(
+            BitmapPixelFormat::Bgra8,
+            BitmapAlphaMode::Premultiplied,
+        )?)
+    }
+}
+
+/// The user's profile-languages OCR engine, falling back to English if no profile
+/// language has a pack installed. (windows-rs maps WinRT null → Err, so or_else fires.)
+fn create_ocr_engine() -> Result<OcrEngine> {
+    OcrEngine::TryCreateFromUserProfileLanguages().or_else(|_| {
+        OcrEngine::TryCreateFromLanguage(&Language::CreateLanguage(&HSTRING::from("en"))?)
+    })
+}
+
+/// One recognized line's words as `table::WordBox`es — empty if the line carries no word
+/// geometry, and a word that fails to read its text/rect is simply skipped rather than
+/// aborting the whole line.
+fn line_word_boxes(line: &OcrLine) -> Vec<table::WordBox> {
+    let mut row = Vec::new();
+    let Ok(words) = line.Words() else {
+        return row;
+    };
+    for j in 0..words.Size().unwrap_or(0) {
+        let Ok(word) = words.GetAt(j) else { continue };
+        if let (Ok(text), Ok(r)) = (word.Text(), word.BoundingRect()) {
+            row.push(table::WordBox {
+                text: text.to_string(),
+                x: r.X,
+                y: r.Y,
+                w: r.Width,
+                h: r.Height,
+            });
+        }
+    }
+    row
+}
+
+/// Rebuild recognized text line-by-line (so layout survives — `OcrResult::Text()` joins
+/// every line with a single SPACE, turning a captured dialog/paragraph/code block into one
+/// run-on line) and collect each line's word geometry for the table-detection pass in
+/// [`table::assemble`]: when the geometry says the capture is a table (the same wide gutter
+/// lining up across three or more lines), the caller joins cells with TABS instead.
+fn collect_lines(result: &OcrResult) -> (String, Vec<Vec<table::WordBox>>) {
+    let mut word_lines: Vec<Vec<table::WordBox>> = Vec::new();
+    let mut out = String::new();
+    let Ok(lines) = result.Lines() else {
+        return (out, word_lines);
+    };
+    let n = lines.Size().unwrap_or(0);
+    for i in 0..n {
+        let Ok(line) = lines.GetAt(i) else { continue };
+        word_lines.push(line_word_boxes(&line));
+        if let Ok(text) = line.Text() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&text.to_string());
+        }
+    }
+    (out, word_lines)
+}
+
+fn recognize(bytes: &[u8]) -> Result<String> {
+    let decoder = decode_source(bytes)?;
 
     // Bomb guard, and it MUST come before the pixel decode. The header alone declares the
     // dimensions, so a few-KB file can claim 60000×60000 — and `GetSoftwareBitmapConvertedAsync`
@@ -168,79 +258,13 @@ fn recognize(bytes: &[u8]) -> Result<String> {
     // point of screen OCR is grabbing UI text, which is 9-11 pt on a normal display: without this
     // the feature looks broken on exactly its main use case (reported: words run together, chunks
     // missing, from a chat-window screenshot).
-    //
-    // `Fant` is WIC's high-quality (windowed-sinc-ish) downscaler/upscaler; plain Linear leaves
-    // the anti-aliased stems mushier. `max` (the engine ceiling clamped to MAX_DIM, above) caps
-    // how far we can go, so the factor is whatever fits — a big capture stays at 1x, which is
-    // fine because a big capture already has big glyphs.
     let scale = upscale_factor(pw, ph, max);
-    let bmp = if scale > 1 {
-        let transform = BitmapTransform::new()?;
-        transform.SetScaledWidth(pw * scale)?;
-        transform.SetScaledHeight(ph * scale)?;
-        transform.SetInterpolationMode(BitmapInterpolationMode::Fant)?;
-        block_op(&decoder.GetSoftwareBitmapTransformedAsync(
-            BitmapPixelFormat::Bgra8,
-            BitmapAlphaMode::Premultiplied,
-            &transform,
-            ExifOrientationMode::RespectExifOrientation,
-            ColorManagementMode::ColorManageToSRgb,
-        )?)?
-    } else {
-        block_op(&decoder.GetSoftwareBitmapConvertedAsync(
-            BitmapPixelFormat::Bgra8,
-            BitmapAlphaMode::Premultiplied,
-        )?)?
-    };
+    let bmp = decode_to_bitmap(&decoder, pw, ph, scale)?;
 
-    // Use the user's languages; fall back to English if no profile language has
-    // an OCR pack. (windows-rs maps WinRT null → Err, so or_else fires.)
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages().or_else(|_| {
-        OcrEngine::TryCreateFromLanguage(&Language::CreateLanguage(&HSTRING::from("en"))?)
-    })?;
+    let engine = create_ocr_engine()?;
     let result = block_op(&engine.RecognizeAsync(&bmp)?)?;
 
-    // `OcrResult::Text()` joins every recognized line with a SPACE, so a captured dialog,
-    // paragraph or code block comes back as one run-on line. Rebuild it from `Lines` so the
-    // layout survives to the clipboard/stdout; fall back to `Text()` if the view is empty or
-    // unreadable (single-line images land on the same string either way).
-    //
-    // TABLES go one step further: when the word geometry says the capture is a table (the
-    // same wide gutter lining up across three or more lines — see `table::assemble`), cells
-    // are joined with TABS so the text pastes straight into a spreadsheet as columns. The
-    // detection is deliberately conservative; anything it declines renders through the plain
-    // per-line path below, byte-identical to what this produced before tables existed.
-    let mut word_lines: Vec<Vec<table::WordBox>> = Vec::new();
-    let mut out = String::new();
-    if let Ok(lines) = result.Lines() {
-        let n = lines.Size().unwrap_or(0);
-        for i in 0..n {
-            let Ok(line) = lines.GetAt(i) else { continue };
-            if let Ok(words) = line.Words() {
-                let mut row = Vec::new();
-                for j in 0..words.Size().unwrap_or(0) {
-                    if let Ok(word) = words.GetAt(j) {
-                        if let (Ok(text), Ok(r)) = (word.Text(), word.BoundingRect()) {
-                            row.push(table::WordBox {
-                                text: text.to_string(),
-                                x: r.X,
-                                y: r.Y,
-                                w: r.Width,
-                                h: r.Height,
-                            });
-                        }
-                    }
-                }
-                word_lines.push(row);
-            }
-            if let Ok(text) = line.Text() {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(&text.to_string());
-            }
-        }
-    }
+    let (mut out, word_lines) = collect_lines(&result);
     if let Some(tsv) = table::assemble(&word_lines) {
         return Ok(tsv);
     }

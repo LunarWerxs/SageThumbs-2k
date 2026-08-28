@@ -214,7 +214,9 @@ fn parse_width(v: Option<&str>) -> ImgW {
         .map_or(ImgW::Natural, |n| ImgW::Px(n.clamp(1, 4000)))
 }
 
-fn dispatch(b: &mut Builder, t: &HtmlTag) {
+/// Leaf formatting/media tags: a single toggle call (or, for `img`/`br`/`hr`, a single
+/// opening-tag-only action). Returns whether `t.name` matched one of them.
+fn dispatch_inline(b: &mut Builder, t: &HtmlTag) -> bool {
     let closing = t.closing;
     match t.name.as_str() {
         "b" | "strong" => b.bold(!closing),
@@ -241,6 +243,16 @@ fn dispatch(b: &mut Builder, t: &HtmlTag) {
         }
         "br" if !closing => b.newline(),
         "hr" if !closing => b.rule(),
+        _ => return false,
+    }
+    true
+}
+
+/// Paired open/close block tags: paragraphs, headings, containers, `<center>`, `<summary>`,
+/// `<blockquote>`. Returns whether `t.name` matched one of them.
+fn dispatch_block(b: &mut Builder, t: &HtmlTag) -> bool {
+    let closing = t.closing;
+    match t.name.as_str() {
         "p" | "figcaption" => {
             if closing {
                 b.close_para();
@@ -286,6 +298,16 @@ fn dispatch(b: &mut Builder, t: &HtmlTag) {
                 b.open_quote();
             }
         }
+        _ => return false,
+    }
+    true
+}
+
+/// Lists and the HTML-table trio: `<ul>`/`<ol>`/`<li>`, `<table>`/`<tr>`/`<td>`/`<th>`.
+/// Returns whether `t.name` matched one of them.
+fn dispatch_list_table(b: &mut Builder, t: &HtmlTag) -> bool {
+    let closing = t.closing;
+    match t.name.as_str() {
         "ul" => {
             if closing {
                 b.close_list();
@@ -331,10 +353,20 @@ fn dispatch(b: &mut Builder, t: &HtmlTag) {
                 b.html_cell_open(t.name == "th");
             }
         }
-        "style" if !closing => b.skip_tag = Some("style"),
-        "script" if !closing => b.skip_tag = Some("script"),
-        "svg" if !closing => b.skip_tag = Some("svg"),
-        "title" if !closing => b.skip_tag = Some("title"),
+        _ => return false,
+    }
+    true
+}
+
+fn dispatch(b: &mut Builder, t: &HtmlTag) {
+    if dispatch_inline(b, t) || dispatch_block(b, t) || dispatch_list_table(b, t) {
+        return;
+    }
+    match t.name.as_str() {
+        "style" if !t.closing => b.skip_tag = Some("style"),
+        "script" if !t.closing => b.skip_tag = Some("script"),
+        "svg" if !t.closing => b.skip_tag = Some("svg"),
+        "title" if !t.closing => b.skip_tag = Some("title"),
         // thead/tbody/tfoot/picture/source/span/sub/sup/small/u/font/wbr/…: structural or
         // purely-visual tags we don't style — their text flows through untouched.
         _ => {}
