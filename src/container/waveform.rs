@@ -101,43 +101,15 @@ fn probe<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
     }
 }
 
+/// A parsed `fmt ` chunk: `(format_tag, channels, bits)`.
+type WavFmt = (u16, u16, u16);
+/// A located `data` chunk: `(start, len)`.
+type WavData = (u64, u64);
+
 /// Walk RIFF chunks (`id[4] + size_le[4] + body`, padded to even) for `fmt ` and
 /// `data`. Cursor is positioned just past the 12-byte RIFF header.
 fn parse_wav<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
-    let mut fmt: Option<(u16, u16, u16)> = None; // (format_tag, channels, bits)
-    let mut data: Option<(u64, u64)> = None; // (start, len)
-    let mut pos: u64 = 12;
-    for _ in 0..64 {
-        r.seek(SeekFrom::Start(pos)).ok()?;
-        let Some(hdr) = read_arr::<8, _>(r) else {
-            break;
-        };
-        let id = &hdr[0..4];
-        let size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as u64;
-        let body = pos + 8;
-        if id == b"fmt " {
-            let n = size.min(40) as usize;
-            let mut buf = vec![0u8; n];
-            r.read_exact(&mut buf).ok()?;
-            let tag = le16(&buf, 0)?;
-            let channels = le16(&buf, 2)?;
-            let bits = le16(&buf, 14)?;
-            // WAVE_FORMAT_EXTENSIBLE: the real tag is the first 2 bytes of the
-            // SubFormat GUID at offset 24.
-            let real_tag = if tag == 0xFFFE && buf.len() >= 26 {
-                le16(&buf, 24)?
-            } else {
-                tag
-            };
-            fmt = Some((real_tag, channels, bits));
-        } else if id == b"data" {
-            data = Some((body, size));
-        }
-        if fmt.is_some() && data.is_some() {
-            break;
-        }
-        pos = body + size + (size & 1); // chunks are word-aligned
-    }
+    let (fmt, data) = scan_wav_chunks(r)?;
     let (tag, channels, bits) = fmt?;
     let (start, len) = data?;
     if channels == 0 || channels > MAX_CHANNELS {
@@ -157,6 +129,54 @@ fn parse_wav<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
         sample_bytes,
         kind,
     })
+}
+
+/// The chunk-walk loop `parse_wav` runs before it can build a `Pcm`: find the
+/// `fmt ` and `data` chunks (either may still be `None` on EOF / the 64-chunk
+/// cap). A malformed `fmt ` chunk body is fatal to the whole scan (propagated via
+/// `?`), matching the original's behavior of never guessing at a bad header.
+fn scan_wav_chunks<R: Read + Seek>(r: &mut R) -> Option<(Option<WavFmt>, Option<WavData>)> {
+    let mut fmt: Option<WavFmt> = None; // (format_tag, channels, bits)
+    let mut data: Option<WavData> = None; // (start, len)
+    let mut pos: u64 = 12;
+    for _ in 0..64 {
+        r.seek(SeekFrom::Start(pos)).ok()?;
+        let Some(hdr) = read_arr::<8, _>(r) else {
+            break;
+        };
+        let id = &hdr[0..4];
+        let size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as u64;
+        let body = pos + 8;
+        if id == b"fmt " {
+            fmt = Some(parse_wav_fmt_chunk(r, size)?);
+        } else if id == b"data" {
+            data = Some((body, size));
+        }
+        if fmt.is_some() && data.is_some() {
+            break;
+        }
+        pos = body + size + (size & 1); // chunks are word-aligned
+    }
+    Some((fmt, data))
+}
+
+/// Parse a `fmt ` chunk body (cursor already at its start) into
+/// `(format_tag, channels, bits)`, resolving `WAVE_FORMAT_EXTENSIBLE`'s real tag.
+fn parse_wav_fmt_chunk<R: Read>(r: &mut R, size: u64) -> Option<WavFmt> {
+    let n = size.min(40) as usize;
+    let mut buf = vec![0u8; n];
+    r.read_exact(&mut buf).ok()?;
+    let tag = le16(&buf, 0)?;
+    let channels = le16(&buf, 2)?;
+    let bits = le16(&buf, 14)?;
+    // WAVE_FORMAT_EXTENSIBLE: the real tag is the first 2 bytes of the
+    // SubFormat GUID at offset 24.
+    let real_tag = if tag == 0xFFFE && buf.len() >= 26 {
+        le16(&buf, 24)?
+    } else {
+        tag
+    };
+    Some((real_tag, channels, bits))
 }
 
 /// Walk AIFF/AIFC chunks (`id[4] + size_be[4] + body`, padded to even) for `COMM`
