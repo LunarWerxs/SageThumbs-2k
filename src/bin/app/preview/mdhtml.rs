@@ -480,7 +480,7 @@ fn decode_entities(s: &str) -> String {
     out
 }
 
-/// `&#123;` / `&#x7B;` — decimal or hex numeric character reference.
+/// `&#123;` / `&#x7B;`: decimal or hex numeric character reference.
 fn numeric_entity(num: &str) -> Option<char> {
     let cp = if let Some(hex) = num.strip_prefix(['x', 'X']) {
         u32::from_str_radix(hex, 16).ok()

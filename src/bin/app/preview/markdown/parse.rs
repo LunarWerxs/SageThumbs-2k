@@ -796,7 +796,7 @@ fn handle_inline_style_event<'e>(ev: Event<'e>, b: &mut Builder) -> Option<Event
 }
 
 /// Raw HTML, thematic breaks, text/code runs (routed to the code-fence buffer while inside
-/// one), and the remaining leaf events (soft/hard breaks, GFM task markers) — plus the final
+/// one), and the remaining leaf events (soft/hard breaks, GFM task markers), plus the final
 /// catch-all for anything the earlier dispatchers didn't claim.
 fn handle_text_and_html_event(ev: Event, b: &mut Builder, code: &mut CodeBlockState) {
     match ev {
