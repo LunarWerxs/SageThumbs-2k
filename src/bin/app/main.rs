@@ -68,7 +68,9 @@ mod win;
 use core::ffi::c_void;
 
 use windows::core::w;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, LPARAM, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -232,384 +234,31 @@ fn main() {
             crate::update::spawn_due_check();
         }
 
-        // Hidden, side-effect-free UI integration route. It takes precedence over
-        // every output-capable mode even in a malformed mixed invocation, preserving
-        // its privacy/safety contract: synthetic full-screen pixels only, with
-        // clipboard, file, dialog, and upload paths fenced inside the overlay.
-        if args.iter().any(|a| a == "--screenshot-automation") {
-            crate::screenshot::run_capture_automation(hinst);
+        // Every headless / one-shot CLI mode, checked in the same relative order the
+        // original single if-chain used (a flag's precedence over another matters when an
+        // invocation names more than one), just split into topical dispatchers so each one
+        // stays small. Each returns `true` when it already handled the launch (including
+        // via `std::process::exit`, for the modes that always exit rather than fall
+        // through), meaning this process should return without ever building a window.
+        if dispatch_diagnostic_modes(hinst, &args) {
             return;
         }
-        // `--bench-preview <dir>`: hidden dev measurement. Times the Quick preview's REAL
-        // decode path over a folder — a cold pass, then a warm pass off the cache — so the
-        // arrow-key stepping cost is a number rather than an impression. Console output, no
-        // window, no side effects. Exists because "it feels faster" is not a measurement.
-        if let Some(pos) = args.iter().position(|a| a == "--bench-preview") {
-            let dir = args.get(pos + 1).cloned().unwrap_or_default();
-            crate::preview::run_bench(&dir);
+        if dispatch_update_modes(&args) {
             return;
         }
-        // `--bench-nav <dir> <steps>`: the same measurement one level up — real viewer window,
-        // real WM_KEYDOWN arrow presses, timed from keypress to painted. Answers "does holding
-        // the arrow key feel instant" without anyone having to sit and hold the arrow key.
-        if let Some(pos) = args.iter().position(|a| a == "--bench-nav") {
-            let dir = args.get(pos + 1).cloned().unwrap_or_default();
-            let steps = args
-                .get(pos + 2)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(20);
-            crate::preview::run_nav_bench(hinst, &dir, steps);
+        if dispatch_convert_and_shot_modes(hinst, dark, &args) {
             return;
         }
-        // `--bench-mash <dir> <keys>`: the HELD arrow key. Presses without waiting for each
-        // paint, so several decodes really are in flight at once - the only bench that can see
-        // whether superseded work is being abandoned, since `--bench-nav` waits for every step
-        // and therefore never has two workers running. `ST2K_NO_CANCEL=1` switches abandonment
-        // off for an A/B on the same binary.
-        if let Some(pos) = args.iter().position(|a| a == "--bench-mash") {
-            let dir = args.get(pos + 1).cloned().unwrap_or_default();
-            let keys = args
-                .get(pos + 2)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(20);
-            crate::preview::run_mash_bench(hinst, &dir, keys);
+        if dispatch_file_and_capture_modes(hinst, &args) {
             return;
         }
-        // `--update-check`: the throttled one-shot the Scheduled Task runs (and the
-        // piggyback above spawns). Toasts if a newer release exists, then exits. It never
-        // re-enters the piggyback, which excludes this flag by name.
-        if args.iter().any(|a| a == "--update-check") {
-            crate::update::run_one_shot_check();
+        if dispatch_screenshot_modes(hinst, &args) {
             return;
         }
-        // `--update-selftest <setup.exe>`: the CI / release-gate smoke — run the REAL
-        // verify → lock → elevated-launch self-update pipeline against a built installer
-        // and exit 0/1. The harness (scripts/test-self-update.ps1) then asserts the
-        // upgrade landed. See update::run_selftest for why this must exist.
-        if let Some(pos) = args.iter().position(|a| a == "--update-selftest") {
-            let ok = args
-                .get(pos + 1)
-                .is_some_and(|p| crate::update::run_selftest(std::path::Path::new(p)));
-            std::process::exit(if ok { 0 } else { 1 });
-        }
-        // `--first-run-seen`: suppress the welcome window. The installer runs this on an
-        // UPGRADE (as the real user), so an existing user is never greeted as a new one.
-        if args.iter().any(|a| a == "--first-run-seen") {
-            crate::first_run::mark_shown();
+        if dispatch_folder_modes(hinst, &args) {
             return;
         }
-        // `--update-task [remove]`: register / drop the per-user update-check Scheduled
-        // Task. Run by the installer (as the real user) and by the uninstaller.
-        if let Some(pos) = args.iter().position(|a| a == "--update-task") {
-            if args.get(pos + 1).map(String::as_str) == Some("remove") {
-                crate::update::remove_update_task();
-            } else {
-                crate::update::sync_update_task();
-            }
-            return;
-        }
-        if let Some(pos) = args.iter().position(|a| a == "--convert") {
-            if let Some(listfile) = args.get(pos + 1) {
-                run_convert_dialog(hinst, listfile);
-            }
-            return;
-        }
-        // Headless GIF asset: `--shot-gif <out.gif>` walks every Settings tab and encodes an
-        // animated (infinite-loop) GIF — the regenerable README/site walkthrough of the
-        // Settings window. Invisible (off-screen); exits 0/1. Checked before `--shot` (exact
-        // match, so the shorter flag never swallows it).
-        if let Some(pos) = args.iter().position(|a| a == "--shot-gif") {
-            let ok = args
-                .get(pos + 1)
-                .is_some_and(|out| settings_dlg::run_shot_gif(hinst, dark, out));
-            std::process::exit(i32::from(!ok));
-        }
-        // Headless self-capture (verification + README/site assets):
-        //   `--shot <out.png> [--tab N] [--window settings|convert|eyedropper]`
-        // builds the chosen window INVISIBLY (off-screen), renders it to a PNG, exits 0/1.
-        // `--tab N` (0-based) selects the Settings category (default 0); ignored for the
-        // other windows. No window ever appears and the desktop is never driven.
-        if let Some(pos) = args.iter().position(|a| a == "--shot") {
-            let window = args
-                .iter()
-                .position(|a| a == "--window")
-                .and_then(|p| args.get(p + 1))
-                .map(String::as_str)
-                .unwrap_or("settings");
-            let ok = if let Some(out) = args.get(pos + 1) {
-                match window {
-                    "convert" => crate::convert::run_shot_convert(out),
-                    "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
-                    "feedback" => crate::feedback::run_shot_feedback(out),
-                    "about" => crate::about::run_shot_about(out),
-                    "doctor" => crate::doctor_report::run_shot_doctor(out),
-                    "firstrun" => crate::first_run::run_shot_first_run(out),
-                    "firstrun2" => crate::first_run::run_shot_first_run2(out),
-                    // The OCR result window, over canned text (no recognizer run) — or the
-                    // real text of `--file <img>` when you want to see an actual scan.
-                    "ocr" => {
-                        let file = args
-                            .iter()
-                            .position(|a| a == "--file")
-                            .and_then(|p| args.get(p + 1));
-                        crate::ocr_result::run_shot_ocr(out, file.map(String::as_str))
-                    }
-                    "preview" => {
-                        // `--file <path>` input (synthetic gradient if absent), plus optional
-                        // headless state forcing: `--hot N` (button N hovered), `--pinned`,
-                        // `--pdf-page N`, `--frame N` (animation frame), `--play` (video strip),
-                        // `--source` (raw text of a normally-rendered file).
-                        let val = |name: &str| {
-                            args.iter()
-                                .position(|a| a == name)
-                                .and_then(|p| args.get(p + 1))
-                        };
-                        let opts = crate::preview::ShotOpts {
-                            file: val("--file").cloned(),
-                            hot: val("--hot").and_then(|s| s.parse().ok()),
-                            pinned: args.iter().any(|a| a == "--pinned"),
-                            pdf_page: val("--pdf-page").and_then(|s| s.parse().ok()),
-                            frame: val("--frame").and_then(|s| s.parse().ok()),
-                            play: args.iter().any(|a| a == "--play"),
-                            dpi: val("--dpi").and_then(|s| s.parse().ok()),
-                            scroll: val("--scroll").and_then(|s| s.parse().ok()),
-                            wheel: val("--wheel").and_then(|s| s.parse().ok()),
-                            wheel_ctrl: args.iter().any(|a| a == "--ctrl"),
-                            wheel_shift: args.iter().any(|a| a == "--shift"),
-                            sel: val("--sel").and_then(|s| {
-                                let (a, b) = s.split_once(',')?;
-                                Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
-                            }),
-                            find: val("--find").cloned(),
-                            wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
-                            source: args.iter().any(|a| a == "--source"),
-                            toggle_source: args.iter().any(|a| a == "--toggle-source"),
-                            toggle_theme: args.iter().any(|a| a == "--toggle-theme"),
-                            size: val("--size").and_then(|s| {
-                                let (w, h) = s.split_once(['x', 'X'])?;
-                                Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-                            }),
-                        };
-                        crate::preview::run_shot_preview(hinst, dark, out, &opts)
-                    }
-                    _ => {
-                        let tab = args
-                            .iter()
-                            .position(|a| a == "--tab")
-                            .and_then(|p| args.get(p + 1))
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .unwrap_or(0);
-                        // `--search <needle>` drives the settings-wide search headlessly
-                        // (append `!` to also pick the first hit) — the functional proof
-                        // shot, not just the layout one.
-                        if let Some(needle) = args
-                            .iter()
-                            .position(|a| a == "--search")
-                            .and_then(|p| args.get(p + 1))
-                        {
-                            settings_dlg::run_shot_search(hinst, dark, out, needle)
-                        } else {
-                            settings_dlg::run_shot(hinst, dark, out, tab)
-                        }
-                    }
-                }
-            } else {
-                false
-            };
-            std::process::exit(i32::from(!ok));
-        }
-        // Diagnostic: `--explorer-selection` prints what a global hotkey would act
-        // on right now — one path per line, nothing when there is no selection —
-        // and exits. Read-only, opens no window, and never falls back to the file
-        // picker the interactive path uses.
-        //
-        // This exists because "I pressed the hotkey and nothing happened" is
-        // otherwise unanswerable: it separates "the hotkey never fired" from "the
-        // hotkey fired but Explorer reported no selection". QuickLook has an open
-        // bug of exactly the second kind on Windows 11's Explorer Home page
-        // (their #1800), and this is how we check whether ours behaves the same.
-        if args.iter().any(|a| a == "--explorer-selection") {
-            // `--after-ms N` waits first. Necessary, not a convenience: the
-            // resolver reads the FOREGROUND Explorer window, and launching this
-            // console tool makes the CONSOLE the foreground window — so without a
-            // delay it always reports "nothing" and looks like a bug in the app.
-            // Run it, click the Explorer window you care about, read the answer.
-            let wait = args
-                .iter()
-                .position(|a| a == "--after-ms")
-                .and_then(|p| args.get(p + 1))
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
-            if wait > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(wait.min(60_000)));
-            }
-            if let Some(p) = explorer_selection::preview_target() {
-                println!("{p}");
-            }
-            return;
-        }
-        // Eyedropper mode: `--eyedropper` (spawned by the DLL verb) opens the
-        // system-wide screen color picker.
-        if args.iter().any(|a| a == "--eyedropper") {
-            run_eyedropper(hinst);
-            return;
-        }
-        // Pre-build thumbnails: `--prebuild <folder>` (the folder right-click entry) walks the
-        // folder and fills Explorer's thumbnail cache, showing progress. The engine lives in
-        // the core crate and is shared with `st2k prebuild`.
-        if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
-            if let Some(dir) = args.get(pos + 1) {
-                // A DRIVE ROOT arrives here as `E:"` — see `prebuild::unmangle_shell_path` for
-                // why the shell's own quoting does that and why it cannot be fixed in the
-                // registry string. Repairing it here also heals installs that already wrote
-                // the old command.
-                let dir = sagethumbs2k_core::prebuild::unmangle_shell_path(dir);
-                prebuild_dlg::run_prebuild(&dir);
-            }
-            return;
-        }
-        // Image info: `--image-info <path>` (spawned by the DLL's Image info verb) shows
-        // a verbose, copyable metadata dump for the file.
-        if let Some(pos) = args.iter().position(|a| a == "--image-info") {
-            if let Some(path) = args.get(pos + 1) {
-                image_info::run_image_info(path);
-            }
-            return;
-        }
-        // Screen OCR: `--ocr <png>` (spawned by the capture overlay's OCR button /
-        // Ctrl+T) reads the text out of the throwaway capture, copies it, and shows it.
-        if let Some(pos) = args.iter().position(|a| a == "--ocr") {
-            if let Some(path) = args.get(pos + 1) {
-                ocr_result::run_ocr(path);
-            }
-            return;
-        }
-        // Screen OCR on a file the user owns: `--ocr-keep <path> [--page N]` (the Quick
-        // preview's OCR toolbar button). Unlike `--ocr` it does NOT delete its input. `--page`
-        // is the 0-based PDF page the viewer is showing. Checked before `--ocr` (exact match,
-        // so they don't overlap).
-        if let Some(pos) = args.iter().position(|a| a == "--ocr-keep") {
-            if let Some(path) = args.get(pos + 1) {
-                let page = args
-                    .iter()
-                    .position(|a| a == "--page")
-                    .and_then(|p| args.get(p + 1))
-                    .and_then(|s| s.parse::<u32>().ok());
-                ocr_result::run_ocr_keep(path, page);
-            }
-            return;
-        }
-        // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
-        // viewer. With no daemon hook yet (Phase 2), it's driven by the path arg + WM_COPYDATA
-        // commands. A second launch forwards its path to the running viewer and exits.
-        if let Some(pos) = args.iter().position(|a| a == "--preview") {
-            let path = args
-                .get(pos + 1)
-                .filter(|p| !p.starts_with("--"))
-                .map(String::as_str);
-            crate::preview::run_preview(hinst, path);
-            return;
-        }
-        // Instant capture: `--screenshot-instant` grabs the whole screen straight to
-        // the clipboard + a PNG, no overlay — the optional "quick-save" hotkey's
-        // action. Checked before `--screenshot` (exact match, so they don't overlap).
-        if args.iter().any(|a| a == "--screenshot-instant") {
-            crate::screenshot::capture_instant();
-            return;
-        }
-        // Screen OCR mode: `--screenshot-ocr` opens the same overlay, but the first
-        // finished region drag reads its text and closes — no editor. The "Copy text on
-        // screen (OCR)" custom-hotkey action. Checked before `--screenshot` (exact match,
-        // so they don't overlap).
-        if args.iter().any(|a| a == "--screenshot-ocr") {
-            crate::screenshot::run_capture_ocr(hinst);
-            return;
-        }
-        // Screenshot mode: `--screenshot` opens the Flameshot-style capture +
-        // annotation overlay (region → draw → copy/save). Wired to a hotkey by the
-        // opt-in tray daemon; runnable directly for testing.
-        if args.iter().any(|a| a == "--screenshot") {
-            crate::screenshot::run_capture(hinst);
-            return;
-        }
-        // Screenshot daemon: `--screenshot-daemon` runs the opt-in tray helper that
-        // registers the global hotkey and spawns captures. Launched at logon (HKCU
-        // autostart) only after the user enables it in Settings.
-        if args.iter().any(|a| a == "--screenshot-daemon") {
-            crate::screenshot::run_daemon(hinst);
-            return;
-        }
-        // Custom action hotkey: `--hotkey-action` (spawned by the daemon when the user's
-        // assigned chord fires) runs whichever action they bound in Settings ▸ Screenshots —
-        // colour picker, screenshot, or a file verb over the Explorer selection / a picker.
-        if args.iter().any(|a| a == "--hotkey-action") {
-            crate::hotkey::run_hotkey_action(hinst);
-            return;
-        }
-        // Upload mode: `--upload <png>` POSTs a capture to a keyless host and copies
-        // the URL to the clipboard (spawned by the capture overlay's Upload button).
-        if let Some(pos) = args.iter().position(|a| a == "--upload") {
-            if let Some(path) = args.get(pos + 1) {
-                crate::screenshot::run_upload(path);
-            }
-            return;
-        }
-        // Upload-keep mode: `--upload-keep <listfile>` uploads the USER files listed
-        // (the DLL's right-click "Upload" verb) to the keyless host and copies the
-        // link(s) to the clipboard — WITHOUT deleting the originals (only `--upload`
-        // deletes, since its file is a throwaway capture). Exact-match above means
-        // `--upload` never swallows this longer flag.
-        if let Some(pos) = args.iter().position(|a| a == "--upload-keep") {
-            if let Some(listfile) = args.get(pos + 1) {
-                crate::screenshot::run_upload_keep(listfile);
-            }
-            return;
-        }
-        // Toggle the screenshot hotkey on/off (HKCU autostart + the tray daemon).
-        // The Settings checkbox will drive this via screenshot::set_enabled; exposed
-        // here so it's usable/testable without the UI.
-        if args.iter().any(|a| a == "--screenshot-toggle") {
-            crate::screenshot::set_enabled(!crate::screenshot::is_enabled());
-            return;
-        }
-        // Files-to-folder mode: `--files-to-folder <listfile>` (spawned by the DLL
-        // verb for a multi-file selection) prompts for a folder name, then moves.
-        if let Some(pos) = args.iter().position(|a| a == "--files-to-folder") {
-            if let Some(listfile) = args.get(pos + 1) {
-                run_files_to_folder_dialog(hinst, listfile);
-            }
-            return;
-        }
-        // Tags-to-folders mode: `--tags-to-folders <listfile>` (spawned by the DLL
-        // verb) sorts audio files into folders by their tags.
-        if let Some(pos) = args.iter().position(|a| a == "--tags-to-folders") {
-            if let Some(listfile) = args.get(pos + 1) {
-                run_tags_to_folders_dialog(hinst, listfile);
-            }
-            return;
-        }
-        // Self-update confirmation: `--updated <ver>` is launched by the installer's [Run]
-        // step right after a SILENT self-update finishes — pop a NON-BLOCKING tray toast
-        // ("you're now on <ver>"), then exit. No modal dialog, so the update stays silent.
-        // The installer gates this relaunch on its own /UPDATED marker, so a normal
-        // interactive install never triggers it.
-        if let Some(pos) = args.iter().position(|a| a == "--updated") {
-            // The installer force-closed the resident hotkey daemon (Restart Manager /
-            // PrepareToInstall) to replace this very EXE — and NOTHING else restarts it
-            // before the next logon. Heal it FIRST, so the hotkeys the toast implicitly
-            // claims are working actually are. No-op when the feature is off.
-            heal_after_install();
-            let ver = args
-                .get(pos + 1)
-                .map_or(env!("CARGO_PKG_VERSION"), String::as_str);
-            crate::update::show_updated_toast(ver);
-            return;
-        }
-        // Silent self-heal: `--heal-hotkeys` (run by the installer after EVERY install —
-        // including manual/silent reinstalls that never pass /UPDATED) restarts the hotkey
-        // daemon if it's wanted but not running. No UI; exits immediately.
-        if args.iter().any(|a| a == "--heal-hotkeys") {
-            heal_after_install();
+        if dispatch_heal_modes(&args) {
             return;
         }
         // Optional postinstall step (a checkbox on setup's last page): restart Explorer and
@@ -644,158 +293,567 @@ fn main() {
         // the user doesn't have to click "Restart". No-op when it's already running / not wanted.
         crate::screenshot::heal_if_wanted();
 
-        // Single instance, TOCTOU-safe: same pattern as the screenshot daemon
-        // (`screenshot::daemon::run_daemon`) — claim a named mutex FIRST, since the
-        // FindWindow check alone races (two Start Menu double-clicks can both pass it
-        // before either has created a window). Held (leaked) for the life of the
-        // Settings window on purpose; dropping it early would let a third launch in.
         // `--tab N` on the NORMAL launch, not just inside `--shot`: the Quick preview viewer's
         // caption gear opens Settings straight on the Quick preview page. It used to be parsed
         // only by the headless capture path, so passing it to a real launch silently opened
         // page 0 (CLAUDE.md SS6.1.1 records a probe that was fooled by exactly that).
         let want_tab = wanted_tab(&args);
 
-        let single_instance = CreateMutexW(None, true, w!("SageThumbs2K.App.Single"));
-        if single_instance.is_ok() && GetLastError() == ERROR_ALREADY_EXISTS {
-            // Another instance is already up (or mid-boot) — activate ITS window
-            // instead of opening a second one. The window may not exist yet if the
-            // other instance is still initializing, so retry briefly before giving up.
-            for _ in 0..50 {
-                if let Ok(existing) = FindWindowW(w!("SageThumbs2KOptions"), None) {
-                    if IsIconic(existing).as_bool() {
-                        let _ = ShowWindow(existing, SW_RESTORE);
-                    }
-                    // A second launch raising the existing Settings window. If the
-                    // foreground grab is refused the window stays hidden behind
-                    // whatever is in front, and the menu item reads as dead.
-                    crate::win::force_foreground(existing);
-                    // Settings was ALREADY open, possibly on another page. Raising it without
-                    // switching would make the viewer's gear look dead to anyone who had it
-                    // open on, say, File types. This is the same WM_COMMAND its own nav item
-                    // sends, so the two paths cannot diverge.
-                    if let Some(tab) = want_tab {
-                        let _ = PostMessageW(
-                            Some(existing),
-                            WM_COMMAND,
-                            WPARAM(
-                                ((STN_CLICKED as usize) << 16)
-                                    | (settings_dlg::NAV_ID_BASE as usize + tab),
-                            ),
-                            LPARAM(0),
-                        );
-                    }
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            // Never appeared — the other instance likely exited between the mutex
-            // check and now. Exit quietly rather than fight over the window class.
+        if handle_single_instance(want_tab) {
             return;
         }
 
-        let class = w!("SageThumbs2KOptions");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(settings_dlg::wndproc),
-            hInstance: hinst,
-            lpszClassName: class,
-            hIcon: app_icon().unwrap_or_default(),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            // Dark window background when the system is dark; otherwise the
-            // classic button-face system color ((COLOR_BTNFACE + 1) as HBRUSH).
-            hbrBackground: if dark {
-                dark_bg_brush()
-            } else {
-                HBRUSH(16isize as *mut c_void)
-            },
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
+        let hwnd = create_and_show_settings_window(hinst, dark, want_tab);
+        run_message_loop(hwnd);
+    }
+}
 
-        // HISTORICAL (v2, before the nav-rail): WS_THICKFRAME let the user drag the
-        // window TALLER; WM_GETMINMAXINFO locked the width + a minimum height, and
-        // WM_SIZE reflowed the bottom-anchored controls (right list / scrollbar /
-        // fold-mask / footer) so the left options got a bigger scroll viewport. That
-        // machinery still exists in `settings_dlg::mod::on_resize` (harmless — it just
-        // never runs without WS_THICKFRAME to trigger it) but is no longer wired to a
-        // resizable frame; see A048 in the private dev notes for why it wasn't deleted
-        // outright (its scroll counterpart lives in a sibling module).
-        //
-        // WS_CLIPCHILDREN: the left options are real child controls that the scroll
-        // path slides with SetWindowPos + a full-band invalidate each tick. Without it,
-        // the parent's background erase paints INTO the child rects before they repaint,
-        // which flashes on a fast scroll. Clipping the children out of the parent's paint
-        // — paired with the double-buffered WM_PAINT + WM_ERASEBKGND no-op in
-        // `settings_dlg` — makes each scroll frame atomic (no erase-then-paint flicker).
-        // v3 layout is a fixed-size nav-rail + content-pane shell (no scrolling
-        // column), so the window is NOT user-resizable — drop WS_THICKFRAME.
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-        // The control layout is in 96-DPI design pixels, scaled per control by `ctl()`
-        // (`GetDpiForWindow`); the window frame must scale to the SAME DPI or the
-        // fixed-size v3 shell clips its controls. Size AND position the window for the
-        // monitor under the cursor — the one it opens on — so the frame DPI matches the
-        // controls' DPI on mixed-DPI multi-monitor setups and after a post-login scale
-        // change. (The old `dpi_for_system()` + CW_USEDEFAULT used the LOGIN primary DPI,
-        // which mismatched the actual monitor and clipped the toggles / fields / footer.)
-        let (mon_dpi, work) = win::cursor_monitor_metrics();
-        // Count this opening of the Settings window and let the sign-in engine decide whether
-        // this is one of the rare moments it speaks up. It has to happen BEFORE the window is
-        // created, because the answer changes how tall the window is: the banner sits in a strip
-        // between the pane and the footer, and the page layout below it runs once and cannot be
-        // re-run. See `settings_dlg::nudge`.
-        nudge::start_session();
-        let nudge_strip = if settings_dlg::decide_sign_in_nudge() {
-            settings_dlg::sign_in_nudge_height()
+/// Hidden, side-effect-free UI integration route (`--screenshot-automation`) plus the
+/// hidden dev measurement flags (`--bench-preview` / `--bench-nav` / `--bench-mash`).
+/// Checked first: the automation route takes precedence over every other output-capable
+/// mode even in a malformed mixed invocation, preserving its privacy/safety contract —
+/// synthetic full-screen pixels only, with clipboard, file, dialog, and upload paths
+/// fenced inside the overlay. Returns `true` if a flag fired (caller should return).
+unsafe fn dispatch_diagnostic_modes(hinst: HINSTANCE, args: &[String]) -> bool {
+    if args.iter().any(|a| a == "--screenshot-automation") {
+        crate::screenshot::run_capture_automation(hinst);
+        return true;
+    }
+    // `--bench-preview <dir>`: times the Quick preview's REAL decode path over a folder —
+    // a cold pass, then a warm pass off the cache — so the arrow-key stepping cost is a
+    // number rather than an impression. Console output, no window, no side effects.
+    if let Some(pos) = args.iter().position(|a| a == "--bench-preview") {
+        let dir = args.get(pos + 1).cloned().unwrap_or_default();
+        crate::preview::run_bench(&dir);
+        return true;
+    }
+    // `--bench-nav <dir> <steps>`: the same measurement one level up — real viewer window,
+    // real WM_KEYDOWN arrow presses, timed from keypress to painted.
+    if let Some(pos) = args.iter().position(|a| a == "--bench-nav") {
+        let dir = args.get(pos + 1).cloned().unwrap_or_default();
+        let steps = args
+            .get(pos + 2)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(20);
+        crate::preview::run_nav_bench(hinst, &dir, steps);
+        return true;
+    }
+    // `--bench-mash <dir> <keys>`: the HELD arrow key, pressed without waiting for each
+    // paint, so several decodes really are in flight at once. `ST2K_NO_CANCEL=1` switches
+    // abandonment off for an A/B on the same binary.
+    if let Some(pos) = args.iter().position(|a| a == "--bench-mash") {
+        let dir = args.get(pos + 1).cloned().unwrap_or_default();
+        let keys = args
+            .get(pos + 2)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(20);
+        crate::preview::run_mash_bench(hinst, &dir, keys);
+        return true;
+    }
+    false
+}
+
+/// The update-plumbing CLI flags: `--update-check` (the throttled one-shot the Scheduled
+/// Task runs, and the piggyback in `main` spawns), `--update-selftest <setup.exe>` (the CI
+/// / release-gate smoke test), `--first-run-seen` (suppress the welcome window on an
+/// upgrade), and `--update-task [remove]` (register/drop the per-user Scheduled Task).
+/// Returns `true` if a flag fired (caller should return).
+unsafe fn dispatch_update_modes(args: &[String]) -> bool {
+    if args.iter().any(|a| a == "--update-check") {
+        crate::update::run_one_shot_check();
+        return true;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--update-selftest") {
+        let ok = args
+            .get(pos + 1)
+            .is_some_and(|p| crate::update::run_selftest(std::path::Path::new(p)));
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if args.iter().any(|a| a == "--first-run-seen") {
+        crate::first_run::mark_shown();
+        return true;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--update-task") {
+        if args.get(pos + 1).map(String::as_str) == Some("remove") {
+            crate::update::remove_update_task();
         } else {
-            0
-        };
-
-        // v3 nav-rail + content-pane shell: fixed 772×588 (96-dpi design), DPI-scaled.
-        let win_w = win::dpi_scale_dpi(772, mon_dpi);
-        let win_h = win::dpi_scale_dpi(588 + nudge_strip, mon_dpi);
-        let x = work.left + ((work.right - work.left) - win_w).max(0) / 2;
-        let y = work.top + ((work.bottom - work.top) - win_h).max(0) / 2;
-        let hwnd = CreateWindowExW(
-            WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
-            class,
-            w!("SageThumbs 2K — Settings"),
-            style,
-            x,
-            y,
-            win_w,
-            win_h,
-            None,
-            None,
-            Some(hinst),
-            None,
-        )
-        .expect("create window");
-
-        if dark {
-            dark_control(hwnd, w!("DarkMode_Explorer"));
-            dark_titlebar(hwnd);
+            crate::update::sync_update_task();
         }
+        return true;
+    }
+    false
+}
 
-        // Land on the requested page before the window is shown, so it never flashes General
-        // first. The layout builder ends with `switch_category(hwnd, 0)`; this re-selects.
-        if let Some(tab) = want_tab {
-            settings_dlg::show_category(hwnd, tab);
+/// Builds the `ShotOpts` for `--shot --window preview`: `--file <path>` input (synthetic
+/// gradient if absent), plus optional headless state forcing — `--hot N` (button N
+/// hovered), `--pinned`, `--pdf-page N`, `--frame N` (animation frame), `--play` (video
+/// strip), `--source` (raw text of a normally-rendered file), and the rest.
+fn build_shot_preview_opts(args: &[String]) -> crate::preview::ShotOpts {
+    let val = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|p| args.get(p + 1))
+    };
+    crate::preview::ShotOpts {
+        file: val("--file").cloned(),
+        hot: val("--hot").and_then(|s| s.parse().ok()),
+        pinned: args.iter().any(|a| a == "--pinned"),
+        pdf_page: val("--pdf-page").and_then(|s| s.parse().ok()),
+        frame: val("--frame").and_then(|s| s.parse().ok()),
+        play: args.iter().any(|a| a == "--play"),
+        dpi: val("--dpi").and_then(|s| s.parse().ok()),
+        scroll: val("--scroll").and_then(|s| s.parse().ok()),
+        wheel: val("--wheel").and_then(|s| s.parse().ok()),
+        wheel_ctrl: args.iter().any(|a| a == "--ctrl"),
+        wheel_shift: args.iter().any(|a| a == "--shift"),
+        sel: val("--sel").and_then(|s| {
+            let (a, b) = s.split_once(',')?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        }),
+        find: val("--find").cloned(),
+        wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
+        source: args.iter().any(|a| a == "--source"),
+        toggle_source: args.iter().any(|a| a == "--toggle-source"),
+        toggle_theme: args.iter().any(|a| a == "--toggle-theme"),
+        size: val("--size").and_then(|s| {
+            let (w, h) = s.split_once(['x', 'X'])?;
+            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+        }),
+    }
+}
+
+/// The default (`settings`) window of `--shot`: builds the requested tab (or drives the
+/// settings-wide search headlessly when `--search <needle>` is present, optionally picking
+/// the first hit with a trailing `!`) and renders it.
+unsafe fn run_shot_settings_window(
+    hinst: HINSTANCE,
+    dark: bool,
+    out: &str,
+    args: &[String],
+) -> bool {
+    let tab = args
+        .iter()
+        .position(|a| a == "--tab")
+        .and_then(|p| args.get(p + 1))
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    if let Some(needle) = args
+        .iter()
+        .position(|a| a == "--search")
+        .and_then(|p| args.get(p + 1))
+    {
+        settings_dlg::run_shot_search(hinst, dark, out, needle)
+    } else {
+        settings_dlg::run_shot(hinst, dark, out, tab)
+    }
+}
+
+/// The body of `--shot <out.png> [--tab N] [--window settings|convert|eyedropper|...]`:
+/// picks the window named by `--window` (default `settings`) and renders it INVISIBLY
+/// (off-screen) to `out`. `pos` is the index of the `--shot` flag itself.
+unsafe fn run_shot_mode(hinst: HINSTANCE, dark: bool, args: &[String], pos: usize) -> bool {
+    let window = args
+        .iter()
+        .position(|a| a == "--window")
+        .and_then(|p| args.get(p + 1))
+        .map(String::as_str)
+        .unwrap_or("settings");
+    let Some(out) = args.get(pos + 1) else {
+        return false;
+    };
+    match window {
+        "convert" => crate::convert::run_shot_convert(out),
+        "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
+        "feedback" => crate::feedback::run_shot_feedback(out),
+        "about" => crate::about::run_shot_about(out),
+        "doctor" => crate::doctor_report::run_shot_doctor(out),
+        "firstrun" => crate::first_run::run_shot_first_run(out),
+        "firstrun2" => crate::first_run::run_shot_first_run2(out),
+        // The OCR result window, over canned text (no recognizer run) — or the
+        // real text of `--file <img>` when you want to see an actual scan.
+        "ocr" => {
+            let file = args
+                .iter()
+                .position(|a| a == "--file")
+                .and_then(|p| args.get(p + 1));
+            crate::ocr_result::run_shot_ocr(out, file.map(String::as_str))
         }
+        "preview" => {
+            let opts = build_shot_preview_opts(args);
+            crate::preview::run_shot_preview(hinst, dark, out, &opts)
+        }
+        _ => run_shot_settings_window(hinst, dark, out, args),
+    }
+}
 
-        let _ = ShowWindow(hwnd, SW_SHOW);
+/// `--convert <listfile>` (the batch-convert dialog), `--shot-gif <out.gif>` (walks every
+/// Settings tab and encodes a regenerable README/site walkthrough GIF, checked before
+/// `--shot` by exact match so the shorter flag never swallows it), and `--shot` itself (see
+/// [`run_shot_mode`]). Returns `true` if a flag fired (caller should return).
+unsafe fn dispatch_convert_and_shot_modes(hinst: HINSTANCE, dark: bool, args: &[String]) -> bool {
+    if let Some(pos) = args.iter().position(|a| a == "--convert") {
+        if let Some(listfile) = args.get(pos + 1) {
+            run_convert_dialog(hinst, listfile);
+        }
+        return true;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--shot-gif") {
+        let ok = args
+            .get(pos + 1)
+            .is_some_and(|out| settings_dlg::run_shot_gif(hinst, dark, out));
+        std::process::exit(i32::from(!ok));
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--shot") {
+        let ok = run_shot_mode(hinst, dark, args, pos);
+        std::process::exit(i32::from(!ok));
+    }
+    false
+}
 
-        let mut msg = MSG::default();
-        loop {
-            // GetMessageW returns -1 on error, 0 on WM_QUIT, >0 otherwise.
-            // as_bool() (`!= 0`) would treat -1 as "keep going" and then spin on
-            // a MSG it never populated — branch on the raw value instead.
-            let r = GetMessageW(&mut msg, None, 0, 0).0;
-            if r == 0 || r == -1 {
-                break;
+/// The read-only diagnostic and file-verb CLI flags: `--explorer-selection`,
+/// `--eyedropper`, `--prebuild <folder>`, `--image-info <path>`, `--ocr <png>`,
+/// `--ocr-keep <path> [--page N]` and `--preview [path]`. Returns `true` if a flag fired
+/// (caller should return).
+unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> bool {
+    // `--explorer-selection` prints what a global hotkey would act on right now — one path
+    // per line, nothing when there is no selection — and exits. This exists because "I
+    // pressed the hotkey and nothing happened" is otherwise unanswerable: it separates "the
+    // hotkey never fired" from "the hotkey fired but Explorer reported no selection".
+    if args.iter().any(|a| a == "--explorer-selection") {
+        // `--after-ms N` waits first. Necessary, not a convenience: the resolver reads the
+        // FOREGROUND Explorer window, and launching this console tool makes the CONSOLE the
+        // foreground window — so without a delay it always reports "nothing".
+        let wait = args
+            .iter()
+            .position(|a| a == "--after-ms")
+            .and_then(|p| args.get(p + 1))
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        if wait > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(wait.min(60_000)));
+        }
+        if let Some(p) = explorer_selection::preview_target() {
+            println!("{p}");
+        }
+        return true;
+    }
+    // Eyedropper mode: `--eyedropper` (spawned by the DLL verb) opens the
+    // system-wide screen color picker.
+    if args.iter().any(|a| a == "--eyedropper") {
+        run_eyedropper(hinst);
+        return true;
+    }
+    // Pre-build thumbnails: `--prebuild <folder>` (the folder right-click entry) walks the
+    // folder and fills Explorer's thumbnail cache, showing progress.
+    if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
+        if let Some(dir) = args.get(pos + 1) {
+            // A DRIVE ROOT arrives here as `E:"` — see `prebuild::unmangle_shell_path` for
+            // why the shell's own quoting does that and why it cannot be fixed in the
+            // registry string. Repairing it here also heals installs that already wrote
+            // the old command.
+            let dir = sagethumbs2k_core::prebuild::unmangle_shell_path(dir);
+            prebuild_dlg::run_prebuild(&dir);
+        }
+        return true;
+    }
+    // Image info: `--image-info <path>` (spawned by the DLL's Image info verb) shows
+    // a verbose, copyable metadata dump for the file.
+    if let Some(pos) = args.iter().position(|a| a == "--image-info") {
+        if let Some(path) = args.get(pos + 1) {
+            image_info::run_image_info(path);
+        }
+        return true;
+    }
+    // Screen OCR: `--ocr <png>` (spawned by the capture overlay's OCR button /
+    // Ctrl+T) reads the text out of the throwaway capture, copies it, and shows it.
+    if let Some(pos) = args.iter().position(|a| a == "--ocr") {
+        if let Some(path) = args.get(pos + 1) {
+            ocr_result::run_ocr(path);
+        }
+        return true;
+    }
+    // Screen OCR on a file the user owns: `--ocr-keep <path> [--page N]` (the Quick
+    // preview's OCR toolbar button). Unlike `--ocr` it does NOT delete its input. Checked
+    // before `--ocr` (exact match, so they don't overlap).
+    if let Some(pos) = args.iter().position(|a| a == "--ocr-keep") {
+        if let Some(path) = args.get(pos + 1) {
+            let page = args
+                .iter()
+                .position(|a| a == "--page")
+                .and_then(|p| args.get(p + 1))
+                .and_then(|s| s.parse::<u32>().ok());
+            ocr_result::run_ocr_keep(path, page);
+        }
+        return true;
+    }
+    // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
+    // viewer. A second launch forwards its path to the running viewer and exits.
+    if let Some(pos) = args.iter().position(|a| a == "--preview") {
+        let path = args
+            .get(pos + 1)
+            .filter(|p| !p.starts_with("--"))
+            .map(String::as_str);
+        crate::preview::run_preview(hinst, path);
+        return true;
+    }
+    false
+}
+
+/// The screenshot-related CLI flags: `--screenshot-instant`, `--screenshot-ocr`,
+/// `--screenshot`, `--screenshot-daemon`, `--hotkey-action`, `--upload <png>`,
+/// `--upload-keep <listfile>` and `--screenshot-toggle`. Returns `true` if a flag fired
+/// (caller should return).
+unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]) -> bool {
+    // Instant capture: grabs the whole screen straight to the clipboard + a PNG, no
+    // overlay. Checked before `--screenshot` (exact match, so they don't overlap).
+    if args.iter().any(|a| a == "--screenshot-instant") {
+        crate::screenshot::capture_instant();
+        return true;
+    }
+    // Screen OCR mode: opens the same overlay, but the first finished region drag reads
+    // its text and closes — no editor. Checked before `--screenshot` (exact match).
+    if args.iter().any(|a| a == "--screenshot-ocr") {
+        crate::screenshot::run_capture_ocr(hinst);
+        return true;
+    }
+    // Screenshot mode: opens the Flameshot-style capture + annotation overlay
+    // (region -> draw -> copy/save). Wired to a hotkey by the opt-in tray daemon.
+    if args.iter().any(|a| a == "--screenshot") {
+        crate::screenshot::run_capture(hinst);
+        return true;
+    }
+    // Screenshot daemon: runs the opt-in tray helper that registers the global hotkey and
+    // spawns captures. Launched at logon only after the user enables it in Settings.
+    if args.iter().any(|a| a == "--screenshot-daemon") {
+        crate::screenshot::run_daemon(hinst);
+        return true;
+    }
+    // Custom action hotkey: spawned by the daemon when the user's assigned chord fires;
+    // runs whichever action they bound in Settings > Screenshots.
+    if args.iter().any(|a| a == "--hotkey-action") {
+        crate::hotkey::run_hotkey_action(hinst);
+        return true;
+    }
+    // Upload mode: POSTs a capture to a keyless host and copies the URL to the clipboard.
+    if let Some(pos) = args.iter().position(|a| a == "--upload") {
+        if let Some(path) = args.get(pos + 1) {
+            crate::screenshot::run_upload(path);
+        }
+        return true;
+    }
+    // Upload-keep mode: uploads the USER files listed to the keyless host and copies the
+    // link(s) to the clipboard, WITHOUT deleting the originals (only `--upload` deletes,
+    // since its file is a throwaway capture). Exact-match above means `--upload` never
+    // swallows this longer flag.
+    if let Some(pos) = args.iter().position(|a| a == "--upload-keep") {
+        if let Some(listfile) = args.get(pos + 1) {
+            crate::screenshot::run_upload_keep(listfile);
+        }
+        return true;
+    }
+    // Toggle the screenshot hotkey on/off (HKCU autostart + the tray daemon).
+    if args.iter().any(|a| a == "--screenshot-toggle") {
+        crate::screenshot::set_enabled(!crate::screenshot::is_enabled());
+        return true;
+    }
+    false
+}
+
+/// `--files-to-folder <listfile>` and `--tags-to-folders <listfile>` (both spawned by DLL
+/// verbs over a multi-file selection). Returns `true` if a flag fired (caller should
+/// return).
+unsafe fn dispatch_folder_modes(hinst: HINSTANCE, args: &[String]) -> bool {
+    if let Some(pos) = args.iter().position(|a| a == "--files-to-folder") {
+        if let Some(listfile) = args.get(pos + 1) {
+            run_files_to_folder_dialog(hinst, listfile);
+        }
+        return true;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--tags-to-folders") {
+        if let Some(listfile) = args.get(pos + 1) {
+            run_tags_to_folders_dialog(hinst, listfile);
+        }
+        return true;
+    }
+    false
+}
+
+/// The install-time heal flags: `--updated <ver>` (launched by the installer's [Run] step
+/// right after a SILENT self-update finishes — heals the hotkey daemon the installer had
+/// to kill, then pops a non-blocking "you're now on <ver>" toast) and `--heal-hotkeys` (run
+/// after EVERY install, including manual/silent reinstalls that never pass `/UPDATED`).
+/// Returns `true` if a flag fired (caller should return).
+unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
+    if let Some(pos) = args.iter().position(|a| a == "--updated") {
+        heal_after_install();
+        let ver = args
+            .get(pos + 1)
+            .map_or(env!("CARGO_PKG_VERSION"), String::as_str);
+        crate::update::show_updated_toast(ver);
+        return true;
+    }
+    if args.iter().any(|a| a == "--heal-hotkeys") {
+        heal_after_install();
+        return true;
+    }
+    false
+}
+
+/// If another instance is already up (or mid-boot), activate ITS window instead of
+/// opening a second one, forwarding `want_tab` — the same WM_COMMAND its own nav item
+/// sends, so the two paths cannot diverge. Retries briefly since the window may not exist
+/// yet if the other instance is still initializing. Returns `true` in every case (the
+/// caller must not build a new window): whether it raised the existing window, or gave up
+/// because the other instance likely exited between the mutex check and now.
+unsafe fn activate_existing_instance(want_tab: Option<usize>) -> bool {
+    for _ in 0..50 {
+        if let Ok(existing) = FindWindowW(w!("SageThumbs2KOptions"), None) {
+            if IsIconic(existing).as_bool() {
+                let _ = ShowWindow(existing, SW_RESTORE);
             }
-            if !IsDialogMessageW(hwnd, &msg).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+            // If the foreground grab is refused the window stays hidden behind whatever
+            // is in front, and the menu item reads as dead.
+            crate::win::force_foreground(existing);
+            if let Some(tab) = want_tab {
+                let _ = PostMessageW(
+                    Some(existing),
+                    WM_COMMAND,
+                    WPARAM(
+                        ((STN_CLICKED as usize) << 16) | (settings_dlg::NAV_ID_BASE as usize + tab),
+                    ),
+                    LPARAM(0),
+                );
             }
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    true
+}
+
+/// Single instance, TOCTOU-safe: same pattern as the screenshot daemon
+/// (`screenshot::daemon::run_daemon`) — claim a named mutex FIRST, since the FindWindow
+/// check alone races (two Start Menu double-clicks can both pass it before either has
+/// created a window). The mutex handle is intentionally leaked (never closed) for the
+/// life of the process; dropping it early would let a third launch in, and `HANDLE` has no
+/// `Drop` impl to fight, so returning from this function changes nothing about that.
+/// Returns `true` if another instance already held the mutex (caller should return
+/// without creating a window).
+unsafe fn handle_single_instance(want_tab: Option<usize>) -> bool {
+    let single_instance = CreateMutexW(None, true, w!("SageThumbs2K.App.Single"));
+    if single_instance.is_ok() && GetLastError() == ERROR_ALREADY_EXISTS {
+        activate_existing_instance(want_tab);
+        return true;
+    }
+    false
+}
+
+/// Registers the window class, sizes and positions it for the monitor under the cursor,
+/// creates it, applies dark mode, lands on the requested tab, and shows it. Isolated out
+/// of `main` because it is the one contiguous "build the real window" concern, distinct
+/// from the CLI-mode dispatch above it and the message loop after it.
+unsafe fn create_and_show_settings_window(
+    hinst: HINSTANCE,
+    dark: bool,
+    want_tab: Option<usize>,
+) -> HWND {
+    let class = w!("SageThumbs2KOptions");
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(settings_dlg::wndproc),
+        hInstance: hinst,
+        lpszClassName: class,
+        hIcon: app_icon().unwrap_or_default(),
+        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+        // Dark window background when the system is dark; otherwise the
+        // classic button-face system color ((COLOR_BTNFACE + 1) as HBRUSH).
+        hbrBackground: if dark {
+            dark_bg_brush()
+        } else {
+            HBRUSH(16isize as *mut c_void)
+        },
+        ..Default::default()
+    };
+    RegisterClassW(&wc);
+
+    // HISTORICAL (v2, before the nav-rail): WS_THICKFRAME let the user drag the window
+    // TALLER; that machinery still exists in `settings_dlg::mod::on_resize` (harmless — it
+    // just never runs without WS_THICKFRAME to trigger it) but is no longer wired to a
+    // resizable frame. v3 layout is a fixed-size nav-rail + content-pane shell (no
+    // scrolling column), so the window is NOT user-resizable — drop WS_THICKFRAME.
+    //
+    // WS_CLIPCHILDREN: the left options are real child controls that the scroll path
+    // slides with SetWindowPos + a full-band invalidate each tick. Without it, the
+    // parent's background erase paints INTO the child rects before they repaint, which
+    // flashes on a fast scroll.
+    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    // The control layout is in 96-DPI design pixels, scaled per control by `ctl()`
+    // (`GetDpiForWindow`); the window frame must scale to the SAME DPI or the fixed-size
+    // v3 shell clips its controls. Size AND position the window for the monitor under the
+    // cursor — the one it opens on — so the frame DPI matches the controls' DPI on
+    // mixed-DPI multi-monitor setups and after a post-login scale change.
+    let (mon_dpi, work) = win::cursor_monitor_metrics();
+    // Count this opening of the Settings window and let the sign-in engine decide whether
+    // this is one of the rare moments it speaks up. It has to happen BEFORE the window is
+    // created, because the answer changes how tall the window is: the banner sits in a
+    // strip between the pane and the footer, and the page layout below it runs once and
+    // cannot be re-run. See `settings_dlg::nudge`.
+    nudge::start_session();
+    let nudge_strip = if settings_dlg::decide_sign_in_nudge() {
+        settings_dlg::sign_in_nudge_height()
+    } else {
+        0
+    };
+
+    // v3 nav-rail + content-pane shell: fixed 772×588 (96-dpi design), DPI-scaled.
+    let win_w = win::dpi_scale_dpi(772, mon_dpi);
+    let win_h = win::dpi_scale_dpi(588 + nudge_strip, mon_dpi);
+    let x = work.left + ((work.right - work.left) - win_w).max(0) / 2;
+    let y = work.top + ((work.bottom - work.top) - win_h).max(0) / 2;
+    let hwnd = CreateWindowExW(
+        WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
+        class,
+        w!("SageThumbs 2K — Settings"),
+        style,
+        x,
+        y,
+        win_w,
+        win_h,
+        None,
+        None,
+        Some(hinst),
+        None,
+    )
+    .expect("create window");
+
+    if dark {
+        dark_control(hwnd, w!("DarkMode_Explorer"));
+        dark_titlebar(hwnd);
+    }
+
+    // Land on the requested page before the window is shown, so it never flashes General
+    // first. The layout builder ends with `switch_category(hwnd, 0)`; this re-selects.
+    if let Some(tab) = want_tab {
+        settings_dlg::show_category(hwnd, tab);
+    }
+
+    let _ = ShowWindow(hwnd, SW_SHOW);
+    hwnd
+}
+
+/// The classic Win32 message pump, run until `WM_QUIT`.
+unsafe fn run_message_loop(hwnd: HWND) {
+    let mut msg = MSG::default();
+    loop {
+        // GetMessageW returns -1 on error, 0 on WM_QUIT, >0 otherwise.
+        // as_bool() (`!= 0`) would treat -1 as "keep going" and then spin on
+        // a MSG it never populated — branch on the raw value instead.
+        let r = GetMessageW(&mut msg, None, 0, 0).0;
+        if r == 0 || r == -1 {
+            break;
+        }
+        if !IsDialogMessageW(hwnd, &msg).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
     }
 }
