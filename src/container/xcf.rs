@@ -751,6 +751,75 @@ fn decode_tile(
     }
 }
 
+/// One decoded GIMP-RLE opcode: how many bytes it contributes, and whether they're `len`
+/// copies of one repeated value or `len` raw literal bytes still waiting to be read.
+enum RleChunk {
+    Run { len: usize, val: u8 },
+    Literal { len: usize },
+}
+
+/// Decodes one GIMP-RLE opcode (the byte already read at the position just before `*p`)
+/// into an [`RleChunk`], advancing `*p` past any length/value bytes the opcode itself
+/// carries — NOT past a literal's payload bytes, which the caller reads one at a time via
+/// [`scatter_literal`] so each can also land straight in `dest`. `None` for the zero-length
+/// long forms (127/128 with a `u16` length of 0), which the format never produces.
+fn decode_rle_opcode(d: &[u8], p: &mut usize, opcode: u8) -> Option<RleChunk> {
+    if opcode <= 126 {
+        // run of (opcode+1) copies of one value
+        let len = opcode as usize + 1;
+        let val = *d.get(*p)?;
+        *p += 1;
+        Some(RleChunk::Run { len, val })
+    } else if opcode == 127 {
+        // long run: u16 length, one value
+        let hi = *d.get(*p)? as usize;
+        let lo = *d.get(*p + 1)? as usize;
+        *p += 2;
+        let len = hi * 256 + lo;
+        let val = *d.get(*p)?;
+        *p += 1;
+        (len != 0).then_some(RleChunk::Run { len, val })
+    } else if opcode == 128 {
+        // long literal: u16 length, then that many raw bytes
+        let hi = *d.get(*p)? as usize;
+        let lo = *d.get(*p + 1)? as usize;
+        *p += 2;
+        (hi * 256 + lo != 0).then_some(RleChunk::Literal { len: hi * 256 + lo })
+    } else {
+        // 129..=255: (256-opcode) raw literal bytes
+        Some(RleChunk::Literal {
+            len: 256 - opcode as usize,
+        })
+    }
+}
+
+/// Writes `len` copies of `val` into `dest` at stride `bpp`, starting at `*slot`.
+fn scatter_run(dest: &mut [u8], slot: &mut usize, bpp: usize, len: usize, val: u8) -> Option<()> {
+    for _ in 0..len {
+        *dest.get_mut(*slot)? = val;
+        *slot += bpp;
+    }
+    Some(())
+}
+
+/// Writes `len` raw bytes read sequentially from `d` starting at `*p` into `dest` at stride
+/// `bpp` starting at `*slot`, advancing both `*p` and `*slot` as it goes.
+fn scatter_literal(
+    d: &[u8],
+    p: &mut usize,
+    dest: &mut [u8],
+    slot: &mut usize,
+    bpp: usize,
+    len: usize,
+) -> Option<()> {
+    for _ in 0..len {
+        *dest.get_mut(*slot)? = *d.get(*p)?;
+        *p += 1;
+        *slot += bpp;
+    }
+    Some(())
+}
+
 /// GIMP tile RLE: for each of `bpp` byte-planes, decode `npix` bytes and scatter them at
 /// stride `bpp` (plane i fills byte i of every pixel), reconstructing the interleaved tile.
 fn decode_rle(d: &[u8], off: usize, bpp: usize, npix: usize, dest: &mut [u8]) -> Option<()> {
@@ -761,63 +830,18 @@ fn decode_rle(d: &[u8], off: usize, bpp: usize, npix: usize, dest: &mut [u8]) ->
         while written < npix {
             let opcode = *d.get(p)?;
             p += 1;
-            if opcode <= 126 {
-                // run of (opcode+1) copies of one value
-                let len = opcode as usize + 1;
-                let val = *d.get(p)?;
-                p += 1;
-                if written + len > npix {
-                    return None;
-                }
-                for _ in 0..len {
-                    *dest.get_mut(slot)? = val;
-                    slot += bpp;
-                }
-                written += len;
-            } else if opcode == 127 {
-                // long run: u16 length, one value
-                let hi = *d.get(p)? as usize;
-                let lo = *d.get(p + 1)? as usize;
-                p += 2;
-                let len = hi * 256 + lo;
-                let val = *d.get(p)?;
-                p += 1;
-                if len == 0 || written + len > npix {
-                    return None;
-                }
-                for _ in 0..len {
-                    *dest.get_mut(slot)? = val;
-                    slot += bpp;
-                }
-                written += len;
-            } else if opcode == 128 {
-                // long literal: u16 length, then that many raw bytes
-                let hi = *d.get(p)? as usize;
-                let lo = *d.get(p + 1)? as usize;
-                p += 2;
-                let len = hi * 256 + lo;
-                if len == 0 || written + len > npix {
-                    return None;
-                }
-                for _ in 0..len {
-                    *dest.get_mut(slot)? = *d.get(p)?;
-                    p += 1;
-                    slot += bpp;
-                }
-                written += len;
-            } else {
-                // 129..=255: (256-opcode) raw literal bytes
-                let len = 256 - opcode as usize;
-                if written + len > npix {
-                    return None;
-                }
-                for _ in 0..len {
-                    *dest.get_mut(slot)? = *d.get(p)?;
-                    p += 1;
-                    slot += bpp;
-                }
-                written += len;
+            let chunk = decode_rle_opcode(d, &mut p, opcode)?;
+            let len = match chunk {
+                RleChunk::Run { len, .. } | RleChunk::Literal { len } => len,
+            };
+            if written + len > npix {
+                return None;
             }
+            match chunk {
+                RleChunk::Run { len, val } => scatter_run(dest, &mut slot, bpp, len, val)?,
+                RleChunk::Literal { len } => scatter_literal(d, &mut p, dest, &mut slot, bpp, len)?,
+            }
+            written += len;
         }
     }
     Some(())
