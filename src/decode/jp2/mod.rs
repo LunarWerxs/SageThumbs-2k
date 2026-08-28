@@ -100,7 +100,10 @@ pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 /// Reject any codestream shape this reduced-resolution path does not cover
 /// (multi-component palettes, absurd component counts, chroma subsampling,
 /// exotic progression orders). Returns the validated component count.
-fn validate_reduced_scope(c: &codestream::Codestream, has_palette: bool) -> Result<usize, Jp2Error> {
+fn validate_reduced_scope(
+    c: &codestream::Codestream,
+    has_palette: bool,
+) -> Result<usize, Jp2Error> {
     // A palette maps SINGLE-component indices; anything else is a shape we refuse to
     // guess at (the parser already declines the exotic ones).
     if has_palette && c.siz.components.len() != 1 {
