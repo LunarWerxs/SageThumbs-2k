@@ -359,9 +359,76 @@ fn refinement_pass(
     }
 }
 
+/// Decode the sign of a newly-significant sample and record it: shared by the
+/// per-sample cleanup decode and the run-length-selected row.
+fn mark_significant(
+    mq: &mut MqDecoder,
+    flags: &mut [u8],
+    coeffs: &mut [i32],
+    neg: &mut [bool],
+    x: usize,
+    y: usize,
+    sw: usize,
+    w: usize,
+    plane_bit: i32,
+) {
+    let (sx, sv) = sign_neighbours(flags, neg, x, y, sw, w);
+    let (scx, xorbit) = sc_context(sx, sv);
+    let s = mq.decode(scx) ^ xorbit;
+    neg[cblk_idx(x, y, w)] = s == 1;
+    coeffs[cblk_idx(x, y, w)] |= plane_bit;
+    flags[cblk_fidx(x, y, sw)] |= SIG;
+}
+
+/// Run-length mode for one full 4-row stripe column: if every sample is
+/// insignificant with no significant neighbours, decode ONE symbol for the
+/// whole column instead of one per sample. Returns `None` when the RL symbol
+/// declared the whole column clear (caller must not decode it again), or
+/// `Some(y)` for the row per-sample decoding should resume at — `y0` when the
+/// stripe wasn't uniformly clear, or one past the RL-selected significant row.
+#[allow(clippy::too_many_arguments)]
+fn cleanup_run_length_stripe(
+    mq: &mut MqDecoder,
+    flags: &mut [u8],
+    coeffs: &mut [i32],
+    neg: &mut [bool],
+    x: usize,
+    y0: usize,
+    stripe_end: usize,
+    sw: usize,
+    w: usize,
+    plane_bit: i32,
+) -> Option<usize> {
+    let mut all_clear = true;
+    for yy in y0..stripe_end {
+        let f = flags[cblk_fidx(x, yy, sw)];
+        let (hc, vc, dc) = neighbour_counts(flags, x, yy, sw);
+        if f & (SIG | VISIT) != 0 || hc + vc + dc != 0 {
+            all_clear = false;
+            break;
+        }
+    }
+    if !all_clear {
+        return Some(y0);
+    }
+    if mq.decode(CTX_RL) == 0 {
+        for yy in y0..stripe_end {
+            flags[cblk_fidx(x, yy, sw)] &= !VISIT;
+        }
+        return None;
+    }
+    // Two UNIFORM bits say which row becomes significant.
+    let hi = mq.decode(CTX_UNI);
+    let lo = mq.decode(CTX_UNI);
+    let k = (hi << 1) | lo;
+    let y = y0 + k as usize;
+    mark_significant(mq, flags, coeffs, neg, x, y, sw, w, plane_bit);
+    Some(y + 1)
+}
+
 /// Cleanup pass (D.2): decode significance for every sample this plane's significance and
-/// refinement passes skipped (run-length coded where a whole 4-row stripe column is clear),
-/// then clear VISIT so the next plane starts fresh.
+/// refinement passes skipped (run-length coded where a whole 4-row stripe column is clear —
+/// see `cleanup_run_length_stripe`), then clear VISIT so the next plane starts fresh.
 #[allow(clippy::too_many_arguments)]
 fn cleanup_pass(
     mq: &mut MqDecoder,
@@ -377,41 +444,17 @@ fn cleanup_pass(
 ) {
     for y0 in (0..h).step_by(4) {
         for x in 0..w {
-            let mut y = y0;
             let stripe_end = (y0 + 4).min(h);
-            // Run-length mode: a full stripe column, all insignificant with no
-            // significant neighbours, is coded with one RL symbol.
-            if stripe_end - y0 == 4 {
-                let mut all_clear = true;
-                for yy in y0..stripe_end {
-                    let f = flags[cblk_fidx(x, yy, sw)];
-                    let (hc, vc, dc) = neighbour_counts(flags, x, yy, sw);
-                    if f & (SIG | VISIT) != 0 || hc + vc + dc != 0 {
-                        all_clear = false;
-                        break;
-                    }
+            let y = if stripe_end - y0 == 4 {
+                match cleanup_run_length_stripe(
+                    mq, flags, coeffs, neg, x, y0, stripe_end, sw, w, plane_bit,
+                ) {
+                    Some(y) => y,
+                    None => continue,
                 }
-                if all_clear {
-                    if mq.decode(CTX_RL) == 0 {
-                        for yy in y0..stripe_end {
-                            flags[cblk_fidx(x, yy, sw)] &= !VISIT;
-                        }
-                        continue;
-                    }
-                    // Two UNIFORM bits say which row becomes significant.
-                    let hi = mq.decode(CTX_UNI);
-                    let lo = mq.decode(CTX_UNI);
-                    let k = (hi << 1) | lo;
-                    y = y0 + k as usize;
-                    let (sx, sv) = sign_neighbours(flags, neg, x, y, sw, w);
-                    let (scx, xorbit) = sc_context(sx, sv);
-                    let s = mq.decode(scx) ^ xorbit;
-                    neg[cblk_idx(x, y, w)] = s == 1;
-                    coeffs[cblk_idx(x, y, w)] |= plane_bit;
-                    flags[cblk_fidx(x, y, sw)] |= SIG;
-                    y += 1;
-                }
-            }
+            } else {
+                y0
+            };
             for yy in y..stripe_end {
                 let f = flags[cblk_fidx(x, yy, sw)];
                 if f & (SIG | VISIT) != 0 {
@@ -421,12 +464,7 @@ fn cleanup_pass(
                 let (hc, vc, dc) = neighbour_counts(flags, x, yy, sw);
                 let cx = zc_context(band, hc, vc, dc);
                 if mq.decode(cx) == 1 {
-                    let (sx, sv) = sign_neighbours(flags, neg, x, yy, sw, w);
-                    let (scx, xorbit) = sc_context(sx, sv);
-                    let s = mq.decode(scx) ^ xorbit;
-                    neg[cblk_idx(x, yy, w)] = s == 1;
-                    coeffs[cblk_idx(x, yy, w)] |= plane_bit;
-                    flags[cblk_fidx(x, yy, sw)] |= SIG;
+                    mark_significant(mq, flags, coeffs, neg, x, yy, sw, w, plane_bit);
                 }
             }
             for yy in y0..stripe_end {
