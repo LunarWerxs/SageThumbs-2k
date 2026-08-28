@@ -100,6 +100,50 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     thumbnail_from_resources(bytes.get(res_start..res_end)?)
 }
 
+/// One `8BIM` resource block's header at `o`: its id and the byte range of its data payload.
+/// `None` when the block isn't well-formed or its data would run past `res_end` — the caller
+/// treats either as "stop walking, no thumbnail found" (same as this function's own `?`
+/// failures did before the split).
+fn resource_block_header(bytes: &[u8], o: usize, res_end: usize) -> Option<(u16, usize, usize)> {
+    if bytes.get(o..o + 4)? != b"8BIM" {
+        return None; // not a well-formed resource run
+    }
+    let id = be16(bytes, o + 4)?;
+    // Pascal name: 1 length byte + name, the whole field padded to even.
+    let name_len = *bytes.get(o + 6)? as usize;
+    let name_field = 1 + name_len;
+    let name_padded = name_field + (name_field & 1);
+    let size_off = o + 6 + name_padded;
+    let size = be32(bytes, size_off)? as usize;
+    let data_off = size_off + 4;
+    let data_end = data_off.checked_add(size)?;
+    if data_end > res_end {
+        return None;
+    }
+    Some((id, data_off, data_end))
+}
+
+/// The JPEG thumbnail payload inside one resource block's data, if `id` is a thumbnail
+/// resource ID, its embedded format is JPEG (1), and the JPEG passes the shared
+/// cover-size/magic checks.
+fn thumbnail_jpeg(bytes: &[u8], id: u16, data_off: usize, data_end: usize) -> Option<Vec<u8>> {
+    if !THUMBNAIL_IDS.contains(&id) {
+        return None;
+    }
+    // 28-byte thumbnail header, then the JPEG (when format == 1 = JPEG).
+    if be32(bytes, data_off)? != 1 {
+        return None;
+    }
+    let jpeg = bytes.get(data_off + 28..data_end)?;
+    // Bound the cover we hand back (shared CBXMEM cap): a hostile PSD could declare a huge
+    // resource block, and the JPEG is decoded downstream under `panic = "abort"`.
+    if jpeg.len() as u64 <= crate::container::MAX_COVER && jpeg.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some(jpeg.to_vec())
+    } else {
+        None
+    }
+}
+
 /// Extract the JPEG thumbnail from a Photoshop Image Resources run (`8BIM` blocks).
 ///
 /// Photoshop-written EPS files embed this exact run behind `%%BeginPhotoshop`, so
@@ -109,38 +153,14 @@ pub(crate) fn thumbnail_from_resources(bytes: &[u8]) -> Option<Vec<u8>> {
 
     let mut o = 0usize;
     while o + 8 <= res_end {
-        if bytes.get(o..o + 4)? != b"8BIM" {
-            break; // not a well-formed resource run
-        }
-        let id = be16(bytes, o + 4)?;
-        // Pascal name: 1 length byte + name, the whole field padded to even.
-        let name_len = *bytes.get(o + 6)? as usize;
-        let name_field = 1 + name_len;
-        let name_padded = name_field + (name_field & 1);
-        let size_off = o + 6 + name_padded;
-        let size = be32(bytes, size_off)? as usize;
-        let data_off = size_off + 4;
-        let data_end = data_off.checked_add(size)?;
-        if data_end > res_end {
+        let Some((id, data_off, data_end)) = resource_block_header(bytes, o, res_end) else {
             break;
+        };
+        if let Some(jpeg) = thumbnail_jpeg(bytes, id, data_off, data_end) {
+            return Some(jpeg);
         }
-
-        if THUMBNAIL_IDS.contains(&id) {
-            // 28-byte thumbnail header, then the JPEG (when format == 1 = JPEG).
-            if be32(bytes, data_off)? == 1 {
-                let jpeg = bytes.get(data_off + 28..data_end)?;
-                // Bound the cover we hand back (shared CBXMEM cap): a hostile PSD
-                // could declare a huge resource block, and the JPEG is decoded
-                // downstream under `panic = "abort"`.
-                if jpeg.len() as u64 <= crate::container::MAX_COVER
-                    && jpeg.starts_with(&[0xFF, 0xD8, 0xFF])
-                {
-                    return Some(jpeg.to_vec());
-                }
-            }
-        }
-
         // Each resource's data is padded to an even length.
+        let size = data_end - data_off;
         o = data_off + size + (size & 1);
     }
     None

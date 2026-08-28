@@ -598,26 +598,27 @@ fn parse_arsc(arsc: &[u8]) -> Option<Arsc<'_>> {
     })
 }
 
-/// Resolve resource id `0xPPTTEEEE` to the best raster path: collect every density
-/// variant of the entry across the package's TYPE chunks, chase references (bounded),
-/// drop non-raster (adaptive `.xml`) candidates, then prefer ANY density, else max dpi.
-fn resolve_icon_path(table: &Arsc, id: u32, depth: u8, work: &mut u32) -> Option<String> {
-    if depth >= MAX_REF_DEPTH || *work == 0 {
-        return None;
-    }
-    let pkg_id = id >> 24;
-    let type_id = ((id >> 16) & 0xFF) as u8;
-    let entry_idx = (id & 0xFFFF) as u16;
-    if type_id == 0 {
-        return None;
-    }
-    let &(_, pkg, hs) = table
+/// Find the package to resolve `pkg_id` in: an exact package-id match, or (package 0 means
+/// "the shared library's single package here") the first package.
+fn find_package<'a>(table: &Arsc<'a>, pkg_id: u32) -> Option<(u32, &'a [u8], usize)> {
+    table
         .packages
         .iter()
         .find(|(pid, ..)| *pid == pkg_id)
-        // Shared libraries reference package 0 meaning "the (single) package here".
-        .or_else(|| (pkg_id == 0).then(|| table.packages.first()).flatten())?;
-    let body = pkg.get(hs..)?;
+        .or_else(|| (pkg_id == 0).then(|| table.packages.first()).flatten())
+        .copied()
+}
+
+/// Walk `body`'s TYPE chunks collecting every density variant of `entry_idx`: string paths
+/// kept only when raster, references chased recursively (bounded by `depth`/`work`).
+fn collect_icon_candidates(
+    table: &Arsc,
+    body: &[u8],
+    type_id: u8,
+    entry_idx: u16,
+    depth: u8,
+    work: &mut u32,
+) -> Vec<(u16, String)> {
     let mut candidates: Vec<(u16, String)> = Vec::new();
     for (t, chs, chunk) in Chunks::new(body) {
         // SPEND FROM THE SHARED BUDGET, not a per-call one. See `MAX_RESOLVE_WORK`: the depth
@@ -654,6 +655,11 @@ fn resolve_icon_path(table: &Arsc, id: u32, depth: u8, work: &mut u32) -> Option
         }
     }
     candidates
+}
+
+/// Prefer ANY density, else the highest dpi.
+fn best_density_candidate(candidates: Vec<(u16, String)>) -> Option<String> {
+    candidates
         .into_iter()
         .max_by_key(|&(d, _)| match d {
             DENSITY_ANY => u32::MAX,
@@ -661,6 +667,25 @@ fn resolve_icon_path(table: &Arsc, id: u32, depth: u8, work: &mut u32) -> Option
             d => d as u32,
         })
         .map(|(_, path)| path)
+}
+
+/// Resolve resource id `0xPPTTEEEE` to the best raster path: collect every density
+/// variant of the entry across the package's TYPE chunks, chase references (bounded),
+/// drop non-raster (adaptive `.xml`) candidates, then prefer ANY density, else max dpi.
+fn resolve_icon_path(table: &Arsc, id: u32, depth: u8, work: &mut u32) -> Option<String> {
+    if depth >= MAX_REF_DEPTH || *work == 0 {
+        return None;
+    }
+    let pkg_id = id >> 24;
+    let type_id = ((id >> 16) & 0xFF) as u8;
+    let entry_idx = (id & 0xFFFF) as u16;
+    if type_id == 0 {
+        return None;
+    }
+    let (_, pkg, hs) = find_package(table, pkg_id)?;
+    let body = pkg.get(hs..)?;
+    let candidates = collect_icon_candidates(table, body, type_id, entry_idx, depth, work);
+    best_density_candidate(candidates)
 }
 
 /// Pull `entry_idx`'s `Res_value` out of one TYPE chunk: `(config density, dataType,

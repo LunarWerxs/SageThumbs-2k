@@ -100,6 +100,33 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
     ))
 }
 
+/// One top-level box header at `pos`: its fourcc and its full (header+body) size, honoring
+/// the extended 8-byte size field when `size32 == 1`. `None` when the header can't be read or
+/// its size can't be resolved — the caller treats that as "stop walking", not "reject the
+/// file", since whatever was already found (a `moov` from an earlier box) still stands.
+fn read_top_level_header<R: Read + Seek>(
+    r: &mut R,
+    pos: u64,
+    total: u64,
+) -> Option<([u8; 4], u64)> {
+    let mut hdr = [0u8; 8];
+    read_exact_at(r, pos, &mut hdr)?;
+    let size32 = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+    let typ = [hdr[4], hdr[5], hdr[6], hdr[7]];
+    // Only read the extended 8-byte size field when the header actually needs it — the
+    // shared `decode_box_size` treats a missing `extended` as "decline size32 == 1".
+    let extended = if size32 == 1 {
+        let mut ext = [0u8; 8];
+        read_exact_at(r, pos + 8, &mut ext)?;
+        Some(u64::from_be_bytes(ext))
+    } else {
+        None
+    };
+    let (full, _header_len) =
+        crate::container::boxhdr::decode_box_size(size32, extended, pos, total)?;
+    Some((typ, full))
+}
+
 /// Walk the top-level boxes: the `ftyp` gate (rejecting non-ISO-BMFF cheaply), the verbatim
 /// `ftyp` copy when it is sanely sized, and the whole `moov` read into RAM (capped).
 /// Returns `(total_size, ftyp, moov)`.
@@ -117,24 +144,7 @@ fn scan_top_level<R: Read + Seek>(r: &mut R) -> Option<(u64, Option<Vec<u8>>, Ve
         if boxes_seen > MAX_TOP_LEVEL_BOXES {
             return None;
         }
-        let mut hdr = [0u8; 8];
-        if read_exact_at(r, pos, &mut hdr).is_none() {
-            break;
-        }
-        let size32 = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
-        let typ = [hdr[4], hdr[5], hdr[6], hdr[7]];
-        // Only read the extended 8-byte size field when the header actually needs it — the
-        // shared `decode_box_size` treats a missing `extended` as "decline size32 == 1".
-        let extended = if size32 == 1 {
-            let mut ext = [0u8; 8];
-            read_exact_at(r, pos + 8, &mut ext)?;
-            Some(u64::from_be_bytes(ext))
-        } else {
-            None
-        };
-        let Some((full, _header_len)) =
-            crate::container::boxhdr::decode_box_size(size32, extended, pos, total)
-        else {
+        let Some((typ, full)) = read_top_level_header(r, pos, total) else {
             break;
         };
         // ISO-BMFF gate: a real mp4/mov starts with `ftyp`. This cheaply rejects Matroska/AVI/
