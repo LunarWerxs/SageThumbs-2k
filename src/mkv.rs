@@ -92,6 +92,94 @@ struct SegmentMap {
     first_cluster: Option<u64>,
 }
 
+/// What `scan_segment_front` collects: positions of the metadata children found before the
+/// first Cluster, plus the raw SeekHead bytes (if any) for `resolve_via_seekhead` to consult.
+struct FrontScan {
+    seekhead: Option<Vec<u8>>,
+    info: Option<u64>,
+    tracks: Option<u64>,
+    cues: Option<u64>,
+    attachments: Option<u64>,
+    cluster: Option<u64>,
+}
+
+/// Front-of-segment walk: capture SeekHead/Info/Tracks (and Cues/Attachments if they happen
+/// to be up front), stopping at the first Cluster — we never scan the cluster body. `None`
+/// only on the position-overflow edge case below, matching `segment_map`'s original `?`.
+fn scan_segment_front<R: Read + Seek>(r: &mut R, seg_data: u64, seg_end: u64) -> Option<FrontScan> {
+    let mut scan = FrontScan {
+        seekhead: None,
+        info: None,
+        tracks: None,
+        cues: None,
+        attachments: None,
+        cluster: None,
+    };
+    let mut p = seg_data;
+    for _ in 0..64 {
+        if p + 2 > seg_end {
+            break;
+        }
+        // A header_at failure here (truncated read, reserved 0x00 marker byte, an
+        // oversized VINT) used to propagate via `?` straight out of segment_map, discarding
+        // every position already resolved (Info/Tracks/Cues/Attachments) even when the bad
+        // element sits AFTER them. Treat it as end-of-walk instead: stop scanning forward,
+        // but keep whatever this pass already found (the SeekHead resolution below still
+        // runs against it).
+        let Some((eid, esize, ehlen, eunk)) = header_at(r, p) else {
+            break;
+        };
+        match eid {
+            ID_SEEKHEAD if esize <= META_MAX => scan.seekhead = read_full_at(r, p + ehlen, esize),
+            ID_INFO => scan.info = Some(p),
+            ID_TRACKS => scan.tracks = Some(p),
+            ID_CUES => scan.cues = Some(p),
+            ID_ATTACHMENTS => scan.attachments = Some(p),
+            ID_CLUSTER => {
+                scan.cluster = Some(p);
+                break;
+            }
+            _ => {}
+        }
+        if eunk {
+            break; // can't skip an unknown-size element
+        }
+        p = p.checked_add(ehlen + esize)?;
+        // No early exit on "found everything": Attachments routinely sit AFTER Cues in a
+        // cues-up-front layout, and a file without a (complete) SeekHead would then lose
+        // its cover art to the shortcut. The walk stops at the first Cluster anyway, so
+        // finishing it costs a handful of header reads, bounded by the iteration cap.
+    }
+    Some(scan)
+}
+
+/// Resolve any position `scan_segment_front` didn't find via the SeekHead (Cues are
+/// typically at the file's end). SeekPosition is an attacker-controlled EBML uint up to
+/// u64::MAX; `checked_add` drops an entry that would overflow instead of wrapping to a bogus
+/// offset (release, overflow-checks off) or panicking (debug/test) — matching the
+/// checked_add already used for Cues-derived cluster positions elsewhere in this file.
+fn resolve_via_seekhead(scan: &mut FrontScan, seg_data: u64) {
+    let Some(sh) = &scan.seekhead else {
+        return;
+    };
+    let cues = scan
+        .cues
+        .or_else(|| seek_lookup(sh, ID_CUES).and_then(|rel| seg_data.checked_add(rel)));
+    let info = scan
+        .info
+        .or_else(|| seek_lookup(sh, ID_INFO).and_then(|rel| seg_data.checked_add(rel)));
+    let tracks = scan
+        .tracks
+        .or_else(|| seek_lookup(sh, ID_TRACKS).and_then(|rel| seg_data.checked_add(rel)));
+    let attachments = scan
+        .attachments
+        .or_else(|| seek_lookup(sh, ID_ATTACHMENTS).and_then(|rel| seg_data.checked_add(rel)));
+    scan.cues = cues;
+    scan.info = info;
+    scan.tracks = tracks;
+    scan.attachments = attachments;
+}
+
 /// Parse the EBML + Segment headers and locate the metadata children. `None` if `r` isn't
 /// Matroska/WebM at all — every public reader in this module gates through this, so each
 /// self-rejects other containers cheaply.
@@ -122,79 +210,18 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
         (seg_data + ssize).min(total)
     };
 
-    // Front-of-segment walk: capture SeekHead/Info/Tracks (and Cues/Attachments if they
-    // happen to be up front), stopping at the first Cluster — we never scan the cluster body.
-    let mut seekhead: Option<Vec<u8>> = None;
-    let mut info_pos = None;
-    let mut tracks_pos = None;
-    let mut cues_pos = None;
-    let mut attach_pos = None;
-    let mut cluster_pos = None;
-    let mut p = seg_data;
-    for _ in 0..64 {
-        if p + 2 > seg_end {
-            break;
-        }
-        // A header_at failure here (truncated read, reserved 0x00 marker byte, an
-        // oversized VINT) used to propagate via `?` straight out of segment_map, discarding
-        // every position already resolved (Info/Tracks/Cues/Attachments) even when the bad
-        // element sits AFTER them. Treat it as end-of-walk instead: stop scanning forward,
-        // but keep whatever this pass already found (the SeekHead resolution below still
-        // runs against it).
-        let Some((eid, esize, ehlen, eunk)) = header_at(r, p) else {
-            break;
-        };
-        match eid {
-            ID_SEEKHEAD if esize <= META_MAX => seekhead = read_full_at(r, p + ehlen, esize),
-            ID_INFO => info_pos = Some(p),
-            ID_TRACKS => tracks_pos = Some(p),
-            ID_CUES => cues_pos = Some(p),
-            ID_ATTACHMENTS => attach_pos = Some(p),
-            ID_CLUSTER => {
-                cluster_pos = Some(p);
-                break;
-            }
-            _ => {}
-        }
-        if eunk {
-            break; // can't skip an unknown-size element
-        }
-        p = p.checked_add(ehlen + esize)?;
-        // No early exit on "found everything": Attachments routinely sit AFTER Cues in a
-        // cues-up-front layout, and a file without a (complete) SeekHead would then lose
-        // its cover art to the shortcut. The walk stops at the first Cluster anyway, so
-        // finishing it costs a handful of header reads, bounded by the iteration cap.
-    }
-
-    // Resolve anything still missing via the SeekHead (Cues are typically at the file's end).
-    // SeekPosition is an attacker-controlled EBML uint up to u64::MAX; `checked_add` drops
-    // an entry that would overflow instead of wrapping to a bogus offset (release,
-    // overflow-checks off) or panicking (debug/test) — matching the checked_add already used
-    // for Cues-derived cluster positions elsewhere in this file.
-    if let Some(sh) = &seekhead {
-        if cues_pos.is_none() {
-            cues_pos = seek_lookup(sh, ID_CUES).and_then(|rel| seg_data.checked_add(rel));
-        }
-        if info_pos.is_none() {
-            info_pos = seek_lookup(sh, ID_INFO).and_then(|rel| seg_data.checked_add(rel));
-        }
-        if tracks_pos.is_none() {
-            tracks_pos = seek_lookup(sh, ID_TRACKS).and_then(|rel| seg_data.checked_add(rel));
-        }
-        if attach_pos.is_none() {
-            attach_pos = seek_lookup(sh, ID_ATTACHMENTS).and_then(|rel| seg_data.checked_add(rel));
-        }
-    }
+    let mut scan = scan_segment_front(r, seg_data, seg_end)?;
+    resolve_via_seekhead(&mut scan, seg_data);
 
     Some(SegmentMap {
         ebml,
         total,
         seg_data,
-        info: info_pos,
-        tracks: tracks_pos,
-        cues: cues_pos,
-        attachments: attach_pos,
-        first_cluster: cluster_pos,
+        info: scan.info,
+        tracks: scan.tracks,
+        cues: scan.cues,
+        attachments: scan.attachments,
+        first_cluster: scan.cluster,
     })
 }
 

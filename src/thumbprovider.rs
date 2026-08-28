@@ -106,11 +106,9 @@ impl ThumbnailProvider_Impl {
         });
         match ext.filter(|x| decode::extension_has_named_coder(x)) {
             Some(ext) => {
-                safety::log_debug(&format!(
-                    "GetThumbnail: tiers declined; retrying as .{ext}"
-                ));
-                let img = decode::decode_by_extension(bytes, &ext, Some(cx))
-                    .map_err(|_| original_err)?;
+                safety::log_debug(&format!("GetThumbnail: tiers declined; retrying as .{ext}"));
+                let img =
+                    decode::decode_by_extension(bytes, &ext, Some(cx)).map_err(|_| original_err)?;
                 Ok(decode::thumbnail_from_image(img, cx))
             }
             None => Err(original_err),

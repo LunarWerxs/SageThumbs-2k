@@ -188,7 +188,7 @@ fn parse_wav_fmt_chunk<R: Read>(r: &mut R, size: u64) -> Option<WavFmt> {
 fn parse_aiff_comm(buf: &[u8]) -> Option<(u16, u16, Kind)> {
     let channels = be16(buf, 0)?;
     let bits = be16(buf, 6)?; // sampleSize
-                               // AIFC carries a 4-byte compression type after the 18-byte COMM core.
+                              // AIFC carries a 4-byte compression type after the 18-byte COMM core.
     let kind = match buf.get(18..22) {
         Some(b"sowt") => Kind::IntLe, // little-endian PCM
         Some(b"NONE") | Some(b"twos") | None => Kind::IntBe,
@@ -197,15 +197,15 @@ fn parse_aiff_comm(buf: &[u8]) -> Option<(u16, u16, Kind)> {
     Some((channels, bits, kind))
 }
 
+/// (channels, bits, kind) from an AIFF COMM chunk, and (sample start, sample len) from SSND.
+type AiffCommSsnd = (Option<(u16, u16, Kind)>, Option<(u64, u64)>);
+
 /// Walk AIFF's top-level chunks from `pos`, collecting the COMM (format) and SSND (sample
 /// data) chunks `parse_aiff` needs, stopping early once both are found. Any read/seek
 /// failure along the way ends the scan with whatever was found so far (possibly nothing),
 /// which is behaviorally identical to `parse_aiff`'s original `?`-propagated abort: either
 /// way, a missing COMM or SSND fails the caller's final `comm?`/`ssnd?`.
-fn scan_aiff_chunks<R: Read + Seek>(
-    r: &mut R,
-    mut pos: u64,
-) -> (Option<(u16, u16, Kind)>, Option<(u64, u64)>) {
+fn scan_aiff_chunks<R: Read + Seek>(r: &mut R, mut pos: u64) -> AiffCommSsnd {
     let mut comm: Option<(u16, u16, Kind)> = None;
     let mut ssnd: Option<(u64, u64)> = None;
     for _ in 0..64 {

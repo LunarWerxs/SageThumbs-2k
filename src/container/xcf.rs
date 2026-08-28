@@ -448,6 +448,68 @@ impl LayerHead {
     }
 }
 
+/// The layer properties `read_layer_properties` accumulates: opacity, visibility, offset.
+struct LayerProps {
+    opacity: f32,
+    visible: bool,
+    ox: i32,
+    oy: i32,
+}
+
+impl Default for LayerProps {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            visible: true,
+            ox: 0,
+            oy: 0,
+        }
+    }
+}
+
+/// Apply one layer property record to `props`, matching `read_layer_head`'s original
+/// property-type switch. An unrecognized `ptype`, or a too-short payload for a recognized
+/// one, leaves `props` unchanged (same as the original's `_ => {}` / guard-fails-the-arm).
+fn apply_layer_property(ptype: u32, payload: &[u8], props: &mut LayerProps) {
+    match ptype {
+        6 if payload.len() >= 4 => {
+            // PROP_OPACITY: 0..=255
+            let o = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            props.opacity = (o as f32 / 255.0).clamp(0.0, 1.0);
+        }
+        33 if payload.len() >= 4 => {
+            // PROP_FLOAT_OPACITY: 0.0..=1.0 (overrides the integer opacity when present)
+            props.opacity = f32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]])
+                .clamp(0.0, 1.0);
+        }
+        8 if payload.len() >= 4 => {
+            props.visible = payload[3] != 0; // PROP_VISIBLE
+        }
+        15 if payload.len() >= 8 => {
+            // PROP_OFFSETS: i32 x, i32 y
+            props.ox = i32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            props.oy = i32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        }
+        _ => {}
+    }
+}
+
+/// Read a layer's property-record list (terminated by a `ptype == 0` record), applying every
+/// recognized property onto a fresh [`LayerProps`].
+fn read_layer_properties(r: &mut Rd<'_>) -> Option<LayerProps> {
+    let mut props = LayerProps::default();
+    loop {
+        let ptype = r.u32()?;
+        let plen = r.u32()? as usize;
+        if ptype == 0 {
+            break;
+        }
+        let payload = r.take(plen)?;
+        apply_layer_property(ptype, payload, &mut props);
+    }
+    Some(props)
+}
+
 /// Read one layer's header: dimensions, type, property list, and the hierarchy pointer.
 ///
 /// ONE parser serves both the budget pre-scan and the decode, so the two can never come to
@@ -465,38 +527,7 @@ fn read_layer_head(d: &[u8], off: usize, wide: bool) -> Option<LayerHead> {
     let name_len = r.u32()? as usize;
     r.take(name_len)?;
 
-    let mut opacity = 1.0f32;
-    let mut visible = true;
-    let (mut ox, mut oy) = (0i32, 0i32);
-    loop {
-        let ptype = r.u32()?;
-        let plen = r.u32()? as usize;
-        if ptype == 0 {
-            break;
-        }
-        let payload = r.take(plen)?;
-        match ptype {
-            6 if payload.len() >= 4 => {
-                // PROP_OPACITY: 0..=255
-                let o = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                opacity = (o as f32 / 255.0).clamp(0.0, 1.0);
-            }
-            33 if payload.len() >= 4 => {
-                // PROP_FLOAT_OPACITY: 0.0..=1.0 (overrides the integer opacity when present)
-                opacity = f32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]])
-                    .clamp(0.0, 1.0);
-            }
-            8 if payload.len() >= 4 => {
-                visible = payload[3] != 0; // PROP_VISIBLE
-            }
-            15 if payload.len() >= 8 => {
-                // PROP_OFFSETS: i32 x, i32 y
-                ox = i32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                oy = i32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
-            }
-            _ => {}
-        }
-    }
+    let props = read_layer_properties(&mut r)?;
 
     let hptr = r.ptr(wide)?; // hierarchy
     let _mask_ptr = r.ptr(wide)?; // layer mask — ignored for the thumbnail
@@ -505,10 +536,10 @@ fn read_layer_head(d: &[u8], off: usize, wide: bool) -> Option<LayerHead> {
         lw,
         lh,
         ltype,
-        ox,
-        oy,
-        opacity,
-        visible,
+        ox: props.ox,
+        oy: props.oy,
+        opacity: props.opacity,
+        visible: props.visible,
         hptr,
     })
 }

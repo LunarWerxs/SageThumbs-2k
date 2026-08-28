@@ -246,6 +246,38 @@ fn header(headers: &[String], name: &str) -> Option<String> {
     })
 }
 
+/// Classify one multipart part for `mime_body`'s multipart branch: a filenamed part collects
+/// as an attachment (whatever its type claims), a nested multipart recurses at `depth + 1`,
+/// and the first `text/plain`/`text/html` part found wins its respective slot.
+fn handle_multipart_part(
+    part: &[u8],
+    attachments: &mut Vec<String>,
+    depth: usize,
+    plain: &mut Option<String>,
+    html: &mut Option<String>,
+) {
+    let Some((ph, poff)) = split_headers(part) else {
+        return;
+    };
+    let pct = header(&ph, "content-type").unwrap_or_else(|| "text/plain".into());
+    let pcte = header(&ph, "content-transfer-encoding").unwrap_or_default();
+    // An attachment is anything with a filename, whatever its type claims.
+    if let Some(name) = part_filename(&ph) {
+        attachments.push(name);
+        return;
+    }
+    let pl = pct.to_ascii_lowercase();
+    if pl.starts_with("multipart/") {
+        if let Some(t) = mime_body(&part[poff..], &pct, &pcte, attachments, depth + 1) {
+            plain.get_or_insert(t);
+        }
+    } else if pl.starts_with("text/plain") && plain.is_none() {
+        *plain = Some(decode_text_part(&part[poff..], &pct, &pcte));
+    } else if pl.starts_with("text/html") && html.is_none() {
+        *html = Some(strip_html(&decode_text_part(&part[poff..], &pct, &pcte)));
+    }
+}
+
 /// Resolve a (possibly multipart) body to displayable TEXT, collecting attachment filenames.
 /// Prefers `text/plain`; falls back to tag-stripped `text/html`. Depth-capped: real mail
 /// nests `multipart/mixed(multipart/alternative(text, html), attachment)` — two levels; four
@@ -266,27 +298,7 @@ fn mime_body(
         let mut plain: Option<String> = None;
         let mut html: Option<String> = None;
         for part in split_multipart(raw, &boundary) {
-            let (ph, poff) = match split_headers(part) {
-                Some(x) => x,
-                None => continue,
-            };
-            let pct = header(&ph, "content-type").unwrap_or_else(|| "text/plain".into());
-            let pcte = header(&ph, "content-transfer-encoding").unwrap_or_default();
-            // An attachment is anything with a filename, whatever its type claims.
-            if let Some(name) = part_filename(&ph) {
-                attachments.push(name);
-                continue;
-            }
-            let pl = pct.to_ascii_lowercase();
-            if pl.starts_with("multipart/") {
-                if let Some(t) = mime_body(&part[poff..], &pct, &pcte, attachments, depth + 1) {
-                    plain.get_or_insert(t);
-                }
-            } else if pl.starts_with("text/plain") && plain.is_none() {
-                plain = Some(decode_text_part(&part[poff..], &pct, &pcte));
-            } else if pl.starts_with("text/html") && html.is_none() {
-                html = Some(strip_html(&decode_text_part(&part[poff..], &pct, &pcte)));
-            }
+            handle_multipart_part(part, attachments, depth, &mut plain, &mut html);
         }
         plain.or(html)
     } else if lower.starts_with("text/html") {
