@@ -121,14 +121,7 @@ fn parse_prologue(bytes: &[u8]) -> Option<Prologue> {
     if !looks_like_xcf(bytes) || bytes.len() < 14 {
         return None;
     }
-    let ver = &bytes[9..13];
-    let version: u32 = if ver == b"file" {
-        0
-    } else if ver[0] == b'v' {
-        std::str::from_utf8(&ver[1..]).ok()?.parse().ok()?
-    } else {
-        return None;
-    };
+    let version = parse_xcf_version(bytes)?;
     let wide = version >= 11;
 
     let mut r = Rd { d: bytes, p: 14 };
@@ -141,7 +134,36 @@ fn parse_prologue(bytes: &[u8]) -> Option<Prologue> {
         return None;
     }
 
-    // Image property list: we need the tile compression and (for indexed) the colormap.
+    let (compression, colormap) = parse_image_properties(&mut r)?;
+    let layer_ptrs = parse_layer_ptrs(&mut r, wide)?;
+
+    Some(Prologue {
+        width,
+        height,
+        wide,
+        compression,
+        prec: Precision::from_word(precision),
+        colormap,
+        layer_ptrs,
+    })
+}
+
+/// The version word out of the 14-byte magic: `"gimp xcf file"` (bytes 9..13 = `"file"`) is
+/// v0; `"gimp xcf v0NN"` (bytes 9..13 = `"v0NN"`) is version `NN`.
+fn parse_xcf_version(bytes: &[u8]) -> Option<u32> {
+    let ver = &bytes[9..13];
+    if ver == b"file" {
+        Some(0)
+    } else if ver[0] == b'v' {
+        std::str::from_utf8(&ver[1..]).ok()?.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// The image property list: we need only the tile compression and (for indexed) the
+/// colormap; resolution, guides, parasites, etc. are irrelevant to the pixels and skipped.
+fn parse_image_properties(r: &mut Rd) -> Option<(u8, Vec<[u8; 3]>)> {
     let mut compression = 1u8; // RLE is GIMP's historical default when unstated
     let mut colormap: Vec<[u8; 3]> = Vec::new();
     loop {
@@ -163,8 +185,11 @@ fn parse_prologue(bytes: &[u8]) -> Option<Prologue> {
             _ => {} // resolution, guides, parasites, etc. — irrelevant to the pixels
         }
     }
+    Some((compression, colormap))
+}
 
-    // Layer pointer list (terminated by a 0 pointer). GIMP writes it TOP-first.
+/// The layer pointer list (terminated by a 0 pointer). GIMP writes it TOP-first.
+fn parse_layer_ptrs(r: &mut Rd, wide: bool) -> Option<Vec<u64>> {
     let mut layer_ptrs = Vec::new();
     loop {
         let ptr = r.ptr(wide)?;
@@ -179,16 +204,7 @@ fn parse_prologue(bytes: &[u8]) -> Option<Prologue> {
     if layer_ptrs.is_empty() {
         return None;
     }
-
-    Some(Prologue {
-        width,
-        height,
-        wide,
-        compression,
-        prec: Precision::from_word(precision),
-        colormap,
-        layer_ptrs,
-    })
+    Some(layer_ptrs)
 }
 
 /// Whether a `w` x `h` LAYER still fits the remaining budget, and what is left after it.

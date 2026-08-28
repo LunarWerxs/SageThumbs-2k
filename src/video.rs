@@ -250,71 +250,97 @@ pub fn nv12_frame_from_owned_bytes(owned: Vec<u8>) -> Option<Nv12Frame> {
     }
     grab_budgeted(move || unsafe {
         let _session = MfSession::start()?;
-        let stream = SHCreateMemStream(Some(&owned))?;
-        let bs = MFCreateMFByteStreamOnStream(&stream).ok()?;
-        let reader = MFCreateSourceReaderFromByteStream(&bs, None).ok()?;
-        let first = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+        let (reader, stream_index, w, h, stride) = nv12_reader_for_bytes(&owned)?;
+        read_first_nv12_sample(&reader, stream_index, w, h, stride)
+    })
+}
 
-        let want = MFCreateMediaType().ok()?;
-        want.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).ok()?;
-        want.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).ok()?;
-        reader.SetCurrentMediaType(first, None, &want).ok()?;
+/// Set up a source reader over `owned`, negotiate NV12 as the media type (no video
+/// processing — the AV1 decoder MFT emits NV12 natively, and enabling the processor would
+/// put the component this function exists to bypass back into the chain), and read back the
+/// negotiated frame dimensions and row stride. Returns `(reader, stream_index, w, h, stride)`.
+unsafe fn nv12_reader_for_bytes(owned: &[u8]) -> Option<(IMFSourceReader, u32, u32, u32, u32)> {
+    let stream = SHCreateMemStream(Some(owned))?;
+    let bs = MFCreateMFByteStreamOnStream(&stream).ok()?;
+    let reader = MFCreateSourceReaderFromByteStream(&bs, None).ok()?;
+    let first = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
-        let cur = reader.GetCurrentMediaType(first).ok()?;
-        let frame_size = cur.GetUINT64(&MF_MT_FRAME_SIZE).ok()?;
-        let (w, h) = ((frame_size >> 32) as u32, frame_size as u32);
-        if w == 0 || h == 0 || (w as u64) * (h as u64) > crate::decode::limits::MAX_PIXELS {
+    let want = MFCreateMediaType().ok()?;
+    want.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).ok()?;
+    want.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).ok()?;
+    reader.SetCurrentMediaType(first, None, &want).ok()?;
+
+    let cur = reader.GetCurrentMediaType(first).ok()?;
+    let frame_size = cur.GetUINT64(&MF_MT_FRAME_SIZE).ok()?;
+    let (w, h) = ((frame_size >> 32) as u32, frame_size as u32);
+    if w == 0 || h == 0 || (w as u64) * (h as u64) > crate::decode::limits::MAX_PIXELS {
+        return None;
+    }
+    let stride = cur.GetUINT32(&MF_MT_DEFAULT_STRIDE).unwrap_or(w);
+    // A negative default stride means bottom-up, which NV12 never is; treat as w.
+    let stride = if (stride as i32) < 0 {
+        w
+    } else {
+        stride.max(w)
+    };
+    Some((reader, first, w, h, stride))
+}
+
+/// Read the first real sample from `reader` (bounded like `grab_reader`'s read loop — a
+/// one-sample mini-MP4 has nothing to skip, and this path's callers build exactly that) and
+/// copy out its NV12 bytes: `h` rows of Y then `h/2` rows of UV, `stride` bytes each.
+unsafe fn read_first_nv12_sample(
+    reader: &IMFSourceReader,
+    stream_index: u32,
+    w: u32,
+    h: u32,
+    stride: u32,
+) -> Option<Nv12Frame> {
+    for _ in 0..16 {
+        let mut flags: u32 = 0;
+        let mut smp: Option<IMFSample> = None;
+        if reader
+            .ReadSample(
+                stream_index,
+                0,
+                None,
+                Some(&mut flags),
+                None,
+                Some(&mut smp),
+            )
+            .is_err()
+        {
             return None;
         }
-        let stride = cur.GetUINT32(&MF_MT_DEFAULT_STRIDE).unwrap_or(w);
-        // A negative default stride means bottom-up, which NV12 never is; treat as w.
-        let stride = if (stride as i32) < 0 {
-            w
-        } else {
-            stride.max(w)
-        };
-
-        // First real sample only: a one-sample mini-MP4 has nothing to skip, and this
-        // path's callers build exactly that. Bounded like grab_reader's read loop.
-        for _ in 0..16 {
-            let mut flags: u32 = 0;
-            let mut smp: Option<IMFSample> = None;
-            if reader
-                .ReadSample(first, 0, None, Some(&mut flags), None, Some(&mut smp))
-                .is_err()
-            {
-                return None;
-            }
-            if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
-                return None;
-            }
-            let Some(sample) = smp else { continue };
-            let Ok(buf) = sample.ConvertToContiguousBuffer() else {
-                continue;
-            };
-            let mut ptr = std::ptr::null_mut();
-            let mut len = 0u32;
-            if buf.Lock(&mut ptr, None, Some(&mut len)).is_err() {
-                continue;
-            }
-            // NV12: `h` rows of Y then `h/2` rows of UV, `stride` bytes each. A short
-            // buffer means the stride guess is wrong — refuse rather than misread.
-            let need = (stride as usize) * (h as usize) * 3 / 2;
-            let data = if (len as usize) >= need {
-                Some(std::slice::from_raw_parts(ptr, need).to_vec())
-            } else {
-                None
-            };
-            let _ = buf.Unlock();
-            return data.map(|data| Nv12Frame {
-                data,
-                width: w,
-                height: h,
-                stride,
-            });
+        if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
+            return None;
         }
-        None
-    })
+        let Some(sample) = smp else { continue };
+        let Ok(buf) = sample.ConvertToContiguousBuffer() else {
+            continue;
+        };
+        let mut ptr = std::ptr::null_mut();
+        let mut len = 0u32;
+        if buf.Lock(&mut ptr, None, Some(&mut len)).is_err() {
+            continue;
+        }
+        // NV12: `h` rows of Y then `h/2` rows of UV, `stride` bytes each. A short
+        // buffer means the stride guess is wrong — refuse rather than misread.
+        let need = (stride as usize) * (h as usize) * 3 / 2;
+        let data = if (len as usize) >= need {
+            Some(std::slice::from_raw_parts(ptr, need).to_vec())
+        } else {
+            None
+        };
+        let _ = buf.Unlock();
+        return data.map(|data| Nv12Frame {
+            data,
+            width: w,
+            height: h,
+            stride,
+        });
+    }
+    None
 }
 
 /// As [`frame_from_bytes`], but takes ownership of the buffer instead of cloning it —
