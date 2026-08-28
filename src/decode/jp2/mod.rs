@@ -391,7 +391,7 @@ fn build_res(
 /// allocating a full-size SubBand every time (see `sized_band`) — several GB
 /// across up to 4 components for one call. Bail before any such allocation.
 /// Each resolution's own bands are built by `build_res` above; only
-/// resolutions the caller actually needs (r <= keep) get pixel storage —
+/// resolutions the caller actually needs (r <= keep) get pixel storage;
 /// anything above is walked for its packet LENGTHS only (the `r as u32 >
 /// max_res` skip in `accumulate_packets`) and its band data is never read.
 #[allow(clippy::too_many_arguments)]

@@ -159,7 +159,7 @@ fn parse_obj_vertex(rest: &str) -> Option<[f32; 3]> {
     ])
 }
 
-/// Parse one OBJ `f` line's vertex indices: `f v`, `f v/vt`, `f v/vt/vn`, `f v//vn` —
+/// Parse one OBJ `f` line's vertex indices: `f v`, `f v/vt`, `f v/vt/vn`, `f v//vn`;
 /// 1-based, negative indices count from the end. Out-of-range/unparseable tokens drop.
 fn parse_obj_face_indices(rest: &str, n_verts: usize) -> Vec<usize> {
     rest.split_ascii_whitespace()
@@ -244,7 +244,7 @@ impl PlyHeaderState {
     }
 
     /// Fold one header line into the state. `None` on a big-endian `format` line or a
-    /// malformed element count — the whole header parse should decline.
+    /// malformed element count, since the whole header parse should decline then.
     fn handle_line(&mut self, l: &str) -> Option<()> {
         if let Some(fmt) = l.strip_prefix("format ") {
             if fmt.starts_with("binary_little_endian") {
@@ -474,7 +474,7 @@ fn mesh_light() -> [f32; 3] {
     [l[0] / n, l[1] / n, l[2] / n]
 }
 
-/// Two-sided flat-shading luminance from a triangle's (already-projected) vertices —
+/// Two-sided flat-shading luminance from a triangle's (already-projected) vertices;
 /// two-sided so inverted windings and open shells still light rather than going black.
 /// `None` for a degenerate (zero-area-normal) triangle.
 fn triangle_luminance(p: &[[f32; 3]], light: [f32; 3]) -> Option<u8> {

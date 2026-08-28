@@ -256,7 +256,7 @@ fn read_mini_stream(
     ministream_cache: &mut Option<Vec<u8>>,
     minifat_cache: &mut Option<Vec<u32>>,
 ) -> Option<Vec<u8>> {
-    // `insert` hands back a borrow of the value just stored — the shell-surface
+    // `insert` hands back a borrow of the value just stored, the shell-surface
     // unwrap ban's preferred spelling of this build-once-cache-forever idiom.
     let ministream: &Vec<u8> = match ministream_cache {
         Some(m) => m,

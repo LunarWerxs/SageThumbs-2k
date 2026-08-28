@@ -188,8 +188,8 @@ fn find_pclr_cmap(jp2h: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     (pclr, cmap)
 }
 
-/// Parse a `pclr` box body — NE (u16), NPC (u8), NPC x Bi, then NE rows of
-/// NPC entries — into 8-bit RGB entries. Returns the entries plus NPC, which
+/// Parse a `pclr` box body (NE u16, NPC u8, NPC x Bi, then NE rows of NPC
+/// entries) into 8-bit RGB entries. Returns the entries plus NPC, which
 /// `validate_cmap` needs to check the paired `cmap` box's shape.
 fn parse_pclr(pc: &[u8]) -> Result<(Vec<[u8; 3]>, usize), Jp2Error> {
     if pc.len() < 3 {
@@ -497,7 +497,7 @@ impl<'a> ParseState<'a> {
     }
 }
 
-/// `cod_comp` is parsed but this decoder never applies a per-component COC override —
+/// `cod_comp` is parsed but this decoder never applies a per-component COC override:
 /// every component is decoded with the single global COD (see the `cod_comp` field
 /// comment on `Codestream`). A file whose COC actually signals a DIFFERENT coding style
 /// would therefore be silently mis-decoded if accepted, so reject it here instead of

@@ -538,7 +538,7 @@ fn parse_dht(d: &[u8], i: usize, huff: &mut [[Option<HuffDec>; 4]; 2]) -> Option
 }
 
 /// Parse a DQT segment starting at `d[i]` (8-bit precision, Pq=0, only) into
-/// `dqt` — kept parsed rather than verbatim so a rotate can transpose it.
+/// `dqt`, kept parsed rather than verbatim so a rotate can transpose it.
 /// Returns the offset just past the segment.
 fn parse_dqt(d: &[u8], i: usize, dqt: &mut Vec<(u8, [u8; 64])>) -> Option<usize> {
     let len = be16(d, i + 2);

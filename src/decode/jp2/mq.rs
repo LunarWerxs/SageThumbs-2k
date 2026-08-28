@@ -385,7 +385,7 @@ fn mark_significant(
 /// insignificant with no significant neighbours, decode ONE symbol for the
 /// whole column instead of one per sample. Returns `None` when the RL symbol
 /// declared the whole column clear (caller must not decode it again), or
-/// `Some(y)` for the row per-sample decoding should resume at — `y0` when the
+/// `Some(y)` for the row per-sample decoding should resume at: `y0` when the
 /// stripe wasn't uniformly clear, or one past the RL-selected significant row.
 #[allow(clippy::too_many_arguments)]
 fn cleanup_run_length_stripe(
@@ -428,7 +428,7 @@ fn cleanup_run_length_stripe(
 }
 
 /// Cleanup pass (D.2): decode significance for every sample this plane's significance and
-/// refinement passes skipped (run-length coded where a whole 4-row stripe column is clear —
+/// refinement passes skipped (run-length coded where a whole 4-row stripe column is clear;
 /// see `cleanup_run_length_stripe`), then clear VISIT so the next plane starts fresh.
 #[allow(clippy::too_many_arguments)]
 fn cleanup_pass(

@@ -779,7 +779,7 @@ fn isobmff_find_box<'a>(boxes: &'a [([u8; 4], &'a [u8])], typ: &[u8; 4]) -> Opti
 }
 
 /// The primary item id from a `pitm` box's body: version byte (0 or 1), 3
-/// reserved/flag bytes, then the item id in that version's width — and
+/// reserved/flag bytes, then the item id in that version's width, and
 /// nothing else trailing.
 fn isobmff_primary_item_id(body: &[u8]) -> Option<u32> {
     let version = *body.first()?;
