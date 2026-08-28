@@ -158,71 +158,62 @@ pub(super) fn nv12_to_srgb_bt601(
     Some(DynamicImage::ImageRgba8(out))
 }
 
-/// Parse the `ipco` properties and apply the eligibility gates documented at module level.
-pub(super) fn eligible_bt601_still(bytes: &[u8]) -> Option<Av1Still> {
-    if bytes.get(4..8) != Some(b"ftyp") {
-        return None;
+/// The `ipco`-property boxes `eligible_bt601_still` cares about, gathered by `walk_ipco_boxes`.
+#[derive(Default)]
+struct FoundIpcoBoxes {
+    av1c: Vec<Vec<u8>>,
+    colr: Vec<Vec<u8>>,
+    ispe: Vec<(u32, u32)>,
+    aux_c: bool,
+}
+
+/// Recursively walk `meta`/`iprp`/`ipco` boxes, collecting the `av1C`/`colr`/`ispe`/`auxC`
+/// properties `eligible_bt601_still` needs. A nested `fn`'s body counts toward its enclosing
+/// function under this repo's complexity scanner, so this lives at module scope instead.
+fn walk_ipco_boxes(buf: &[u8], depth: u8, f: &mut FoundIpcoBoxes) {
+    if depth > 6 {
+        return;
     }
-    #[derive(Default)]
-    struct Found {
-        av1c: Vec<Vec<u8>>,
-        colr: Vec<Vec<u8>>,
-        ispe: Vec<(u32, u32)>,
-        aux_c: bool,
-    }
-    fn walk(buf: &[u8], depth: u8, f: &mut Found) {
-        if depth > 6 {
+    let mut p = 0usize;
+    while p + 8 <= buf.len() {
+        let Ok(raw) = buf[p..p + 4].try_into() else {
             return;
-        }
-        let mut p = 0usize;
-        while p + 8 <= buf.len() {
-            let Ok(raw) = buf[p..p + 4].try_into() else {
-                return;
-            };
-            let size32 = u32::from_be_bytes(raw);
-            let typ = &buf[p + 4..p + 8];
-            let Some((full, hdr)) =
-                crate::container::boxhdr::decode_box_size(size32, None, p as u64, buf.len() as u64)
-            else {
-                return;
-            };
-            let (full, hdr) = (full as usize, hdr as usize);
-            let end = p + full;
-            let body = &buf[p + hdr..end];
-            match typ {
-                b"av1C" => f.av1c.push(buf[p..end].to_vec()),
-                b"colr" if body.get(..4) == Some(b"nclx") => f.colr.push(buf[p..end].to_vec()),
-                b"auxC" => f.aux_c = true,
-                // ImageSpatialExtentsProperty: FullBox, then width u32, height u32.
-                b"ispe" => {
-                    if let (Some(w), Some(h)) = (be32(body, 4), be32(body, 8)) {
-                        f.ispe.push((w, h));
-                    }
+        };
+        let size32 = u32::from_be_bytes(raw);
+        let typ = &buf[p + 4..p + 8];
+        let Some((full, hdr)) =
+            crate::container::boxhdr::decode_box_size(size32, None, p as u64, buf.len() as u64)
+        else {
+            return;
+        };
+        let (full, hdr) = (full as usize, hdr as usize);
+        let end = p + full;
+        let body = &buf[p + hdr..end];
+        match typ {
+            b"av1C" => f.av1c.push(buf[p..end].to_vec()),
+            b"colr" if body.get(..4) == Some(b"nclx") => f.colr.push(buf[p..end].to_vec()),
+            b"auxC" => f.aux_c = true,
+            // ImageSpatialExtentsProperty: FullBox, then width u32, height u32.
+            b"ispe" => {
+                if let (Some(w), Some(h)) = (be32(body, 4), be32(body, 8)) {
+                    f.ispe.push((w, h));
                 }
-                b"meta" => {
-                    if let Some(children) = body.get(4..) {
-                        walk(children, depth + 1, f);
-                    }
-                }
-                b"iprp" | b"ipco" => walk(body, depth + 1, f),
-                _ => {}
             }
-            p = end;
+            b"meta" => {
+                if let Some(children) = body.get(4..) {
+                    walk_ipco_boxes(children, depth + 1, f);
+                }
+            }
+            b"iprp" | b"ipco" => walk_ipco_boxes(body, depth + 1, f),
+            _ => {}
         }
+        p = end;
     }
-    let mut found = Found::default();
-    walk(bytes, 0, &mut found);
+}
 
-    let ([av1c], [colr], [(w, h)], false) = (
-        &found.av1c[..],
-        &found.colr[..],
-        &found.ispe[..],
-        found.aux_c,
-    ) else {
-        return None;
-    };
-    let (w, h) = (*w, *h);
-
+/// Apply the BT.601-eligibility gates documented at module level to one already-located
+/// `av1C`/`colr` pair, given the single `ispe` width/height already resolved.
+fn validate_bt601_eligibility(av1c: &[u8], colr: &[u8], w: u32, h: u32) -> Option<Av1Still> {
     // nclx payload: "nclx", then primaries/transfer/matrix as u16 each. The box slice still
     // carries its 8-byte header + the 4-byte type, so the CICP words start at 12.
     let primaries = be16(colr, 12)?;
@@ -250,12 +241,32 @@ pub(super) fn eligible_bt601_still(bytes: &[u8]) -> Option<Av1Still> {
     }
 
     Some(Av1Still {
-        av1c: av1c.clone(),
-        colr: colr.clone(),
+        av1c: av1c.to_vec(),
+        colr: colr.to_vec(),
         width: w,
         height: h,
         full_range,
     })
+}
+
+/// Parse the `ipco` properties and apply the eligibility gates documented at module level.
+pub(super) fn eligible_bt601_still(bytes: &[u8]) -> Option<Av1Still> {
+    if bytes.get(4..8) != Some(b"ftyp") {
+        return None;
+    }
+    let mut found = FoundIpcoBoxes::default();
+    walk_ipco_boxes(bytes, 0, &mut found);
+
+    let ([av1c], [colr], [(w, h)], false) = (
+        &found.av1c[..],
+        &found.colr[..],
+        &found.ispe[..],
+        found.aux_c,
+    ) else {
+        return None;
+    };
+
+    validate_bt601_eligibility(av1c, colr, *w, *h)
 }
 
 /// The primary item's bytes: `pitm` names it, `iinf`+`iloc` (the strip module's hardened

@@ -1123,20 +1123,9 @@ mod tests {
         }
     }
 
-    /// On-demand FUZZER for the container cover extractors — our untrusted-input surface
-    /// (a hostile file lands here inside Explorer's thumbnail host under `panic = "abort"`).
-    /// Seeds from the real test corpus, applies random mutations (bit/byte flips, truncate,
-    /// insert, extend) plus degenerate buffers, and asserts `extract_cover` never PANICS
-    /// (an abort would take down Explorer). Deterministic PRNG → any crash is reproducible;
-    /// failing inputs are saved to TEMP. Run on demand (DEV profile, so the catch_unwind
-    /// below actually catches — the release profile is panic=abort):
-    ///   cargo test --lib fuzz_extract_cover -- --ignored --nocapture
-    #[test]
-    #[ignore = "fuzzer — run on demand with --ignored"]
-    fn fuzz_extract_cover() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
-
-        // Seeds: every corpus sample (size-capped) + a few degenerate buffers.
+    /// Seeds for `fuzz_extract_cover`: every corpus sample (size-capped) plus a few
+    /// degenerate buffers.
+    fn fuzz_seed_corpus() -> Vec<Vec<u8>> {
         let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("test-corpus");
@@ -1150,6 +1139,79 @@ mod tests {
                 }
             }
         }
+        seeds
+    }
+
+    /// Apply `nmut` random byte-level mutations (flip/set/truncate/insert/extend/increment)
+    /// to `data` in place, using `rng` for every random choice.
+    fn mutate_fuzz_input(data: &mut Vec<u8>, nmut: u64, rng: &mut impl FnMut() -> u64) {
+        for _ in 0..nmut {
+            if data.is_empty() {
+                data.push((rng() & 0xff) as u8);
+                continue;
+            }
+            match rng() % 6 {
+                0 => {
+                    let p = (rng() as usize) % data.len();
+                    data[p] ^= 1u8 << (rng() % 8);
+                }
+                1 => {
+                    let p = (rng() as usize) % data.len();
+                    data[p] = (rng() & 0xff) as u8;
+                }
+                2 => {
+                    let p = (rng() as usize) % data.len();
+                    data.truncate(p);
+                }
+                3 => {
+                    let p = (rng() as usize) % (data.len() + 1);
+                    data.insert(p, (rng() & 0xff) as u8);
+                }
+                4 => {
+                    for _ in 0..(rng() % 64) {
+                        data.push((rng() & 0xff) as u8);
+                    }
+                }
+                _ => {
+                    let p = (rng() as usize) % data.len();
+                    data[p] = data[p].wrapping_add(1);
+                }
+            }
+        }
+    }
+
+    /// Save each crashing input to TEMP and panic naming how many were found, or print the
+    /// clean-run summary when `crashes` is empty.
+    fn report_fuzz_crashes(iters: u64, crashes: &[(u64, Vec<u8>)]) {
+        if crashes.is_empty() {
+            eprintln!("fuzz_extract_cover: {iters} iterations, 0 panics");
+            return;
+        }
+        for (i, data) in crashes {
+            let p = std::env::temp_dir().join(format!("st2k_fuzz_crash_{i}.bin"));
+            let _ = std::fs::write(&p, data);
+            eprintln!("PANIC iter {i}: {} bytes -> {}", data.len(), p.display());
+        }
+        panic!(
+            "fuzz_extract_cover found {} panicking input(s)",
+            crashes.len()
+        );
+    }
+
+    /// On-demand FUZZER for the container cover extractors — our untrusted-input surface
+    /// (a hostile file lands here inside Explorer's thumbnail host under `panic = "abort"`).
+    /// Seeds from the real test corpus, applies random mutations (bit/byte flips, truncate,
+    /// insert, extend) plus degenerate buffers, and asserts `extract_cover` never PANICS
+    /// (an abort would take down Explorer). Deterministic PRNG → any crash is reproducible;
+    /// failing inputs are saved to TEMP. Run on demand (DEV profile, so the catch_unwind
+    /// below actually catches — the release profile is panic=abort):
+    ///   cargo test --lib fuzz_extract_cover -- --ignored --nocapture
+    #[test]
+    #[ignore = "fuzzer — run on demand with --ignored"]
+    fn fuzz_extract_cover() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let seeds = fuzz_seed_corpus();
         eprintln!("fuzz_extract_cover: {} seeds", seeds.len());
 
         // Deterministic xorshift64 PRNG (reproducible; no rand dep).
@@ -1170,39 +1232,7 @@ mod tests {
         for i in 0..ITERS {
             let mut data = seeds[(rng() as usize) % seeds.len()].clone();
             let nmut = 1 + rng() % 10;
-            for _ in 0..nmut {
-                if data.is_empty() {
-                    data.push((rng() & 0xff) as u8);
-                    continue;
-                }
-                match rng() % 6 {
-                    0 => {
-                        let p = (rng() as usize) % data.len();
-                        data[p] ^= 1u8 << (rng() % 8);
-                    }
-                    1 => {
-                        let p = (rng() as usize) % data.len();
-                        data[p] = (rng() & 0xff) as u8;
-                    }
-                    2 => {
-                        let p = (rng() as usize) % data.len();
-                        data.truncate(p);
-                    }
-                    3 => {
-                        let p = (rng() as usize) % (data.len() + 1);
-                        data.insert(p, (rng() & 0xff) as u8);
-                    }
-                    4 => {
-                        for _ in 0..(rng() % 64) {
-                            data.push((rng() & 0xff) as u8);
-                        }
-                    }
-                    _ => {
-                        let p = (rng() as usize) % data.len();
-                        data[p] = data[p].wrapping_add(1);
-                    }
-                }
-            }
+            mutate_fuzz_input(&mut data, nmut, &mut rng);
             let bytes = data.clone();
             if catch_unwind(AssertUnwindSafe(|| {
                 let _ = extract_cover(&bytes);
@@ -1217,18 +1247,6 @@ mod tests {
         }
 
         std::panic::set_hook(prev);
-
-        if !crashes.is_empty() {
-            for (i, data) in &crashes {
-                let p = std::env::temp_dir().join(format!("st2k_fuzz_crash_{i}.bin"));
-                let _ = std::fs::write(&p, data);
-                eprintln!("PANIC iter {i}: {} bytes -> {}", data.len(), p.display());
-            }
-            panic!(
-                "fuzz_extract_cover found {} panicking input(s)",
-                crashes.len()
-            );
-        }
-        eprintln!("fuzz_extract_cover: {ITERS} iterations, 0 panics");
+        report_fuzz_crashes(ITERS, &crashes);
     }
 }

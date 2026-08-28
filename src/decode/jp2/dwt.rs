@@ -63,6 +63,70 @@ fn ext(v: &[f32], i0: isize, i: isize) -> f32 {
     v[k as usize]
 }
 
+/// Handle `filtr_1d`'s `n == 1` case: a single sample is low-pass if it sits on an even
+/// index, else it is a lone high-pass coefficient carrying half its value (F.3.7). For the
+/// reversible 5/3 path that halving is INTEGER division truncating toward zero (openjpeg's
+/// `OPJ_S(0) /= 2` in opj_dwt_decode_1_); keeping the .5 here broke bit-exactness on any
+/// image small enough to produce 1-sample bands — an 8x8 image with the encoder's default 5
+/// decomposition levels has several.
+fn lift_single_sample(sig: &mut [f32], i0: usize, reversible: bool) {
+    if !i0.is_multiple_of(2) {
+        sig[0] /= 2.0;
+        if reversible {
+            sig[0] = sig[0].trunc();
+        }
+    }
+}
+
+/// The 5/3 reversible lifting branch of `filtr_1d`: even samples first, then odd, using the
+/// just-updated evens. `scratch` already holds the untouched original signal on entry.
+fn lift_reversible(sig: &mut [f32], i0i: isize, scratch: &[f32]) {
+    let n = sig.len();
+    for (k, slot) in sig.iter_mut().enumerate() {
+        let i = i0i + k as isize;
+        if i % 2 == 0 {
+            let a = ext(scratch, i0i, i - 1);
+            let b = ext(scratch, i0i, i + 1);
+            *slot = scratch[k] - ((a + b + 2.0) / 4.0).floor();
+        }
+    }
+    // The odd pass is done IN PLACE on `sig` (no second scratch buffer): it only ever
+    // needs an EVEN-position neighbor (i-1/i+1 for an odd i), and `ext`'s periodic/mirror
+    // extension can't turn an even query into an odd one — the period `2*(n-1)` is always
+    // even, and folding via `period - k` preserves k's parity — so every neighbor read
+    // here lands on a slot the loop above already finished writing, never one this loop
+    // is about to overwrite.
+    for k in 0..n {
+        let i = i0i + k as isize;
+        if i % 2 != 0 {
+            let a = ext(sig, i0i, i - 1);
+            let b = ext(sig, i0i, i + 1);
+            sig[k] = scratch[k] + ((a + b) / 2.0).floor();
+        }
+    }
+}
+
+/// The 9/7 irreversible lifting branch of `filtr_1d`: undo the K scaling, then the four
+/// lifting steps in reverse, each reading from a fresh `scratch` copy of the prior step.
+fn lift_irreversible(sig: &mut [f32], i0i: isize, scratch: &mut Vec<f32>) {
+    for (k, s) in sig.iter_mut().enumerate() {
+        let i = i0i + k as isize;
+        *s = if i % 2 == 0 { *s * K } else { *s / K };
+    }
+    for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
+        scratch.clear();
+        scratch.extend_from_slice(sig);
+        for (k, s) in sig.iter_mut().enumerate() {
+            let i = i0i + k as isize;
+            if (i % 2 == 0) == even_step {
+                let a = ext(scratch, i0i, i - 1);
+                let b = ext(scratch, i0i, i + 1);
+                *s = scratch[k] - coef * (a + b);
+            }
+        }
+    }
+}
+
 /// 1D inverse lifting on an already-interleaved signal whose first sample is at absolute
 /// index `i0`. Parity of the absolute index decides low-pass (even) vs high-pass (odd).
 ///
@@ -78,70 +142,21 @@ fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool, scratch: &mut Vec<f32>
     if n == 0 {
         return;
     }
-    let i0i = i0 as isize;
     if n == 1 {
-        // A single sample is low-pass if it sits on an even index, else it is a lone
-        // high-pass coefficient carrying half its value (F.3.7). For the reversible 5/3
-        // path that halving is INTEGER division truncating toward zero (openjpeg's
-        // `OPJ_S(0) /= 2` in opj_dwt_decode_1_); keeping the .5 here broke bit-exactness
-        // on any image small enough to produce 1-sample bands — an 8x8 image with the
-        // encoder's default 5 decomposition levels has several.
-        if !i0.is_multiple_of(2) {
-            sig[0] /= 2.0;
-            if reversible {
-                sig[0] = sig[0].trunc();
-            }
-        }
+        lift_single_sample(sig, i0, reversible);
         return;
     }
 
+    let i0i = i0 as isize;
     scratch.clear();
     scratch.extend_from_slice(sig);
     // `scratch` is now the untouched original ("src" in the derivation below); `sig` becomes
     // the working buffer, written in place.
 
     if reversible {
-        // 5/3: even samples first, then odd, using the just-updated evens.
-        for (k, slot) in sig.iter_mut().enumerate() {
-            let i = i0i + k as isize;
-            if i % 2 == 0 {
-                let a = ext(scratch, i0i, i - 1);
-                let b = ext(scratch, i0i, i + 1);
-                *slot = scratch[k] - ((a + b + 2.0) / 4.0).floor();
-            }
-        }
-        // The odd pass is done IN PLACE on `sig` (no second scratch buffer): it only ever
-        // needs an EVEN-position neighbor (i-1/i+1 for an odd i), and `ext`'s periodic/mirror
-        // extension can't turn an even query into an odd one — the period `2*(n-1)` is always
-        // even, and folding via `period - k` preserves k's parity — so every neighbor read
-        // here lands on a slot the loop above already finished writing, never one this loop
-        // is about to overwrite.
-        for k in 0..n {
-            let i = i0i + k as isize;
-            if i % 2 != 0 {
-                let a = ext(sig, i0i, i - 1);
-                let b = ext(sig, i0i, i + 1);
-                sig[k] = scratch[k] + ((a + b) / 2.0).floor();
-            }
-        }
+        lift_reversible(sig, i0i, scratch);
     } else {
-        // 9/7: undo the K scaling, then the four lifting steps in reverse.
-        for (k, s) in sig.iter_mut().enumerate() {
-            let i = i0i + k as isize;
-            *s = if i % 2 == 0 { *s * K } else { *s / K };
-        }
-        for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
-            scratch.clear();
-            scratch.extend_from_slice(sig);
-            for (k, s) in sig.iter_mut().enumerate() {
-                let i = i0i + k as isize;
-                if (i % 2 == 0) == even_step {
-                    let a = ext(scratch, i0i, i - 1);
-                    let b = ext(scratch, i0i, i + 1);
-                    *s = scratch[k] - coef * (a + b);
-                }
-            }
-        }
+        lift_irreversible(sig, i0i, scratch);
     }
 }
 
