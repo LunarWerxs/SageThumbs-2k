@@ -50,29 +50,8 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         .or_else(|| images.first().map(|&(i, _)| i));
 
     if let (Some(base), Some(mobi_len)) = (image_base, mobi_header_len(rec0)) {
-        // EXTH CoverOffset (201) then ThumbOffset (202): cover = record(base + off).
-        // EXTH is detected by its magic at record0[16 + mobi_header_len] (the
-        // exth_flags bit at rec0[128] is what Calibre reads, but the magic is a
-        // more robust gate). cover = record(image_base + offset), per Calibre.
-        let exth_start = 16usize.saturating_add(mobi_len);
-        for tag in [201u32, 202] {
-            if let Some(off) = exth_u32(rec0, exth_start, tag) {
-                if off != u32::MAX {
-                    if let Some(idx) = base.checked_add(off as usize) {
-                        if let Some(data) = rec(idx) {
-                            if is_image(data) && data.len() as u64 <= super::MAX_COVER {
-                                return Some(data.to_vec());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // No usable EXTH cover: Calibre falls back to the first image (image_base).
-        if let Some(data) = rec(base) {
-            if is_image(data) && data.len() as u64 <= super::MAX_COVER {
-                return Some(data.to_vec());
-            }
+        if let Some(cover) = cover_via_exth_or_base(rec0, base, mobi_len, &rec) {
+            return Some(cover);
         }
     }
 
@@ -82,6 +61,38 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     (size as u64 <= super::MAX_COVER)
         .then(|| rec(idx).map(<[u8]>::to_vec))
         .flatten()
+}
+
+/// EXTH CoverOffset (201) then ThumbOffset (202): cover = record(base + off). EXTH is
+/// detected by its magic at record0[16 + mobi_header_len] (the exth_flags bit at
+/// rec0[128] is what Calibre reads, but the magic is a more robust gate). Falls back to
+/// the first image (`base` itself) when no usable EXTH cover exists, per Calibre.
+fn cover_via_exth_or_base<'a>(
+    rec0: &'a [u8],
+    base: usize,
+    mobi_len: usize,
+    rec: &dyn Fn(usize) -> Option<&'a [u8]>,
+) -> Option<Vec<u8>> {
+    let exth_start = 16usize.saturating_add(mobi_len);
+    for tag in [201u32, 202] {
+        if let Some(off) = exth_u32(rec0, exth_start, tag) {
+            if off != u32::MAX {
+                if let Some(idx) = base.checked_add(off as usize) {
+                    if let Some(data) = rec(idx) {
+                        if is_image(data) && data.len() as u64 <= super::MAX_COVER {
+                            return Some(data.to_vec());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(data) = rec(base) {
+        if is_image(data) && data.len() as u64 <= super::MAX_COVER {
+            return Some(data.to_vec());
+        }
+    }
+    None
 }
 
 /// MOBI header length at record0[20:24], or None if there's no MOBI header.

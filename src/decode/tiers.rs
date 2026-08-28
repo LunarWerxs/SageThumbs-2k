@@ -175,46 +175,8 @@ pub(crate) fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8
         }
         if data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
             // SOI (FF D8 FF…). Measure it; a valid JPEG is skipped whole.
-            match jpeg_span(data, i) {
-                // A structurally perfect JPEG we cannot decode is worse than no candidate at
-                // all: picking it costs the whole tier. Canon CR2 is the case — its raw sensor
-                // data is a ~20 MB LOSSLESS JPEG (SOF3) with a valid marker chain, so it wins
-                // "largest embedded JPEG" over the real 3 MB display preview, and both the
-                // `image` crate and WIC then reject it ("the image header is unrecognized").
-                // The tier failed outright and a Canon RAW fell through to a ~900 ms WIC
-                // demosaic — while the preview it wanted sat right there. Skipping the frame
-                // still advances `i` by its measured span, so this costs nothing.
-                Some((len, Some(sof))) if !jpeg_sof_is_decodable(sof) => {
-                    i += len;
-                    seen += 1;
-                    if seen >= 64 {
-                        break;
-                    }
-                    continue;
-                }
-                Some((len, _)) => {
-                    if len >= min_size {
-                        if match overall {
-                            None => true,
-                            Some((_, bl)) => len > bl,
-                        } {
-                            overall = Some((i, len));
-                        }
-                        if len <= PREVIEW_SOFT_MAX
-                            && match capped {
-                                None => true,
-                                Some((_, bl)) => len > bl,
-                            }
-                        {
-                            capped = Some((i, len));
-                        }
-                    }
-                    i += len;
-                }
-                None => i += 1,
-            }
-            seen += 1;
-            if seen >= 64 {
+            i += span_at_soi(data, i, min_size, &mut capped, &mut overall);
+            if bump_seen(&mut seen) {
                 break;
             }
         } else {
@@ -223,6 +185,62 @@ pub(crate) fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8
     }
     let (start, len) = capped.or(overall)?;
     data.get(start..start.checked_add(len)?)
+}
+
+/// One SOI candidate at `i`: measure its span, fold it into `capped`/`overall` when it's
+/// a real decodable preview, and return how far `i` should advance. A structurally
+/// perfect JPEG we cannot decode is worse than no candidate at all: picking it costs the
+/// whole tier. Canon CR2 is the case — its raw sensor data is a ~20 MB LOSSLESS JPEG
+/// (SOF3) with a valid marker chain, so it wins "largest embedded JPEG" over the real
+/// 3 MB display preview, and both the `image` crate and WIC then reject it ("the image
+/// header is unrecognized"). Skipping the frame still advances by its measured span, so
+/// this costs nothing.
+fn span_at_soi(
+    data: &[u8],
+    i: usize,
+    min_size: usize,
+    capped: &mut Option<(usize, usize)>,
+    overall: &mut Option<(usize, usize)>,
+) -> usize {
+    match jpeg_span(data, i) {
+        Some((len, Some(sof))) if !jpeg_sof_is_decodable(sof) => len,
+        Some((len, _)) => {
+            consider_candidate(capped, overall, i, len, min_size);
+            len
+        }
+        None => 1,
+    }
+}
+
+/// Track the best-so-far embedded JPEG candidates: `overall` = largest at or above
+/// `min_size`; `capped` = largest that's ALSO at or below [`PREVIEW_SOFT_MAX`].
+fn consider_candidate(
+    capped: &mut Option<(usize, usize)>,
+    overall: &mut Option<(usize, usize)>,
+    start: usize,
+    len: usize,
+    min_size: usize,
+) {
+    if len < min_size {
+        return;
+    }
+    let better_than = |cur: &Option<(usize, usize)>| match cur {
+        None => true,
+        Some((_, bl)) => len > *bl,
+    };
+    if better_than(overall) {
+        *overall = Some((start, len));
+    }
+    if len <= PREVIEW_SOFT_MAX && better_than(capped) {
+        *capped = Some((start, len));
+    }
+}
+
+/// Bump the SOI-candidate counter and report whether the scan's 64-candidate cap has
+/// been reached (a hostile file can't make the loop run away).
+fn bump_seen(seen: &mut usize) -> bool {
+    *seen += 1;
+    *seen >= 64
 }
 
 /// Decode a headerless Truevision TGA (and its `.icb`/`.vda`/`.vst` aliases) when

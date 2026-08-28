@@ -113,38 +113,10 @@ extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             return r;
         }
         match msg {
-            WM_CREATE => {
-                let hinst: HINSTANCE = match GetModuleHandleW(None) {
-                    Ok(h) => h.into(),
-                    Err(_) => return LRESULT(-1),
-                };
-                build(hwnd, hinst);
-                LRESULT(0)
-            }
+            WM_CREATE => on_create(hwnd),
             // The checklist's notifications now land HERE, not on the Settings wndproc —
             // forward the two it needs: drag-to-reorder and the dark-mode button paint.
-            WM_NOTIFY => {
-                let nmhdr = lparam.0 as *const NMHDR;
-                let code = (*nmhdr).code;
-                if code == windows::Win32::UI::Controls::LVN_BEGINDRAG
-                    && (*nmhdr).hwndFrom
-                        == GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST).unwrap_or_default()
-                {
-                    let nmlv = lparam.0 as *const NMLISTVIEW;
-                    list::begin_menu_drag((*nmhdr).hwndFrom, (*nmlv).iItem);
-                    return LRESULT(0);
-                }
-                if code == NM_CUSTOMDRAW {
-                    if is_button_class((*nmhdr).hwndFrom) {
-                        return LRESULT(restyle::draw_button_cd(
-                            hwnd,
-                            lparam.0 as *const NMCUSTOMDRAW,
-                        ));
-                    }
-                    return LRESULT(CDRF_DODEFAULT as isize);
-                }
-                LRESULT(0)
-            }
+            WM_NOTIFY => on_notify(hwnd, lparam),
             // Right-click bulk toggle (check all / uncheck all) on the checklist. Gated on
             // the sender being the list itself — WM_CONTEXTMENU also fires for Reset/Done
             // and for the popup's own background, and without this guard any of those
@@ -162,82 +134,116 @@ extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             // `list::list_context_menu` passes as THIS popup (not Settings), so the popup
             // wndproc must handle them itself — mod.rs's ODT_MENU arms did this for the
             // format list's identical dark-mode menu, but this window never inherited it.
-            WM_MEASUREITEM => {
-                let m = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
-                if m.CtlType == ODT_MENU {
-                    let label = wide(list::ctx_menu_label(m.itemID as usize));
-                    let n = label.len().saturating_sub(1);
-                    let hdc = GetDC(Some(hwnd));
-                    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
-                    let mut sz = SIZE::default();
-                    let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
-                    SelectObject(hdc, old);
-                    ReleaseDC(Some(hwnd), hdc);
-                    m.itemWidth = (sz.cx + 30) as u32;
-                    m.itemHeight = 26;
-                    LRESULT(1)
-                } else {
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-            }
-            WM_DRAWITEM => {
-                let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
-                if d.CtlType == ODT_MENU {
-                    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
-                    let bg = if selected {
-                        dark_menu_sel_brush()
-                    } else {
-                        dark_menu_brush()
-                    };
-                    FillRect(d.hDC, &d.rcItem, bg);
-                    SetBkMode(d.hDC, TRANSPARENT);
-                    SetTextColor(d.hDC, DARK_TEXT());
-                    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
-                    let mut label = wide(list::ctx_menu_label(d.itemID as usize));
-                    let n = label.len().saturating_sub(1);
-                    let mut rc = d.rcItem;
-                    rc.left += 14;
-                    DrawTextW(
-                        d.hDC,
-                        &mut label[..n],
-                        &mut rc,
-                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-                    );
-                    LRESULT(1)
-                } else {
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-            }
-            WM_COMMAND => {
-                match (wparam.0 & 0xFFFF) as i32 {
-                    ID_POP_RESET => {
-                        if let Ok(list) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
-                            list::reset_menu_order(list);
-                        }
-                    }
-                    IDOK => {
-                        let _ = DestroyWindow(hwnd);
-                    }
-                    _ => {}
-                }
-                LRESULT(0)
-            }
+            WM_MEASUREITEM => on_measureitem(hwnd, msg, wparam, lparam),
+            WM_DRAWITEM => on_drawitem(hwnd, msg, wparam, lparam),
+            WM_COMMAND => on_command(hwnd, wparam),
             WM_CLOSE => {
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
-            WM_DESTROY => {
-                // Hand the checklist back BEFORE the window goes away, hidden again, so
-                // load/save find it exactly where they always did.
-                if let (Some(settings), Ok(list)) =
-                    (settings_hwnd(), GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST))
-                {
-                    let _ = ShowWindow(list, SW_HIDE);
-                    let _ = SetParent(list, Some(settings));
-                }
-                LRESULT(0)
-            }
+            WM_DESTROY => on_destroy(hwnd),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+unsafe fn on_create(hwnd: HWND) -> LRESULT {
+    let hinst: HINSTANCE = match GetModuleHandleW(None) {
+        Ok(h) => h.into(),
+        Err(_) => return LRESULT(-1),
+    };
+    build(hwnd, hinst);
+    LRESULT(0)
+}
+
+unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let nmhdr = lparam.0 as *const NMHDR;
+    let code = (*nmhdr).code;
+    if code == windows::Win32::UI::Controls::LVN_BEGINDRAG
+        && (*nmhdr).hwndFrom == GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST).unwrap_or_default()
+    {
+        let nmlv = lparam.0 as *const NMLISTVIEW;
+        list::begin_menu_drag((*nmhdr).hwndFrom, (*nmlv).iItem);
+        return LRESULT(0);
+    }
+    if code == NM_CUSTOMDRAW {
+        if is_button_class((*nmhdr).hwndFrom) {
+            return LRESULT(restyle::draw_button_cd(hwnd, lparam.0 as *const NMCUSTOMDRAW));
+        }
+        return LRESULT(CDRF_DODEFAULT as isize);
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_measureitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let m = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
+    if m.CtlType != ODT_MENU {
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    let label = wide(list::ctx_menu_label(m.itemID as usize));
+    let n = label.len().saturating_sub(1);
+    let hdc = GetDC(Some(hwnd));
+    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
+    let mut sz = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
+    SelectObject(hdc, old);
+    ReleaseDC(Some(hwnd), hdc);
+    m.itemWidth = (sz.cx + 30) as u32;
+    m.itemHeight = 26;
+    LRESULT(1)
+}
+
+unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
+    if d.CtlType != ODT_MENU {
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
+    let bg = if selected {
+        dark_menu_sel_brush()
+    } else {
+        dark_menu_brush()
+    };
+    FillRect(d.hDC, &d.rcItem, bg);
+    SetBkMode(d.hDC, TRANSPARENT);
+    SetTextColor(d.hDC, DARK_TEXT());
+    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
+    let mut label = wide(list::ctx_menu_label(d.itemID as usize));
+    let n = label.len().saturating_sub(1);
+    let mut rc = d.rcItem;
+    rc.left += 14;
+    DrawTextW(
+        d.hDC,
+        &mut label[..n],
+        &mut rc,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+    LRESULT(1)
+}
+
+unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    match (wparam.0 & 0xFFFF) as i32 {
+        ID_POP_RESET => {
+            if let Ok(list) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
+                list::reset_menu_order(list);
+            }
+        }
+        IDOK => {
+            let _ = DestroyWindow(hwnd);
+        }
+        _ => {}
+    }
+    LRESULT(0)
+}
+
+/// Hand the checklist back BEFORE the window goes away, hidden again, so load/save find
+/// it exactly where they always did.
+unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
+    if let (Some(settings), Ok(list)) =
+        (settings_hwnd(), GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST))
+    {
+        let _ = ShowWindow(list, SW_HIDE);
+        let _ = SetParent(list, Some(settings));
+    }
+    LRESULT(0)
 }

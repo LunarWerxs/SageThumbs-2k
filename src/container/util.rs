@@ -223,33 +223,40 @@ pub(super) fn jpeg_sof_dims(data: &[u8], off: usize) -> Option<(u16, u16)> {
     }
     let mut p = off + 2;
     for _ in 0..4096 {
-        if *data.get(p)? != 0xFF {
-            return None; // expected a marker here
-        }
-        while *data.get(p)? == 0xFF {
-            p = p.checked_add(1)?; // skip 0xFF fill bytes
-        }
-        let marker = *data.get(p)?;
-        p = p.checked_add(1)?;
+        let (marker, next) = next_marker(data, p)?;
+        p = next;
         match marker {
-            0xC0..=0xC2 => {
-                // length(2) precision(1) height(2) width(2)
-                let h = u16::from_be_bytes([*data.get(p + 3)?, *data.get(p + 4)?]);
-                let w = u16::from_be_bytes([*data.get(p + 5)?, *data.get(p + 6)?]);
-                return Some((w, h));
-            }
+            0xC0..=0xC2 => return sof0_dims(data, p),
             0xD9 | 0xDA => return None, // EOI or scan start reached with no frame header
             0x01 | 0xD0..=0xD7 => {}    // standalone markers, no payload
             _ => {
-                let len = u16::from_be_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
-                if len < 2 {
-                    return None;
-                }
-                p = p.checked_add(len)?;
+                p = skip_length_prefixed_segment(data, p)?;
             }
         }
     }
     None
+}
+
+/// Skip 0xFF fill bytes starting at `p` and read the marker byte that follows.
+/// Returns `(marker, position right after the marker byte)`.
+fn next_marker(data: &[u8], p: usize) -> Option<(u8, usize)> {
+    if *data.get(p)? != 0xFF {
+        return None; // expected a marker here
+    }
+    let mut p = p;
+    while *data.get(p)? == 0xFF {
+        p = p.checked_add(1)?; // skip 0xFF fill bytes
+    }
+    let marker = *data.get(p)?;
+    Some((marker, p.checked_add(1)?))
+}
+
+/// An SOF0/1/2 frame header's width/height, read right after its marker byte at `p`
+/// (length(2) precision(1) height(2) width(2)).
+fn sof0_dims(data: &[u8], p: usize) -> Option<(u16, u16)> {
+    let h = u16::from_be_bytes([*data.get(p + 3)?, *data.get(p + 4)?]);
+    let w = u16::from_be_bytes([*data.get(p + 5)?, *data.get(p + 6)?]);
+    Some((w, h))
 }
 
 #[cfg(test)]

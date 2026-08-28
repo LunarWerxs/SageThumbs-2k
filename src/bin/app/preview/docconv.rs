@@ -70,6 +70,17 @@ fn sniff_delim(text: &str) -> u8 {
 /// leading `#` column carries the 1-based data-row number (QuickLook parity: it lets a user
 /// cross-reference a row in a large file), and runs through `md_cell` like every other cell.
 fn delimited_table(text: &str, delim: u8) -> String {
+    let (rows, total_rows) = parse_delimited_rows(text, delim);
+    if rows.is_empty() {
+        return "*(empty file)*".to_string();
+    }
+    render_row_table(text.len(), &rows, total_rows)
+}
+
+/// RFC-4180-ish parse (quoted fields, `""` escapes, embedded delimiters/newlines) into
+/// capped `(rows, total_data_rows_seen)`. `total_rows` can exceed `rows.len()` when the
+/// [`MAX_ROWS`] cap dropped some.
+fn parse_delimited_rows(text: &str, delim: u8) -> (Vec<Vec<String>>, usize) {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut field = String::new();
@@ -137,12 +148,15 @@ fn delimited_table(text: &str, delim: u8) -> String {
             rows.push(row);
         }
     }
-    if rows.is_empty() {
-        return "*(empty file)*".to_string();
-    }
+    (rows, total_rows)
+}
 
+/// Render already-parsed `rows` (first = header) as a GFM pipe table with a leading `#`
+/// row-number column and a truncation note when `total_rows` exceeds what was kept.
+/// `text_len_hint` sizes the output buffer; it need not be exact.
+fn render_row_table(text_len_hint: usize, rows: &[Vec<String>], total_rows: usize) -> String {
     let ncols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
-    let mut out = String::with_capacity(text.len() + rows.len() * 4);
+    let mut out = String::with_capacity(text_len_hint + rows.len() * 4);
     for (ri, r) in rows.iter().enumerate() {
         out.push('|');
         out.push(' ');
