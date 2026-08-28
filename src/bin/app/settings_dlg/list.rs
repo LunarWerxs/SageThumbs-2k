@@ -439,116 +439,8 @@ pub(super) unsafe extern "system" fn list_subclass(
             let _ = RemoveWindowSubclass(h, Some(list_subclass), uid);
         }
         WM_NOTIFY => {
-            let nmhdr = l.0 as *const NMHDR;
-            // A finished column drag (issue #26.3). Dragging Extension or Category has to
-            // reflow Description so the three still exactly fill the list; dragging
-            // Description itself means the user wants that width, so the auto-fit stands down
-            // rather than snapping the drag back.
-            //
-            // GATED ON ID_LIST, and that is load-bearing: this subclass is installed on TWO
-            // listviews (the file-types list in `build.rs`, and the single-column checklist in
-            // `mod.rs::checklist`, which reuses it for the SPACE bulk-toggle). The checklist
-            // has no visible header to drag, so this cannot fire for it today — but `fit_columns`
-            // is written for the three-column file-types list specifically, so pointing it at
-            // any other list would be wrong the moment that changes.
-            // DESCRIPTION IS NOT DRAGGABLE — refuse the drag before it starts.
-            //
-            // It is the LAST column and `fit_columns` sizes it to exactly fill the list, so the
-            // only thing dragging it can do is make it narrower and leave dead space against the
-            // scrollbar. There is no width the user could want there that fitting does not
-            // already give them, and the gap reads as a rendering bug rather than as their own
-            // layout. Returning TRUE from HDN_BEGINTRACK is the documented way to say no.
-            //
-            // This replaces a "remember that the user dragged Description and stop auto-fitting
-            // it" flag. That flag existed only to stop the auto-fit snapping such a drag back —
-            // once the drag itself is refused, it had nothing left to do.
-            if (*nmhdr).hwndFrom == list_header(h)
-                && refuses_header_drag(
-                    (*nmhdr).code,
-                    GetDlgCtrlID(h),
-                    (*(l.0 as *const windows::Win32::UI::Controls::NMHEADERW)).iItem,
-                )
-            {
-                return LRESULT(1);
-            }
-            if (*nmhdr).code == windows::Win32::UI::Controls::HDN_ENDTRACKW
-                && (*nmhdr).hwndFrom == list_header(h)
-                && GetDlgCtrlID(h) == ID_LIST
-            {
-                let hdn = l.0 as *const windows::Win32::UI::Controls::NMHEADERW;
-                {
-                    // FLOOR THE DRAGGED COLUMN FIRST. A Win32 header divider can be dragged
-                    // all the way to zero, and a 0 px column is a trap rather than a choice:
-                    // its two dividers land on the same pixel, so there is no longer anything
-                    // to grab to drag it back, and nothing on this page resets column widths
-                    // (Defaults resets the format ticks, not the layout). Snapping back to a
-                    // usable minimum keeps the column reachable; the user can still make it
-                    // genuinely narrow, just not vanish it.
-                    const MIN_COL_W: i32 = 40;
-                    let col = (*hdn).iItem;
-                    if (0..2).contains(&col) {
-                        let w = SendMessageW(
-                            h,
-                            windows::Win32::UI::Controls::LVM_GETCOLUMNWIDTH,
-                            Some(WPARAM(col as usize)),
-                            None,
-                        )
-                        .0 as i32;
-                        if w < MIN_COL_W {
-                            SendMessageW(
-                                h,
-                                LVM_SETCOLUMNWIDTH,
-                                Some(WPARAM(col as usize)),
-                                Some(LPARAM(MIN_COL_W as isize)),
-                            );
-                        }
-                    }
-                    super::fit_columns(h);
-                }
-                // Repaint: the rows underneath still carry the pre-drag column geometry.
-                let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(h), None, true);
-            }
-            if (*nmhdr).code == NM_CUSTOMDRAW && (*nmhdr).hwndFrom == list_header(h) {
-                let nmcd = l.0 as *const NMCUSTOMDRAW;
-                let stage = (*nmcd).dwDrawStage;
-                if stage == CDDS_PREPAINT {
-                    return LRESULT(CDRF_NOTIFYITEMDRAW as isize);
-                } else if stage == CDDS_ITEMPREPAINT {
-                    // Muted column-header text to match the mockup. The color is
-                    // only honored if we return CDRF_NEWFONT (not CDRF_DODEFAULT).
-                    SetTextColor((*nmcd).hdc, HEADER_TEXT());
-                    return LRESULT((CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT) as isize);
-                } else if stage == CDDS_ITEMPOSTPAINT {
-                    // Kill the LAST column's right-hand divider. The theme draws it as a
-                    // bright vertical line against the dark header — it reads as a drag
-                    // grabber, and since HDS_NOSIZING the columns can't be dragged at all.
-                    // The inner dividers stay: those separate real columns.
-                    let cols = SendMessageW(
-                        list_header(h),
-                        windows::Win32::UI::Controls::HDM_GETITEMCOUNT,
-                        None,
-                        None,
-                    )
-                    .0;
-                    if cols > 0 && (*nmcd).dwItemSpec as isize == cols - 1 {
-                        let rc = (*nmcd).rc;
-                        let hdc = (*nmcd).hdc;
-                        // Sample the header's own painted background rather than naming a
-                        // colour, so this stays right in light mode and under a future theme.
-                        let bg =
-                            windows::Win32::Graphics::Gdi::GetPixel(hdc, rc.right - 4, rc.top + 2);
-                        if bg.0 != windows::Win32::Graphics::Gdi::CLR_INVALID {
-                            let strip = RECT {
-                                left: rc.right - 2,
-                                top: rc.top,
-                                right: rc.right,
-                                bottom: rc.bottom,
-                            };
-                            fill(hdc, &strip, bg);
-                        }
-                    }
-                    return LRESULT(CDRF_DODEFAULT as isize);
-                }
+            if let Some(res) = on_notify(h, l) {
+                return res;
             }
         }
         WM_KEYDOWN
@@ -589,6 +481,136 @@ pub(super) unsafe extern "system" fn list_subclass(
         _ => {}
     }
     DefSubclassProc(h, msg, w, l)
+}
+
+/// `list_subclass`'s `WM_NOTIFY` handling: a finished column drag (floor + refit), the
+/// Description-column drag refusal, and the header's custom-draw. `Some(res)` means the
+/// subclass should return `res` immediately instead of falling through to `DefSubclassProc`.
+unsafe fn on_notify(h: HWND, l: LPARAM) -> Option<LRESULT> {
+    let nmhdr = l.0 as *const NMHDR;
+    // A finished column drag (issue #26.3). Dragging Extension or Category has to
+    // reflow Description so the three still exactly fill the list; dragging
+    // Description itself means the user wants that width, so the auto-fit stands down
+    // rather than snapping the drag back.
+    //
+    // GATED ON ID_LIST, and that is load-bearing: this subclass is installed on TWO
+    // listviews (the file-types list in `build.rs`, and the single-column checklist in
+    // `mod.rs::checklist`, which reuses it for the SPACE bulk-toggle). The checklist
+    // has no visible header to drag, so this cannot fire for it today — but `fit_columns`
+    // is written for the three-column file-types list specifically, so pointing it at
+    // any other list would be wrong the moment that changes.
+    // DESCRIPTION IS NOT DRAGGABLE — refuse the drag before it starts.
+    //
+    // It is the LAST column and `fit_columns` sizes it to exactly fill the list, so the
+    // only thing dragging it can do is make it narrower and leave dead space against the
+    // scrollbar. There is no width the user could want there that fitting does not
+    // already give them, and the gap reads as a rendering bug rather than as their own
+    // layout. Returning TRUE from HDN_BEGINTRACK is the documented way to say no.
+    //
+    // This replaces a "remember that the user dragged Description and stop auto-fitting
+    // it" flag. That flag existed only to stop the auto-fit snapping such a drag back —
+    // once the drag itself is refused, it had nothing left to do.
+    if (*nmhdr).hwndFrom == list_header(h)
+        && refuses_header_drag(
+            (*nmhdr).code,
+            GetDlgCtrlID(h),
+            (*(l.0 as *const windows::Win32::UI::Controls::NMHEADERW)).iItem,
+        )
+    {
+        return Some(LRESULT(1));
+    }
+    if (*nmhdr).code == windows::Win32::UI::Controls::HDN_ENDTRACKW
+        && (*nmhdr).hwndFrom == list_header(h)
+        && GetDlgCtrlID(h) == ID_LIST
+    {
+        on_notify_header_endtrack(h, l.0 as *const windows::Win32::UI::Controls::NMHEADERW);
+    }
+    if (*nmhdr).code == NM_CUSTOMDRAW && (*nmhdr).hwndFrom == list_header(h) {
+        if let Some(res) = on_notify_header_customdraw(l.0 as *const NMCUSTOMDRAW, list_header(h)) {
+            return Some(res);
+        }
+    }
+    None
+}
+
+/// `on_notify`'s `HDN_ENDTRACKW`: floor the just-dragged column at a usable minimum, then refit
+/// the other columns to fill the list.
+unsafe fn on_notify_header_endtrack(h: HWND, hdn: *const windows::Win32::UI::Controls::NMHEADERW) {
+    // FLOOR THE DRAGGED COLUMN FIRST. A Win32 header divider can be dragged
+    // all the way to zero, and a 0 px column is a trap rather than a choice:
+    // its two dividers land on the same pixel, so there is no longer anything
+    // to grab to drag it back, and nothing on this page resets column widths
+    // (Defaults resets the format ticks, not the layout). Snapping back to a
+    // usable minimum keeps the column reachable; the user can still make it
+    // genuinely narrow, just not vanish it.
+    const MIN_COL_W: i32 = 40;
+    let col = (*hdn).iItem;
+    if (0..2).contains(&col) {
+        let w = SendMessageW(
+            h,
+            windows::Win32::UI::Controls::LVM_GETCOLUMNWIDTH,
+            Some(WPARAM(col as usize)),
+            None,
+        )
+        .0 as i32;
+        if w < MIN_COL_W {
+            SendMessageW(
+                h,
+                LVM_SETCOLUMNWIDTH,
+                Some(WPARAM(col as usize)),
+                Some(LPARAM(MIN_COL_W as isize)),
+            );
+        }
+    }
+    super::fit_columns(h);
+    // Repaint: the rows underneath still carry the pre-drag column geometry.
+    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(h), None, true);
+}
+
+/// `on_notify`'s `NM_CUSTOMDRAW` on the header: mutes the header text and hides the last
+/// column's divider. `Some(res)` means the caller should return `res` immediately.
+unsafe fn on_notify_header_customdraw(nmcd: *const NMCUSTOMDRAW, header: HWND) -> Option<LRESULT> {
+    let stage = (*nmcd).dwDrawStage;
+    if stage == CDDS_PREPAINT {
+        return Some(LRESULT(CDRF_NOTIFYITEMDRAW as isize));
+    }
+    if stage == CDDS_ITEMPREPAINT {
+        // Muted column-header text to match the mockup. The color is
+        // only honored if we return CDRF_NEWFONT (not CDRF_DODEFAULT).
+        SetTextColor((*nmcd).hdc, HEADER_TEXT());
+        return Some(LRESULT((CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT) as isize));
+    }
+    if stage == CDDS_ITEMPOSTPAINT {
+        // Kill the LAST column's right-hand divider. The theme draws it as a
+        // bright vertical line against the dark header — it reads as a drag
+        // grabber, and since HDS_NOSIZING the columns can't be dragged at all.
+        // The inner dividers stay: those separate real columns.
+        let cols = SendMessageW(
+            header,
+            windows::Win32::UI::Controls::HDM_GETITEMCOUNT,
+            None,
+            None,
+        )
+        .0;
+        if cols > 0 && (*nmcd).dwItemSpec as isize == cols - 1 {
+            let rc = (*nmcd).rc;
+            let hdc = (*nmcd).hdc;
+            // Sample the header's own painted background rather than naming a
+            // colour, so this stays right in light mode and under a future theme.
+            let bg = windows::Win32::Graphics::Gdi::GetPixel(hdc, rc.right - 4, rc.top + 2);
+            if bg.0 != windows::Win32::Graphics::Gdi::CLR_INVALID {
+                let strip = RECT {
+                    left: rc.right - 2,
+                    top: rc.top,
+                    right: rc.right,
+                    bottom: rc.bottom,
+                };
+                fill(hdc, &strip, bg);
+            }
+        }
+        return Some(LRESULT(CDRF_DODEFAULT as isize));
+    }
+    None
 }
 
 /// Index of the Description column in the file-types list: the LAST of the three.
