@@ -312,6 +312,93 @@ pub(super) fn find_codestream(bytes: &[u8]) -> Result<&[u8], Jp2Error> {
     find_codestream_and_palette(bytes).map(|(cs, _)| cs)
 }
 
+/// Outcome of indexing one SOT (start-of-tile-part) marker: whether the caller's marker
+/// loop should keep walking, or stop because the codestream has lost synchronization.
+enum SotOutcome {
+    Continue,
+    Desync,
+}
+
+/// Index one tile-part's payload (the SOT marker's body through its data, ending at SOD
+/// or an empty part), pushing it onto `tiles[isot]`.
+///
+/// Real-world `Psot` is not always trustworthy. The corpus's 76 MP scan ends with ~1500
+/// empty tile-parts whose Psot says 12 while their TLM entry says 14: the encoder left the
+/// trailing SOD out of its own length. Following Psot literally lands ON that SOD and
+/// desynchronizes everything after it. Stepping over a SOD found exactly at the tile-part
+/// boundary costs nothing on well-formed files and rescues the whole tail on this one. If
+/// we have still lost the thread, the caller stops indexing tiles rather than
+/// misinterpreting compressed data as markers — whatever was collected up to here still
+/// decodes; the top-level caller falls back to ImageMagick if it is not enough. Never guess
+/// our way through a desynchronized codestream.
+fn index_tile_part<'a>(
+    r: &mut Reader<'a>,
+    cs: &'a [u8],
+    seg_start: usize,
+    seg_end: usize,
+    tiles: &mut [Vec<&'a [u8]>],
+) -> Result<SotOutcome, Jp2Error> {
+    // Isot, Psot, TPsot, TNsot — then the tile-part body runs to Psot.
+    let isot = r.u16()? as usize;
+    let psot = r.u32()?;
+    let _tpsot = r.u8()?;
+    let _tnsot = r.u8()?;
+    // The tile-part ends `Psot` bytes after the START of the SOT marker.
+    let sot_marker_start = seg_start - 2;
+    // `Psot` must clear the SOT segment itself (2 marker + 10 body = 12), or setting
+    // `r.p = part_end` below would move the cursor BACKWARDS and the marker loop would
+    // re-read this SOT forever. A crafted Psot of 1 is a free hang in a shell host
+    // otherwise, so this is a hard reject, not a clamp.
+    const MIN_PSOT: u32 = 12;
+    let part_end = if psot == 0 {
+        cs.len()
+    } else {
+        if psot < MIN_PSOT {
+            return Err(Jp2Error::Malformed("Psot shorter than its own SOT segment"));
+        }
+        sot_marker_start
+            .checked_add(psot as usize)
+            .filter(|e| *e <= cs.len())
+            .ok_or(Jp2Error::Truncated)?
+    };
+    // Skip any tile-part header markers up to SOD, WITHOUT running past the tile-part. A
+    // tile-part carrying no data at all is legal (this file ends tile 0 with `Psot = 12`,
+    // i.e. the SOT segment and nothing else); hunting for a SOD that is not there would
+    // walk into the next segment and only surface much later as a bogus truncation.
+    r.p = seg_end;
+    let body = loop {
+        if r.p >= part_end {
+            break &cs[part_end..part_end]; // empty tile-part
+        }
+        let mm = r.u16()?;
+        if mm == marker::SOD {
+            break cs.get(r.p..part_end).ok_or(Jp2Error::Truncated)?;
+        }
+        let l = r.u16()? as usize;
+        if l < 2 {
+            return Err(Jp2Error::Malformed("tile-part marker length < 2"));
+        }
+        r.p =
+            r.p.checked_add(l - 2)
+                .filter(|e| *e <= part_end)
+                .ok_or(Jp2Error::Truncated)?;
+    };
+    if !body.is_empty() {
+        tiles
+            .get_mut(isot)
+            .ok_or(Jp2Error::Malformed("tile index out of range"))?
+            .push(body);
+    }
+    r.p = part_end;
+    while cs.get(r.p..r.p + 2) == Some(&[0xFF, 0x93]) {
+        r.p += 2;
+    }
+    match cs.get(r.p..r.p + 2) {
+        Some(&[0xFF, b]) if b == 0x90 || b == 0xD9 => Ok(SotOutcome::Continue),
+        _ => Ok(SotOutcome::Desync),
+    }
+}
+
 /// Parse the main header and index every tile-part payload. Does NOT decode any pixels.
 pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
     let mut r = Reader { d: cs, p: 0 };
@@ -378,79 +465,10 @@ pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
                     *slot = Some(q);
                 }
             }
-            marker::SOT => {
-                // Isot, Psot, TPsot, TNsot — then the tile-part body runs to Psot.
-                let isot = r.u16()? as usize;
-                let psot = r.u32()?;
-                let _tpsot = r.u8()?;
-                let _tnsot = r.u8()?;
-                // The tile-part ends `Psot` bytes after the START of the SOT marker.
-                let sot_marker_start = seg_start - 2;
-                // `Psot` must clear the SOT segment itself (2 marker + 10 body = 12), or the
-                // `r.p = part_end` below would move the cursor BACKWARDS and the marker loop
-                // would re-read this SOT forever. A crafted Psot of 1 is a free hang in a
-                // shell host otherwise, so this is a hard reject, not a clamp.
-                const MIN_PSOT: u32 = 12;
-                let part_end = if psot == 0 {
-                    cs.len()
-                } else {
-                    if psot < MIN_PSOT {
-                        return Err(Jp2Error::Malformed("Psot shorter than its own SOT segment"));
-                    }
-                    sot_marker_start
-                        .checked_add(psot as usize)
-                        .filter(|e| *e <= cs.len())
-                        .ok_or(Jp2Error::Truncated)?
-                };
-                // Skip any tile-part header markers up to SOD, WITHOUT running past the
-                // tile-part. A tile-part carrying no data at all is legal (this file ends
-                // tile 0 with `Psot = 12`, i.e. the SOT segment and nothing else); hunting
-                // for a SOD that is not there would walk into the next segment and only
-                // surface much later as a bogus truncation.
-                r.p = seg_end;
-                let body = loop {
-                    if r.p >= part_end {
-                        break &cs[part_end..part_end]; // empty tile-part
-                    }
-                    let mm = r.u16()?;
-                    if mm == marker::SOD {
-                        break cs.get(r.p..part_end).ok_or(Jp2Error::Truncated)?;
-                    }
-                    let l = r.u16()? as usize;
-                    if l < 2 {
-                        return Err(Jp2Error::Malformed("tile-part marker length < 2"));
-                    }
-                    r.p =
-                        r.p.checked_add(l - 2)
-                            .filter(|e| *e <= part_end)
-                            .ok_or(Jp2Error::Truncated)?;
-                };
-                if !body.is_empty() {
-                    tiles
-                        .get_mut(isot)
-                        .ok_or(Jp2Error::Malformed("tile index out of range"))?
-                        .push(body);
-                }
-                r.p = part_end;
-                // Real-world `Psot` is not always trustworthy. The corpus's 76 MP scan ends
-                // with ~1500 empty tile-parts whose Psot says 12 while their TLM entry says
-                // 14: the encoder left the trailing SOD out of its own length. Following
-                // Psot literally lands ON that SOD and desynchronizes everything after it.
-                // Stepping over a SOD found exactly at the tile-part boundary costs nothing
-                // on well-formed files and rescues the whole tail on this one.
-                while cs.get(r.p..r.p + 2) == Some(&[0xFF, 0x93]) {
-                    r.p += 2;
-                }
-                // If we have still lost the thread, stop indexing tiles rather than
-                // misinterpreting compressed data as markers. Whatever was collected up to
-                // here still decodes; the caller falls back to ImageMagick if it is not
-                // enough. Never guess our way through a desynchronized codestream.
-                match cs.get(r.p..r.p + 2) {
-                    Some(&[0xFF, b]) if b == 0x90 || b == 0xD9 => {}
-                    _ => break,
-                }
-                continue;
-            }
+            marker::SOT => match index_tile_part(&mut r, cs, seg_start, seg_end, &mut tiles)? {
+                SotOutcome::Continue => continue,
+                SotOutcome::Desync => break,
+            },
             _ => {}
         }
         r.p = seg_end;
