@@ -457,12 +457,7 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     unsafe {
         match msg {
             WM_HOTKEY => {
-                match wparam.0 as i32 {
-                    HOTKEY_ID => spawn(Some("--screenshot")),
-                    QUICK_HOTKEY_ID => spawn(Some("--screenshot-instant")),
-                    CUSTOM_HOTKEY_ID => spawn(Some("--hotkey-action")),
-                    _ => {}
-                }
+                on_hotkey(wparam);
                 LRESULT(0)
             }
             // Quick preview Space hook (see `spacehook`): the hook callback posts these so the
@@ -479,68 +474,26 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             // Space is already dead there and the user has no way to find that out, so say it
             // now rather than letting them press a key that never reaches us.
             m if m == super::elevwarn::WM_APP_CHECK_ELEVATED => {
-                if let Some(kind) = super::elevwarn::warning_for(HWND(wparam.0 as *mut c_void)) {
-                    show_elevated_warning(hwnd, kind);
-                }
+                on_check_elevated(hwnd, wparam);
                 LRESULT(0)
             }
             WM_RELOAD => {
-                rearm_hotkeys(hwnd);
-                // Reconcile the tray icon with the (possibly just-changed) setting.
-                if sagethumbs2k_core::settings::screenshot_hide_tray() {
-                    remove_tray_icon(hwnd);
-                } else {
-                    ensure_tray_icon(hwnd);
-                }
+                on_reload(hwnd);
                 LRESULT(0)
             }
             WM_TRAY => {
-                let ev = (lparam.0 & 0xffff) as u32;
-                if ev == WM_LBUTTONDBLCLK {
-                    spawn(Some("--screenshot"));
-                } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
-                    show_tray_menu(hwnd);
-                } else if ev == NIN_BALLOONUSERCLICK {
-                    // One message for every balloon, so route on which one we last raised.
-                    match LAST_BALLOON.swap(BALLOON_NONE, Ordering::Relaxed) {
-                        BALLOON_ELEVATED => spawn(None), // open Settings to bind a hotkey
-                        _ => open_releases(),            // the "update available" toast
-                    }
-                }
+                on_tray(hwnd, lparam);
                 LRESULT(0)
             }
             WM_TIMER => {
-                match wparam.0 {
-                    UPDATE_TIMER_ID => kick_update_check(hwnd),
-                    // Catch-all backstop: re-assert the hotkey registrations in case some
-                    // unforeseen event silently dropped them while we kept running.
-                    REARM_TIMER_ID => rearm_hotkeys(hwnd),
-                    // The taskbar rejected our icon earlier (logon race) — try again until
-                    // it takes, unless the user hid the icon meanwhile.
-                    TRAY_RETRY_TIMER_ID => {
-                        if sagethumbs2k_core::settings::screenshot_hide_tray() {
-                            let _ = KillTimer(Some(hwnd), TRAY_RETRY_TIMER_ID);
-                        } else {
-                            ensure_tray_icon(hwnd);
-                        }
-                    }
-                    _ => {}
-                }
+                on_timer(hwnd, wparam);
                 LRESULT(0)
             }
             // Sleep/resume, lock/unlock, RDP reconnect and display changes can each silently drop
             // a live `RegisterHotKey` while this process stays up — so the hotkey quietly dies
             // while the process remains apparently healthy. Re-assert on each event so the
             // hotkey comes back the instant the machine does, with no "reopen the app" needed.
-            WM_POWERBROADCAST => {
-                // Only on RESUME — never on suspend, so we never release the chord right before
-                // sleeping (which would leave it unregistered until wake).
-                let ev = wparam.0 as u32;
-                if ev == PBT_APMRESUMEAUTOMATIC || ev == PBT_APMRESUMESUSPEND {
-                    rearm_hotkeys(hwnd);
-                }
-                LRESULT(1) // TRUE — grant the power-state change
-            }
+            WM_POWERBROADCAST => on_powerbroadcast(hwnd, wparam),
             WM_WTSSESSION_CHANGE => {
                 // Any session transition (lock/unlock, connect/disconnect) is cheap to re-arm on.
                 rearm_hotkeys(hwnd);
@@ -556,57 +509,155 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             // the taskbar). Explorer restarts are ROUTINE around this app: its own installer
             // and dev install script restart Explorer to swap the shell-extension DLL.
             m if m != 0 && m == TASKBAR_CREATED.load(Ordering::Relaxed) => {
-                if !sagethumbs2k_core::settings::screenshot_hide_tray() {
-                    ensure_tray_icon(hwnd);
-                }
+                on_taskbar_created(hwnd);
                 LRESULT(0)
             }
             WM_UPDATE_FOUND => {
-                if lparam.0 != 0 {
-                    let tag = *Box::from_raw(lparam.0 as *mut String);
-                    show_update_toast(hwnd, &tag);
-                }
+                on_update_found(hwnd, lparam);
                 LRESULT(0)
             }
             WM_COMMAND => {
-                match wparam.0 & 0xffff {
-                    IDM_CAPTURE => spawn(Some("--screenshot")),
-                    IDM_OCR => spawn(Some("--screenshot-ocr")),
-                    IDM_SETTINGS => spawn(None),
-                    IDM_HIDE => {
-                        // Hide the tray icon but keep the hotkey running (matches the
-                        // Settings "Hide tray icon" toggle). Restore via Settings.
-                        let _ = sagethumbs2k_core::settings::set_dword("ScreenshotHideTray", 1);
-                        remove_tray_icon(hwnd);
-                    }
-                    IDM_QUIT => {
-                        // "Exit" disables the daemon for real: drop the HKCU autostart entry
-                        // (so it won't relaunch at next logon) AND close the daemon (quit posts
-                        // WM_CLOSE → WM_DESTROY, which removes the tray icon + unregisters the
-                        // hotkeys). Unlike `set_enabled(false)`, `quit` stops even when a custom
-                        // hotkey is bound — an explicit "stop everything".
-                        super::quit();
-                    }
-                    _ => {}
-                }
+                on_command(hwnd, wparam);
                 LRESULT(0)
             }
             WM_DESTROY => {
-                let _ = KillTimer(Some(hwnd), UPDATE_TIMER_ID);
-                let _ = KillTimer(Some(hwnd), REARM_TIMER_ID);
-                let _ = WTSUnRegisterSessionNotification(hwnd);
-                super::spacehook::uninstall(); // drop the Space hook with the daemon
-                super::elevwarn::uninstall(); // and its foreground watcher
-                remove_tray_icon(hwnd);
-                let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
-                let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
-                let _ = UnregisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID);
-                PostQuitMessage(0);
+                on_destroy(hwnd);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+/// `WM_HOTKEY` — dispatch by which of the three registered hotkey ids fired.
+unsafe fn on_hotkey(wparam: WPARAM) {
+    match wparam.0 as i32 {
+        HOTKEY_ID => spawn(Some("--screenshot")),
+        QUICK_HOTKEY_ID => spawn(Some("--screenshot-instant")),
+        CUSTOM_HOTKEY_ID => spawn(Some("--hotkey-action")),
+        _ => {}
+    }
+}
+
+/// `super::elevwarn::WM_APP_CHECK_ELEVATED`.
+unsafe fn on_check_elevated(hwnd: HWND, wparam: WPARAM) {
+    if let Some(kind) = super::elevwarn::warning_for(HWND(wparam.0 as *mut c_void)) {
+        show_elevated_warning(hwnd, kind);
+    }
+}
+
+/// `WM_RELOAD` — posted by the Settings window when the user picks a different capture
+/// hotkey: re-read + re-register it, and reconcile the tray icon with the (possibly
+/// just-changed) hide-tray setting.
+unsafe fn on_reload(hwnd: HWND) {
+    rearm_hotkeys(hwnd);
+    if sagethumbs2k_core::settings::screenshot_hide_tray() {
+        remove_tray_icon(hwnd);
+    } else {
+        ensure_tray_icon(hwnd);
+    }
+}
+
+/// `WM_TRAY` — the notify-icon callback: double-click captures, right-click/context menu
+/// opens the tray menu, and a balloon click routes on which balloon we last raised.
+unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
+    let ev = (lparam.0 & 0xffff) as u32;
+    if ev == WM_LBUTTONDBLCLK {
+        spawn(Some("--screenshot"));
+    } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
+        show_tray_menu(hwnd);
+    } else if ev == NIN_BALLOONUSERCLICK {
+        // One message for every balloon, so route on which one we last raised.
+        match LAST_BALLOON.swap(BALLOON_NONE, Ordering::Relaxed) {
+            BALLOON_ELEVATED => spawn(None), // open Settings to bind a hotkey
+            _ => open_releases(),            // the "update available" toast
+        }
+    }
+}
+
+/// `WM_TIMER` — dispatch by timer id: the periodic update check, the hotkey re-arm
+/// backstop, and the tray-icon add retry (logon race).
+unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) {
+    match wparam.0 {
+        UPDATE_TIMER_ID => kick_update_check(hwnd),
+        // Catch-all backstop: re-assert the hotkey registrations in case some
+        // unforeseen event silently dropped them while we kept running.
+        REARM_TIMER_ID => rearm_hotkeys(hwnd),
+        // The taskbar rejected our icon earlier (logon race) — try again until
+        // it takes, unless the user hid the icon meanwhile.
+        TRAY_RETRY_TIMER_ID => {
+            if sagethumbs2k_core::settings::screenshot_hide_tray() {
+                let _ = KillTimer(Some(hwnd), TRAY_RETRY_TIMER_ID);
+            } else {
+                ensure_tray_icon(hwnd);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `WM_POWERBROADCAST` — only on RESUME (never on suspend, so we never release the
+/// chord right before sleeping, which would leave it unregistered until wake).
+unsafe fn on_powerbroadcast(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    let ev = wparam.0 as u32;
+    if ev == PBT_APMRESUMEAUTOMATIC || ev == PBT_APMRESUMESUSPEND {
+        rearm_hotkeys(hwnd);
+    }
+    LRESULT(1) // TRUE — grant the power-state change
+}
+
+/// The taskbar-created broadcast: re-add the tray icon (unless the user hid it).
+unsafe fn on_taskbar_created(hwnd: HWND) {
+    if !sagethumbs2k_core::settings::screenshot_hide_tray() {
+        ensure_tray_icon(hwnd);
+    }
+}
+
+/// `WM_UPDATE_FOUND`.
+unsafe fn on_update_found(hwnd: HWND, lparam: LPARAM) {
+    if lparam.0 != 0 {
+        let tag = *Box::from_raw(lparam.0 as *mut String);
+        show_update_toast(hwnd, &tag);
+    }
+}
+
+/// `WM_COMMAND` — the tray menu's item ids.
+unsafe fn on_command(hwnd: HWND, wparam: WPARAM) {
+    match wparam.0 & 0xffff {
+        IDM_CAPTURE => spawn(Some("--screenshot")),
+        IDM_OCR => spawn(Some("--screenshot-ocr")),
+        IDM_SETTINGS => spawn(None),
+        IDM_HIDE => {
+            // Hide the tray icon but keep the hotkey running (matches the
+            // Settings "Hide tray icon" toggle). Restore via Settings.
+            let _ = sagethumbs2k_core::settings::set_dword("ScreenshotHideTray", 1);
+            remove_tray_icon(hwnd);
+        }
+        IDM_QUIT => {
+            // "Exit" disables the daemon for real: drop the HKCU autostart entry
+            // (so it won't relaunch at next logon) AND close the daemon (quit posts
+            // WM_CLOSE → WM_DESTROY, which removes the tray icon + unregisters the
+            // hotkeys). Unlike `set_enabled(false)`, `quit` stops even when a custom
+            // hotkey is bound — an explicit "stop everything".
+            super::quit();
+        }
+        _ => {}
+    }
+}
+
+/// `WM_DESTROY` — tear down timers, session notifications, hooks, tray icon and
+/// hotkeys, then post the quit message.
+unsafe fn on_destroy(hwnd: HWND) {
+    let _ = KillTimer(Some(hwnd), UPDATE_TIMER_ID);
+    let _ = KillTimer(Some(hwnd), REARM_TIMER_ID);
+    let _ = WTSUnRegisterSessionNotification(hwnd);
+    super::spacehook::uninstall(); // drop the Space hook with the daemon
+    super::elevwarn::uninstall(); // and its foreground watcher
+    remove_tray_icon(hwnd);
+    let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);
+    let _ = UnregisterHotKey(Some(hwnd), QUICK_HOTKEY_ID);
+    let _ = UnregisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID);
+    PostQuitMessage(0);
 }
 
 #[cfg(test)]
