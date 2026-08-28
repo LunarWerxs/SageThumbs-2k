@@ -137,86 +137,118 @@ fn flag_num_opt<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Opt
     }
 }
 
+fn run_thumbnail(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let (i, o) = (need(pos, 0)?, need(pos, 1)?);
+    let size = flag_num(rest, "--size", 256)?;
+    cli::thumbnail(i, o, size)
+}
+
+fn run_convert(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let (i, o) = (need(pos, 0)?, need(pos, 1)?);
+    let q = flag_num(rest, "--quality", 90u8)?;
+    let wq = flag_num_opt::<u8>(rest, "--webp-quality")?;
+    let resize = cli::parse_resize(flag(rest, "--resize").as_deref())?;
+    cli::convert(i, o, q, wq, resize)
+}
+
+/// `batch <op> <inputs...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...]`
+fn run_batch(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let op = need(pos, 0)?;
+    let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
+    if inputs.is_empty() {
+        return Err("batch needs at least one input file or directory".to_string());
+    }
+    let size = flag_num(rest, "--size", 256)?;
+    let q = flag_num(rest, "--quality", 90u8)?;
+    let resize = cli::parse_resize(flag(rest, "--resize").as_deref())?;
+    cli::batch(
+        op,
+        &inputs,
+        flag(rest, "--out").as_deref(),
+        size,
+        flag(rest, "--to").as_deref(),
+        q,
+        resize,
+    )
+}
+
+/// `--size` takes a comma-separated LIST because the shell caches per size bucket; a
+/// single number leaves every other Explorer view still building its tiles by hand.
+fn prebuild_sizes(rest: &[String]) -> Result<Vec<u32>, String> {
+    let Some(s) = flag(rest, "--size") else {
+        return Ok(sagethumbs2k_core::prebuild::DEFAULT_SIZES.to_vec());
+    };
+    let parsed: Vec<u32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    if parsed.is_empty() {
+        return Err(format!("--size: no number found in \"{s}\""));
+    }
+    Ok(parsed)
+}
+
+/// `prebuild <paths...> [--recurse] [--size N[,N…]] [--rebuild-all] [--jobs N]`
+fn run_prebuild(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
+    if inputs.is_empty() {
+        return Err("prebuild needs at least one folder or file".to_string());
+    }
+    let sizes = prebuild_sizes(rest)?;
+    cli::prebuild(
+        &inputs,
+        has_flag(rest, "--recurse") || has_flag(rest, "-r"),
+        sizes,
+        has_flag(rest, "--rebuild-all"),
+        flag_num(rest, "--jobs", 3)?,
+    )
+}
+
+fn run_rotate(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let i = need(pos, 0)?;
+    let by = flag(rest, "--by").ok_or("rotate needs --by right|left|180|fliph|flipv")?;
+    cli::rotate(i, &by)
+}
+
+fn run_compress(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let i = need(pos, 0)?;
+    let max =
+        flag(rest, "--max-size").ok_or("compress needs --max-size (e.g. 1MB, 500KB, 800000)")?;
+    cli::compress(i, cli::parse_size(&max)?)
+}
+
+// Dev/measurement verb (undocumented in --help, like the app EXE's --bench-* modes): time
+// the decode of many files inside ONE process, so the numbers carry no per-file
+// process-start noise. Used by scripts\check-decode-speed.ps1.
+fn run_bench_decode(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
+    if inputs.is_empty() {
+        return Err("bench-decode needs at least one input file".to_string());
+    }
+    let size = flag_num(rest, "--size", 256u32)?;
+    let runs = flag_num(rest, "--runs", 3u32)?;
+    cli::bench_decode(&inputs, size, runs)
+}
+
+/// One verb, because "register --off" and "unregister" are the same action and having
+/// both spellings fail differently would be its own bug report.
+fn run_register(verb: &str, pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let off = verb == "unregister"
+        || has_flag(rest, "--off")
+        || pos.first().is_some_and(|p| p.as_str() == "off");
+    let status = has_flag(rest, "--status") || pos.first().is_some_and(|p| p.as_str() == "status");
+    cli::register_portable(off, status)
+}
+
 fn run(args: &[String]) -> Result<String, String> {
     let verb = args.first().map(|s| s.as_str()).unwrap_or("");
     let rest = &args[args.len().min(1)..];
     let pos = positionals(rest);
 
     match verb {
-        "thumbnail" | "thumb" => {
-            let (i, o) = (need(&pos, 0)?, need(&pos, 1)?);
-            let size = flag_num(rest, "--size", 256)?;
-            cli::thumbnail(i, o, size)
-        }
-        "convert" => {
-            let (i, o) = (need(&pos, 0)?, need(&pos, 1)?);
-            let q = flag_num(rest, "--quality", 90u8)?;
-            let wq = flag_num_opt::<u8>(rest, "--webp-quality")?;
-            cli::convert(
-                i,
-                o,
-                q,
-                wq,
-                cli::parse_resize(flag(rest, "--resize").as_deref())?,
-            )
-        }
-        "batch" => {
-            // batch <op> <inputs...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...]
-            let op = need(&pos, 0)?;
-            let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
-            if inputs.is_empty() {
-                return Err("batch needs at least one input file or directory".to_string());
-            }
-            let size = flag_num(rest, "--size", 256)?;
-            let q = flag_num(rest, "--quality", 90u8)?;
-            cli::batch(
-                op,
-                &inputs,
-                flag(rest, "--out").as_deref(),
-                size,
-                flag(rest, "--to").as_deref(),
-                q,
-                cli::parse_resize(flag(rest, "--resize").as_deref())?,
-            )
-        }
-        "prebuild" => {
-            // prebuild <paths...> [--recurse] [--size N[,N…]] [--rebuild-all] [--jobs N]
-            let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
-            if inputs.is_empty() {
-                return Err("prebuild needs at least one folder or file".to_string());
-            }
-            // `--size` takes a LIST because the shell caches per size bucket; a single number
-            // leaves every other Explorer view still building its tiles by hand.
-            let sizes: Vec<u32> = match flag(rest, "--size") {
-                Some(s) => {
-                    let parsed: Vec<u32> =
-                        s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-                    if parsed.is_empty() {
-                        return Err(format!("--size: no number found in \"{s}\""));
-                    }
-                    parsed
-                }
-                None => sagethumbs2k_core::prebuild::DEFAULT_SIZES.to_vec(),
-            };
-            cli::prebuild(
-                &inputs,
-                has_flag(rest, "--recurse") || has_flag(rest, "-r"),
-                sizes,
-                has_flag(rest, "--rebuild-all"),
-                flag_num(rest, "--jobs", 3)?,
-            )
-        }
-        "rotate" => {
-            let i = need(&pos, 0)?;
-            let by = flag(rest, "--by").ok_or("rotate needs --by right|left|180|fliph|flipv")?;
-            cli::rotate(i, &by)
-        }
-        "compress" => {
-            let i = need(&pos, 0)?;
-            let max = flag(rest, "--max-size")
-                .ok_or("compress needs --max-size (e.g. 1MB, 500KB, 800000)")?;
-            cli::compress(i, cli::parse_size(&max)?)
-        }
+        "thumbnail" | "thumb" => run_thumbnail(&pos, rest),
+        "convert" => run_convert(&pos, rest),
+        "batch" => run_batch(&pos, rest),
+        "prebuild" => run_prebuild(&pos, rest),
+        "rotate" => run_rotate(&pos, rest),
+        "compress" => run_compress(&pos, rest),
         "strip" => cli::strip_meta(need(&pos, 0)?),
         "ocr" => cli::ocr(need(&pos, 0)?),
         "pdf" => {
@@ -225,18 +257,7 @@ fn run(args: &[String]) -> Result<String, String> {
             cli::pdf(out, &inputs)
         }
         "info" => cli::info(need(&pos, 0)?, has_flag(rest, "--json")),
-        // Dev/measurement verb (undocumented in --help, like the app EXE's --bench-* modes):
-        // time the decode of many files inside ONE process, so the numbers carry no per-file
-        // process-start noise. Used by scripts\check-decode-speed.ps1.
-        "bench-decode" => {
-            let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
-            if inputs.is_empty() {
-                return Err("bench-decode needs at least one input file".to_string());
-            }
-            let size = flag_num(rest, "--size", 256u32)?;
-            let runs = flag_num(rest, "--runs", 3u32)?;
-            cli::bench_decode(&inputs, size, runs)
-        }
+        "bench-decode" => run_bench_decode(&pos, rest),
         "formats" => Ok(cli::list_formats(has_flag(rest, "--json"))),
         // Read-only; never fails, so it always prints a report rather than an error —
         // a user running this already has something broken. An optional file path adds a
@@ -245,16 +266,7 @@ fn run(args: &[String]) -> Result<String, String> {
         "doctor" | "diag" => Ok(sagethumbs2k_core::doctor::report(
             pos.first().map(|s| s.as_str()),
         )),
-        "register" | "unregister" => {
-            // One verb, because "register --off" and "unregister" are the same action and
-            // having both spellings fail differently would be its own bug report.
-            let off = verb == "unregister"
-                || has_flag(rest, "--off")
-                || pos.first().is_some_and(|p| p.as_str() == "off");
-            let status =
-                has_flag(rest, "--status") || pos.first().is_some_and(|p| p.as_str() == "status");
-            cli::register_portable(off, status)
-        }
+        "register" | "unregister" => run_register(verb, &pos, rest),
         "upload-hosts" | "upload-host" => {
             let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");
             cli::upload_hosts(open)

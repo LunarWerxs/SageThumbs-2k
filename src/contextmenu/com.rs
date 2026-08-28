@@ -48,6 +48,182 @@ impl IShellExtInit_Impl for ContextMenu_Impl {
     }
 }
 
+/// Selection-kind flags derived from the request's paths: `any_image` (reused for the
+/// single-image preview gate — for a 1-file selection it IS `is_image(paths[0])`, so we
+/// don't probe the same path's extension twice per right-click), `condensed` ("show on all
+/// file types": no image in the selection at all), and `audio_only` (supported but every
+/// file is a music file, so the image-only quick verbs get dropped — `all()` is false for
+/// an empty selection, but `condensed` already covers that case).
+fn selection_kinds(paths: &[String]) -> (bool, bool, bool) {
+    let any_image = paths.iter().any(|p| verbs::is_image(p));
+    let condensed = !any_image;
+    let audio_only = !condensed && paths.iter().all(|p| verbs::is_audio(p));
+    (any_image, condensed, audio_only)
+}
+
+/// How many command ids this menu may hand out, and how many were available before
+/// clamping. Honors the shell's allotted range `[idcmdfirst, idcmdlast]` (inclusive) —
+/// each leaf consumes one id, popup parents do not — clamped to what we're allowed:
+/// overflowing collides with a neighboring handler's ids and misdispatches a click.
+fn command_budget(idcmdfirst: u32, idcmdlast: u32, leaves_n: usize) -> (u32, usize) {
+    let avail = (idcmdlast as usize)
+        .saturating_sub(idcmdfirst as usize)
+        .saturating_add(1);
+    (leaves_n.min(avail) as u32, avail)
+}
+
+/// Quick-verb groups directly on the main menu (Options toggle), below the preview. Each is
+/// built starting at its GLOBAL leaf index, so it reuses the submenu's command ids — a
+/// click on either copy invokes the same action and we claim no extra ids. The quick verbs
+/// are Convert/Resize/Rotate — all image-only, so an audio-only selection drops them too
+/// (same reason the audio view drops them from the submenu).
+///
+/// Shown whenever the toggle is on, INCLUDING when the signed sparse package is installed.
+/// An earlier build also gated on `!modern_menu_active()`, on the theory that Windows
+/// bridges the packaged IExplorerCommand quick verbs DOWN into this legacy "Show more
+/// options" menu, so our copies would double-list. That premise is false: packaged
+/// context-menu verbs appear ONLY in the modern COMPACT flyout, never in the classic menu —
+/// so the suppression just made the quick verbs vanish for every user whose default IS the
+/// classic menu (a very common Win11 setup). Packaged (compact) and classic (this menu) are
+/// separate surfaces; no single menu ever shows both, so nothing doubles.
+///
+/// No divider is added here: the quick verbs flow straight into the "SageThumbs 2K" entry
+/// so the whole group reads as one block; the separator goes below THAT entry instead.
+unsafe fn insert_quick_verb_groups(
+    hmenu: HMENU,
+    mut pos: u32,
+    idcmdfirst: u32,
+    budget: u32,
+    vis: &settings::MenuVisibility,
+) -> u32 {
+    for item in verbs::quick_items() {
+        // Honor per-item visibility: a hidden top-level item drops its quick-verb copy
+        // from the main menu too.
+        let qtitle = match &item {
+            verbs::QuickItem::Group(t, _, _) => *t,
+            verbs::QuickItem::Leaf(t, _) => *t,
+        };
+        if !vis.shown(qtitle) {
+            continue;
+        }
+        match item {
+            verbs::QuickItem::Group(title, children, start) => {
+                let Ok(qsub) = CreatePopupMenu() else {
+                    continue;
+                };
+                let mut n = start;
+                build_menu_into(qsub, children, idcmdfirst, &mut n, budget, vis);
+                let _ = InsertMenuW(
+                    hmenu,
+                    pos,
+                    MF_BYPOSITION | MF_POPUP | MF_STRING,
+                    qsub.0 as usize,
+                    &HSTRING::from(crate::i18n::t(title)),
+                );
+                pos += 1;
+            }
+            verbs::QuickItem::Leaf(title, idx) => {
+                // A top-level leaf reusing its submenu command id: same global leaf
+                // index → same id_for() id → same action.
+                if idx < budget {
+                    let cmd = verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(idx)), idcmdfirst);
+                    let _ = InsertMenuW(
+                        hmenu,
+                        pos,
+                        MF_BYPOSITION | MF_STRING,
+                        cmd as usize,
+                        &HSTRING::from(crate::i18n::t(title)),
+                    );
+                    pos += 1;
+                }
+            }
+        }
+    }
+    pos
+}
+
+impl ContextMenu_Impl {
+    /// The full "SageThumbs 2K" submenu, directly below the preview + quick verbs (preview
+    /// at its top in mode 1). This is the brand entry with every verb + Settings — kept
+    /// cohesive with the preview above it, never "off on its own." We ship ONLY this
+    /// classic handler (no packaged modern command), so "SageThumbs 2K" is listed exactly
+    /// once. Returns the new `pos` and whether the preview was actually inserted into it.
+    #[allow(clippy::too_many_arguments)] // one call site; a struct would only rename these
+    unsafe fn insert_sagethumbs_submenu(
+        &self,
+        hmenu: HMENU,
+        mut pos: u32,
+        idcmdfirst: u32,
+        budget: u32,
+        mode: u32,
+        condensed: bool,
+        audio_only: bool,
+        vis: &settings::MenuVisibility,
+    ) -> (u32, bool) {
+        let mut preview_inserted = false;
+        let Ok(hsub) = CreatePopupMenu() else {
+            return (pos, preview_inserted);
+        };
+        if let Some(cmd) = self.preview_cmd.get() {
+            if mode == 1 && self.insert_preview(hsub, 0, cmd) {
+                preview_inserted = true;
+                // Real Explorer does not reliably forward WM_INITMENUPOPUP for this
+                // child popup, so the row must exist before the submenu is handed to
+                // the parent.
+                let _ = InsertMenuW(hsub, 1, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+            }
+        }
+        // Build the top-level items in the user's saved order (drag-to-reorder in
+        // Settings). Each item keeps its ORIGINAL leaf-start index, so command ids stay
+        // stable — the dispatch side reads the default leaves()/slot_for, so only the
+        // insertion order changes. Full custom-ordered tree for a supported image
+        // selection; the audio-only set for a music selection; the condensed
+        // file-agnostic set for an unsupported one (show-on-all-file-types).
+        let top = if condensed {
+            verbs::condensed_top_level()
+        } else if audio_only {
+            verbs::audio_top_level()
+        } else {
+            verbs::ordered_top_level()
+        };
+        for (item, start_leaf) in top {
+            let mut leaf = start_leaf;
+            build_menu_into(
+                hsub,
+                std::slice::from_ref(item),
+                idcmdfirst,
+                &mut leaf,
+                budget,
+                vis,
+            );
+        }
+        let _ = InsertMenuW(
+            hmenu,
+            pos,
+            MF_BYPOSITION | MF_POPUP | MF_STRING,
+            hsub.0 as usize,
+            &HSTRING::from("SageThumbs 2K"),
+        );
+        // Brand icon in front of "SageThumbs 2K" (hbmpItem, alpha-blended).
+        let logo = menu_logo();
+        if !logo.is_invalid() {
+            let mii = MENUITEMINFOW {
+                cbSize: core::mem::size_of::<MENUITEMINFOW>() as u32,
+                fMask: MIIM_BITMAP,
+                hbmpItem: logo,
+                ..Default::default()
+            };
+            let _ = SetMenuItemInfoW(hmenu, pos, true, &mii);
+        }
+        pos += 1;
+        // The single divider for our whole block goes BELOW the "SageThumbs 2K" entry, so
+        // the preview + quick verbs + this entry read as one cohesive "SageThumbs" group,
+        // fenced off from the rest of the menu (owner request).
+        let _ = InsertMenuW(hmenu, pos, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        (pos, preview_inserted)
+    }
+}
+
 impl IContextMenu_Impl for ContextMenu_Impl {
     fn QueryContextMenu(
         &self,
@@ -65,33 +241,15 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 return S_OK; // menu disabled in Options
             }
             let paths = self.paths.borrow();
-            // Computed once and reused for the single-image preview gate below (for a
-            // 1-file selection this `.any` IS `is_image(paths[0])`), so we don't probe
-            // the same path's extension twice per right-click.
-            let any_image = paths.iter().any(|p| verbs::is_image(p));
+            let (any_image, condensed, audio_only) = selection_kinds(&paths);
             // "Show on all file types": on an UNSUPPORTED selection, fall through to a
             // CONDENSED menu (file-agnostic utilities only) when the user opted in;
             // otherwise add nothing, as before.
-            let condensed = !any_image;
             if condensed && !settings::menu_all_file_types() {
                 return S_OK; // nothing for non-image selections
             }
-            // An AUDIO-only selection (supported, so not condensed, but every file is a
-            // music file) gets the audio view: the image-only verbs (Convert/Resize/
-            // Rotate/Wallpaper/…) no-op or produce garbage on sound, so we drop them and
-            // show only the audio-relevant set (Files to folder · Rename ▸ · Sort ▸ +
-            // Settings). `all()` is false for an empty selection, but `condensed` already
-            // is true then, so `!condensed` guards that.
-            let audio_only = !condensed && paths.iter().all(|p| verbs::is_audio(p));
-            // Honor the shell's allotted command-id range [idcmdfirst, idcmdlast]
-            // (inclusive). Each leaf consumes one id; popup parents do not.
-            // Overflowing the range can collide with a neighboring handler's ids
-            // and misdispatch a click — so clamp to what we're allowed.
-            let avail = (idcmdlast as usize)
-                .saturating_sub(idcmdfirst as usize)
-                .saturating_add(1);
             let leaves_n = verbs::leaves().len();
-            let budget = leaves_n.min(avail) as u32;
+            let (budget, avail) = command_budget(idcmdfirst, idcmdlast, leaves_n);
             if budget == 0 {
                 return S_OK;
             }
@@ -141,149 +299,19 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                     }
                 }
 
-                // 2) Quick-verb groups directly on the main menu (Options toggle),
-                //    below the preview. Each is built starting at its GLOBAL leaf
-                //    index, so it reuses the submenu's command ids — a click on
-                //    either copy invokes the same action and we claim no extra ids.
-                // The quick verbs are Convert/Resize/Rotate — all image-only, so they're
-                // suppressed for an audio-only selection too (same reason the audio view
-                // drops them from the submenu below).
-                //
-                // Shown whenever the toggle is on, INCLUDING when the signed sparse package
-                // is installed. An earlier build also gated on `!modern_menu_active()`, on
-                // the theory that Windows bridges the packaged IExplorerCommand quick verbs
-                // DOWN into this legacy "Show more options" menu, so our copies would
-                // double-list. That premise is false: packaged context-menu verbs appear
-                // ONLY in the modern COMPACT flyout, never in the classic menu — so the
-                // suppression just made the quick verbs vanish for every user whose default
-                // IS the classic menu (a very common Win11 setup), the "I enabled Show quick
-                // actions and see nothing" report. Packaged (compact) and classic (this menu)
-                // are separate surfaces; no single menu ever shows both, so nothing doubles.
+                // 2) Quick-verb groups (see `insert_quick_verb_groups`).
                 if settings::menu_quick_verbs() && !condensed && !audio_only {
-                    for item in verbs::quick_items() {
-                        // Honor per-item visibility: a hidden top-level item drops
-                        // its quick-verb copy from the main menu too.
-                        let qtitle = match &item {
-                            verbs::QuickItem::Group(t, _, _) => *t,
-                            verbs::QuickItem::Leaf(t, _) => *t,
-                        };
-                        if !vis.shown(qtitle) {
-                            continue;
-                        }
-                        match item {
-                            verbs::QuickItem::Group(title, children, start) => {
-                                let Ok(qsub) = CreatePopupMenu() else {
-                                    continue;
-                                };
-                                let mut n = start;
-                                build_menu_into(qsub, children, idcmdfirst, &mut n, budget, &vis);
-                                let _ = InsertMenuW(
-                                    hmenu,
-                                    pos,
-                                    MF_BYPOSITION | MF_POPUP | MF_STRING,
-                                    qsub.0 as usize,
-                                    &HSTRING::from(crate::i18n::t(title)),
-                                );
-                                pos += 1;
-                            }
-                            verbs::QuickItem::Leaf(title, idx) => {
-                                // A top-level leaf reusing its submenu command id:
-                                // same global leaf index → same id_for() id → same action.
-                                if idx < budget {
-                                    let cmd = verbs::id_for(
-                                        verbs::CmdSlot::Leaf(verbs::LeafId(idx)),
-                                        idcmdfirst,
-                                    );
-                                    let _ = InsertMenuW(
-                                        hmenu,
-                                        pos,
-                                        MF_BYPOSITION | MF_STRING,
-                                        cmd as usize,
-                                        &HSTRING::from(crate::i18n::t(title)),
-                                    );
-                                    pos += 1;
-                                }
-                            }
-                        }
-                    }
-                    // No divider here: the quick verbs flow straight into the
-                    // "SageThumbs 2K" entry so the whole group reads as one block.
-                    // The separator goes BELOW that entry instead (see section 3).
+                    pos = insert_quick_verb_groups(hmenu, pos, idcmdfirst, budget, &vis);
                 }
 
-                // 3) The full "SageThumbs 2K" submenu, directly below the preview +
-                // quick verbs (preview at its top in mode 1). This is the brand entry
-                // with every verb + Settings — kept cohesive with the preview above it,
-                // never "off on its own." We ship ONLY this classic handler (no packaged
-                // modern command), so "SageThumbs 2K" is listed exactly once.
-                if let Ok(hsub) = CreatePopupMenu() {
-                    if let Some(cmd) = self.preview_cmd.get() {
-                        if mode == 1 && self.insert_preview(hsub, 0, cmd) {
-                            preview_inserted = true;
-                            // Real Explorer does not reliably forward
-                            // WM_INITMENUPOPUP for this child popup, so the row must
-                            // exist before the submenu is handed to the parent.
-                            let _ = InsertMenuW(
-                                hsub,
-                                1,
-                                MF_BYPOSITION | MF_SEPARATOR,
-                                0,
-                                PCWSTR::null(),
-                            );
-                        }
-                    }
-                    // Build the top-level items in the user's saved order (drag-to-
-                    // reorder in Settings). Each item keeps its ORIGINAL leaf-start
-                    // index, so command ids stay stable — the dispatch side reads the
-                    // default leaves()/slot_for, so only the insertion order changes.
-                    // Full custom-ordered tree for a supported image selection; the
-                    // audio-only set for a music selection; the condensed file-agnostic
-                    // set for an unsupported one (show-on-all-file-types).
-                    let top = if condensed {
-                        verbs::condensed_top_level()
-                    } else if audio_only {
-                        verbs::audio_top_level()
-                    } else {
-                        verbs::ordered_top_level()
-                    };
-                    for (item, start_leaf) in top {
-                        let mut leaf = start_leaf;
-                        build_menu_into(
-                            hsub,
-                            std::slice::from_ref(item),
-                            idcmdfirst,
-                            &mut leaf,
-                            budget,
-                            &vis,
-                        );
-                    }
-                    let _ = InsertMenuW(
-                        hmenu,
-                        pos,
-                        MF_BYPOSITION | MF_POPUP | MF_STRING,
-                        hsub.0 as usize,
-                        &HSTRING::from("SageThumbs 2K"),
-                    );
-                    // Brand icon in front of "SageThumbs 2K" (hbmpItem, alpha-blended).
-                    let logo = menu_logo();
-                    if !logo.is_invalid() {
-                        let mii = MENUITEMINFOW {
-                            cbSize: core::mem::size_of::<MENUITEMINFOW>() as u32,
-                            fMask: MIIM_BITMAP,
-                            hbmpItem: logo,
-                            ..Default::default()
-                        };
-                        let _ = SetMenuItemInfoW(hmenu, pos, true, &mii);
-                    }
-                    pos += 1;
+                // 3) The full "SageThumbs 2K" submenu (see `insert_sagethumbs_submenu`).
+                let (new_pos, sub_preview_inserted) = self.insert_sagethumbs_submenu(
+                    hmenu, pos, idcmdfirst, budget, mode, condensed, audio_only, &vis,
+                );
+                pos = new_pos;
+                preview_inserted |= sub_preview_inserted;
+                let _ = pos; // last write; nothing reads it after this point
 
-                    // The single divider for our whole block goes BELOW the
-                    // "SageThumbs 2K" entry, so the preview + quick verbs + this
-                    // entry read as one cohesive "SageThumbs" group, fenced off from
-                    // the rest of the menu (owner request).
-                    let _ =
-                        InsertMenuW(hmenu, pos, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
-                }
                 // Command ids consumed: the preview slot (offset = leaf count) when a
                 // preview was ACTUALLY added, else the leaves the submenu used (0 when
                 // skipped). Claiming the leaf range is harmless when only the preview is

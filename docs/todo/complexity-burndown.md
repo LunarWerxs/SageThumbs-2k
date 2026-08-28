@@ -190,9 +190,9 @@ before the next release is still recommended.
 |x| 107 | 36 | `jpeg_span` | src/container/util.rs:143 |
 |x| 106 | 29 | `decode_rle` | src/container/xcf.rs:756 |
 | | 93 | 48 | `run_action` | src/verbs/actions.rs:333 |
-| | 92 | 52 | `run` | src/bin/cli.rs:140 |
+|x| 92 | 52 | `run` | src/bin/cli.rs:140 |
 |x| 92 | 37 | `keyframe_mini_mp4` | src/flv.rs:56 |
-| | 88 | 32 | `QueryContextMenu` | src/contextmenu/com.rs:52 |
+|x| 88 | 32 | `QueryContextMenu` | src/contextmenu/com.rs:52 |
 | | 84 | 23 | `parse_packet` | src/decode/jp2/packet.rs:217 |
 | | 76 | 32 | `decode_channels` | src/container/psp.rs:244 |
 | | 76 | 43 | `daemon_wndproc` | src/bin/app/screenshot/daemon.rs:456 |
