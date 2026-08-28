@@ -1315,167 +1315,232 @@ pub(crate) fn pdf_raster_edge(wic_thumbnail_cx: Option<u32>) -> u32 {
     wic_thumbnail_cx.unwrap_or(1024).max(1024)
 }
 
+/// JPEG 2000 with a size cap: our own reduced-resolution decoder, which decodes ONLY
+/// the wavelet levels the target needs. On the 76 MP corpus scan that is ~0.5s against
+/// ~4s for a full ImageMagick decode, and the output is a true resolution level (often
+/// SHARPER than decode-then-downscale). Gated on a cap on purpose: full-fidelity
+/// callers (Convert, Image info) keep the established tiers, and ANY error here — the
+/// declined coding styles, subsampled chroma, malformed data — falls through to those
+/// same tiers, so no JP2 that rendered before can render worse. Correctness evidence:
+/// bit-exact on every lossless corpus file (see decode/jp2 exactness tests), verified
+/// against ImageMagick on the lossy ones.
+fn try_jp2_reduced_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    let cx = wic_thumbnail_cx?;
+    if !jp2::is_jp2(bytes) {
+        return None;
+    }
+    if let Ok((rgb, w, h)) = jp2::decode_reduced(bytes, cx) {
+        if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
+            // EXIF orientation, same as the final fallback tier applies. Applying it here
+            // rather than deferring matters because a thumbnail that comes back rotated is
+            // one Explorer then CACHES rotated.
+            return Some(apply_exif_orientation(DynamicImage::ImageRgb8(img), bytes));
+        }
+    }
+    crate::safety::log_debug("decode: jp2 native reduced decode declined, using tiers");
+    None
+}
+
+/// Large JPEG: decode DCT-SCALED instead of decoding every pixel and then throwing almost
+/// all of them away. Exactly the same bargain as the JP2 tier above — ask the codec for a
+/// reduced resolution level rather than the full image — and gated the same way, on a
+/// caller that actually wants a thumbnail.
+///
+/// This is the difference between a 7680x2160 wallpaper costing ~4 s a tile and costing a
+/// fraction of that. Measured on a real folder: 65 files, 1.3 GB of AI-upscaled JPEG and
+/// PNG, took ~150 s to pre-build, of which the top seven files alone were ~55 s. Thread
+/// count was NOT the cause (3 -> 16 workers moved it 6 %), nor the three size buckets; it
+/// was that every tile decoded its source in full.
+///
+/// Only JPEG, and only above a size floor — see `wic_scaled_from_bytes_if_codec_scales` for
+/// why widening it is a re-measurement rather than a one-line change. Any failure falls
+/// straight through to the tiers below, so nothing that rendered before can stop rendering.
+///
+/// WIC does NOT apply EXIF orientation (it hands back the codec's stored pixels), and this
+/// tier has to apply it itself rather than relying on the final fallback's own EXIF step.
+/// Camera JPEGs are overwhelmingly the files that clear the 512 KiB floor AND carry a
+/// non-identity orientation, which makes this tier the one place it matters most.
+fn try_wic_scaled_jpeg_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    let cx = wic_thumbnail_cx?;
+    let img = wic_scaled_from_bytes_if_codec_scales(bytes, cx)?;
+    Some(apply_exif_orientation(img, bytes))
+}
+
+/// Video: grab a representative frame via the OS Media Foundation codecs (no bundled
+/// bytes). Magic-gated, so only actual videos pay the MF cost (HEIC/AVIF share the
+/// `ftyp` box but are excluded). Any decode failure falls through to the image tiers,
+/// which then fail to the file's default icon — never worse than before.
+fn try_video_tier(
+    bytes: &[u8],
+    raw_preview: RawPreviewOrder,
+    wic_thumbnail_cx: Option<u32>,
+) -> Option<Result<DynamicImage>> {
+    if !crate::video::is_video_magic(bytes) {
+        return None;
+    }
+    // OPTION (`VideoCoverArt`, off by default): show the embedded poster instead of a
+    // frame. Checked before the decode tiers so it costs nothing when a cover exists,
+    // and falls straight through when one doesn't. Mirrors the provider in `streamsrc`.
+    if crate::settings::prefer_cover_art() {
+        if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
+            return Some(decode_image_with_raw_order(
+                &cover,
+                raw_preview,
+                wic_thumbnail_cx,
+            ));
+        }
+    }
+    // Prefer the smart targeted read for a representative keyframe built from the
+    // container's own index — MP4/MOV via the `moov` (`crate::mp4`), Matroska/WebM via the
+    // Cues (`crate::mkv`). Each self-gates to its container and returns None otherwise (or
+    // when the index can't be mapped), so we fall back to decoding a frame off the buffer.
+    // The mark is the user's `VideoOffset` (30 % unless changed), read ONCE so every tier
+    // below seeks to the same place.
+    let at = crate::settings::video_offset_frac();
+    let frame = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), at)
+        .or_else(|| crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), at))
+        // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
+        // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
+        .or_else(|| crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes)))
+        .and_then(crate::video::frame_from_owned_bytes)
+        // FLV, VP6/Sorenson (issue #26): NO Windows decoder exists for these, so the
+        // frame is decoded out of process by the sibling st2k.exe (see `flv::flash_frame`
+        // for why the pure-Rust Flash decoders must never run in THIS process). Self-gated
+        // on the FLV magic + codec id, so every other container skips it for free.
+        .or_else(|| crate::flv::flash_frame(&mut std::io::Cursor::new(bytes)))
+        // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
+        // seek its own index to the true ~30 % frame (no head-prefix depth cap).
+        .or_else(|| crate::video::frame_from_bytes_repr(bytes))
+        // VP9 Profile 2/3 (10/12-bit HDR in webm/mkv, issue #26): Media Foundation's
+        // VP9 decoder stops at Profile 0/1 even with the Store extension installed, so
+        // when every MF tier above came back empty AND the container says V_VP9, the
+        // keyframe is decoded out of process by the sibling st2k.exe (`crate::vp9` for
+        // why the pure-Rust decoder must never run in THIS process). Deliberately LAST:
+        // Profile 0 is the common case and MF is hardware-accelerated and in-process —
+        // it must keep winning, and only otherwise-blank tiles pay for a spawn.
+        .or_else(|| crate::vp9::vp9_frame(&mut std::io::Cursor::new(bytes), at));
+    if let Some(frame) = frame {
+        return Some(Ok(frame));
+    }
+    // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
+    // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library
+    // rips and media managers routinely write) is still a faithful picture of the file,
+    // and unlike a frame it needs no codec at all. Mirrors the provider's fallback in
+    // `streamsrc`, so the CLI, the preview and Explorer all agree.
+    if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
+        return Some(decode_image_with_raw_order(
+            &cover,
+            raw_preview,
+            wic_thumbnail_cx,
+        ));
+    }
+    None
+}
+
+/// GIMP `.xcf` FIRST, and only when the caller told us how big a picture it can use.
+/// `extract_cover` reaches the same decoder, but its signature carries no target, so it
+/// flattens the full canvas — measured at 5.7 s of layer decode plus 4.6 s of compositing
+/// for one 6000x4000 file with 15 layers, all of it to produce a 256 px tile. Handing the
+/// target in drops that to milliseconds. Falls through to `extract_cover` below when there
+/// is no target (the full-fidelity callers), so the picture they get is unchanged.
+fn try_xcf_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    if wic_thumbnail_cx.is_none() || !crate::container::looks_like_xcf(bytes) {
+        return None;
+    }
+    crate::container::xcf_from_bytes_scaled(bytes, wic_thumbnail_cx)
+}
+
+/// DjVu, for a related but narrower reason than the XCF tier above. It does NOT render
+/// smaller for a smaller tile - a DjVu costs what its JB2 mask and IW44 background cost
+/// regardless, and shrinking the render only coarsens the picture. What the target decides
+/// is whether the file's baked TH44 thumbnail can serve this request: encoders cap it at
+/// 128 px, so it answers Explorer's icon and list views (16/32/48/96) in about two
+/// milliseconds against nearly two hundred for a render, and must be rendered past for
+/// anything bigger. `extract_cover` carries no target and so has to assume the largest.
+/// Falls through to it when there is no target, which is what Convert wants anyway.
+fn try_djvu_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    if wic_thumbnail_cx.is_none() || !crate::container::looks_like_djvu(bytes) {
+        return None;
+    }
+    crate::container::djvu_from_bytes_scaled(bytes, wic_thumbnail_cx)
+}
+
+/// Ebook / comic-archive cover extraction (EPUB, CBZ, MOBI, FB2, CB7, CBR,
+/// DjVu…). If this is a container, pull the cover and decode THAT. The cover
+/// bytes go through `decode_image` (not back through here) so a maliciously
+/// nested container can't recurse — depth is capped at 1.
+fn try_container_cover_tier(
+    bytes: &[u8],
+    raw_preview: RawPreviewOrder,
+    wic_thumbnail_cx: Option<u32>,
+) -> Option<Result<DynamicImage>> {
+    let cover = crate::container::extract_cover(bytes)?;
+    Some(match cover {
+        crate::container::CoverOut::Bytes(b) => {
+            decode_image_with_raw_order(&b, raw_preview, wic_thumbnail_cx)
+        }
+        crate::container::CoverOut::Image(img) => Ok(img),
+    })
+}
+
+/// PDF: rasterize page 1 via the OS PDF engine (Windows.Data.Pdf). The PNG it
+/// returns goes through `decode_image`, same as an ebook cover.
+///
+/// The raster edge follows THIS REQUEST's target, floored at the 1024 this always used, so
+/// it is never smaller than before and never larger than the tile actually needs. Two ways
+/// to get this wrong, both avoided here:
+///   - A fixed 1024 (what shipped before) would make PDFs the one format that upscales a
+///     too-small source once the ceiling can exceed 1024 (issue #26.5).
+///   - Deriving it from `settings::max_thumb_size()` instead — which is what the first cut
+///     of this fix did — reads the user's global CEILING rather than what Explorer asked
+///     for, so a 32 px icon-view request would rasterize a 2560 px page and throw almost
+///     all of it away. `wic_thumbnail_cx` is already clamped per request
+///     (`thumbprovider`: `cx.min(max_thumb)`), which is exactly the number wanted here, and
+///     is what the JP2 tier above uses too.
+///
+/// Full-fidelity callers pass None and keep the historical 1024.
+fn try_pdf_tier(
+    bytes: &[u8],
+    raw_preview: RawPreviewOrder,
+    wic_thumbnail_cx: Option<u32>,
+) -> Option<Result<DynamicImage>> {
+    if !bytes.starts_with(b"%PDF-") {
+        return None;
+    }
+    let edge = pdf_raster_edge(wic_thumbnail_cx);
+    let png = crate::pdf::render_first_page(bytes, edge)?;
+    Some(decode_image_with_raw_order(
+        &png,
+        raw_preview,
+        wic_thumbnail_cx,
+    ))
+}
+
 fn decode_preview_with_raw_order(
     bytes: &[u8],
     raw_preview: RawPreviewOrder,
     wic_thumbnail_cx: Option<u32>,
 ) -> Result<DynamicImage> {
-    // JPEG 2000 with a size cap: our own reduced-resolution decoder, which decodes ONLY
-    // the wavelet levels the target needs. On the 76 MP corpus scan that is ~0.5s against
-    // ~4s for a full ImageMagick decode, and the output is a true resolution level (often
-    // SHARPER than decode-then-downscale). Gated on a cap on purpose: full-fidelity
-    // callers (Convert, Image info) keep the established tiers, and ANY error here — the
-    // declined coding styles, subsampled chroma, malformed data — falls through to those
-    // same tiers, so no JP2 that rendered before can render worse. Correctness evidence:
-    // bit-exact on every lossless corpus file (see decode/jp2 exactness tests), verified
-    // against ImageMagick on the lossy ones.
-    if let Some(cx) = wic_thumbnail_cx {
-        if jp2::is_jp2(bytes) {
-            if let Ok((rgb, w, h)) = jp2::decode_reduced(bytes, cx) {
-                if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
-                    // EXIF orientation, same as the tier path below applies at the end of this
-                    // function. An early return here is a return past that call, and a thumbnail
-                    // that comes back rotated is one Explorer then CACHES rotated.
-                    return Ok(apply_exif_orientation(DynamicImage::ImageRgb8(img), bytes));
-                }
-            }
-            crate::safety::log_debug("decode: jp2 native reduced decode declined, using tiers");
-        }
+    if let Some(img) = try_jp2_reduced_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
-    // Large JPEG: decode DCT-SCALED instead of decoding every pixel and then throwing almost
-    // all of them away. Exactly the same bargain as the JP2 arm above — ask the codec for a
-    // reduced resolution level rather than the full image — and gated the same way, on a
-    // caller that actually wants a thumbnail.
-    //
-    // This is the difference between a 7680x2160 wallpaper costing ~4 s a tile and costing a
-    // fraction of that. Measured on a real folder: 65 files, 1.3 GB of AI-upscaled JPEG and
-    // PNG, took ~150 s to pre-build, of which the top seven files alone were ~55 s. Thread
-    // count was NOT the cause (3 -> 16 workers moved it 6 %), nor the three size buckets; it
-    // was that every tile decoded its source in full.
-    //
-    // Only JPEG, and only above a size floor — see `wic_scaled_from_bytes_if_codec_scales` for
-    // why widening it is a re-measurement rather than a one-line change. Any failure falls
-    // straight through to the tiers below, so nothing that rendered before can stop rendering.
-    //
-    // WIC does NOT apply EXIF orientation (it hands back the codec's stored pixels), and this
-    // early return skips the `apply_exif_orientation` at the end of this function — so it has to
-    // apply it here. Camera JPEGs are overwhelmingly the files that clear the 512 KiB floor AND
-    // carry a non-identity orientation, which makes this arm the one place it matters most.
-    if let Some(cx) = wic_thumbnail_cx {
-        if let Some(img) = wic_scaled_from_bytes_if_codec_scales(bytes, cx) {
-            return Ok(apply_exif_orientation(img, bytes));
-        }
+    if let Some(img) = try_wic_scaled_jpeg_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
-    // Video: grab a representative frame via the OS Media Foundation codecs (no bundled
-    // bytes). Magic-gated, so only actual videos pay the MF cost (HEIC/AVIF share the
-    // `ftyp` box but are excluded). Any decode failure falls through to the image tiers,
-    // which then fail to the file's default icon — never worse than before.
-    if crate::video::is_video_magic(bytes) {
-        // OPTION (`VideoCoverArt`, off by default): show the embedded poster instead of a
-        // frame. Checked before the decode tiers so it costs nothing when a cover exists,
-        // and falls straight through when one doesn't. Mirrors the provider in `streamsrc`.
-        if crate::settings::prefer_cover_art() {
-            if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
-                return decode_image_with_raw_order(&cover, raw_preview, wic_thumbnail_cx);
-            }
-        }
-        // Prefer the smart targeted read for a representative keyframe built from the
-        // container's own index — MP4/MOV via the `moov` (`crate::mp4`), Matroska/WebM via the
-        // Cues (`crate::mkv`). Each self-gates to its container and returns None otherwise (or
-        // when the index can't be mapped), so we fall back to decoding a frame off the buffer.
-        // The mark is the user's `VideoOffset` (30 % unless changed), read ONCE so every tier
-        // below seeks to the same place.
-        let at = crate::settings::video_offset_frac();
-        let frame = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), at)
-            .or_else(|| crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), at))
-            // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
-            // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
-            .or_else(|| crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes)))
-            .and_then(crate::video::frame_from_owned_bytes)
-            // FLV, VP6/Sorenson (issue #26): NO Windows decoder exists for these, so the
-            // frame is decoded out of process by the sibling st2k.exe (see `flv::flash_frame`
-            // for why the pure-Rust Flash decoders must never run in THIS process). Self-gated
-            // on the FLV magic + codec id, so every other container skips it for free.
-            .or_else(|| crate::flv::flash_frame(&mut std::io::Cursor::new(bytes)))
-            // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
-            // seek its own index to the true ~30 % frame (no head-prefix depth cap).
-            .or_else(|| crate::video::frame_from_bytes_repr(bytes))
-            // VP9 Profile 2/3 (10/12-bit HDR in webm/mkv, issue #26): Media Foundation's
-            // VP9 decoder stops at Profile 0/1 even with the Store extension installed, so
-            // when every MF tier above came back empty AND the container says V_VP9, the
-            // keyframe is decoded out of process by the sibling st2k.exe (`crate::vp9` for
-            // why the pure-Rust decoder must never run in THIS process). Deliberately LAST:
-            // Profile 0 is the common case and MF is hardware-accelerated and in-process —
-            // it must keep winning, and only otherwise-blank tiles pay for a spawn.
-            .or_else(|| crate::vp9::vp9_frame(&mut std::io::Cursor::new(bytes), at));
-        if let Some(frame) = frame {
-            return Ok(frame);
-        }
-        // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
-        // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library
-        // rips and media managers routinely write) is still a faithful picture of the file,
-        // and unlike a frame it needs no codec at all. Mirrors the provider's fallback in
-        // `streamsrc`, so the CLI, the preview and Explorer all agree.
-        if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
-            return decode_image_with_raw_order(&cover, raw_preview, wic_thumbnail_cx);
-        }
+    if let Some(r) = try_video_tier(bytes, raw_preview, wic_thumbnail_cx) {
+        return r;
     }
-    // GIMP `.xcf` FIRST, and only when the caller told us how big a picture it can use.
-    // `extract_cover` reaches the same decoder, but its signature carries no target, so it
-    // flattens the full canvas — measured at 5.7 s of layer decode plus 4.6 s of compositing
-    // for one 6000x4000 file with 15 layers, all of it to produce a 256 px tile. Handing the
-    // target in drops that to milliseconds. Falls through to `extract_cover` below when there
-    // is no target (the full-fidelity callers), so the picture they get is unchanged.
-    if wic_thumbnail_cx.is_some() && crate::container::looks_like_xcf(bytes) {
-        if let Some(img) = crate::container::xcf_from_bytes_scaled(bytes, wic_thumbnail_cx) {
-            return Ok(img);
-        }
+    if let Some(img) = try_xcf_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
-    // DjVu, for a related but narrower reason than the XCF route above. It does NOT render
-    // smaller for a smaller tile - a DjVu costs what its JB2 mask and IW44 background cost
-    // regardless, and shrinking the render only coarsens the picture. What the target decides
-    // is whether the file's baked TH44 thumbnail can serve this request: encoders cap it at
-    // 128 px, so it answers Explorer's icon and list views (16/32/48/96) in about two
-    // milliseconds against nearly two hundred for a render, and must be rendered past for
-    // anything bigger. `extract_cover` carries no target and so has to assume the largest.
-    // Falls through to it when there is no target, which is what Convert wants anyway.
-    if wic_thumbnail_cx.is_some() && crate::container::looks_like_djvu(bytes) {
-        if let Some(img) = crate::container::djvu_from_bytes_scaled(bytes, wic_thumbnail_cx) {
-            return Ok(img);
-        }
+    if let Some(img) = try_djvu_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
-    // Ebook / comic-archive cover extraction (EPUB, CBZ, MOBI, FB2, CB7, CBR,
-    // DjVu…). If this is a container, pull the cover and decode THAT. The cover
-    // bytes go through `decode_image` (not back through here) so a maliciously
-    // nested container can't recurse — depth is capped at 1.
-    if let Some(cover) = crate::container::extract_cover(bytes) {
-        return match cover {
-            crate::container::CoverOut::Bytes(b) => {
-                decode_image_with_raw_order(&b, raw_preview, wic_thumbnail_cx)
-            }
-            crate::container::CoverOut::Image(img) => Ok(img),
-        };
+    if let Some(r) = try_container_cover_tier(bytes, raw_preview, wic_thumbnail_cx) {
+        return r;
     }
-    // PDF: rasterize page 1 via the OS PDF engine (Windows.Data.Pdf). The PNG it
-    // returns goes through `decode_image`, same as an ebook cover.
-    //
-    // The raster edge follows THIS REQUEST's target, floored at the 1024 this always used, so
-    // it is never smaller than before and never larger than the tile actually needs. Two ways
-    // to get this wrong, both avoided here:
-    //   - A fixed 1024 (what shipped before) would make PDFs the one format that upscales a
-    //     too-small source once the ceiling can exceed 1024 (issue #26.5).
-    //   - Deriving it from `settings::max_thumb_size()` instead — which is what the first cut
-    //     of this fix did — reads the user's global CEILING rather than what Explorer asked
-    //     for, so a 32 px icon-view request would rasterize a 2560 px page and throw almost
-    //     all of it away. `wic_thumbnail_cx` is already clamped per request
-    //     (`thumbprovider`: `cx.min(max_thumb)`), which is exactly the number wanted here, and
-    //     is what the JP2 branch above uses too.
-    // Full-fidelity callers pass None and keep the historical 1024.
-    if bytes.starts_with(b"%PDF-") {
-        let edge = pdf_raster_edge(wic_thumbnail_cx);
-        if let Some(png) = crate::pdf::render_first_page(bytes, edge) {
-            return decode_image_with_raw_order(&png, raw_preview, wic_thumbnail_cx);
-        }
+    if let Some(r) = try_pdf_tier(bytes, raw_preview, wic_thumbnail_cx) {
+        return r;
     }
     decode_image_with_raw_order(bytes, raw_preview, wic_thumbnail_cx)
 }

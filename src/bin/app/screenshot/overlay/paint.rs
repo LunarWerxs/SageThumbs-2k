@@ -47,30 +47,25 @@ unsafe fn frame_dc(hdc: HDC, vw: i32, vh: i32) -> HDC {
     mem
 }
 
-pub(super) unsafe fn shot_paint(hwnd: HWND) {
-    let s = &mut *shot_ptr(hwnd);
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
-
-    // Build the whole frame off-screen, then blit it once — this is what kills the
-    // flicker (the screen was being assembled in several visible steps before).
-    let mem = frame_dc(hdc, s.vw, s.vh);
-
-    // Dimmed screen everywhere; the selection shows through at full brightness.
-    let _ = BitBlt(mem, 0, 0, s.vw, s.vh, Some(s.dimmed), 0, 0, SRCCOPY);
-    let sel = match s.sel {
+/// The active selection rect: committed selection, the in-progress drag rectangle, or
+/// (idle, nothing committed) the hovered window's rect shown as a preview — so "a click
+/// captures THIS" is shown rather than explained.
+unsafe fn selection_rect(s: &Shot) -> RECT {
+    match s.sel {
         Some(r) => r,
         None if s.sel_dragging => tools::norm(s.sel_anchor, s.cur),
-        // Idle with a window under the cursor: preview that window's rect exactly as a
-        // drag-in-progress paints — bright inside the dim, framed below — so "a click
-        // captures THIS" is shown rather than explained.
         None => s.win_hint.unwrap_or(RECT {
             left: 0,
             top: 0,
             right: 0,
             bottom: 0,
         }),
-    };
+    }
+}
+
+/// The selection shows through the dim at full brightness, blitted from the bright
+/// snapshot over the already-dimmed backdrop.
+unsafe fn blit_selection_bright(mem: HDC, s: &Shot, sel: RECT) {
     if sel.right > sel.left && sel.bottom > sel.top {
         let _ = BitBlt(
             mem,
@@ -84,13 +79,15 @@ pub(super) unsafe fn shot_paint(hwnd: HWND) {
             SRCCOPY,
         );
     }
+}
 
-    // Annotations + the move-selection highlight + the in-progress shape + caret.
-    // The overlay paints in screen space, so no coordinate offset (0, 0). Clip them
-    // to the committed selection so the live preview matches the cropped output —
-    // nothing drawn "into the void" outside the capture region (which would vanish
-    // on copy/save). SaveDC/RestoreDC brackets the clip so the UI chrome below is
-    // unclipped.
+/// Annotations + the move-selection highlight + the in-progress shape + caret.
+/// The overlay paints in screen space, so no coordinate offset (0, 0). Clip them
+/// to the committed selection so the live preview matches the cropped output —
+/// nothing drawn "into the void" outside the capture region (which would vanish
+/// on copy/save). SaveDC/RestoreDC brackets the clip so the UI chrome painted
+/// afterward is unclipped.
+unsafe fn paint_annotations(mem: HDC, s: &Shot) {
     let dc_state = SaveDC(mem);
     if let Some(r) = s.sel {
         let _ = IntersectClipRect(mem, r.left, r.top, r.right, r.bottom);
@@ -117,13 +114,15 @@ pub(super) unsafe fn shot_paint(hwnd: HWND) {
         tools::draw_text(mem, 0, 0, *at, buf, s.color(), &s.text_font, true);
     }
     let _ = RestoreDC(mem, dc_state);
+}
 
-    // Selection outline + the floating toolbar (once committed) + the hint strip.
+/// Selection outline + the live "W × H" size badge while dragging + the floating
+/// toolbar (once committed) and whichever flyout/tooltip is currently active.
+unsafe fn paint_selection_chrome(mem: HDC, s: &Shot, sel: RECT) {
     if sel.right > sel.left && sel.bottom > sel.top {
         tools::frame(mem, sel, rgb(0, 174, 255), 1);
     }
-    // Live "W × H" pixel readout while dragging the region, so the user can size things
-    // precisely. Drag-only: once committed, the toolbar + hint strip take over the space.
+    // Drag-only readout: once committed, the toolbar + hint strip take over the space.
     if s.sel_dragging && sel.right > sel.left && sel.bottom > sel.top {
         draw_dim_badge(mem, s, sel);
     }
@@ -153,40 +152,41 @@ pub(super) unsafe fn shot_paint(hwnd: HWND) {
             }
         }
     }
-    draw_hint(mem, s);
+}
 
-    // The Eyedropper magnifier follows the cursor, on top of everything. Sized for
-    // the monitor under the cursor (committed selection if there is one, else the
-    // cursor point); drawn from the bright snapshot so the zoom shows true colours.
-    if s.tool == Tool::Eyedropper {
-        let dpi = match s.sel {
-            Some(sel) => shot_dpi_for_sel(s, sel),
-            None => shot_dpi_for_sel(
-                s,
-                RECT {
-                    left: s.cur.x,
-                    top: s.cur.y,
-                    right: s.cur.x + 1,
-                    bottom: s.cur.y + 1,
-                },
-            ),
-        };
-        draw_loupe(
-            mem,
-            s.shot,
-            s.cur.x,
-            s.cur.y,
-            s.vw,
-            s.vh,
-            dpi,
-            s.eye_copied,
-            s.automation.is_some(),
-        );
-    }
+/// The Eyedropper magnifier following the cursor, on top of everything. Sized for the
+/// monitor under the cursor (committed selection if there is one, else the cursor
+/// point); drawn from the bright snapshot so the zoom shows true colours.
+unsafe fn paint_eyedropper_loupe(mem: HDC, s: &Shot) {
+    let dpi = match s.sel {
+        Some(sel) => shot_dpi_for_sel(s, sel),
+        None => shot_dpi_for_sel(
+            s,
+            RECT {
+                left: s.cur.x,
+                top: s.cur.y,
+                right: s.cur.x + 1,
+                bottom: s.cur.y + 1,
+            },
+        ),
+    };
+    draw_loupe(
+        mem,
+        s.shot,
+        s.cur.x,
+        s.cur.y,
+        s.vw,
+        s.vh,
+        dpi,
+        s.eye_copied,
+        s.automation.is_some(),
+    );
+}
 
-    // One blit to the window — only the actually-invalidated rect (`ps.rcPaint`, from
-    // BeginPaint above), since `mem` is cached now: a small invalidate (e.g. mousemove's
-    // old/new cursor rect) no longer pays to move the whole virtual-screen frame either.
+/// One blit to the window — only the actually-invalidated rect (`ps.rcPaint`, from
+/// BeginPaint), since `mem` is cached now: a small invalidate (e.g. mousemove's
+/// old/new cursor rect) no longer pays to move the whole virtual-screen frame either.
+unsafe fn blit_frame_to_window(hdc: HDC, mem: HDC, ps: &PAINTSTRUCT) {
     let pr = ps.rcPaint;
     let (pw, ph) = (pr.right - pr.left, pr.bottom - pr.top);
     if pw > 0 && ph > 0 {
@@ -202,6 +202,29 @@ pub(super) unsafe fn shot_paint(hwnd: HWND) {
             SRCCOPY,
         );
     }
+}
+
+pub(super) unsafe fn shot_paint(hwnd: HWND) {
+    let s = &mut *shot_ptr(hwnd);
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(hwnd, &mut ps);
+
+    // Build the whole frame off-screen, then blit it once — this is what kills the
+    // flicker (the screen was being assembled in several visible steps before).
+    let mem = frame_dc(hdc, s.vw, s.vh);
+
+    // Dimmed screen everywhere; the selection shows through at full brightness.
+    let _ = BitBlt(mem, 0, 0, s.vw, s.vh, Some(s.dimmed), 0, 0, SRCCOPY);
+    let sel = selection_rect(s);
+    blit_selection_bright(mem, s, sel);
+    paint_annotations(mem, s);
+    paint_selection_chrome(mem, s, sel);
+    draw_hint(mem, s);
+    if s.tool == Tool::Eyedropper {
+        paint_eyedropper_loupe(mem, s);
+    }
+
+    blit_frame_to_window(hdc, mem, &ps);
     let _ = EndPaint(hwnd, &ps);
     if s.automation.is_some() {
         let _ = GdiFlush();

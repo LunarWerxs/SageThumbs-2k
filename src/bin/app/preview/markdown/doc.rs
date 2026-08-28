@@ -55,6 +55,90 @@ pub(super) fn build_doc(blocks: &[Block]) -> (String, Vec<DocBase>) {
     (doc, bases)
 }
 
+/// Append one run's text to `doc`, recording where it landed. Shared by every block kind
+/// below whose selectable pieces are plain inline runs.
+fn runs(doc: &mut String, runs: &[Run]) -> Vec<usize> {
+    let mut v = Vec::with_capacity(runs.len());
+    for r in runs {
+        v.push(doc.len());
+        doc.push_str(&r.text);
+    }
+    doc.push('\n');
+    v
+}
+
+/// A list item: indent, the bullet/number marker, an optional GFM task checkbox, then its
+/// runs. Two spaces per level — the nesting the pane DRAWS (`sc(22) * (depth + 1)`) has to
+/// survive the copy or every sub-bullet pastes flat at the top level.
+fn doc_append_item(
+    doc: &mut String,
+    depth: u8,
+    marker: &str,
+    rs: &[Run],
+    task: Option<bool>,
+) -> DocBase {
+    for _ in 0..depth {
+        doc.push_str("  ");
+    }
+    // `marker` is the DISPLAY glyph ("•"), which is not a Markdown bullet. An ordered
+    // item's marker is already "N." and carries its number, so that one passes through.
+    doc.push_str(if marker.ends_with('.') { marker } else { "-" });
+    // GFM order is marker THEN checkbox ("- [x] done"). Emitting the box INSTEAD of the
+    // bullet gave "[x] done", which is not a task list anywhere it lands.
+    match task {
+        Some(true) => doc.push_str(" [x]"),
+        Some(false) => doc.push_str(" [ ]"),
+        None => {}
+    }
+    doc.push(' ');
+    DocBase::Runs(runs(doc, rs))
+}
+
+/// A fenced code block: the opening fence (with the language tag, if any), the text
+/// (newline-terminated), and the closing fence.
+fn doc_append_code(doc: &mut String, text: &str, lang: highlight::Lang) -> DocBase {
+    doc.push_str("```");
+    if let Some(t) = highlight::lang_tag(lang) {
+        doc.push_str(t);
+    }
+    doc.push('\n');
+    let b = doc.len();
+    doc.push_str(text);
+    if !text.ends_with('\n') {
+        doc.push('\n');
+    }
+    doc.push_str("```\n");
+    DocBase::Code(b)
+}
+
+/// A table: header row (if any) then body rows, tab-separated cells so the paste lands in
+/// a spreadsheet as columns, one row per line.
+fn doc_append_table(doc: &mut String, header: &[Vec<Run>], rows: &[Vec<Vec<Run>>]) -> DocBase {
+    let mut all: Vec<&[Vec<Run>]> = Vec::with_capacity(rows.len() + 1);
+    if !header.is_empty() {
+        all.push(header);
+    }
+    all.extend(rows.iter().map(|r| r.as_slice()));
+    let mut out = Vec::with_capacity(all.len());
+    for row in all {
+        let mut rb = Vec::with_capacity(row.len());
+        for (ci, cell) in row.iter().enumerate() {
+            if ci > 0 {
+                doc.push('\t'); // tab-separated: pastes into a spreadsheet as columns
+            }
+            let mut cb = Vec::with_capacity(cell.len());
+            for r in cell {
+                cb.push(doc.len());
+                doc.push_str(&r.text);
+            }
+            rb.push(cb);
+        }
+        doc.push('\n');
+        out.push(rb);
+    }
+    DocBase::Table(out)
+}
+
 /// Append `block`'s text to the selection document (in reading order) and report where its runs
 /// landed. Runs are the only hit-testable pieces: the STRUCTURAL prefixes below (a heading's
 /// `#`s, a list bullet and its indent, a quote's `>`, code fences) are copied but never
@@ -65,15 +149,6 @@ pub(super) fn build_doc(blocks: &[Block]) -> (String, Vec<DocBase>) {
 /// indistinguishable from body text, code runs into prose. Markdown keeps the structure when
 /// pasted anywhere Markdown-aware AND still reads correctly as plain text.
 pub(super) fn doc_append(doc: &mut String, block: &Block) -> DocBase {
-    fn runs(doc: &mut String, runs: &[Run]) -> Vec<usize> {
-        let mut v = Vec::with_capacity(runs.len());
-        for r in runs {
-            v.push(doc.len());
-            doc.push_str(&r.text);
-        }
-        doc.push('\n');
-        v
-    }
     match block {
         Block::Para(rs, _) => DocBase::Runs(runs(doc, rs)),
         Block::Heading(level, rs, _) => {
@@ -87,68 +162,9 @@ pub(super) fn doc_append(doc: &mut String, block: &Block) -> DocBase {
             doc.push_str("> ");
             DocBase::Runs(runs(doc, rs))
         }
-        Block::Item(depth, marker, rs, task) => {
-            // Two spaces per level. The nesting the pane DRAWS (`sc(22) * (depth + 1)`) has to
-            // survive the copy or every sub-bullet pastes flat at the top level.
-            for _ in 0..*depth {
-                doc.push_str("  ");
-            }
-            // `marker` is the DISPLAY glyph ("•"), which is not a Markdown bullet. An ordered
-            // item's marker is already "N." and carries its number, so that one passes through.
-            doc.push_str(if marker.ends_with('.') {
-                marker.as_str()
-            } else {
-                "-"
-            });
-            // GFM order is marker THEN checkbox ("- [x] done"). Emitting the box INSTEAD of the
-            // bullet gave "[x] done", which is not a task list anywhere it lands.
-            match task {
-                Some(true) => doc.push_str(" [x]"),
-                Some(false) => doc.push_str(" [ ]"),
-                None => {}
-            }
-            doc.push(' ');
-            DocBase::Runs(runs(doc, rs))
-        }
-        Block::Code(text, lang) => {
-            doc.push_str("```");
-            if let Some(t) = highlight::lang_tag(*lang) {
-                doc.push_str(t);
-            }
-            doc.push('\n');
-            let b = doc.len();
-            doc.push_str(text);
-            if !text.ends_with('\n') {
-                doc.push('\n');
-            }
-            doc.push_str("```\n");
-            DocBase::Code(b)
-        }
-        Block::Table { header, rows, .. } => {
-            let mut all: Vec<&[Vec<Run>]> = Vec::with_capacity(rows.len() + 1);
-            if !header.is_empty() {
-                all.push(header.as_slice());
-            }
-            all.extend(rows.iter().map(|r| r.as_slice()));
-            let mut out = Vec::with_capacity(all.len());
-            for row in all {
-                let mut rb = Vec::with_capacity(row.len());
-                for (ci, cell) in row.iter().enumerate() {
-                    if ci > 0 {
-                        doc.push('\t'); // tab-separated: pastes into a spreadsheet as columns
-                    }
-                    let mut cb = Vec::with_capacity(cell.len());
-                    for r in cell {
-                        cb.push(doc.len());
-                        doc.push_str(&r.text);
-                    }
-                    rb.push(cb);
-                }
-                doc.push('\n');
-                out.push(rb);
-            }
-            DocBase::Table(out)
-        }
+        Block::Item(depth, marker, rs, task) => doc_append_item(doc, *depth, marker, rs, *task),
+        Block::Code(text, lang) => doc_append_code(doc, text, *lang),
+        Block::Table { header, rows, .. } => doc_append_table(doc, header, rows),
         Block::Rule => {
             doc.push_str("---\n");
             DocBase::None

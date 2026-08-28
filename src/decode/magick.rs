@@ -987,24 +987,15 @@ fn encode_wait_decision(
     }
 }
 
-/// ENCODE `img` to `out` via ImageMagick using the explicit `target_ext` coder.
-/// We feed magick a PNG on stdin and let it write the exotic target
-/// (PSD/DDS/JP2/…) to the file — so OUR decode pipeline handles every input
-/// format and magick is only the output coder. Same isolation as the decode
-/// path: child process, `-limit`s, and an external kill-timeout. None of our
-/// inputs reach magick's parsers (only our own re-encoded PNG does).
-pub fn encode_via_magick(
-    img: &DynamicImage,
-    out: &std::path::Path,
+/// Resolve the magick executable and the `coder:path` output target for `target_ext`.
+/// Self-defend: this is the single chokepoint for the magick-backed Convert targets,
+/// so gate the capability here rather than trusting every caller to pre-check
+/// `magick_available()`. A distinct, logged error keeps "magick missing" diagnosable
+/// instead of looking like a genuine encode failure (bare E_FAIL).
+fn magick_encode_target(
     target_ext: &str,
-    quality: Option<u8>,
-) -> Result<()> {
-    use std::io::Write;
-
-    // Self-defend: this is the single chokepoint for the magick-backed Convert
-    // targets, so gate the capability here rather than trusting every caller to
-    // pre-check magick_available(). A distinct, logged error keeps "magick missing"
-    // diagnosable instead of looking like a genuine encode failure (bare E_FAIL).
+    out: &std::path::Path,
+) -> Result<(&'static PathBuf, String)> {
     let Some(exe) = magick_exe() else {
         crate::safety::log_debug("encode_via_magick: ImageMagick not available for this target");
         return Err(Error::from(E_FAIL));
@@ -1014,44 +1005,65 @@ pub fn encode_via_magick(
         Error::from(E_FAIL)
     })?;
     let out_str = out.to_str().ok_or_else(|| Error::from(E_FAIL))?;
-    let output_spec = format!("{coder}:{out_str}");
+    Ok((exe, format!("{coder}:{out_str}")))
+}
 
-    let mut png = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|_| Error::from(E_FAIL))?;
-
-    let mut cmd = Command::new(exe);
-    add_magick_limits(&mut cmd);
-    // `png:-` (our own re-encode on stdin) → an EXPLICIT coder + target path.
-    // The prefix is load-bearing: without it, a missing output module can make
-    // ImageMagick silently preserve the PNG input while naming it `.avif`, `.jxl`,
-    // etc. When a quality is given (lossy AVIF/JXL), pass it through as
-    // `-quality N`; lossless targets use ImageMagick's default.
+/// `png:-` (our own re-encode on stdin) → an EXPLICIT coder + target path. The prefix
+/// is load-bearing: without it, a missing output module can make ImageMagick silently
+/// preserve the PNG input while naming it `.avif`, `.jxl`, etc. When a quality is given
+/// (lossy AVIF/JXL), pass it through as `-quality N`; lossless targets use ImageMagick's
+/// default.
+fn magick_encode_args(output_spec: String, quality: Option<u8>) -> Vec<String> {
     let mut args: Vec<String> = vec!["png:-".to_string()];
     if let Some(q) = quality {
         args.push("-quality".to_string());
         args.push(q.clamp(1, 100).to_string());
     }
     args.push(output_spec);
-    cmd.args(&args)
+    args
+}
+
+/// Spawn ImageMagick with `args`, bound by the shared magick concurrency gate (memory)
+/// across in-process + st2k fan-out. The returned permit must be held by the caller
+/// until the child has been waited on.
+fn spawn_magick_child(
+    exe: &std::path::Path,
+    args: &[String],
+) -> Result<(std::process::Child, Option<magick_gate::Permit>)> {
+    let mut cmd = Command::new(exe);
+    add_magick_limits(&mut cmd);
+    cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
     apply_magick_environment(&mut cmd, exe);
-    // Bound concurrent magick children (memory) across in-process + st2k fan-out.
-    let _permit = magick_gate::acquire();
-    let mut child = cmd.spawn().map_err(|_| Error::from(E_FAIL))?;
+    let permit = magick_gate::acquire();
+    let child = cmd.spawn().map_err(|_| Error::from(E_FAIL))?;
+    Ok((child, permit))
+}
+
+/// Wire up the child's stdin/stdout/stderr pipes: a writer thread feeds `png` in (drop
+/// closes the pipe so magick sees EOF), a reader thread drains stdout and signals `rx`
+/// when done (magick writes to the FILE, not stdout, so this only exists to observe that
+/// EOF; the bytes are never used, but draining through the same capped helper stderr
+/// uses below avoids an unbounded read), and an optional stderr-drain thread captures
+/// diagnostics for a failure log.
+type MagickEncodePipes = (
+    std::thread::JoinHandle<()>,
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<()>,
+    Option<std::thread::JoinHandle<Vec<u8>>>,
+);
+
+fn pipe_magick_encode(child: &mut std::process::Child, png: Vec<u8>) -> Result<MagickEncodePipes> {
+    use std::io::Write;
 
     let mut stdin = child.stdin.take().ok_or_else(|| Error::from(E_FAIL))?;
     let writer = std::thread::spawn(move || {
         let _ = stdin.write_all(&png); // drop closes the pipe → magick sees EOF
     });
 
-    // magick writes to the FILE, not stdout — so stdout closes when it exits. This
-    // thread only exists to observe that EOF (the actual bytes are never used), so
-    // drain it through the same capped helper stderr uses below: an unbounded
-    // read_to_end here had no cap at all, unlike the decode path's stdout read.
     let stdout = child.stdout.take().ok_or_else(|| Error::from(E_FAIL))?;
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
@@ -1063,23 +1075,30 @@ pub fn encode_via_magick(
     let stderr = child.stderr.take();
     let errdrain = stderr.map(|s| std::thread::spawn(move || drain_capped(s)));
 
+    Ok((writer, reader, rx, errdrain))
+}
+
+/// Poll the child through the wall-clock deadline, escalating on either a CPU-budget or
+/// wall-clock timeout. EOF on stdout (`rx`) normally means the process is about to
+/// exit, but it is not proof: a hostile/broken child can close stdout early, stop
+/// reading stdin, and stay alive — so this keeps polling the real process on the SAME
+/// deadline instead of trusting the `rx` signal alone.
+fn wait_for_magick_child(
+    child: &mut std::process::Child,
+    rx: std::sync::mpsc::Receiver<()>,
+) -> (bool, bool, bool, Option<std::process::ExitStatus>) {
     let deadline = std::time::Instant::now() + MAGICK_TIMEOUT;
     let mut timed_out = rx.recv_timeout(MAGICK_TIMEOUT).is_err();
     let mut cpu_exceeded = false;
     let mut wait_failed = false;
     let mut status = None;
 
-    // EOF on stdout normally means the process is about to exit, but it is not
-    // proof: a hostile/broken child can close stdout early, stop reading stdin,
-    // and stay alive. Poll the real process through the SAME wall-clock deadline
-    // while the writer continues independently. Never join that writer until the
-    // child has exited or been killed, or a full stdin pipe can hang us forever.
     while !timed_out && !cpu_exceeded && status.is_none() {
         match child.try_wait() {
             Ok(Some(value)) => status = Some(value),
             Ok(None) => {
                 let now = std::time::Instant::now();
-                match encode_wait_decision(child_cpu_time(&child), MAGICK_CPU_BUDGET, now, deadline)
+                match encode_wait_decision(child_cpu_time(child), MAGICK_CPU_BUDGET, now, deadline)
                 {
                     EncodeWait::CpuExceeded => cpu_exceeded = true,
                     EncodeWait::TimedOut => timed_out = true,
@@ -1102,10 +1121,21 @@ pub fn encode_via_magick(
     if status.is_none() {
         status = child.wait().ok();
     }
-    let _ = writer.join();
-    let _ = reader.join();
-    let err = errdrain.and_then(|h| h.join().ok()).unwrap_or_default();
+    (timed_out, cpu_exceeded, wait_failed, status)
+}
 
+/// Interpret the wait outcome into the final `Result`, logging and removing any partial
+/// output file on every failure path. A partial file or an unavailable coder must never
+/// be reported as a successful convert; requiring an observed clean exit complements
+/// the explicit coder prefix `magick_encode_target` built.
+fn finish_magick_encode(
+    out: &std::path::Path,
+    timed_out: bool,
+    cpu_exceeded: bool,
+    wait_failed: bool,
+    status: Option<std::process::ExitStatus>,
+    err: &[u8],
+) -> Result<()> {
     if timed_out || cpu_exceeded {
         log_magick_failure(
             if cpu_exceeded {
@@ -1114,19 +1144,17 @@ pub fn encode_via_magick(
                 "encode timed out"
             },
             status,
-            &err,
+            err,
         );
         let _ = std::fs::remove_file(out);
         return Err(Error::from(E_FAIL));
     }
     if wait_failed {
-        log_magick_failure("could not observe encode process", status, &err);
+        log_magick_failure("could not observe encode process", status, err);
         let _ = std::fs::remove_file(out);
         return Err(Error::from(E_FAIL));
     }
     let wrote = std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false);
-    // A partial file or an unavailable coder must never be reported as a successful
-    // convert. Requiring an observed clean exit complements the explicit coder prefix.
     let clean_exit = status.is_some_and(|value| value.success());
     if wrote && clean_exit {
         Ok(())
@@ -1138,11 +1166,44 @@ pub fn encode_via_magick(
                 "encode produced no file"
             },
             status,
-            &err,
+            err,
         );
         let _ = std::fs::remove_file(out);
         Err(Error::from(E_FAIL))
     }
+}
+
+/// ENCODE `img` to `out` via ImageMagick using the explicit `target_ext` coder.
+/// We feed magick a PNG on stdin and let it write the exotic target
+/// (PSD/DDS/JP2/…) to the file — so OUR decode pipeline handles every input
+/// format and magick is only the output coder. Same isolation as the decode
+/// path: child process, `-limit`s, and an external kill-timeout. None of our
+/// inputs reach magick's parsers (only our own re-encoded PNG does).
+pub fn encode_via_magick(
+    img: &DynamicImage,
+    out: &std::path::Path,
+    target_ext: &str,
+    quality: Option<u8>,
+) -> Result<()> {
+    let (exe, output_spec) = magick_encode_target(target_ext, out)?;
+    let args = magick_encode_args(output_spec, quality);
+
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|_| Error::from(E_FAIL))?;
+
+    // Bound concurrent magick children (memory) across in-process + st2k fan-out.
+    let (mut child, _permit) = spawn_magick_child(exe, &args)?;
+    let (writer, reader, rx, errdrain) = pipe_magick_encode(&mut child, png)?;
+
+    // Never join the writer until the child has exited or been killed, or a full
+    // stdin pipe can hang us forever.
+    let (timed_out, cpu_exceeded, wait_failed, status) = wait_for_magick_child(&mut child, rx);
+    let _ = writer.join();
+    let _ = reader.join();
+    let err = errdrain.and_then(|h| h.join().ok()).unwrap_or_default();
+
+    finish_magick_encode(out, timed_out, cpu_exceeded, wait_failed, status, &err)
 }
 
 #[cfg(test)]
