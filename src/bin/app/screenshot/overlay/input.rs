@@ -722,6 +722,184 @@ unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
     LRESULT(0)
 }
 
+/// `VK_ESCAPE` while the overlay is open: peel back transient editor state before closing
+/// the whole capture. This makes Esc useful for correcting a mis-click instead of
+/// immediately losing the screenshot underneath it; only once nothing is left to unwind
+/// does it fall through to closing the window.
+unsafe fn on_key_escape(hwnd: HWND, s: &mut Shot) -> bool {
+    if s.sel_dragging {
+        s.sel_dragging = false; // cancel the initial region drag, keep the overlay
+        return true;
+    }
+    if s.color_flyout || s.text_flyout || s.font_dropdown {
+        s.color_flyout = false;
+        s.text_flyout = false;
+        s.font_dropdown = false;
+        return true;
+    }
+    if s.typing.is_some() {
+        s.typing = None; // cancel the in-progress text only
+        s.typing_drag = false; // and any active reposition drag
+        s.move_from = None;
+        s.pending_hi = None; // drop any half-typed surrogate
+        return true;
+    }
+    if s.draw_from.take().is_some() {
+        s.pen_pts.clear(); // cancel the active annotation, keep the capture
+        return true;
+    }
+    if s.selected.take().is_some() {
+        s.move_from = None; // deselect first; a second Esc closes
+        return true;
+    }
+    let _ = DestroyWindow(hwnd);
+    false
+}
+
+/// `VK_RETURN`: accept to the clipboard (the quick "I'm done, it's copied" gesture) and
+/// close, unless an annotation is mid-typing — then the newline falls through to WM_CHAR
+/// instead of committing the whole capture.
+unsafe fn on_key_enter(hwnd: HWND, s: &mut Shot) -> bool {
+    if s.typing.is_some() {
+        // Enter while an annotation is being typed must insert a newline, not
+        // commit + close the whole capture — otherwise multi-line annotations are
+        // structurally impossible. Don't consume it here: falling through lets the
+        // WM_CHAR(0x0D) that follows land the literal newline (see WM_CHAR above).
+        return false;
+    }
+    if block_automation_output(s, "blocked-copy") {
+        return true;
+    }
+    // Saving to a file is the explicit Ctrl+S / Save-button action.
+    commit_text(s);
+    if s.sel.is_some() {
+        finish_copy(s);
+    }
+    let _ = DestroyWindow(hwnd);
+    false
+}
+
+/// `VK_DELETE` under the Move tool: removes the grabbed shape, pushed onto `redo` (not
+/// cleared) so Ctrl+Y restores it, same as any other undo entry.
+fn on_key_delete(s: &mut Shot) -> bool {
+    if let Some(idx) = s.selected.take() {
+        if idx < s.shapes.len() {
+            let sh = s.shapes.remove(idx);
+            s.redo.push(sh);
+            // Indices shift on a remove; a leftover move-undo could now point at the
+            // wrong shape (or the one just deleted).
+            MOVE_UNDO.with(|c| c.set(None));
+        }
+    }
+    s.move_from = None;
+    true
+}
+
+/// Ctrl+Z (undo) / Ctrl+Y or Ctrl+Shift+Z (redo). `None` if `vk` is neither.
+fn on_key_undo_redo(s: &mut Shot, ctrl: bool, shift: bool, vk: u16) -> Option<bool> {
+    if ctrl && !shift && vk == b'Z' as u16 {
+        undo_step(s, MOVE_UNDO.with(|c| c.take()));
+        return Some(true);
+    }
+    if ctrl && (vk == b'Y' as u16 || (shift && vk == b'Z' as u16)) {
+        if let Some(sh) = s.redo.pop() {
+            s.shapes.push(sh);
+        }
+        s.selected = None;
+        s.move_from = None;
+        // A redo is a new "last action" — an old move-undo record no longer applies.
+        MOVE_UNDO.with(|c| c.set(None));
+        return Some(true);
+    }
+    None
+}
+
+/// Ctrl+C (copy) / Ctrl+T (OCR) / Ctrl+S (save): each accepts + closes (only once a region
+/// exists), checked before the plain-letter tool shortcuts below so 'C'/'T' alone stay tool
+/// picks. `None` if `vk` is none of the three.
+unsafe fn on_key_clipboard_action(hwnd: HWND, s: &mut Shot, ctrl: bool, vk: u16) -> Option<bool> {
+    if ctrl && vk == b'C' as u16 {
+        if block_automation_output(s, "blocked-copy") {
+            return Some(true);
+        }
+        if s.sel.is_some() {
+            commit_text(s);
+            finish_copy(s);
+            let _ = DestroyWindow(hwnd);
+        }
+        return Some(false);
+    }
+    if ctrl && vk == b'T' as u16 {
+        if block_automation_output(s, "blocked-ocr") {
+            return Some(true);
+        }
+        if s.sel.is_some() {
+            commit_text(s);
+            finish_ocr(s);
+            let _ = DestroyWindow(hwnd);
+        }
+        return Some(false);
+    }
+    // Ctrl+S keeps the overlay open if the Save-As prompt is cancelled.
+    if ctrl && vk == b'S' as u16 {
+        if block_automation_output(s, "blocked-save") {
+            return Some(true);
+        }
+        if s.sel.is_some() {
+            commit_text(s);
+            if finish_save(hwnd, s) {
+                let _ = DestroyWindow(hwnd);
+            }
+        }
+        return Some(false);
+    }
+    None
+}
+
+/// The plain-letter tool shortcut `vk` names, or `None` if it names no tool. Callers gate
+/// out Ctrl/Alt combinations first — this is purely the letter -> `Tool` table.
+fn tool_shortcut_for(vk: u16) -> Option<Tool> {
+    match vk {
+        x if x == b'R' as u16 => Some(Tool::Rect),
+        x if x == b'O' as u16 || x == b'C' as u16 => Some(Tool::Ellipse),
+        x if x == b'A' as u16 => Some(Tool::Arrow),
+        x if x == b'L' as u16 => Some(Tool::Line),
+        x if x == b'P' as u16 => Some(Tool::Pen),
+        x if x == b'T' as u16 => Some(Tool::Text),
+        x if x == b'N' as u16 => Some(Tool::Number),
+        x if x == b'H' as u16 => Some(Tool::Highlight),
+        x if x == b'B' as u16 => Some(Tool::Pixelate), // B = blur/blockify
+        x if x == b'I' as u16 => Some(Tool::Invert),
+        x if x == b'E' as u16 => Some(Tool::Eyedropper),
+        x if x == b'M' as u16 => Some(Tool::Move),
+        _ => None,
+    }
+}
+
+/// VK_OEM_4 '[' / VK_OEM_6 ']': text size while the Text tool is active, else line
+/// thickness. Returns `false` if `vk` is neither key.
+fn on_key_size_or_thickness(s: &mut Shot, vk: u16) -> bool {
+    if vk == 0xDB {
+        if s.tool == Tool::Text {
+            let sz = (-s.text_font.lfHeight - 2).max(10);
+            s.text_font.lfHeight = -sz;
+        } else {
+            s.thickness = (s.thickness - 1).max(1);
+        }
+        return true;
+    }
+    if vk == 0xDD {
+        if s.tool == Tool::Text {
+            let sz = (-s.text_font.lfHeight + 2).min(96);
+            s.text_font.lfHeight = -sz;
+        } else {
+            s.thickness = (s.thickness + 1).min(40);
+        }
+        return true;
+    }
+    false
+}
+
 /// Keyboard: tool shortcuts, colour/thickness, undo/redo, accept (Enter → copy),
 /// save (Ctrl+S), cancel/close (Esc). Returns true if a repaint is needed.
 pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
@@ -750,56 +928,10 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
     }
 
     if vk == VK_ESCAPE.0 {
-        // Peel back transient editor state before closing the whole capture. This
-        // makes Esc useful for correcting a mis-click instead of immediately losing
-        // the screenshot underneath it.
-        if s.sel_dragging {
-            s.sel_dragging = false; // cancel the initial region drag, keep the overlay
-            return true;
-        }
-        if s.color_flyout || s.text_flyout || s.font_dropdown {
-            s.color_flyout = false;
-            s.text_flyout = false;
-            s.font_dropdown = false;
-            return true;
-        }
-        if s.typing.is_some() {
-            s.typing = None; // cancel the in-progress text only
-            s.typing_drag = false; // and any active reposition drag
-            s.move_from = None;
-            s.pending_hi = None; // drop any half-typed surrogate
-            return true;
-        }
-        if s.draw_from.take().is_some() {
-            s.pen_pts.clear(); // cancel the active annotation, keep the capture
-            return true;
-        }
-        if s.selected.take().is_some() {
-            s.move_from = None; // deselect first; a second Esc closes
-            return true;
-        }
-        let _ = DestroyWindow(hwnd);
-        return false;
+        return on_key_escape(hwnd, s);
     }
     if vk == VK_RETURN.0 {
-        if s.typing.is_some() {
-            // Enter while an annotation is being typed must insert a newline, not
-            // commit + close the whole capture — otherwise multi-line annotations are
-            // structurally impossible. Don't consume it here: falling through lets the
-            // WM_CHAR(0x0D) that follows land the literal newline (see WM_CHAR above).
-            return false;
-        }
-        if block_automation_output(s, "blocked-copy") {
-            return true;
-        }
-        // Enter = accept to the clipboard (the quick "I'm done, it's copied" gesture).
-        // Saving to a file is the explicit Ctrl+S / Save-button action.
-        commit_text(s);
-        if s.sel.is_some() {
-            finish_copy(s);
-        }
-        let _ = DestroyWindow(hwnd);
-        return false;
+        return on_key_enter(hwnd, s);
     }
     // While typing text, swallow every other key here (the characters are inserted
     // by WM_CHAR) so letters go into the text instead of triggering tool shortcuts.
@@ -807,75 +939,14 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
         return false;
     }
 
-    // Move tool: Delete removes the grabbed shape. Pushed onto `redo` (not cleared) so
-    // Ctrl+Y restores it, same as any other undo entry — it used to discard the shape
-    // outright, so a delete could never be taken back.
     if vk == VK_DELETE.0 {
-        if let Some(idx) = s.selected.take() {
-            if idx < s.shapes.len() {
-                let sh = s.shapes.remove(idx);
-                s.redo.push(sh);
-                // Indices shift on a remove; a leftover move-undo could now point at the
-                // wrong shape (or the one just deleted).
-                MOVE_UNDO.with(|c| c.set(None));
-            }
-        }
-        s.move_from = None;
-        return true;
+        return on_key_delete(s);
     }
-
-    if ctrl && !shift && vk == b'Z' as u16 {
-        undo_step(s, MOVE_UNDO.with(|c| c.take()));
-        return true;
+    if let Some(handled) = on_key_undo_redo(s, ctrl, shift, vk) {
+        return handled;
     }
-    if ctrl && (vk == b'Y' as u16 || (shift && vk == b'Z' as u16)) {
-        if let Some(sh) = s.redo.pop() {
-            s.shapes.push(sh);
-        }
-        s.selected = None;
-        s.move_from = None;
-        // A redo is a new "last action" — an old move-undo record no longer applies.
-        MOVE_UNDO.with(|c| c.set(None));
-        return true;
-    }
-    // Ctrl+C = copy to clipboard; Ctrl+S = save. Both accept + close (only once a
-    // region exists). Ctrl+S keeps the overlay open if the Save-As prompt is cancelled.
-    // Checked before the plain-letter tool shortcuts below, so 'C' alone is still Ellipse.
-    if ctrl && vk == b'C' as u16 {
-        if block_automation_output(s, "blocked-copy") {
-            return true;
-        }
-        if s.sel.is_some() {
-            commit_text(s);
-            finish_copy(s);
-            let _ = DestroyWindow(hwnd);
-        }
-        return false;
-    }
-    // Ctrl+T = read the region's text (OCR) and close. Also checked ahead of the
-    // plain-letter shortcuts, so 'T' alone stays the Text tool.
-    if ctrl && vk == b'T' as u16 {
-        if block_automation_output(s, "blocked-ocr") {
-            return true;
-        }
-        if s.sel.is_some() {
-            commit_text(s);
-            finish_ocr(s);
-            let _ = DestroyWindow(hwnd);
-        }
-        return false;
-    }
-    if ctrl && vk == b'S' as u16 {
-        if block_automation_output(s, "blocked-save") {
-            return true;
-        }
-        if s.sel.is_some() {
-            commit_text(s);
-            if finish_save(hwnd, s) {
-                let _ = DestroyWindow(hwnd);
-            }
-        }
-        return false;
+    if let Some(handled) = on_key_clipboard_action(hwnd, s, ctrl, vk) {
+        return handled;
     }
 
     // OCR launch mode never reaches the annotation pass, so the tool / colour / thickness
@@ -891,21 +962,7 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
     let new_tool = if ctrl || alt {
         None
     } else {
-        match vk {
-            x if x == b'R' as u16 => Some(Tool::Rect),
-            x if x == b'O' as u16 || x == b'C' as u16 => Some(Tool::Ellipse),
-            x if x == b'A' as u16 => Some(Tool::Arrow),
-            x if x == b'L' as u16 => Some(Tool::Line),
-            x if x == b'P' as u16 => Some(Tool::Pen),
-            x if x == b'T' as u16 => Some(Tool::Text),
-            x if x == b'N' as u16 => Some(Tool::Number),
-            x if x == b'H' as u16 => Some(Tool::Highlight),
-            x if x == b'B' as u16 => Some(Tool::Pixelate), // B = blur/blockify
-            x if x == b'I' as u16 => Some(Tool::Invert),
-            x if x == b'E' as u16 => Some(Tool::Eyedropper),
-            x if x == b'M' as u16 => Some(Tool::Move),
-            _ => None,
-        }
+        tool_shortcut_for(vk)
     };
     if let Some(t) = new_tool {
         commit_text(s);
@@ -919,24 +976,7 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
         s.cycle_color();
         return true;
     }
-    if vk == 0xDB {
-        // VK_OEM_4 '[' — text size while the Text tool is active, else line thickness.
-        if s.tool == Tool::Text {
-            let sz = (-s.text_font.lfHeight - 2).max(10);
-            s.text_font.lfHeight = -sz;
-        } else {
-            s.thickness = (s.thickness - 1).max(1);
-        }
-        return true;
-    }
-    if vk == 0xDD {
-        // VK_OEM_6 ']'
-        if s.tool == Tool::Text {
-            let sz = (-s.text_font.lfHeight + 2).min(96);
-            s.text_font.lfHeight = -sz;
-        } else {
-            s.thickness = (s.thickness + 1).min(40);
-        }
+    if on_key_size_or_thickness(s, vk) {
         return true;
     }
     false
