@@ -30,22 +30,33 @@ project.
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
 cleared by a burndown tranche; see git log for the commits.
 
+**Tranche 1 (2026-08-28): 8 of 8 planned rows cleared**, in order: `transform` (jpegtran.rs),
+`decode_tile` (jp2/mod.rs), `decode_code_block` (jp2/mq.rs), `read_streams` (ole.rs),
+`isobmff_has_hevc_aux_alpha` (color.rs), `parse` (jp2/codestream.rs), `parse_ply` (mesh.rs),
+`extract` (ilbm.rs). Each was split into named helper functions covering one phase of the
+original function's work; no behavior change, verified with `cargo test` (module-scoped
+during the pass, full suite at the end: 753 passed, 0 failed, 18 ignored) plus `cargo clippy`
+and `cargo fmt --all --check` on every touched file. The `color.rs` item additionally hoisted
+four already-nested helper functions (`boxes`/`item_id`/`associated_items`/
+`auxl_targets_primary`) out to module scope, which is why `isobmff_associated_items` below
+picked up a new location without changing its own complexity number.
+
 | done | cog | CC | function | location |
 |---|---|---|---|---|
 | | 579 | 205 | `wndproc` | src/bin/app/preview/window.rs:709 |
 | | 480 | 124 | `shot_wndproc` | src/bin/app/screenshot/overlay/input.rs:128 |
 | | 402 | 146 | `wndproc` | src/bin/app/settings_dlg/mod.rs:1041 |
 | | 208 | 77 | `main` | src/bin/app/main.rs:195 |
-| | 207 | 86 | `transform` | src/jpegtran.rs:461 |
-| | 203 | 73 | `decode_tile` | src/decode/jp2/mod.rs:257 |
-| | 182 | 46 | `decode_code_block` | src/decode/jp2/mq.rs:275 |
-| | 170 | 67 | `read_streams` | src/container/ole.rs:71 |
-| | 158 | 69 | `isobmff_has_hevc_aux_alpha` | src/decode/color.rs:600 |
-| | 153 | 55 | `parse` | src/decode/jp2/codestream.rs:316 |
+|x| 207 | 86 | `transform` | src/jpegtran.rs:461 |
+|x| 203 | 73 | `decode_tile` | src/decode/jp2/mod.rs:257 |
+|x| 182 | 46 | `decode_code_block` | src/decode/jp2/mq.rs:275 |
+|x| 170 | 67 | `read_streams` | src/container/ole.rs:71 |
+|x| 158 | 69 | `isobmff_has_hevc_aux_alpha` | src/decode/color.rs:600 |
+|x| 153 | 55 | `parse` | src/decode/jp2/codestream.rs:316 |
 | | 120 | 42 | `run_block` | src/bin/app/preview/markdown/inline.rs:192 |
 | | 116 | 77 | `handle_key` | src/bin/app/screenshot/overlay/input.rs:620 |
-| | 114 | 49 | `parse_ply` | src/decode/mesh.rs:197 |
-| | 113 | 59 | `extract` | src/container/ilbm.rs:42 |
+|x| 114 | 49 | `parse_ply` | src/decode/mesh.rs:197 |
+|x| 113 | 59 | `extract` | src/container/ilbm.rs:42 |
 | | 111 | 43 | `about_wndproc` | src/bin/app/about.rs:798 |
 | | 109 | 64 | `parse_sps` | src/flv.rs:552 |
 | | 108 | 36 | `apply_v3_layout` | src/bin/app/settings_dlg/navrail.rs:875 |
@@ -141,7 +152,7 @@ cleared by a burndown tranche; see git log for the commits.
 | | 34 | 15 | `reference` | src/decode/jp2/dwt.rs:260 |
 | | 34 | 17 | `avif_wic_verdict` | src/decode/color.rs:441 |
 | | 34 | 20 | `scaled_pre_pass_sweep_by_format` | src/decode/tests.rs:2246 |
-| | 34 | 19 | `associated_items` | src/decode/color.rs:648 |
+| | 34 | 19 | `isobmff_associated_items` (was `associated_items`, hoisted out of `isobmff_has_hevc_aux_alpha`) | src/decode/color.rs:645 |
 | | 34 | 15 | `filtr_1d` | src/decode/jp2/dwt.rs:76 |
 | | 34 | 22 | `wndproc` | src/bin/app/prebuild_dlg.rs:238 |
 | | 33 | 18 | `tiff_ifd0_is_reduced` | src/streamsrc/rawsniff.rs:135 |
