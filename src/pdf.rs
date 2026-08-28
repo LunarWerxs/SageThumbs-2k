@@ -279,16 +279,7 @@ fn render_page_of(doc: &PdfDocument, page_index: u32, width: u32) -> Result<Vec<
 }
 
 fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {
-    // Copy the PDF into a WinRT in-memory stream.
-    let stream = InMemoryRandomAccessStream::new()?;
-    {
-        let writer = DataWriter::CreateDataWriter(&stream)?;
-        writer.WriteBytes(bytes)?;
-        block_op(&writer.StoreAsync()?)?;
-        // Detach so dropping the writer doesn't close `stream`.
-        writer.DetachStream()?;
-    }
-    stream.Seek(0)?;
+    let stream = copy_bytes_to_pdf_stream(bytes)?;
 
     // Load the document and grab the requested page (clamped into range).
     let doc = block_op(&PdfDocument::LoadFromStreamAsync(&stream)?)?;
@@ -298,28 +289,51 @@ fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)>
     }
     let page = doc.GetPage(page_index.min(count - 1))?;
 
-    // Page size is in DIPs (96 dpi). Scale so the long edge is `max_dim`.
+    let (dw, dh) = scaled_page_dims(&page, max_dim)?;
+    let buf = rasterize_page_to_png(&page, dw, dh)?;
+    Ok((buf, count))
+}
+
+/// Copy `bytes` into a fresh WinRT in-memory stream, rewound to the start.
+fn copy_bytes_to_pdf_stream(bytes: &[u8]) -> Result<InMemoryRandomAccessStream> {
+    let stream = InMemoryRandomAccessStream::new()?;
+    {
+        let writer = DataWriter::CreateDataWriter(&stream)?;
+        writer.WriteBytes(bytes)?;
+        block_op(&writer.StoreAsync()?)?;
+        // Detach so dropping the writer doesn't close `stream`.
+        writer.DetachStream()?;
+    }
+    stream.Seek(0)?;
+    Ok(stream)
+}
+
+/// Page size is in DIPs (96 dpi). Scale so the long edge is `max_dim`.
+fn scaled_page_dims(page: &windows::Data::Pdf::PdfPage, max_dim: u32) -> Result<(u32, u32)> {
     let size = page.Size()?;
     let (pw, ph) = (size.Width.max(1.0), size.Height.max(1.0));
     let scale = max_dim as f32 / pw.max(ph);
     let dw = (pw * scale).round().clamp(1.0, max_dim as f32) as u32;
     let dh = (ph * scale).round().clamp(1.0, max_dim as f32) as u32;
+    Ok((dw, dh))
+}
 
-    // Rasterize to a PNG stream (PdfPageRenderOptions defaults to PNG).
+/// Rasterize `page` to a PNG byte stream (`PdfPageRenderOptions` defaults to PNG) and
+/// read the encoded bytes back out.
+fn rasterize_page_to_png(page: &windows::Data::Pdf::PdfPage, dw: u32, dh: u32) -> Result<Vec<u8>> {
     let out = InMemoryRandomAccessStream::new()?;
     let opts = PdfPageRenderOptions::new()?;
     opts.SetDestinationWidth(dw)?;
     opts.SetDestinationHeight(dh)?;
     block_action(&page.RenderWithOptionsToStreamAsync(&out, &opts)?)?;
 
-    // Read the PNG bytes back out.
     out.Seek(0)?;
     let len = out.Size()? as u32;
     let reader = DataReader::CreateDataReader(&out)?;
     block_op(&reader.LoadAsync(len)?)?;
     let mut buf = vec![0u8; len as usize];
     reader.ReadBytes(&mut buf)?;
-    Ok((buf, count))
+    Ok(buf)
 }
 
 /// Hard cap on a single async wait so a pathological PDF can't hang the thread.

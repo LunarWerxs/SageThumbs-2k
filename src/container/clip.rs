@@ -75,22 +75,34 @@ pub fn extract_seek<R: Read + Seek>(mut r: R) -> Option<Vec<u8>> {
 /// name at its target; any mismatch falls back to the sequential walk (16 bytes
 /// per hop), so a corrupt header degrades to slower, never to wrong.
 fn find_sqli<R: Read + Seek>(r: &mut R, first: u64) -> Option<(u64, u64)> {
-    if let Some((name, len)) = chunk_header(r, first) {
-        if name == *b"CHNKHead" && len >= 16 {
-            let mut data = [0u8; 16];
-            if r.read_exact(&mut data).is_ok() {
-                if let Ok(ptr) = data[8..16].try_into().map(u64::from_be_bytes) {
-                    if let Some((n, l)) = chunk_header(r, ptr) {
-                        if n == *b"CHNKSQLi" {
-                            return Some((ptr + 16, l));
-                        }
-                    }
-                }
-            }
-        }
+    if let Some(hit) = chnk_head_shortcut(r, first) {
+        return Some(hit);
     }
-    // Fallback: hop chunk to chunk. Bounded iterations so a hostile chain of
-    // zero-length chunks can't spin us; EOF/malformed headers end the walk.
+    chnk_walk_fallback(r, first)
+}
+
+/// Try the `CHNKHead` pointer shortcut: its data holds the database chunk's file offset
+/// at bytes 8..16 (verified against real CSP files), validated against the chunk name at
+/// its target. Any mismatch (wrong header, short read, name that isn't `CHNKSQLi`)
+/// returns None so the caller falls back to the sequential walk.
+fn chnk_head_shortcut<R: Read + Seek>(r: &mut R, first: u64) -> Option<(u64, u64)> {
+    let (name, len) = chunk_header(r, first)?;
+    if name != *b"CHNKHead" || len < 16 {
+        return None;
+    }
+    let mut data = [0u8; 16];
+    r.read_exact(&mut data).ok()?;
+    let ptr = u64::from_be_bytes(data[8..16].try_into().ok()?);
+    let (n, l) = chunk_header(r, ptr)?;
+    if n != *b"CHNKSQLi" {
+        return None;
+    }
+    Some((ptr + 16, l))
+}
+
+/// Fallback: hop chunk to chunk. Bounded iterations so a hostile chain of
+/// zero-length chunks can't spin us; EOF/malformed headers end the walk.
+fn chnk_walk_fallback<R: Read + Seek>(r: &mut R, first: u64) -> Option<(u64, u64)> {
     let mut pos = first;
     for _ in 0..65_536 {
         let (name, len) = chunk_header(r, pos)?;

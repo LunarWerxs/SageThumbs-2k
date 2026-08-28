@@ -35,15 +35,36 @@ pub(super) unsafe fn mp4_remux_moov(stream: &IStream) -> Option<Vec<u8>> {
     // buries video even deeper just fast-fails to the default icon (no hang).
     const HEAD_KEEP: u64 = 128 * 1024 * 1024;
     const MOOV_MAX: u64 = 96 * 1024 * 1024; // sanity cap on the tail moov we'll pull
-                                            // A file padded with countless tiny boxes would otherwise force one Seek+Read COM
-                                            // round-trip per box, on the calling apartment thread, for as many iterations as the
-                                            // stream is 8-byte units long: `total` comes straight from the raw (uncapped, for this
-                                            // path) IStream::Stat size, so nothing else bounds the walk. This caps it so such a file
-                                            // fails fast (falls back to the default icon) instead of hanging the thumbnail request.
-    const WALK_MAX_BOXES: u32 = 100_000;
 
     let total = stream_size(stream)?;
-    // Walk top-level boxes to find mdat (offset + header length) and moov (offset + size).
+    let (mdat, moov) = locate_mdat_and_moov(stream, total)?;
+    let (mdat_off, mdat_hlen) = mdat;
+    let (moov_off, moov_size) = moov;
+    // Only worth it for moov-AFTER-mdat (faststart is already handled by the prefix path).
+    if moov_off <= mdat_off || moov_size == 0 || moov_size > MOOV_MAX {
+        return None;
+    }
+
+    let mut head =
+        retain_head_with_rewritten_mdat(stream, total, mdat_off, mdat_hlen, moov_off, HEAD_KEEP)?;
+    let moov_buf = read_tail_moov(stream, moov_off, moov_size)?;
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+
+    head.extend_from_slice(&moov_buf);
+    Some(head)
+}
+
+/// Walk top-level boxes from the stream start looking for `mdat` (offset + header
+/// length) and `moov` (offset + full size), stopping at the first `moov` found. A file
+/// padded with countless tiny boxes would otherwise force one Seek+Read COM round-trip
+/// per box, on the calling apartment thread, for as many iterations as the stream is
+/// 8-byte units long: `total` comes straight from the raw (uncapped, for this path)
+/// IStream::Stat size, so nothing else bounds the walk. `WALK_MAX_BOXES` caps it so such
+/// a file fails fast (falls back to the default icon) instead of hanging the thumbnail
+/// request.
+unsafe fn locate_mdat_and_moov(stream: &IStream, total: u64) -> Option<((u64, u64), (u64, u64))> {
+    const WALK_MAX_BOXES: u32 = 100_000;
+
     let mut pos: u64 = 0;
     let mut mdat: Option<(u64, u64)> = None; // (offset, header_len)
     let mut moov: Option<(u64, u64)> = None; // (offset, full_size)
@@ -91,16 +112,21 @@ pub(super) unsafe fn mp4_remux_moov(stream: &IStream) -> Option<Vec<u8>> {
         }
         pos = pos.checked_add(full)?;
     }
+    Some((mdat?, moov?))
+}
 
-    let (mdat_off, mdat_hlen) = mdat?;
-    let (moov_off, moov_size) = moov?;
-    // Only worth it for moov-AFTER-mdat (faststart is already handled by the prefix path).
-    if moov_off <= mdat_off || moov_size == 0 || moov_size > MOOV_MAX {
-        return None;
-    }
-
-    // Retain ftyp + mdat header + early mdat, ending before the moov.
-    let keep = HEAD_KEEP.min(moov_off).min(total);
+/// Retain ftyp + mdat header + early mdat, ending before the moov (capped at
+/// `head_keep`), then rewrite the kept mdat box's size so it ends exactly at the
+/// retained boundary (data offset is unchanged).
+unsafe fn retain_head_with_rewritten_mdat(
+    stream: &IStream,
+    total: u64,
+    mdat_off: u64,
+    mdat_hlen: u64,
+    moov_off: u64,
+    head_keep: u64,
+) -> Option<Vec<u8>> {
+    let keep = head_keep.min(moov_off).min(total);
     if keep <= mdat_off + mdat_hlen {
         return None;
     }
@@ -110,7 +136,6 @@ pub(super) unsafe fn mp4_remux_moov(stream: &IStream) -> Option<Vec<u8>> {
     }
     read_full(stream, &mut head)?;
 
-    // Rewrite mdat's size so the box ends exactly at `keep` (data offset is unchanged).
     let new_mdat = keep - mdat_off;
     let o = mdat_off as usize;
     if mdat_hlen == 16 {
@@ -118,17 +143,17 @@ pub(super) unsafe fn mp4_remux_moov(stream: &IStream) -> Option<Vec<u8>> {
     } else {
         head[o..o + 4].copy_from_slice(&(new_mdat as u32).to_be_bytes());
     }
+    Some(head)
+}
 
-    // Pull the moov from the tail (one seek + bulk read) and append it.
+/// Pull the moov from the tail (one seek + bulk read).
+unsafe fn read_tail_moov(stream: &IStream, moov_off: u64, moov_size: u64) -> Option<Vec<u8>> {
     let mut moov_buf = vec![0u8; moov_size as usize];
     if stream.Seek(moov_off as i64, STREAM_SEEK_SET, None).is_err() {
         return None;
     }
     read_full(stream, &mut moov_buf)?;
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-
-    head.extend_from_slice(&moov_buf);
-    Some(head)
+    Some(moov_buf)
 }
 
 #[cfg(test)]

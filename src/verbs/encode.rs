@@ -447,58 +447,14 @@ fn encode_to_opts(
         // files for photos; alpha is preserved. Optional: without `webp-lossy`,
         // WebP falls through to the lossless `other` arm (the `image` encoder).
         #[cfg(feature = "webp-lossy")]
-        ImageFormat::WebP if webp_quality.is_some() => {
-            let quality = match webp_quality {
-                Some(quality) => quality,
-                None => return Err(Error::from(E_FAIL)),
-            };
-            // libwebp rejects edges > 16383. `encode()` looks infallible but
-            // .unwrap()s internally, and the worker thread has no catch_unwind
-            // (panic=abort) — so an oversized image would abort the whole batch.
-            // Fail this one file cleanly instead.
-            let (pw, ph) = (img.width(), img.height());
-            if pw == 0 || ph == 0 || pw > 16383 || ph > 16383 {
-                return Err(Error::from(E_FAIL));
-            }
-            let rgba = img.to_rgba8();
-            let mem = webp::Encoder::from_rgba(rgba.as_raw(), pw, ph)
-                .encode(quality.clamp(1, 100) as f32);
-            w.write_all(&mem).map_err(|_| Error::from(E_FAIL))
-        }
-        ImageFormat::Png => {
-            // image's PNG encoder takes a coarse Fast/Default/Best level, not
-            // the legacy 0–9 zlib scale, so map onto it.
-            let ct = match png_level {
-                0..=2 => image::codecs::png::CompressionType::Fast,
-                7..=9 => image::codecs::png::CompressionType::Best,
-                _ => image::codecs::png::CompressionType::Default,
-            };
-            img.write_with_encoder(image::codecs::png::PngEncoder::new_with_quality(
-                &mut w,
-                ct,
-                image::codecs::png::FilterType::Adaptive,
-            ))
-            .map_err(|_| Error::from(E_FAIL))
-        }
+        ImageFormat::WebP if webp_quality.is_some() => encode_lossy_webp(&mut w, img, webp_quality),
+        ImageFormat::Png => encode_png_variant(&mut w, img, png_level),
         ImageFormat::OpenExr => encode_exr_bounded(&mut w, img).map_err(|_| Error::from(E_FAIL)),
         ImageFormat::Hdr => encode_hdr_bounded(&mut w, img).map_err(|_| Error::from(E_FAIL)),
         ImageFormat::Farbfeld => {
             encode_farbfeld_streaming(&mut w, img).map_err(|_| Error::from(E_FAIL))
         }
-        ImageFormat::Pnm => {
-            let is_pam = target_ext.eq_ignore_ascii_case("pam");
-            let is_ppm = target_ext.eq_ignore_ascii_case("ppm");
-            if is_pam {
-                encode_pam_streaming(&mut w, img).map_err(|_| Error::from(E_FAIL))
-            } else if is_ppm {
-                encode_ppm_streaming(&mut w, img).map_err(|_| Error::from(E_FAIL))
-            } else {
-                // Preserve the prior dynamic behavior for PBM/PGM/general-PNM
-                // transforms, whose subtype depends on their pixel type.
-                img.write_to(&mut w, ImageFormat::Pnm)
-                    .map_err(|_| Error::from(E_FAIL))
-            }
-        }
+        ImageFormat::Pnm => encode_pnm_variant(&mut w, img, target_ext),
         other => img.write_to(&mut w, other).map_err(|_| Error::from(E_FAIL)),
     };
     res?;
@@ -507,6 +463,69 @@ fn encode_to_opts(
     // TRUNCATED temp file over the destination (breaking the atomic-write promise).
     w.flush().map_err(|_| Error::from(E_FAIL))?;
     Ok(())
+}
+
+/// Encode lossy WebP via libwebp (`image-webp` only encodes lossless). libwebp rejects
+/// edges > 16383; `encode()` looks infallible but `.unwrap()`s internally and the worker
+/// thread has no `catch_unwind` (panic=abort), so an oversized image would abort the
+/// whole batch — fail this one file cleanly instead.
+#[cfg(feature = "webp-lossy")]
+fn encode_lossy_webp(
+    w: &mut std::io::BufWriter<std::fs::File>,
+    img: &DynamicImage,
+    webp_quality: Option<u8>,
+) -> Result<()> {
+    let quality = match webp_quality {
+        Some(quality) => quality,
+        None => return Err(Error::from(E_FAIL)),
+    };
+    let (pw, ph) = (img.width(), img.height());
+    if pw == 0 || ph == 0 || pw > 16383 || ph > 16383 {
+        return Err(Error::from(E_FAIL));
+    }
+    let rgba = img.to_rgba8();
+    let mem = webp::Encoder::from_rgba(rgba.as_raw(), pw, ph).encode(quality.clamp(1, 100) as f32);
+    w.write_all(&mem).map_err(|_| Error::from(E_FAIL))
+}
+
+/// PNG: `image`'s encoder takes a coarse Fast/Default/Best level, not the legacy 0-9
+/// zlib scale, so map onto it.
+fn encode_png_variant(
+    w: &mut std::io::BufWriter<std::fs::File>,
+    img: &DynamicImage,
+    png_level: u32,
+) -> Result<()> {
+    let ct = match png_level {
+        0..=2 => image::codecs::png::CompressionType::Fast,
+        7..=9 => image::codecs::png::CompressionType::Best,
+        _ => image::codecs::png::CompressionType::Default,
+    };
+    img.write_with_encoder(image::codecs::png::PngEncoder::new_with_quality(
+        w,
+        ct,
+        image::codecs::png::FilterType::Adaptive,
+    ))
+    .map_err(|_| Error::from(E_FAIL))
+}
+
+/// PNM subtype by target extension: PAM/PPM get their own streaming encoders; anything
+/// else preserves the prior dynamic behavior for PBM/PGM/general-PNM transforms, whose
+/// subtype depends on their pixel type.
+fn encode_pnm_variant(
+    w: &mut std::io::BufWriter<std::fs::File>,
+    img: &DynamicImage,
+    target_ext: &str,
+) -> Result<()> {
+    let is_pam = target_ext.eq_ignore_ascii_case("pam");
+    let is_ppm = target_ext.eq_ignore_ascii_case("ppm");
+    if is_pam {
+        encode_pam_streaming(w, img).map_err(|_| Error::from(E_FAIL))
+    } else if is_ppm {
+        encode_ppm_streaming(w, img).map_err(|_| Error::from(E_FAIL))
+    } else {
+        img.write_to(w, ImageFormat::Pnm)
+            .map_err(|_| Error::from(E_FAIL))
+    }
 }
 
 /// Resize applied by the Convert… dialog.
