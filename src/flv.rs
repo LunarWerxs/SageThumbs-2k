@@ -303,15 +303,8 @@ fn slice_walk<'a, T>(
     flv: &'a [u8],
     visit: &mut dyn FnMut(u8, u8, &'a [u8]) -> SliceWalk<T>,
 ) -> Option<T> {
-    if flv.len() < 24 || &flv[0..3] != b"FLV" {
-        return None;
-    }
-    let data_offset = u32::from_be_bytes([flv[5], flv[6], flv[7], flv[8]]) as u64;
-    if !(9..=HEADER_MAX).contains(&data_offset) {
-        return None;
-    }
     let total = flv.len() as u64;
-    let mut pos = data_offset.checked_add(4)?; // skip PreviousTagSize0
+    let mut pos = flv_first_tag_pos(flv)?;
     let mut tags = 0u32;
     while pos.checked_add(11)? <= total {
         tags = tags.checked_add(1)?;
@@ -322,13 +315,7 @@ fn slice_walk<'a, T>(
         if tags > MAX_TAGS || pos > WALK_MAX {
             return None;
         }
-        let th = flv.get(pos as usize..pos as usize + 11)?;
-        let tag_type = th[0] & 0x1F;
-        let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
-        let payload_pos = pos.checked_add(11)?;
-        if payload_pos.checked_add(data_size)? > total {
-            return None; // truncated mid-tag
-        }
+        let (tag_type, payload_pos, data_size) = read_tag_header(flv, pos, total)?;
         if tag_type == 9 && data_size >= 2 {
             let payload = flv.get(payload_pos as usize..(payload_pos + data_size) as usize)?;
             let (frame_type, codec_id) = (payload[0] >> 4, payload[0] & 0x0F);
@@ -339,6 +326,33 @@ fn slice_walk<'a, T>(
         pos = payload_pos.checked_add(data_size)?.checked_add(4)?;
     }
     None
+}
+
+/// Validate the FLV header and return the byte offset of the first tag (past
+/// PreviousTagSize0), or None for a non-FLV / malformed header.
+fn flv_first_tag_pos(flv: &[u8]) -> Option<u64> {
+    if flv.len() < 24 || &flv[0..3] != b"FLV" {
+        return None;
+    }
+    let data_offset = u32::from_be_bytes([flv[5], flv[6], flv[7], flv[8]]) as u64;
+    if !(9..=HEADER_MAX).contains(&data_offset) {
+        return None;
+    }
+    data_offset.checked_add(4)
+}
+
+/// Read one tag's fixed 11-byte header at `pos`: `(tag_type, payload offset, payload
+/// length)`, or None for an out-of-range read or a payload that runs past `total`
+/// (truncated mid-tag).
+fn read_tag_header(flv: &[u8], pos: u64, total: u64) -> Option<(u8, u64, u64)> {
+    let th = flv.get(pos as usize..pos as usize + 11)?;
+    let tag_type = th[0] & 0x1F;
+    let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
+    let payload_pos = pos.checked_add(11)?;
+    if payload_pos.checked_add(data_size)? > total {
+        return None; // truncated mid-tag
+    }
+    Some((tag_type, payload_pos, data_size))
 }
 
 /// Decode the first VP6/Sorenson keyframe of an FLV to a frame — OUT OF PROCESS.

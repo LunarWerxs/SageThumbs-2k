@@ -443,46 +443,70 @@ pub(super) fn linkify_into(runs: &mut Vec<Run>, s: &str, bold: bool, italic: boo
 /// (with balanced-paren handling so `…/Foo_(bar)` keeps its `)`).
 pub(super) fn url_at(s: &str, i: usize) -> Option<(usize, String)> {
     let b = s.as_bytes();
-    // Left boundary: start of run, whitespace, or a common opener — never mid-word (so
-    // `foohttp://x` doesn't match).
-    if i > 0
-        && !matches!(
-            b[i - 1],
-            b' ' | b'\t'
-                | b'\n'
-                | b'\r'
-                | b'('
-                | b'['
-                | b'{'
-                | b'<'
-                | b'*'
-                | b'_'
-                | b'~'
-                | b'"'
-                | b'\''
-        )
-    {
+    if i > 0 && !is_url_left_boundary(b[i - 1]) {
         return None;
     }
     let rest = &s[i..];
+    let (scheme_len, www) = url_scheme_at(rest)?;
+    let end = scan_url_bytes(rest, scheme_len)?;
+    let e = trim_trailing_punct(&rest.as_bytes()[..end], scheme_len)?;
+    let url = &s[i..i + e];
+    // Require a dot in the host portion (rejects `https://localhost`-only noise and bare schemes).
+    if !url[scheme_len..].contains('.') {
+        return None;
+    }
+    let dest = if www {
+        format!("https://{url}")
+    } else {
+        url.to_string()
+    };
+    Some((e, dest))
+}
+
+/// Left boundary: start of run, whitespace, or a common opener — never mid-word (so
+/// `foohttp://x` doesn't match).
+fn is_url_left_boundary(c: u8) -> bool {
+    matches!(
+        c,
+        b' ' | b'\t'
+            | b'\n'
+            | b'\r'
+            | b'('
+            | b'['
+            | b'{'
+            | b'<'
+            | b'*'
+            | b'_'
+            | b'~'
+            | b'"'
+            | b'\''
+    )
+}
+
+/// A `http(s)://` or `www.` prefix at the start of `rest`: `(scheme byte length, is-www)`.
+fn url_scheme_at(rest: &str) -> Option<(usize, bool)> {
     let lower = rest
         .as_bytes()
         .iter()
         .take(8)
         .map(|c| c.to_ascii_lowercase())
         .collect::<Vec<u8>>();
-    let (scheme_len, www) = if lower.starts_with(b"https://") {
-        (8, false)
+    if lower.starts_with(b"https://") {
+        Some((8, false))
     } else if lower.starts_with(b"http://") {
-        (7, false)
+        Some((7, false))
     } else if lower.starts_with(b"www.") {
-        (4, true)
+        Some((4, true))
     } else {
-        return None;
-    };
-    // Consume ASCII URL bytes (RFC-3986 unreserved + sub-delims + `:/?#[]@%`). Stopping at the
-    // first non-URL byte ends the link at whitespace, quotes, `<`, backtick, AND any multibyte
-    // (non-ASCII) char — the latter also guarantees every cut lands on a char boundary.
+        None
+    }
+}
+
+/// Consume ASCII URL bytes (RFC-3986 unreserved + sub-delims + `:/?#[]@%`) from the start
+/// of `rest`, stopping at the first non-URL byte — whitespace, quotes, `<`, backtick, and
+/// any multibyte (non-ASCII) char, the latter also guaranteeing every cut lands on a char
+/// boundary. None if nothing follows the scheme.
+fn scan_url_bytes(rest: &str, scheme_len: usize) -> Option<usize> {
     let is_url_byte = |c: u8| {
         c.is_ascii_alphanumeric()
             || matches!(
@@ -519,11 +543,16 @@ pub(super) fn url_at(s: &str, i: usize) -> Option<(usize, String)> {
         end = k + 1;
     }
     if end <= scheme_len {
-        return None; // nothing after the scheme
+        None // nothing after the scheme
+    } else {
+        Some(end)
     }
-    // Trim trailing punctuation; keep a `)` only if the URL has more `(` than `)`.
-    let raw = &rest.as_bytes()[..end];
-    let mut e = end;
+}
+
+/// Trim trailing punctuation off `raw` down to `scheme_len`; keep a trailing `)` only if
+/// the URL has more `(` than `)`. None if nothing survives past the scheme.
+fn trim_trailing_punct(raw: &[u8], scheme_len: usize) -> Option<usize> {
+    let mut e = raw.len();
     while e > scheme_len {
         let c = raw[e - 1];
         if matches!(
@@ -544,19 +573,10 @@ pub(super) fn url_at(s: &str, i: usize) -> Option<(usize, String)> {
         }
     }
     if e <= scheme_len {
-        return None;
-    }
-    let url = &s[i..i + e];
-    // Require a dot in the host portion (rejects `https://localhost`-only noise and bare schemes).
-    if !url[scheme_len..].contains('.') {
-        return None;
-    }
-    let dest = if www {
-        format!("https://{url}")
+        None
     } else {
-        url.to_string()
-    };
-    Some((e, dest))
+        Some(e)
+    }
 }
 
 /// If `md` opens with YAML front matter (offset 0: a line of exactly `---`, then a run of
