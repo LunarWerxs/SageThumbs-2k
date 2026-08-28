@@ -9,9 +9,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2Controller, ICoreWebView2Environment,
-    ICoreWebView2NavigationStartingEventArgs, ICoreWebView2WebResourceRequestedEventArgs,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+    CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
+    ICoreWebView2Environment, ICoreWebView2NavigationStartingEventArgs,
+    ICoreWebView2WebResourceRequestedEventArgs, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
 };
 use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
@@ -54,6 +54,33 @@ pub(super) unsafe fn create(
 
     // The user-data folder MUST be writable (never Program Files). Live mode uses a unique
     // ephemeral dir wiped on drop; local mode reuses a fixed per-user cache dir.
+    let (profile_dir, udf) = resolve_profile_dir(mode)?;
+    let udf_h = HSTRING::from(udf.as_os_str());
+
+    let environment = create_environment(&udf_h)?;
+    let controller = create_controller(&environment, parent)?;
+
+    controller.SetBounds(*rect).ok()?;
+    controller.SetIsVisible(true).ok()?;
+    let webview = controller.CoreWebView2().ok()?;
+
+    apply_lockdown(&webview, mode);
+    if mode == Mode::Local {
+        install_local_mode_guards(&webview, &environment, parent)?;
+    }
+
+    let url_h = HSTRING::from(url);
+    webview.Navigate(PCWSTR(url_h.as_ptr())).ok()?;
+    Some(WebViewHost {
+        controller,
+        profile_dir,
+    })
+}
+
+/// Resolve the WebView2 user-data folder for `mode`: `(ephemeral profile dir to remember for
+/// cleanup, the folder to actually pass as the user-data folder)`. `None` only when
+/// `LOCALAPPDATA` isn't set.
+fn resolve_profile_dir(mode: Mode) -> Option<(Option<std::path::PathBuf>, std::path::PathBuf)> {
     let base = std::env::var("LOCALAPPDATA").ok()?;
     let root = std::path::Path::new(&base).join("SageThumbs2K");
     let profile_dir = if mode == Mode::Live {
@@ -71,11 +98,14 @@ pub(super) unsafe fn create(
     };
     let udf = profile_dir.clone().unwrap_or_else(|| root.join("wv2"));
     let _ = std::fs::create_dir_all(&udf);
-    let udf_h = HSTRING::from(udf.as_os_str());
+    Some((profile_dir, udf))
+}
 
-    // --- async #1: create the environment (pumps messages until ready) ---
+/// Async #1: create the WebView2 environment over `udf` (pumps messages until ready).
+unsafe fn create_environment(udf_h: &HSTRING) -> Option<ICoreWebView2Environment> {
     let env_cell: Rc<RefCell<Option<ICoreWebView2Environment>>> = Rc::new(RefCell::new(None));
     let ec = env_cell.clone();
+    let udf_h = udf_h.clone();
     CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
         Box::new(move |handler| {
             CreateCoreWebView2EnvironmentWithOptions(
@@ -93,9 +123,15 @@ pub(super) unsafe fn create(
         }),
     )
     .ok()?;
-    let environment = env_cell.borrow_mut().take()?;
+    let out = env_cell.borrow_mut().take();
+    out
+}
 
-    // --- async #2: create the controller parented on the viewer ---
+/// Async #2: create the controller parented on the viewer.
+unsafe fn create_controller(
+    environment: &ICoreWebView2Environment,
+    parent: HWND,
+) -> Option<ICoreWebView2Controller> {
     let ctrl_cell: Rc<RefCell<Option<ICoreWebView2Controller>>> = Rc::new(RefCell::new(None));
     let cc = ctrl_cell.clone();
     let env2 = environment.clone();
@@ -111,13 +147,13 @@ pub(super) unsafe fn create(
         }),
     )
     .ok()?;
-    let controller = ctrl_cell.borrow_mut().take()?;
+    let out = ctrl_cell.borrow_mut().take();
+    out
+}
 
-    controller.SetBounds(*rect).ok()?;
-    controller.SetIsVisible(true).ok()?;
-    let webview = controller.CoreWebView2().ok()?;
-
-    // --- lockdown ---
+/// Turn off dev tools, the default context menu, the status bar, and (local mode only)
+/// JavaScript.
+unsafe fn apply_lockdown(webview: &ICoreWebView2, mode: Mode) {
     if let Ok(settings) = webview.Settings() {
         let _ = settings.SetAreDevToolsEnabled(false);
         let _ = settings.SetAreDefaultContextMenusEnabled(false);
@@ -126,87 +162,89 @@ pub(super) unsafe fn create(
             let _ = settings.SetIsScriptEnabled(false); // no JS for a local file
         }
     }
-    if mode == Mode::Local {
-        // Block EVERY non-file:// request so a local page can't fetch remote images/fonts/beacons.
-        webview
-            .AddWebResourceRequestedFilter(w!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
-            .ok()?;
-        let env3 = environment.clone();
-        let handler = WebResourceRequestedEventHandler::create(Box::new(
-            move |_wv, args: Option<ICoreWebView2WebResourceRequestedEventArgs>| {
-                if let Some(args) = args {
-                    if let Ok(request) = args.Request() {
-                        let mut uri_p = PWSTR::null();
-                        let uri = if request.Uri(&mut uri_p).is_ok() && !uri_p.is_null() {
-                            let s = uri_p.to_string().unwrap_or_default();
-                            CoTaskMemFree(Some(uri_p.as_ptr() as *const _));
-                            s
-                        } else {
-                            String::new()
-                        };
-                        if !uri.starts_with("file:") {
-                            if let Ok(resp) =
-                                env3.CreateWebResourceResponse(None, 403, w!("Blocked"), w!(""))
-                            {
-                                let _ = args.SetResponse(&resp);
-                            }
-                        }
-                    }
-                }
-                Ok(())
-            },
-        ));
-        let mut token: i64 = 0;
-        let _ = webview.add_WebResourceRequested(&handler, &mut token);
+}
 
-        // The resource filter above blocks a clicked link's own navigation too (Document is one
-        // of its ALL contexts), which just swaps in a blank 403, i.e. "does nothing" from the
-        // user's seat. Intercept the navigation itself instead: file:// (the loaded page, or an
-        // in-page anchor) passes unchanged; http(s) is canceled and handed to the OS default
-        // browser via ShellExecuteW, same allow-and-launch shape as the Markdown link path in
-        // `window.rs::open_preview_link`; anything else is canceled and dropped outright, since
-        // an untrusted local HTML file must not launch an arbitrary protocol handler from a click.
-        let nav_handler = NavigationStartingEventHandler::create(Box::new(
-            move |_wv, args: Option<ICoreWebView2NavigationStartingEventArgs>| {
-                if let Some(args) = args {
+/// Local mode's two guards: block every non-`file://` resource request, and intercept
+/// navigation so a clicked link opens in the OS default browser instead of silently doing
+/// nothing (the resource filter alone would blank-403 it).
+unsafe fn install_local_mode_guards(
+    webview: &ICoreWebView2,
+    environment: &ICoreWebView2Environment,
+    parent: HWND,
+) -> Option<()> {
+    // Block EVERY non-file:// request so a local page can't fetch remote images/fonts/beacons.
+    webview
+        .AddWebResourceRequestedFilter(w!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
+        .ok()?;
+    let env3 = environment.clone();
+    let handler = WebResourceRequestedEventHandler::create(Box::new(
+        move |_wv, args: Option<ICoreWebView2WebResourceRequestedEventArgs>| {
+            if let Some(args) = args {
+                if let Ok(request) = args.Request() {
                     let mut uri_p = PWSTR::null();
-                    let uri = if args.Uri(&mut uri_p).is_ok() && !uri_p.is_null() {
+                    let uri = if request.Uri(&mut uri_p).is_ok() && !uri_p.is_null() {
                         let s = uri_p.to_string().unwrap_or_default();
                         CoTaskMemFree(Some(uri_p.as_ptr() as *const _));
                         s
                     } else {
                         String::new()
                     };
-                    if uri.starts_with("file:") {
-                        return Ok(()); // the page load itself, or a same-file anchor: unchanged
-                    }
-                    let _ = args.SetCancel(true);
-                    let lower = uri.to_ascii_lowercase();
-                    if lower.starts_with("http://") || lower.starts_with("https://") {
-                        let w = HSTRING::from(uri.as_str());
-                        let _ = ShellExecuteW(
-                            Some(parent),
-                            w!("open"),
-                            PCWSTR(w.as_ptr()),
-                            PCWSTR::null(),
-                            PCWSTR::null(),
-                            SW_SHOWNORMAL,
-                        );
+                    if !uri.starts_with("file:") {
+                        if let Ok(resp) =
+                            env3.CreateWebResourceResponse(None, 403, w!("Blocked"), w!(""))
+                        {
+                            let _ = args.SetResponse(&resp);
+                        }
                     }
                 }
-                Ok(())
-            },
-        ));
-        let mut nav_token: i64 = 0;
-        let _ = webview.add_NavigationStarting(&nav_handler, &mut nav_token);
-    }
+            }
+            Ok(())
+        },
+    ));
+    let mut token: i64 = 0;
+    let _ = webview.add_WebResourceRequested(&handler, &mut token);
 
-    let url_h = HSTRING::from(url);
-    webview.Navigate(PCWSTR(url_h.as_ptr())).ok()?;
-    Some(WebViewHost {
-        controller,
-        profile_dir,
-    })
+    // The resource filter above blocks a clicked link's own navigation too (Document is one
+    // of its ALL contexts), which just swaps in a blank 403, i.e. "does nothing" from the
+    // user's seat. Intercept the navigation itself instead: file:// (the loaded page, or an
+    // in-page anchor) passes unchanged; http(s) is canceled and handed to the OS default
+    // browser via ShellExecuteW, same allow-and-launch shape as the Markdown link path in
+    // `window.rs::open_preview_link`; anything else is canceled and dropped outright, since
+    // an untrusted local HTML file must not launch an arbitrary protocol handler from a click.
+    let nav_handler = NavigationStartingEventHandler::create(Box::new(
+        move |_wv, args: Option<ICoreWebView2NavigationStartingEventArgs>| {
+            if let Some(args) = args {
+                let mut uri_p = PWSTR::null();
+                let uri = if args.Uri(&mut uri_p).is_ok() && !uri_p.is_null() {
+                    let s = uri_p.to_string().unwrap_or_default();
+                    CoTaskMemFree(Some(uri_p.as_ptr() as *const _));
+                    s
+                } else {
+                    String::new()
+                };
+                if uri.starts_with("file:") {
+                    return Ok(()); // the page load itself, or a same-file anchor: unchanged
+                }
+                let _ = args.SetCancel(true);
+                let lower = uri.to_ascii_lowercase();
+                if lower.starts_with("http://") || lower.starts_with("https://") {
+                    let w = HSTRING::from(uri.as_str());
+                    let _ = ShellExecuteW(
+                        Some(parent),
+                        w!("open"),
+                        PCWSTR(w.as_ptr()),
+                        PCWSTR::null(),
+                        PCWSTR::null(),
+                        SW_SHOWNORMAL,
+                    );
+                }
+            }
+            Ok(())
+        },
+    ));
+    let mut nav_token: i64 = 0;
+    let _ = webview.add_NavigationStarting(&nav_handler, &mut nav_token);
+    Some(())
 }
 
 /// Remove `wv2-ephemeral-<pid>` folders left behind by earlier runs.
