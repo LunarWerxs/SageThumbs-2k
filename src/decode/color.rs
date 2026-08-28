@@ -337,57 +337,56 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
 /// render mis-saturated. Handles an embedded ICC (`prof`/`rICC`) directly, AND maps the
 /// common CICP `nclx` signal (Display-P3 / sRGB) to a built-in profile so even nclx-only
 /// files (e.g. iPhone HEIC) color-manage. Returns ICC bytes for [`apply_icc_to_srgb`].
+/// One box's contribution to the `colr` search: `Some(icc)` if this box (or
+/// one nested inside it) carries the profile, `None` to keep walking siblings.
+fn isobmff_colr_box_icc(typ: &[u8], body: &[u8], depth: u8) -> Option<Vec<u8>> {
+    match typ {
+        b"colr" => colr_profile(body),
+        // `meta` is a FullBox (4-byte version+flags precede its children).
+        b"meta" => walk_isobmff_colr(body.get(4..)?, depth + 1),
+        b"iprp" | b"ipco" => walk_isobmff_colr(body, depth + 1),
+        _ => None,
+    }
+}
+
+/// Walk one ISOBMFF box level looking for a `colr` box (recursing through
+/// `meta`/`iprp`/`ipco` containers), returning the first ICC profile found.
+fn walk_isobmff_colr(buf: &[u8], depth: u8) -> Option<Vec<u8>> {
+    if depth > 6 {
+        return None;
+    }
+    let mut p = 0usize;
+    while p + 8 <= buf.len() {
+        let size32 = u32::from_be_bytes(buf[p..p + 4].try_into().ok()?);
+        let typ = &buf[p + 4..p + 8];
+        let extended = if size32 == 1 {
+            Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
+        } else {
+            None
+        };
+        let (full, hdr) = crate::container::boxhdr::decode_box_size(
+            size32,
+            extended,
+            p as u64,
+            buf.len() as u64,
+        )?;
+        let (full, hdr) = (full as usize, hdr as usize);
+        let end = p + full;
+        let body = &buf[p + hdr..end];
+        if let Some(icc) = isobmff_colr_box_icc(typ, body, depth) {
+            return Some(icc);
+        }
+        p = end;
+    }
+    None
+}
+
 pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
     // Only walk real ISOBMFF (starts with an `ftyp` box) — never chew through a RAW/JXR.
     if bytes.get(4..8) != Some(b"ftyp") {
         return None;
     }
-    fn walk(buf: &[u8], depth: u8) -> Option<Vec<u8>> {
-        if depth > 6 {
-            return None;
-        }
-        let mut p = 0usize;
-        while p + 8 <= buf.len() {
-            let size32 = u32::from_be_bytes(buf[p..p + 4].try_into().ok()?);
-            let typ = &buf[p + 4..p + 8];
-            let extended = if size32 == 1 {
-                Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
-            } else {
-                None
-            };
-            let (full, hdr) = crate::container::boxhdr::decode_box_size(
-                size32,
-                extended,
-                p as u64,
-                buf.len() as u64,
-            )?;
-            let (full, hdr) = (full as usize, hdr as usize);
-            let end = p + full;
-            let body = &buf[p + hdr..end];
-            match typ {
-                b"colr" => {
-                    if let Some(icc) = colr_profile(body) {
-                        return Some(icc);
-                    }
-                }
-                // `meta` is a FullBox (4-byte version+flags precede its children).
-                b"meta" => {
-                    if let Some(r) = body.get(4..).and_then(|c| walk(c, depth + 1)) {
-                        return Some(r);
-                    }
-                }
-                b"iprp" | b"ipco" => {
-                    if let Some(r) = walk(body, depth + 1) {
-                        return Some(r);
-                    }
-                }
-                _ => {}
-            }
-            p = end;
-        }
-        None
-    }
-    walk(bytes, 0)
+    walk_isobmff_colr(bytes, 0)
 }
 
 /// How far can Microsoft's AV1 WIC codec be trusted with this AVIF's colour?
@@ -438,78 +437,78 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 /// Callers use this exactly like [`isobmff_has_hevc_aux_alpha`]: prefer ImageMagick when the
 /// external tier is available, and fall back to WIC when it is not, so the Compact install
 /// keeps the thumbnail it has today rather than losing it.
-pub(super) fn avif_wic_verdict(bytes: &[u8]) -> AvifWicVerdict {
-    if bytes.get(4..8) != Some(b"ftyp") {
-        return AvifWicVerdict::Trusted;
-    }
-    struct Found {
-        matrix: Option<u16>,
-        high_bitdepth: bool,
-        is_av1: bool,
-    }
+/// AV1/colour signals gathered while walking an AVIF's box tree.
+struct AvifWicFound {
+    matrix: Option<u16>,
+    high_bitdepth: bool,
+    is_av1: bool,
+}
 
-    fn walk(buf: &[u8], depth: u8, f: &mut Found) {
-        if depth > 6 {
-            return;
-        }
-        let mut p = 0usize;
-        while p + 8 <= buf.len() {
-            let Ok(raw) = buf[p..p + 4].try_into() else {
-                return;
-            };
-            let size32 = u32::from_be_bytes(raw);
-            let typ = &buf[p + 4..p + 8];
-            // 64-bit sizes only ever wrap `mdat` here, which holds no colour metadata, so this
-            // never reads the extended field — `decode_box_size` declines a `size32 == 1` box
-            // when `extended` is `None`, matching the original "just stop" behaviour exactly.
-            let Some((full, hdr)) =
-                crate::container::boxhdr::decode_box_size(size32, None, p as u64, buf.len() as u64)
-            else {
-                return;
-            };
-            let (full, hdr) = (full as usize, hdr as usize);
-            let end = p + full;
-            let body = &buf[p + hdr..end];
-            match typ {
-                // ColourInformationBox: `nclx` carries CICP as 3 × u16 then a full-range bit.
-                b"colr" if body.get(..4) == Some(b"nclx") => {
-                    if let Some(raw) = body.get(8..10).and_then(|b| b.try_into().ok()) {
-                        f.matrix = Some(u16::from_be_bytes(raw));
-                    }
-                }
-                // AV1CodecConfigurationBox: byte 2 is
-                // seq_tier(1) high_bitdepth(1) twelve_bit(1) monochrome(1) subx(1) suby(1) pos(2).
-                b"av1C" => {
-                    f.is_av1 = true;
-                    if let Some(b) = body.get(2) {
-                        f.high_bitdepth |= (b >> 6) & 1 == 1;
-                    }
-                }
-                // `meta` is a FullBox: 4 bytes of version+flags precede its children.
-                b"meta" => {
-                    if let Some(children) = body.get(4..) {
-                        walk(children, depth + 1, f);
-                    }
-                }
-                b"iprp" | b"ipco" => walk(body, depth + 1, f),
-                _ => {}
+/// Update `f` from one box's own contents; recurse into container boxes.
+fn avif_wic_note_box(typ: &[u8], body: &[u8], depth: u8, f: &mut AvifWicFound) {
+    match typ {
+        // ColourInformationBox: `nclx` carries CICP as 3 × u16 then a full-range bit.
+        b"colr" if body.get(..4) == Some(b"nclx") => {
+            if let Some(raw) = body.get(8..10).and_then(|b| b.try_into().ok()) {
+                f.matrix = Some(u16::from_be_bytes(raw));
             }
-            p = end;
         }
+        // AV1CodecConfigurationBox: byte 2 is
+        // seq_tier(1) high_bitdepth(1) twelve_bit(1) monochrome(1) subx(1) suby(1) pos(2).
+        b"av1C" => {
+            f.is_av1 = true;
+            if let Some(b) = body.get(2) {
+                f.high_bitdepth |= (b >> 6) & 1 == 1;
+            }
+        }
+        // `meta` is a FullBox: 4 bytes of version+flags precede its children.
+        b"meta" => {
+            if let Some(children) = body.get(4..) {
+                walk_avif_wic(children, depth + 1, f);
+            }
+        }
+        b"iprp" | b"ipco" => walk_avif_wic(body, depth + 1, f),
+        _ => {}
     }
-    let mut found = Found {
-        matrix: None,
-        high_bitdepth: false,
-        is_av1: false,
-    };
-    walk(bytes, 0, &mut found);
+}
 
-    if !found.is_av1 {
+/// Walk one ISOBMFF box level, recording AV1/colour signals into `f`.
+fn walk_avif_wic(buf: &[u8], depth: u8, f: &mut AvifWicFound) {
+    if depth > 6 {
+        return;
+    }
+    let mut p = 0usize;
+    while p + 8 <= buf.len() {
+        let Ok(raw) = buf[p..p + 4].try_into() else {
+            return;
+        };
+        let size32 = u32::from_be_bytes(raw);
+        let typ = &buf[p + 4..p + 8];
+        // 64-bit sizes only ever wrap `mdat` here, which holds no colour metadata, so this
+        // never reads the extended field — `decode_box_size` declines a `size32 == 1` box
+        // when `extended` is `None`, matching the original "just stop" behaviour exactly.
+        let Some((full, hdr)) =
+            crate::container::boxhdr::decode_box_size(size32, None, p as u64, buf.len() as u64)
+        else {
+            return;
+        };
+        let (full, hdr) = (full as usize, hdr as usize);
+        let end = p + full;
+        let body = &buf[p + hdr..end];
+        avif_wic_note_box(typ, body, depth, f);
+        p = end;
+    }
+}
+
+/// Turn the gathered signals into a verdict; see the doc comment on
+/// `avif_wic_verdict` for the measured error table each branch encodes.
+fn avif_wic_verdict_from(f: &AvifWicFound) -> AvifWicVerdict {
+    if !f.is_av1 {
         // HEIC and friends carry `hvcC`, and are not ours to route.
         return AvifWicVerdict::Trusted;
     }
     // The measurably-correct case: an explicit BT.709 (or identity) matrix at 8 bits.
-    if !found.high_bitdepth && matches!(found.matrix, Some(0) | Some(1)) {
+    if !f.high_bitdepth && matches!(f.matrix, Some(0) | Some(1)) {
         return AvifWicVerdict::Trusted;
     }
     // High bit depth WITH colour signalling: WIC's only error here is the transfer function,
@@ -517,10 +516,23 @@ pub(super) fn avif_wic_verdict(bytes: &[u8]) -> AvifWicVerdict {
     // present" — and it has to be, because an AVIF with NO `colr` at all fails differently
     // (a full-vs-limited RANGE error: 0 reads as 15 and 255 as 233, worst channel 22) and that
     // one is NOT this curve. Measured, both of them; see the doc comment above.
-    if found.high_bitdepth && found.matrix.is_some() {
+    if f.high_bitdepth && f.matrix.is_some() {
         return AvifWicVerdict::NeedsHighDepthCurve;
     }
     AvifWicVerdict::Untrusted
+}
+
+pub(super) fn avif_wic_verdict(bytes: &[u8]) -> AvifWicVerdict {
+    if bytes.get(4..8) != Some(b"ftyp") {
+        return AvifWicVerdict::Trusted;
+    }
+    let mut found = AvifWicFound {
+        matrix: None,
+        high_bitdepth: false,
+        is_av1: false,
+    };
+    walk_avif_wic(bytes, 0, &mut found);
+    avif_wic_verdict_from(&found)
 }
 
 /// What Microsoft's AV1 WIC codec can be trusted with for a given AVIF.
@@ -642,6 +654,45 @@ fn isobmff_item_id(body: &[u8], version: u8, p: &mut usize) -> Option<u32> {
     Some(id)
 }
 
+/// One association index (15-bit when `large_indices`, else 7-bit), advancing `p`.
+fn isobmff_association_index(body: &[u8], large_indices: bool, p: &mut usize) -> Option<usize> {
+    if large_indices {
+        let raw = u16::from_be_bytes(body.get(*p..*p + 2)?.try_into().ok()?);
+        *p += 2;
+        Some((raw & 0x7FFF) as usize)
+    } else {
+        let raw = *body.get(*p)?;
+        *p += 1;
+        Some((raw & 0x7F) as usize)
+    }
+}
+
+/// Decode one ItemPropertyAssociation entry (item id + its association list),
+/// advancing `p` past it. Returns `(item id, has an alpha-aux property)`.
+#[allow(clippy::too_many_arguments)]
+fn isobmff_ipma_entry(
+    body: &[u8],
+    version: u8,
+    large_indices: bool,
+    property_count: usize,
+    alpha_properties: &[usize],
+    p: &mut usize,
+) -> Option<(u32, bool)> {
+    let id = isobmff_item_id(body, version, p)?;
+    let associations = *body.get(*p)? as usize;
+    *p += 1;
+    let mut has_alpha_property = false;
+    for _ in 0..associations {
+        let raw = isobmff_association_index(body, large_indices, p)?;
+        // Property index 0 is reserved; a value past ipco is malformed.
+        if raw == 0 || raw > property_count {
+            return None;
+        }
+        has_alpha_property |= alpha_properties.contains(&raw);
+    }
+    Some((id, has_alpha_property))
+}
+
 fn isobmff_associated_items(
     body: &[u8],
     property_count: usize,
@@ -661,26 +712,14 @@ fn isobmff_associated_items(
     let mut p = 8usize;
     let mut out = Vec::new();
     for _ in 0..count {
-        let id = isobmff_item_id(body, version, &mut p)?;
-        let associations = *body.get(p)? as usize;
-        p += 1;
-        let mut has_alpha_property = false;
-        for _ in 0..associations {
-            let raw = if large_indices {
-                let raw = u16::from_be_bytes(body.get(p..p + 2)?.try_into().ok()?);
-                p += 2;
-                (raw & 0x7FFF) as usize
-            } else {
-                let raw = *body.get(p)?;
-                p += 1;
-                (raw & 0x7F) as usize
-            };
-            // Property index 0 is reserved; a value past ipco is malformed.
-            if raw == 0 || raw > property_count {
-                return None;
-            }
-            has_alpha_property |= alpha_properties.contains(&raw);
-        }
+        let (id, has_alpha_property) = isobmff_ipma_entry(
+            body,
+            version,
+            large_indices,
+            property_count,
+            alpha_properties,
+            &mut p,
+        )?;
         if has_alpha_property {
             out.push(id);
         }
@@ -718,12 +757,9 @@ fn isobmff_auxl_targets_primary(
     Some(found)
 }
 
-pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
-    const HEVC_ALPHA_AUX_TYPE: &[u8] = b"urn:mpeg:hevc:2015:auxid:1";
-    const MAX_BOXES: usize = 512;
-
-    // A structurally valid FileTypeBox must lead the file. Its body is major
-    // brand + minor version, followed by zero or more compatible brands.
+/// A structurally valid FileTypeBox must lead the file. Its body is major
+/// brand + minor version, followed by zero or more compatible (4-byte) brands.
+fn isobmff_ftyp_is_sane(bytes: &[u8]) -> bool {
     let Some(first_size) = bytes.get(0..4) else {
         return false;
     };
@@ -731,61 +767,35 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
         return false;
     };
     let first_size = u32::from_be_bytes(first_size) as usize;
-    if bytes.get(4..8) != Some(b"ftyp")
-        || first_size < 16
-        || first_size > bytes.len()
-        || !(first_size - 16).is_multiple_of(4)
-    {
-        return false;
-    }
+    bytes.get(4..8) == Some(b"ftyp")
+        && first_size >= 16
+        && first_size <= bytes.len()
+        && (first_size - 16).is_multiple_of(4)
+}
 
-    let mut boxes_left = MAX_BOXES;
-    let top = match isobmff_boxes(bytes, &mut boxes_left) {
-        Some(boxes) => boxes,
-        None => return false,
-    };
-    let meta = match top.iter().find(|(typ, _)| typ == b"meta") {
-        Some((_, body)) => *body,
-        None => return false,
-    };
-    let children = match meta
-        .get(4..)
-        .and_then(|body| isobmff_boxes(body, &mut boxes_left))
-    {
-        Some(boxes) => boxes,
-        None => return false,
-    };
-    let primary = match children.iter().find(|(typ, _)| typ == b"pitm") {
-        Some((_, body)) => {
-            let version = match body.first() {
-                Some(version) if *version <= 1 => *version,
-                _ => return false,
-            };
-            let mut p = 4usize;
-            match isobmff_item_id(body, version, &mut p) {
-                Some(id) if p == body.len() => id,
-                _ => return false,
-            }
-        }
-        None => return false,
-    };
-    let iprp = match children.iter().find(|(typ, _)| typ == b"iprp") {
-        Some((_, body)) => *body,
-        None => return false,
-    };
-    let properties = match isobmff_boxes(iprp, &mut boxes_left) {
-        Some(boxes) => boxes,
-        None => return false,
-    };
-    let ipco = match properties.iter().find(|(typ, _)| typ == b"ipco") {
-        Some((_, body)) => *body,
-        None => return false,
-    };
-    let ipco_properties = match isobmff_boxes(ipco, &mut boxes_left) {
-        Some(boxes) => boxes,
-        None => return false,
-    };
-    let alpha_properties: Vec<usize> = ipco_properties
+/// First top-level box of type `typ` in an already-parsed box list, if any.
+fn isobmff_find_box<'a>(boxes: &'a [([u8; 4], &'a [u8])], typ: &[u8; 4]) -> Option<&'a [u8]> {
+    boxes.iter().find(|(t, _)| t == typ).map(|(_, b)| *b)
+}
+
+/// The primary item id from a `pitm` box's body: version byte (0 or 1), 3
+/// reserved/flag bytes, then the item id in that version's width — and
+/// nothing else trailing.
+fn isobmff_primary_item_id(body: &[u8]) -> Option<u32> {
+    let version = *body.first()?;
+    if version > 1 {
+        return None;
+    }
+    let mut p = 4usize;
+    let id = isobmff_item_id(body, version, &mut p)?;
+    (p == body.len()).then_some(id)
+}
+
+/// Indices (1-based, matching `ipma`'s convention) of every `auxC` property in
+/// `ipco` whose aux type is the HEVC auxiliary-alpha URN.
+fn isobmff_alpha_property_indices(ipco_properties: &[([u8; 4], &[u8])]) -> Vec<usize> {
+    const HEVC_ALPHA_AUX_TYPE: &[u8] = b"urn:mpeg:hevc:2015:auxid:1";
+    ipco_properties
         .iter()
         .enumerate()
         .filter_map(|(index, (typ, body))| {
@@ -796,27 +806,53 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
             let nul = aux_type.iter().position(|&byte| byte == 0)?;
             (&aux_type[..nul] == HEVC_ALPHA_AUX_TYPE).then_some(index + 1)
         })
-        .collect();
-    if alpha_properties.is_empty() {
-        return false;
+        .collect()
+}
+
+/// The actual walk, `?`-chained through every box lookup; `None` at any step
+/// means "not an HEVC-aux-alpha file", exactly like the old `return false`s.
+fn isobmff_hevc_aux_alpha(bytes: &[u8]) -> Option<bool> {
+    const MAX_BOXES: usize = 512;
+    if !isobmff_ftyp_is_sane(bytes) {
+        return None;
     }
-    let ipma = match properties.iter().find(|(typ, _)| typ == b"ipma") {
-        Some((_, body)) => *body,
-        None => return false,
-    };
-    let alpha_items = match isobmff_associated_items(ipma, ipco_properties.len(), &alpha_properties)
-    {
-        Some(items) if !items.is_empty() => items,
-        _ => return false,
-    };
-    children
-        .iter()
-        .filter(|(typ, _)| typ == b"iref")
-        .try_fold(false, |found, (_, body)| {
-            isobmff_auxl_targets_primary(body, &alpha_items, primary, &mut boxes_left)
-                .map(|matches| found || matches)
-        })
-        .unwrap_or(false)
+
+    let mut boxes_left = MAX_BOXES;
+    let top = isobmff_boxes(bytes, &mut boxes_left)?;
+    let meta = isobmff_find_box(&top, b"meta")?;
+    let children = isobmff_boxes(meta.get(4..)?, &mut boxes_left)?;
+
+    let primary = isobmff_find_box(&children, b"pitm").and_then(isobmff_primary_item_id)?;
+    let iprp = isobmff_find_box(&children, b"iprp")?;
+    let properties = isobmff_boxes(iprp, &mut boxes_left)?;
+    let ipco = isobmff_find_box(&properties, b"ipco")?;
+    let ipco_properties = isobmff_boxes(ipco, &mut boxes_left)?;
+
+    let alpha_properties = isobmff_alpha_property_indices(&ipco_properties);
+    if alpha_properties.is_empty() {
+        return Some(false);
+    }
+
+    let ipma = isobmff_find_box(&properties, b"ipma")?;
+    let alpha_items = isobmff_associated_items(ipma, ipco_properties.len(), &alpha_properties)?;
+    if alpha_items.is_empty() {
+        return Some(false);
+    }
+
+    Some(
+        children
+            .iter()
+            .filter(|(typ, _)| typ == b"iref")
+            .try_fold(false, |found, (_, body)| {
+                isobmff_auxl_targets_primary(body, &alpha_items, primary, &mut boxes_left)
+                    .map(|matches| found || matches)
+            })
+            .unwrap_or(false),
+    )
+}
+
+pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
+    isobmff_hevc_aux_alpha(bytes).unwrap_or(false)
 }
 
 /// One `colr` box body → ICC bytes: a direct embedded profile, or a CICP `nclx` signal
