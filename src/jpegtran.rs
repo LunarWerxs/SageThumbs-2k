@@ -456,13 +456,25 @@ fn dst_pos(op: Op, gw: usize, gh: usize, c: usize, r: usize) -> (usize, usize) {
     }
 }
 
-/// Transform a JPEG losslessly. Returns the new JPEG bytes, or None if the input
-/// is outside our supported scope (caller falls back to a lossy re-encode).
-pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
-    let d = jpeg;
-    if d.len() < 4 || d[0] != 0xFF || d[1] != 0xD8 {
-        return None; // not a JPEG
-    }
+/// Parsed JPEG segments, from just after SOI up to (but not including) the
+/// entropy-coded scan data.
+struct ParsedHeader {
+    pre_frame: Vec<u8>,
+    dqt: Vec<(u8, [u8; 64])>,
+    huff: [[Option<HuffDec>; 4]; 2],
+    restart_interval: usize,
+    width: usize,
+    height: usize,
+    comps: Vec<Comp>,
+    scan_start: usize,
+}
+
+/// Parse everything from just after SOI up to the SOS scan data. Every segment
+/// length below comes straight from the (untrusted) file, so all slicing is
+/// bounds-checked with `.get(..)?` / explicit `> d.len()` guards: a malformed
+/// JPEG returns None and the caller falls back to a lossy re-encode.
+/// (`be16(d, i+2)` is always safe here — the loop guard keeps `i+4 <= d.len()`.)
+fn parse_headers(d: &[u8]) -> Option<ParsedHeader> {
     let mut i = 2usize;
 
     let mut pre_frame: Vec<u8> = Vec::new(); // APPn/COM kept verbatim, before the frame
@@ -476,10 +488,6 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
     let mut comps: Vec<Comp> = Vec::new();
     let mut scan_start = 0usize;
 
-    // Every segment length below comes straight from the (untrusted) file, so all
-    // slicing is bounds-checked with `.get(..)?` / explicit `> d.len()` guards: a
-    // malformed JPEG returns None and the caller falls back to a lossy re-encode.
-    // (`be16(d, i+2)` is always safe here — the loop guard keeps `i+4 <= d.len()`.)
     while i + 4 <= d.len() {
         if d[i] != 0xFF {
             return None;
@@ -625,6 +633,22 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || comps.is_empty() || scan_start == 0 {
         return None;
     }
+
+    Some(ParsedHeader {
+        pre_frame,
+        dqt,
+        huff,
+        restart_interval,
+        width,
+        height,
+        comps,
+        scan_start,
+    })
+}
+
+/// Validate dimensions are in-scope and block-aligned, then size and allocate
+/// each component's coefficient-block grid. Returns the MCU grid dimensions.
+fn alloc_grids(width: usize, height: usize, comps: &mut [Comp]) -> Option<(usize, usize)> {
     // Reject absurd dimensions before allocating the coefficient grid: width/height
     // come from a ~20-byte header, so without this a tiny hostile file could demand
     // gigabytes. MAX_DIM is the decode pipeline's single bomb-guard ceiling
@@ -660,7 +684,19 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
         c.blocks = vec![[0i32; 64]; cells];
     }
 
-    // --- Decode the entropy-coded scan, MCU by MCU. ---
+    Some((mcus_x, mcus_y))
+}
+
+/// Decode the entropy-coded scan, MCU by MCU, filling `comps[ci].blocks` in place.
+fn decode_scan(
+    d: &[u8],
+    scan_start: usize,
+    huff: &[[Option<HuffDec>; 4]; 2],
+    restart_interval: usize,
+    mcus_x: usize,
+    mcus_y: usize,
+    comps: &mut [Comp],
+) -> Option<()> {
     // Snapshot per-component params so the loop can mutate `comps[ci].blocks`
     // without holding an immutable borrow of `comps`.
     let cparams: Vec<(u8, u8, usize, usize, usize)> = comps
@@ -691,8 +727,12 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
             mcu += 1;
         }
     }
+    Some(())
+}
 
-    // --- Transform each component's block grid + the blocks themselves. ---
+/// Transform each component's block grid + the blocks themselves in place.
+/// Returns the output image dimensions.
+fn apply_transform(comps: &mut [Comp], op: Op, width: usize, height: usize) -> (usize, usize) {
     let transpose = matches!(op, Op::Rot90 | Op::Rot270);
     for c in comps.iter_mut() {
         let (gw, gh) = (c.grid_w, c.grid_h);
@@ -711,13 +751,19 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
             std::mem::swap(&mut c.h, &mut c.v);
         }
     }
-    let (out_w, out_h) = if transpose {
+    if transpose {
         (height, width)
     } else {
         (width, height)
-    };
+    }
+}
 
-    // --- Re-encode with the standard Huffman tables. ---
+/// Re-encode the transformed coefficient grids with the standard Huffman
+/// tables, MCU by MCU. Returns None if a coefficient needs a magnitude
+/// category the standard tables don't have (only possible for an extreme DC
+/// diff in a quality-100 JPEG) — the caller then bails to the lossy path
+/// rather than write a corrupt file.
+fn encode_scan(comps: &[Comp], out_w: usize, out_h: usize) -> Option<Vec<u8>> {
     let enc_dc = [
         build_enc(&DC_LUMA_BITS, &DC_VALS),
         build_enc(&DC_CHROMA_BITS, &DC_VALS),
@@ -734,7 +780,7 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
     let nmcus_x = out_w.div_ceil(8 * nhmax);
     let nmcus_y = out_h.div_ceil(8 * nvmax);
 
-    let mut bw = BitWriter::new(Vec::with_capacity(d.len()));
+    let mut bw = BitWriter::new(Vec::new());
     let mut preds = vec![0i32; comps.len()];
     for my in 0..nmcus_y {
         for mx in 0..nmcus_x {
@@ -759,7 +805,34 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
         }
     }
     bw.flush();
-    let scan = bw.out;
+    Some(bw.out)
+}
+
+/// Transform a JPEG losslessly. Returns the new JPEG bytes, or None if the input
+/// is outside our supported scope (caller falls back to a lossy re-encode).
+pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
+    let d = jpeg;
+    if d.len() < 4 || d[0] != 0xFF || d[1] != 0xD8 {
+        return None; // not a JPEG
+    }
+
+    let ParsedHeader {
+        pre_frame,
+        dqt,
+        huff,
+        restart_interval,
+        width,
+        height,
+        mut comps,
+        scan_start,
+    } = parse_headers(d)?;
+
+    let (mcus_x, mcus_y) = alloc_grids(width, height, &mut comps)?;
+    decode_scan(d, scan_start, &huff, restart_interval, mcus_x, mcus_y, &mut comps)?;
+
+    let (out_w, out_h) = apply_transform(&mut comps, op, width, height);
+    let transpose = matches!(op, Op::Rot90 | Op::Rot270);
+    let scan = encode_scan(&comps, out_w, out_h)?;
 
     // --- Reassemble: SOI · kept segments · DHT · SOF0 · SOS · scan · EOI. ---
     let mut out = Vec::with_capacity(d.len() + 1024);
