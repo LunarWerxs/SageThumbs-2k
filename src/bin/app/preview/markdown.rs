@@ -365,179 +365,42 @@ pub(super) unsafe fn render(
         let y_block_start = y;
         match block {
             Block::Heading(level, runs, center) => {
-                if !first {
-                    y += sc(8); // extra top margin before a heading (GitHub 24px total)
-                }
-                let px = heading_px(*level);
-                let fonts = Fonts::new(hwnd, px, true, false);
-                let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(
-                    hdc,
-                    runs,
-                    &fonts,
-                    x0,
-                    y,
-                    full_w,
-                    if *center { 1 } else { 0 },
-                    y >= rc.bottom,
-                    &ctx,
-                    links,
-                    Some(&mut rsel),
+                y = paint_heading(
+                    hwnd, hdc, rc, *level, runs, *center, first, x0, y, full_w, c, links, &mut rsel,
                 );
-                fonts.free();
-                y = ny;
-                if *level <= 2 {
-                    // GitHub-style hairline under h1/h2.
-                    hline(hdc, x0, x0 + full_w, y + sc(4), c.border);
-                    y += sc(8);
-                }
-                y += sc(10);
             }
             Block::Para(runs, center) => {
-                let fonts = Fonts::new(hwnd, BODY_PX, false, false);
-                let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(
+                y = paint_para(
+                    hwnd, hdc, rc, runs, *center, x0, y, full_w, c, links, &mut rsel,
+                );
+            }
+            Block::Code(text, lang) => {
+                let base = match layout.bases.get(bi) {
+                    Some(DocBase::Code(b)) => *b,
+                    _ => 0,
+                };
+                y = paint_code(
+                    hwnd,
                     hdc,
-                    runs,
-                    &fonts,
+                    rc,
+                    text,
+                    *lang,
                     x0,
                     y,
                     full_w,
-                    if *center { 1 } else { 0 },
-                    y >= rc.bottom,
-                    &ctx,
-                    links,
-                    Some(&mut rsel),
+                    c,
+                    sel.range,
+                    &mut *sel.hits,
+                    base,
                 );
-                fonts.free();
-                if ny > y {
-                    y = ny + sc(14);
-                }
-            }
-            Block::Code(text, lang) => {
-                let f = font(hwnd, 13, false, false, true);
-                let pad = sc(12);
-                // Code isn't wrapped (line-per-line), so the panel height is line_count * line_h.
-                let old = SelectObject(hdc, f.into());
-                let mut tm = TEXTMETRICW::default();
-                let _ = GetTextMetricsW(hdc, &mut tm);
-                let line_h = tm.tmHeight + tm.tmExternalLeading;
-                SelectObject(hdc, old);
-                let nlines = text.split('\n').count().max(1) as i32;
-                let h = nlines * line_h + 2 * pad;
-                // Cull: only paint the panel + code when the block overlaps the viewport.
-                // `paint_lines` itself clips to [rc.top, rc.bottom], so a code block taller than the
-                // pane draws only its visible lines. `h` is cheap line-count math, so `y` advances
-                // either way and the scroll height stays correct.
-                if y < rc.bottom && y + h > rc.top {
-                    // GitHub 6px-radius code panel.
-                    let cb = CreateSolidBrush(COLORREF(c.code_bg));
-                    let cp = CreatePen(PS_SOLID, 1, COLORREF(c.code_bg));
-                    let ob = SelectObject(hdc, cb.into());
-                    let op = SelectObject(hdc, HGDIOBJ(cp.0));
-                    let r6 = sc(6);
-                    let _ = RoundRect(hdc, x0, y, x0 + full_w, y + h, r6, r6);
-                    SelectObject(hdc, ob);
-                    SelectObject(hdc, op);
-                    let _ = DeleteObject(cb.into());
-                    let _ = DeleteObject(HGDIOBJ(cp.0));
-                    // The code text is its own slice of the selection document: translate the
-                    // range into it (a selection reaching past either end just clamps, which is
-                    // exactly the "selection continues outside this block" case).
-                    let base = match layout.bases.get(bi) {
-                        Some(DocBase::Code(b)) => *b,
-                        _ => 0,
-                    };
-                    let local = sel
-                        .range
-                        .map(|(s, e)| (s.saturating_sub(base), e.saturating_sub(base)));
-                    let mut ls = highlight::LineSel {
-                        hits: &mut *sel.hits,
-                        base,
-                        spec: FontSpec {
-                            px: 13,
-                            bold: false,
-                            italic: false,
-                            mono: true,
-                        },
-                    };
-                    highlight::paint_lines(
-                        hdc,
-                        text,
-                        *lang,
-                        x0 + pad,
-                        y + pad,
-                        full_w - 2 * pad,
-                        rc.top,
-                        rc.bottom,
-                        f,
-                        c.fg,
-                        local,
-                        Some(&mut ls),
-                    );
-                }
-                let _ = DeleteObject(f.into());
-                y += h + sc(14);
             }
             Block::Item(depth, marker, runs, task) => {
-                let indent = sc(22) * (*depth as i32 + 1);
-                let mx = x0 + indent - sc(18);
-                match task {
-                    // GFM task item: a GitHub-style checkbox in place of the bullet.
-                    Some(done) => draw_checkbox(hwnd, hdc, mx, y, *done, c),
-                    // Ordinary bullet / number in the muted colour.
-                    None => {
-                        let mf = font(hwnd, BODY_PX, false, false, false);
-                        draw_at(hdc, marker, mx, y, mf, c.muted);
-                        let _ = DeleteObject(mf.into());
-                    }
-                }
-                let fonts = Fonts::new(hwnd, BODY_PX, false, false);
-                let ctx = ctx_for(hwnd, c, c.fg);
-                let (ny, _) = run_block(
-                    hdc,
-                    runs,
-                    &fonts,
-                    x0 + indent,
-                    y,
-                    full_w - indent,
-                    0,
-                    y >= rc.bottom,
-                    &ctx,
-                    links,
-                    Some(&mut rsel),
+                y = paint_item(
+                    hwnd, hdc, rc, *depth, marker, runs, *task, x0, y, full_w, c, links, &mut rsel,
                 );
-                fonts.free();
-                y = ny + sc(4);
             }
             Block::Quote(runs) => {
-                let indent = sc(16);
-                let y_start = y;
-                let fonts = Fonts::new(hwnd, BODY_PX, false, true);
-                let ctx = ctx_for(hwnd, c, c.muted);
-                let (ny, _) = run_block(
-                    hdc,
-                    runs,
-                    &fonts,
-                    x0 + indent,
-                    y,
-                    full_w - indent,
-                    0,
-                    y >= rc.bottom,
-                    &ctx,
-                    links,
-                    Some(&mut rsel),
-                );
-                fonts.free();
-                y = ny;
-                // GitHub-style gray quote bar spanning the quote's height.
-                let pen = CreatePen(PS_SOLID, sc(4), COLORREF(c.border));
-                let op = SelectObject(hdc, HGDIOBJ(pen.0));
-                let _ = MoveToEx(hdc, x0 + sc(2), y_start, None);
-                let _ = LineTo(hdc, x0 + sc(2), y);
-                SelectObject(hdc, op);
-                let _ = DeleteObject(HGDIOBJ(pen.0));
-                y += sc(14);
+                y = paint_quote(hwnd, hdc, rc, runs, x0, y, full_w, c, links, &mut rsel);
             }
             Block::Rule => {
                 // GitHub hr: a short solid bar, not a hairline.
@@ -607,6 +470,261 @@ pub(super) unsafe fn render(
         );
     }
     y + scroll - top + margin // total content height
+}
+
+/// `Block::Heading` paint arm: heading text + the h1/h2 hairline underline.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_heading(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    level: u8,
+    runs: &[Run],
+    center: bool,
+    first: bool,
+    x0: i32,
+    mut y: i32,
+    full_w: i32,
+    c: &MdColors,
+    links: &mut Vec<LinkHit>,
+    rsel: &mut RunSel,
+) -> i32 {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    if !first {
+        y += sc(8); // extra top margin before a heading (GitHub 24px total)
+    }
+    let px = heading_px(level);
+    let fonts = Fonts::new(hwnd, px, true, false);
+    let ctx = ctx_for(hwnd, c, c.fg);
+    let (ny, _) = run_block(
+        hdc,
+        runs,
+        &fonts,
+        x0,
+        y,
+        full_w,
+        if center { 1 } else { 0 },
+        y >= rc.bottom,
+        &ctx,
+        links,
+        Some(rsel),
+    );
+    fonts.free();
+    y = ny;
+    if level <= 2 {
+        // GitHub-style hairline under h1/h2.
+        hline(hdc, x0, x0 + full_w, y + sc(4), c.border);
+        y += sc(8);
+    }
+    y + sc(10)
+}
+
+/// `Block::Para` paint arm.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_para(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    runs: &[Run],
+    center: bool,
+    x0: i32,
+    y: i32,
+    full_w: i32,
+    c: &MdColors,
+    links: &mut Vec<LinkHit>,
+    rsel: &mut RunSel,
+) -> i32 {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let fonts = Fonts::new(hwnd, BODY_PX, false, false);
+    let ctx = ctx_for(hwnd, c, c.fg);
+    let (ny, _) = run_block(
+        hdc,
+        runs,
+        &fonts,
+        x0,
+        y,
+        full_w,
+        if center { 1 } else { 0 },
+        y >= rc.bottom,
+        &ctx,
+        links,
+        Some(rsel),
+    );
+    fonts.free();
+    if ny > y {
+        ny + sc(14)
+    } else {
+        y
+    }
+}
+
+/// `Block::Code` paint arm: the rounded panel + syntax-highlighted, unwrapped lines.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_code(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    text: &str,
+    lang: highlight::Lang,
+    x0: i32,
+    y: i32,
+    full_w: i32,
+    c: &MdColors,
+    sel_range: Option<(usize, usize)>,
+    sel_hits: &mut Vec<SelHit>,
+    base: usize,
+) -> i32 {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let f = font(hwnd, 13, false, false, true);
+    let pad = sc(12);
+    // Code isn't wrapped (line-per-line), so the panel height is line_count * line_h.
+    let old = SelectObject(hdc, f.into());
+    let mut tm = TEXTMETRICW::default();
+    let _ = GetTextMetricsW(hdc, &mut tm);
+    let line_h = tm.tmHeight + tm.tmExternalLeading;
+    SelectObject(hdc, old);
+    let nlines = text.split('\n').count().max(1) as i32;
+    let h = nlines * line_h + 2 * pad;
+    // Cull: only paint the panel + code when the block overlaps the viewport.
+    // `paint_lines` itself clips to [rc.top, rc.bottom], so a code block taller than the
+    // pane draws only its visible lines. `h` is cheap line-count math, so `y` advances
+    // either way and the scroll height stays correct.
+    if y < rc.bottom && y + h > rc.top {
+        // GitHub 6px-radius code panel.
+        let cb = CreateSolidBrush(COLORREF(c.code_bg));
+        let cp = CreatePen(PS_SOLID, 1, COLORREF(c.code_bg));
+        let ob = SelectObject(hdc, cb.into());
+        let op = SelectObject(hdc, HGDIOBJ(cp.0));
+        let r6 = sc(6);
+        let _ = RoundRect(hdc, x0, y, x0 + full_w, y + h, r6, r6);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        let _ = DeleteObject(cb.into());
+        let _ = DeleteObject(HGDIOBJ(cp.0));
+        // The code text is its own slice of the selection document: translate the
+        // range into it (a selection reaching past either end just clamps, which is
+        // exactly the "selection continues outside this block" case).
+        let local = sel_range.map(|(s, e)| (s.saturating_sub(base), e.saturating_sub(base)));
+        let mut ls = highlight::LineSel {
+            hits: sel_hits,
+            base,
+            spec: FontSpec {
+                px: 13,
+                bold: false,
+                italic: false,
+                mono: true,
+            },
+        };
+        highlight::paint_lines(
+            hdc,
+            text,
+            lang,
+            x0 + pad,
+            y + pad,
+            full_w - 2 * pad,
+            rc.top,
+            rc.bottom,
+            f,
+            c.fg,
+            local,
+            Some(&mut ls),
+        );
+    }
+    let _ = DeleteObject(f.into());
+    y + h + sc(14)
+}
+
+/// `Block::Item` paint arm: bullet/number or task checkbox, then the item's runs.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_item(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    depth: u8,
+    marker: &str,
+    runs: &[Run],
+    task: Option<bool>,
+    x0: i32,
+    y: i32,
+    full_w: i32,
+    c: &MdColors,
+    links: &mut Vec<LinkHit>,
+    rsel: &mut RunSel,
+) -> i32 {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let indent = sc(22) * (depth as i32 + 1);
+    let mx = x0 + indent - sc(18);
+    match task {
+        // GFM task item: a GitHub-style checkbox in place of the bullet.
+        Some(done) => draw_checkbox(hwnd, hdc, mx, y, done, c),
+        // Ordinary bullet / number in the muted colour.
+        None => {
+            let mf = font(hwnd, BODY_PX, false, false, false);
+            draw_at(hdc, marker, mx, y, mf, c.muted);
+            let _ = DeleteObject(mf.into());
+        }
+    }
+    let fonts = Fonts::new(hwnd, BODY_PX, false, false);
+    let ctx = ctx_for(hwnd, c, c.fg);
+    let (ny, _) = run_block(
+        hdc,
+        runs,
+        &fonts,
+        x0 + indent,
+        y,
+        full_w - indent,
+        0,
+        y >= rc.bottom,
+        &ctx,
+        links,
+        Some(rsel),
+    );
+    fonts.free();
+    ny + sc(4)
+}
+
+/// `Block::Quote` paint arm: the runs, then the GitHub-style gray quote bar.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_quote(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    runs: &[Run],
+    x0: i32,
+    y: i32,
+    full_w: i32,
+    c: &MdColors,
+    links: &mut Vec<LinkHit>,
+    rsel: &mut RunSel,
+) -> i32 {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let indent = sc(16);
+    let y_start = y;
+    let fonts = Fonts::new(hwnd, BODY_PX, false, true);
+    let ctx = ctx_for(hwnd, c, c.muted);
+    let (ny, _) = run_block(
+        hdc,
+        runs,
+        &fonts,
+        x0 + indent,
+        y,
+        full_w - indent,
+        0,
+        y >= rc.bottom,
+        &ctx,
+        links,
+        Some(rsel),
+    );
+    fonts.free();
+    let y = ny;
+    // GitHub-style gray quote bar spanning the quote's height.
+    let pen = CreatePen(PS_SOLID, sc(4), COLORREF(c.border));
+    let op = SelectObject(hdc, HGDIOBJ(pen.0));
+    let _ = MoveToEx(hdc, x0 + sc(2), y_start, None);
+    let _ = LineTo(hdc, x0 + sc(2), y);
+    SelectObject(hdc, op);
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    y + sc(14)
 }
 
 mod doc;
