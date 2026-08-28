@@ -15,6 +15,31 @@ behavior change. Run `cargo test` (scoped to the touched module when the full su
 slow) after each function, plus `cargo clippy` on the touched files, before moving to the
 next item.
 
+**Threshold discipline (learned in tranche 2): a land helper still has to clear the gate on
+its own, and the gate is stricter than nesting alone.** The scan's error/gating threshold is
+cognitive ~30 / cyclomatic ~20 (the "warning" tier sits lower, around cognitive 15, and is
+not gating). Two things bit tranche 2 specifically:
+
+1. **This scanner counts the `?` operator as a branch point**, unlike typical
+   SonarSource-style cognitive-complexity conventions that treat early-return via `?` as
+   free. A dispatcher with one `?`-propagating call per match arm (e.g. a 6-9-way marker
+   switch, each arm calling a fallible `parse_*` helper) racks up complexity from the `?`s
+   alone even after every arm's OWN nesting is flattened to one line. `parse_headers`
+   (jpegtran.rs) and `parse` (jp2/codestream.rs) both needed a second pass for exactly this:
+   flattening nesting got them from >100 down to ~40-70, but they still gated until each
+   arm's fallible call was changed to return its `Result`/`Option` via `.map()` (no `?`
+   inside the arm) and the whole match's error got propagated through a SINGLE `?` after the
+   match, not one per arm. See those two functions for the pattern (`HeaderMarkerOutcome` /
+   `MarkerOutcome`).
+2. **A brand-new helper spawned mid-extraction is not automatically under the gate**: check
+   it, don't assume it. Splitting a giant function frequently produces a "coordinator" helper
+   (a marker-dispatch loop, a per-line state-machine `handle_line`) whose OWN complexity can
+   still land in the 20s-40s if it has many branches, even with zero remaining nesting.
+
+**When extracting, land every new helper comfortably under cognitive 30 / cyclomatic 20**,
+not just "smaller than before", and for any function with more than ~5 fallible calls
+dispatched from one match/if-chain, prefer the defer-the-`?` pattern over one `?` per arm.
+
 Do not attempt casually: the three giant Win32 wndproc dispatchers below (cognitive
 579/480/402) are large, stateful, side-effect-heavy message loops. Splitting them safely
 needs a dedicated session with manual UI verification (exercising the actual window,
@@ -40,6 +65,26 @@ and `cargo fmt --all --check` on every touched file. The `color.rs` item additio
 four already-nested helper functions (`boxes`/`item_id`/`associated_items`/
 `auxl_targets_primary`) out to module scope, which is why `isobmff_associated_items` below
 picked up a new location without changing its own complexity number.
+
+**Tranche 2 (2026-08-28): the residue tranche 1 left behind, 24 gating functions across the
+same 8 files, cleared.** Odin's own rescan after tranche 1 (`gatingErrors` 187) showed the
+first pass had split each giant function into helpers, but several of those helpers were
+STILL over the gate, one file was untouched by name (`jpegtran.rs:xform_block`), and
+`isobmff_has_hevc_aux_alpha`, `parse` (codestream.rs) and `extract` (ilbm.rs) each had more
+work to do beyond their tranche-1 split. Covered: `parse_headers`/`decode_scan`/
+`xform_block` (jpegtran.rs); `progression_order`/`decode_reduced`/
+`build_component_resolutions`/`build_precinct_states` (jp2/mod.rs); `cleanup_pass`
+(jp2/mq.rs); `read_mini_stream` (ole.rs); `isobmff_has_hevc_aux_alpha`/`isobmff_color_icc`/
+`avif_wic_verdict`/`isobmff_associated_items` (color.rs); `parse`/`parse_palette`/
+`parse_siz`/`index_tile_part` (jp2/codestream.rs); `parse_obj`/`render`/`parse_ply_header`
+(mesh.rs); `extract` (ilbm.rs). `parse_headers` and `parse` (codestream.rs) needed a SECOND
+pass each after the first extraction still gated; see the threshold-discipline note above
+for why. Verified with `cargo test --lib` (753 passed, 0 failed, 18 ignored, matching
+tranche 1's baseline exactly) plus `cargo clippy --workspace --all-targets -D warnings` and
+`cargo fmt --all --check`, both clean, after every file. Odin's portable rescan afterward:
+**0 cognitive/cyclomatic gating errors left in any of the 8 files** (verified against the
+raw per-finding JSON, not just the truncated "top 50" audit `.md`); repo-wide gating errors
+187 -> 163.
 
 | done | cog | CC | function | location |
 |---|---|---|---|---|
@@ -95,16 +140,16 @@ picked up a new location without changing its own complexity number.
 | | 53 | 18 | `filtr_1d_matches_the_original_three_buffer_algorithm` | src/decode/jp2/dwt.rs:259 |
 | | 52 | 31 | `decode_scaled` | src/decode/exrscale.rs:73 |
 | | 51 | 17 | `lib_side_translation_keys_all_survive_the_dll_subset` | src/i18n.rs:229 |
-| | 51 | 18 | `parse_obj` | src/decode/mesh.rs:150 |
+|x| 51 | 18 | `parse_obj` | src/decode/mesh.rs:150 |
 | | 51 | 23 | `eyedropper_wndproc` | src/bin/app/eyedropper.rs:376 |
 | | 50 | 15 | `cluster_keyframe` | src/mkv.rs:336 |
 | | 50 | 28 | `parse_tag` | src/bin/app/preview/mdhtml.rs:98 |
 | | 49 | 25 | `generate_locales` | src/build.rs:268 |
 | | 47 | 30 | `assemble` | src/ocr/table.rs:81 |
-| | 47 | 22 | `render` | src/decode/mesh.rs:327 |
+|x| 47 | 22 | `render` | src/decode/mesh.rs:327 |
 | | 47 | 17 | `ttf_wndproc` | src/bin/app/tags_to_folders.rs:45 |
 | | 47 | 24 | `capture_monitor` | src/bin/app/screenshot/hdr.rs:192 |
-| | 46 | 28 | `decode_reduced` | src/decode/jp2/mod.rs:105 |
+|x| 46 | 28 | `decode_reduced` | src/decode/jp2/mod.rs:105 |
 | | 46 | 22 | `nv12_frame_from_owned_bytes` | src/video.rs:247 |
 | | 46 | 28 | `parse_prologue` | src/container/xcf.rs:119 |
 | | 45 | 26 | `sample_location` | src/mp4.rs:470 |
@@ -113,7 +158,7 @@ picked up a new location without changing its own complexity number.
 | | 44 | 20 | `parse_apev2_cover` | src/container/audio/ape.rs:45 |
 | | 44 | 27 | `read_info_verbose` | src/strip.rs:435 |
 | | 44 | 27 | `do_action` | src/bin/app/preview/window/command.rs:46 |
-| | 44 | 27 | `parse_palette` | src/decode/jp2/codestream.rs:170 |
+|x| 44 | 27 | `parse_palette` | src/decode/jp2/codestream.rs:170 |
 | | 44 | 27 | `decode_level` | src/container/xcf.rs:565 |
 | | 44 | 25 | `read_info_impl` | src/strip.rs:284 |
 | | 43 | 17 | `paint_lines` | src/bin/app/preview/highlight.rs:91 |
@@ -134,7 +179,7 @@ picked up a new location without changing its own complexity number.
 | | 38 | 22 | `convert_wndproc` | src/bin/app/convert.rs:1042 |
 | | 38 | 15 | `neutralize_lossless_jpeg_orientation` | src/verbs/encode.rs:273 |
 | | 38 | 21 | `parse_wav` | src/container/waveform.rs:106 |
-| | 37 | 14 | `isobmff_color_icc` | src/decode/color.rs:340 |
+|x| 37 | 14 | `isobmff_color_icc` | src/decode/color.rs:340 |
 | | 37 | 14 | `size_of` | src/mp4.rs:425 |
 | | 37 | 32 | `video_key` | src/bin/app/preview/window.rs:1532 |
 | | 37 | 20 | `first_run_wndproc` | src/bin/app/first_run.rs:516 |
@@ -150,9 +195,9 @@ picked up a new location without changing its own complexity number.
 | | 35 | 23 | `eligible_bt601_still` | src/decode/avifmf.rs:162 |
 | | 35 | 21 | `fuzz_extract_cover` | src/container/mod.rs:1107 |
 | | 34 | 15 | `reference` | src/decode/jp2/dwt.rs:260 |
-| | 34 | 17 | `avif_wic_verdict` | src/decode/color.rs:441 |
+|x| 34 | 17 | `avif_wic_verdict` | src/decode/color.rs:441 |
 | | 34 | 20 | `scaled_pre_pass_sweep_by_format` | src/decode/tests.rs:2246 |
-| | 34 | 19 | `isobmff_associated_items` (was `associated_items`, hoisted out of `isobmff_has_hevc_aux_alpha`) | src/decode/color.rs:645 |
+|x| 34 | 19 | `isobmff_associated_items` (was `associated_items`, hoisted out of `isobmff_has_hevc_aux_alpha`) | src/decode/color.rs:645 |
 | | 34 | 15 | `filtr_1d` | src/decode/jp2/dwt.rs:76 |
 | | 34 | 22 | `wndproc` | src/bin/app/prebuild_dlg.rs:238 |
 | | 33 | 18 | `tiff_ifd0_is_reduced` | src/streamsrc/rawsniff.rs:135 |
@@ -170,8 +215,8 @@ picked up a new location without changing its own complexity number.
 | | 32 | 15 | `thumbnail_from_resources` | src/container/psd.rs:107 |
 | | 32 | 20 | `resolve_icon_path` | src/container/apk.rs:604 |
 | | 32 | 29 | `epsi_preview` | src/container/eps.rs:71 |
-| | 31 | 27 | `parse_siz` | src/decode/jp2/codestream.rs:486 |
-| | 31 | 12 | `xform_block` | src/jpegtran.rs:425 |
+|x| 31 | 27 | `parse_siz` | src/decode/jp2/codestream.rs:486 |
+|x| 31 | 12 | `xform_block` | src/jpegtran.rs:425 |
 | | 31 | 22 | `mp4_remux_moov` | src/streamsrc/mp4remux.rs:31 |
 | | 31 | 13 | `find_sqli` | src/container/clip.rs:77 |
 | | 30 | 20 | `parse_header` | src/decode/dds.rs:334 |
