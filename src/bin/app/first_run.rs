@@ -513,6 +513,52 @@ fn release_windows_prtscn() {
     }
 }
 
+/// Is `id` one of the intro/sub-caption statics that should render muted rather
+/// than through the generic static coloring?
+fn is_dim_caption(id: i32) -> bool {
+    id == ID_HEAD
+        || id == ID_PREVIEW_SUB
+        || id == ID_SHOT_SUB
+        || id == ID_THUMBS_SUB
+        || id == ID_P_COVERS_SUB
+        || id == ID_P_SCANLATION_SUB
+        || id == ID_P2_SUB
+}
+
+/// `WM_CREATE`: build the dialog's controls.
+unsafe fn on_first_run_create(hwnd: HWND) -> LRESULT {
+    let hinst: HINSTANCE = match GetModuleHandleW(None) {
+        Ok(h) => h.into(),
+        Err(_) => return LRESULT(-1),
+    };
+    build(hwnd, hinst);
+    LRESULT(0)
+}
+
+/// `WM_COMMAND`: the Print-Screen sync checkbox and the OK/Next button.
+unsafe fn on_first_run_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    match (wparam.0 & 0xFFFF) as i32 {
+        ID_SHOT => sync_prtscn(hwnd),
+        IDOK => {
+            if ON_PAGE_2.with(|p| p.get()) {
+                apply(hwnd);
+                apply_persona(hwnd);
+                let _ = DestroyWindow(hwnd);
+            } else {
+                // Apply page 1 NOW, then ask the one page-2 question. Applying
+                // per-page means closing the window mid-question still honors
+                // the choices already confirmed.
+                apply(hwnd);
+                if let Ok(h) = GetModuleHandleW(None) {
+                    flip_to_page2(hwnd, h.into());
+                }
+            }
+        }
+        _ => {}
+    }
+    LRESULT(0)
+}
+
 extern "system" fn first_run_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -524,14 +570,7 @@ extern "system" fn first_run_wndproc(
         // the generic static coloring claims them.
         if msg == WM_CTLCOLORSTATIC {
             let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
-            if id == ID_HEAD
-                || id == ID_PREVIEW_SUB
-                || id == ID_SHOT_SUB
-                || id == ID_THUMBS_SUB
-                || id == ID_P_COVERS_SUB
-                || id == ID_P_SCANLATION_SUB
-                || id == ID_P2_SUB
-            {
+            if is_dim_caption(id) {
                 return dark_ctlcolor_dim(wparam);
             }
         }
@@ -539,36 +578,8 @@ extern "system" fn first_run_wndproc(
             return r;
         }
         match msg {
-            WM_CREATE => {
-                let hinst: HINSTANCE = match GetModuleHandleW(None) {
-                    Ok(h) => h.into(),
-                    Err(_) => return LRESULT(-1),
-                };
-                build(hwnd, hinst);
-                LRESULT(0)
-            }
-            WM_COMMAND => {
-                match (wparam.0 & 0xFFFF) as i32 {
-                    ID_SHOT => sync_prtscn(hwnd),
-                    IDOK => {
-                        if ON_PAGE_2.with(|p| p.get()) {
-                            apply(hwnd);
-                            apply_persona(hwnd);
-                            let _ = DestroyWindow(hwnd);
-                        } else {
-                            // Apply page 1 NOW, then ask the one page-2 question. Applying
-                            // per-page means closing the window mid-question still honors
-                            // the choices already confirmed.
-                            apply(hwnd);
-                            if let Ok(h) = GetModuleHandleW(None) {
-                                flip_to_page2(hwnd, h.into());
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                LRESULT(0)
-            }
+            WM_CREATE => on_first_run_create(hwnd),
+            WM_COMMAND => on_first_run_command(hwnd, wparam),
             WM_DPICHANGED => {
                 wm_dpichanged(hwnd, lparam);
                 LRESULT(0)
