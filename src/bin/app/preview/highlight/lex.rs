@@ -194,8 +194,192 @@ pub(in crate::preview) fn find_from(hay: &str, from: usize, needle: &str) -> Opt
         .map(|p| p + from)
 }
 
+/// Outcome of [`try_block_comment_open`]: whether `i` opens a block comment, and if so whether
+/// its close is on this same line.
+enum BlockOpen {
+    NoMatch,
+    /// Closed on this line; scanning resumes at the returned index.
+    Closed(usize),
+    /// No close on this line — the comment (and `in_block`) carries into the next line.
+    ToEol,
+}
+
+/// Continuation of a block comment carried over from a previous line (`*in_block` was already
+/// true). Pushes the `Comment` run either up to the close (returns `Some(end)`) or to the end of
+/// the line (returns `None`, meaning `in_block` stays set for the caller).
+fn continue_block_comment<'a>(
+    line: &'a str,
+    sp: &Spec,
+    i: usize,
+    out: &mut Vec<(Tag, &'a str)>,
+) -> Option<usize> {
+    if let Some((_, close)) = sp.block {
+        if let Some(pos) = find_from(line, i, close) {
+            let end = pos + close.len();
+            out.push((Tag::Comment, &line[i..end]));
+            return Some(end);
+        }
+    }
+    out.push((Tag::Comment, &line[i..]));
+    None
+}
+
+/// A line comment starting at `i` (one of `sp.line_comment`), if any: flushes the pending Plain
+/// run up to `i` and pushes a `Comment` run for the rest of the line.
+fn try_line_comment<'a>(
+    line: &'a str,
+    sp: &Spec,
+    i: usize,
+    seg: usize,
+    out: &mut Vec<(Tag, &'a str)>,
+) -> bool {
+    if !sp.line_comment.iter().any(|c| line[i..].starts_with(*c)) {
+        return false;
+    }
+    if i > seg {
+        out.push((Tag::Plain, &line[seg..i]));
+    }
+    out.push((Tag::Comment, &line[i..]));
+    true
+}
+
+/// A block comment opening at `i`, if any: flushes the pending Plain run, then either finds the
+/// close on this same line or consumes the rest of the line. See [`BlockOpen`].
+fn try_block_comment_open<'a>(
+    line: &'a str,
+    sp: &Spec,
+    i: usize,
+    seg: usize,
+    out: &mut Vec<(Tag, &'a str)>,
+) -> BlockOpen {
+    let Some((open, close)) = sp.block else {
+        return BlockOpen::NoMatch;
+    };
+    if !line[i..].starts_with(open) {
+        return BlockOpen::NoMatch;
+    }
+    if i > seg {
+        out.push((Tag::Plain, &line[seg..i]));
+    }
+    if let Some(pos) = find_from(line, i + open.len(), close) {
+        let end = pos + close.len();
+        out.push((Tag::Comment, &line[i..end]));
+        BlockOpen::Closed(end)
+    } else {
+        out.push((Tag::Comment, &line[i..]));
+        BlockOpen::ToEol
+    }
+}
+
+/// A string literal opening at `i` (a quote char in `sp.strings`), if any: consumes to the
+/// closing quote (or end of line) and classifies it as `Keyword` when immediately followed by
+/// `:` (an object KEY / property — colours like QuickLook's blue property names) or `Str`
+/// otherwise. Returns the scan position just past the token.
+fn try_string_literal<'a>(
+    line: &'a str,
+    sp: &Spec,
+    i: usize,
+    n: usize,
+    seg: usize,
+    out: &mut Vec<(Tag, &'a str)>,
+) -> Option<usize> {
+    let b = line.as_bytes();
+    let ch = b[i];
+    if !sp.strings.contains(&ch) {
+        return None;
+    }
+    if i > seg {
+        out.push((Tag::Plain, &line[seg..i]));
+    }
+    let start = i;
+    let mut j = i + 1;
+    while j < n {
+        if b[j] == b'\\' {
+            j += 2;
+            continue;
+        }
+        if b[j] == ch {
+            j += 1;
+            break;
+        }
+        j += 1;
+    }
+    let end = j.min(n);
+    let is_key = line
+        .get(end..)
+        .is_some_and(|r| r.trim_start().starts_with(':'));
+    out.push((
+        if is_key { Tag::Keyword } else { Tag::Str },
+        &line[start..end],
+    ));
+    Some(end)
+}
+
+/// A number literal starting at `i`, if any: consumes the run of alphanumeric/`.`/`_` bytes
+/// (loose on purpose — good enough to colour `0x1F`, `1_000`, `3.14e10` as one run without a
+/// real numeric grammar). Returns the scan position just past the token.
+fn try_number_literal<'a>(
+    line: &'a str,
+    i: usize,
+    n: usize,
+    seg: usize,
+    out: &mut Vec<(Tag, &'a str)>,
+) -> Option<usize> {
+    let b = line.as_bytes();
+    if !b[i].is_ascii_digit() {
+        return None;
+    }
+    if i > seg {
+        out.push((Tag::Plain, &line[seg..i]));
+    }
+    let start = i;
+    let mut j = i;
+    while j < n && (b[j].is_ascii_alphanumeric() || b[j] == b'.' || b[j] == b'_') {
+        j += 1;
+    }
+    out.push((Tag::Num, &line[start..j]));
+    Some(j)
+}
+
+/// An identifier starting at `i`, if any: scans the run of ident chars regardless, and only when
+/// it's a recognized keyword flushes the pending Plain run and pushes a `Keyword` token (a
+/// non-keyword identifier stays folded into the surrounding Plain run — few runs per line).
+/// Returns `(new scan position, new pending-Plain-run start)`.
+fn try_identifier<'a>(
+    line: &'a str,
+    sp: &Spec,
+    i: usize,
+    n: usize,
+    seg: usize,
+    out: &mut Vec<(Tag, &'a str)>,
+) -> Option<(usize, usize)> {
+    let b = line.as_bytes();
+    let ch = b[i];
+    if !(ch.is_ascii_alphabetic() || ch == b'_') {
+        return None;
+    }
+    let start = i;
+    let mut j = i;
+    while j < n && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+        j += 1;
+    }
+    let word = &line[start..j];
+    if sp.keywords.contains(&word) {
+        if start > seg {
+            out.push((Tag::Plain, &line[seg..start]));
+        }
+        out.push((Tag::Keyword, word));
+        Some((j, j))
+    } else {
+        Some((j, seg))
+    }
+}
+
 /// Tokenize one line into `(tag, slice)` runs. `in_block` carries block-comment state across
 /// lines. Non-keyword identifiers + punctuation stay in `Plain` runs (few runs per line).
+///
+/// A thin dispatch loop over the per-token-kind helpers above, tried in order at each scan
+/// position; the first one that matches advances `i`/`seg` and the loop continues.
 pub(in crate::preview) fn tokenize<'a>(
     line: &'a str,
     sp: &Spec,
@@ -207,115 +391,67 @@ pub(in crate::preview) fn tokenize<'a>(
     let mut i = 0usize;
     let mut seg = 0usize; // start of the pending Plain segment
 
-    macro_rules! flush {
-        ($upto:expr) => {
-            if $upto > seg {
-                out.push((Tag::Plain, &line[seg..$upto]));
-            }
-        };
-    }
-
     while i < n {
         // carried-over block comment
         if *in_block {
-            if let Some((_, close)) = sp.block {
-                if let Some(pos) = find_from(line, i, close) {
-                    let end = pos + close.len();
-                    out.push((Tag::Comment, &line[i..end]));
+            match continue_block_comment(line, sp, i, &mut out) {
+                Some(end) => {
                     i = end;
-                    seg = i;
+                    seg = end;
                     *in_block = false;
-                    continue;
                 }
-            }
-            out.push((Tag::Comment, &line[i..]));
-            seg = n;
-            break;
-        }
-        // line comment -> rest of line
-        if sp.line_comment.iter().any(|c| line[i..].starts_with(*c)) {
-            flush!(i);
-            out.push((Tag::Comment, &line[i..]));
-            seg = n;
-            break;
-        }
-        // block comment open
-        if let Some((open, close)) = sp.block {
-            if line[i..].starts_with(open) {
-                flush!(i);
-                if let Some(pos) = find_from(line, i + open.len(), close) {
-                    let end = pos + close.len();
-                    out.push((Tag::Comment, &line[i..end]));
-                    i = end;
-                    seg = i;
-                } else {
-                    out.push((Tag::Comment, &line[i..]));
+                None => {
                     i = n;
                     seg = n;
-                    *in_block = true;
                 }
+            }
+            continue;
+        }
+        // line comment -> rest of line
+        if try_line_comment(line, sp, i, seg, &mut out) {
+            i = n;
+            seg = n;
+            continue;
+        }
+        // block comment open
+        match try_block_comment_open(line, sp, i, seg, &mut out) {
+            BlockOpen::Closed(end) => {
+                i = end;
+                seg = end;
                 continue;
             }
-        }
-        let ch = b[i];
-        // string literal
-        if sp.strings.contains(&ch) {
-            flush!(i);
-            let start = i;
-            i += 1;
-            while i < n {
-                if b[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if b[i] == ch {
-                    i += 1;
-                    break;
-                }
-                i += 1;
+            BlockOpen::ToEol => {
+                i = n;
+                seg = n;
+                *in_block = true;
+                continue;
             }
-            let end = i.min(n);
-            // A string immediately followed by `:` is an object KEY / property — colour it like a
-            // keyword (matches QuickLook's blue property names) instead of an orange string value.
-            let is_key = line
-                .get(end..)
-                .is_some_and(|r| r.trim_start().starts_with(':'));
-            out.push((
-                if is_key { Tag::Keyword } else { Tag::Str },
-                &line[start..end],
-            ));
+            BlockOpen::NoMatch => {}
+        }
+        // string literal
+        if let Some(end) = try_string_literal(line, sp, i, n, seg, &mut out) {
             i = end;
-            seg = i;
+            seg = end;
             continue;
         }
         // number literal
-        if ch.is_ascii_digit() {
-            flush!(i);
-            let start = i;
-            while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'.' || b[i] == b'_') {
-                i += 1;
-            }
-            out.push((Tag::Num, &line[start..i]));
-            seg = i;
+        if let Some(end) = try_number_literal(line, i, n, seg, &mut out) {
+            i = end;
+            seg = end;
             continue;
         }
         // identifier -> keyword lookup (non-keywords stay in the plain segment)
-        if ch.is_ascii_alphabetic() || ch == b'_' {
-            let start = i;
-            while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-                i += 1;
-            }
-            let word = &line[start..i];
-            if sp.keywords.contains(&word) {
-                flush!(start);
-                out.push((Tag::Keyword, word));
-                seg = i;
-            }
+        if let Some((end, new_seg)) = try_identifier(line, sp, i, n, seg, &mut out) {
+            i = end;
+            seg = new_seg;
             continue;
         }
         // plain char (advance by full UTF-8 char so slices never split a codepoint)
+        let ch = b[i];
         i += if ch < 0x80 { 1 } else { utf8_len(ch) };
     }
-    flush!(n);
+    if n > seg {
+        out.push((Tag::Plain, &line[seg..n]));
+    }
     out
 }
