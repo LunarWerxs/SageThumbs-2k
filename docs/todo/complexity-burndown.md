@@ -377,6 +377,19 @@ passed, 0 failed, 18 ignored, matching baseline) and `cargo test --bin SageThumb
 SageThumbs2K -- -D warnings` both clean, and `cargo fmt --all --check` clean with no
 reflow needed.
 
+**Correction (2026-08-28): the "out of scope" note above, and the tranche-13 note it points
+back to, were wrong.** The portable scanner reads Python too, so
+`scripts/compare-renders.py:main` (cognitive 41/CC 39) was a live gating row all along, not
+exempt from this queue. Cleared in its own pass: split into `build_arg_parser`,
+`validate_args`, `list_corpus_files` (the shared setup), `run_expect_mode`/
+`print_expect_report` (the `--expect` known-colour path), and
+`classify_pair`/`run_differential_pool`/`print_differential_report` (the `--old` differential
+path), leaving `main` as a thin dispatcher that builds args, validates them, lists the
+corpus, and calls one of the two mode functions. No behavior change. Verified with
+`python -m py_compile scripts/compare-renders.py` and `python scripts/compare-renders.py
+--help`, both clean. This closes out the queue completely: every row, Rust and Python, is
+now checked off.
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -677,7 +690,7 @@ before the next release is still recommended.
 |x| 42 | 34 | `encode_via_magick` | src/decode/magick.rs:996 |
 |x| 42 | 21 | `doc_append` | src/bin/app/preview/markdown/doc.rs:67 |
 |x| 42 | 18 | `parse_columns` | src/bin/app/preview/dbdoc.rs:658 |
-| | 41 | 39 | `main` | scripts/compare-renders.py:119 |
+|x| 41 | 39 | `main` | scripts/compare-renders.py:119 |
 |x| 40 | 30 | `dispatch_tool` | src/mcp.rs:313 |
 |x| 40 | 13 | `collect_leaf_pages` | src/container/clip.rs:183 |
 |x| 39 | 24 | `run_capture_inner` | src/bin/app/screenshot/overlay.rs:424 |

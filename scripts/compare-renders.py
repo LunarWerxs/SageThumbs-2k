@@ -116,7 +116,7 @@ def load_expected(path):
     return want
 
 
-def main():
+def build_arg_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--out", default=None)
@@ -131,7 +131,10 @@ def main():
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--threshold", type=float, default=2.0)
-    a = ap.parse_args()
+    return ap
+
+
+def validate_args(ap, a):
     if not a.old and not a.expect:
         ap.error("need --old (differential mode) or --expect (known-colour mode)")
     if not a.new and not a.rendered:
@@ -139,51 +142,69 @@ def main():
     if a.old and not a.out:
         ap.error("differential mode needs --out to render into")
 
-    a.out = a.out or a.rendered
-    os.makedirs(a.out, exist_ok=True)
-    files = [os.path.join(a.corpus, f) for f in sorted(os.listdir(a.corpus))
-             if os.path.isfile(os.path.join(a.corpus, f)) and not f.startswith("_")]
 
-    if a.expect:
-        want = load_expected(a.expect)
-        jobs = [(a.new, f, a.out, a.size, a.timeout, want[os.path.basename(f)], a.rendered)
-                for f in files if os.path.basename(f) in want]
-        missing = sorted(set(want) - {os.path.basename(f) for f in files})
-        bad = []
-        with cf.ThreadPoolExecutor(max_workers=a.jobs) as pool:
-            for name, w, got, verdict in pool.map(expect_job, jobs):
-                if verdict != "ok":
-                    bad.append((name, w, got, verdict))
-        print(f"=== {len(jobs)} files with a known flattened colour, "
-              f"{len(jobs) - len(bad)} correct ===")
-        for name, w, got, verdict in bad:
-            print(f"  {name:<44} want rgb{w}  got {got}  [{verdict}]")
-        # A manifest entry with no sample behind it is a silently EMPTY check, which is the
-        # failure mode this whole file exists to stop. Say so; do not quietly pass.
-        for name in missing:
-            print(f"  {name:<44} NOT IN THE CORPUS (re-run build-corpus.ps1)")
-        return 1 if (bad or missing) else 0
+def list_corpus_files(corpus):
+    return [os.path.join(corpus, f) for f in sorted(os.listdir(corpus))
+            if os.path.isfile(os.path.join(corpus, f)) and not f.startswith("_")]
 
-    jobs = [(a.old, a.new, f, a.out, a.size, a.timeout) for f in files]
-    changed, lost, gained, same, errs = [], [], [], 0, []
+
+def print_expect_report(job_count, bad, missing):
+    print(f"=== {job_count} files with a known flattened colour, "
+          f"{job_count - len(bad)} correct ===")
+    for name, w, got, verdict in bad:
+        print(f"  {name:<44} want rgb{w}  got {got}  [{verdict}]")
+    # A manifest entry with no sample behind it is a silently EMPTY check, which is the
+    # failure mode this whole file exists to stop. Say so; do not quietly pass.
+    for name in missing:
+        print(f"  {name:<44} NOT IN THE CORPUS (re-run build-corpus.ps1)")
+
+
+def run_expect_mode(a, files):
+    want = load_expected(a.expect)
+    jobs = [(a.new, f, a.out, a.size, a.timeout, want[os.path.basename(f)], a.rendered)
+            for f in files if os.path.basename(f) in want]
+    missing = sorted(set(want) - {os.path.basename(f) for f in files})
+    bad = []
     with cf.ThreadPoolExecutor(max_workers=a.jobs) as pool:
+        for name, w, got, verdict in pool.map(expect_job, jobs):
+            if verdict != "ok":
+                bad.append((name, w, got, verdict))
+    print_expect_report(len(jobs), bad, missing)
+    return 1 if (bad or missing) else 0
+
+
+def classify_pair(name, ra, rb, delta, threshold):
+    """Sort one compare_job result into its bucket name, or None to count as 'same'."""
+    if ra == "ok" and rb != "ok":
+        return "lost", (name, rb)
+    if ra != "ok" and rb == "ok":
+        return "gained", (name, ra)
+    if ra != "ok":
+        return "skip", None
+    if isinstance(delta, str):
+        return "error", (name, delta)
+    if delta >= threshold:
+        return "changed", (name, delta)
+    return "same", None
+
+
+def run_differential_pool(files, jobs, threshold, worker_count):
+    changed, lost, gained, same, errs = [], [], [], 0, []
+    buckets = {"lost": lost, "gained": gained, "changed": changed, "error": errs}
+    with cf.ThreadPoolExecutor(max_workers=worker_count) as pool:
         for i, (name, ra, rb, delta) in enumerate(pool.map(compare_job, jobs), 1):
             if i % 25 == 0:
                 print(f"  ...{i}/{len(files)}", file=sys.stderr, flush=True)
-            if ra == "ok" and rb != "ok":
-                lost.append((name, rb))
-            elif ra != "ok" and rb == "ok":
-                gained.append((name, ra))
-            elif ra != "ok":
-                continue
-            elif isinstance(delta, str):
-                errs.append((name, delta))
-            elif delta >= a.threshold:
-                changed.append((name, delta))
-            else:
+            kind, entry = classify_pair(name, ra, rb, delta, threshold)
+            if kind == "same":
                 same += 1
+            elif kind != "skip":
+                buckets[kind].append(entry)
+    return changed, lost, gained, same, errs
 
-    print(f"\n=== {len(files)} samples, {same} pixel-identical ===")
+
+def print_differential_report(total, same, lost, gained, changed, errs):
+    print(f"\n=== {total} samples, {same} pixel-identical ===")
     print(f"\nLOST a thumbnail ({len(lost)}):")
     for n, why in sorted(lost):
         print(f"  {n:<44} new={why}")
@@ -197,7 +218,27 @@ def main():
         print(f"\nUNREADABLE OUTPUT ({len(errs)}):")
         for n, e in errs:
             print(f"  {n:<44} {e}")
+
+
+def run_differential_mode(a, files):
+    jobs = [(a.old, a.new, f, a.out, a.size, a.timeout) for f in files]
+    changed, lost, gained, same, errs = run_differential_pool(files, jobs, a.threshold, a.jobs)
+    print_differential_report(len(files), same, lost, gained, changed, errs)
     return 1 if (lost or changed or errs) else 0
+
+
+def main():
+    ap = build_arg_parser()
+    a = ap.parse_args()
+    validate_args(ap, a)
+
+    a.out = a.out or a.rendered
+    os.makedirs(a.out, exist_ok=True)
+    files = list_corpus_files(a.corpus)
+
+    if a.expect:
+        return run_expect_mode(a, files)
+    return run_differential_mode(a, files)
 
 
 if __name__ == "__main__":
