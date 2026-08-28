@@ -38,14 +38,18 @@ struct Bmhd {
     transparent: u16,
 }
 
-/// Decode an ILBM/PBM to RGBA, or `None` on malformed input.
-pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
-    if !looks_like_ilbm(bytes) {
-        return None;
-    }
-    let is_pbm = &bytes[8..12] == b"PBM ";
+/// What the IFF chunk walk gathers before any pixel work starts.
+struct IlbmChunks<'a> {
+    bmhd: Option<Bmhd>,
+    cmap: Vec<[u8; 3]>,
+    camg: u32,
+    sham: Option<&'a [u8]>,
+    body: Option<&'a [u8]>,
+}
 
-    // Walk the IFF chunks (after the 12-byte FORM header), gathering what we need.
+/// Walk the IFF chunks (after the 12-byte FORM header), gathering what the decoder needs.
+/// BODY is last in a well-formed file, so the walk stops there.
+fn parse_chunks(bytes: &[u8]) -> Option<IlbmChunks<'_>> {
     let mut bmhd: Option<Bmhd> = None;
     let mut cmap: Vec<[u8; 3]> = Vec::new();
     let mut camg: u32 = 0;
@@ -93,6 +97,125 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
         // Chunks are word-aligned: skip the pad byte after an odd length.
         p = data_end + (len & 1);
     }
+    Some(IlbmChunks {
+        bmhd,
+        cmap,
+        camg,
+        sham,
+        body,
+    })
+}
+
+/// Build one scanline's per-pixel colour index (and, for masking mode 1, per-pixel alpha)
+/// from the raw planar/chunky bytes.
+#[allow(clippy::too_many_arguments)]
+fn decode_row(
+    raw: &[u8],
+    y: usize,
+    w: usize,
+    row_bytes: usize,
+    planes_per_row: u32,
+    planes: u32,
+    is_pbm: bool,
+    masking: u8,
+    idx_row: &mut [u32],
+    mask_row: &mut [u8],
+) {
+    if is_pbm {
+        let row = &raw[y * row_bytes..];
+        for (x, slot) in idx_row.iter_mut().enumerate() {
+            *slot = *row.get(x).unwrap_or(&0) as u32;
+        }
+        return;
+    }
+    for v in idx_row.iter_mut() {
+        *v = 0;
+    }
+    let row_base = y * row_bytes * planes_per_row as usize;
+    for plane in 0..planes as usize {
+        let plane_off = row_base + plane * row_bytes;
+        let Some(plane_bytes) = raw.get(plane_off..plane_off + row_bytes) else {
+            continue;
+        };
+        for x in 0..w {
+            let bit = (plane_bytes[x >> 3] >> (7 - (x & 7))) & 1;
+            idx_row[x] |= (bit as u32) << plane;
+        }
+    }
+    // Masking mode 1 (mskHasMask): an EXTRA bitplane after the colour planes — bit
+    // set = pixel visible, clear = transparent. The row layout above already skips
+    // over it (`planes_per_row`); actually APPLY it too, or masked/transparent
+    // regions render fully opaque. A truncated/missing mask row degrades to opaque
+    // (the old behavior).
+    if masking == 1 {
+        for m in mask_row.iter_mut() {
+            *m = 255;
+        }
+        let mask_off = row_base + planes as usize * row_bytes;
+        if let Some(mask_bytes) = raw.get(mask_off..mask_off + row_bytes) {
+            for x in 0..w {
+                let bit = (mask_bytes[x >> 3] >> (7 - (x & 7))) & 1;
+                mask_row[x] = if bit == 1 { 255 } else { 0 };
+            }
+        }
+    }
+}
+
+/// Paint one scanline's colour indices into `img` as RGBA, resolving direct-RGB / HAM /
+/// EHB / indexed colour and the mask/colour-key alpha.
+#[allow(clippy::too_many_arguments)]
+fn paint_row(
+    img: &mut RgbaImage,
+    y: u32,
+    idx_row: &[u32],
+    mask_row: &[u8],
+    cmap: &[[u8; 3]],
+    line_pal: &[[u8; 3]],
+    direct_rgb: bool,
+    ham: bool,
+    planes: u32,
+    ehb: bool,
+    masking: u8,
+    transparent: u32,
+) {
+    let mut prev = line_pal.first().copied().unwrap_or([0, 0, 0]); // HAM running colour
+    for (x, &v) in idx_row.iter().enumerate() {
+        let [r, g, b] = if direct_rgb {
+            [
+                (v & 0xFF) as u8,
+                ((v >> 8) & 0xFF) as u8,
+                ((v >> 16) & 0xFF) as u8,
+            ]
+        } else if ham {
+            ham_pixel(v, planes, line_pal, &mut prev)
+        } else if ehb {
+            ehb_color(v, cmap)
+        } else {
+            cmap.get(v as usize).copied().unwrap_or([0, 0, 0])
+        };
+        let a = if masking == 2 && v == transparent {
+            0
+        } else {
+            mask_row[x] // 255 unless masking mode 1 cleared this pixel's mask bit
+        };
+        img.put_pixel(x as u32, y, image::Rgba([r, g, b, a]));
+    }
+}
+
+/// Decode an ILBM/PBM to RGBA, or `None` on malformed input.
+pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
+    if !looks_like_ilbm(bytes) {
+        return None;
+    }
+    let is_pbm = &bytes[8..12] == b"PBM ";
+
+    let IlbmChunks {
+        bmhd,
+        cmap,
+        camg,
+        sham,
+        body,
+    } = parse_chunks(bytes)?;
 
     let bmhd = bmhd?;
     let body = body?;
@@ -154,49 +277,21 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     let mut mask_row = vec![255u8; w as usize]; // per-pixel alpha from the mask plane
 
     for y in 0..h as usize {
-        // Build the per-pixel value for this scanline.
-        if is_pbm {
-            let row = &raw[y * row_bytes..];
-            for (x, slot) in idx_row.iter_mut().enumerate() {
-                *slot = *row.get(x).unwrap_or(&0) as u32;
-            }
-        } else {
-            for v in idx_row.iter_mut() {
-                *v = 0;
-            }
-            let row_base = y * row_bytes * planes_per_row as usize;
-            for plane in 0..planes as usize {
-                let plane_off = row_base + plane * row_bytes;
-                let plane_bytes = raw.get(plane_off..plane_off + row_bytes);
-                let Some(plane_bytes) = plane_bytes else {
-                    continue;
-                };
-                for x in 0..w as usize {
-                    let bit = (plane_bytes[x >> 3] >> (7 - (x & 7))) & 1;
-                    idx_row[x] |= (bit as u32) << plane;
-                }
-            }
-            // Masking mode 1 (mskHasMask): an EXTRA bitplane after the colour
-            // planes — bit set = pixel visible, clear = transparent. The row
-            // layout above already skips over it (`planes_per_row`); actually
-            // APPLY it too, or masked/transparent regions render fully opaque.
-            // A truncated/missing mask row degrades to opaque (the old behavior).
-            if bmhd.masking == 1 {
-                for m in mask_row.iter_mut() {
-                    *m = 255;
-                }
-                let mask_off = row_base + planes as usize * row_bytes;
-                if let Some(mask_bytes) = raw.get(mask_off..mask_off + row_bytes) {
-                    for x in 0..w as usize {
-                        let bit = (mask_bytes[x >> 3] >> (7 - (x & 7))) & 1;
-                        mask_row[x] = if bit == 1 { 255 } else { 0 };
-                    }
-                }
-            }
-        }
+        decode_row(
+            &raw,
+            y,
+            w as usize,
+            row_bytes,
+            planes_per_row,
+            planes,
+            is_pbm,
+            bmhd.masking,
+            &mut idx_row,
+            &mut mask_row,
+        );
 
-        // Map the scanline's values to RGBA. For SHAM, pick this line's palette
-        // (one per scanline, or one per pair on interlaced files).
+        // For SHAM, pick this line's palette (one per scanline, or one per pair on
+        // interlaced files).
         let line_pal: &[[u8; 3]] = if sham_pals.is_empty() {
             &cmap
         } else {
@@ -204,28 +299,21 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
             let idx = if n >= h as usize { y } else { y / 2 };
             &sham_pals[idx.min(n - 1)]
         };
-        let mut prev = line_pal.first().copied().unwrap_or([0, 0, 0]); // HAM running colour
-        for (x, &v) in idx_row.iter().enumerate() {
-            let [r, g, b] = if direct_rgb {
-                [
-                    (v & 0xFF) as u8,
-                    ((v >> 8) & 0xFF) as u8,
-                    ((v >> 16) & 0xFF) as u8,
-                ]
-            } else if ham {
-                ham_pixel(v, planes, line_pal, &mut prev)
-            } else if ehb {
-                ehb_color(v, &cmap)
-            } else {
-                cmap.get(v as usize).copied().unwrap_or([0, 0, 0])
-            };
-            let a = if bmhd.masking == 2 && v == bmhd.transparent as u32 {
-                0
-            } else {
-                mask_row[x] // 255 unless masking mode 1 cleared this pixel's mask bit
-            };
-            img.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, a]));
-        }
+
+        paint_row(
+            &mut img,
+            y as u32,
+            &idx_row,
+            &mask_row,
+            &cmap,
+            line_pal,
+            direct_rgb,
+            ham,
+            planes,
+            ehb,
+            bmhd.masking,
+            bmhd.transparent as u32,
+        );
     }
 
     Some(DynamicImage::ImageRgba8(img))
