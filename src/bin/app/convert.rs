@@ -628,6 +628,110 @@ unsafe fn read_resize(hwnd: HWND) -> Resize {
     }
 }
 
+/// The dialog's configured output directory, or `None` for "same folder as each
+/// image" (the localized placeholder, or the legacy `(`-prefixed form, both mean
+/// "unset").
+unsafe fn resolve_convert_outdir(hwnd: HWND) -> Option<PathBuf> {
+    let outdir_text = get_edit_text(hwnd, CID_OUTDIR);
+    let is_placeholder = outdir_text.is_empty()
+        || outdir_text == t("cv_same_folder")
+        || outdir_text.starts_with('(');
+    (!is_placeholder).then(|| std::path::PathBuf::from(&outdir_text))
+}
+
+/// One (resize, tag) job's output for `f`, dispatched by target kind.
+/// `pdf_already_written` suppresses duplicate PDF jobs: the PDF writer takes no
+/// resize, so re-running it once per size would emit N identical PDFs under
+/// confusing names, so only the first job in a file's list is honored.
+#[allow(clippy::too_many_arguments)]
+fn produce_convert_job(
+    f: &str,
+    tgt: CvTarget,
+    dir: &std::path::Path,
+    resize: Resize,
+    tag: Option<&str>,
+    quality: u8,
+    png_level: u32,
+    webp_quality: Option<u8>,
+    pdf_already_written: bool,
+) -> Option<PathBuf> {
+    match tgt {
+        CvTarget::Native(format, ext) => {
+            let opts = ConvertOpts {
+                // The dialog supplies WebP quality via `opts.webp_quality`
+                // (from its per-format Settings), so the Target stays None.
+                target: Target {
+                    format,
+                    ext,
+                    webp_quality: None,
+                },
+                jpeg_quality: quality,
+                png_level,
+                webp_quality,
+                resize,
+            };
+            sagethumbs2k_core::convert_file_opts_named(f, opts, dir, tag).ok()
+        }
+        // One image -> one single-page PDF (reserved name in `dir`). Page geometry
+        // is a PDF page-layout setting (Settings > Saving), not a pixel resize.
+        CvTarget::Pdf if pdf_already_written => None,
+        CvTarget::Pdf => sagethumbs2k_core::convert_image_to_pdf_in(f, dir, quality).ok(),
+        // Exotic target written by the bundled ImageMagick (reserved name).
+        CvTarget::Magick(ext) => {
+            // AVIF/JXL honor the quality slider; the lossless exotic targets
+            // (PSD/DDS/…) get magick's default (None).
+            let q = matches!(ext, "avif" | "jxl")
+                .then(|| MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8);
+            sagethumbs2k_core::convert_to_magick_in_named(f, dir, ext, resize, q, tag).ok()
+        }
+    }
+}
+
+/// One source file's whole job list (normally one job; three when "write every
+/// preset size" is on). Each source runs its whole size list here rather than the
+/// list being flattened into the work items, so one file's outputs stay on one
+/// worker and cannot interleave with another file's. Note the decode still
+/// happens once per OUTPUT, not once per file - each `convert_file_opts_named`
+/// reads and decodes the source itself. Sharing one decode across the sizes would
+/// mean holding a full-resolution image while three encodes run, which is the
+/// trade this deliberately does not make.
+fn convert_one_file(
+    f: &str,
+    tgt: CvTarget,
+    jobs: &[(Resize, Option<String>)],
+    quality: u8,
+    png_level: u32,
+    webp_quality: Option<u8>,
+    outdir: &Option<PathBuf>,
+) -> Option<PathBuf> {
+    // Cancelled mid-run: skip the rest cheaply so the batch winds down fast.
+    if CONVERT_CANCEL.load(Ordering::Relaxed) {
+        return None;
+    }
+    let dir = outdir
+        .clone()
+        .or_else(|| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))?;
+    let mut first: Option<PathBuf> = None;
+    for (resize, tag) in jobs {
+        let (resize, tag) = (*resize, tag.as_deref());
+        let produced = produce_convert_job(
+            f,
+            tgt,
+            &dir,
+            resize,
+            tag,
+            quality,
+            png_level,
+            webp_quality,
+            first.is_some(),
+        );
+        if first.is_none() {
+            first = produced;
+        }
+    }
+    first
+}
+
 /// Read the dialog options and run the batch conversion on a worker thread,
 /// posting progress back to the window.
 unsafe fn start_convert(hwnd: HWND) {
@@ -650,14 +754,7 @@ unsafe fn start_convert(hwnd: HWND) {
     };
     // Normally one job per file; three when "write every preset size" is on.
     let jobs = read_resize_jobs(hwnd);
-    let outdir_text = get_edit_text(hwnd, CID_OUTDIR);
-    // The "(same folder as each image)" placeholder means "no explicit outdir".
-    // Compare against the localized placeholder (and the legacy `(`-prefixed form)
-    // so a translated placeholder is still recognized as "unset".
-    let is_placeholder = outdir_text.is_empty()
-        || outdir_text == t("cv_same_folder")
-        || outdir_text.starts_with('(');
-    let outdir = (!is_placeholder).then(|| std::path::PathBuf::from(&outdir_text));
+    let outdir = resolve_convert_outdir(hwnd);
 
     if let Ok(prog) = GetDlgItem(Some(hwnd), CID_PROGRESS) {
         let _ = ShowWindow(prog, SW_SHOW);
@@ -692,69 +789,7 @@ unsafe fn start_convert(hwnd: HWND) {
         let outs: Vec<Option<PathBuf>> = sagethumbs2k_core::parallel::map_indexed(
             &files,
             0, // auto worker count = available_parallelism
-            |_, f| {
-                // Cancelled mid-run: skip the rest cheaply so the batch winds down fast.
-                if CONVERT_CANCEL.load(Ordering::Relaxed) {
-                    return None;
-                }
-                let dir = outdir
-                    .clone()
-                    .or_else(|| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))?;
-                // Each source runs its whole size list here rather than the list being
-                // flattened into the work items, so one file's outputs stay on one worker
-                // and cannot interleave with another file's. Note the decode still happens
-                // once per OUTPUT, not once per file - each `convert_file_opts_named` reads
-                // and decodes the source itself. Sharing one decode across the sizes would
-                // mean holding a full-resolution image while three encodes run, which is the
-                // trade this deliberately does not make.
-                let mut first: Option<PathBuf> = None;
-                for (resize, tag) in &jobs {
-                    let (resize, tag) = (*resize, tag.as_deref());
-                    let produced = match tgt {
-                        CvTarget::Native(format, ext) => {
-                            let opts = ConvertOpts {
-                                // The dialog supplies WebP quality via `opts.webp_quality`
-                                // (from its per-format Settings), so the Target stays None.
-                                target: Target {
-                                    format,
-                                    ext,
-                                    webp_quality: None,
-                                },
-                                jpeg_quality: quality,
-                                png_level,
-                                webp_quality,
-                                resize,
-                            };
-                            sagethumbs2k_core::convert_file_opts_named(f, opts, &dir, tag).ok()
-                        }
-                        // One image -> one single-page PDF (reserved name in `dir`).
-                        // The PDF writer takes no resize, so running it once per size
-                        // would emit N IDENTICAL PDFs under confusing names. Emit the
-                        // first job only; page geometry is a PDF page-layout setting
-                        // (Settings > Saving), not a pixel resize.
-                        CvTarget::Pdf if first.is_some() => None,
-                        CvTarget::Pdf => {
-                            sagethumbs2k_core::convert_image_to_pdf_in(f, &dir, quality).ok()
-                        }
-                        // Exotic target written by the bundled ImageMagick (reserved name).
-                        CvTarget::Magick(ext) => {
-                            // AVIF/JXL honor the quality slider; the lossless exotic targets
-                            // (PSD/DDS/…) get magick's default (None).
-                            let q = matches!(ext, "avif" | "jxl").then(|| {
-                                MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8
-                            });
-                            sagethumbs2k_core::convert_to_magick_in_named(
-                                f, &dir, ext, resize, q, tag,
-                            )
-                            .ok()
-                        }
-                    };
-                    if first.is_none() {
-                        first = produced;
-                    }
-                }
-                first
-            },
+            |_, f| convert_one_file(f, tgt, &jobs, quality, png_level, webp_quality, &outdir),
             || {
                 let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let _ = PostMessageW(
@@ -1048,6 +1083,84 @@ extern "system" fn settings_wndproc(
     }
 }
 
+/// `WM_CREATE`: build the dialog's controls.
+unsafe fn on_convert_create(hwnd: HWND) -> LRESULT {
+    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+    build_convert_controls(hwnd, hinst);
+    LRESULT(0)
+}
+
+/// `WM_COMMAND`: every button/combo the dialog owns.
+unsafe fn on_convert_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    let id = (wparam.0 & 0xFFFF) as i32;
+    let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+    match id {
+        IDOK => start_convert(hwnd),
+        IDCANCEL => request_close(hwnd),
+        CID_BROWSE => {
+            if let Some(dir) = pick_folder(hwnd) {
+                set_edit_text(hwnd, CID_OUTDIR, &dir);
+            }
+        }
+        CID_SETTINGS => {
+            let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            run_format_settings(hwnd, hinst, combo_sel(hwnd, CID_FORMAT));
+        }
+        CID_FORMAT if notify == CBN_SELCHANGE => update_settings_enabled(hwnd),
+        CID_RESIZE_CHK | CID_RESIZE_ALL => update_resize_enabled(hwnd),
+        CID_RESIZE if notify == CBN_SELCHANGE => update_resize_enabled(hwnd),
+        _ => {}
+    }
+    LRESULT(0)
+}
+
+/// `WM_CONVERT_PROGRESS`: advance the progress bar to `wparam` files done.
+unsafe fn on_convert_progress(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    if let Ok(p) = GetDlgItem(Some(hwnd), CID_PROGRESS) {
+        SendMessageW(p, PBM_SETPOS, Some(WPARAM(wparam.0)), None);
+    }
+    LRESULT(0)
+}
+
+/// `WM_CONVERT_DONE`: report the summary, offer to open the output folder when at
+/// least one file was written, then close.
+unsafe fn on_convert_done(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    CONVERT_RUNNING.store(false, Ordering::Relaxed);
+    let ok = wparam.0;
+    let summary = t("cv_done")
+        .replace("{ok}", &ok.to_string())
+        .replace("{total}", &lparam.0.to_string());
+    let cap = wide("SageThumbs 2K");
+    // When at least one file was written, offer to open the output
+    // folder (Explorer with the first produced file selected). Nothing
+    // written → just the plain summary.
+    match LAST_OUTPUT.lock().unwrap().clone().filter(|_| ok > 0) {
+        Some(path) => {
+            let text = wide(&format!("{summary}\n\n{}", t("cv_open_folder")));
+            let r = MessageBoxW(
+                Some(hwnd),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(cap.as_ptr()),
+                MB_YESNO | MB_ICONINFORMATION,
+            );
+            if r == IDYES {
+                reveal_in_explorer(&path);
+            }
+        }
+        None => {
+            let text = wide(&summary);
+            MessageBoxW(
+                Some(hwnd),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(cap.as_ptr()),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+    }
+    let _ = DestroyWindow(hwnd);
+    LRESULT(0)
+}
+
 extern "system" fn convert_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -1059,75 +1172,10 @@ extern "system" fn convert_wndproc(
             return r;
         }
         match msg {
-            WM_CREATE => {
-                let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
-                build_convert_controls(hwnd, hinst);
-                LRESULT(0)
-            }
-            WM_COMMAND => {
-                let id = (wparam.0 & 0xFFFF) as i32;
-                let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
-                match id {
-                    IDOK => start_convert(hwnd),
-                    IDCANCEL => request_close(hwnd),
-                    CID_BROWSE => {
-                        if let Some(dir) = pick_folder(hwnd) {
-                            set_edit_text(hwnd, CID_OUTDIR, &dir);
-                        }
-                    }
-                    CID_SETTINGS => {
-                        let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
-                        run_format_settings(hwnd, hinst, combo_sel(hwnd, CID_FORMAT));
-                    }
-                    CID_FORMAT if notify == CBN_SELCHANGE => update_settings_enabled(hwnd),
-                    CID_RESIZE_CHK | CID_RESIZE_ALL => update_resize_enabled(hwnd),
-                    CID_RESIZE if notify == CBN_SELCHANGE => update_resize_enabled(hwnd),
-                    _ => {}
-                }
-                LRESULT(0)
-            }
-            WM_CONVERT_PROGRESS => {
-                if let Ok(p) = GetDlgItem(Some(hwnd), CID_PROGRESS) {
-                    SendMessageW(p, PBM_SETPOS, Some(WPARAM(wparam.0)), None);
-                }
-                LRESULT(0)
-            }
-            WM_CONVERT_DONE => {
-                CONVERT_RUNNING.store(false, Ordering::Relaxed);
-                let ok = wparam.0;
-                let summary = t("cv_done")
-                    .replace("{ok}", &ok.to_string())
-                    .replace("{total}", &lparam.0.to_string());
-                let cap = wide("SageThumbs 2K");
-                // When at least one file was written, offer to open the output
-                // folder (Explorer with the first produced file selected). Nothing
-                // written → just the plain summary.
-                match LAST_OUTPUT.lock().unwrap().clone().filter(|_| ok > 0) {
-                    Some(path) => {
-                        let text = wide(&format!("{summary}\n\n{}", t("cv_open_folder")));
-                        let r = MessageBoxW(
-                            Some(hwnd),
-                            PCWSTR(text.as_ptr()),
-                            PCWSTR(cap.as_ptr()),
-                            MB_YESNO | MB_ICONINFORMATION,
-                        );
-                        if r == IDYES {
-                            reveal_in_explorer(&path);
-                        }
-                    }
-                    None => {
-                        let text = wide(&summary);
-                        MessageBoxW(
-                            Some(hwnd),
-                            PCWSTR(text.as_ptr()),
-                            PCWSTR(cap.as_ptr()),
-                            MB_OK | MB_ICONINFORMATION,
-                        );
-                    }
-                }
-                let _ = DestroyWindow(hwnd);
-                LRESULT(0)
-            }
+            WM_CREATE => on_convert_create(hwnd),
+            WM_COMMAND => on_convert_command(hwnd, wparam),
+            WM_CONVERT_PROGRESS => on_convert_progress(hwnd, wparam),
+            WM_CONVERT_DONE => on_convert_done(hwnd, wparam, lparam),
             WM_DPICHANGED => {
                 wm_dpichanged(hwnd, lparam);
                 LRESULT(0)
