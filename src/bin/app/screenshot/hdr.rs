@@ -35,13 +35,15 @@
 use windows::core::Interface;
 use windows::core::BOOL;
 use windows::Foundation::TypedEventHandler;
-use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
+use windows::Graphics::Capture::{
+    Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
+};
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
@@ -191,73 +193,10 @@ pub(super) fn monitor_is_hdr(mon: HMONITOR) -> bool {
 /// case is today's behaviour rather than a broken screenshot.
 pub(super) fn capture_monitor(mon: HMONITOR) -> Option<(Vec<u8>, u32, u32)> {
     unsafe {
-        // --- D3D11 device, and its WinRT face -------------------------------
-        let mut device: Option<ID3D11Device> = None;
-        D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            HMODULE::default(),
-            // BGRA support is REQUIRED for the capture interop; without it the
-            // frame pool either fails outright or hands back the wrong format.
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            None,
-        )
-        .ok()?;
-        let device = device?;
-        let ctx = device.GetImmediateContext().ok()?;
-        let dxgi: IDXGIDevice = device.cast().ok()?;
-        let winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice =
-            CreateDirect3D11DeviceFromDXGIDevice(&dxgi)
-                .ok()?
-                .cast()
-                .ok()?;
+        let (device, ctx, winrt_device) = create_capture_device()?;
+        let (pool, session) = start_capture_session(mon, &winrt_device)?;
 
-        // --- The capture item for this monitor ------------------------------
-        // `CreateForMonitor` is the interop path, so there is no consent picker:
-        // a desktop app capturing a screen it can already BitBlt needs no extra
-        // permission.
-        let interop =
-            windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>().ok()?;
-        let item: GraphicsCaptureItem = interop.CreateForMonitor(mon).ok()?;
-        let size = item.Size().ok()?;
-        if size.Width <= 0 || size.Height <= 0 {
-            return None;
-        }
-
-        // Free-threaded pool: we poll for one frame from this thread rather than
-        // pumping a dispatcher we do not own.
-        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-            &winrt_device,
-            DirectXPixelFormat::R16G16B16A16Float,
-            2,
-            size,
-        )
-        .ok()?;
-        let session = pool.CreateCaptureSession(&item).ok()?;
-        // The cursor is drawn by the overlay itself, and a screenshot tool that
-        // bakes in a stale pointer is worse than one that does not.
-        let _ = session.SetIsCursorCaptureEnabled(false);
-        // Registering a no-op handler keeps the pool alive on some drivers that
-        // will not produce frames for a pool with no listener at all.
-        let _ = pool.FrameArrived(&TypedEventHandler::new(|_, _| Ok(())));
-        session.StartCapture().ok()?;
-
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(FRAME_TIMEOUT_MS);
-        let frame = loop {
-            if let Ok(f) = pool.TryGetNextFrame() {
-                break Some(f);
-            }
-            if std::time::Instant::now() >= deadline {
-                break None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(4));
-        };
-        let frame = match frame {
+        let frame = match wait_for_frame(&pool) {
             Some(f) => f,
             None => {
                 let _ = session.Close();
@@ -267,28 +206,15 @@ pub(super) fn capture_monitor(mon: HMONITOR) -> Option<(Vec<u8>, u32, u32)> {
         };
 
         // --- GPU texture -> CPU staging copy --------------------------------
-        let access: IDirect3DDxgiInterfaceAccess = frame.Surface().ok()?.cast().ok()?;
-        let src: ID3D11Texture2D = access.GetInterface().ok()?;
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        src.GetDesc(&mut desc);
+        let Some((src, desc)) = frame_src_texture(&frame) else {
+            return None;
+        };
         if desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT {
             let _ = session.Close();
             let _ = pool.Close();
             return None; // not the HDR surface we asked for — do not guess at it
         }
-        let staging_desc = D3D11_TEXTURE2D_DESC {
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-            MiscFlags: 0,
-            ..desc
-        };
-        let mut staging: Option<ID3D11Texture2D> = None;
-        device
-            .CreateTexture2D(&staging_desc, None, Some(&mut staging))
-            .ok()?;
-        let staging = staging?;
-        ctx.CopyResource(&staging, &src);
+        let staging = staged_copy(&device, &ctx, &src, &desc)?;
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
@@ -306,6 +232,120 @@ pub(super) fn capture_monitor(mon: HMONITOR) -> Option<(Vec<u8>, u32, u32)> {
         let _ = pool.Close();
         Some((out, w, h))
     }
+}
+
+/// D3D11 device, and its WinRT face. BGRA support is REQUIRED for the capture interop;
+/// without it the frame pool either fails outright or hands back the wrong format.
+unsafe fn create_capture_device() -> Option<(
+    ID3D11Device,
+    ID3D11DeviceContext,
+    windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
+)> {
+    let mut device: Option<ID3D11Device> = None;
+    D3D11CreateDevice(
+        None,
+        D3D_DRIVER_TYPE_HARDWARE,
+        HMODULE::default(),
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        None,
+        D3D11_SDK_VERSION,
+        Some(&mut device),
+        None,
+        None,
+    )
+    .ok()?;
+    let device = device?;
+    let ctx = device.GetImmediateContext().ok()?;
+    let dxgi: IDXGIDevice = device.cast().ok()?;
+    let winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice =
+        CreateDirect3D11DeviceFromDXGIDevice(&dxgi)
+            .ok()?
+            .cast()
+            .ok()?;
+    Some((device, ctx, winrt_device))
+}
+
+/// The capture item for `mon` (`CreateForMonitor` is the interop path, so there is no
+/// consent picker: a desktop app capturing a screen it can already BitBlt needs no extra
+/// permission), and a started free-threaded capture session against it.
+unsafe fn start_capture_session(
+    mon: HMONITOR,
+    winrt_device: &windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
+) -> Option<(Direct3D11CaptureFramePool, GraphicsCaptureSession)> {
+    let interop =
+        windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>().ok()?;
+    let item: GraphicsCaptureItem = interop.CreateForMonitor(mon).ok()?;
+    let size = item.Size().ok()?;
+    if size.Width <= 0 || size.Height <= 0 {
+        return None;
+    }
+
+    // Free-threaded pool: we poll for one frame from this thread rather than
+    // pumping a dispatcher we do not own.
+    let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        winrt_device,
+        DirectXPixelFormat::R16G16B16A16Float,
+        2,
+        size,
+    )
+    .ok()?;
+    let session = pool.CreateCaptureSession(&item).ok()?;
+    // The cursor is drawn by the overlay itself, and a screenshot tool that
+    // bakes in a stale pointer is worse than one that does not.
+    let _ = session.SetIsCursorCaptureEnabled(false);
+    // Registering a no-op handler keeps the pool alive on some drivers that
+    // will not produce frames for a pool with no listener at all.
+    let _ = pool.FrameArrived(&TypedEventHandler::new(|_, _| Ok(())));
+    session.StartCapture().ok()?;
+    Some((pool, session))
+}
+
+/// Poll `pool` until a frame arrives or [`FRAME_TIMEOUT_MS`] elapses.
+unsafe fn wait_for_frame(pool: &Direct3D11CaptureFramePool) -> Option<Direct3D11CaptureFrame> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(FRAME_TIMEOUT_MS);
+    loop {
+        if let Ok(f) = pool.TryGetNextFrame() {
+            return Some(f);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(4));
+    }
+}
+
+/// `frame`'s underlying D3D11 texture and its description.
+unsafe fn frame_src_texture(
+    frame: &Direct3D11CaptureFrame,
+) -> Option<(ID3D11Texture2D, D3D11_TEXTURE2D_DESC)> {
+    let access: IDirect3DDxgiInterfaceAccess = frame.Surface().ok()?.cast().ok()?;
+    let src: ID3D11Texture2D = access.GetInterface().ok()?;
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    src.GetDesc(&mut desc);
+    Some((src, desc))
+}
+
+/// Copy `src` into a new CPU-readable staging texture matching `desc`.
+unsafe fn staged_copy(
+    device: &ID3D11Device,
+    ctx: &ID3D11DeviceContext,
+    src: &ID3D11Texture2D,
+    desc: &D3D11_TEXTURE2D_DESC,
+) -> Option<ID3D11Texture2D> {
+    let staging_desc = D3D11_TEXTURE2D_DESC {
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+        MiscFlags: 0,
+        ..*desc
+    };
+    let mut staging: Option<ID3D11Texture2D> = None;
+    device
+        .CreateTexture2D(&staging_desc, None, Some(&mut staging))
+        .ok()?;
+    let staging = staging?;
+    ctx.CopyResource(&staging, src);
+    Some(staging)
 }
 
 /// scRGB half-float rows -> top-down 8-bit BGRA.
