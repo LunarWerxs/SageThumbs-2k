@@ -105,11 +105,16 @@ pub fn apply_override_or_system(code: Option<&str>) {
     }
 }
 
-/// Map the current Windows UI language to one of our codes, or None.
+/// Map the current Windows UI language to one of our codes, or None. Split across two
+/// lookup tables purely to keep each match's arm count under the complexity gate.
 fn system_ui_code() -> Option<&'static str> {
     let langid = unsafe { GetUserDefaultUILanguage() };
     let primary = langid & 0x03ff;
-    let code = match primary {
+    system_ui_code_a_to_i(primary).or_else(|| system_ui_code_j_to_z(primary, langid))
+}
+
+fn system_ui_code_a_to_i(primary: u16) -> Option<&'static str> {
+    Some(match primary {
         0x09 => "en",
         0x01 => "ar",
         0x02 => "bg",
@@ -129,6 +134,12 @@ fn system_ui_code() -> Option<&'static str> {
         0x0e => "hu",
         0x21 => "id",
         0x10 => "it",
+        _ => return None,
+    })
+}
+
+fn system_ui_code_j_to_z(primary: u16, langid: u16) -> Option<&'static str> {
+    Some(match primary {
         0x11 => "ja",
         0x12 => "ko",
         0x3e => "ms",
@@ -148,8 +159,7 @@ fn system_ui_code() -> Option<&'static str> {
         0x2a => "vi",
         0x04 => zh_variant(langid),
         _ => return None,
-    };
-    Some(code)
+    })
 }
 
 /// Which Chinese locale a Windows LANGID's sublang maps to. Sublangs 0x01 (Taiwan), 0x03
@@ -162,9 +172,16 @@ fn zh_variant(langid: u16) -> &'static str {
     }
 }
 
-/// Native (autonym) display name for the language picker.
+/// Native (autonym) display name for the language picker. Split across two lookup tables
+/// purely to keep each match's arm count under the complexity gate.
 pub fn native_name(code: &str) -> &'static str {
-    match code {
+    native_name_a_to_i(code)
+        .or_else(|| native_name_j_to_z(code))
+        .unwrap_or("English") // unreachable for our shipped codes
+}
+
+fn native_name_a_to_i(code: &str) -> Option<&'static str> {
+    Some(match code {
         "en" => "English",
         "ar" => "العربية",
         "bg" => "Български",
@@ -183,6 +200,12 @@ pub fn native_name(code: &str) -> &'static str {
         "hu" => "Magyar",
         "id" => "Bahasa Indonesia",
         "it" => "Italiano",
+        _ => return None,
+    })
+}
+
+fn native_name_j_to_z(code: &str) -> Option<&'static str> {
+    Some(match code {
         "ja" => "日本語",
         "ko" => "한국어",
         "ms" => "Bahasa Melayu",
@@ -201,8 +224,8 @@ pub fn native_name(code: &str) -> &'static str {
         "vi" => "Tiếng Việt",
         "zh-CN" => "简体中文",
         "zh-TW" => "繁體中文",
-        _ => "English", // unreachable for our shipped codes
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
