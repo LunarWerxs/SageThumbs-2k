@@ -47,7 +47,6 @@ pub(super) unsafe fn draw_table(
     let fonts = Fonts::new(hwnd, BODY_PX, false, false);
     let hfonts = Fonts::new(hwnd, BODY_PX, true, false);
     let ctx = ctx_for(hwnd, c, c.fg);
-    let col_align = |ci: usize| aligns.get(ci).copied().unwrap_or(0);
 
     // Every row to draw, in order, with its "is the header row" flag (HTML tables may have none).
     let all: Vec<(&[Vec<Run>], bool)> = {
@@ -59,65 +58,10 @@ pub(super) unsafe fn draw_table(
         v
     };
 
-    // Step 1: each column's natural (unwrapped) TEXT width. Padding is deliberately NOT folded
-    // in yet — how much padding the table can afford depends on this total.
-    //
-    // MEASURED FROM THE WIDEST FEW CELLS PER COLUMN, not from every cell. `run_block` is a full
-    // inline layout pass (font select, tokenise, measure each word, allocate), around 37 us a
-    // call, and this loop used to run it on EVERY cell on EVERY paint. A CSV export with 6,666
-    // rows and 80 columns is 427,000 cells, so this step alone was ~16 seconds, and steps 4 and
-    // 5 below each did it again: a real 5 MB CSV took 49 SECONDS to appear. Arrowing through a
-    // folder of them was the symptom.
-    //
-    // Character count is a free proxy for width, so the candidates are picked by that and only
-    // the top few per column are actually measured. It is a proxy, not a guarantee (`WWWW` is
-    // wider than `iiiiii`), which is exactly why it takes the top SEVERAL rather than the single
-    // longest: for a column to come out narrow, every one of the widest seven by character count
-    // would have to be unusually narrow characters AND some shorter cell unusually wide ones.
-    // The cost of being wrong is a column that wraps a cell it need not have, never clipped or
-    // overlapping text (step 5 clips every cell to its own column regardless).
-    const WIDTH_SAMPLES: usize = 7;
-    let mut nat_text = vec![0i32; ncols];
     let mut scratch: Vec<LinkHit> = Vec::new();
-    let cell_chars = |cell: &[Run]| -> usize { cell.iter().map(|r| r.text.chars().count()).sum() };
-    for (ci, nat) in nat_text.iter_mut().enumerate() {
-        // The header always counts: it is a different (bold) font and it is the row a narrow
-        // column is most visibly wrong for.
-        let mut cands: Vec<(usize, usize)> = Vec::new(); // (chars, index into `all`)
-        for (ri, (row, _)) in all.iter().enumerate() {
-            if let Some(cell) = row.get(ci) {
-                cands.push((cell_chars(cell), ri));
-            }
-        }
-        cands.sort_unstable_by_key(|&(chars, _)| std::cmp::Reverse(chars));
-        let hdr_first = if all.first().map(|(_, h)| *h).unwrap_or(false) {
-            Some(0usize)
-        } else {
-            None
-        };
-        for ri in hdr_first
-            .into_iter()
-            .chain(cands.iter().take(WIDTH_SAMPLES).map(|&(_, ri)| ri))
-        {
-            let (row, is_hdr) = all[ri];
-            let Some(cell) = row.get(ci) else { continue };
-            let f = if is_hdr { &hfonts } else { &fonts };
-            let (_, w) = run_block(
-                hdc,
-                cell,
-                f,
-                0,
-                0,
-                i32::MAX / 4,
-                0,
-                true,
-                &ctx,
-                &mut scratch,
-                None,
-            );
-            *nat = (*nat).max(w);
-        }
-    }
+    // Step 1: each column's natural (unwrapped) TEXT width.
+    let nat_text =
+        measure_natural_col_widths(hdc, &all, ncols, &fonts, &hfonts, &ctx, &mut scratch);
 
     // Step 2: GitHub's roomy 13px side padding is most of a column once a CSV export brings
     // nine of them (26px of every ~107px slice). When the table cannot fit at natural width the
@@ -145,24 +89,148 @@ pub(super) unsafe fn draw_table(
         fair_widths(&nat, avail)
     };
     let table_w: i32 = colw.iter().sum();
-    let cell_x = |ci: usize| x0 + colw[..ci].iter().sum::<i32>();
-    // The text a cell may use. `colw` is floored at `min_col` above, so the guard only bites in
-    // the more-columns-than-fit case — where the per-cell clip is what keeps things tidy.
-    let cell_w = |ci: usize| (colw[ci] - 2 * hpad).max(sc(8));
 
     // Step 4: row heights (wrap each cell at its column width).
-    //
-    // Every row's height is needed, even for rows far off screen, because the rows below cannot
-    // be placed without it. What is NOT needed is a full layout pass per cell: the overwhelming
-    // majority of CSV cells are short and obviously fit on one line, and for those the answer is
-    // just the line height.
-    //
-    // `max_char_w` is the widest glyph in the font, so `chars * max_char_w` is an upper bound on
-    // any string's width in it. When that bound already fits the column, the cell CANNOT wrap and
-    // needs no measuring at all — a conservative test, so it is never wrong in the direction that
-    // matters. Only cells that might wrap pay for `run_block`. `line_lead` and the `sc(3)` in
-    // `line_h_probe` are the same value, so a single-line cell's measured height is exactly
-    // `line_h_probe` and the fast path is not an approximation.
+    let row_h = measure_row_heights(
+        hwnd,
+        hdc,
+        &all,
+        ncols,
+        &fonts,
+        &hfonts,
+        &ctx,
+        &colw,
+        hpad,
+        vpad,
+        &mut scratch,
+    );
+
+    // Step 5: draw. Zebra fill first, then text, then the grid on top.
+    let mut y = draw_table_rows(
+        hwnd, hdc, &all, &row_h, ncols, &colw, x0, y0, table_w, hpad, vpad, &fonts, &hfonts,
+        aligns, c, &ctx, links, sel, vis,
+    );
+    draw_table_grid(hdc, x0, y0, y, table_w, ncols, &colw, c);
+    // Say what was left out. Silently dropping columns would be the same sin as silently
+    // truncating rows, and the number is the only way a reader can tell this is a preview
+    // limit rather than the file's real shape.
+    y = draw_dropped_col_note(
+        hwnd,
+        hdc,
+        dropped_cols,
+        x0,
+        y,
+        avail,
+        &fonts,
+        c,
+        &mut scratch,
+    );
+    fonts.free();
+    hfonts.free();
+    y
+}
+
+/// [`draw_table`] step 1: each column's natural (unwrapped) TEXT width. Padding is deliberately
+/// NOT folded in yet — how much padding the table can afford depends on this total.
+///
+/// MEASURED FROM THE WIDEST FEW CELLS PER COLUMN, not from every cell. `run_block` is a full
+/// inline layout pass (font select, tokenise, measure each word, allocate), around 37 us a
+/// call, and this loop used to run it on EVERY cell on EVERY paint. A CSV export with 6,666
+/// rows and 80 columns is 427,000 cells, so this step alone was ~16 seconds, and the row-height
+/// and draw steps each did it again: a real 5 MB CSV took 49 SECONDS to appear. Arrowing through
+/// a folder of them was the symptom.
+///
+/// Character count is a free proxy for width, so the candidates are picked by that and only
+/// the top few per column are actually measured. It is a proxy, not a guarantee (`WWWW` is
+/// wider than `iiiiii`), which is exactly why it takes the top SEVERAL rather than the single
+/// longest: for a column to come out narrow, every one of the widest seven by character count
+/// would have to be unusually narrow characters AND some shorter cell unusually wide ones.
+/// The cost of being wrong is a column that wraps a cell it need not have, never clipped or
+/// overlapping text (the draw step clips every cell to its own column regardless).
+unsafe fn measure_natural_col_widths(
+    hdc: HDC,
+    all: &[(&[Vec<Run>], bool)],
+    ncols: usize,
+    fonts: &Fonts,
+    hfonts: &Fonts,
+    ctx: &RunCtx,
+    scratch: &mut Vec<LinkHit>,
+) -> Vec<i32> {
+    const WIDTH_SAMPLES: usize = 7;
+    let mut nat_text = vec![0i32; ncols];
+    let cell_chars = |cell: &[Run]| -> usize { cell.iter().map(|r| r.text.chars().count()).sum() };
+    for (ci, nat) in nat_text.iter_mut().enumerate() {
+        // The header always counts: it is a different (bold) font and it is the row a narrow
+        // column is most visibly wrong for.
+        let mut cands: Vec<(usize, usize)> = Vec::new(); // (chars, index into `all`)
+        for (ri, (row, _)) in all.iter().enumerate() {
+            if let Some(cell) = row.get(ci) {
+                cands.push((cell_chars(cell), ri));
+            }
+        }
+        cands.sort_unstable_by_key(|&(chars, _)| std::cmp::Reverse(chars));
+        let hdr_first = if all.first().map(|(_, h)| *h).unwrap_or(false) {
+            Some(0usize)
+        } else {
+            None
+        };
+        for ri in hdr_first
+            .into_iter()
+            .chain(cands.iter().take(WIDTH_SAMPLES).map(|&(_, ri)| ri))
+        {
+            let (row, is_hdr) = all[ri];
+            let Some(cell) = row.get(ci) else { continue };
+            let f = if is_hdr { hfonts } else { fonts };
+            let (_, w) = run_block(
+                hdc,
+                cell,
+                f,
+                0,
+                0,
+                i32::MAX / 4,
+                0,
+                true,
+                ctx,
+                scratch,
+                None,
+            );
+            *nat = (*nat).max(w);
+        }
+    }
+    nat_text
+}
+
+/// [`draw_table`] step 4: every row's height, wrapping each cell at its column width.
+///
+/// Every row's height is needed, even for rows far off screen, because the rows below cannot
+/// be placed without it. What is NOT needed is a full layout pass per cell: the overwhelming
+/// majority of CSV cells are short and obviously fit on one line, and for those the answer is
+/// just the line height.
+///
+/// `max_char_w` is the widest glyph in the font, so `chars * max_char_w` is an upper bound on
+/// any string's width in it. When that bound already fits the column, the cell CANNOT wrap and
+/// needs no measuring at all — a conservative test, so it is never wrong in the direction that
+/// matters. Only cells that might wrap pay for `run_block`. `line_lead` and the `sc(3)` in
+/// `line_h_probe` are the same value, so a single-line cell's measured height is exactly
+/// `line_h_probe` and the fast path is not an approximation.
+#[allow(clippy::too_many_arguments)]
+unsafe fn measure_row_heights(
+    hwnd: HWND,
+    hdc: HDC,
+    all: &[(&[Vec<Run>], bool)],
+    ncols: usize,
+    fonts: &Fonts,
+    hfonts: &Fonts,
+    ctx: &RunCtx,
+    colw: &[i32],
+    hpad: i32,
+    vpad: i32,
+    scratch: &mut Vec<LinkHit>,
+) -> Vec<i32> {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    // The text a cell may use. `colw` is floored at `min_col` by the caller, so the guard only
+    // bites in the more-columns-than-fit case — where the per-cell clip is what keeps things tidy.
+    let cell_w = |ci: usize| (colw[ci] - 2 * hpad).max(sc(8));
     let (line_h_probe, max_char_w) = {
         let old = SelectObject(hdc, fonts.reg.into());
         let mut tm = TEXTMETRICW::default();
@@ -179,8 +247,8 @@ pub(super) unsafe fn draw_table(
         )
     };
     let mut row_h: Vec<i32> = Vec::new();
-    for (row, is_hdr) in &all {
-        let f = if *is_hdr { &hfonts } else { &fonts };
+    for (row, is_hdr) in all {
+        let f = if *is_hdr { hfonts } else { fonts };
         let mut h = line_h_probe;
         for (ci, cell) in row.iter().enumerate().take(ncols) {
             // Upper bound on this cell's unwrapped width, with no GDI call and no allocation.
@@ -199,36 +267,53 @@ pub(super) unsafe fn draw_table(
             if bound <= i64::from(cell_w(ci)) {
                 continue; // cannot wrap, so it is exactly one line and `h` already covers it
             }
-            let (ny, _) = run_block(
-                hdc,
-                cell,
-                f,
-                0,
-                0,
-                cell_w(ci),
-                0,
-                true,
-                &ctx,
-                &mut scratch,
-                None,
-            );
+            let (ny, _) = run_block(hdc, cell, f, 0, 0, cell_w(ci), 0, true, ctx, scratch, None);
             h = h.max(ny);
         }
         row_h.push(h + 2 * vpad);
     }
+    row_h
+}
 
-    // Step 5: draw. Zebra fill first, then text, then the grid on top.
+/// [`draw_table`] step 5: the zebra fill + text for every row, skipping rows entirely above or
+/// below `vis` (GDI would clip them anyway, but clipping happens AFTER the layout work, and the
+/// layout work is the whole cost — see the row-height comment). Returns the y just past the last
+/// row, for the grid/note steps that follow.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_table_rows(
+    hwnd: HWND,
+    hdc: HDC,
+    all: &[(&[Vec<Run>], bool)],
+    row_h: &[i32],
+    ncols: usize,
+    colw: &[i32],
+    x0: i32,
+    y0: i32,
+    table_w: i32,
+    hpad: i32,
+    vpad: i32,
+    fonts: &Fonts,
+    hfonts: &Fonts,
+    aligns: &[u8],
+    c: &MdColors,
+    ctx: &RunCtx,
+    links: &mut Vec<LinkHit>,
+    sel: &mut TblSel,
+    vis: (i32, i32),
+) -> i32 {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let cell_x = |ci: usize| x0 + colw[..ci].iter().sum::<i32>();
+    let cell_w = |ci: usize| (colw[ci] - 2 * hpad).max(sc(8));
+    let col_align = |ci: usize| aligns.get(ci).copied().unwrap_or(0);
     let mut y = y0;
     let mut body_i = 0usize;
     for (ri, (row, is_hdr)) in all.iter().enumerate() {
-        let f = if *is_hdr { &hfonts } else { &fonts };
+        let f = if *is_hdr { hfonts } else { fonts };
         let h = row_h[ri];
-        // Rows entirely above or below the pane are not drawn. GDI would clip them anyway, but
-        // clipping happens AFTER the layout work, and the layout work is the whole cost: a
-        // 6,666-row table has about forty rows on screen and was laying out all of them, every
-        // paint. Links and selection rects are collected only for what is drawn, which is the
-        // same rule the text-block skip in the caller already follows (only visible links can be
-        // clicked, only visible selection can be seen).
+        // Rows entirely above or below the pane are not drawn. Links and selection rects are
+        // collected only for what is drawn, which is the same rule the text-block skip in the
+        // caller already follows (only visible links can be clicked, only visible selection can
+        // be seen).
         if y + h <= vis.0 || y >= vis.1 {
             y += h;
             hline(hdc, x0, x0 + table_w, y, c.border);
@@ -279,7 +364,7 @@ pub(super) unsafe fn draw_table(
                 cell_w(ci),
                 col_align(ci),
                 false,
-                &ctx,
+                ctx,
                 links,
                 Some(&mut rsel),
             );
@@ -288,55 +373,86 @@ pub(super) unsafe fn draw_table(
         y += h;
         hline(hdc, x0, x0 + table_w, y, c.border); // row separator
     }
-    // top edge + verticals
-    hline(hdc, x0, x0 + table_w, y0, c.border);
-    for ci in 0..=ncols {
-        let x = if ci == ncols {
-            x0 + table_w
-        } else {
-            cell_x(ci)
-        };
-        let pen = CreatePen(PS_SOLID, 1, COLORREF(c.border));
-        let op = SelectObject(hdc, HGDIOBJ(pen.0));
-        let _ = MoveToEx(hdc, x, y0, None);
-        let _ = LineTo(hdc, x, y);
-        SelectObject(hdc, op);
-        let _ = DeleteObject(HGDIOBJ(pen.0));
-    }
-    // Say what was left out. Silently dropping columns would be the same sin as silently
-    // truncating rows, and the number is the only way a reader can tell this is a preview
-    // limit rather than the file's real shape.
-    if dropped_cols > 0 {
-        let note = vec![Run {
-            text: format!(
-                "+{dropped_cols} more column{} not shown (too narrow to read at this window width)",
-                if dropped_cols == 1 { "" } else { "s" }
-            ),
-            bold: false,
-            italic: true,
-            code: false,
-            strike: false,
-            link: None,
-        }];
-        let nctx = ctx_for(hwnd, c, c.muted);
-        let (ny, _) = run_block(
-            hdc,
-            &note,
-            &fonts,
-            x0,
-            y + sc(4),
-            avail,
-            0,
-            false,
-            &nctx,
-            &mut scratch,
-            None,
-        );
-        y = ny + sc(2);
-    }
-    fonts.free();
-    hfonts.free();
     y
+}
+
+/// [`draw_table`]'s grid lines: top edge + every column's vertical, drawn on top of the rows.
+#[allow(clippy::too_many_arguments)]
+fn draw_table_grid(
+    hdc: HDC,
+    x0: i32,
+    y0: i32,
+    y: i32,
+    table_w: i32,
+    ncols: usize,
+    colw: &[i32],
+    c: &MdColors,
+) {
+    let cell_x = |ci: usize| x0 + colw[..ci].iter().sum::<i32>();
+    unsafe {
+        hline(hdc, x0, x0 + table_w, y0, c.border);
+        for ci in 0..=ncols {
+            let x = if ci == ncols {
+                x0 + table_w
+            } else {
+                cell_x(ci)
+            };
+            let pen = CreatePen(PS_SOLID, 1, COLORREF(c.border));
+            let op = SelectObject(hdc, HGDIOBJ(pen.0));
+            let _ = MoveToEx(hdc, x, y0, None);
+            let _ = LineTo(hdc, x, y);
+            SelectObject(hdc, op);
+            let _ = DeleteObject(HGDIOBJ(pen.0));
+        }
+    }
+}
+
+/// [`draw_table`]'s trailing note when columns were dropped for width (a no-op, returning `y`
+/// unchanged, when none were). Silently dropping columns would be the same sin as silently
+/// truncating rows, and the number is the only way a reader can tell this is a preview limit
+/// rather than the file's real shape.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_dropped_col_note(
+    hwnd: HWND,
+    hdc: HDC,
+    dropped_cols: usize,
+    x0: i32,
+    y: i32,
+    avail: i32,
+    fonts: &Fonts,
+    c: &MdColors,
+    scratch: &mut Vec<LinkHit>,
+) -> i32 {
+    if dropped_cols == 0 {
+        return y;
+    }
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let note = vec![Run {
+        text: format!(
+            "+{dropped_cols} more column{} not shown (too narrow to read at this window width)",
+            if dropped_cols == 1 { "" } else { "s" }
+        ),
+        bold: false,
+        italic: true,
+        code: false,
+        strike: false,
+        link: None,
+    }];
+    let nctx = ctx_for(hwnd, c, c.muted);
+    let (ny, _) = run_block(
+        hdc,
+        &note,
+        fonts,
+        x0,
+        y + sc(4),
+        avail,
+        0,
+        false,
+        &nctx,
+        scratch,
+        None,
+    );
+    ny + sc(2)
 }
 
 /// Share `avail` px among columns wanting `nat` px each, max-min fair.

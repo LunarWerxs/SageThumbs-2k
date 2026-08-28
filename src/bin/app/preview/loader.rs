@@ -233,90 +233,12 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
         let cls = content::classify(path);
 
         if opts.play && matches!(cls, ContentKind::Video) {
-            // Live engine so the transport strip renders (the video surface is a swap chain
-            // PrintWindow can't read, so it stays black; the strip is parent GDI and captures).
-            st.kind.set(ContentKind::Video);
-            let (cw, ch) = client_size(hwnd);
-            place(hwnd, cw, ch, Some((-32000, -32000)));
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            st.shown.set(true);
-            if let Some(p) = super::video::create(
-                hwnd,
-                hwnd,
-                &video_rect(hwnd),
-                st.hinst,
-                path,
-                is_audio(path),
-            ) {
-                *st.video.borrow_mut() = Some(p);
-                // Headless `--play --shot` of a track: decode its art synchronously so the capture
-                // shows the same backdrop the live viewer paints (the async path never lands in a
-                // shot window, which pumps only briefly).
-                if is_audio(path) {
-                    if let Some(d) = content::decode_sync(path) {
-                        if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, 0x0000_0000) {
-                            *st.art.borrow_mut() = Some(RenderData::opaque(hbmp, d.w, d.h));
-                        }
-                    }
-                }
-            }
-            set_title(hwnd);
-            if let Some(h) = opts.hot {
-                st.hot.set(Some(h));
-            }
+            load_sync_play_video(hwnd, st, path, opts);
             return; // already sized/shown
         } else if is_pdf(path) {
-            // The re-show path gets the continuous view too, so a viewer that was already open
-            // scrolls exactly like one opened fresh. Asynchronous, so a headless shot that does
-            // not pump captures the single-page render below and is byte-identical to before;
-            // `--wait-ms` is what lets a shot wait for the scrolling view on purpose.
-            super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
-            // Render the requested page + the page count so the ◀ ▶ pager + "N / M" show.
-            let pg = opts.pdf_page.unwrap_or(0);
-            let done = sagethumbs2k_core::decode::read_capped(path)
-                .ok()
-                .and_then(|b| sagethumbs2k_core::pdf::render_page_counted(&b, pg, 1600))
-                .and_then(|(png, count)| image::load_from_memory(&png).ok().map(|img| (img, count)))
-                .map(|(img, count)| {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    if let Some(rd) = content::make_render(w, h, &rgba.into_raw(), letterbox_bg(st))
-                    {
-                        *st.render.borrow_mut() = Some(rd);
-                        st.kind.set(ContentKind::Image);
-                        st.pdf_page.set(pg.min(count.saturating_sub(1)));
-                        st.pdf_pages.set(count.min(1_000_000));
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .unwrap_or(false);
-            if !done {
-                load_static(st, path, ContentKind::Image);
-            }
+            load_sync_pdf(hwnd, st, path, opts);
         } else if let (Some(fr), true) = (opts.frame, is_animatable(path)) {
-            // Decode the animation and show a specific frame.
-            let frames = sagethumbs2k_core::decode::read_preview_capped(path)
-                .ok()
-                .and_then(|b| super::anim::decode_animation(&b, &ext_of(path)));
-            if let Some(frames) = frames {
-                let bg = letterbox_bg(st);
-                let mut rds: Vec<RenderData> = Vec::new();
-                for (d, _) in frames {
-                    if let Some(rd) = content::make_render(d.w, d.h, &d.rgba, bg) {
-                        rds.push(rd);
-                    }
-                }
-                if !rds.is_empty() {
-                    st.cur_frame.set(fr.min(rds.len() - 1));
-                    *st.frames.borrow_mut() = rds;
-                    st.kind.set(ContentKind::Image);
-                }
-            }
-            if st.frames.borrow().is_empty() {
-                load_static(st, path, ContentKind::Image); // not actually animated
-            }
+            load_sync_frame(st, path, fr);
         } else {
             // Video (no --play) falls back to its still frame-grab (the Image path).
             let kind = match cls {
@@ -335,6 +257,99 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
     place(hwnd, cw, ch, Some((-32000, -32000)));
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     st.shown.set(true);
+}
+
+/// `load_sync`'s `--play` branch: a live video engine so the transport strip renders (the video
+/// surface is a swap chain `PrintWindow` can't read, so it stays black; the strip is parent GDI
+/// and captures). Sizes/shows the window itself (unlike the other branches, which fall through
+/// to `load_sync`'s common tail) because the video child needs a parented, realized window.
+unsafe fn load_sync_play_video(hwnd: HWND, st: &ViewerState, path: &str, opts: &super::ShotOpts) {
+    st.kind.set(ContentKind::Video);
+    let (cw, ch) = client_size(hwnd);
+    place(hwnd, cw, ch, Some((-32000, -32000)));
+    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    st.shown.set(true);
+    if let Some(p) = super::video::create(
+        hwnd,
+        hwnd,
+        &video_rect(hwnd),
+        st.hinst,
+        path,
+        is_audio(path),
+    ) {
+        *st.video.borrow_mut() = Some(p);
+        // Headless `--play --shot` of a track: decode its art synchronously so the capture
+        // shows the same backdrop the live viewer paints (the async path never lands in a
+        // shot window, which pumps only briefly).
+        if is_audio(path) {
+            if let Some(d) = content::decode_sync(path) {
+                if let Some(hbmp) = content::make_dib(d.w, d.h, &d.rgba, 0x0000_0000) {
+                    *st.art.borrow_mut() = Some(RenderData::opaque(hbmp, d.w, d.h));
+                }
+            }
+        }
+    }
+    set_title(hwnd);
+    if let Some(h) = opts.hot {
+        st.hot.set(Some(h));
+    }
+}
+
+/// `load_sync`'s PDF branch: render the requested page + page count synchronously so the ◀ ▶
+/// pager + "N / M" indicator show, and spawn the continuous view opening in the background.
+unsafe fn load_sync_pdf(hwnd: HWND, st: &ViewerState, path: &str, opts: &super::ShotOpts) {
+    // The re-show path gets the continuous view too, so a viewer that was already open
+    // scrolls exactly like one opened fresh. Asynchronous, so a headless shot that does
+    // not pump captures the single-page render below and is byte-identical to before;
+    // `--wait-ms` is what lets a shot wait for the scrolling view on purpose.
+    super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
+    let pg = opts.pdf_page.unwrap_or(0);
+    let done = sagethumbs2k_core::decode::read_capped(path)
+        .ok()
+        .and_then(|b| sagethumbs2k_core::pdf::render_page_counted(&b, pg, 1600))
+        .and_then(|(png, count)| image::load_from_memory(&png).ok().map(|img| (img, count)))
+        .map(|(img, count)| {
+            let rgba = img.to_rgba8();
+            let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+            if let Some(rd) = content::make_render(w, h, &rgba.into_raw(), letterbox_bg(st)) {
+                *st.render.borrow_mut() = Some(rd);
+                st.kind.set(ContentKind::Image);
+                st.pdf_page.set(pg.min(count.saturating_sub(1)));
+                st.pdf_pages.set(count.min(1_000_000));
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    if !done {
+        load_static(st, path, ContentKind::Image);
+    }
+}
+
+/// `load_sync`'s animated-frame branch: decode the animation and show frame `fr`, falling back
+/// to the still-frame path if decoding fails or yields nothing (not actually animated).
+unsafe fn load_sync_frame(st: &ViewerState, path: &str, fr: usize) {
+    let frames = sagethumbs2k_core::decode::read_preview_capped(path)
+        .ok()
+        .and_then(|b| super::anim::decode_animation(&b, &ext_of(path)));
+    if let Some(frames) = frames {
+        let bg = letterbox_bg(st);
+        let mut rds: Vec<RenderData> = Vec::new();
+        for (d, _) in frames {
+            if let Some(rd) = content::make_render(d.w, d.h, &d.rgba, bg) {
+                rds.push(rd);
+            }
+        }
+        if !rds.is_empty() {
+            st.cur_frame.set(fr.min(rds.len() - 1));
+            *st.frames.borrow_mut() = rds;
+            st.kind.set(ContentKind::Image);
+        }
+    }
+    if st.frames.borrow().is_empty() {
+        load_static(st, path, ContentKind::Image); // not actually animated
+    }
 }
 
 /// Synchronous still decode for the headless shot: image → DIB, text/markdown → read, else card.

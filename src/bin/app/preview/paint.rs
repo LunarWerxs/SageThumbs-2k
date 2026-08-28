@@ -463,6 +463,7 @@ unsafe fn paint_content_video(hwnd: HWND, hdc: HDC, st: &ViewerState, text: u32,
 
 /// The caption strip: background, hairline, file-name title (+ PDF page indicator), toolbar
 /// glyphs. Split out of [`paint_into`] to keep that coordinator thin.
+#[allow(clippy::too_many_arguments)]
 unsafe fn paint_caption(
     hwnd: HWND,
     hdc: HDC,
@@ -490,6 +491,7 @@ unsafe fn paint_caption(
 
 /// Title (file name), left-aligned in the caption, plus the "N / M" PDF page indicator when
 /// applicable, right-aligned just before the toolbar buttons.
+#[allow(clippy::too_many_arguments)]
 unsafe fn paint_caption_title(
     hwnd: HWND,
     hdc: HDC,
