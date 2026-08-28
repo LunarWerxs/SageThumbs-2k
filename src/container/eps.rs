@@ -68,8 +68,20 @@ pub fn extract_ascii_preview(bytes: &[u8]) -> Option<CoverOut> {
         .or_else(|| photoshop_preview(head).map(CoverOut::Bytes))
 }
 
-fn epsi_preview(bytes: &[u8]) -> Option<DynamicImage> {
-    let (header, mut rest) = find_comment(bytes, b"%%BeginPreview:")?;
+/// A parsed, bounds-validated `%%BeginPreview:` header.
+struct EpsiHeader {
+    width: u32,
+    height: u32,
+    depth: u32,
+    lines: u32,
+    row_bytes: usize,
+    packed_len: usize,
+    pixels: u64,
+}
+
+/// Parse and validate the `%%BeginPreview:` header fields (width, height, depth, line count),
+/// bounded to sane dimensions and a packed payload that fits the bounded head scan.
+fn parse_epsi_header(header: &[u8]) -> Option<EpsiHeader> {
     let mut fields = std::str::from_utf8(header).ok()?.split_ascii_whitespace();
     let width = fields.next()?.parse::<u32>().ok()?;
     let height = fields.next()?.parse::<u32>().ok()?;
@@ -95,6 +107,20 @@ fn epsi_preview(bytes: &[u8]) -> Option<DynamicImage> {
     if packed_len > ASCII_SCAN_MAX / 2 {
         return None;
     }
+    Some(EpsiHeader {
+        width,
+        height,
+        depth,
+        lines,
+        row_bytes,
+        packed_len,
+        pixels,
+    })
+}
+
+/// Read `lines` hex-encoded `%` comment lines into a packed buffer of exactly `packed_len`
+/// bytes, returning it alongside the input slice positioned just after the last line read.
+fn read_epsi_packed(mut rest: &[u8], lines: u32, packed_len: usize) -> Option<(Vec<u8>, &[u8])> {
     let mut packed = Vec::with_capacity(packed_len);
     for _ in 0..lines {
         let (line, next) = take_line(rest);
@@ -104,33 +130,53 @@ fn epsi_preview(bytes: &[u8]) -> Option<DynamicImage> {
     if packed.len() != packed_len {
         return None;
     }
+    Some((packed, rest))
+}
+
+/// Unpack the EPSI rows (lower-left-up sample order) into a top-down greyscale buffer.
+/// EPSI samples run from the lower-left upward, while image buffers run from the upper-left
+/// downward, so the packed rows are reversed as they unpack.
+fn unpack_epsi_rows(
+    packed: &[u8],
+    width: u32,
+    depth: u32,
+    row_bytes: usize,
+    pixels: u64,
+) -> Option<Vec<u8>> {
     let mut grey = Vec::with_capacity(pixels as usize);
-    // EPSI samples run from the lower-left upward, while image buffers run from
-    // the upper-left downward. Reverse the packed rows as we unpack them.
     for row in packed.chunks_exact(row_bytes).rev() {
         unpack_row(row, width as usize, depth, &mut grey)?;
     }
-    // Skip blank lines before the terminator. ImageMagick's `epi:` coder writes one, and this
-    // check used to demand `%%EndPreview` on the VERY next line - so a preview whose 4800 bytes
-    // had all been read correctly was thrown away on the strength of an empty line, and every
-    // EPS that tool produces silently had no thumbnail. The corpus sample passed throughout
-    // because Adobe does not write the blank line, which is exactly how it went unnoticed.
-    //
-    // Still terminator-checked rather than dropped: reaching `%%EndPreview` is what proves the
-    // hex ran to the end of a real preview instead of us having stopped in the middle of one.
-    let mut end;
+    Some(grey)
+}
+
+/// Skip blank lines before the terminator. ImageMagick's `epi:` coder writes one, and this
+/// check used to demand `%%EndPreview` on the VERY next line - so a preview whose 4800 bytes
+/// had all been read correctly was thrown away on the strength of an empty line, and every
+/// EPS that tool produces silently had no thumbnail. The corpus sample passed throughout
+/// because Adobe does not write the blank line, which is exactly how it went unnoticed.
+///
+/// Still terminator-checked rather than dropped: reaching `%%EndPreview` is what proves the
+/// hex ran to the end of a real preview instead of us having stopped in the middle of one.
+fn epsi_terminates(mut rest: &[u8]) -> bool {
     loop {
         let (line, next) = take_line(rest);
         rest = next;
-        end = line;
-        if !end.trim_ascii().is_empty() || rest.is_empty() {
-            break;
+        if !line.trim_ascii().is_empty() || rest.is_empty() {
+            return line == b"%%EndPreview";
         }
     }
-    if end != b"%%EndPreview" || grey.len() as u64 != pixels {
+}
+
+fn epsi_preview(bytes: &[u8]) -> Option<DynamicImage> {
+    let (header, rest) = find_comment(bytes, b"%%BeginPreview:")?;
+    let h = parse_epsi_header(header)?;
+    let (packed, rest) = read_epsi_packed(rest, h.lines, h.packed_len)?;
+    let grey = unpack_epsi_rows(&packed, h.width, h.depth, h.row_bytes, h.pixels)?;
+    if !epsi_terminates(rest) || grey.len() as u64 != h.pixels {
         return None;
     }
-    GrayImage::from_raw(width, height, grey).map(DynamicImage::ImageLuma8)
+    GrayImage::from_raw(h.width, h.height, grey).map(DynamicImage::ImageLuma8)
 }
 
 fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
