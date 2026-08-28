@@ -126,6 +126,26 @@ three bin/lib targets, 0 failed), `cargo clippy --bin SageThumbs2K -- -D warning
 fmt --all --check`, all clean. Same preflight-only caveat as tranche 3: a human UI
 click-through before the next release is still recommended.
 
+**Tranche 6 (2026-08-28): 9 of the next-worst rows cleared** (`main`/`run_shot_mode` split
+(main.rs), `run_block` (inline.rs), `handle_key` (overlay/input.rs), `about_wndproc` (about.rs),
+`parse_sps` + `keyframe_mini_mp4` (flv.rs), `apply_v3_layout` (navrail.rs), `jpeg_span`
+(container/util.rs), `decode_rle` (xcf.rs)). This tranche's code was already committed (git log:
+`1ef2113` through `e1a36d1`) by an earlier pass through this same queue that split each function
+into named helpers (e.g. `dispatch_diagnostic_modes`/`dispatch_update_modes`/etc. out of `main`;
+`tokenize_runs`/`break_into_lines`/`draw_wrapped_lines` out of `run_block`;
+`on_key_escape`/`on_key_enter`/`on_key_undo_redo`/etc. out of `handle_key`; per-message handlers
+out of `about_wndproc`; `parse_chroma_format`/`skip_pic_order_cnt_fields`/
+`parse_frame_geom_fields`/`frame_geom_to_pixels` out of `parse_sps`, `read_flv_header`/
+`handle_video_tag`/`TagOutcome` out of `keyframe_mini_mp4`; `place_row` out of
+`apply_v3_layout`; `skip_length_prefixed_segment`/`skip_entropy_coded_scan` out of `jpeg_span`;
+`decode_rle_opcode`/scatter helpers out of `decode_rle`) but this doc was never updated to check
+the rows off and no verification pass had been recorded. This session verified it: every listed
+function now reads as a thin coordinator delegating to its extracted helpers (visually confirmed
+under gate), `cargo test --lib` (753 passed, 0 failed, 18 ignored, matching the established
+baseline exactly) and `cargo test --bin SageThumbs2K` (362 passed, 0 failed, matching tranche 5's
+baseline) both pass, `cargo clippy --bin SageThumbs2K -- -D warnings` and `cargo clippy --lib -- -D
+warnings` are clean, and `cargo fmt --all --check` is clean.
+
 **Tranche 5 (2026-08-28): `wndproc` (settings_dlg/mod.rs), the third and last of the three
 giant Win32 dispatchers, cleared.** Split the message dispatcher into a thin chain of
 message-category dispatchers (lifecycle/app messages, command-or-notify, paint/draw, timer-or-
@@ -153,25 +173,25 @@ before the next release is still recommended.
 |x| 579 | 205 | `wndproc` | src/bin/app/preview/window.rs:709 |
 |x| 480 | 124 | `shot_wndproc` | src/bin/app/screenshot/overlay/input.rs:128 |
 |x| 402 | 146 | `wndproc` | src/bin/app/settings_dlg/mod.rs:1041 |
-| | 208 | 77 | `main` | src/bin/app/main.rs:195 |
+|x| 208 | 77 | `main` | src/bin/app/main.rs:195 |
 |x| 207 | 86 | `transform` | src/jpegtran.rs:461 |
 |x| 203 | 73 | `decode_tile` | src/decode/jp2/mod.rs:257 |
 |x| 182 | 46 | `decode_code_block` | src/decode/jp2/mq.rs:275 |
 |x| 170 | 67 | `read_streams` | src/container/ole.rs:71 |
 |x| 158 | 69 | `isobmff_has_hevc_aux_alpha` | src/decode/color.rs:600 |
 |x| 153 | 55 | `parse` | src/decode/jp2/codestream.rs:316 |
-| | 120 | 42 | `run_block` | src/bin/app/preview/markdown/inline.rs:192 |
-| | 116 | 77 | `handle_key` | src/bin/app/screenshot/overlay/input.rs:620 |
+|x| 120 | 42 | `run_block` | src/bin/app/preview/markdown/inline.rs:192 |
+|x| 116 | 77 | `handle_key` | src/bin/app/screenshot/overlay/input.rs:620 |
 |x| 114 | 49 | `parse_ply` | src/decode/mesh.rs:197 |
 |x| 113 | 59 | `extract` | src/container/ilbm.rs:42 |
-| | 111 | 43 | `about_wndproc` | src/bin/app/about.rs:798 |
-| | 109 | 64 | `parse_sps` | src/flv.rs:552 |
-| | 108 | 36 | `apply_v3_layout` | src/bin/app/settings_dlg/navrail.rs:875 |
-| | 107 | 36 | `jpeg_span` | src/container/util.rs:143 |
-| | 106 | 29 | `decode_rle` | src/container/xcf.rs:756 |
+|x| 111 | 43 | `about_wndproc` | src/bin/app/about.rs:798 |
+|x| 109 | 64 | `parse_sps` | src/flv.rs:552 |
+|x| 108 | 36 | `apply_v3_layout` | src/bin/app/settings_dlg/navrail.rs:875 |
+|x| 107 | 36 | `jpeg_span` | src/container/util.rs:143 |
+|x| 106 | 29 | `decode_rle` | src/container/xcf.rs:756 |
 | | 93 | 48 | `run_action` | src/verbs/actions.rs:333 |
 | | 92 | 52 | `run` | src/bin/cli.rs:140 |
-| | 92 | 37 | `keyframe_mini_mp4` | src/flv.rs:56 |
+|x| 92 | 37 | `keyframe_mini_mp4` | src/flv.rs:56 |
 | | 88 | 32 | `QueryContextMenu` | src/contextmenu/com.rs:52 |
 | | 84 | 23 | `parse_packet` | src/decode/jp2/packet.rs:217 |
 | | 76 | 32 | `decode_channels` | src/container/psp.rs:244 |
