@@ -159,9 +159,37 @@ pub fn label_for(file_name: &str) -> Option<String> {
 ///
 /// No-ops on images too small to badge legibly, or when the label does not fit.
 pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle) {
+    let Some(g) = badge_geometry(w, h, label, style) else {
+        return; // too small to badge legibly, or the chip would not fit
+    };
+    // The label's own category decides the tint. `label` is the uppercased extension, and
+    // `formats::category` matches lowercase tables, so fold the case back down here.
+    let tint = category_rgb(&label.to_ascii_lowercase());
+    paint_chip(rgba, w, h, &g, tint, style);
+    paint_glyphs(rgba, w, h, &g, label);
+}
+
+/// The badge chip's geometry, keyed off the image edge and the label length so the same
+/// layout math backs both [`paint_chip`] and [`paint_glyphs`] and the two can never drift
+/// apart in size or position.
+struct BadgeGeom {
+    scale: u32,
+    gw: u32,
+    gap: u32,
+    pad: u32,
+    fold: u32,
+    chip_w: u32,
+    chip_h: u32,
+    x0: u32,
+    y0: u32,
+}
+
+/// Compute the chip's geometry, or `None` when the image is too small to badge legibly or
+/// the chip would not fit.
+fn badge_geometry(w: u32, h: u32, label: &str, style: BadgeStyle) -> Option<BadgeGeom> {
     let edge = w.min(h);
     if edge < MIN_BADGED_EDGE || label.is_empty() {
-        return;
+        return None;
     }
     // Integer glyph scale keyed to the SHORT edge so the badge occupies a CONSTANT FRACTION
     // of the tile rather than growing with it. A 3-char chip is 21 glyph-cells wide, so
@@ -187,52 +215,70 @@ pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle) {
     // Inset from the corner by the same padding, so the chip does not touch the edge.
     let margin = pad;
     if chip_w + margin * 2 > w || chip_h + margin * 2 > h {
-        return; // would dominate the tile: better to draw nothing
+        return None; // would dominate the tile: better to draw nothing
     }
     let x0 = w - chip_w - margin;
     let y0 = h - chip_h - margin;
+    Some(BadgeGeom {
+        scale,
+        gw,
+        gap,
+        pad,
+        fold,
+        chip_w,
+        chip_h,
+        x0,
+        y0,
+    })
+}
 
-    let put = |buf: &mut [u8], x: u32, y: u32, rgb: (u8, u8, u8), a: u32| {
-        if x >= w || y >= h {
-            return;
-        }
-        let i = ((y * w + x) * 4) as usize;
-        let Some(px) = buf.get_mut(i..i + 4) else {
-            return;
-        };
-        // Source-over onto the existing pixel; the thumbnail's own alpha is preserved and
-        // raised toward opaque where the chip covers it, so a badge on a transparent PNG
-        // still reads instead of blending into whatever sits behind the icon.
-        let blend = |dst: u8, src: u8| ((src as u32 * a + dst as u32 * (255 - a)) / 255) as u8;
-        px[0] = blend(px[0], rgb.0);
-        px[1] = blend(px[1], rgb.1);
-        px[2] = blend(px[2], rgb.2);
-        px[3] = px[3].max(a as u8);
+/// Source-over `rgb`@`a` onto `buf[x, y]`. The thumbnail's own alpha is preserved and raised
+/// toward opaque where the chip covers it, so a badge on a transparent PNG still reads
+/// instead of blending into whatever sits behind the icon.
+fn put_px(buf: &mut [u8], w: u32, h: u32, x: u32, y: u32, rgb: (u8, u8, u8), a: u32) {
+    if x >= w || y >= h {
+        return;
+    }
+    let i = ((y * w + x) * 4) as usize;
+    let Some(px) = buf.get_mut(i..i + 4) else {
+        return;
     };
+    let blend = |dst: u8, src: u8| ((src as u32 * a + dst as u32 * (255 - a)) / 255) as u8;
+    px[0] = blend(px[0], rgb.0);
+    px[1] = blend(px[1], rgb.1);
+    px[2] = blend(px[2], rgb.2);
+    px[3] = px[3].max(a as u8);
+}
 
-    // The label's own category decides the tint. `label` is the uppercased extension, and
-    // `formats::category` matches lowercase tables, so fold the case back down here.
-    let tint = category_rgb(&label.to_ascii_lowercase());
-
-    for y in y0..y0 + chip_h {
-        for x in x0..x0 + chip_w {
+/// Paint the chip background: a dark rounded-ish box for [`BadgeStyle::Text`], or the
+/// category-tinted dog-eared page for [`BadgeStyle::Icon`].
+fn paint_chip(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    g: &BadgeGeom,
+    tint: (u8, u8, u8),
+    style: BadgeStyle,
+) {
+    for y in g.y0..g.y0 + g.chip_h {
+        for x in g.x0..g.x0 + g.chip_w {
             // Distance from the TOP-RIGHT corner, which is where the page is dog-eared.
-            let dx = x0 + chip_w - 1 - x;
-            let dy = y - y0;
+            let dx = g.x0 + g.chip_w - 1 - x;
+            let dy = y - g.y0;
             // Clip the plain corner pixels for a softened (not sharply rectangular) look.
             // The top-right one is skipped when a fold already reshapes that corner.
-            let cx = x == x0 || x == x0 + chip_w - 1;
-            let cy = y == y0 || y == y0 + chip_h - 1;
-            if cx && cy && !(fold > 0 && dx + dy < fold) {
+            let cx = x == g.x0 || x == g.x0 + g.chip_w - 1;
+            let cy = y == g.y0 || y == g.y0 + g.chip_h - 1;
+            if cx && cy && !(g.fold > 0 && dx + dy < g.fold) {
                 continue;
             }
             match style {
                 // Near-black at ~72% so the underlying image still shows through slightly.
-                BadgeStyle::Text => put(rgba, x, y, (16, 16, 16), 184),
+                BadgeStyle::Text => put_px(rgba, w, h, x, y, (16, 16, 16), 184),
                 BadgeStyle::Icon => {
-                    let on_fold_edge = fold > 0 && dx + dy == fold;
+                    let on_fold_edge = g.fold > 0 && dx + dy == g.fold;
                     let outline = cx || cy || on_fold_edge;
-                    let (rgb, a) = if fold > 0 && dx + dy < fold {
+                    let (rgb, a) = if g.fold > 0 && dx + dy < g.fold {
                         // The folded-back flap: lighter, so it reads as the sheet's underside.
                         (blend_to_white(tint, 150), 245)
                     } else if outline {
@@ -241,26 +287,31 @@ pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle) {
                     } else {
                         (tint, 235)
                     };
-                    put(rgba, x, y, rgb, a);
+                    put_px(rgba, w, h, x, y, rgb, a);
                 }
             }
         }
     }
-    // Glyphs, near-white and fully opaque for maximum contrast against the chip.
-    let mut cx = x0 + pad;
+}
+
+/// Paint `label`'s glyphs, near-white and fully opaque for maximum contrast against the chip.
+fn paint_glyphs(rgba: &mut [u8], w: u32, h: u32, g: &BadgeGeom, label: &str) {
+    let mut cx = g.x0 + g.pad;
     for ch in label.bytes() {
-        if let Some(g) = glyph(ch) {
-            for (row, bits) in g.iter().enumerate() {
+        if let Some(gl) = glyph(ch) {
+            for (row, bits) in gl.iter().enumerate() {
                 for col in 0..5u32 {
                     if bits & (1 << (4 - col)) == 0 {
                         continue;
                     }
-                    for sy in 0..scale {
-                        for sx in 0..scale {
-                            put(
+                    for sy in 0..g.scale {
+                        for sx in 0..g.scale {
+                            put_px(
                                 rgba,
-                                cx + col * scale + sx,
-                                y0 + pad + row as u32 * scale + sy,
+                                w,
+                                h,
+                                cx + col * g.scale + sx,
+                                g.y0 + g.pad + row as u32 * g.scale + sy,
                                 (245, 245, 245),
                                 255,
                             );
@@ -269,7 +320,7 @@ pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle) {
                 }
             }
         }
-        cx += gw + gap;
+        cx += g.gw + g.gap;
     }
 }
 
