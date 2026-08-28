@@ -202,6 +202,71 @@ fn paint_row(
     }
 }
 
+/// Bomb / sanity guards on the declared image dimensions and plane count.
+fn validate_ilbm_dims(w: u32, h: u32, planes: u32) -> bool {
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64 * h as u64) > MAX_PIXELS {
+        return false;
+    }
+    planes != 0 && planes <= 32
+}
+
+/// Row layout. ILBM: word-aligned 2-byte rows, `planes (+mask)` per scanline. PBM: one
+/// chunky byte per pixel, even-padded. Returns `(row_bytes, planes_per_row)`.
+fn ilbm_row_layout(w: u32, planes: u32, mask_plane: u32, is_pbm: bool) -> (usize, u32) {
+    if is_pbm {
+        (((w + 1) & !1) as usize, 1u32)
+    } else {
+        ((w.div_ceil(16) * 2) as usize, planes + mask_plane)
+    }
+}
+
+/// Cap the raw intermediate buffer AND the RGBA canvas against the shared single-allocation
+/// ceiling (MAX_ALLOC = 512 MiB), not just MAX_PIXELS: the earlier w*h <= MAX_PIXELS check
+/// alone still lets w*h reach ~268M, and 4 bytes/pixel for either buffer alone then
+/// approaches ~1 GiB — well past the budget every other decode tier enforces for a single
+/// allocation.
+fn ilbm_alloc_within_budget(expected: usize, w: u32, h: u32) -> bool {
+    expected as u64 <= MAX_ALLOC && (w as u64) * (h as u64) * 4 <= MAX_ALLOC
+}
+
+/// Get the raw (uncompressed) planar/chunky bytes. `Cow` so the uncompressed case BORROWS the
+/// body instead of copying it — every use below is read-only, and the copy was a full extra
+/// allocation of up to the whole input (256 MiB read cap) on a path that also runs in-process
+/// for the classic-menu preview. Tolerates a slightly short final row, but only if most of it
+/// arrived.
+fn decode_ilbm_body(
+    body: &[u8],
+    compression: u8,
+    expected: usize,
+    row_bytes: usize,
+) -> Option<std::borrow::Cow<'_, [u8]>> {
+    let raw: std::borrow::Cow<[u8]> = match compression {
+        0 => std::borrow::Cow::Borrowed(body),
+        1 => std::borrow::Cow::Owned(byterun1_decode(body, expected)?),
+        _ => return None, // compression 2 (vertical RLE) etc. — unsupported
+    };
+    if raw.len() < expected && raw.len() + row_bytes < expected {
+        return None;
+    }
+    Some(raw)
+}
+
+/// This scanline's palette: for SHAM, one 16-colour palette per scanline (or per pair on
+/// interlaced files); otherwise the base CMAP.
+fn ilbm_line_palette<'a>(
+    sham_pals: &'a [Vec<[u8; 3]>],
+    cmap: &'a [[u8; 3]],
+    y: usize,
+    h: usize,
+) -> &'a [[u8; 3]] {
+    if sham_pals.is_empty() {
+        return cmap;
+    }
+    let n = sham_pals.len();
+    let idx = if n >= h { y } else { y / 2 };
+    &sham_pals[idx.min(n - 1)]
+}
+
 /// Decode an ILBM/PBM to RGBA, or `None` on malformed input.
 pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     if !looks_like_ilbm(bytes) {
@@ -220,51 +285,21 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     let bmhd = bmhd?;
     let body = body?;
     let (w, h, planes) = (bmhd.w, bmhd.h, bmhd.planes as u32);
-    // Bomb / sanity guards.
-    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64 * h as u64) > MAX_PIXELS {
-        return None;
-    }
-    if planes == 0 || planes > 32 {
+    if !validate_ilbm_dims(w, h, planes) {
         return None;
     }
 
     let mask_plane = u32::from(bmhd.masking == 1);
     let direct_rgb = planes >= 24; // 24-bit RGB (or 25/32 with mask)
-
-    // Row layout. ILBM: word-aligned 2-byte rows, `planes (+mask)` per scanline.
-    // PBM: one chunky byte per pixel, even-padded.
-    let (row_bytes, planes_per_row) = if is_pbm {
-        (((w + 1) & !1) as usize, 1u32)
-    } else {
-        ((w.div_ceil(16) * 2) as usize, planes + mask_plane)
-    };
+    let (row_bytes, planes_per_row) = ilbm_row_layout(w, planes, mask_plane, is_pbm);
     let expected = row_bytes
         .checked_mul(planes_per_row as usize)?
         .checked_mul(h as usize)?;
-    // Cap the raw intermediate buffer AND the RGBA canvas against the shared
-    // single-allocation ceiling (MAX_ALLOC = 512 MiB), not just MAX_PIXELS: the earlier
-    // w*h <= MAX_PIXELS check alone still lets w*h reach ~268M, and 4 bytes/pixel for
-    // either buffer alone then approaches ~1 GiB — well past the budget every other
-    // decode tier enforces for a single allocation.
-    if expected as u64 > MAX_ALLOC || (w as u64) * (h as u64) * 4 > MAX_ALLOC {
+    if !ilbm_alloc_within_budget(expected, w, h) {
         return None;
     }
 
-    // Get the raw (uncompressed) planar/chunky bytes. `Cow` so the uncompressed case BORROWS the
-    // body instead of copying it — every use below is read-only, and the copy was a full extra
-    // allocation of up to the whole input (256 MiB read cap) on a path that also runs in-process
-    // for the classic-menu preview.
-    let raw: std::borrow::Cow<[u8]> = match bmhd.compression {
-        0 => std::borrow::Cow::Borrowed(body),
-        1 => std::borrow::Cow::Owned(byterun1_decode(body, expected)?),
-        _ => return None, // compression 2 (vertical RLE) etc. — unsupported
-    };
-    if raw.len() < expected {
-        // Tolerate a slightly short final row only if we got most of it.
-        if raw.len() + row_bytes < expected {
-            return None;
-        }
-    }
+    let raw = decode_ilbm_body(body, bmhd.compression, expected, row_bytes)?;
 
     let ham = camg & CAMG_HAM != 0 && (planes == 6 || planes == 8) && !cmap.is_empty();
     // Per-scanline HAM palettes (SHAM), if present. Only meaningful for HAM.
@@ -290,15 +325,7 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
             &mut mask_row,
         );
 
-        // For SHAM, pick this line's palette (one per scanline, or one per pair on
-        // interlaced files).
-        let line_pal: &[[u8; 3]] = if sham_pals.is_empty() {
-            &cmap
-        } else {
-            let n = sham_pals.len();
-            let idx = if n >= h as usize { y } else { y / 2 };
-            &sham_pals[idx.min(n - 1)]
-        };
+        let line_pal = ilbm_line_palette(&sham_pals, &cmap, y, h as usize);
 
         paint_row(
             &mut img,
