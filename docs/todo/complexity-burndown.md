@@ -275,6 +275,44 @@ matching tranche 15's baseline), `cargo clippy --workspace --all-targets --featu
 clippy --bin SageThumbs2K -- -D warnings` clean, and `cargo fmt --all --check` clean (after one
 `cargo fmt --all` pass to reflow two comments/call sites the edits left over-width).
 
+**Tranche 17 (2026-08-28): the next 10 worst rows cleared**, worst first:
+`scaled_pre_pass_sweep_by_format` (decode/tests.rs), a `#[test]` measurement sweep, split into
+`sweep_dims_and_scales`/`sweep_best_us`/`sweep_ms`/`sweep_fidelity`/`sweep_print_row` (the two
+nested `best_us`/`ms` fns hoisted to module scope too, since a nested fn's body counts toward
+its enclosing function under this scanner); `gif_prefers_wic` (decode.rs) split its two
+heaviest match arms into `gif_skip_extension`/`gif_full_canvas_descriptor`; `extract`
+(container/max.rs) split into `thumbnail_value_offset` (the property-list walk) and
+`read_cf_value` (the `VT_CF` tag/data read); `check_registration` (doctor.rs) split into
+`check_one_handler` (one COM handler's registered/exists/loads checks) and
+`check_approved_list`; `spawn_decode` (preview/content.rs) had its worker-thread closure split
+into `try_post_streamed`/`try_post_quick_first_paint`/`try_post_animation` (plus a new
+`post_anim` mirroring the existing `post_render`) /`decode_and_post_static`, one per
+decode-tier attempt, leaving the closure a thin sequence of early returns; `window_under`
+(screenshot/overlay/input.rs) split into `window_is_candidate` (visible/minimized/cloaked
+gate), `window_visual_bounds` (DWM extended-frame-bounds with `GetWindowRect` fallback), and
+`clamp_to_overlay`; `scan_top_level` (mp4.rs) had its per-box header read (size32/extended/
+`decode_box_size`) split into `read_top_level_header`, folding both prior break-on-failure
+points into one `else`-branch on its `Option`; `thumbnail_from_resources` (container/psd.rs)
+split into `resource_block_header` (one `8BIM` block's id/data range) and `thumbnail_jpeg`
+(the id/format/magic checks on that block's payload); `resolve_icon_path` (container/apk.rs)
+split into `find_package` (package-id lookup with the package-0 shared-library fallback),
+`collect_icon_candidates` (the TYPE-chunk walk, recursing into `resolve_icon_path` for
+`TYPE_REFERENCE`), and `best_density_candidate` (the final max-by-density pick); `epsi_preview`
+(container/eps.rs) split into `parse_epsi_header` (the `%%BeginPreview:` field parse and
+bounds validation, collected into a new `EpsiHeader` struct), `read_epsi_packed` (the hex-line
+read loop), `unpack_epsi_rows` (the lower-left-up-to-top-down unpack), and `epsi_terminates`
+(the blank-line-skipping `%%EndPreview` check). No behavior change anywhere in this tranche.
+Verified per file (scoped `cargo test`, or `cargo build`/compile-clean for the two files with
+no unit tests of their own, preview/content.rs and container/max.rs beyond its one existing
+smoke test) and at the end: `cargo test --lib` (753 passed, 0 failed, 18 ignored, matching
+baseline) and `cargo test --bin SageThumbs2K --features html-preview` (363 passed, matching
+tranche 16's baseline), `cargo clippy --workspace --all-targets --features html-preview -- -D
+warnings` clean, and `cargo fmt --all --check` clean (one `cargo fmt --all` pass needed
+mid-tranche). One mid-edit mistake, caught before it reached clippy: moving
+`gif_prefers_wic`'s helpers into place first landed them between its existing doc comment and
+its `fn`, stealing that comment for the wrong function; fixed by moving the helpers above the
+doc comment instead.
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -602,7 +640,7 @@ before the next release is still recommended.
 |x| 35 | 21 | `fuzz_extract_cover` | src/container/mod.rs:1107 |
 |x| 34 | 15 | `reference` | src/decode/jp2/dwt.rs:260 |
 |x| 34 | 17 | `avif_wic_verdict` | src/decode/color.rs:441 |
-| | 34 | 20 | `scaled_pre_pass_sweep_by_format` | src/decode/tests.rs:2246 |
+|x| 34 | 20 | `scaled_pre_pass_sweep_by_format` | src/decode/tests.rs:2246 |
 |x| 34 | 19 | `isobmff_associated_items` (was `associated_items`, hoisted out of `isobmff_has_hevc_aux_alpha`) | src/decode/color.rs:645 |
 |x| 34 | 15 | `filtr_1d` | src/decode/jp2/dwt.rs:76 |
 |x| 34 | 22 | `wndproc` | src/bin/app/prebuild_dlg.rs:238 |
@@ -612,15 +650,15 @@ before the next release is still recommended.
 |x| 33 | 15 | `mime_body` | src/bin/app/preview/mailmsg.rs:253 |
 |x| 33 | 24 | `read_layer_head` | src/container/xcf.rs:440 |
 |x| 33 | 27 | `segment_map` | src/mkv.rs:98 |
-| | 33 | 16 | `gif_prefers_wic` | src/decode.rs:814 |
-| | 33 | 27 | `extract` | src/container/max.rs:32 |
-| | 32 | 10 | `check_registration` | src/doctor.rs:312 |
-| | 32 | 14 | `spawn_decode` | src/bin/app/preview/content.rs:1024 |
-| | 32 | 20 | `window_under` | src/bin/app/screenshot/overlay/input.rs:56 |
-| | 32 | 19 | `scan_top_level` | src/mp4.rs:106 |
-| | 32 | 15 | `thumbnail_from_resources` | src/container/psd.rs:107 |
-| | 32 | 20 | `resolve_icon_path` | src/container/apk.rs:604 |
-| | 32 | 29 | `epsi_preview` | src/container/eps.rs:71 |
+|x| 33 | 16 | `gif_prefers_wic` | src/decode.rs:814 |
+|x| 33 | 27 | `extract` | src/container/max.rs:32 |
+|x| 32 | 10 | `check_registration` | src/doctor.rs:312 |
+|x| 32 | 14 | `spawn_decode` | src/bin/app/preview/content.rs:1024 |
+|x| 32 | 20 | `window_under` | src/bin/app/screenshot/overlay/input.rs:56 |
+|x| 32 | 19 | `scan_top_level` | src/mp4.rs:106 |
+|x| 32 | 15 | `thumbnail_from_resources` | src/container/psd.rs:107 |
+|x| 32 | 20 | `resolve_icon_path` | src/container/apk.rs:604 |
+|x| 32 | 29 | `epsi_preview` | src/container/eps.rs:71 |
 |x| 31 | 27 | `parse_siz` | src/decode/jp2/codestream.rs:486 |
 |x| 31 | 12 | `xform_block` | src/jpegtran.rs:425 |
 | | 31 | 22 | `mp4_remux_moov` | src/streamsrc/mp4remux.rs:31 |
