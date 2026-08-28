@@ -40,13 +40,19 @@ not gating). Two things bit tranche 2 specifically:
 not just "smaller than before", and for any function with more than ~5 fallible calls
 dispatched from one match/if-chain, prefer the defer-the-`?` pattern over one `?` per arm.
 
-Do not attempt casually: the three giant Win32 wndproc dispatchers below (cognitive
-579/480/402) are large, stateful, side-effect-heavy message loops. Splitting them safely
-needs a dedicated session with manual UI verification (exercising the actual window,
-not just `cargo test`), not a mechanical extract-and-move pass. Treat them as their own
-project.
+Do not attempt casually: these giant Win32 wndproc dispatchers are large, stateful,
+side-effect-heavy message loops. Splitting them safely needs a dedicated session, not a
+casual mechanical extract-and-move pass. Treat each as its own project.
 
-- `wndproc` src/bin/app/preview/window.rs:709 (cognitive 579, CC 205)
+**Standing note on wndproc refactors:** a message-dispatcher split like this is mechanical
+by construction (one match arm -> one named handler, same routing, same LRESULT returns,
+same unsafe blocks) and passes build + `cargo test` + clippy cleanly because none of those
+tools can drive real window messages through the OS message loop. That only proves the
+*code* still means what it meant before, not that the *window* still behaves right under a
+mouse and keyboard. **A human UI click-through (open a real preview window and exercise
+drag/resize/keys/toolbar/PDF paging/video transport by hand) is still recommended before
+the next release**, for this row and for any future wndproc split in this file.
+
 - `shot_wndproc` src/bin/app/screenshot/overlay/input.rs:128 (cognitive 480, CC 124)
 - `wndproc` src/bin/app/settings_dlg/mod.rs:1041 (cognitive 402, CC 146)
 
@@ -86,9 +92,26 @@ tranche 1's baseline exactly) plus `cargo clippy --workspace --all-targets -D wa
 raw per-finding JSON, not just the truncated "top 50" audit `.md`); repo-wide gating errors
 187 -> 163.
 
+**Tranche 3 (2026-08-28): `wndproc` (window.rs), the first of the three giant Win32
+dispatchers, cleared.** Split the 767-line message dispatcher into a thin match (one line per
+message, each calling a named handler) plus ~30 extracted handler functions, one per
+nontrivial message arm, with `WM_MOUSEMOVE`, `WM_LBUTTONDOWN` and `WM_KEYDOWN` further split
+into sub-handlers (`mousemove_drag`/`mousemove_hover`; `lbuttondown_pane`;
+`keydown_copy_select`/`keydown_video_and_home`/`keydown_page_nav`/`keydown_lifecycle`) once
+their own extracted complexity was still too high for one function. Same message routing,
+same `LRESULT`s (including every `DefWindowProc` fallthrough), same unsafe blocks, no
+behavior change intended. Verified with `cargo test --bin SageThumbs2K` (the module's own 11
+`preview::window::tests` pass), `cargo test --lib` (753 passed, 0 failed, 18 ignored,
+matching the tranche 1/2 baseline exactly, this tranche touched a `bin`, not `lib`, so the
+lib suite is an unchanged-behavior check rather than direct coverage), `cargo clippy --bin
+SageThumbs2K -- -D warnings`, and `cargo fmt --all --check`, all clean. See the standing note
+above: build/test/clippy passing is preflight-level verification, not proof the actual window
+still behaves right under a mouse and keyboard, a human UI click-through before the next
+release is still recommended.
+
 | done | cog | CC | function | location |
 |---|---|---|---|---|
-| | 579 | 205 | `wndproc` | src/bin/app/preview/window.rs:709 |
+|x| 579 | 205 | `wndproc` | src/bin/app/preview/window.rs:709 |
 | | 480 | 124 | `shot_wndproc` | src/bin/app/screenshot/overlay/input.rs:128 |
 | | 402 | 146 | `wndproc` | src/bin/app/settings_dlg/mod.rs:1041 |
 | | 208 | 77 | `main` | src/bin/app/main.rs:195 |
