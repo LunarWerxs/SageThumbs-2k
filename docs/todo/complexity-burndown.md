@@ -109,10 +109,28 @@ above: build/test/clippy passing is preflight-level verification, not proof the 
 still behaves right under a mouse and keyboard, a human UI click-through before the next
 release is still recommended.
 
+**Tranche 4 (2026-08-28): `shot_wndproc` (screenshot/overlay/input.rs), the second of the
+three giant Win32 dispatchers, cleared.** Split the message dispatcher into a thin match
+(one line per message, each calling a named `on_*` handler) plus ~20 extracted functions,
+with the two heaviest arms further split: `WM_LBUTTONDOWN` into
+`on_lbuttondown`/`on_lbuttondown_selected`/`try_color_flyout_click`/`try_text_flyout_click`/
+`try_toolbar_button_click`/`apply_selection_click`, and `WM_MOUSEMOVE` into
+`on_mousemove`/`update_eyedropper_loupe`/`update_active_drag`/`update_window_hint`/
+`update_hover_button`. `WM_LBUTTONUP`'s OCR-launch branch became
+`finish_selection_drag`/`finish_draw_drag`, and `WM_CHAR`'s surrogate-pair handling became
+`push_typed_char`, both to keep the coordinator function's own complexity under the gate (see
+the threshold-discipline note above). Same message routing, same `LRESULT`s (including the
+`WM_SETCURSOR` `DefWindowProcW` fallthrough), same unsafe blocks, no behavior change intended.
+Verified with `cargo test --bin SageThumbs2K overlay::input` (the module's own 9
+`screenshot::overlay::input::tests` pass), `cargo test --lib --bins` (388 passed across all
+three bin/lib targets, 0 failed), `cargo clippy --bin SageThumbs2K -- -D warnings`, and `cargo
+fmt --all --check`, all clean. Same preflight-only caveat as tranche 3: a human UI
+click-through before the next release is still recommended.
+
 | done | cog | CC | function | location |
 |---|---|---|---|---|
 |x| 579 | 205 | `wndproc` | src/bin/app/preview/window.rs:709 |
-| | 480 | 124 | `shot_wndproc` | src/bin/app/screenshot/overlay/input.rs:128 |
+|x| 480 | 124 | `shot_wndproc` | src/bin/app/screenshot/overlay/input.rs:128 |
 | | 402 | 146 | `wndproc` | src/bin/app/settings_dlg/mod.rs:1041 |
 | | 208 | 77 | `main` | src/bin/app/main.rs:195 |
 |x| 207 | 86 | `transform` | src/jpegtran.rs:461 |

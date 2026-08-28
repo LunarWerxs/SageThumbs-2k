@@ -140,479 +140,586 @@ pub(super) extern "system" fn shot_wndproc(
         }
         match msg {
             WM_ERASEBKGND => LRESULT(1), // the snapshot covers every pixel
-            WM_LBUTTONDOWN => {
-                activate_overlay(hwnd);
-                let s = &mut *shot_ptr(hwnd);
-                let p = pt(lparam);
-                match s.sel {
-                    None => {
-                        if s.tool == Tool::Eyedropper {
-                            // Pick a colour without dragging a region first (E + click).
-                            sample_pixel(s, p);
-                        } else {
-                            s.sel_dragging = true;
-                            s.sel_anchor = p;
-                            s.cur = p;
-                        }
-                    }
-                    Some(sel) => {
-                        let dpi = shot_dpi_for_sel(s, sel);
-                        let buttons = toolbar::layout(sel, s.vw, s.vh, dpi);
-                        // The open colour palette intercepts clicks first.
-                        if s.color_flyout {
-                            if let Some((_, cbr)) =
-                                buttons.iter().find(|(b, _)| *b == Button::Color)
-                            {
-                                let (_, sw) =
-                                    toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
-                                if let Some((swatch, _)) = sw.iter().find(|(_, r)| pt_in(*r, p)) {
-                                    match *swatch {
-                                        Swatch::Color(c) | Swatch::Custom(Some(c)) => {
-                                            s.cur_color = c
-                                        }
-                                        Swatch::Custom(None) | Swatch::Picker => {
-                                            pick_custom_color(hwnd, s)
-                                        }
-                                    }
-                                    s.color_flyout = false;
-                                    let _ = InvalidateRect(Some(hwnd), None, false);
-                                    return LRESULT(0);
-                                }
-                            }
-                            // Clicked off the palette → close it; consume if that click
-                            // was the Colour button itself (else fall through).
-                            s.color_flyout = false;
-                            let _ = InvalidateRect(Some(hwnd), None, false);
-                            if toolbar::hit(&buttons, p.x, p.y) == Some(Button::Color) {
-                                return LRESULT(0);
-                            }
-                        }
-                        // The open text settings flyout intercepts clicks too.
-                        if s.text_flyout {
-                            if let Some((_, tbr)) =
-                                buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text))
-                            {
-                                let (_, its) = toolbar::text_flyout_layout(
-                                    *tbr,
-                                    s.vw,
-                                    s.vh,
-                                    s.font_dropdown,
-                                    dpi,
-                                );
-                                if let Some((item, _)) = its.iter().find(|(_, r)| pt_in(*r, p)) {
-                                    match *item {
-                                        TextItem::FontField => s.font_dropdown = !s.font_dropdown,
-                                        TextItem::FontOption(i) => {
-                                            tools::set_face(
-                                                &mut s.text_font,
-                                                toolbar::PRESET_FONTS[i],
-                                            );
-                                            s.font_dropdown = false;
-                                        }
-                                        TextItem::SizeDown => {
-                                            let sz = (-s.text_font.lfHeight - 2).max(8);
-                                            s.text_font.lfHeight = -sz;
-                                        }
-                                        TextItem::SizeUp => {
-                                            let sz = (-s.text_font.lfHeight + 2).min(120);
-                                            s.text_font.lfHeight = -sz;
-                                        }
-                                        TextItem::Bold => {
-                                            s.text_font.lfWeight = if s.text_font.lfWeight >= 700 {
-                                                400
-                                            } else {
-                                                700
-                                            };
-                                        }
-                                        TextItem::Underline => {
-                                            s.text_font.lfUnderline =
-                                                u8::from(s.text_font.lfUnderline == 0);
-                                        }
-                                        TextItem::More => {
-                                            pick_text_font(hwnd, s);
-                                            s.text_flyout = false;
-                                            s.font_dropdown = false;
-                                        }
-                                    }
-                                    let _ = InvalidateRect(Some(hwnd), None, false);
-                                    return LRESULT(0);
-                                }
-                            }
-                            // Clicked off the flyout → close it. Consume if it was the
-                            // Text button itself; else fall through (a canvas click
-                            // then drops the text caret and starts typing).
-                            s.text_flyout = false;
-                            s.font_dropdown = false;
-                            let _ = InvalidateRect(Some(hwnd), None, false);
-                            if toolbar::hit(&buttons, p.x, p.y) == Some(Button::Tool(Tool::Text)) {
-                                return LRESULT(0);
-                            }
-                        }
-                        // A click on a toolbar button takes priority over drawing.
-                        if let Some(btn) = toolbar::hit(&buttons, p.x, p.y) {
-                            if handle_button(hwnd, s, btn) {
-                                return LRESULT(0); // window destroyed — stop touching it
-                            }
-                            let _ = InvalidateRect(Some(hwnd), None, false);
-                            return LRESULT(0);
-                        }
-                        let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-                        if ctrl && s.typing.is_some() && s.tool == Tool::Text {
-                            // Ctrl-drag while typing repositions the *active* text box
-                            // (you stay in edit mode) — place the caption as you write it.
-                            s.typing_drag = true;
-                            s.move_from = Some(p);
-                        } else if ctrl || s.tool == Tool::Move {
-                            // Move tool — or Ctrl-drag with any tool — grabs the
-                            // topmost shape under the cursor (if any).
-                            s.selected = tools::hit_shape(&s.shapes, p.x, p.y);
-                            s.move_from = s.selected.map(|_| p);
-                            // A fresh grab starts a fresh undo record — any total left over
-                            // from a PREVIOUS drag must not apply to this one.
-                            MOVE_UNDO.with(|c| c.set(None));
-                        } else if s.tool == Tool::Eyedropper {
-                            sample_pixel(s, p); // grab the pixel's colour; never draws
-                        } else if s.tool == Tool::Text {
-                            // Click while typing = finish & deselect (no new box on this
-                            // click); a click when idle starts a fresh box. Predictable
-                            // "click away to commit" instead of spawning an empty box you
-                            // then have to Esc out of.
-                            if s.typing.is_some() {
-                                commit_text(s);
-                            } else {
-                                s.typing = Some((p, String::new()));
-                                s.pending_hi = None; // fresh buffer, no half-typed surrogate
-                            }
-                        } else if s.tool == Tool::Number {
-                            let n = s.number_next;
-                            s.number_next += 1;
-                            let color = s.color();
-                            s.shapes.push(Shape::Number { at: p, n, color });
-                            s.redo.clear();
-                            MOVE_UNDO.with(|c| c.set(None)); // a new shape is the new "last action"
-                        } else {
-                            s.draw_from = Some(p);
-                            s.pen_pts.clear();
-                            s.pen_pts.push(p);
-                            s.cur = p;
-                        }
-                    }
-                }
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                LRESULT(0)
-            }
-            WM_MOUSEMOVE => {
-                let s = &mut *shot_ptr(hwnd);
-                let p = pt(lparam);
-                // The Eyedropper loupe tracks the cursor: clear the "copied" flash and
-                // repaint just the old + new loupe areas (not the whole virtual screen,
-                // which would be a heavy blit per tick on a multi-monitor desktop).
-                if s.tool == Tool::Eyedropper {
-                    let old = loupe_rect(s, s.cur.x, s.cur.y);
-                    let new = loupe_rect(s, p.x, p.y);
-                    s.eye_copied = false;
-                    let _ = InvalidateRect(Some(hwnd), Some(&old), false);
-                    let _ = InvalidateRect(Some(hwnd), Some(&new), false);
-                }
-                s.cur = p;
-                if s.sel_dragging {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                } else if s.typing_drag {
-                    // Reposition the active text box by the cursor delta (still editing).
-                    if let Some(from) = s.move_from {
-                        if let Some((at, _)) = s.typing.as_mut() {
-                            at.x += p.x - from.x;
-                            at.y += p.y - from.y;
-                        }
-                        s.move_from = Some(p);
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                } else if let (Some(from), Some(idx)) = (s.move_from, s.selected) {
-                    // Drag the grabbed shape by the cursor delta.
-                    let (dx, dy) = (p.x - from.x, p.y - from.y);
-                    if idx < s.shapes.len() {
-                        tools::translate_shape(&mut s.shapes[idx], dx, dy);
-                        // Fold this tick's delta into the drag's running total, so Ctrl+Z
-                        // can undo the WHOLE drag (not just the last tick) by inverting it.
-                        MOVE_UNDO.with(|c| c.set(Some(accumulate_move_undo(c.get(), idx, dx, dy))));
-                    }
-                    s.move_from = Some(p);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                } else if s.draw_from.is_some() {
-                    if s.tool == Tool::Pen {
-                        s.pen_pts.push(p);
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-                // Before any selection exists, track the WINDOW under the cursor so a bare
-                // click can capture it (the hint paints as a live preview). Not while the
-                // Eyedropper is armed — there a click means "sample this pixel", and a
-                // window highlight would promise something the click won't do.
-                if s.sel.is_none() && !s.sel_dragging {
-                    let hint = if s.tool == Tool::Eyedropper || s.automation.is_some() {
-                        None
-                    } else {
-                        window_under(hwnd, s.vx, s.vy, s.vw, s.vh, p)
-                    };
-                    let changed = match (s.win_hint, hint) {
-                        (None, None) => false,
-                        (Some(a), Some(b)) => {
-                            a.left != b.left
-                                || a.top != b.top
-                                || a.right != b.right
-                                || a.bottom != b.bottom
-                        }
-                        _ => true,
-                    };
-                    if changed {
-                        s.win_hint = hint;
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    }
-                }
-                // Track which toolbar button we're hovering (only when idle), and
-                // (re)arm the hover-delay timer so the tooltip pops after a beat.
-                let idle = !s.sel_dragging && s.draw_from.is_none() && s.move_from.is_none();
-                let hovered = match (idle, s.sel) {
-                    (true, Some(sel)) => toolbar::hit(
-                        &toolbar::layout(sel, s.vw, s.vh, shot_dpi_for_sel(s, sel)),
-                        p.x,
-                        p.y,
-                    ),
-                    _ => None,
-                };
-                if hovered != s.hover_btn {
-                    s.hover_btn = hovered;
-                    s.tip_show = false;
-                    let _ = KillTimer(Some(hwnd), HOVER_TIMER);
-                    if hovered.is_some() {
-                        let _ = SetTimer(Some(hwnd), HOVER_TIMER, 450, None);
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-                LRESULT(0)
-            }
-            WM_LBUTTONUP => {
-                let s = &mut *shot_ptr(hwnd);
-                let p = pt(lparam);
-                if s.sel_dragging {
-                    s.sel_dragging = false;
-                    let r = tools::norm(s.sel_anchor, p);
-                    if (r.right - r.left) > 4 && (r.bottom - r.top) > 4 {
-                        s.sel = Some(r);
-                        // OCR launch mode: the region IS the whole gesture. Recognize and
-                        // close instead of raising the annotation toolbar. A too-small drag
-                        // falls through with no selection, so the overlay stays up for a
-                        // second try rather than closing on a mis-click.
-                        if s.ocr_mode {
-                            finish_ocr(s);
-                            let _ = DestroyWindow(hwnd);
-                            return LRESULT(0);
-                        }
-                    } else if let Some(w) = s.win_hint.take() {
-                        // A CLICK (a "drag" under the threshold) with a window highlighted:
-                        // the window IS the region. Same commit as a drag ending — including
-                        // OCR mode, where clicking a dialog reads the text out of it.
-                        s.sel = Some(w);
-                        if s.ocr_mode {
-                            finish_ocr(s);
-                            let _ = DestroyWindow(hwnd);
-                            return LRESULT(0);
-                        }
-                    }
-                    s.win_hint = None;
-                } else if s.typing_drag {
-                    s.typing_drag = false;
-                    s.move_from = None; // done repositioning the active text box
-                } else if s.move_from.is_some() {
-                    s.move_from = None; // finished dragging the selected shape
-                } else if let Some(a) = s.draw_from.take() {
-                    let shift = shift_active(s);
-                    let tool = s.tool;
-                    let final_point = tools::drag_endpoint(tool, a, p, shift);
-                    if finish_shape(s, a, final_point) {
-                        if let Some(state) = s.automation.as_mut() {
-                            state.commit_gen += 1;
-                            state.last_drag = Some(AutomationDrag {
-                                tool,
-                                anchor: a,
-                                raw: p,
-                                final_point,
-                                snapped: shift,
-                            });
-                            state.status = "ready";
-                        }
-                    }
-                }
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                LRESULT(0)
-            }
-            WM_CHAR => {
-                let s = &mut *shot_ptr(hwnd);
-                // WM_CHAR carries one UTF-16 code unit — decode it (not a single ASCII
-                // byte) so accented and other Unicode characters type correctly. A
-                // non-BMP character arrives as a high+low surrogate pair across two
-                // messages; buffer the high half until its low half lands.
-                if s.typing.is_some() {
-                    let u = (wparam.0 & 0xFFFF) as u16;
-                    if let Some(hi) = s.pending_hi.take() {
-                        // Expecting the low half of a surrogate pair.
-                        if (0xDC00..=0xDFFF).contains(&u) {
-                            if let Some(ch) =
-                                char::decode_utf16([hi, u]).next().and_then(|r| r.ok())
-                            {
-                                if let Some((_, buf)) = s.typing.as_mut() {
-                                    buf.push(ch);
-                                }
-                            }
-                            let _ = InvalidateRect(Some(hwnd), None, false);
-                            return LRESULT(0);
-                        }
-                        // Stray high surrogate without a matching low half — drop it and
-                        // fall through to process `u` on its own.
-                    }
-                    if (0xD800..=0xDBFF).contains(&u) {
-                        s.pending_hi = Some(u); // high surrogate — wait for its low half
-                    } else if u == 0x08 {
-                        if let Some((_, buf)) = s.typing.as_mut() {
-                            buf.pop();
-                        }
-                    } else if u == 0x0D {
-                        // Enter mid-annotation: handle_key's VK_RETURN branch defers to
-                        // here instead of committing/closing while typing (see there), so
-                        // this is where the literal newline actually lands.
-                        if let Some((_, buf)) = s.typing.as_mut() {
-                            buf.push('\n');
-                        }
-                    } else if u >= 0x20 && u != 0x7F {
-                        // A BMP character (lone surrogates were handled above), excluding
-                        // DEL (0x7F, sent by Ctrl+Backspace on some layouts) — it renders
-                        // as a tofu glyph instead of doing anything useful, so drop it
-                        // rather than insert it. Lossy path so an unexpected unpaired
-                        // surrogate can't panic.
-                        if let Some((_, buf)) = s.typing.as_mut() {
-                            buf.push_str(&String::from_utf16_lossy(&[u]));
-                        }
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                }
-                LRESULT(0)
-            }
-            WM_KEYDOWN => {
-                let vk = wparam.0 as u16;
-                // Bit 30 means the key was already down. A held F8 must toggle the
-                // automation latch once, not on every auto-repeat WM_KEYDOWN.
-                let repeated_f8 = vk == VK_F8.0 && (lparam.0 & (1isize << 30)) != 0;
-                let shift_preview = if vk == VK_SHIFT.0 {
-                    let s = &*shot_ptr(hwnd);
-                    s.draw_from.is_some() && matches!(s.tool, Tool::Line | Tool::Arrow)
-                } else {
-                    false
-                };
-                if (!repeated_f8 && handle_key(hwnd, vk)) || shift_preview {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-                LRESULT(0)
-            }
-            WM_KEYUP => {
-                // Shift can be pressed or released without moving the mouse. Repaint an
-                // active line/arrow so its preview toggles immediately in either direction.
-                if wparam.0 as u16 == VK_SHIFT.0 {
-                    let s = &*shot_ptr(hwnd);
-                    if s.draw_from.is_some() && matches!(s.tool, Tool::Line | Tool::Arrow) {
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    }
-                }
-                LRESULT(0)
-            }
-            WM_TIMER => {
-                let s = &mut *shot_ptr(hwnd);
-                if wparam.0 == HOVER_TIMER {
-                    let _ = KillTimer(Some(hwnd), HOVER_TIMER);
-                    if s.hover_btn.is_some() && !s.tip_show {
-                        s.tip_show = true;
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    }
-                }
-                LRESULT(0)
-            }
-            WM_SETCURSOR => {
-                // Only override the client area; let the default handle the rest.
-                if (lparam.0 & 0xffff) as u32 != HTCLIENT {
-                    return DefWindowProcW(hwnd, msg, wparam, lparam);
-                }
-                let s = &*shot_ptr(hwnd);
-                let p = s.cur; // last client-space mouse pos (WM_SETCURSOR precedes the move)
-                let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-                // Over the toolbar, or over an open flyout panel?
-                let over_ui = s.sel.is_some_and(|sel| {
-                    let dpi = shot_dpi_for_sel(s, sel);
-                    let buttons = toolbar::layout(sel, s.vw, s.vh, dpi);
-                    if toolbar::hit(&buttons, p.x, p.y).is_some() {
-                        return true;
-                    }
-                    if s.color_flyout {
-                        if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
-                            let (panel, _) =
-                                toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
-                            return pt_in(panel, p);
-                        }
-                    }
-                    if s.text_flyout {
-                        if let Some((_, tbr)) =
-                            buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text))
-                        {
-                            let (panel, _) =
-                                toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
-                            return pt_in(panel, p);
-                        }
-                    }
-                    false
-                });
-                let moving = ctrl || s.tool == Tool::Move;
-                let over_shape = moving && tools::hit_shape(&s.shapes, p.x, p.y).is_some();
-                let active_typing_move = ctrl && s.tool == Tool::Text && s.typing.is_some();
-                // An already-active gesture wins over modifier changes and toolbar
-                // hover. When idle, match the pointer to what the next click would do.
-                let id = if s.typing_drag || s.move_from.is_some() {
-                    IDC_SIZEALL
-                } else if s.sel_dragging || s.draw_from.is_some() {
-                    IDC_CROSS
-                } else if over_ui {
-                    IDC_ARROW
-                } else if active_typing_move || over_shape {
-                    IDC_SIZEALL
-                } else if moving {
-                    IDC_ARROW
-                } else if s.tool == Tool::Text {
-                    IDC_IBEAM
-                } else {
-                    IDC_CROSS
-                };
-                if let Ok(cur) = LoadCursorW(None, id) {
-                    SetCursor(Some(cur));
-                }
-                LRESULT(1)
-            }
+            WM_LBUTTONDOWN => on_lbuttondown(hwnd, lparam),
+            WM_MOUSEMOVE => on_mousemove(hwnd, lparam),
+            WM_LBUTTONUP => on_lbuttonup(hwnd, lparam),
+            WM_CHAR => on_char(hwnd, wparam),
+            WM_KEYDOWN => on_keydown(hwnd, wparam, lparam),
+            WM_KEYUP => on_keyup(hwnd, wparam),
+            WM_TIMER => on_timer(hwnd, wparam),
+            WM_SETCURSOR => on_setcursor(hwnd, wparam, lparam),
             WM_PAINT => {
                 shot_paint(hwnd);
                 LRESULT(0)
             }
-            WM_DESTROY => {
-                let ptr = shot_ptr(hwnd);
-                if !ptr.is_null() {
-                    let s = Box::from_raw(ptr);
-                    let _ = DeleteDC(s.shot);
-                    let _ = DeleteObject(HGDIOBJ(s.shot_bmp.0));
-                    let _ = DeleteDC(s.dimmed);
-                    let _ = DeleteObject(HGDIOBJ(s.dimmed_bmp.0));
-                }
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
+            WM_DESTROY => on_destroy(hwnd),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+/// `WM_LBUTTONDOWN`: with no region yet, either sample a pixel (Eyedropper) or start the
+/// region drag; with a region already up, route through the annotation toolbar/flyouts/
+/// canvas via [`on_lbuttondown_selected`].
+unsafe fn on_lbuttondown(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    activate_overlay(hwnd);
+    let s = &mut *shot_ptr(hwnd);
+    let p = pt(lparam);
+    match s.sel {
+        None => {
+            if s.tool == Tool::Eyedropper {
+                // Pick a colour without dragging a region first (E + click).
+                sample_pixel(s, p);
+            } else {
+                s.sel_dragging = true;
+                s.sel_anchor = p;
+                s.cur = p;
+            }
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
+        Some(sel) => on_lbuttondown_selected(hwnd, s, sel, p),
+    }
+}
+
+/// A mouse-down while a region is already up: flyouts intercept first, then the
+/// toolbar, then the click falls through to whatever the active tool does with it.
+unsafe fn on_lbuttondown_selected(hwnd: HWND, s: &mut Shot, sel: RECT, p: POINT) -> LRESULT {
+    let dpi = shot_dpi_for_sel(s, sel);
+    let buttons = toolbar::layout(sel, s.vw, s.vh, dpi);
+    if let Some(r) = try_color_flyout_click(hwnd, s, &buttons, p, dpi) {
+        return r;
+    }
+    if let Some(r) = try_text_flyout_click(hwnd, s, &buttons, p, dpi) {
+        return r;
+    }
+    if let Some(r) = try_toolbar_button_click(hwnd, s, &buttons, p) {
+        return r;
+    }
+    apply_selection_click(s, p);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    LRESULT(0)
+}
+
+/// Click routing for the open colour palette flyout: `Some(_)` means the caller must
+/// return that `LRESULT` immediately (the click was consumed); `None` means the flyout
+/// wasn't open, or it just closed and the click should keep falling through untouched.
+unsafe fn try_color_flyout_click(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    p: POINT,
+    dpi: i32,
+) -> Option<LRESULT> {
+    if !s.color_flyout {
+        return None;
+    }
+    if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
+        let (_, sw) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
+        if let Some((swatch, _)) = sw.iter().find(|(_, r)| pt_in(*r, p)) {
+            match *swatch {
+                Swatch::Color(c) | Swatch::Custom(Some(c)) => s.cur_color = c,
+                Swatch::Custom(None) | Swatch::Picker => pick_custom_color(hwnd, s),
+            }
+            s.color_flyout = false;
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            return Some(LRESULT(0));
+        }
+    }
+    // Clicked off the palette → close it; consume if that click was the Colour button
+    // itself (else fall through).
+    s.color_flyout = false;
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    if toolbar::hit(buttons, p.x, p.y) == Some(Button::Color) {
+        return Some(LRESULT(0));
+    }
+    None
+}
+
+/// Click routing for the open text-settings flyout, same shape as
+/// [`try_color_flyout_click`]: `Some(_)` to return immediately, `None` to fall through.
+unsafe fn try_text_flyout_click(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    p: POINT,
+    dpi: i32,
+) -> Option<LRESULT> {
+    if !s.text_flyout {
+        return None;
+    }
+    if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
+        let (_, its) = toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
+        if let Some((item, _)) = its.iter().find(|(_, r)| pt_in(*r, p)) {
+            match *item {
+                TextItem::FontField => s.font_dropdown = !s.font_dropdown,
+                TextItem::FontOption(i) => {
+                    tools::set_face(&mut s.text_font, toolbar::PRESET_FONTS[i]);
+                    s.font_dropdown = false;
+                }
+                TextItem::SizeDown => {
+                    let sz = (-s.text_font.lfHeight - 2).max(8);
+                    s.text_font.lfHeight = -sz;
+                }
+                TextItem::SizeUp => {
+                    let sz = (-s.text_font.lfHeight + 2).min(120);
+                    s.text_font.lfHeight = -sz;
+                }
+                TextItem::Bold => {
+                    s.text_font.lfWeight = if s.text_font.lfWeight >= 700 {
+                        400
+                    } else {
+                        700
+                    };
+                }
+                TextItem::Underline => {
+                    s.text_font.lfUnderline = u8::from(s.text_font.lfUnderline == 0);
+                }
+                TextItem::More => {
+                    pick_text_font(hwnd, s);
+                    s.text_flyout = false;
+                    s.font_dropdown = false;
+                }
+            }
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            return Some(LRESULT(0));
+        }
+    }
+    // Clicked off the flyout → close it. Consume if it was the Text button itself; else
+    // fall through (a canvas click then drops the text caret and starts typing).
+    s.text_flyout = false;
+    s.font_dropdown = false;
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    if toolbar::hit(buttons, p.x, p.y) == Some(Button::Tool(Tool::Text)) {
+        return Some(LRESULT(0));
+    }
+    None
+}
+
+/// A click on a toolbar button takes priority over drawing. `None` means the click
+/// missed every button.
+unsafe fn try_toolbar_button_click(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    p: POINT,
+) -> Option<LRESULT> {
+    let btn = toolbar::hit(buttons, p.x, p.y)?;
+    if handle_button(hwnd, s, btn) {
+        return Some(LRESULT(0)); // window destroyed — stop touching it
+    }
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    Some(LRESULT(0))
+}
+
+/// The click missed every flyout and toolbar button: route it to whatever the active
+/// tool does with a fresh mouse-down on the canvas itself.
+unsafe fn apply_selection_click(s: &mut Shot, p: POINT) {
+    let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+    if ctrl && s.typing.is_some() && s.tool == Tool::Text {
+        // Ctrl-drag while typing repositions the *active* text box (you stay in edit
+        // mode) — place the caption as you write it.
+        s.typing_drag = true;
+        s.move_from = Some(p);
+    } else if ctrl || s.tool == Tool::Move {
+        // Move tool — or Ctrl-drag with any tool — grabs the topmost shape under the
+        // cursor (if any).
+        s.selected = tools::hit_shape(&s.shapes, p.x, p.y);
+        s.move_from = s.selected.map(|_| p);
+        // A fresh grab starts a fresh undo record — any total left over from a
+        // PREVIOUS drag must not apply to this one.
+        MOVE_UNDO.with(|c| c.set(None));
+    } else if s.tool == Tool::Eyedropper {
+        sample_pixel(s, p); // grab the pixel's colour; never draws
+    } else if s.tool == Tool::Text {
+        // Click while typing = finish & deselect (no new box on this click); a click
+        // when idle starts a fresh box. Predictable "click away to commit" instead of
+        // spawning an empty box you then have to Esc out of.
+        if s.typing.is_some() {
+            commit_text(s);
+        } else {
+            s.typing = Some((p, String::new()));
+            s.pending_hi = None; // fresh buffer, no half-typed surrogate
+        }
+    } else if s.tool == Tool::Number {
+        let n = s.number_next;
+        s.number_next += 1;
+        let color = s.color();
+        s.shapes.push(Shape::Number { at: p, n, color });
+        s.redo.clear();
+        MOVE_UNDO.with(|c| c.set(None)); // a new shape is the new "last action"
+    } else {
+        s.draw_from = Some(p);
+        s.pen_pts.clear();
+        s.pen_pts.push(p);
+        s.cur = p;
+    }
+}
+
+/// `WM_MOUSEMOVE`: the loupe, the active drag (if any), the click-a-window hint, and the
+/// toolbar hover/tooltip timer are independent concerns, each gets its own pass.
+unsafe fn on_mousemove(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let s = &mut *shot_ptr(hwnd);
+    let p = pt(lparam);
+    update_eyedropper_loupe(hwnd, s, p);
+    s.cur = p;
+    update_active_drag(hwnd, s, p);
+    update_window_hint(hwnd, s, p);
+    update_hover_button(hwnd, s, p);
+    LRESULT(0)
+}
+
+/// The Eyedropper loupe tracks the cursor: clear the "copied" flash and repaint just the
+/// old + new loupe areas (not the whole virtual screen, which would be a heavy blit per
+/// tick on a multi-monitor desktop).
+unsafe fn update_eyedropper_loupe(hwnd: HWND, s: &mut Shot, p: POINT) {
+    if s.tool != Tool::Eyedropper {
+        return;
+    }
+    let old = loupe_rect(s, s.cur.x, s.cur.y);
+    let new = loupe_rect(s, p.x, p.y);
+    s.eye_copied = false;
+    let _ = InvalidateRect(Some(hwnd), Some(&old), false);
+    let _ = InvalidateRect(Some(hwnd), Some(&new), false);
+}
+
+/// Whichever gesture is currently active (region drag, text-box reposition, shape move,
+/// or freehand pen) advances by this tick's cursor position. At most one of these is
+/// ever active at once.
+unsafe fn update_active_drag(hwnd: HWND, s: &mut Shot, p: POINT) {
+    if s.sel_dragging {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if s.typing_drag {
+        // Reposition the active text box by the cursor delta (still editing).
+        if let Some(from) = s.move_from {
+            if let Some((at, _)) = s.typing.as_mut() {
+                at.x += p.x - from.x;
+                at.y += p.y - from.y;
+            }
+            s.move_from = Some(p);
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if let (Some(from), Some(idx)) = (s.move_from, s.selected) {
+        // Drag the grabbed shape by the cursor delta.
+        let (dx, dy) = (p.x - from.x, p.y - from.y);
+        if idx < s.shapes.len() {
+            tools::translate_shape(&mut s.shapes[idx], dx, dy);
+            // Fold this tick's delta into the drag's running total, so Ctrl+Z can undo
+            // the WHOLE drag (not just the last tick) by inverting it.
+            MOVE_UNDO.with(|c| c.set(Some(accumulate_move_undo(c.get(), idx, dx, dy))));
+        }
+        s.move_from = Some(p);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if s.draw_from.is_some() {
+        if s.tool == Tool::Pen {
+            s.pen_pts.push(p);
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Before any selection exists, track the WINDOW under the cursor so a bare click can
+/// capture it (the hint paints as a live preview). Not while the Eyedropper is armed —
+/// there a click means "sample this pixel", and a window highlight would promise
+/// something the click won't do.
+unsafe fn update_window_hint(hwnd: HWND, s: &mut Shot, p: POINT) {
+    if s.sel.is_some() || s.sel_dragging {
+        return;
+    }
+    let hint = if s.tool == Tool::Eyedropper || s.automation.is_some() {
+        None
+    } else {
+        window_under(hwnd, s.vx, s.vy, s.vw, s.vh, p)
+    };
+    let changed = match (s.win_hint, hint) {
+        (None, None) => false,
+        (Some(a), Some(b)) => {
+            a.left != b.left || a.top != b.top || a.right != b.right || a.bottom != b.bottom
+        }
+        _ => true,
+    };
+    if changed {
+        s.win_hint = hint;
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Track which toolbar button we're hovering (only when idle), and (re)arm the
+/// hover-delay timer so the tooltip pops after a beat.
+unsafe fn update_hover_button(hwnd: HWND, s: &mut Shot, p: POINT) {
+    let idle = !s.sel_dragging && s.draw_from.is_none() && s.move_from.is_none();
+    let hovered = match (idle, s.sel) {
+        (true, Some(sel)) => toolbar::hit(
+            &toolbar::layout(sel, s.vw, s.vh, shot_dpi_for_sel(s, sel)),
+            p.x,
+            p.y,
+        ),
+        _ => None,
+    };
+    if hovered != s.hover_btn {
+        s.hover_btn = hovered;
+        s.tip_show = false;
+        let _ = KillTimer(Some(hwnd), HOVER_TIMER);
+        if hovered.is_some() {
+            let _ = SetTimer(Some(hwnd), HOVER_TIMER, 450, None);
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// `WM_LBUTTONUP`: finish whichever gesture was active (region drag, text reposition,
+/// shape move, or a drawn annotation).
+unsafe fn on_lbuttonup(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let s = &mut *shot_ptr(hwnd);
+    let p = pt(lparam);
+    if s.sel_dragging {
+        if let Some(r) = finish_selection_drag(hwnd, s, p) {
+            return r;
+        }
+    } else if s.typing_drag {
+        s.typing_drag = false;
+        s.move_from = None; // done repositioning the active text box
+    } else if s.move_from.is_some() {
+        s.move_from = None; // finished dragging the selected shape
+    } else if let Some(a) = s.draw_from.take() {
+        finish_draw_drag(s, a, p);
+    }
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    LRESULT(0)
+}
+
+/// The region drag (or click-a-window "drag") just ended: commit the region, and in OCR
+/// launch mode recognize + close immediately instead of raising the annotation toolbar.
+/// `Some(_)` means the caller must return that `LRESULT` immediately (the window may
+/// already be destroyed).
+unsafe fn finish_selection_drag(hwnd: HWND, s: &mut Shot, p: POINT) -> Option<LRESULT> {
+    s.sel_dragging = false;
+    let r = tools::norm(s.sel_anchor, p);
+    if (r.right - r.left) > 4 && (r.bottom - r.top) > 4 {
+        s.sel = Some(r);
+        // OCR launch mode: the region IS the whole gesture. Recognize and close instead
+        // of raising the annotation toolbar. A too-small drag falls through with no
+        // selection, so the overlay stays up for a second try rather than closing on a
+        // mis-click.
+        if s.ocr_mode {
+            finish_ocr(s);
+            let _ = DestroyWindow(hwnd);
+            return Some(LRESULT(0));
+        }
+    } else if let Some(w) = s.win_hint.take() {
+        // A CLICK (a "drag" under the threshold) with a window highlighted: the window
+        // IS the region. Same commit as a drag ending — including OCR mode, where
+        // clicking a dialog reads the text out of it.
+        s.sel = Some(w);
+        if s.ocr_mode {
+            finish_ocr(s);
+            let _ = DestroyWindow(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+    s.win_hint = None;
+    None
+}
+
+/// A drawn annotation (rect/arrow/pen/…) just finished: turn it into a shape and, under
+/// automation, record it as the drag the next `AutomationDrag` query will report.
+unsafe fn finish_draw_drag(s: &mut Shot, a: POINT, p: POINT) {
+    let shift = shift_active(s);
+    let tool = s.tool;
+    let final_point = tools::drag_endpoint(tool, a, p, shift);
+    if finish_shape(s, a, final_point) {
+        if let Some(state) = s.automation.as_mut() {
+            state.commit_gen += 1;
+            state.last_drag = Some(AutomationDrag {
+                tool,
+                anchor: a,
+                raw: p,
+                final_point,
+                snapped: shift,
+            });
+            state.status = "ready";
+        }
+    }
+}
+
+/// `WM_CHAR`: only meaningful while an annotation is being typed. Everything else
+/// (tool shortcuts) goes through `WM_KEYDOWN`/[`handle_key`] instead.
+unsafe fn on_char(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    let s = &mut *shot_ptr(hwnd);
+    if s.typing.is_none() {
+        return LRESULT(0);
+    }
+    // WM_CHAR carries one UTF-16 code unit — decode it (not a single ASCII byte) so
+    // accented and other Unicode characters type correctly. A non-BMP character arrives
+    // as a high+low surrogate pair across two messages; buffer the high half until its
+    // low half lands.
+    let u = (wparam.0 & 0xFFFF) as u16;
+    push_typed_char(s, u);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    LRESULT(0)
+}
+
+/// Append one UTF-16 code unit typed into the active text buffer, handling surrogate
+/// pairs, backspace, Enter, and the DEL-as-tofu-glyph exclusion. Split out of
+/// [`on_char`] so the surrogate-pair nesting doesn't pile onto the message-dispatch
+/// function's own complexity.
+fn push_typed_char(s: &mut Shot, u: u16) {
+    if let Some(hi) = s.pending_hi.take() {
+        // Expecting the low half of a surrogate pair.
+        if (0xDC00..=0xDFFF).contains(&u) {
+            if let Some(ch) = char::decode_utf16([hi, u]).next().and_then(|r| r.ok()) {
+                if let Some((_, buf)) = s.typing.as_mut() {
+                    buf.push(ch);
+                }
+            }
+            return;
+        }
+        // Stray high surrogate without a matching low half — drop it and fall through
+        // to process `u` on its own.
+    }
+    if (0xD800..=0xDBFF).contains(&u) {
+        s.pending_hi = Some(u); // high surrogate — wait for its low half
+    } else if u == 0x08 {
+        if let Some((_, buf)) = s.typing.as_mut() {
+            buf.pop();
+        }
+    } else if u == 0x0D {
+        // Enter mid-annotation: handle_key's VK_RETURN branch defers to here instead of
+        // committing/closing while typing (see there), so this is where the literal
+        // newline actually lands.
+        if let Some((_, buf)) = s.typing.as_mut() {
+            buf.push('\n');
+        }
+    } else if u >= 0x20 && u != 0x7F {
+        // A BMP character (lone surrogates were handled above), excluding DEL (0x7F,
+        // sent by Ctrl+Backspace on some layouts) — it renders as a tofu glyph instead
+        // of doing anything useful, so drop it rather than insert it. Lossy path so an
+        // unexpected unpaired surrogate can't panic.
+        if let Some((_, buf)) = s.typing.as_mut() {
+            buf.push_str(&String::from_utf16_lossy(&[u]));
+        }
+    }
+}
+
+/// `WM_KEYDOWN`: tool shortcuts and undo/redo go through [`handle_key`]; this wrapper
+/// only handles the F8 auto-repeat guard and the live Shift-snap preview repaint.
+unsafe fn on_keydown(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let vk = wparam.0 as u16;
+    // Bit 30 means the key was already down. A held F8 must toggle the automation latch
+    // once, not on every auto-repeat WM_KEYDOWN.
+    let repeated_f8 = vk == VK_F8.0 && (lparam.0 & (1isize << 30)) != 0;
+    let shift_preview = if vk == VK_SHIFT.0 {
+        let s = &*shot_ptr(hwnd);
+        s.draw_from.is_some() && matches!(s.tool, Tool::Line | Tool::Arrow)
+    } else {
+        false
+    };
+    if (!repeated_f8 && handle_key(hwnd, vk)) || shift_preview {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+    LRESULT(0)
+}
+
+/// `WM_KEYUP`: Shift can be pressed or released without moving the mouse. Repaint an
+/// active line/arrow so its preview toggles immediately in either direction.
+unsafe fn on_keyup(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    if wparam.0 as u16 == VK_SHIFT.0 {
+        let s = &*shot_ptr(hwnd);
+        if s.draw_from.is_some() && matches!(s.tool, Tool::Line | Tool::Arrow) {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+    LRESULT(0)
+}
+
+/// `WM_TIMER`: only the hover-tooltip timer is ever armed on this window.
+unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    let s = &mut *shot_ptr(hwnd);
+    if wparam.0 == HOVER_TIMER {
+        let _ = KillTimer(Some(hwnd), HOVER_TIMER);
+        if s.hover_btn.is_some() && !s.tip_show {
+            s.tip_show = true;
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+    LRESULT(0)
+}
+
+/// `WM_SETCURSOR`: pick the cursor shape for whatever gesture/tool is active over the
+/// client area; default handling covers non-client hit-tests (resize borders etc).
+unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Only override the client area; let the default handle the rest.
+    if (lparam.0 & 0xffff) as u32 != HTCLIENT {
+        return DefWindowProcW(hwnd, WM_SETCURSOR, wparam, lparam);
+    }
+    let s = &*shot_ptr(hwnd);
+    let p = s.cur; // last client-space mouse pos (WM_SETCURSOR precedes the move)
+    let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+    let over_ui = is_over_toolbar_ui(s, p);
+    let moving = ctrl || s.tool == Tool::Move;
+    let over_shape = moving && tools::hit_shape(&s.shapes, p.x, p.y).is_some();
+    let active_typing_move = ctrl && s.tool == Tool::Text && s.typing.is_some();
+    // An already-active gesture wins over modifier changes and toolbar hover. When
+    // idle, match the pointer to what the next click would do.
+    let id = if s.typing_drag || s.move_from.is_some() {
+        IDC_SIZEALL
+    } else if s.sel_dragging || s.draw_from.is_some() {
+        IDC_CROSS
+    } else if over_ui {
+        IDC_ARROW
+    } else if active_typing_move || over_shape {
+        IDC_SIZEALL
+    } else if moving {
+        IDC_ARROW
+    } else if s.tool == Tool::Text {
+        IDC_IBEAM
+    } else {
+        IDC_CROSS
+    };
+    if let Ok(cur) = LoadCursorW(None, id) {
+        SetCursor(Some(cur));
+    }
+    LRESULT(1)
+}
+
+/// Whether client point `p` is over the toolbar itself or an open flyout panel: the
+/// cursor stays the default arrow there instead of the tool's normal crosshair/I-beam.
+unsafe fn is_over_toolbar_ui(s: &Shot, p: POINT) -> bool {
+    s.sel.is_some_and(|sel| {
+        let dpi = shot_dpi_for_sel(s, sel);
+        let buttons = toolbar::layout(sel, s.vw, s.vh, dpi);
+        if toolbar::hit(&buttons, p.x, p.y).is_some() {
+            return true;
+        }
+        if s.color_flyout {
+            if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
+                let (panel, _) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
+                return pt_in(panel, p);
+            }
+        }
+        if s.text_flyout {
+            if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
+                let (panel, _) =
+                    toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
+                return pt_in(panel, p);
+            }
+        }
+        false
+    })
+}
+
+/// `WM_DESTROY`: free the boxed `Shot` and its GDI objects, then quit the message loop.
+unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
+    let ptr = shot_ptr(hwnd);
+    if !ptr.is_null() {
+        let s = Box::from_raw(ptr);
+        let _ = DeleteDC(s.shot);
+        let _ = DeleteObject(HGDIOBJ(s.shot_bmp.0));
+        let _ = DeleteDC(s.dimmed);
+        let _ = DeleteObject(HGDIOBJ(s.dimmed_bmp.0));
+    }
+    PostQuitMessage(0);
+    LRESULT(0)
 }
 
 /// Keyboard: tool shortcuts, colour/thickness, undo/redo, accept (Enter → copy),
