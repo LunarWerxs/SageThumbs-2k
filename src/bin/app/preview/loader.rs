@@ -395,92 +395,135 @@ unsafe fn load_sync_frame(st: &ViewerState, path: &str, fr: usize) {
     }
 }
 
+/// `load_static`'s "View source" hook, same gating as the async `load` path minus the window
+/// ops. Returns true (and has already set text/kind) if source view took over.
+unsafe fn try_static_source_view(st: &ViewerState, path: &str) -> bool {
+    st.src_capable.set(source_capable(&ext_of(path)));
+    if !(st.src_capable.get() && st.src_view.get()) {
+        return false;
+    }
+    let Some(text) = content::read_text(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(text);
+    st.kind.set(ContentKind::Text);
+    true
+}
+
+/// `load_static`'s archive-listing hook (zip/7z/rar-family), same render as the async `load` path.
+unsafe fn try_static_archive_listing(st: &ViewerState, path: &str) -> bool {
+    if !content::is_archive_ext(&ext_of(path)) {
+        return false;
+    }
+    let Some(listing) = content::archive_listing(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(listing);
+    st.kind.set(ContentKind::Text);
+    true
+}
+
+/// `load_static`'s database-view hook, same render as the async `load` path.
+unsafe fn try_static_db_markdown(st: &ViewerState, path: &str) -> bool {
+    let Some(md) = db_markdown(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(md);
+    st.md_has_headings.set(true);
+    st.md_remote_ok.set(false);
+    st.kind.set(ContentKind::Markdown);
+    true
+}
+
+/// `load_static`'s email-view hook, same render as the async `load` path.
+unsafe fn try_static_mail_markdown(st: &ViewerState, path: &str) -> bool {
+    let Some(md) = mail_markdown(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(md);
+    st.md_has_headings.set(true);
+    st.md_remote_ok.set(false);
+    st.kind.set(ContentKind::Markdown);
+    true
+}
+
+/// `load_static`'s `ContentKind::Image` arm: decode, or fall back to the info card.
+unsafe fn apply_static_image(st: &ViewerState, path: &str) {
+    match content::decode_sync(path) {
+        Some(d) => {
+            if let Some(rd) = content::make_render(d.w, d.h, &d.rgba, letterbox_bg(st)) {
+                *st.render.borrow_mut() = Some(rd);
+                st.kind.set(ContentKind::Image);
+            } else {
+                *st.card.borrow_mut() = Some(infocard::gather(path));
+                st.kind.set(ContentKind::InfoCard);
+            }
+        }
+        None => {
+            *st.card.borrow_mut() = Some(infocard::gather(path));
+            st.kind.set(ContentKind::InfoCard);
+        }
+    }
+}
+
+/// `load_static`'s `ContentKind::Text`/`Markdown` arm: read (converting to markdown for the
+/// Markdown case), or fall back to the info card.
+unsafe fn apply_static_text_or_markdown(st: &ViewerState, path: &str, kind: ContentKind) {
+    let read = if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
+        content::read_doc(path)
+    } else {
+        content::read_text(path)
+    };
+    let Some(mut t) = read else {
+        *st.card.borrow_mut() = Some(infocard::gather(path));
+        st.kind.set(ContentKind::InfoCard);
+        return;
+    };
+    if kind == ContentKind::Markdown {
+        if let Some(conv) = super::docconv::to_markdown(&ext_of(path), &t) {
+            t = conv.md;
+            seed_md_attachments(st, conv.attachments);
+        }
+        st.md_has_headings.set(super::markdown::has_headings(&t));
+        st.md_has_remote.set(super::markdown::has_remote_images(&t));
+        st.md_remote_ok
+            .set(sagethumbs2k_core::settings::preview_md_remote_img());
+    }
+    *st.text.borrow_mut() = Some(t);
+    st.kind.set(kind);
+}
+
+/// `load_static`'s final by-kind dispatch, once none of the content-specific hooks took over.
+unsafe fn apply_static_content_kind(st: &ViewerState, path: &str, kind: ContentKind) {
+    match kind {
+        ContentKind::Image => apply_static_image(st, path),
+        ContentKind::Text | ContentKind::Markdown => apply_static_text_or_markdown(st, path, kind),
+        _ => {
+            *st.card.borrow_mut() = Some(infocard::gather(path));
+            st.kind.set(ContentKind::InfoCard);
+        }
+    }
+}
+
 /// Synchronous still decode for the headless shot: image → DIB, text/markdown → read, else card.
 pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind) {
-    // "View source" (`--source`) — same gating as the async `load` path, minus the window ops.
-    st.src_capable.set(source_capable(&ext_of(path)));
-    if st.src_capable.get() && st.src_view.get() {
-        if let Some(text) = content::read_text(path) {
-            *st.text.borrow_mut() = Some(text);
-            st.kind.set(ContentKind::Text);
-            return;
-        }
-    }
-    // Archive listing (zip/7z/rar-family) — shown in the text pane, same as the async `load` path.
-    if content::is_archive_ext(&ext_of(path)) {
-        if let Some(listing) = content::archive_listing(path) {
-            *st.text.borrow_mut() = Some(listing);
-            st.kind.set(ContentKind::Text);
-            return;
-        }
-    }
-    // Database view (same render as the async `load` path).
-    if let Some(md) = db_markdown(path) {
-        *st.text.borrow_mut() = Some(md);
-        st.md_has_headings.set(true);
-        st.md_remote_ok.set(false);
-        st.kind.set(ContentKind::Markdown);
+    if try_static_source_view(st, path) {
         return;
     }
-    // Email view (same render as the async `load` path).
-    if let Some(md) = mail_markdown(path) {
-        *st.text.borrow_mut() = Some(md);
-        st.md_has_headings.set(true);
-        st.md_remote_ok.set(false);
-        st.kind.set(ContentKind::Markdown);
+    if try_static_archive_listing(st, path) {
+        return;
+    }
+    if try_static_db_markdown(st, path) {
+        return;
+    }
+    if try_static_mail_markdown(st, path) {
         return;
     }
     // Font specimen (same render as the async `load` path).
     if super::font::is_font_ext(&ext_of(path)) && render_font_to_state(st, path) {
         return;
     }
-    match kind {
-        ContentKind::Image => match content::decode_sync(path) {
-            Some(d) => {
-                if let Some(rd) = content::make_render(d.w, d.h, &d.rgba, letterbox_bg(st)) {
-                    *st.render.borrow_mut() = Some(rd);
-                    st.kind.set(ContentKind::Image);
-                } else {
-                    *st.card.borrow_mut() = Some(infocard::gather(path));
-                    st.kind.set(ContentKind::InfoCard);
-                }
-            }
-            None => {
-                *st.card.borrow_mut() = Some(infocard::gather(path));
-                st.kind.set(ContentKind::InfoCard);
-            }
-        },
-        ContentKind::Text | ContentKind::Markdown => {
-            match if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
-                content::read_doc(path)
-            } else {
-                content::read_text(path)
-            } {
-                Some(mut t) => {
-                    if kind == ContentKind::Markdown {
-                        if let Some(conv) = super::docconv::to_markdown(&ext_of(path), &t) {
-                            t = conv.md;
-                            seed_md_attachments(st, conv.attachments);
-                        }
-                        st.md_has_headings.set(super::markdown::has_headings(&t));
-                        st.md_has_remote.set(super::markdown::has_remote_images(&t));
-                        st.md_remote_ok
-                            .set(sagethumbs2k_core::settings::preview_md_remote_img());
-                    }
-                    *st.text.borrow_mut() = Some(t);
-                    st.kind.set(kind);
-                }
-                None => {
-                    *st.card.borrow_mut() = Some(infocard::gather(path));
-                    st.kind.set(ContentKind::InfoCard);
-                }
-            }
-        }
-        _ => {
-            *st.card.borrow_mut() = Some(infocard::gather(path));
-            st.kind.set(ContentKind::InfoCard);
-        }
-    }
+    apply_static_content_kind(st, path, kind);
 }
 
 /// Decode a converted document's inline attachments (notebook `attachment:` images — bytes that
