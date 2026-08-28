@@ -275,60 +275,6 @@ fn neutralize_lossless_jpeg_orientation(bytes: Vec<u8>) -> Vec<u8> {
     use img_parts::Bytes;
 
     const EXIF_PREFIX: &[u8] = b"Exif\0\0";
-    const TAG_ORIENTATION: u16 = 0x0112;
-
-    // Same bit layout `carry::normalize_orientation` rewrites: IFD0's Orientation entry is a
-    // single SHORT stored inline in the entry's own 4-byte value field, so this never changes
-    // the block's length or any offset within it.
-    fn normalize(tiff: &mut [u8]) {
-        let le = match tiff.first_chunk::<2>() {
-            Some(b"II") => true,
-            Some(b"MM") => false,
-            _ => return,
-        };
-        let u16at = |b: &[u8], o: usize| -> Option<u16> {
-            let v = b.get(o..o + 2)?.first_chunk::<2>()?;
-            Some(if le {
-                u16::from_le_bytes(*v)
-            } else {
-                u16::from_be_bytes(*v)
-            })
-        };
-        let u32at = |b: &[u8], o: usize| -> Option<u32> {
-            let v = b.get(o..o + 4)?.first_chunk::<4>()?;
-            Some(if le {
-                u32::from_le_bytes(*v)
-            } else {
-                u32::from_be_bytes(*v)
-            })
-        };
-        let Some(ifd0) = u32at(tiff, 4).map(|v| v as usize) else {
-            return;
-        };
-        let Some(count) = u16at(tiff, ifd0) else {
-            return;
-        };
-        for i in 0..count as usize {
-            let entry = ifd0 + 2 + i * 12;
-            if u16at(tiff, entry) != Some(TAG_ORIENTATION) {
-                continue;
-            }
-            // Type 3 (SHORT), count 1 — anything else is malformed; leave it alone rather
-            // than guess at a layout we do not recognise.
-            if u16at(tiff, entry + 2) != Some(3) || u32at(tiff, entry + 4) != Some(1) {
-                return;
-            }
-            let one: [u8; 2] = if le {
-                1u16.to_le_bytes()
-            } else {
-                1u16.to_be_bytes()
-            };
-            if let Some(slot) = tiff.get_mut(entry + 8..entry + 10) {
-                slot.copy_from_slice(&one);
-            }
-            return;
-        }
-    }
 
     let Ok(mut jpeg) = Jpeg::from_bytes(Bytes::from(bytes.clone())) else {
         return bytes;
@@ -341,7 +287,7 @@ fn neutralize_lossless_jpeg_orientation(bytes: Vec<u8>) -> Vec<u8> {
         return bytes; // no EXIF segment — nothing to neutralize
     };
     let mut tiff = segs[idx].contents()[EXIF_PREFIX.len()..].to_vec();
-    normalize(&mut tiff);
+    zero_out_ifd0_orientation(&mut tiff);
     let mut new_contents = EXIF_PREFIX.to_vec();
     new_contents.extend_from_slice(&tiff);
     segs[idx] = JpegSegment::new_with_contents(markers::APP1, Bytes::from(new_contents));
@@ -353,6 +299,65 @@ fn neutralize_lossless_jpeg_orientation(bytes: Vec<u8>) -> Vec<u8> {
         return bytes;
     }
     out.to_vec()
+}
+
+/// Rewrite IFD0's Orientation entry (tag 0x0112) to 1 ("normal"), in place.
+///
+/// Same bit layout `carry::normalize_orientation` rewrites: the entry is a single SHORT
+/// stored inline in its own 4-byte value field, so this never changes the block's length
+/// or any offset within it. Best-effort: any parse surprise (bad byte-order marker,
+/// out-of-range offsets, an entry shaped unlike a plain SHORT/count-1) leaves `tiff`
+/// untouched rather than guess at a layout we do not recognise.
+fn zero_out_ifd0_orientation(tiff: &mut [u8]) {
+    const TAG_ORIENTATION: u16 = 0x0112;
+
+    let le = match tiff.first_chunk::<2>() {
+        Some(b"II") => true,
+        Some(b"MM") => false,
+        _ => return,
+    };
+    let u16at = |b: &[u8], o: usize| -> Option<u16> {
+        let v = b.get(o..o + 2)?.first_chunk::<2>()?;
+        Some(if le {
+            u16::from_le_bytes(*v)
+        } else {
+            u16::from_be_bytes(*v)
+        })
+    };
+    let u32at = |b: &[u8], o: usize| -> Option<u32> {
+        let v = b.get(o..o + 4)?.first_chunk::<4>()?;
+        Some(if le {
+            u32::from_le_bytes(*v)
+        } else {
+            u32::from_be_bytes(*v)
+        })
+    };
+    let Some(ifd0) = u32at(tiff, 4).map(|v| v as usize) else {
+        return;
+    };
+    let Some(count) = u16at(tiff, ifd0) else {
+        return;
+    };
+    for i in 0..count as usize {
+        let entry = ifd0 + 2 + i * 12;
+        if u16at(tiff, entry) != Some(TAG_ORIENTATION) {
+            continue;
+        }
+        // Type 3 (SHORT), count 1 — anything else is malformed; leave it alone rather
+        // than guess at a layout we do not recognise.
+        if u16at(tiff, entry + 2) != Some(3) || u32at(tiff, entry + 4) != Some(1) {
+            return;
+        }
+        let one: [u8; 2] = if le {
+            1u16.to_le_bytes()
+        } else {
+            1u16.to_be_bytes()
+        };
+        if let Some(slot) = tiff.get_mut(entry + 8..entry + 10) {
+            slot.copy_from_slice(&one);
+        }
+        return;
+    }
 }
 
 /// Resize via a menu preset and write a new "(resized)" file next to the source,
