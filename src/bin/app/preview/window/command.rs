@@ -47,148 +47,163 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
     let st = &*state(hwnd);
     let path = st.path.borrow().clone();
     match btn {
-        Btn::Toc => {
-            // Slide the panel rather than snapping: freeze the CURRENT width (settled or
-            // mid-animation), flip the target, and let TOC_TIMER_ID tween toward it.
-            let w_full = crate::win::dpi_scale(hwnd, 220);
-            let from = st
-                .toc_anim
-                .get()
-                .unwrap_or(if st.toc_open.get() { w_full } else { 0 });
-            let open = !st.toc_open.get();
-            st.toc_open.set(open);
-            st.toc_anim.set(Some(from));
-            SetTimer(Some(hwnd), TOC_TIMER_ID, 15, None);
-            let _ = sagethumbs2k_core::settings::set_preview_toc_open(open); // persist ("pin")
-            let _ = InvalidateRect(Some(hwnd), None, false);
-        }
-        Btn::MdImages => {
-            // Flip whether web-hosted images are fetched, remember it, and re-render this document
-            // so the change is visible immediately (the chips become pictures, or back). Reloading
-            // rather than patching state in place is the same discipline `toggle_source` uses: the
-            // load path already tears down the image cache and re-parses.
-            let on = !st.md_remote_ok.get();
-            let _ = sagethumbs2k_core::settings::set_preview_md_remote_img(on);
-            st.md_remote_ok.set(on);
-            if let Some(p) = path.clone() {
-                request_load(hwnd, &p);
-            }
-        }
+        Btn::Toc => on_btn_toc(hwnd, st),
+        Btn::MdImages => on_btn_md_images(hwnd, st, path),
         Btn::Source => toggle_source(hwnd),
         Btn::Theme => toggle_theme(hwnd),
-        Btn::Settings => {
-            // Straight to the page whose options govern THIS window. The index is resolved by
-            // name (`quick_preview_page`), never written as a literal — Settings pages have been
-            // inserted before and every hard-coded number silently pointed one page off.
-            let page = crate::settings_dlg::quick_preview_page().to_string();
-            crate::preview::spawn_self(&["--tab", &page]);
-        }
+        Btn::Settings => on_btn_settings(),
         Btn::PdfPrev => goto_pdf_page(hwnd, -1),
         Btn::PdfNext => goto_pdf_page(hwnd, 1),
         Btn::Close => request_close(hwnd),
-        Btn::Pin => {
-            let pin = !st.pinned.get();
-            st.pinned.set(pin);
-            let z = if pin { HWND_TOPMOST } else { HWND_NOTOPMOST };
-            let _ = SetWindowPos(
-                hwnd,
-                Some(z),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-            let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-            let mut r = RECT::default();
-            let _ = GetClientRect(hwnd, &mut r);
-            r.bottom = cap;
-            let _ = InvalidateRect(Some(hwnd), Some(&r), false);
-        }
-        Btn::Copy => {
-            if let Some(p) = path {
-                let bytes = sagethumbs2k_core::clipboard::utf16_nul_bytes(&p);
-                let _ = sagethumbs2k_core::clipboard::set_clipboard(
-                    sagethumbs2k_core::clipboard::CF_UNICODETEXT,
-                    &bytes,
-                );
-            }
-        }
-        Btn::Ocr => {
-            // `--ocr-keep`, NOT `--ocr`: the capture path hands the helper a throwaway PNG it
-            // is expected to delete, and this is the user's own file.
-            //
-            // `--page` goes with EVERY pdf (`pdf_pages > 0`), not just multi-page ones. It looks
-            // like it should only matter when there's a page to choose, but it also selects the
-            // resolution the helper renders at: with `--page` it re-renders through
-            // `pdf::render_page_counted(.., 2400)`, and without it falls back to `decode_full`,
-            // whose PDF path is the 1024 px THUMBNAIL render. Gating on `> 1` therefore read a
-            // single-page scan — a receipt, a form, the most common PDF there is — at less than
-            // half the resolution of the identical page inside a 2-page file, and OCR accuracy
-            // tracks resolution directly. Non-PDFs keep `pdf_pages == 0` and pass no page.
-            if let Some(p) = path {
-                let page = st.pdf_page.get().to_string();
-                if st.pdf_pages.get() > 0 {
-                    crate::preview::spawn_self(&["--ocr-keep", &p, "--page", &page]);
-                } else {
-                    crate::preview::spawn_self(&["--ocr-keep", &p]);
-                }
-            }
-        }
-        Btn::Info => {
-            if let Some(p) = path {
-                crate::preview::spawn_self(&["--image-info", &p]);
-            }
-        }
-        Btn::Upload => {
-            // Reuse the shipped keyless-host upload chain (same as the screenshot Upload
-            // button + the DLL "Upload (copy link)" verb): write the path to a temp list,
-            // spawn `--upload-keep` which uploads, copies the link, and toasts the result.
-            // KEEPS the original (unlike `--upload`). No new deps / EXE weight.
-            if let Some(p) = path {
-                let mut lf = std::env::temp_dir();
-                lf.push(format!("st2k_preview_upload_{}.lst", std::process::id()));
-                if std::fs::write(&lf, &p).is_ok() {
-                    if let Some(s) = lf.to_str() {
-                        crate::preview::spawn_self(&["--upload-keep", s]);
-                    }
-                }
-            }
-        }
-        Btn::Open => {
-            if let Some(p) = path {
-                let w = crate::win::wide(&p);
-                ShellExecuteW(
-                    Some(hwnd),
-                    w!("open"),
-                    PCWSTR(w.as_ptr()),
-                    PCWSTR::null(),
-                    PCWSTR::null(),
-                    SW_SHOWNORMAL,
-                );
-                // Open hands off to the default app, then closes. Route through
-                // `request_close` (not a direct `DestroyWindow`): a reentrant click while a
-                // WebView2 `create` is pumping its own message loop would otherwise free
-                // `ViewerState` (WM_DESTROY) while that create still holds `hwnd`. `request_close`
-                // defers the destroy until the create returns, same as every other close path.
-                request_close(hwnd);
-            }
-        }
-        Btn::OpenWith => {
-            if let Some(p) = path {
-                let w = crate::win::wide(&p);
-                // The shell "openas" verb shows the Open With dialog (no SHOpenWithDialog needed).
-                ShellExecuteW(
-                    Some(hwnd),
-                    w!("openas"),
-                    PCWSTR(w.as_ptr()),
-                    PCWSTR::null(),
-                    PCWSTR::null(),
-                    SW_SHOWNORMAL,
-                );
-            }
+        Btn::Pin => on_btn_pin(hwnd, st),
+        Btn::Copy => on_btn_copy(path),
+        Btn::Ocr => on_btn_ocr(st, path),
+        Btn::Info => on_btn_info(path),
+        Btn::Upload => on_btn_upload(path),
+        Btn::Open => on_btn_open(hwnd, path),
+        Btn::OpenWith => on_btn_open_with(hwnd, path),
+    }
+}
+
+/// Slide the table-of-contents panel rather than snapping: freeze the CURRENT width (settled or
+/// mid-animation), flip the target, and let `TOC_TIMER_ID` tween toward it.
+unsafe fn on_btn_toc(hwnd: HWND, st: &ViewerState) {
+    let w_full = crate::win::dpi_scale(hwnd, 220);
+    let from = st
+        .toc_anim
+        .get()
+        .unwrap_or(if st.toc_open.get() { w_full } else { 0 });
+    let open = !st.toc_open.get();
+    st.toc_open.set(open);
+    st.toc_anim.set(Some(from));
+    SetTimer(Some(hwnd), TOC_TIMER_ID, 15, None);
+    let _ = sagethumbs2k_core::settings::set_preview_toc_open(open); // persist ("pin")
+    let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
+/// Flip whether web-hosted Markdown images are fetched, remember it, and re-render this document
+/// so the change is visible immediately (the chips become pictures, or back). Reloading rather
+/// than patching state in place is the same discipline `toggle_source` uses: the load path
+/// already tears down the image cache and re-parses.
+unsafe fn on_btn_md_images(hwnd: HWND, st: &ViewerState, path: Option<String>) {
+    let on = !st.md_remote_ok.get();
+    let _ = sagethumbs2k_core::settings::set_preview_md_remote_img(on);
+    st.md_remote_ok.set(on);
+    if let Some(p) = path {
+        request_load(hwnd, &p);
+    }
+}
+
+/// Straight to the page whose options govern THIS window. The index is resolved by name
+/// (`quick_preview_page`), never written as a literal — Settings pages have been inserted
+/// before and every hard-coded number silently pointed one page off.
+fn on_btn_settings() {
+    let page = crate::settings_dlg::quick_preview_page().to_string();
+    crate::preview::spawn_self(&["--tab", &page]);
+}
+
+unsafe fn on_btn_pin(hwnd: HWND, st: &ViewerState) {
+    let pin = !st.pinned.get();
+    st.pinned.set(pin);
+    let z = if pin { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    let _ = SetWindowPos(
+        hwnd,
+        Some(z),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    );
+    let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
+    let mut r = RECT::default();
+    let _ = GetClientRect(hwnd, &mut r);
+    r.bottom = cap;
+    let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+}
+
+unsafe fn on_btn_copy(path: Option<String>) {
+    if let Some(p) = path {
+        let bytes = sagethumbs2k_core::clipboard::utf16_nul_bytes(&p);
+        let _ = sagethumbs2k_core::clipboard::set_clipboard(
+            sagethumbs2k_core::clipboard::CF_UNICODETEXT,
+            &bytes,
+        );
+    }
+}
+
+/// `--ocr-keep`, NOT `--ocr`: the capture path hands the helper a throwaway PNG it is expected
+/// to delete, and this is the user's own file.
+///
+/// `--page` goes with EVERY pdf (`pdf_pages > 0`), not just multi-page ones. It looks like it
+/// should only matter when there's a page to choose, but it also selects the resolution the
+/// helper renders at: with `--page` it re-renders through `pdf::render_page_counted(.., 2400)`,
+/// and without it falls back to `decode_full`, whose PDF path is the 1024 px THUMBNAIL render.
+/// Gating on `> 1` therefore read a single-page scan — a receipt, a form, the most common PDF
+/// there is — at less than half the resolution of the identical page inside a 2-page file, and
+/// OCR accuracy tracks resolution directly. Non-PDFs keep `pdf_pages == 0` and pass no page.
+fn on_btn_ocr(st: &ViewerState, path: Option<String>) {
+    let Some(p) = path else { return };
+    let page = st.pdf_page.get().to_string();
+    if st.pdf_pages.get() > 0 {
+        crate::preview::spawn_self(&["--ocr-keep", &p, "--page", &page]);
+    } else {
+        crate::preview::spawn_self(&["--ocr-keep", &p]);
+    }
+}
+
+fn on_btn_info(path: Option<String>) {
+    if let Some(p) = path {
+        crate::preview::spawn_self(&["--image-info", &p]);
+    }
+}
+
+/// Reuse the shipped keyless-host upload chain (same as the screenshot Upload button + the DLL
+/// "Upload (copy link)" verb): write the path to a temp list, spawn `--upload-keep` which
+/// uploads, copies the link, and toasts the result. KEEPS the original (unlike `--upload`). No
+/// new deps / EXE weight.
+fn on_btn_upload(path: Option<String>) {
+    let Some(p) = path else { return };
+    let mut lf = std::env::temp_dir();
+    lf.push(format!("st2k_preview_upload_{}.lst", std::process::id()));
+    if std::fs::write(&lf, &p).is_ok() {
+        if let Some(s) = lf.to_str() {
+            crate::preview::spawn_self(&["--upload-keep", s]);
         }
     }
+}
+
+unsafe fn on_btn_open(hwnd: HWND, path: Option<String>) {
+    let Some(p) = path else { return };
+    let w = crate::win::wide(&p);
+    ShellExecuteW(
+        Some(hwnd),
+        w!("open"),
+        PCWSTR(w.as_ptr()),
+        PCWSTR::null(),
+        PCWSTR::null(),
+        SW_SHOWNORMAL,
+    );
+    // Open hands off to the default app, then closes. Route through `request_close` (not a
+    // direct `DestroyWindow`): a reentrant click while a WebView2 `create` is pumping its own
+    // message loop would otherwise free `ViewerState` (WM_DESTROY) while that create still
+    // holds `hwnd`. `request_close` defers the destroy until the create returns, same as every
+    // other close path.
+    request_close(hwnd);
+}
+
+/// The shell "openas" verb shows the Open With dialog (no `SHOpenWithDialog` needed).
+unsafe fn on_btn_open_with(hwnd: HWND, path: Option<String>) {
+    let Some(p) = path else { return };
+    let w = crate::win::wide(&p);
+    ShellExecuteW(
+        Some(hwnd),
+        w!("openas"),
+        PCWSTR(w.as_ptr()),
+        PCWSTR::null(),
+        PCWSTR::null(),
+        SW_SHOWNORMAL,
+    );
 }
 
 /// Flip THIS viewer between the light and dark skin (toolbar button). Session-only: it sets a

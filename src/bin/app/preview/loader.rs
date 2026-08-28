@@ -19,6 +19,38 @@ use super::window::{
 /// Switch the viewer to preview `path` (async decode). Resets the open grace window.
 pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     let st = &*state(hwnd);
+    let gen = reset_viewer_state(hwnd, st, path);
+
+    // "View source" is on and this file has a rendered view to toggle away from → show the raw
+    // text instead. A failed/binary read falls through to the normal rendered path.
+    if st.src_capable.get() && st.src_view.get() && show_source(hwnd, path) {
+        return;
+    }
+
+    if try_show_archive_listing(hwnd, st, path) {
+        return;
+    }
+    if try_show_db_markdown(hwnd, st, path) {
+        return;
+    }
+    if try_show_mail_markdown(hwnd, st, path) {
+        return;
+    }
+    if try_show_font_specimen(hwnd, st, path) {
+        return;
+    }
+    // HTML / .url: WebView2-hosted render (feature `html-preview`, gated behind Settings toggles).
+    #[cfg(feature = "html-preview")]
+    if try_load_web(hwnd, path) {
+        return;
+    }
+
+    dispatch_by_content_kind(hwnd, st, path, gen);
+}
+
+/// Reset all per-document viewer state ahead of loading `path`. Returns the new decode
+/// generation id.
+unsafe fn reset_viewer_state(hwnd: HWND, st: &ViewerState, path: &str) -> u64 {
     *st.path.borrow_mut() = Some(path.to_string());
     st.born.set(GetTickCount64());
     let gen = st.decode_gen.get() + 1;
@@ -72,68 +104,79 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     // NOTE: `src_view` is deliberately NOT reset here — it's a sticky viewing mode for the window,
     // so flipping through a folder of .md files with ←/→ keeps showing source.
     st.src_capable.set(source_capable(&ext_of(path)));
+    gen
+}
 
-    // "View source" is on and this file has a rendered view to toggle away from → show the raw
-    // text instead. A failed/binary read falls through to the normal rendered path.
-    if st.src_capable.get() && st.src_view.get() && show_source(hwnd, path) {
-        return;
+/// Archives (zip/7z/rar-family with no cover): show a file listing in the text pane. Returns
+/// `true` (having already updated state, repainted, and refreshed search) if `path` was a
+/// recognized archive; `false` to fall through to normal classification.
+unsafe fn try_show_archive_listing(hwnd: HWND, st: &ViewerState, path: &str) -> bool {
+    if !content::is_archive_ext(&ext_of(path)) {
+        return false;
     }
+    let Some(listing) = content::archive_listing(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(listing);
+    st.kind.set(ContentKind::Text);
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    set_title(hwnd);
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
+    true
+}
 
-    // Archives (zip/7z/rar-family with no cover): show a file listing in the text pane. Falls
-    // through to normal classification if it isn't actually a recognized archive.
-    if content::is_archive_ext(&ext_of(path)) {
-        if let Some(listing) = content::archive_listing(path) {
-            *st.text.borrow_mut() = Some(listing);
-            st.kind.set(ContentKind::Text);
-            ensure_shown(hwnd);
-            let _ = InvalidateRect(Some(hwnd), None, false);
-            set_title(hwnd);
-            super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-            return;
-        }
-    }
-    // SQLite databases: schema + the first rows of each table, through the markdown pipeline.
-    // Gated on the TEXT toggle (it's a data view, like the CSV table — see `classify`). A `.db`
-    // that isn't SQLite (Thumbs.db, an SQL Server file) returns None and falls through.
-    if let Some(md) = db_markdown(path) {
-        *st.text.borrow_mut() = Some(md);
-        st.md_has_headings.set(true);
-        st.md_remote_ok.set(false); // generated content, nothing remote to fetch
-        st.kind.set(ContentKind::Markdown);
-        ensure_shown(hwnd);
-        let _ = InvalidateRect(Some(hwnd), None, false);
-        set_title(hwnd);
-        super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-        return;
-    }
-    // Email (.eml / Outlook .msg): headers + body + attachment list, through the markdown
-    // pipeline. Same hook shape as the DB view above; a file that isn't really mail falls
-    // through to exactly what it did before.
-    if let Some(md) = mail_markdown(path) {
-        *st.text.borrow_mut() = Some(md);
-        st.md_has_headings.set(true);
-        st.md_remote_ok.set(false); // bodies are flattened to text; nothing remote to fetch
-        st.kind.set(ContentKind::Markdown);
-        ensure_shown(hwnd);
-        let _ = InvalidateRect(Some(hwnd), None, false);
-        set_title(hwnd);
-        super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-        return;
-    }
-    // Font files: render a specimen (name + pangram + glyph sheet) as an image.
-    if super::font::is_font_ext(&ext_of(path)) && render_font_to_state(&*state(hwnd), path) {
-        ensure_shown(hwnd);
-        let _ = InvalidateRect(Some(hwnd), None, false);
-        set_title(hwnd);
-        super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-        return;
-    }
-    // HTML / .url: WebView2-hosted render (feature `html-preview`, gated behind Settings toggles).
-    #[cfg(feature = "html-preview")]
-    if try_load_web(hwnd, path) {
-        return;
-    }
+/// SQLite databases: schema + the first rows of each table, through the markdown pipeline.
+/// Gated on the TEXT toggle (it's a data view, like the CSV table — see `classify`). A `.db`
+/// that isn't SQLite (Thumbs.db, an SQL Server file) returns `false` and falls through.
+unsafe fn try_show_db_markdown(hwnd: HWND, st: &ViewerState, path: &str) -> bool {
+    let Some(md) = db_markdown(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(md);
+    st.md_has_headings.set(true);
+    st.md_remote_ok.set(false); // generated content, nothing remote to fetch
+    st.kind.set(ContentKind::Markdown);
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    set_title(hwnd);
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
+    true
+}
 
+/// Email (.eml / Outlook .msg): headers + body + attachment list, through the markdown
+/// pipeline. Same hook shape as the DB view above; a file that isn't really mail returns
+/// `false`, falling through to exactly what it did before.
+unsafe fn try_show_mail_markdown(hwnd: HWND, st: &ViewerState, path: &str) -> bool {
+    let Some(md) = mail_markdown(path) else {
+        return false;
+    };
+    *st.text.borrow_mut() = Some(md);
+    st.md_has_headings.set(true);
+    st.md_remote_ok.set(false); // bodies are flattened to text; nothing remote to fetch
+    st.kind.set(ContentKind::Markdown);
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    set_title(hwnd);
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
+    true
+}
+
+/// Font files: render a specimen (name + pangram + glyph sheet) as an image.
+unsafe fn try_show_font_specimen(hwnd: HWND, st: &ViewerState, path: &str) -> bool {
+    if !(super::font::is_font_ext(&ext_of(path)) && render_font_to_state(st, path)) {
+        return false;
+    }
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    set_title(hwnd);
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
+    true
+}
+
+/// Classify `path` and dispatch to the matching content kind's load path (image/PDF, video,
+/// text/markdown, or the fallback info card).
+unsafe fn dispatch_by_content_kind(hwnd: HWND, st: &ViewerState, path: &str, gen: u64) {
     let kind = content::classify(path);
     match kind {
         ContentKind::Image => {
