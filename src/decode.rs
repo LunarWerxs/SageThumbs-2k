@@ -307,74 +307,14 @@ fn decode_any_with_wic_target(
     // Per-tier breadcrumb: each tier's underlying error Display is logged before
     // we fall through, so a failed decode is diagnosable (`-Debug` on) instead of
     // every tier collapsing to a bare E_FAIL. Logging is gated by `log_debug`.
-    // JPEG XL: our own pure-Rust tier, FIRST and signature-gated. The `image` crate
-    // and WIC don't decode jxl, and build-release.ps1 strips the jxl coder out of the
-    // bundled magick — so without this an ADVERTISED format silently fails to
-    // thumbnail on a clean install. On failure we still fall through to the tiers
-    // below (a machine with a full ImageMagick could yet decode it).
-    if is_jxl(bytes) {
-        match decode_jxl(bytes, wic_thumbnail_cx) {
-            Ok(img) => return Ok(img),
-            Err(e) => crate::safety::log_debug(&format!("decode tier `jxl` failed: {e}")),
-        }
+    if let Some(img) = try_jxl_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
-    // DDS: our own tier, magic-gated, ahead of `image` because it OWNS the format —
-    // BC1–BC7 (incl. BC6H HDR) plus the uncompressed layouts, all pure Rust. The
-    // `image` crate stops at DXT1/3/5, WIC's DDS codec stops at the same three, and
-    // ImageMagick (FULL install only) can't read BC4/BC5-signed/BC6H/float DDS at
-    // all — so before this, BC7 (what every modern game texture uses) needed a
-    // 20 s subprocess and BC6H worked nowhere. Failure falls through to the tiers
-    // below, so no DDS that thumbnailed before can regress. See `dds.rs`.
-    if is_dds(bytes) {
-        // Textures ship their own thumbnail chain; use it. A 16k BC7 texture is 268 MP at
-        // level 0 and has a 256-px mip a few hundred KB in. Full-fidelity callers pass
-        // `None` and keep level 0.
-        match decode_dds(bytes, wic_thumbnail_cx) {
-            // BC6H and the float layouts come back linear-float, tone-mapped here
-            // exactly like the EXR/Radiance results below.
-            Ok(img) => {
-                return Ok(
-                    if matches!(
-                        img,
-                        DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
-                    ) {
-                        tone_map_float(&img)
-                    } else {
-                        img
-                    },
-                )
-            }
-            Err(e) => crate::safety::log_debug(&format!("decode tier `dds` failed: {e}")),
-        }
+    if let Some(img) = try_dds_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
-    // Two formats prefer the OS codec for a bounded thumbnail ask, for the same underlying
-    // reason: WIC SCALES WHILE IT DECODES, and the pure-Rust tier cannot — it materialises
-    // the whole image and then shrinks it. That costs nothing on a small file and a great
-    // deal on a large one, which is exactly what the size-tiered speed baseline exists to
-    // show: BMP measured 2.3 ms at 0.08 MP but 258.6 ms at 12 MP against Windows' 22.1 ms
-    // (11.7x), the single worst ratio in the whole matrix.
-    //
-    // Still WebP prefers the OS codec when this is a bounded thumbnail ask: Windows' WebP
-    // codec decodes ~3.8x faster than the pure-Rust tier (measured on a 1279x1280 sample:
-    // ~27 ms vs ~103 ms, and the cost is the decode itself — flat whether the target is 64 px
-    // or 1024 px). STRICTLY a fast path in FRONT of the existing one: the codec is an optional
-    // Store extension, so any failure — absent codec included — falls straight through to the
-    // `image` tier unchanged, which is also what keeps the Compact install and codec-less
-    // machines exactly as they were. Animated WebP is excluded because FRAME CHOICE is a
-    // decoder decision (`sample-decoy-frames.webp` pins first-frame selection to the verified
-    // path), and ICC-tagged WebP is excluded so colour management stays where it is verified
-    // today. Full-fidelity callers (`wic_thumbnail_cx == None`, e.g. Convert) are excluded on
-    // purpose: their output bytes must not change decoder mid-release for a speed win the
-    // non-interactive path doesn't need.
-    if wic_thumbnail_cx.is_some()
-        && (webp_prefers_wic(bytes) || bmp_prefers_wic(bytes) || gif_prefers_wic(bytes))
-    {
-        match wic_fallback(bytes, wic_thumbnail_cx) {
-            Ok(img) => return Ok(img),
-            Err(e) => crate::safety::log_debug(&format!(
-                "decode: WIC fast path unavailable, using the image tier: {e}"
-            )),
-        }
+    if let Some(img) = try_wic_thumbnail_fastpath(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
     // A TIFF whose IFD0 says `NewSubfileType = reduced-resolution` is a container whose
     // MAIN image lives elsewhere (SubIFDs), and the `image` crate only ever decodes IFD0.
@@ -384,59 +324,10 @@ fn decode_any_with_wic_target(
     // the real tiers run: nothing that rendered before can stop rendering, it just stops
     // winning. See `streamsrc::tiff_ifd0_is_reduced`.
     let mut reduced_ifd0: Option<DynamicImage> = None;
-    match decode_with_image(bytes) {
-        // The float exclusion is not fussiness: a 32-bit-float TIFF has to go through the
-        // tone map below to become 8-bit sRGB at all, and stashing one would hand a caller
-        // linear floats where it expects pixels. No camera-RAW preview IFD is float, so this
-        // costs the fix nothing and closes the one shape that would break.
-        Ok(img)
-            if crate::streamsrc::tiff_ifd0_is_reduced(bytes)
-                && !matches!(
-                    img,
-                    DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
-                ) =>
-        {
-            // Big enough for this tile AND not a blank placeholder: answer from it now and
-            // skip the real decoders. This is the difference between a Hasselblad thumbnail
-            // costing 1.3 seconds and costing nothing. See `reduced_ifd0_serves` for why the
-            // content test is not optional.
-            if reduced_ifd0_serves(&img, wic_thumbnail_cx) {
-                crate::safety::log_debug(
-                    "decode tier `image`: reduced-resolution IFD0 covers this tile and has content — using it",
-                );
-                return Ok(img);
-            }
-            crate::safety::log_debug(
-                "decode tier `image`: TIFF IFD0 is reduced-resolution — held as fallback",
-            );
-            reduced_ifd0 = Some(img);
-        }
-        Ok(img) => {
-            // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
-            // be saved as PNG/JPEG or turned into an 8-bit DIB directly. Tone-map
-            // it to 8-bit sRGB ourselves (native Rust) — no ImageMagick subprocess,
-            // so EXR/HDR also work on the compact (no-magick) install.
-            if matches!(
-                img,
-                DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
-            ) {
-                // REDUCE FIRST, when the caller only wants a tile. A 12 MP Radiance file is
-                // 144 MB of float and the tone map then runs over every one of those pixels
-                // to produce a 256 px thumbnail. Averaging in LINEAR light before the curve
-                // is also the physically correct order, and it is not a new idea here:
-                // `exrscale::decode_scaled` has always box-averaged OpenEXR into the target
-                // grid and handed the caller a small float image to tone-map. This gives the
-                // formats that reach the `image` tier (Radiance .hdr, float PNM, jxl HDR) the
-                // same treatment. Full-fidelity callers pass `None` and are untouched.
-                let img = match wic_thumbnail_cx {
-                    Some(cx) => pre_reduce(img, cx),
-                    None => img,
-                };
-                return Ok(tone_map_float(&img));
-            }
-            return Ok(img);
-        }
-        Err(e) => crate::safety::log_debug(&format!("decode tier `image` failed: {e}")),
+    match try_image_tier(bytes, wic_thumbnail_cx) {
+        ImageTierOutcome::Decoded(img) => return Ok(img),
+        ImageTierOutcome::ReducedIfd0(img) => reduced_ifd0 = Some(img),
+        ImageTierOutcome::Failed => {}
     }
     // Camera-RAW fast path for preview fidelity. A RAW file embeds a JPEG the
     // camera already rendered; decoding that is ~10–30× faster than demosaicing.
@@ -444,81 +335,27 @@ fn decode_any_with_wic_target(
     // callers use the late fallback below so Convert/Resize/Image-info prefer real
     // WIC/ImageMagick decoders whenever they are available.
     if raw_preview == RawPreviewOrder::BeforeExternal {
-        match decode_raw_preview(bytes, wic_thumbnail_cx) {
-            Ok(img) => return Ok(img),
-            Err(e) => crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}")),
+        if let Some(img) = try_raw_preview_tier(bytes, wic_thumbnail_cx) {
+            return Ok(img);
         }
     }
     // Two things Microsoft's WIC codecs get wrong on ISOBMFF images, both of which we can
     // detect from the container CHEAPLY and route around when the Full install's external
     // tier is available. In both cases WIC stays the fallback: on the Compact install (no
     // ImageMagick) a slightly wrong thumbnail still beats no thumbnail at all.
-    //
-    //  * HEIC: the HEVC codec accepts auxiliary-alpha files and returns an opaque image.
-    //    Gated on a checked `auxC` property carrying the exact HEVC alpha identifier.
-    //  * AVIF: the AV1 codec misreads the `nclx` colour box that libaom writes by default,
-    //    shifting colour on exactly the files `avifenc`/`ffmpeg` produce (issue #9).
-    let wic_hevc_alpha = isobmff_has_hevc_aux_alpha(bytes);
-    // Three outcomes, not two. Most high-bit-depth AVIF used to land in the ImageMagick bucket
-    // purely because the old predicate was a bool: WIC's error there is a pure transfer curve
-    // we can invert in-process for microseconds, so it now stays on the cheap path and gets
-    // corrected afterwards (~400 ms -> ~114 ms, and worst channel error 11 -> 1, i.e. BETTER
-    // colour than the subprocess route it replaces). Only the genuinely unrecoverable case —
-    // the 8-bit matrix error, where WIC clips as it converts — still pays for magick.
-    let avif_verdict = if wic_hevc_alpha {
-        color::AvifWicVerdict::Trusted
-    } else {
-        color::avif_wic_verdict(bytes)
+    let route = match route_isobmff_wic_quirks(bytes, external, wic_thumbnail_cx) {
+        Ok(img) => return Ok(img),
+        Err(route) => route,
     };
-    let wic_avif_color = matches!(avif_verdict, color::AvifWicVerdict::Untrusted);
-    let magick_attempted = external && (wic_hevc_alpha || wic_avif_color);
-    let mut preferred_magick_error = None;
-    if magick_attempted {
-        let why = if wic_hevc_alpha {
-            "HEIC auxiliary alpha"
-        } else {
-            "AVIF nclx colour"
-        };
-        crate::safety::log_debug(&format!("decode: routing around WIC ({why})"));
-        // The 8-bit BT.601 bucket first tries the OS's own AV1 decoder via Media Foundation
-        // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
-        // the ~180 ms this route used to cost. Narrowly gated and best-effort — anything it
-        // declines (alpha, wide gamut, MF absent, decode failure) proceeds to magick exactly
-        // as before, so this can only ever be faster, never different.
-        if wic_avif_color {
-            if let Some(img) = avifmf::decode_bt601_avif(bytes, wic_thumbnail_cx) {
-                crate::safety::log_debug("decode: tier `avif-mf` decoded the BT.601 AVIF");
-                return Ok(img);
-            }
-        }
-        // Ask magick for no more than the caller's target edge, exactly as the generic
-        // magick tier below already does. This route used to take the uncapped
-        // `decode_via_magick`, so a 256 px Explorer tile rendered the full 4096 px guard
-        // and threw almost all of it away — then PNG-encoded that surface and decoded it
-        // back. Measured on a 3000x2000 AVIF at a 256 px target: 10-bit 1261 ms -> 400 ms,
-        // 8-bit 638 ms -> 388 ms. Nothing about the colour fix needs the larger render:
-        // the ICC below is applied from the ORIGINAL container, not magick's output, and
-        // full-fidelity callers reach here with `wic_thumbnail_cx == None` (uncapped) as
-        // before.
-        match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
-            // `decode_via_magick` passes `-strip`, so the profile magick would otherwise
-            // have carried into its PNG output is gone by the time we read it back. Apply
-            // it here from the ORIGINAL container instead, exactly as the WIC path does,
-            // or a wide-gamut file routed here would come out in raw Adobe RGB / P3
-            // numbers — the same "decoded right, then threw the profile away" fault that
-            // was fixed for JPEG XL in 1.7.1.
-            Ok(img) => return Ok(apply_icc_to_srgb(img, color::isobmff_color_icc(bytes))),
-            Err(e) => {
-                crate::safety::log_debug(&format!("decode tier `magick ({why})` failed: {e}"));
-                preferred_magick_error = Some(e);
-            }
-        }
-    }
+    let magick_attempted = route.magick_attempted;
     match wic_fallback(bytes, wic_thumbnail_cx) {
         Ok(img) => {
             // High-bit-depth AVIF: WIC handed back the right pixels through the wrong transfer.
             // Invert it here rather than paying a subprocess to avoid it.
-            let img = if matches!(avif_verdict, color::AvifWicVerdict::NeedsHighDepthCurve) {
+            let img = if matches!(
+                route.avif_verdict,
+                color::AvifWicVerdict::NeedsHighDepthCurve
+            ) {
                 crate::safety::log_debug("decode: undoing WIC's high-bit-depth AV1 transfer curve");
                 color::undo_wic_high_depth_curve(img)
             } else {
@@ -551,7 +388,7 @@ fn decode_any_with_wic_target(
     // preview ([`decode_menu_preview`]) runs on explorer.exe's OWN UI thread and cannot
     // afford a subprocess (≤20s) there — it falls back to the cheap embedded-JPEG slice
     // below, or a caption-only tile.
-    let mut last_err = preferred_magick_error.unwrap_or_else(|| Error::from(E_FAIL));
+    let mut last_err = route.magick_error.unwrap_or_else(|| Error::from(E_FAIL));
     if external {
         if !magick_attempted {
             // Ask magick for no more than the caller's target edge. Rendering the fixed
@@ -567,11 +404,8 @@ fn decode_any_with_wic_target(
             }
         }
         if raw_preview == RawPreviewOrder::AfterExternal {
-            match decode_raw_preview(bytes, wic_thumbnail_cx) {
-                Ok(img) => return Ok(img),
-                Err(e) => {
-                    crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}"))
-                }
+            if let Some(img) = try_raw_preview_tier(bytes, wic_thumbnail_cx) {
+                return Ok(img);
             }
         }
     }
@@ -588,15 +422,301 @@ fn decode_any_with_wic_target(
     // document preview — show that rather than a blank tile. Strictly additive: only
     // reached AFTER every higher-fidelity tier above has failed, so it can't downgrade a
     // good result.
-    if let Some(jpeg) = largest_embedded_jpeg(bytes, LENIENT_RAW_PREVIEW) {
-        match decode_with_image(jpeg) {
-            Ok(img) => return Ok(img),
-            Err(e) => crate::safety::log_debug(&format!(
-                "decode tier `embedded-jpeg (lenient)` failed: {e}"
-            )),
-        }
+    if let Some(img) = try_embedded_jpeg_last_resort(bytes) {
+        return Ok(img);
     }
     Err(last_err)
+}
+
+/// JPEG XL: our own pure-Rust tier, FIRST and signature-gated. The `image` crate and
+/// WIC don't decode jxl, and build-release.ps1 strips the jxl coder out of the bundled
+/// magick — so without this an ADVERTISED format silently fails to thumbnail on a
+/// clean install. On failure the caller falls through to the tiers below (a machine
+/// with a full ImageMagick could yet decode it).
+fn try_jxl_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    if !is_jxl(bytes) {
+        return None;
+    }
+    match decode_jxl(bytes, wic_thumbnail_cx) {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::safety::log_debug(&format!("decode tier `jxl` failed: {e}"));
+            None
+        }
+    }
+}
+
+/// DDS: our own tier, magic-gated, ahead of `image` because it OWNS the format —
+/// BC1–BC7 (incl. BC6H HDR) plus the uncompressed layouts, all pure Rust. The `image`
+/// crate stops at DXT1/3/5, WIC's DDS codec stops at the same three, and ImageMagick
+/// (FULL install only) can't read BC4/BC5-signed/BC6H/float DDS at all — so before
+/// this, BC7 (what every modern game texture uses) needed a 20 s subprocess and BC6H
+/// worked nowhere. Failure falls through to the tiers below, so no DDS that
+/// thumbnailed before can regress. See `dds.rs`.
+fn try_dds_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    if !is_dds(bytes) {
+        return None;
+    }
+    // Textures ship their own thumbnail chain; use it. A 16k BC7 texture is 268 MP at
+    // level 0 and has a 256-px mip a few hundred KB in. Full-fidelity callers pass
+    // `None` and keep level 0.
+    match decode_dds(bytes, wic_thumbnail_cx) {
+        // BC6H and the float layouts come back linear-float, tone-mapped here
+        // exactly like the EXR/Radiance results below.
+        Ok(img) => Some(
+            if matches!(
+                img,
+                DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+            ) {
+                tone_map_float(&img)
+            } else {
+                img
+            },
+        ),
+        Err(e) => {
+            crate::safety::log_debug(&format!("decode tier `dds` failed: {e}"));
+            None
+        }
+    }
+}
+
+/// Two formats prefer the OS codec for a bounded thumbnail ask, for the same
+/// underlying reason: WIC SCALES WHILE IT DECODES, and the pure-Rust tier cannot — it
+/// materialises the whole image and then shrinks it. That costs nothing on a small
+/// file and a great deal on a large one, which is exactly what the size-tiered speed
+/// baseline exists to show: BMP measured 2.3 ms at 0.08 MP but 258.6 ms at 12 MP
+/// against Windows' 22.1 ms (11.7x), the single worst ratio in the whole matrix.
+///
+/// Still WebP prefers the OS codec when this is a bounded thumbnail ask: Windows' WebP
+/// codec decodes ~3.8x faster than the pure-Rust tier (measured on a 1279x1280 sample:
+/// ~27 ms vs ~103 ms, and the cost is the decode itself — flat whether the target is 64 px
+/// or 1024 px). STRICTLY a fast path in FRONT of the existing one: the codec is an optional
+/// Store extension, so any failure — absent codec included — falls straight through to the
+/// `image` tier unchanged, which is also what keeps the Compact install and codec-less
+/// machines exactly as they were. Animated WebP is excluded because FRAME CHOICE is a
+/// decoder decision (`sample-decoy-frames.webp` pins first-frame selection to the verified
+/// path), and ICC-tagged WebP is excluded so colour management stays where it is verified
+/// today. Full-fidelity callers (`wic_thumbnail_cx == None`, e.g. Convert) are excluded on
+/// purpose: their output bytes must not change decoder mid-release for a speed win the
+/// non-interactive path doesn't need.
+fn try_wic_thumbnail_fastpath(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    if wic_thumbnail_cx.is_none()
+        || !(webp_prefers_wic(bytes) || bmp_prefers_wic(bytes) || gif_prefers_wic(bytes))
+    {
+        return None;
+    }
+    match wic_fallback(bytes, wic_thumbnail_cx) {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::safety::log_debug(&format!(
+                "decode: WIC fast path unavailable, using the image tier: {e}"
+            ));
+            None
+        }
+    }
+}
+
+/// What the `image`-crate tier produced: a usable decode, a reduced-resolution IFD0
+/// held back as a fallback stash, or nothing.
+enum ImageTierOutcome {
+    Decoded(DynamicImage),
+    ReducedIfd0(DynamicImage),
+    Failed,
+}
+
+/// The `image` crate tier, including the reduced-resolution-IFD0 TIFF special case and
+/// the HDR-float tone-map. See [`decode_any_with_wic_target`]'s callsite comment for
+/// why a reduced IFD0 is stashed rather than answered from immediately.
+fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutcome {
+    match decode_with_image(bytes) {
+        // The float exclusion is not fussiness: a 32-bit-float TIFF has to go through the
+        // tone map below to become 8-bit sRGB at all, and stashing one would hand a caller
+        // linear floats where it expects pixels. No camera-RAW preview IFD is float, so this
+        // costs the fix nothing and closes the one shape that would break.
+        Ok(img)
+            if crate::streamsrc::tiff_ifd0_is_reduced(bytes)
+                && !matches!(
+                    img,
+                    DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+                ) =>
+        {
+            // Big enough for this tile AND not a blank placeholder: answer from it now and
+            // skip the real decoders. This is the difference between a Hasselblad thumbnail
+            // costing 1.3 seconds and costing nothing. See `reduced_ifd0_serves` for why the
+            // content test is not optional.
+            if reduced_ifd0_serves(&img, wic_thumbnail_cx) {
+                crate::safety::log_debug(
+                    "decode tier `image`: reduced-resolution IFD0 covers this tile and has content — using it",
+                );
+                return ImageTierOutcome::Decoded(img);
+            }
+            crate::safety::log_debug(
+                "decode tier `image`: TIFF IFD0 is reduced-resolution — held as fallback",
+            );
+            ImageTierOutcome::ReducedIfd0(img)
+        }
+        Ok(img) => {
+            // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
+            // be saved as PNG/JPEG or turned into an 8-bit DIB directly. Tone-map
+            // it to 8-bit sRGB ourselves (native Rust) — no ImageMagick subprocess,
+            // so EXR/HDR also work on the compact (no-magick) install.
+            if matches!(
+                img,
+                DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+            ) {
+                // REDUCE FIRST, when the caller only wants a tile. A 12 MP Radiance file is
+                // 144 MB of float and the tone map then runs over every one of those pixels
+                // to produce a 256 px thumbnail. Averaging in LINEAR light before the curve
+                // is also the physically correct order, and it is not a new idea here:
+                // `exrscale::decode_scaled` has always box-averaged OpenEXR into the target
+                // grid and handed the caller a small float image to tone-map. This gives the
+                // formats that reach the `image` tier (Radiance .hdr, float PNM, jxl HDR) the
+                // same treatment. Full-fidelity callers pass `None` and are untouched.
+                let img = match wic_thumbnail_cx {
+                    Some(cx) => pre_reduce(img, cx),
+                    None => img,
+                };
+                return ImageTierOutcome::Decoded(tone_map_float(&img));
+            }
+            ImageTierOutcome::Decoded(img)
+        }
+        Err(e) => {
+            crate::safety::log_debug(&format!("decode tier `image` failed: {e}"));
+            ImageTierOutcome::Failed
+        }
+    }
+}
+
+/// Camera-RAW fast path: a RAW file embeds a JPEG the camera already rendered, ~10–30×
+/// faster to decode than demosaicing. Shared by both the before-external and
+/// after-external call sites in [`decode_any_with_wic_target`].
+fn try_raw_preview_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    match decode_raw_preview(bytes, wic_thumbnail_cx) {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}"));
+            None
+        }
+    }
+}
+
+/// Outcome of [`route_isobmff_wic_quirks`] when it does NOT resolve the decode itself:
+/// what the WIC fallback and the external tier below still need to know.
+struct WicQuirkRoute {
+    /// Set once ImageMagick was invoked (or attempted) to route around a known-bad WIC
+    /// decode, so the WIC fallback can log why colours may still be off, and the
+    /// external tier below can skip a redundant magick attempt.
+    magick_attempted: bool,
+    /// WIC's transfer-curve verdict for this AVIF (or `Trusted` when the file isn't
+    /// AVIF/HEIC at all), needed by the WIC fallback to decide whether to invert WIC's
+    /// high-bit-depth curve.
+    avif_verdict: color::AvifWicVerdict,
+    /// Set when magick was attempted here and failed, so it becomes the final
+    /// fallback error instead of a generic E_FAIL.
+    magick_error: Option<Error>,
+}
+
+/// Two things Microsoft's WIC codecs get wrong on ISOBMFF images, both of which we can
+/// detect from the container CHEAPLY and route around when the Full install's external
+/// tier is available. In both cases WIC stays the eventual fallback: on the Compact
+/// install (no ImageMagick) a slightly wrong thumbnail still beats no thumbnail at all.
+///
+///  * HEIC: the HEVC codec accepts auxiliary-alpha files and returns an opaque image.
+///    Gated on a checked `auxC` property carrying the exact HEVC alpha identifier.
+///  * AVIF: the AV1 codec misreads the `nclx` colour box that libaom writes by default,
+///    shifting colour on exactly the files `avifenc`/`ffmpeg` produce (issue #9).
+///
+/// Returns `Ok` when the decode is already resolved (avif-mf or magick succeeded), or
+/// `Err(route)` with what the caller needs to continue to the WIC fallback.
+fn route_isobmff_wic_quirks(
+    bytes: &[u8],
+    external: bool,
+    wic_thumbnail_cx: Option<u32>,
+) -> std::result::Result<DynamicImage, WicQuirkRoute> {
+    let wic_hevc_alpha = isobmff_has_hevc_aux_alpha(bytes);
+    // Three outcomes, not two. Most high-bit-depth AVIF used to land in the ImageMagick bucket
+    // purely because the old predicate was a bool: WIC's error there is a pure transfer curve
+    // we can invert in-process for microseconds, so it now stays on the cheap path and gets
+    // corrected afterwards (~400 ms -> ~114 ms, and worst channel error 11 -> 1, i.e. BETTER
+    // colour than the subprocess route it replaces). Only the genuinely unrecoverable case —
+    // the 8-bit matrix error, where WIC clips as it converts — still pays for magick.
+    let avif_verdict = if wic_hevc_alpha {
+        color::AvifWicVerdict::Trusted
+    } else {
+        color::avif_wic_verdict(bytes)
+    };
+    let wic_avif_color = matches!(avif_verdict, color::AvifWicVerdict::Untrusted);
+    let magick_attempted = external && (wic_hevc_alpha || wic_avif_color);
+    if !magick_attempted {
+        return Err(WicQuirkRoute {
+            magick_attempted,
+            avif_verdict,
+            magick_error: None,
+        });
+    }
+    let why = if wic_hevc_alpha {
+        "HEIC auxiliary alpha"
+    } else {
+        "AVIF nclx colour"
+    };
+    crate::safety::log_debug(&format!("decode: routing around WIC ({why})"));
+    // The 8-bit BT.601 bucket first tries the OS's own AV1 decoder via Media Foundation
+    // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
+    // the ~180 ms this route used to cost. Narrowly gated and best-effort — anything it
+    // declines (alpha, wide gamut, MF absent, decode failure) proceeds to magick exactly
+    // as before, so this can only ever be faster, never different.
+    if wic_avif_color {
+        if let Some(img) = avifmf::decode_bt601_avif(bytes, wic_thumbnail_cx) {
+            crate::safety::log_debug("decode: tier `avif-mf` decoded the BT.601 AVIF");
+            return Ok(img);
+        }
+    }
+    // Ask magick for no more than the caller's target edge, exactly as the generic
+    // magick tier below already does. This route used to take the uncapped
+    // `decode_via_magick`, so a 256 px Explorer tile rendered the full 4096 px guard
+    // and threw almost all of it away — then PNG-encoded that surface and decoded it
+    // back. Measured on a 3000x2000 AVIF at a 256 px target: 10-bit 1261 ms -> 400 ms,
+    // 8-bit 638 ms -> 388 ms. Nothing about the colour fix needs the larger render:
+    // the ICC below is applied from the ORIGINAL container, not magick's output, and
+    // full-fidelity callers reach here with `wic_thumbnail_cx == None` (uncapped) as
+    // before.
+    match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
+        // `decode_via_magick` passes `-strip`, so the profile magick would otherwise
+        // have carried into its PNG output is gone by the time we read it back. Apply
+        // it here from the ORIGINAL container instead, exactly as the WIC path does,
+        // or a wide-gamut file routed here would come out in raw Adobe RGB / P3
+        // numbers — the same "decoded right, then threw the profile away" fault that
+        // was fixed for JPEG XL in 1.7.1.
+        Ok(img) => Ok(apply_icc_to_srgb(img, color::isobmff_color_icc(bytes))),
+        Err(e) => {
+            crate::safety::log_debug(&format!("decode tier `magick ({why})` failed: {e}"));
+            Err(WicQuirkRoute {
+                magick_attempted,
+                avif_verdict,
+                magick_error: Some(e),
+            })
+        }
+    }
+}
+
+/// Last resort (CHEAP — a linear byte scan + image-tier decode, no subprocess, so the
+/// menu path runs it too): every real decoder failed (or is absent — e.g. a clean
+/// compact install with no Microsoft RAW Image Extension and no bundled ImageMagick).
+/// If the file still embeds ANY decodable JPEG — a camera RAW's small EXIF thumbnail, a
+/// document preview — show that rather than a blank tile. Strictly additive: only
+/// reached AFTER every higher-fidelity tier above has failed, so it can't downgrade a
+/// good result.
+fn try_embedded_jpeg_last_resort(bytes: &[u8]) -> Option<DynamicImage> {
+    let jpeg = largest_embedded_jpeg(bytes, LENIENT_RAW_PREVIEW)?;
+    match decode_with_image(jpeg) {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::safety::log_debug(&format!(
+                "decode tier `embedded-jpeg (lenient)` failed: {e}"
+            ));
+            None
+        }
+    }
 }
 
 /// Below this luminance standard deviation, a reduced-resolution IFD0 is a PLACEHOLDER, not a

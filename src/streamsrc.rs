@@ -109,156 +109,8 @@ pub(crate) unsafe fn stream_source_with_caps(
     target_edge: u32,
     who: &str,
 ) -> Result<StreamSource> {
-    if peek_is_video(stream) {
-        // OPTION: prefer the embedded poster over a frame from the film (`VideoCoverArt`,
-        // off by default). Read BEFORE the frame tiers so a film library shows its covers
-        // without paying for a decode first; a file with no cover falls straight through to
-        // the normal cascade, having cost one bounded metadata read.
-        //
-        // `tried_cover_art` remembers whether this pass ran: if it did and found nothing,
-        // the fallback rescue below (after every frame tier also fails) must not call
-        // `vcodec::cover_art` a second time — the stream hasn't changed, so it would just
-        // re-scan the same moov to the same null answer. That third full scan (cover_art,
-        // keyframe_mini_mp4, cover_art again) was the actual A032 cost on a HEVC-with-no-
-        // cover-and-no-OS-codec file.
-        let mut tried_cover_art = false;
-        if crate::settings::prefer_cover_art() {
-            tried_cover_art = true;
-            if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
-                stream: stream.clone(),
-            }) {
-                safety::log_debug(&format!(
-                    "{who}: cover art preferred over a frame ({} bytes)",
-                    cover.len()
-                ));
-                return Ok(StreamSource::Bytes(cover));
-            }
-        }
-        // Never stream the multi-GB original through the shell IStream: Media Foundation
-        // reading a whole movie that way is catastrophically slow (30 s+, a pegged core, past
-        // Explorer's timeout). Every tier below is a TARGETED read instead: find the one
-        // keyframe worth showing and touch only the bytes around it.
-        //
-        // There used to be a tier 0 here, "decode by FILE PATH when we can recover it". It
-        // was REMOVED (2026-08-12) because it never ran: both handlers are initialised with
-        // an `IStream`, and a shell stream reports only a bare leaf NAME, so the path lookup
-        // it depended on always returned nothing. A documented optimisation that silently
-        // does not exist is worse than none, because it makes the tiers below look like a
-        // fallback nobody needs to keep fast. They are the whole story. Measured after
-        // removal, through the real provider on a 163 MB 1080p clip: 1.2 s with the index at
-        // the END and 1.7 s with it at the front, in a DEBUG build.
-        // WHERE in the video: the user's `VideoOffset` (30 % unless changed — see
-        // `settings::video_offset_frac`). Read ONCE here so every tier below seeks to the same
-        // mark; a per-tier read could disagree if the setting changed mid-decode, and the
-        // fallbacks would then show a different frame from the tier that was meant to run.
-        let at = crate::settings::video_offset_frac();
-        // Tiers, each fast or a fast miss:
-        //   1. SMART TARGETED READ (MP4/MOV): parse the moov index, build a tiny
-        //      one-keyframe MP4 for the sync sample nearest the mark, decode that —
-        //      single-digit MB (index + one keyframe), a representative frame, and
-        //      it works regardless of moov position (faststart or moov-at-end);
-        //   2. SMART TARGETED READ (Matroska/WebM): the EBML analog — read the Cues
-        //      index, build a tiny one-cluster MKV for the keyframe nearest the mark;
-        //  2b. FLV (H.264 only): walk the head tags for the AVC config + first keyframe
-        //      and remux them into a mini-MP4 — MF has no FLV demuxer, so no later tier
-        //      can open the container at all (it has no index, so `at` can't be honoured);
-        //  2c. FLV (VP6 / Sorenson Spark): decode the first keyframe OUT OF PROCESS via
-        //      the sibling st2k.exe — Windows has no decoder for these at all;
-        //   3. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
-        //      demuxer seek the real index over a block-caching IStream that
-        //      coalesces its reads (no per-format parser, any container MF decodes);
-        //   4. a faststart MP4 / small / unindexed video decodes from its head prefix;
-        //   5. a big *non*-faststart MP4 (moov at the very end) is remuxed —
-        //      head frames + tail moov stitched into a small valid MP4.
-        // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek. They read a
-        // bounded head prefix, so they CANNOT honour a late offset — there are no bytes there
-        // to seek into. That is a property of the fallback, not a bug to fix here.
-        let frame = crate::mp4::keyframe_mini_mp4(
-            &mut IStreamReader {
-                stream: stream.clone(),
-            },
-            at,
-        )
-        .and_then(crate::video::frame_from_owned_bytes)
-        .or_else(|| {
-            crate::mkv::keyframe_mini_mkv(
-                &mut IStreamReader {
-                    stream: stream.clone(),
-                },
-                at,
-            )
-            .and_then(crate::video::frame_from_owned_bytes)
-        })
-        .or_else(|| {
-            crate::flv::keyframe_mini_mp4(&mut IStreamReader {
-                stream: stream.clone(),
-            })
-            .and_then(crate::video::frame_from_owned_bytes)
-        })
-        .or_else(|| {
-            // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
-            //     decoded out of process by the sibling st2k.exe (`flv::flash_frame` — the
-            //     pure-Rust Flash decoders panic on hostile input and must never run inside
-            //     the shell host). Self-gated on the FLV magic + codec id; bounded head read.
-            crate::flv::flash_frame(&mut IStreamReader {
-                stream: stream.clone(),
-            })
-        })
-        .or_else(|| {
-            // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
-            // seek reads cheap (the old shell-IStream meltdown was thousands
-            // of tiny marshaled reads — here they coalesce into a few big ones).
-            stream_size(stream)
-                .and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
-        })
-        .or_else(|| video_prefix(stream).and_then(crate::video::frame_from_owned_bytes))
-        .or_else(|| mp4_remux_moov(stream).and_then(crate::video::frame_from_owned_bytes))
-        .or_else(|| {
-            // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
-            //    Profile 0/1 even with the Store extension installed, so when every tier
-            //    above came back empty AND the container says V_VP9, the keyframe (located
-            //    via the same Cues read as tier 2) is decoded out of process by the sibling
-            //    st2k.exe (`crate::vp9`). Deliberately LAST: Profile 0 must keep hitting the
-            //    hardware-accelerated in-process MF path, and only otherwise-blank tiles pay
-            //    for a process spawn. Self-gated on the codec id; bounded targeted reads.
-            crate::vp9::vp9_frame(
-                &mut IStreamReader {
-                    stream: stream.clone(),
-                },
-                at,
-            )
-        });
-        if let Some(frame) = frame {
-            safety::log_debug(&format!(
-                "{who}: video frame {}x{}",
-                frame.width(),
-                frame.height()
-            ));
-            return Ok(StreamSource::Frame(frame));
-        }
-        // No decodable frame. OggS is ambiguous — an audio-only .ogg/.opus matches
-        // the video magic too, so fall THROUGH to the album-art path below instead of
-        // failing. A genuine video container the OS can't decode stops here — after one
-        // last rescue: Matroska attached cover art. The usual reason NO tier decoded is
-        // a missing OS codec (HEVC/AV1 are Store add-ons, not inbox), and library rips
-        // routinely attach a poster, so show the film instead of a blank tile. Bounded:
-        // the attachment element is read via the container's own index, never the stream.
-        if !peek_is_ogg(stream) {
-            if needs_fallback_cover_art(tried_cover_art) {
-                if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
-                    stream: stream.clone(),
-                }) {
-                    safety::log_debug(&format!(
-                        "{who}: video frame undecodable — using attached cover art ({} bytes)",
-                        cover.len()
-                    ));
-                    return Ok(StreamSource::Bytes(cover));
-                }
-            }
-            safety::log_debug(&format!("{who}: video with no decodable frame"));
-            return Err(Error::from(E_FAIL));
-        }
-        safety::log_debug(&format!("{who}: OggS not video — trying album art"));
+    if let Some(resolved) = try_video_source(stream, who) {
+        return resolved;
     }
 
     match audio_art(stream) {
@@ -270,32 +122,8 @@ pub(crate) unsafe fn stream_source_with_caps(
         AudioArt::NotAudio => {}
     }
 
-    // OPENEXR — decode scaled straight off the (seekable) stream. A 12K VFX render
-    // pass is hundreds of MB on disk, so the bounded whole-file read below refuses
-    // it outright and the file gets the stock icon; and even well under the cap,
-    // the `image` tier's full-resolution float decode costs orders of magnitude
-    // more memory and time than the tile we were asked for. Files the scaled
-    // decoder declines (deep, chroma-subsampled, non-RGB channel names) fall
-    // through to the unchanged cascade below.
-    if peek_is_exr(stream) {
-        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-        let source = IStreamReader {
-            stream: stream.clone(),
-        };
-        match decode::exr_scaled_from_reader(source, target_edge) {
-            Ok(img) => {
-                safety::log_debug(&format!(
-                    "{who}: scaled EXR {}x{}",
-                    img.width(),
-                    img.height()
-                ));
-                return Ok(StreamSource::Frame(img));
-            }
-            Err(e) => {
-                safety::log_debug(&format!("{who}: scaled EXR decode failed ({e})"));
-                let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-            }
-        }
+    if let Some(src) = try_exr_source(stream, who, target_edge) {
+        return Ok(src);
     }
 
     // GENERIC archive (a registered .zip/.rar/.7z — NOT the cbz/epub/office/… zips,
@@ -337,34 +165,14 @@ pub(crate) unsafe fn stream_source_with_caps(
         return Ok(StreamSource::Bytes(prefix));
     }
 
-    // CAMERA-RAW embedded-preview fast path.  A number of RAW families put a
+    // CAMERA-RAW embedded-preview fast path. A number of RAW families put a
     // display JPEG near the front of the file, followed by tens or hundreds of
     // MiB of sensor data. Do not turn every TIFF into this path: it needs a RAW
     // extension or RAW-specific container metadata, plus a structurally valid
     // preview. On a miss (including a preview beyond this bounded prefix) the
     // old whole-file path remains the correctness backstop.
-    if let Some(raw) = raw_preview_fast(stream, max_file_bytes) {
-        match raw {
-            RawFastSource::Preview(preview) => {
-                safety::log_debug(&format!(
-                    "{who}: RAW embedded-preview fast path ({} bytes)",
-                    preview.len()
-                ));
-                return Ok(StreamSource::Bytes(preview));
-            }
-            RawFastSource::Prefix(prefix, size) => {
-                // No early JPEG: reuse the bytes already fetched while probing and
-                // read only the remaining tail. This preserves the old full-decode
-                // fallback without rereading the first 16 MiB.
-                stream.Seek(prefix.len() as i64, STREAM_SEEK_SET, None)?;
-                return Ok(StreamSource::Bytes(read_all_append(
-                    stream,
-                    decode::effective_input_cap(max_file_bytes) as usize,
-                    Some(size),
-                    prefix,
-                )?));
-            }
-        }
+    if let Some(src) = try_raw_preview_fast(stream, max_file_bytes, who)? {
+        return Ok(src);
     }
 
     // Not audio, not video: skip oversized files cheaply via the stream length
@@ -384,80 +192,7 @@ pub(crate) unsafe fn stream_source_with_caps(
         // rescue: their baked thumbnail sits in the first bytes, so a
         // bounded prefix read suffices no matter the file size (issue #1).
         Some(size) if size > max => {
-            if let Some(cover) = archive_cover_streamed(stream) {
-                safety::log_debug(&format!("{who}: streamed cover from {size}-byte archive"));
-                return Ok(StreamSource::Bytes(cover));
-            }
-            if let Some(prefix) = head_preview_prefix(stream) {
-                safety::log_debug(&format!(
-                    "{who}: head-preview prefix ({} bytes) of {size}-byte file",
-                    prefix.len()
-                ));
-                return Ok(StreamSource::Bytes(prefix));
-            }
-            // GIMP `.xcf`. Every rescue around this one needs something a GIMP file does not
-            // have: a baked-in preview near the front (it has none at all) or an OS codec for
-            // the WIC pass below (Windows has none). So a large `.xcf` reached no decoder on
-            // any version ever shipped, and that is not a small class of file: XCF stores
-            // layers, and layered work is exactly what gets big. Its decoder walks absolute
-            // file offsets and reads one tile at a time, so it needs no buffer and no cap.
-            //
-            // Placed BEFORE the MaxSize test below on purpose: nothing here is buffered, so
-            // the reason that test exists does not apply. The user's own MaxSize is still
-            // honoured — this branch is only reached when `size > min(MaxSize, hard cap)`, and
-            // the settings-driven half of that is checked again by the caller.
-            if size <= max_file_bytes {
-                let mut reader = IStreamReader {
-                    stream: stream.clone(),
-                };
-                // The caller's target goes IN, so the flatten happens on a reduced grid. A
-                // big layered XCF is precisely the file that reaches this branch, and it is
-                // also the one that used to spend seconds building a full-resolution canvas
-                // nobody would look at.
-                if let Some(img) = crate::container::xcf_from_reader(&mut reader, Some(target_edge))
-                {
-                    safety::log_debug(&format!(
-                        "{who}: streamed XCF decode of {size}-byte file -> {}x{}",
-                        img.width(),
-                        img.height()
-                    ));
-                    return Ok(StreamSource::Frame(img));
-                }
-                let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-            }
-            // LAST RESCUE: hand the FILE to the OS codecs and let them scale during decode,
-            // so a huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
-            // Needs a real path — the shell usually exposes one (same recovery the video
-            // tier already relies on); a sandboxed or virtual item has none and falls
-            // through to the refusal below exactly as before. Nothing is buffered: WIC
-            // reads the file itself and `target_edge` bounds what we copy out.
-            // LAST RESCUE: let the OS codecs read THIS STREAM and scale during decode, so a
-            // huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
-            //
-            // Deliberately stream-based, not path-based. The shell gives a thumbnail provider
-            // no path (its stream reports only a leaf name), so an earlier by-path version of
-            // this rescue could never fire here. WIC reads a stream lazily, which is all the
-            // rescue ever actually needed: nothing buffers the document, and `target_edge`
-            // bounds what gets copied out.
-            //
-            // ONLY when OUR OWN buffering ceiling is what refused the file. If the USER set a
-            // smaller MaxSize, they asked us to skip files this big and the rescue must not
-            // quietly overrule that -- "too big to hold in memory" is our problem to route
-            // around, "don't spend effort on files over N MB" is their decision to keep.
-            if size <= max_file_bytes {
-                let head = read_prefix(stream, decode::COLOR_HEAD_BYTES);
-                if let Some(img) = decode::wic_scaled_from_stream(stream, target_edge, &head) {
-                    safety::log_debug(&format!(
-                        "{who}: oversized WIC rescue of {size}-byte stream -> {}x{}",
-                        img.width(),
-                        img.height()
-                    ));
-                    return Ok(StreamSource::Frame(img));
-                }
-                let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-            }
-            safety::log_debug(&format!("{who}: skip, {size} bytes over limit"));
-            Err(Error::from(E_FAIL))
+            oversized_rescue(stream, size, max_file_bytes, target_edge, who)
         }
         None if peek_is_7z(stream) => {
             // A provider stream with neither a recoverable name nor a Stat size
@@ -474,6 +209,311 @@ pub(crate) unsafe fn stream_source_with_caps(
             Ok(StreamSource::Bytes(read_all(stream, max as usize, size)?))
         }
     }
+}
+
+/// The video tiers of the [`stream_source_with_caps`] cascade. `None` means "not a
+/// video, or OggS ambiguously falling through" — the caller continues to the
+/// audio-art path below exactly as before; `Some(result)` means the cascade is
+/// already resolved (a decoded frame, a cover-art rescue, or a hard failure).
+unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamSource>> {
+    if !peek_is_video(stream) {
+        return None;
+    }
+    // OPTION: prefer the embedded poster over a frame from the film (`VideoCoverArt`,
+    // off by default). Read BEFORE the frame tiers so a film library shows its covers
+    // without paying for a decode first; a file with no cover falls straight through to
+    // the normal cascade, having cost one bounded metadata read.
+    //
+    // `tried_cover_art` remembers whether this pass ran: if it did and found nothing,
+    // the fallback rescue below (after every frame tier also fails) must not call
+    // `vcodec::cover_art` a second time — the stream hasn't changed, so it would just
+    // re-scan the same moov to the same null answer. That third full scan (cover_art,
+    // keyframe_mini_mp4, cover_art again) was the actual A032 cost on a HEVC-with-no-
+    // cover-and-no-OS-codec file.
+    let mut tried_cover_art = false;
+    if crate::settings::prefer_cover_art() {
+        tried_cover_art = true;
+        if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
+            stream: stream.clone(),
+        }) {
+            safety::log_debug(&format!(
+                "{who}: cover art preferred over a frame ({} bytes)",
+                cover.len()
+            ));
+            return Some(Ok(StreamSource::Bytes(cover)));
+        }
+    }
+    // Never stream the multi-GB original through the shell IStream: Media Foundation
+    // reading a whole movie that way is catastrophically slow (30 s+, a pegged core, past
+    // Explorer's timeout). Every tier below is a TARGETED read instead: find the one
+    // keyframe worth showing and touch only the bytes around it.
+    //
+    // There used to be a tier 0 here, "decode by FILE PATH when we can recover it". It
+    // was REMOVED (2026-08-12) because it never ran: both handlers are initialised with
+    // an `IStream`, and a shell stream reports only a bare leaf NAME, so the path lookup
+    // it depended on always returned nothing. A documented optimisation that silently
+    // does not exist is worse than none, because it makes the tiers below look like a
+    // fallback nobody needs to keep fast. They are the whole story. Measured after
+    // removal, through the real provider on a 163 MB 1080p clip: 1.2 s with the index at
+    // the END and 1.7 s with it at the front, in a DEBUG build.
+    // WHERE in the video: the user's `VideoOffset` (30 % unless changed — see
+    // `settings::video_offset_frac`). Read ONCE here so every tier below seeks to the same
+    // mark; a per-tier read could disagree if the setting changed mid-decode, and the
+    // fallbacks would then show a different frame from the tier that was meant to run.
+    let at = crate::settings::video_offset_frac();
+    // Tiers, each fast or a fast miss:
+    //   1. SMART TARGETED READ (MP4/MOV): parse the moov index, build a tiny
+    //      one-keyframe MP4 for the sync sample nearest the mark, decode that —
+    //      single-digit MB (index + one keyframe), a representative frame, and
+    //      it works regardless of moov position (faststart or moov-at-end);
+    //   2. SMART TARGETED READ (Matroska/WebM): the EBML analog — read the Cues
+    //      index, build a tiny one-cluster MKV for the keyframe nearest the mark;
+    //  2b. FLV (H.264 only): walk the head tags for the AVC config + first keyframe
+    //      and remux them into a mini-MP4 — MF has no FLV demuxer, so no later tier
+    //      can open the container at all (it has no index, so `at` can't be honoured);
+    //  2c. FLV (VP6 / Sorenson Spark): decode the first keyframe OUT OF PROCESS via
+    //      the sibling st2k.exe — Windows has no decoder for these at all;
+    //   3. GENERAL targeted read (AVI/WMV/… + any unmapped MP4/MKV): let MF's own
+    //      demuxer seek the real index over a block-caching IStream that
+    //      coalesces its reads (no per-format parser, any container MF decodes);
+    //   4. a faststart MP4 / small / unindexed video decodes from its head prefix;
+    //   5. a big *non*-faststart MP4 (moov at the very end) is remuxed —
+    //      head frames + tail moov stitched into a small valid MP4.
+    // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek. They read a
+    // bounded head prefix, so they CANNOT honour a late offset — there are no bytes there
+    // to seek into. That is a property of the fallback, not a bug to fix here.
+    let frame = crate::mp4::keyframe_mini_mp4(
+        &mut IStreamReader {
+            stream: stream.clone(),
+        },
+        at,
+    )
+    .and_then(crate::video::frame_from_owned_bytes)
+    .or_else(|| {
+        crate::mkv::keyframe_mini_mkv(
+            &mut IStreamReader {
+                stream: stream.clone(),
+            },
+            at,
+        )
+        .and_then(crate::video::frame_from_owned_bytes)
+    })
+    .or_else(|| {
+        crate::flv::keyframe_mini_mp4(&mut IStreamReader {
+            stream: stream.clone(),
+        })
+        .and_then(crate::video::frame_from_owned_bytes)
+    })
+    .or_else(|| {
+        // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
+        //     decoded out of process by the sibling st2k.exe (`flv::flash_frame` — the
+        //     pure-Rust Flash decoders panic on hostile input and must never run inside
+        //     the shell host). Self-gated on the FLV magic + codec id; bounded head read.
+        crate::flv::flash_frame(&mut IStreamReader {
+            stream: stream.clone(),
+        })
+    })
+    .or_else(|| {
+        // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
+        // seek reads cheap (the old shell-IStream meltdown was thousands
+        // of tiny marshaled reads — here they coalesce into a few big ones).
+        stream_size(stream).and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
+    })
+    .or_else(|| video_prefix(stream).and_then(crate::video::frame_from_owned_bytes))
+    .or_else(|| mp4_remux_moov(stream).and_then(crate::video::frame_from_owned_bytes))
+    .or_else(|| {
+        // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
+        //    Profile 0/1 even with the Store extension installed, so when every tier
+        //    above came back empty AND the container says V_VP9, the keyframe (located
+        //    via the same Cues read as tier 2) is decoded out of process by the sibling
+        //    st2k.exe (`crate::vp9`). Deliberately LAST: Profile 0 must keep hitting the
+        //    hardware-accelerated in-process MF path, and only otherwise-blank tiles pay
+        //    for a process spawn. Self-gated on the codec id; bounded targeted reads.
+        crate::vp9::vp9_frame(
+            &mut IStreamReader {
+                stream: stream.clone(),
+            },
+            at,
+        )
+    });
+    if let Some(frame) = frame {
+        safety::log_debug(&format!(
+            "{who}: video frame {}x{}",
+            frame.width(),
+            frame.height()
+        ));
+        return Some(Ok(StreamSource::Frame(frame)));
+    }
+    // No decodable frame. OggS is ambiguous — an audio-only .ogg/.opus matches
+    // the video magic too, so fall THROUGH to the album-art path below instead of
+    // failing. A genuine video container the OS can't decode stops here — after one
+    // last rescue: Matroska attached cover art. The usual reason NO tier decoded is
+    // a missing OS codec (HEVC/AV1 are Store add-ons, not inbox), and library rips
+    // routinely attach a poster, so show the film instead of a blank tile. Bounded:
+    // the attachment element is read via the container's own index, never the stream.
+    if !peek_is_ogg(stream) {
+        if needs_fallback_cover_art(tried_cover_art) {
+            if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
+                stream: stream.clone(),
+            }) {
+                safety::log_debug(&format!(
+                    "{who}: video frame undecodable — using attached cover art ({} bytes)",
+                    cover.len()
+                ));
+                return Some(Ok(StreamSource::Bytes(cover)));
+            }
+        }
+        safety::log_debug(&format!("{who}: video with no decodable frame"));
+        return Some(Err(Error::from(E_FAIL)));
+    }
+    safety::log_debug(&format!("{who}: OggS not video — trying album art"));
+    None
+}
+
+/// OPENEXR — decode scaled straight off the (seekable) stream. A 12K VFX render
+/// pass is hundreds of MB on disk, so the bounded whole-file read below refuses it
+/// outright and the file gets the stock icon; and even well under the cap, the
+/// `image` tier's full-resolution float decode costs orders of magnitude more
+/// memory and time than the tile we were asked for. Files the scaled decoder
+/// declines (deep, chroma-subsampled, non-RGB channel names) fall through to the
+/// unchanged cascade below (`None`).
+unsafe fn try_exr_source(stream: &IStream, who: &str, target_edge: u32) -> Option<StreamSource> {
+    if !peek_is_exr(stream) {
+        return None;
+    }
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let source = IStreamReader {
+        stream: stream.clone(),
+    };
+    match decode::exr_scaled_from_reader(source, target_edge) {
+        Ok(img) => {
+            safety::log_debug(&format!(
+                "{who}: scaled EXR {}x{}",
+                img.width(),
+                img.height()
+            ));
+            Some(StreamSource::Frame(img))
+        }
+        Err(e) => {
+            safety::log_debug(&format!("{who}: scaled EXR decode failed ({e})"));
+            let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+            None
+        }
+    }
+}
+
+/// CAMERA-RAW embedded-preview fast path (see the callsite comment in
+/// [`stream_source_with_caps`]). `Ok(None)` means "no fast-path preview here,
+/// continue the cascade below" — a miss, not an error.
+unsafe fn try_raw_preview_fast(
+    stream: &IStream,
+    max_file_bytes: u64,
+    who: &str,
+) -> Result<Option<StreamSource>> {
+    let Some(raw) = raw_preview_fast(stream, max_file_bytes) else {
+        return Ok(None);
+    };
+    match raw {
+        RawFastSource::Preview(preview) => {
+            safety::log_debug(&format!(
+                "{who}: RAW embedded-preview fast path ({} bytes)",
+                preview.len()
+            ));
+            Ok(Some(StreamSource::Bytes(preview)))
+        }
+        RawFastSource::Prefix(prefix, size) => {
+            // No early JPEG: reuse the bytes already fetched while probing and
+            // read only the remaining tail. This preserves the old full-decode
+            // fallback without rereading the first 16 MiB.
+            stream.Seek(prefix.len() as i64, STREAM_SEEK_SET, None)?;
+            Ok(Some(StreamSource::Bytes(read_all_append(
+                stream,
+                decode::effective_input_cap(max_file_bytes) as usize,
+                Some(size),
+                prefix,
+            )?)))
+        }
+    }
+}
+
+/// The oversized-file branch of the tail size match in [`stream_source_with_caps`]:
+/// a streamed archive cover, a head-preview prefix, a streamed XCF flatten, and
+/// finally the OS-codec (WIC) rescue reading straight off the stream — each tried
+/// in turn before giving up on a file too big to buffer.
+unsafe fn oversized_rescue(
+    stream: &IStream,
+    size: u64,
+    max_file_bytes: u64,
+    target_edge: u32,
+    who: &str,
+) -> Result<StreamSource> {
+    if let Some(cover) = archive_cover_streamed(stream) {
+        safety::log_debug(&format!("{who}: streamed cover from {size}-byte archive"));
+        return Ok(StreamSource::Bytes(cover));
+    }
+    if let Some(prefix) = head_preview_prefix(stream) {
+        safety::log_debug(&format!(
+            "{who}: head-preview prefix ({} bytes) of {size}-byte file",
+            prefix.len()
+        ));
+        return Ok(StreamSource::Bytes(prefix));
+    }
+    // GIMP `.xcf`. Every rescue around this one needs something a GIMP file does not
+    // have: a baked-in preview near the front (it has none at all) or an OS codec for
+    // the WIC pass below (Windows has none). So a large `.xcf` reached no decoder on
+    // any version ever shipped, and that is not a small class of file: XCF stores
+    // layers, and layered work is exactly what gets big. Its decoder walks absolute
+    // file offsets and reads one tile at a time, so it needs no buffer and no cap.
+    //
+    // Placed BEFORE the MaxSize test below on purpose: nothing here is buffered, so
+    // the reason that test exists does not apply. The user's own MaxSize is still
+    // honoured — this branch is only reached when `size > min(MaxSize, hard cap)`, and
+    // the settings-driven half of that is checked again by the caller.
+    if size <= max_file_bytes {
+        let mut reader = IStreamReader {
+            stream: stream.clone(),
+        };
+        // The caller's target goes IN, so the flatten happens on a reduced grid. A
+        // big layered XCF is precisely the file that reaches this branch, and it is
+        // also the one that used to spend seconds building a full-resolution canvas
+        // nobody would look at.
+        if let Some(img) = crate::container::xcf_from_reader(&mut reader, Some(target_edge)) {
+            safety::log_debug(&format!(
+                "{who}: streamed XCF decode of {size}-byte file -> {}x{}",
+                img.width(),
+                img.height()
+            ));
+            return Ok(StreamSource::Frame(img));
+        }
+        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    }
+    // LAST RESCUE: let the OS codecs read THIS STREAM and scale during decode, so a
+    // huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
+    //
+    // Deliberately stream-based, not path-based. The shell gives a thumbnail provider
+    // no path (its stream reports only a leaf name), so an earlier by-path version of
+    // this rescue could never fire here. WIC reads a stream lazily, which is all the
+    // rescue ever actually needed: nothing buffers the document, and `target_edge`
+    // bounds what gets copied out.
+    //
+    // ONLY when OUR OWN buffering ceiling is what refused the file. If the USER set a
+    // smaller MaxSize, they asked us to skip files this big and the rescue must not
+    // quietly overrule that -- "too big to hold in memory" is our problem to route
+    // around, "don't spend effort on files over N MB" is their decision to keep.
+    if size <= max_file_bytes {
+        let head = read_prefix(stream, decode::COLOR_HEAD_BYTES);
+        if let Some(img) = decode::wic_scaled_from_stream(stream, target_edge, &head) {
+            safety::log_debug(&format!(
+                "{who}: oversized WIC rescue of {size}-byte stream -> {}x{}",
+                img.width(),
+                img.height()
+            ));
+            return Ok(StreamSource::Frame(img));
+        }
+        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    }
+    safety::log_debug(&format!("{who}: skip, {size} bytes over limit"));
+    Err(Error::from(E_FAIL))
 }
 
 /// Does the post-frame-tiers cover-art rescue in [`stream_source_with_caps`] need
