@@ -55,6 +55,39 @@ the next release**, for this row and for any future wndproc split in this file.
 
 - `shot_wndproc` src/bin/app/screenshot/overlay/input.rs:128 (cognitive 480, CC 124)
 
+**Tranche 11 (2026-08-28): the next 9 worst rows cleared**, worst first: two test functions
+had their nested logic hoisted out to named module-scope helpers rather than split by
+phase, since a `#[test]` fn's job is the assertions, not a multi-step pipeline,
+`filtr_1d_matches_the_original_three_buffer_algorithm` (decode/jp2/dwt.rs) had its nested
+`reference` fn (itself over the gate from the nesting) split into `reference_reversible`/
+`reference_irreversible`, sharing the `n <= 1` edge case in `reference`;
+`lib_side_translation_keys_all_survive_the_dll_subset` (i18n.rs) had its directory-walk-and-
+scan body split into `scan_lib_t_calls` (the walk) and `scan_file_t_calls` (one file's `t("…")`
+matches). `parse_tag` (preview/mdhtml.rs) split into `parse_tag_attrs`/`parse_one_attr` for
+the attribute-list loop; `generate_locales` (build.rs) split into `read_locales`/
+`write_locales_table`/`build_coverage_report`/`append_locale_gap_report`/
+`write_coverage_file`/`write_keys_module`/`write_dll_keys`, plus a hoisted `is_dll_key`
+predicate (was a closure); `assemble` (ocr/table.rs) split into its four documented steps as
+named helpers (`rebuild_visual_rows`, `typical_space_width`, `find_columns`,
+`assemble_rows`), plus a hoisted `gap_of` (was a closure); `ttf_wndproc`
+(tags_to_folders.rs) split into `on_create`/`on_command`/`on_command_ok`, same
+wndproc-dispatcher method as prior tranches; `capture_monitor` (screenshot/hdr.rs) split
+into `create_capture_device`/`start_capture_session`/`wait_for_frame`/
+`frame_src_texture`/`staged_copy`, preserving the original's inconsistent early-return
+cleanup exactly (only the HDR-format-mismatch branch explicitly closes the WGC
+session/pool before returning `None`; every other failure path propagates via `?` with no
+explicit close, same as before, not a bug we introduced, and not one we fixed here);
+`nv12_frame_from_owned_bytes` (video.rs) split into `nv12_reader_for_bytes` (source-reader
+setup + NV12 media-type negotiation) and `read_first_nv12_sample` (the bounded sample-read
+loop); `parse_prologue` (container/xcf.rs) split into `parse_xcf_version`/
+`parse_image_properties`/`parse_layer_ptrs`. No behavior change anywhere in this tranche.
+Verified per file (scoped `cargo test`, or `cargo check`/`cargo clippy` alone for the two
+files with no unit tests of their own, tags_to_folders.rs and screenshot/hdr.rs) and at the
+end: `cargo test --lib` (753 passed, 0 failed, 18 ignored, matching baseline) and `cargo
+test --bin SageThumbs2K` (362 passed, matching tranche 10's baseline), `cargo clippy
+--workspace --all-targets -- -D warnings` clean, and `cargo fmt --all --check` clean (after
+one `cargo fmt --all` pass to reflow four call sites/signatures the edits left over-width).
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -323,21 +356,21 @@ before the next release is still recommended.
 |x| 55 | 23 | `popup_wndproc` | src/bin/app/settings_dlg/menuitems.rs:110 |
 |x| 54 | 18 | `largest_embedded_jpeg` | src/decode/tiers.rs:162 |
 |x| 53 | 23 | `jpeg_sof_dims` | src/container/util.rs:214 |
-| | 53 | 18 | `filtr_1d_matches_the_original_three_buffer_algorithm` | src/decode/jp2/dwt.rs:259 |
+|x| 53 | 18 | `filtr_1d_matches_the_original_three_buffer_algorithm` | src/decode/jp2/dwt.rs:259 |
 |x| 52 | 31 | `decode_scaled` | src/decode/exrscale.rs:73 |
-| | 51 | 17 | `lib_side_translation_keys_all_survive_the_dll_subset` | src/i18n.rs:229 |
+|x| 51 | 17 | `lib_side_translation_keys_all_survive_the_dll_subset` | src/i18n.rs:229 |
 |x| 51 | 18 | `parse_obj` | src/decode/mesh.rs:150 |
 |x| 51 | 23 | `eyedropper_wndproc` | src/bin/app/eyedropper.rs:376 |
 |x| 50 | 15 | `cluster_keyframe` | src/mkv.rs:336 |
-| | 50 | 28 | `parse_tag` | src/bin/app/preview/mdhtml.rs:98 |
-| | 49 | 25 | `generate_locales` | src/build.rs:268 |
-| | 47 | 30 | `assemble` | src/ocr/table.rs:81 |
+|x| 50 | 28 | `parse_tag` | src/bin/app/preview/mdhtml.rs:98 |
+|x| 49 | 25 | `generate_locales` | src/build.rs:268 |
+|x| 47 | 30 | `assemble` | src/ocr/table.rs:81 |
 |x| 47 | 22 | `render` | src/decode/mesh.rs:327 |
-| | 47 | 17 | `ttf_wndproc` | src/bin/app/tags_to_folders.rs:45 |
-| | 47 | 24 | `capture_monitor` | src/bin/app/screenshot/hdr.rs:192 |
+|x| 47 | 17 | `ttf_wndproc` | src/bin/app/tags_to_folders.rs:45 |
+|x| 47 | 24 | `capture_monitor` | src/bin/app/screenshot/hdr.rs:192 |
 |x| 46 | 28 | `decode_reduced` | src/decode/jp2/mod.rs:105 |
-| | 46 | 22 | `nv12_frame_from_owned_bytes` | src/video.rs:247 |
-| | 46 | 28 | `parse_prologue` | src/container/xcf.rs:119 |
+|x| 46 | 22 | `nv12_frame_from_owned_bytes` | src/video.rs:247 |
+|x| 46 | 28 | `parse_prologue` | src/container/xcf.rs:119 |
 | | 45 | 26 | `sample_location` | src/mp4.rs:470 |
 | | 45 | 21 | `walk` | src/bin/app/preview/dbdoc.rs:407 |
 | | 45 | 22 | `load` | src/bin/app/preview/loader.rs:20 |
