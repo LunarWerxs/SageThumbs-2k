@@ -88,6 +88,42 @@ test --bin SageThumbs2K` (362 passed, matching tranche 10's baseline), `cargo cl
 --workspace --all-targets -- -D warnings` clean, and `cargo fmt --all --check` clean (after
 one `cargo fmt --all` pass to reflow four call sites/signatures the edits left over-width).
 
+**Tranche 12 (2026-08-28): the next 10 worst rows cleared**, worst first: `sample_location`
+(mp4.rs) split into `locate_chunk_for_sample` (the `stsc` run-length walk) and
+`walk_to_sample_offset` (the capped intra-chunk size walk); `walk` (preview/dbdoc.rs), the
+b-tree page visitor, split into `page_header` (page-type/ncells/ptr_base validation) and
+`walk_cell` (one cell's full read, using `std::ops::ControlFlow` to distinguish "malformed,
+abort the whole walk" from "skip to the next cell", matching the original's `return`/`continue`
+mix exactly); `load` (preview/loader.rs) split into `reset_viewer_state` (the per-document reset
+block) plus one `try_show_*` helper per early-return content hook (archive listing, DB markdown,
+mail markdown, font specimen) and `dispatch_by_content_kind` (the final classify+match), same
+shape as the wndproc precedent but for an early-return dispatcher instead of a message loop;
+`parse_apev2_cover` (container/audio/ape.rs) split into `read_apev2_item` (one item's
+size/flags/key/value read), `apev2_cover_rank` (front/back ranking), and `consider_apev2_cover`
+(the description/image validation + best-candidate update); `do_action`
+(preview/window/command.rs), a toolbar-button dispatcher, split into one `on_btn_*` handler per
+non-trivial `Btn` arm, same wndproc-dispatcher method as prior tranches; `decode_level`
+(container/xcf.rs) split into `read_level_tile_pointers` (header + tile-pointer-list read),
+`tile_read_window` (the encoded-length estimate/shrink logic), and `decode_and_blit_tile` (one
+tile's read+decode+blit/accumulate); `read_info_impl` (strip.rs) split into
+`resolve_image_dimensions` (the three-tier dims probe) with its full-decode tier further split
+into `resolve_dims_via_full_decode`, and `apply_exif_metadata` (make/model/datetime/DPI/GPS);
+`read_info_verbose` (strip.rs) split into `write_file_section`/`write_image_section`/
+`write_exif_section`/`write_extra_facts_section`, one per report section, each returning the
+bool the caller needs for the final "(none)" line; `paint_lines` (preview/highlight.rs) split
+into `gutter_metrics` (line-number column geometry), `record_line_hit` (selection hit-rect
+bookkeeping), `draw_gutter_line_number`, and `draw_code_runs`; `tiff_has_raw_ifd_marker`
+(streamsrc/rawsniff.rs) split its per-entry IFD0 scan into `raw_ifd_entry_marker`, again using
+`ControlFlow<bool>` to keep the three original outcomes (found → `Break(true)`, malformed →
+`Break(false)`, keep scanning → `Continue`) distinct from a single boolean return. No behavior
+change anywhere in this tranche. Verified per file (scoped `cargo test`) and at the end: `cargo
+test --lib` (753 passed, 0 failed, 18 ignored, matching baseline) and `cargo test --bin
+SageThumbs2K` (362 passed, matching tranche 11's baseline), `cargo clippy --workspace
+--all-targets -- -D warnings` and `cargo clippy --bin SageThumbs2K --features html-preview -- -D
+warnings` both clean, and `cargo fmt --all --check` clean (after one `cargo fmt --all` pass,
+plus a manual fix for a doc-comment left orphaned above the wrong function by one of the
+extractions, caught by the fmt-check diff and by re-reading the file rather than by any tool).
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -371,17 +407,17 @@ before the next release is still recommended.
 |x| 46 | 28 | `decode_reduced` | src/decode/jp2/mod.rs:105 |
 |x| 46 | 22 | `nv12_frame_from_owned_bytes` | src/video.rs:247 |
 |x| 46 | 28 | `parse_prologue` | src/container/xcf.rs:119 |
-| | 45 | 26 | `sample_location` | src/mp4.rs:470 |
-| | 45 | 21 | `walk` | src/bin/app/preview/dbdoc.rs:407 |
-| | 45 | 22 | `load` | src/bin/app/preview/loader.rs:20 |
-| | 44 | 20 | `parse_apev2_cover` | src/container/audio/ape.rs:45 |
-| | 44 | 27 | `read_info_verbose` | src/strip.rs:435 |
-| | 44 | 27 | `do_action` | src/bin/app/preview/window/command.rs:46 |
+|x| 45 | 26 | `sample_location` | src/mp4.rs:470 |
+|x| 45 | 21 | `walk` | src/bin/app/preview/dbdoc.rs:407 |
+|x| 45 | 22 | `load` | src/bin/app/preview/loader.rs:20 |
+|x| 44 | 20 | `parse_apev2_cover` | src/container/audio/ape.rs:45 |
+|x| 44 | 27 | `read_info_verbose` | src/strip.rs:435 |
+|x| 44 | 27 | `do_action` | src/bin/app/preview/window/command.rs:46 |
 |x| 44 | 27 | `parse_palette` | src/decode/jp2/codestream.rs:170 |
-| | 44 | 27 | `decode_level` | src/container/xcf.rs:565 |
-| | 44 | 25 | `read_info_impl` | src/strip.rs:284 |
-| | 43 | 17 | `paint_lines` | src/bin/app/preview/highlight.rs:91 |
-| | 43 | 18 | `tiff_has_raw_ifd_marker` | src/streamsrc/rawsniff.rs:192 |
+|x| 44 | 27 | `decode_level` | src/container/xcf.rs:565 |
+|x| 44 | 25 | `read_info_impl` | src/strip.rs:284 |
+|x| 43 | 17 | `paint_lines` | src/bin/app/preview/highlight.rs:91 |
+|x| 43 | 18 | `tiff_has_raw_ifd_marker` | src/streamsrc/rawsniff.rs:192 |
 | | 43 | 29 | `shot_paint` | src/bin/app/screenshot/overlay/paint.rs:50 |
 | | 42 | 22 | `settings_wndproc` | src/bin/app/convert.rs:844 |
 | | 42 | 27 | `decode_preview_with_raw_order` | src/decode.rs:1198 |
