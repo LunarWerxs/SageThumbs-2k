@@ -196,9 +196,53 @@ fn read_big_stream(
     Some(out)
 }
 
+/// Build the per-file mini-stream (the root entry's own stream), hop-bounded
+/// from its declared size and capped at `MAX_STREAM`.
+fn build_ministream(
+    bytes: &[u8],
+    fat: &[u32],
+    sector_size: usize,
+    root: Option<StreamLoc>,
+) -> Option<Vec<u8>> {
+    let (rstart, rsize) = root?;
+    let rsize = (rsize.min(MAX_STREAM as u64)) as usize;
+    let root_cap = rsize.div_ceil(sector_size).saturating_add(2);
+    let mut m = Vec::with_capacity(rsize);
+    for s in follow(rstart, fat, root_cap)? {
+        m.extend_from_slice(read_sector(bytes, s, sector_size)?);
+        if m.len() >= rsize {
+            break;
+        }
+    }
+    m.truncate(rsize);
+    Some(m)
+}
+
+/// Build the per-file mini-FAT (concatenated u32 entries) from the main FAT chain.
+fn build_minifat(
+    bytes: &[u8],
+    fat: &[u32],
+    sector_size: usize,
+    first_minifat: u32,
+) -> Option<Vec<u32>> {
+    let mut minifat: Vec<u32> = Vec::new();
+    // The mini-FAT's own sector count isn't known ahead of the walk either.
+    for s in follow(first_minifat, fat, MAX_SECTORS)? {
+        let sec = read_sector(bytes, s, sector_size)?;
+        for i in 0..sector_size / 4 {
+            minifat.push(le32(sec, i * 4)?);
+        }
+        if minifat.len() > MAX_SECTORS {
+            return None;
+        }
+    }
+    Some(minifat)
+}
+
 /// Read a stream whose declared size is below the mini-stream cutoff, via the
 /// per-file mini-stream (the root entry's stream) and mini-FAT. Both are built
-/// at most once per file and cached by the caller across targets.
+/// at most once per file (by `build_ministream`/`build_minifat` above) and
+/// cached by the caller across targets.
 #[allow(clippy::too_many_arguments)]
 fn read_mini_stream(
     bytes: &[u8],
@@ -212,42 +256,16 @@ fn read_mini_stream(
     ministream_cache: &mut Option<Vec<u8>>,
     minifat_cache: &mut Option<Vec<u32>>,
 ) -> Option<Vec<u8>> {
+    // `insert` hands back a borrow of the value just stored — the shell-surface
+    // unwrap ban's preferred spelling of this build-once-cache-forever idiom.
     let ministream: &Vec<u8> = match ministream_cache {
         Some(m) => m,
-        None => {
-            let (rstart, rsize) = root?;
-            let rsize = (rsize.min(MAX_STREAM as u64)) as usize;
-            let root_cap = rsize.div_ceil(sector_size).saturating_add(2);
-            let mut m = Vec::with_capacity(rsize);
-            for s in follow(rstart, fat, root_cap)? {
-                m.extend_from_slice(read_sector(bytes, s, sector_size)?);
-                if m.len() >= rsize {
-                    break;
-                }
-            }
-            m.truncate(rsize);
-            // `insert` hands back a borrow of the value just stored — the
-            // shell-surface unwrap ban's preferred spelling of this cache idiom.
-            ministream_cache.insert(m)
-        }
+        None => ministream_cache.insert(build_ministream(bytes, fat, sector_size, root)?),
     };
     // The mini-FAT too is per-FILE: build it once, reuse for every small target.
     let minifat: &Vec<u32> = match minifat_cache {
         Some(m) => m,
-        None => {
-            let mut minifat: Vec<u32> = Vec::new();
-            // The mini-FAT's own sector count isn't known ahead of the walk either.
-            for s in follow(first_minifat, fat, MAX_SECTORS)? {
-                let sec = read_sector(bytes, s, sector_size)?;
-                for i in 0..sector_size / 4 {
-                    minifat.push(le32(sec, i * 4)?);
-                }
-                if minifat.len() > MAX_SECTORS {
-                    return None;
-                }
-            }
-            minifat_cache.insert(minifat)
-        }
+        None => minifat_cache.insert(build_minifat(bytes, fat, sector_size, first_minifat)?),
     };
     // Walk via the same hop-bounded follow() the FAT/root-stream chains use
     // (not an out.len()-growth bound): when the root stream is empty and
