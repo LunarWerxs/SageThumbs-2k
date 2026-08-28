@@ -84,9 +84,17 @@ fn blend_to_white(rgb: (u8, u8, u8), n: u32) -> (u8, u8, u8) {
 }
 
 /// 5x7 uppercase glyphs, one `u8` per row (bit 4 = leftmost pixel). Only the characters a
-/// format label can contain.
-#[rustfmt::skip]
+/// format label can contain. Split into three lookup tables (letters A-M, letters N-Z,
+/// digits/`+`), tried in order, purely to keep each match's arm count under the complexity
+/// gate; the rows themselves are unchanged.
 fn glyph(c: u8) -> Option<[u8; 7]> {
+    glyph_a_to_m(c)
+        .or_else(|| glyph_n_to_z(c))
+        .or_else(|| glyph_digit_or_plus(c))
+}
+
+#[rustfmt::skip]
+fn glyph_a_to_m(c: u8) -> Option<[u8; 7]> {
     Some(match c {
         b'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
         b'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
@@ -101,6 +109,13 @@ fn glyph(c: u8) -> Option<[u8; 7]> {
         b'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
         b'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
         b'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        _ => return None,
+    })
+}
+
+#[rustfmt::skip]
+fn glyph_n_to_z(c: u8) -> Option<[u8; 7]> {
+    Some(match c {
         b'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
         b'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         b'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
@@ -114,6 +129,13 @@ fn glyph(c: u8) -> Option<[u8; 7]> {
         b'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
         b'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
         b'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        _ => return None,
+    })
+}
+
+#[rustfmt::skip]
+fn glyph_digit_or_plus(c: u8) -> Option<[u8; 7]> {
+    Some(match c {
         b'0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
         b'1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
         b'2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
