@@ -425,42 +425,48 @@ impl SampleSizes<'_> {
     fn size_of(&self, idx: u64) -> Option<u64> {
         let idx = idx as usize;
         match self {
-            SampleSizes::Stsz(full) => {
-                let p = full_box_body(full);
-                let uniform = g32(p, 0)?;
-                let count = g32(p, 4)? as usize;
-                if idx >= count {
-                    return None;
-                }
-                if uniform != 0 {
-                    Some(uniform as u64)
-                } else {
-                    g32(p, 8 + idx * 4).map(u64::from)
-                }
-            }
-            SampleSizes::Stz2(full) => {
-                let p = full_box_body(full);
-                let field = *p.get(3)?; // 24 reserved bits then an 8-bit field_size
-                let count = g32(p, 4)? as usize;
-                if idx >= count {
-                    return None;
-                }
-                match field {
-                    16 => g16(p, 8 + idx * 2).map(u64::from),
-                    8 => p.get(8 + idx).map(|&b| b as u64),
-                    4 => {
-                        let byte = *p.get(8 + idx / 2)?;
-                        let nib = if idx.is_multiple_of(2) {
-                            byte >> 4
-                        } else {
-                            byte & 0x0F
-                        };
-                        Some(nib as u64)
-                    }
-                    _ => None,
-                }
-            }
+            SampleSizes::Stsz(full) => stsz_size_of(full, idx),
+            SampleSizes::Stz2(full) => stz2_size_of(full, idx),
         }
+    }
+}
+
+/// `stsz` (uniform or per-sample 32-bit) size lookup.
+fn stsz_size_of(full: &[u8], idx: usize) -> Option<u64> {
+    let p = full_box_body(full);
+    let uniform = g32(p, 0)?;
+    let count = g32(p, 4)? as usize;
+    if idx >= count {
+        return None;
+    }
+    if uniform != 0 {
+        Some(uniform as u64)
+    } else {
+        g32(p, 8 + idx * 4).map(u64::from)
+    }
+}
+
+/// `stz2` (compact 4/8/16-bit field) size lookup.
+fn stz2_size_of(full: &[u8], idx: usize) -> Option<u64> {
+    let p = full_box_body(full);
+    let field = *p.get(3)?; // 24 reserved bits then an 8-bit field_size
+    let count = g32(p, 4)? as usize;
+    if idx >= count {
+        return None;
+    }
+    match field {
+        16 => g16(p, 8 + idx * 2).map(u64::from),
+        8 => p.get(8 + idx).map(|&b| b as u64),
+        4 => {
+            let byte = *p.get(8 + idx / 2)?;
+            let nib = if idx.is_multiple_of(2) {
+                byte >> 4
+            } else {
+                byte & 0x0F
+            };
+            Some(nib as u64)
+        }
+        _ => None,
     }
 }
 
