@@ -60,6 +60,30 @@ the next release**, for this row and for any future wndproc split in this file.
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
 cleared by a burndown tranche; see git log for the commits.
 
+**Tranche 10 (2026-08-28): the next 8 worst rows cleared**, worst first: `extract`
+(container/mobi.rs) split into `cover_via_exth_or_base` (the EXTH-lookup-then-first-image
+phase); `delimited_table` (preview/docconv.rs) split into `parse_delimited_rows` (the
+RFC-4180-ish parse loop) and `render_row_table` (the GFM pipe-table render); `popup_wndproc`
+(settings_dlg/menuitems.rs) split into `on_create`/`on_notify`/`on_measureitem`/
+`on_drawitem`/`on_command`/`on_destroy`, same wndproc-dispatcher method as prior tranches;
+`largest_embedded_jpeg` (decode/tiers.rs) split into `span_at_soi` (one SOI candidate's
+measure-and-fold), `consider_candidate` (the capped/overall bookkeeping) and `bump_seen`
+(the 64-candidate cap); `jpeg_sof_dims` (container/util.rs) split into `next_marker` (the
+fill-byte-skip-and-read-marker prologue, the same shape `jpeg_span` already has inline) and
+`sof0_dims` (the SOF0/1/2 width/height read); `decode_scaled` (decode/exrscale.rs) split
+into `resolve_rgb_layer`, `resolve_channels`, `validate_layer_dims`, `channel_slot` (the
+per-line R/G/B/A slot lookup, replacing a 4-arm match), and `image_from_accumulators`, all
+called from the original decode/filter/decompress skeleton, which stays in `decode_scaled`
+unchanged; `eyedropper_wndproc` (eyedropper.rs) split into `on_mousemove`/`on_button_down`/
+`on_keydown_space`/`on_keydown_tab`/`on_keydown_digit`/`on_destroy`, same wndproc-dispatcher
+method; `cluster_keyframe` (mkv.rs) split into `simple_block_keyframe` and
+`block_group_keyframe` per `id` arm. No behavior change anywhere in this tranche. Verified
+per file (scoped `cargo test`) and at the end: `cargo test --lib` (753 passed, 0 failed, 18
+ignored, matching baseline) and `cargo test --bin SageThumbs2K` (362 passed, matching
+tranche 9's baseline), `cargo clippy --lib -- -D warnings` and `cargo clippy --bin
+SageThumbs2K -- -D warnings` both clean, and `cargo fmt --all --check` clean (after one
+`cargo fmt --all` pass to reflow three call sites/signatures the edits left over-width).
+
 **Tranche 9 (2026-08-28): the next 9 worst rows cleared**, worst first: `paint_into`
 (preview/paint.rs) split into `paint_content` (a thin `ContentKind` match) plus one
 `paint_content_*` helper per arm, and `paint_caption`/`paint_caption_title`/
@@ -294,17 +318,17 @@ before the next release is still recommended.
 |x| 59 | 25 | `extract` | src/container/blend.rs:16 |
 |x| 58 | 22 | `ensure_visible` | src/bin/app/preview/selection.rs:323 |
 |x| 57 | 33 | `type_chunk_value` | src/container/apk.rs:668 |
-| | 57 | 27 | `extract` | src/container/mobi.rs:10 |
-| | 56 | 26 | `delimited_table` | src/bin/app/preview/docconv.rs:72 |
-| | 55 | 23 | `popup_wndproc` | src/bin/app/settings_dlg/menuitems.rs:110 |
-| | 54 | 18 | `largest_embedded_jpeg` | src/decode/tiers.rs:162 |
-| | 53 | 23 | `jpeg_sof_dims` | src/container/util.rs:214 |
+|x| 57 | 27 | `extract` | src/container/mobi.rs:10 |
+|x| 56 | 26 | `delimited_table` | src/bin/app/preview/docconv.rs:72 |
+|x| 55 | 23 | `popup_wndproc` | src/bin/app/settings_dlg/menuitems.rs:110 |
+|x| 54 | 18 | `largest_embedded_jpeg` | src/decode/tiers.rs:162 |
+|x| 53 | 23 | `jpeg_sof_dims` | src/container/util.rs:214 |
 | | 53 | 18 | `filtr_1d_matches_the_original_three_buffer_algorithm` | src/decode/jp2/dwt.rs:259 |
-| | 52 | 31 | `decode_scaled` | src/decode/exrscale.rs:73 |
+|x| 52 | 31 | `decode_scaled` | src/decode/exrscale.rs:73 |
 | | 51 | 17 | `lib_side_translation_keys_all_survive_the_dll_subset` | src/i18n.rs:229 |
 |x| 51 | 18 | `parse_obj` | src/decode/mesh.rs:150 |
-| | 51 | 23 | `eyedropper_wndproc` | src/bin/app/eyedropper.rs:376 |
-| | 50 | 15 | `cluster_keyframe` | src/mkv.rs:336 |
+|x| 51 | 23 | `eyedropper_wndproc` | src/bin/app/eyedropper.rs:376 |
+|x| 50 | 15 | `cluster_keyframe` | src/mkv.rs:336 |
 | | 50 | 28 | `parse_tag` | src/bin/app/preview/mdhtml.rs:98 |
 | | 49 | 25 | `generate_locales` | src/build.rs:268 |
 | | 47 | 30 | `assemble` | src/ocr/table.rs:81 |

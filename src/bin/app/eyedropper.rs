@@ -382,52 +382,11 @@ extern "system" fn eyedropper_wndproc(
     unsafe {
         match msg {
             WM_ERASEBKGND => LRESULT(1), // the snapshot covers every pixel
-            WM_MOUSEMOVE => {
-                let mx = (lparam.0 & 0xffff) as u16 as i16 as i32;
-                let my = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
-                let ox = EYE_LAST_X.swap(mx, Ordering::Relaxed);
-                let oy = EYE_LAST_Y.swap(my, Ordering::Relaxed);
-                // Repaint the old + new loupe boxes (erase old, draw new).
-                let old = eye_loupe_box(ox, oy);
-                let new = eye_loupe_box(mx, my);
-                let _ = InvalidateRect(Some(hwnd), Some(&old), false);
-                let _ = InvalidateRect(Some(hwnd), Some(&new), false);
-                LRESULT(0)
-            }
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
-                let mx = (lparam.0 & 0xffff) as u16 as i16 as i32;
-                let my = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
-                let c = eye_sample(mx, my);
-                if ctrl_held() {
-                    if let Ok(mut st) = EYE_STASH.lock() {
-                        st.push(c);
-                    }
-                    let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(mx, my)), false);
-                    return LRESULT(0);
-                }
-                eye_finish(Some(c));
-                let _ = DestroyWindow(hwnd);
-                LRESULT(0)
-            }
+            WM_MOUSEMOVE => on_mousemove(hwnd, lparam),
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN => on_button_down(hwnd, lparam),
             // Space picks the pixel under the cursor (a steadier alternative to a
             // click — your hand doesn't move).
-            WM_KEYDOWN if wparam.0 == VK_SPACE.0 as usize => {
-                let cx = EYE_LAST_X.load(Ordering::Relaxed);
-                let cy = EYE_LAST_Y.load(Ordering::Relaxed);
-                let pick = (cx > -10000).then(|| eye_sample(cx, cy));
-                if ctrl_held() {
-                    if let Some(c) = pick {
-                        if let Ok(mut st) = EYE_STASH.lock() {
-                            st.push(c);
-                        }
-                        let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(cx, cy)), false);
-                    }
-                    return LRESULT(0);
-                }
-                eye_finish(pick);
-                let _ = DestroyWindow(hwnd);
-                LRESULT(0)
-            }
+            WM_KEYDOWN if wparam.0 == VK_SPACE.0 as usize => on_keydown_space(hwnd),
             // Esc is cancel, so it deliberately does NOT copy — not even a stash
             // that was mid-build. Space is the one key that commits.
             WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => {
@@ -437,46 +396,99 @@ extern "system" fn eyedropper_wndproc(
             // Tab cycles the clipboard format (hex → rgb → hsl → hsv) and remembers it. The
             // value row re-renders in the new format immediately, so the choice is made while
             // LOOKING at the number it produces rather than in a settings page.
-            WM_KEYDOWN if wparam.0 == VK_TAB.0 as usize => {
-                let fmt = (EYE_FMT.load(Ordering::Relaxed) + 1) % 4;
-                EYE_FMT.store(fmt, Ordering::Relaxed);
-                let _ = sagethumbs2k_core::settings::set_eyedropper_format(fmt as u32);
-                let cx = EYE_LAST_X.load(Ordering::Relaxed);
-                let cy = EYE_LAST_Y.load(Ordering::Relaxed);
-                let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(cx, cy)), false);
-                LRESULT(0)
-            }
+            WM_KEYDOWN if wparam.0 == VK_TAB.0 as usize => on_keydown_tab(hwnd),
             // 1–9 copy that history swatch (1 = most recent) and close — the "give me
             // yesterday's brand colour again" path. Ignored when the digit names no entry,
             // so a stray keypress can't close the tool with nothing copied.
-            WM_KEYDOWN if (0x31..=0x39).contains(&wparam.0) => {
-                let idx = wparam.0 - 0x31;
-                let c = EYE_HISTORY.lock().ok().and_then(|h| h.get(idx).copied());
-                if let Some(c) = c {
-                    eye_remember(&[c]); // recalling promotes it back to most-recent
-                    let fmt = EYE_FMT.load(Ordering::Relaxed);
-                    set_clipboard_text(&fmt_color(fmt, c));
-                    let _ = DestroyWindow(hwnd);
-                }
-                LRESULT(0)
-            }
+            WM_KEYDOWN if (0x31..=0x39).contains(&wparam.0) => on_keydown_digit(hwnd, wparam),
             WM_PAINT => {
                 eye_paint(hwnd);
                 LRESULT(0)
             }
-            WM_DESTROY => {
-                if let Some(&dc) = EYE_SHOT.get() {
-                    let _ = DeleteDC(HDC(dc as *mut c_void));
-                }
-                if let Some(&bmp) = EYE_SHOT_BMP.get() {
-                    let _ = DeleteObject(HGDIOBJ(bmp as *mut c_void));
-                }
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
+            WM_DESTROY => on_destroy(),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+unsafe fn on_mousemove(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let mx = (lparam.0 & 0xffff) as u16 as i16 as i32;
+    let my = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
+    let ox = EYE_LAST_X.swap(mx, Ordering::Relaxed);
+    let oy = EYE_LAST_Y.swap(my, Ordering::Relaxed);
+    // Repaint the old + new loupe boxes (erase old, draw new).
+    let old = eye_loupe_box(ox, oy);
+    let new = eye_loupe_box(mx, my);
+    let _ = InvalidateRect(Some(hwnd), Some(&old), false);
+    let _ = InvalidateRect(Some(hwnd), Some(&new), false);
+    LRESULT(0)
+}
+
+unsafe fn on_button_down(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let mx = (lparam.0 & 0xffff) as u16 as i16 as i32;
+    let my = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
+    let c = eye_sample(mx, my);
+    if ctrl_held() {
+        if let Ok(mut st) = EYE_STASH.lock() {
+            st.push(c);
+        }
+        let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(mx, my)), false);
+        return LRESULT(0);
+    }
+    eye_finish(Some(c));
+    let _ = DestroyWindow(hwnd);
+    LRESULT(0)
+}
+
+unsafe fn on_keydown_space(hwnd: HWND) -> LRESULT {
+    let cx = EYE_LAST_X.load(Ordering::Relaxed);
+    let cy = EYE_LAST_Y.load(Ordering::Relaxed);
+    let pick = (cx > -10000).then(|| eye_sample(cx, cy));
+    if ctrl_held() {
+        if let Some(c) = pick {
+            if let Ok(mut st) = EYE_STASH.lock() {
+                st.push(c);
+            }
+            let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(cx, cy)), false);
+        }
+        return LRESULT(0);
+    }
+    eye_finish(pick);
+    let _ = DestroyWindow(hwnd);
+    LRESULT(0)
+}
+
+unsafe fn on_keydown_tab(hwnd: HWND) -> LRESULT {
+    let fmt = (EYE_FMT.load(Ordering::Relaxed) + 1) % 4;
+    EYE_FMT.store(fmt, Ordering::Relaxed);
+    let _ = sagethumbs2k_core::settings::set_eyedropper_format(fmt as u32);
+    let cx = EYE_LAST_X.load(Ordering::Relaxed);
+    let cy = EYE_LAST_Y.load(Ordering::Relaxed);
+    let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(cx, cy)), false);
+    LRESULT(0)
+}
+
+unsafe fn on_keydown_digit(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    let idx = wparam.0 - 0x31;
+    let c = EYE_HISTORY.lock().ok().and_then(|h| h.get(idx).copied());
+    if let Some(c) = c {
+        eye_remember(&[c]); // recalling promotes it back to most-recent
+        let fmt = EYE_FMT.load(Ordering::Relaxed);
+        set_clipboard_text(&fmt_color(fmt, c));
+        let _ = DestroyWindow(hwnd);
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_destroy() -> LRESULT {
+    if let Some(&dc) = EYE_SHOT.get() {
+        let _ = DeleteDC(HDC(dc as *mut c_void));
+    }
+    if let Some(&bmp) = EYE_SHOT_BMP.get() {
+        let _ = DeleteObject(HGDIOBJ(bmp as *mut c_void));
+    }
+    PostQuitMessage(0);
+    LRESULT(0)
 }
 
 unsafe fn eye_paint(hwnd: HWND) {

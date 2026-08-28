@@ -335,40 +335,48 @@ pub fn vp9_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>>
 /// IS Matroska's keyframe marker for grouped blocks).
 fn cluster_keyframe(cluster_body: &[u8], video_track: u64) -> Option<Vec<u8>> {
     for (id, _, data) in children(cluster_body) {
-        match id {
-            ID_SIMPLE_BLOCK => {
-                if let Some((track, flags, frame)) = parse_block(data) {
-                    if track == video_track && flags & 0x80 != 0 {
-                        if let Some(f) = unlaced_frame(flags, frame) {
-                            return Some(f.to_vec());
-                        }
-                    }
-                }
-            }
-            ID_BLOCK_GROUP => {
-                let mut block = None;
-                let mut has_ref = false;
-                for (cid, _, cd) in children(data) {
-                    match cid {
-                        ID_BLOCK => block = Some(cd),
-                        ID_REFERENCE_BLOCK => has_ref = true,
-                        _ => {}
-                    }
-                }
-                if !has_ref {
-                    if let Some((track, flags, frame)) = block.and_then(parse_block) {
-                        if track == video_track {
-                            if let Some(f) = unlaced_frame(flags, frame) {
-                                return Some(f.to_vec());
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
+        let frame = match id {
+            ID_SIMPLE_BLOCK => simple_block_keyframe(data, video_track),
+            ID_BLOCK_GROUP => block_group_keyframe(data, video_track),
+            _ => None,
+        };
+        if frame.is_some() {
+            return frame;
         }
     }
     None
+}
+
+/// A SimpleBlock's frame, when it belongs to `video_track` and its keyframe flag
+/// (0x80) is set.
+fn simple_block_keyframe(data: &[u8], video_track: u64) -> Option<Vec<u8>> {
+    let (track, flags, frame) = parse_block(data)?;
+    if track != video_track || flags & 0x80 == 0 {
+        return None;
+    }
+    unlaced_frame(flags, frame).map(<[u8]>::to_vec)
+}
+
+/// A BlockGroup's Block frame, when it belongs to `video_track` and carries no
+/// ReferenceBlock (that absence IS Matroska's keyframe marker for grouped blocks).
+fn block_group_keyframe(data: &[u8], video_track: u64) -> Option<Vec<u8>> {
+    let mut block = None;
+    let mut has_ref = false;
+    for (cid, _, cd) in children(data) {
+        match cid {
+            ID_BLOCK => block = Some(cd),
+            ID_REFERENCE_BLOCK => has_ref = true,
+            _ => {}
+        }
+    }
+    if has_ref {
+        return None;
+    }
+    let (track, flags, frame) = block.and_then(parse_block)?;
+    if track != video_track {
+        return None;
+    }
+    unlaced_frame(flags, frame).map(<[u8]>::to_vec)
 }
 
 /// Split a (Simple)Block body into `(track_number, flags, frame_bytes)`: a size-style vint

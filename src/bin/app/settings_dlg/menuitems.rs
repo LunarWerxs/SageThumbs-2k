@@ -168,7 +168,10 @@ unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     }
     if code == NM_CUSTOMDRAW {
         if is_button_class((*nmhdr).hwndFrom) {
-            return LRESULT(restyle::draw_button_cd(hwnd, lparam.0 as *const NMCUSTOMDRAW));
+            return LRESULT(restyle::draw_button_cd(
+                hwnd,
+                lparam.0 as *const NMCUSTOMDRAW,
+            ));
         }
         return LRESULT(CDRF_DODEFAULT as isize);
     }

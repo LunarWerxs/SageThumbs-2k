@@ -23,6 +23,7 @@
 use std::io::{BufReader, Read, Seek};
 
 use exr::block::reader::ChunksReader;
+use exr::meta::header::Header;
 use exr::prelude::*;
 use image::DynamicImage;
 use windows::core::{Error, Result};
@@ -79,25 +80,11 @@ pub(crate) fn decode_scaled<R: Read + Seek>(src: R, target_edge: u32) -> Result<
     // R, G and B. Anything else (deep, luminance/chroma-only, subsampled) is left
     // to the existing tiers.
     let headers = reader.headers();
-    let layer = headers
-        .iter()
-        .position(|h| {
-            !h.deep
-                && ["R", "G", "B"]
-                    .iter()
-                    .all(|c| h.channels.find_index_of_channel(&Text::from(*c)).is_some())
-                && h.channels.list.iter().all(|c| c.sampling == Vec2(1, 1))
-        })
-        .ok_or_else(fail)?;
-    let header = headers.get(layer).ok_or_else(fail)?;
+    let (layer, header) = resolve_rgb_layer(headers).ok_or_else(fail)?;
 
     // Channel slots. R/G/B are guaranteed by the search above; A is optional and
     // defaults to fully opaque, matching the `image` tier.
-    let idx_of = |name: &str| header.channels.find_index_of_channel(&Text::from(name));
-    let (Some(ch_r), Some(ch_g), Some(ch_b)) = (idx_of("R"), idx_of("G"), idx_of("B")) else {
-        return Err(fail());
-    };
-    let ch_a = idx_of("A");
+    let (ch_r, ch_g, ch_b, ch_a) = resolve_channels(header).ok_or_else(fail)?;
     let sample_types: Vec<SampleType> =
         header.channels.list.iter().map(|c| c.sample_type).collect();
     let bytes_per_pixel = header.channels.bytes_per_pixel;
@@ -105,16 +92,7 @@ pub(crate) fn decode_scaled<R: Read + Seek>(src: R, target_edge: u32) -> Result<
     // The DISPLAY window is the image the viewer sees; the layer's own data window
     // may be offset from it (and may be smaller or larger).
     let display = header.shared_attributes.display_window;
-    let (w, h) = (display.size.width(), display.size.height());
-    if w == 0 || h == 0 || w > MAX_DIM as usize || h > MAX_DIM as usize {
-        return Err(fail());
-    }
-    if (w as u64).saturating_mul(h as u64) > MAX_PIXELS {
-        return Err(fail());
-    }
-    if header.chunk_count > MAX_CHUNKS {
-        return Err(fail());
-    }
+    let (w, h) = validate_layer_dims(header).ok_or_else(fail)?;
     let offset = header.own_attributes.layer_position - display.position;
     let (off_x, off_y) = (offset.x() as i64, offset.y() as i64);
 
@@ -161,12 +139,8 @@ pub(crate) fn decode_scaled<R: Read + Seek>(src: R, target_edge: u32) -> Result<
                 return Ok(());
             }
             for line in block.lines(&header.channels) {
-                let slot = match Some(line.location.channel) {
-                    c if c == Some(ch_r) => 0usize,
-                    c if c == Some(ch_g) => 1,
-                    c if c == Some(ch_b) => 2,
-                    c if c == ch_a => 3,
-                    _ => continue,
+                let Some(slot) = channel_slot(line.location.channel, ch_r, ch_g, ch_b, ch_a) else {
+                    continue;
                 };
                 let y = line.location.position.y() as i64 + off_y;
                 let Some(ty) = grid.sampled_row(y) else {
@@ -192,11 +166,94 @@ pub(crate) fn decode_scaled<R: Read + Seek>(src: R, target_edge: u32) -> Result<
         })
         .map_err(|_| fail())?;
 
+    Ok(image_from_accumulators(
+        tw,
+        th,
+        ch_a.is_some(),
+        &sums,
+        &counts,
+    ))
+}
+
+/// The non-deep part with R, G and B channels, un-subsampled: the same header choice
+/// the `image` crate's OpenEXR tier makes. Anything else (deep, luminance/chroma-only,
+/// subsampled) is left to the existing tiers.
+fn resolve_rgb_layer(headers: &[Header]) -> Option<(usize, &Header)> {
+    let layer = headers.iter().position(|h| {
+        !h.deep
+            && ["R", "G", "B"]
+                .iter()
+                .all(|c| h.channels.find_index_of_channel(&Text::from(*c)).is_some())
+            && h.channels.list.iter().all(|c| c.sampling == Vec2(1, 1))
+    })?;
+    Some((layer, headers.get(layer)?))
+}
+
+/// R/G/B channel indices (guaranteed present by [`resolve_rgb_layer`]'s search) plus the
+/// optional A channel, which defaults to fully opaque when absent, matching the `image`
+/// tier.
+fn resolve_channels(header: &Header) -> Option<(usize, usize, usize, Option<usize>)> {
+    let idx_of = |name: &str| header.channels.find_index_of_channel(&Text::from(name));
+    let (Some(ch_r), Some(ch_g), Some(ch_b)) = (idx_of("R"), idx_of("G"), idx_of("B")) else {
+        return None;
+    };
+    Some((ch_r, ch_g, ch_b, idx_of("A")))
+}
+
+/// The DISPLAY window's `(width, height)`, bounds-checked against [`MAX_DIM`],
+/// [`MAX_PIXELS`] and [`MAX_CHUNKS`]. The display window is the image the viewer sees;
+/// the layer's own data window may be offset from it (and may be smaller or larger).
+fn validate_layer_dims(header: &Header) -> Option<(usize, usize)> {
+    let display = header.shared_attributes.display_window;
+    let (w, h) = (display.size.width(), display.size.height());
+    if w == 0 || h == 0 || w > MAX_DIM as usize || h > MAX_DIM as usize {
+        return None;
+    }
+    if (w as u64).saturating_mul(h as u64) > MAX_PIXELS {
+        return None;
+    }
+    if header.chunk_count > MAX_CHUNKS {
+        return None;
+    }
+    Some((w, h))
+}
+
+/// Which accumulator slot (R=0, G=1, B=2, A=3) a decompressed line's channel index maps
+/// to, or `None` for a channel this tier doesn't accumulate.
+fn channel_slot(
+    channel: usize,
+    ch_r: usize,
+    ch_g: usize,
+    ch_b: usize,
+    ch_a: Option<usize>,
+) -> Option<usize> {
+    if channel == ch_r {
+        Some(0)
+    } else if channel == ch_g {
+        Some(1)
+    } else if channel == ch_b {
+        Some(2)
+    } else if Some(channel) == ch_a {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+/// Turn the per-cell sum/count accumulators into the final linear-float image: an
+/// unsampled cell (outside the data window, or a chunk the file never stored) stays
+/// zeroed, matching what the `image` tier leaves there. Alpha defaults to fully opaque
+/// when the source had no A channel.
+fn image_from_accumulators(
+    tw: usize,
+    th: usize,
+    has_alpha: bool,
+    sums: &[[f32; 4]],
+    counts: &[u32],
+) -> DynamicImage {
     let mut out = image::Rgba32FImage::new(tw as u32, th as u32);
     for (px, (sum, &n)) in out.pixels_mut().zip(sums.iter().zip(counts.iter())) {
         if n == 0 {
-            // Outside the data window (or a chunk the file never stored): the
-            // `image` tier leaves these zeroed too.
             continue;
         }
         let inv = 1.0 / n as f32;
@@ -204,10 +261,10 @@ pub(crate) fn decode_scaled<R: Read + Seek>(src: R, target_edge: u32) -> Result<
             sum[0] * inv,
             sum[1] * inv,
             sum[2] * inv,
-            if ch_a.is_some() { sum[3] * inv } else { 1.0 },
+            if has_alpha { sum[3] * inv } else { 1.0 },
         ];
     }
-    Ok(DynamicImage::ImageRgba32F(out))
+    DynamicImage::ImageRgba32F(out)
 }
 
 /// Read one channel's row of samples and box-average it into the target row.
