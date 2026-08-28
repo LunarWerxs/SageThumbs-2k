@@ -108,7 +108,7 @@ use super::fileops::{
     combine_to_cbz, combined_path, files_to_folder, reserve_dest, sanitize_component,
     sort_by_dimensions,
 };
-use super::menu::{EmailSize, RenamePattern, Transform, VerbAction, WallpaperMode};
+use super::menu::{CompressSize, EmailSize, RenamePattern, Transform, VerbAction, WallpaperMode};
 use crate::decode;
 
 // Don't flash a console window when we spawn `st2k.exe` from the shell host
@@ -332,73 +332,9 @@ pub fn run_action_detached(action: VerbAction, paths: Vec<String>, owner: Option
 /// [`ActionReport`] the Invoke callers surface to the user on failure.
 pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
     match action {
-        VerbAction::Convert(target) => {
-            // Counts over ALL paths (no image filter), so the attempted count matches
-            // its denominator. Each file is converted on the batch pool (routed to the
-            // st2k helper per file for crash isolation when present, else in-process —
-            // `convert_one(None, …)` IS `convert_file`). Results come back IN ORDER, so
-            // the first success matches the old first-in-iteration reveal target. The
-            // global magick cap bounds memory across the fanned-out st2k children.
-            let exe = st2k_exe();
-            let exe_ref = exe.as_deref();
-            let outs: Vec<PathBuf> =
-                crate::parallel::map(paths, |_, p| convert_one(exe_ref, p, target))
-                    .into_iter()
-                    .flatten()
-                    .collect();
-            let n = outs.len();
-            let first = outs.into_iter().next();
-            let mut r = if n < paths.len() {
-                crate::safety::log(&format!(
-                    "Convert to {}: only {}/{} succeeded",
-                    target.ext,
-                    n,
-                    paths.len()
-                ));
-                ActionReport::applied(paths.len(), n).with_note("conversion failed for some files")
-            } else {
-                ActionReport::applied(paths.len(), n)
-            };
-            r.output = first;
-            r
-        }
-        VerbAction::Transform(t) => {
-            // Routed per file to `st2k rotate` on the batch pool (else in-process
-            // `transform_file`); `transform_one` returns the produced path, so the
-            // ordered results give the same count + first-reveal as the old loop.
-            let exe = st2k_exe();
-            let exe_ref = exe.as_deref();
-            let outs: Vec<PathBuf> =
-                crate::parallel::map(paths, |_, p| transform_one(exe_ref, p, t))
-                    .into_iter()
-                    .flatten()
-                    .collect();
-            let n = outs.len();
-            let first = outs.into_iter().next();
-            let mut r = if n < paths.len() {
-                crate::safety::log(&format!("Transform: only {}/{} succeeded", n, paths.len()));
-                ActionReport::applied(paths.len(), n).with_note("rotate/flip failed for some files")
-            } else {
-                ActionReport::applied(paths.len(), n)
-            };
-            r.output = first;
-            r
-        }
-        VerbAction::Clipboard => {
-            // Clipboard holds one image. Use the first *image* in the selection
-            // (not paths.first()): the menu gate only requires *some* image, so
-            // for a mixed selection the first item may be a non-image.
-            match paths.iter().find(|p| is_image(p.as_str())) {
-                Some(p) => match copy_to_clipboard(p) {
-                    Ok(()) => ActionReport::applied(1, 1),
-                    Err(e) => {
-                        crate::safety::log(&format!("Copy to clipboard failed for {p}: {e:?}"));
-                        ActionReport::applied(1, 0).with_note("couldn't decode or copy the image")
-                    }
-                },
-                None => ActionReport::default(),
-            }
-        }
+        VerbAction::Convert(target) => handle_convert(paths, target),
+        VerbAction::Transform(t) => handle_transform(paths, t),
+        VerbAction::Clipboard => handle_clipboard(paths),
         VerbAction::Upload => {
             // Upload the selected image(s) to the keyless host in the companion app,
             // which copies the resulting link(s) to the clipboard. The originals are
@@ -406,94 +342,10 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             launch_upload(paths);
             ActionReport::delegated()
         }
-        VerbAction::Wallpaper(mode) => {
-            // One wallpaper. Use the first *image* in the selection (see above).
-            match paths.iter().find(|p| is_image(p.as_str())) {
-                Some(p) => {
-                    crate::safety::log_debug(&format!("Set wallpaper: using {p}"));
-                    match set_wallpaper(p, mode) {
-                        Ok(()) => ActionReport::applied(1, 1),
-                        Err(e) => {
-                            crate::safety::log(&format!("Set wallpaper failed for {p}: {e:?}"));
-                            ActionReport::applied(1, 0).with_note("couldn't set the wallpaper")
-                        }
-                    }
-                }
-                None => ActionReport::default(),
-            }
-        }
-        VerbAction::CombineToPdf => {
-            let imgs: Vec<String> = paths
-                .iter()
-                .filter(|p| is_image(p.as_str()))
-                .cloned()
-                .collect();
-            if imgs.is_empty() {
-                return ActionReport::default();
-            }
-            // Hold the slot for the whole write: it's what keeps a second, concurrent Combine
-            // from picking the same name and renaming over this one's finished file.
-            let slot = combined_path(&imgs[0], "pdf");
-            let out = slot.path().to_path_buf();
-            match crate::topdf::combine_to_pdf(&imgs, &out, crate::settings::jpeg_quality()) {
-                // `dropped` is how many of `imgs` were undecodable and so silently excluded
-                // from the PDF by `combine_to_pdf_paged`. This used to be invisible here — any
-                // `Ok(_)` reported a flat `applied(1, 1)` ("1 of 1 succeeded") no matter how many
-                // of a 10-image combine actually made it into the PDF. Report the REAL counts
-                // instead, so a partial combine surfaces via the normal `surface()` message box
-                // (which only pops for `failed() > 0`) rather than claiming full success.
-                Ok((_, dropped)) => {
-                    let attempted = imgs.len();
-                    let done = attempted.saturating_sub(dropped);
-                    let report = ActionReport {
-                        output: Some(out),
-                        ..ActionReport::applied(attempted, done)
-                    };
-                    if dropped > 0 {
-                        let plural = if dropped == 1 { "" } else { "s" };
-                        report.with_note(format!("{dropped} image{plural} couldn't be read"))
-                    } else {
-                        report
-                    }
-                }
-                Err(e) => {
-                    crate::safety::log(&format!("Combine to PDF failed: {e:?}"));
-                    ActionReport::applied(1, 0).with_note("couldn't build the PDF")
-                }
-            }
-        }
-        VerbAction::CombineToCbz => {
-            let imgs: Vec<String> = paths
-                .iter()
-                .filter(|p| is_image(p.as_str()))
-                .cloned()
-                .collect();
-            if imgs.is_empty() {
-                return ActionReport::default();
-            }
-            let slot = combined_path(&imgs[0], "cbz");
-            let out = slot.path().to_path_buf();
-            match combine_to_cbz(&imgs, &out) {
-                Ok(()) => ActionReport {
-                    output: Some(out),
-                    ..ActionReport::applied(1, 1)
-                },
-                Err(e) => {
-                    crate::safety::log(&format!("Combine to CBZ failed: {e:?}"));
-                    ActionReport::applied(1, 0).with_note("couldn't build the CBZ archive")
-                }
-            }
-        }
-        VerbAction::Ocr => match paths.iter().find(|p| is_image(p.as_str())) {
-            Some(p) => match crate::ocr::ocr_to_clipboard(p) {
-                Ok(()) => ActionReport::applied(1, 1),
-                Err(e) => {
-                    crate::safety::log(&format!("OCR failed for {p}: {e:?}"));
-                    ActionReport::applied(1, 0).with_note("couldn't read text from the image")
-                }
-            },
-            None => ActionReport::default(),
-        },
+        VerbAction::Wallpaper(mode) => handle_wallpaper(paths, mode),
+        VerbAction::CombineToPdf => handle_combine_to_pdf(paths),
+        VerbAction::CombineToCbz => handle_combine_to_cbz(paths),
+        VerbAction::Ocr => handle_ocr(paths),
         VerbAction::ImageInfo => {
             // Opens its own info window (a message box) — the app owns the UX.
             if let Some(p) = paths.iter().find(|p| is_image(p.as_str())) {
@@ -501,27 +353,7 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             }
             ActionReport::delegated()
         }
-        VerbAction::StripMetadata => {
-            // Per-image, on the batch pool. Routed per file to `st2k strip`
-            // (helper-if-present), else in-process `strip::strip_metadata`; `strip_one`
-            // returns the same success bool, so attempted/done/note are identical to
-            // the old sequential loop.
-            let exe = st2k_exe();
-            let exe_ref = exe.as_deref();
-            let imgs: Vec<String> = paths
-                .iter()
-                .filter(|p| is_image(p.as_str()))
-                .cloned()
-                .collect();
-            let oks = crate::parallel::map(&imgs, |_, p| strip_one(exe_ref, p));
-            let attempted = imgs.len();
-            let done = oks.iter().filter(|&&ok| ok).count();
-            let mut r = ActionReport::applied(attempted, done);
-            if done < attempted {
-                r.note = Some("couldn't rewrite the file without metadata".into());
-            }
-            r
-        }
+        VerbAction::StripMetadata => handle_strip_metadata(paths),
         VerbAction::ConvertDialog => {
             launch_convert_dialog(paths);
             ActionReport::delegated()
@@ -530,156 +362,357 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             launch_app(&[]);
             ActionReport::delegated()
         }
-        VerbAction::ResizeImg(r) => {
-            // Per-image, on the batch pool. Routed per file to `st2k convert --resize`
-            // (helper-if-present), else in-process `resize_file`; ordered results give
-            // the same attempted/done/note + first-reveal as the old loop.
-            let exe = st2k_exe();
-            let exe_ref = exe.as_deref();
-            let imgs: Vec<String> = paths
-                .iter()
-                .filter(|p| is_image(p.as_str()))
-                .cloned()
-                .collect();
-            let outs: Vec<PathBuf> = crate::parallel::map(&imgs, |_, p| resize_one(exe_ref, p, r))
-                .into_iter()
-                .flatten()
-                .collect();
-            let attempted = imgs.len();
-            let done = outs.len();
-            let first = outs.into_iter().next();
-            let mut rep = ActionReport::applied(attempted, done);
-            if done < attempted {
-                rep.note = Some("couldn't resize some images".into());
-            }
-            rep.output = first;
-            rep
-        }
-        VerbAction::ShrinkForEmail(size) => {
-            // Per-image, on the batch pool. Routed per file to `st2k convert --resize`
-            // (helper-if-present), else in-process `shrink_for_email`; ordered results
-            // give the same attempted/done/note + first-reveal as the old loop.
-            let exe = st2k_exe();
-            let exe_ref = exe.as_deref();
-            let imgs: Vec<String> = paths
-                .iter()
-                .filter(|p| is_image(p.as_str()))
-                .cloned()
-                .collect();
-            let outs: Vec<PathBuf> =
-                crate::parallel::map(&imgs, |_, p| shrink_one(exe_ref, p, size))
-                    .into_iter()
-                    .flatten()
-                    .collect();
-            let attempted = imgs.len();
-            let done = outs.len();
-            let first = outs.into_iter().next();
-            let mut rep = ActionReport::applied(attempted, done);
-            if done < attempted {
-                rep.note = Some("couldn't shrink some images".into());
-            }
-            rep.output = first;
-            rep
-        }
-        VerbAction::CompressToSize(size) => {
-            // Per-image, IN-PROCESS (not routed through the st2k helper — `helper.rs`
-            // is outside this change's file ownership, so no `compress_one` routing
-            // shim exists; see the module doc's routing list). Runs on the batch pool
-            // like the other per-image verbs above.
-            let imgs: Vec<String> = paths
-                .iter()
-                .filter(|p| is_image(p.as_str()))
-                .cloned()
-                .collect();
-            let target = size.target_bytes();
-            let outs: Vec<PathBuf> =
-                crate::parallel::map(&imgs, |_, p| compress_to_size(p, target).ok())
-                    .into_iter()
-                    .flatten()
-                    .collect();
-            let attempted = imgs.len();
-            let done = outs.len();
-            let first = outs.into_iter().next();
-            let mut rep = ActionReport::applied(attempted, done);
-            if done < attempted {
-                rep.note = Some("couldn't compress some images".into());
-            }
-            rep.output = first;
-            rep
-        }
+        VerbAction::ResizeImg(r) => handle_resize_img(paths, r),
+        VerbAction::ShrinkForEmail(size) => handle_shrink_for_email(paths, size),
+        VerbAction::CompressToSize(size) => handle_compress_to_size(paths, size),
         VerbAction::RenameByExif(pattern) => rename_by_exif(paths, pattern),
-        VerbAction::SetFolderIcon => {
-            // One folder icon. Use the first *image* in the selection.
-            match paths.iter().find(|p| is_image(p.as_str())) {
-                Some(p) => match set_folder_icon(p) {
-                    Ok(()) => ActionReport::applied(1, 1),
-                    Err(e) => {
-                        crate::safety::log(&format!("Set folder icon failed for {p}: {e:?}"));
-                        ActionReport::applied(1, 0).with_note("couldn't set the folder icon")
-                    }
-                },
-                None => ActionReport::default(),
-            }
-        }
+        VerbAction::SetFolderIcon => handle_set_folder_icon(paths),
         VerbAction::Eyedropper => {
             // A system-wide screen color picker (the selected file is irrelevant).
             let _ = paths;
             launch_app(&["--eyedropper"]);
             ActionReport::delegated()
         }
-        VerbAction::FilesToFolder => {
-            // Operates on ALL selected files (any type), not just images. One file
-            // → a folder named after it (no prompt); many → the name-prompt dialog
-            // in the companion app.
-            match paths.len() {
-                0 => ActionReport::default(),
-                1 => {
-                    let stem = Path::new(&paths[0])
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("New Folder");
-                    match files_to_folder(paths, stem) {
-                        Ok(_) => ActionReport::applied(1, 1),
-                        Err(e) => {
-                            crate::safety::log(&format!("Files to folder failed: {e:?}"));
-                            ActionReport::applied(1, 0)
-                                .with_note("couldn't create or fill the folder")
-                        }
-                    }
+        VerbAction::FilesToFolder => handle_files_to_folder(paths),
+        VerbAction::SortByDimensions => handle_sort_by_dimensions(paths),
+        VerbAction::TagsToFolders => handle_tags_to_folders(paths),
+    }
+}
+
+/// `VerbAction::Convert` — counts over ALL paths (no image filter), so the attempted
+/// count matches its denominator. Each file is converted on the batch pool (routed to
+/// the st2k helper per file for crash isolation when present, else in-process —
+/// `convert_one(None, …)` IS `convert_file`). Results come back IN ORDER, so the first
+/// success matches the old first-in-iteration reveal target. The global magick cap
+/// bounds memory across the fanned-out st2k children.
+fn handle_convert(paths: &[String], target: Target) -> ActionReport {
+    let exe = st2k_exe();
+    let exe_ref = exe.as_deref();
+    let outs: Vec<PathBuf> = crate::parallel::map(paths, |_, p| convert_one(exe_ref, p, target))
+        .into_iter()
+        .flatten()
+        .collect();
+    let n = outs.len();
+    let first = outs.into_iter().next();
+    let mut r = if n < paths.len() {
+        crate::safety::log(&format!(
+            "Convert to {}: only {}/{} succeeded",
+            target.ext,
+            n,
+            paths.len()
+        ));
+        ActionReport::applied(paths.len(), n).with_note("conversion failed for some files")
+    } else {
+        ActionReport::applied(paths.len(), n)
+    };
+    r.output = first;
+    r
+}
+
+/// `VerbAction::Transform` — routed per file to `st2k rotate` on the batch pool (else
+/// in-process `transform_file`); `transform_one` returns the produced path, so the
+/// ordered results give the same count + first-reveal as the old loop.
+fn handle_transform(paths: &[String], t: Transform) -> ActionReport {
+    let exe = st2k_exe();
+    let exe_ref = exe.as_deref();
+    let outs: Vec<PathBuf> = crate::parallel::map(paths, |_, p| transform_one(exe_ref, p, t))
+        .into_iter()
+        .flatten()
+        .collect();
+    let n = outs.len();
+    let first = outs.into_iter().next();
+    let mut r = if n < paths.len() {
+        crate::safety::log(&format!("Transform: only {}/{} succeeded", n, paths.len()));
+        ActionReport::applied(paths.len(), n).with_note("rotate/flip failed for some files")
+    } else {
+        ActionReport::applied(paths.len(), n)
+    };
+    r.output = first;
+    r
+}
+
+/// `VerbAction::Clipboard` — clipboard holds one image. Use the first *image* in the
+/// selection (not `paths.first()`): the menu gate only requires *some* image, so for a
+/// mixed selection the first item may be a non-image.
+fn handle_clipboard(paths: &[String]) -> ActionReport {
+    match paths.iter().find(|p| is_image(p.as_str())) {
+        Some(p) => match copy_to_clipboard(p) {
+            Ok(()) => ActionReport::applied(1, 1),
+            Err(e) => {
+                crate::safety::log(&format!("Copy to clipboard failed for {p}: {e:?}"));
+                ActionReport::applied(1, 0).with_note("couldn't decode or copy the image")
+            }
+        },
+        None => ActionReport::default(),
+    }
+}
+
+/// `VerbAction::Wallpaper` — one wallpaper. Use the first *image* in the selection (see
+/// [`handle_clipboard`]).
+fn handle_wallpaper(paths: &[String], mode: WallpaperMode) -> ActionReport {
+    match paths.iter().find(|p| is_image(p.as_str())) {
+        Some(p) => {
+            crate::safety::log_debug(&format!("Set wallpaper: using {p}"));
+            match set_wallpaper(p, mode) {
+                Ok(()) => ActionReport::applied(1, 1),
+                Err(e) => {
+                    crate::safety::log(&format!("Set wallpaper failed for {p}: {e:?}"));
+                    ActionReport::applied(1, 0).with_note("couldn't set the wallpaper")
                 }
-                _ => {
-                    launch_files_to_folder(paths);
-                    ActionReport::delegated()
+            }
+        }
+        None => ActionReport::default(),
+    }
+}
+
+/// `VerbAction::CombineToPdf`.
+fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
+    let imgs: Vec<String> = paths
+        .iter()
+        .filter(|p| is_image(p.as_str()))
+        .cloned()
+        .collect();
+    if imgs.is_empty() {
+        return ActionReport::default();
+    }
+    // Hold the slot for the whole write: it's what keeps a second, concurrent Combine
+    // from picking the same name and renaming over this one's finished file.
+    let slot = combined_path(&imgs[0], "pdf");
+    let out = slot.path().to_path_buf();
+    match crate::topdf::combine_to_pdf(&imgs, &out, crate::settings::jpeg_quality()) {
+        // `dropped` is how many of `imgs` were undecodable and so silently excluded
+        // from the PDF by `combine_to_pdf_paged`. This used to be invisible here — any
+        // `Ok(_)` reported a flat `applied(1, 1)` ("1 of 1 succeeded") no matter how many
+        // of a 10-image combine actually made it into the PDF. Report the REAL counts
+        // instead, so a partial combine surfaces via the normal `surface()` message box
+        // (which only pops for `failed() > 0`) rather than claiming full success.
+        Ok((_, dropped)) => {
+            let attempted = imgs.len();
+            let done = attempted.saturating_sub(dropped);
+            let report = ActionReport {
+                output: Some(out),
+                ..ActionReport::applied(attempted, done)
+            };
+            if dropped > 0 {
+                let plural = if dropped == 1 { "" } else { "s" };
+                report.with_note(format!("{dropped} image{plural} couldn't be read"))
+            } else {
+                report
+            }
+        }
+        Err(e) => {
+            crate::safety::log(&format!("Combine to PDF failed: {e:?}"));
+            ActionReport::applied(1, 0).with_note("couldn't build the PDF")
+        }
+    }
+}
+
+/// `VerbAction::CombineToCbz`.
+fn handle_combine_to_cbz(paths: &[String]) -> ActionReport {
+    let imgs: Vec<String> = paths
+        .iter()
+        .filter(|p| is_image(p.as_str()))
+        .cloned()
+        .collect();
+    if imgs.is_empty() {
+        return ActionReport::default();
+    }
+    let slot = combined_path(&imgs[0], "cbz");
+    let out = slot.path().to_path_buf();
+    match combine_to_cbz(&imgs, &out) {
+        Ok(()) => ActionReport {
+            output: Some(out),
+            ..ActionReport::applied(1, 1)
+        },
+        Err(e) => {
+            crate::safety::log(&format!("Combine to CBZ failed: {e:?}"));
+            ActionReport::applied(1, 0).with_note("couldn't build the CBZ archive")
+        }
+    }
+}
+
+/// `VerbAction::Ocr`.
+fn handle_ocr(paths: &[String]) -> ActionReport {
+    match paths.iter().find(|p| is_image(p.as_str())) {
+        Some(p) => match crate::ocr::ocr_to_clipboard(p) {
+            Ok(()) => ActionReport::applied(1, 1),
+            Err(e) => {
+                crate::safety::log(&format!("OCR failed for {p}: {e:?}"));
+                ActionReport::applied(1, 0).with_note("couldn't read text from the image")
+            }
+        },
+        None => ActionReport::default(),
+    }
+}
+
+/// `VerbAction::StripMetadata` — per-image, on the batch pool. Routed per file to
+/// `st2k strip` (helper-if-present), else in-process `strip::strip_metadata`;
+/// `strip_one` returns the same success bool, so attempted/done/note are identical to
+/// the old sequential loop.
+fn handle_strip_metadata(paths: &[String]) -> ActionReport {
+    let exe = st2k_exe();
+    let exe_ref = exe.as_deref();
+    let imgs: Vec<String> = paths
+        .iter()
+        .filter(|p| is_image(p.as_str()))
+        .cloned()
+        .collect();
+    let oks = crate::parallel::map(&imgs, |_, p| strip_one(exe_ref, p));
+    let attempted = imgs.len();
+    let done = oks.iter().filter(|&&ok| ok).count();
+    let mut r = ActionReport::applied(attempted, done);
+    if done < attempted {
+        r.note = Some("couldn't rewrite the file without metadata".into());
+    }
+    r
+}
+
+/// `VerbAction::ResizeImg` — per-image, on the batch pool. Routed per file to
+/// `st2k convert --resize` (helper-if-present), else in-process `resize_file`; ordered
+/// results give the same attempted/done/note + first-reveal as the old loop.
+fn handle_resize_img(paths: &[String], r: Resize) -> ActionReport {
+    let exe = st2k_exe();
+    let exe_ref = exe.as_deref();
+    let imgs: Vec<String> = paths
+        .iter()
+        .filter(|p| is_image(p.as_str()))
+        .cloned()
+        .collect();
+    let outs: Vec<PathBuf> = crate::parallel::map(&imgs, |_, p| resize_one(exe_ref, p, r))
+        .into_iter()
+        .flatten()
+        .collect();
+    let attempted = imgs.len();
+    let done = outs.len();
+    let first = outs.into_iter().next();
+    let mut rep = ActionReport::applied(attempted, done);
+    if done < attempted {
+        rep.note = Some("couldn't resize some images".into());
+    }
+    rep.output = first;
+    rep
+}
+
+/// `VerbAction::ShrinkForEmail` — per-image, on the batch pool. Routed per file to
+/// `st2k convert --resize` (helper-if-present), else in-process `shrink_for_email`;
+/// ordered results give the same attempted/done/note + first-reveal as the old loop.
+fn handle_shrink_for_email(paths: &[String], size: EmailSize) -> ActionReport {
+    let exe = st2k_exe();
+    let exe_ref = exe.as_deref();
+    let imgs: Vec<String> = paths
+        .iter()
+        .filter(|p| is_image(p.as_str()))
+        .cloned()
+        .collect();
+    let outs: Vec<PathBuf> = crate::parallel::map(&imgs, |_, p| shrink_one(exe_ref, p, size))
+        .into_iter()
+        .flatten()
+        .collect();
+    let attempted = imgs.len();
+    let done = outs.len();
+    let first = outs.into_iter().next();
+    let mut rep = ActionReport::applied(attempted, done);
+    if done < attempted {
+        rep.note = Some("couldn't shrink some images".into());
+    }
+    rep.output = first;
+    rep
+}
+
+/// `VerbAction::CompressToSize` — per-image, IN-PROCESS (not routed through the st2k
+/// helper — `helper.rs` is outside this change's file ownership, so no `compress_one`
+/// routing shim exists; see the module doc's routing list). Runs on the batch pool like
+/// the other per-image verbs above.
+fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport {
+    let imgs: Vec<String> = paths
+        .iter()
+        .filter(|p| is_image(p.as_str()))
+        .cloned()
+        .collect();
+    let target = size.target_bytes();
+    let outs: Vec<PathBuf> = crate::parallel::map(&imgs, |_, p| compress_to_size(p, target).ok())
+        .into_iter()
+        .flatten()
+        .collect();
+    let attempted = imgs.len();
+    let done = outs.len();
+    let first = outs.into_iter().next();
+    let mut rep = ActionReport::applied(attempted, done);
+    if done < attempted {
+        rep.note = Some("couldn't compress some images".into());
+    }
+    rep.output = first;
+    rep
+}
+
+/// `VerbAction::SetFolderIcon` — one folder icon. Use the first *image* in the
+/// selection.
+fn handle_set_folder_icon(paths: &[String]) -> ActionReport {
+    match paths.iter().find(|p| is_image(p.as_str())) {
+        Some(p) => match set_folder_icon(p) {
+            Ok(()) => ActionReport::applied(1, 1),
+            Err(e) => {
+                crate::safety::log(&format!("Set folder icon failed for {p}: {e:?}"));
+                ActionReport::applied(1, 0).with_note("couldn't set the folder icon")
+            }
+        },
+        None => ActionReport::default(),
+    }
+}
+
+/// `VerbAction::FilesToFolder` — operates on ALL selected files (any type), not just
+/// images. One file → a folder named after it (no prompt); many → the name-prompt
+/// dialog in the companion app.
+fn handle_files_to_folder(paths: &[String]) -> ActionReport {
+    match paths.len() {
+        0 => ActionReport::default(),
+        1 => {
+            let stem = Path::new(&paths[0])
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("New Folder");
+            match files_to_folder(paths, stem) {
+                Ok(_) => ActionReport::applied(1, 1),
+                Err(e) => {
+                    crate::safety::log(&format!("Files to folder failed: {e:?}"));
+                    ActionReport::applied(1, 0).with_note("couldn't create or fill the folder")
                 }
             }
         }
-        VerbAction::SortByDimensions => {
-            let (moved, skipped) = sort_by_dimensions(paths);
-            if skipped > 0 {
-                crate::safety::log(&format!(
-                    "Sort by dimensions: {moved} moved, {skipped} skipped (couldn't read size / move)"
-                ));
-                ActionReport::applied(moved + skipped, moved)
-                    .with_note(format!("{skipped} couldn't be read or moved"))
-            } else {
-                ActionReport::applied(moved + skipped, moved)
-            }
+        _ => {
+            launch_files_to_folder(paths);
+            ActionReport::delegated()
         }
-        VerbAction::TagsToFolders => {
-            // Audio-only; the dialog (destination/template/copy-move) lives in the
-            // companion app. No audio in the selection → nothing to do.
-            let audio: Vec<String> = paths
-                .iter()
-                .filter(|p| is_audio(p.as_str()))
-                .cloned()
-                .collect();
-            if audio.is_empty() {
-                ActionReport::default()
-            } else {
-                launch_tags_to_folders(&audio);
-                ActionReport::delegated()
-            }
-        }
+    }
+}
+
+/// `VerbAction::SortByDimensions`.
+fn handle_sort_by_dimensions(paths: &[String]) -> ActionReport {
+    let (moved, skipped) = sort_by_dimensions(paths);
+    if skipped > 0 {
+        crate::safety::log(&format!(
+            "Sort by dimensions: {moved} moved, {skipped} skipped (couldn't read size / move)"
+        ));
+        ActionReport::applied(moved + skipped, moved)
+            .with_note(format!("{skipped} couldn't be read or moved"))
+    } else {
+        ActionReport::applied(moved + skipped, moved)
+    }
+}
+
+/// `VerbAction::TagsToFolders` — audio-only; the dialog (destination/template/
+/// copy-move) lives in the companion app. No audio in the selection → nothing to do.
+fn handle_tags_to_folders(paths: &[String]) -> ActionReport {
+    let audio: Vec<String> = paths
+        .iter()
+        .filter(|p| is_audio(p.as_str()))
+        .cloned()
+        .collect();
+    if audio.is_empty() {
+        ActionReport::default()
+    } else {
+        launch_tags_to_folders(&audio);
+        ActionReport::delegated()
     }
 }
 
