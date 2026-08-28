@@ -872,6 +872,112 @@ pub(super) const V3_ALWAYS_HIDDEN: &[i32] = &[
     ID_MENU_RESET,
 ];
 
+/// Places one page row's control(s) and returns the handles that were placed (for the
+/// caller to push into `cats[ci]`) plus the `y` this row leaves behind — unchanged for
+/// every row except `Row::ListFill`, which grows to fill down to `content_bottom` and
+/// advances `y` past itself (the fixed-row table in `fixed_row_next_y` cannot know that
+/// height ahead of placing it, so it deliberately leaves this row's case out).
+unsafe fn place_row(
+    hwnd: HWND,
+    place: &impl Fn(i32, i32, i32, i32, i32) -> Option<HWND>,
+    row: Row,
+    y: i32,
+    first: bool,
+    content_bottom: i32,
+) -> (Vec<HWND>, i32) {
+    let mut placed = Vec::new();
+    match row {
+        Row::Head(id) => {
+            let row_y = y + if first { 0 } else { 20 };
+            if let Some(c) = place(id, PANE_X, row_y, PANE_W, 18) {
+                placed.push(c);
+            }
+        }
+        Row::Switch(id) => {
+            // Dependent switches sit indented under their parent, the same visual
+            // nesting first-run gives the PrtScn row — the indent plus the greying
+            // (`sync_dependent_switches`) is what makes the hierarchy legible.
+            let indent = if super::values::is_dependent_switch(id) {
+                18
+            } else {
+                0
+            };
+            if let Some(c) = place(id, PANE_X + indent, y, PANE_W - indent, 28) {
+                placed.push(c);
+            }
+        }
+        Row::Pair(lbl, field, fw, fh) => {
+            let lbl_dy = if fh > 40 { 4 } else { 2 };
+            if let Some(c) = place(lbl, PANE_X, y + lbl_dy, 220, 18) {
+                placed.push(c);
+            }
+            if let Some(c) = place(field, PANE_X + PANE_W - fw, y, fw, fh) {
+                placed.push(c);
+            }
+        }
+        Row::Btn(id, w) => {
+            if let Some(c) = place(id, PANE_X, y, w, 26) {
+                placed.push(c);
+            }
+        }
+        Row::BtnStatus(bid, bw, sid) => {
+            if let Some(c) = place(bid, PANE_X, y, bw, 26) {
+                placed.push(c);
+            }
+            // status right-aligned on the SAME row, in the space to the RIGHT of the
+            // button (non-overlapping, so the static's bg fill can't cover the button).
+            let sx = PANE_X + bw + 12;
+            if let Some(c) = place(sid, sx, y + 4, PANE_W - bw - 12, 18) {
+                placed.push(c);
+            }
+        }
+        Row::StatusBtn(sid, bid, bw) => {
+            // Mirror of BtnStatus: the status badge fills the LEFT, the button is
+            // right-aligned (the sync row — "● Synced" left, "Stop syncing" right).
+            if let Some(c) = place(sid, PANE_X, y + 4, PANE_W - bw - 12, 18) {
+                placed.push(c);
+            }
+            if let Some(c) = place(bid, PANE_X + PANE_W - bw, y, bw, 26) {
+                placed.push(c);
+            }
+        }
+        Row::Status(id) => {
+            if let Some(c) = place(id, PANE_X, y, PANE_W, 18) {
+                placed.push(c);
+            }
+        }
+        Row::Btn3(a, b, c3) => {
+            let gap = 8;
+            let w = (PANE_W - 2 * gap) / 3;
+            for (i, id) in [a, b, c3].into_iter().enumerate() {
+                if let Some(c) = place(id, PANE_X + i as i32 * (w + gap), y, w, 26) {
+                    placed.push(c);
+                }
+            }
+        }
+        Row::Wide(id) => {
+            // 18, not 24: a single-line EDIT top-aligns its text, so the taller box
+            // never centred the cue text — it just left 11px of dead space under it.
+            // With the 5/3 frame this is a 26px box with the ink centred.
+            if let Some(c) = place(id, PANE_X, y + 8, PANE_W, 18) {
+                placed.push(c);
+            }
+        }
+        Row::ListFill(id) => {
+            let h = (content_bottom - 8 - y).max(60);
+            if let Some(c) = place(id, PANE_X, y, PANE_W, h) {
+                // Square list corners poked out of the pane's rounded look
+                // (report: "a little edge of the table poking into the
+                // roundedness") — clip them.
+                super::restyle::round_corners(hwnd, c, 8);
+                placed.push(c);
+            }
+            return (placed, y + h + 4);
+        }
+    }
+    (placed, y)
+}
+
 pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     // Hide the old scrolling chrome + the headers the nav/page-header now title.
     for &id in V3_ALWAYS_HIDDEN {
@@ -962,95 +1068,9 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
         let mut first = true;
         for &row in cat_rows(ci) {
             let fixed_next_y = fixed_row_next_y(row, y, first);
-            match row {
-                Row::Head(id) => {
-                    let row_y = y + if first { 0 } else { 20 };
-                    if let Some(c) = place(id, PANE_X, row_y, PANE_W, 18) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::Switch(id) => {
-                    // Dependent switches sit indented under their parent, the same visual
-                    // nesting first-run gives the PrtScn row — the indent plus the greying
-                    // (`sync_dependent_switches`) is what makes the hierarchy legible.
-                    let indent = if super::values::is_dependent_switch(id) {
-                        18
-                    } else {
-                        0
-                    };
-                    if let Some(c) = place(id, PANE_X + indent, y, PANE_W - indent, 28) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::Pair(lbl, field, fw, fh) => {
-                    let lbl_dy = if fh > 40 { 4 } else { 2 };
-                    if let Some(c) = place(lbl, PANE_X, y + lbl_dy, 220, 18) {
-                        cats[ci].push(c);
-                    }
-                    if let Some(c) = place(field, PANE_X + PANE_W - fw, y, fw, fh) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::Btn(id, w) => {
-                    if let Some(c) = place(id, PANE_X, y, w, 26) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::BtnStatus(bid, bw, sid) => {
-                    if let Some(c) = place(bid, PANE_X, y, bw, 26) {
-                        cats[ci].push(c);
-                    }
-                    // status right-aligned on the SAME row, in the space to the RIGHT of the
-                    // button (non-overlapping, so the static's bg fill can't cover the button).
-                    let sx = PANE_X + bw + 12;
-                    if let Some(c) = place(sid, sx, y + 4, PANE_W - bw - 12, 18) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::StatusBtn(sid, bid, bw) => {
-                    // Mirror of BtnStatus: the status badge fills the LEFT, the button is
-                    // right-aligned (the sync row — "● Synced" left, "Stop syncing" right).
-                    if let Some(c) = place(sid, PANE_X, y + 4, PANE_W - bw - 12, 18) {
-                        cats[ci].push(c);
-                    }
-                    if let Some(c) = place(bid, PANE_X + PANE_W - bw, y, bw, 26) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::Status(id) => {
-                    if let Some(c) = place(id, PANE_X, y, PANE_W, 18) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::Btn3(a, b, c3) => {
-                    let gap = 8;
-                    let w = (PANE_W - 2 * gap) / 3;
-                    for (i, id) in [a, b, c3].into_iter().enumerate() {
-                        if let Some(c) = place(id, PANE_X + i as i32 * (w + gap), y, w, 26) {
-                            cats[ci].push(c);
-                        }
-                    }
-                }
-                Row::Wide(id) => {
-                    // 18, not 24: a single-line EDIT top-aligns its text, so the taller box
-                    // never centred the cue text — it just left 11px of dead space under it.
-                    // With the 5/3 frame this is a 26px box with the ink centred.
-                    if let Some(c) = place(id, PANE_X, y + 8, PANE_W, 18) {
-                        cats[ci].push(c);
-                    }
-                }
-                Row::ListFill(id) => {
-                    let h = (content_bottom - 8 - y).max(60);
-                    if let Some(c) = place(id, PANE_X, y, PANE_W, h) {
-                        // Square list corners poked out of the pane's rounded look
-                        // (report: "a little edge of the table poking into the
-                        // roundedness") — clip them.
-                        super::restyle::round_corners(hwnd, c, 8);
-                        cats[ci].push(c);
-                    }
-                    y += h + 4;
-                }
-            }
+            let (placed, new_y) = place_row(hwnd, &place, row, y, first, content_bottom);
+            cats[ci].extend(placed);
+            y = new_y;
             if let Some(next_y) = fixed_next_y {
                 y = next_y;
             }
