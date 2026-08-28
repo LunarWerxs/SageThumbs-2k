@@ -192,15 +192,25 @@ pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     Some(tris)
 }
 
-/// PLY: ASCII and binary_little_endian, the two variants real exporters write. Vertices
-/// must lead with float x/y/z properties; faces are `list <count-type> <index-type>`.
-pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
+struct PlyHeader {
+    ascii: bool,
+    n_verts: usize,
+    n_faces: usize,
+    /// Properties per vertex (x,y,z must be the first three).
+    vert_props: usize,
+    /// Byte offset of `end_header`'s own line ending, i.e. where the body starts.
+    head_end: usize,
+}
+
+/// Parse a PLY header (up to and including `end_header`). Vertices must lead with float
+/// x/y/z properties; anything else (big-endian, no xyz lead) is declined.
+fn parse_ply_header(bytes: &[u8]) -> Option<PlyHeader> {
     let head_end = find_sub(bytes, b"end_header")? + "end_header".len();
     let header = core::str::from_utf8(&bytes[..head_end]).ok()?;
     let mut ascii = true;
     let mut n_verts = 0usize;
     let mut n_faces = 0usize;
-    let mut vert_props = 0usize; // properties per vertex (x,y,z must be the first three)
+    let mut vert_props = 0usize;
     let mut in_vertex = false;
     let mut xyz_lead = 0usize;
     for line in header.lines() {
@@ -230,6 +240,112 @@ pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     if xyz_lead < 3 || n_verts == 0 || n_verts > MAX_VERTS || n_faces > MAX_TRIS * 2 {
         return None;
     }
+    Some(PlyHeader {
+        ascii,
+        n_verts,
+        n_faces,
+        vert_props,
+        head_end,
+    })
+}
+
+/// Read ASCII-encoded PLY vertex/face lines (the body after `end_header`) into triangles.
+fn read_ply_ascii(body: &[u8], n_verts: usize, n_faces: usize) -> Option<Vec<[f32; 9]>> {
+    let text = core::str::from_utf8(body).ok()?;
+    let mut lines = text.lines();
+    let mut verts: Vec<[f32; 3]> = Vec::with_capacity(n_verts.min(1 << 16));
+    let mut tris: Vec<[f32; 9]> = Vec::new();
+    for _ in 0..n_verts {
+        let mut it = lines.next()?.split_ascii_whitespace();
+        let v = [
+            it.next()?.parse::<f32>().ok()?,
+            it.next()?.parse::<f32>().ok()?,
+            it.next()?.parse::<f32>().ok()?,
+        ];
+        if v.iter().all(|c| c.is_finite()) {
+            verts.push(v);
+        } else {
+            verts.push([0.0; 3]);
+        }
+    }
+    for _ in 0..n_faces {
+        let Some(line) = lines.next() else { break };
+        let mut it = line.split_ascii_whitespace();
+        let cnt: usize = it.next().and_then(|t| t.parse().ok())?;
+        let idx: Vec<usize> = it
+            .take(cnt.min(64))
+            .filter_map(|t| t.parse::<usize>().ok())
+            .filter(|&i| i < verts.len())
+            .collect();
+        fan(&mut tris, &verts, &idx);
+        if tris.len() >= MAX_TRIS {
+            break;
+        }
+    }
+    Some(tris)
+}
+
+/// Read binary-little-endian PLY vertex/face data (the body after `end_header`) into
+/// triangles. Only all-float32 vertex properties are supported (the overwhelmingly common
+/// layout); anything else refuses rather than mis-striding. Faces assume `list uchar int`
+/// / `list uchar uint` (the standard); a first count byte outside 3..=64 refuses the whole
+/// face block rather than guessing a stride.
+fn read_ply_binary(
+    body: &[u8],
+    n_verts: usize,
+    n_faces: usize,
+    vert_props: usize,
+) -> Option<Vec<[f32; 9]>> {
+    let stride = vert_props.checked_mul(4)?;
+    let need = n_verts.checked_mul(stride)?;
+    let vbytes = body.get(..need)?;
+    let mut verts: Vec<[f32; 3]> = Vec::with_capacity(n_verts.min(1 << 16));
+    for i in 0..n_verts {
+        let o = i * stride;
+        let mut v = [0f32; 3];
+        for (j, c) in v.iter_mut().enumerate() {
+            *c = f32::from_le_bytes(vbytes.get(o + j * 4..o + j * 4 + 4)?.try_into().ok()?);
+        }
+        verts.push(if v.iter().all(|c| c.is_finite()) {
+            v
+        } else {
+            [0.0; 3]
+        });
+    }
+    let mut tris: Vec<[f32; 9]> = Vec::new();
+    let mut o = need;
+    for _ in 0..n_faces {
+        let cnt = *body.get(o)? as usize;
+        if !(3..=64).contains(&cnt) {
+            break;
+        }
+        o += 1;
+        let mut idx = Vec::with_capacity(cnt);
+        for _ in 0..cnt {
+            let i = u32::from_le_bytes(body.get(o..o + 4)?.try_into().ok()?) as usize;
+            if i < verts.len() {
+                idx.push(i);
+            }
+            o += 4;
+        }
+        fan(&mut tris, &verts, &idx);
+        if tris.len() >= MAX_TRIS {
+            break;
+        }
+    }
+    Some(tris)
+}
+
+/// PLY: ASCII and binary_little_endian, the two variants real exporters write. Vertices
+/// must lead with float x/y/z properties; faces are `list <count-type> <index-type>`.
+pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
+    let PlyHeader {
+        ascii,
+        n_verts,
+        n_faces,
+        vert_props,
+        head_end,
+    } = parse_ply_header(bytes)?;
     // Body starts after end_header's own line ending.
     let mut body = &bytes[head_end..];
     if body.starts_with(b"\r\n") {
@@ -237,80 +353,11 @@ pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     } else if body.starts_with(b"\n") {
         body = &body[1..];
     }
-    let mut verts: Vec<[f32; 3]> = Vec::with_capacity(n_verts.min(1 << 16));
-    let mut tris: Vec<[f32; 9]> = Vec::new();
     if ascii {
-        let text = core::str::from_utf8(body).ok()?;
-        let mut lines = text.lines();
-        for _ in 0..n_verts {
-            let mut it = lines.next()?.split_ascii_whitespace();
-            let v = [
-                it.next()?.parse::<f32>().ok()?,
-                it.next()?.parse::<f32>().ok()?,
-                it.next()?.parse::<f32>().ok()?,
-            ];
-            if v.iter().all(|c| c.is_finite()) {
-                verts.push(v);
-            } else {
-                verts.push([0.0; 3]);
-            }
-        }
-        for _ in 0..n_faces {
-            let Some(line) = lines.next() else { break };
-            let mut it = line.split_ascii_whitespace();
-            let cnt: usize = it.next().and_then(|t| t.parse().ok())?;
-            let idx: Vec<usize> = it
-                .take(cnt.min(64))
-                .filter_map(|t| t.parse::<usize>().ok())
-                .filter(|&i| i < verts.len())
-                .collect();
-            fan(&mut tris, &verts, &idx);
-            if tris.len() >= MAX_TRIS {
-                break;
-            }
-        }
+        read_ply_ascii(body, n_verts, n_faces)
     } else {
-        // Binary LE. Only all-float32 vertex properties are supported (the overwhelmingly
-        // common layout); anything else refuses rather than mis-strides.
-        let stride = vert_props.checked_mul(4)?;
-        let need = n_verts.checked_mul(stride)?;
-        let vbytes = body.get(..need)?;
-        for i in 0..n_verts {
-            let o = i * stride;
-            let mut v = [0f32; 3];
-            for (j, c) in v.iter_mut().enumerate() {
-                *c = f32::from_le_bytes(vbytes.get(o + j * 4..o + j * 4 + 4)?.try_into().ok()?);
-            }
-            verts.push(if v.iter().all(|c| c.is_finite()) {
-                v
-            } else {
-                [0.0; 3]
-            });
-        }
-        // Faces: assume `list uchar int` / `list uchar uint` (the standard). A first count
-        // byte outside 3..=64 refuses the whole face block rather than guessing a stride.
-        let mut o = need;
-        for _ in 0..n_faces {
-            let cnt = *body.get(o)? as usize;
-            if !(3..=64).contains(&cnt) {
-                break;
-            }
-            o += 1;
-            let mut idx = Vec::with_capacity(cnt);
-            for _ in 0..cnt {
-                let i = u32::from_le_bytes(body.get(o..o + 4)?.try_into().ok()?) as usize;
-                if i < verts.len() {
-                    idx.push(i);
-                }
-                o += 4;
-            }
-            fan(&mut tris, &verts, &idx);
-            if tris.len() >= MAX_TRIS {
-                break;
-            }
-        }
+        read_ply_binary(body, n_verts, n_faces, vert_props)
     }
-    Some(tris)
 }
 
 fn fan(tris: &mut Vec<[f32; 9]>, verts: &[[f32; 3]], idx: &[usize]) {
