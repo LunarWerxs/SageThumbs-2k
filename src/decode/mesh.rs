@@ -147,6 +147,46 @@ pub(crate) fn parse_ascii_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     Some(tris)
 }
 
+/// Parse one OBJ `v` line's x/y/z. `None` propagates as a whole-file parse
+/// failure, matching the original `?`-chained behaviour of `parse_obj`.
+fn parse_obj_vertex(rest: &str) -> Option<[f32; 3]> {
+    let mut it = rest.split_ascii_whitespace();
+    let (x, y, z) = (it.next()?, it.next()?, it.next()?);
+    Some([
+        x.parse::<f32>().ok()?,
+        y.parse::<f32>().ok()?,
+        z.parse::<f32>().ok()?,
+    ])
+}
+
+/// Parse one OBJ `f` line's vertex indices: `f v`, `f v/vt`, `f v/vt/vn`, `f v//vn` —
+/// 1-based, negative indices count from the end. Out-of-range/unparseable tokens drop.
+fn parse_obj_face_indices(rest: &str, n_verts: usize) -> Vec<usize> {
+    rest.split_ascii_whitespace()
+        .filter_map(|tok| {
+            let first = tok.split('/').next()?;
+            let i = first.parse::<i64>().ok()?;
+            let n = n_verts as i64;
+            let resolved = if i < 0 { n + i } else { i - 1 };
+            usize::try_from(resolved).ok().filter(|&r| r < n_verts)
+        })
+        .collect()
+}
+
+/// Fan-triangulate one face's indices into `tris`, stopping the instant
+/// MAX_TRIS is reached (mid-face, same cutoff point as before). Returns
+/// whether the cap was hit, so the caller can return early.
+fn push_obj_face(tris: &mut Vec<[f32; 9]>, verts: &[[f32; 3]], idx: &[usize]) -> bool {
+    for w in 1..idx.len().saturating_sub(1) {
+        let (a, b, c) = (verts[idx[0]], verts[idx[w]], verts[idx[w + 1]]);
+        tris.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]]);
+        if tris.len() >= MAX_TRIS {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     let text = core::str::from_utf8(bytes).ok()?;
     let mut verts: Vec<[f32; 3]> = Vec::new();
@@ -154,13 +194,7 @@ pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     for line in text.lines() {
         let l = line.trim_start();
         if let Some(rest) = l.strip_prefix("v ") {
-            let mut it = rest.split_ascii_whitespace();
-            let (x, y, z) = (it.next()?, it.next()?, it.next()?);
-            let v = [
-                x.parse::<f32>().ok()?,
-                y.parse::<f32>().ok()?,
-                z.parse::<f32>().ok()?,
-            ];
+            let v = parse_obj_vertex(rest)?;
             if v.iter().all(|c| c.is_finite()) {
                 verts.push(v);
             }
@@ -168,24 +202,9 @@ pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
                 return None;
             }
         } else if let Some(rest) = l.strip_prefix("f ") {
-            // `f v`, `f v/vt`, `f v/vt/vn`, `f v//vn`; indices 1-based, negatives count
-            // from the end. Polygons fan-triangulate.
-            let idx: Vec<usize> = rest
-                .split_ascii_whitespace()
-                .filter_map(|tok| {
-                    let first = tok.split('/').next()?;
-                    let i = first.parse::<i64>().ok()?;
-                    let n = verts.len() as i64;
-                    let resolved = if i < 0 { n + i } else { i - 1 };
-                    usize::try_from(resolved).ok().filter(|&r| r < verts.len())
-                })
-                .collect();
-            for w in 1..idx.len().saturating_sub(1) {
-                let (a, b, c) = (verts[idx[0]], verts[idx[w]], verts[idx[w + 1]]);
-                tris.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]]);
-                if tris.len() >= MAX_TRIS {
-                    return Some(tris);
-                }
+            let idx = parse_obj_face_indices(rest, verts.len());
+            if push_obj_face(&mut tris, &verts, &idx) {
+                return Some(tris);
             }
         }
     }
@@ -202,49 +221,82 @@ struct PlyHeader {
     head_end: usize,
 }
 
+/// Header parse state accumulated while walking PLY header lines.
+struct PlyHeaderState {
+    ascii: bool,
+    n_verts: usize,
+    n_faces: usize,
+    vert_props: usize,
+    in_vertex: bool,
+    xyz_lead: usize,
+}
+
+impl PlyHeaderState {
+    fn new() -> Self {
+        PlyHeaderState {
+            ascii: true,
+            n_verts: 0,
+            n_faces: 0,
+            vert_props: 0,
+            in_vertex: false,
+            xyz_lead: 0,
+        }
+    }
+
+    /// Fold one header line into the state. `None` on a big-endian `format` line or a
+    /// malformed element count — the whole header parse should decline.
+    fn handle_line(&mut self, l: &str) -> Option<()> {
+        if let Some(fmt) = l.strip_prefix("format ") {
+            if fmt.starts_with("binary_little_endian") {
+                self.ascii = false;
+            } else if !fmt.starts_with("ascii") {
+                return None; // big-endian: not worth the matrix of cases
+            }
+        } else if let Some(rest) = l.strip_prefix("element vertex ") {
+            self.n_verts = rest.trim().parse().ok()?;
+            self.in_vertex = true;
+        } else if let Some(rest) = l.strip_prefix("element face ") {
+            self.n_faces = rest.trim().parse().ok()?;
+            self.in_vertex = false;
+        } else if l.starts_with("element ") {
+            self.in_vertex = false;
+        } else if l.starts_with("property ") && self.in_vertex {
+            self.vert_props += 1;
+            let is_float_xyz = l.ends_with(" x") || l.ends_with(" y") || l.ends_with(" z");
+            if is_float_xyz && self.vert_props == self.xyz_lead + 1 && self.vert_props <= 3 {
+                self.xyz_lead += 1;
+            }
+        }
+        Some(())
+    }
+
+    /// `x`/`y`/`z` must be the first three vertex properties, the vertex count must be
+    /// in range, and the face count must fit the render's triangle budget.
+    fn is_valid(&self) -> bool {
+        self.xyz_lead >= 3
+            && self.n_verts > 0
+            && self.n_verts <= MAX_VERTS
+            && self.n_faces <= MAX_TRIS * 2
+    }
+}
+
 /// Parse a PLY header (up to and including `end_header`). Vertices must lead with float
 /// x/y/z properties; anything else (big-endian, no xyz lead) is declined.
 fn parse_ply_header(bytes: &[u8]) -> Option<PlyHeader> {
     let head_end = find_sub(bytes, b"end_header")? + "end_header".len();
     let header = core::str::from_utf8(&bytes[..head_end]).ok()?;
-    let mut ascii = true;
-    let mut n_verts = 0usize;
-    let mut n_faces = 0usize;
-    let mut vert_props = 0usize;
-    let mut in_vertex = false;
-    let mut xyz_lead = 0usize;
+    let mut state = PlyHeaderState::new();
     for line in header.lines() {
-        let l = line.trim();
-        if let Some(fmt) = l.strip_prefix("format ") {
-            if fmt.starts_with("binary_little_endian") {
-                ascii = false;
-            } else if !fmt.starts_with("ascii") {
-                return None; // big-endian: not worth the matrix of cases
-            }
-        } else if let Some(rest) = l.strip_prefix("element vertex ") {
-            n_verts = rest.trim().parse().ok()?;
-            in_vertex = true;
-        } else if let Some(rest) = l.strip_prefix("element face ") {
-            n_faces = rest.trim().parse().ok()?;
-            in_vertex = false;
-        } else if l.starts_with("element ") {
-            in_vertex = false;
-        } else if l.starts_with("property ") && in_vertex {
-            vert_props += 1;
-            let is_float_xyz = l.ends_with(" x") || l.ends_with(" y") || l.ends_with(" z");
-            if is_float_xyz && vert_props == xyz_lead + 1 && vert_props <= 3 {
-                xyz_lead += 1;
-            }
-        }
+        state.handle_line(line.trim())?;
     }
-    if xyz_lead < 3 || n_verts == 0 || n_verts > MAX_VERTS || n_faces > MAX_TRIS * 2 {
+    if !state.is_valid() {
         return None;
     }
     Some(PlyHeader {
-        ascii,
-        n_verts,
-        n_faces,
-        vert_props,
+        ascii: state.ascii,
+        n_verts: state.n_verts,
+        n_faces: state.n_faces,
+        vert_props: state.vert_props,
         head_end,
     })
 }
@@ -367,116 +419,145 @@ fn fan(tris: &mut Vec<[f32; 9]>, verts: &[[f32; 3]], idx: &[usize]) {
     }
 }
 
-/// Orthographic flat-shaded render with a z-buffer, supersampled [`SS`]× and box-averaged
-/// down. The camera angle is fixed (turntable −35°, tilt −25°): every mesh gets the same
+/// The fixed turntable/tilt view: turntable −35°, tilt −25°, giving every mesh the same
 /// three-quarter view a slicer's file list shows, which is what makes a FOLDER of models
-/// scannable.
-fn render(tris: &[[f32; 9]], edge: u32) -> image::RgbaImage {
-    let big = edge * SS;
-    // Rotate, then find the projected bounds so the model fills the frame.
-    let (ya, xa) = (-35f32.to_radians(), -25f32.to_radians());
-    let (sy, cy) = ya.sin_cos();
-    let (sx, cx) = xa.sin_cos();
-    let rot = |p: [f32; 3]| {
-        // Y-axis turntable, then X-axis tilt.
-        let (x1, z1) = (p[0] * cy + p[2] * sy, -p[0] * sy + p[2] * cy);
-        // STL/OBJ convention: Z is UP. Map model (x, y, z) -> view (x, z, y) first so the
-        // turntable spins around the model's vertical axis.
-        let (y2, z2) = (p[1] * cx - z1 * sx, p[1] * sx + z1 * cx);
+/// scannable. Precomputes its sin/cos once so `project` is a handful of multiplies.
+struct MeshView {
+    sy: f32,
+    cy: f32,
+    sx: f32,
+    cx: f32,
+}
+
+impl MeshView {
+    fn new() -> Self {
+        let (ya, xa) = (-35f32.to_radians(), -25f32.to_radians());
+        let (sy, cy) = ya.sin_cos();
+        let (sx, cx) = xa.sin_cos();
+        MeshView { sy, cy, sx, cx }
+    }
+
+    /// STL/OBJ convention: Z is UP. Pre-swap model (x, y, z) -> view (x, z, y) so the
+    /// turntable spins around the model's vertical axis, then Y-axis turntable, then
+    /// X-axis tilt.
+    fn project(&self, p: [f32; 3]) -> [f32; 3] {
+        let p = [p[0], p[2], p[1]];
+        let (x1, z1) = (
+            p[0] * self.cy + p[2] * self.sy,
+            -p[0] * self.sy + p[2] * self.cy,
+        );
+        let (y2, z2) = (p[1] * self.cx - z1 * self.sx, p[1] * self.sx + z1 * self.cx);
         [x1, y2, z2]
-    };
-    // Pre-swap axes so Z-up models stand upright: model (x,y,z) -> (x,z,y).
-    let up = |p: [f32; 3]| [p[0], p[2], p[1]];
+    }
+}
+
+/// Projected bounding box of every triangle's vertices, for framing the render.
+fn mesh_bounds(tris: &[[f32; 9]], view: &MeshView) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for t in tris {
         for v in t.chunks_exact(3) {
-            let p = rot(up([v[0], v[1], v[2]]));
+            let p = view.project([v[0], v[1], v[2]]);
             for a in 0..3 {
                 min[a] = min[a].min(p[a]);
                 max[a] = max[a].max(p[a]);
             }
         }
     }
-    let mut img = image::RgbaImage::new(edge, edge);
-    let span = (max[0] - min[0]).max(max[1] - min[1]);
-    if !span.is_finite() || span <= 0.0 {
-        return img; // fully transparent: a degenerate mesh renders as nothing, calmly
+    (min, max)
+}
+
+/// The fixed directional light, normalized.
+fn mesh_light() -> [f32; 3] {
+    let l = [-0.45f32, 0.55, 0.70];
+    let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
+    [l[0] / n, l[1] / n, l[2] / n]
+}
+
+/// Two-sided flat-shading luminance from a triangle's (already-projected) vertices —
+/// two-sided so inverted windings and open shells still light rather than going black.
+/// `None` for a degenerate (zero-area-normal) triangle.
+fn triangle_luminance(p: &[[f32; 3]], light: [f32; 3]) -> Option<u8> {
+    let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+    let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if nl <= 0.0 || !nl.is_finite() {
+        return None;
     }
-    let margin = 0.94f32;
-    let scale = big as f32 * margin / span;
-    let off = |a: usize| (big as f32 - (max[a] - min[a]) * scale) / 2.0 - min[a] * scale;
-    let (offx, offy) = (off(0), off(1));
+    let ndl = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs();
+    Some((48.0 + 195.0 * ndl).min(255.0) as u8)
+}
 
-    let mut zbuf = vec![f32::NEG_INFINITY; (big * big) as usize];
-    let mut shade = vec![0u8; (big * big) as usize];
-    let light = {
-        let l = [-0.45f32, 0.55, 0.70];
-        let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
-        [l[0] / n, l[1] / n, l[2] / n]
+/// Project, light, and rasterize (barycentric over its screen-space bounding box) one
+/// triangle into the shared z-buffer/shade buffers.
+#[allow(clippy::too_many_arguments)]
+fn rasterize_triangle(
+    t: &[f32; 9],
+    view: &MeshView,
+    scale: f32,
+    offx: f32,
+    offy: f32,
+    big: u32,
+    light: [f32; 3],
+    zbuf: &mut [f32],
+    shade: &mut [u8],
+) {
+    let p: Vec<[f32; 3]> = t
+        .chunks_exact(3)
+        .map(|v| view.project([v[0], v[1], v[2]]))
+        .collect();
+    // Screen coords (y flipped: +y up in view space, down in the image).
+    let sxy = |v: &[f32; 3]| {
+        (
+            v[0] * scale + offx,
+            big as f32 - (v[1] * scale + offy),
+            v[2],
+        )
     };
-    for t in tris {
-        let p: Vec<[f32; 3]> = t
-            .chunks_exact(3)
-            .map(|v| rot(up([v[0], v[1], v[2]])))
-            .collect();
-        // Screen coords (y flipped: +y up in view space, down in the image).
-        let sxy = |v: &[f32; 3]| {
-            (
-                v[0] * scale + offx,
-                big as f32 - (v[1] * scale + offy),
-                v[2],
-            )
-        };
-        let (x0, y0, z0) = sxy(&p[0]);
-        let (x1, y1, z1) = sxy(&p[1]);
-        let (x2, y2, z2) = sxy(&p[2]);
-        // Face normal (view space) for the lighting; two-sided so inverted windings and
-        // open shells still light rather than going black.
-        let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
-        let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
-        let n = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
-        let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-        if nl <= 0.0 || !nl.is_finite() {
-            continue; // degenerate triangle
-        }
-        let ndl = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs();
-        let lum = (48.0 + 195.0 * ndl).min(255.0) as u8;
+    let (x0, y0, z0) = sxy(&p[0]);
+    let (x1, y1, z1) = sxy(&p[1]);
+    let (x2, y2, z2) = sxy(&p[2]);
 
-        // Rasterize: barycentric over the bounding box.
-        let minx = x0.min(x1).min(x2).floor().max(0.0) as u32;
-        let maxx = (x0.max(x1).max(x2).ceil() as u32).min(big - 1);
-        let miny = y0.min(y1).min(y2).floor().max(0.0) as u32;
-        let maxy = (y0.max(y1).max(y2).ceil() as u32).min(big - 1);
-        let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-        if area.abs() < 1e-6 {
-            continue;
-        }
-        for py in miny..=maxy {
-            for px in minx..=maxx {
-                let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
-                let w0 = ((x2 - x1) * (fy - y1) - (y2 - y1) * (fx - x1)) / area;
-                let w1 = ((x0 - x2) * (fy - y2) - (y0 - y2) * (fx - x2)) / area;
-                let w2 = 1.0 - w0 - w1;
-                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
-                    continue;
-                }
-                let z = w0 * z0 + w1 * z1 + w2 * z2;
-                let i = (py * big + px) as usize;
-                if z > zbuf[i] {
-                    zbuf[i] = z;
-                    shade[i] = lum;
-                }
+    let Some(lum) = triangle_luminance(&p, light) else {
+        return; // degenerate triangle
+    };
+
+    let minx = x0.min(x1).min(x2).floor().max(0.0) as u32;
+    let maxx = (x0.max(x1).max(x2).ceil() as u32).min(big - 1);
+    let miny = y0.min(y1).min(y2).floor().max(0.0) as u32;
+    let maxy = (y0.max(y1).max(y2).ceil() as u32).min(big - 1);
+    let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if area.abs() < 1e-6 {
+        return;
+    }
+    for py in miny..=maxy {
+        for px in minx..=maxx {
+            let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+            let w0 = ((x2 - x1) * (fy - y1) - (y2 - y1) * (fx - x1)) / area;
+            let w1 = ((x0 - x2) * (fy - y2) - (y0 - y2) * (fx - x2)) / area;
+            let w2 = 1.0 - w0 - w1;
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                continue;
+            }
+            let z = w0 * z0 + w1 * z1 + w2 * z2;
+            let i = (py * big + px) as usize;
+            if z > zbuf[i] {
+                zbuf[i] = z;
+                shade[i] = lum;
             }
         }
     }
+}
 
-    // Box-average SS×SS down into the final image; coverage becomes alpha, so edges blend
-    // into whatever Explorer paints behind the thumbnail.
+/// Box-average SS×SS down into the final image; coverage becomes alpha, so edges blend
+/// into whatever Explorer paints behind the thumbnail.
+fn downsample_mesh(edge: u32, big: u32, zbuf: &[f32], shade: &[u8]) -> image::RgbaImage {
+    let mut img = image::RgbaImage::new(edge, edge);
     for y in 0..edge {
         for x in 0..edge {
             let (mut sum, mut cov) = (0u32, 0u32);
@@ -503,6 +584,35 @@ fn render(tris: &[[f32; 9]], edge: u32) -> image::RgbaImage {
         }
     }
     img
+}
+
+/// Orthographic flat-shaded render with a z-buffer, supersampled [`SS`]× and box-averaged
+/// down. See [`MeshView`] for the fixed camera angle.
+fn render(tris: &[[f32; 9]], edge: u32) -> image::RgbaImage {
+    let big = edge * SS;
+    let view = MeshView::new();
+    let (min, max) = mesh_bounds(tris, &view);
+
+    let span = (max[0] - min[0]).max(max[1] - min[1]);
+    if !span.is_finite() || span <= 0.0 {
+        // fully transparent: a degenerate mesh renders as nothing, calmly
+        return image::RgbaImage::new(edge, edge);
+    }
+    let margin = 0.94f32;
+    let scale = big as f32 * margin / span;
+    let off = |a: usize| (big as f32 - (max[a] - min[a]) * scale) / 2.0 - min[a] * scale;
+    let (offx, offy) = (off(0), off(1));
+
+    let mut zbuf = vec![f32::NEG_INFINITY; (big * big) as usize];
+    let mut shade = vec![0u8; (big * big) as usize];
+    let light = mesh_light();
+    for t in tris {
+        rasterize_triangle(
+            t, &view, scale, offx, offy, big, light, &mut zbuf, &mut shade,
+        );
+    }
+
+    downsample_mesh(edge, big, &zbuf, &shade)
 }
 
 /// The parser entry points by name, for the fuzz harness — same shape as `dds::fuzzapi`.
