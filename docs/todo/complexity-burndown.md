@@ -126,6 +126,39 @@ three bin/lib targets, 0 failed), `cargo clippy --bin SageThumbs2K -- -D warning
 fmt --all --check`, all clean. Same preflight-only caveat as tranche 3: a human UI
 click-through before the next release is still recommended.
 
+**Tranche 8 (2026-08-28): the next 9 worst rows cleared**, worst first: `run_action`
+(verbs/actions.rs) split into per-verb `handle_*` helpers (handle_convert,
+handle_transform, handle_clipboard, handle_wallpaper, handle_combine_to_pdf,
+handle_combine_to_cbz, handle_ocr, handle_strip_metadata, handle_resize_img,
+handle_shrink_for_email, handle_compress_to_size, handle_set_folder_icon,
+handle_files_to_folder, handle_sort_by_dimensions, handle_tags_to_folders), leaving
+`run_action` a thin 21-arm dispatcher; `daemon_wndproc` (screenshot/daemon.rs) split into
+named `on_*` message handlers, same wndproc-dispatcher method as tranches 3-5;
+`decode_any_with_wic_target` (decode.rs) split into per-tier helpers (try_jxl_tier,
+try_dds_tier, try_wic_thumbnail_fastpath, try_image_tier/`ImageTierOutcome`,
+try_raw_preview_tier, route_isobmff_wic_quirks/`WicQuirkRoute`,
+try_embedded_jpeg_last_resort); `stream_source_with_caps` (streamsrc.rs) split into
+try_video_source, try_exr_source, try_raw_preview_fast, oversized_rescue; `render`
+(preview/markdown.rs) split its `Block` match's five heaviest arms into paint_heading/
+paint_para/paint_code/paint_item/paint_quote (Rule/Table/Image stayed inline, already
+shallow); `apply_settings` (settings_dlg/values.rs) split into 10 per-section helpers
+(apply_thumbnail_and_badge_settings, apply_menu_and_misc_toggles,
+apply_menu_item_list_order, apply_menu_preview_and_theme, apply_screenshot_tool_prefs,
+apply_container_settings, apply_tuning_numbers, apply_screenshot_hotkeys,
+apply_quick_preview_and_screenshot_enable, apply_format_flags), called in the same order;
+`stamp` (badge.rs) split into badge_geometry (+`BadgeGeom`), put_px, paint_chip,
+paint_glyphs; `run_shot` (preview/shot.rs) split each `--shot` CLI option's handling into
+apply_wait_ms, apply_size, apply_wheel, apply_scroll, apply_sel, apply_find,
+bench_repaint_if_requested; `create` (preview/webview.rs, `html-preview` feature) split
+into resolve_profile_dir, create_environment, create_controller, apply_lockdown,
+install_local_mode_guards. No behavior change anywhere in this tranche. Verified per file
+(scoped `cargo test`/`cargo build`) and at the end: `cargo test --lib` (753 passed, 0
+failed, 18 ignored, matching baseline) and `cargo test --bin SageThumbs2K` (362 passed,
+363 with `--features html-preview`, the one extra being a feature-gated test), `cargo
+clippy --lib -- -D warnings` and `cargo clippy --bin SageThumbs2K -- -D warnings` both
+clean (also re-checked with `--features html-preview` for the webview.rs row, since that
+module only compiles under the feature), and `cargo fmt --all --check` clean.
+
 **Tranche 7 (2026-08-28): 6 more of the next-worst rows cleared.** `run` (cli.rs) split
 into `run_thumbnail`/`run_convert`/`run_batch`/`run_prebuild`/`run_rotate`/`run_compress`/
 `run_bench_decode`/`run_register` per-verb helpers plus a `prebuild_sizes` helper, leaving
@@ -208,22 +241,22 @@ before the next release is still recommended.
 |x| 108 | 36 | `apply_v3_layout` | src/bin/app/settings_dlg/navrail.rs:875 |
 |x| 107 | 36 | `jpeg_span` | src/container/util.rs:143 |
 |x| 106 | 29 | `decode_rle` | src/container/xcf.rs:756 |
-| | 93 | 48 | `run_action` | src/verbs/actions.rs:333 |
+|x| 93 | 48 | `run_action` | src/verbs/actions.rs:333 |
 |x| 92 | 52 | `run` | src/bin/cli.rs:140 |
 |x| 92 | 37 | `keyframe_mini_mp4` | src/flv.rs:56 |
 |x| 88 | 32 | `QueryContextMenu` | src/contextmenu/com.rs:52 |
 |x| 84 | 23 | `parse_packet` | src/decode/jp2/packet.rs:217 |
 |x| 76 | 32 | `decode_channels` | src/container/psp.rs:244 |
-| | 76 | 43 | `daemon_wndproc` | src/bin/app/screenshot/daemon.rs:456 |
-| | 75 | 42 | `decode_any_with_wic_target` | src/decode.rs:292 |
+|x| 76 | 43 | `daemon_wndproc` | src/bin/app/screenshot/daemon.rs:456 |
+|x| 75 | 42 | `decode_any_with_wic_target` | src/decode.rs:292 |
 |x| 74 | 47 | `dispatch` | src/bin/app/preview/mdhtml.rs:217 |
 |x| 72 | 37 | `recognize` | src/ocr.rs:130 |
-| | 69 | 37 | `stream_source_with_caps` | src/streamsrc.rs:105 |
-| | 68 | 33 | `render` | src/bin/app/preview/markdown.rs:265 |
-| | 68 | 40 | `apply_settings` | src/bin/app/settings_dlg/values.rs:414 |
-| | 66 | 30 | `stamp` | src/badge.rs:161 |
-| | 66 | 38 | `run_shot` | src/bin/app/preview/shot.rs:13 |
-| | 65 | 30 | `create` | src/bin/app/preview/webview.rs:43 |
+|x| 69 | 37 | `stream_source_with_caps` | src/streamsrc.rs:105 |
+|x| 68 | 33 | `render` | src/bin/app/preview/markdown.rs:265 |
+|x| 68 | 40 | `apply_settings` | src/bin/app/settings_dlg/values.rs:414 |
+|x| 66 | 30 | `stamp` | src/badge.rs:161 |
+|x| 66 | 38 | `run_shot` | src/bin/app/preview/shot.rs:13 |
+|x| 65 | 30 | `create` | src/bin/app/preview/webview.rs:43 |
 | | 64 | 28 | `paint_into` | src/bin/app/preview/paint.rs:141 |
 | | 64 | 28 | `tokenize` | src/bin/app/preview/highlight/lex.rs:199 |
 | | 63 | 20 | `load_sync` | src/bin/app/preview/loader.rs:229 |
