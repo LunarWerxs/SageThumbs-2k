@@ -443,20 +443,19 @@ fn fourcc_layout(fourcc: &[u8], alpha_mode: &mut u32) -> Option<Layout> {
 /// by one — BC6H is 94..=96 and BC7 is 97..=99, NOT the 94..=95/96..=98 an older
 /// copy of this table in `strip/ddsinfo.rs` used to claim.
 fn dxgi_layout(dxgi: u32) -> Option<Layout> {
+    dxgi_layout_wide_channels(dxgi)
+        .or_else(|| dxgi_layout_narrow_channels(dxgi))
+        .or_else(|| dxgi_layout_bgra_and_block(dxgi))
+}
+
+/// The 32/64-bit-per-channel and two/four-channel formats: `DXGI_FORMAT` 1..=41.
+fn dxgi_layout_wide_channels(dxgi: u32) -> Option<Layout> {
     /// `R8G8B8A8` and friends: channel N occupies byte N.
     const RGBA8: Masks = Masks {
         bpp: 32,
         r: 0x0000_00FF,
         g: 0x0000_FF00,
         b: 0x00FF_0000,
-        a: 0xFF00_0000,
-        grey: false,
-    };
-    const BGRA8: Masks = Masks {
-        bpp: 32,
-        r: 0x00FF_0000,
-        g: 0x0000_FF00,
-        b: 0x0000_00FF,
         a: 0xFF00_0000,
         grey: false,
     };
@@ -491,6 +490,15 @@ fn dxgi_layout(dxgi: u32) -> Option<Layout> {
         }),
         37 => Layout::Snorm16(2),    // R16G16_SNORM
         39..=41 => Layout::Float(1), // R32_FLOAT / D32_FLOAT
+        _ => return None,
+    };
+    Some(l)
+}
+
+/// The single-and-double-byte-channel formats and the block-compressed formats
+/// that don't need the BGRA masks: `DXGI_FORMAT` 48..=84.
+fn dxgi_layout_narrow_channels(dxgi: u32) -> Option<Layout> {
+    let l = match dxgi {
         48..=49 => Layout::Masks(Masks {
             // R8G8_UNORM
             bpp: 16,
@@ -532,6 +540,23 @@ fn dxgi_layout(dxgi: u32) -> Option<Layout> {
         81 => Layout::Block(Block::Bc4 { signed: true }),
         82..=83 => Layout::Block(Block::Bc5 { signed: false }),
         84 => Layout::Block(Block::Bc5 { signed: true }),
+        _ => return None,
+    };
+    Some(l)
+}
+
+/// The BGRA-ordered 16/32-bit formats, the HDR block formats, and the legacy
+/// tail: `DXGI_FORMAT` 85..=115.
+fn dxgi_layout_bgra_and_block(dxgi: u32) -> Option<Layout> {
+    const BGRA8: Masks = Masks {
+        bpp: 32,
+        r: 0x00FF_0000,
+        g: 0x0000_FF00,
+        b: 0x0000_00FF,
+        a: 0xFF00_0000,
+        grey: false,
+    };
+    let l = match dxgi {
         85 => Layout::Masks(Masks {
             // B5G6R5
             bpp: 16,
