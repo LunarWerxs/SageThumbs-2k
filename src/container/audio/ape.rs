@@ -35,6 +35,57 @@ pub(super) fn apev2_cover<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     None
 }
 
+/// Read one `size(4) flags(4) key\0 value[size]` APEv2 item starting at `p`. Returns the item's
+/// key, value, and the offset just past it, or `None` on a truncated/malformed item.
+fn read_apev2_item(buf: &[u8], p: usize) -> Option<(&[u8], &[u8], usize)> {
+    let vsize = le32(buf, p)? as usize;
+    let mut p = p.checked_add(8)?; // size(4) + flags(4)
+    let kstart = p;
+    while p < buf.len() && buf[p] != 0 {
+        p += 1;
+    }
+    let key = buf.get(kstart..p)?;
+    p = p.checked_add(1)?; // skip the key's NUL
+    let value = buf.get(p..p.checked_add(vsize)?)?;
+    p += vsize;
+    Some((key, value, p))
+}
+
+/// Front beats back: rank 0 for "Cover Art (Front)", 1 for "Cover Art (Back)", `None` for
+/// anything else.
+fn apev2_cover_rank(key: &[u8]) -> Option<u8> {
+    if key.eq_ignore_ascii_case(b"cover art (front)") {
+        Some(0)
+    } else if key.eq_ignore_ascii_case(b"cover art (back)") {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Decode one cover item's `description\0imagedata` value and, if it validates, replace `best`
+/// when it outranks (or, within the same rank, outsizes) the current candidate. A malformed or
+/// oversized item is skipped, not fatal: the tag may still hold a good one further down.
+fn consider_apev2_cover(best: &mut Option<(u8, Vec<u8>)>, rank: u8, value: &[u8]) {
+    let Some(img) = value
+        .iter()
+        .position(|&b| b == 0)
+        .and_then(|nul| value.get(nul + 1..))
+    else {
+        return;
+    };
+    if !crate::container::looks_like_raster(img) || img.len() as u64 > crate::container::MAX_COVER {
+        return;
+    }
+    let better = match best {
+        None => true,
+        Some((r, cur)) => rank < *r || (rank == *r && img.len() > cur.len()),
+    };
+    if better {
+        *best = Some((rank, img.to_vec()));
+    }
+}
+
 /// Walk APEv2 items (`u32 size, u32 flags, key\0, value[size]`) for a cover-art
 /// binary item; its value is `description\0imagedata`.
 ///
@@ -46,43 +97,10 @@ fn parse_apev2_cover(buf: &[u8], count: usize) -> Option<Vec<u8>> {
     let mut best: Option<(u8, Vec<u8>)> = None;
     let mut p = 0usize;
     for _ in 0..count.min(512) {
-        let vsize = le32(buf, p)? as usize;
-        p = p.checked_add(8)?; // size(4) + flags(4)
-        let kstart = p;
-        while p < buf.len() && buf[p] != 0 {
-            p += 1;
-        }
-        let key = buf.get(kstart..p)?;
-        p = p.checked_add(1)?; // skip the key's NUL
-        let value = buf.get(p..p.checked_add(vsize)?)?;
-        p += vsize;
-        let rank = if key.eq_ignore_ascii_case(b"cover art (front)") {
-            Some(0u8)
-        } else if key.eq_ignore_ascii_case(b"cover art (back)") {
-            Some(1u8)
-        } else {
-            None
-        };
-        if let Some(rank) = rank {
-            // description\0image — a malformed item is skipped, not fatal: the tag may
-            // still hold a good one further down.
-            if let Some(img) = value
-                .iter()
-                .position(|&b| b == 0)
-                .and_then(|nul| value.get(nul + 1..))
-            {
-                if crate::container::looks_like_raster(img)
-                    && img.len() as u64 <= crate::container::MAX_COVER
-                {
-                    let better = match &best {
-                        None => true,
-                        Some((r, cur)) => rank < *r || (rank == *r && img.len() > cur.len()),
-                    };
-                    if better {
-                        best = Some((rank, img.to_vec()));
-                    }
-                }
-            }
+        let (key, value, next_p) = read_apev2_item(buf, p)?;
+        p = next_p;
+        if let Some(rank) = apev2_cover_rank(key) {
+            consider_apev2_cover(&mut best, rank, value);
         }
     }
     best.map(|(_, img)| img)

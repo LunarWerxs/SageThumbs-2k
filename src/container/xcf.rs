@@ -596,24 +596,7 @@ fn decode_level<R: Read + Seek>(
         return None;
     }
 
-    // The level header plus one pointer per tile, read in one go. At MAX_TILES this is the
-    // largest single read the decoder makes, and it is still bounded and proportional to an
-    // image we have already agreed to draw.
-    let ptr_bytes = if pro.wide { 8 } else { 4 };
-    let list_len = 8usize.checked_add(ntiles.checked_mul(ptr_bytes)?)?;
-    read_at(r, off, list_len, win)?;
-    let mut rd = Rd { d: win, p: 0 };
-    if rd.u32()? != lw || rd.u32()? != lh {
-        return None; // first level must match the layer size
-    }
-    let mut tile_ptrs = Vec::with_capacity(ntiles);
-    for _ in 0..ntiles {
-        let tptr = rd.ptr(pro.wide)?;
-        if tptr == 0 {
-            return None; // fewer tile pointers than the grid demands → malformed
-        }
-        tile_ptrs.push(tptr);
-    }
+    let tile_ptrs = read_level_tile_pointers(r, pro, off, lw, lh, ntiles, win)?;
 
     let (rw, rh) = (lw.div_ceil(step), lh.div_ceil(step));
     let mut out = RgbaImage::new(rw, rh);
@@ -633,71 +616,155 @@ fn decode_level<R: Read + Seek>(
         let ty = (ti as u32 / tiles_x) * TILE;
         let tw = (lw - tx).min(TILE);
         let th = (lh - ty).min(TILE);
-        let need = (tw * th * bpp) as usize;
-        // How many ENCODED bytes one tile can occupy. Uncompressed is exactly the pixel
-        // count; RLE's worst case is an opcode byte per literal byte, so twice that bounds
-        // it; zlib on incompressible input carries a small deflate overhead, which the same
-        // doubling covers. An over-generous window costs a short read and nothing else —
-        // every decoder below stops when its output is full, not when its input runs out.
-        let window = need.checked_mul(2)?.checked_add(64)?;
-        // The NEXT tile's pointer is where this tile's record ends, so when the tiles are
-        // stored in ascending order (which is what GIMP writes) that delta is the record's
-        // EXACT encoded length. Reading it instead of the worst-case window is the difference
-        // between copying ~32 KB and ~2 KB per tile, and a big layered file has tens of
-        // thousands of tiles. Only ever SHRINKS the read and only when the delta is a
-        // sane forward step, so an out-of-order or hand-crafted file keeps the old window
-        // and the old behaviour.
-        let window = match tile_ptrs.get(ti + 1) {
-            Some(&next) if next > tptr => {
-                let span = (next - tptr).min(window as u64) as usize;
-                if span >= 8 {
-                    span
-                } else {
-                    window
-                }
-            }
-            _ => window,
-        };
-        read_at(r, tptr, window, win)?;
-        let buf = scratch.get_mut(..need)?;
-        decode_tile(win, 0, pro.compression, bpp, tw, th, buf)?;
-        if step > 1 {
-            blit_tile_scaled(
-                &mut acc,
-                rw,
-                rh,
-                buf,
-                tx,
-                ty,
-                tw,
-                th,
-                bpp,
-                bps,
-                head.ltype,
-                pro.prec,
-                &pro.colormap,
-                step,
-            );
-        } else {
-            blit_tile(
-                &mut out,
-                buf,
-                tx,
-                ty,
-                tw,
-                th,
-                bpp,
-                bps,
-                head.ltype,
-                pro.prec,
-                &pro.colormap,
-            );
-        }
+        decode_and_blit_tile(
+            r,
+            head,
+            pro,
+            &tile_ptrs,
+            ti,
+            tptr,
+            tx,
+            ty,
+            tw,
+            th,
+            bpp,
+            bps,
+            step,
+            rw,
+            rh,
+            win,
+            &mut scratch,
+            &mut out,
+            &mut acc,
+        )?;
     }
     if step > 1 {
         resolve_accumulator(&mut out, &acc);
     }
     Some(out)
+}
+
+/// Read a level's header (must match the layer's `(lw, lh)`) plus its `ntiles` tile pointers, in
+/// one bounded read. At `MAX_TILES` this is the largest single read the decoder makes, and it is
+/// still bounded and proportional to an image we have already agreed to draw.
+fn read_level_tile_pointers<R: Read + Seek>(
+    r: &mut R,
+    pro: &Prologue,
+    off: u64,
+    lw: u32,
+    lh: u32,
+    ntiles: usize,
+    win: &mut Vec<u8>,
+) -> Option<Vec<u64>> {
+    let ptr_bytes = if pro.wide { 8 } else { 4 };
+    let list_len = 8usize.checked_add(ntiles.checked_mul(ptr_bytes)?)?;
+    read_at(r, off, list_len, win)?;
+    let mut rd = Rd { d: win, p: 0 };
+    if rd.u32()? != lw || rd.u32()? != lh {
+        return None; // first level must match the layer size
+    }
+    let mut tile_ptrs = Vec::with_capacity(ntiles);
+    for _ in 0..ntiles {
+        let tptr = rd.ptr(pro.wide)?;
+        if tptr == 0 {
+            return None; // fewer tile pointers than the grid demands → malformed
+        }
+        tile_ptrs.push(tptr);
+    }
+    Some(tile_ptrs)
+}
+
+/// How many ENCODED bytes one tile can occupy. Uncompressed is exactly the pixel count; RLE's
+/// worst case is an opcode byte per literal byte, so twice that bounds it; zlib on incompressible
+/// input carries a small deflate overhead, which the same doubling covers. An over-generous
+/// window costs a short read and nothing else — every decoder stops when its output is full, not
+/// when its input runs out.
+///
+/// The NEXT tile's pointer is where this tile's record ends, so when the tiles are stored in
+/// ascending order (which is what GIMP writes) that delta is the record's EXACT encoded length.
+/// Reading it instead of the worst-case window is the difference between copying ~32 KB and ~2 KB
+/// per tile, and a big layered file has tens of thousands of tiles. Only ever SHRINKS the read
+/// and only when the delta is a sane forward step, so an out-of-order or hand-crafted file keeps
+/// the old window and the old behaviour.
+fn tile_read_window(tile_ptrs: &[u64], ti: usize, tptr: u64, need: usize) -> Option<usize> {
+    let window = need.checked_mul(2)?.checked_add(64)?;
+    Some(match tile_ptrs.get(ti + 1) {
+        Some(&next) if next > tptr => {
+            let span = (next - tptr).min(window as u64) as usize;
+            if span >= 8 {
+                span
+            } else {
+                window
+            }
+        }
+        _ => window,
+    })
+}
+
+/// Read, decode, and blit (or accumulate, at `step > 1`) one tile into `out`/`acc`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one per already-threaded caller value"
+)]
+fn decode_and_blit_tile<R: Read + Seek>(
+    r: &mut R,
+    head: &LayerHead,
+    pro: &Prologue,
+    tile_ptrs: &[u64],
+    ti: usize,
+    tptr: u64,
+    tx: u32,
+    ty: u32,
+    tw: u32,
+    th: u32,
+    bpp: u32,
+    bps: u32,
+    step: u32,
+    rw: u32,
+    rh: u32,
+    win: &mut Vec<u8>,
+    scratch: &mut [u8],
+    out: &mut RgbaImage,
+    acc: &mut [[u32; 5]],
+) -> Option<()> {
+    let need = (tw * th * bpp) as usize;
+    let window = tile_read_window(tile_ptrs, ti, tptr, need)?;
+    read_at(r, tptr, window, win)?;
+    let buf = scratch.get_mut(..need)?;
+    decode_tile(win, 0, pro.compression, bpp, tw, th, buf)?;
+    if step > 1 {
+        blit_tile_scaled(
+            acc,
+            rw,
+            rh,
+            buf,
+            tx,
+            ty,
+            tw,
+            th,
+            bpp,
+            bps,
+            head.ltype,
+            pro.prec,
+            &pro.colormap,
+            step,
+        );
+    } else {
+        blit_tile(
+            out,
+            buf,
+            tx,
+            ty,
+            tw,
+            th,
+            bpp,
+            bps,
+            head.ltype,
+            pro.prec,
+            &pro.colormap,
+        );
+    }
+    Some(())
 }
 
 /// Turn the premultiplied sums back into straight RGBA8.
