@@ -89,9 +89,24 @@ pub(crate) fn assemble(lines: &[Vec<WordBox>]) -> Option<String> {
         return None;
     }
 
-    // ---- 1. Rebuild the VISUAL rows: sort by vertical center, sweep-cluster, then sort
-    // each row by x. This is the step that undoes the engine's column-major line split.
-    let mut order: Vec<&WordBox> = words.clone();
+    let rows = rebuild_visual_rows(&words, h_med)?;
+    let g_med = typical_space_width(&rows, h_med);
+    let columns = find_columns(&rows, h_med, g_med)?;
+    assemble_rows(&rows, &columns, h_med, g_med)
+}
+
+/// The horizontal gap between two words that sit next to each other on a row (negative when
+/// they overlap). The base measurement every gutter/space decision below is built from.
+fn gap_of(a: &WordBox, b: &WordBox) -> f32 {
+    b.x - (a.x + a.w)
+}
+
+/// Step 1: rebuild the VISUAL rows — sort by vertical center, sweep-cluster, then sort each
+/// row by x. This is the step that undoes the engine's column-major line split. `None` if
+/// fewer than [`MIN_SUPPORT`] rows result (mirrors `rows.last_mut()`'s `?`, which cannot
+/// actually miss since a row is always pushed first, but keeps the original safety net).
+fn rebuild_visual_rows<'a>(words: &[&'a WordBox], h_med: f32) -> Option<Vec<Vec<&'a WordBox>>> {
+    let mut order: Vec<&WordBox> = words.to_vec();
     order.sort_by(|a, b| {
         (a.y + a.h / 2.0)
             .partial_cmp(&(b.y + b.h / 2.0))
@@ -118,14 +133,16 @@ pub(crate) fn assemble(lines: &[Vec<WordBox>]) -> Option<String> {
     if rows.len() < MIN_SUPPORT {
         return None;
     }
+    Some(rows)
+}
 
-    // ---- 2. The recognition's typical SPACE width — from sub-gutter gaps only. The median
-    // of ALL gaps is wrong for exactly the target input: in a small table the gutters
-    // OUTNUMBER the spaces, so the overall median IS a gutter (caught by the unit tests on
-    // this module's first version). With no plausible spaces at all, height alone governs.
-    let gap_of = |a: &WordBox, b: &WordBox| b.x - (a.x + a.w);
+/// Step 2: the recognition's typical SPACE width — from sub-gutter gaps only. The median of
+/// ALL gaps is wrong for exactly the target input: in a small table the gutters OUTNUMBER
+/// the spaces, so the overall median IS a gutter (caught by the unit tests on this module's
+/// first version). With no plausible spaces at all, height alone governs (returns 0.0).
+fn typical_space_width(rows: &[Vec<&WordBox>], h_med: f32) -> f32 {
     let mut space_gaps: Vec<f32> = Vec::new();
-    for row in &rows {
+    for row in rows {
         for pair in row.windows(2) {
             let gap = gap_of(pair[0], pair[1]);
             if gap < GAP_MIN_HEIGHTS * h_med {
@@ -133,14 +150,17 @@ pub(crate) fn assemble(lines: &[Vec<WordBox>]) -> Option<String> {
             }
         }
     }
-    let g_med = median(&space_gaps).unwrap_or(0.0).max(0.0);
-    let wide = |gap: f32| gap >= GAP_MIN_HEIGHTS * h_med && gap >= GAP_MIN_MEDIAN * g_med;
+    median(&space_gaps).unwrap_or(0.0).max(0.0)
+}
 
-    // ---- 3. Candidate separators: the midpoint of every wide gap. Midpoints, not edges,
-    // so left-aligned text columns and right-aligned number columns both cluster (their
-    // word edges wander; the gutter's centre does not).
+/// Step 3: candidate separators are the midpoint of every wide gap (midpoints, not edges, so
+/// left-aligned text columns and right-aligned number columns both cluster — their word
+/// edges wander, the gutter's centre does not), clustered and kept only when witnessed by at
+/// least [`MIN_SUPPORT`] rows. `None` if no column survives.
+fn find_columns(rows: &[Vec<&WordBox>], h_med: f32, g_med: f32) -> Option<Vec<f32>> {
+    let wide = |gap: f32| gap >= GAP_MIN_HEIGHTS * h_med && gap >= GAP_MIN_MEDIAN * g_med;
     let mut mids: Vec<f32> = Vec::new();
-    for row in &rows {
+    for row in rows {
         for pair in row.windows(2) {
             let gap = gap_of(pair[0], pair[1]);
             if wide(gap) {
@@ -181,9 +201,21 @@ pub(crate) fn assemble(lines: &[Vec<WordBox>]) -> Option<String> {
     if columns.is_empty() {
         return None;
     }
+    Some(columns)
+}
 
-    // ---- 4. Assemble rows, splitting cells at confirmed columns — and count cell lengths
-    // for the prose guard as we go.
+/// Step 4: assemble rows, splitting cells at confirmed columns (a LOOSER tolerance than
+/// detection built them at, see [`ASSEMBLY_TOL_FACTOR`]) — and apply the prose-column guard:
+/// a "table" whose typical cell is a sentence is a two-column DOCUMENT, and tabbing it would
+/// interleave its reading order, so refuse and let the engine's own per-column text stand.
+fn assemble_rows(
+    rows: &[Vec<&WordBox>],
+    columns: &[f32],
+    h_med: f32,
+    g_med: f32,
+) -> Option<String> {
+    let wide = |gap: f32| gap >= GAP_MIN_HEIGHTS * h_med && gap >= GAP_MIN_MEDIAN * g_med;
+    let tol = CLUSTER_TOL_HEIGHTS * h_med;
     let on_column = |prev: &WordBox, w: &WordBox| {
         let gap = gap_of(prev, w);
         wide(gap)
@@ -213,9 +245,6 @@ pub(crate) fn assemble(lines: &[Vec<WordBox>]) -> Option<String> {
         }
         cell_lengths.push(cell_words);
     }
-    // The prose-column guard: a "table" whose typical cell is a sentence is a two-column
-    // DOCUMENT, and tabbing it would interleave its reading order. Refuse; the engine's own
-    // per-column text (which reads correctly, one column after the other) stands.
     if median_usize(&cell_lengths)? > MAX_CELL_WORDS {
         return None;
     }
