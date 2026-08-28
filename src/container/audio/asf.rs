@@ -260,29 +260,31 @@ fn cd_text(body: &[u8], tags: &mut AsfTags) -> Option<()> {
 /// that store the ECD before the Content Description Object (the common layout).
 fn apply_text_attr(name: &[u8], dtype: u16, value: &[u8], tags: &mut AsfTags) {
     match dtype {
-        0 => {
-            // Unicode string
-            let Some(s) = utf16_string(value) else { return };
-            if name_eq(name, b"WM/AlbumTitle") {
-                tags.album.get_or_insert(s);
-            } else if name_eq(name, b"Author") {
-                tags.artist.get_or_insert(s);
-            } else if name_eq(name, b"Title") {
-                tags.title.get_or_insert(s);
-            } else if name_eq(name, b"WM/TrackNumber") && tags.track.is_none() {
-                tags.track = parse_track(&s);
-            } else if name_eq(name, b"WM/Genre") {
-                tags.genre.get_or_insert(s);
-            } else if name_eq(name, b"WM/Year") && tags.year.is_none() {
-                // WM/Year is a string ("2003"); keep only the leading 4-digit year.
-                tags.year = s.get(..4).and_then(|y| y.parse().ok());
-            }
-        }
+        0 => apply_unicode_attr(name, value, tags),
         // DWORD: WM/Track is a zero-based integer
         3 if name_eq(name, b"WM/Track") && tags.track.is_none() => {
             tags.track = le32(value, 0).map(|n| n.saturating_add(1));
         }
         _ => {}
+    }
+}
+
+/// One dtype-0 (Unicode string) attribute onto the tags we care about, first value wins.
+fn apply_unicode_attr(name: &[u8], value: &[u8], tags: &mut AsfTags) {
+    let Some(s) = utf16_string(value) else { return };
+    if name_eq(name, b"WM/AlbumTitle") {
+        tags.album.get_or_insert(s);
+    } else if name_eq(name, b"Author") {
+        tags.artist.get_or_insert(s);
+    } else if name_eq(name, b"Title") {
+        tags.title.get_or_insert(s);
+    } else if name_eq(name, b"WM/TrackNumber") && tags.track.is_none() {
+        tags.track = parse_track(&s);
+    } else if name_eq(name, b"WM/Genre") {
+        tags.genre.get_or_insert(s);
+    } else if name_eq(name, b"WM/Year") && tags.year.is_none() {
+        // WM/Year is a string ("2003"); keep only the leading 4-digit year.
+        tags.year = s.get(..4).and_then(|y| y.parse().ok());
     }
 }
 
