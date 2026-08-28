@@ -185,34 +185,19 @@ fn splits_a_cluster(w16: &[u16], at: &[usize], n: usize) -> bool {
     char::from_u32(w16[n] as u32).is_some_and(|c| c == '\u{200D}' || is_combining(c))
 }
 
-/// Word-wrap + draw a block's inline `runs` starting at `(x0, y)` within `width`.
-/// `align`: 0 left, 1 center, 2 right (per-line offset). `dry` measures without drawing
-/// (no GDI output, no link/selection collection). Returns `(y_after, widest_line)`.
-#[allow(clippy::too_many_arguments)] // GDI layout core: hdc + geometry + mode flags, no struct gain
-pub(super) unsafe fn run_block(
+/// Flattens `runs` into measured tokens (words / spaces / hard breaks), each remembering the
+/// run bytes it came from so it maps back to the selection document. Splits any word wider
+/// than `width` into character chunks (the way CSS `overflow-wrap: anywhere` does), so a
+/// single token can never run off the pane edge unbroken. `sel` only needs read access here
+/// (per-run document-offset bases); the draw pass reborrows it mutably for hit-testing.
+unsafe fn tokenize_runs(
     hdc: HDC,
     runs: &[Run],
     fonts: &Fonts,
-    x0: i32,
-    y: i32,
     width: i32,
-    align: u8,
-    dry: bool,
     ctx: &RunCtx,
-    links: &mut Vec<LinkHit>,
-    mut sel: Option<&mut RunSel>,
-) -> (i32, i32) {
-    if runs.iter().all(|r| r.text.trim().is_empty()) {
-        return (y, 0);
-    }
-    // Line height from the regular font's metrics + a little leading.
-    let old_font = SelectObject(hdc, fonts.reg.into());
-    let mut tm = TEXTMETRICW::default();
-    let _ = GetTextMetricsW(hdc, &mut tm);
-    let line_h = tm.tmHeight + tm.tmExternalLeading + ctx.line_lead;
-
-    // Flatten runs -> measured tokens (words / spaces / hard breaks), each remembering the run
-    // bytes it came from so it maps back to the selection document.
+    sel: Option<&RunSel>,
+) -> Vec<Tok> {
     let mut toks: Vec<Tok> = Vec::new();
     for (ri, r) in runs.iter().enumerate() {
         let f = fonts.pick(r);
@@ -224,7 +209,7 @@ pub(super) unsafe fn run_block(
         };
         let pad = if r.code { ctx.code_pad } else { 0 };
         SelectObject(hdc, f.into());
-        let base = sel.as_ref().and_then(|s| s.bases.get(ri).copied());
+        let base = sel.and_then(|s| s.bases.get(ri).copied());
         let mut word: Vec<u16> = Vec::new();
         // Per UTF-16 unit of `word`, the byte offset of the CHARACTER that unit belongs to. Only
         // read when an over-wide token has to be split below, where it both maps each chunk back
@@ -332,8 +317,12 @@ pub(super) unsafe fn run_block(
         }
         flush_word!(r.text.len());
     }
+    toks
+}
 
-    // Break into lines (greedy), remembering each placed word's line-relative x.
+/// Greedy line-break of `toks` into `width`-wide lines, remembering each placed word's
+/// line-relative x. Returns `(placements, line width)` per line.
+fn break_into_lines(toks: &[Tok], width: i32) -> Vec<(Vec<(i32, usize)>, i32)> {
     let mut lines: Vec<(Vec<(i32, usize)>, i32)> = Vec::new(); // (placements, line width)
     let mut cur: Vec<(i32, usize)> = Vec::new();
     let mut cx = 0;
@@ -372,109 +361,162 @@ pub(super) unsafe fn run_block(
     if !cur.is_empty() || !line_start {
         lines.push((cur, cx));
     }
-    if lines.is_empty() {
-        SelectObject(hdc, old_font);
-        return (y, 0);
-    }
-    let max_w = lines.iter().map(|(_, w)| *w).max().unwrap_or(0);
+    lines
+}
 
+/// Draws every laid-out line: selection fill + hit rects first (an opaque fill after the
+/// glyphs would erase them), then each word's glyphs, inline-code shading, strikethrough and
+/// link underline/hit-rect.
+#[allow(clippy::too_many_arguments)] // GDI draw core: hdc + geometry + mode flags, no struct gain
+unsafe fn draw_wrapped_lines(
+    hdc: HDC,
+    toks: &[Tok],
+    lines: &[(Vec<(i32, usize)>, i32)],
+    x0: i32,
+    y: i32,
+    width: i32,
+    align: u8,
+    line_h: i32,
+    ctx: &RunCtx,
+    links: &mut Vec<LinkHit>,
+    mut sel: Option<&mut RunSel>,
+) {
     // Copied out so the draw loop can read the selection while `sel` is mutably reborrowed for
     // the per-line fill.
     let (sel_rng, sel_bg) = match sel.as_ref() {
         Some(s) => (s.range, s.bg),
         None => (None, 0),
     };
-    if !dry {
-        for (li, (placed, lw)) in lines.iter().enumerate() {
-            let xoff = match align {
-                1 => (width - lw).max(0) / 2,
-                2 => (width - lw).max(0),
-                _ => 0,
+    for (li, (placed, lw)) in lines.iter().enumerate() {
+        let xoff = match align {
+            1 => (width - lw).max(0) / 2,
+            2 => (width - lw).max(0),
+            _ => 0,
+        };
+        let cy = y + li as i32 * line_h;
+        // Selection fill + hit rects BEFORE the glyphs — an opaque fill after would erase them.
+        if let Some(s) = sel.as_deref_mut() {
+            line_sel(hdc, toks, placed, x0 + xoff, cy, line_h, s);
+        }
+        for (rx, idx) in placed {
+            let Tok::Word {
+                s,
+                w,
+                pad,
+                font,
+                color,
+                code,
+                strike,
+                link,
+                doc,
+                ..
+            } = &toks[*idx]
+            else {
+                continue;
             };
-            let cy = y + li as i32 * line_h;
-            // Selection fill + hit rects BEFORE the glyphs — an opaque fill after would erase them.
-            if let Some(s) = sel.as_deref_mut() {
-                line_sel(hdc, &toks, placed, x0 + xoff, cy, line_h, s);
-            }
-            for (rx, idx) in placed {
-                let Tok::Word {
-                    s,
-                    w,
-                    pad,
-                    font,
-                    color,
-                    code,
-                    strike,
-                    link,
-                    doc,
-                    ..
-                } = &toks[*idx]
-                else {
-                    continue;
+            let cx = x0 + xoff + rx;
+            SelectObject(hdc, (*font).into());
+            SetTextColor(hdc, COLORREF(*color));
+            if *code {
+                // Shaded panel behind inline code (opaque ExtTextOut). It would paint OVER the
+                // selection fill, so when the span is selected the panel IS the highlight.
+                let hot = sel_rng
+                    .zip(*doc)
+                    .is_some_and(|((ss, se), (ds, de))| ss < de && se > ds);
+                let r = RECT {
+                    left: cx,
+                    top: cy,
+                    right: cx + *w,
+                    bottom: cy + line_h,
                 };
-                let cx = x0 + xoff + rx;
-                SelectObject(hdc, (*font).into());
-                SetTextColor(hdc, COLORREF(*color));
-                if *code {
-                    // Shaded panel behind inline code (opaque ExtTextOut). It would paint OVER the
-                    // selection fill, so when the span is selected the panel IS the highlight.
-                    let hot = sel_rng
-                        .zip(*doc)
-                        .is_some_and(|((ss, se), (ds, de))| ss < de && se > ds);
-                    let r = RECT {
+                SetBkColor(hdc, COLORREF(if hot { sel_bg } else { ctx.code_bg }));
+                SetBkMode(hdc, OPAQUE);
+                let _ = ExtTextOutW(
+                    hdc,
+                    cx + *pad,
+                    cy,
+                    ETO_OPAQUE,
+                    Some(&r as *const RECT),
+                    PCWSTR(s.as_ptr()),
+                    s.len() as u32,
+                    None,
+                );
+                SetBkMode(hdc, TRANSPARENT);
+            } else {
+                let _ = ExtTextOutW(
+                    hdc,
+                    cx,
+                    cy,
+                    ETO_OPTIONS(0),
+                    None,
+                    PCWSTR(s.as_ptr()),
+                    s.len() as u32,
+                    None,
+                );
+            }
+            if *strike {
+                hline(hdc, cx + *pad, cx + *w - *pad, cy + line_h / 2, *color);
+            }
+            if let Some(url) = link {
+                hline(
+                    hdc,
+                    cx + *pad,
+                    cx + *w - *pad,
+                    cy + line_h - ctx.ul_off,
+                    *color,
+                );
+                links.push(LinkHit {
+                    rect: RECT {
                         left: cx,
                         top: cy,
                         right: cx + *w,
                         bottom: cy + line_h,
-                    };
-                    SetBkColor(hdc, COLORREF(if hot { sel_bg } else { ctx.code_bg }));
-                    SetBkMode(hdc, OPAQUE);
-                    let _ = ExtTextOutW(
-                        hdc,
-                        cx + *pad,
-                        cy,
-                        ETO_OPAQUE,
-                        Some(&r as *const RECT),
-                        PCWSTR(s.as_ptr()),
-                        s.len() as u32,
-                        None,
-                    );
-                    SetBkMode(hdc, TRANSPARENT);
-                } else {
-                    let _ = ExtTextOutW(
-                        hdc,
-                        cx,
-                        cy,
-                        ETO_OPTIONS(0),
-                        None,
-                        PCWSTR(s.as_ptr()),
-                        s.len() as u32,
-                        None,
-                    );
-                }
-                if *strike {
-                    hline(hdc, cx + *pad, cx + *w - *pad, cy + line_h / 2, *color);
-                }
-                if let Some(url) = link {
-                    hline(
-                        hdc,
-                        cx + *pad,
-                        cx + *w - *pad,
-                        cy + line_h - ctx.ul_off,
-                        *color,
-                    );
-                    links.push(LinkHit {
-                        rect: RECT {
-                            left: cx,
-                            top: cy,
-                            right: cx + *w,
-                            bottom: cy + line_h,
-                        },
-                        url: url.clone(),
-                    });
-                }
+                    },
+                    url: url.clone(),
+                });
             }
         }
+    }
+}
+
+/// Word-wrap + draw a block's inline `runs` starting at `(x0, y)` within `width`.
+/// `align`: 0 left, 1 center, 2 right (per-line offset). `dry` measures without drawing
+/// (no GDI output, no link/selection collection). Returns `(y_after, widest_line)`.
+#[allow(clippy::too_many_arguments)] // GDI layout core: hdc + geometry + mode flags, no struct gain
+pub(super) unsafe fn run_block(
+    hdc: HDC,
+    runs: &[Run],
+    fonts: &Fonts,
+    x0: i32,
+    y: i32,
+    width: i32,
+    align: u8,
+    dry: bool,
+    ctx: &RunCtx,
+    links: &mut Vec<LinkHit>,
+    sel: Option<&mut RunSel>,
+) -> (i32, i32) {
+    if runs.iter().all(|r| r.text.trim().is_empty()) {
+        return (y, 0);
+    }
+    // Line height from the regular font's metrics + a little leading.
+    let old_font = SelectObject(hdc, fonts.reg.into());
+    let mut tm = TEXTMETRICW::default();
+    let _ = GetTextMetricsW(hdc, &mut tm);
+    let line_h = tm.tmHeight + tm.tmExternalLeading + ctx.line_lead;
+
+    let toks = tokenize_runs(hdc, runs, fonts, width, ctx, sel.as_deref());
+    let lines = break_into_lines(&toks, width);
+    if lines.is_empty() {
+        SelectObject(hdc, old_font);
+        return (y, 0);
+    }
+    let max_w = lines.iter().map(|(_, w)| *w).max().unwrap_or(0);
+
+    if !dry {
+        draw_wrapped_lines(
+            hdc, &toks, &lines, x0, y, width, align, line_h, ctx, links, sel,
+        );
     }
     SelectObject(hdc, old_font);
     (y + lines.len() as i32 * line_h, max_w)
