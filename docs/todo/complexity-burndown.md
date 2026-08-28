@@ -313,6 +313,34 @@ mid-tranche). One mid-edit mistake, caught before it reached clippy: moving
 its `fn`, stealing that comment for the wrong function; fixed by moving the helpers above the
 doc comment instead.
 
+**Tranche 18 (2026-08-28): the next 10 worst rows cleared**, worst first:
+`mp4_remux_moov` (streamsrc/mp4remux.rs) split into `locate_mdat_and_moov` (the top-level
+box walk), `retain_head_with_rewritten_mdat` (keep-and-rewrite of the retained head), and
+`read_tail_moov` (the tail pull); `find_sqli` (container/clip.rs) split its nested
+`CHNKHead`-pointer if-chain into `chnk_head_shortcut`, leaving the sequential hop-walk as
+`chnk_walk_fallback`; `render` (pdf.rs) split into `copy_bytes_to_pdf_stream`,
+`scaled_page_dims`, and `rasterize_page_to_png`, one per phase; `encode_to_opts`
+(verbs/encode.rs) split its three heaviest match arms into `encode_lossy_webp` (still
+`#[cfg(feature = "webp-lossy")]`), `encode_png_variant`, and `encode_pnm_variant`;
+`scrub_mouse_down` (preview/transport.rs) split into `nav_arrow_hit` (the sibling-nav zone
+test) and `dispatch_scrub_click` (the play/speed/arrows/loop/volume/mute/track chain, same
+order); `parse_header` (decode/dds.rs) split its DX10/FourCC/masks branch into
+`resolve_pixel_layout`; `slice_walk` (flv.rs) split into `flv_first_tag_pos` (header
+validate) and `read_tag_header` (one tag's 11-byte header + truncation check); `url_at`
+(preview/markdown/parse.rs) split into `is_url_left_boundary`, `url_scheme_at`,
+`scan_url_bytes`, and `trim_trailing_punct`, one per parse phase; `col_at`
+(preview/highlight.rs) split into `display_units` (the tab/surrogate-aware display map
+build), `measure_display_extents` (the single `GetTextExtentExPointW` call), and
+`nearest_char_boundary` (the caret-snap walk); `encode_pam_streaming`
+(verbs/encode/streaming.rs) split into `write_pam_header` and `write_pam_pixels`. No
+behavior change anywhere in this tranche. Verified per file (scoped `cargo test`, or
+`cargo build`/`cargo test --bin SageThumbs2K` for the bin-only modules: preview/transport.rs,
+preview/markdown/parse.rs, preview/highlight.rs) and at the end: `cargo test --lib` (753
+passed, 0 failed, 18 ignored, matching baseline) and `cargo test --bin SageThumbs2K
+--features html-preview` (363 passed, matching tranche 17's baseline), `cargo clippy
+--workspace --all-targets --features html-preview -- -D warnings` and `cargo clippy --lib
+--features webp-lossy -- -D warnings` both clean, and `cargo fmt --all --check` clean.
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -661,18 +689,18 @@ before the next release is still recommended.
 |x| 32 | 29 | `epsi_preview` | src/container/eps.rs:71 |
 |x| 31 | 27 | `parse_siz` | src/decode/jp2/codestream.rs:486 |
 |x| 31 | 12 | `xform_block` | src/jpegtran.rs:425 |
-| | 31 | 22 | `mp4_remux_moov` | src/streamsrc/mp4remux.rs:31 |
-| | 31 | 13 | `find_sqli` | src/container/clip.rs:77 |
-| | 30 | 20 | `parse_header` | src/decode/dds.rs:334 |
-| | 30 | 22 | `scrub_mouse_down` | src/bin/app/preview/transport.rs:282 |
-| | 30 | 24 | `encode_to_opts` | src/verbs/encode.rs:411 |
-| | 30 | 15 | `col_at` | src/bin/app/preview/highlight.rs:397 |
+|x| 31 | 22 | `mp4_remux_moov` | src/streamsrc/mp4remux.rs:31 |
+|x| 31 | 13 | `find_sqli` | src/container/clip.rs:77 |
+|x| 30 | 20 | `parse_header` | src/decode/dds.rs:334 |
+|x| 30 | 22 | `scrub_mouse_down` | src/bin/app/preview/transport.rs:282 |
+|x| 30 | 24 | `encode_to_opts` | src/verbs/encode.rs:411 |
+|x| 30 | 15 | `col_at` | src/bin/app/preview/highlight.rs:397 |
 | | 30 | 13 | `apply_text_attr` | src/container/audio/asf.rs:261 |
-| | 30 | 15 | `encode_pam_streaming` | src/verbs/encode/streaming.rs:273 |
-| | 30 | 26 | `render` | src/pdf.rs:281 |
+|x| 30 | 15 | `encode_pam_streaming` | src/verbs/encode/streaming.rs:273 |
+|x| 30 | 26 | `render` | src/pdf.rs:281 |
 | | 30 | 14 | `strip_html` | src/bin/app/preview/mailmsg.rs:519 |
-| | 30 | 19 | `slice_walk` | src/flv.rs:268 |
-| | 30 | 19 | `url_at` | src/bin/app/preview/markdown/parse.rs:444 |
+|x| 30 | 19 | `slice_walk` | src/flv.rs:268 |
+|x| 30 | 19 | `url_at` | src/bin/app/preview/markdown/parse.rs:444 |
 | | 0 | 38 | `dxgi_layout` | src/decode/dds.rs:438 |
 | | 0 | 49 | `parse_blocks` | src/bin/app/preview/markdown/parse.rs:622 |
 | | 0 | 38 | `glyph` | src/badge.rs:89 |
