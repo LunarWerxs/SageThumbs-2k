@@ -325,66 +325,74 @@ pub(in crate::preview) unsafe fn ensure_visible(hwnd: HWND, off: usize) {
     let c = content_rect(hwnd);
     let m = crate::win::dpi_scale(hwnd, 12);
     match st.kind.get() {
-        ContentKind::Text => {
-            ensure_text_starts(st);
-            let lh = mono_line_h(hwnd);
-            let li = {
-                let starts = st.line_starts.borrow();
-                line_of(&starts, off) as i32
-            };
-            let y = c.top + m - st.text_scroll.get() + li * lh;
-            if y < c.top {
-                scroll_by(hwnd, y - c.top);
-            } else if y + lh > c.bottom {
-                scroll_by(hwnd, y + lh - c.bottom);
-            }
-        }
-        ContentKind::Markdown => {
-            // Markdown only has rects for what it PAINTED, so an off-screen target has nothing
-            // to aim at — and `md_focus_hit`'s nearest-hit fallback would return an already
-            // visible token and "succeed" without scrolling anywhere.
-            let len = with_doc(st, |d| d.len()).unwrap_or(0);
-            if off == 0 {
-                scroll_by(hwnd, -st.text_scroll.get()); // Ctrl+Shift+Home
-                return;
-            }
-            if off >= len {
-                scroll_by(hwnd, st.text_h.get()); // Ctrl+Shift+End (scroll_by clamps)
-                return;
-            }
-            // Otherwise the target is at most a line or two away (a char/word hop), so walk
-            // toward it: each scroll repaints synchronously, which records fresh rects.
-            let step = crate::win::dpi_scale(hwnd, 24);
-            for _ in 0..8 {
-                let (exact, dir) = {
-                    let hits = st.md_hits.borrow();
-                    let exact = hits
-                        .iter()
-                        .find(|h| off >= h.start && off <= h.end)
-                        .copied();
-                    let dir = match &exact {
-                        Some(_) => 0,
-                        None if hits.iter().all(|h| h.start > off) => -1, // it's above us
-                        None if hits.iter().all(|h| h.end < off) => 1,    // it's below us
-                        None => 0, // painted range straddles it: nothing sensible to do
-                    };
-                    (exact, dir)
-                };
-                let dy = match exact {
-                    Some(h) if h.rect.top < c.top => h.rect.top - c.top,
-                    Some(h) if h.rect.bottom > c.bottom => h.rect.bottom - c.bottom,
-                    Some(_) => return, // on screen
-                    None if dir != 0 => dir * step,
-                    None => return,
-                };
-                let before = st.text_scroll.get();
-                scroll_by(hwnd, dy);
-                if st.text_scroll.get() == before {
-                    return; // already at that end of the document
-                }
-            }
-        }
+        ContentKind::Text => ensure_visible_text(hwnd, st, c, m, off),
+        ContentKind::Markdown => ensure_visible_markdown(hwnd, st, c, off),
         _ => {}
+    }
+}
+
+/// [`ensure_visible`]'s Text-pane arm: the caret's line-based y within the mono grid, scrolled
+/// into view if it falls above or below the pane.
+unsafe fn ensure_visible_text(hwnd: HWND, st: &ViewerState, c: RECT, m: i32, off: usize) {
+    ensure_text_starts(st);
+    let lh = mono_line_h(hwnd);
+    let li = {
+        let starts = st.line_starts.borrow();
+        line_of(&starts, off) as i32
+    };
+    let y = c.top + m - st.text_scroll.get() + li * lh;
+    if y < c.top {
+        scroll_by(hwnd, y - c.top);
+    } else if y + lh > c.bottom {
+        scroll_by(hwnd, y + lh - c.bottom);
+    }
+}
+
+/// [`ensure_visible`]'s Markdown-pane arm.
+///
+/// Markdown only has rects for what it PAINTED, so an off-screen target has nothing to aim at —
+/// and `md_focus_hit`'s nearest-hit fallback would return an already visible token and "succeed"
+/// without scrolling anywhere. Document start/end are exact jumps; otherwise the target is at
+/// most a line or two away (a char/word hop), so walk toward it — each scroll repaints
+/// synchronously, which records fresh rects.
+unsafe fn ensure_visible_markdown(hwnd: HWND, st: &ViewerState, c: RECT, off: usize) {
+    let len = with_doc(st, |d| d.len()).unwrap_or(0);
+    if off == 0 {
+        scroll_by(hwnd, -st.text_scroll.get()); // Ctrl+Shift+Home
+        return;
+    }
+    if off >= len {
+        scroll_by(hwnd, st.text_h.get()); // Ctrl+Shift+End (scroll_by clamps)
+        return;
+    }
+    let step = crate::win::dpi_scale(hwnd, 24);
+    for _ in 0..8 {
+        let (exact, dir) = {
+            let hits = st.md_hits.borrow();
+            let exact = hits
+                .iter()
+                .find(|h| off >= h.start && off <= h.end)
+                .copied();
+            let dir = match &exact {
+                Some(_) => 0,
+                None if hits.iter().all(|h| h.start > off) => -1, // it's above us
+                None if hits.iter().all(|h| h.end < off) => 1,    // it's below us
+                None => 0, // painted range straddles it: nothing sensible to do
+            };
+            (exact, dir)
+        };
+        let dy = match exact {
+            Some(h) if h.rect.top < c.top => h.rect.top - c.top,
+            Some(h) if h.rect.bottom > c.bottom => h.rect.bottom - c.bottom,
+            Some(_) => return, // on screen
+            None if dir != 0 => dir * step,
+            None => return,
+        };
+        let before = st.text_scroll.get();
+        scroll_by(hwnd, dy);
+        if st.text_scroll.get() == before {
+            return; // already at that end of the document
+        }
     }
 }
 

@@ -675,29 +675,44 @@ fn type_chunk_value(chunk: &[u8], hs: usize, entry_idx: u16) -> Option<(u16, u8,
     // ResTable_config self-reports its size; density sits at its byte 16.
     let cfg_size = le32(chunk, 20)? as usize;
     let density = if cfg_size >= 18 { le16(chunk, 36)? } else { 0 };
-    let off = if flags & SPARSE_FLAG != 0 {
-        // Sparse: `{idx, offset/4}` u16 pairs matched by idx — NOT positional.
-        let mut found = None;
+    let off = find_entry_offset(chunk, hs, flags, entry_count, entry_idx)?;
+    let (dtype, data) = read_res_value(chunk, entries_start, off)?;
+    Some((density, dtype, data))
+}
+
+/// The TYPE chunk's entry-offset table: sparse (`{idx, offset/4}` u16 pairs, matched by `idx` —
+/// NOT positional) when `SPARSE_FLAG` is set, else dense (a positional `u32` offset per entry,
+/// `NO_ENTRY` meaning "absent here"). Returns the byte offset (already ×4) of `entry_idx`'s
+/// entry within the entries area, or `None` if it isn't present in this chunk.
+fn find_entry_offset(
+    chunk: &[u8],
+    hs: usize,
+    flags: u8,
+    entry_count: u32,
+    entry_idx: u16,
+) -> Option<usize> {
+    if flags & SPARSE_FLAG != 0 {
         for i in 0..entry_count as usize {
             let p = hs.checked_add(i.checked_mul(4)?)?;
             let (idx, o) = (le16(chunk, p)?, le16(chunk, p.checked_add(2)?)?);
             if idx == entry_idx {
-                found = Some((o as usize).checked_mul(4)?);
-                break;
+                return (o as usize).checked_mul(4);
             }
         }
-        found?
+        None
     } else {
         if u32::from(entry_idx) >= entry_count {
             return None;
         }
         let p = hs.checked_add((entry_idx as usize).checked_mul(4)?)?;
         let o = le32(chunk, p)?;
-        if o == NO_ENTRY {
-            return None;
-        }
-        o as usize
-    };
+        (o != NO_ENTRY).then_some(o as usize)
+    }
+}
+
+/// The `Res_value` (dataType, data) for the entry at `entries_start + off`. `None` if the entry
+/// is complex (a bag) or the reads run off the chunk.
+fn read_res_value(chunk: &[u8], entries_start: usize, off: usize) -> Option<(u8, u32)> {
     let entry = entries_start.checked_add(off)?;
     let eflags = le16(chunk, entry.checked_add(2)?)?;
     if eflags & ENTRY_COMPLEX != 0 {
@@ -707,7 +722,7 @@ fn type_chunk_value(chunk: &[u8], hs: usize, entry_idx: u16) -> Option<(u16, u8,
     let value = entry.checked_add(8)?;
     let dtype = *chunk.get(value.checked_add(3)?)?;
     let data = le32(chunk, value.checked_add(4)?)?;
-    Some((density, dtype, data))
+    Some((dtype, data))
 }
 
 /// Direct fuzz entry points into the parsers BELOW the zip layer. Test-only.
