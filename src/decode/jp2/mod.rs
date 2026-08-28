@@ -252,56 +252,36 @@ fn sized_band(w: usize, h: usize, materialize: bool) -> SubBand {
     }
 }
 
-/// Decode one tile's contribution into the output planes.
+/// Per (component, resolution) subband storage, sized on the reference grid.
+/// Resolution r covers levels [0, r]; r = 0 is the lowest LL.
+struct Res {
+    // (x0, y0, x1, y1) of this resolution's grid
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    bands: Vec<SubBand>, // r == 0: [LL]; r > 0: [HL, LH, HH]
+}
+
+/// Build each component's per-resolution subband descriptors, sized on the
+/// reference grid. Budgets the pixel storage we are ABOUT TO allocate (r <=
+/// keep only — see `sized_band`) against MAX_ALLOC. `levels` comes straight
+/// off an untrusted marker with no bound past MAX_PIXELS (~1 GiB of *final*
+/// RGBA), which says nothing about an intermediate tile pyramid: a file that
+/// declares a near-268MP image but is requested at a tiny thumbnail size
+/// would, before this check, still walk `r` up to the FULL resolution
+/// allocating a full-size SubBand every time (see `sized_band`) — several GB
+/// across up to 4 components for one call. Bail before any such allocation.
 #[allow(clippy::too_many_arguments)]
-fn decode_tile(
-    c: &codestream::Codestream,
-    tx: u32,
-    ty: u32,
+fn build_component_resolutions(
+    ncomp: usize,
+    levels: u32,
     keep: u32,
-    drop: u32,
-    planes: &mut [Vec<f32>],
-    out_w: u32,
-    out_h: u32,
-) -> Result<(), Jp2Error> {
-    let siz = &c.siz;
-    let ti = (ty * siz.num_tiles_x() + tx) as usize;
-
-    // Tile bounds on the reference grid.
-    let tx0 = (siz.xtosiz + tx * siz.xtsiz).max(siz.xosiz);
-    let ty0 = (siz.ytosiz + ty * siz.ytsiz).max(siz.yosiz);
-    let tx1 = (siz.xtosiz + (tx + 1) * siz.xtsiz).min(siz.xsiz);
-    let ty1 = (siz.ytosiz + (ty + 1) * siz.ytsiz).min(siz.ysiz);
-    if tx1 <= tx0 || ty1 <= ty0 {
-        return Ok(());
-    }
-
-    let ncomp = siz.components.len();
-    let levels = c.cod.levels as u32;
-
-    // Concatenate the tile's parts; packets may straddle a tile-part boundary.
-    let mut body: Vec<u8> = Vec::new();
-    for p in &c.tiles[ti] {
-        body.extend_from_slice(p);
-    }
-
-    // Per (component, resolution) subband storage, sized on the reference grid.
-    // Resolution r covers levels [0, r]; r = 0 is the lowest LL.
-    struct Res {
-        // (x0, y0, x1, y1) of this resolution's grid
-        x0: u32,
-        y0: u32,
-        x1: u32,
-        y1: u32,
-        bands: Vec<SubBand>, // r == 0: [LL]; r > 0: [HL, LH, HH]
-    }
-    // Budget the pixel storage we are ABOUT TO allocate (r <= keep only — see
-    // `sized_band` above) against MAX_ALLOC. `levels` comes straight off an untrusted
-    // marker with no bound past MAX_PIXELS (~1 GiB of *final* RGBA), which says nothing
-    // about an intermediate tile pyramid: a file that declares a near-268MP image but is
-    // requested at a tiny thumbnail size would, before this check, still walk `r` up to
-    // the FULL resolution allocating a full-size SubBand every time (see `sized_band`) —
-    // several GB across up to 4 components for one call. Bail before any such allocation.
+    tx0: u32,
+    ty0: u32,
+    tx1: u32,
+    ty1: u32,
+) -> Result<Vec<Vec<Res>>, Jp2Error> {
     let max_alloc_floats = crate::decode::limits::MAX_ALLOC / 4;
     let mut alloc_floats: u64 = 0;
     let mut comps: Vec<Vec<Res>> = Vec::with_capacity(ncomp);
@@ -364,34 +344,15 @@ fn decode_tile(
         }
         comps.push(rs);
     }
+    Ok(comps)
+}
 
-    // -- Packet walk, precinct-aware --------------------------------------------
-    //
-    // Packets are addressed by (layer, resolution, component, precinct). One packet holds
-    // ALL bands of its resolution in a single bit stream (see packet::parse_packet). A
-    // code-block's data may arrive spread over MANY packets (one per quality layer); the
-    // segments are CONCATENATED and tier-1 decoded ONCE with continuous state, which is
-    // what openjpeg's chunk list does — decoding each layer's slice with fresh contexts
-    // produced structured garbage on every multi-layer file.
-    // Resolutions 0..=max_res are decoded; anything above is walked for its lengths only.
-    let max_res = keep;
-
-    // Code-block styles this decoder does not speak yet: selective arithmetic bypass
-    // (0x01) stores later passes as raw bits, TERMALL (0x04) terminates and restarts the
-    // MQ coder per pass, and vertical causality (0x08) changes context formation at
-    // stripe boundaries. All three change decoded VALUES silently if ignored, so they are
-    // declined here and the caller falls back to ImageMagick.
-    if c.cod.cblk_style & 0x0D != 0 {
-        return Err(Jp2Error::Unsupported(
-            "code-block style (bypass/termall/causal)",
-        ));
-    }
-
-    let mut br = BitReader::new(&body);
-
+/// Precinct counts per resolution, from component 0's resolution grid (all
+/// components share dimensions in the 1:1-subsampling scope this path covers).
+fn precinct_counts(c: &codestream::Codestream, levels: u32, comp0: &[Res]) -> Vec<(usize, usize)> {
     let mut nprec: Vec<(usize, usize)> = Vec::with_capacity(levels as usize + 1);
     for r in 0..=levels as usize {
-        let res = &comps[0][r];
+        let res = &comp0[r];
         let (ppx, ppy) = c.cod.precinct(r);
         let v = if res.x1 <= res.x0 || res.y1 <= res.y0 {
             (0, 0)
@@ -403,7 +364,23 @@ fn decode_tile(
         };
         nprec.push(v);
     }
+    nprec
+}
 
+/// Build the per (component, resolution, precinct) tag-tree and code-block
+/// bookkeeping the packet walk needs. Within a band the precinct is
+/// half-sized for r > 0, because the bands sit at half the resolution grid;
+/// code-blocks are clipped to whichever is smaller.
+#[allow(clippy::too_many_arguments)]
+fn build_precinct_states(
+    c: &codestream::Codestream,
+    ncomp: usize,
+    levels: u32,
+    tx0: u32,
+    ty0: u32,
+    nprec: &[(usize, usize)],
+    comps: &[Vec<Res>],
+) -> Vec<Vec<Vec<Vec<PrecBand>>>> {
     let mut states: Vec<Vec<Vec<Vec<PrecBand>>>> = Vec::with_capacity(ncomp);
     for ci in 0..ncomp {
         let mut per_res = Vec::with_capacity(levels as usize + 1);
@@ -461,12 +438,23 @@ fn decode_tile(
         }
         states.push(per_res);
     }
+    states
+}
 
-    let layers = c.cod.layers as u32;
-    // Progression order. Position-based orders iterate precincts in raster order; with the
-    // uniform 1:1 components this path is limited to, that reduces to the precinct index.
+/// Build the (layer, resolution, component, precinct-index) iteration order
+/// for the packet walk, per JPEG2000's LRCP/RLCP/RPCL-style progression
+/// orders. Position-based orders iterate precincts in raster order; with the
+/// uniform 1:1 components this path is limited to, that reduces to the
+/// precinct index.
+fn progression_order(
+    progression: u8,
+    layers: u32,
+    levels: u32,
+    ncomp: usize,
+    nprec: &[(usize, usize)],
+) -> Vec<(u32, usize, usize, usize)> {
     let mut order: Vec<(u32, usize, usize, usize)> = Vec::new();
-    match c.cod.progression {
+    match progression {
         0 => {
             for l in 0..layers {
                 for r in 0..=levels as usize {
@@ -501,19 +489,39 @@ fn decode_tile(
             }
         }
     }
+    order
+}
 
-    // A code-block's segments accumulated across every layer that included it.
-    struct BlockAcc {
-        bytes: Vec<u8>,
-        passes: u32,
-        zero_bitplanes: u32,
-        cblk_x: usize,
-        cblk_y: usize,
-    }
-    let mut acc: std::collections::HashMap<(usize, usize, usize, usize, usize), BlockAcc> =
-        std::collections::HashMap::new();
+/// A code-block's segments accumulated across every layer that included it.
+struct BlockAcc {
+    bytes: Vec<u8>,
+    passes: u32,
+    zero_bitplanes: u32,
+    cblk_x: usize,
+    cblk_y: usize,
+}
 
-    for (layer, r, ci, pi) in order {
+/// Keyed by (component, resolution, band, precinct-index, code-block index
+/// within the precinct's band).
+type BlockAccMap = std::collections::HashMap<(usize, usize, usize, usize, usize), BlockAcc>;
+
+/// Walk packets in the given order, concatenating each code-block's segments
+/// across every quality layer that touches it. A code-block's data may arrive
+/// spread over MANY packets (one per quality layer); the segments are
+/// CONCATENATED and tier-1-decoded ONCE with continuous state, which is what
+/// openjpeg's chunk list does — decoding each layer's slice with fresh
+/// contexts produced structured garbage on every multi-layer file.
+fn accumulate_packets(
+    br: &mut BitReader,
+    body: &[u8],
+    order: &[(u32, usize, usize, usize)],
+    c: &codestream::Codestream,
+    states: &mut [Vec<Vec<Vec<PrecBand>>>],
+    max_res: u32,
+) -> Result<BlockAccMap, Jp2Error> {
+    let mut acc: BlockAccMap = std::collections::HashMap::new();
+
+    for &(layer, r, ci, pi) in order {
         if c.cod.sop {
             let q = br.pos();
             if body.get(q..q + 2) == Some(&[0xFF, 0x91]) {
@@ -525,7 +533,7 @@ fn decode_tile(
         let Some(bands) = states[ci][r].get_mut(pi) else {
             continue;
         };
-        let contributions = packet::parse_packet(&mut br, layer, bands)?;
+        let contributions = packet::parse_packet(br, layer, bands)?;
         if c.cod.eph {
             let q = br.pos();
             if body.get(q..q + 2) == Some(&[0xFF, 0x92]) {
@@ -558,79 +566,215 @@ fn decode_tile(
         }
         br.seek(q);
     }
+    Ok(acc)
+}
+
+/// Tier-1 decode one code-block and write its dequantized coefficients into
+/// its subband's data plane. A no-op if the block falls outside the band's
+/// materialized bounds.
+#[allow(clippy::too_many_arguments)]
+fn decode_block_into_band(
+    c: &codestream::Codestream,
+    ci: usize,
+    r: usize,
+    b: usize,
+    pi: usize,
+    states: &[Vec<Vec<Vec<PrecBand>>>],
+    comps: &mut [Vec<Res>],
+    a: &BlockAcc,
+) {
+    let band_kind = match (r, b) {
+        (0, _) => mq::Band::Ll,
+        (_, 0) => mq::Band::Hl,
+        (_, 1) => mq::Band::Lh,
+        _ => mq::Band::Hh,
+    };
+    let (ppx, ppy) = c.cod.precinct(r);
+    let (bppx, bppy) = if r == 0 {
+        (ppx, ppy)
+    } else {
+        (ppx.max(1) - 1, ppy.max(1) - 1)
+    };
+    let cbw_max = (c.cod.cblk_w as usize).min(1usize << bppx);
+    let cbh_max = (c.cod.cblk_h as usize).min(1usize << bppy);
+    let pb = &states[ci][r][pi][b];
+    let (gx, gy) = (pb.bx0 + a.cblk_x, pb.by0 + a.cblk_y);
+    let bw = comps[ci][r].bands[b].w;
+    let bh = comps[ci][r].bands[b].h;
+    let x0 = gx * cbw_max;
+    let y0 = gy * cbh_max;
+    if x0 >= bw || y0 >= bh {
+        return;
+    }
+    let cw = cbw_max.min(bw - x0);
+    let ch = cbh_max.min(bh - y0);
+    let (exp, mant) = subband_step(c, ci, r, b);
+    let gain = subband_gain(band_kind);
+    let prec = c.siz.components[ci].prec as u32 + 1;
+    let guard = quant_for(c, ci).guard_bits as u32;
+    // guard (0-7, the QCD/QCC Sqcd 3-bit field) and exp (0-31, 5 bits) come straight
+    // off an untrusted marker with no further bound. guard=exp=0 previously
+    // underflowed this subtraction to u32::MAX (wraps in release, panics in debug
+    // under panic=abort); guard=7,exp=31 previously overflowed max_bp to 37, which
+    // mq.rs turns into a bitplane count that `1i32 << bitplane` cannot safely shift
+    // by (shift amounts >= 32 are themselves out of range). Saturate the subtraction
+    // and cap to the widest bitplane count a 32-bit magnitude can shift into.
+    let max_bp = guard.saturating_add(exp as u32).saturating_sub(1).min(30);
+    let out = mq::decode_code_block(
+        &a.bytes,
+        cw,
+        ch,
+        band_kind,
+        a.zero_bitplanes,
+        a.passes,
+        max_bp.max(1),
+        c.cod.cblk_style,
+    );
+    #[cfg(test)]
+    if std::env::var_os("ST2K_JP2_TRACE").is_some() {
+        eprintln!(
+            "    blk c{ci} r{r} b{b} {cw}x{ch} passes={} zbp={} seg={}B consumed={}B maxbp={}",
+            a.passes,
+            a.zero_bitplanes,
+            a.bytes.len(),
+            out.consumed,
+            max_bp
+        );
+    }
+    let qf = dequant_factor(c, ci, prec, gain, exp, mant);
+    let band = &mut comps[ci][r].bands[b];
+    for yy in 0..ch {
+        for xx in 0..cw {
+            let bxp = x0 + xx;
+            let byp = y0 + yy;
+            if bxp < band.w && byp < band.h {
+                band.data[byp * band.w + bxp] = out.coeffs[yy * cw + xx] as f32 * qf;
+            }
+        }
+    }
+}
+
+/// Inverse DWT each component's resolution pyramid up to `keep`, then copy the
+/// tile's reconstructed samples into the shared output planes.
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_tile_planes(
+    comps: &mut [Vec<Res>],
+    planes: &mut [Vec<f32>],
+    ncomp: usize,
+    keep: u32,
+    drop: u32,
+    siz: &codestream::Siz,
+    reversible: bool,
+    out_w: u32,
+    out_h: u32,
+) {
+    for ci in 0..ncomp {
+        let mut cur = std::mem::replace(&mut comps[ci][0].bands[0], SubBand::empty(0, 0));
+        for r in 1..=keep as usize {
+            let res = &comps[ci][r];
+            let hl = &res.bands[0];
+            let lh = &res.bands[1];
+            let hh = &res.bands[2];
+            cur = dwt::reconstruct(
+                &cur,
+                hl,
+                lh,
+                hh,
+                res.x0 as usize,
+                res.y0 as usize,
+                reversible,
+            );
+        }
+        // Copy the tile's reconstructed samples into the output plane.
+        let res = &comps[ci][keep as usize];
+        let ox = res.x0.saturating_sub(siz.xosiz.div_ceil(1 << drop));
+        let oy = res.y0.saturating_sub(siz.yosiz.div_ceil(1 << drop));
+        for y in 0..cur.h {
+            let py = oy as usize + y;
+            if py >= out_h as usize {
+                break;
+            }
+            for x in 0..cur.w {
+                let pxx = ox as usize + x;
+                if pxx >= out_w as usize {
+                    break;
+                }
+                planes[ci][py * out_w as usize + pxx] = cur.data[y * cur.w + x];
+            }
+        }
+    }
+}
+
+/// Decode one tile's contribution into the output planes.
+#[allow(clippy::too_many_arguments)]
+fn decode_tile(
+    c: &codestream::Codestream,
+    tx: u32,
+    ty: u32,
+    keep: u32,
+    drop: u32,
+    planes: &mut [Vec<f32>],
+    out_w: u32,
+    out_h: u32,
+) -> Result<(), Jp2Error> {
+    let siz = &c.siz;
+    let ti = (ty * siz.num_tiles_x() + tx) as usize;
+
+    // Tile bounds on the reference grid.
+    let tx0 = (siz.xtosiz + tx * siz.xtsiz).max(siz.xosiz);
+    let ty0 = (siz.ytosiz + ty * siz.ytsiz).max(siz.yosiz);
+    let tx1 = (siz.xtosiz + (tx + 1) * siz.xtsiz).min(siz.xsiz);
+    let ty1 = (siz.ytosiz + (ty + 1) * siz.ytsiz).min(siz.ysiz);
+    if tx1 <= tx0 || ty1 <= ty0 {
+        return Ok(());
+    }
+
+    let ncomp = siz.components.len();
+    let levels = c.cod.levels as u32;
+
+    // Concatenate the tile's parts; packets may straddle a tile-part boundary.
+    let mut body: Vec<u8> = Vec::new();
+    for p in &c.tiles[ti] {
+        body.extend_from_slice(p);
+    }
+
+    let mut comps = build_component_resolutions(ncomp, levels, keep, tx0, ty0, tx1, ty1)?;
+
+    // -- Packet walk, precinct-aware --------------------------------------------
+    //
+    // Packets are addressed by (layer, resolution, component, precinct). One packet holds
+    // ALL bands of its resolution in a single bit stream (see packet::parse_packet). A
+    // code-block's data may arrive spread over MANY packets (one per quality layer); the
+    // segments are CONCATENATED and tier-1 decoded ONCE with continuous state, which is
+    // what openjpeg's chunk list does — decoding each layer's slice with fresh contexts
+    // produced structured garbage on every multi-layer file.
+    // Resolutions 0..=max_res are decoded; anything above is walked for its lengths only.
+    let max_res = keep;
+
+    // Code-block styles this decoder does not speak yet: selective arithmetic bypass
+    // (0x01) stores later passes as raw bits, TERMALL (0x04) terminates and restarts the
+    // MQ coder per pass, and vertical causality (0x08) changes context formation at
+    // stripe boundaries. All three change decoded VALUES silently if ignored, so they are
+    // declined here and the caller falls back to ImageMagick.
+    if c.cod.cblk_style & 0x0D != 0 {
+        return Err(Jp2Error::Unsupported(
+            "code-block style (bypass/termall/causal)",
+        ));
+    }
+
+    let mut br = BitReader::new(&body);
+
+    let nprec = precinct_counts(c, levels, &comps[0]);
+    let mut states = build_precinct_states(c, ncomp, levels, tx0, ty0, &nprec, &comps);
+
+    let layers = c.cod.layers as u32;
+    let order = progression_order(c.cod.progression, layers, levels, ncomp, &nprec);
+
+    let acc = accumulate_packets(&mut br, &body, &order, c, &mut states, max_res)?;
 
     // Tier-1 decode: once per code-block, over its concatenated segments.
     for ((ci, r, b, pi, _), a) in &acc {
-        let (ci, r, b, pi) = (*ci, *r, *b, *pi);
-        let band_kind = match (r, b) {
-            (0, _) => mq::Band::Ll,
-            (_, 0) => mq::Band::Hl,
-            (_, 1) => mq::Band::Lh,
-            _ => mq::Band::Hh,
-        };
-        let (ppx, ppy) = c.cod.precinct(r);
-        let (bppx, bppy) = if r == 0 {
-            (ppx, ppy)
-        } else {
-            (ppx.max(1) - 1, ppy.max(1) - 1)
-        };
-        let cbw_max = (c.cod.cblk_w as usize).min(1usize << bppx);
-        let cbh_max = (c.cod.cblk_h as usize).min(1usize << bppy);
-        let pb = &states[ci][r][pi][b];
-        let (gx, gy) = (pb.bx0 + a.cblk_x, pb.by0 + a.cblk_y);
-        let bw = comps[ci][r].bands[b].w;
-        let bh = comps[ci][r].bands[b].h;
-        let x0 = gx * cbw_max;
-        let y0 = gy * cbh_max;
-        if x0 >= bw || y0 >= bh {
-            continue;
-        }
-        let cw = cbw_max.min(bw - x0);
-        let ch = cbh_max.min(bh - y0);
-        let (exp, mant) = subband_step(c, ci, r, b);
-        let gain = subband_gain(band_kind);
-        let prec = c.siz.components[ci].prec as u32 + 1;
-        let guard = quant_for(c, ci).guard_bits as u32;
-        // guard (0-7, the QCD/QCC Sqcd 3-bit field) and exp (0-31, 5 bits) come straight
-        // off an untrusted marker with no further bound. guard=exp=0 previously
-        // underflowed this subtraction to u32::MAX (wraps in release, panics in debug
-        // under panic=abort); guard=7,exp=31 previously overflowed max_bp to 37, which
-        // mq.rs turns into a bitplane count that `1i32 << bitplane` cannot safely shift
-        // by (shift amounts >= 32 are themselves out of range). Saturate the subtraction
-        // and cap to the widest bitplane count a 32-bit magnitude can shift into.
-        let max_bp = guard.saturating_add(exp as u32).saturating_sub(1).min(30);
-        let out = mq::decode_code_block(
-            &a.bytes,
-            cw,
-            ch,
-            band_kind,
-            a.zero_bitplanes,
-            a.passes,
-            max_bp.max(1),
-            c.cod.cblk_style,
-        );
-        #[cfg(test)]
-        if std::env::var_os("ST2K_JP2_TRACE").is_some() {
-            eprintln!(
-                "    blk c{ci} r{r} b{b} {cw}x{ch} passes={} zbp={} seg={}B consumed={}B maxbp={}",
-                a.passes,
-                a.zero_bitplanes,
-                a.bytes.len(),
-                out.consumed,
-                max_bp
-            );
-        }
-        let qf = dequant_factor(c, ci, prec, gain, exp, mant);
-        let band = &mut comps[ci][r].bands[b];
-        for yy in 0..ch {
-            for xx in 0..cw {
-                let bxp = x0 + xx;
-                let byp = y0 + yy;
-                if bxp < band.w && byp < band.h {
-                    band.data[byp * band.w + bxp] = out.coeffs[yy * cw + xx] as f32 * qf;
-                }
-            }
-        }
+        decode_block_into_band(c, *ci, *r, *b, *pi, &states, &mut comps, a);
     }
 
     // Coefficient dump for tier-1 debugging: compare against a Python FORWARD 5/3 of the
@@ -652,42 +796,17 @@ fn decode_tile(
         }
     }
 
-    // Inverse DWT: start from the lowest LL and lift `keep` times.
-    for ci in 0..ncomp {
-        let mut cur = std::mem::replace(&mut comps[ci][0].bands[0], SubBand::empty(0, 0));
-        for r in 1..=keep as usize {
-            let res = &comps[ci][r];
-            let hl = &res.bands[0];
-            let lh = &res.bands[1];
-            let hh = &res.bands[2];
-            cur = dwt::reconstruct(
-                &cur,
-                hl,
-                lh,
-                hh,
-                res.x0 as usize,
-                res.y0 as usize,
-                c.cod.reversible,
-            );
-        }
-        // Copy the tile's reconstructed samples into the output plane.
-        let res = &comps[ci][keep as usize];
-        let ox = res.x0.saturating_sub(siz.xosiz.div_ceil(1 << drop));
-        let oy = res.y0.saturating_sub(siz.yosiz.div_ceil(1 << drop));
-        for y in 0..cur.h {
-            let py = oy as usize + y;
-            if py >= out_h as usize {
-                break;
-            }
-            for x in 0..cur.w {
-                let pxx = ox as usize + x;
-                if pxx >= out_w as usize {
-                    break;
-                }
-                planes[ci][py * out_w as usize + pxx] = cur.data[y * cur.w + x];
-            }
-        }
-    }
+    reconstruct_tile_planes(
+        &mut comps,
+        planes,
+        ncomp,
+        keep,
+        drop,
+        siz,
+        c.cod.reversible,
+        out_w,
+        out_h,
+    );
     Ok(())
 }
 
