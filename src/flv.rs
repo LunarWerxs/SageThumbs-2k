@@ -45,16 +45,9 @@ const KEYFRAME_MAX: usize = 16 * 1024 * 1024;
 /// Largest plausible FLV header DataOffset (spec value is 9; some writers pad slightly).
 const HEADER_MAX: u64 = 4096;
 
-/// Build a one-keyframe mini-MP4 from an FLV whose video codec is H.264. Returns the
-/// mini-MP4 bytes for [`crate::video::frame_from_bytes`], or `None` for non-FLV input,
-/// non-AVC codecs, or any malformed/truncated structure (caller falls through).
-///
-/// Unlike the MP4/MKV twins this takes no time fraction: FLV has no sample index to seek
-/// (`onMetaData` keyframe tables are optional and untrustworthy), so the representative
-/// frame is the FIRST keyframe after the sequence header — a targeted read of the file
-/// head, never a whole-file scan.
-pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
-    let total = r.seek(SeekFrom::End(0)).ok()?;
+/// Validates the FLV signature and reads `DataOffset`. `None` for anything that isn't a
+/// well-formed FLV header, or a file too small to hold one plus a tag.
+fn read_flv_header<R: Read + Seek>(r: &mut R, total: u64) -> Option<u64> {
     // Header (9) + PreviousTagSize0 (4) + one tag header (11) is the smallest useful file.
     if total < 24 {
         return None;
@@ -68,6 +61,82 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     if !(9..=HEADER_MAX).contains(&data_offset) {
         return None;
     }
+    Some(data_offset)
+}
+
+/// What processing one tag inside [`keyframe_mini_mp4`]'s walk should do next.
+enum TagOutcome {
+    /// Not a usable video tag yet (or this one was the config, now captured) — keep walking.
+    Continue,
+    /// A keyframe tag was found: this is the whole function's answer, ready to return
+    /// (`mux` itself can still fail, hence the inner `Option`).
+    Return(Option<Vec<u8>>),
+}
+
+/// Inspect one FLV tag. VideoData: `FrameType`(4 bits) `CodecID`(4 bits), then for AVC:
+/// `AVCPacketType`(1) `CompositionTime`(3), then the body. Non-video or too-short tags are
+/// [`TagOutcome::Continue`]; a non-AVC codec aborts the whole parse (`None`) — Sorenson
+/// Spark / VP6 get their frame via [`flash_frame`] instead, never remuxed here.
+fn handle_video_tag<R: Read + Seek>(
+    r: &mut R,
+    tag_type: u8,
+    data_size: u64,
+    payload_pos: u64,
+    avc_config: &mut Option<Vec<u8>>,
+) -> Option<TagOutcome> {
+    if tag_type != 9 || data_size < 2 {
+        return Some(TagOutcome::Continue);
+    }
+    let mut vh = [0u8; 2];
+    read_exact_at(r, payload_pos, &mut vh)?;
+    let frame_type = vh[0] >> 4;
+    let codec_id = vh[0] & 0x0F;
+    if codec_id != 7 {
+        return None;
+    }
+    let packet_type = vh[1];
+    if data_size < 5 {
+        return Some(TagOutcome::Continue);
+    }
+    let body_len = (data_size - 5) as usize;
+    if packet_type == 0 && avc_config.is_none() && body_len > 0 {
+        // AVC sequence header: the payload is an AVCDecoderConfigurationRecord.
+        if body_len > CONFIG_MAX {
+            return None;
+        }
+        let mut cfg = vec![0u8; body_len];
+        read_exact_at(r, payload_pos.checked_add(5)?, &mut cfg)?;
+        if cfg.first() != Some(&1) || cfg.len() < 7 {
+            return None; // configurationVersion must be 1
+        }
+        *avc_config = Some(cfg);
+        return Some(TagOutcome::Continue);
+    }
+    if packet_type == 1 && frame_type == 1 && body_len > 0 {
+        // A keyframe NALU tag — usable once the config has been seen.
+        if let Some(cfg) = avc_config.as_ref() {
+            if body_len > KEYFRAME_MAX {
+                return None;
+            }
+            let mut keyframe = vec![0u8; body_len];
+            read_exact_at(r, payload_pos.checked_add(5)?, &mut keyframe)?;
+            return Some(TagOutcome::Return(mux(cfg, &keyframe)));
+        }
+    }
+    Some(TagOutcome::Continue)
+}
+
+/// Build a one-keyframe mini-MP4 from an FLV whose video codec is H.264. Returns the
+/// mini-MP4 bytes for [`crate::video::frame_from_bytes`], or `None` for non-FLV input,
+/// non-AVC codecs, or any malformed/truncated structure (caller falls through).
+///
+/// Unlike the MP4/MKV twins this takes no time fraction: FLV has no sample index to seek
+/// (`onMetaData` keyframe tables are optional and untrustworthy), so the representative
+/// frame is the FIRST keyframe after the sequence header — a targeted read of the file
+/// head, never a whole-file scan.
+pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
+    let total = r.seek(SeekFrom::End(0)).ok()?;
+    let data_offset = read_flv_header(r, total)?;
 
     let mut avc_config: Option<Vec<u8>> = None;
     let mut pos = data_offset.checked_add(4)?; // skip PreviousTagSize0
@@ -89,44 +158,9 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
         if payload_pos.checked_add(data_size)? > total {
             return None; // truncated mid-tag
         }
-        // VideoData: FrameType(4 bits) CodecID(4 bits), then for AVC:
-        // AVCPacketType(1) CompositionTime(3), then the body.
-        if tag_type == 9 && data_size >= 2 {
-            let mut vh = [0u8; 2];
-            read_exact_at(r, payload_pos, &mut vh)?;
-            let frame_type = vh[0] >> 4;
-            let codec_id = vh[0] & 0x0F;
-            if codec_id != 7 {
-                // Sorenson Spark / VP6 / anything else: not remuxable into an MP4 — stop
-                // cleanly. Codec ids 2/4 get their frame via [`flash_frame`] instead.
-                return None;
-            }
-            let packet_type = vh[1];
-            if data_size >= 5 {
-                let body_len = (data_size - 5) as usize;
-                if packet_type == 0 && avc_config.is_none() && body_len > 0 {
-                    // AVC sequence header: the payload is an AVCDecoderConfigurationRecord.
-                    if body_len > CONFIG_MAX {
-                        return None;
-                    }
-                    let mut cfg = vec![0u8; body_len];
-                    read_exact_at(r, payload_pos.checked_add(5)?, &mut cfg)?;
-                    if cfg.first() != Some(&1) || cfg.len() < 7 {
-                        return None; // configurationVersion must be 1
-                    }
-                    avc_config = Some(cfg);
-                } else if packet_type == 1 && frame_type == 1 && body_len > 0 {
-                    // A keyframe NALU tag — usable once the config has been seen.
-                    if let Some(cfg) = &avc_config {
-                        if body_len > KEYFRAME_MAX {
-                            return None;
-                        }
-                        let mut keyframe = vec![0u8; body_len];
-                        read_exact_at(r, payload_pos.checked_add(5)?, &mut keyframe)?;
-                        return mux(cfg, &keyframe);
-                    }
-                }
-            }
+        match handle_video_tag(r, tag_type, data_size, payload_pos, &mut avc_config)? {
+            TagOutcome::Continue => {}
+            TagOutcome::Return(v) => return v,
         }
         pos = payload_pos.checked_add(data_size)?.checked_add(4)?;
     }
@@ -547,15 +581,11 @@ fn skip_scaling_list(b: &mut Bits, size: u32) -> Option<()> {
     Some(())
 }
 
-/// Frame geometry from an SPS RBSP (ITU-T H.264 §7.3.2.1.1): walk every field ahead of
-/// `pic_width_in_mbs_minus1`, apply the frame-cropping rectangle in chroma-scaled units.
-fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {
-    let mut b = Bits { d: rbsp, pos: 0 };
-    let profile_idc = b.bits(8)?;
-    b.bits(8)?; // constraint_set flags + reserved
-    b.bits(8)?; // level_idc
-    b.ue()?; // seq_parameter_set_id
-
+/// The chroma-format prelude gated on `profile_idc` (§7.3.2.1.1: only certain High-profile
+/// variants carry it): reads `chroma_format_idc`, `separate_colour_planes`, and any scaling
+/// matrix (skipped via [`skip_scaling_list`], not decoded — the values are irrelevant here).
+/// Consumes those bits from `b` only when the profile actually carries them.
+fn parse_chroma_format(b: &mut Bits, profile_idc: u32) -> Option<(u32, bool)> {
     let mut chroma_format_idc = 1u32; // 4:2:0 unless the profile carries it explicitly
     let mut separate_colour_planes = false;
     if matches!(
@@ -577,12 +607,17 @@ fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {
             let lists = if chroma_format_idc == 3 { 12 } else { 8 };
             for i in 0..lists {
                 if b.bit()? == 1 {
-                    skip_scaling_list(&mut b, if i < 6 { 16 } else { 64 })?;
+                    skip_scaling_list(b, if i < 6 { 16 } else { 64 })?;
                 }
             }
         }
     }
+    Some((chroma_format_idc, separate_colour_planes))
+}
 
+/// The picture-order-count fields (§7.3.2.1.1). Consumed but not returned — only their
+/// effect on `b`'s bit position matters to the fields that follow.
+fn skip_pic_order_cnt_fields(b: &mut Bits) -> Option<()> {
     b.ue()?; // log2_max_frame_num_minus4
     let pic_order_cnt_type = b.ue()?;
     if pic_order_cnt_type == 0 {
@@ -601,9 +636,19 @@ fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {
     } else if pic_order_cnt_type > 2 {
         return None;
     }
-    b.ue()?; // max_num_ref_frames
-    b.bit()?; // gaps_in_frame_num_value_allowed_flag
+    Some(())
+}
 
+/// The frame-size fields (§7.3.2.1.1): mb-unit dimensions, `frame_mbs_only_flag`, and the
+/// optional frame-cropping rectangle, in bitstream order.
+struct FrameGeomFields {
+    pic_width_in_mbs_minus1: u32,
+    pic_height_in_map_units_minus1: u32,
+    frame_mbs_only: u32,
+    crop: (u32, u32, u32, u32), // (left, right, top, bottom)
+}
+
+fn parse_frame_geom_fields(b: &mut Bits) -> Option<FrameGeomFields> {
     let pic_width_in_mbs_minus1 = b.ue()?;
     let pic_height_in_map_units_minus1 = b.ue()?;
     let frame_mbs_only = b.bit()?;
@@ -612,22 +657,33 @@ fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {
     }
     b.bit()?; // direct_8x8_inference_flag
 
-    let (mut crop_l, mut crop_r, mut crop_t, mut crop_b) = (0u32, 0u32, 0u32, 0u32);
+    let mut crop = (0u32, 0u32, 0u32, 0u32);
     if b.bit()? == 1 {
-        crop_l = b.ue()?;
-        crop_r = b.ue()?;
-        crop_t = b.ue()?;
-        crop_b = b.ue()?;
+        crop = (b.ue()?, b.ue()?, b.ue()?, b.ue()?);
     }
+    Some(FrameGeomFields {
+        pic_width_in_mbs_minus1,
+        pic_height_in_map_units_minus1,
+        frame_mbs_only,
+        crop,
+    })
+}
 
-    let width_px = pic_width_in_mbs_minus1.checked_add(1)?.checked_mul(16)?;
-    let height_px = pic_height_in_map_units_minus1
+/// Pixel width/height from the mb-unit fields + crop rectangle (§7.4.2.1.1). Crop units
+/// scale with the chroma sampling: SubWidthC/SubHeightC for 4:2:0/4:2:2, unity for
+/// monochrome, 4:4:4, and separate colour planes.
+fn frame_geom_to_pixels(
+    g: &FrameGeomFields,
+    chroma_format_idc: u32,
+    separate_colour_planes: bool,
+) -> Option<(u16, u16)> {
+    let width_px = g.pic_width_in_mbs_minus1.checked_add(1)?.checked_mul(16)?;
+    let height_px = g
+        .pic_height_in_map_units_minus1
         .checked_add(1)?
         .checked_mul(16)?
-        .checked_mul(2u32.checked_sub(frame_mbs_only)?)?;
+        .checked_mul(2u32.checked_sub(g.frame_mbs_only)?)?;
 
-    // Crop units scale with the chroma sampling (§7.4.2.1.1): SubWidthC/SubHeightC for
-    // chroma 1/2, unity for monochrome, 4:4:4, and separate colour planes.
     let chroma_array_type = if separate_colour_planes {
         0
     } else {
@@ -638,14 +694,33 @@ fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {
         2 => (2, 1),       // 4:2:2
         _ => (1, 1),       // mono / 4:4:4 / separate planes
     };
-    let unit_y = unit_y_base.checked_mul(2u32.checked_sub(frame_mbs_only)?)?;
+    let unit_y = unit_y_base.checked_mul(2u32.checked_sub(g.frame_mbs_only)?)?;
 
+    let (crop_l, crop_r, crop_t, crop_b) = g.crop;
     let w = width_px.checked_sub(crop_l.checked_add(crop_r)?.checked_mul(unit_x)?)?;
     let h = height_px.checked_sub(crop_t.checked_add(crop_b)?.checked_mul(unit_y)?)?;
     if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
         return None;
     }
     Some((w as u16, h as u16))
+}
+
+/// Frame geometry from an SPS RBSP (ITU-T H.264 §7.3.2.1.1): walk every field ahead of
+/// `pic_width_in_mbs_minus1`, apply the frame-cropping rectangle in chroma-scaled units.
+fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {
+    let mut b = Bits { d: rbsp, pos: 0 };
+    let profile_idc = b.bits(8)?;
+    b.bits(8)?; // constraint_set flags + reserved
+    b.bits(8)?; // level_idc
+    b.ue()?; // seq_parameter_set_id
+
+    let (chroma_format_idc, separate_colour_planes) = parse_chroma_format(&mut b, profile_idc)?;
+    skip_pic_order_cnt_fields(&mut b)?;
+    b.ue()?; // max_num_ref_frames
+    b.bit()?; // gaps_in_frame_num_value_allowed_flag
+
+    let geom = parse_frame_geom_fields(&mut b)?;
+    frame_geom_to_pixels(&geom, chroma_format_idc, separate_colour_planes)
 }
 
 #[cfg(test)]
