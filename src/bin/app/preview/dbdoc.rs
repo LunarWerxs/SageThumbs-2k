@@ -687,6 +687,127 @@ fn declared_type(after_name: &str) -> String {
 ///
 /// `WITHOUT ROWID` tables store the PRIMARY KEY columns FIRST and the rest after (verified
 /// against real files), so the returned order is reordered to match the record, not the DDL.
+/// Whether the DDL past the column list's closing paren carries a `WITHOUT ROWID`
+/// clause (case/whitespace-insensitive).
+fn table_is_without_rowid(sql: &str, close: usize) -> bool {
+    sql[close..]
+        .to_ascii_uppercase()
+        .replace(char::is_whitespace, " ")
+        .contains("WITHOUT ROWID")
+}
+
+/// Extract the column list out of a `PRIMARY KEY(...)` table constraint, for the WITHOUT
+/// ROWID record-order reorder below. `None` when `part` has no such parenthesised list.
+fn parse_pk_constraint_list(part: &str) -> Option<Vec<String>> {
+    let u = part.to_ascii_uppercase();
+    let pk = u
+        .find("PRIMARY")
+        .and_then(|i| find_top_level_open_paren(&part[i..]).map(|o| i + o))?;
+    let end = matching_paren(part, pk)?;
+    Some(
+        split_top_level(&part[pk + 1..end])
+            .into_iter()
+            .map(|c| unquote(first_word(c.trim())))
+            .filter(|c| !c.is_empty())
+            .collect(),
+    )
+}
+
+/// Parse one non-constraint column definition: its `Col` (name + declared-type affinity),
+/// whether it's an inline `PRIMARY KEY`, and whether it qualifies as the `INTEGER PRIMARY
+/// KEY` rowid alias (exactly that phrase, not e.g. `INT`, and not a `DESC` key). `None`
+/// when `part` has no identifier (a blank or malformed entry).
+fn parse_column_def(part: &str) -> Option<(Col, bool, bool)> {
+    let ident = first_word(part);
+    let name = unquote(ident);
+    if name.is_empty() {
+        return None;
+    }
+    let after_name = &part[ident.len()..];
+    let real = has_real_affinity(&declared_type(after_name));
+    let rest = after_name
+        .to_ascii_uppercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let is_pk = rest.contains("PRIMARY KEY");
+    let is_rowid_alias = rest.starts_with("INTEGER PRIMARY KEY") && !rest.contains("DESC");
+    Some((Col { name, real }, is_pk, is_rowid_alias))
+}
+
+/// Walk each top-level, comment-stripped part of the column list: table constraints
+/// (which contribute to the returned PK-from-constraint list but no column) and column
+/// definitions (which contribute a `Col` and possibly the inline/rowid-alias PRIMARY KEY).
+fn column_defs_and_pk(body: &str) -> (Vec<Col>, Vec<String>, Option<String>, Option<usize>) {
+    let mut cols: Vec<Col> = Vec::new();
+    let mut rowid_alias: Option<usize> = None;
+    let mut pk_from_constraint: Vec<String> = Vec::new();
+    let mut inline_pk: Option<String> = None;
+
+    for part in split_top_level(body) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let upper_first = first_word(part).to_ascii_uppercase();
+        if matches!(
+            upper_first.as_str(),
+            "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
+        ) {
+            // Table constraint, not a column. Grab a PRIMARY KEY(...) list for the record order.
+            if let Some(pk) = parse_pk_constraint_list(part) {
+                pk_from_constraint = pk;
+            }
+            continue;
+        }
+        let Some((col, is_pk, is_rowid_alias)) = parse_column_def(part) else {
+            continue;
+        };
+        if is_pk {
+            inline_pk = Some(col.name.clone());
+            if is_rowid_alias {
+                rowid_alias = Some(cols.len());
+            }
+        }
+        cols.push(col);
+    }
+    (cols, pk_from_constraint, inline_pk, rowid_alias)
+}
+
+/// `WITHOUT ROWID` tables store the PRIMARY KEY columns FIRST and the rest after (verified
+/// against real files). Move them to the front WITH their affinity, since reordering
+/// names alone would silently mispair every column's type with the wrong header. Falls
+/// back to the original order if the reorder can't account for every column.
+fn reorder_without_rowid(
+    cols: Vec<Col>,
+    pk_from_constraint: &[String],
+    inline_pk: Option<String>,
+) -> Vec<Col> {
+    let pk: Vec<String> = if !pk_from_constraint.is_empty() {
+        pk_from_constraint.to_vec()
+    } else {
+        inline_pk.into_iter().collect()
+    };
+    let mut order: Vec<usize> = Vec::with_capacity(cols.len());
+    for k in &pk {
+        if let Some(i) = cols.iter().position(|c| c.name.eq_ignore_ascii_case(k)) {
+            if !order.contains(&i) {
+                order.push(i);
+            }
+        }
+    }
+    for i in 0..cols.len() {
+        if !order.contains(&i) {
+            order.push(i);
+        }
+    }
+    if order.len() != cols.len() {
+        return cols;
+    }
+    let mut slots: Vec<Option<Col>> = cols.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
+}
+
 fn parse_columns(sql: &str) -> Cols {
     let empty = Cols {
         cols: Vec::new(),
@@ -702,92 +823,12 @@ fn parse_columns(sql: &str) -> Cols {
     // two column definitions parses as a column called `--` and swallows the one after it, so
     // the comments come out before anything is split.
     let body = strip_sql_comments(&sql[open + 1..close]);
-    let without_rowid = sql[close..]
-        .to_ascii_uppercase()
-        .replace(char::is_whitespace, " ")
-        .contains("WITHOUT ROWID");
+    let without_rowid = table_is_without_rowid(sql, close);
 
-    let mut cols: Vec<Col> = Vec::new();
-    let mut rowid_alias: Option<usize> = None;
-    let mut pk_from_constraint: Vec<String> = Vec::new();
-    let mut inline_pk: Option<String> = None;
-
-    for part in split_top_level(&body) {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        let upper_first = first_word(part).to_ascii_uppercase();
-        if matches!(
-            upper_first.as_str(),
-            "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
-        ) {
-            // Table constraint, not a column. Grab a PRIMARY KEY(...) list for the record order.
-            let u = part.to_ascii_uppercase();
-            if let Some(pk) = u
-                .find("PRIMARY")
-                .and_then(|i| find_top_level_open_paren(&part[i..]).map(|o| i + o))
-            {
-                if let Some(end) = matching_paren(part, pk) {
-                    pk_from_constraint = split_top_level(&part[pk + 1..end])
-                        .into_iter()
-                        .map(|c| unquote(first_word(c.trim())))
-                        .filter(|c| !c.is_empty())
-                        .collect();
-                }
-            }
-            continue;
-        }
-        let ident = first_word(part);
-        let name = unquote(ident);
-        if name.is_empty() {
-            continue;
-        }
-        let after_name = &part[ident.len()..];
-        let real = has_real_affinity(&declared_type(after_name));
-        let rest = after_name
-            .to_ascii_uppercase()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if rest.contains("PRIMARY KEY") {
-            inline_pk = Some(name.clone());
-            // Exactly `INTEGER PRIMARY KEY` (not e.g. `INT`, not a DESC key) is the rowid alias.
-            if rest.starts_with("INTEGER PRIMARY KEY") && !rest.contains("DESC") {
-                rowid_alias = Some(cols.len());
-            }
-        }
-        cols.push(Col { name, real });
-    }
+    let (mut cols, pk_from_constraint, inline_pk, mut rowid_alias) = column_defs_and_pk(&body);
 
     if without_rowid {
-        let pk: Vec<String> = if !pk_from_constraint.is_empty() {
-            pk_from_constraint
-        } else {
-            inline_pk.into_iter().collect()
-        };
-        // Move the PK columns to the front WITH their affinity — reordering names alone would
-        // silently mispair every column's type with the wrong header.
-        let mut order: Vec<usize> = Vec::with_capacity(cols.len());
-        for k in &pk {
-            if let Some(i) = cols.iter().position(|c| c.name.eq_ignore_ascii_case(k)) {
-                if !order.contains(&i) {
-                    order.push(i);
-                }
-            }
-        }
-        for i in 0..cols.len() {
-            if !order.contains(&i) {
-                order.push(i);
-            }
-        }
-        if order.len() == cols.len() {
-            let mut slots: Vec<Option<Col>> = cols.into_iter().map(Some).collect();
-            cols = order
-                .into_iter()
-                .filter_map(|i| slots[i].take())
-                .collect::<Vec<_>>();
-        }
+        cols = reorder_without_rowid(cols, &pk_from_constraint, inline_pk);
         // A WITHOUT ROWID table has no rowid to alias.
         rowid_alias = None;
     }

@@ -175,6 +175,48 @@ fn page_type(db: &[u8], page_size: usize, page_no: usize) -> Option<(u8, usize)>
     Some((*db.get(hdr_off)?, hdr_off))
 }
 
+/// Queue every child of a table-INTERIOR page onto `stack`: each cell's left child pointer,
+/// then the right-most pointer (which covers keys greater than every cell on this page).
+/// Caps total queued work, not just visited pages: an interior page can fan out to
+/// thousands of children before `collect_leaf_pages`'s visited-page budget ever gets to
+/// spend them.
+fn queue_interior_children(
+    db: &[u8],
+    page_size: usize,
+    page_no: usize,
+    hdr_off: usize,
+    stack: &mut Vec<usize>,
+) {
+    // Interior header is 12 bytes (vs a leaf's 8); the cell-pointer array follows,
+    // same layout `read_sqlite_preview`'s leaf scan uses below.
+    let page_off = (page_no - 1) * page_size;
+    let hdr_in_page = hdr_off - page_off;
+    let ptr_space = page_size.saturating_sub(hdr_in_page + 12);
+    let max_cells = ptr_space / 2;
+    let num_cells = match (db.get(hdr_off + 3), db.get(hdr_off + 4)) {
+        (Some(&nh), Some(&nl)) => (u16::from_be_bytes([nh, nl]) as usize).min(max_cells),
+        _ => 0,
+    };
+    for c in 0..num_cells {
+        if stack.len() >= TREE_WALK_BUDGET {
+            break;
+        }
+        let cpo = hdr_off + 12 + c * 2;
+        if let (Some(&h), Some(&l)) = (db.get(cpo), db.get(cpo + 1)) {
+            let cell_off = page_off + u16::from_be_bytes([h, l]) as usize;
+            if let Some(Ok(child)) = db.get(cell_off..cell_off + 4).map(<[u8; 4]>::try_from) {
+                stack.push(u32::from_be_bytes(child) as usize);
+            }
+        }
+    }
+    if stack.len() < TREE_WALK_BUDGET {
+        // The right-most pointer covers keys greater than every cell on this page.
+        if let Some(Ok(rp)) = db.get(hdr_off + 8..hdr_off + 12).map(<[u8; 4]>::try_from) {
+            stack.push(u32::from_be_bytes(rp) as usize);
+        }
+    }
+}
+
 /// Collect every table-LEAF page reachable from `root`, walking table-interior pages
 /// depth-first (iteratively — a hostile file building a long interior chain must not blow the
 /// stack, which panic=abort would turn into a whole-shell crash). `TREE_WALK_BUDGET` bounds
@@ -194,43 +236,7 @@ fn collect_leaf_pages(db: &[u8], page_size: usize, root: usize, out: &mut Vec<us
         };
         match ptype {
             TABLE_LEAF => out.push(page_no),
-            TABLE_INTERIOR => {
-                // Interior header is 12 bytes (vs a leaf's 8); the cell-pointer array follows,
-                // same layout `read_sqlite_preview`'s leaf scan uses below.
-                let page_off = (page_no - 1) * page_size;
-                let hdr_in_page = hdr_off - page_off;
-                let ptr_space = page_size.saturating_sub(hdr_in_page + 12);
-                let max_cells = ptr_space / 2;
-                let num_cells = match (db.get(hdr_off + 3), db.get(hdr_off + 4)) {
-                    (Some(&nh), Some(&nl)) => {
-                        (u16::from_be_bytes([nh, nl]) as usize).min(max_cells)
-                    }
-                    _ => 0,
-                };
-                // Cap total queued work too, not just visited pages: an interior page can fan
-                // out to thousands of children before the budget above ever gets to spend them.
-                for c in 0..num_cells {
-                    if stack.len() >= TREE_WALK_BUDGET {
-                        break;
-                    }
-                    let cpo = hdr_off + 12 + c * 2;
-                    if let (Some(&h), Some(&l)) = (db.get(cpo), db.get(cpo + 1)) {
-                        let cell_off = page_off + u16::from_be_bytes([h, l]) as usize;
-                        if let Some(Ok(child)) =
-                            db.get(cell_off..cell_off + 4).map(<[u8; 4]>::try_from)
-                        {
-                            stack.push(u32::from_be_bytes(child) as usize);
-                        }
-                    }
-                }
-                if stack.len() < TREE_WALK_BUDGET {
-                    // The right-most pointer covers keys greater than every cell on this page.
-                    if let Some(Ok(rp)) = db.get(hdr_off + 8..hdr_off + 12).map(<[u8; 4]>::try_from)
-                    {
-                        stack.push(u32::from_be_bytes(rp) as usize);
-                    }
-                }
-            }
+            TABLE_INTERIOR => queue_interior_children(db, page_size, page_no, hdr_off, &mut stack),
             _ => {}
         }
     }

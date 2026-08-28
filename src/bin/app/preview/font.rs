@@ -46,62 +46,108 @@ fn be32(b: &[u8], o: usize) -> Option<u32> {
         .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
 
-/// Parse the sfnt `name` table for a human display name — full name (id 4), else family (id 1),
-/// preferring the Windows/Unicode (platform 3, UTF-16BE) record. Handles a `.ttc` collection by
-/// reading the first font. `None` if it can't be parsed.
-fn display_name(bytes: &[u8]) -> Option<String> {
+/// Locate the sfnt `name` table's offset, handling a `.ttc` collection by reading the
+/// first font's table directory. `None` if the directory can't be read or has no `name`
+/// table.
+fn find_name_table(bytes: &[u8]) -> Option<usize> {
     let sfnt = if bytes.get(0..4) == Some(b"ttcf") {
         be32(bytes, 12)? as usize
     } else {
         0
     };
     let num_tables = be16(bytes, sfnt + 4)?;
-    let mut name_tbl = None;
     for i in 0..num_tables as usize {
         let e = sfnt + 12 + i * 16;
         if bytes.get(e..e + 4) == Some(b"name") {
-            name_tbl = Some(be32(bytes, e + 8)? as usize);
-            break;
+            return Some(be32(bytes, e + 8)? as usize);
         }
     }
-    let nt = name_tbl?;
+    None
+}
+
+/// Rank of a `name` record: lower is better. Full name (id 4) on the Windows/Unicode
+/// platform (3) wins; family (id 1) on the same platform is next; any other platform's
+/// full name, then anything else.
+fn name_record_rank(name_id: u16, plat: u16) -> u8 {
+    match (name_id, plat) {
+        (4, 3) => 0,
+        (1, 3) => 1,
+        (4, _) => 2,
+        _ => 3,
+    }
+}
+
+/// One `name` record's read outcome: a malformed record aborts the WHOLE scan (matching
+/// the original per-record `?` early return out of the enclosing function, since a name
+/// table this corrupt can't be trusted further), an off-topic name id (not family/full
+/// name) is skipped, and a good record yields `(platform, name id, decoded + trimmed
+/// string)`.
+enum NameRecordOutcome {
+    Malformed,
+    Skip,
+    Value(u16, u16, String),
+}
+
+/// Read + decode one `name` record at byte offset `r`: UTF-16BE for the Unicode
+/// platforms (3, 0), everything else as UTF-8-ish bytes.
+fn read_name_record(bytes: &[u8], str_base: usize, r: usize) -> NameRecordOutcome {
+    let Some(plat) = be16(bytes, r) else {
+        return NameRecordOutcome::Malformed;
+    };
+    let Some(name_id) = be16(bytes, r + 6) else {
+        return NameRecordOutcome::Malformed;
+    };
+    if name_id != 1 && name_id != 4 {
+        return NameRecordOutcome::Skip;
+    }
+    let (Some(len), Some(off)) = (be16(bytes, r + 8), be16(bytes, r + 10)) else {
+        return NameRecordOutcome::Malformed;
+    };
+    let (len, off) = (len as usize, off as usize);
+    let Some(data) = bytes.get(str_base + off..str_base + off + len) else {
+        return NameRecordOutcome::Malformed;
+    };
+    let s = if plat == 3 || plat == 0 {
+        let u16s: Vec<u16> = data
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&u16s)
+    } else {
+        String::from_utf8_lossy(data).into_owned()
+    };
+    NameRecordOutcome::Value(plat, name_id, s.trim().to_string())
+}
+
+/// Walk the `name` table at `nt` and keep the best-ranked family/full-name record.
+fn best_name(bytes: &[u8], nt: usize) -> Option<String> {
     let count = be16(bytes, nt + 2)?;
     let str_base = nt + be16(bytes, nt + 4)? as usize;
     let mut best: Option<(u8, String)> = None; // (rank, name); lower rank = better
     for i in 0..count as usize {
         let r = nt + 6 + i * 12;
-        let plat = be16(bytes, r)?;
-        let name_id = be16(bytes, r + 6)?;
-        if name_id != 1 && name_id != 4 {
-            continue;
-        }
-        let len = be16(bytes, r + 8)? as usize;
-        let off = be16(bytes, r + 10)? as usize;
-        let data = bytes.get(str_base + off..str_base + off + len)?;
-        let s = if plat == 3 || plat == 0 {
-            let u16s: Vec<u16> = data
-                .chunks_exact(2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            String::from_utf16_lossy(&u16s)
-        } else {
-            String::from_utf8_lossy(data).into_owned()
+        let (plat, name_id, s) = match read_name_record(bytes, str_base, r) {
+            NameRecordOutcome::Malformed => return None,
+            NameRecordOutcome::Skip => continue,
+            NameRecordOutcome::Value(plat, name_id, s) => (plat, name_id, s),
         };
-        let s = s.trim().to_string();
         if s.is_empty() {
             continue;
         }
-        let rank = match (name_id, plat) {
-            (4, 3) => 0,
-            (1, 3) => 1,
-            (4, _) => 2,
-            _ => 3,
-        };
+        let rank = name_record_rank(name_id, plat);
         if best.as_ref().is_none_or(|(br, _)| rank < *br) {
             best = Some((rank, s));
         }
     }
     best.map(|(_, s)| s)
+}
+
+/// Parse the sfnt `name` table for a human display name — full name (id 4), else family (id 1),
+/// preferring the Windows/Unicode (platform 3, UTF-16BE) record. Handles a `.ttc` collection by
+/// reading the first font. `None` if it can't be parsed.
+fn display_name(bytes: &[u8]) -> Option<String> {
+    let nt = find_name_table(bytes)?;
+    best_name(bytes, nt)
 }
 
 /// Create a font at cap-height `px` in the given face.

@@ -308,70 +308,87 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
     }
 }
 
+/// Collect the string array at `k` (missing/non-array/non-string entries silently
+/// dropped), for the two tools that take a file list.
+fn want_str_array(args: &Value, k: &str) -> Vec<String> {
+    args.get(k)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `convert`: input/output paths, JPEG/WebP quality, and an optional resize spec.
+fn dispatch_convert(args: &Value) -> Result<String, String> {
+    let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
+    let u64_or = |k: &str, d: u64| args.get(k).and_then(|v| v.as_u64()).unwrap_or(d);
+    let q = u64_or("quality", 90).clamp(1, 100) as u8;
+    let wq = args
+        .get("webp_quality")
+        .and_then(|v| v.as_u64())
+        .map(|w| w.clamp(1, 100) as u8);
+    cli::convert(
+        &need("input")?,
+        &need("output")?,
+        q,
+        wq,
+        cli::parse_resize(want("resize").as_deref())?,
+    )
+}
+
+/// `pdf`: an output path plus the input file list.
+fn dispatch_pdf(args: &Value) -> Result<String, String> {
+    let need = |k: &str| {
+        args.get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("missing string argument '{k}'"))
+    };
+    cli::pdf(&need("output")?, &want_str_array(args, "inputs"))
+}
+
+/// `batch`: an operation name over the input file list, plus the same
+/// output/size/format/quality/resize options `thumbnail`/`convert` take individually.
+fn dispatch_batch(args: &Value) -> Result<String, String> {
+    let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
+    let u64_or = |k: &str, d: u64| args.get(k).and_then(|v| v.as_u64()).unwrap_or(d);
+    let u32_or = |k: &str, d: u64| saturating_u32(u64_or(k, d));
+    cli::batch(
+        &need("op")?,
+        &want_str_array(args, "inputs"),
+        want("out").as_deref(),
+        u32_or("size", 256),
+        want("to").as_deref(),
+        u64_or("quality", 90).clamp(1, 100) as u8,
+        cli::parse_resize(want("resize").as_deref())?,
+    )
+}
+
 /// Map a tool name + arguments to a [`crate::cli`] verb. `Err` = a tool error
 /// (bad/missing args or the verb failing), surfaced to the agent as text.
 fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
     let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
     let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
-    let u64_or = |k: &str, d: u64| args.get(k).and_then(|v| v.as_u64()).unwrap_or(d);
-    let u32_or = |k: &str, d: u64| saturating_u32(u64_or(k, d));
+    let u32_or =
+        |k: &str, d: u64| saturating_u32(args.get(k).and_then(|v| v.as_u64()).unwrap_or(d));
 
     match name {
         "thumbnail" => cli::thumbnail(&need("input")?, &need("output")?, u32_or("size", 256)),
-        "convert" => {
-            let q = u64_or("quality", 90).clamp(1, 100) as u8;
-            let wq = args
-                .get("webp_quality")
-                .and_then(|v| v.as_u64())
-                .map(|w| w.clamp(1, 100) as u8);
-            cli::convert(
-                &need("input")?,
-                &need("output")?,
-                q,
-                wq,
-                cli::parse_resize(want("resize").as_deref())?,
-            )
-        }
+        "convert" => dispatch_convert(args),
         "compress" => cli::compress(&need("input")?, cli::parse_size(&need("max_size")?)?),
         "rotate" => cli::rotate(&need("input")?, &need("by")?),
         "strip" => cli::strip_meta(&need("input")?),
         "ocr" => cli::ocr(&need("input")?),
-        "pdf" => {
-            let inputs: Vec<String> = args
-                .get("inputs")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            cli::pdf(&need("output")?, &inputs)
-        }
+        "pdf" => dispatch_pdf(args),
         "info" => cli::info(&need("input")?, true),
         "formats" => Ok(cli::list_formats(true)),
         "doctor" => Ok(crate::doctor::report(want("file").as_deref())),
-        "batch" => {
-            let op = need("op")?;
-            let inputs: Vec<String> = args
-                .get("inputs")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            cli::batch(
-                &op,
-                &inputs,
-                want("out").as_deref(),
-                u32_or("size", 256),
-                want("to").as_deref(),
-                u64_or("quality", 90).clamp(1, 100) as u8,
-                cli::parse_resize(want("resize").as_deref())?,
-            )
-        }
+        "batch" => dispatch_batch(args),
         "register_status" => cli::register_portable(false, true),
         other => Err(format!("unknown tool '{other}'")),
     }

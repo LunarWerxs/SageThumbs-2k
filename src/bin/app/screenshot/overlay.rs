@@ -421,34 +421,33 @@ unsafe extern "system" fn countdown_wndproc(
     }
 }
 
-unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) {
-    // Claim one shared mutex before any window lookup or screen allocation — see
-    // `claim_single_overlay_slot` for why this closes the TOCTOU race.
-    let Ok(_overlay_lock) = claim_single_overlay_slot(w!("SageThumbs2K.ShotOverlay.Single")) else {
-        return;
-    };
-    // The configured pre-capture delay (0 = none). Never for the automation route, whose
-    // whole contract is deterministic synthetic pixels with no live-desktop interaction.
-    if !automation && !countdown_delay() {
-        return; // Esc during the countdown = the user changed their mind
-    }
+/// The virtual desktop's origin and size, or `None` if either dimension is non-positive
+/// (no monitors attached is the realistic cause).
+unsafe fn virtual_screen_metrics() -> Option<(i32, i32, i32, i32)> {
     let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    if vw <= 0 || vh <= 0 {
-        return;
-    }
-    // Freeze the screen into a memory DC (the normal overlay paints from this, never
-    // the live desktop, so annotations don't fight with what's underneath). The
-    // automation route MUST NOT copy or sample the desktop: it fills every pixel of
-    // the same full-virtual-screen bitmap with a deterministic synthetic canvas.
-    let screen = GetDC(None);
+    (vw > 0 && vh > 0).then_some((vx, vy, vw, vh))
+}
+
+/// Freeze the screen into a memory DC (the normal overlay paints from this, never the
+/// live desktop, so annotations don't fight with what's underneath), or fill it with the
+/// deterministic synthetic automation canvas, since the automation route MUST NOT copy or
+/// sample the desktop. A GDI failure here (object-quota exhaustion is the realistic
+/// cause) must not fall through to SelectObject/BitBlt on a null handle, which paints
+/// "you captured a black screen" instead of a diagnosable failure (A139), so this logs,
+/// releases everything already allocated (`screen` included), and returns `None` instead.
+unsafe fn freeze_screen_to_dc(
+    screen: HDC,
+    vx: i32,
+    vy: i32,
+    vw: i32,
+    vh: i32,
+    automation: bool,
+) -> Option<(HDC, HBITMAP)> {
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, vw, vh);
-    // A GDI failure here (object-quota exhaustion is the realistic cause) must not fall
-    // through to SelectObject/BitBlt on a null handle — that paints "you captured a black
-    // screen" instead of a diagnosable failure (A139).
     if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
         sagethumbs2k_core::safety::log(
             "screenshot: full-screen GDI setup failed, aborting capture",
@@ -462,7 +461,7 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
         if !screen.is_invalid() {
             ReleaseDC(None, screen);
         }
-        return;
+        return None;
     }
     SelectObject(mem, HGDIOBJ(bmp.0));
     if automation {
@@ -473,24 +472,34 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
         // to fix.
         let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
     }
-    // A pre-dimmed copy of the snapshot — paint blits this for the surround (no
-    // per-frame alpha) and blits the bright `mem` through for the selection.
+    Some((mem, bmp))
+}
+
+/// A pre-dimmed copy of the frozen snapshot: paint blits this for the surround (no
+/// per-frame alpha) and blits the bright `mem` through for the selection. Releases
+/// `screen`, which nothing needs any more once both DCs hold their own copy of it.
+unsafe fn build_dimmed_copy(screen: HDC, mem: HDC, vw: i32, vh: i32) -> (HDC, HBITMAP) {
     let dim = CreateCompatibleDC(Some(screen));
     let dim_bmp = CreateCompatibleBitmap(screen, vw, vh);
     SelectObject(dim, HGDIOBJ(dim_bmp.0));
     let _ = BitBlt(dim, 0, 0, vw, vh, Some(mem), 0, 0, SRCCOPY);
     apply_dim(dim, vw, vh);
     ReleaseDC(None, screen);
+    (dim, dim_bmp)
+}
 
-    // Seed the default annotation text size for the DPI of the monitor under the
-    // cursor at capture start (no selection exists yet to source one from). The
-    // user-chosen size from here on stays physical — it's baked into the saved/copied
-    // image — but the starting default should feel the same physical size on a HiDPI
-    // display. Identity at 96 keeps a standard display byte-identical.
+/// The default annotation text size's DPI: the monitor under the cursor at capture start
+/// (no selection exists yet to source one from), so the starting default feels the same
+/// physical size on a HiDPI display, even though the user-chosen size from here on stays
+/// physical (it's baked into the saved/copied image). Identity at 96 keeps a standard
+/// display byte-identical, and is also what the automation route always uses (deterministic,
+/// no live cursor to sample).
+unsafe fn seed_dpi_for_capture(automation: bool) -> i32 {
+    if automation {
+        return 96;
+    }
     let mut cursor = POINT::default();
-    let seed_dpi = if automation {
-        96
-    } else if GetCursorPos(&mut cursor).is_ok() {
+    if GetCursorPos(&mut cursor).is_ok() {
         dpi_for_sel(RECT {
             left: cursor.x,
             top: cursor.y,
@@ -499,9 +508,26 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
         })
     } else {
         96
-    };
+    }
+}
 
-    let state = Box::new(Shot {
+/// Assemble the overlay's initial mutable state from the frozen/dimmed DCs and the
+/// capture-start options.
+#[allow(clippy::too_many_arguments)]
+unsafe fn build_shot_state(
+    mem: HDC,
+    bmp: HBITMAP,
+    dim: HDC,
+    dim_bmp: HBITMAP,
+    vx: i32,
+    vy: i32,
+    vw: i32,
+    vh: i32,
+    automation: bool,
+    ocr_mode: bool,
+    seed_dpi: i32,
+) -> Box<Shot> {
+    Box::new(Shot {
         shot: mem,
         shot_bmp: bmp,
         dimmed: dim,
@@ -561,8 +587,21 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
         // OCR mode even if both flags were somehow passed.
         ocr_mode: ocr_mode && !automation,
         win_hint: None,
-    });
+    })
+}
 
+/// Register the overlay window class (if needed), create the window over the whole
+/// virtual screen, attach `state`, and pump its message loop until it closes.
+#[allow(clippy::too_many_arguments)]
+unsafe fn run_overlay_message_loop(
+    hinst: HINSTANCE,
+    automation: bool,
+    vx: i32,
+    vy: i32,
+    vw: i32,
+    vh: i32,
+    state: Box<Shot>,
+) {
     let class = if automation {
         w!("SageThumbs2KShotAutomation")
     } else {
@@ -623,6 +662,34 @@ unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) 
         let _ = DeleteObject(state.dimmed_bmp.into());
     }
     gdip::shutdown(gdip_token);
+}
+
+unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_mode: bool) {
+    // Claim one shared mutex before any window lookup or screen allocation — see
+    // `claim_single_overlay_slot` for why this closes the TOCTOU race.
+    let Ok(_overlay_lock) = claim_single_overlay_slot(w!("SageThumbs2K.ShotOverlay.Single")) else {
+        return;
+    };
+    // The configured pre-capture delay (0 = none). Never for the automation route, whose
+    // whole contract is deterministic synthetic pixels with no live-desktop interaction.
+    if !automation && !countdown_delay() {
+        return; // Esc during the countdown = the user changed their mind
+    }
+    let Some((vx, vy, vw, vh)) = virtual_screen_metrics() else {
+        return;
+    };
+
+    let screen = GetDC(None);
+    let Some((mem, bmp)) = freeze_screen_to_dc(screen, vx, vy, vw, vh, automation) else {
+        return;
+    };
+    let (dim, dim_bmp) = build_dimmed_copy(screen, mem, vw, vh);
+    let seed_dpi = seed_dpi_for_capture(automation);
+    let state = build_shot_state(
+        mem, bmp, dim, dim_bmp, vx, vy, vw, vh, automation, ocr_mode, seed_dpi,
+    );
+
+    run_overlay_message_loop(hinst, automation, vx, vy, vw, vh, state);
 }
 
 /// Instant capture: grab the WHOLE virtual screen straight to the clipboard + a

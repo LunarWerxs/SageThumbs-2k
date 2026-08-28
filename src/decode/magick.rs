@@ -1081,7 +1081,7 @@ fn pipe_magick_encode(child: &mut std::process::Child, png: Vec<u8>) -> Result<M
 /// Poll the child through the wall-clock deadline, escalating on either a CPU-budget or
 /// wall-clock timeout. EOF on stdout (`rx`) normally means the process is about to
 /// exit, but it is not proof: a hostile/broken child can close stdout early, stop
-/// reading stdin, and stay alive — so this keeps polling the real process on the SAME
+/// reading stdin, and stay alive, so this keeps polling the real process on the SAME
 /// deadline instead of trusting the `rx` signal alone.
 fn wait_for_magick_child(
     child: &mut std::process::Child,

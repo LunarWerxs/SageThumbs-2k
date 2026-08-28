@@ -48,7 +48,7 @@ unsafe fn frame_dc(hdc: HDC, vw: i32, vh: i32) -> HDC {
 }
 
 /// The active selection rect: committed selection, the in-progress drag rectangle, or
-/// (idle, nothing committed) the hovered window's rect shown as a preview — so "a click
+/// (idle, nothing committed) the hovered window's rect shown as a preview, so "a click
 /// captures THIS" is shown rather than explained.
 unsafe fn selection_rect(s: &Shot) -> RECT {
     match s.sel {

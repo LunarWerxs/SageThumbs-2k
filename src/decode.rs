@@ -1342,7 +1342,7 @@ fn try_jp2_reduced_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<D
 }
 
 /// Large JPEG: decode DCT-SCALED instead of decoding every pixel and then throwing almost
-/// all of them away. Exactly the same bargain as the JP2 tier above — ask the codec for a
+/// all of them away. Exactly the same bargain as the JP2 tier above: ask the codec for a
 /// reduced resolution level rather than the full image — and gated the same way, on a
 /// caller that actually wants a thumbnail.
 ///

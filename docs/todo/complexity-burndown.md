@@ -124,6 +124,47 @@ warnings` both clean, and `cargo fmt --all --check` clean (after one `cargo fmt 
 plus a manual fix for a doc-comment left orphaned above the wrong function by one of the
 extractions, caught by the fmt-check diff and by re-reading the file rather than by any tool).
 
+**Tranche 13 (2026-08-28): the next 10 worst rows cleared**, worst first: `shot_paint`
+(screenshot/overlay/paint.rs) split into `selection_rect`, `blit_selection_bright`,
+`paint_annotations`, `paint_selection_chrome`, `paint_eyedropper_loupe`, and
+`blit_frame_to_window`, one per paint phase; `settings_wndproc` (convert.rs), the small
+quality-settings popup dispatcher, split into `settings_popup_on_create`/
+`settings_popup_on_hscroll`/`settings_popup_on_command`/`settings_popup_on_command_ok`, same
+wndproc-dispatcher method as prior tranches; `decode_preview_with_raw_order` (decode.rs)
+split into one `try_*_tier` function per format tier (`try_jp2_reduced_tier`,
+`try_wic_scaled_jpeg_tier`, `try_video_tier`, `try_xcf_tier`, `try_djvu_tier`,
+`try_container_cover_tier`, `try_pdf_tier`), each returning `Option<DynamicImage>` or
+`Option<Result<DynamicImage>>` so a tier that has no answer falls through exactly as the
+original's inline `if`-chain did; `encode_via_magick` (decode/magick.rs) split into
+`magick_encode_target`/`magick_encode_args`/`spawn_magick_child`/`pipe_magick_encode`/
+`wait_for_magick_child`/`finish_magick_encode`, matching the function's own
+prepare/spawn/pipe/wait/finish phases; `doc_append` (preview/markdown/doc.rs) split into
+`doc_append_item`/`doc_append_code`/`doc_append_table` per non-trivial `Block` arm, plus a
+hoisted `runs` helper (was a nested fn); `parse_columns` (preview/dbdoc.rs) split into
+`table_is_without_rowid`, `parse_pk_constraint_list`, `parse_column_def`,
+`column_defs_and_pk` (the walk), and `reorder_without_rowid`; `dispatch_tool` (mcp.rs), an
+MCP tool-name dispatcher, split into `dispatch_convert`/`dispatch_pdf`/`dispatch_batch` per
+non-trivial tool, same wndproc-dispatcher-style method applied to a string match, plus a
+hoisted `want_str_array` helper shared by the two list-taking tools; `collect_leaf_pages`
+(container/clip.rs) split its table-INTERIOR-page arm into `queue_interior_children`;
+`run_capture_inner` (screenshot/overlay.rs) split into `virtual_screen_metrics`,
+`freeze_screen_to_dc`, `build_dimmed_copy`, `seed_dpi_for_capture`, `build_shot_state`, and
+`run_overlay_message_loop`, matching its own setup/freeze/dim/seed/state/message-loop
+phases; `display_name` (preview/font.rs) split into `find_name_table`, `name_record_rank`,
+`read_name_record` (returning a 3-way `NameRecordOutcome`, malformed/skip/value, to
+preserve the original's per-record `?` that aborted the WHOLE scan on a malformed record,
+distinct from the name-id filter that only skips one record), and `best_name` (the walk).
+`scripts/compare-renders.py:main` (cognitive 41/CC 39) was left unchecked: it is a Python
+script, not part of this Rust gate or its `cargo test`/`clippy`/`fmt` verification loop.
+No behavior change anywhere in this tranche. Verified per file (scoped `cargo test`) and at
+the end: `cargo test --lib` (753 passed, 0 failed, 18 ignored, matching baseline) and `cargo
+test --bin SageThumbs2K --features html-preview` (363 passed, matching tranche 12's
+baseline), `cargo clippy --workspace --all-targets --features html-preview -- -D warnings`
+and `cargo clippy --bin SageThumbs2K -- -D warnings` both clean, and `cargo fmt --all
+--check` clean (after one `cargo fmt --all` pass to reflow three call sites/signatures the
+edits left over-width, plus a blank-line fix for a doc comment that picked up a
+`doc_lazy_continuation` clippy lint once moved from a plain `//` comment to a `///` one).
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -418,17 +459,17 @@ before the next release is still recommended.
 |x| 44 | 25 | `read_info_impl` | src/strip.rs:284 |
 |x| 43 | 17 | `paint_lines` | src/bin/app/preview/highlight.rs:91 |
 |x| 43 | 18 | `tiff_has_raw_ifd_marker` | src/streamsrc/rawsniff.rs:192 |
-| | 43 | 29 | `shot_paint` | src/bin/app/screenshot/overlay/paint.rs:50 |
-| | 42 | 22 | `settings_wndproc` | src/bin/app/convert.rs:844 |
-| | 42 | 27 | `decode_preview_with_raw_order` | src/decode.rs:1198 |
-| | 42 | 34 | `encode_via_magick` | src/decode/magick.rs:996 |
-| | 42 | 21 | `doc_append` | src/bin/app/preview/markdown/doc.rs:67 |
-| | 42 | 18 | `parse_columns` | src/bin/app/preview/dbdoc.rs:658 |
+|x| 43 | 29 | `shot_paint` | src/bin/app/screenshot/overlay/paint.rs:50 |
+|x| 42 | 22 | `settings_wndproc` | src/bin/app/convert.rs:844 |
+|x| 42 | 27 | `decode_preview_with_raw_order` | src/decode.rs:1198 |
+|x| 42 | 34 | `encode_via_magick` | src/decode/magick.rs:996 |
+|x| 42 | 21 | `doc_append` | src/bin/app/preview/markdown/doc.rs:67 |
+|x| 42 | 18 | `parse_columns` | src/bin/app/preview/dbdoc.rs:658 |
 | | 41 | 39 | `main` | scripts/compare-renders.py:119 |
-| | 40 | 30 | `dispatch_tool` | src/mcp.rs:313 |
-| | 40 | 13 | `collect_leaf_pages` | src/container/clip.rs:183 |
-| | 39 | 24 | `run_capture_inner` | src/bin/app/screenshot/overlay.rs:424 |
-| | 38 | 25 | `display_name` | src/bin/app/preview/font.rs:52 |
+|x| 40 | 30 | `dispatch_tool` | src/mcp.rs:313 |
+|x| 40 | 13 | `collect_leaf_pages` | src/container/clip.rs:183 |
+|x| 39 | 24 | `run_capture_inner` | src/bin/app/screenshot/overlay.rs:424 |
+|x| 38 | 25 | `display_name` | src/bin/app/preview/font.rs:52 |
 | | 38 | 23 | `start_convert` | src/bin/app/convert.rs:633 |
 | | 38 | 36 | `extract_cover` | src/container/mod.rs:291 |
 | | 38 | 22 | `convert_wndproc` | src/bin/app/convert.rs:1042 |

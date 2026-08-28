@@ -68,7 +68,7 @@ fn runs(doc: &mut String, runs: &[Run]) -> Vec<usize> {
 }
 
 /// A list item: indent, the bullet/number marker, an optional GFM task checkbox, then its
-/// runs. Two spaces per level — the nesting the pane DRAWS (`sc(22) * (depth + 1)`) has to
+/// runs. Two spaces per level: the nesting the pane DRAWS (`sc(22) * (depth + 1)`) has to
 /// survive the copy or every sub-bullet pastes flat at the top level.
 fn doc_append_item(
     doc: &mut String,
