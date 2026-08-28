@@ -34,6 +34,58 @@ pub(super) fn pt(lparam: LPARAM) -> POINT {
     }
 }
 
+/// Is `h` even a candidate: not our own overlay, visible, not minimized (a minimized
+/// window's rect is a parked -32000 fiction), and not DWM-cloaked (a UWP app suspended on
+/// another virtual desktop LOOKS visible to `IsWindowVisible` but draws nothing — a hint
+/// that selected it would capture whatever is behind it)?
+unsafe fn window_is_candidate(h: HWND, overlay: HWND) -> bool {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+    if h == overlay || !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+        return false;
+    }
+    let mut cloaked: u32 = 0;
+    let _ = DwmGetWindowAttribute(
+        h,
+        DWMWA_CLOAKED,
+        &mut cloaked as *mut _ as *mut core::ffi::c_void,
+        core::mem::size_of::<u32>() as u32,
+    );
+    cloaked == 0
+}
+
+/// `h`'s visual bounds: `DWMWA_EXTENDED_FRAME_BOUNDS` when DWM answers it, else
+/// `GetWindowRect`. The DWM value is preferred because `GetWindowRect` includes the
+/// invisible resize borders Windows 10+ draws the drop shadow in, which reads as "the
+/// capture grabbed a margin of the window behind it".
+unsafe fn window_visual_bounds(h: HWND) -> Option<RECT> {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    let mut r = RECT::default();
+    if DwmGetWindowAttribute(
+        h,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &mut r as *mut _ as *mut core::ffi::c_void,
+        core::mem::size_of::<RECT>() as u32,
+    )
+    .is_ok()
+    {
+        return Some(r);
+    }
+    GetWindowRect(h, &mut r).ok().map(|_| r)
+}
+
+/// Back to client space, clamped to the overlay (a window can hang off-screen). `None` when
+/// the clamp collapses the rect to nothing.
+fn clamp_to_overlay(r: RECT, vx: i32, vy: i32, vw: i32, vh: i32) -> Option<RECT> {
+    let c = RECT {
+        left: (r.left - vx).clamp(0, vw),
+        top: (r.top - vy).clamp(0, vh),
+        right: (r.right - vx).clamp(0, vw),
+        bottom: (r.bottom - vy).clamp(0, vh),
+    };
+    (c.right > c.left && c.bottom > c.top).then_some(c)
+}
+
 /// The top-level window under client point `p`, as a client-space rect clamped to the
 /// overlay — or `None` over the bare desktop. Drives the click-a-window capture: hovering
 /// previews this rect, a sub-threshold "drag" (a click) selects it.
@@ -45,14 +97,9 @@ pub(super) fn pt(lparam: LPARAM) -> POINT {
 /// window WAS at freeze time, and background windows cannot move while a topmost overlay
 /// owns the foreground.
 ///
-/// Skips, in the order they bite: our own overlay, invisible windows, minimized windows
-/// (their rect is a parked -32000 fiction), DWM-cloaked windows (UWP apps suspended on
-/// another virtual desktop LOOK visible to `IsWindowVisible` but draw nothing — a hint
-/// that selects an invisible window would capture whatever is behind it), and the desktop
-/// shell pair (Progman/WorkerW — "the desktop" is not a window pick, drag instead).
-/// The rect is `DWMWA_EXTENDED_FRAME_BOUNDS` — the visual bounds — because `GetWindowRect`
-/// includes the invisible resize borders Windows 10+ draws the drop shadow in, which reads
-/// as "the capture grabbed a margin of the window behind it".
+/// Skips, in the order they bite: our own overlay/invisible/minimized/cloaked windows (see
+/// [`window_is_candidate`]), and the desktop shell pair (Progman/WorkerW — "the desktop" is
+/// not a window pick, drag instead).
 unsafe fn window_under(
     overlay: HWND,
     vx: i32,
@@ -61,11 +108,8 @@ unsafe fn window_under(
     vh: i32,
     p: POINT,
 ) -> Option<RECT> {
-    use windows::Win32::Graphics::Dwm::{
-        DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
-    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetTopWindow, GetWindow, IsIconic, IsWindowVisible, GW_HWNDNEXT,
+        GetClassNameW, GetTopWindow, GetWindow, GW_HWNDNEXT,
     };
     let screen = POINT {
         x: p.x + vx,
@@ -74,34 +118,14 @@ unsafe fn window_under(
     let mut h = GetTopWindow(None).ok()?;
     loop {
         let next = || GetWindow(h, GW_HWNDNEXT).ok();
-        if h == overlay || !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+        if !window_is_candidate(h, overlay) {
             h = next()?;
             continue;
         }
-        let mut cloaked: u32 = 0;
-        let _ = DwmGetWindowAttribute(
-            h,
-            DWMWA_CLOAKED,
-            &mut cloaked as *mut _ as *mut core::ffi::c_void,
-            core::mem::size_of::<u32>() as u32,
-        );
-        if cloaked != 0 {
+        let Some(r) = window_visual_bounds(h) else {
             h = next()?;
             continue;
-        }
-        let mut r = RECT::default();
-        if DwmGetWindowAttribute(
-            h,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            &mut r as *mut _ as *mut core::ffi::c_void,
-            core::mem::size_of::<RECT>() as u32,
-        )
-        .is_err()
-            && GetWindowRect(h, &mut r).is_err()
-        {
-            h = next()?;
-            continue;
-        }
+        };
         if screen.x < r.left || screen.x >= r.right || screen.y < r.top || screen.y >= r.bottom {
             h = next()?;
             continue;
@@ -114,14 +138,7 @@ unsafe fn window_under(
         if name == "Progman" || name == "WorkerW" {
             return None;
         }
-        // Back to client space, clamped to the overlay (a window can hang off-screen).
-        let c = RECT {
-            left: (r.left - vx).clamp(0, vw),
-            top: (r.top - vy).clamp(0, vh),
-            right: (r.right - vx).clamp(0, vw),
-            bottom: (r.bottom - vy).clamp(0, vh),
-        };
-        return (c.right > c.left && c.bottom > c.top).then_some(c);
+        return clamp_to_overlay(r, vx, vy, vw, vh);
     }
 }
 

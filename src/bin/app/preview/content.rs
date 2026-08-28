@@ -1017,6 +1017,89 @@ fn truncate_long_lines(text: &str, max: usize) -> String {
         .join("\n")
 }
 
+/// Formats that stream + downscale off the file handle (OpenEXR) skip the read entirely — a
+/// 12K render pass is past every in-memory cap. Never animated, so this can post the
+/// single-frame result straight away. Returns `true` when it did.
+unsafe fn try_post_streamed(hwnd: HWND, gen: u64, path: &str) -> bool {
+    let Some(decoded) = streamed_decode(path) else {
+        return false;
+    };
+    post_render(hwnd, gen, Some(std::sync::Arc::new(decoded)));
+    true
+}
+
+/// CODEC-SCALED DECODE, ahead of the read, for a non-animated format: when this succeeds
+/// nothing else needs the file's bytes at all, so reading them first would be pure waste.
+/// …and STOPS there. The full decode is deferred until something actually needs those pixels,
+/// which for a fit view is never: the pane shows about a megapixel and this holds up to 2048
+/// on the long edge. Measured, 12 MP JPEG: 59 ms here against 250 ms for the full decode, so
+/// an arrow step stops paying the 250 ms at all.
+///
+/// What makes deferring SAFE rather than a downgrade is `DecodedRgba::nat`: the pixels are
+/// small but the render still reports the real image size, so the caption, the window sizing
+/// and "100%" are unchanged. `window::ensure_full_for_zoom` fetches the real thing the moment
+/// a zoom asks for more detail than this holds.
+///
+/// Only reached for codecs that genuinely decode small (JPEG's DCT reduction); anything else
+/// returns `false` and the caller falls through to the full decode unchanged.
+unsafe fn try_post_quick_first_paint(hwnd: HWND, gen: u64, path: &str) -> bool {
+    let Some(quick) = display_scaled_first_paint(path) else {
+        return false;
+    };
+    let quick = std::sync::Arc::new(quick);
+    cache_put(path, std::sync::Arc::clone(&quick));
+    post_render(hwnd, gen, Some(quick));
+    true
+}
+
+/// Post an animated frame list as `WM_APP_ANIM`.
+unsafe fn post_anim(hwnd: HWND, gen: u64, frames: Vec<(DecodedRgba, u32)>) {
+    let payload: Box<(u64, Vec<(DecodedRgba, u32)>)> = Box::new((gen, frames));
+    let raw = Box::into_raw(payload);
+    if PostMessageW(
+        Some(hwnd),
+        WM_APP_ANIM,
+        WPARAM(gen as usize),
+        LPARAM(raw as isize),
+    )
+    .is_err()
+    {
+        drop(Box::from_raw(raw));
+    }
+}
+
+/// Animated GIF/APNG/animated-WebP → post the whole frame list. A static file of the same
+/// extension has no frames here and falls through to the single-frame path. Returns `true`
+/// when a frame list was posted.
+unsafe fn try_post_animation(hwnd: HWND, gen: u64, bytes: Option<&[u8]>, ext: &str) -> bool {
+    let Some(bytes) = bytes else {
+        return false;
+    };
+    let Some(frames) = super::anim::decode_animation(bytes, ext) else {
+        return false;
+    };
+    post_anim(hwnd, gen, frames);
+    true
+}
+
+/// Decode `bytes` as a static image, cache + post it, and return the shown `(w, h)` for the
+/// PSD/PSB sharpen chase below, or `None` if the decode failed.
+unsafe fn decode_and_post_static(
+    hwnd: HWND,
+    gen: u64,
+    path: &str,
+    bytes: Option<std::sync::Arc<Vec<u8>>>,
+) -> Option<(i32, i32)> {
+    let decoded = bytes.and_then(decode_loaded).map(std::sync::Arc::new);
+    // Cache and hand over the SAME allocation — one decode, no copy of the pixels.
+    let shown = decoded.as_ref().map(|d| (d.w, d.h));
+    if let Some(d) = &decoded {
+        cache_put(path, std::sync::Arc::clone(d));
+    }
+    post_render(hwnd, gen, decoded);
+    shown
+}
+
 /// Kick off an async decode of `path` on a detached worker thread. The result (or `None`
 /// on failure/timeout) is posted back to `hwnd` as `WM_APP_RENDER` carrying a boxed
 /// `(gen, Option<SharedRgba>)`; `gen` lets the UI thread drop a stale result after the
@@ -1039,23 +1122,7 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
         if abandoned(gen) {
             return;
         }
-        // Formats that stream + downscale off the file handle (OpenEXR) skip the read
-        // entirely — a 12K render pass is past every in-memory cap. Never animated, so
-        // this can post the single-frame result straight away.
-        if let Some(decoded) = streamed_decode(&path) {
-            let payload: Box<(u64, Option<SharedRgba>)> =
-                Box::new((gen, Some(std::sync::Arc::new(decoded))));
-            let raw = Box::into_raw(payload);
-            if PostMessageW(
-                Some(hwnd),
-                WM_APP_RENDER,
-                WPARAM(gen as usize),
-                LPARAM(raw as isize),
-            )
-            .is_err()
-            {
-                drop(Box::from_raw(raw));
-            }
+        if try_post_streamed(hwnd, gen, &path) {
             return;
         }
         let ext = std::path::Path::new(&path)
@@ -1063,36 +1130,17 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        // CODEC-SCALED DECODE, ahead of the read: when this succeeds nothing else needs the
-        // file's bytes at all, so reading them first would be pure waste.
-        //
-        // The animated extensions are excluded rather than ordered around. They need the bytes
-        // for the frame probe below regardless, and none of them is a codec that decodes small,
-        // so nothing is given up. That exclusion also preserves the rule this path was built
-        // under: an animated file posts `WM_APP_ANIM` and returns, and posting a still render
-        // as well left the window with two render paths half-applied, which crashed outright on
-        // a 24 MP PNG (access violation, found by `--bench-nav` at exactly the step that
-        // reaches it). Keeping the two mutually exclusive is what makes that unrepresentable.
-        if !matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
-            // …and STOPS there. The full decode is deferred until something actually needs
-            // those pixels, which for a fit view is never: the pane shows about a megapixel and
-            // this holds up to 2048 on the long edge. Measured, 12 MP JPEG: 59 ms here against
-            // 250 ms for the full decode, so an arrow step stops paying the 250 ms at all.
-            //
-            // What makes deferring SAFE rather than a downgrade is `DecodedRgba::nat`: the
-            // pixels are small but the render still reports the real image size, so the
-            // caption, the window sizing and "100%" are unchanged.
-            // `window::ensure_full_for_zoom` fetches the real thing the moment a zoom asks for
-            // more detail than this holds.
-            //
-            // Only reached for codecs that genuinely decode small (JPEG's DCT reduction);
-            // anything else returns `None` and falls through to the full decode unchanged.
-            if let Some(quick) = display_scaled_first_paint(&path) {
-                let quick = std::sync::Arc::new(quick);
-                cache_put(&path, std::sync::Arc::clone(&quick));
-                post_render(hwnd, gen, Some(quick));
-                return;
-            }
+        // The animated extensions are excluded from the quick codec-scaled path rather than
+        // ordered around it. They need the bytes for the frame probe below regardless, and
+        // none of them is a codec that decodes small, so nothing is given up. That exclusion
+        // also preserves the rule this path was built under: an animated file posts
+        // `WM_APP_ANIM` and returns, and posting a still render as well left the window with
+        // two render paths half-applied, which crashed outright on a 24 MP PNG (access
+        // violation, found by `--bench-nav` at exactly the step that reaches it). Keeping the
+        // two mutually exclusive is what makes that unrepresentable.
+        let animated_ext = matches!(ext.as_str(), "gif" | "png" | "apng" | "webp");
+        if !animated_ext && try_post_quick_first_paint(hwnd, gen, &path) {
+            return;
         }
         // One bounded/path-aware read for BOTH the animation probe and static fallback.
         // This also gives the standalone viewer the core's PSD/PSB/Blender head-preview and
@@ -1103,37 +1151,11 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
         let bytes = sagethumbs2k_core::decode::read_preview_capped(&path)
             .ok()
             .map(std::sync::Arc::new);
-        // Animated GIF/APNG/animated-WebP → post the whole frame list (WM_APP_ANIM). A static
-        // file of the same extension returns None and falls through to the single-frame path.
-        if matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
-            if let Some(bytes) = bytes.as_deref() {
-                if let Some(frames) = super::anim::decode_animation(bytes, &ext) {
-                    let payload: Box<(u64, Vec<(DecodedRgba, u32)>)> = Box::new((gen, frames));
-                    let raw = Box::into_raw(payload);
-                    if PostMessageW(
-                        Some(hwnd),
-                        WM_APP_ANIM,
-                        WPARAM(gen as usize),
-                        LPARAM(raw as isize),
-                    )
-                    .is_err()
-                    {
-                        drop(Box::from_raw(raw));
-                    }
-                    return;
-                }
-            }
+        if animated_ext && try_post_animation(hwnd, gen, bytes.as_deref().map(Vec::as_slice), &ext)
+        {
+            return;
         }
-        let decoded = bytes
-            .clone()
-            .and_then(decode_loaded)
-            .map(std::sync::Arc::new);
-        // Cache and hand over the SAME allocation — one decode, no copy of the pixels.
-        let shown = decoded.as_ref().map(|d| (d.w, d.h));
-        if let Some(d) = &decoded {
-            cache_put(&path, std::sync::Arc::clone(d));
-        }
-        post_render(hwnd, gen, decoded);
+        let shown = decode_and_post_static(hwnd, gen, &path, bytes.clone());
         // The fast preview is now on screen. For PSD/PSB that preview is Photoshop's small
         // baked-in thumbnail, so chase it with the real composite and post a SECOND result.
         // Two-stage on purpose: the composite shells out to ImageMagick and can take seconds,

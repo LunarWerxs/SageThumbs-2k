@@ -308,65 +308,54 @@ fn check_legacy_install(r: &mut Report) {
     }
 }
 
-/// The COM half: is each coclass registered, does its DLL exist, and will it load.
-fn check_registration(r: &mut Report) -> bool {
-    r.head("COM registration");
-    check_legacy_install(r);
-
-    let mut thumb_ok = true;
-    let handlers = [
-        ("Thumbnail provider", CLSID_THUMBNAIL_PROVIDER_STR, true),
-        ("Context menu (classic)", CLSID_CONTEXT_MENU_STR, false),
-        ("Preview handler", CLSID_PREVIEW_HANDLER_STR, false),
-        ("Property handler", CLSID_PROPERTY_STORE_STR, false),
-    ];
-
-    for (name, clsid, critical) in handlers {
-        match inproc_path(clsid) {
-            None => {
-                if critical {
-                    thumb_ok = false;
-                    r.fail_with_fix(
-                        name,
-                        "NOT REGISTERED (no InprocServer32)",
-                        "Reinstall, or run an elevated: \
-                         regsvr32 \"C:\\Program Files\\SageThumbs2K\\sagethumbs2k.dll\"",
-                    );
-                } else {
-                    r.line(S::Warn, name, "not registered");
-                }
+/// Check one COM handler's registration/load status, writing to the report as it goes.
+/// Returns `false` only when this handler is BOTH critical and broken (unregistered, missing
+/// DLL, or fails to load); a non-critical handler always returns `true` regardless of state.
+fn check_one_handler(r: &mut Report, name: &str, clsid: &str, critical: bool) -> bool {
+    match inproc_path(clsid) {
+        None => {
+            if critical {
+                r.fail_with_fix(
+                    name,
+                    "NOT REGISTERED (no InprocServer32)",
+                    "Reinstall, or run an elevated: \
+                     regsvr32 \"C:\\Program Files\\SageThumbs2K\\sagethumbs2k.dll\"",
+                );
+                false
+            } else {
+                r.line(S::Warn, name, "not registered");
+                true
             }
-            Some(p) => {
-                let path = PathBuf::from(&p);
-                if !path.exists() {
-                    if critical {
-                        thumb_ok = false;
-                    }
-                    r.fail_with_fix(
-                        name,
-                        &format!("registered -> {p} (FILE MISSING)"),
-                        "The registration points at a DLL that is not there — reinstall.",
-                    );
-                } else if let Err(e) = can_load(&path) {
-                    if critical {
-                        thumb_ok = false;
-                    }
-                    r.fail_with_fix(
-                        name,
-                        &format!("DLL WILL NOT LOAD: {e}"),
-                        "Windows cannot load the extension, so the shell silently shows \
-                         plain icons. Usually a missing Microsoft Visual C++ Redistributable \
-                         (x64) — install it and retry.",
-                    );
-                } else {
-                    r.line(S::Ok, name, &format!("registered, loads OK -> {p}"));
-                }
+        }
+        Some(p) => {
+            let path = PathBuf::from(&p);
+            if !path.exists() {
+                r.fail_with_fix(
+                    name,
+                    &format!("registered -> {p} (FILE MISSING)"),
+                    "The registration points at a DLL that is not there — reinstall.",
+                );
+                !critical
+            } else if let Err(e) = can_load(&path) {
+                r.fail_with_fix(
+                    name,
+                    &format!("DLL WILL NOT LOAD: {e}"),
+                    "Windows cannot load the extension, so the shell silently shows \
+                     plain icons. Usually a missing Microsoft Visual C++ Redistributable \
+                     (x64) — install it and retry.",
+                );
+                !critical
+            } else {
+                r.line(S::Ok, name, &format!("registered, loads OK -> {p}"));
+                true
             }
         }
     }
+}
 
-    // The Approved list is mandatory on locked-down / policy-managed machines and is
-    // silently enforced: an unapproved extension is simply never loaded.
+/// The Approved list is mandatory on locked-down / policy-managed machines and is silently
+/// enforced: an unapproved extension is simply never loaded.
+fn check_approved_list(r: &mut Report) {
     let approved = LOCAL_MACHINE.open(APPROVED).ok();
     for (name, clsid) in [
         ("Approved: thumbnail", CLSID_THUMBNAIL_PROVIDER_STR),
@@ -384,6 +373,28 @@ fn check_registration(r: &mut Report) -> bool {
             r.line(S::Warn, name, "not in the Approved Shell Extensions list");
         }
     }
+}
+
+/// The COM half: is each coclass registered, does its DLL exist, and will it load.
+fn check_registration(r: &mut Report) -> bool {
+    r.head("COM registration");
+    check_legacy_install(r);
+
+    let mut thumb_ok = true;
+    let handlers = [
+        ("Thumbnail provider", CLSID_THUMBNAIL_PROVIDER_STR, true),
+        ("Context menu (classic)", CLSID_CONTEXT_MENU_STR, false),
+        ("Preview handler", CLSID_PREVIEW_HANDLER_STR, false),
+        ("Property handler", CLSID_PROPERTY_STORE_STR, false),
+    ];
+
+    for (name, clsid, critical) in handlers {
+        if !check_one_handler(r, name, clsid, critical) {
+            thumb_ok = false;
+        }
+    }
+
+    check_approved_list(r);
 
     thumb_ok
 }
