@@ -828,7 +828,15 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
     } = parse_headers(d)?;
 
     let (mcus_x, mcus_y) = alloc_grids(width, height, &mut comps)?;
-    decode_scan(d, scan_start, &huff, restart_interval, mcus_x, mcus_y, &mut comps)?;
+    decode_scan(
+        d,
+        scan_start,
+        &huff,
+        restart_interval,
+        mcus_x,
+        mcus_y,
+        &mut comps,
+    )?;
 
     let (out_w, out_h) = apply_transform(&mut comps, op, width, height);
     let transpose = matches!(op, Op::Rot90 | Op::Rot270);

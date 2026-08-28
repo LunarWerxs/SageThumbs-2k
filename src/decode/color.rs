@@ -597,129 +597,130 @@ pub(super) fn undo_wic_high_depth_curve(img: DynamicImage) -> DynamicImage {
 /// This is deliberately a bounded, association-aware box walk rather than a
 /// byte search: an exact `auxC` property must be assigned to an item by `ipma`,
 /// and that item must be an `auxl` auxiliary of the primary (`pitm`) item.
+/// Parse a complete ISOBMFF box sequence, retaining at most the small, bounded
+/// metadata tree `isobmff_has_hevc_aux_alpha` needs. A malformed sibling makes
+/// the whole predicate decline rather than attempting to recover into media
+/// payload.
+fn isobmff_boxes<'a>(buf: &'a [u8], boxes_left: &mut usize) -> Option<Vec<([u8; 4], &'a [u8])>> {
+    let mut p = 0usize;
+    let mut out = Vec::new();
+    while p != buf.len() {
+        if *boxes_left == 0 || buf.len() - p < 8 {
+            return None;
+        }
+        *boxes_left -= 1;
+
+        let size32 = u32::from_be_bytes(buf.get(p..p + 4)?.try_into().ok()?);
+        let typ = buf.get(p + 4..p + 8)?.try_into().ok()?;
+        let extended = if size32 == 1 {
+            Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
+        } else {
+            None
+        };
+        let (size, header_len) = crate::container::boxhdr::decode_box_size(
+            size32,
+            extended,
+            p as u64,
+            buf.len() as u64,
+        )?;
+        let (size, header_len) = (size as usize, header_len as usize);
+        let end = p + size;
+        let body = buf.get(p + header_len..end)?;
+        out.push((typ, body));
+        p = end;
+    }
+    Some(out)
+}
+
+fn isobmff_item_id(body: &[u8], version: u8, p: &mut usize) -> Option<u32> {
+    let id = match version {
+        0 => u16::from_be_bytes(body.get(*p..*p + 2)?.try_into().ok()?) as u32,
+        1 => u32::from_be_bytes(body.get(*p..*p + 4)?.try_into().ok()?),
+        _ => return None,
+    };
+    *p += if version == 0 { 2 } else { 4 };
+    Some(id)
+}
+
+fn isobmff_associated_items(
+    body: &[u8],
+    property_count: usize,
+    alpha_properties: &[usize],
+) -> Option<Vec<u32>> {
+    let version = *body.first()?;
+    if version > 1 {
+        return None;
+    }
+    let flags = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]);
+    let large_indices = flags & 1 != 0;
+    let count = u32::from_be_bytes(body.get(4..8)?.try_into().ok()?) as usize;
+    let min_entry_len = if version == 0 { 3 } else { 5 }; // item ID + association count
+    if count > body.len().saturating_sub(8) / min_entry_len {
+        return None;
+    }
+    let mut p = 8usize;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let id = isobmff_item_id(body, version, &mut p)?;
+        let associations = *body.get(p)? as usize;
+        p += 1;
+        let mut has_alpha_property = false;
+        for _ in 0..associations {
+            let raw = if large_indices {
+                let raw = u16::from_be_bytes(body.get(p..p + 2)?.try_into().ok()?);
+                p += 2;
+                (raw & 0x7FFF) as usize
+            } else {
+                let raw = *body.get(p)?;
+                p += 1;
+                (raw & 0x7F) as usize
+            };
+            // Property index 0 is reserved; a value past ipco is malformed.
+            if raw == 0 || raw > property_count {
+                return None;
+            }
+            has_alpha_property |= alpha_properties.contains(&raw);
+        }
+        if has_alpha_property {
+            out.push(id);
+        }
+    }
+    (p == body.len()).then_some(out)
+}
+
+fn isobmff_auxl_targets_primary(
+    body: &[u8],
+    alpha_items: &[u32],
+    primary: u32,
+    boxes_left: &mut usize,
+) -> Option<bool> {
+    let version = *body.first()?;
+    if version > 1 {
+        return None;
+    }
+    let mut found = false;
+    for (typ, reference) in isobmff_boxes(body.get(4..)?, boxes_left)? {
+        if typ != *b"auxl" {
+            continue;
+        }
+        let mut p = 0usize;
+        let from = isobmff_item_id(reference, version, &mut p)?;
+        let count = u16::from_be_bytes(reference.get(p..p + 2)?.try_into().ok()?) as usize;
+        p += 2;
+        for _ in 0..count {
+            let target = isobmff_item_id(reference, version, &mut p)?;
+            found |= alpha_items.contains(&from) && target == primary;
+        }
+        if p != reference.len() {
+            return None;
+        }
+    }
+    Some(found)
+}
+
 pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
     const HEVC_ALPHA_AUX_TYPE: &[u8] = b"urn:mpeg:hevc:2015:auxid:1";
     const MAX_BOXES: usize = 512;
-
-    /// Parse a complete box sequence, retaining at most the small, bounded
-    /// metadata tree this predicate needs. A malformed sibling makes the whole
-    /// predicate decline rather than attempting to recover into media payload.
-    fn boxes<'a>(buf: &'a [u8], boxes_left: &mut usize) -> Option<Vec<([u8; 4], &'a [u8])>> {
-        let mut p = 0usize;
-        let mut out = Vec::new();
-        while p != buf.len() {
-            if *boxes_left == 0 || buf.len() - p < 8 {
-                return None;
-            }
-            *boxes_left -= 1;
-
-            let size32 = u32::from_be_bytes(buf.get(p..p + 4)?.try_into().ok()?);
-            let typ = buf.get(p + 4..p + 8)?.try_into().ok()?;
-            let extended = if size32 == 1 {
-                Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
-            } else {
-                None
-            };
-            let (size, header_len) = crate::container::boxhdr::decode_box_size(
-                size32,
-                extended,
-                p as u64,
-                buf.len() as u64,
-            )?;
-            let (size, header_len) = (size as usize, header_len as usize);
-            let end = p + size;
-            let body = buf.get(p + header_len..end)?;
-            out.push((typ, body));
-            p = end;
-        }
-        Some(out)
-    }
-
-    fn item_id(body: &[u8], version: u8, p: &mut usize) -> Option<u32> {
-        let id = match version {
-            0 => u16::from_be_bytes(body.get(*p..*p + 2)?.try_into().ok()?) as u32,
-            1 => u32::from_be_bytes(body.get(*p..*p + 4)?.try_into().ok()?),
-            _ => return None,
-        };
-        *p += if version == 0 { 2 } else { 4 };
-        Some(id)
-    }
-
-    fn associated_items(
-        body: &[u8],
-        property_count: usize,
-        alpha_properties: &[usize],
-    ) -> Option<Vec<u32>> {
-        let version = *body.first()?;
-        if version > 1 {
-            return None;
-        }
-        let flags = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]);
-        let large_indices = flags & 1 != 0;
-        let count = u32::from_be_bytes(body.get(4..8)?.try_into().ok()?) as usize;
-        let min_entry_len = if version == 0 { 3 } else { 5 }; // item ID + association count
-        if count > body.len().saturating_sub(8) / min_entry_len {
-            return None;
-        }
-        let mut p = 8usize;
-        let mut out = Vec::new();
-        for _ in 0..count {
-            let id = item_id(body, version, &mut p)?;
-            let associations = *body.get(p)? as usize;
-            p += 1;
-            let mut has_alpha_property = false;
-            for _ in 0..associations {
-                let raw = if large_indices {
-                    let raw = u16::from_be_bytes(body.get(p..p + 2)?.try_into().ok()?);
-                    p += 2;
-                    (raw & 0x7FFF) as usize
-                } else {
-                    let raw = *body.get(p)?;
-                    p += 1;
-                    (raw & 0x7F) as usize
-                };
-                // Property index 0 is reserved; a value past ipco is malformed.
-                if raw == 0 || raw > property_count {
-                    return None;
-                }
-                has_alpha_property |= alpha_properties.contains(&raw);
-            }
-            if has_alpha_property {
-                out.push(id);
-            }
-        }
-        (p == body.len()).then_some(out)
-    }
-
-    fn auxl_targets_primary(
-        body: &[u8],
-        alpha_items: &[u32],
-        primary: u32,
-        boxes_left: &mut usize,
-    ) -> Option<bool> {
-        let version = *body.first()?;
-        if version > 1 {
-            return None;
-        }
-        let mut found = false;
-        for (typ, reference) in boxes(body.get(4..)?, boxes_left)? {
-            if typ != *b"auxl" {
-                continue;
-            }
-            let mut p = 0usize;
-            let from = item_id(reference, version, &mut p)?;
-            let count = u16::from_be_bytes(reference.get(p..p + 2)?.try_into().ok()?) as usize;
-            p += 2;
-            for _ in 0..count {
-                let target = item_id(reference, version, &mut p)?;
-                found |= alpha_items.contains(&from) && target == primary;
-            }
-            if p != reference.len() {
-                return None;
-            }
-        }
-        Some(found)
-    }
 
     // A structurally valid FileTypeBox must lead the file. Its body is major
     // brand + minor version, followed by zero or more compatible brands.
@@ -739,7 +740,7 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
     }
 
     let mut boxes_left = MAX_BOXES;
-    let top = match boxes(bytes, &mut boxes_left) {
+    let top = match isobmff_boxes(bytes, &mut boxes_left) {
         Some(boxes) => boxes,
         None => return false,
     };
@@ -747,7 +748,10 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
         Some((_, body)) => *body,
         None => return false,
     };
-    let children = match meta.get(4..).and_then(|body| boxes(body, &mut boxes_left)) {
+    let children = match meta
+        .get(4..)
+        .and_then(|body| isobmff_boxes(body, &mut boxes_left))
+    {
         Some(boxes) => boxes,
         None => return false,
     };
@@ -758,7 +762,7 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
                 _ => return false,
             };
             let mut p = 4usize;
-            match item_id(body, version, &mut p) {
+            match isobmff_item_id(body, version, &mut p) {
                 Some(id) if p == body.len() => id,
                 _ => return false,
             }
@@ -769,7 +773,7 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
         Some((_, body)) => *body,
         None => return false,
     };
-    let properties = match boxes(iprp, &mut boxes_left) {
+    let properties = match isobmff_boxes(iprp, &mut boxes_left) {
         Some(boxes) => boxes,
         None => return false,
     };
@@ -777,7 +781,7 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
         Some((_, body)) => *body,
         None => return false,
     };
-    let ipco_properties = match boxes(ipco, &mut boxes_left) {
+    let ipco_properties = match isobmff_boxes(ipco, &mut boxes_left) {
         Some(boxes) => boxes,
         None => return false,
     };
@@ -800,7 +804,8 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
         Some((_, body)) => *body,
         None => return false,
     };
-    let alpha_items = match associated_items(ipma, ipco_properties.len(), &alpha_properties) {
+    let alpha_items = match isobmff_associated_items(ipma, ipco_properties.len(), &alpha_properties)
+    {
         Some(items) if !items.is_empty() => items,
         _ => return false,
     };
@@ -808,7 +813,7 @@ pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
         .iter()
         .filter(|(typ, _)| typ == b"iref")
         .try_fold(false, |found, (_, body)| {
-            auxl_targets_primary(body, &alpha_items, primary, &mut boxes_left)
+            isobmff_auxl_targets_primary(body, &alpha_items, primary, &mut boxes_left)
                 .map(|matches| found || matches)
         })
         .unwrap_or(false)

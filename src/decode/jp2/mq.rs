@@ -494,11 +494,28 @@ pub(super) fn decode_code_block(
         let plane_bit = 1i32 << bitplane;
         match pass_kind {
             0 => significance_pass(
-                &mut mq, &mut flags, &mut coeffs, &mut neg, band, w, h, sw, plane_bit,
+                &mut mq,
+                &mut flags,
+                &mut coeffs,
+                &mut neg,
+                band,
+                w,
+                h,
+                sw,
+                plane_bit,
             ),
             1 => refinement_pass(&mut mq, &mut flags, &mut coeffs, w, h, sw, plane_bit),
             _ => cleanup_pass(
-                &mut mq, &mut flags, &mut coeffs, &mut neg, band, w, h, sw, plane_bit, segsym,
+                &mut mq,
+                &mut flags,
+                &mut coeffs,
+                &mut neg,
+                band,
+                w,
+                h,
+                sw,
+                plane_bit,
+                segsym,
             ),
         }
 
