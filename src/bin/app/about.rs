@@ -795,139 +795,169 @@ unsafe fn ctlcolor_text(hdc: HDC, color: COLORREF) -> LRESULT {
     LRESULT(dark_bg_brush().0 as isize)
 }
 
+/// Muted on-surface colours for the subtitle / license / copyright statics, handled BEFORE
+/// the generic static colouring so they don't get the default text colour. `None` if `id`
+/// names none of them.
+unsafe fn muted_static_color(wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
+    let hdc = HDC(wparam.0 as *mut c_void);
+    let muted = match id {
+        ID_SUBTITLE | ID_LICENSE => Some(HEADER_TEXT()),
+        ID_COPYRIGHT => Some(DISABLED_TEXT()),
+        _ => None,
+    };
+    muted.map(|c| ctlcolor_text(hdc, c))
+}
+
+unsafe fn on_create(hwnd: HWND) -> LRESULT {
+    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+    // Opening a page is not a request to hit the network. If the user has turned
+    // "Automatically check for updates" off, respect it here too — this arm used to
+    // fire regardless, which is exactly what issue #26 reported. The manual pill
+    // click below still checks unconditionally, because that IS a request.
+    let auto = sagethumbs2k_core::settings::update_auto_check();
+    let state = Box::new(About {
+        status: if auto { Status::Checking } else { Status::Idle },
+        checking: false,
+        spin_frame: 0,
+        pending: None,
+        gh_icon: None,
+        logo_icon: None,
+        lw_icon: None,
+    });
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+    build_about(hwnd, hinst);
+    if auto {
+        begin_check(hwnd); // check on open, with the ≈2 s spinner
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_drawitem(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
+    match d.CtlID as i32 {
+        ID_VER_PILL => draw_ver_pill(hwnd, d),
+        ID_STATUS_PILL => draw_status_pill(hwnd, d),
+        ID_FEEDBACK_PILL => draw_feedback_pill(hwnd, d),
+        _ => {}
+    }
+    LRESULT(1)
+}
+
+unsafe fn on_about_checked(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        if lparam.0 != 0 {
+            // Window torn down between post and dispatch — reclaim the tag.
+            drop(Box::from_raw(lparam.0 as *mut String));
+        }
+        return LRESULT(0);
+    }
+    let result = match wparam.0 {
+        1 => {
+            let tag = if lparam.0 != 0 {
+                *Box::from_raw(lparam.0 as *mut String)
+            } else {
+                String::new()
+            };
+            Status::Available(tag)
+        }
+        2 => Status::Failed,
+        _ => Status::UpToDate,
+    };
+    // Faux timer: if the spinner hasn't run for its minimum yet, hold the result
+    // and let WM_TIMER reveal it once ≈2 s has passed; otherwise show it now.
+    if (*st).spin_frame >= MIN_SPIN_FRAMES {
+        reveal(hwnd, result);
+    } else {
+        (*st).pending = Some(result);
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_spin_timer(hwnd: HWND) -> LRESULT {
+    let st = about_state(hwnd);
+    if !st.is_null() {
+        (*st).spin_frame = (*st).spin_frame.saturating_add(1);
+        if (*st).spin_frame >= MIN_SPIN_FRAMES {
+            if let Some(result) = (*st).pending.take() {
+                reveal(hwnd, result); // min time met and result ready → show + stop
+                return LRESULT(0);
+            }
+        }
+        invalidate_status(hwnd); // advance the spinner one frame
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    let id = (wparam.0 & 0xFFFF) as i32;
+    let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+    match id {
+        IDOK | IDCANCEL => {
+            let _ = DestroyWindow(hwnd);
+        }
+        ID_LW_LOGO if notify == STN_CLICKED => open_url(URL_PARENT),
+        ID_VER_PILL if notify == STN_CLICKED => open_url(URL_GITHUB),
+        ID_STATUS_PILL if notify == STN_CLICKED => on_status_click(hwnd),
+        // Modal to About, so the box the user was reading stays put behind it.
+        ID_FEEDBACK_PILL if notify == STN_CLICKED => crate::feedback::show_feedback(hwnd),
+        _ => {}
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_setcursor(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Hand cursor over the four clickables; default elsewhere.
+    let over = HWND(wparam.0 as *mut c_void);
+    let clickable = [ID_LW_LOGO, ID_VER_PILL, ID_STATUS_PILL, ID_FEEDBACK_PILL]
+        .iter()
+        .any(|&id| {
+            GetDlgItem(Some(hwnd), id)
+                .map(|h| h == over)
+                .unwrap_or(false)
+        });
+    if clickable {
+        if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
+            SetCursor(Some(hand));
+        }
+        return LRESULT(1);
+    }
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+unsafe fn on_ncdestroy(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let p = about_state(hwnd);
+    if !p.is_null() {
+        let _ = KillTimer(Some(hwnd), SPIN_TIMER_ID);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        let st = Box::from_raw(p);
+        for icon in [st.gh_icon, st.logo_icon, st.lw_icon].into_iter().flatten() {
+            let _ = DeleteObject(HGDIOBJ(icon.0));
+        }
+    }
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
 extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         // Muted on-surface colours for the subtitle / license / copyright — handled
         // BEFORE the generic static colouring so they don't get the default text colour.
         if msg == WM_CTLCOLORSTATIC {
-            let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
-            let hdc = HDC(wparam.0 as *mut c_void);
-            let muted = match id {
-                ID_SUBTITLE | ID_LICENSE => Some(HEADER_TEXT()),
-                ID_COPYRIGHT => Some(DISABLED_TEXT()),
-                _ => None,
-            };
-            if let Some(c) = muted {
-                return ctlcolor_text(hdc, c);
+            if let Some(r) = muted_static_color(wparam, lparam) {
+                return r;
             }
         }
         if let Some(r) = dark_ctlcolor(msg, wparam) {
             return r;
         }
         match msg {
-            WM_CREATE => {
-                let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
-                // Opening a page is not a request to hit the network. If the user has turned
-                // "Automatically check for updates" off, respect it here too — this arm used to
-                // fire regardless, which is exactly what issue #26 reported. The manual pill
-                // click below still checks unconditionally, because that IS a request.
-                let auto = sagethumbs2k_core::settings::update_auto_check();
-                let state = Box::new(About {
-                    status: if auto { Status::Checking } else { Status::Idle },
-                    checking: false,
-                    spin_frame: 0,
-                    pending: None,
-                    gh_icon: None,
-                    logo_icon: None,
-                    lw_icon: None,
-                });
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
-                build_about(hwnd, hinst);
-                if auto {
-                    begin_check(hwnd); // check on open, with the ≈2 s spinner
-                }
-                LRESULT(0)
-            }
-            WM_DRAWITEM => {
-                let d = &*(lparam.0 as *const DRAWITEMSTRUCT);
-                match d.CtlID as i32 {
-                    ID_VER_PILL => draw_ver_pill(hwnd, d),
-                    ID_STATUS_PILL => draw_status_pill(hwnd, d),
-                    ID_FEEDBACK_PILL => draw_feedback_pill(hwnd, d),
-                    _ => {}
-                }
-                LRESULT(1)
-            }
-            WM_ABOUT_CHECKED => {
-                let st = about_state(hwnd);
-                if st.is_null() {
-                    if lparam.0 != 0 {
-                        // Window torn down between post and dispatch — reclaim the tag.
-                        drop(Box::from_raw(lparam.0 as *mut String));
-                    }
-                    return LRESULT(0);
-                }
-                let result = match wparam.0 {
-                    1 => {
-                        let tag = if lparam.0 != 0 {
-                            *Box::from_raw(lparam.0 as *mut String)
-                        } else {
-                            String::new()
-                        };
-                        Status::Available(tag)
-                    }
-                    2 => Status::Failed,
-                    _ => Status::UpToDate,
-                };
-                // Faux timer: if the spinner hasn't run for its minimum yet, hold the result
-                // and let WM_TIMER reveal it once ≈2 s has passed; otherwise show it now.
-                if (*st).spin_frame >= MIN_SPIN_FRAMES {
-                    reveal(hwnd, result);
-                } else {
-                    (*st).pending = Some(result);
-                }
-                LRESULT(0)
-            }
-            WM_TIMER if wparam.0 == SPIN_TIMER_ID => {
-                let st = about_state(hwnd);
-                if !st.is_null() {
-                    (*st).spin_frame = (*st).spin_frame.saturating_add(1);
-                    if (*st).spin_frame >= MIN_SPIN_FRAMES {
-                        if let Some(result) = (*st).pending.take() {
-                            reveal(hwnd, result); // min time met and result ready → show + stop
-                            return LRESULT(0);
-                        }
-                    }
-                    invalidate_status(hwnd); // advance the spinner one frame
-                }
-                LRESULT(0)
-            }
-            WM_COMMAND => {
-                let id = (wparam.0 & 0xFFFF) as i32;
-                let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
-                match id {
-                    IDOK | IDCANCEL => {
-                        let _ = DestroyWindow(hwnd);
-                    }
-                    ID_LW_LOGO if notify == STN_CLICKED => open_url(URL_PARENT),
-                    ID_VER_PILL if notify == STN_CLICKED => open_url(URL_GITHUB),
-                    ID_STATUS_PILL if notify == STN_CLICKED => on_status_click(hwnd),
-                    // Modal to About, so the box the user was reading stays put behind it.
-                    ID_FEEDBACK_PILL if notify == STN_CLICKED => {
-                        crate::feedback::show_feedback(hwnd)
-                    }
-                    _ => {}
-                }
-                LRESULT(0)
-            }
-            WM_SETCURSOR => {
-                // Hand cursor over the four clickables; default elsewhere.
-                let over = HWND(wparam.0 as *mut c_void);
-                let clickable = [ID_LW_LOGO, ID_VER_PILL, ID_STATUS_PILL, ID_FEEDBACK_PILL]
-                    .iter()
-                    .any(|&id| {
-                        GetDlgItem(Some(hwnd), id)
-                            .map(|h| h == over)
-                            .unwrap_or(false)
-                    });
-                if clickable {
-                    if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
-                        SetCursor(Some(hand));
-                    }
-                    return LRESULT(1);
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
+            WM_CREATE => on_create(hwnd),
+            WM_DRAWITEM => on_drawitem(hwnd, lparam),
+            WM_ABOUT_CHECKED => on_about_checked(hwnd, wparam, lparam),
+            WM_TIMER if wparam.0 == SPIN_TIMER_ID => on_spin_timer(hwnd),
+            WM_COMMAND => on_command(hwnd, wparam),
+            WM_SETCURSOR => on_setcursor(hwnd, msg, wparam, lparam),
             WM_DPICHANGED => {
                 wm_dpichanged(hwnd, lparam);
                 LRESULT(0)
@@ -936,18 +966,7 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
-            WM_NCDESTROY => {
-                let p = about_state(hwnd);
-                if !p.is_null() {
-                    let _ = KillTimer(Some(hwnd), SPIN_TIMER_ID);
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                    let st = Box::from_raw(p);
-                    for icon in [st.gh_icon, st.logo_icon, st.lw_icon].into_iter().flatten() {
-                        let _ = DeleteObject(HGDIOBJ(icon.0));
-                    }
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
+            WM_NCDESTROY => on_ncdestroy(hwnd, msg, wparam, lparam),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
