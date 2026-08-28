@@ -341,6 +341,42 @@ passed, 0 failed, 18 ignored, matching baseline) and `cargo test --bin SageThumb
 --workspace --all-targets --features html-preview -- -D warnings` and `cargo clippy --lib
 --features webp-lossy -- -D warnings` both clean, and `cargo fmt --all --check` clean.
 
+**Tranche 19 (2026-08-28): the last 8 rows in the Rust gate cleared**, worst first:
+`strip_html` (preview/mailmsg.rs) split into `strip_tags_to_text` (the script/style/head
+drop plus block-tag-to-newline pass), `unescape_html_entities`, and `collapse_blank_lines`,
+its own three documented phases as named helpers; `apply_text_attr` (container/audio/asf.rs)
+split its dtype-0 branch into `apply_unicode_attr`; `parse_blocks` (preview/markdown/parse.rs),
+the pulldown-cmark event-to-`Block` walk, was a single ~50-arm match; split into a
+`CodeBlockState` struct (carrying the in-code-fence locals that used to live directly in the
+function) plus four category dispatchers tried in a chain
+(`handle_structural_event`/`handle_table_event`/`handle_inline_style_event`/
+`handle_text_and_html_event`), each returning the `Event` back via `Option<Event>` when it
+isn't theirs, so an event belongs to exactly one and the routing is unchanged; `dxgi_layout`
+(decode/dds.rs), a `DXGI_FORMAT`-to-`Layout` lookup, split into
+`dxgi_layout_wide_channels`/`dxgi_layout_narrow_channels`/`dxgi_layout_bgra_and_block` by
+`DXGI_FORMAT` numeric range, tried in order via `.or_else()`, ranges are disjoint so this
+changes nothing about which arm a given value hits; `glyph` (badge.rs), the 5x7 bitmap-font
+table, split into `glyph_a_to_m`/`glyph_n_to_z`/`glyph_digit_or_plus`, same `.or_else()`
+chaining; `decode_entities` (preview/mdhtml.rs) split its numeric-vs-named branch into
+`numeric_entity` and `named_entity`, with `named_entity` itself split into
+`named_entity_basic`/`named_entity_typographic` since the full 25-entry table still gated on
+its own; `system_ui_code` and `native_name` (i18n.rs), two Windows-LANGID/language-code
+lookup tables, each split into an alphabetic first-half/second-half pair
+(`system_ui_code_a_to_i`/`system_ui_code_j_to_z`, `native_name_a_to_i`/`native_name_j_to_z`),
+same `.or_else()` chaining. All eight of these were lookup-table or leaf functions (cognitive
+0 for six of the eight; the scanner counts match arms toward cyclomatic but not cognitive
+when there's no nesting), so every split here is a same-shape divide-the-table move, not a
+phase extraction. No behavior change anywhere in this tranche. This closes out the Rust
+portion of the queue: the one remaining unchecked row, `scripts/compare-renders.py:main`, is
+a Python script outside this gate and this repo's `cargo test`/`clippy`/`fmt` loop (see the
+tranche-13 note). Verified per file (scoped `cargo test`, or `cargo check`/`cargo build` for
+mdhtml.rs, which has no unit tests of its own) and at the end: `cargo test --lib` (753
+passed, 0 failed, 18 ignored, matching baseline) and `cargo test --bin SageThumbs2K
+--features html-preview` (363 passed, matching tranche 18's baseline), `cargo clippy
+--workspace --all-targets --features html-preview -- -D warnings` and `cargo clippy --bin
+SageThumbs2K -- -D warnings` both clean, and `cargo fmt --all --check` clean with no
+reflow needed.
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -695,15 +731,15 @@ before the next release is still recommended.
 |x| 30 | 22 | `scrub_mouse_down` | src/bin/app/preview/transport.rs:282 |
 |x| 30 | 24 | `encode_to_opts` | src/verbs/encode.rs:411 |
 |x| 30 | 15 | `col_at` | src/bin/app/preview/highlight.rs:397 |
-| | 30 | 13 | `apply_text_attr` | src/container/audio/asf.rs:261 |
+|x| 30 | 13 | `apply_text_attr` | src/container/audio/asf.rs:261 |
 |x| 30 | 15 | `encode_pam_streaming` | src/verbs/encode/streaming.rs:273 |
 |x| 30 | 26 | `render` | src/pdf.rs:281 |
-| | 30 | 14 | `strip_html` | src/bin/app/preview/mailmsg.rs:519 |
+|x| 30 | 14 | `strip_html` | src/bin/app/preview/mailmsg.rs:519 |
 |x| 30 | 19 | `slice_walk` | src/flv.rs:268 |
 |x| 30 | 19 | `url_at` | src/bin/app/preview/markdown/parse.rs:444 |
-| | 0 | 38 | `dxgi_layout` | src/decode/dds.rs:438 |
-| | 0 | 49 | `parse_blocks` | src/bin/app/preview/markdown/parse.rs:622 |
-| | 0 | 38 | `glyph` | src/badge.rs:89 |
-| | 0 | 33 | `decode_entities` | src/bin/app/preview/mdhtml.rs:365 |
-| | 0 | 36 | `system_ui_code` | src/i18n.rs:109 |
-| | 0 | 37 | `native_name` | src/i18n.rs:166 |
+|x| 0 | 38 | `dxgi_layout` | src/decode/dds.rs:438 |
+|x| 0 | 49 | `parse_blocks` | src/bin/app/preview/markdown/parse.rs:622 |
+|x| 0 | 38 | `glyph` | src/badge.rs:89 |
+|x| 0 | 33 | `decode_entities` | src/bin/app/preview/mdhtml.rs:365 |
+|x| 0 | 36 | `system_ui_code` | src/i18n.rs:109 |
+|x| 0 | 37 | `native_name` | src/i18n.rs:166 |
