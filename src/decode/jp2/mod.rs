@@ -97,20 +97,15 @@ pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((c.siz.width(), c.siz.height()))
 }
 
-/// Decode to RGB8 (or gray expanded to RGB) at the smallest resolution level that is still
-/// at least `target_edge` on its long side.
-///
-/// Returns the pixels plus the decoded dimensions, which will be >= the target and are the
-/// caller's to resize down precisely.
-pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u32), Jp2Error> {
-    let (cs, palette) = codestream::find_codestream_and_palette(bytes)?;
-    let c = codestream::parse(cs)?;
+/// Reject any codestream shape this reduced-resolution path does not cover
+/// (multi-component palettes, absurd component counts, chroma subsampling,
+/// exotic progression orders). Returns the validated component count.
+fn validate_reduced_scope(c: &codestream::Codestream, has_palette: bool) -> Result<usize, Jp2Error> {
     // A palette maps SINGLE-component indices; anything else is a shape we refuse to
     // guess at (the parser already declines the exotic ones).
-    if palette.is_some() && c.siz.components.len() != 1 {
+    if has_palette && c.siz.components.len() != 1 {
         return Err(Jp2Error::Unsupported("palette with multiple components"));
     }
-
     let ncomp = c.siz.components.len();
     if ncomp == 0 || ncomp > 4 {
         return Err(Jp2Error::Unsupported("component count"));
@@ -123,12 +118,12 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
     if !matches!(c.cod.progression, 0..=2) {
         return Err(Jp2Error::Unsupported("progression order"));
     }
+    Ok(ncomp)
+}
 
-    let full_w = c.siz.width();
-    let full_h = c.siz.height();
-    let levels = c.cod.levels as u32;
-
-    // Choose how many levels to DROP: the most that still leaves us >= target_edge.
+/// Choose how many wavelet levels to DROP: the most that still leaves the
+/// output >= `target_edge` on its long side. Returns `(drop, keep)`.
+fn choose_reduction(full_w: u32, full_h: u32, levels: u32, target_edge: u32) -> (u32, u32) {
     let mut drop = 0u32;
     while drop < levels {
         let next = drop + 1;
@@ -139,28 +134,33 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
         }
         drop = next;
     }
-    let keep = levels - drop; // reconstruction steps we will actually run
+    (drop, levels - drop) // (drop, keep = reconstruction steps we will actually run)
+}
 
-    let out_w = full_w.div_ceil(1 << drop).max(1);
-    let out_h = full_h.div_ceil(1 << drop).max(1);
+/// Bound the `planes` allocation the caller is about to make, independent of
+/// MAX_PIXELS: MAX_PIXELS bounds the DECLARED area, but says nothing about
+/// `ncomp` separate f32 buffers of that area. A spec-legal single-resolution
+/// file (levels == 0) forces `drop` to stay 0 regardless of target_edge, so a
+/// 268MP-declared, single-resolution JP2 requested at a tiny thumbnail size
+/// would still try to allocate up to ~4.3GB across 4 components without this.
+fn check_reduced_alloc_budget(out_w: u32, out_h: u32, ncomp: usize) -> Result<(), Jp2Error> {
     let px = (out_w as u64) * (out_h as u64);
-    // MAX_PIXELS (268MP) bounds the DECLARED area; it says nothing about the `planes`
-    // allocation two lines down, which is `ncomp` separate f32 buffers of that area. A
-    // spec-legal single-resolution file (levels == 0) forces `drop` to stay 0 regardless
-    // of target_edge (the drop-selection loop above is a no-op when levels == 0), so a
-    // 268MP-declared, single-resolution JP2 requested at a tiny thumbnail size would
-    // still try to allocate up to ~4.3GB across 4 components. Bound the allocation
-    // itself too, independent of MAX_PIXELS.
     let max_px_for_alloc = crate::decode::limits::MAX_ALLOC / (4 * ncomp as u64);
     if px > crate::decode::limits::MAX_PIXELS || px > max_px_for_alloc {
         return Err(Jp2Error::Unsupported("reduced image still too large"));
     }
+    Ok(())
+}
 
-    // One plane per component at the reduced size.
-    let mut planes: Vec<Vec<f32>> = (0..ncomp)
-        .map(|_| vec![0.0f32; (out_w as usize) * (out_h as usize)])
-        .collect();
-
+/// Decode every tile that has data into the shared output `planes`.
+fn decode_all_tiles(
+    c: &codestream::Codestream,
+    keep: u32,
+    drop: u32,
+    planes: &mut [Vec<f32>],
+    out_w: u32,
+    out_h: u32,
+) -> Result<(), Jp2Error> {
     let ntx = c.siz.num_tiles_x();
     let nty = c.siz.num_tiles_y();
     for ty in 0..nty {
@@ -170,58 +170,60 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
             if parts.is_empty() {
                 continue;
             }
-            decode_tile(&c, tx, ty, keep, drop, &mut planes, out_w, out_h)?;
+            decode_tile(c, tx, ty, keep, drop, planes, out_w, out_h)?;
         }
     }
+    Ok(())
+}
 
-    // Inverse component transform and DC level shift into 8-bit.
-    let n = (out_w as usize) * (out_h as usize);
+/// Palette-indexed image: the decoded samples are LOOKUP INDICES, not
+/// intensities. Rendering them as gray paints an archive.org blank scanned
+/// page (palette 0=white) solid black — the exact failure the corpus bilevel
+/// fixture pins.
+fn palette_to_rgb(n: usize, plane0: &[f32], pal: &codestream::Palette, shift: f32) -> Vec<u8> {
     let mut rgb = vec![0u8; n * 3];
-    let prec = c.siz.components[0].prec as u32 + 1;
-    let signed = c.siz.components[0].signed;
-    let shift = if signed {
-        0.0
-    } else {
-        (1i64 << (prec - 1)) as f32
-    };
-    let scale = if prec >= 8 {
-        1.0 / ((1u64 << (prec - 8)) as f32)
-    } else {
-        (1u64 << (8 - prec)) as f32
-    };
-
-    // Palette-indexed image: the decoded samples are LOOKUP INDICES, not intensities.
-    // Rendering them as gray paints an archive.org blank scanned page (palette 0=white)
-    // solid black — the exact failure the corpus bilevel fixture pins.
-    if let Some(pal) = palette {
-        let last = pal.entries.len() - 1;
-        for i in 0..n {
-            let idx = ((planes[0][i] + shift).round().max(0.0) as usize).min(last);
-            rgb[i * 3..i * 3 + 3].copy_from_slice(&pal.entries[idx]);
-        }
-        return Ok((rgb, out_w, out_h));
+    let last = pal.entries.len() - 1;
+    for i in 0..n {
+        let idx = ((plane0[i] + shift).round().max(0.0) as usize).min(last);
+        rgb[i * 3..i * 3 + 3].copy_from_slice(&pal.entries[idx]);
     }
+    rgb
+}
 
-    let mct = c.cod.mct && ncomp >= 3;
+/// One pixel's (R, G, B) sample values, inverse component transform applied.
+fn mct_pixel(a: f32, bb: f32, cc: f32, mct: bool, reversible: bool) -> (f32, f32, f32) {
+    if !mct {
+        return (a, bb, cc);
+    }
+    if reversible {
+        // RCT (inverse): G = Y - floor((Cb + Cr)/4); R = Cr + G; B = Cb + G.
+        let g = a - ((bb + cc) / 4.0).floor();
+        (cc + g, g, bb + g)
+    } else {
+        // ICT (inverse), the usual YCbCr matrix.
+        (
+            a + 1.402 * cc,
+            a - 0.344_136 * bb - 0.714_136 * cc,
+            a + 1.772 * bb,
+        )
+    }
+}
+
+/// Inverse component transform and DC level shift every pixel into 8-bit RGB.
+fn color_planes_to_rgb(
+    n: usize,
+    ncomp: usize,
+    planes: &[Vec<f32>],
+    mct: bool,
+    reversible: bool,
+    shift: f32,
+    scale: f32,
+) -> Vec<u8> {
+    let mut rgb = vec![0u8; n * 3];
     for i in 0..n {
         let (r, g, b) = if ncomp >= 3 {
             let (a, bb, cc) = (planes[0][i], planes[1][i], planes[2][i]);
-            if mct {
-                if c.cod.reversible {
-                    // RCT (inverse): G = Y - floor((Cb + Cr)/4); R = Cr + G; B = Cb + G.
-                    let g = a - ((bb + cc) / 4.0).floor();
-                    (cc + g, g, bb + g)
-                } else {
-                    // ICT (inverse), the usual YCbCr matrix.
-                    (
-                        a + 1.402 * cc,
-                        a - 0.344_136 * bb - 0.714_136 * cc,
-                        a + 1.772 * bb,
-                    )
-                }
-            } else {
-                (a, bb, cc)
-            }
+            mct_pixel(a, bb, cc, mct, reversible)
         } else {
             let v = planes[0][i];
             (v, v, v)
@@ -231,6 +233,55 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
             rgb[i * 3 + k] = s.clamp(0.0, 255.0) as u8;
         }
     }
+    rgb
+}
+
+/// Decode to RGB8 (or gray expanded to RGB) at the smallest resolution level that is still
+/// at least `target_edge` on its long side.
+///
+/// Returns the pixels plus the decoded dimensions, which will be >= the target and are the
+/// caller's to resize down precisely.
+pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u32), Jp2Error> {
+    let (cs, palette) = codestream::find_codestream_and_palette(bytes)?;
+    let c = codestream::parse(cs)?;
+    let ncomp = validate_reduced_scope(&c, palette.is_some())?;
+
+    let full_w = c.siz.width();
+    let full_h = c.siz.height();
+    let levels = c.cod.levels as u32;
+    let (drop, keep) = choose_reduction(full_w, full_h, levels, target_edge);
+
+    let out_w = full_w.div_ceil(1 << drop).max(1);
+    let out_h = full_h.div_ceil(1 << drop).max(1);
+    check_reduced_alloc_budget(out_w, out_h, ncomp)?;
+
+    // One plane per component at the reduced size.
+    let mut planes: Vec<Vec<f32>> = (0..ncomp)
+        .map(|_| vec![0.0f32; (out_w as usize) * (out_h as usize)])
+        .collect();
+
+    decode_all_tiles(&c, keep, drop, &mut planes, out_w, out_h)?;
+
+    let n = (out_w as usize) * (out_h as usize);
+    let prec = c.siz.components[0].prec as u32 + 1;
+    let signed = c.siz.components[0].signed;
+    let shift = if signed {
+        0.0
+    } else {
+        (1i64 << (prec - 1)) as f32
+    };
+
+    if let Some(pal) = palette {
+        return Ok((palette_to_rgb(n, &planes[0], &pal, shift), out_w, out_h));
+    }
+
+    let scale = if prec >= 8 {
+        1.0 / ((1u64 << (prec - 8)) as f32)
+    } else {
+        (1u64 << (8 - prec)) as f32
+    };
+    let mct = c.cod.mct && ncomp >= 3;
+    let rgb = color_planes_to_rgb(n, ncomp, &planes, mct, c.cod.reversible, shift, scale);
     Ok((rgb, out_w, out_h))
 }
 
@@ -263,6 +314,70 @@ struct Res {
     bands: Vec<SubBand>, // r == 0: [LL]; r > 0: [HL, LH, HH]
 }
 
+/// Build one resolution's subband descriptors (LL for r==0, HL/LH/HH for
+/// r>0) on the reference grid at decomposition depth `nb`, accounting any
+/// materialized allocation against the running `alloc_floats` budget.
+#[allow(clippy::too_many_arguments)]
+fn build_res(
+    r: u32,
+    nb: u32,
+    tx0: u32,
+    ty0: u32,
+    tx1: u32,
+    ty1: u32,
+    materialize: bool,
+    alloc_floats: &mut u64,
+    max_alloc_floats: u64,
+) -> Result<Res, Jp2Error> {
+    let x0 = tx0.div_ceil(1 << nb);
+    let y0 = ty0.div_ceil(1 << nb);
+    let x1 = tx1.div_ceil(1 << nb);
+    let y1 = ty1.div_ceil(1 << nb);
+    let bands = if r == 0 {
+        let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        if materialize {
+            *alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
+            if *alloc_floats > max_alloc_floats {
+                return Err(Jp2Error::Unsupported("tile pyramid too large"));
+            }
+        }
+        vec![sized_band(w, h, materialize)]
+    } else {
+        // Band bounds per spec equation B-15 (what opj_tcd_init_tile computes):
+        // tbx0 = ceil((tx0 - 2^(n-1)*xob) / 2^n), with xob/yob = 1 on the
+        // high-pass axis. The previous floor-based shortcut agreed with this only
+        // when (t mod 2^n) <= 2^(n-1), so odd-sized tiles came out a sample short
+        // in the detail bands and the whole packet walk drifted after them.
+        let d = nb + 1;
+        let (hl0, hl1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, false));
+        let (lh0, lh1) = (band_span(tx0, tx1, d, false), band_span(ty0, ty1, d, true));
+        let (hh0, hh1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, true));
+        let dims = [
+            (hl0.1, hl1.1), // HL: high-pass x, low-pass y
+            (lh0.1, lh1.1), // LH: low-pass x, high-pass y
+            (hh0.1, hh1.1), // HH
+        ];
+        if materialize {
+            for (w, h) in dims {
+                *alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
+                if *alloc_floats > max_alloc_floats {
+                    return Err(Jp2Error::Unsupported("tile pyramid too large"));
+                }
+            }
+        }
+        dims.into_iter()
+            .map(|(w, h)| sized_band(w, h, materialize))
+            .collect()
+    };
+    Ok(Res {
+        x0,
+        y0,
+        x1,
+        y1,
+        bands,
+    })
+}
+
 /// Build each component's per-resolution subband descriptors, sized on the
 /// reference grid. Budgets the pixel storage we are ABOUT TO allocate (r <=
 /// keep only — see `sized_band`) against MAX_ALLOC. `levels` comes straight
@@ -272,6 +387,10 @@ struct Res {
 /// would, before this check, still walk `r` up to the FULL resolution
 /// allocating a full-size SubBand every time (see `sized_band`) — several GB
 /// across up to 4 components for one call. Bail before any such allocation.
+/// Each resolution's own bands are built by `build_res` above; only
+/// resolutions the caller actually needs (r <= keep) get pixel storage —
+/// anything above is walked for its packet LENGTHS only (the `r as u32 >
+/// max_res` skip in `accumulate_packets`) and its band data is never read.
 #[allow(clippy::too_many_arguments)]
 fn build_component_resolutions(
     ncomp: usize,
@@ -289,58 +408,18 @@ fn build_component_resolutions(
         let mut rs = Vec::with_capacity(levels as usize + 1);
         for r in 0..=levels {
             let nb = levels - r;
-            let x0 = tx0.div_ceil(1 << nb);
-            let y0 = ty0.div_ceil(1 << nb);
-            let x1 = tx1.div_ceil(1 << nb);
-            let y1 = ty1.div_ceil(1 << nb);
-            // Only resolutions the caller actually needs (r <= keep) get pixel storage.
-            // Anything above is walked for its packet LENGTHS only (the `r as u32 >
-            // max_res` skip further down) and its band data is never read, so a
-            // dims-only descriptor is enough — see `sized_band`.
             let materialize = r <= keep;
-            let bands = if r == 0 {
-                let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
-                if materialize {
-                    alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
-                    if alloc_floats > max_alloc_floats {
-                        return Err(Jp2Error::Unsupported("tile pyramid too large"));
-                    }
-                }
-                vec![sized_band(w, h, materialize)]
-            } else {
-                // Band bounds per spec equation B-15 (what opj_tcd_init_tile computes):
-                // tbx0 = ceil((tx0 - 2^(n-1)*xob) / 2^n), with xob/yob = 1 on the
-                // high-pass axis. The previous floor-based shortcut agreed with this only
-                // when (t mod 2^n) <= 2^(n-1), so odd-sized tiles came out a sample short
-                // in the detail bands and the whole packet walk drifted after them.
-                let d = nb + 1;
-                let (hl0, hl1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, false));
-                let (lh0, lh1) = (band_span(tx0, tx1, d, false), band_span(ty0, ty1, d, true));
-                let (hh0, hh1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, true));
-                let dims = [
-                    (hl0.1, hl1.1), // HL: high-pass x, low-pass y
-                    (lh0.1, lh1.1), // LH: low-pass x, high-pass y
-                    (hh0.1, hh1.1), // HH
-                ];
-                if materialize {
-                    for (w, h) in dims {
-                        alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
-                        if alloc_floats > max_alloc_floats {
-                            return Err(Jp2Error::Unsupported("tile pyramid too large"));
-                        }
-                    }
-                }
-                dims.into_iter()
-                    .map(|(w, h)| sized_band(w, h, materialize))
-                    .collect()
-            };
-            rs.push(Res {
-                x0,
-                y0,
-                x1,
-                y1,
-                bands,
-            });
+            rs.push(build_res(
+                r,
+                nb,
+                tx0,
+                ty0,
+                tx1,
+                ty1,
+                materialize,
+                &mut alloc_floats,
+                max_alloc_floats,
+            )?);
         }
         comps.push(rs);
     }
@@ -367,10 +446,59 @@ fn precinct_counts(c: &codestream::Codestream, levels: u32, comp0: &[Res]) -> Ve
     nprec
 }
 
+/// Build one precinct-band's tag-tree and code-block bookkeeping: the
+/// code-block grid clipped to the band (anchored at the band's own origin
+/// block), plus fresh inclusion / MSB tag trees sized to that grid.
+#[allow(clippy::too_many_arguments)]
+fn build_prec_band(
+    c: &codestream::Codestream,
+    ci: usize,
+    r: usize,
+    b: usize,
+    px: usize,
+    py: usize,
+    bppx: u8,
+    bppy: u8,
+    cbw: usize,
+    cbh: usize,
+    tx0: u32,
+    ty0: u32,
+    comps: &[Vec<Res>],
+) -> PrecBand {
+    let (ox, oy) = band_origin(c, r, b, tx0, ty0);
+    let bw = comps[ci][r].bands[b].w as u32;
+    let bh = comps[ci][r].bands[b].h as u32;
+    let px0 = ((ox >> bppx) + px as u32) << bppx;
+    let py0 = ((oy >> bppy) + py as u32) << bppy;
+    let px1 = (px0 + (1 << bppx)).min(ox + bw);
+    let py1 = (py0 + (1 << bppy)).min(oy + bh);
+    // Clamp the precinct to the band before counting code-blocks; the
+    // grid is anchored at the band origin's own block.
+    let px0 = px0.max(ox);
+    let py0 = py0.max(oy);
+    let (nbx, nby) = if px1 <= px0 || py1 <= py0 {
+        (0, 0)
+    } else {
+        (
+            (px1.div_ceil(cbw as u32) - px0 / cbw as u32) as usize,
+            (py1.div_ceil(cbh as u32) - py0 / cbh as u32) as usize,
+        )
+    };
+    PrecBand {
+        nbx,
+        nby,
+        bx0: ((px0 / cbw as u32) - (ox / cbw as u32)) as usize,
+        by0: ((py0 / cbh as u32) - (oy / cbh as u32)) as usize,
+        incl: TagTree::new(nbx, nby),
+        imsb: TagTree::new(nbx, nby),
+        blocks: vec![BlockState::default(); nbx * nby],
+    }
+}
+
 /// Build the per (component, resolution, precinct) tag-tree and code-block
 /// bookkeeping the packet walk needs. Within a band the precinct is
 /// half-sized for r > 0, because the bands sit at half the resolution grid;
-/// code-blocks are clipped to whichever is smaller.
+/// code-blocks are clipped to whichever is smaller (see `build_prec_band`).
 #[allow(clippy::too_many_arguments)]
 fn build_precinct_states(
     c: &codestream::Codestream,
@@ -402,34 +530,9 @@ fn build_precinct_states(
                 for px in 0..npx {
                     let mut bands = Vec::with_capacity(nbands);
                     for b in 0..nbands {
-                        let (ox, oy) = band_origin(c, r, b, tx0, ty0);
-                        let bw = comps[ci][r].bands[b].w as u32;
-                        let bh = comps[ci][r].bands[b].h as u32;
-                        let px0 = ((ox >> bppx) + px as u32) << bppx;
-                        let py0 = ((oy >> bppy) + py as u32) << bppy;
-                        let px1 = (px0 + (1 << bppx)).min(ox + bw);
-                        let py1 = (py0 + (1 << bppy)).min(oy + bh);
-                        // Clamp the precinct to the band before counting code-blocks; the
-                        // grid is anchored at the band origin's own block.
-                        let px0 = px0.max(ox);
-                        let py0 = py0.max(oy);
-                        let (nbx, nby) = if px1 <= px0 || py1 <= py0 {
-                            (0, 0)
-                        } else {
-                            (
-                                (px1.div_ceil(cbw as u32) - px0 / cbw as u32) as usize,
-                                (py1.div_ceil(cbh as u32) - py0 / cbh as u32) as usize,
-                            )
-                        };
-                        bands.push(PrecBand {
-                            nbx,
-                            nby,
-                            bx0: ((px0 / cbw as u32) - (ox / cbw as u32)) as usize,
-                            by0: ((py0 / cbh as u32) - (oy / cbh as u32)) as usize,
-                            incl: TagTree::new(nbx, nby),
-                            imsb: TagTree::new(nbx, nby),
-                            blocks: vec![BlockState::default(); nbx * nby],
-                        });
+                        bands.push(build_prec_band(
+                            c, ci, r, b, px, py, bppx, bppy, cbw, cbh, tx0, ty0, comps,
+                        ));
                     }
                     per_prec.push(bands);
                 }
@@ -441,11 +544,72 @@ fn build_precinct_states(
     states
 }
 
+/// LRCP order: layer outermost, then resolution, component, position.
+fn order_lrcp(
+    layers: u32,
+    levels: u32,
+    ncomp: usize,
+    nprec: &[(usize, usize)],
+) -> Vec<(u32, usize, usize, usize)> {
+    let mut order = Vec::new();
+    for l in 0..layers {
+        for r in 0..=levels as usize {
+            for ci in 0..ncomp {
+                for pi in 0..(nprec[r].0 * nprec[r].1) {
+                    order.push((l, r, ci, pi));
+                }
+            }
+        }
+    }
+    order
+}
+
+/// RLCP order: resolution outermost, then layer, component, position.
+fn order_rlcp(
+    layers: u32,
+    levels: u32,
+    ncomp: usize,
+    nprec: &[(usize, usize)],
+) -> Vec<(u32, usize, usize, usize)> {
+    let mut order = Vec::new();
+    for r in 0..=levels as usize {
+        for l in 0..layers {
+            for ci in 0..ncomp {
+                for pi in 0..(nprec[r].0 * nprec[r].1) {
+                    order.push((l, r, ci, pi));
+                }
+            }
+        }
+    }
+    order
+}
+
+/// RPCL order: resolution outermost, then position, component, layer.
+fn order_rpcl(
+    layers: u32,
+    levels: u32,
+    ncomp: usize,
+    nprec: &[(usize, usize)],
+) -> Vec<(u32, usize, usize, usize)> {
+    let mut order = Vec::new();
+    for r in 0..=levels as usize {
+        for pi in 0..(nprec[r].0 * nprec[r].1) {
+            for ci in 0..ncomp {
+                for l in 0..layers {
+                    order.push((l, r, ci, pi));
+                }
+            }
+        }
+    }
+    order
+}
+
 /// Build the (layer, resolution, component, precinct-index) iteration order
 /// for the packet walk, per JPEG2000's LRCP/RLCP/RPCL-style progression
 /// orders. Position-based orders iterate precincts in raster order; with the
 /// uniform 1:1 components this path is limited to, that reduces to the
-/// precinct index.
+/// precinct index. Each order's own nested walk lives in its own `order_*`
+/// helper above; this is just the progression-code dispatch.
 fn progression_order(
     progression: u8,
     layers: u32,
@@ -453,43 +617,11 @@ fn progression_order(
     ncomp: usize,
     nprec: &[(usize, usize)],
 ) -> Vec<(u32, usize, usize, usize)> {
-    let mut order: Vec<(u32, usize, usize, usize)> = Vec::new();
     match progression {
-        0 => {
-            for l in 0..layers {
-                for r in 0..=levels as usize {
-                    for ci in 0..ncomp {
-                        for pi in 0..(nprec[r].0 * nprec[r].1) {
-                            order.push((l, r, ci, pi));
-                        }
-                    }
-                }
-            }
-        }
-        1 => {
-            for r in 0..=levels as usize {
-                for l in 0..layers {
-                    for ci in 0..ncomp {
-                        for pi in 0..(nprec[r].0 * nprec[r].1) {
-                            order.push((l, r, ci, pi));
-                        }
-                    }
-                }
-            }
-        }
-        _ => {
-            for r in 0..=levels as usize {
-                for pi in 0..(nprec[r].0 * nprec[r].1) {
-                    for ci in 0..ncomp {
-                        for l in 0..layers {
-                            order.push((l, r, ci, pi));
-                        }
-                    }
-                }
-            }
-        }
+        0 => order_lrcp(layers, levels, ncomp, nprec),
+        1 => order_rlcp(layers, levels, ncomp, nprec),
+        _ => order_rpcl(layers, levels, ncomp, nprec),
     }
-    order
 }
 
 /// A code-block's segments accumulated across every layer that included it.
