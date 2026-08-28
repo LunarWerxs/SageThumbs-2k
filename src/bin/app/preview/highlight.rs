@@ -117,13 +117,8 @@ pub(super) unsafe fn paint_lines(
 
     // Left gutter: right-aligned 1-based line numbers in a muted colour, like QuickLook / an editor.
     // Its width is sized to the digit count of the last line, so the code column shifts right by it.
-    let total_lines = text.split('\n').count().max(1);
     let char_w = tm.tmAveCharWidth.max(1);
-    let digits = total_lines.to_string().len() as i32;
-    let gutter_pad = char_w; // gap between the numbers and the code
-    let gutter_w = digits * char_w + gutter_pad * 2;
-    let code_x = x + gutter_w;
-    let code_right = x + width; // the code column ends at the same right edge as before
+    let (gutter_w, gutter_pad, code_x, code_right) = gutter_metrics(text, x, width, char_w);
     let gutter_fg = crate::dark::HEADER_TEXT().0;
     let sel_bg = crate::dark::SEL_BG().0;
 
@@ -188,66 +183,19 @@ pub(super) unsafe fn paint_lines(
                 }
                 // One hit per drawn line: this is a mono grid, so hit-testing re-measures inside
                 // it for a char-precise offset (`text_x` = code_x, past the line-number gutter).
-                if let Some(k) = sink.as_deref_mut() {
-                    k.hits.push(SelHit {
-                        rect: RECT {
-                            left: code_x,
-                            top: y,
-                            right: code_right,
-                            bottom: y + line_h,
-                        },
-                        start: k.base + line_start,
-                        end: k.base + line_start + line.len(),
-                        font: k.spec,
-                        text_x: code_x,
-                    });
-                }
-                // line number, right-aligned in [x, x+gutter_w-pad]
-                SetTextColor(hdc, COLORREF(gutter_fg));
-                let mut num: Vec<u16> = line_no.to_string().encode_utf16().collect();
-                let mut nr = RECT {
-                    left: x,
-                    top: y,
-                    right: x + gutter_w - gutter_pad,
-                    bottom: y + line_h,
-                };
-                DrawTextW(
-                    hdc,
-                    &mut num,
-                    &mut nr,
-                    DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX,
+                record_line_hit(
+                    sink.as_deref_mut(),
+                    line_start,
+                    line.len(),
+                    code_x,
+                    code_right,
+                    y,
+                    line_h,
                 );
-                // code runs, starting past the gutter
-                let mut cx = code_x;
-                for (tag, s) in runs {
-                    if s.is_empty() {
-                        continue;
-                    }
-                    SetTextColor(hdc, COLORREF(colors.of(tag)));
-                    let w16: Vec<u16> = s.encode_utf16().collect();
-                    let clip = RECT {
-                        left: cx,
-                        top: y,
-                        right: code_right,
-                        bottom: y + line_h,
-                    };
-                    let _ = ExtTextOutW(
-                        hdc,
-                        cx,
-                        y,
-                        ETO_CLIPPED,
-                        Some(&clip as *const RECT),
-                        PCWSTR(w16.as_ptr()),
-                        w16.len() as u32,
-                        None,
-                    );
-                    let mut sz = SIZE::default();
-                    let _ = GetTextExtentPoint32W(hdc, &w16, &mut sz);
-                    cx += sz.cx;
-                    if cx > code_right {
-                        break; // rest of the line is off the pane
-                    }
-                }
+                draw_gutter_line_number(
+                    hdc, line_no, x, gutter_w, gutter_pad, y, line_h, gutter_fg,
+                );
+                draw_code_runs(hdc, &runs, code_x, code_right, y, line_h, &colors);
             }
         }
         y += line_h;
@@ -265,6 +213,116 @@ pub(super) unsafe fn paint_lines(
         });
     }
     y - y0
+}
+
+/// Left-gutter geometry: right-aligned 1-based line numbers, sized to the digit count of the
+/// LAST line so the code column shifts right by exactly its width. Returns
+/// `(gutter_w, gutter_pad, code_x, code_right)`.
+fn gutter_metrics(text: &str, x: i32, width: i32, char_w: i32) -> (i32, i32, i32, i32) {
+    let total_lines = text.split('\n').count().max(1);
+    let digits = total_lines.to_string().len() as i32;
+    let gutter_pad = char_w; // gap between the numbers and the code
+    let gutter_w = digits * char_w + gutter_pad * 2;
+    let code_x = x + gutter_w;
+    let code_right = x + width; // the code column ends at the same right edge as before
+    (gutter_w, gutter_pad, code_x, code_right)
+}
+
+/// Record one drawn line's hit-test rect into the caller's [`LineSel`] collector, if any (the
+/// standalone text pane passes `None` and hit-tests analytically instead).
+fn record_line_hit(
+    sink: Option<&mut LineSel>,
+    line_start: usize,
+    line_len: usize,
+    code_x: i32,
+    code_right: i32,
+    y: i32,
+    line_h: i32,
+) {
+    if let Some(k) = sink {
+        k.hits.push(SelHit {
+            rect: RECT {
+                left: code_x,
+                top: y,
+                right: code_right,
+                bottom: y + line_h,
+            },
+            start: k.base + line_start,
+            end: k.base + line_start + line_len,
+            font: k.spec,
+            text_x: code_x,
+        });
+    }
+}
+
+/// Draw one line's right-aligned 1-based number in the gutter, `[x, x+gutter_w-pad]`.
+#[allow(clippy::too_many_arguments)] // owner-draw helper: many positional draw params by nature
+unsafe fn draw_gutter_line_number(
+    hdc: HDC,
+    line_no: usize,
+    x: i32,
+    gutter_w: i32,
+    gutter_pad: i32,
+    y: i32,
+    line_h: i32,
+    gutter_fg: u32,
+) {
+    SetTextColor(hdc, COLORREF(gutter_fg));
+    let mut num: Vec<u16> = line_no.to_string().encode_utf16().collect();
+    let mut nr = RECT {
+        left: x,
+        top: y,
+        right: x + gutter_w - gutter_pad,
+        bottom: y + line_h,
+    };
+    DrawTextW(
+        hdc,
+        &mut num,
+        &mut nr,
+        DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX,
+    );
+}
+
+/// Draw one line's tagged runs, starting past the gutter, clipped to `code_right`.
+unsafe fn draw_code_runs(
+    hdc: HDC,
+    runs: &[(Tag, &str)],
+    code_x: i32,
+    code_right: i32,
+    y: i32,
+    line_h: i32,
+    colors: &Colors,
+) {
+    let mut cx = code_x;
+    for (tag, s) in runs {
+        if s.is_empty() {
+            continue;
+        }
+        SetTextColor(hdc, COLORREF(colors.of(*tag)));
+        let w16: Vec<u16> = s.encode_utf16().collect();
+        let clip = RECT {
+            left: cx,
+            top: y,
+            right: code_right,
+            bottom: y + line_h,
+        };
+        let _ = ExtTextOutW(
+            hdc,
+            cx,
+            y,
+            ETO_CLIPPED,
+            Some(&clip as *const RECT),
+            PCWSTR(w16.as_ptr()),
+            w16.len() as u32,
+            None,
+        );
+        let mut sz = SIZE::default();
+        let _ = GetTextExtentPoint32W(hdc, &w16, &mut sz);
+        cx += sz.cx;
+        if cx > code_right {
+            break; // rest of the line is off the pane
+        }
+    }
 }
 
 /// Fill the selection background for one line: the intersection of the document byte range

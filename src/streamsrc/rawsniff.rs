@@ -230,44 +230,65 @@ pub(super) fn tiff_has_raw_ifd_marker(head: &[u8]) -> bool {
         let Some(tag) = u16_at(entry) else {
             return false;
         };
-        // CFA/DNG tags are structurally parsed from IFD0, not searched as arbitrary
-        // byte strings. This prevents a normal camera-authored TIFF's EXIF/XMP maker
-        // text from accidentally rerouting it through the RAW shortcut.
-        if matches!(
-            tag,
-            0x828D | 0x828E | 0xC612 | 0xC614 | 0xC616 | 0xC61A | 0xC627
-        ) {
-            return true;
-        }
-        let Some(type_offset) = entry.checked_add(2) else {
-            return false;
-        };
-        let Some(count_offset) = entry.checked_add(4) else {
-            return false;
-        };
-        let Some(value_offset) = entry.checked_add(8) else {
-            return false;
-        };
-        if tag == 0x0106 && u32_at(count_offset) == Some(1) {
-            let Some(field_type) = u16_at(type_offset) else {
-                return false;
-            };
-            let value = match field_type {
-                3 => match u16_at(value_offset) {
-                    Some(value) => value as u32,
-                    None => return false,
-                },
-                4 => match u32_at(value_offset) {
-                    Some(value) => value,
-                    None => return false,
-                },
-                _ => continue,
-            };
-            // TIFF/EP CFA and LinearRaw photometric interpretations.
-            if matches!(value, 32_803 | 34_892) {
-                return true;
-            }
+        match raw_ifd_entry_marker(tag, entry, &u16_at, &u32_at) {
+            std::ops::ControlFlow::Break(found) => return found,
+            std::ops::ControlFlow::Continue(()) => {}
         }
     }
     false
+}
+
+/// Check one IFD0 entry for either RAW-marker shape this scanner recognizes: a CFA/DNG tag, or
+/// PhotometricInterpretation (tag 0x0106, count 1) reading as TIFF/EP CFA (32803) or LinearRaw
+/// (34892). `Break(true)` means the marker was found and the caller should return `true`
+/// immediately; `Break(false)` means a truncated/malformed read, matching the caller's own
+/// `?`-shaped early `return false`s; `Continue` means keep scanning the next entry.
+fn raw_ifd_entry_marker(
+    tag: u16,
+    entry: usize,
+    u16_at: &impl Fn(usize) -> Option<u16>,
+    u32_at: &impl Fn(usize) -> Option<u32>,
+) -> std::ops::ControlFlow<bool> {
+    use std::ops::ControlFlow::{Break, Continue};
+    // CFA/DNG tags are structurally parsed from IFD0, not searched as arbitrary byte strings.
+    // This prevents a normal camera-authored TIFF's EXIF/XMP maker text from accidentally
+    // rerouting it through the RAW shortcut.
+    if matches!(
+        tag,
+        0x828D | 0x828E | 0xC612 | 0xC614 | 0xC616 | 0xC61A | 0xC627
+    ) {
+        return Break(true);
+    }
+    let Some(type_offset) = entry.checked_add(2) else {
+        return Break(false);
+    };
+    let Some(count_offset) = entry.checked_add(4) else {
+        return Break(false);
+    };
+    let Some(value_offset) = entry.checked_add(8) else {
+        return Break(false);
+    };
+    if tag != 0x0106 || u32_at(count_offset) != Some(1) {
+        return Continue(());
+    }
+    let Some(field_type) = u16_at(type_offset) else {
+        return Break(false);
+    };
+    let value = match field_type {
+        3 => match u16_at(value_offset) {
+            Some(value) => value as u32,
+            None => return Break(false),
+        },
+        4 => match u32_at(value_offset) {
+            Some(value) => value,
+            None => return Break(false),
+        },
+        _ => return Continue(()),
+    };
+    // TIFF/EP CFA and LinearRaw photometric interpretations.
+    if matches!(value, 32_803 | 34_892) {
+        Break(true)
+    } else {
+        Continue(())
+    }
 }
