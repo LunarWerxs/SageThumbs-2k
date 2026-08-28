@@ -32,76 +32,63 @@ pub(super) fn is_woff(bytes: &[u8]) -> bool {
     bytes.get(0..4) == Some(b"wOFF")
 }
 
-/// Rebuild the original sfnt (TTF/OTF) from a WOFF.
+struct WoffTable {
+    tag: u32,
+    checksum: u32,
+    data: Vec<u8>,
+}
+
+/// Read one table-directory entry and decompress (or copy) its data.
 ///
-/// `None` for anything malformed, over-large, or not a WOFF at all - the caller
-/// then just shows its normal info card rather than a broken specimen.
-pub(super) fn to_sfnt(bytes: &[u8]) -> Option<Vec<u8>> {
-    use std::io::Read;
+/// `total` is the whole-font size already checked against the 64 MiB cap in
+/// [`to_sfnt`]; capping the per-table decompression by `orig.min(total)` too
+/// keeps a small WOFF with a small `total` from decompressing far past that
+/// cap via an inflated per-table `orig` field.
+fn read_woff_table(bytes: &[u8], entry_offset: usize, total: usize) -> Option<WoffTable> {
+    let tag = be32(bytes, entry_offset)?;
+    let off = be32(bytes, entry_offset + 4)? as usize;
+    let comp = be32(bytes, entry_offset + 8)? as usize;
+    let orig = be32(bytes, entry_offset + 12)? as usize;
+    let checksum = be32(bytes, entry_offset + 16)?;
+    let raw = bytes.get(off..off.checked_add(comp)?)?;
+    // compLength == origLength means the table was stored, not deflated.
+    let data = if comp == orig {
+        raw.to_vec()
+    } else {
+        let cap = orig.min(total);
+        let mut out = Vec::with_capacity(cap);
+        use std::io::Read;
+        flate2::read::ZlibDecoder::new(raw)
+            .take(cap as u64)
+            .read_to_end(&mut out)
+            .ok()?;
+        if out.len() != orig {
+            return None; // truncated or lying header, refuse rather than ship a half table
+        }
+        out
+    };
+    Some(WoffTable {
+        tag,
+        checksum,
+        data,
+    })
+}
 
-    if !is_woff(bytes) {
-        return None;
-    }
-    let flavor = be32(bytes, 4)?;
-    let num_tables = be16(bytes, 12)? as usize;
-    if num_tables == 0 || num_tables > MAX_TABLES {
-        return None;
-    }
-    // The header's own claim about the output size doubles as the allocation cap.
-    let total = be32(bytes, 16)? as usize;
-    if total > 64 * 1024 * 1024 {
-        return None;
-    }
-
-    struct Table {
-        tag: u32,
-        checksum: u32,
-        data: Vec<u8>,
-    }
-    let mut tables: Vec<Table> = Vec::with_capacity(num_tables);
+/// Read every table-directory entry, sorted by tag (an sfnt directory must be;
+/// WOFF's already is, but a hand-made file might not be and the loader would
+/// reject the result).
+fn read_woff_tables(bytes: &[u8], num_tables: usize, total: usize) -> Option<Vec<WoffTable>> {
+    let mut tables = Vec::with_capacity(num_tables);
     for i in 0..num_tables {
-        let e = HDR + i * DIR_ENTRY;
-        let tag = be32(bytes, e)?;
-        let off = be32(bytes, e + 4)? as usize;
-        let comp = be32(bytes, e + 8)? as usize;
-        let orig = be32(bytes, e + 12)? as usize;
-        let checksum = be32(bytes, e + 16)?;
-        let raw = bytes.get(off..off.checked_add(comp)?)?;
-        // compLength == origLength means the table was stored, not deflated.
-        let data = if comp == orig {
-            raw.to_vec()
-        } else {
-            // `orig` is this ONE table's own origLength, attacker-controlled and
-            // independent of `total` (the whole-font size already checked against the
-            // 64 MiB cap above). Bounding the read by `orig` alone would let a small
-            // WOFF with a small `total` still decompress far past that cap — the
-            // allocation hint two lines up was already `orig.min(total)`, but the
-            // actual zlib read wasn't, so the over-cap bytes got decompressed (and
-            // dropped) before the length check below ever ran. `.min(total)` here
-            // makes the read agree with the allocation: a legitimate table (orig <=
-            // total) is unaffected, and an inflated one now short-reads and is
-            // rejected below instead of being decompressed past the cap first.
-            let cap = orig.min(total);
-            let mut out = Vec::with_capacity(cap);
-            flate2::read::ZlibDecoder::new(raw)
-                .take(cap as u64)
-                .read_to_end(&mut out)
-                .ok()?;
-            if out.len() != orig {
-                return None; // truncated or lying header — refuse rather than ship a half table
-            }
-            out
-        };
-        tables.push(Table {
-            tag,
-            checksum,
-            data,
-        });
+        tables.push(read_woff_table(bytes, HDR + i * DIR_ENTRY, total)?);
     }
-    // An sfnt directory must be sorted by tag; WOFF's already is, but a hand-made
-    // file might not be and the loader would reject the result.
     tables.sort_by_key(|t| t.tag);
+    Some(tables)
+}
 
+/// Write the sfnt header, table directory, and table data for an already
+/// tag-sorted table list.
+fn assemble_sfnt(flavor: u32, tables: &[WoffTable], total: usize) -> Vec<u8> {
     // sfnt header: version, numTables, then the binary-search hint fields.
     let n = tables.len() as u16;
     let mut pow2 = 1u16;
@@ -120,7 +107,7 @@ pub(super) fn to_sfnt(bytes: &[u8]) -> Option<Vec<u8>> {
     // Table data starts after the directory, each table 4-byte aligned.
     let mut offset = 12 + tables.len() * 16;
     let mut placed = Vec::with_capacity(tables.len());
-    for t in &tables {
+    for t in tables {
         placed.push(offset);
         offset += t.data.len();
         offset = offset.next_multiple_of(4);
@@ -131,13 +118,36 @@ pub(super) fn to_sfnt(bytes: &[u8]) -> Option<Vec<u8>> {
         out.extend_from_slice(&(off as u32).to_be_bytes());
         out.extend_from_slice(&(t.data.len() as u32).to_be_bytes());
     }
-    for t in &tables {
+    for t in tables {
         out.extend_from_slice(&t.data);
         while out.len() % 4 != 0 {
             out.push(0);
         }
     }
-    Some(out)
+    out
+}
+
+/// Rebuild the original sfnt (TTF/OTF) from a WOFF.
+///
+/// `None` for anything malformed, over-large, or not a WOFF at all - the caller
+/// then just shows its normal info card rather than a broken specimen.
+pub(super) fn to_sfnt(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !is_woff(bytes) {
+        return None;
+    }
+    let flavor = be32(bytes, 4)?;
+    let num_tables = be16(bytes, 12)? as usize;
+    if num_tables == 0 || num_tables > MAX_TABLES {
+        return None;
+    }
+    // The header's own claim about the output size doubles as the allocation cap.
+    let total = be32(bytes, 16)? as usize;
+    if total > 64 * 1024 * 1024 {
+        return None;
+    }
+
+    let tables = read_woff_tables(bytes, num_tables, total)?;
+    Some(assemble_sfnt(flavor, &tables, total))
 }
 
 #[cfg(test)]
