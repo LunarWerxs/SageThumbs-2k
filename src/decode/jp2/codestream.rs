@@ -165,9 +165,8 @@ pub(super) struct Palette {
     pub entries: Vec<[u8; 3]>,
 }
 
-/// Parse `jp2h`'s `pclr` and `cmap` boxes into a ready LUT. `Ok(None)` = no palette at
-/// all; `Err(Unsupported)` = a palette exists but in a shape we refuse to guess at.
-fn parse_palette(jp2h: &[u8]) -> Result<Option<Palette>, Jp2Error> {
+/// Scan `jp2h`'s immediate children for `pclr` and `cmap` box bodies.
+fn find_pclr_cmap(jp2h: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     let mut pclr: Option<&[u8]> = None;
     let mut cmap: Option<&[u8]> = None;
     let mut p = 0usize;
@@ -186,9 +185,13 @@ fn parse_palette(jp2h: &[u8]) -> Result<Option<Palette>, Jp2Error> {
         }
         p += len;
     }
-    let Some(pc) = pclr else { return Ok(None) };
+    (pclr, cmap)
+}
 
-    // pclr: NE (u16), NPC (u8), NPC x Bi, then NE rows of NPC entries.
+/// Parse a `pclr` box body — NE (u16), NPC (u8), NPC x Bi, then NE rows of
+/// NPC entries — into 8-bit RGB entries. Returns the entries plus NPC, which
+/// `validate_cmap` needs to check the paired `cmap` box's shape.
+fn parse_pclr(pc: &[u8]) -> Result<(Vec<[u8; 3]>, usize), Jp2Error> {
     if pc.len() < 3 {
         return Err(Jp2Error::Malformed("pclr too short"));
     }
@@ -231,21 +234,36 @@ fn parse_palette(jp2h: &[u8]) -> Result<Option<Palette>, Jp2Error> {
         }
         entries.push(rgb);
     }
+    Ok((entries, npc))
+}
 
-    // cmap: (CMP u16, MTYP u8, PCOL u8) per output channel. Accept only "component 0
-    // through palette columns in order" — the shape real encoders write.
-    if let Some(cm) = cmap {
-        if cm.len() % 4 != 0 || cm.is_empty() {
-            return Err(Jp2Error::Malformed("cmap length"));
-        }
-        for (i, ch) in cm.chunks_exact(4).enumerate() {
-            let cmp = u16::from_be_bytes([ch[0], ch[1]]);
-            let (mtyp, pcol) = (ch[2], ch[3]);
-            if cmp != 0 || mtyp != 1 || pcol as usize != (if npc == 1 { 0 } else { i }) {
-                return Err(Jp2Error::Unsupported("cmap shape"));
-            }
+/// Validate a `cmap` box body: (CMP u16, MTYP u8, PCOL u8) per output
+/// channel, accepting only "component 0 through palette columns in order" —
+/// the shape real encoders write. `Ok(())` when there is no `cmap` (optional).
+fn validate_cmap(cmap: Option<&[u8]>, npc: usize) -> Result<(), Jp2Error> {
+    let Some(cm) = cmap else {
+        return Ok(());
+    };
+    if cm.len() % 4 != 0 || cm.is_empty() {
+        return Err(Jp2Error::Malformed("cmap length"));
+    }
+    for (i, ch) in cm.chunks_exact(4).enumerate() {
+        let cmp = u16::from_be_bytes([ch[0], ch[1]]);
+        let (mtyp, pcol) = (ch[2], ch[3]);
+        if cmp != 0 || mtyp != 1 || pcol as usize != (if npc == 1 { 0 } else { i }) {
+            return Err(Jp2Error::Unsupported("cmap shape"));
         }
     }
+    Ok(())
+}
+
+/// Parse `jp2h`'s `pclr` and `cmap` boxes into a ready LUT. `Ok(None)` = no palette at
+/// all; `Err(Unsupported)` = a palette exists but in a shape we refuse to guess at.
+fn parse_palette(jp2h: &[u8]) -> Result<Option<Palette>, Jp2Error> {
+    let (pclr, cmap) = find_pclr_cmap(jp2h);
+    let Some(pc) = pclr else { return Ok(None) };
+    let (entries, npc) = parse_pclr(pc)?;
+    validate_cmap(cmap, npc)?;
     Ok(Some(Palette { entries }))
 }
 
@@ -319,6 +337,67 @@ enum SotOutcome {
     Desync,
 }
 
+/// Where this tile-part's payload ends: `Psot` bytes after the START of the SOT marker, or
+/// end-of-codestream when `Psot == 0` (legal: the last tile-part in the file).
+///
+/// `Psot` must clear the SOT segment itself (2 marker + 10 body = 12), or the caller's
+/// `r.p = part_end` would move the cursor BACKWARDS and the marker loop would re-read this
+/// SOT forever. A crafted Psot of 1 is a free hang in a shell host otherwise, so this is a
+/// hard reject, not a clamp.
+fn compute_part_end(sot_marker_start: usize, psot: u32, cs_len: usize) -> Result<usize, Jp2Error> {
+    const MIN_PSOT: u32 = 12;
+    if psot == 0 {
+        return Ok(cs_len);
+    }
+    if psot < MIN_PSOT {
+        return Err(Jp2Error::Malformed("Psot shorter than its own SOT segment"));
+    }
+    sot_marker_start
+        .checked_add(psot as usize)
+        .filter(|e| *e <= cs_len)
+        .ok_or(Jp2Error::Truncated)
+}
+
+/// Skip any tile-part header markers up to SOD, WITHOUT running past `part_end`. A
+/// tile-part carrying no data at all is legal (e.g. a tile ending with `Psot = 12`, i.e.
+/// the SOT segment and nothing else); hunting for a SOD that is not there would walk into
+/// the next segment and only surface much later as a bogus truncation.
+fn find_tile_part_body<'a>(
+    r: &mut Reader<'a>,
+    cs: &'a [u8],
+    part_end: usize,
+) -> Result<&'a [u8], Jp2Error> {
+    loop {
+        if r.p >= part_end {
+            return Ok(&cs[part_end..part_end]); // empty tile-part
+        }
+        let mm = r.u16()?;
+        if mm == marker::SOD {
+            return cs.get(r.p..part_end).ok_or(Jp2Error::Truncated);
+        }
+        let l = r.u16()? as usize;
+        if l < 2 {
+            return Err(Jp2Error::Malformed("tile-part marker length < 2"));
+        }
+        r.p =
+            r.p.checked_add(l - 2)
+                .filter(|e| *e <= part_end)
+                .ok_or(Jp2Error::Truncated)?;
+    }
+}
+
+/// After a tile-part's payload, skip any repeated `0xFF93` (SOD) bytes and report whether
+/// the marker loop can keep walking (a real SOT/EOC follows) or has lost synchronization.
+fn next_sot_outcome(cs: &[u8], p: &mut usize) -> SotOutcome {
+    while cs.get(*p..*p + 2) == Some(&[0xFF, 0x93]) {
+        *p += 2;
+    }
+    match cs.get(*p..*p + 2) {
+        Some(&[0xFF, b]) if b == 0x90 || b == 0xD9 => SotOutcome::Continue,
+        _ => SotOutcome::Desync,
+    }
+}
+
 /// Index one tile-part's payload (the SOT marker's body through its data, ending at SOD
 /// or an empty part), pushing it onto `tiles[isot]`.
 ///
@@ -345,44 +424,10 @@ fn index_tile_part<'a>(
     let _tnsot = r.u8()?;
     // The tile-part ends `Psot` bytes after the START of the SOT marker.
     let sot_marker_start = seg_start - 2;
-    // `Psot` must clear the SOT segment itself (2 marker + 10 body = 12), or setting
-    // `r.p = part_end` below would move the cursor BACKWARDS and the marker loop would
-    // re-read this SOT forever. A crafted Psot of 1 is a free hang in a shell host
-    // otherwise, so this is a hard reject, not a clamp.
-    const MIN_PSOT: u32 = 12;
-    let part_end = if psot == 0 {
-        cs.len()
-    } else {
-        if psot < MIN_PSOT {
-            return Err(Jp2Error::Malformed("Psot shorter than its own SOT segment"));
-        }
-        sot_marker_start
-            .checked_add(psot as usize)
-            .filter(|e| *e <= cs.len())
-            .ok_or(Jp2Error::Truncated)?
-    };
-    // Skip any tile-part header markers up to SOD, WITHOUT running past the tile-part. A
-    // tile-part carrying no data at all is legal (this file ends tile 0 with `Psot = 12`,
-    // i.e. the SOT segment and nothing else); hunting for a SOD that is not there would
-    // walk into the next segment and only surface much later as a bogus truncation.
+    let part_end = compute_part_end(sot_marker_start, psot, cs.len())?;
+
     r.p = seg_end;
-    let body = loop {
-        if r.p >= part_end {
-            break &cs[part_end..part_end]; // empty tile-part
-        }
-        let mm = r.u16()?;
-        if mm == marker::SOD {
-            break cs.get(r.p..part_end).ok_or(Jp2Error::Truncated)?;
-        }
-        let l = r.u16()? as usize;
-        if l < 2 {
-            return Err(Jp2Error::Malformed("tile-part marker length < 2"));
-        }
-        r.p =
-            r.p.checked_add(l - 2)
-                .filter(|e| *e <= part_end)
-                .ok_or(Jp2Error::Truncated)?;
-    };
+    let body = find_tile_part_body(r, cs, part_end)?;
     if !body.is_empty() {
         tiles
             .get_mut(isot)
@@ -390,13 +435,85 @@ fn index_tile_part<'a>(
             .push(body);
     }
     r.p = part_end;
-    while cs.get(r.p..r.p + 2) == Some(&[0xFF, 0x93]) {
-        r.p += 2;
+    Ok(next_sot_outcome(cs, &mut r.p))
+}
+
+/// Accumulated marker-parse state for `parse`'s main loop, one field per
+/// header the decoder needs plus the per-tile payload lists SIZ sizes.
+struct ParseState<'a> {
+    siz: Option<Siz>,
+    cod: Option<Cod>,
+    qcd: Option<Qcd>,
+    cod_comp: Vec<Option<Cod>>,
+    qcd_comp: Vec<Option<Qcd>>,
+    tiles: Vec<Vec<&'a [u8]>>,
+}
+
+impl<'a> ParseState<'a> {
+    fn new() -> Self {
+        ParseState {
+            siz: None,
+            cod: None,
+            qcd: None,
+            cod_comp: Vec::new(),
+            qcd_comp: Vec::new(),
+            tiles: Vec::new(),
+        }
     }
-    match cs.get(r.p..r.p + 2) {
-        Some(&[0xFF, b]) if b == 0x90 || b == 0xD9 => Ok(SotOutcome::Continue),
-        _ => Ok(SotOutcome::Desync),
+
+    fn ncomp(&self) -> usize {
+        self.siz.as_ref().map(|s| s.components.len()).unwrap_or(0)
     }
+
+    /// SIZ: image/tile grid + per-component sampling. Also (re)sizes the
+    /// per-component COC/QCC override slots and the per-tile payload lists.
+    fn handle_siz(&mut self, r: &mut Reader) -> Result<(), Jp2Error> {
+        let s = parse_siz(r)?;
+        self.cod_comp = vec![None; s.components.len()];
+        self.qcd_comp = vec![None; s.components.len()];
+        let nt = (s.num_tiles_x() as u64) * (s.num_tiles_y() as u64);
+        if nt == 0 || nt > MAX_TILES {
+            return Err(Jp2Error::Unsupported("tile count out of range"));
+        }
+        self.tiles = vec![Vec::new(); nt as usize];
+        self.siz = Some(s);
+        Ok(())
+    }
+
+    fn handle_coc(&mut self, r: &mut Reader, seg_end: usize) -> Result<(), Jp2Error> {
+        let (idx, c) = parse_coc(r, seg_end, self.ncomp(), self.cod.as_ref())?;
+        if let Some(slot) = self.cod_comp.get_mut(idx) {
+            *slot = Some(c);
+        }
+        Ok(())
+    }
+
+    fn handle_qcc(&mut self, r: &mut Reader, seg_end: usize) -> Result<(), Jp2Error> {
+        let (idx, q) = parse_qcc(r, seg_end, self.ncomp())?;
+        if let Some(slot) = self.qcd_comp.get_mut(idx) {
+            *slot = Some(q);
+        }
+        Ok(())
+    }
+}
+
+/// `cod_comp` is parsed but this decoder never applies a per-component COC override —
+/// every component is decoded with the single global COD (see the `cod_comp` field
+/// comment on `Codestream`). A file whose COC actually signals a DIFFERENT coding style
+/// would therefore be silently mis-decoded if accepted, so reject it here instead of
+/// pretending the override was honoured.
+fn validate_coc_matches_cod(cod_comp: &[Option<Cod>], cod: &Cod) -> Result<(), Jp2Error> {
+    for comp in cod_comp.iter().flatten() {
+        if comp.levels != cod.levels
+            || comp.cblk_w != cod.cblk_w
+            || comp.cblk_h != cod.cblk_h
+            || comp.reversible != cod.reversible
+            || comp.precincts != cod.precincts
+        {
+            return Err(Jp2Error::Unsupported("COC overrides COD"));
+        }
+    }
+    Ok(())
 }
 
 /// Parse the main header and index every tile-part payload. Does NOT decode any pixels.
@@ -406,12 +523,7 @@ pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
         return Err(Jp2Error::Malformed("no SOC"));
     }
 
-    let mut siz: Option<Siz> = None;
-    let mut cod: Option<Cod> = None;
-    let mut qcd: Option<Qcd> = None;
-    let mut cod_comp: Vec<Option<Cod>> = Vec::new();
-    let mut qcd_comp: Vec<Option<Qcd>> = Vec::new();
-    let mut tiles: Vec<Vec<&[u8]>> = Vec::new();
+    let mut state = ParseState::new();
 
     loop {
         if r.p >= cs.len() {
@@ -438,66 +550,84 @@ pub(super) fn parse(cs: &[u8]) -> Result<Codestream<'_>, Jp2Error> {
         }
 
         match m {
-            marker::SIZ => {
-                let s = parse_siz(&mut r)?;
-                cod_comp = vec![None; s.components.len()];
-                qcd_comp = vec![None; s.components.len()];
-                let nt = (s.num_tiles_x() as u64) * (s.num_tiles_y() as u64);
-                if nt == 0 || nt > MAX_TILES {
-                    return Err(Jp2Error::Unsupported("tile count out of range"));
-                }
-                tiles = vec![Vec::new(); nt as usize];
-                siz = Some(s);
-            }
-            marker::COD => cod = Some(parse_cod(&mut r, seg_end)?),
-            marker::COC => {
-                let ncomp = siz.as_ref().map(|s| s.components.len()).unwrap_or(0);
-                let (idx, c) = parse_coc(&mut r, seg_end, ncomp, cod.as_ref())?;
-                if let Some(slot) = cod_comp.get_mut(idx) {
-                    *slot = Some(c);
+            marker::SIZ => state.handle_siz(&mut r)?,
+            marker::COD => state.cod = Some(parse_cod(&mut r, seg_end)?),
+            marker::COC => state.handle_coc(&mut r, seg_end)?,
+            marker::QCD => state.qcd = Some(parse_qcd(&mut r, seg_end)?),
+            marker::QCC => state.handle_qcc(&mut r, seg_end)?,
+            marker::SOT => {
+                match index_tile_part(&mut r, cs, seg_start, seg_end, &mut state.tiles)? {
+                    SotOutcome::Continue => continue,
+                    SotOutcome::Desync => break,
                 }
             }
-            marker::QCD => qcd = Some(parse_qcd(&mut r, seg_end)?),
-            marker::QCC => {
-                let ncomp = siz.as_ref().map(|s| s.components.len()).unwrap_or(0);
-                let (idx, q) = parse_qcc(&mut r, seg_end, ncomp)?;
-                if let Some(slot) = qcd_comp.get_mut(idx) {
-                    *slot = Some(q);
-                }
-            }
-            marker::SOT => match index_tile_part(&mut r, cs, seg_start, seg_end, &mut tiles)? {
-                SotOutcome::Continue => continue,
-                SotOutcome::Desync => break,
-            },
             _ => {}
         }
         r.p = seg_end;
     }
 
-    let cod = cod.ok_or(Jp2Error::Malformed("no COD"))?;
-    // cod_comp is parsed but this decoder never applies a per-component COC override —
-    // every component is decoded with the single global COD (see the `cod_comp` field
-    // comment). A file whose COC actually signals a DIFFERENT coding style would
-    // therefore be silently mis-decoded if accepted, so reject it here instead of
-    // pretending the override was honoured.
-    for comp in cod_comp.iter().flatten() {
-        if comp.levels != cod.levels
-            || comp.cblk_w != cod.cblk_w
-            || comp.cblk_h != cod.cblk_h
-            || comp.reversible != cod.reversible
-            || comp.precincts != cod.precincts
-        {
-            return Err(Jp2Error::Unsupported("COC overrides COD"));
-        }
-    }
+    let cod = state.cod.ok_or(Jp2Error::Malformed("no COD"))?;
+    validate_coc_matches_cod(&state.cod_comp, &cod)?;
 
     Ok(Codestream {
-        siz: siz.ok_or(Jp2Error::Malformed("no SIZ"))?,
+        siz: state.siz.ok_or(Jp2Error::Malformed("no SIZ"))?,
         cod,
-        qcd: qcd.ok_or(Jp2Error::Malformed("no QCD"))?,
-        cod_comp,
-        qcd_comp,
-        tiles,
+        qcd: state.qcd.ok_or(Jp2Error::Malformed("no QCD"))?,
+        cod_comp: state.cod_comp,
+        qcd_comp: state.qcd_comp,
+        tiles: state.tiles,
+    })
+}
+
+/// Validate the SIZ image/tile grid: a sane component count, non-empty image and tile
+/// grids, tile origin inside the image origin, and a total pixel count the decode's
+/// width*height*components allocation can afford (bound here rather than discovering it
+/// as an OOM inside a shell host).
+#[allow(clippy::too_many_arguments)]
+fn validate_siz_grid(
+    xsiz: u32,
+    ysiz: u32,
+    xosiz: u32,
+    yosiz: u32,
+    xtsiz: u32,
+    ytsiz: u32,
+    xtosiz: u32,
+    ytosiz: u32,
+    csiz: u16,
+) -> Result<(), Jp2Error> {
+    if csiz == 0 || csiz > MAX_COMPONENTS {
+        return Err(Jp2Error::Unsupported("component count"));
+    }
+    if xsiz <= xosiz || ysiz <= yosiz {
+        return Err(Jp2Error::Malformed("empty image grid"));
+    }
+    if xtsiz == 0 || ytsiz == 0 || xtosiz > xosiz || ytosiz > yosiz {
+        return Err(Jp2Error::Malformed("bad tile grid"));
+    }
+    let px = ((xsiz - xosiz) as u64) * ((ysiz - yosiz) as u64);
+    if px > crate::decode::limits::MAX_PIXELS {
+        return Err(Jp2Error::Unsupported("image too large"));
+    }
+    Ok(())
+}
+
+/// One SIZ component entry: Ssiz (precision-1 + signed flag), XRsiz, YRsiz.
+fn parse_siz_component(r: &mut Reader) -> Result<Component, Jp2Error> {
+    let ssiz = r.u8()?;
+    let dx = r.u8()?;
+    let dy = r.u8()?;
+    if dx == 0 || dy == 0 {
+        return Err(Jp2Error::Malformed("zero component subsampling"));
+    }
+    let prec = ssiz & 0x7F;
+    if prec > 37 {
+        return Err(Jp2Error::Unsupported("component precision"));
+    }
+    Ok(Component {
+        prec,
+        signed: ssiz & 0x80 != 0,
+        dx,
+        dy,
     })
 }
 
@@ -513,40 +643,11 @@ fn parse_siz(r: &mut Reader) -> Result<Siz, Jp2Error> {
     let ytosiz = r.u32()?;
     let csiz = r.u16()?;
 
-    if csiz == 0 || csiz > MAX_COMPONENTS {
-        return Err(Jp2Error::Unsupported("component count"));
-    }
-    if xsiz <= xosiz || ysiz <= yosiz {
-        return Err(Jp2Error::Malformed("empty image grid"));
-    }
-    if xtsiz == 0 || ytsiz == 0 || xtosiz > xosiz || ytosiz > yosiz {
-        return Err(Jp2Error::Malformed("bad tile grid"));
-    }
-    // The decode allocates width*height*components samples; bound it here rather than
-    // discovering it as an OOM inside a shell host.
-    let px = ((xsiz - xosiz) as u64) * ((ysiz - yosiz) as u64);
-    if px > crate::decode::limits::MAX_PIXELS {
-        return Err(Jp2Error::Unsupported("image too large"));
-    }
+    validate_siz_grid(xsiz, ysiz, xosiz, yosiz, xtsiz, ytsiz, xtosiz, ytosiz, csiz)?;
 
     let mut components = Vec::with_capacity(csiz as usize);
     for _ in 0..csiz {
-        let ssiz = r.u8()?;
-        let dx = r.u8()?;
-        let dy = r.u8()?;
-        if dx == 0 || dy == 0 {
-            return Err(Jp2Error::Malformed("zero component subsampling"));
-        }
-        let prec = ssiz & 0x7F;
-        if prec > 37 {
-            return Err(Jp2Error::Unsupported("component precision"));
-        }
-        components.push(Component {
-            prec,
-            signed: ssiz & 0x80 != 0,
-            dx,
-            dy,
-        });
+        components.push(parse_siz_component(r)?);
     }
     Ok(Siz {
         xsiz,
