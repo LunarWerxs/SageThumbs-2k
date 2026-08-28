@@ -1656,6 +1656,54 @@ unsafe fn on_video_event(hwnd: HWND, event: u32) {
 ///
 /// `←/→` are the seek keys here rather than folder navigation: while a clip is playing that is what
 /// the key means everywhere else, and PgUp/PgDn still flip through the folder, so nothing is lost.
+/// Seek keys: `←/→` (step scaled by Ctrl/Shift), Home/End.
+unsafe fn video_key_seek(v: &super::video::VideoPlayer, vk: u16, step: f64) -> bool {
+    match vk {
+        k if k == VK_LEFT.0 => v.seek_by(-step),
+        k if k == VK_RIGHT.0 => v.seek_by(step),
+        k if k == VK_HOME.0 => v.seek(0.0),
+        k if k == VK_END.0 => {
+            let d = v.duration();
+            if d.is_finite() && d > 0.0 {
+                v.seek((d - 0.1).max(0.0));
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Volume keys: `↑/↓` nudge and persist.
+unsafe fn video_key_volume(v: &super::video::VideoPlayer, vk: u16) -> bool {
+    match vk {
+        k if k == VK_UP.0 => v.nudge_volume(0.05),
+        k if k == VK_DOWN.0 => v.nudge_volume(-0.05),
+        _ => return false,
+    }
+    persist_volume(v);
+    true
+}
+
+/// Toggle keys: play/pause, mute, loop.
+unsafe fn video_key_toggle(v: &super::video::VideoPlayer, vk: u16) -> bool {
+    match vk {
+        // K and P both pause, because muscle memory splits between YouTube and desktop players.
+        // Space is deliberately NOT bound: it belongs to the preview's own open/close lifecycle.
+        k if k == 'K' as u16 || k == 'P' as u16 => v.toggle_play(),
+        k if k == 'M' as u16 => {
+            v.set_muted(!v.muted());
+            persist_volume(v);
+        }
+        k if k == 'L' as u16 => {
+            let on = !v.looping();
+            v.set_looping(on);
+            let _ = sagethumbs2k_core::settings::set_preview_loop(on);
+        }
+        _ => return false,
+    }
+    true
+}
+
 unsafe fn video_key(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) -> bool {
     let st = &*state(hwnd);
     if st.kind.get() != ContentKind::Video {
@@ -1677,35 +1725,10 @@ unsafe fn video_key(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) -> bool {
     if st.arrow_nav.get() && matches!(vk, k if k == VK_LEFT.0 || k == VK_RIGHT.0) {
         return false;
     }
-    match vk {
-        k if k == VK_LEFT.0 => v.seek_by(-step),
-        k if k == VK_RIGHT.0 => v.seek_by(step),
-        k if k == VK_UP.0 => v.nudge_volume(0.05),
-        k if k == VK_DOWN.0 => v.nudge_volume(-0.05),
-        k if k == VK_HOME.0 => v.seek(0.0),
-        k if k == VK_END.0 => {
-            let d = v.duration();
-            if d.is_finite() && d > 0.0 {
-                v.seek((d - 0.1).max(0.0));
-            }
-        }
-        // K and P both pause, because muscle memory splits between YouTube and desktop players.
-        // Space is deliberately NOT bound: it belongs to the preview's own open/close lifecycle.
-        k if k == 'K' as u16 || k == 'P' as u16 => v.toggle_play(),
-        k if k == 'M' as u16 => {
-            v.set_muted(!v.muted());
-            persist_volume(v);
-        }
-        k if k == 'L' as u16 => {
-            let on = !v.looping();
-            v.set_looping(on);
-            let _ = sagethumbs2k_core::settings::set_preview_loop(on);
-        }
-        _ => return false,
-    }
-    // Volume and seek are held in the player, so only the strip needs repainting.
-    if matches!(vk, k if k == VK_UP.0 || k == VK_DOWN.0) {
-        persist_volume(v);
+    let consumed =
+        video_key_seek(v, vk, step) || video_key_volume(v, vk) || video_key_toggle(v, vk);
+    if !consumed {
+        return false;
     }
     let sr = scrub_rect(hwnd);
     let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
