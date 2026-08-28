@@ -453,12 +453,24 @@ pub(super) unsafe fn hit_test(
 /// walk over the raw chars picks the boundary (per-char re-measuring would be O(n²) per
 /// mouse-move — [`disp_extent`] on the paint side is the same single-measure discipline).
 pub(super) unsafe fn col_at(hdc: HDC, line: &str, dx: i32) -> usize {
-    // Display text (tabs → 4 spaces) + a parallel map: display unit → raw byte END of its char.
+    let (w16, raw_end) = display_units(line);
+    if w16.is_empty() {
+        return 0;
+    }
+    let Some(dxs) = measure_display_extents(hdc, &w16) else {
+        return 0;
+    };
+    nearest_char_boundary(line, &w16, &raw_end, &dxs, dx)
+}
+
+/// Display text (tabs → 4 spaces) + a parallel map: display unit → raw byte END of its
+/// char. Stops at [`MEASURE_CAP`] display units — way past any real pane width.
+fn display_units(line: &str) -> (Vec<u16>, Vec<usize>) {
     let mut w16: Vec<u16> = Vec::new();
     let mut raw_end: Vec<usize> = Vec::new();
     for (i, c) in line.char_indices() {
         if w16.len() >= MEASURE_CAP {
-            break; // way past any real pane width
+            break;
         }
         let e = i + c.len_utf8();
         if c == '\t' {
@@ -474,9 +486,11 @@ pub(super) unsafe fn col_at(hdc: HDC, line: &str, dx: i32) -> usize {
             }
         }
     }
-    if w16.is_empty() {
-        return 0;
-    }
+    (w16, raw_end)
+}
+
+/// ONE GDI call filling every display prefix's cumulative width. None on GDI failure.
+unsafe fn measure_display_extents(hdc: HDC, w16: &[u16]) -> Option<Vec<i32>> {
     let mut dxs = vec![0i32; w16.len()];
     let mut sz = SIZE::default();
     // lpnFit None → nMaxExtent is ignored and every partial extent is filled.
@@ -491,10 +505,20 @@ pub(super) unsafe fn col_at(hdc: HDC, line: &str, dx: i32) -> usize {
     )
     .as_bool()
     {
-        return 0;
+        return None;
     }
-    // Walk raw chars via the map: each char covers display span [left, right) — snap to the
-    // nearer edge of the char containing dx.
+    Some(dxs)
+}
+
+/// Walk raw chars via the display map: each char covers display span [left, right) —
+/// snap to the nearer edge of the char containing `dx`.
+fn nearest_char_boundary(
+    line: &str,
+    w16: &[u16],
+    raw_end: &[usize],
+    dxs: &[i32],
+    dx: i32,
+) -> usize {
     let mut left = 0i32;
     let mut d0 = 0usize;
     while d0 < w16.len() {

@@ -275,13 +275,32 @@ pub(super) fn encode_pam_streaming<W: Write>(
     img: &DynamicImage,
 ) -> std::io::Result<()> {
     let (depth, tuple_type, wide) = pam_layout(img);
+    write_pam_header(writer, img, depth, tuple_type, wide)?;
+    write_pam_pixels(writer, img, depth, wide)
+}
+
+fn write_pam_header<W: Write>(
+    writer: &mut W,
+    img: &DynamicImage,
+    depth: usize,
+    tuple_type: &str,
+    wide: bool,
+) -> std::io::Result<()> {
     writeln!(writer, "P7")?;
     writeln!(writer, "WIDTH {}", img.width())?;
     writeln!(writer, "HEIGHT {}", img.height())?;
     writeln!(writer, "DEPTH {depth}")?;
     writeln!(writer, "MAXVAL {}", if wide { 65_535 } else { 255 })?;
     writeln!(writer, "TUPLTYPE {tuple_type}")?;
-    writeln!(writer, "ENDHDR")?;
+    writeln!(writer, "ENDHDR")
+}
+
+fn write_pam_pixels<W: Write>(
+    writer: &mut W,
+    img: &DynamicImage,
+    depth: usize,
+    wide: bool,
+) -> std::io::Result<()> {
     for y in 0..img.height() {
         for x in 0..img.width() {
             let samples = pam_u16_at(img, x, y);
