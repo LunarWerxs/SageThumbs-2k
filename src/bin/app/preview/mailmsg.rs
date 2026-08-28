@@ -529,8 +529,15 @@ fn b64_decode(raw: &[u8]) -> Vec<u8> {
 /// to be one — the locked-down WebView2 path exists for local HTML files the user opted
 /// into; a mail body is remote-authored and gets flattened to text, always.
 fn strip_html(html: &str) -> String {
-    let mut out = String::with_capacity(html.len() / 2);
-    // Drop container elements whose CONTENT must vanish with the tags.
+    let cleaned = strip_tags_to_text(html);
+    let unescaped = unescape_html_entities(&cleaned);
+    collapse_blank_lines(&unescaped)
+}
+
+/// Drop `<script>`/`<style>`/`<head>` spans wholesale (content included), and turn every
+/// other tag into either nothing (inline tags) or a newline (block tags), so what's left
+/// reads as loosely-formatted text.
+fn strip_tags_to_text(html: &str) -> String {
     let lower_all = html.to_ascii_lowercase();
     let mut cleaned = String::with_capacity(html.len());
     let mut pos = 0usize;
@@ -577,8 +584,12 @@ fn strip_html(html: &str) -> String {
             None => break, // unterminated tag: done
         }
     }
-    let rest: &str = &cleaned;
-    // Entities.
+    cleaned
+}
+
+/// Decode the handful of HTML entities a mail body realistically uses.
+fn unescape_html_entities(rest: &str) -> String {
+    let mut out = String::with_capacity(rest.len());
     let mut chars = rest.char_indices();
     while let Some((i, c)) = chars.next() {
         if c != '&' {
@@ -606,10 +617,14 @@ fn strip_html(html: &str) -> String {
             out.push('&');
         }
     }
-    // Collapse the blank-line stutter block tags leave behind.
-    let mut collapsed = String::with_capacity(out.len());
+    out
+}
+
+/// Collapse the blank-line stutter block tags leave behind, and trim the result.
+fn collapse_blank_lines(text: &str) -> String {
+    let mut collapsed = String::with_capacity(text.len());
     let mut blanks = 0;
-    for line in out.lines() {
+    for line in text.lines() {
         if line.trim().is_empty() {
             blanks += 1;
             if blanks > 1 {
