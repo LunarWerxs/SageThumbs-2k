@@ -28,32 +28,41 @@ pub fn looks_like_max(head: &[u8]) -> bool {
     ole::looks_like_ole(head)
 }
 
+/// Find the byte offset of the `PIDSI_THUMBNAIL` property's value, walking the
+/// PropertySet's first section's property list. Section offset is at +44 (after the
+/// 28-byte stream header + the first 16-byte FMTID).
+fn thumbnail_value_offset(s: &[u8]) -> Option<usize> {
+    let section = le32(s, 44)? as usize;
+    let num_props = le32(s, section.checked_add(4)?)? as usize;
+    for i in 0..num_props.min(256) {
+        let pair = section.checked_add(8)?.checked_add(i.checked_mul(8)?)?;
+        let pid = le32(s, pair)?;
+        let poff = le32(s, pair.checked_add(4)?)? as usize;
+        if pid == PIDSI_THUMBNAIL {
+            return section.checked_add(poff);
+        }
+    }
+    None
+}
+
+/// Read the `VT_CF` value at `v`: validate the type tag, then return the clipboard tag plus
+/// its data slice.
+fn read_cf_value(s: &[u8], v: usize) -> Option<(u32, &[u8])> {
+    if le32(s, v)? != VT_CF {
+        return None;
+    }
+    let cb = le32(s, v.checked_add(4)?)? as usize; // size of tag + data
+    let tag = le32(s, v.checked_add(8)?)?;
+    let data_len = cb.checked_sub(4)?;
+    let data = s.get(v.checked_add(12)?..v.checked_add(12)?.checked_add(data_len)?)?;
+    Some((tag, data))
+}
+
 /// Extract the embedded thumbnail from an OLE compound file, or None.
 pub fn extract(bytes: &[u8]) -> Option<CoverOut> {
     let s = ole::read_stream(bytes, "\u{5}SummaryInformation")?;
-
-    // PropertySet: first section's byte offset is at +44 (after the 28-byte stream
-    // header + the first 16-byte FMTID).
-    let section = le32(&s, 44)? as usize;
-    let num_props = le32(&s, section.checked_add(4)?)? as usize;
-    let mut value_off = None;
-    for i in 0..num_props.min(256) {
-        let pair = section.checked_add(8)?.checked_add(i.checked_mul(8)?)?;
-        let pid = le32(&s, pair)?;
-        let poff = le32(&s, pair.checked_add(4)?)? as usize;
-        if pid == PIDSI_THUMBNAIL {
-            value_off = Some(section.checked_add(poff)?);
-            break;
-        }
-    }
-    let v = value_off?;
-    if le32(&s, v)? != VT_CF {
-        return None;
-    }
-    let cb = le32(&s, v.checked_add(4)?)? as usize; // size of tag + data
-    let tag = le32(&s, v.checked_add(8)?)?;
-    let data_len = cb.checked_sub(4)?;
-    let data = s.get(v.checked_add(12)?..v.checked_add(12)?.checked_add(data_len)?)?;
+    let v = thumbnail_value_offset(&s)?;
+    let (tag, data) = read_cf_value(&s, v)?;
 
     match tag {
         CF_DIB => super::util::decodable_image(dib_to_bmp(data)?).map(CoverOut::Bytes),

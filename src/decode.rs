@@ -913,6 +913,43 @@ fn bmp_prefers_wic(bytes: &[u8]) -> bool {
     matches!(bitcount, 1 | 4 | 8 | 16 | 24) && matches!(compression, BI_RGB | BI_BITFIELDS)
 }
 
+/// Step over an Extension block (`0x21`): one label byte, then a sub-block chain. Returns the
+/// index just past it, or `None` if the file is truncated.
+fn gif_skip_extension(bytes: &[u8], i: usize) -> Option<usize> {
+    if i >= bytes.len() {
+        return None;
+    }
+    gif_skip_subblocks(bytes, i + 1)
+}
+
+/// Step over an Image Descriptor (`0x2C`) and verify it is a full-canvas frame: left/top zero
+/// and width/height matching the logical screen. Returns the index just past it, or `None` if
+/// the frame does not qualify (offset, undersized, or truncated) or the file is truncated.
+fn gif_full_canvas_descriptor(
+    bytes: &[u8],
+    screen_w: u16,
+    screen_h: u16,
+    i: usize,
+) -> Option<usize> {
+    let desc = bytes.get(i..i + 9)?;
+    let left = u16::from_le_bytes([desc[0], desc[1]]);
+    let top = u16::from_le_bytes([desc[2], desc[3]]);
+    let w = u16::from_le_bytes([desc[4], desc[5]]);
+    let h = u16::from_le_bytes([desc[6], desc[7]]);
+    if left != 0 || top != 0 || w != screen_w || h != screen_h {
+        return None;
+    }
+    let local_table = desc[8];
+    let mut next = i + 9;
+    if local_table & 0x80 != 0 {
+        next += 3 << ((local_table & 0x07) + 1);
+    }
+    if next >= bytes.len() {
+        return None;
+    }
+    gif_skip_subblocks(bytes, next + 1)
+}
+
 /// Is this a SINGLE-FRAME GIF whose one frame covers the whole logical screen, so the OS
 /// codec should decode it ahead of the `image` tier?
 ///
@@ -955,11 +992,7 @@ fn gif_prefers_wic(bytes: &[u8]) -> bool {
             0x3B => return frames == 1,
             // Extension: one label byte, then a sub-block chain.
             0x21 => {
-                if i >= bytes.len() {
-                    return false;
-                }
-                i += 1;
-                let Some(next) = gif_skip_subblocks(bytes, i) else {
+                let Some(next) = gif_skip_extension(bytes, i) else {
                     return false;
                 };
                 i = next;
@@ -972,26 +1005,7 @@ fn gif_prefers_wic(bytes: &[u8]) -> bool {
                 if frames > 1 {
                     return false;
                 }
-                let Some(desc) = bytes.get(i..i + 9) else {
-                    return false;
-                };
-                let left = u16::from_le_bytes([desc[0], desc[1]]);
-                let top = u16::from_le_bytes([desc[2], desc[3]]);
-                let w = u16::from_le_bytes([desc[4], desc[5]]);
-                let h = u16::from_le_bytes([desc[6], desc[7]]);
-                if left != 0 || top != 0 || w != screen_w || h != screen_h {
-                    return false;
-                }
-                let local_table = desc[8];
-                i += 9;
-                if local_table & 0x80 != 0 {
-                    i += 3 << ((local_table & 0x07) + 1);
-                }
-                if i >= bytes.len() {
-                    return false;
-                }
-                i += 1;
-                let Some(next) = gif_skip_subblocks(bytes, i) else {
+                let Some(next) = gif_full_canvas_descriptor(bytes, screen_w, screen_h, i) else {
                     return false;
                 };
                 i = next;
