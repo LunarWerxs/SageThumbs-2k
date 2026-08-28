@@ -11,7 +11,81 @@
 //! CommonMark splits block HTML at blank lines, so the opener and its `</div>` arrive in
 //! DIFFERENT events with markdown in between.
 
+use std::ops::ControlFlow;
+
 use super::markdown::{Builder, ImgW};
+
+/// `feed`'s step while inside `<!-- ... -->` (possibly opened by an earlier fragment).
+/// `Break(())` means the comment is still open at the end of this fragment; the wait carries
+/// over to the next `feed` call via `b.in_comment`.
+fn advance_in_comment(b: &mut Builder, s: &str, i: usize) -> ControlFlow<(), usize> {
+    match s[i..].find("-->") {
+        Some(p) => {
+            b.in_comment = false;
+            ControlFlow::Continue(i + p + 3)
+        }
+        None => ControlFlow::Break(()),
+    }
+}
+
+/// `feed`'s step while inside `<style>`/`<script>`/`<svg>`, dropping everything until the
+/// matching close tag. `Break(())` when the close tag doesn't land in this fragment.
+fn advance_in_skip_tag(
+    b: &mut Builder,
+    s: &str,
+    i: usize,
+    tag: &'static str,
+) -> ControlFlow<(), usize> {
+    let low = s[i..].to_ascii_lowercase();
+    let needle = format!("</{tag}");
+    let Some(p) = low.find(&needle) else {
+        return ControlFlow::Break(());
+    };
+    let after = i + p;
+    let Some(q) = s[after..].find('>') else {
+        return ControlFlow::Break(());
+    };
+    b.skip_tag = None;
+    ControlFlow::Continue(after + q + 1)
+}
+
+/// `feed`'s step when the next byte is `<`: a comment/doctype opener, a real tag (dispatched),
+/// or a stray `<` emitted literally as text.
+fn advance_at_lt(b: &mut Builder, s: &str, i: usize, bytes: &[u8]) -> ControlFlow<(), usize> {
+    if s[i..].starts_with("<!--") {
+        b.in_comment = true;
+        return ControlFlow::Continue(i + 4);
+    }
+    if i + 1 < bytes.len() && bytes[i + 1] == b'!' {
+        // <!DOCTYPE ...> and friends: skip to '>'.
+        return match s[i..].find('>') {
+            Some(p) => ControlFlow::Continue(i + p + 1),
+            None => ControlFlow::Break(()),
+        };
+    }
+    match parse_tag(s, i) {
+        Some(t) => {
+            dispatch(b, &t);
+            ControlFlow::Continue(t.end)
+        }
+        None => {
+            // stray '<' that isn't a tag, emit literally
+            b.text("<");
+            ControlFlow::Continue(i + 1)
+        }
+    }
+}
+
+/// `feed`'s step for a run of plain text up to the next `<` (or fragment end).
+fn advance_text(b: &mut Builder, s: &str, i: usize, bytes: &[u8]) -> usize {
+    let next = s[i..].find('<').map(|p| i + p).unwrap_or(bytes.len());
+    let txt = decode_entities(&s[i..next]);
+    let cleaned = collapse_ws(&txt);
+    if !cleaned.is_empty() {
+        b.text(&cleaned);
+    }
+    next
+}
 
 /// Tokenize one raw-HTML fragment into builder ops.
 pub(super) fn feed(b: &mut Builder, html: &str) {
@@ -19,69 +93,18 @@ pub(super) fn feed(b: &mut Builder, html: &str) {
     let bytes = s.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        // Inside <!-- ... --> (possibly started in an earlier fragment).
-        if b.in_comment {
-            match s[i..].find("-->") {
-                Some(p) => {
-                    i += p + 3;
-                    b.in_comment = false;
-                }
-                None => return,
-            }
-            continue;
-        }
-        // Inside <style>/<script>/<svg>: drop everything until the matching close tag.
-        if let Some(tag) = b.skip_tag {
-            let low = s[i..].to_ascii_lowercase();
-            let needle = format!("</{tag}");
-            match low.find(&needle) {
-                Some(p) => {
-                    let after = i + p;
-                    match s[after..].find('>') {
-                        Some(q) => {
-                            i = after + q + 1;
-                            b.skip_tag = None;
-                        }
-                        None => return,
-                    }
-                }
-                None => return,
-            }
-            continue;
-        }
-        if bytes[i] == b'<' {
-            if s[i..].starts_with("<!--") {
-                b.in_comment = true;
-                i += 4;
-                continue;
-            }
-            if i + 1 < bytes.len() && bytes[i + 1] == b'!' {
-                // <!DOCTYPE ...> and friends: skip to '>'.
-                match s[i..].find('>') {
-                    Some(p) => i += p + 1,
-                    None => return,
-                }
-                continue;
-            }
-            match parse_tag(s, i) {
-                Some(t) => {
-                    dispatch(b, &t);
-                    i = t.end;
-                }
-                None => {
-                    // stray '<' that isn't a tag — emit literally
-                    b.text("<");
-                    i += 1;
-                }
-            }
+        let step = if b.in_comment {
+            advance_in_comment(b, s, i)
+        } else if let Some(tag) = b.skip_tag {
+            advance_in_skip_tag(b, s, i, tag)
+        } else if bytes[i] == b'<' {
+            advance_at_lt(b, s, i, bytes)
         } else {
-            let next = s[i..].find('<').map(|p| i + p).unwrap_or(bytes.len());
-            let txt = decode_entities(&s[i..next]);
-            let cleaned = collapse_ws(&txt);
-            if !cleaned.is_empty() {
-                b.text(&cleaned);
-            }
-            i = next;
+            ControlFlow::Continue(advance_text(b, s, i, bytes))
+        };
+        match step {
+            ControlFlow::Continue(next) => i = next,
+            ControlFlow::Break(()) => return,
         }
     }
 }

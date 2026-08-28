@@ -20,6 +20,49 @@ use super::*;
 /// Elements cut wholesale wherever they appear at the top level of `<svg>`.
 const DROP_ELEMENTS: &[&str] = &["metadata", "title", "desc"];
 
+/// Attempt to drop a top-level metadata element (`<title>`/`<desc>`/`<metadata>`) whose open
+/// tag is `tail`. Returns the remaining text after the whole element, plus any trailing
+/// whitespace it sat on (so the file does not fill up with blank lines), when it both
+/// qualifies and is well-formed. `None` leaves it alone: not a drop candidate, or never closed.
+fn try_drop_element<'a>(
+    tail: &'a str,
+    name: Option<&str>,
+    depth_after_svg: i32,
+) -> Option<&'a str> {
+    let n = name.filter(|n| depth_after_svg == 0 && DROP_ELEMENTS.contains(n))?;
+    let end = element_span(tail, n)?;
+    let rest = &tail[end..];
+    let trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
+    Some(if trimmed.starts_with('<') {
+        trimmed
+    } else {
+        rest
+    })
+}
+
+/// Track nesting so a `<title>` inside a `<path>`/`<g>` is recognised as accessibility text and
+/// kept: `-1` before `<svg>` is seen, `0` at its direct children, incrementing/decrementing with
+/// every other open/close tag once inside it.
+fn step_depth(depth_after_svg: i32, name: Option<&str>, tail: &str) -> i32 {
+    if depth_after_svg < 0 {
+        return if name == Some("svg") {
+            0
+        } else {
+            depth_after_svg
+        };
+    }
+    let Some(_) = name else {
+        return depth_after_svg;
+    };
+    if !is_self_closing(tail) && !tail.starts_with("</") {
+        depth_after_svg + 1
+    } else if tail.starts_with("</") {
+        depth_after_svg - 1
+    } else {
+        depth_after_svg
+    }
+}
+
 /// Remove metadata from SVG source, returning the rewritten bytes.
 ///
 /// Errors only if the input is not valid UTF-8 (an SVG must be, per the spec).
@@ -36,29 +79,11 @@ pub(super) fn strip(input: &[u8]) -> Result<Vec<u8>> {
         out.push_str(before);
         let name = element_name(tail);
 
-        if depth_after_svg >= 0 {
-            if let Some(n) = name {
-                if DROP_ELEMENTS.contains(&n) && depth_after_svg == 0 {
-                    if let Some(end) = element_span(tail, n) {
-                        rest = &tail[end..];
-                        // Also swallow the whitespace the removed element sat on,
-                        // so the file does not fill up with blank lines.
-                        let trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
-                        if trimmed.starts_with('<') {
-                            rest = trimmed;
-                        }
-                        continue;
-                    }
-                }
-                if !is_self_closing(tail) && !tail.starts_with("</") {
-                    depth_after_svg += 1;
-                } else if tail.starts_with("</") {
-                    depth_after_svg -= 1;
-                }
-            }
-        } else if name == Some("svg") {
-            depth_after_svg = 0;
+        if let Some(new_rest) = try_drop_element(tail, name, depth_after_svg) {
+            rest = new_rest;
+            continue;
         }
+        depth_after_svg = step_depth(depth_after_svg, name, tail);
 
         // Copy this tag through untouched.
         let end = tag_end(tail).map(|i| i + 1).unwrap_or(tail.len());

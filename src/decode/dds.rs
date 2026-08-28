@@ -749,6 +749,95 @@ fn decode_rgba8(bytes: &[u8], s: &Surface, target: Option<u32>) -> Result<Dynami
         .ok_or_else(|| fail("buffer size mismatch"))
 }
 
+/// The fast-mean shortcut for a FULL (non-edge) block in average mode: compute its mean
+/// without expanding all sixteen texels and write it to `out`, returning whether it did (the
+/// caller then skips the normal decode for this block entirely).
+///
+/// Edge blocks fall through to the normal decode instead: their average covers only the
+/// in-bounds texels, which an index histogram cannot distinguish. Byte-identical either way,
+/// pinned by `dds_mean_tests::the_fast_block_mean_matches_a_full_decode_exactly`.
+#[allow(clippy::too_many_arguments)]
+fn try_fast_block_mean(
+    blk: &[u8],
+    block: Block,
+    average_blocks: bool,
+    bx: usize,
+    by: usize,
+    bw: usize,
+    width: u32,
+    height: u32,
+    out: &mut [u8],
+) -> bool {
+    let whole_block = (bx + 1) * 4 <= width as usize && (by + 1) * 4 <= height as usize;
+    if !(average_blocks && whole_block) {
+        return false;
+    }
+    let Some(mean) = block_mean_fast(blk, block) else {
+        return false;
+    };
+    let dst = (by * bw + bx) * 4;
+    if let Some(d) = out.get_mut(dst..dst + 4) {
+        d.copy_from_slice(&mean);
+    }
+    true
+}
+
+/// Decode one block's 4×4 RGBA texels into `tile` (every arm writes all 16 pixels, so it never
+/// carries a previous block's contents). Returns `false` for BC6H, a float-only format that
+/// never reaches this 8-bit path, so the caller aborts the whole walk, matching the original's
+/// unconditional `return`.
+fn decode_block_tile(blk: &[u8], block: Block, tile: &mut [u8]) -> bool {
+    match block {
+        Block::Bc1 => bcdec_rs::bc1(blk, tile, 16),
+        Block::Bc2 => bcdec_rs::bc2(blk, tile, 16),
+        Block::Bc3 => bcdec_rs::bc3(blk, tile, 16),
+        // BC4/BC5 decode to 1 or 2 tightly packed channels; expand after.
+        Block::Bc4 { signed } => {
+            let mut one = [0u8; 16];
+            bcdec_rs::bc4(blk, &mut one, 4, signed);
+            for (i, v) in one.iter().enumerate() {
+                tile[i * 4..i * 4 + 4].copy_from_slice(&[*v, *v, *v, 255]);
+            }
+        }
+        Block::Bc5 { signed } => {
+            let mut two = [0u8; 32];
+            bcdec_rs::bc5(blk, &mut two, 8, signed);
+            for i in 0..16 {
+                // R,G,0: the third channel genuinely is not stored, and
+                // this matches what ImageMagick renders for ATI2/BC5.
+                tile[i * 4..i * 4 + 4].copy_from_slice(&[two[i * 2], two[i * 2 + 1], 0, 255]);
+            }
+        }
+        Block::Bc7 => bcdec_rs::bc7(blk, tile, 16),
+        // Float-only; never reaches the 8-bit path.
+        Block::Bc6h { .. } => return false,
+    }
+    true
+}
+
+/// Write one decoded block's tile into `out`: its mean (average mode) or a direct tile copy
+/// (full-resolution mode, clipped to the in-bounds part for edge blocks).
+#[allow(clippy::too_many_arguments)]
+fn write_decoded_block(
+    tile: &[u8; 4 * 4 * 4],
+    average_blocks: bool,
+    bx: usize,
+    by: usize,
+    bw: usize,
+    width: u32,
+    height: u32,
+    row: usize,
+    out: &mut [u8],
+) {
+    if average_blocks {
+        let tw = 4.min(width as usize - bx * 4);
+        let th = 4.min(height as usize - by * 4);
+        write_block_average(tile, (by * bw + bx) * 4, tw, th, out);
+    } else {
+        copy_tile(tile, 4, bx, by, width, height, row, out);
+    }
+}
+
 /// Walk the 4×4 block grid, decoding each into a scratch tile and copying the
 /// in-bounds part out. The tile hop is what makes a texture whose dimensions are
 /// not a multiple of 4 work — the last row/column of blocks is partly padding.
@@ -768,8 +857,7 @@ fn blocks_rgba8(
     let bh = height.div_ceil(4) as usize;
     let bytes = block.block_bytes();
     let row = width as usize * 4;
-    // 4×4 RGBA scratch. Every arm below writes all 16 pixels, so it never carries
-    // a previous block's contents.
+    // 4×4 RGBA scratch, reused every iteration.
     let mut tile = [0u8; 4 * 4 * 4];
     for by in 0..bh {
         for bx in 0..bw {
@@ -777,58 +865,13 @@ fn blocks_rgba8(
             let Some(blk) = src.get(off..off + bytes) else {
                 return;
             };
-            // A FULL block whose mean is all the caller wants never needs its sixteen texels.
-            // Edge blocks fall through to the decode below: their average covers only the
-            // in-bounds texels, which an index histogram cannot distinguish. Byte-identical
-            // either way — pinned by
-            // `dds_mean_tests::the_fast_block_mean_matches_a_full_decode_exactly`.
-            let whole_block = (bx + 1) * 4 <= width as usize && (by + 1) * 4 <= height as usize;
-            if average_blocks && whole_block {
-                if let Some(mean) = block_mean_fast(blk, block) {
-                    let dst = (by * bw + bx) * 4;
-                    if let Some(d) = out.get_mut(dst..dst + 4) {
-                        d.copy_from_slice(&mean);
-                    }
-                    continue;
-                }
+            if try_fast_block_mean(blk, block, average_blocks, bx, by, bw, width, height, out) {
+                continue;
             }
-            match block {
-                Block::Bc1 => bcdec_rs::bc1(blk, &mut tile, 16),
-                Block::Bc2 => bcdec_rs::bc2(blk, &mut tile, 16),
-                Block::Bc3 => bcdec_rs::bc3(blk, &mut tile, 16),
-                // BC4/BC5 decode to 1 or 2 tightly packed channels; expand after.
-                Block::Bc4 { signed } => {
-                    let mut one = [0u8; 16];
-                    bcdec_rs::bc4(blk, &mut one, 4, signed);
-                    for (i, v) in one.iter().enumerate() {
-                        tile[i * 4..i * 4 + 4].copy_from_slice(&[*v, *v, *v, 255]);
-                    }
-                }
-                Block::Bc5 { signed } => {
-                    let mut two = [0u8; 32];
-                    bcdec_rs::bc5(blk, &mut two, 8, signed);
-                    for i in 0..16 {
-                        // R,G,0 — the third channel genuinely is not stored, and
-                        // this matches what ImageMagick renders for ATI2/BC5.
-                        tile[i * 4..i * 4 + 4].copy_from_slice(&[
-                            two[i * 2],
-                            two[i * 2 + 1],
-                            0,
-                            255,
-                        ]);
-                    }
-                }
-                Block::Bc7 => bcdec_rs::bc7(blk, &mut tile, 16),
-                // Float-only; never reaches the 8-bit path.
-                Block::Bc6h { .. } => return,
+            if !decode_block_tile(blk, block, &mut tile) {
+                return;
             }
-            if average_blocks {
-                let tw = 4.min(width as usize - bx * 4);
-                let th = 4.min(height as usize - by * 4);
-                write_block_average(&tile, (by * bw + bx) * 4, tw, th, out);
-            } else {
-                copy_tile(&tile, 4, bx, by, width, height, row, out);
-            }
+            write_decoded_block(&tile, average_blocks, bx, by, bw, width, height, row, out);
         }
     }
 }
