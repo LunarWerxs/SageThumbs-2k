@@ -240,6 +240,41 @@ html-preview -- -D warnings` clean (after adding an `IlocEntry` type alias for a
 elsewhere in these files), and `cargo fmt --all --check` clean (after one `cargo fmt --all`
 pass to reflow several signatures/expressions the edits left over-width).
 
+**Tranche 16 (2026-08-28): the next 11 worst rows cleared**, worst first: `eligible_bt601_still`
+(decode/avifmf.rs) had its nested `walk` fn (itself over the gate from the nesting) hoisted to
+module scope as `walk_ipco_boxes` with its `Found` struct renamed `FoundIpcoBoxes`, plus a
+`validate_bt601_eligibility` helper for the final CICP/av1C eligibility checks; `fuzz_extract_cover`
+(container/mod.rs), a `#[test]` fuzzer, split into `fuzz_seed_corpus`, `mutate_fuzz_input`, and
+`report_fuzz_crashes`; `reference` (decode/jp2/dwt.rs) was found already under gate, a leftover row
+from tranche 11's split of its own caller (`filtr_1d_matches_the_original_three_buffer_algorithm`)
+that this doc never checked off, so it needed no further work, only verification; `filtr_1d`
+(decode/jp2/dwt.rs), the production 1D lifting step, split into `lift_single_sample`,
+`lift_reversible`, and `lift_irreversible`, one per original branch; `wndproc` (prebuild_dlg.rs)
+split into `on_pb_create`/`on_pb_progress`/`on_pb_done`/`on_pb_command`, same wndproc-dispatcher
+method as prior tranches; `tiff_ifd0_is_reduced` (streamsrc/rawsniff.rs) split its per-entry IFD0
+scan into `reduced_subfile_entry`, using `ControlFlow<bool>` the same way its sibling
+`tiff_has_raw_ifd_marker`/`raw_ifd_entry_marker` already does in this file; `get_thumbnail_inner`
+(thumbprovider.rs) split into `decode_thumb_source` (the `StreamSource` dispatch) and
+`retry_decode_by_extension` (the declined-tiers fallback); `parse_aiff` (container/waveform.rs)
+split into `parse_aiff_comm`, `scan_aiff_chunks`, and `finish_aiff_pcm`, matching the `parse_wav`
+precedent already in this file: every early `?` abort in the scan becomes a loop `break`, which is
+behaviorally identical since a missing `comm`/`ssnd` fails the caller's own `comm?`/`ssnd?` either
+way; `mime_body` (preview/mailmsg.rs) split its multipart-part classification loop body into
+`handle_multipart_part`; `read_layer_head` (container/xcf.rs) split its property-record loop into
+`read_layer_properties` + `apply_layer_property`, collecting into a new `LayerProps` struct instead
+of four loose locals; `segment_map` (mkv.rs) split into `scan_segment_front` (the front-of-segment
+element walk, returning a new `FrontScan` struct) and `resolve_via_seekhead` (filling in whatever
+the front walk missed). No behavior change anywhere in this tranche. Verified per file (scoped
+`cargo test`, `mime_body` via the `SageThumbs2K` bin target since `preview/mailmsg.rs` is a bin
+module, `wndproc`/`get_thumbnail_inner` via `cargo build`/`cargo test --lib` compile-clean since
+neither has unit tests of its own) and at the end: `cargo test --lib` (753 passed, 0 failed, 18
+ignored, matching baseline) and `cargo test --bin SageThumbs2K --features html-preview` (363 passed,
+matching tranche 15's baseline), `cargo clippy --workspace --all-targets --features html-preview --
+-D warnings` clean (after adding an `AiffCommSsnd` type alias for a `clippy::type_complexity` hit on
+`scan_aiff_chunks`'s return type, same pattern already used elsewhere in these files) and `cargo
+clippy --bin SageThumbs2K -- -D warnings` clean, and `cargo fmt --all --check` clean (after one
+`cargo fmt --all` pass to reflow two comments/call sites the edits left over-width).
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
@@ -563,20 +598,20 @@ before the next release is still recommended.
 |x| 36 | 15 | `cue_points` | src/mkv.rs:718 |
 |x| 36 | 13 | `strip` | src/strip/svgmeta.rs:26 |
 |x| 35 | 17 | `blocks_rgba8` | src/decode/dds.rs:759 |
-| | 35 | 23 | `eligible_bt601_still` | src/decode/avifmf.rs:162 |
-| | 35 | 21 | `fuzz_extract_cover` | src/container/mod.rs:1107 |
-| | 34 | 15 | `reference` | src/decode/jp2/dwt.rs:260 |
+|x| 35 | 23 | `eligible_bt601_still` | src/decode/avifmf.rs:162 |
+|x| 35 | 21 | `fuzz_extract_cover` | src/container/mod.rs:1107 |
+|x| 34 | 15 | `reference` | src/decode/jp2/dwt.rs:260 |
 |x| 34 | 17 | `avif_wic_verdict` | src/decode/color.rs:441 |
 | | 34 | 20 | `scaled_pre_pass_sweep_by_format` | src/decode/tests.rs:2246 |
 |x| 34 | 19 | `isobmff_associated_items` (was `associated_items`, hoisted out of `isobmff_has_hevc_aux_alpha`) | src/decode/color.rs:645 |
-| | 34 | 15 | `filtr_1d` | src/decode/jp2/dwt.rs:76 |
-| | 34 | 22 | `wndproc` | src/bin/app/prebuild_dlg.rs:238 |
-| | 33 | 18 | `tiff_ifd0_is_reduced` | src/streamsrc/rawsniff.rs:135 |
-| | 33 | 17 | `get_thumbnail_inner` | src/thumbprovider.rs:85 |
-| | 33 | 19 | `parse_aiff` | src/container/waveform.rs:164 |
-| | 33 | 15 | `mime_body` | src/bin/app/preview/mailmsg.rs:253 |
-| | 33 | 24 | `read_layer_head` | src/container/xcf.rs:440 |
-| | 33 | 27 | `segment_map` | src/mkv.rs:98 |
+|x| 34 | 15 | `filtr_1d` | src/decode/jp2/dwt.rs:76 |
+|x| 34 | 22 | `wndproc` | src/bin/app/prebuild_dlg.rs:238 |
+|x| 33 | 18 | `tiff_ifd0_is_reduced` | src/streamsrc/rawsniff.rs:135 |
+|x| 33 | 17 | `get_thumbnail_inner` | src/thumbprovider.rs:85 |
+|x| 33 | 19 | `parse_aiff` | src/container/waveform.rs:164 |
+|x| 33 | 15 | `mime_body` | src/bin/app/preview/mailmsg.rs:253 |
+|x| 33 | 24 | `read_layer_head` | src/container/xcf.rs:440 |
+|x| 33 | 27 | `segment_map` | src/mkv.rs:98 |
 | | 33 | 16 | `gif_prefers_wic` | src/decode.rs:814 |
 | | 33 | 27 | `extract` | src/container/max.rs:32 |
 | | 32 | 10 | `check_registration` | src/doctor.rs:312 |
