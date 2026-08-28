@@ -421,24 +421,28 @@ fn be16(d: &[u8], i: usize) -> usize {
     ((d[i] as usize) << 8) | d[i + 1] as usize
 }
 
+/// Per-cell natural-order destination + sign for one within-block coefficient.
+/// Derived from the separable-DCT mirror identity F'(u,v)=(-1)^u·F(u,v) for a
+/// horizontal flip (u = column freq), and transpose F'(u,v)=F(v,u).
+///   rot90 (CW)  = transpose then flip-H  → negate odd SOURCE rows
+///   rot270 (CCW)= transpose then flip-V  → negate odd SOURCE cols
+fn xform_cell(op: Op, r: usize, c: usize) -> (usize, usize, i32) {
+    match op {
+        Op::Rot90 => (c, r, if r & 1 == 1 { -1 } else { 1 }),
+        Op::Rot270 => (c, r, if c & 1 == 1 { -1 } else { 1 }),
+        Op::Rot180 => (r, c, if (r + c) & 1 == 1 { -1 } else { 1 }),
+        Op::FlipH => (r, c, if c & 1 == 1 { -1 } else { 1 }),
+        Op::FlipV => (r, c, if r & 1 == 1 { -1 } else { 1 }),
+    }
+}
+
 /// Within-block coefficient transform (natural order, `[row*8 + col]`).
 fn xform_block(src: &[i32; 64], op: Op) -> [i32; 64] {
     let mut out = [0i32; 64];
     for r in 0..8 {
         for c in 0..8 {
-            let v = src[r * 8 + c];
-            // Derived from the separable-DCT mirror identity F'(u,v)=(-1)^u·F(u,v)
-            // for a horizontal flip (u = column freq), and transpose F'(u,v)=F(v,u).
-            //   rot90 (CW)  = transpose then flip-H  → negate odd SOURCE rows
-            //   rot270 (CCW)= transpose then flip-V  → negate odd SOURCE cols
-            let (nr, nc, sign) = match op {
-                Op::Rot90 => (c, r, if r & 1 == 1 { -1 } else { 1 }),
-                Op::Rot270 => (c, r, if c & 1 == 1 { -1 } else { 1 }),
-                Op::Rot180 => (r, c, if (r + c) & 1 == 1 { -1 } else { 1 }),
-                Op::FlipH => (r, c, if c & 1 == 1 { -1 } else { 1 }),
-                Op::FlipV => (r, c, if r & 1 == 1 { -1 } else { 1 }),
-            };
-            out[nr * 8 + nc] = v * sign;
+            let (nr, nc, sign) = xform_cell(op, r, c);
+            out[nr * 8 + nc] = src[r * 8 + c] * sign;
         }
     }
     out
@@ -469,11 +473,146 @@ struct ParsedHeader {
     scan_start: usize,
 }
 
+/// Parse an SOF0 (baseline) segment starting at `d[i]` (the `0xFFC0` marker):
+/// length, precision, height, width, ncomp, comps. Returns
+/// `(width, height, comps, next i)`.
+fn parse_sof0(d: &[u8], i: usize) -> Option<(usize, usize, Vec<Comp>, usize)> {
+    let len = be16(d, i + 2);
+    if len < 2 {
+        return None;
+    }
+    let seg = d.get(i + 4..i + 2 + len)?;
+    if seg.len() < 6 || seg[0] != 8 {
+        return None; // truncated header, or not 8-bit
+    }
+    let height = be16(seg, 1);
+    let width = be16(seg, 3);
+    let ncomp = seg[5] as usize;
+    if seg.len() < 6 + ncomp * 3 {
+        return None;
+    }
+    let mut comps = Vec::with_capacity(ncomp);
+    for c in 0..ncomp {
+        let o = 6 + c * 3;
+        comps.push(Comp {
+            id: seg[o],
+            h: (seg[o + 1] >> 4) as usize,
+            v: (seg[o + 1] & 0xf) as usize,
+            tq: seg[o + 2],
+            td: 0,
+            ta: 0,
+            grid_w: 0,
+            grid_h: 0,
+            blocks: Vec::new(),
+        });
+    }
+    Some((width, height, comps, i + 2 + len))
+}
+
+/// Parse a DHT segment (may hold several tables) starting at `d[i]`, filling
+/// `huff[class][id]`. Returns the offset just past the segment.
+fn parse_dht(d: &[u8], i: usize, huff: &mut [[Option<HuffDec>; 4]; 2]) -> Option<usize> {
+    let len = be16(d, i + 2);
+    if len < 2 {
+        return None;
+    }
+    let end = i + 2 + len;
+    if end > d.len() {
+        return None;
+    }
+    let mut p = i + 4;
+    while p < end {
+        let tc = (d[p] >> 4) as usize;
+        let th = (d[p] & 0xf) as usize;
+        let bits = d.get(p + 1..p + 17)?;
+        let total: usize = bits.iter().map(|&b| b as usize).sum();
+        let vals = d.get(p + 17..p + 17 + total)?;
+        // Guard ids 0..4 and classes 0..2; out-of-range → bail (None).
+        if tc >= 2 || th >= 4 {
+            return None;
+        }
+        huff[tc][th] = Some(build_dec(bits, vals));
+        p += 17 + total;
+    }
+    Some(end)
+}
+
+/// Parse a DQT segment starting at `d[i]` (8-bit precision, Pq=0, only) into
+/// `dqt` — kept parsed rather than verbatim so a rotate can transpose it.
+/// Returns the offset just past the segment.
+fn parse_dqt(d: &[u8], i: usize, dqt: &mut Vec<(u8, [u8; 64])>) -> Option<usize> {
+    let len = be16(d, i + 2);
+    if len < 2 {
+        return None;
+    }
+    let end = i + 2 + len;
+    if end > d.len() {
+        return None;
+    }
+    let mut p = i + 4;
+    while p + 65 <= end {
+        if d[p] >> 4 != 0 {
+            return None; // 16-bit quant table — unsupported
+        }
+        let tq = d[p] & 0xf;
+        let mut tbl = [0u8; 64];
+        tbl.copy_from_slice(&d[p + 1..p + 65]);
+        dqt.push((tq, tbl));
+        p += 65;
+    }
+    Some(end)
+}
+
+/// Parse an APPn/COM segment starting at `d[i]`, keeping it verbatim ahead of
+/// the frame. Returns the offset just past the segment.
+fn parse_appn_or_com(d: &[u8], i: usize, pre_frame: &mut Vec<u8>) -> Option<usize> {
+    let len = be16(d, i + 2);
+    if len < 2 {
+        return None;
+    }
+    pre_frame.extend_from_slice(d.get(i..i + 2 + len)?);
+    Some(i + 2 + len)
+}
+
+/// Parse a DRI segment starting at `d[i]`. Returns `(restart_interval, next i)`.
+fn parse_dri(d: &[u8], i: usize) -> Option<(usize, usize)> {
+    let len = be16(d, i + 2);
+    if i + 6 > d.len() {
+        return None;
+    }
+    Some((be16(d, i + 4), i + 2 + len))
+}
+
+/// Parse the SOS header's per-component table selectors (not the scan data
+/// itself), writing `td`/`ta` into the matching entry of `comps`. Returns the
+/// scan-data start offset.
+fn parse_sos_selectors(d: &[u8], i: usize, comps: &mut [Comp]) -> Option<usize> {
+    let len = be16(d, i + 2);
+    let ns = *d.get(i + 4)? as usize;
+    if i + 5 + ns * 2 > d.len() {
+        return None;
+    }
+    for s in 0..ns {
+        let o = i + 5 + s * 2;
+        let cid = d[o];
+        let td = d[o + 1] >> 4;
+        let ta = d[o + 1] & 0xf;
+        if let Some(c) = comps.iter_mut().find(|c| c.id == cid) {
+            c.td = td;
+            c.ta = ta;
+        }
+    }
+    Some(i + 2 + len)
+}
+
 /// Parse everything from just after SOI up to the SOS scan data. Every segment
 /// length below comes straight from the (untrusted) file, so all slicing is
 /// bounds-checked with `.get(..)?` / explicit `> d.len()` guards: a malformed
 /// JPEG returns None and the caller falls back to a lossy re-encode.
 /// (`be16(d, i+2)` is always safe here — the loop guard keeps `i+4 <= d.len()`.)
+///
+/// Each segment type's own parsing lives in a `parse_*` helper above; this
+/// function is just the marker dispatch loop.
 fn parse_headers(d: &[u8]) -> Option<ParsedHeader> {
     let mut i = 2usize;
 
@@ -496,127 +635,25 @@ fn parse_headers(d: &[u8]) -> Option<ParsedHeader> {
         match marker {
             0xD8 | 0xD9 => return None, // unexpected SOI/EOI here
             0xC0 => {
-                // SOF0 (baseline). length, precision, height, width, ncomp, comps
-                let len = be16(d, i + 2);
-                if len < 2 {
-                    return None;
-                }
-                let seg = d.get(i + 4..i + 2 + len)?;
-                if seg.len() < 6 || seg[0] != 8 {
-                    return None; // truncated header, or not 8-bit
-                }
-                height = be16(seg, 1);
-                width = be16(seg, 3);
-                let ncomp = seg[5] as usize;
-                if seg.len() < 6 + ncomp * 3 {
-                    return None;
-                }
-                for c in 0..ncomp {
-                    let o = 6 + c * 3;
-                    comps.push(Comp {
-                        id: seg[o],
-                        h: (seg[o + 1] >> 4) as usize,
-                        v: (seg[o + 1] & 0xf) as usize,
-                        tq: seg[o + 2],
-                        td: 0,
-                        ta: 0,
-                        grid_w: 0,
-                        grid_h: 0,
-                        blocks: Vec::new(),
-                    });
-                }
-                i += 2 + len;
+                let (w, h, c, next) = parse_sof0(d, i)?;
+                width = w;
+                height = h;
+                comps = c;
+                i = next;
             }
             0xC1..=0xCF if marker != 0xC4 && marker != 0xC8 && marker != 0xCC => {
                 return None; // progressive / arithmetic / other SOF — unsupported
             }
-            0xC4 => {
-                // DHT (may hold several tables)
-                let len = be16(d, i + 2);
-                if len < 2 {
-                    return None;
-                }
-                let end = i + 2 + len;
-                if end > d.len() {
-                    return None;
-                }
-                let mut p = i + 4;
-                while p < end {
-                    let tc = d[p] >> 4;
-                    let th = d[p] & 0xf;
-                    let bits = d.get(p + 1..p + 17)?;
-                    let total: usize = bits.iter().map(|&b| b as usize).sum();
-                    let vals = d.get(p + 17..p + 17 + total)?;
-                    // Guard ids 0..4 and classes 0..2; out-of-range → bail (None).
-                    let tc = tc as usize;
-                    let th = th as usize;
-                    if tc >= 2 || th >= 4 {
-                        return None;
-                    }
-                    huff[tc][th] = Some(build_dec(bits, vals));
-                    p += 17 + total;
-                }
-                i += 2 + len;
-            }
-            0xDB => {
-                // DQT — parsed (not kept verbatim) so a rotate can transpose it.
-                // 8-bit precision (Pq=0) only.
-                let len = be16(d, i + 2);
-                if len < 2 {
-                    return None;
-                }
-                let end = i + 2 + len;
-                if end > d.len() {
-                    return None;
-                }
-                let mut p = i + 4;
-                while p + 65 <= end {
-                    if d[p] >> 4 != 0 {
-                        return None; // 16-bit quant table — unsupported
-                    }
-                    let tq = d[p] & 0xf;
-                    let mut tbl = [0u8; 64];
-                    tbl.copy_from_slice(&d[p + 1..p + 65]);
-                    dqt.push((tq, tbl));
-                    p += 65;
-                }
-                i += 2 + len;
-            }
-            0xE0..=0xEF | 0xFE => {
-                // APPn / COM — keep verbatim before the frame.
-                let len = be16(d, i + 2);
-                if len < 2 {
-                    return None;
-                }
-                pre_frame.extend_from_slice(d.get(i..i + 2 + len)?);
-                i += 2 + len;
-            }
+            0xC4 => i = parse_dht(d, i, &mut huff)?,
+            0xDB => i = parse_dqt(d, i, &mut dqt)?,
+            0xE0..=0xEF | 0xFE => i = parse_appn_or_com(d, i, &mut pre_frame)?,
             0xDD => {
-                let len = be16(d, i + 2);
-                if i + 6 > d.len() {
-                    return None;
-                }
-                restart_interval = be16(d, i + 4);
-                i += 2 + len;
+                let (ri, next) = parse_dri(d, i)?;
+                restart_interval = ri;
+                i = next;
             }
             0xDA => {
-                // SOS — read the per-component table selectors, then the scan.
-                let len = be16(d, i + 2);
-                let ns = *d.get(i + 4)? as usize;
-                if i + 5 + ns * 2 > d.len() {
-                    return None;
-                }
-                for s in 0..ns {
-                    let o = i + 5 + s * 2;
-                    let cid = d[o];
-                    let td = d[o + 1] >> 4;
-                    let ta = d[o + 1] & 0xf;
-                    if let Some(c) = comps.iter_mut().find(|c| c.id == cid) {
-                        c.td = td;
-                        c.ta = ta;
-                    }
-                }
-                scan_start = i + 2 + len;
+                scan_start = parse_sos_selectors(d, i, &mut comps)?;
                 break;
             }
             0xC8 | 0xCC => return None, // JPG / DAC
@@ -687,6 +724,32 @@ fn alloc_grids(width: usize, height: usize, comps: &mut [Comp]) -> Option<(usize
     Some((mcus_x, mcus_y))
 }
 
+/// Decode every component's blocks for one MCU at grid position `(mx, my)`,
+/// writing into `comps[ci].blocks` and updating each component's DC predictor.
+fn decode_mcu(
+    br: &mut BitReader,
+    huff: &[[Option<HuffDec>; 4]; 2],
+    cparams: &[(u8, u8, usize, usize, usize)],
+    comps: &mut [Comp],
+    preds: &mut [i32],
+    mx: usize,
+    my: usize,
+) -> Option<()> {
+    for (ci, &(td, ta, ch, cv, cgw)) in cparams.iter().enumerate() {
+        let dc = huff[0].get(td as usize)?.as_ref()?;
+        let ac = huff[1].get(ta as usize)?.as_ref()?;
+        for by in 0..cv {
+            for bx in 0..ch {
+                let blk = decode_block(br, dc, ac, &mut preds[ci])?;
+                let gx = mx * ch + bx;
+                let gy = my * cv + by;
+                comps[ci].blocks[gy * cgw + gx] = blk;
+            }
+        }
+    }
+    Some(())
+}
+
 /// Decode the entropy-coded scan, MCU by MCU, filling `comps[ci].blocks` in place.
 fn decode_scan(
     d: &[u8],
@@ -712,18 +775,7 @@ fn decode_scan(
                 br.restart()?;
                 preds.iter_mut().for_each(|p| *p = 0);
             }
-            for (ci, &(td, ta, ch, cv, cgw)) in cparams.iter().enumerate() {
-                let dc = huff[0].get(td as usize)?.as_ref()?;
-                let ac = huff[1].get(ta as usize)?.as_ref()?;
-                for by in 0..cv {
-                    for bx in 0..ch {
-                        let blk = decode_block(&mut br, dc, ac, &mut preds[ci])?;
-                        let gx = mx * ch + bx;
-                        let gy = my * cv + by;
-                        comps[ci].blocks[gy * cgw + gx] = blk;
-                    }
-                }
-            }
+            decode_mcu(&mut br, huff, &cparams, comps, &mut preds, mx, my)?;
             mcu += 1;
         }
     }
