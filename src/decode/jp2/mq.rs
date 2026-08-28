@@ -264,6 +264,185 @@ pub(super) struct CodeBlockOut {
     pub consumed: usize,
 }
 
+#[inline]
+fn cblk_idx(x: usize, y: usize, w: usize) -> usize {
+    y * w + x
+}
+
+#[inline]
+fn cblk_fidx(x: usize, y: usize, sw: usize) -> usize {
+    (y + 1) * sw + (x + 1)
+}
+
+/// Neighbour significance counts (horizontal, vertical, diagonal) around (x, y), read from
+/// the padded flag grid.
+#[inline]
+fn neighbour_counts(flags: &[u8], x: usize, y: usize, sw: usize) -> (u32, u32, u32) {
+    let c = cblk_fidx(x, y, sw);
+    let hcount = ((flags[c - 1] & SIG) + (flags[c + 1] & SIG)) as u32;
+    let vcount = ((flags[c - sw] & SIG) + (flags[c + sw] & SIG)) as u32;
+    let dcount = ((flags[c - sw - 1] & SIG)
+        + (flags[c - sw + 1] & SIG)
+        + (flags[c + sw - 1] & SIG)
+        + (flags[c + sw + 1] & SIG)) as u32;
+    (hcount, vcount, dcount)
+}
+
+/// Significance-propagation pass (D.2): for every not-yet-significant sample with at least
+/// one significant neighbour, decode whether it becomes significant this plane (and, if so,
+/// its sign).
+#[allow(clippy::too_many_arguments)]
+fn significance_pass(
+    mq: &mut MqDecoder,
+    flags: &mut [u8],
+    coeffs: &mut [i32],
+    neg: &mut [bool],
+    band: Band,
+    w: usize,
+    h: usize,
+    sw: usize,
+    plane_bit: i32,
+) {
+    for y0 in (0..h).step_by(4) {
+        for x in 0..w {
+            for y in y0..(y0 + 4).min(h) {
+                let f = flags[cblk_fidx(x, y, sw)];
+                if f & SIG != 0 {
+                    continue;
+                }
+                let (hc, vc, dc) = neighbour_counts(flags, x, y, sw);
+                if hc + vc + dc == 0 {
+                    continue;
+                }
+                let cx = zc_context(band, hc, vc, dc);
+                if mq.decode(cx) == 1 {
+                    let (sx, sv) = sign_neighbours(flags, neg, x, y, sw, w);
+                    let (scx, xorbit) = sc_context(sx, sv);
+                    let s = mq.decode(scx) ^ xorbit;
+                    neg[cblk_idx(x, y, w)] = s == 1;
+                    coeffs[cblk_idx(x, y, w)] |= plane_bit;
+                    flags[cblk_fidx(x, y, sw)] |= SIG;
+                }
+                flags[cblk_fidx(x, y, sw)] |= VISIT;
+            }
+        }
+    }
+}
+
+/// Magnitude-refinement pass (D.2): for every already-significant, not-yet-visited sample,
+/// decode one more magnitude bit.
+fn refinement_pass(
+    mq: &mut MqDecoder,
+    flags: &mut [u8],
+    coeffs: &mut [i32],
+    w: usize,
+    h: usize,
+    sw: usize,
+    plane_bit: i32,
+) {
+    for y0 in (0..h).step_by(4) {
+        for x in 0..w {
+            for y in y0..(y0 + 4).min(h) {
+                let f = flags[cblk_fidx(x, y, sw)];
+                if f & SIG == 0 || f & VISIT != 0 {
+                    continue;
+                }
+                let (hc, vc, dc) = neighbour_counts(flags, x, y, sw);
+                let first = f & REFINED == 0;
+                let cx = mr_context(first, hc + vc + dc);
+                if mq.decode(cx) == 1 {
+                    coeffs[cblk_idx(x, y, w)] |= plane_bit;
+                }
+                flags[cblk_fidx(x, y, sw)] |= REFINED;
+            }
+        }
+    }
+}
+
+/// Cleanup pass (D.2): decode significance for every sample this plane's significance and
+/// refinement passes skipped (run-length coded where a whole 4-row stripe column is clear),
+/// then clear VISIT so the next plane starts fresh.
+#[allow(clippy::too_many_arguments)]
+fn cleanup_pass(
+    mq: &mut MqDecoder,
+    flags: &mut [u8],
+    coeffs: &mut [i32],
+    neg: &mut [bool],
+    band: Band,
+    w: usize,
+    h: usize,
+    sw: usize,
+    plane_bit: i32,
+    segsym: bool,
+) {
+    for y0 in (0..h).step_by(4) {
+        for x in 0..w {
+            let mut y = y0;
+            let stripe_end = (y0 + 4).min(h);
+            // Run-length mode: a full stripe column, all insignificant with no
+            // significant neighbours, is coded with one RL symbol.
+            if stripe_end - y0 == 4 {
+                let mut all_clear = true;
+                for yy in y0..stripe_end {
+                    let f = flags[cblk_fidx(x, yy, sw)];
+                    let (hc, vc, dc) = neighbour_counts(flags, x, yy, sw);
+                    if f & (SIG | VISIT) != 0 || hc + vc + dc != 0 {
+                        all_clear = false;
+                        break;
+                    }
+                }
+                if all_clear {
+                    if mq.decode(CTX_RL) == 0 {
+                        for yy in y0..stripe_end {
+                            flags[cblk_fidx(x, yy, sw)] &= !VISIT;
+                        }
+                        continue;
+                    }
+                    // Two UNIFORM bits say which row becomes significant.
+                    let hi = mq.decode(CTX_UNI);
+                    let lo = mq.decode(CTX_UNI);
+                    let k = (hi << 1) | lo;
+                    y = y0 + k as usize;
+                    let (sx, sv) = sign_neighbours(flags, neg, x, y, sw, w);
+                    let (scx, xorbit) = sc_context(sx, sv);
+                    let s = mq.decode(scx) ^ xorbit;
+                    neg[cblk_idx(x, y, w)] = s == 1;
+                    coeffs[cblk_idx(x, y, w)] |= plane_bit;
+                    flags[cblk_fidx(x, y, sw)] |= SIG;
+                    y += 1;
+                }
+            }
+            for yy in y..stripe_end {
+                let f = flags[cblk_fidx(x, yy, sw)];
+                if f & (SIG | VISIT) != 0 {
+                    flags[cblk_fidx(x, yy, sw)] &= !VISIT;
+                    continue;
+                }
+                let (hc, vc, dc) = neighbour_counts(flags, x, yy, sw);
+                let cx = zc_context(band, hc, vc, dc);
+                if mq.decode(cx) == 1 {
+                    let (sx, sv) = sign_neighbours(flags, neg, x, yy, sw, w);
+                    let (scx, xorbit) = sc_context(sx, sv);
+                    let s = mq.decode(scx) ^ xorbit;
+                    neg[cblk_idx(x, yy, w)] = s == 1;
+                    coeffs[cblk_idx(x, yy, w)] |= plane_bit;
+                    flags[cblk_fidx(x, yy, sw)] |= SIG;
+                }
+            }
+            for yy in y0..stripe_end {
+                flags[cblk_fidx(x, yy, sw)] &= !VISIT;
+            }
+        }
+    }
+    if segsym {
+        // Segmentation symbol: four UNIFORM bits that should read 1010. We do
+        // not police it — a mismatch means corruption we already tolerate.
+        for _ in 0..4 {
+            mq.decode(CTX_UNI);
+        }
+    }
+}
+
 /// Decode one code-block's compressed bytes into coefficients.
 ///
 /// `zero_bitplanes` is the number of leading all-zero magnitude bitplanes signalled in the
@@ -307,23 +486,6 @@ pub(super) fn decode_code_block(
     // Bit position of the first coded plane; passes walk downward from here.
     let mut bitplane = total_planes as i32 - 1;
 
-    let idx = |x: usize, y: usize| y * w + x;
-    let fidx = |x: usize, y: usize| (y + 1) * sw + (x + 1);
-
-    // Neighbour significance counts around (x, y).
-    macro_rules! neighbours {
-        ($flags:expr, $x:expr, $y:expr) => {{
-            let c = fidx($x, $y);
-            let hcount = (($flags[c - 1] & SIG) + ($flags[c + 1] & SIG)) as u32;
-            let vcount = (($flags[c - sw] & SIG) + ($flags[c + sw] & SIG)) as u32;
-            let dcount = (($flags[c - sw - 1] & SIG)
-                + ($flags[c - sw + 1] & SIG)
-                + ($flags[c + sw - 1] & SIG)
-                + ($flags[c + sw + 1] & SIG)) as u32;
-            (hcount, vcount, dcount)
-        }};
-    }
-
     let mut pass = 0u32;
     // Pass order per bitplane: cleanup for the first plane, then SPP/MRP/CUP.
     let mut pass_kind = 2u8; // 0 = significance, 1 = refinement, 2 = cleanup
@@ -331,128 +493,15 @@ pub(super) fn decode_code_block(
     while pass < passes && bitplane >= 0 {
         let plane_bit = 1i32 << bitplane;
         match pass_kind {
-            // ── Significance propagation ──────────────────────────────────────
-            0 => {
-                for y0 in (0..h).step_by(4) {
-                    for x in 0..w {
-                        for y in y0..(y0 + 4).min(h) {
-                            let f = flags[fidx(x, y)];
-                            if f & SIG != 0 {
-                                continue;
-                            }
-                            let (hc, vc, dc) = neighbours!(flags, x, y);
-                            if hc + vc + dc == 0 {
-                                continue;
-                            }
-                            let cx = zc_context(band, hc, vc, dc);
-                            if mq.decode(cx) == 1 {
-                                let (sx, sv) = sign_neighbours(&flags, &neg, x, y, sw, w);
-                                let (scx, xorbit) = sc_context(sx, sv);
-                                let s = mq.decode(scx) ^ xorbit;
-                                neg[idx(x, y)] = s == 1;
-                                coeffs[idx(x, y)] |= plane_bit;
-                                flags[fidx(x, y)] |= SIG;
-                            }
-                            flags[fidx(x, y)] |= VISIT;
-                        }
-                    }
-                }
-            }
-            // ── Magnitude refinement ──────────────────────────────────────────
-            1 => {
-                for y0 in (0..h).step_by(4) {
-                    for x in 0..w {
-                        for y in y0..(y0 + 4).min(h) {
-                            let f = flags[fidx(x, y)];
-                            if f & SIG == 0 || f & VISIT != 0 {
-                                continue;
-                            }
-                            let (hc, vc, dc) = neighbours!(flags, x, y);
-                            let first = f & REFINED == 0;
-                            let cx = mr_context(first, hc + vc + dc);
-                            if mq.decode(cx) == 1 {
-                                coeffs[idx(x, y)] |= plane_bit;
-                            }
-                            flags[fidx(x, y)] |= REFINED;
-                        }
-                    }
-                }
-            }
-            // ── Cleanup ───────────────────────────────────────────────────────
-            _ => {
-                for y0 in (0..h).step_by(4) {
-                    for x in 0..w {
-                        let mut y = y0;
-                        let stripe_end = (y0 + 4).min(h);
-                        // Run-length mode: a full stripe column, all insignificant with no
-                        // significant neighbours, is coded with one RL symbol.
-                        if stripe_end - y0 == 4 {
-                            let mut all_clear = true;
-                            for yy in y0..stripe_end {
-                                let f = flags[fidx(x, yy)];
-                                let (hc, vc, dc) = neighbours!(flags, x, yy);
-                                if f & (SIG | VISIT) != 0 || hc + vc + dc != 0 {
-                                    all_clear = false;
-                                    break;
-                                }
-                            }
-                            if all_clear {
-                                if mq.decode(CTX_RL) == 0 {
-                                    for yy in y0..stripe_end {
-                                        flags[fidx(x, yy)] &= !VISIT;
-                                    }
-                                    continue;
-                                }
-                                // Two UNIFORM bits say which row becomes significant.
-                                let hi = mq.decode(CTX_UNI);
-                                let lo = mq.decode(CTX_UNI);
-                                let k = (hi << 1) | lo;
-                                y = y0 + k as usize;
-                                let (sx, sv) = sign_neighbours(&flags, &neg, x, y, sw, w);
-                                let (scx, xorbit) = sc_context(sx, sv);
-                                let s = mq.decode(scx) ^ xorbit;
-                                neg[idx(x, y)] = s == 1;
-                                coeffs[idx(x, y)] |= plane_bit;
-                                flags[fidx(x, y)] |= SIG;
-                                y += 1;
-                            }
-                        }
-                        for yy in y..stripe_end {
-                            let f = flags[fidx(x, yy)];
-                            if f & (SIG | VISIT) != 0 {
-                                flags[fidx(x, yy)] &= !VISIT;
-                                continue;
-                            }
-                            let (hc, vc, dc) = neighbours!(flags, x, yy);
-                            let cx = zc_context(band, hc, vc, dc);
-                            if mq.decode(cx) == 1 {
-                                let (sx, sv) = sign_neighbours(&flags, &neg, x, yy, sw, w);
-                                let (scx, xorbit) = sc_context(sx, sv);
-                                let s = mq.decode(scx) ^ xorbit;
-                                neg[idx(x, yy)] = s == 1;
-                                coeffs[idx(x, yy)] |= plane_bit;
-                                flags[fidx(x, yy)] |= SIG;
-                            }
-                        }
-                        for yy in y0..stripe_end {
-                            flags[fidx(x, yy)] &= !VISIT;
-                        }
-                    }
-                }
-                if segsym {
-                    // Segmentation symbol: four UNIFORM bits that should read 1010. We do
-                    // not police it — a mismatch means corruption we already tolerate.
-                    for _ in 0..4 {
-                        mq.decode(CTX_UNI);
-                    }
-                }
-            }
+            0 => significance_pass(
+                &mut mq, &mut flags, &mut coeffs, &mut neg, band, w, h, sw, plane_bit,
+            ),
+            1 => refinement_pass(&mut mq, &mut flags, &mut coeffs, w, h, sw, plane_bit),
+            _ => cleanup_pass(
+                &mut mq, &mut flags, &mut coeffs, &mut neg, band, w, h, sw, plane_bit, segsym,
+            ),
         }
 
-        // Clear VISIT after the significance pass so refinement sees a clean slate.
-        if pass_kind == 0 {
-            // handled per-sample in cleanup; nothing to do here
-        }
         if vertical_causal {
             // Stripe-causal context formation only changes which neighbours are visible.
             // Our neighbour reads already stay inside the block, so nothing extra is needed
