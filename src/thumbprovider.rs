@@ -82,6 +82,66 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
 }
 
 impl ThumbnailProvider_Impl {
+    /// Every registered-format tier declined a `StreamSource::Bytes` payload. A few
+    /// registered formats (Wavefront RLA, PSX TIM, MacPaint, Dr Halo CUT, …) have no
+    /// signature ImageMagick can sniff, so the nameless stdin pipe could never reach their
+    /// coder and they thumbnailed nowhere; same for a camera RAW carrying no embedded
+    /// preview. The shell's stream usually reports a leaf NAME even when it reports no
+    /// usable path, and that is enough to name the coder. Re-borrowing here rather than
+    /// reading the name up front keeps the succeeding path byte-identical. `original_err` is
+    /// returned unchanged if the extension retry can't do better either.
+    fn retry_decode_by_extension(
+        &self,
+        bytes: &[u8],
+        cx: u32,
+        original_err: Error,
+    ) -> Result<decode::Decoded> {
+        // try_borrow, never borrow: this crate is `panic = "abort"`, so an
+        // already-borrowed RefCell would take the host down rather than
+        // decline a thumbnail. Failing to get the name just keeps `original_err`.
+        let ext = self.stream.try_borrow().ok().and_then(|borrow| {
+            borrow
+                .as_ref()
+                .and_then(|s| unsafe { streamsrc::stream_extension(s) })
+        });
+        match ext.filter(|x| decode::extension_has_named_coder(x)) {
+            Some(ext) => {
+                safety::log_debug(&format!(
+                    "GetThumbnail: tiers declined; retrying as .{ext}"
+                ));
+                let img = decode::decode_by_extension(bytes, &ext, Some(cx))
+                    .map_err(|_| original_err)?;
+                Ok(decode::thumbnail_from_image(img, cx))
+            }
+            None => Err(original_err),
+        }
+    }
+
+    /// Decode one `StreamSource` variant into the tile the caller asked for. Kept apart from
+    /// `get_thumbnail_inner` because the `Bytes` arm's declined-tiers retry is its own
+    /// multi-step fallback, not a one-line dispatch.
+    fn decode_thumb_source(
+        &self,
+        source: StreamSource,
+        cx: u32,
+        cfg: &settings::ThumbSettings,
+    ) -> Result<decode::Decoded> {
+        match source {
+            StreamSource::Frame(frame) => Ok(decode::thumbnail_from_image(frame, cx)),
+            StreamSource::Bytes(bytes) => {
+                safety::log_debug(&format!("GetThumbnail: cx={cx} bytes={}", bytes.len()));
+                match decode::decode_thumbnail_opts(&bytes, cx, cfg.use_embedded) {
+                    Ok(img) => Ok(img),
+                    Err(e) => self.retry_decode_by_extension(&bytes, cx, e),
+                }
+            }
+            StreamSource::Covers(covers) => {
+                safety::log_debug(&format!("GetThumbnail: cx={cx} covers={}", covers.len()));
+                decode::thumbnail_from_covers(&covers, cx)
+            }
+        }
+    }
+
     fn get_thumbnail_inner(
         &self,
         cx: u32,
@@ -137,47 +197,7 @@ impl ThumbnailProvider_Impl {
         // it. Adding a second worker thread here would duplicate that host-side budget for a
         // hang the OS-level isolation already survives, at the cost of a second COM-apartment
         // hazard on whatever the tiered decoders (WIC/magick) assume about the calling thread.
-        let img = match source {
-            StreamSource::Frame(frame) => decode::thumbnail_from_image(frame, cx),
-            StreamSource::Bytes(bytes) => {
-                safety::log_debug(&format!("GetThumbnail: cx={cx} bytes={}", bytes.len()));
-                match decode::decode_thumbnail_opts(&bytes, cx, cfg.use_embedded) {
-                    Ok(img) => img,
-                    // Every tier declined. A few registered formats (Wavefront RLA, PSX TIM,
-                    // MacPaint, Dr Halo CUT, …) have no signature ImageMagick can sniff, so the
-                    // nameless stdin pipe could never reach their coder and they thumbnailed
-                    // nowhere; same for a camera RAW carrying no embedded preview. The shell's
-                    // stream usually reports a leaf NAME even when it reports no usable path,
-                    // and that is enough to name the coder. Re-borrowing here rather than
-                    // reading the name up front keeps the succeeding path byte-identical.
-                    Err(e) => {
-                        // try_borrow, never borrow: this crate is `panic = "abort"`, so an
-                        // already-borrowed RefCell would take the host down rather than
-                        // decline a thumbnail. Failing to get the name just keeps `e`.
-                        let ext = self.stream.try_borrow().ok().and_then(|borrow| {
-                            borrow
-                                .as_ref()
-                                .and_then(|s| unsafe { streamsrc::stream_extension(s) })
-                        });
-                        match ext.filter(|x| decode::extension_has_named_coder(x)) {
-                            Some(ext) => {
-                                safety::log_debug(&format!(
-                                    "GetThumbnail: tiers declined; retrying as .{ext}"
-                                ));
-                                let img = decode::decode_by_extension(&bytes, &ext, Some(cx))
-                                    .map_err(|_| e)?;
-                                decode::thumbnail_from_image(img, cx)
-                            }
-                            None => return Err(e),
-                        }
-                    }
-                }
-            }
-            StreamSource::Covers(covers) => {
-                safety::log_debug(&format!("GetThumbnail: cx={cx} covers={}", covers.len()));
-                decode::thumbnail_from_covers(&covers, cx)?
-            }
-        };
+        let img = self.decode_thumb_source(source, cx, &cfg)?;
         safety::log_debug(&format!(
             "GetThumbnail: decoded {}x{}",
             img.width, img.height

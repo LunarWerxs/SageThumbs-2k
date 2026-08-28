@@ -235,94 +235,102 @@ fn spawn_worker(hwnd: HWND, folder: String) {
     });
 }
 
+unsafe fn on_pb_create(hwnd: HWND) -> LRESULT {
+    let hinst: HINSTANCE = match GetModuleHandleW(None) {
+        Ok(h) => h.into(),
+        Err(_) => return LRESULT(-1),
+    };
+    let folder = FOLDER
+        .lock()
+        .map(|f| f.clone())
+        .unwrap_or_else(|e| e.into_inner().clone());
+    build(hwnd, hinst, &folder);
+    // Start the work only once the controls exist, or the first progress post would
+    // arrive before there is a bar to move.
+    spawn_worker(hwnd, folder);
+    LRESULT(0)
+}
+
+unsafe fn on_pb_progress(hwnd: HWND, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let (done, total) = (wp.0, lp.0 as usize);
+    SEEN.0.store(done, Ordering::Relaxed);
+    SEEN.1.store(total, Ordering::Relaxed);
+    if let Ok(bar) = GetDlgItem(Some(hwnd), ID_BAR) {
+        let _ = SendMessageW(
+            bar,
+            PBM_SETRANGE32,
+            Some(WPARAM(0)),
+            Some(LPARAM(total.max(1) as isize)),
+        );
+        let _ = SendMessageW(bar, PBM_SETPOS, Some(WPARAM(done)), None);
+    }
+    set_edit_text(hwnd, ID_STATUS, &format!("{done} / {total}"));
+    LRESULT(0)
+}
+
+unsafe fn on_pb_done(hwnd: HWND) -> LRESULT {
+    FINISHED.store(true, Ordering::Relaxed);
+    let s = RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    FAILED.store(s.as_ref().is_some_and(|s| s.failed > 0), Ordering::Relaxed);
+    let text = s.map(|s| summary_text(&s)).unwrap_or_default();
+    set_edit_text(hwnd, ID_STATUS, &text);
+    // The bar must READ as finished. A cancelled run stops part-way, and leaving it
+    // half-filled next to "stopped" is the honest picture; a completed one is filled.
+    if !CANCEL.load(Ordering::Relaxed) {
+        if let Ok(bar) = GetDlgItem(Some(hwnd), ID_BAR) {
+            let total = SEEN.1.load(Ordering::Relaxed).max(1);
+            let _ = SendMessageW(bar, PBM_SETPOS, Some(WPARAM(total)), None);
+        }
+    }
+    set_edit_text(hwnd, ID_ACTION, t("pb_close"));
+    // A CLEAN run closes itself. Leaving a dialog on screen that says "done" and does
+    // nothing makes the user dismiss a window to finish a job they already asked for.
+    // The delay is so the summary is readable rather than a flash — long enough to
+    // catch "48 built", short enough not to feel stuck.
+    //
+    // It stays open when there is something to READ: a cancelled run, or one where the
+    // shell refused files. Those are the cases where vanishing would hide the answer.
+    let clean = !CANCEL.load(Ordering::Relaxed) && !FAILED.load(Ordering::Relaxed);
+    if clean {
+        let _ = SetTimer(Some(hwnd), AUTOCLOSE_TIMER, 1_400, None);
+    }
+    LRESULT(0)
+}
+
+unsafe fn on_pb_command(hwnd: HWND, wp: WPARAM) -> LRESULT {
+    if (wp.0 & 0xFFFF) as i32 == ID_ACTION {
+        // One button, two jobs: while work is running it cancels, and once the
+        // summary is up it closes. Two buttons would leave a dead one on screen for
+        // the whole run.
+        if FINISHED.load(Ordering::Relaxed) {
+            // The run is over and the button reads "Close" — so close.
+            let _ = DestroyWindow(hwnd);
+        } else if SEEN.1.load(Ordering::Relaxed) == 0 {
+            // Still scanning, so there is no progress to abandon: shut the flag and go.
+            CANCEL.store(true, Ordering::Relaxed);
+            let _ = DestroyWindow(hwnd);
+        } else {
+            // Mid-run: ask the engine to stop and wait for its WM_PB_DONE, which brings
+            // the real counts. Closing here instead would throw away the summary of the
+            // work that WAS done.
+            CANCEL.store(true, Ordering::Relaxed);
+            set_edit_text(hwnd, ID_ACTION, t("pb_close"));
+        }
+    }
+    LRESULT(0)
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        WM_CREATE => {
-            let hinst: HINSTANCE = match GetModuleHandleW(None) {
-                Ok(h) => h.into(),
-                Err(_) => return LRESULT(-1),
-            };
-            let folder = FOLDER
-                .lock()
-                .map(|f| f.clone())
-                .unwrap_or_else(|e| e.into_inner().clone());
-            build(hwnd, hinst, &folder);
-            // Start the work only once the controls exist, or the first progress post would
-            // arrive before there is a bar to move.
-            spawn_worker(hwnd, folder);
-            LRESULT(0)
-        }
-        WM_PB_PROGRESS => {
-            let (done, total) = (wp.0, lp.0 as usize);
-            SEEN.0.store(done, Ordering::Relaxed);
-            SEEN.1.store(total, Ordering::Relaxed);
-            if let Ok(bar) = GetDlgItem(Some(hwnd), ID_BAR) {
-                let _ = SendMessageW(
-                    bar,
-                    PBM_SETRANGE32,
-                    Some(WPARAM(0)),
-                    Some(LPARAM(total.max(1) as isize)),
-                );
-                let _ = SendMessageW(bar, PBM_SETPOS, Some(WPARAM(done)), None);
-            }
-            set_edit_text(hwnd, ID_STATUS, &format!("{done} / {total}"));
-            LRESULT(0)
-        }
-        WM_PB_DONE => {
-            FINISHED.store(true, Ordering::Relaxed);
-            let s = RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
-            FAILED.store(s.as_ref().is_some_and(|s| s.failed > 0), Ordering::Relaxed);
-            let text = s.map(|s| summary_text(&s)).unwrap_or_default();
-            set_edit_text(hwnd, ID_STATUS, &text);
-            // The bar must READ as finished. A cancelled run stops part-way, and leaving it
-            // half-filled next to "stopped" is the honest picture; a completed one is filled.
-            if !CANCEL.load(Ordering::Relaxed) {
-                if let Ok(bar) = GetDlgItem(Some(hwnd), ID_BAR) {
-                    let total = SEEN.1.load(Ordering::Relaxed).max(1);
-                    let _ = SendMessageW(bar, PBM_SETPOS, Some(WPARAM(total)), None);
-                }
-            }
-            set_edit_text(hwnd, ID_ACTION, t("pb_close"));
-            // A CLEAN run closes itself. Leaving a dialog on screen that says "done" and does
-            // nothing makes the user dismiss a window to finish a job they already asked for.
-            // The delay is so the summary is readable rather than a flash — long enough to
-            // catch "48 built", short enough not to feel stuck.
-            //
-            // It stays open when there is something to READ: a cancelled run, or one where the
-            // shell refused files. Those are the cases where vanishing would hide the answer.
-            let clean = !CANCEL.load(Ordering::Relaxed) && !FAILED.load(Ordering::Relaxed);
-            if clean {
-                let _ = SetTimer(Some(hwnd), AUTOCLOSE_TIMER, 1_400, None);
-            }
-            LRESULT(0)
-        }
+        WM_CREATE => on_pb_create(hwnd),
+        WM_PB_PROGRESS => on_pb_progress(hwnd, wp, lp),
+        WM_PB_DONE => on_pb_done(hwnd),
         WM_TIMER if wp.0 == AUTOCLOSE_TIMER => {
             let _ = KillTimer(Some(hwnd), AUTOCLOSE_TIMER);
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
-        WM_COMMAND => {
-            if (wp.0 & 0xFFFF) as i32 == ID_ACTION {
-                // One button, two jobs: while work is running it cancels, and once the
-                // summary is up it closes. Two buttons would leave a dead one on screen for
-                // the whole run.
-                if FINISHED.load(Ordering::Relaxed) {
-                    // The run is over and the button reads "Close" — so close.
-                    let _ = DestroyWindow(hwnd);
-                } else if SEEN.1.load(Ordering::Relaxed) == 0 {
-                    // Still scanning, so there is no progress to abandon: shut the flag and go.
-                    CANCEL.store(true, Ordering::Relaxed);
-                    let _ = DestroyWindow(hwnd);
-                } else {
-                    // Mid-run: ask the engine to stop and wait for its WM_PB_DONE, which brings
-                    // the real counts. Closing here instead would throw away the summary of the
-                    // work that WAS done.
-                    CANCEL.store(true, Ordering::Relaxed);
-                    set_edit_text(hwnd, ID_ACTION, t("pb_close"));
-                }
-            }
-            LRESULT(0)
-        }
+        WM_COMMAND => on_pb_command(hwnd, wp),
         WM_CTLCOLORSTATIC => {
             // The path and the counts are secondary to the bar; dim them both.
             dark_ctlcolor_dim(wp)

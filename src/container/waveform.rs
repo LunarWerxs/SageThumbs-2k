@@ -181,12 +181,37 @@ fn parse_wav_fmt_chunk<R: Read>(r: &mut R, size: u64) -> Option<WavFmt> {
 
 /// Walk AIFF/AIFC chunks (`id[4] + size_be[4] + body`, padded to even) for `COMM`
 /// and `SSND`. Cursor is just past the 12-byte FORM header.
-fn parse_aiff<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
-    let mut comm: Option<(u16, u16, Kind)> = None; // (channels, bits, kind)
-    let mut ssnd: Option<(u64, u64)> = None; // (sample start, len)
-    let mut pos: u64 = 12;
+/// Parse one AIFF `COMM` chunk body already read into `buf`: channels, bit depth, and PCM
+/// endianness/sign. `None` for a real (lossy) AIFC codec, which the caller can't read as PCM
+/// — same as any other malformed/unreadable COMM, since a missing `comm` result at the end
+/// of `parse_aiff` returns `None` regardless of which chunk-scan step produced it.
+fn parse_aiff_comm(buf: &[u8]) -> Option<(u16, u16, Kind)> {
+    let channels = be16(buf, 0)?;
+    let bits = be16(buf, 6)?; // sampleSize
+                               // AIFC carries a 4-byte compression type after the 18-byte COMM core.
+    let kind = match buf.get(18..22) {
+        Some(b"sowt") => Kind::IntLe, // little-endian PCM
+        Some(b"NONE") | Some(b"twos") | None => Kind::IntBe,
+        Some(_) => return None, // a real (lossy) codec — skip
+    };
+    Some((channels, bits, kind))
+}
+
+/// Walk AIFF's top-level chunks from `pos`, collecting the COMM (format) and SSND (sample
+/// data) chunks `parse_aiff` needs, stopping early once both are found. Any read/seek
+/// failure along the way ends the scan with whatever was found so far (possibly nothing),
+/// which is behaviorally identical to `parse_aiff`'s original `?`-propagated abort: either
+/// way, a missing COMM or SSND fails the caller's final `comm?`/`ssnd?`.
+fn scan_aiff_chunks<R: Read + Seek>(
+    r: &mut R,
+    mut pos: u64,
+) -> (Option<(u16, u16, Kind)>, Option<(u64, u64)>) {
+    let mut comm: Option<(u16, u16, Kind)> = None;
+    let mut ssnd: Option<(u64, u64)> = None;
     for _ in 0..64 {
-        r.seek(SeekFrom::Start(pos)).ok()?;
+        if r.seek(SeekFrom::Start(pos)).is_err() {
+            break;
+        }
         let Some(hdr) = read_arr::<8, _>(r) else {
             break;
         };
@@ -196,19 +221,18 @@ fn parse_aiff<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
         if id == b"COMM" {
             let n = size.min(40) as usize;
             let mut buf = vec![0u8; n];
-            r.read_exact(&mut buf).ok()?;
-            let channels = be16(&buf, 0)?;
-            let bits = be16(&buf, 6)?; // sampleSize
-                                       // AIFC carries a 4-byte compression type after the 18-byte COMM core.
-            let kind = match buf.get(18..22) {
-                Some(b"sowt") => Kind::IntLe, // little-endian PCM
-                Some(b"NONE") | Some(b"twos") | None => Kind::IntBe,
-                Some(_) => return None, // a real (lossy) codec — skip
-            };
-            comm = Some((channels, bits, kind));
+            if r.read_exact(&mut buf).is_err() {
+                break;
+            }
+            comm = parse_aiff_comm(&buf);
+            if comm.is_none() {
+                break;
+            }
         } else if id == b"SSND" {
             // SSND body = offset_be[4] + blockSize_be[4] + sample frames.
-            let head = read_arr::<8, _>(r)?;
+            let Some(head) = read_arr::<8, _>(r) else {
+                break;
+            };
             let offset = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as u64;
             let sample_start = body + 8 + offset;
             let sample_len = size.saturating_sub(8 + offset);
@@ -219,8 +243,11 @@ fn parse_aiff<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
         }
         pos = body + size + (size & 1);
     }
-    let (channels, bits, mut kind) = comm?;
-    let (start, len) = ssnd?;
+    (comm, ssnd)
+}
+
+/// Validate the COMM/SSND chunk data `scan_aiff_chunks` collected into a final `Pcm`.
+fn finish_aiff_pcm(channels: u16, bits: u16, mut kind: Kind, start: u64, len: u64) -> Option<Pcm> {
     if channels == 0 || channels > MAX_CHANNELS {
         return None;
     }
@@ -239,6 +266,13 @@ fn parse_aiff<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
         sample_bytes,
         kind,
     })
+}
+
+fn parse_aiff<R: Read + Seek>(r: &mut R) -> Option<Pcm> {
+    let (comm, ssnd) = scan_aiff_chunks(r, 12);
+    let (channels, bits, kind) = comm?;
+    let (start, len) = ssnd?;
+    finish_aiff_pcm(channels, bits, kind, start, len)
 }
 
 // ── peak extraction ───────────────────────────────────────────────────────────

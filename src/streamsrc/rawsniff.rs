@@ -132,6 +132,43 @@ pub(super) fn looks_like_raw_container(head: &[u8], raw_extension: bool) -> bool
 /// It walks IFD0 the same shape as its sibling below rather than sharing a helper: that
 /// one is fuzzed, load-bearing for the shell's nameless-stream routing, and asks a
 /// different question. Twenty checked lines cost less than restructuring it.
+/// Check one IFD0 entry for `tiff_ifd0_is_reduced`'s NewSubfileType marker. `Break(v)` means
+/// the tag was found and its reduced-resolution bit is `v`; `Continue` means keep scanning
+/// the next entry (either this wasn't the tag, or its value was malformed/unreadable, which
+/// the original treated as "not this entry" via `continue` rather than aborting the scan).
+fn reduced_subfile_entry(
+    ifd: usize,
+    index: usize,
+    num: &impl Fn(usize, bool) -> Option<u32>,
+) -> std::ops::ControlFlow<bool> {
+    use std::ops::ControlFlow::{Break, Continue};
+    let Some(entry) = index
+        .checked_mul(12)
+        .and_then(|off| ifd.checked_add(2)?.checked_add(off))
+    else {
+        return Break(false);
+    };
+    if num(entry, false) != Some(0x00FE) {
+        return Continue(());
+    }
+    // NewSubfileType is LONG (type 4) by the spec, but SHORT (3) is written in the
+    // wild; anything else is malformed and ignored. Bit 0 set = reduced-resolution.
+    let Some(type_offset) = entry.checked_add(2) else {
+        return Break(false);
+    };
+    let wide = match num(type_offset, false) {
+        Some(4) => true,
+        Some(3) => false,
+        _ => return Continue(()),
+    };
+    // A SHORT is left-justified in the 4-byte value field in BOTH endiannesses, so
+    // reading the first two bytes is right either way (same as the sibling scanner).
+    match entry.checked_add(8).and_then(|o| num(o, wide)) {
+        Some(v) => Break(v & 1 == 1),
+        None => Continue(()),
+    }
+}
+
 pub(crate) fn tiff_ifd0_is_reduced(head: &[u8]) -> bool {
     // NOT extended to Phase One `.iiq` (TIFF + `IIII` at offset 8) or to a `SubIFDs` tag,
     // though both would be easy and both look right on paper. Measured A/B on 2026-08-21:
@@ -161,29 +198,9 @@ pub(crate) fn tiff_ifd0_is_reduced(head: &[u8]) -> bool {
         return false;
     };
     for index in 0..count {
-        let Some(entry) = index
-            .checked_mul(12)
-            .and_then(|off| ifd.checked_add(2)?.checked_add(off))
-        else {
-            return false;
-        };
-        if num(entry, false) != Some(0x00FE) {
-            continue;
-        }
-        // NewSubfileType is LONG (type 4) by the spec, but SHORT (3) is written in the
-        // wild; anything else is malformed and ignored. Bit 0 set = reduced-resolution.
-        let Some(type_offset) = entry.checked_add(2) else {
-            return false;
-        };
-        let wide = match num(type_offset, false) {
-            Some(4) => true,
-            Some(3) => false,
-            _ => continue,
-        };
-        // A SHORT is left-justified in the 4-byte value field in BOTH endiannesses, so
-        // reading the first two bytes is right either way (same as the sibling scanner).
-        if let Some(v) = entry.checked_add(8).and_then(|o| num(o, wide)) {
-            return v & 1 == 1;
+        match reduced_subfile_entry(ifd, index, &num) {
+            std::ops::ControlFlow::Break(v) => return v,
+            std::ops::ControlFlow::Continue(()) => {}
         }
     }
     false
