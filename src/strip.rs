@@ -101,57 +101,8 @@ pub fn strip_metadata(path: &str) -> Result<()> {
         .unwrap_or_default();
 
     let out_bytes: Vec<u8> = match ext.as_str() {
-        "jpg" | "jpeg" | "jpe" | "jfif" => {
-            let mut jpeg = Jpeg::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
-            // C2PA / Content Credentials: a JUMBF box spread over APP11 segments. Only the
-            // FIRST packet of a box carries the LBox/TBox header `is_jumbf_app11` looks for;
-            // once a manifest exceeds ~64KB it continues in more APP11 segments that share the
-            // same box-instance number but have no TBox of their own to match on. Find every
-            // C2PA box instance from whichever segment announces it, then drop every APP11
-            // segment in that instance - not just the one that matched - so a multi-segment
-            // manifest doesn't leave its continuation packets behind (which would otherwise let
-            // `has_content_credentials` report `false` while manifest fragments still survive).
-            let c2pa_instances: std::collections::HashSet<u16> = jpeg
-                .segments()
-                .iter()
-                .filter(|s| s.marker() == markers::APP11 && jumbf::is_jumbf_app11(s.contents()))
-                .filter_map(|s| app11_identity(s.contents()).map(|(inst, _)| inst))
-                .collect();
-            jpeg.segments_mut().retain(|s| {
-                if STRIP_APP_MARKERS.contains(&s.marker()) {
-                    return false;
-                }
-                if s.marker() == markers::APP11 {
-                    if jumbf::is_jumbf_app11(s.contents()) {
-                        return false; // the box-defining packet itself
-                    }
-                    // A JPEG XT HDR layer wears the same marker and must survive - only a
-                    // genuine CONTINUATION packet (sequence > 1) of a flagged box instance is
-                    // dropped, never an unrelated first-of-its-own-box packet that happens to
-                    // reuse the same instance number.
-                    if let Some((inst, seq)) = app11_identity(s.contents()) {
-                        if seq > 1 && c2pa_instances.contains(&inst) {
-                            return false;
-                        }
-                    }
-                }
-                true
-            });
-            let bytes = jpeg.encoder().bytes();
-            Jpeg::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?; // sanity re-parse
-            bytes.to_vec()
-        }
-        "png" => {
-            let mut png = Png::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
-            // iCCP (color profile) intentionally NOT removed.
-            for k in [b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"] {
-                png.remove_chunks_by_type(*k);
-            }
-            png.remove_chunks_by_type(jumbf::PNG_C2PA_CHUNK);
-            let bytes = png.encoder().bytes();
-            Png::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?;
-            bytes.to_vec()
-        }
+        "jpg" | "jpeg" | "jpe" | "jfif" => strip_jpeg(input)?,
+        "png" => strip_png(input)?,
         "webp" => webpmeta::strip(input)?,
         "svg" => svgmeta::strip(&input)?,
         // .svgz is gzip-compressed SVG (Illustrator/Inkscape's "compressed" save option). The
@@ -175,6 +126,62 @@ pub fn strip_metadata(path: &str) -> Result<()> {
     };
 
     atomic_overwrite(Path::new(path), &out_bytes)
+}
+
+/// JPEG arm of [`strip_metadata`]: drop EXIF/IPTC/XMP/COM (APP1/APP13/COM), plus any C2PA
+/// "Content Credentials" JUMBF box (APP11) — see [`jumbf`]. ICC (APP2) is deliberately kept.
+fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
+    let mut jpeg = Jpeg::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
+    // C2PA / Content Credentials: a JUMBF box spread over APP11 segments. Only the
+    // FIRST packet of a box carries the LBox/TBox header `is_jumbf_app11` looks for;
+    // once a manifest exceeds ~64KB it continues in more APP11 segments that share the
+    // same box-instance number but have no TBox of their own to match on. Find every
+    // C2PA box instance from whichever segment announces it, then drop every APP11
+    // segment in that instance - not just the one that matched - so a multi-segment
+    // manifest doesn't leave its continuation packets behind (which would otherwise let
+    // `has_content_credentials` report `false` while manifest fragments still survive).
+    let c2pa_instances: std::collections::HashSet<u16> = jpeg
+        .segments()
+        .iter()
+        .filter(|s| s.marker() == markers::APP11 && jumbf::is_jumbf_app11(s.contents()))
+        .filter_map(|s| app11_identity(s.contents()).map(|(inst, _)| inst))
+        .collect();
+    jpeg.segments_mut().retain(|s| {
+        if STRIP_APP_MARKERS.contains(&s.marker()) {
+            return false;
+        }
+        if s.marker() == markers::APP11 {
+            if jumbf::is_jumbf_app11(s.contents()) {
+                return false; // the box-defining packet itself
+            }
+            // A JPEG XT HDR layer wears the same marker and must survive - only a
+            // genuine CONTINUATION packet (sequence > 1) of a flagged box instance is
+            // dropped, never an unrelated first-of-its-own-box packet that happens to
+            // reuse the same instance number.
+            if let Some((inst, seq)) = app11_identity(s.contents()) {
+                if seq > 1 && c2pa_instances.contains(&inst) {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    let bytes = jpeg.encoder().bytes();
+    Jpeg::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?; // sanity re-parse
+    Ok(bytes.to_vec())
+}
+
+/// PNG arm of [`strip_metadata`]: drop EXIF/text/time chunks plus any C2PA chunk. iCCP (color
+/// profile) is intentionally NOT removed — stripping it shifts colors on wide-gamut displays.
+fn strip_png(input: Bytes) -> Result<Vec<u8>> {
+    let mut png = Png::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
+    for k in [b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"] {
+        png.remove_chunks_by_type(*k);
+    }
+    png.remove_chunks_by_type(jumbf::PNG_C2PA_CHUNK);
+    let bytes = png.encoder().bytes();
+    Png::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?;
+    Ok(bytes.to_vec())
 }
 
 /// In-place overwrite via a same-volume temp + rename, with a short retry so a

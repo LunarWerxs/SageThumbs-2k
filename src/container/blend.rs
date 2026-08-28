@@ -32,49 +32,81 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
 
     let mut off = block_start;
     while off + 8 <= bytes.len() {
-        let code = bytes.get(off..off + 4)?;
+        let (code, len, hdr) = read_block_header(bytes, off, v1, legacy_hdr)?;
         if code == b"ENDB" {
             break;
         }
-        let (len, hdr) = if v1 {
-            // LargeBHead8: code i32, sdna i32, old u64, len i64@16, count i64
-            (
-                i64::from_le_bytes(bytes.get(off + 16..off + 24)?.try_into().ok()?) as usize,
-                32usize,
-            )
-        } else {
-            // BHead4 / SmallBHead8: len i32 at +4
-            (
-                i32::from_le_bytes(bytes.get(off + 4..off + 8)?.try_into().ok()?) as usize,
-                legacy_hdr,
-            )
-        };
-
         if code == b"TEST" {
-            let body = off.checked_add(hdr)?;
-            let w = i32::from_le_bytes(bytes.get(body..body + 4)?.try_into().ok()?);
-            let h = i32::from_le_bytes(bytes.get(body + 4..body + 8)?.try_into().ok()?);
-            if w > 0 && h > 0 && w as u32 <= MAX_EDGE && h as u32 <= MAX_EDGE {
-                let (w, h) = (w as u32, h as u32);
-                let px_bytes = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
-                // Integrity check: the block length is exactly 8 + w*h*4.
-                if len == 8 + px_bytes {
-                    let px = bytes.get(body + 8..body + 8 + px_bytes)?;
-                    let img = RgbaImage::from_raw(w, h, px.to_vec())?;
-                    // Blender stores this buffer BOTTOM-UP (it comes straight off an
-                    // OpenGL-style ImBuf), so the rows have to be reversed or every
-                    // .blend thumbnails upside down (issue #10). Blender's own
-                    // extractor does exactly this: `thumb_data_vertical_flip` in
-                    // source/blender/blendthumb/src/blendthumb_extract.cc.
-                    return Some(DynamicImage::ImageRgba8(image::imageops::flip_vertical(
-                        &img,
-                    )));
-                }
+            if let Some(img) = decode_test_block(bytes, off, hdr, len)? {
+                return Some(img);
             }
         }
         off = off.checked_add(hdr)?.checked_add(len)?;
     }
     None
+}
+
+/// One block-stream record's header: `(code, block length, header size)`. A `None` here is a
+/// hard abort of the whole search (truncated/corrupt block stream) — same as the equivalent
+/// reads used to be inlined in [`extract`] via `?`, before the ENDB/TEST checks that follow.
+fn read_block_header(
+    bytes: &[u8],
+    off: usize,
+    v1: bool,
+    legacy_hdr: usize,
+) -> Option<(&[u8], usize, usize)> {
+    let code = bytes.get(off..off + 4)?;
+    let (len, hdr) = if v1 {
+        // LargeBHead8: code i32, sdna i32, old u64, len i64@16, count i64
+        (
+            i64::from_le_bytes(bytes.get(off + 16..off + 24)?.try_into().ok()?) as usize,
+            32usize,
+        )
+    } else {
+        // BHead4 / SmallBHead8: len i32 at +4
+        (
+            i32::from_le_bytes(bytes.get(off + 4..off + 8)?.try_into().ok()?) as usize,
+            legacy_hdr,
+        )
+    };
+    Some((code, len, hdr))
+}
+
+/// Decode a `TEST` block (found at `off`, header size `hdr`, declared block length `len`) into
+/// its embedded thumbnail.
+///
+/// The outer `Option` mirrors what a `?` failure here used to mean inside [`extract`] itself: a
+/// hard abort of the WHOLE search (truncated/corrupt data), not just this block. `None` means
+/// that; `Some(None)` is a soft miss — this block's own declared dimensions or length don't
+/// check out — and the caller keeps scanning for another `TEST` block; `Some(Some(img))` is the
+/// thumbnail.
+fn decode_test_block(
+    bytes: &[u8],
+    off: usize,
+    hdr: usize,
+    len: usize,
+) -> Option<Option<DynamicImage>> {
+    let body = off.checked_add(hdr)?;
+    let w = i32::from_le_bytes(bytes.get(body..body + 4)?.try_into().ok()?);
+    let h = i32::from_le_bytes(bytes.get(body + 4..body + 8)?.try_into().ok()?);
+    if !(w > 0 && h > 0 && w as u32 <= MAX_EDGE && h as u32 <= MAX_EDGE) {
+        return Some(None);
+    }
+    let (w, h) = (w as u32, h as u32);
+    let px_bytes = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    // Integrity check: the block length is exactly 8 + w*h*4.
+    if len != 8 + px_bytes {
+        return Some(None);
+    }
+    let px = bytes.get(body + 8..body + 8 + px_bytes)?;
+    let img = RgbaImage::from_raw(w, h, px.to_vec())?;
+    // Blender stores this buffer BOTTOM-UP (it comes straight off an OpenGL-style ImBuf), so the
+    // rows have to be reversed or every .blend thumbnails upside down (issue #10). Blender's own
+    // extractor does exactly this: `thumb_data_vertical_flip` in
+    // source/blender/blendthumb/src/blendthumb_extract.cc.
+    Some(Some(DynamicImage::ImageRgba8(
+        image::imageops::flip_vertical(&img),
+    )))
 }
 
 #[cfg(test)]
