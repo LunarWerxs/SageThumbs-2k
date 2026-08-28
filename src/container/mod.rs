@@ -288,7 +288,19 @@ fn blend_compressed_head(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// If `bytes` is a recognized ebook/comic container, return its cover image.
+///
+/// Sniffed in four groups, tried in order (same overall priority as before the
+/// split — see each group's own doc comment for why a group's internal order
+/// matters, e.g. APK-before-zip and PSD-falls-through-to-the-magick-tier).
 pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
+    try_generic_archive_cover(bytes)
+        .or_else(|| try_creative_app_cover(bytes))
+        .or_else(|| try_ebook_and_cad_cover(bytes))
+        .or_else(|| try_misc_cover(bytes))
+}
+
+/// Generic archive containers: APK/zip/7z/rar.
+fn try_generic_archive_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Android packages and their split-bundle wrappers: the REAL launcher icon via
     // AndroidManifest.xml / resources.arsc. Must stay BEFORE the generic zip branch —
     // an APK is a zip, and the generic image-pick would grab an arbitrary res/
@@ -310,6 +322,12 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     if bytes.starts_with(b"Rar!\x1A\x07") {
         return rar::extract(bytes).map(CoverOut::Bytes);
     }
+    None
+}
+
+/// Creative-app native formats: DjVu, GIMP, Paint.NET, Photoshop, EPS, icns,
+/// Blender, Affinity, Paint Shop Pro, ILBM, Cinema 4D, CorelDRAW, Clip Studio.
+fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     // DjVu (IFF85 magic "AT&TFORM").
     if looks_like_djvu(bytes) {
         return djvu::extract(bytes).map(CoverOut::Image);
@@ -395,6 +413,12 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     if bytes.starts_with(b"CSFCHUNK") {
         return clip::extract(bytes).map(CoverOut::Bytes);
     }
+    None
+}
+
+/// Ebook/comic and CAD/office containers: Mobi, CBT, FB2, SketchUp, DWG,
+/// Rhino, InDesign, and OLE2 (3ds Max / legacy Office).
+fn try_ebook_and_cad_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Kindle / Mobipocket: PalmDB type+creator "BOOKMOBI" at offset 60.
     if bytes.len() > 68 && &bytes[60..68] == b"BOOKMOBI" {
         return mobi::extract(bytes).map(CoverOut::Bytes);
@@ -429,6 +453,11 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
     if max::looks_like_max(bytes) {
         return max::extract(bytes);
     }
+    None
+}
+
+/// Everything else: audio album art, then the G-code last resort.
+fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Audio with embedded album art (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/…).
     if audio::looks_like_audio(bytes) {
         return audio::extract(bytes).map(CoverOut::Bytes);
