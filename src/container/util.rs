@@ -168,6 +168,41 @@ fn skip_entropy_coded_scan(data: &[u8], mut p: usize) -> Option<usize> {
     }
 }
 
+/// One marker's effect on [`jpeg_span`]'s walk, starting right after the marker byte (`p`).
+/// `Continue` carries the position to resume scanning from; `Done` is EOI (the caller computes
+/// the span length itself, since only it has `off`); `None` aborts the whole walk (an unreadable
+/// segment length).
+enum SpanStep {
+    Continue(usize),
+    Done,
+}
+
+/// Dispatch one JPEG marker inside [`jpeg_span`]'s walk. `sof` records the frame header's marker
+/// byte, once, the first time a real SOFn is seen (0xC4/0xC8/0xCC share the numeric range but
+/// are not frame headers, so the guard below excludes them; a later thumbnail SOF must not
+/// overwrite the frame this span describes).
+fn advance_span_marker(
+    data: &[u8],
+    marker: u8,
+    p: usize,
+    sof: &mut Option<u8>,
+) -> Option<SpanStep> {
+    match marker {
+        0xD9 => Some(SpanStep::Done), // EOI — done
+        0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
+            sof.get_or_insert(marker);
+            Some(SpanStep::Continue(skip_length_prefixed_segment(data, p)?))
+        }
+        0xDA => {
+            // Start-of-scan: skip its header by length, then the entropy data.
+            let p = skip_length_prefixed_segment(data, p)?;
+            Some(SpanStep::Continue(skip_entropy_coded_scan(data, p)?))
+        }
+        0x01 | 0xD0..=0xD7 => Some(SpanStep::Continue(p)), // standalone markers, no payload
+        _ => Some(SpanStep::Continue(skip_length_prefixed_segment(data, p)?)),
+    }
+}
+
 pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> {
     if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
         return None;
@@ -177,32 +212,10 @@ pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> 
     // A well-formed JPEG has far fewer segments than this; the cap just stops a
     // crafted run of pseudo-markers from spinning.
     for _ in 0..4096 {
-        if *data.get(p)? != 0xFF {
-            return None; // expected a marker here
-        }
-        while *data.get(p)? == 0xFF {
-            p = p.checked_add(1)?; // skip 0xFF fill bytes
-        }
-        let marker = *data.get(p)?;
-        p = p.checked_add(1)?;
-        match marker {
-            0xD9 => return Some((p - off, sof)), // EOI — done
-            // SOFn. 0xC4 (DHT), 0xC8 (reserved) and 0xCC (DAC) share the range but are not
-            // frame headers; record the FIRST real one, since that is the frame this span
-            // describes and a later thumbnail SOF must not overwrite it.
-            0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
-                sof.get_or_insert(marker);
-                p = skip_length_prefixed_segment(data, p)?;
-            }
-            0xDA => {
-                // Start-of-scan: skip its header by length, then the entropy data.
-                p = skip_length_prefixed_segment(data, p)?;
-                p = skip_entropy_coded_scan(data, p)?;
-            }
-            0x01 | 0xD0..=0xD7 => {} // standalone markers, no payload
-            _ => {
-                p = skip_length_prefixed_segment(data, p)?;
-            }
+        let (marker, next) = next_marker(data, p)?;
+        match advance_span_marker(data, marker, next, &mut sof)? {
+            SpanStep::Continue(np) => p = np,
+            SpanStep::Done => return Some((next - off, sof)),
         }
     }
     None
