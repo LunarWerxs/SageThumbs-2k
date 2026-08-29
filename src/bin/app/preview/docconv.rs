@@ -77,6 +77,70 @@ fn delimited_table(text: &str, delim: u8) -> String {
     render_row_table(text.len(), &rows, total_rows)
 }
 
+/// End the current field: push it onto `row` (capped at [`MAX_COLS`], past which extra fields
+/// are silently dropped rather than growing the row unbounded).
+fn end_field(row: &mut Vec<String>, field: &mut String) {
+    if row.len() < MAX_COLS {
+        row.push(std::mem::take(field));
+    } else {
+        field.clear();
+    }
+}
+
+/// Append the UTF-8 character starting at `b[i]` to `field` (falling back to U+FFFD for an
+/// invalid/truncated run), multibyte-safe. Returns the number of bytes consumed, for the
+/// caller to advance its cursor by.
+fn push_char_bytes(field: &mut String, b: &[u8], i: usize) -> usize {
+    let ch_len = utf8_len(b[i]);
+    field.push_str(std::str::from_utf8(&b[i..(i + ch_len).min(b.len())]).unwrap_or("\u{FFFD}"));
+    ch_len
+}
+
+/// One byte inside a quoted field: `""` is an escaped quote (consumes 2 bytes), a lone `"`
+/// closes the field (consumes 1), anything else is appended verbatim via [`push_char_bytes`].
+/// Returns the number of bytes consumed.
+fn step_in_quotes(b: &[u8], i: usize, c: u8, field: &mut String, in_q: &mut bool) -> usize {
+    if c == b'"' {
+        if b.get(i + 1) == Some(&b'"') {
+            field.push('"');
+            return 2;
+        }
+        *in_q = false;
+        return 1;
+    }
+    push_char_bytes(field, b, i)
+}
+
+/// One `\n`/`\r` byte outside quotes: closes the current record (finishing its trailing field,
+/// bumping `total_rows`, and pushing `row` unless the [`MAX_ROWS`] cap was already hit) unless
+/// the record is empty (a blank line contributes nothing). Absorbs a following `\n` when `c` was
+/// `\r` (CRLF as one line break). Returns the number of bytes consumed (1, or 2 for CRLF).
+fn step_newline(
+    b: &[u8],
+    i: usize,
+    c: u8,
+    row: &mut Vec<String>,
+    field: &mut String,
+    rows: &mut Vec<Vec<String>>,
+    total_rows: &mut usize,
+) -> usize {
+    let crlf = c == b'\r' && b.get(i + 1) == Some(&b'\n');
+    if !field.is_empty() || !row.is_empty() {
+        end_field(row, field);
+        *total_rows += 1;
+        if rows.len() < MAX_ROWS {
+            rows.push(std::mem::take(row));
+        } else {
+            row.clear();
+        }
+    }
+    if crlf {
+        2
+    } else {
+        1
+    }
+}
+
 /// RFC-4180-ish parse (quoted fields, `""` escapes, embedded delimiters/newlines) into
 /// capped `(rows, total_data_rows_seen)`. `total_rows` can exceed `rows.len()` when the
 /// [`MAX_ROWS`] cap dropped some.
@@ -88,61 +152,24 @@ fn parse_delimited_rows(text: &str, delim: u8) -> (Vec<Vec<String>>, usize) {
     let mut total_rows = 0usize;
     let b = text.as_bytes();
     let mut i = 0;
-    let push_field = |row: &mut Vec<String>, field: &mut String| {
-        if row.len() < MAX_COLS {
-            row.push(std::mem::take(field));
-        } else {
-            field.clear();
-        }
-    };
     while i < b.len() {
         let c = b[i];
-        if in_q {
-            if c == b'"' {
-                if b.get(i + 1) == Some(&b'"') {
-                    field.push('"');
-                    i += 2;
-                    continue;
-                }
-                in_q = false;
-            } else {
-                // multibyte-safe: push the raw byte run for this char
-                let ch_len = utf8_len(c);
-                field.push_str(
-                    std::str::from_utf8(&b[i..(i + ch_len).min(b.len())]).unwrap_or("\u{FFFD}"),
-                );
-                i += ch_len;
-                continue;
-            }
+        i += if in_q {
+            step_in_quotes(b, i, c, &mut field, &mut in_q)
         } else if c == b'"' && field.is_empty() {
             in_q = true;
+            1
         } else if c == delim {
-            push_field(&mut row, &mut field);
+            end_field(&mut row, &mut field);
+            1
         } else if c == b'\n' || c == b'\r' {
-            if c == b'\r' && b.get(i + 1) == Some(&b'\n') {
-                i += 1;
-            }
-            if !field.is_empty() || !row.is_empty() {
-                push_field(&mut row, &mut field);
-                total_rows += 1;
-                if rows.len() < MAX_ROWS {
-                    rows.push(std::mem::take(&mut row));
-                } else {
-                    row.clear();
-                }
-            }
+            step_newline(b, i, c, &mut row, &mut field, &mut rows, &mut total_rows)
         } else {
-            let ch_len = utf8_len(c);
-            field.push_str(
-                std::str::from_utf8(&b[i..(i + ch_len).min(b.len())]).unwrap_or("\u{FFFD}"),
-            );
-            i += ch_len;
-            continue;
-        }
-        i += 1;
+            push_char_bytes(&mut field, b, i)
+        };
     }
     if !field.is_empty() || !row.is_empty() {
-        push_field(&mut row, &mut field);
+        end_field(&mut row, &mut field);
         total_rows += 1;
         if rows.len() < MAX_ROWS {
             rows.push(row);
