@@ -164,6 +164,80 @@ unsafe fn apply_lockdown(webview: &ICoreWebView2, mode: Mode) {
     }
 }
 
+/// Read an event's URI after calling its `Uri(&mut PWSTR)` accessor (`res`, `uri_p` are that
+/// call's return value and out-param), freeing the returned string with `CoTaskMemFree`. Empty
+/// string on any failure (the call errored, or returned a null pointer); shared by both guard
+/// handlers below, which otherwise had this read-and-free dance duplicated verbatim.
+unsafe fn read_event_uri(res: windows::core::Result<()>, uri_p: PWSTR) -> String {
+    if res.is_ok() && !uri_p.is_null() {
+        let s = uri_p.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(uri_p.as_ptr() as *const _));
+        s
+    } else {
+        String::new()
+    }
+}
+
+/// `WebResourceRequested` handler body: block every request whose URI isn't `file://` with a
+/// 403, so a local page can't fetch remote images/fonts/beacons.
+unsafe fn on_web_resource_requested(
+    env: &ICoreWebView2Environment,
+    args: Option<ICoreWebView2WebResourceRequestedEventArgs>,
+) -> windows::core::Result<()> {
+    let Some(args) = args else {
+        return Ok(());
+    };
+    let Ok(request) = args.Request() else {
+        return Ok(());
+    };
+    let mut uri_p = PWSTR::null();
+    let res = request.Uri(&mut uri_p);
+    let uri = read_event_uri(res, uri_p);
+    if !uri.starts_with("file:") {
+        if let Ok(resp) = env.CreateWebResourceResponse(None, 403, w!("Blocked"), w!("")) {
+            let _ = args.SetResponse(&resp);
+        }
+    }
+    Ok(())
+}
+
+/// `NavigationStarting` handler body. The resource filter installed alongside this blocks a
+/// clicked link's own navigation too (Document is one of its ALL contexts), which just swaps in
+/// a blank 403, i.e. "does nothing" from the user's seat; intercepting navigation directly is
+/// what lets `file://` (the loaded page, or an in-page anchor) pass unchanged while `http(s)` is
+/// canceled and handed to the OS default browser via `ShellExecuteW`, same allow-and-launch
+/// shape as the Markdown link path in `window.rs::open_preview_link`; anything else is canceled
+/// and dropped outright, since an untrusted local HTML file must not launch an arbitrary
+/// protocol handler from a click.
+unsafe fn on_navigation_starting(
+    parent: HWND,
+    args: Option<ICoreWebView2NavigationStartingEventArgs>,
+) -> windows::core::Result<()> {
+    let Some(args) = args else {
+        return Ok(());
+    };
+    let mut uri_p = PWSTR::null();
+    let res = args.Uri(&mut uri_p);
+    let uri = read_event_uri(res, uri_p);
+    if uri.starts_with("file:") {
+        return Ok(()); // the page load itself, or a same-file anchor: unchanged
+    }
+    let _ = args.SetCancel(true);
+    let lower = uri.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        let w = HSTRING::from(uri.as_str());
+        let _ = ShellExecuteW(
+            Some(parent),
+            w!("open"),
+            PCWSTR(w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+    Ok(())
+}
+
 /// Local mode's two guards: block every non-`file://` resource request, and intercept
 /// navigation so a clicked link opens in the OS default browser instead of silently doing
 /// nothing (the resource filter alone would blank-403 it).
@@ -179,67 +253,15 @@ unsafe fn install_local_mode_guards(
     let env3 = environment.clone();
     let handler = WebResourceRequestedEventHandler::create(Box::new(
         move |_wv, args: Option<ICoreWebView2WebResourceRequestedEventArgs>| {
-            if let Some(args) = args {
-                if let Ok(request) = args.Request() {
-                    let mut uri_p = PWSTR::null();
-                    let uri = if request.Uri(&mut uri_p).is_ok() && !uri_p.is_null() {
-                        let s = uri_p.to_string().unwrap_or_default();
-                        CoTaskMemFree(Some(uri_p.as_ptr() as *const _));
-                        s
-                    } else {
-                        String::new()
-                    };
-                    if !uri.starts_with("file:") {
-                        if let Ok(resp) =
-                            env3.CreateWebResourceResponse(None, 403, w!("Blocked"), w!(""))
-                        {
-                            let _ = args.SetResponse(&resp);
-                        }
-                    }
-                }
-            }
-            Ok(())
+            on_web_resource_requested(&env3, args)
         },
     ));
     let mut token: i64 = 0;
     let _ = webview.add_WebResourceRequested(&handler, &mut token);
 
-    // The resource filter above blocks a clicked link's own navigation too (Document is one
-    // of its ALL contexts), which just swaps in a blank 403, i.e. "does nothing" from the
-    // user's seat. Intercept the navigation itself instead: file:// (the loaded page, or an
-    // in-page anchor) passes unchanged; http(s) is canceled and handed to the OS default
-    // browser via ShellExecuteW, same allow-and-launch shape as the Markdown link path in
-    // `window.rs::open_preview_link`; anything else is canceled and dropped outright, since
-    // an untrusted local HTML file must not launch an arbitrary protocol handler from a click.
     let nav_handler = NavigationStartingEventHandler::create(Box::new(
         move |_wv, args: Option<ICoreWebView2NavigationStartingEventArgs>| {
-            if let Some(args) = args {
-                let mut uri_p = PWSTR::null();
-                let uri = if args.Uri(&mut uri_p).is_ok() && !uri_p.is_null() {
-                    let s = uri_p.to_string().unwrap_or_default();
-                    CoTaskMemFree(Some(uri_p.as_ptr() as *const _));
-                    s
-                } else {
-                    String::new()
-                };
-                if uri.starts_with("file:") {
-                    return Ok(()); // the page load itself, or a same-file anchor: unchanged
-                }
-                let _ = args.SetCancel(true);
-                let lower = uri.to_ascii_lowercase();
-                if lower.starts_with("http://") || lower.starts_with("https://") {
-                    let w = HSTRING::from(uri.as_str());
-                    let _ = ShellExecuteW(
-                        Some(parent),
-                        w!("open"),
-                        PCWSTR(w.as_ptr()),
-                        PCWSTR::null(),
-                        PCWSTR::null(),
-                        SW_SHOWNORMAL,
-                    );
-                }
-            }
-            Ok(())
+            on_navigation_starting(parent, args)
         },
     ));
     let mut nav_token: i64 = 0;
