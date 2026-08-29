@@ -390,6 +390,70 @@ corpus, and calls one of the two mode functions. No behavior change. Verified wi
 --help`, both clean. This closes out the queue completely: every row, Rust and Python, is
 now checked off.
 
+**Tranche 20 (2026-08-28): final-sweep stragglers, 15 rows cleared.** A fresh portable rescan
+after the "Correction" pass above still found 15 gating rows, not 0: helpers earlier tranches
+had already split but that landed over the gate on re-measurement, plus one row
+(`wndproc`, preview/window.rs) the original queue never listed by name. Worst first:
+`tokenize_runs` (preview/markdown/inline.rs) had its `flush_word!` macro replaced with real
+functions `flush_word`/`split_overwide_word` (a `RunTokCtx` struct bundles the per-run token
+metadata they both need), but that alone still left the function at cognitive 33 on rescan, so
+a second pass hoisted the per-run character walk itself into `walk_run_chars`, leaving
+`tokenize_runs` a thin per-run setup loop; `place_row` (settings_dlg/navrail.rs) split each
+`Row` arm into its own `place_*_row` helper (`place_head_row`/`place_switch_row`/
+`place_pair_row`/`place_btn_row`/`place_btn_status_row`/`place_status_btn_row`/
+`place_status_row`/`place_btn3_row`/`place_wide_row`/`place_list_fill_row`), leaving `place_row`
+a thin match; `collect_channel_planes` (container/psp.rs) split its `CHANNEL_BLOCK` header
+read + decode into `read_channel_plane`; `parse_chroma_format` (flv.rs) split into
+`parse_chroma_and_scaling_fields` and `skip_scaling_matrix`, leaving `parse_chroma_format` a
+profile-check dispatcher; `parse_delimited_rows` (preview/docconv.rs), the CSV/TSV/PSV
+byte-at-a-time state machine, split into `end_field`/`push_char_bytes`/`step_in_quotes`/
+`step_newline`, each returning the bytes consumed so the main loop became a flat
+`i += match { ... }`; `jpeg_span` (container/util.rs) reused the sibling `next_marker` helper
+(already extracted from `jpeg_sof_dims` in an earlier tranche) for its own fill-byte-skip-
+and-read-marker prologue, and split the per-marker dispatch into `advance_span_marker`
+(returning a `SpanStep::Continue`/`Done` enum); `render` (preview/markdown.rs) split its
+layout-cache refresh into `refresh_parse_cache`/`refresh_height_cache`, its heading ToC push
+into `record_heading_toc`, and its off-screen fast-path check into `cached_offscreen_height`;
+`install_local_mode_guards` (preview/webview.rs, `html-preview` feature) hoisted both
+WebView2 event-handler closures' bodies to named functions (`on_web_resource_requested`,
+`on_navigation_starting`), sharing a `read_event_uri` helper for the URI-read-and-free dance
+both used to duplicate; `dispatch_by_content_kind` (preview/loader.rs) split each
+`ContentKind` arm into `dispatch_image_kind`/`dispatch_video_kind`/
+`dispatch_text_or_markdown_kind`/`dispatch_fallback_kind`, sharing a `show_info_card` helper;
+`decode_any_with_wic_target` (decode.rs) split its WIC-fallback/TGA/magick/reduced-IFD0/
+embedded-JPEG tail into `last_resort_tiers`, with the AVIF high-depth-curve fix and the
+attempted-magick log line pulled into `finish_wic_fallback`; `handle_video_tag` (flv.rs) split
+its AVC-config-capture and keyframe-mux branches into `capture_avc_config`/
+`mux_keyframe_tag`; `parse_one_attr` (preview/mdhtml.rs) split into `read_attr_name` and
+`read_attr_value` (itself calling `read_quoted_attr_value`/`read_unquoted_attr_value`);
+`paint_chip` (badge.rs) had its per-pixel colour decision split into `chip_pixel_color`,
+leaving `paint_chip` a plain double loop; `find_entry_offset` (container/apk.rs) split into
+`find_sparse_entry_offset`/`find_dense_entry_offset`; `wndproc` (preview/window.rs, CC 39),
+the ~30-arm top-level message dispatcher, was grouped into four message-class
+sub-dispatchers (`on_geometry_msg`/`on_app_msg`/`on_mouse_msg`/`on_key_and_lifecycle_msg`),
+the same `Option<LRESULT>` fall-through method `settings_dlg::mod::wndproc` already uses
+(tranche 5), preserving every `LRESULT` return and `DefWindowProc` fallthrough exactly. No
+behavior change anywhere in this tranche, and every row cleared the gate; none needed a
+readability trade-off. Verified per file (scoped `cargo test` where the module has one,
+`cargo check --features html-preview` compile-clean for the bin-only modules without unit
+tests of their own) and at the end: `cargo test --lib` (753 passed, 0 failed, 18 ignored,
+matching baseline) and `cargo test --bin SageThumbs2K --features html-preview` (363 passed,
+matching the prior tranche's baseline), `cargo clippy --workspace --all-targets --features
+html-preview -- -D warnings` and `cargo clippy --bin SageThumbs2K -- -D warnings` both clean
+(`flush_word`/`walk_run_chars`/`split_overwide_word` picked up
+`#[allow(clippy::too_many_arguments)]`, same pattern already used elsewhere in these files),
+and `cargo fmt --all --check` clean (two `cargo fmt --all` passes to reflow call
+sites/signatures the edits left over-width). Final acceptance was the scanner, not the test
+suite: `python odin.py architect --rescan --project sagethumbs-2k` from the shared `odin`
+clone, checked against the raw per-finding JSON rather than the truncated top-50 report -
+**0 cognitive/cyclomatic gating errors, repo-wide.** The scan's one remaining error-severity
+finding is unrelated to this queue and was left alone: an "oversized file" advisory on
+`decode/tests.rs` (2723 lines, the file-size check's own 2500-line threshold), not a
+complexity finding and not blocking. Same preflight-only caveat as the earlier wndproc splits
+(tranches 3-5): a human UI click-through of the preview window (drag/resize, mouse/keyboard
+routing, paint) is still recommended before the next release, given `wndproc`
+(preview/window.rs) was touched again here.
+
 ## Queue
 
 Ranked worst first (cognitive complexity, then cyclomatic complexity). Checked rows were
