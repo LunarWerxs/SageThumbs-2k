@@ -77,6 +77,45 @@ enum TagOutcome {
 /// `AVCPacketType`(1) `CompositionTime`(3), then the body. Non-video or too-short tags are
 /// [`TagOutcome::Continue`]; a non-AVC codec aborts the whole parse (`None`) — Sorenson
 /// Spark / VP6 get their frame via [`flash_frame`] instead, never remuxed here.
+/// Capture `avc_config` from an AVC sequence-header tag's payload (the caller has already
+/// confirmed this tag IS one: `packet_type == 0`, no config yet, non-empty body). `None` aborts
+/// the whole parse: an oversized or malformed (`configurationVersion != 1`) record.
+fn capture_avc_config<R: Read + Seek>(
+    r: &mut R,
+    payload_pos: u64,
+    body_len: usize,
+    avc_config: &mut Option<Vec<u8>>,
+) -> Option<TagOutcome> {
+    // AVC sequence header: the payload is an AVCDecoderConfigurationRecord.
+    if body_len > CONFIG_MAX {
+        return None;
+    }
+    let mut cfg = vec![0u8; body_len];
+    read_exact_at(r, payload_pos.checked_add(5)?, &mut cfg)?;
+    if cfg.first() != Some(&1) || cfg.len() < 7 {
+        return None; // configurationVersion must be 1
+    }
+    *avc_config = Some(cfg);
+    Some(TagOutcome::Continue)
+}
+
+/// Read and mux a keyframe NALU tag's payload (the caller has already confirmed this tag IS
+/// one: config seen, AVC packet type 1, frame type 1). `None` aborts the whole parse (an
+/// oversized sample or a read failure).
+fn mux_keyframe_tag<R: Read + Seek>(
+    r: &mut R,
+    payload_pos: u64,
+    body_len: usize,
+    cfg: &[u8],
+) -> Option<TagOutcome> {
+    if body_len > KEYFRAME_MAX {
+        return None;
+    }
+    let mut keyframe = vec![0u8; body_len];
+    read_exact_at(r, payload_pos.checked_add(5)?, &mut keyframe)?;
+    Some(TagOutcome::Return(mux(cfg, &keyframe)))
+}
+
 fn handle_video_tag<R: Read + Seek>(
     r: &mut R,
     tag_type: u8,
@@ -100,27 +139,12 @@ fn handle_video_tag<R: Read + Seek>(
     }
     let body_len = (data_size - 5) as usize;
     if packet_type == 0 && avc_config.is_none() && body_len > 0 {
-        // AVC sequence header: the payload is an AVCDecoderConfigurationRecord.
-        if body_len > CONFIG_MAX {
-            return None;
-        }
-        let mut cfg = vec![0u8; body_len];
-        read_exact_at(r, payload_pos.checked_add(5)?, &mut cfg)?;
-        if cfg.first() != Some(&1) || cfg.len() < 7 {
-            return None; // configurationVersion must be 1
-        }
-        *avc_config = Some(cfg);
-        return Some(TagOutcome::Continue);
+        return capture_avc_config(r, payload_pos, body_len, avc_config);
     }
     if packet_type == 1 && frame_type == 1 && body_len > 0 {
         // A keyframe NALU tag — usable once the config has been seen.
         if let Some(cfg) = avc_config.as_ref() {
-            if body_len > KEYFRAME_MAX {
-                return None;
-            }
-            let mut keyframe = vec![0u8; body_len];
-            read_exact_at(r, payload_pos.checked_add(5)?, &mut keyframe)?;
-            return Some(TagOutcome::Return(mux(cfg, &keyframe)));
+            return mux_keyframe_tag(r, payload_pos, body_len, cfg);
         }
     }
     Some(TagOutcome::Continue)
@@ -599,34 +623,49 @@ fn skip_scaling_list(b: &mut Bits, size: u32) -> Option<()> {
 /// variants carry it): reads `chroma_format_idc`, `separate_colour_planes`, and any scaling
 /// matrix (skipped via [`skip_scaling_list`], not decoded — the values are irrelevant here).
 /// Consumes those bits from `b` only when the profile actually carries them.
+/// `seq_scaling_matrix_present`'s list walk: 12 lists for 4:4:4 (`chroma_format_idc == 3`),
+/// else 8, each optionally present and skipped via [`skip_scaling_list`] (16 entries for the
+/// first six lists, 64 for the rest).
+fn skip_scaling_matrix(b: &mut Bits, chroma_format_idc: u32) -> Option<()> {
+    let lists = if chroma_format_idc == 3 { 12 } else { 8 };
+    for i in 0..lists {
+        if b.bit()? == 1 {
+            skip_scaling_list(b, if i < 6 { 16 } else { 64 })?;
+        }
+    }
+    Some(())
+}
+
+/// The chroma-format + optional scaling-matrix fields (§7.3.2.1.1), read only when
+/// [`parse_chroma_format`]'s profile check says this profile carries them.
+fn parse_chroma_and_scaling_fields(b: &mut Bits) -> Option<(u32, bool)> {
+    let chroma_format_idc = b.ue()?;
+    if chroma_format_idc > 3 {
+        return None;
+    }
+    let separate_colour_planes = if chroma_format_idc == 3 {
+        b.bit()? == 1
+    } else {
+        false
+    };
+    b.ue()?; // bit_depth_luma_minus8
+    b.ue()?; // bit_depth_chroma_minus8
+    b.bit()?; // qpprime_y_zero_transform_bypass_flag
+    if b.bit()? == 1 {
+        skip_scaling_matrix(b, chroma_format_idc)?; // seq_scaling_matrix_present
+    }
+    Some((chroma_format_idc, separate_colour_planes))
+}
+
 fn parse_chroma_format(b: &mut Bits, profile_idc: u32) -> Option<(u32, bool)> {
-    let mut chroma_format_idc = 1u32; // 4:2:0 unless the profile carries it explicitly
-    let mut separate_colour_planes = false;
     if matches!(
         profile_idc,
         100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
     ) {
-        chroma_format_idc = b.ue()?;
-        if chroma_format_idc > 3 {
-            return None;
-        }
-        if chroma_format_idc == 3 {
-            separate_colour_planes = b.bit()? == 1;
-        }
-        b.ue()?; // bit_depth_luma_minus8
-        b.ue()?; // bit_depth_chroma_minus8
-        b.bit()?; // qpprime_y_zero_transform_bypass_flag
-        if b.bit()? == 1 {
-            // seq_scaling_matrix_present
-            let lists = if chroma_format_idc == 3 { 12 } else { 8 };
-            for i in 0..lists {
-                if b.bit()? == 1 {
-                    skip_scaling_list(b, if i < 6 { 16 } else { 64 })?;
-                }
-            }
-        }
+        parse_chroma_and_scaling_fields(b)
+    } else {
+        Some((1, false)) // 4:2:0 unless the profile carries it explicitly
     }
-    Some((chroma_format_idc, separate_colour_planes))
 }
 
 /// The picture-order-count fields (§7.3.2.1.1). Consumed but not returned — only their
