@@ -257,6 +257,60 @@ fn heading_px(level: u8) -> i32 {
     }
 }
 
+/// Refresh the layout's PARSE half (blocks + selection document + offsets) when either the
+/// document or the remote-images flag changed. This half is independent of wrap width: a
+/// resize can never invalidate it, which is why it's keyed and refreshed separately from
+/// [`refresh_height_cache`] below.
+fn refresh_parse_cache(layout: &mut MdLayout, md: &str, remote_ok: bool, gen: u64) {
+    let parse_key = (gen, remote_ok);
+    if !layout.ready || layout.parse_key != parse_key {
+        layout.blocks = std::rc::Rc::new(parse_blocks(md, remote_ok));
+        let (doc, bases) = build_doc(&layout.blocks);
+        layout.doc = doc;
+        layout.bases = bases;
+        layout.parse_key = parse_key;
+        layout.width_key = None;
+        layout.ready = true;
+    }
+}
+
+/// Refresh the layout's measured-HEIGHTS half when the wrap width changed (or the block count
+/// did, which follows a fresh parse); unlike the parse above, these die on every width change.
+fn refresh_height_cache(layout: &mut MdLayout, full_w: i32) {
+    if layout.width_key != Some(full_w) || layout.heights.len() != layout.blocks.len() {
+        layout.heights = vec![-1; layout.blocks.len()];
+        layout.width_key = Some(full_w);
+    }
+}
+
+/// Push `block`'s outline entry when it's a heading, called unconditionally (before any
+/// off-screen skip below) so the ToC stays complete even when the heading itself is culled.
+/// `pre` matches the in-arm pre-margin so click targets align.
+fn record_heading_toc(
+    block: &Block,
+    toc: &mut Vec<TocEntry>,
+    pre: i32,
+    y: i32,
+    top: i32,
+    scroll: i32,
+) {
+    if let Block::Heading(lvl, runs, _) = block {
+        toc.push(TocEntry {
+            level: *lvl,
+            text: runs_text(runs),
+            target: (y + pre - top + scroll).max(0),
+        });
+    }
+}
+
+/// A cached text-block height IF it's safe to skip re-measuring `bi`: already measured
+/// (`h >= 0`) and fully off-screen at `y`. `None` means render it normally (never measured, or
+/// on-screen).
+fn cached_offscreen_height(heights: &[i32], bi: usize, y: i32, rc: &RECT) -> Option<i32> {
+    let h = heights.get(bi).copied().unwrap_or(-1);
+    (h >= 0 && (y + h <= rc.top || y >= rc.bottom)).then_some(h)
+}
+
 /// Render `md` into `rc`, scrolled by `scroll` device px. Returns the total content height
 /// (device px) so the caller can clamp scrolling. Fills `rc` with the bg first. `doc_dir` is
 /// the markdown file's folder (local image srcs resolve against it); `imgs` is the per-document
@@ -296,28 +350,14 @@ pub(super) unsafe fn render(
     let mut y = top - scroll;
     let mut first = true;
 
-    // Layout cache, keyed in TWO parts because the two halves have different lifetimes:
-    //   * the PARSE (blocks + selection document + offsets) depends only on the document and the
-    //     remote-images flag — a resize can never change it;
-    //   * the measured block HEIGHTS depend on the wrap width, so they die on every width change.
-    // Splitting them is what makes a width-tracking column affordable: dragging the frame (or a
-    // 15 ms tick of the ToC slide, which now genuinely changes the wrap width) re-measures only
-    // the blocks the culling loop actually reaches, instead of re-running the whole pulldown-cmark
-    // walk over a document up to the 5 MB text cap on every frame.
-    let parse_key = (gen, remote_ok);
-    if !layout.ready || layout.parse_key != parse_key {
-        layout.blocks = std::rc::Rc::new(parse_blocks(md, remote_ok));
-        let (doc, bases) = build_doc(&layout.blocks);
-        layout.doc = doc;
-        layout.bases = bases;
-        layout.parse_key = parse_key;
-        layout.width_key = None;
-        layout.ready = true;
-    }
-    if layout.width_key != Some(full_w) || layout.heights.len() != layout.blocks.len() {
-        layout.heights = vec![-1; layout.blocks.len()];
-        layout.width_key = Some(full_w);
-    }
+    // Layout cache, keyed in TWO parts because the two halves have different lifetimes — see
+    // `refresh_parse_cache`/`refresh_height_cache`. Splitting them is what makes a
+    // width-tracking column affordable: dragging the frame (or a 15 ms tick of the ToC slide,
+    // which now genuinely changes the wrap width) re-measures only the blocks the culling loop
+    // actually reaches, instead of re-running the whole pulldown-cmark walk over a document up
+    // to the 5 MB text cap on every frame.
+    refresh_parse_cache(layout, md, remote_ok, gen);
+    refresh_height_cache(layout, full_w);
     // Cheap handle, not a copy — lets the loop below read the blocks while still writing
     // measured heights back into `layout`.
     let blocks = std::rc::Rc::clone(&layout.blocks);
@@ -326,16 +366,7 @@ pub(super) unsafe fn render(
         .then(std::time::Instant::now);
 
     for (bi, block) in blocks.iter().enumerate() {
-        // Outline entry for every heading, BEFORE any skip, so the ToC stays complete even when the
-        // heading is culled off-screen. `+pre` matches the in-arm pre-margin so click targets align.
-        if let Block::Heading(lvl, runs, _) = block {
-            let pre = if first { 0 } else { sc(8) };
-            toc.push(TocEntry {
-                level: *lvl,
-                text: runs_text(runs),
-                target: (y + pre - top + scroll).max(0),
-            });
-        }
+        record_heading_toc(block, toc, if first { 0 } else { sc(8) }, y, top, scroll);
         // Fast-path: a text block we've already measured that's fully off-screen — skip the
         // run_block re-measure entirely and just advance by the cached height.
         let is_text = matches!(
@@ -343,8 +374,7 @@ pub(super) unsafe fn render(
             Block::Heading(..) | Block::Para(..) | Block::Item(..) | Block::Quote(..)
         );
         if is_text {
-            let h = layout.heights.get(bi).copied().unwrap_or(-1);
-            if h >= 0 && (y + h <= rc.top || y >= rc.bottom) {
+            if let Some(h) = cached_offscreen_height(&layout.heights, bi, y, rc) {
                 y += h;
                 first = false;
                 continue;
