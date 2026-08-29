@@ -173,13 +173,12 @@ fn parse_tag_attrs(s: &str, start: usize) -> Option<(Vec<(String, String)>, usiz
     }
 }
 
-/// Parse one `name` or `name="value"` (or `name='value'`, or unquoted) attribute starting at
-/// `j`. Returns the attribute name, its (entity-decoded) value, and the byte index just past
-/// it. When `j` is not the start of a valid attribute name, returns `j` unchanged as `next`
-/// so the caller's stray-char skip applies.
-fn parse_one_attr(s: &str, j: usize) -> (String, String, usize) {
+/// Read an attribute name starting at `j` (up to whitespace or `= > /`). Returns the
+/// lowercased name and the position just past it; `None` when there is no name here (the
+/// caller's stray-char skip applies).
+fn read_attr_name(s: &str, j: usize) -> Option<(String, usize)> {
     let bytes = s.as_bytes();
-    let an_start = j;
+    let start = j;
     let mut j = j;
     while j < bytes.len()
         && !bytes[j].is_ascii_whitespace()
@@ -187,39 +186,72 @@ fn parse_one_attr(s: &str, j: usize) -> (String, String, usize) {
     {
         j += 1;
     }
-    if j == an_start {
-        return (String::new(), String::new(), an_start);
+    if j == start {
+        return None;
     }
-    let aname = s[an_start..j].to_ascii_lowercase();
+    Some((s[start..j].to_ascii_lowercase(), j))
+}
+
+/// Read a quoted attribute value's contents, starting right after the opening quote `q`.
+/// Returns the entity-decoded value and the position just past the closing quote (or the end
+/// of `s`, for an unterminated value).
+fn read_quoted_attr_value(s: &str, j: usize, q: u8) -> (String, usize) {
+    let bytes = s.as_bytes();
+    let v_start = j;
+    let mut j = j;
+    while j < bytes.len() && bytes[j] != q {
+        j += 1;
+    }
+    let val = decode_entities(&s[v_start..j.min(bytes.len())]);
+    if j < bytes.len() {
+        j += 1; // past the closing quote
+    }
+    (val, j)
+}
+
+/// Read an unquoted attribute value: up to whitespace or `>`.
+fn read_unquoted_attr_value(s: &str, j: usize) -> (String, usize) {
+    let bytes = s.as_bytes();
+    let v_start = j;
+    let mut j = j;
+    while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'>' {
+        j += 1;
+    }
+    (decode_entities(&s[v_start..j]), j)
+}
+
+/// Read the `=value` part of an attribute: `j` points AT the `=` (the caller has already
+/// confirmed `bytes[j] == '='`). Skips whitespace after the `=`, then reads a quoted or
+/// unquoted value. Returns the entity-decoded value and the position just past it.
+fn read_attr_value(s: &str, j: usize) -> (String, usize) {
+    let bytes = s.as_bytes();
+    let mut j = j + 1; // past '='
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    match bytes.get(j) {
+        Some(&q) if q == b'"' || q == b'\'' => read_quoted_attr_value(s, j + 1, q),
+        _ => read_unquoted_attr_value(s, j),
+    }
+}
+
+/// Parse one `name` or `name="value"` (or `name='value'`, or unquoted) attribute starting at
+/// `j`. Returns the attribute name, its (entity-decoded) value, and the byte index just past
+/// it. When `j` is not the start of a valid attribute name, returns `j` unchanged as `next`
+/// so the caller's stray-char skip applies.
+fn parse_one_attr(s: &str, j: usize) -> (String, String, usize) {
+    let bytes = s.as_bytes();
+    let Some((aname, mut j)) = read_attr_name(s, j) else {
+        return (String::new(), String::new(), j);
+    };
     while j < bytes.len() && bytes[j].is_ascii_whitespace() {
         j += 1;
     }
     let mut aval = String::new();
     if bytes.get(j) == Some(&b'=') {
-        j += 1;
-        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-            j += 1;
-        }
-        match bytes.get(j) {
-            Some(&q) if q == b'"' || q == b'\'' => {
-                j += 1;
-                let v_start = j;
-                while j < bytes.len() && bytes[j] != q {
-                    j += 1;
-                }
-                aval = decode_entities(&s[v_start..j.min(bytes.len())]);
-                if j < bytes.len() {
-                    j += 1; // past the closing quote
-                }
-            }
-            _ => {
-                let v_start = j;
-                while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'>' {
-                    j += 1;
-                }
-                aval = decode_entities(&s[v_start..j]);
-            }
-        }
+        let (v, nj) = read_attr_value(s, j);
+        aval = v;
+        j = nj;
     }
     (aname, aval, j)
 }
