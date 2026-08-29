@@ -705,10 +705,43 @@ fn type_chunk_value(chunk: &[u8], hs: usize, entry_idx: u16) -> Option<(u16, u8,
     Some((density, dtype, data))
 }
 
-/// The TYPE chunk's entry-offset table: sparse (`{idx, offset/4}` u16 pairs, matched by `idx`,
-/// NOT positional) when `SPARSE_FLAG` is set, else dense (a positional `u32` offset per entry,
-/// `NO_ENTRY` meaning "absent here"). Returns the byte offset (already ×4) of `entry_idx`'s
-/// entry within the entries area, or `None` if it isn't present in this chunk.
+/// Sparse entry-offset table: `{idx, offset/4}` u16 pairs, matched by `idx`, NOT positional.
+/// Returns the byte offset (already ×4) of `entry_idx`'s entry, or `None` if it isn't present.
+fn find_sparse_entry_offset(
+    chunk: &[u8],
+    hs: usize,
+    entry_count: u32,
+    entry_idx: u16,
+) -> Option<usize> {
+    for i in 0..entry_count as usize {
+        let p = hs.checked_add(i.checked_mul(4)?)?;
+        let (idx, o) = (le16(chunk, p)?, le16(chunk, p.checked_add(2)?)?);
+        if idx == entry_idx {
+            return (o as usize).checked_mul(4);
+        }
+    }
+    None
+}
+
+/// Dense entry-offset table: a positional `u32` offset per entry, `NO_ENTRY` meaning "absent
+/// here". Returns the byte offset of `entry_idx`'s entry, or `None` if out of range or absent.
+fn find_dense_entry_offset(
+    chunk: &[u8],
+    hs: usize,
+    entry_count: u32,
+    entry_idx: u16,
+) -> Option<usize> {
+    if u32::from(entry_idx) >= entry_count {
+        return None;
+    }
+    let p = hs.checked_add((entry_idx as usize).checked_mul(4)?)?;
+    let o = le32(chunk, p)?;
+    (o != NO_ENTRY).then_some(o as usize)
+}
+
+/// The TYPE chunk's entry-offset table: sparse when `SPARSE_FLAG` is set, else dense. Returns
+/// the byte offset (already ×4) of `entry_idx`'s entry within the entries area, or `None` if it
+/// isn't present in this chunk.
 fn find_entry_offset(
     chunk: &[u8],
     hs: usize,
@@ -717,21 +750,9 @@ fn find_entry_offset(
     entry_idx: u16,
 ) -> Option<usize> {
     if flags & SPARSE_FLAG != 0 {
-        for i in 0..entry_count as usize {
-            let p = hs.checked_add(i.checked_mul(4)?)?;
-            let (idx, o) = (le16(chunk, p)?, le16(chunk, p.checked_add(2)?)?);
-            if idx == entry_idx {
-                return (o as usize).checked_mul(4);
-            }
-        }
-        None
+        find_sparse_entry_offset(chunk, hs, entry_count, entry_idx)
     } else {
-        if u32::from(entry_idx) >= entry_count {
-            return None;
-        }
-        let p = hs.checked_add((entry_idx as usize).checked_mul(4)?)?;
-        let o = le32(chunk, p)?;
-        (o != NO_ENTRY).then_some(o as usize)
+        find_dense_entry_offset(chunk, hs, entry_count, entry_idx)
     }
 }
 
