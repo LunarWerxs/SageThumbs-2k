@@ -284,6 +284,27 @@ pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
 /// — [`render_rgb`]'s depth-specific match decides whether that's fatal. `None` only for a
 /// hard parse failure: a truncated/oversized plane, or an RLE/unknown-compression channel
 /// this decoder doesn't attempt (the caller falls back to the JPEG carve for those).
+/// Read one `CHANNEL_BLOCK` sub-block's header (`chunk(4) compressedLen(4) uncompressedLen(4)
+/// bitmapType(2) channelType(2)`) and decode/copy its `px` bytes of plane data per
+/// `a.compression`. Returns `(channel type, decoded plane)`. `None` aborts the WHOLE walk in
+/// [`collect_channel_planes`] (RLE/unknown compression, a truncated plane, or any header read
+/// running off the block); the caller then falls back to the JPEG carve.
+fn read_channel_plane(b: &[u8], c: usize, a: &Attrs, px: usize) -> Option<(u16, Vec<u8>)> {
+    let chunk = le32(b, c)? as usize;
+    let clen = le32(b, c + 4)? as usize;
+    let ctype = le16(b, c + 14)?;
+    let data = b.get(c + chunk..c + chunk.checked_add(clen)?)?;
+    let raw = match a.compression {
+        COMP_LZ77 => inflate_capped(data, px)?,
+        COMP_NONE => data.get(..px.min(data.len()))?.to_vec(),
+        _ => return None, // RLE or unknown: let the caller fall back
+    };
+    if raw.len() < px {
+        return None; // truncated plane — do not render a half image
+    }
+    Some((ctype, raw))
+}
+
 fn collect_channel_planes<'a>(
     b: &'a [u8],
     content: usize,
@@ -303,19 +324,7 @@ fn collect_channel_planes<'a>(
                 }
             }
             CHANNEL_BLOCK => {
-                // chunk(4) compressedLen(4) uncompressedLen(4) bitmapType(2) channelType(2)
-                let chunk = le32(b, c)? as usize;
-                let clen = le32(b, c + 4)? as usize;
-                let ctype = le16(b, c + 14)?;
-                let data = b.get(c + chunk..c + chunk.checked_add(clen)?)?;
-                let raw = match a.compression {
-                    COMP_LZ77 => inflate_capped(data, px)?,
-                    COMP_NONE => data.get(..px.min(data.len()))?.to_vec(),
-                    _ => return None, // RLE or unknown: let the caller fall back
-                };
-                if raw.len() < px {
-                    return None; // truncated plane — do not render a half image
-                }
+                let (ctype, raw) = read_channel_plane(b, c, a, px)?;
                 if let Some(slot) = chan.get_mut(ctype as usize) {
                     *slot = Some(raw);
                 }
