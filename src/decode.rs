@@ -287,6 +287,108 @@ fn decode_any(bytes: &[u8], raw_preview: RawPreviewOrder, external: bool) -> Res
     decode_any_with_wic_target(bytes, raw_preview, external, None)
 }
 
+/// Apply the WIC decode's AVIF high-bit-depth curve fix when [`route_isobmff_wic_quirks`] says
+/// it's needed, and log when we're falling back to the codec we deliberately tried to route
+/// around (`magick_attempted`).
+fn finish_wic_fallback(
+    img: DynamicImage,
+    route: &WicQuirkRoute,
+    magick_attempted: bool,
+) -> DynamicImage {
+    let img = if matches!(
+        route.avif_verdict,
+        color::AvifWicVerdict::NeedsHighDepthCurve
+    ) {
+        crate::safety::log_debug("decode: undoing WIC's high-bit-depth AV1 transfer curve");
+        color::undo_wic_high_depth_curve(img)
+    } else {
+        img
+    };
+    if magick_attempted {
+        // Reaching WIC after we deliberately tried to avoid it means the thumbnail is
+        // about to be produced by the codec we KNOW misreads this file, so say so
+        // rather than returning a quietly wrong picture. A wrong-coloured tile still
+        // beats no tile (it is what the Compact install shows anyway), but it must be
+        // diagnosable — the alternative is issue #9's "some files are just wrong
+        // sometimes", with nothing in the log to point at.
+        crate::safety::log_debug(
+            "decode: fell back to WIC after routing around it — colours may be off",
+        );
+    }
+    img
+}
+
+/// The tail of [`decode_any_with_wic_target`]'s tier chain, run once
+/// [`route_isobmff_wic_quirks`] has decided WIC is the next thing to try (it either declined to
+/// route around WIC, or its own route failed): WIC → TGA → ImageMagick (`external` only) → the
+/// after-external RAW-preview retry → the reduced-IFD0 stash → the cheap embedded-JPEG scan.
+/// Mirrors the original's linear fallthrough exactly, just moved off the caller's own
+/// complexity budget.
+fn last_resort_tiers(
+    bytes: &[u8],
+    wic_thumbnail_cx: Option<u32>,
+    raw_preview: RawPreviewOrder,
+    external: bool,
+    route: WicQuirkRoute,
+    reduced_ifd0: Option<DynamicImage>,
+) -> Result<DynamicImage> {
+    let magick_attempted = route.magick_attempted;
+    match wic_fallback(bytes, wic_thumbnail_cx) {
+        Ok(img) => return Ok(finish_wic_fallback(img, &route, magick_attempted)),
+        Err(e) => crate::safety::log_debug(&format!("decode tier `WIC` failed: {e}")),
+    }
+    // TGA has no magic bytes, so the `image` guesser + magick-via-stdin both miss
+    // it; detect it by a header sanity check and decode with an explicit format
+    // BEFORE magick, so a real TGA skips a doomed (20s-capped) subprocess.
+    match decode_tga(bytes) {
+        Ok(img) => return Ok(img),
+        Err(e) => crate::safety::log_debug(&format!("decode tier `TGA` failed: {e}")),
+    }
+    // ImageMagick subprocess (the exotic long tail) + the full-fidelity after-external
+    // RAW fallback. SKIPPED entirely when `external` is false: the classic in-shell menu
+    // preview ([`decode_menu_preview`]) runs on explorer.exe's OWN UI thread and cannot
+    // afford a subprocess (≤20s) there — it falls back to the cheap embedded-JPEG slice
+    // below, or a caption-only tile.
+    let mut last_err = route.magick_error.unwrap_or_else(|| Error::from(E_FAIL));
+    if external {
+        if !magick_attempted {
+            // Ask magick for no more than the caller's target edge. Rendering the fixed
+            // 4096 cap and then throwing most of it away cost 15.6s on a 76 MP JPEG 2000
+            // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
+            // for a file that decodes perfectly well.
+            match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
+                Ok(img) => return Ok(img),
+                Err(e) => {
+                    crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
+                    last_err = e;
+                }
+            }
+        }
+        if raw_preview == RawPreviewOrder::AfterExternal {
+            if let Some(img) = try_raw_preview_tier(bytes, wic_thumbnail_cx) {
+                return Ok(img);
+            }
+        }
+    }
+    // The reduced-resolution IFD0 held back above. Every real decoder has now failed or is
+    // absent, and a small genuine preview beats both the byte-scan carve below and a blank
+    // tile — so this is where it is finally spent.
+    if let Some(img) = reduced_ifd0 {
+        return Ok(img);
+    }
+    // Last resort (CHEAP — a linear byte scan + image-tier decode, no subprocess, so the
+    // menu path runs it too): every real decoder failed (or is absent — e.g. a clean
+    // compact install with no Microsoft RAW Image Extension and no bundled ImageMagick).
+    // If the file still embeds ANY decodable JPEG — a camera RAW's small EXIF thumbnail, a
+    // document preview — show that rather than a blank tile. Strictly additive: only
+    // reached AFTER every higher-fidelity tier above has failed, so it can't downgrade a
+    // good result.
+    if let Some(img) = try_embedded_jpeg_last_resort(bytes) {
+        return Ok(img);
+    }
+    Err(last_err)
+}
+
 /// [`decode_any`] with an optional target edge for the WIC tier only. This is kept
 /// private to thumbnail decoding so all full-fidelity paths retain their raw-pixel contract.
 fn decode_any_with_wic_target(
@@ -343,89 +445,17 @@ fn decode_any_with_wic_target(
     // detect from the container CHEAPLY and route around when the Full install's external
     // tier is available. In both cases WIC stays the fallback: on the Compact install (no
     // ImageMagick) a slightly wrong thumbnail still beats no thumbnail at all.
-    let route = match route_isobmff_wic_quirks(bytes, external, wic_thumbnail_cx) {
-        Ok(img) => return Ok(img),
-        Err(route) => route,
-    };
-    let magick_attempted = route.magick_attempted;
-    match wic_fallback(bytes, wic_thumbnail_cx) {
-        Ok(img) => {
-            // High-bit-depth AVIF: WIC handed back the right pixels through the wrong transfer.
-            // Invert it here rather than paying a subprocess to avoid it.
-            let img = if matches!(
-                route.avif_verdict,
-                color::AvifWicVerdict::NeedsHighDepthCurve
-            ) {
-                crate::safety::log_debug("decode: undoing WIC's high-bit-depth AV1 transfer curve");
-                color::undo_wic_high_depth_curve(img)
-            } else {
-                img
-            };
-            // Reaching WIC after we deliberately tried to avoid it means the thumbnail is
-            // about to be produced by the codec we KNOW misreads this file, so say so
-            // rather than returning a quietly wrong picture. A wrong-coloured tile still
-            // beats no tile (it is what the Compact install shows anyway), but it must be
-            // diagnosable — the alternative is issue #9's "some files are just wrong
-            // sometimes", with nothing in the log to point at.
-            if magick_attempted {
-                crate::safety::log_debug(
-                    "decode: fell back to WIC after routing around it — colours may be off",
-                );
-            }
-            return Ok(img);
-        }
-        Err(e) => crate::safety::log_debug(&format!("decode tier `WIC` failed: {e}")),
+    match route_isobmff_wic_quirks(bytes, external, wic_thumbnail_cx) {
+        Ok(img) => Ok(img),
+        Err(route) => last_resort_tiers(
+            bytes,
+            wic_thumbnail_cx,
+            raw_preview,
+            external,
+            route,
+            reduced_ifd0,
+        ),
     }
-    // TGA has no magic bytes, so the `image` guesser + magick-via-stdin both miss
-    // it; detect it by a header sanity check and decode with an explicit format
-    // BEFORE magick, so a real TGA skips a doomed (20s-capped) subprocess.
-    match decode_tga(bytes) {
-        Ok(img) => return Ok(img),
-        Err(e) => crate::safety::log_debug(&format!("decode tier `TGA` failed: {e}")),
-    }
-    // ImageMagick subprocess (the exotic long tail) + the full-fidelity after-external
-    // RAW fallback. SKIPPED entirely when `external` is false: the classic in-shell menu
-    // preview ([`decode_menu_preview`]) runs on explorer.exe's OWN UI thread and cannot
-    // afford a subprocess (≤20s) there — it falls back to the cheap embedded-JPEG slice
-    // below, or a caption-only tile.
-    let mut last_err = route.magick_error.unwrap_or_else(|| Error::from(E_FAIL));
-    if external {
-        if !magick_attempted {
-            // Ask magick for no more than the caller's target edge. Rendering the fixed
-            // 4096 cap and then throwing most of it away cost 15.6s on a 76 MP JPEG 2000
-            // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
-            // for a file that decodes perfectly well.
-            match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
-                Ok(img) => return Ok(img),
-                Err(e) => {
-                    crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
-                    last_err = e;
-                }
-            }
-        }
-        if raw_preview == RawPreviewOrder::AfterExternal {
-            if let Some(img) = try_raw_preview_tier(bytes, wic_thumbnail_cx) {
-                return Ok(img);
-            }
-        }
-    }
-    // The reduced-resolution IFD0 held back above. Every real decoder has now failed or is
-    // absent, and a small genuine preview beats both the byte-scan carve below and a blank
-    // tile — so this is where it is finally spent.
-    if let Some(img) = reduced_ifd0 {
-        return Ok(img);
-    }
-    // Last resort (CHEAP — a linear byte scan + image-tier decode, no subprocess, so the
-    // menu path runs it too): every real decoder failed (or is absent — e.g. a clean
-    // compact install with no Microsoft RAW Image Extension and no bundled ImageMagick).
-    // If the file still embeds ANY decodable JPEG — a camera RAW's small EXIF thumbnail, a
-    // document preview — show that rather than a blank tile. Strictly additive: only
-    // reached AFTER every higher-fidelity tier above has failed, so it can't downgrade a
-    // good result.
-    if let Some(img) = try_embedded_jpeg_last_resort(bytes) {
-        return Ok(img);
-    }
-    Err(last_err)
 }
 
 /// JPEG XL: our own pure-Rust tier, FIRST and signature-gated. The `image` crate and
