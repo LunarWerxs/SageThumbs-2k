@@ -272,8 +272,47 @@ fn put_px(buf: &mut [u8], w: u32, h: u32, x: u32, y: u32, rgb: (u8, u8, u8), a: 
     px[3] = px[3].max(a as u8);
 }
 
-/// Paint the chip background: a dark rounded-ish box for [`BadgeStyle::Text`], or the
-/// category-tinted dog-eared page for [`BadgeStyle::Icon`].
+/// Decide one chip pixel's colour/alpha at `(x, y)`: a dark rounded-ish box for
+/// [`BadgeStyle::Text`], or the category-tinted dog-eared page for [`BadgeStyle::Icon`].
+/// `None` for a clipped plain corner pixel (softened, not sharply rectangular, except where a
+/// fold already reshapes that corner).
+fn chip_pixel_color(
+    x: u32,
+    y: u32,
+    g: &BadgeGeom,
+    tint: (u8, u8, u8),
+    style: BadgeStyle,
+) -> Option<((u8, u8, u8), u32)> {
+    // Distance from the TOP-RIGHT corner, which is where the page is dog-eared.
+    let dx = g.x0 + g.chip_w - 1 - x;
+    let dy = y - g.y0;
+    // Clip the plain corner pixels for a softened (not sharply rectangular) look.
+    // The top-right one is skipped when a fold already reshapes that corner.
+    let cx = x == g.x0 || x == g.x0 + g.chip_w - 1;
+    let cy = y == g.y0 || y == g.y0 + g.chip_h - 1;
+    if cx && cy && !(g.fold > 0 && dx + dy < g.fold) {
+        return None;
+    }
+    Some(match style {
+        // Near-black at ~72% so the underlying image still shows through slightly.
+        BadgeStyle::Text => ((16, 16, 16), 184),
+        BadgeStyle::Icon => {
+            let on_fold_edge = g.fold > 0 && dx + dy == g.fold;
+            let outline = cx || cy || on_fold_edge;
+            if g.fold > 0 && dx + dy < g.fold {
+                // The folded-back flap: lighter, so it reads as the sheet's underside.
+                (blend_to_white(tint, 150), 245)
+            } else if outline {
+                // A darker rim keeps the mark legible on a same-coloured picture.
+                (shade(tint, 150), 255)
+            } else {
+                (tint, 235)
+            }
+        }
+    })
+}
+
+/// Paint the chip background over its whole rect, pixel by pixel via [`chip_pixel_color`].
 fn paint_chip(
     rgba: &mut [u8],
     w: u32,
@@ -284,33 +323,8 @@ fn paint_chip(
 ) {
     for y in g.y0..g.y0 + g.chip_h {
         for x in g.x0..g.x0 + g.chip_w {
-            // Distance from the TOP-RIGHT corner, which is where the page is dog-eared.
-            let dx = g.x0 + g.chip_w - 1 - x;
-            let dy = y - g.y0;
-            // Clip the plain corner pixels for a softened (not sharply rectangular) look.
-            // The top-right one is skipped when a fold already reshapes that corner.
-            let cx = x == g.x0 || x == g.x0 + g.chip_w - 1;
-            let cy = y == g.y0 || y == g.y0 + g.chip_h - 1;
-            if cx && cy && !(g.fold > 0 && dx + dy < g.fold) {
-                continue;
-            }
-            match style {
-                // Near-black at ~72% so the underlying image still shows through slightly.
-                BadgeStyle::Text => put_px(rgba, w, h, x, y, (16, 16, 16), 184),
-                BadgeStyle::Icon => {
-                    let on_fold_edge = g.fold > 0 && dx + dy == g.fold;
-                    let outline = cx || cy || on_fold_edge;
-                    let (rgb, a) = if g.fold > 0 && dx + dy < g.fold {
-                        // The folded-back flap: lighter, so it reads as the sheet's underside.
-                        (blend_to_white(tint, 150), 245)
-                    } else if outline {
-                        // A darker rim keeps the mark legible on a same-coloured picture.
-                        (shade(tint, 150), 255)
-                    } else {
-                        (tint, 235)
-                    };
-                    put_px(rgba, w, h, x, y, rgb, a);
-                }
+            if let Some((rgb, a)) = chip_pixel_color(x, y, g, tint, style) {
+                put_px(rgba, w, h, x, y, rgb, a);
             }
         }
     }
