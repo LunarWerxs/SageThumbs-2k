@@ -706,6 +706,129 @@ fn pdf_wheel_action(ctrl: bool, shift: bool) -> WheelAction {
     }
 }
 
+/// Window geometry/paint messages: hit-testing, sizing constraints, paint/print, and
+/// resize-drag bookkeeping. `None` when `msg` isn't one of these; the caller tries the next
+/// category.
+unsafe fn on_geometry_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    Some(match msg {
+        WM_NCHITTEST => on_nchittest(hwnd, wparam, lparam),
+        WM_GETMINMAXINFO => {
+            let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+            mmi.ptMinTrackSize.x = crate::win::dpi_scale(hwnd, MIN_W);
+            mmi.ptMinTrackSize.y = crate::win::dpi_scale(hwnd, MIN_H);
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1), // WM_PAINT fills the whole client; skip the erase flash
+        WM_PAINT => {
+            paint(hwnd);
+            LRESULT(0)
+        }
+        WM_PRINTCLIENT => {
+            paint_into(hwnd, HDC(wparam.0 as *mut _));
+            LRESULT(0)
+        }
+        WM_SIZE => on_size(hwnd),
+        WM_SIZING => {
+            // A real frame drag (never our own SetWindowPos) — flag it so WM_EXITSIZEMOVE
+            // knows this was a RESIZE and not just a move, and remembers the size.
+            (*state(hwnd)).user_sized.set(true);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_EXITSIZEMOVE => {
+            remember_size(hwnd);
+            LRESULT(0)
+        }
+        WM_NCLBUTTONDBLCLK => {
+            // Double-click the caption = forget the dragged size and fit this file again.
+            // DefWindowProc would send SC_MAXIMIZE, which this WS_POPUP window can't honour
+            // anyway, so nothing is being taken away.
+            if wparam.0 as u32 == HTCAPTION {
+                forget_size(hwnd);
+                return Some(LRESULT(0));
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_DPICHANGED => {
+            crate::win::wm_dpichanged(hwnd, lparam);
+            LRESULT(0)
+        }
+        _ => return None,
+    })
+}
+
+/// App-defined async/custom messages (`WM_APP_*`, plus the video player's own registered
+/// message) and the tick timer: decode/render completions posted from worker threads, and
+/// periodic UI upkeep. `None` when `msg` isn't one of these.
+unsafe fn on_app_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    Some(match msg {
+        WM_TIMER => on_timer(hwnd, wparam),
+        WM_APP_RENDER => {
+            on_render(hwnd, wparam, lparam);
+            LRESULT(0)
+        }
+        WM_APP_ANIM => {
+            on_anim(hwnd, lparam);
+            LRESULT(0)
+        }
+        WM_APP_MDIMG => on_app_mdimg(hwnd, lparam),
+        WM_APP_PDFDOC => on_app_pdfdoc(hwnd, lparam),
+        WM_APP_PDFTILE => on_app_pdftile(hwnd, lparam),
+        WM_APP_PDFSTRIP => on_app_pdfstrip(hwnd, lparam),
+        WM_APP_PDFTEXT => on_app_pdftext(hwnd, lparam),
+        WM_APP_PDFINFO => on_app_pdfinfo(hwnd, lparam),
+        m if m == super::video::WM_APP_VIDEO => {
+            on_video_event(hwnd, wparam.0 as u32);
+            LRESULT(0)
+        }
+        WM_APP_SWITCH => on_app_switch(hwnd, lparam),
+        _ => return None,
+    })
+}
+
+/// Mouse input over the content pane: movement, buttons, wheel, cursor. `None` when `msg`
+/// isn't one of these.
+unsafe fn on_mouse_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    Some(match msg {
+        WM_MOUSEMOVE => on_mousemove(hwnd, lparam),
+        WM_MOUSELEAVE => on_mouseleave(hwnd),
+        WM_LBUTTONDOWN => on_lbuttondown(hwnd, lparam),
+        WM_LBUTTONUP => on_lbuttonup(hwnd, lparam),
+        WM_CAPTURECHANGED => on_capturechanged(hwnd),
+        WM_SETCURSOR => on_setcursor(hwnd, wparam, lparam),
+        WM_LBUTTONDBLCLK => on_lbuttondblclk(hwnd, lparam),
+        WM_MOUSEWHEEL => on_mousewheel(hwnd, wparam, lparam),
+        _ => return None,
+    })
+}
+
+/// Keyboard input, activation, and the remaining lifecycle/IPC messages. `None` when `msg`
+/// isn't one of these.
+unsafe fn on_key_and_lifecycle_msg(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    Some(match msg {
+        WM_ACTIVATE => on_activate(hwnd, wparam),
+        WM_KEYDOWN => on_keydown(hwnd, wparam, lparam),
+        WM_CHAR => {
+            // Only the find bar consumes typed characters; everything else falls through so
+            // nothing else in the viewer changes behaviour.
+            if super::find::on_char(hwnd, wparam.0 as u32) {
+                return Some(LRESULT(0));
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_COPYDATA => {
+            on_command(hwnd, lparam);
+            LRESULT(1)
+        }
+        WM_DESTROY => on_destroy(hwnd),
+        _ => return None,
+    })
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         // Any message dispatched before GWLP_USERDATA is set (the synchronous WM_NCCREATE /
@@ -716,93 +839,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         if state(hwnd).is_null() {
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
-        match msg {
-            WM_NCHITTEST => on_nchittest(hwnd, wparam, lparam),
-            WM_GETMINMAXINFO => {
-                let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
-                mmi.ptMinTrackSize.x = crate::win::dpi_scale(hwnd, MIN_W);
-                mmi.ptMinTrackSize.y = crate::win::dpi_scale(hwnd, MIN_H);
-                LRESULT(0)
-            }
-            WM_ERASEBKGND => LRESULT(1), // WM_PAINT fills the whole client; skip the erase flash
-            WM_PAINT => {
-                paint(hwnd);
-                LRESULT(0)
-            }
-            WM_PRINTCLIENT => {
-                paint_into(hwnd, HDC(wparam.0 as *mut _));
-                LRESULT(0)
-            }
-            WM_TIMER => on_timer(hwnd, wparam),
-            WM_APP_RENDER => {
-                on_render(hwnd, wparam, lparam);
-                LRESULT(0)
-            }
-            WM_APP_ANIM => {
-                on_anim(hwnd, lparam);
-                LRESULT(0)
-            }
-            WM_APP_MDIMG => on_app_mdimg(hwnd, lparam),
-            WM_APP_PDFDOC => on_app_pdfdoc(hwnd, lparam),
-            WM_APP_PDFTILE => on_app_pdftile(hwnd, lparam),
-            WM_APP_PDFSTRIP => on_app_pdfstrip(hwnd, lparam),
-            WM_APP_PDFTEXT => on_app_pdftext(hwnd, lparam),
-            WM_APP_PDFINFO => on_app_pdfinfo(hwnd, lparam),
-            m if m == super::video::WM_APP_VIDEO => {
-                on_video_event(hwnd, wparam.0 as u32);
-                LRESULT(0)
-            }
-            WM_SIZE => on_size(hwnd),
-            WM_SIZING => {
-                // A real frame drag (never our own SetWindowPos) — flag it so WM_EXITSIZEMOVE
-                // knows this was a RESIZE and not just a move, and remembers the size.
-                (*state(hwnd)).user_sized.set(true);
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_EXITSIZEMOVE => {
-                remember_size(hwnd);
-                LRESULT(0)
-            }
-            WM_NCLBUTTONDBLCLK => {
-                // Double-click the caption = forget the dragged size and fit this file again.
-                // DefWindowProc would send SC_MAXIMIZE, which this WS_POPUP window can't honour
-                // anyway, so nothing is being taken away.
-                if wparam.0 as u32 == HTCAPTION {
-                    forget_size(hwnd);
-                    return LRESULT(0);
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_APP_SWITCH => on_app_switch(hwnd, lparam),
-            WM_ACTIVATE => on_activate(hwnd, wparam),
-            WM_MOUSEMOVE => on_mousemove(hwnd, lparam),
-            WM_MOUSELEAVE => on_mouseleave(hwnd),
-            WM_LBUTTONDOWN => on_lbuttondown(hwnd, lparam),
-            WM_LBUTTONUP => on_lbuttonup(hwnd, lparam),
-            WM_CAPTURECHANGED => on_capturechanged(hwnd),
-            WM_SETCURSOR => on_setcursor(hwnd, wparam, lparam),
-            WM_LBUTTONDBLCLK => on_lbuttondblclk(hwnd, lparam),
-            WM_MOUSEWHEEL => on_mousewheel(hwnd, wparam, lparam),
-            WM_KEYDOWN => on_keydown(hwnd, wparam, lparam),
-            WM_CHAR => {
-                // Only the find bar consumes typed characters; everything else falls through so
-                // nothing else in the viewer changes behaviour.
-                if super::find::on_char(hwnd, wparam.0 as u32) {
-                    return LRESULT(0);
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_COPYDATA => {
-                on_command(hwnd, lparam);
-                LRESULT(1)
-            }
-            WM_DPICHANGED => {
-                crate::win::wm_dpichanged(hwnd, lparam);
-                LRESULT(0)
-            }
-            WM_DESTROY => on_destroy(hwnd),
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        if let Some(r) = on_geometry_msg(hwnd, msg, wparam, lparam) {
+            return r;
         }
+        if let Some(r) = on_app_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+        if let Some(r) = on_mouse_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+        if let Some(r) = on_key_and_lifecycle_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 }
 
