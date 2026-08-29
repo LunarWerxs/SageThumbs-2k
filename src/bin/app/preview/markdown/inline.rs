@@ -185,6 +185,162 @@ fn splits_a_cluster(w16: &[u16], at: &[usize], n: usize) -> bool {
     char::from_u32(w16[n] as u32).is_some_and(|c| c == '\u{200D}' || is_combining(c))
 }
 
+/// Per-run token metadata that stays fixed across one [`Run`]'s whole word-walk in
+/// [`tokenize_runs`]: bundled so [`flush_word`]/[`split_overwide_word`] take one struct instead
+/// of eight positional parameters that never change within the run.
+struct RunTokCtx<'a> {
+    font: HFONT,
+    color: u32,
+    pad: i32,
+    code: bool,
+    strike: bool,
+    link: &'a Option<String>,
+    spec: FontSpec,
+    base: Option<usize>,
+}
+
+/// Measure the pending `word` and push it onto `toks` as one [`Tok::Word`] (or several, via
+/// [`split_overwide_word`], when it is wider than `width`). `wend` is the source byte offset the
+/// word ends at, `wstart` where it began (both only matter for the selection-document span this
+/// token maps back to. No-op (matching the macro this replaced) when `word` is empty. Clears
+/// `word`/`unit_at` before returning.
+#[allow(clippy::too_many_arguments)] // one call site, all genuinely distinct inputs
+unsafe fn flush_word(
+    hdc: HDC,
+    word: &mut Vec<u16>,
+    unit_at: &mut Vec<usize>,
+    wstart: usize,
+    wend: usize,
+    width: i32,
+    toks: &mut Vec<Tok>,
+    rc: &RunTokCtx,
+) {
+    if word.is_empty() {
+        return;
+    }
+    let mut sz = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, word.as_slice(), &mut sz);
+    if width > 0 && sz.cx + 2 * rc.pad > width && word.len() > 1 {
+        // A token wider than the ENTIRE line offers the greedy breaker below no break
+        // opportunity, so it used to be placed anyway - running over the next table column and
+        // off the pane edge, which is exactly what a CSV full of 90-character API keys looked
+        // like. Split it between characters instead, the way CSS `overflow-wrap: anywhere` does.
+        split_overwide_word(hdc, word, unit_at.as_slice(), wend, width, sz, toks, rc);
+    } else {
+        toks.push(Tok::Word {
+            s: core::mem::take(word),
+            w: sz.cx + 2 * rc.pad,
+            pad: rc.pad,
+            font: rc.font,
+            color: rc.color,
+            code: rc.code,
+            strike: rc.strike,
+            link: rc.link.clone(),
+            doc: rc.base.map(|b| (b + wstart, b + wend)),
+            spec: rc.spec,
+        });
+    }
+    unit_at.clear();
+}
+
+/// [`flush_word`]'s over-wide branch: split `word` into character chunks no wider than `width`,
+/// each becoming its own [`Tok::Word`] mapped back to its own slice of the selection document.
+/// `sz` is the whole word's already-measured width, used to pro-rate a chunk whose own measure
+/// fails. Clears `word` before returning.
+#[allow(clippy::too_many_arguments)] // one call site, all genuinely distinct inputs
+unsafe fn split_overwide_word(
+    hdc: HDC,
+    word: &mut Vec<u16>,
+    unit_at: &[usize],
+    wend: usize,
+    width: i32,
+    sz: SIZE,
+    toks: &mut Vec<Tok>,
+    rc: &RunTokCtx,
+) {
+    let mut a = 0usize;
+    while a < word.len() {
+        let n = units_fitting(hdc, &word[a..], (width - 2 * rc.pad).max(1), &unit_at[a..]);
+        let b = (a + n).min(word.len());
+        let mut csz = SIZE::default();
+        if !GetTextExtentPoint32W(hdc, &word[a..b], &mut csz).as_bool() {
+            // A failed measure would leave the chunk 0 px wide, which both stacks the chunks
+            // on top of each other and gives selection a zero-width hit rect. The whole-token
+            // width is already known, so pro-rate it rather than trusting the zero.
+            csz.cx = sz.cx * (b - a) as i32 / word.len().max(1) as i32;
+        }
+        let to = if b < word.len() { unit_at[b] } else { wend };
+        let from = unit_at[a];
+        toks.push(Tok::Word {
+            s: word[a..b].to_vec(),
+            w: csz.cx + 2 * rc.pad,
+            pad: rc.pad,
+            font: rc.font,
+            color: rc.color,
+            code: rc.code,
+            strike: rc.strike,
+            link: rc.link.clone(),
+            doc: rc.base.map(|bb| (bb + from, bb + to)),
+            spec: rc.spec,
+        });
+        a = b;
+    }
+    word.clear();
+}
+
+/// Walk one run's characters, flushing words at newlines/whitespace/script boundaries via
+/// [`flush_word`]. Mutates `word`/`unit_at`/`wstart` (the pending-word scratch state) and
+/// pushes finished tokens onto `toks`. Split out of [`tokenize_runs`] so the per-run setup
+/// loop there doesn't also carry this walk's own branching.
+#[allow(clippy::too_many_arguments)] // one call site, all genuinely distinct inputs
+unsafe fn walk_run_chars(
+    hdc: HDC,
+    text: &str,
+    width: i32,
+    word: &mut Vec<u16>,
+    unit_at: &mut Vec<usize>,
+    wstart: &mut usize,
+    toks: &mut Vec<Tok>,
+    rc: &RunTokCtx,
+) {
+    let mut chars = text.char_indices().peekable();
+    while let Some((ci, ch)) = chars.next() {
+        match ch {
+            '\n' => {
+                flush_word(hdc, word, unit_at, *wstart, ci, width, toks, rc);
+                toks.push(Tok::Break);
+            }
+            ' ' | '\t' => {
+                flush_word(hdc, word, unit_at, *wstart, ci, width, toks, rc);
+                let mut sz = SIZE::default();
+                let sp = [b' ' as u16];
+                let _ = GetTextExtentPoint32W(hdc, &sp, &mut sz);
+                toks.push(Tok::Space(sz.cx));
+            }
+            _ => {
+                if word.is_empty() {
+                    *wstart = ci;
+                }
+                let mut b = [0u16; 2];
+                for u in ch.encode_utf16(&mut b) {
+                    word.push(*u);
+                    unit_at.push(ci);
+                }
+                // Scripts that don't put spaces between words get their break
+                // opportunities here instead. Without this a Chinese/Japanese paragraph is
+                // ONE token, and the greedy line-breaker below places an over-wide token
+                // anyway, so the whole paragraph ran off the pane edge and was clipped.
+                if let Some(&(ni, next)) = chars.peek() {
+                    if can_break_between(ch, next) {
+                        flush_word(hdc, word, unit_at, *wstart, ni, width, toks, rc);
+                    }
+                }
+            }
+        }
+    }
+    flush_word(hdc, word, unit_at, *wstart, text.len(), width, toks, rc);
+}
+
 /// Flattens `runs` into measured tokens (words / spaces / hard breaks), each remembering the
 /// run bytes it came from so it maps back to the selection document. Splits any word wider
 /// than `width` into character chunks (the way CSS `overflow-wrap: anywhere` does), so a
@@ -210,112 +366,32 @@ unsafe fn tokenize_runs(
         let pad = if r.code { ctx.code_pad } else { 0 };
         SelectObject(hdc, f.into());
         let base = sel.and_then(|s| s.bases.get(ri).copied());
+        let rc = RunTokCtx {
+            font: f,
+            color,
+            pad,
+            code: r.code,
+            strike: r.strike,
+            link: &r.link,
+            spec,
+            base,
+        };
         let mut word: Vec<u16> = Vec::new();
         // Per UTF-16 unit of `word`, the byte offset of the CHARACTER that unit belongs to. Only
         // read when an over-wide token has to be split below, where it both maps each chunk back
         // to its slice of the selection document and keeps a surrogate pair from being cut in half.
         let mut unit_at: Vec<usize> = Vec::new();
         let mut wstart = 0usize; // byte offset in `r.text` where the pending word began
-        macro_rules! flush_word {
-            ($wend:expr) => {
-                if !word.is_empty() {
-                    let wend: usize = $wend;
-                    let mut sz = SIZE::default();
-                    let _ = GetTextExtentPoint32W(hdc, &word, &mut sz);
-                    if width > 0 && sz.cx + 2 * pad > width && word.len() > 1 {
-                        // A token wider than the ENTIRE line offers the greedy breaker below no
-                        // break opportunity, so it used to be placed anyway - running over the
-                        // next table column and off the pane edge, which is exactly what a CSV
-                        // full of 90-character API keys looked like. Split it between characters
-                        // instead, the way CSS `overflow-wrap: anywhere` does.
-                        let mut a = 0usize;
-                        while a < word.len() {
-                            let n = units_fitting(
-                                hdc,
-                                &word[a..],
-                                (width - 2 * pad).max(1),
-                                &unit_at[a..],
-                            );
-                            let b = (a + n).min(word.len());
-                            let mut csz = SIZE::default();
-                            if !GetTextExtentPoint32W(hdc, &word[a..b], &mut csz).as_bool() {
-                                // A failed measure would leave the chunk 0 px wide, which both
-                                // stacks the chunks on top of each other and gives selection a
-                                // zero-width hit rect. The whole-token width is already known,
-                                // so pro-rate it rather than trusting the zero.
-                                csz.cx = sz.cx * (b - a) as i32 / word.len().max(1) as i32;
-                            }
-                            let to = if b < word.len() { unit_at[b] } else { wend };
-                            let from = unit_at[a];
-                            toks.push(Tok::Word {
-                                s: word[a..b].to_vec(),
-                                w: csz.cx + 2 * pad,
-                                pad,
-                                font: f,
-                                color,
-                                code: r.code,
-                                strike: r.strike,
-                                link: r.link.clone(),
-                                doc: base.map(|bb| (bb + from, bb + to)),
-                                spec,
-                            });
-                            a = b;
-                        }
-                        word.clear();
-                    } else {
-                        toks.push(Tok::Word {
-                            s: core::mem::take(&mut word),
-                            w: sz.cx + 2 * pad,
-                            pad,
-                            font: f,
-                            color,
-                            code: r.code,
-                            strike: r.strike,
-                            link: r.link.clone(),
-                            doc: base.map(|b| (b + wstart, b + wend)),
-                            spec,
-                        });
-                    }
-                    unit_at.clear();
-                }
-            };
-        }
-        let mut chars = r.text.char_indices().peekable();
-        while let Some((ci, ch)) = chars.next() {
-            match ch {
-                '\n' => {
-                    flush_word!(ci);
-                    toks.push(Tok::Break);
-                }
-                ' ' | '\t' => {
-                    flush_word!(ci);
-                    let mut sz = SIZE::default();
-                    let sp = [b' ' as u16];
-                    let _ = GetTextExtentPoint32W(hdc, &sp, &mut sz);
-                    toks.push(Tok::Space(sz.cx));
-                }
-                _ => {
-                    if word.is_empty() {
-                        wstart = ci;
-                    }
-                    let mut b = [0u16; 2];
-                    for u in ch.encode_utf16(&mut b) {
-                        word.push(*u);
-                        unit_at.push(ci);
-                    }
-                    // Scripts that don't put spaces between words get their break
-                    // opportunities here instead. Without this a Chinese/Japanese paragraph is
-                    // ONE token, and the greedy line-breaker below places an over-wide token
-                    // anyway — so the whole paragraph ran off the pane edge and was clipped.
-                    if let Some(&(ni, next)) = chars.peek() {
-                        if can_break_between(ch, next) {
-                            flush_word!(ni);
-                        }
-                    }
-                }
-            }
-        }
-        flush_word!(r.text.len());
+        walk_run_chars(
+            hdc,
+            &r.text,
+            width,
+            &mut word,
+            &mut unit_at,
+            &mut wstart,
+            &mut toks,
+            &rc,
+        );
     }
     toks
 }
