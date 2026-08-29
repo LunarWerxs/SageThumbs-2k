@@ -174,94 +174,115 @@ unsafe fn try_show_font_specimen(hwnd: HWND, st: &ViewerState, path: &str) -> bo
     true
 }
 
+/// `ContentKind::Image` (including PDF): spawn the decode, then show the "Loading" state if
+/// the window is already visible.
+unsafe fn dispatch_image_kind(hwnd: HWND, st: &ViewerState, path: &str, gen: u64) {
+    st.kind.set(ContentKind::Loading);
+    if is_pdf(path) {
+        // PDF: render page 0 via the OS renderer + fetch the page count (for nav).
+        content::spawn_decode_pdf(hwnd, path.to_string(), 0, gen);
+        // Second, and second on purpose: parsing the whole document for the
+        // continuous view must never delay page one appearing. If it never lands
+        // (encrypted, malformed, enormous) the viewer stays the single-page pager.
+        super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
+    } else {
+        content::spawn_decode(hwnd, path.to_string(), gen);
+    }
+    if st.shown.get() {
+        let _ = InvalidateRect(Some(hwnd), None, false); // show "Loading" in the current window
+    }
+}
+
+/// `ContentKind::Video`: show the window, then start playback into a child over the content
+/// (falling back to a still frame when playback is unavailable).
+unsafe fn dispatch_video_kind(hwnd: HWND, st: &ViewerState, path: &str, gen: u64) {
+    // Set the kind first (so client_size uses the video size), show the window (gives the
+    // render child a parent + rect), then start playback into a child over the content.
+    st.kind.set(ContentKind::Video);
+    ensure_shown(hwnd);
+    let cr = video_rect(hwnd); // render child leaves room for the scrub strip
+    match super::video::create(hwnd, hwnd, &cr, st.hinst, path, is_audio(path)) {
+        Some(p) => {
+            *st.video.borrow_mut() = Some(p);
+            // Repaint the scrub position.
+            SetTimer(Some(hwnd), SCRUB_TIMER_ID, 250, None);
+            // Audio has no picture, so decode its embedded cover art for the backdrop.
+            // The engine is already playing; this lands later and only repaints (see
+            // `on_render`, which routes a decode arriving while the kind is still Video
+            // into `art` rather than treating it as the content).
+            if is_audio(path) {
+                content::spawn_decode(hwnd, path.to_string(), gen);
+            }
+        }
+        None => {
+            // Playback unavailable (codec/engine) → fall back to a still frame.
+            st.kind.set(ContentKind::Loading);
+            content::spawn_decode(hwnd, path.to_string(), gen);
+        }
+    }
+    let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
+/// `ContentKind::Text`/`Markdown`: read is fast + small (5 MB cap), so resolve it synchronously.
+/// Structured docs (CSV/TSV/ipynb) read UNtruncated so their parse sees the whole file.
+unsafe fn dispatch_text_or_markdown_kind(
+    hwnd: HWND,
+    st: &ViewerState,
+    path: &str,
+    kind: ContentKind,
+) {
+    let read = if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
+        content::read_doc(path)
+    } else {
+        content::read_text(path)
+    };
+    match read {
+        Some(mut t) => {
+            if kind == ContentKind::Markdown {
+                // CSV/TSV/ipynb convert to synthesized markdown first (see `docconv`),
+                // then one full parse at load — the paint path reads the cached flag.
+                if let Some(conv) = super::docconv::to_markdown(&ext_of(path), &t) {
+                    t = conv.md;
+                    seed_md_attachments(st, conv.attachments);
+                }
+                st.md_has_headings.set(super::markdown::has_headings(&t));
+                st.md_has_remote.set(super::markdown::has_remote_images(&t));
+                st.md_remote_ok
+                    .set(sagethumbs2k_core::settings::preview_md_remote_img());
+            }
+            *st.text.borrow_mut() = Some(t);
+            st.kind.set(kind);
+        }
+        None => show_info_card(st, path), // unreadable / turned out binary → the calm card
+    }
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
+/// Show the fallback info card (unrecognized/unreadable content).
+unsafe fn show_info_card(st: &ViewerState, path: &str) {
+    *st.card.borrow_mut() = Some(infocard::gather(path));
+    st.kind.set(ContentKind::InfoCard);
+}
+
+/// Any content kind with no dedicated view: the fallback info card.
+unsafe fn dispatch_fallback_kind(hwnd: HWND, st: &ViewerState, path: &str) {
+    show_info_card(st, path);
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
 /// Classify `path` and dispatch to the matching content kind's load path (image/PDF, video,
 /// text/markdown, or the fallback info card).
 unsafe fn dispatch_by_content_kind(hwnd: HWND, st: &ViewerState, path: &str, gen: u64) {
     let kind = content::classify(path);
     match kind {
-        ContentKind::Image => {
-            st.kind.set(ContentKind::Loading);
-            if is_pdf(path) {
-                // PDF: render page 0 via the OS renderer + fetch the page count (for nav).
-                content::spawn_decode_pdf(hwnd, path.to_string(), 0, gen);
-                // Second, and second on purpose: parsing the whole document for the
-                // continuous view must never delay page one appearing. If it never lands
-                // (encrypted, malformed, enormous) the viewer stays the single-page pager.
-                super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
-            } else {
-                content::spawn_decode(hwnd, path.to_string(), gen);
-            }
-            if st.shown.get() {
-                let _ = InvalidateRect(Some(hwnd), None, false); // show "Loading" in the current window
-            }
-        }
-        ContentKind::Video => {
-            // Set the kind first (so client_size uses the video size), show the window (gives the
-            // render child a parent + rect), then start playback into a child over the content.
-            st.kind.set(ContentKind::Video);
-            ensure_shown(hwnd);
-            let cr = video_rect(hwnd); // render child leaves room for the scrub strip
-            match super::video::create(hwnd, hwnd, &cr, st.hinst, path, is_audio(path)) {
-                Some(p) => {
-                    *st.video.borrow_mut() = Some(p);
-                    // Repaint the scrub position.
-                    SetTimer(Some(hwnd), SCRUB_TIMER_ID, 250, None);
-                    // Audio has no picture, so decode its embedded cover art for the backdrop.
-                    // The engine is already playing; this lands later and only repaints (see
-                    // `on_render`, which routes a decode arriving while the kind is still Video
-                    // into `art` rather than treating it as the content).
-                    if is_audio(path) {
-                        content::spawn_decode(hwnd, path.to_string(), gen);
-                    }
-                }
-                None => {
-                    // Playback unavailable (codec/engine) → fall back to a still frame.
-                    st.kind.set(ContentKind::Loading);
-                    content::spawn_decode(hwnd, path.to_string(), gen);
-                }
-            }
-            let _ = InvalidateRect(Some(hwnd), None, false);
-        }
+        ContentKind::Image => dispatch_image_kind(hwnd, st, path, gen),
+        ContentKind::Video => dispatch_video_kind(hwnd, st, path, gen),
         ContentKind::Text | ContentKind::Markdown => {
-            // Text/markdown read is fast + small (5 MB cap), so resolve it synchronously.
-            // Structured docs (CSV/TSV/ipynb) read UNtruncated so their parse sees the whole file.
-            let read = if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
-                content::read_doc(path)
-            } else {
-                content::read_text(path)
-            };
-            match read {
-                Some(mut t) => {
-                    if kind == ContentKind::Markdown {
-                        // CSV/TSV/ipynb convert to synthesized markdown first (see `docconv`),
-                        // then one full parse at load — the paint path reads the cached flag.
-                        if let Some(conv) = super::docconv::to_markdown(&ext_of(path), &t) {
-                            t = conv.md;
-                            seed_md_attachments(st, conv.attachments);
-                        }
-                        st.md_has_headings.set(super::markdown::has_headings(&t));
-                        st.md_has_remote.set(super::markdown::has_remote_images(&t));
-                        st.md_remote_ok
-                            .set(sagethumbs2k_core::settings::preview_md_remote_img());
-                    }
-                    *st.text.borrow_mut() = Some(t);
-                    st.kind.set(kind);
-                }
-                None => {
-                    // Unreadable / turned out binary → the calm card.
-                    *st.card.borrow_mut() = Some(infocard::gather(path));
-                    st.kind.set(ContentKind::InfoCard);
-                }
-            }
-            ensure_shown(hwnd);
-            let _ = InvalidateRect(Some(hwnd), None, false);
+            dispatch_text_or_markdown_kind(hwnd, st, path, kind)
         }
-        _ => {
-            *st.card.borrow_mut() = Some(infocard::gather(path));
-            st.kind.set(ContentKind::InfoCard);
-            ensure_shown(hwnd);
-            let _ = InvalidateRect(Some(hwnd), None, false);
-        }
+        _ => dispatch_fallback_kind(hwnd, st, path),
     }
     set_title(hwnd);
     super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
