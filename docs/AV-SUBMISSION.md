@@ -72,6 +72,23 @@ The uncomfortable corollary is worth stating plainly: **the better a release doe
 VirusTotal number looks for a while.** v2.5.0 x64 (572 downloads) reads 9; v2.4.0 x64 (69
 downloads) reads 5. That is not a quality signal about the build.
 
+### The portable zip is the working answer for a blocked user, and it is measured
+
+```text
+v2.5.0 x64 installer   9/70   incl. Microsoft Trojan:Win32/Wacatac.B!ml
+v2.5.0 x64 portable    1/66   Bkav alone; Microsoft CLEAN
+v2.5.0 arm64 portable  never scanned (nobody has submitted it)
+```
+
+Same program, no Inno wrapper, and the warning that actually blocks people is gone. Anyone
+stopped by Defender can unzip the portable build and run `st2k register` for per-user Explorer
+thumbnails and the classic right-click menu, no admin and nothing machine-wide. Be honest about
+the gap when recommending it: the preview pane, the Details pane columns and the Win11 compact
+menu are all HKLM-registered and stay installer-only (see CLAUDE.md section 3).
+
+This is now in README.md's antivirus FAQ, because it is the only thing on this page that helps
+a blocked user in the next five minutes rather than in the next release.
+
 ### Five of the nine cannot block anybody
 
 Sorting the v2.5.0 x64 flaggers by whether a real user could be stopped by one:
