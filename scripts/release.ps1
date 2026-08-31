@@ -126,7 +126,12 @@ try {
     # #30. Informational for the same reason as the two above - a verdict on a superseded
     # release must never block the release that supersedes it, which is why check-av.ps1 scopes
     # its own -Gate to the CURRENT release only.
-    pwsh "$root\scripts\check-av.ps1"
+    # -Releases 3 rather than the default: the question here is "did what we last shipped
+    # drift", and each artifact costs a paced VirusTotal call (their public API allows four a
+    # minute), so the full history would add minutes to every release for context nobody reads
+    # at this moment. `pwsh scripts\check-av.ps1 -Releases 12` is there when the history IS the
+    # question.
+    pwsh "$root\scripts\check-av.ps1" -Releases 3
 
     # 1) must be on main with a clean tree (so we release exactly what's committed).
     Write-Host "[2/6] clean-tree + branch guard" -ForegroundColor Green
