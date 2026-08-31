@@ -39,6 +39,7 @@
     pwsh scripts/check-av.ps1 -Version 2.5.0      # just one
     pwsh scripts/check-av.ps1 -Gate               # exit 1 on a tier-1 signature match
     pwsh scripts/check-av.ps1 -Json               # machine-readable
+    pwsh scripts/check-av.ps1 -ProveItFails       # prove the gate still has teeth (no network)
 
   Needs the GitHub CLI (for the published asset digests) and VIRUSTOTAL_API_KEY in .env.
   It only ever LOOKS UP hashes; it never uploads a published binary.
@@ -49,13 +50,61 @@ param(
     [int]$Releases = 6,
     [switch]$Gate,
     [switch]$Json,
-    [string]$Repo = 'LunarWerxs/SageThumbs-2k'
+    [string]$Repo = 'LunarWerxs/SageThumbs-2k',
+    # Self-test: feed synthetic verdicts through the same decision this script uses on real
+    # ones, and prove it fails when it should and only when it should. No network, no VT key.
+    # Same convention as check-render-sanity.ps1 and check-prebuild-coverage.ps1, for the same
+    # reason: a gate nobody has ever seen FAIL is indistinguishable from a gate that cannot.
+    # It matters more here than usual, because the condition this gate exists for is RARE - the
+    # real fleet is expected to be clean of it for months at a time, so nothing in ordinary use
+    # would ever reveal that the failing branch had rotted.
+    [switch]$ProveItFails
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 
 function Note([string]$m, [string]$c = 'Gray') { Write-Host "[av] $m" -ForegroundColor $c }
+
+# THE decision, as one pure function so the self-test exercises the real thing rather than a
+# paraphrase of it. Returns the exit code: 1 only when the CURRENT release carries a tier-1
+# signature match, because a verdict on a superseded release must never block the release that
+# supersedes it (check-winget.ps1 draws the same line).
+function Get-AvExitCode($Rows, [string]$LatestTag, [bool]$Gating) {
+    if (-not $Gating) { return 0 }
+    $bad = @($Rows | Where-Object { $_.status -eq 'ok' -and $_.tier1_signature -and $_.Tag -eq $LatestTag })
+    if ($bad) { return 1 }
+    return 0
+}
+
+if ($ProveItFails) {
+    $cases = @(
+        @{ name = 'current release carries a tier-1 SIGNATURE'
+           rows = @([pscustomobject]@{ status='ok'; Tag='v9.9.9'; tier1_signature=@('GData') })
+           tag  = 'v9.9.9'; gate = $true; want = 1 }
+        @{ name = 'the same signature on a SUPERSEDED release'
+           rows = @([pscustomobject]@{ status='ok'; Tag='v9.9.8'; tier1_signature=@('GData') })
+           tag  = 'v9.9.9'; gate = $true; want = 0 }
+        @{ name = 'current release, tier-1 ML generic only (Microsoft !ml)'
+           rows = @([pscustomobject]@{ status='ok'; Tag='v9.9.9'; tier1_signature=@(); tier1_ml=@('Microsoft') })
+           tag  = 'v9.9.9'; gate = $true; want = 0 }
+        @{ name = 'signature present but -Gate not requested'
+           rows = @([pscustomobject]@{ status='ok'; Tag='v9.9.9'; tier1_signature=@('GData') })
+           tag  = 'v9.9.9'; gate = $false; want = 0 }
+        @{ name = 'a never-scanned artifact cannot fail the gate'
+           rows = @([pscustomobject]@{ status='never-scanned'; Tag='v9.9.9'; tier1_signature=@('GData') })
+           tag  = 'v9.9.9'; gate = $true; want = 0 }
+    )
+    $bad = 0
+    foreach ($c in $cases) {
+        $got = Get-AvExitCode $c.rows $c.tag $c.gate
+        if ($got -eq $c.want) { Note ("PASS  {0} -> {1}" -f $c.name, $got) }
+        else { Note ("FAIL  {0} -> {1}, expected {2}" -f $c.name, $got, $c.want) 'Red'; $bad++ }
+    }
+    if ($bad) { Note "$bad case(s) wrong - the gate does not behave as documented." 'Red'; exit 1 }
+    Note 'ALL GREEN: the gate fails when it should, and only then.'
+    exit 0
+}
 
 function Skip([string]$why) {
     # A missing prerequisite must never read as "the installers are fine". Say so and exit 0:
@@ -189,10 +238,12 @@ if ($sig) {
     Note 'GenKryptik) is usually an auto-generated cluster id rather than real analysis, but' 'Red'
     Note 'that judgement belongs to a person, which is why this prints instead of deciding.' 'Red'
 
-    $current = @($sig | Where-Object { $_.Tag -eq $latestTag })
-    if ($Gate -and $current) {
+    # Through the SAME function -ProveItFails exercises, so the self-test cannot drift away
+    # from what actually happens on a real run.
+    $code = Get-AvExitCode $rows $latestTag ([bool]$Gate)
+    if ($code -ne 0) {
         Note "failing: the CURRENT release ($latestTag) carries a tier-1 signature match." 'Red'
-        exit 1
+        exit $code
     }
     if ($Gate) {
         Note "not failing: the current release ($latestTag) is clean of tier-1 signatures." 'Yellow'
