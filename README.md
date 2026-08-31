@@ -284,7 +284,8 @@ themselves: Microsoft's `Wacatac.B!ml` ends in `!ml`, its own marker for "a mach
 model guessed"; Fortinet reports `PossibleThreat`; Rising reports `Undefined`; Skyhigh reports
 `BehavesLike`. None of them claims to have recognised anything specific.
 
-Two measurements, if you would rather not take our word for it:
+Two measurements, taken on 2026-08-31, if you would rather not take our word for it. They
+are dated on purpose: these numbers move, which is the entire point being made.
 
 - **The count moves on its own, with no change to the software.** A freshly built installer,
   the same product, scanned the same day: **2 of 71** engines. The published build of that
@@ -302,9 +303,10 @@ the SHA-256 on the release page matches what you got.
 
 **If you are actually being blocked, download the portable `.zip` instead.** It carries the
 same program without the installer wrapper that draws these warnings, and it is measurably
-quieter: the 2.5.0 portable reads **1 of 66** where the installer reads 9 of 70, and Defender
-does not flag it. Unzip it anywhere and run `st2k register` (or use the button in Settings
-under Advanced) to turn on Explorer thumbnails and the classic right-click menu for your user
+quieter. On 2026-08-31 the 2.5.0 portable read **1 of 66** where the installer read 9 of 70,
+and Defender did not flag the portable at all. Unzip it anywhere and run `st2k register` (or
+use the button in Settings under Advanced) to turn on Explorer thumbnails and the classic
+right-click menu for your user
 account, with no administrator rights and nothing written machine-wide. Three things still need
 the installer, because Windows only accepts them registered for the whole machine: the Explorer
 **preview pane**, the **Details pane** columns, and the **Windows 11 compact right-click menu**.
