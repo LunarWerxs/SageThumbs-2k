@@ -339,6 +339,26 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
         )
     });
     if let Some(frame) = frame {
+        // ISSUE #32, applied HERE because here is where every tier above converges. A clip
+        // rotated losslessly (metadata only, no re-encode) must thumbnail the way it plays,
+        // which is what Windows' own thumbnailer does; doing it per-tier would mean six
+        // chances to forget. Not-an-MP4, or an upright one, costs one bounded moov read and
+        // changes nothing.
+        let rotation = crate::mp4::display_rotation(&mut IStreamReader {
+            stream: stream.clone(),
+        })
+        .or_else(|| {
+            crate::mkv::display_rotation(&mut IStreamReader {
+                stream: stream.clone(),
+            })
+        });
+        let frame = match rotation {
+            Some(deg) => {
+                safety::log_debug(&format!("{who}: display matrix asks for {deg} deg"));
+                crate::video::apply_display_rotation(frame, deg)
+            }
+            None => frame,
+        };
         safety::log_debug(&format!(
             "{who}: video frame {}x{}",
             frame.width(),

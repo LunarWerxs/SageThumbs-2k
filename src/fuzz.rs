@@ -103,6 +103,13 @@ fn header_targets() -> Vec<Target> {
         ("mp4::cover_art", |b| {
             let _ = crate::mp4::cover_art(&mut Cursor::new(b));
         }),
+        // Issue #32's display-matrix read. New parser over untrusted bytes, running
+        // in-process in the shell under `panic = "abort"`, so it belongs here from the day it
+        // lands rather than after something goes wrong. Writing it already turned up one
+        // latent abort in `box_body`, which this exercises from the other direction.
+        ("mp4::display_rotation", |b| {
+            let _ = crate::mp4::display_rotation(&mut Cursor::new(b));
+        }),
         ("vcodec::cover_art", |b| {
             let _ = crate::vcodec::cover_art(&mut Cursor::new(b));
         }),

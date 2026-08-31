@@ -41,6 +41,16 @@ pub(crate) const ID_TRACKS: u64 = 0x1654_AE6B;
 pub(crate) const ID_TRACK_ENTRY: u64 = 0xAE;
 pub(crate) const ID_TRACK_NUMBER: u64 = 0xD7;
 pub(crate) const ID_TRACK_TYPE: u64 = 0x83;
+/// `TrackEntry ▸ Video`, and the projection sub-tree inside it that carries rotation
+/// (issue #32 — Matroska's answer to the MP4 display matrix).
+const ID_VIDEO: u64 = 0xE0;
+const ID_PROJECTION: u64 = 0x7670;
+/// `ProjectionPoseRoll`. **0x7675, verified against a file ffmpeg actually wrote** — the first
+/// draft of this used 0x7BBD, which is not a projection element at all, and the consequence
+/// would have been the worst kind: an id that never matches makes this read silently return
+/// "upright", which is indistinguishable from a video that IS upright. Nothing would have
+/// failed; rotation would simply never have worked.
+const ID_PROJECTION_POSE_ROLL: u64 = 0x7675;
 pub(crate) const ID_CUES: u64 = 0x1C53_BB6B;
 pub(crate) const ID_CUE_POINT: u64 = 0xBB;
 pub(crate) const ID_CUE_TIME: u64 = 0xB3;
@@ -436,6 +446,86 @@ pub fn video_codec_id<R: Read + Seek>(r: &mut R) -> Option<String> {
     let map = segment_map(r)?;
     let (_, hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
     video_track_codec(&tracks[hlen..])
+}
+
+/// The CLOCKWISE rotation, in degrees (90, 180 or 270), that this Matroska file's video track
+/// asks a player to apply — the twin of [`crate::mp4::display_rotation`], and issue #32's
+/// other half.
+///
+/// Matroska has no display matrix. It stores the same intent as `ProjectionPoseRoll`, a float
+/// in DEGREES inside `TrackEntry ▸ Video ▸ Projection`, and FFmpeg converts between the two
+/// forms — the same `ffmpeg -display_rotation 90 -c copy` into a `.mkv` produces a roll here
+/// that `ffprobe` reports back as the identical display matrix it writes into an `.mp4`.
+///
+/// Cheap: the EBML head plus the Tracks element, a few KB, and `None` for non-Matroska
+/// sources, video-less files and upright video.
+pub fn display_rotation<R: Read + Seek>(r: &mut R) -> Option<u32> {
+    let map = segment_map(r)?;
+    let (_, hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
+    video_track_roll(tracks.get(hlen..)?).and_then(rotation_from_roll)
+}
+
+/// `ProjectionPoseRoll` of the first video TrackEntry, in degrees, or `None`.
+fn video_track_roll(tracks_data: &[u8]) -> Option<f64> {
+    for (id, _, entry) in children(tracks_data) {
+        if id != ID_TRACK_ENTRY {
+            continue;
+        }
+        let mut ttype = None;
+        let mut roll = None;
+        for (cid, _, cd) in children(entry) {
+            match cid {
+                ID_TRACK_TYPE => ttype = Some(ebml_uint(cd)),
+                ID_VIDEO => {
+                    for (vid, _, vd) in children(cd) {
+                        if vid != ID_PROJECTION {
+                            continue;
+                        }
+                        for (pid, _, pd) in children(vd) {
+                            if pid == ID_PROJECTION_POSE_ROLL {
+                                roll = ebml_float(pd);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if ttype == Some(TRACK_TYPE_VIDEO) {
+            return roll;
+        }
+    }
+    None
+}
+
+/// Map a `ProjectionPoseRoll` to the clockwise angle to apply, or `None` for upright video
+/// and for any roll that is not an exact quarter turn.
+///
+/// **The direction is measured, not assumed.** Remuxing the issue's own commands into
+/// Matroska and reading the roll back out of the files gives:
+///
+/// ```text
+///   ffmpeg -display_rotation …    roll written    ffprobe display matrix   -> clockwise
+///                          90            +90.0    same as the .mp4's          270
+///                         180           +180.0    same as the .mp4's          180
+///                         270            -90.0    same as the .mp4's           90
+/// ```
+///
+/// So the roll is COUNTER-clockwise degrees and is negated here. `mkv_roll_matches_the_mp4_matrix`
+/// pins those rows against the MP4 mapper itself, because a silent disagreement between the two
+/// containers would rotate one of them the wrong way while the other stayed right.
+///
+/// A float is compared with a tolerance rather than for equality: it is written by whichever
+/// muxer produced the file, and 90.00000000000001 is a quarter turn.
+fn rotation_from_roll(roll: f64) -> Option<u32> {
+    if !roll.is_finite() {
+        return None;
+    }
+    // Counter-clockwise degrees -> the clockwise angle we apply, normalised into [0, 360).
+    let cw = (-roll).rem_euclid(360.0);
+    [90u32, 180, 270]
+        .into_iter()
+        .find(|&candidate| (cw - f64::from(candidate)).abs() < 0.5)
 }
 
 /// The attached cover image of a Matroska file: `cover.*` (the name the Matroska spec
@@ -1410,5 +1500,94 @@ mod tests {
         }
         let list = cue_points(&cues, Some(1));
         assert_eq!(list.len(), CUE_POINTS_MAX);
+    }
+
+    /// Issue #32, the Matroska half. Matroska has no display matrix; it stores the same
+    /// intent as a `ProjectionPoseRoll` float in degrees, and the sign is NOT the same as
+    /// the MP4 matrix, so the two halves have to be pinned against each other or one
+    /// container silently rotates the wrong way.
+    ///
+    /// The numbers are measured, by reading the roll back out of files ffmpeg wrote:
+    /// `-display_rotation 90` into a `.mkv` writes a roll of +90, and ffprobe reports that
+    /// file as carrying the identical display matrix as the `.mp4` - which the MP4 side
+    /// maps to 270 clockwise. So a roll of +90 must produce 270 here, and this asserts it
+    /// BY CALLING THE MP4 MAPPER rather than by restating its answer.
+    #[test]
+    fn mkv_roll_matches_the_mp4_matrix() {
+        const ONE: i32 = 1 << 16;
+        // (roll degrees written by ffmpeg, the equivalent MP4 matrix a, b, c, d)
+        let pairs = [
+            (90.0, (0, -ONE, ONE, 0)),
+            (180.0, (-ONE, 0, 0, -ONE)),
+            (-90.0, (0, ONE, -ONE, 0)),
+        ];
+        for (roll, (a, b, c, d)) in pairs {
+            let via_mkv = rotation_from_roll(roll);
+            let via_mp4 = crate::mp4::rotation_from_matrix_for_tests(a, b, c, d);
+            assert_eq!(
+                via_mkv, via_mp4,
+                "a roll of {roll} and its equivalent display matrix must agree"
+            );
+            assert!(via_mkv.is_some(), "a roll of {roll} must rotate something");
+        }
+    }
+
+    /// Upright video, non-quarter turns, and the values a float can actually arrive as.
+    #[test]
+    fn only_quarter_turns_rotate_anything() {
+        assert_eq!(rotation_from_roll(0.0), None, "upright");
+        assert_eq!(
+            rotation_from_roll(-0.0),
+            None,
+            "negative zero is still upright"
+        );
+        assert_eq!(rotation_from_roll(360.0), None, "a full turn is upright");
+        assert_eq!(rotation_from_roll(45.0), None, "not a quarter turn");
+        assert_eq!(rotation_from_roll(f64::NAN), None, "NaN");
+        assert_eq!(rotation_from_roll(f64::INFINITY), None, "infinity");
+
+        // Written by a muxer, not by hand: a hair off a quarter turn is a quarter turn.
+        assert_eq!(rotation_from_roll(90.000000001), Some(270));
+        assert_eq!(rotation_from_roll(-89.9999), Some(90));
+        // And the wrap-around forms mean the same thing as their in-range twins.
+        assert_eq!(rotation_from_roll(270.0), rotation_from_roll(-90.0));
+        assert_eq!(rotation_from_roll(-180.0), rotation_from_roll(180.0));
+    }
+
+    /// The descent itself: the roll must come from the VIDEO track's Projection, not from a
+    /// sibling track and not from a Video element that has no Projection at all.
+    #[test]
+    fn the_roll_is_read_from_the_video_tracks_projection() {
+        // A subtitle track (type 17) claiming a roll, then the real video track.
+        let decoy = track_entry(17, Some(180.0));
+        let video = track_entry(1, Some(90.0));
+        let mut tracks = decoy.clone();
+        tracks.extend_from_slice(&video);
+        assert_eq!(video_track_roll(&tracks), Some(90.0));
+
+        // A video track with no Projection is upright, not an error.
+        assert_eq!(video_track_roll(&track_entry(1, None)), None);
+        // No video track at all.
+        assert_eq!(video_track_roll(&decoy), None);
+        // Garbage is a clean miss, never a panic (panic = "abort" in the shell host).
+        assert_eq!(video_track_roll(&[0xFF; 32]), None);
+        assert_eq!(video_track_roll(&[]), None);
+    }
+
+    /// A TrackEntry of `track_type`, optionally carrying Video > Projection > PoseRoll.
+    fn track_entry(track_type: u8, roll: Option<f64>) -> Vec<u8> {
+        let mut entry = vec![0x83, 0x81, track_type]; // TrackType
+        if let Some(roll) = roll {
+            let mut pose = vec![0x76, 0x75, 0x88]; // ProjectionPoseRoll, 8-byte float
+            pose.extend_from_slice(&roll.to_be_bytes());
+            let mut proj = vec![0x76, 0x70, 0x80 | pose.len() as u8]; // Projection
+            proj.extend_from_slice(&pose);
+            let mut video = vec![0xE0, 0x80 | proj.len() as u8]; // Video
+            video.extend_from_slice(&proj);
+            entry.extend_from_slice(&video);
+        }
+        let mut out = vec![0xAE, 0x80 | entry.len() as u8]; // TrackEntry
+        out.extend_from_slice(&entry);
+        out
     }
 }

@@ -6,6 +6,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **A video you rotated without re-encoding now thumbnails the right way up.** Turning a
+  clip with `ffmpeg -display_rotation 90 -i in.mp4 -c copy out.mp4` is instant and keeps
+  the original quality, because it writes a note in the file rather than touching a single
+  pixel. Windows' own thumbnails and practically every player honour that note; SageThumbs
+  did not, so a rotated clip looked identical to the original in Explorer and you had to
+  open videos one at a time to tell which way up they were. It now reads the note and turns
+  the picture to match. Both the MP4 family (`.mp4`, `.mov`, `.m4v`, `.3gp`) and Matroska
+  (`.mkv`, `.webm`), which record it in two different ways. Upright videos are unaffected
+  and cost nothing extra. (issue #32)
+
 - **Photoshop files stayed blurry in the Explorer preview pane, however long you waited.**
   A `.psd` carries a small ready-made thumbnail near the front of the file — usually about
   160 pixels, whatever the size of the artwork — and SageThumbs was answering every request

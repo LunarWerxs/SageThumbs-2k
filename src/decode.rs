@@ -1492,7 +1492,20 @@ fn try_video_tier(
         // it must keep winning, and only otherwise-blank tiles pay for a spawn.
         .or_else(|| crate::vp9::vp9_frame(&mut std::io::Cursor::new(bytes), at));
     if let Some(frame) = frame {
-        return Some(Ok(frame));
+        // ISSUE #32, the by-bytes twin of the gate in `streamsrc::try_video_source`, and kept
+        // in step with it deliberately: a clip rotated losslessly (metadata only, no
+        // re-encode) must thumbnail the way it plays on every surface, or `st2k` and Explorer
+        // disagree about one file. See `video::apply_display_rotation` for why this cannot
+        // double-rotate whichever tier above produced the frame.
+        let rotation = crate::mp4::display_rotation(&mut std::io::Cursor::new(bytes))
+            .or_else(|| crate::mkv::display_rotation(&mut std::io::Cursor::new(bytes)));
+        return Some(Ok(match rotation {
+            Some(deg) => {
+                crate::safety::log_debug(&format!("video: display matrix asks for {deg} deg"));
+                crate::video::apply_display_rotation(frame, deg)
+            }
+            None => frame,
+        }));
     }
     // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
     // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library

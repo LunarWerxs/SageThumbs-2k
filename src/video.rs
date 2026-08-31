@@ -22,6 +22,32 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 /// D3DFMT_X8R8G8B8 — the format id for `MFVideoFormat_RGB32`, for the stride fallback.
 const RGB32_FOURCC: u32 = 22;
 
+/// Turn a decoded frame the way the container's display matrix asks (issue #32), given the
+/// CLOCKWISE angle from [`crate::mp4::display_rotation`].
+///
+/// The image counterpart is `decode::apply_exif_orientation`, and this is deliberately the
+/// same shape: metadata says which way is up, and the pixels get turned once, at the end,
+/// where every producer of them converges.
+///
+/// **It cannot double-rotate, and that is a property of our Media Foundation setup rather
+/// than luck.** Every frame in this module comes from an `IMFSourceReader` asked for
+/// NV12/RGB32 output, whose `MF_MT_FRAME_SIZE` is the CODED size: the Source Reader hands
+/// back the decoder's pixels untouched, because applying the display matrix is a renderer's
+/// job (the EVR / Media Engine), not a reader's. Measured before this was written — the four
+/// files from the issue's own `ffmpeg -display_rotation` commands all came back 640x360.
+/// The remuxing tiers cannot rotate either: `mp4::build_mini_mp4` writes a unity matrix.
+///
+/// Anything but 90/180/270 returns the frame untouched, so a caller may pass a rotation it
+/// did not check.
+pub fn apply_display_rotation(img: DynamicImage, clockwise_degrees: u32) -> DynamicImage {
+    match clockwise_degrees {
+        90 => img.rotate90(),
+        180 => img.rotate180(),
+        270 => img.rotate270(),
+        _ => img,
+    }
+}
+
 /// Is Media Foundation actually present on this machine?
 ///
 /// `mfplat.dll` / `mfreadwrite.dll` are **delay-loaded** (see `delay_load_media_foundation`

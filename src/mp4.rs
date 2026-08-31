@@ -179,29 +179,123 @@ fn scan_top_level<R: Read + Seek>(r: &mut R) -> Option<(u64, Option<Vec<u8>>, Ve
 
 /// The `mdia` body of the video track (the trak whose `hdlr` handler_type is 'vide').
 fn video_mdia(moov_body: &[u8]) -> Option<&[u8]> {
+    find(video_trak(moov_body)?, b"mdia").map(box_body)
+}
+
+/// The `trak` BODY of the file's video track, which is what a caller needs when it wants
+/// something outside `mdia` — the `tkhd` display matrix, in [`display_rotation`]'s case.
+fn video_trak(moov_body: &[u8]) -> Option<&[u8]> {
     for (typ, trak) in boxes(moov_body) {
         if &typ != b"trak" {
             continue;
         }
+        let trak_body = box_body(trak);
         // `continue`, not `?`: a trak with no `mdia` is one BAD track, not the end of the
         // search. Propagating None here abandoned the whole moov on the first oddball trak
         // (editors emit hint/metadata/placeholder traks), so a file whose video track came
         // second reported "no video track" — the smart index tier silently downgraded, and
         // doctor told the user the codec was unidentifiable in a file that plainly has one.
-        let Some(mdia) = find(box_body(trak), b"mdia") else {
+        let Some(mdia) = find(trak_body, b"mdia") else {
             continue;
         };
-        let mdia_body = box_body(mdia);
-        let hdlr = match find(mdia_body, b"hdlr") {
+        let hdlr = match find(box_body(mdia), b"hdlr") {
             Some(h) => full_box_body(h),
             None => continue,
         };
         // hdlr: pre_defined(4) handler_type(4) … — 'vide' marks the video track.
         if hdlr.get(4..8) == Some(b"vide") {
-            return Some(mdia_body);
+            return Some(trak_body);
         }
     }
     None
+}
+
+/// The CLOCKWISE rotation, in degrees (90, 180 or 270), that this video's `tkhd` display
+/// matrix asks a player to apply — or `None` for an upright video and for anything this
+/// cannot read as one of the three right angles.
+///
+/// Issue #32. Rotating a phone or action-cam clip losslessly means writing this matrix and
+/// touching not one pixel (`ffmpeg -display_rotation 90 -i in.mp4 -c copy out.mp4`), which is
+/// instant and keeps the original quality. Windows' own thumbnailer honours it and so does
+/// essentially every player, so a thumbnail that ignores it is not merely different, it is
+/// the one place the user's library disagrees with itself.
+///
+/// **Only exact right angles.** The matrix is a general affine transform and can express
+/// scales, shears and arbitrary angles; a thumbnail cannot honour those faithfully, and
+/// half-honouring one would be worse than leaving it alone. So this recognises the four
+/// canonical forms and declines everything else, including the identity.
+///
+/// The translation components are deliberately ignored: a 90/270 rotation about the origin
+/// normally comes with a translate that puts the picture back in frame, but we rotate the
+/// decoded bitmap itself rather than composing pixels through the matrix, so the offset has
+/// nothing to act on.
+pub fn display_rotation<R: Read + Seek>(r: &mut R) -> Option<u32> {
+    let (_, _, moov) = scan_top_level(r)?;
+    let trak = video_trak(box_body(&moov))?;
+    rotation_from_tkhd(find(trak, b"tkhd")?)
+}
+
+/// [`display_rotation`]'s pure half: the clockwise angle encoded in one whole `tkhd` box.
+///
+/// `tkhd` is a full box, and the matrix sits after fields whose width depends on its version:
+/// v0 packs creation/modification/duration as 32-bit (20 bytes through `duration`), v1 as
+/// 64-bit (32 bytes), and both then carry 16 bytes of reserved/layer/alternate_group/volume
+/// before the nine 32-bit matrix entries.
+fn rotation_from_tkhd(tkhd: &[u8]) -> Option<u32> {
+    let p = box_body(tkhd); // [version][flags(3)] then the version-dependent fields
+    let matrix_at = match p.first()? {
+        0 => 4 + 20 + 16,
+        1 => 4 + 32 + 16,
+        _ => return None,
+    };
+    // a, b, c, d — the 2x2 that carries rotation. u/v/w and the translation are skipped:
+    // see the doc comment above for why.
+    let a = g32(p, matrix_at)? as i32;
+    let b = g32(p, matrix_at + 4)? as i32;
+    let c = g32(p, matrix_at + 12)? as i32;
+    let d = g32(p, matrix_at + 16)? as i32;
+    rotation_from_matrix(a, b, c, d)
+}
+
+/// One unit in the matrix's 16.16 fixed-point encoding.
+const FIXED_ONE: i32 = 1 << 16;
+
+/// [`rotation_from_matrix`], reachable from `mkv`'s tests so the two containers' rotation
+/// mappings are asserted against EACH OTHER rather than each restating its own answer. They
+/// encode the same intent with opposite signs, so a drift in one of them is exactly the bug
+/// that would rotate one container the wrong way while the other stayed right.
+#[cfg(test)]
+pub(crate) fn rotation_from_matrix_for_tests(a: i32, b: i32, c: i32, d: i32) -> Option<u32> {
+    rotation_from_matrix(a, b, c, d)
+}
+
+/// The clockwise angle for the 2x2 part of a display matrix, or `None` when it is the
+/// identity or anything that is not an exact right-angle rotation.
+///
+/// **The mapping is measured, not derived from a convention.** FFmpeg, the ISO spec and
+/// various players describe this transform with opposite sign conventions, and getting it
+/// backwards would rotate every phone video the wrong way — a bug that looks exactly like the
+/// one being fixed. So the four rows below were read out of files written by the very command
+/// the issue reports, and each one's intended picture was taken from `ffmpeg -frames:v 1`
+/// (whose autorotate is on by default), then matched against rotations of the unrotated
+/// original. All three matched at a mean pixel difference of **0.00**:
+///
+/// ```text
+///   a      b      c      d     written by                 intended picture
+///   1      0      0      1     (no rotation)              unchanged
+///   0     -1      1      0     -display_rotation 90       90 deg COUNTER-clockwise
+///  -1      0      0     -1     -display_rotation 180      180
+///   0      1     -1      0     -display_rotation 270      90 deg clockwise
+/// ```
+///
+/// `rotation_matches_the_measured_ground_truth` pins those exact rows.
+fn rotation_from_matrix(a: i32, b: i32, c: i32, d: i32) -> Option<u32> {
+    match (a, b, c, d) {
+        (0, x, y, 0) if x == -FIXED_ONE && y == FIXED_ONE => Some(270),
+        (x, 0, 0, y) if x == -FIXED_ONE && y == -FIXED_ONE => Some(180),
+        (0, x, y, 0) if x == FIXED_ONE && y == -FIXED_ONE => Some(90),
+        _ => None,
+    }
 }
 
 /// Sanity cap on an embedded cover image. Poster art is tens to hundreds of KB; a larger
@@ -299,8 +393,18 @@ fn find<'a>(buf: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
 }
 
 /// The payload of a box (skips the 8- or 16-byte size/type header).
+///
+/// A slice too short to hold even the size field yields an empty body rather than panicking.
+/// Every caller that comes from [`boxes`] is handed a box of at least 8 bytes, so this cannot
+/// fire there — but the indexing it replaces was an unchecked `full[0..4]`, and this crate
+/// runs inside `explorer.exe` under `panic = "abort"`, where an out-of-bounds read on
+/// attacker-controlled bytes aborts the user's shell rather than declining a thumbnail. A
+/// parser reached with a short slice must decline, and the caller must not have to know.
 fn box_body(full: &[u8]) -> &[u8] {
-    let size32 = u32::from_be_bytes([full[0], full[1], full[2], full[3]]);
+    let Some(size_field) = full.get(0..4) else {
+        return &[];
+    };
+    let size32 = u32::from_be_bytes(size_field.try_into().unwrap_or([0; 4]));
     let hlen = if size32 == 1 { 16 } else { 8 };
     full.get(hlen..).unwrap_or(&[])
 }
@@ -868,6 +972,178 @@ mod tests {
     /// hint/metadata/placeholder traks; when one led the file, the `?` here abandoned the
     /// whole search and a perfectly good video track that came second was reported absent
     /// (silent index-tier downgrade, plus doctor claiming the codec was unidentifiable).
+    /// Issue #32: the display-matrix rotation, pinned to the numbers it was MEASURED from.
+    ///
+    /// The direction here is the whole risk. FFmpeg, the ISO spec and various players
+    /// describe this transform with opposite sign conventions, so a plausible reading of the
+    /// spec gets it backwards - and backwards rotates every phone video the wrong way, which
+    /// looks exactly like the bug being fixed rather than like a new one. These four rows were
+    /// therefore read out of real files written by the issue's own command
+    /// (`ffmpeg -display_rotation N -i in.mp4 -c copy out.mp4`), and the intended picture for
+    /// each was taken from `ffmpeg -frames:v 1` (autorotate on by default) and matched against
+    /// rotations of the unrotated original at a mean pixel difference of 0.00.
+    #[test]
+    fn rotation_matches_the_measured_ground_truth() {
+        const ONE: i32 = FIXED_ONE;
+        // (a, b, c, d) as written by ffmpeg          -> clockwise degrees to apply
+        assert_eq!(rotation_from_matrix(0, -ONE, ONE, 0), Some(270)); // -display_rotation 90
+        assert_eq!(rotation_from_matrix(-ONE, 0, 0, -ONE), Some(180)); // -display_rotation 180
+        assert_eq!(rotation_from_matrix(0, ONE, -ONE, 0), Some(90)); // -display_rotation 270
+
+        // The two 90-degree cases must NOT be interchangeable, or the assertions above would
+        // pass just as happily with the direction inverted.
+        assert_ne!(
+            rotation_from_matrix(0, -ONE, ONE, 0),
+            rotation_from_matrix(0, ONE, -ONE, 0),
+            "the two quarter turns must map to different angles"
+        );
+    }
+
+    /// An upright video, and everything that is not an exact right angle, must be left alone.
+    /// A thumbnail cannot honour a scale, a shear or a 37-degree tilt faithfully, and
+    /// half-honouring one would be worse than ignoring it.
+    #[test]
+    fn only_exact_right_angles_rotate_anything() {
+        const ONE: i32 = FIXED_ONE;
+        assert_eq!(rotation_from_matrix(ONE, 0, 0, ONE), None, "identity");
+        assert_eq!(rotation_from_matrix(0, 0, 0, 0), None, "degenerate");
+        assert_eq!(
+            rotation_from_matrix(-ONE, 0, 0, ONE),
+            None,
+            "horizontal flip"
+        );
+        assert_eq!(rotation_from_matrix(ONE, 0, 0, -ONE), None, "vertical flip");
+        assert_eq!(rotation_from_matrix(2 * ONE, 0, 0, 2 * ONE), None, "scale");
+        assert_eq!(
+            rotation_from_matrix(46341, -46341, 46341, 46341),
+            None,
+            "45 degrees"
+        );
+        // Near-misses are misses: a matrix one fixed-point unit off a right angle is not one.
+        assert_eq!(
+            rotation_from_matrix(0, -ONE + 1, ONE, 0),
+            None,
+            "off by one unit"
+        );
+    }
+
+    /// The version-dependent offset walk, on both `tkhd` layouts. v0 packs the times as
+    /// 32-bit and v1 as 64-bit, so a parser that assumes one reads the matrix out of the
+    /// middle of some other field on the other - and would then usually find no right angle
+    /// and silently do nothing, which is indistinguishable from an upright video.
+    #[test]
+    fn the_matrix_is_found_in_both_tkhd_versions() {
+        const ONE: i32 = FIXED_ONE;
+        for version in [0u8, 1u8] {
+            let tkhd = tkhd_with_matrix(version, 0, -ONE, ONE, 0);
+            assert_eq!(
+                rotation_from_tkhd(&tkhd),
+                Some(270),
+                "tkhd v{version} matrix must be read at the right offset"
+            );
+        }
+        // An unknown version is declined rather than guessed at.
+        assert_eq!(
+            rotation_from_tkhd(&tkhd_with_matrix(2, 0, -ONE, ONE, 0)),
+            None
+        );
+        // A tkhd cut off before the end of the matrix is a clean miss, never a panic - this
+        // runs under `panic = "abort"`, so an out-of-bounds read here would take the shell
+        // host down rather than decline a thumbnail.
+        //
+        // The boundary is stated exactly rather than as "some small numbers", because the two
+        // sides mean different things - and it is the boundary of what THIS parser reads, not
+        // of the matrix. Only a, b, c and d carry rotation, and d ends 68 bytes into a v0 box
+        // (8 header + 4 version and flags + 20 times + 16 reserved/layer/volume, then a@48
+        // b@52 u@56 c@60 d@64). The remaining matrix entries, the width and the height are all
+        // surplus here, so a box cut anywhere after 68 still answers.
+        const ROTATION_FIELDS_END: usize = 8 + 4 + 20 + 16 + 20;
+        let short = tkhd_with_matrix(0, 0, -ONE, ONE, 0);
+        assert!(
+            short.len() > ROTATION_FIELDS_END,
+            "the fixture must have a tail to cut"
+        );
+        for cut in [0usize, 8, 12, 20, 40, ROTATION_FIELDS_END - 1] {
+            assert_eq!(
+                rotation_from_tkhd(&short[..cut]),
+                None,
+                "truncated at {cut}"
+            );
+        }
+        assert_eq!(
+            rotation_from_tkhd(&short[..ROTATION_FIELDS_END]),
+            Some(270),
+            "everything past the d entry is surplus to this parser"
+        );
+    }
+
+    /// End to end over a whole file: the rotation must be found through the real box walk,
+    /// on the VIDEO track, past a decoy track that claims a different rotation.
+    #[test]
+    fn display_rotation_reads_the_video_tracks_matrix() {
+        const ONE: i32 = FIXED_ONE;
+        // A sound track that (nonsensically, but this is the point) carries a 180 matrix.
+        let sound = container(
+            b"trak",
+            &[
+                &tkhd_with_matrix(0, -ONE, 0, 0, -ONE),
+                &container(b"mdia", &[&hdlr_of(b"soun")]),
+            ],
+        );
+        let video = container(
+            b"trak",
+            &[
+                &tkhd_with_matrix(0, 0, ONE, -ONE, 0),
+                &container(b"mdia", &[&hdlr_of(b"vide")]),
+            ],
+        );
+        let moov = container(b"moov", &[&sound, &video]);
+        let mut file = default_ftyp();
+        file.extend_from_slice(&moov);
+
+        assert_eq!(
+            display_rotation(&mut Cursor::new(&file)),
+            Some(90),
+            "the VIDEO track decides, not whichever trak comes first"
+        );
+
+        // Not an ISO-BMFF at all, and an upright video: both are a quiet None.
+        assert_eq!(
+            display_rotation(&mut Cursor::new(b"not a video".to_vec())),
+            None
+        );
+        let upright = container(
+            b"trak",
+            &[
+                &tkhd_with_matrix(0, ONE, 0, 0, ONE),
+                &container(b"mdia", &[&hdlr_of(b"vide")]),
+            ],
+        );
+        let mut plain = default_ftyp();
+        plain.extend_from_slice(&container(b"moov", &[&upright]));
+        assert_eq!(display_rotation(&mut Cursor::new(&plain)), None);
+    }
+
+    /// A `tkhd` of the given version whose 2x2 matrix part is (a, b, c, d), everything else
+    /// zero. Built to the real layout rather than to the parser's expectations.
+    fn tkhd_with_matrix(version: u8, a: i32, b: i32, c: i32, d: i32) -> Vec<u8> {
+        let times = if version == 0 { 20 } else { 32 };
+        let mut body = vec![0u8; times + 16]; // through volume + reserved
+        for v in [a, b, 0, c, d, 0, 0, 0, 1 << 30] {
+            body.extend_from_slice(&(v as u32).to_be_bytes());
+        }
+        body.extend_from_slice(&[0u8; 8]); // width + height, 16.16
+        fbx(b"tkhd", version, 0x0000_0007, &body)
+    }
+
+    /// A minimal `hdlr` declaring `kind` ("vide" / "soun").
+    fn hdlr_of(kind: &[u8; 4]) -> Vec<u8> {
+        let mut body = vec![0u8; 4]; // pre_defined
+        body.extend_from_slice(kind);
+        body.extend_from_slice(&[0u8; 12]);
+        fbx(b"hdlr", 0, 0, &body)
+    }
+
     #[test]
     fn video_track_found_after_a_trak_with_no_mdia() {
         let mut hdlr_body = vec![0u8; 4]; // version+flags
