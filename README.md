@@ -278,10 +278,35 @@ Nothing about how you browse files changes.
 
 ### Why did Windows or my antivirus flag the installer?
 
-SmartScreen's "Windows protected your PC" screen is normal for a new, unsigned indie installer
-with no download history yet; click **More info, Run anyway**. Antivirus false positives happen
-because it's a shell extension that loads into `explorer.exe`, which is unusual for most
-software even though it's exactly what a thumbnail handler is supposed to do.
+Because it is unsigned and every release is a brand-new file the world has never seen. That is
+a *reputation* verdict, not a finding about the code, and the detection names say so
+themselves: Microsoft's `Wacatac.B!ml` ends in `!ml`, its own marker for "a machine-learning
+model guessed"; Fortinet reports `PossibleThreat`; Rising reports `Undefined`; Skyhigh reports
+`BehavesLike`. None of them claims to have recognised anything specific.
+
+Two measurements, if you would rather not take our word for it:
+
+- **The count moves on its own, with no change to the software.** A freshly built installer,
+  the same product, scanned the same day: **2 of 71** engines. The published build of that
+  identical version, four days and a few hundred downloads later: **9 of 71**. Same program,
+  same code, engines simply score a file more as it circulates. Older releases settle back
+  down again (1.2.2 sits at 1 of 75).
+- **Removing half the installer changes nothing.** We built a variant with the entire bundled
+  ImageMagick engine stripped out, halving the download, and scanned both within ten minutes of
+  each other: 2 of 71 with it, 3 of 70 without. The size and contents are not what is being
+  scored.
+
+Every release links its own VirusTotal report, so you can see the current ratio and the exact
+engine names for the file you downloaded rather than one popup's opinion. You can also verify
+the SHA-256 on the release page matches what you got.
+
+If your antivirus quarantines it, reporting it as a false positive to *your* vendor genuinely
+helps, those reports are what clear it for everyone else using that product. Code signing is
+the durable fix and is planned.
+
+SmartScreen's "Windows protected your PC" screen is a separate thing: it is the same
+no-history-yet reputation prompt rather than a malware verdict. Click **More info**, then
+**Run anyway**.
 
 ### How is it different from the original SageThumbs, or a tool like MysticThumbs?
 

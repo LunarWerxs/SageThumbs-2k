@@ -183,6 +183,7 @@ mts
 nef
 nrw
 numbers
+obj
 odf
 odg
 odp
@@ -214,6 +215,7 @@ pgx
 ph
 phm
 phz
+ply
 png
 pnm
 pot
@@ -258,6 +260,7 @@ sr2
 srf
 srw
 sti
+stl
 sun
 svg
 svgz

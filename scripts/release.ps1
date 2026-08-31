@@ -119,6 +119,14 @@ try {
     # for the same reason check-issues is: a stale failing PR for a superseded version must
     # never block the release that supersedes it.
     pwsh "$root\scripts\check-winget.ps1"
+    # The third "what happened after we last shipped" question, and the one a user had to ask
+    # for us: antivirus engines keep re-scoring a hash long after step 4b's gate cleared it, so
+    # a release can pass on the day and drift afterwards. v2.5.0 passed the gate at 2 or 3
+    # detections and read 9 four days later; the way we learned that was a comment on issue
+    # #30. Informational for the same reason as the two above - a verdict on a superseded
+    # release must never block the release that supersedes it, which is why check-av.ps1 scopes
+    # its own -Gate to the CURRENT release only.
+    pwsh "$root\scripts\check-av.ps1"
 
     # 1) must be on main with a clean tree (so we release exactly what's committed).
     Write-Host "[2/6] clean-tree + branch guard" -ForegroundColor Green
@@ -376,6 +384,32 @@ try {
                 (Get-ReleaseSha256 -Path $artifact.Portable.FullName) + '`')
         )
     }
+
+    # The VirusTotal permalink for each installer, which step [4b/6] has just scanned anyway.
+    # Reputation verdicts on an unsigned installer are this project's most persistent support
+    # question (issue #30, and #12 before it), and the single most useful answer is the actual
+    # ratio next to the actual file rather than one popup's opinion. The link is derived from
+    # the artifact's own SHA-256, so it always points at exactly the bytes attached below and
+    # cannot drift onto some other build. README.md's antivirus FAQ promises this link exists;
+    # this is what makes that true.
+    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+        ''
+        '**Antivirus / SmartScreen:** these builds are unsigned, so a brand-new file with no'
+        'download history draws reputation-based warnings. Scan results for these exact bytes:'
+    )
+    foreach ($artifact in $releaseArtifacts) {
+        $sha = Get-ReleaseSha256 -Path $artifact.Setup.FullName
+        Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+            ('- ' + $artifact.Architecture + ' installer on VirusTotal: ' +
+                'https://www.virustotal.com/gui/file/' + $sha.ToLower())
+        )
+    }
+    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+        ''
+        'See the [antivirus FAQ](https://github.com/LunarWerxs/SageThumbs-2k#why-did-windows-or-my-antivirus-flag-the-installer)'
+        'for what those detection names actually mean and two measurements showing the count'
+        'moves without the software changing.'
+    )
 
     # 5) Create a DRAFT first. Verify GitHub received the exact local bytes before
     # publishing, so an upload anomaly never briefly exposes a corrupt public build.

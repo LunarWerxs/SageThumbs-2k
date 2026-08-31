@@ -8,6 +8,7 @@ archive-two.zip
 blob.PspBrush
 contact.png
 countdown.PspTube
+cube.stl
 huge.jp2
 sample (edited).png
 sample-avif-10bit.avif
@@ -351,6 +352,8 @@ sample.xltx
 sample.xpm
 sample.xv
 sample.xyze
+tetra.obj
+tetra.ply
 tiny-bilevel.jp2
 tiny16-gplasma.jp2
 tiny16-gplasma.png

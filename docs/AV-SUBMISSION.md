@@ -4,6 +4,131 @@ Fill-in-the-blanks kit for reporting the installer as a false positive. The fina
 needs a signed-in Microsoft account and a file upload, so that last click is yours; every
 piece of information you need is assembled here.
 
+## 2026-08-31: the count was MEASURED end to end, and the payload is not the cause (issue #30)
+
+A user reported v2.5.0 x64 at 9 detections and called it abnormally high. They were right that
+it is high, and right that nobody on our side had noticed. Everything below is measured, not
+argued.
+
+### Every published installer, looked up by hash on the same afternoon
+
+```text
+release        arch     VT      engines
+v2.5.0         x64     9/71     APEX DeepInstinct Fortinet Google Microsoft Rising Skyhigh
+                                TrellixENS TrendMicro-HouseCall
+v2.5.0         arm64   2/71     APEX Skyhigh
+v2.4.1         x64    10/71     + Cylance alibabacloud
+v2.4.1         arm64   1/71     APEX
+v2.4.0         x64     5/71  ;  v2.4.0 arm64  2/71
+v2.3.2         x64     6/71  ;  v2.3.2 arm64  3/71
+v2.3.1         x64    13/71  ;  v2.3.1 arm64  1/71
+v2.3.0         x64     4/69  ;  v2.2.0 x64 3/71 ; v2.1.2 x64 4/70 ; v2.0.0 x64 4/71
+v1.12.0        x64     5/71  ;  v1.8.0 x64 5/71 ; v1.7.5 x64 4/71
+```
+
+`scripts\check-av.ps1` regenerates this table on demand; it is wired into `release.ps1` at
+step [1/6] so the NEXT release always reports on the LAST one.
+
+### The controlled experiment: removing half the installer does not help
+
+The standing hypothesis was that the shape of the artifact, a 1.2 MB stub dragging a 12.6 MB
+entropy-8.00 overlay (91.3% of the file), is what the heuristic engines score. `build-release.ps1`
+already has a `-NoImageMagick` flag, so this was testable for the price of two builds. Both were
+built from ONE tree and uploaded within ten minutes of each other, so the engine set, the
+signature set and the file age are all constant and the payload is the only variable:
+
+```text
+variant                          size         overlay   VT      engines
+WITH ImageMagick (as shipped)    13,860,373   91%       2/71    APEX, Skyhigh
+WITHOUT ImageMagick               7,189,270   83%       3/70    APEX, Elastic, Skyhigh
+```
+
+**Halving the download did not reduce detections; it slightly increased them.** So the payload
+is not what is being scored, and the ideas that follow from that hypothesis are dead:
+splitting ImageMagick out of the installer, downloading it on demand, shipping Compact by
+default. Do not spend a product decision on any of them. (Downloading it on demand would also
+add a network surface for a marginal, now-disproven benefit.)
+
+### What the same experiment DID prove, and it is the whole answer
+
+That freshly-built Full installer is the same product as the published v2.5.0 x64, built from
+the same tree minutes apart. It scored **2/71**. The published one scored **9/70** the same
+afternoon.
+
+Same program. Same code. Same day, same engines, same signatures. The only differences are that
+one hash is four days old and has been downloaded ~570 times, and the other had existed for ten
+minutes.
+
+This is the cleanest evidence this project has ever had for the prevalence explanation the older
+sections below argue from release-to-release history. It also sharpens it into a LIFECYCLE
+rather than a straight line, which is what the older `1.3.4 clean / 1.3.8 flagged` alternation
+was really showing:
+
+1. a brand-new hash is nearly clean, because the cloud/ML systems have not processed it yet;
+2. it SPIKES over the following days as it is downloaded, submitted and scored;
+3. it DECAYS again as it accrues prevalence and reputation (1.2.2 is at 1/75).
+
+The uncomfortable corollary is worth stating plainly: **the better a release does, the worse its
+VirusTotal number looks for a while.** v2.5.0 x64 (572 downloads) reads 9; v2.4.0 x64 (69
+downloads) reads 5. That is not a quality signal about the build.
+
+### Five of the nine cannot block anybody
+
+Sorting the v2.5.0 x64 flaggers by whether a real user could be stopped by one:
+
+- **Microsoft** - the only one documented to have actually blocked an install here (issue #12,
+  a real Defender cloud-ML quarantine). Defender is on by default on essentially every Windows
+  machine, so this is the detection that matters, and it is the one to submit every release.
+- **TrendMicro-HouseCall, Rising** - real consumer products, plausible on a home machine.
+- **DeepInstinct, Fortinet, Skyhigh, TrellixENS** - enterprise EDR and gateway products sold to
+  IT departments. A machine running these is usually also blocking unsigned installers by
+  policy, so clearing the verdict would frequently not even unblock the install.
+- **Google** - not a shipping antivirus at all. It is Google's own scanner contributed to
+  VirusTotal. Nobody's download is blocked by it; it only moves the ratio.
+- **APEX** - SecureAge's AI engine, and this project's single most persistent flagger: it
+  appears on nearly every build of every version including the cleanest arm64 ones.
+
+So the headline ratio overstates user harm by roughly a factor of four. Fix the number people
+actually get blocked by, and treat the rest as cosmetic.
+
+### The x64 / arm64 gap is the engines, not the build
+
+Every x64 build scores 3-13 while the arm64 build of the SAME release scores 1-3. The two come
+from one `installer.iss`, the same ImageMagick pin and file inventory, the same cargo features
+and the same stub-DLL treatment. The VirusTotal denominator is identical (71 on both), so the
+engines are running on the ARM64 file; they simply flag it far less. Conclusion: engines model
+x86-64 code far more deeply than ARM64. There is no x64 build defect to find, and an x64 number
+is only meaningful against other x64 numbers - which is why `check-av.ps1` reports a band per
+architecture rather than one global threshold.
+
+### Vendor false-positive channels, verified 2026-08-31
+
+Cross-checked against VirusTotal's own maintained contact list plus live fetches. Ranked by
+whether the submission reduces REAL user harm rather than the VT ratio:
+
+| engine | channel | account? | worth it |
+|---|---|---|---|
+| Microsoft | https://www.microsoft.com/en-us/wdsi/filesubmission | yes, MS account | **the one that matters** |
+| SecureAge (APEX) | https://uav.secureage.com/falsepositive | no | high: our most persistent flagger |
+| Fortinet | https://www.fortiguard.com/faq/classificationdispute | no | medium |
+| TrendMicro | https://www.trendmicro.com/en_us/about/legal/detection-reevaluation.html | no | medium, real consumer AV |
+| Rising | fp@rising.com.cn | no | low unless we have China traffic |
+| DeepInstinct | vt-fps-requests@deepinstinct.com | no | cosmetic |
+| Trellix | datasubmission@trellix.com | no | cosmetic |
+| Skyhigh | GatewayAnti-Malware-SupportEscalations@SkyhighSecurity.com | no | cosmetic |
+| Google | google-at-virustotal@google.com | no | cosmetic only, not a shipping AV |
+
+**Close the loop on every submission.** Three to seven days later run
+`python push_to_vt.py --hash <sha256>` on that exact hash: success is the engine's row
+disappearing. If it has not cleared in a week the submission did not land, so resubmit. A
+submission nobody re-checks is the same defect as a gate nobody looks at twice.
+
+### Still the durable fix, and still a spending decision
+
+Code signing. Every release is a fresh unsigned hash, so the lifecycle above re-runs from
+scratch each version, forever. Nothing free changes that. Everything in this document is
+managing a symptom.
+
 ## Before anything: run the check, it decides for you
 
 ```powershell
