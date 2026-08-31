@@ -162,6 +162,8 @@ cv_output_folder = "Folder keluaran:"
 cv_same_folder = "(folder yang sama dengan setiap imej)"
 cv_convert = "Tukar"
 cv_done = "Menukar {ok} daripada {total} imej."
+cv_failed_list = "Fail berikut tidak dapat ditukar:"
+cv_failed_more = "…dan {n} lagi"
 # Resize-mode dropdown
 cv_resize_defined = "Saiz ditentukan"
 cv_resize_1080 = "Muatkan ke 1920 × 1080"

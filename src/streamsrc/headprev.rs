@@ -11,11 +11,14 @@ use super::*;
 /// The head-preview fast path (see the call site in [`stream_source`]): bounded-
 /// prefix read + probe for an opaque PSD/PSB or plain `.blend`, any file size.
 /// Returns the prefix only when it is strictly smaller than the file (no byte
-/// savings otherwise) AND [`crate::container::extract_cover`] — the same extractor
-/// the decode tier will run on it — actually finds a preview inside. Any miss
-/// returns None and the caller proceeds exactly as before this path existed.
-/// Rewinds via `stream_prefix` on the hit path and explicitly on the miss paths.
-pub(super) unsafe fn head_preview_fast(stream: &IStream) -> Option<Vec<u8>> {
+/// savings otherwise), AND [`crate::container::extract_cover`] — the same extractor
+/// the decode tier will run on it — actually finds a preview inside, AND that
+/// preview is big enough to answer a `target_edge`-px request (issue #33 — see
+/// [`crate::container::upgradable_head_preview_edge`], which is what keeps this
+/// narrow enough not to punish `.blend`/`.dwg`). Any miss returns None and the
+/// caller proceeds exactly as before this path existed. Rewinds via `stream_prefix`
+/// on the hit path and explicitly on the miss paths.
+pub(super) unsafe fn head_preview_fast(stream: &IStream, target_edge: u32) -> Option<Vec<u8>> {
     let size = stream_size(stream)?;
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     let mut head = [0u8; 8];
@@ -55,9 +58,20 @@ pub(super) unsafe fn head_preview_fast(stream: &IStream) -> Option<Vec<u8>> {
         return None; // prefix would be the whole file — the normal read is equivalent
     }
     let prefix = stream_prefix(stream, wanted as usize)?;
-    crate::container::extract_cover(&prefix)
-        .is_some()
-        .then_some(prefix)
+    crate::container::extract_cover(&prefix)?;
+    // ISSUE #33. Committing to the prefix here is not just a choice of decoder, it decides
+    // what BYTES exist downstream: once we hand back 29 KB of PSD head, the merged composite
+    // is not merely slower to reach, it is gone. So a container that has a better picture
+    // behind its baked preview gets the size question asked HERE, with the same predicate the
+    // decode side uses, or the two would disagree and one of them would do wasted work.
+    // Anything else (a `.blend`, a `.dwg`, an unmeasurable preview) answers None and keeps the
+    // fast path unconditionally — reading their whole document would buy the same image.
+    if let Some(edge) = crate::container::upgradable_head_preview_edge(&prefix) {
+        if !decode::embedded_preview_serves(edge, target_edge) {
+            return None;
+        }
+    }
+    Some(prefix)
 }
 
 /// For an OVERSIZED file (past the in-memory cap): if its magic marks a container

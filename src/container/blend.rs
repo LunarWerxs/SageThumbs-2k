@@ -109,6 +109,40 @@ fn decode_test_block(
     )))
 }
 
+/// Test-only synthetic-`.blend` builder, shared with the `streamsrc` head-preview fast-path
+/// tests (re-exported as `container::blend_testutil`). Lives outside `mod tests` so sibling
+/// modules can reach it under cfg(test), exactly like [`super::psd::testutil`].
+#[cfg(test)]
+pub(crate) mod testutil {
+    /// Minimal valid legacy .blend (BHead4) with a 4x3 TEST thumbnail, plus an arbitrary
+    /// `tail` after ENDB standing in for the scene data a real file is huge from. (The
+    /// tail's CONTENT is not always filler: the gzip-truncation test needs bytes that
+    /// actually compress to something.)
+    ///
+    /// The thumbnail is deliberately TINY, and that is the point wherever this is used to
+    /// test the issue-#33 size gate: Blender's baked preview is the only picture in the file,
+    /// so no request is ever large enough to justify reading past it.
+    pub(crate) fn synthetic_blend(tail: &[u8]) -> Vec<u8> {
+        let (w, h) = (4u32, 3u32);
+        let px = vec![200u8; (w * h * 4) as usize];
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BLENDER");
+        b.push(b'_'); // 32-bit pointers
+        b.push(b'v'); // little-endian
+        b.extend_from_slice(b"277");
+        b.extend_from_slice(b"TEST");
+        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
+        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(&px);
+        b.extend_from_slice(b"ENDB");
+        b.extend_from_slice(&[0u8; 16]);
+        b.extend_from_slice(tail);
+        b
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

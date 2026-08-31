@@ -164,6 +164,8 @@ cv_output_folder = "Tuloskansio:"
 cv_same_folder = "(sama kansio kuin kullakin kuvalla)"
 cv_convert = "Muunna"
 cv_done = "Muunnettiin {ok}/{total} kuva(a)."
+cv_failed_list = "Näitä tiedostoja ei voitu muuntaa:"
+cv_failed_more = "…ja {n} muuta"
 # Resize-mode dropdown
 cv_resize_defined = "Määritetty koko"
 cv_resize_1080 = "Sovita kokoon 1920 × 1080"

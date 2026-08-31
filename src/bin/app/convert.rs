@@ -63,6 +63,14 @@ static MAGICK_QUALITY: AtomicI32 = AtomicI32::new(50); // AVIF/JXL quality 1..=1
 /// its first success. (Only `Option`/`PathBuf` ops under the lock, so it can never
 /// poison.)
 static LAST_OUTPUT: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Source files the most recent run did not produce an output for, so the completion
+/// message can NAME them (issue #34 — a batch that reported "51 of 60" and nothing else
+/// left the user with no way to tell which nine, or why). Written by the worker once the
+/// run has finished, read on the UI thread. Deliberately empty after a cancelled run.
+static FAILED_FILES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Most failures the completion message lists by name before summarising the rest. Six
+/// keeps the box readable when a whole folder fails, which is exactly when it is longest.
+const MAX_LISTED_FAILURES: usize = 6;
 /// Set true while a batch is running; the Cancel button checks it to decide
 /// between "abort the run" and "close the dialog". Cleared when the run finishes.
 static CONVERT_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -801,6 +809,20 @@ unsafe fn start_convert(hwnd: HWND) {
             },
         );
         let ok = outs.iter().flatten().count();
+        // Name the ones that did NOT convert (issue #34). `map_indexed` returns results in
+        // input order, so a `None` at index i IS `files[i]` — no plumbing needed to find out
+        // which. Skipped when the user cancelled: everything queued behind the cancel is a
+        // `None` too, and listing those as failures would be a lie about the user's own act.
+        *FAILED_FILES.lock().unwrap() = if CONVERT_CANCEL.load(Ordering::Relaxed) {
+            Vec::new()
+        } else {
+            files
+                .iter()
+                .zip(&outs)
+                .filter(|(_, out)| out.is_none())
+                .map(|(f, _)| f.clone())
+                .collect()
+        };
         // Remember the first produced output (ordered results → lowest-index success,
         // matching the old first-in-iteration reveal) so completion can offer it.
         if let Some(first) = outs.into_iter().flatten().next() {
@@ -1124,12 +1146,44 @@ unsafe fn on_convert_progress(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 
 /// `WM_CONVERT_DONE`: report the summary, offer to open the output folder when at
 /// least one file was written, then close.
+/// The block appended to the completion message when files did not convert (issue #34), or
+/// an empty string when they all did.
+///
+/// Pure and separately testable on purpose: this is the part with an off-by-one in it (the
+/// "and N more" tail), and the surrounding function puts up a modal message box, which no test
+/// can drive. File NAMES only, not full paths — the box is a summary, not a log, and a batch
+/// of 60 documents from one folder would otherwise be sixty copies of the same directory.
+fn failed_summary(failed: &[String]) -> String {
+    if failed.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("\n\n{}", t("cv_failed_list"));
+    for f in failed.iter().take(MAX_LISTED_FAILURES) {
+        let name = std::path::Path::new(f)
+            .file_name()
+            .map_or_else(|| f.clone(), |n| n.to_string_lossy().into_owned());
+        out.push_str(&format!("\n  {name}"));
+    }
+    if let Some(rest) = failed
+        .len()
+        .checked_sub(MAX_LISTED_FAILURES)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!(
+            "\n  {}",
+            t("cv_failed_more").replace("{n}", &rest.to_string())
+        ));
+    }
+    out
+}
+
 unsafe fn on_convert_done(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     CONVERT_RUNNING.store(false, Ordering::Relaxed);
     let ok = wparam.0;
     let summary = t("cv_done")
         .replace("{ok}", &ok.to_string())
-        .replace("{total}", &lparam.0.to_string());
+        .replace("{total}", &lparam.0.to_string())
+        + &failed_summary(&FAILED_FILES.lock().unwrap());
     let cap = wide("SageThumbs 2K");
     // When at least one file was written, offer to open the output
     // folder (Explorer with the first produced file selected). Nothing
@@ -1219,6 +1273,50 @@ unsafe fn request_close(hwnd: HWND) {
 mod tests {
     use super::*;
     use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+
+    /// Issue #34, the half that is not about the cap. A batch that reported "51 of 60" and
+    /// stopped told the user nothing they could act on — not which nine, and not why. The cap
+    /// fix means those nine convert now, but SOME file will always fail, so the summary has to
+    /// be able to name them.
+    #[test]
+    fn the_completion_message_names_the_files_that_failed() {
+        assert_eq!(failed_summary(&[]), "", "a clean run adds nothing at all");
+
+        let one = failed_summary(&[r"C:\work\photos\huge.psd".to_string()]);
+        assert!(one.contains("huge.psd"), "the name must appear: {one}");
+        assert!(
+            !one.contains(r"C:\work\photos"),
+            "the box is a summary, not a log — no directories: {one}"
+        );
+        assert!(
+            !one.contains("more"),
+            "one failure must not claim there are others: {one}"
+        );
+
+        // Exactly at the listing limit: every name, still no tail.
+        let at_limit: Vec<String> = (0..MAX_LISTED_FAILURES)
+            .map(|i| format!("f{i}.psd"))
+            .collect();
+        let s = failed_summary(&at_limit);
+        for f in &at_limit {
+            assert!(s.contains(f.as_str()), "{f} missing from {s}");
+        }
+        assert!(!s.contains("more"), "no tail at exactly the limit: {s}");
+
+        // One past it: the tail appears, and its COUNT is the number left over, not the total.
+        let over: Vec<String> = (0..MAX_LISTED_FAILURES + 3)
+            .map(|i| format!("f{i}.psd"))
+            .collect();
+        let s = failed_summary(&over);
+        assert!(
+            s.contains("3 more"),
+            "the tail must count the remainder: {s}"
+        );
+        assert!(
+            !s.contains(&format!("f{}.psd", MAX_LISTED_FAILURES)),
+            "names past the limit must be summarised, not listed: {s}"
+        );
+    }
 
     /// A016: a typed dimension must be capped, not passed straight through toward
     /// an `apply_resize` allocation that scales with it.

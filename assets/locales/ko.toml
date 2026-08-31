@@ -164,6 +164,8 @@ cv_output_folder = "출력 폴더:"
 cv_same_folder = "(각 이미지와 같은 폴더)"
 cv_convert = "변환"
 cv_done = "이미지 {total}개 중 {ok}개를 변환했습니다."
+cv_failed_list = "다음 파일은 변환할 수 없습니다:"
+cv_failed_more = "…외 {n}개"
 # Resize-mode dropdown
 cv_resize_defined = "지정 크기"
 cv_resize_1080 = "1920 × 1080에 맞추기"

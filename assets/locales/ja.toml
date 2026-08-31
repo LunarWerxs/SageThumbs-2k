@@ -164,6 +164,8 @@ cv_output_folder = "出力フォルダー:"
 cv_same_folder = "（各画像と同じフォルダー）"
 cv_convert = "変換"
 cv_done = "{total} 個中 {ok} 個の画像を変換しました。"
+cv_failed_list = "次のファイルは変換できませんでした:"
+cv_failed_more = "…ほか {n} 件"
 # Resize-mode dropdown
 cv_resize_defined = "指定サイズ"
 cv_resize_1080 = "1920 × 1080 に収める"

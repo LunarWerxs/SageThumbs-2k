@@ -164,6 +164,8 @@ cv_output_folder = "โฟลเดอร์ผลลัพธ์:"
 cv_same_folder = "(โฟลเดอร์เดียวกับแต่ละรูป)"
 cv_convert = "แปลง"
 cv_done = "แปลงแล้ว {ok} จาก {total} รูป"
+cv_failed_list = "ไม่สามารถแปลงไฟล์เหล่านี้:"
+cv_failed_more = "…และอีก {n} รายการ"
 # Resize-mode dropdown
 cv_resize_defined = "กำหนดขนาดเอง"
 cv_resize_1080 = "ย่อให้พอดี 1920 × 1080"

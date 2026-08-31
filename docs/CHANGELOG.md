@@ -2,6 +2,34 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
+## Unreleased
+
+### Fixed
+
+- **Photoshop files stayed blurry in the Explorer preview pane, however long you waited.**
+  A `.psd` carries a small ready-made thumbnail near the front of the file — usually about
+  160 pixels, whatever the size of the artwork — and SageThumbs was answering every request
+  with it, including the preview pane's, which asks for something nearer 2048. You got a soft,
+  undersized picture that never improved. It now uses that built-in thumbnail only when it is
+  genuinely big enough for the size being asked for, and renders the real full-resolution
+  artwork when it is not. Explorer's ordinary icon views are unchanged and exactly as fast as
+  before, because for those the built-in thumbnail really is big enough; the large views take
+  a moment the first time and are then cached like any other thumbnail. The Space-bar Quick
+  preview, which was already showing the full picture, is untouched. (issue #33)
+
+- **Converting very large Photoshop files did nothing at all.** Converting a folder of PSDs
+  quietly skipped every file over about 270 MB — no error, no output, just a smaller number in
+  the "converted N of M" summary. Those files were being turned away by a size limit meant for
+  something else entirely: a safety budget for files that arrive unasked-for, such as whatever
+  folder Explorer happens to be drawing thumbnails of. A file you picked and asked to convert
+  is not that, and it now gets a limit sized for the job — comfortably past the 2 GB ceiling
+  Photoshop's own `.psd` format has. The "Max file size (MB)" setting was never involved, which
+  is why changing it did not help. (issue #34)
+
+- **A conversion that fails now says which files it was.** The summary at the end of a batch
+  reported how many succeeded and nothing else, so a run that skipped nine files out of sixty
+  gave you no way to tell which nine. It now names them.
+
 ## 2.5.0
 
 ### Added

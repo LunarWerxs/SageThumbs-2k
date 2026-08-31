@@ -162,6 +162,8 @@ cv_output_folder = "Folder ng output:"
 cv_same_folder = "(parehong folder ng bawat larawan)"
 cv_convert = "I-convert"
 cv_done = "Na-convert ang {ok} sa {total} larawan."
+cv_failed_list = "Hindi ma-convert ang mga file na ito:"
+cv_failed_more = "…at {n} pa"
 # Resize-mode dropdown
 cv_resize_defined = "Tinukoy na laki"
 cv_resize_1080 = "Ikasya sa 1920 × 1080"

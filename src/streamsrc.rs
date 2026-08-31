@@ -156,8 +156,10 @@ pub(crate) unsafe fn stream_source_with_caps(
     // is under-cap files, which used to pay the whole-file read; an oversized
     // hit just gets the exact prefix instead of the blanket rescue below.
     // Transparent PSDs skip this (preview_prefix_len bows out) — their composite
-    // needs the full bytes.
-    if let Some(prefix) = head_preview_fast(stream) {
+    // needs the full bytes. So does a PSD whose ~160px baked preview is too small
+    // for `target_edge` (issue #33): the prefix would otherwise be the only bytes
+    // the decoder ever sees, and the composite unreachable however big the request.
+    if let Some(prefix) = head_preview_fast(stream, target_edge) {
         safety::log_debug(&format!(
             "{who}: head-preview fast path ({} bytes)",
             prefix.len()
@@ -1370,6 +1372,74 @@ mod tests {
                 other.is_ok()
             ),
         }
+    }
+
+    /// Issue #33, at the layer that decides what BYTES exist.
+    ///
+    /// This is the half of the bug a decode-side fix alone could never reach: once the
+    /// cascade commits to the head prefix, the merged composite is not slow to get at, it is
+    /// absent. So a PSD whose baked preview cannot serve the request must fall through to the
+    /// whole-file read HERE, before the decoder is ever asked.
+    ///
+    /// Driven at two sizes on ONE fixture on purpose — the difference between the two
+    /// assertions is the request, nothing else.
+    #[test]
+    fn a_psd_preview_too_small_for_the_request_yields_the_whole_file() {
+        use crate::container::psd_testutil::synthetic_psd_preview;
+        // A 32 px baked preview: ample for an icon, hopeless for a preview pane.
+        let (psd, head_len) = synthetic_psd_preview(3, Some(32), 1 << 20);
+        let stream = unsafe { SHCreateMemStream(Some(&psd)) }.expect("SHCreateMemStream");
+        match unsafe { stream_source(&stream, 100 << 20, 96, "test") } {
+            Ok(StreamSource::Bytes(b)) => assert_eq!(
+                b.len(),
+                head_len,
+                "a 32 px preview still answers a 96 px tile off the prefix"
+            ),
+            other => panic!("expected Bytes, got {}", other.is_ok()),
+        }
+        let stream = unsafe { SHCreateMemStream(Some(&psd)) }.expect("SHCreateMemStream");
+        match unsafe { stream_source(&stream, 100 << 20, 1024, "test") } {
+            Ok(StreamSource::Bytes(b)) => assert_eq!(
+                b.len(),
+                psd.len(),
+                "a 1024 px request must reach the whole file, or the composite is unreachable"
+            ),
+            other => panic!("expected Bytes, got {}", other.is_ok()),
+        }
+    }
+
+    /// The narrowing, at this layer: a `.blend` keeps the prefix at EVERY size, because
+    /// reading its whole document would buy the identical picture.
+    #[test]
+    fn a_blend_keeps_the_head_prefix_at_every_request_size() {
+        // A real TEST thumbnail block plus a scene-data tail past `HEAD_PREVIEW_BYTES`, which
+        // is what it takes to reach this fast path at all: `.blend` gets the blanket prefix
+        // length, and the cascade declines any prefix that is not strictly smaller than the
+        // file. The thumbnail inside is 4x3 — far smaller than either request below, so if
+        // the issue-#33 gate applied here it would refuse both.
+        let blend = crate::container::blend_testutil::synthetic_blend(&vec![
+            0u8;
+            decode::HEAD_PREVIEW_BYTES
+                + (1 << 20)
+        ]);
+        let mut seen: Vec<usize> = Vec::new();
+        for cx in [96u32, 2048] {
+            let stream = unsafe { SHCreateMemStream(Some(&blend)) }.expect("SHCreateMemStream");
+            match unsafe { stream_source(&stream, 100 << 20, cx, "test") } {
+                Ok(StreamSource::Bytes(b)) => {
+                    assert!(
+                        b.len() < blend.len(),
+                        "the .blend fast path must hold at {cx} px"
+                    );
+                    seen.push(b.len());
+                }
+                other => panic!("expected Bytes, got {}", other.is_ok()),
+            }
+        }
+        assert_eq!(
+            seen[0], seen[1],
+            "the request size must not change what a .blend hands back"
+        );
     }
 
     #[test]

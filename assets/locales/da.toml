@@ -163,6 +163,8 @@ cv_output_folder = "Outputmappe:"
 cv_same_folder = "(samme mappe som hvert billede)"
 cv_convert = "Konvertér"
 cv_done = "Konverterede {ok} af {total} billede(r)."
+cv_failed_list = "Disse filer kunne ikke konverteres:"
+cv_failed_more = "…og {n} mere"
 # Resize-mode dropdown
 cv_resize_defined = "Fast størrelse"
 cv_resize_1080 = "Tilpas til 1920 × 1080"

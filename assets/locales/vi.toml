@@ -166,6 +166,8 @@ cv_output_folder = "Thư mục đầu ra:"
 cv_same_folder = "(cùng thư mục với mỗi ảnh)"
 cv_convert = "Chuyển đổi"
 cv_done = "Đã chuyển đổi {ok} trên {total} ảnh."
+cv_failed_list = "Không thể chuyển đổi các tệp này:"
+cv_failed_more = "…và {n} tệp nữa"
 # Resize-mode dropdown
 cv_resize_defined = "Kích thước xác định"
 cv_resize_1080 = "Vừa khung 1920 × 1080"

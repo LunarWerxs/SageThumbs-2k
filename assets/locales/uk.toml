@@ -166,6 +166,8 @@ cv_output_folder = "Вихідна тека:"
 cv_same_folder = "(та сама тека, що й кожне зображення)"
 cv_convert = "Перетворити"
 cv_done = "Перетворено {ok} з {total} зображень."
+cv_failed_list = "Не вдалося перетворити ці файли:"
+cv_failed_more = "…та ще {n}"
 # Resize-mode dropdown
 cv_resize_defined = "Заданий розмір"
 cv_resize_1080 = "Вписати в 1920 × 1080"

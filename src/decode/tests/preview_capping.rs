@@ -16,7 +16,7 @@ fn read_preview_capped_rescues_head_preview_containers() {
     let mut data = b"BLENDER-v277".to_vec();
     data.resize(2048, 0);
     std::fs::write(&blend, &data).unwrap();
-    let got = read_preview_capped_at(blend.to_str().unwrap(), 1024, 1536).unwrap();
+    let got = read_preview_capped_at(blend.to_str().unwrap(), 1024, 1536, ANY_PREVIEW).unwrap();
     assert_eq!(
         got.len(),
         1536,
@@ -25,7 +25,7 @@ fn read_preview_capped_rescues_head_preview_containers() {
     assert!(got.starts_with(b"BLENDER"));
 
     // Prefix cap larger than the file: return everything there is.
-    let got = read_preview_capped_at(blend.to_str().unwrap(), 1024, 8192).unwrap();
+    let got = read_preview_capped_at(blend.to_str().unwrap(), 1024, 8192, ANY_PREVIEW).unwrap();
     assert_eq!(got.len(), 2048);
 
     let plain = dir.join("big.jpg");
@@ -33,12 +33,12 @@ fn read_preview_capped_rescues_head_preview_containers() {
     data.resize(2048, 0);
     std::fs::write(&plain, &data).unwrap();
     assert!(
-        read_preview_capped_at(plain.to_str().unwrap(), 1024, 1536).is_err(),
+        read_preview_capped_at(plain.to_str().unwrap(), 1024, 1536, ANY_PREVIEW).is_err(),
         "oversized non-head-preview file keeps the hard refusal"
     );
 
     // Under the cap: identical to read_capped (whole file, any format).
-    let got = read_preview_capped_at(plain.to_str().unwrap(), 4096, 1536).unwrap();
+    let got = read_preview_capped_at(plain.to_str().unwrap(), 4096, 1536, ANY_PREVIEW).unwrap();
     assert_eq!(got.len(), 2048);
 }
 
@@ -53,7 +53,8 @@ fn read_preview_capped_under_cap_psd_reads_only_the_head() {
     let (psd, head_len) = crate::container::psd_testutil::synthetic_psd(3, true, 512 * 1024);
     let path = dir.join("big.psd");
     std::fs::write(&path, &psd).unwrap();
-    let got = read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20).unwrap();
+    let got =
+        read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20, ANY_PREVIEW).unwrap();
     assert_eq!(
         got.len(),
         head_len,
@@ -64,13 +65,15 @@ fn read_preview_capped_under_cap_psd_reads_only_the_head() {
     let (bare, _) = crate::container::psd_testutil::synthetic_psd(3, false, 64 * 1024);
     let path = dir.join("bare.psd");
     std::fs::write(&path, &bare).unwrap();
-    let got = read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20).unwrap();
+    let got =
+        read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20, ANY_PREVIEW).unwrap();
     assert_eq!(got.len(), bare.len(), "no baked thumbnail -> whole file");
 
     let (alpha, _) = crate::container::psd_testutil::synthetic_psd(4, true, 64 * 1024);
     let path = dir.join("alpha.psd");
     std::fs::write(&path, &alpha).unwrap();
-    let got = read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20).unwrap();
+    let got =
+        read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20, ANY_PREVIEW).unwrap();
     assert_eq!(
         got.len(),
         alpha.len(),
@@ -87,7 +90,8 @@ fn read_preview_capped_under_cap_dwg_and_gcode_read_only_the_head() {
     let (dwg, head_len) = crate::container::dwg_testutil::synthetic_dwg(true, 512 * 1024);
     let path = dir.join("big.dwg");
     std::fs::write(&path, &dwg).unwrap();
-    let got = read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20).unwrap();
+    let got =
+        read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20, ANY_PREVIEW).unwrap();
     assert_eq!(
         got.len(),
         head_len,
@@ -115,7 +119,8 @@ fn read_preview_capped_under_cap_dwg_and_gcode_read_only_the_head() {
     let path = dir.join("big.gcode");
     std::fs::write(&path, g.as_bytes()).unwrap();
     assert!(std::fs::metadata(&path).unwrap().len() > (4 << 20) + head_bytes as u64);
-    let got = read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20).unwrap();
+    let got =
+        read_preview_capped_at(path.to_str().unwrap(), 100 << 20, 16 << 20, ANY_PREVIEW).unwrap();
     assert_eq!(
         got.len(),
         4 << 20,
@@ -131,7 +136,8 @@ fn read_preview_capped_under_cap_dwg_and_gcode_read_only_the_head() {
     let small = dir.join("small.gcode");
     let body = b"G28\nG1 X0 Y0\n";
     std::fs::write(&small, body).unwrap();
-    let got = read_preview_capped_at(small.to_str().unwrap(), 100 << 20, 16 << 20).unwrap();
+    let got =
+        read_preview_capped_at(small.to_str().unwrap(), 100 << 20, 16 << 20, ANY_PREVIEW).unwrap();
     assert_eq!(got.len(), body.len());
 }
 
@@ -147,6 +153,261 @@ fn read_preview_capped_rescues_oversized_clip() {
     let clip = crate::container::clip_testutil::synthetic_clip(&png, 64 * 1024, false);
     let path = dir.join("big.clip");
     std::fs::write(&path, &clip).unwrap();
-    let got = read_preview_capped_at(path.to_str().unwrap(), 1024, 1536).unwrap();
+    let got = read_preview_capped_at(path.to_str().unwrap(), 1024, 1536, ANY_PREVIEW).unwrap();
     assert_eq!(got, &png[..]);
+}
+
+/// Issue #33: the PSD size decision, pinned on both sides.
+///
+/// The bug was that the ~160 px preview Photoshop bakes into every PSD answered EVERY
+/// request, so an Explorer preview pane asking for 2048 got a 160 px bitmap and stayed
+/// blurry however long the user waited. The fix is not "never use the preview" — that would
+/// throw away the fast path a folder of big documents depends on — it is to ask the same
+/// question [`fit_to_box`] will ask, so the two cannot disagree.
+mod psd_preview_serves_the_request {
+    /// The measurement the whole decision rests on. If this drifts, everything below is
+    /// asserting something other than what it claims.
+    #[test]
+    fn the_fixture_preview_is_the_size_it_says_it_is() {
+        let (psd, _) = crate::container::psd_testutil::synthetic_psd(3, true, 0);
+        assert_eq!(
+            crate::container::psd_preview_long_edge(&psd),
+            Some(crate::container::psd_testutil::SYNTHETIC_PREVIEW_EDGE),
+            "preview_dims must read the JPEG's own frame header"
+        );
+        // A PSD with no baked preview is UNKNOWN, never "zero" — the callers branch on it.
+        let (bare, _) = crate::container::psd_testutil::synthetic_psd(3, false, 0);
+        assert_eq!(crate::container::psd_preview_long_edge(&bare), None);
+        assert_eq!(crate::container::psd_preview_long_edge(b"not a psd"), None);
+    }
+
+    /// Explorer's ordinary views still come off the baked preview. This is the half of the
+    /// fix that is about NOT regressing: a 160 px preview covers a 256 px tile within the
+    /// enlargement `fit_to_box` already performs, so nothing that was fast becomes slow.
+    #[test]
+    fn the_everyday_icon_sizes_still_use_the_baked_preview() {
+        for cx in [16u32, 32, 48, 96, 256, 640] {
+            assert!(
+                crate::decode::embedded_preview_serves(160, cx),
+                "a 160 px preview must still answer a {cx} px tile"
+            );
+        }
+    }
+
+    /// The reported bug. 2048 is the preview pane's request in the issue; 768 is Explorer's
+    /// largest physical tile (256 logical at 300% scale), and it is over the line too — at
+    /// that size the shipped code returned a 160 px bitmap and Explorer CENTRED it, so the
+    /// tile was both soft and visibly smaller than its neighbours.
+    #[test]
+    fn a_large_request_is_refused_by_a_small_preview() {
+        for cx in [641u32, 768, 1024, 2048] {
+            assert!(
+                !crate::decode::embedded_preview_serves(160, cx),
+                "a 160 px preview must NOT answer a {cx} px tile"
+            );
+        }
+    }
+
+    /// The boundary is `fit_to_box`'s, exactly, and that is the point of the design rather
+    /// than a coincidence to be tidied away: `MAX_UPSCALE_FACTOR` is where the fit step stops
+    /// enlarging, so one px past it the caller would get a tile of the wrong SIZE, not merely
+    /// a soft one.
+    #[test]
+    fn the_boundary_is_the_fit_steps_own() {
+        let edge = 100u32;
+        let limit = edge * 4; // MAX_UPSCALE_FACTOR
+        assert!(crate::decode::embedded_preview_serves(edge, limit));
+        assert!(!crate::decode::embedded_preview_serves(edge, limit + 1));
+        // A preview at least as large as the request always serves — no enlargement at all.
+        assert!(crate::decode::embedded_preview_serves(4096, 2048));
+        // Degenerate inputs must not answer yes, and must not overflow on the way.
+        assert!(!crate::decode::embedded_preview_serves(0, 32));
+        assert!(crate::decode::embedded_preview_serves(u32::MAX, u32::MAX));
+    }
+
+    /// The narrowing that keeps this from punishing formats it cannot help. A `.blend`'s
+    /// baked thumbnail is the ONLY picture in the file, so declining it would read the whole
+    /// document to produce the identical image.
+    #[test]
+    fn only_containers_with_a_better_picture_behind_them_are_second_guessed() {
+        let (psd, _) = crate::container::psd_testutil::synthetic_psd(3, true, 0);
+        assert!(
+            crate::container::upgradable_head_preview_edge(&psd).is_some(),
+            "a PSD has a merged composite behind its preview"
+        );
+        let mut blend = b"BLENDER-v277".to_vec();
+        blend.resize(2048, 0);
+        assert_eq!(
+            crate::container::upgradable_head_preview_edge(&blend),
+            None,
+            "a .blend must keep the head fast path unconditionally"
+        );
+    }
+}
+
+/// The failure mode the issue-#33 fix INTRODUCES, and therefore has to close.
+///
+/// Reaching the merged composite is the whole point of that fix, but a PSD whose merged
+/// image data is absent or empty does not make ImageMagick fail — it makes it report success
+/// and hand back a frame of solid black. Verified directly against the bundled binary before
+/// this guard was written, on exactly the fixture below. An opaque PSD never took this route
+/// at thumbnail sizes before, so without the content test the fix would swap Photoshop's real
+/// preview for a black rectangle on every document saved without "Maximize Compatibility".
+///
+/// This is the same lesson as the Kodak `.dcr` placeholder and the three renders that
+/// `check-render-sanity.ps1` exists for: SIZE IS NOT EVIDENCE OF CONTENT, and neither is a
+/// decode that returned Ok.
+mod a_blank_composite_never_replaces_a_real_preview {
+    /// The com_roundtrip shape: valid 100x100 opaque RGB header, a real baked preview, and a
+    /// tail of zeroes where the merged image data belongs. `preview` is the preview's edge and
+    /// `flat` chooses whether it is a single colour or a picture.
+    fn psd_with_zero_image_data(preview: u32, flat: bool) -> Vec<u8> {
+        let mut img = image::RgbImage::new(preview, preview);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = if flat || (x / 8 + y / 8) % 2 == 0 {
+                image::Rgb([200, 50, 50])
+            } else {
+                image::Rgb([10, 10, 120])
+            };
+        }
+        let mut jpeg = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_be_bytes()); // format = JPEG
+        data.extend_from_slice(&[0u8; 20]);
+        data.extend_from_slice(&[0, 24]);
+        data.extend_from_slice(&[0, 1]);
+        data.extend_from_slice(&jpeg);
+        let mut res = Vec::new();
+        res.extend_from_slice(b"8BIM");
+        res.extend_from_slice(&1036u16.to_be_bytes());
+        res.extend_from_slice(&[0, 0]);
+        res.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        res.extend_from_slice(&data);
+        if data.len() & 1 == 1 {
+            res.push(0);
+        }
+
+        let mut psd = Vec::new();
+        psd.extend_from_slice(b"8BPS");
+        psd.extend_from_slice(&[0, 1]);
+        psd.extend_from_slice(&[0u8; 6]);
+        psd.extend_from_slice(&[0, 3]); // channels: opaque RGB
+        psd.extend_from_slice(&100u32.to_be_bytes()); // height
+        psd.extend_from_slice(&100u32.to_be_bytes()); // width
+        psd.extend_from_slice(&[0, 8]);
+        psd.extend_from_slice(&[0, 3]); // colour mode = RGB
+        psd.extend_from_slice(&0u32.to_be_bytes());
+        psd.extend_from_slice(&(res.len() as u32).to_be_bytes());
+        psd.extend_from_slice(&res);
+        psd.extend_from_slice(&vec![0u8; 64 * 1024]);
+        psd
+    }
+
+    /// A 32 px preview cannot serve a 256 px tile, so the fix sends this to the composite —
+    /// which decodes black. The preview holds a picture, so the preview must win anyway.
+    #[test]
+    fn a_black_composite_loses_to_a_preview_that_has_content() {
+        if !crate::decode::magick_available() {
+            // Loud, because a skip that reads as a pass is worse than no test at all.
+            eprintln!(
+                "SKIPPED a_black_composite_loses_to_a_preview_that_has_content: no ImageMagick"
+            );
+            return;
+        }
+        let psd = psd_with_zero_image_data(32, false);
+        assert!(
+            !crate::decode::embedded_preview_serves(32, 256),
+            "premise: a 32 px preview must be too small for a 256 px tile"
+        );
+        let img = crate::decode::decode_preview_capped(&psd, 256)
+            .expect("a PSD with a baked preview must always thumbnail");
+        assert!(
+            crate::decode::luma_sd(&img) > 8.0,
+            "the tile must hold a picture, not the composite's black rectangle"
+        );
+    }
+
+    /// The other side, so the guard cannot degenerate into "never use the composite": when
+    /// the baked preview is a single colour too, there is nothing better to fall back TO, and
+    /// the composite is still the honest answer.
+    #[test]
+    fn a_flat_preview_does_not_veto_the_composite() {
+        let flat = psd_with_zero_image_data(32, true);
+        assert!(
+            crate::decode::decode_preview_capped(&flat, 256).is_ok(),
+            "a flat document must still produce a thumbnail either way"
+        );
+    }
+}
+
+/// The by-path half of issue #33, and the caller that must NOT change with it.
+///
+/// `read_preview_capped` and the stream cascade implement one rule for two front ends. A fix
+/// applied to only one of them is how Explorer and `st2k thumbnail` start drawing different
+/// pictures of the same file — and since every visual gate in this repo drives the CLI, it is
+/// also how the fix would become invisible to them.
+mod the_by_path_read_honours_the_request_size {
+    use super::*;
+
+    fn staged_psd(tag: &str, preview: u32) -> (std::path::PathBuf, usize, usize) {
+        let (psd, head_len) =
+            crate::container::psd_testutil::synthetic_psd_preview(3, Some(preview), 512 * 1024);
+        let dir = std::env::temp_dir().join(format!("st2k_bypath_{tag}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.psd");
+        std::fs::write(&path, &psd).unwrap();
+        (path, head_len, psd.len())
+    }
+
+    #[test]
+    fn a_named_size_refuses_a_preview_that_cannot_reach_it() {
+        let (path, head_len, full) = staged_psd("sized", 32);
+        let p = path.to_string_lossy().into_owned();
+
+        // Small request: the 32 px preview covers it, so the cheap prefix still wins.
+        let got = read_preview_capped_for(&p, 96).unwrap();
+        assert_eq!(
+            got.len(),
+            head_len,
+            "a 96 px tile keeps the head-prefix fast path"
+        );
+
+        // Large request: the prefix would make the composite unreachable, so read it all.
+        let got = read_preview_capped_for(&p, 2048).unwrap();
+        assert_eq!(
+            got.len(),
+            full,
+            "a 2048 px request must get the whole document"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The Quick preview reads through the no-target entry deliberately: it draws the small
+    /// preview instantly and then re-reads the file by path on a worker to replace it with
+    /// the real composite. Making it pay the big read up front would trade an immediate
+    /// picture for a multi-second blank window — the exact thing its two-stage design avoids,
+    /// and the path issue #33 reports as ALREADY CORRECT.
+    #[test]
+    fn the_no_target_entry_still_takes_the_cheap_prefix_at_any_size() {
+        let (path, head_len, _) = staged_psd("anysize", 32);
+        let p = path.to_string_lossy().into_owned();
+        assert_eq!(
+            read_preview_capped(&p).unwrap().len(),
+            head_len,
+            "the Quick preview's fast first stage must be untouched by the size gate"
+        );
+        assert_eq!(
+            read_preview_capped_for(&p, ANY_PREVIEW).unwrap().len(),
+            head_len
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
 }

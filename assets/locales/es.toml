@@ -164,6 +164,8 @@ cv_output_folder = "Carpeta de salida:"
 cv_same_folder = "(la misma carpeta que cada imagen)"
 cv_convert = "Convertir"
 cv_done = "Se convirtieron {ok} de {total} imagen(es)."
+cv_failed_list = "No se pudieron convertir estos archivos:"
+cv_failed_more = "…y {n} más"
 # Resize-mode dropdown
 cv_resize_defined = "Tamaño definido"
 cv_resize_1080 = "Ajustar a 1920 × 1080"

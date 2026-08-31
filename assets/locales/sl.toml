@@ -164,6 +164,8 @@ cv_output_folder = "Izhodna mapa:"
 cv_same_folder = "(ista mapa kot vsaka slika)"
 cv_convert = "Pretvori"
 cv_done = "Pretvorjenih {ok} od {total} slik."
+cv_failed_list = "Teh datotek ni bilo mogoče pretvoriti:"
+cv_failed_more = "…in še {n}"
 # Resize-mode dropdown
 cv_resize_defined = "Določena velikost"
 cv_resize_1080 = "Prilagodi na 1920 × 1080"

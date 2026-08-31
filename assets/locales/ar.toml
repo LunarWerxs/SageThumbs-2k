@@ -165,6 +165,8 @@ cv_output_folder = "مجلد الإخراج:"
 cv_same_folder = "(نفس مجلد كل صورة)"
 cv_convert = "تحويل"
 cv_done = "تم تحويل {ok} من {total} صورة."
+cv_failed_list = "تعذّر تحويل هذه الملفات:"
+cv_failed_more = "و{n} أخرى"
 # Resize-mode dropdown
 cv_resize_defined = "حجم محدد"
 cv_resize_1080 = "ملاءمة ضمن 1920 × 1080"

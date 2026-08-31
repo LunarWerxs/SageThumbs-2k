@@ -84,6 +84,22 @@ pub fn preview_prefix_len<R: std::io::Read + std::io::Seek>(r: &mut R) -> Option
     res_len_off.checked_add(4)?.checked_add(res_len)
 }
 
+/// Pixel size of the baked preview (resource 1036/1033), without decoding it.
+///
+/// Read from the preview JPEG's own frame header, NOT from the 28-byte thumbnail-resource
+/// header that precedes it. The two are meant to agree, but only the SOF decides what a
+/// decoder will actually produce, and the caller is deciding whether those pixels can serve a
+/// request — so a resource header that lies (or, as in this module's own synthetic fixture,
+/// simply is not filled in) must never get to answer for them.
+///
+/// `None` = "no measurable preview". Callers must read that as *unknown*, not as *small*:
+/// deciding against the baked preview on a file that has none is a decision about nothing.
+pub fn preview_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    let jpeg = extract(bytes)?;
+    let (w, h) = super::util::jpeg_sof_dims(&jpeg, 0)?;
+    (w > 0 && h > 0).then_some((u32::from(w), u32::from(h)))
+}
+
 /// Extract the embedded JPEG thumbnail from a PSD/PSB, or None.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     if !bytes.starts_with(b"8BPS") {
@@ -171,6 +187,16 @@ pub(crate) fn thumbnail_from_resources(bytes: &[u8]) -> Option<Vec<u8>> {
 /// Lives outside `mod tests` so sibling modules can reach it under cfg(test).
 #[cfg(test)]
 pub(crate) mod testutil {
+    /// The preview edge [`synthetic_psd`] bakes in, chosen to match what Photoshop actually
+    /// writes into resource 1036.
+    ///
+    /// It is not decoration. The size of this preview is now a LOAD-BEARING property of the
+    /// fixture: [`crate::decode::embedded_preview_serves`] decides from it whether the head
+    /// prefix may answer a request at all (issue #33), so a fixture carrying the 4 px
+    /// thumbnail this used to write would make every caller take the "too small, render the
+    /// composite" branch and test the opposite of what its name says.
+    pub(crate) const SYNTHETIC_PREVIEW_EDGE: u32 = 160;
+
     /// Minimal valid RGB PSD: 26-byte header with `channels`, empty color-mode
     /// data, one image-resource block holding a 1036 JPEG thumbnail (when
     /// `with_thumb`), then `tail` zero bytes standing in for the layer/image
@@ -178,9 +204,20 @@ pub(crate) mod testutil {
     /// head-prefix length (header + CMD + resources) that
     /// [`super::preview_prefix_len`] should report.
     pub(crate) fn synthetic_psd(channels: u16, with_thumb: bool, tail: usize) -> (Vec<u8>, usize) {
+        synthetic_psd_preview(channels, with_thumb.then_some(SYNTHETIC_PREVIEW_EDGE), tail)
+    }
+
+    /// [`synthetic_psd`] with the baked preview's edge chosen by the caller, for the tests
+    /// that are ABOUT that size — a preview too small for the request must send the decode to
+    /// the real composite, and only a fixture that can be built both ways can show it.
+    pub(crate) fn synthetic_psd_preview(
+        channels: u16,
+        thumb_edge: Option<u32>,
+        tail: usize,
+    ) -> (Vec<u8>, usize) {
         let mut res = Vec::new();
-        if with_thumb {
-            let jpeg = tiny_jpeg();
+        if let Some(edge) = thumb_edge {
+            let jpeg = preview_jpeg(edge);
             let mut data = Vec::new();
             data.extend_from_slice(&1u32.to_be_bytes()); // format = JPEG
             data.extend_from_slice(&[0u8; 20]); // w/h/widthbytes/totalsize/sizeafter
@@ -214,18 +251,25 @@ pub(crate) mod testutil {
         (psd, head_len)
     }
 
-    fn tiny_jpeg() -> Vec<u8> {
+    /// A square JPEG of `edge` px, standing in for Photoshop's baked preview. Real content
+    /// (a two-tone check), not a flat fill, so a caller that also wants to know whether the
+    /// preview holds a picture is looking at one.
+    fn preview_jpeg(edge: u32) -> Vec<u8> {
+        let mut img = image::RgbImage::new(edge.max(1), edge.max(1));
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = if (x / 4 + y / 4) % 2 == 0 {
+                image::Rgb([200, 50, 50])
+            } else {
+                image::Rgb([20, 20, 90])
+            };
+        }
         let mut buf = Vec::new();
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-            4,
-            4,
-            image::Rgb([200, 50, 50]),
-        ))
-        .write_to(
-            &mut std::io::Cursor::new(&mut buf),
-            image::ImageFormat::Jpeg,
-        )
-        .unwrap();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut buf),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
         buf
     }
 }

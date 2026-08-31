@@ -35,6 +35,48 @@ pub fn read_capped(path: &str) -> std::io::Result<Vec<u8>> {
     std::fs::read(path)
 }
 
+/// Read a whole file for a **user-initiated full-fidelity verb** (Convert, Resize, Rotate,
+/// Strip, Combine), refusing anything past [`limits::MAX_FULL_FIDELITY_INPUT_BYTES`].
+///
+/// Split from [`read_capped`] for issue #34: the two reads answer different questions. That
+/// one bounds what an *arriving* file may cost us; this one bounds what a file the user
+/// *chose* may cost, and those are not the same number — see the constant for why.
+///
+/// The reserve is fallible on purpose. A file inside the ceiling can still be more than this
+/// machine has free, and the difference between the two failures matters: `Vec`'s infallible
+/// growth aborts the process under `panic = "abort"`, taking the batch (or, on the in-process
+/// fallback, the shell host) with it, while this returns an error the caller can report and
+/// carry on from. Callers that *should* be refused are refused by the ceiling; callers that
+/// merely cannot fit today are told so.
+pub fn read_full_fidelity(path: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let len = std::fs::metadata(path)?.len();
+    if len > limits::MAX_FULL_FIDELITY_INPUT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "input is {len} bytes, over the {} byte limit for full-quality conversion",
+                limits::MAX_FULL_FIDELITY_INPUT_BYTES
+            ),
+        ));
+    }
+    let mut buf = Vec::new();
+    let want = usize::try_from(len).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("input is {len} bytes, too large to address"),
+        )
+    })?;
+    buf.try_reserve_exact(want).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            format!("not enough memory to load this {len}-byte file"),
+        )
+    })?;
+    std::fs::File::open(path)?.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 /// The scaled-EXR edge used by the by-path front ends (`st2k thumbnail`, the Quick
 /// preview viewer). Both consume the result at screen scale, and 2048 keeps a 12K
 /// render pass crisp in a maximized viewer while still bounding the work.
@@ -305,7 +347,9 @@ pub fn decode_preview_path(path: &str, target_edge: u32) -> Result<DynamicImage>
     if let Some(img) = decode_preview_streamed(path, target_edge) {
         return Ok(img);
     }
-    let bytes = read_preview_capped(path).map_err(|_| Error::from(E_FAIL))?;
+    // `..._for`: this caller stated a target edge, so it must not be handed a head prefix
+    // whose baked preview cannot reach it (issue #33).
+    let bytes = read_preview_capped_for(path, target_edge).map_err(|_| Error::from(E_FAIL))?;
     // `..._for_path` rather than plain `decode_preview`: the few formats whose
     // ImageMagick coder is name-selected are undecodable from bytes alone, and here
     // we have the name. Identical behaviour for everything else.
@@ -331,8 +375,37 @@ pub const HEAD_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 /// the decode tiers like any image file. Anything else keeps [`read_capped`]'s
 /// hard refusal. NOT for full-fidelity verbs (convert/rotate/strip) — a truncated
 /// read there would corrupt output.
+/// A caller that will take whatever preview the file offers, however small — the Quick
+/// preview (which posts the fast prefix and then chases it with the real composite of its
+/// own accord), the animation probe, `doctor`. See [`read_preview_capped_for`] for the
+/// callers that cannot.
 pub fn read_preview_capped(path: &str) -> std::io::Result<Vec<u8>> {
-    read_preview_capped_at(path, limits::MAX_INPUT_BYTES, HEAD_PREVIEW_BYTES)
+    read_preview_capped_for(path, ANY_PREVIEW)
+}
+
+/// `target_edge` for a caller with no size in mind: every baked preview serves it.
+pub const ANY_PREVIEW: u32 = 0;
+
+/// [`read_preview_capped`] for a caller that KNOWS the size it needs, and so cannot accept a
+/// head prefix whose baked preview is far too small for it (issue #33).
+///
+/// The by-path twin of the `target_edge` the stream cascade now takes. Same reasoning: the
+/// prefix is not a choice of decoder, it is a choice of which BYTES exist, so a PSD's merged
+/// composite is unreachable once we commit to the head — and `st2k thumbnail --size 2048`
+/// producing a 160 px picture stretched to 2048 is the same defect the preview pane had.
+///
+/// It matters that this is opt-IN rather than the default. The Quick preview deliberately
+/// wants the small-and-instant prefix: it draws that, then re-reads the file by path on a
+/// worker to replace it with the composite. Forcing the big read on it would trade an
+/// immediate preview for a multi-second blank window, which is the trade its two-stage design
+/// exists to avoid.
+pub fn read_preview_capped_for(path: &str, target_edge: u32) -> std::io::Result<Vec<u8>> {
+    read_preview_capped_at(
+        path,
+        limits::MAX_INPUT_BYTES,
+        HEAD_PREVIEW_BYTES,
+        target_edge,
+    )
 }
 
 /// [`read_preview_capped`] with the caps as parameters so tests can exercise the
@@ -341,6 +414,7 @@ pub(super) fn read_preview_capped_at(
     path: &str,
     max: u64,
     prefix: usize,
+    target_edge: u32,
 ) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let len = std::fs::metadata(path)?.len();
@@ -351,7 +425,7 @@ pub(super) fn read_preview_capped_at(
         // thumbnail provider's IStream fast path (`streamsrc::head_preview_fast`).
         // Committed only when the prefix actually yields a preview; any miss
         // falls back to the full read below, byte-for-byte as before.
-        if let Some(head) = head_preview_file_fast(path, len, prefix) {
+        if let Some(head) = head_preview_file_fast(path, len, prefix, target_edge) {
             return Ok(head);
         }
         return std::fs::read(path);
@@ -379,11 +453,22 @@ pub(super) fn read_preview_capped_at(
 
 /// The under-cap fast path of [`read_preview_capped_at`]: bounded-prefix read +
 /// probe for a head-preview container. Returns the prefix only when it is
-/// strictly smaller than the file AND [`crate::container::extract_cover`] — the
-/// same extractor the decode tiers will run — finds a preview inside it. Any
-/// miss (not a head-preview magic, transparent PSD, malformed sections, I/O
-/// error) returns None and the caller does the normal whole-file read.
-pub(super) fn head_preview_file_fast(path: &str, len: u64, prefix_cap: usize) -> Option<Vec<u8>> {
+/// strictly smaller than the file, AND [`crate::container::extract_cover`] — the
+/// same extractor the decode tiers will run — finds a preview inside it, AND that
+/// preview can serve `target_edge` (issue #33; [`ANY_PREVIEW`] means the caller
+/// imposed no size and every preview qualifies). Any miss (not a head-preview
+/// magic, transparent PSD, malformed sections, I/O error) returns None and the
+/// caller does the normal whole-file read.
+///
+/// The by-path twin of `streamsrc::head_preview_fast`, deliberately kept in step with it:
+/// they implement one rule for two front ends, and a fix applied to only one of them is how
+/// Explorer and `st2k thumbnail` would start drawing different pictures of the same file.
+pub(super) fn head_preview_file_fast(
+    path: &str,
+    len: u64,
+    prefix_cap: usize,
+    target_edge: u32,
+) -> Option<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
     let mut magic = [0u8; 8];
@@ -402,9 +487,13 @@ pub(super) fn head_preview_file_fast(path: &str, len: u64, prefix_cap: usize) ->
     f.seek(SeekFrom::Start(0)).ok()?;
     let mut buf = vec![0u8; wanted as usize];
     f.read_exact(&mut buf).ok()?;
-    crate::container::extract_cover(&buf)
-        .is_some()
-        .then_some(buf)
+    crate::container::extract_cover(&buf)?;
+    if let Some(edge) = crate::container::upgradable_head_preview_edge(&buf) {
+        if !embedded_preview_serves(edge, target_edge) {
+            return None;
+        }
+    }
+    Some(buf)
 }
 
 #[cfg(test)]
@@ -553,5 +642,63 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Issue #34: a Convert batch silently dropped every PSD over 256 MiB, because the verb
+    /// read its input through the THUMBNAIL path's DoS budget. This pins the RELATIONSHIP
+    /// rather than the numbers — whatever the two ceilings are, the one for a file the user
+    /// picked must be the larger.
+    ///
+    /// A const block, so it is checked when the crate compiles rather than when a test runs:
+    /// both sides are constants, and a build that got this backwards should not produce a
+    /// binary at all. (It is also what clippy asks for, for the same reason.)
+    #[test]
+    fn a_user_chosen_file_gets_a_bigger_budget_than_one_that_arrived() {
+        const {
+            assert!(
+                limits::MAX_FULL_FIDELITY_INPUT_BYTES > limits::MAX_INPUT_BYTES,
+                "Convert must not be refused at the size an unsolicited thumbnail is"
+            );
+            // The reported files ran 34-502 MB. Both ends have to be inside the verb budget,
+            // and the top end was outside the old one — which is the whole bug.
+            let reported_largest: u64 = 502 * 1000 * 1000;
+            assert!(reported_largest > limits::MAX_INPUT_BYTES);
+            assert!(reported_largest < limits::MAX_FULL_FIDELITY_INPUT_BYTES);
+        }
+    }
+
+    /// The refusal that remains must be a REPORTED one. A read that dies by aborting the
+    /// process (which is what an infallible `Vec` growth does under `panic = "abort"`) would
+    /// take the whole batch with it, so the ceiling is checked from metadata before anything
+    /// is allocated, and the message says what happened.
+    #[test]
+    fn an_over_ceiling_file_is_refused_with_a_reason_not_an_abort() {
+        let path =
+            std::env::temp_dir().join(format!("st2k_full_fidelity_cap_{}.bin", std::process::id()));
+        std::fs::write(&path, b"not actually huge").expect("stage temp file");
+        let p = path.to_string_lossy().into_owned();
+        // Under the ceiling: read normally, byte-for-byte.
+        assert_eq!(read_full_fidelity(&p).unwrap(), b"not actually huge");
+
+        // A sparse file past the ceiling, so the refusal is exercised without staging 2 GiB
+        // of real bytes. `set_len` reserves the LENGTH only; Windows reports it as the file
+        // size, which is exactly what the metadata check reads.
+        let big = std::env::temp_dir().join(format!(
+            "st2k_full_fidelity_over_{}.bin",
+            std::process::id()
+        ));
+        let f = std::fs::File::create(&big).expect("create sparse file");
+        f.set_len(limits::MAX_FULL_FIDELITY_INPUT_BYTES + 1)
+            .expect("set_len");
+        drop(f);
+        let err = read_full_fidelity(&big.to_string_lossy()).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("over the") && msg.contains("limit"),
+            "the refusal must say why, got: {msg}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&big);
     }
 }

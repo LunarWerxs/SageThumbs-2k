@@ -609,6 +609,37 @@ pub fn psd_has_alpha(bytes: &[u8]) -> bool {
     psd::has_alpha(bytes)
 }
 
+/// Long edge of the preview a PSD/PSB bakes into resource 1036, measured without decoding
+/// it. `None` when there is none, or none we can measure. See [`psd::preview_dims`].
+pub fn psd_preview_long_edge(bytes: &[u8]) -> Option<u32> {
+    psd::preview_dims(bytes).map(|(w, h)| w.max(h))
+}
+
+/// The baked preview's own JPEG bytes, for a caller that needs to look at its PIXELS rather
+/// than its size — `decode` compares it against a rendered composite before preferring one
+/// over the other. Named apart from the internal extractor so the intent is visible at the
+/// call site: this is the picture we would otherwise have shown.
+pub fn psd_baked_preview(bytes: &[u8]) -> Option<Vec<u8>> {
+    psd::extract(bytes)
+}
+
+/// Long edge of a head-baked preview, **but only for containers where reading the WHOLE file
+/// would offer a better picture than that preview** (issue #33).
+///
+/// This is the question [`crate::streamsrc`]'s head-preview fast path has to answer before it
+/// commits to a bounded prefix, and it is narrower than "how big is the preview". A `None`
+/// means *do not second-guess the prefix* — and Blender and DWG answer `None` deliberately,
+/// not by omission: their baked preview is the only picture in the file, so declining it would
+/// buy the identical image for the price of reading the whole document. Photoshop is the one
+/// member because a PSD carries a merged composite behind its ~160 px thumbnail, and
+/// [`crate::decode`] can render it.
+pub fn upgradable_head_preview_edge(bytes: &[u8]) -> Option<u32> {
+    if !bytes.starts_with(b"8BPS") {
+        return None;
+    }
+    psd_preview_long_edge(bytes)
+}
+
 /// Head-preview prefix sizing: how many leading bytes are enough to extract
 /// this container's baked preview, or None when there's no bounded-prefix fast
 /// path and the caller should read the whole file. `ext` is the file's lowercase
@@ -693,6 +724,8 @@ pub(crate) fn is_image_name(name: &str) -> bool {
 #[cfg(test)]
 pub(crate) use clip::testutil as clip_testutil;
 
+#[cfg(test)]
+pub(crate) use blend::testutil as blend_testutil;
 #[cfg(test)]
 pub(crate) use dwg::testutil as dwg_testutil;
 /// Test-only re-exports so the `decode`/`streamsrc` head-preview fast-path tests
@@ -1003,27 +1036,7 @@ mod tests {
         );
     }
 
-    /// Minimal valid legacy .blend (BHead4) with a 4×3 TEST thumbnail, plus an
-    /// arbitrary tail after ENDB (stands in for the scene data of a big file).
-    fn synthetic_blend(tail: &[u8]) -> Vec<u8> {
-        let (w, h) = (4u32, 3u32);
-        let px = vec![200u8; (w * h * 4) as usize];
-        let mut b = Vec::new();
-        b.extend_from_slice(b"BLENDER");
-        b.push(b'_'); // 32-bit pointers
-        b.push(b'v'); // little-endian
-        b.extend_from_slice(b"277");
-        b.extend_from_slice(b"TEST");
-        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
-        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
-        b.extend_from_slice(&(w as i32).to_le_bytes());
-        b.extend_from_slice(&(h as i32).to_le_bytes());
-        b.extend_from_slice(&px);
-        b.extend_from_slice(b"ENDB");
-        b.extend_from_slice(&[0u8; 16]);
-        b.extend_from_slice(tail);
-        b
-    }
+    use super::blend::testutil::synthetic_blend;
 
     #[test]
     fn compressed_blend_covers_extract() {

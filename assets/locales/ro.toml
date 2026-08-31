@@ -162,6 +162,8 @@ cv_output_folder = "Dosar de ieșire:"
 cv_same_folder = "(același dosar ca fiecare imagine)"
 cv_convert = "Convertește"
 cv_done = "Convertite {ok} din {total} imagine(i)."
+cv_failed_list = "Aceste fișiere nu au putut fi convertite:"
+cv_failed_more = "…și încă {n}"
 # Resize-mode dropdown
 cv_resize_defined = "Dimensiune definită"
 cv_resize_1080 = "Încadrează în 1920 × 1080"

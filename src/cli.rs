@@ -222,7 +222,9 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
     let img = match decode::decode_preview_streamed(input, edge) {
         Some(img) => img,
         None => {
-            let bytes = decode::read_preview_capped(input).map_err(|e| e.to_string())?;
+            // `..._for`: this verb named a size, so a head prefix whose baked preview
+            // cannot reach it must not stand in for the real picture (issue #33).
+            let bytes = decode::read_preview_capped_for(input, edge).map_err(|e| e.to_string())?;
             // Cap the decode at the edge we're about to shrink to anyway — the streamed
             // path above already takes `edge`, and rendering ImageMagick's full 4096 first
             // costs seconds on a big scan for pixels this immediately discards.
@@ -323,7 +325,11 @@ pub fn rotate(input: &str, by: &str) -> Result<String, String> {
 /// size). Powers the MCP `view` tool — lets an AI agent SEE any of our supported formats
 /// directly (HEIC/RAW/PSD/ebook covers/CAD previews/…), not just convert them to a file.
 pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
-    let bytes = decode::read_preview_capped(input).map_err(|e| e.to_string())?;
+    // An agent asking for a big view of a PSD wants the composite, not the 160 px baked
+    // preview stretched to fill it (issue #33). `max_dim == 0` means full size, which is the
+    // opposite of `ANY_PREVIEW` - ask for the largest edge there is.
+    let want = if max_dim == 0 { u32::MAX } else { max_dim };
+    let bytes = decode::read_preview_capped_for(input, want).map_err(|e| e.to_string())?;
     let img = decode::decode_preview_capped_for_path(&bytes, 0, input)
         .map_err(|_| format!("cannot decode {input}"))?;
     let img = fit_for_cli(img, max_dim);
@@ -846,7 +852,7 @@ pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, S
             let t0 = Instant::now();
             let decoded = match decode::decode_preview_streamed(input, edge) {
                 Some(img) => Some(img),
-                None => match decode::read_preview_capped(input) {
+                None => match decode::read_preview_capped_for(input, edge) {
                     Ok(bytes) => decode::decode_preview_capped_for_path(&bytes, edge, input).ok(),
                     Err(_) => None,
                 },

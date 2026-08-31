@@ -270,11 +270,17 @@ fn jpeg_also_decodes_through_com() {
 }
 
 /// A synthetic opaque RGB PSD: header + empty color-mode data + one 1036
-/// image-resource block holding a small red JPEG thumbnail + `tail` zero bytes
+/// image-resource block holding a red JPEG thumbnail + `tail` zero bytes
 /// of "layer data" (mirrors `container::psd::testutil`, which an external test
 /// crate can't reach).
+///
+/// The preview is **160 px, the size Photoshop actually writes**, and that is now
+/// load-bearing rather than cosmetic. Since issue #33 the head-preview fast path only
+/// commits to the prefix when the baked preview can serve the request, so the 4 px
+/// thumbnail this used to carry would send a 96 px tile off to render the composite —
+/// and this test would then be exercising the opposite of the path in its name.
 fn synthetic_psd_with_thumb(tail: usize) -> Vec<u8> {
-    let jpeg = encode(solid(4, 4, [200, 50, 50, 255]), ImageFormat::Jpeg);
+    let jpeg = encode(solid(160, 160, [200, 50, 50, 255]), ImageFormat::Jpeg);
     let mut data = Vec::new();
     data.extend_from_slice(&1u32.to_be_bytes()); // format = JPEG
     data.extend_from_slice(&[0u8; 20]); // w/h/widthbytes/totalsize/sizeafter
@@ -322,6 +328,116 @@ fn big_psd_thumbnails_through_com_via_the_head_prefix() {
     assert!(
         r > 150 && g < 110 && b < 110,
         "expected the red baked thumbnail, got BGRA {:?}",
+        [b, g, r]
+    );
+}
+
+/// A PSD whose baked preview and whose merged composite are DIFFERENT COLOURS, so which one
+/// a thumbnail came from is unambiguous from a single pixel.
+///
+/// Preview: red stripes. Merged image data: green stripes. Both striped rather than flat, so
+/// the answer never turns on the blank-composite tie-break — this test is about the SIZE
+/// decision and nothing else. 64x64 with a 64 px preview, which serves a 256 px request
+/// exactly (`MAX_UPSCALE_FACTOR`) and cannot serve 1024.
+fn psd_with_distinct_preview_and_composite() -> Vec<u8> {
+    let mut prev = RgbaImage::new(64, 64);
+    for (_, y, p) in prev.enumerate_pixels_mut() {
+        *p = if (y / 4) % 2 == 0 {
+            Rgba([200, 50, 50, 255])
+        } else {
+            Rgba([60, 10, 10, 255])
+        };
+    }
+    let jpeg = encode(prev, ImageFormat::Jpeg);
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&1u32.to_be_bytes()); // format = JPEG
+    data.extend_from_slice(&64u32.to_be_bytes()); // width
+    data.extend_from_slice(&64u32.to_be_bytes()); // height
+    data.extend_from_slice(&(64u32 * 3).to_be_bytes()); // widthbytes
+    data.extend_from_slice(&(64u32 * 3 * 64).to_be_bytes()); // totalsize
+    data.extend_from_slice(&(jpeg.len() as u32).to_be_bytes()); // sizeafter
+    data.extend_from_slice(&[0, 24]); // bits/pixel
+    data.extend_from_slice(&[0, 1]); // planes
+    data.extend_from_slice(&jpeg);
+
+    let mut res = Vec::new();
+    res.extend_from_slice(b"8BIM");
+    res.extend_from_slice(&1036u16.to_be_bytes());
+    res.extend_from_slice(&[0, 0]);
+    res.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    res.extend_from_slice(&data);
+    if data.len() & 1 == 1 {
+        res.push(0);
+    }
+
+    let mut psd = Vec::new();
+    psd.extend_from_slice(b"8BPS");
+    psd.extend_from_slice(&[0, 1]);
+    psd.extend_from_slice(&[0u8; 6]);
+    psd.extend_from_slice(&[0, 3]); // channels: opaque RGB
+    psd.extend_from_slice(&64u32.to_be_bytes()); // height
+    psd.extend_from_slice(&64u32.to_be_bytes()); // width
+    psd.extend_from_slice(&[0, 8]); // depth
+    psd.extend_from_slice(&[0, 3]); // colour mode = RGB
+    psd.extend_from_slice(&0u32.to_be_bytes()); // colour-mode data
+    psd.extend_from_slice(&(res.len() as u32).to_be_bytes());
+    psd.extend_from_slice(&res);
+    psd.extend_from_slice(&0u32.to_be_bytes()); // layer + mask info: empty
+    psd.extend_from_slice(&[0, 0]); // image-data compression = raw
+                                    // Planar: all R, then all G, then all B — GREEN stripes.
+    for channel in [[40u8, 10], [200, 60], [80, 20]] {
+        for y in 0..64u32 {
+            let v = if (y / 4) % 2 == 0 {
+                channel[0]
+            } else {
+                channel[1]
+            };
+            psd.extend_from_slice(&[v; 64]);
+        }
+    }
+    psd
+}
+
+/// **Issue #33, end to end through the real DLL, at the surface that reported it.**
+///
+/// The Explorer preview pane asked `GetThumbnail` for 2048 px and got Photoshop's 160 px
+/// baked thumbnail, every time, however long it waited. The fix makes the size of the request
+/// decide which source answers it — so on one file, changing only `cx`, the colour of the
+/// returned tile must change too.
+///
+/// Driven through `LoadLibrary` -> `IInitializeWithStream` -> `IThumbnailProvider` like every
+/// other test here, because the bug lived in the handshake between the stream cascade (which
+/// decides what bytes exist) and the decoder (which decides what to do with them). A
+/// decode-only test could not have caught it: the cascade had already thrown the composite
+/// away before the decoder was asked.
+#[test]
+fn a_large_request_gets_the_psd_composite_not_the_baked_preview() {
+    let _settings = settings_lock();
+    if !sagethumbs2k_core::decode::magick_available() {
+        // Loud, because a skip that reads as a pass is worse than no test at all.
+        eprintln!(
+            "SKIPPED a_large_request_gets_the_psd_composite_not_the_baked_preview: no ImageMagick"
+        );
+        return;
+    }
+    let psd = psd_with_distinct_preview_and_composite();
+
+    // Small enough for the baked preview to serve: the fast path stands, and the tile is RED.
+    let t = unsafe { get_thumbnail(&psd, 256) }.unwrap();
+    let [b, g, r, _] = t.px(t.w / 2, 2);
+    assert!(
+        r > g && r > b,
+        "a 256 px tile must still come from the baked preview (red), got BGRA {:?}",
+        [b, g, r]
+    );
+
+    // Too large for it: the composite must be reached, and the tile is GREEN.
+    let t = unsafe { get_thumbnail(&psd, 1024) }.unwrap();
+    let [b, g, r, _] = t.px(t.w / 2, 2);
+    assert!(
+        g > r && g > b,
+        "a 1024 px request must render the merged composite (green), got BGRA {:?}",
         [b, g, r]
     );
 }

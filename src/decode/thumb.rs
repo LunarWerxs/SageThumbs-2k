@@ -73,17 +73,80 @@ pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Resul
 /// continue through [`decode_preview`] with no target size.
 pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicImage> {
     // Keep this entry's container/PDF/video behavior identical to `decode_preview`; only the
-    // final WIC raster source receives the target edge. Transparent PSDs retain the preview
-    // path's real-composite exception so their alpha is not flattened into the baked JPEG.
-    if bytes.starts_with(b"8BPS") && crate::container::psd_has_alpha(bytes) {
+    // final WIC raster source receives the target edge. PSDs are the one exception, for the
+    // two reasons in `psd_composite_wanted`.
+    let cx = cx.max(1);
+    if bytes.starts_with(b"8BPS") && psd_composite_wanted(bytes, cx) {
         match decode_psd_composite(bytes) {
-            Ok(img) => return Ok(img),
+            Ok(img) if composite_beats_baked_preview(&img, bytes) => return Ok(img),
+            Ok(_) => crate::safety::log_debug(
+                "PSD composite decoded blank; keeping the baked preview instead",
+            ),
             Err(e) => crate::safety::log_debug(&format!(
-                "transparent PSD composite failed ({e}); using baked preview"
+                "PSD composite failed ({e}); using baked preview"
             )),
         }
     }
-    decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx.max(1)))
+    decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx))
+}
+
+/// Is the composite we just decoded actually WORTH having, next to the preview it would
+/// replace?
+///
+/// **A successful decode is not evidence of a picture, and this is measured rather than
+/// feared.** Handed a PSD whose merged image-data section is absent or empty, the bundled
+/// ImageMagick does not fail — it reports success and returns a frame of solid black. That
+/// was reproduced directly against `magick "file.psd[0]"`, and it is the same shape as the
+/// three bugs `scripts\check-render-sanity.ps1` was built for, and as the Kodak `.dcr`
+/// placeholder that made [`super::reduced_ifd0_serves`] require content as well as size.
+///
+/// It matters here precisely BECAUSE of the issue-#33 fix above: an opaque PSD never reached
+/// the composite at thumbnail sizes before, so this failure mode is one the fix introduces
+/// and therefore one the fix has to close. Trading Photoshop's real 160 px preview for a
+/// black rectangle would be a straight regression on any document whose merged data the
+/// writer left out — the "Maximize Compatibility" checkbox is exactly that choice.
+///
+/// The flat-composite branch is the only one that pays for a second decode, and it is rare.
+/// A genuinely single-colour document lands there and keeps its composite, because its baked
+/// preview is that same single colour and has nothing more to offer.
+fn composite_beats_baked_preview(composite: &DynamicImage, bytes: &[u8]) -> bool {
+    // `REDUCED_IFD0_MIN_SD` is reused deliberately rather than copied to a new name: it is
+    // calibrated for a different format but answers the identical question — does this
+    // bitmap hold a picture, or is it a rectangle of one colour? A flat fill scores 0.00.
+    if luma_sd(composite) >= REDUCED_IFD0_MIN_SD {
+        return true;
+    }
+    match crate::container::psd_baked_preview(bytes).and_then(|p| decode_with_image(&p).ok()) {
+        Some(preview) => luma_sd(&preview) < REDUCED_IFD0_MIN_SD,
+        None => true, // nothing to fall back to; a flat composite still beats no thumbnail
+    }
+}
+
+/// Should a PSD/PSB thumbnail render the real merged composite rather than the ~160 px JPEG
+/// Photoshop bakes into image resource 1036?
+///
+/// Two independent reasons, and the second one is issue #33:
+///
+/// 1. **The document is transparent.** The baked preview is a JPEG, which has no alpha, so a
+///    background-removed document would thumbnail against flat white. Predates #33.
+/// 2. **The preview is too small for what was asked for.** It is a fixed ~160 px whatever the
+///    canvas is, so it answers an icon view honestly and a 2048 px preview pane not at all —
+///    [`fit_to_box`] will not enlarge it that far, so the pane got a 160 px bitmap centred in
+///    it and stayed blurry no matter how long the user waited. This mirrors the guard the RAW
+///    path already applies (`super::reduced_ifd0_serves`): use the file's own preview when it
+///    is genuinely big enough for the request, and render properly when it is not.
+///
+/// A PSD with no measurable baked preview answers `false` and takes the unchanged path: there
+/// is nothing for a composite to be better *than*, and the ordinary tiers already reach
+/// ImageMagick for it.
+///
+/// The composite is best-effort in both cases. When it fails — no ImageMagick on a compact
+/// install, or a document magick cannot open — the caller falls straight through to the baked
+/// preview, so nothing that produced a thumbnail before can stop producing one.
+fn psd_composite_wanted(bytes: &[u8], cx: u32) -> bool {
+    crate::container::psd_has_alpha(bytes)
+        || crate::container::psd_preview_long_edge(bytes)
+            .is_some_and(|edge| !embedded_preview_serves(edge, cx))
 }
 
 /// True when every pixel is fully transparent (alpha 0) — i.e. nothing visible.
@@ -104,6 +167,31 @@ pub(super) const NEAREST_UPSCALE_MAX: u32 = 64;
 /// e.g. Photoshop's baked 128/160/256 px preview resource against Explorer's 256 px request —
 /// the enlargement is slight and the tile matches its neighbours.
 pub(super) const MAX_UPSCALE_FACTOR: u32 = 4;
+
+/// May a container's baked-in preview, whose long edge is `preview_edge`, answer a request for
+/// a `cx`-px tile — or must the caller go and render the real picture instead?
+///
+/// **The predicate is [`fit_to_box`]'s own, deliberately, and that is the whole design.** The
+/// enlargement branch there fills the box only while `cx <= long * MAX_UPSCALE_FACTOR`; past
+/// that it hands the small bitmap back untouched, and Explorer centres it in the cell rather
+/// than scaling it. So a preview outside this range does not merely produce a soft tile, it
+/// produces one that is *the wrong size as well*, which is the shape of issue #25 all over
+/// again. Asking the same question the fit step will ask is what makes the two agree: when
+/// this says yes, the caller gets back exactly the `cx`-px tile it asked for.
+///
+/// Two things it is NOT:
+///
+/// * **Not a content test.** The RAW twin ([`super::reduced_ifd0_serves`]) also requires the
+///   preview to contain a picture, because a Kodak `.dcr` ships a blank one and being large is
+///   not the same as having something in it. That failure mode belongs to camera firmware
+///   writing a placeholder; Photoshop's resource 1036 is the document, and the decoded pixels
+///   are not in hand at the point this is asked anyway. If a blank baked preview is ever
+///   reported, the answer is to add the same `luma_sd` floor here, not to widen this.
+/// * **Not for full-fidelity callers.** They pass no target at all and never reach this —
+///   Convert and Resize want the real image at real resolution, whatever its size.
+pub fn embedded_preview_serves(preview_edge: u32, cx: u32) -> bool {
+    preview_edge > 0 && cx <= preview_edge.saturating_mul(MAX_UPSCALE_FACTOR)
+}
 
 /// How much reduction is left for the real filter after [`pre_reduce`] has done the integer
 /// part, in halves: 3 means the filter still gets at least a 1.5x reduction to do.

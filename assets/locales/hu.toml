@@ -165,6 +165,8 @@ cv_output_folder = "Kimeneti mappa:"
 cv_same_folder = "(minden kép saját mappájába)"
 cv_convert = "Konvertálás"
 cv_done = "{total} képből {ok} konvertálva."
+cv_failed_list = "Ezeket a fájlokat nem sikerült konvertálni:"
+cv_failed_more = "…és még {n}"
 # Resize-mode dropdown
 cv_resize_defined = "Megadott méret"
 cv_resize_1080 = "Illesztés 1920 × 1080 méretbe"

@@ -152,11 +152,37 @@ pub(crate) mod limits {
     /// Kept at MAX_DIM so these paths and the bomb guard agree.
     pub const FULL_FIDELITY_EDGE: &str = "16384x16384>";
 
-    /// Hard ceiling on the whole-file bytes we'll buffer in memory for ONE decode
-    /// or file-verb. The thumbnail provider (its stream cap) and the path-reading
-    /// verbs (`verbs::encode::read_capped`) share this DoS budget so "too big to
-    /// load" means the same thing on both paths.
+    /// Hard ceiling on the whole-file bytes we'll buffer in memory for ONE decode of a
+    /// file that ARRIVED AT US — an Explorer thumbnail, a preview pane, a CLI/MCP call
+    /// naming a path we did not choose. It is a DoS budget: the shell hands us whatever
+    /// the user happens to be browsing past, so the cost of the largest such file is a
+    /// cost we pay uninvited, and 256 MiB is comfortably more than any thumbnail needs.
     pub const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+    /// The same ceiling for a **user-initiated full-fidelity verb** — Convert, Resize,
+    /// Rotate, Strip, Combine — where the file is one the user picked and asked us to
+    /// process, and the answer they want is the whole picture.
+    ///
+    /// Issue #34: this used to be [`MAX_INPUT_BYTES`], and a folder of Photoshop work
+    /// converted cleanly right up to 256 MiB and then stopped, with 502 MB documents
+    /// dropping out of a 60-file batch. The DoS reasoning above simply does not transfer.
+    /// Nobody browsed past a 502 MB PSD by accident; they selected it, chose a format, and
+    /// pressed Convert. A budget whose whole justification is "we did not ask for this
+    /// file" cannot be the one that refuses a file the user did ask for.
+    ///
+    /// Why a ceiling at all, rather than none: the verb reads the document into one
+    /// contiguous buffer, and an allocation this crate cannot satisfy is an ABORT, not an
+    /// error — `panic = "abort"`, and the in-process fallback path can be inside
+    /// `explorer.exe`. `readers::read_full_fidelity` therefore reserves fallibly so a
+    /// machine that is merely short of memory reports it, and this number bounds what is
+    /// worth attempting in the first place.
+    ///
+    /// 2 GiB because that is Photoshop's OWN limit: a `.psd` cannot exceed it, which is the
+    /// entire reason `.psb` exists. So every PSD ever written now converts, and the number
+    /// is one the format chose rather than one we invented. A genuinely larger `.psb` is
+    /// refused — with a message that says so, which is the half of this bug that was never
+    /// about the cap.
+    pub const MAX_FULL_FIDELITY_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
     /// ImageMagick subprocess resource caps. These are the SINGLE source for the
     /// child's `-limit` CLI flags, the external kill-timeout ([`super::MAGICK_TIMEOUT`]),
@@ -875,12 +901,14 @@ pub(crate) use mesh::fuzzapi as mesh_fuzzapi;
 pub(crate) use readers::effective_input_cap;
 pub use readers::{
     decode_preview_path, decode_preview_streamed, exr_scaled_from_reader, is_exr_magic,
-    read_capped, read_preview_capped, wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
-    wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, COLOR_HEAD_BYTES, EXR_PATH_EDGE,
-    HEAD_PREVIEW_BYTES,
+    read_capped, read_full_fidelity, read_preview_capped, read_preview_capped_for,
+    wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
+    wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, ANY_PREVIEW, COLOR_HEAD_BYTES,
+    EXR_PATH_EDGE, HEAD_PREVIEW_BYTES,
 };
 pub use thumb::{
-    decode_thumbnail_opts, reduce_to_fit, thumbnail_from_covers, thumbnail_from_image,
+    decode_thumbnail_opts, embedded_preview_serves, reduce_to_fit, thumbnail_from_covers,
+    thumbnail_from_image,
 };
 pub(crate) use tiers::{largest_embedded_jpeg, MIN_RAW_PREVIEW};
 

@@ -164,6 +164,8 @@ cv_output_folder = "Uitvoermap:"
 cv_same_folder = "(zelfde map als elke afbeelding)"
 cv_convert = "Converteren"
 cv_done = "{ok} van {total} afbeelding(en) geconverteerd."
+cv_failed_list = "Deze bestanden konden niet worden geconverteerd:"
+cv_failed_more = "…en nog {n}"
 # Resize-mode dropdown
 cv_resize_defined = "Vaste grootte"
 cv_resize_1080 = "Passend in 1920 × 1080"

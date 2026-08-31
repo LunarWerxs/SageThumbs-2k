@@ -164,6 +164,8 @@ cv_output_folder = "Папка вывода:"
 cv_same_folder = "(та же папка, что и у каждого изображения)"
 cv_convert = "Преобразовать"
 cv_done = "Преобразовано {ok} из {total} изобр."
+cv_failed_list = "Не удалось преобразовать эти файлы:"
+cv_failed_more = "…и ещё {n}"
 # Resize-mode dropdown
 cv_resize_defined = "Заданный размер"
 cv_resize_1080 = "Вписать в 1920 × 1080"

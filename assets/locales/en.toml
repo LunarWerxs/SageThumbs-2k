@@ -244,6 +244,8 @@ cv_output_folder = "Output folder:"
 cv_same_folder = "(same folder as each image)"
 cv_convert = "Convert"
 cv_done = "Converted {ok} of {total} image(s)."
+cv_failed_list = "These files could not be converted:"
+cv_failed_more = "…and {n} more"
 cv_open_folder = "Open output folder?"
 # Resize-mode dropdown
 cv_resize_defined = "Defined size"

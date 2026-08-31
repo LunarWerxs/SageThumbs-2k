@@ -164,6 +164,8 @@ cv_output_folder = "Utdatamapp:"
 cv_same_folder = "(samma mapp som varje bild)"
 cv_convert = "Konvertera"
 cv_done = "Konverterade {ok} av {total} bild(er)."
+cv_failed_list = "Dessa filer kunde inte konverteras:"
+cv_failed_more = "…och {n} till"
 # Resize-mode dropdown
 cv_resize_defined = "Bestämd storlek"
 cv_resize_1080 = "Anpassa till 1920 × 1080"

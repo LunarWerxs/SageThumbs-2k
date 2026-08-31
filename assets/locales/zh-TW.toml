@@ -166,6 +166,8 @@ cv_output_folder = "輸出資料夾："
 cv_same_folder = "（與每張影像相同的資料夾）"
 cv_convert = "轉換"
 cv_done = "已轉換 {total} 張影像中的 {ok} 張。"
+cv_failed_list = "以下檔案無法轉換："
+cv_failed_more = "…以及另外 {n} 個"
 # Resize-mode dropdown
 cv_resize_defined = "指定尺寸"
 cv_resize_1080 = "縮放至 1920 × 1080 以內"
