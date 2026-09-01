@@ -301,16 +301,6 @@ Every release links its own VirusTotal report, so you can see the current ratio 
 engine names for the file you downloaded rather than one popup's opinion. You can also verify
 the SHA-256 on the release page matches what you got.
 
-**If you are actually being blocked, download the portable `.zip` instead.** It carries the
-same program without the installer wrapper that draws these warnings, and it is measurably
-quieter. On 2026-08-31 the 2.5.0 portable read **1 of 66** where the installer read 9 of 70,
-and Defender did not flag the portable at all. Unzip it anywhere and run `st2k register` (or
-use the button in Settings under Advanced) to turn on Explorer thumbnails and the classic
-right-click menu for your user
-account, with no administrator rights and nothing written machine-wide. Three things still need
-the installer, because Windows only accepts them registered for the whole machine: the Explorer
-**preview pane**, the **Details pane** columns, and the **Windows 11 compact right-click menu**.
-
 If your antivirus quarantines it, reporting it as a false positive to *your* vendor genuinely
 helps, those reports are what clear it for everyone else using that product. Code signing is
 the durable fix and is planned.
