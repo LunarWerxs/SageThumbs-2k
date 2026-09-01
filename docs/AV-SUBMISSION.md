@@ -185,6 +185,37 @@ got popular; the scrutiny followed.** A freshly built installer nobody has submi
    reported. If anyone retries this, verify the analysis date actually advanced before believing
    the verdicts.
 
+### The signing options, priced and eliminated (researched 2026-08-31)
+
+**Azure Artifact Signing** (renamed from Trusted Signing in 2026) is the pick. $9.99/month
+Basic, 5,000 signatures a month, $0.005 per signature over. No USB token, no HSM, works from
+CI through the official GitHub Action, and one account signs every Windows thing we ship.
+
+Two things decide whether it is even available to us, and they are worth settling BEFORE
+starting the identity validation, because a failed attempt has to be redone from scratch:
+
+* **Organisation identity** (certificate says LunarWerx) requires a verifiable tax history of
+  **3 or more years**, plus a DUNS that matches D&B exactly.
+* **Individual identity** (certificate says a person's name plus city/state/country) is **US or
+  Canada only**, and the details are pulled READ-ONLY from the Azure billing account, so that
+  account's legal name and address must already match the government ID being presented.
+* Either way it needs a **paid** Azure subscription. Free, trial and sponsored are refused.
+
+⛔ **Certum's Open Source Code Signing certificate is a TRAP for this project specifically**, and
+it is the cheapest thing on the market at about EUR 25, so somebody will suggest it. It puts
+**"Open Source Developer"** in the publisher field rather than our name, it is issued to
+individuals only, and Certum **revokes it if the signed software is distributed commercially**.
+This project is PolyForm Noncommercial with a live commercial-licence prospect, so that
+certificate would be revoked out from under us the moment the licensing deal lands.
+
+Traditional OV certificates from Certum or SSL.com run roughly $116-226/year with cloud signing
+and put the real company name on the certificate. They are the fallback if the Azure identity
+validation fails.
+
+One timing note that removes the usual argument for a traditional CA: since **27 February 2026**
+a code signing certificate may be valid for at most ~459 days, so multi-year prepay discounts no
+longer exist anywhere. Monthly and annual now cost about the same per year.
+
 ### Still the durable fix, and still a spending decision
 
 Code signing. Every release is a fresh unsigned hash, so the lifecycle above re-runs from
