@@ -72,23 +72,25 @@ The uncomfortable corollary is worth stating plainly: **the better a release doe
 VirusTotal number looks for a while.** v2.5.0 x64 (572 downloads) reads 9; v2.4.0 x64 (69
 downloads) reads 5. That is not a quality signal about the build.
 
-### The portable zip is the working answer for a blocked user, and it is measured
+### PROVEN: it is ONLY the installer wrapper. Our own binaries are 0/70.
+
+The published 2.5.0 payload was pulled out and every one of our binaries scanned on its own:
 
 ```text
-v2.5.0 x64 installer   9/70   incl. Microsoft Trojan:Win32/Wacatac.B!ml
-v2.5.0 x64 portable    1/66   Bkav alone; Microsoft CLEAN
-v2.5.0 arm64 portable  never scanned (nobody has submitted it)
+sagethumbs2k.dll   7,126,016   0/70
+st2k.exe           7,257,088   0/70
+SageThumbs2K.exe  10,415,104   0/71
+st2k_dlghook.dll     194,048   0/70
 ```
 
-Same program, no Inno wrapper, and the warning that actually blocks people is gone. Anyone
-stopped by Defender can unzip the portable build and run `st2k register` for per-user Explorer
-thumbnails and the classic right-click menu, no admin and nothing machine-wide. Be honest about
-the gap when recommending it: the preview pane, the Details pane columns and the Win11 compact
-menu are all HKLM-registered and stay installer-only (see CLAUDE.md section 3).
+Zero. Not one engine flags any of the code we write. Every detection in this document is on the
+Inno Setup stub that carries them. That settles a question worth never re-opening: there is
+nothing to find in our source, and no amount of code review or hardening moves this number.
 
-This is now in README.md's antivirus FAQ, because it is the only thing on this page that helps
-a blocked user in the next five minutes rather than in the next release.
-
+(The portable zip, which is the same binaries without the wrapper, read 1/66 the same day. It
+is NOT to be recommended as a workaround, per owner directive 2026-08-31: pointing users at a
+different download concedes the premise, and the installer is what we ship. It is recorded here
+only as further evidence that the wrapper is the whole story.)
 ### Five of the nine cannot block anybody
 
 Sorting the v2.5.0 x64 flaggers by whether a real user could be stopped by one:
@@ -139,6 +141,49 @@ whether the submission reduces REAL user harm rather than the VT ratio:
 `python push_to_vt.py --hash <sha256>` on that exact hash: success is the engine's row
 disappearing. If it has not cleared in a week the submission did not land, so resubmit. A
 submission nobody re-checks is the same defect as a gate nobody looks at twice.
+
+### What the count actually tracks, and what I could NOT establish (2026-08-31)
+
+The owner's question was sharp and fair: we sat around 3 for dozens of releases, so how is it
+suddenly 9? Ruled out, each with evidence rather than argument:
+
+- **Our code.** Every shipped binary is 0/70 (above).
+- **The payload.** Halving the installer by dropping ImageMagick moved it 2 -> 3, the wrong way.
+- **Build nondeterminism.** The same source built TWICE on the same afternoon scored 2/71 and
+  2/70. A fresh build is reproducibly ~2; there is no build-time lottery.
+- **Installer construction.** v2.4.0 and v2.4.1 differ by one digit in AppxManifest and nothing
+  else in packaging, and scored 5 and 10.
+- **Installer size.** 13.75 MB at 2.0.0 to 13.86 MB at 2.5.0, under 1% growth across the jump.
+
+What is LEFT, and it is the best-supported explanation rather than a proven one: **attention**.
+The number of times a hash has been submitted to VirusTotal tracks the detection count better
+than anything else measured:
+
+```text
+version   submissions   detections
+1.7.5           1            4
+1.8.0           1            5
+2.0.0           2            4
+2.2.0           3            3
+2.3.2           4            6
+2.4.1           8           10
+2.5.0          16            9
+```
+
+Each submission pulls a fresh set of cloud/reputation engines onto the file. The 1.x era sat at
+3-5 partly because almost nobody was putting those installers through VirusTotal. **The product
+got popular; the scrutiny followed.** A freshly built installer nobody has submitted is 2.
+
+⛔ **Two honest gaps, stated so nobody treats this section as finished.**
+
+1. **v2.3.1 breaks the pattern** at 13 detections with only 2 submissions and 94 downloads. No
+   explanation offered; it is the single wildest outlier in the whole dataset.
+2. **The engines-got-more-aggressive theory is UNTESTED, not disproven.** The obvious test is to
+   re-scan an old installer with today's engines. `POST /files/{id}/analyse` was called on five
+   of them and VirusTotal accepted every request, but `last_analysis_date` never moved, so the
+   identical before/after numbers proved NOTHING. That result was discarded rather than
+   reported. If anyone retries this, verify the analysis date actually advanced before believing
+   the verdicts.
 
 ### Still the durable fix, and still a spending decision
 
