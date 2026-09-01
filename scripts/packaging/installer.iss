@@ -177,6 +177,21 @@ Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
+[Dirs]
+; The licence-history breadcrumb home. Three properties, each load-bearing:
+;   * users-modify, because the licence check runs UNELEVATED at runtime and must be
+;     able to record "this machine held an active business licence" when it learns it;
+;   * uninsneveruninstall, because the breadcrumb MUST SURVIVE UNINSTALL: reinstalling
+;     is the one supported way to change the Personal/Business mode, so a breadcrumb the
+;     uninstaller deleted would let a machine that ran a business licence reinstall as
+;     Personal and look exactly like a fresh home install - which voids the downgrade
+;     notice the breadcrumb exists to power;
+;   * ADVISORY ONLY - the file records reminder state, never entitlement. A user who
+;     edits it defeats a reminder, nothing more, which is why users-modify is safe.
+; check-consistency.ps1 pins this entry (path + both flags) so it cannot be "tidied"
+; away without the gate naming exactly what broke.
+Name: "{commonappdata}\SageThumbs2K"; Permissions: users-modify; Flags: uninsneveruninstall
+
 [Icons]
 Name: "{group}\SageThumbs 2K"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\app.ico"
 Name: "{group}\Uninstall SageThumbs 2K"; Filename: "{uninstallexe}"
@@ -410,6 +425,7 @@ end;
 // (0 = Windows' own type icon, 1 = our format mark, 2 = nothing).
 var
   CornerPage: TInputOptionWizardPage;
+  LicensePage: TInputOptionWizardPage;
 
 function CornerMarkAlreadyChosen: Boolean;
 begin
@@ -444,6 +460,19 @@ begin
   Result := 0;
 end;
 
+// Preselect from the machine's existing declaration so an interactive reinstall
+// re-asks WITHOUT quietly resetting the answer: Business stays preselected for a
+// machine that declared Business, and changing it is one deliberate click.
+function LicenseModeInitial: Integer;
+var
+  V: String;
+begin
+  Result := 0; // Personal, the default for a machine with no declaration
+  if RegQueryStringValue(HKEY_LOCAL_MACHINE, 'Software\SageThumbs2K', 'LicenseMode', V) then
+    if CompareText(V, 'business') = 0 then
+      Result := 1;
+end;
+
 procedure InitializeWizard;
 begin
   CornerPage := CreateInputOptionPage(wpSelectDir,
@@ -460,6 +489,30 @@ begin
   CornerPage.Add('Nothing' + #13#10
     + 'Leave the picture bare.');
   CornerPage.SelectedValueIndex := CornerMarkInitial;
+
+  // Personal-or-Business, asked on EVERY interactive run on purpose: reinstalling
+  // is the one supported way to change the mode (owner decision, 2026-08-31 - a
+  // deliberate piece of friction, "not just a setting lazy users will just go flip
+  // the switch on"), so an interactive reinstall must re-ask. Silent runs - which is
+  // every self-update - never show wizard pages and never touch the stored answer,
+  // which is exactly what keeps the mode stable across versions.
+  //
+  // This is self-declaration, not enforcement: it exists so a business that installs
+  // this can never say nobody told them. Free personal use is first-class and the
+  // app never nags a Personal install.
+  LicensePage := CreateInputOptionPage(CornerPage.ID,
+    'How will you use SageThumbs 2K?',
+    'Personal use is free. Business use needs a licence.',
+    'SageThumbs 2K is free for personal, non-commercial use under the PolyForm'
+      + ' Noncommercial license. Using it in a business or other commercial setting'
+      + ' requires a commercial licence.',
+    True,   // exclusive: radio buttons
+    False);
+  LicensePage.Add('Personal use (free)' + #13#10
+    + 'Home, hobby, and other non-commercial use. Every feature included.');
+  LicensePage.Add('Business or commercial use' + #13#10
+    + 'For work. You can enter your licence key afterwards in SageThumbs 2K Settings.');
+  LicensePage.SelectedValueIndex := LicenseModeInitial;
 end;
 
 // Do not re-ask somebody who has already answered - an upgrade should be quiet. A first
@@ -474,6 +527,24 @@ end;
 // regsvr32 entry runs BETWEEN those two steps, and `register()` reads this value to decide
 // whether to suppress Explorer's per-ProgID overlay. Writing it afterwards would store the
 // answer and apply half of it.
+// The mode is HKLM - written here by the ELEVATED installer and only ever READ by
+// the app, which is what makes "reinstall to change it" a real property rather
+// than a convention: an unelevated process cannot flip it. Guarded on WizardSilent
+// like the corner-mark write, so a silent self-update preserves the stored answer.
+procedure ApplyLicenseModeChoice;
+var
+  V: String;
+begin
+  if not WizardSilent then
+  begin
+    if LicensePage.SelectedValueIndex = 1 then
+      V := 'business'
+    else
+      V := 'personal';
+    RegWriteStringValue(HKEY_LOCAL_MACHINE, 'Software\SageThumbs2K', 'LicenseMode', V);
+  end;
+end;
+
 procedure ApplyCornerMarkChoice;
 begin
   if not WizardSilent then
@@ -486,7 +557,10 @@ var
   Stale: String;
 begin
   if CurStep = ssInstall then
+  begin
     ApplyCornerMarkChoice;
+    ApplyLicenseModeChoice;
+  end;
   if CurStep = ssPostInstall then
   begin
     Stale := StaleAfterInstall;

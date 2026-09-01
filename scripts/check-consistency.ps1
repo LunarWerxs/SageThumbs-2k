@@ -391,6 +391,36 @@ if ($fitSkipped) {
   }
 }
 
+# --- licence persistence: the breadcrumb must survive uninstall -----------------
+# The Personal/Business mode changes ONLY by reinstalling (owner decision, 2026-08-31),
+# which makes uninstall->reinstall the mode-change path. Downgrade detection therefore
+# depends on a breadcrumb the UNINSTALLER LEAVES BEHIND; if it were ever swept into a
+# cleanup list, a machine that ran a business licence would reinstall as Personal looking
+# exactly like a fresh home install, and the insistent notice would silently never fire.
+# These pins are that test: each one names the invariant that rots the feature if broken.
+$iss = Get-Content -Raw "$root/scripts/packaging/installer.iss"
+$dirLine = ($iss -split "?
+") | Where-Object { $_ -match 'commonappdata..SageThumbs2K' -and $_ -notmatch '^\s*;' } | Select-Object -First 1
+if (-not $dirLine) {
+  $fail.Add("installer.iss: the {commonappdata}\SageThumbs2K [Dirs] entry is gone - the licence breadcrumb has no home")
+} else {
+  if ($dirLine -notmatch 'uninsneveruninstall') { $fail.Add("installer.iss: breadcrumb dir lost uninsneveruninstall - uninstall would delete the licence history and void downgrade detection") }
+  if ($dirLine -notmatch 'users-modify')       { $fail.Add("installer.iss: breadcrumb dir lost users-modify - the unelevated licence check could not record history") }
+}
+if ($iss -notmatch [regex]::Escape("RegWriteStringValue(HKEY_LOCAL_MACHINE, 'Software\SageThumbs2K', 'LicenseMode'")) {
+  $fail.Add("installer.iss: the HKLM LicenseMode write is gone - the installer no longer records the Personal/Business answer")
+}
+# The uninstaller must never be taught to delete the breadcrumb. Scan the whole file for
+# any uninstall directive that names it, so the pin holds wherever such a line is added.
+foreach ($bad in ($iss -split "?
+") | Where-Object { $_ -match 'license-history' -and $_ -match '(?i)uninstalldelete|Type:\s*files|Type:\s*filesandordirs' }) {
+  $fail.Add("installer.iss: an uninstall directive names license-history - the breadcrumb MUST survive uninstall: $($bad.Trim())")
+}
+# And the Rust side must agree with the installer on where history lives.
+$lic = Get-Content -Raw "$root/src/bin/app/license.rs"
+if ($lic -notmatch [regex]::Escape("license-history.json")) { $fail.Add("license.rs no longer references license-history.json - installer and app disagree on the breadcrumb") }
+if ($lic -notmatch [regex]::Escape('join("SageThumbs2K")')) { $fail.Add("license.rs breadcrumb path no longer matches the installer-created {commonappdata}\SageThumbs2K directory") }
+
 # --- report -------------------------------------------------------------------
 if ($fail.Count) {
   Write-Host "[consistency] FAILED ($($fail.Count)):" -ForegroundColor Red

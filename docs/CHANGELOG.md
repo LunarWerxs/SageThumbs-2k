@@ -4,6 +4,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **The installer now asks how you will use SageThumbs 2K: personal (free) or business.**
+  Personal, non-commercial use stays free with every feature, exactly as before. Business and
+  other commercial use requires a commercial licence under the PolyForm Noncommercial license
+  the app has always shipped with; the installer now says so plainly instead of leaving it in
+  the licence text nobody reads. Your answer is remembered across updates, and changing it
+  means reinstalling. Nothing about thumbnails, previews, or any feature changes either way.
+
 ### Fixed
 
 - **A video you rotated without re-encoding now thumbnails the right way up.** Turning a

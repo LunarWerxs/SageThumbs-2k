@@ -40,6 +40,7 @@ mod gdip;
 mod hotkey;
 mod http;
 mod image_info;
+mod license;
 /// The "you could be signed in" prompt: app glue (persistence, identity, the decision).
 mod nudge;
 /// The shared LunarWerx decision engine, vendored VERBATIM. Never edit it here — see `nudge.rs`.
@@ -798,6 +799,13 @@ unsafe fn create_and_show_settings_window(
     // strip between the pane and the footer, and the page layout below it runs once and
     // cannot be re-run. See `settings_dlg::nudge`.
     nudge::start_session();
+    // Licence posture, decided once as Settings opens (the natural "the user is
+    // looking at us" moment) and logged for support threads. Today the value only
+    // drives the log line; the Business nag banner, the one-time downgrade notice
+    // and the deauthorised alert are the surfaces that will consume it as the
+    // licensing UI lands. Deciding it HERE, next to the nudge decision, is
+    // deliberate: both answer "what may this window say to the user unprompted".
+    let _license_posture = license::current_posture();
     let nudge_strip = if settings_dlg::decide_sign_in_nudge() {
         settings_dlg::sign_in_nudge_height()
     } else {
