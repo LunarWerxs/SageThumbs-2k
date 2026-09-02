@@ -420,6 +420,10 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
     if rw <= (shown.0.max(1) as u32).saturating_mul(3) / 2
         && rh <= (shown.1.max(1) as u32).saturating_mul(3) / 2
     {
+        sagethumbs2k_core::safety::log_debug(&format!(
+            "preview: keeping the baked preview of {path} (document {rw}x{rh}, showing {}x{})",
+            shown.0, shown.1
+        ));
         return None;
     }
     // Re-read the file WHOLE. The bytes the preview stage worked from came from
@@ -427,8 +431,32 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
     // PREFIX (that is how a 100 MB PSD thumbnails cheaply) — and a truncated PSD cannot be
     // composited, so handing those bytes to `decode_full` would silently fall straight back
     // to the baked preview we are trying to replace.
-    let whole = sagethumbs2k_core::decode::read_capped(path).ok()?;
-    let full = sagethumbs2k_core::decode::decode_full(&whole).ok()?;
+    //
+    // ISSUE #33: through the FULL-FIDELITY reader (2 GiB), not `read_capped` (the 256 MiB
+    // thumbnail ceiling). A Quick preview is one file the user opened on purpose - the same
+    // decision Convert makes for #34 - and the documents that never sharpened were exactly
+    // the ones the thumbnail ceiling refused, with nothing in the log, because every way
+    // this pass could give up was a bare `?`. Each step now says why it stopped, in the same
+    // verbose log the reporter was already reading.
+    let whole = match sagethumbs2k_core::decode::read_full_fidelity(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            sagethumbs2k_core::safety::log_debug(&format!(
+                "preview: cannot re-read {path} for the composite (document {rw}x{rh}): {e}"
+            ));
+            return None;
+        }
+    };
+    let full = match sagethumbs2k_core::decode::decode_full(&whole) {
+        Ok(img) => img,
+        Err(e) => {
+            sagethumbs2k_core::safety::log_debug(&format!(
+                "preview: composite decode failed for {path} (document {rw}x{rh}, {} bytes): {e}",
+                whole.len()
+            ));
+            return None;
+        }
+    };
     let rgba = full.to_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
     // Guard the no-compositor case explicitly: on a compact install `decode_full` falls back
@@ -1144,6 +1172,14 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
     std::thread::spawn(move || {
         // Reconstruct the HWND inside the worker (HWND isn't `Send`; the raw pointer is).
         let hwnd = HWND(hwnd_raw as *mut c_void);
+        // ISSUE #33: this worker calls into WIC by way of `read_preview_capped` (the oversized
+        // rescue for a file past the thumbnail ceiling decodes THROUGH WIC by path) and the
+        // WIC tier of the in-memory decode, and WIC is COM. Without an apartment every one
+        // of those calls answered `CoInitialize has not been called (0x800401F0)` - the very
+        // line the issue's verbose log shows - and fell back to the slow tier, or to nothing.
+        // The first-paint pre-pass and the sharpen pass each init their own; this covers the
+        // rest of the worker. Held for the whole closure; a repeat MTA init inside is a no-op.
+        let _com = sagethumbs2k_core::parallel::ComGuard::mta();
         // Held-down arrow key: by the time the scheduler gets here the user may already be two
         // files further on. Nothing has been read or decoded yet, so this costs one atomic load
         // and reclaims the entire worker.

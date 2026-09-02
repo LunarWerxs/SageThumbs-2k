@@ -289,6 +289,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   a moment the first time and are then cached like any other thumbnail. The Space-bar Quick
   preview, which was already showing the full picture, is untouched. (issue #33)
 
+- **The Space-bar Quick preview now sharpens very large Photoshop files too.** Opening a
+  PSD or PSB over about 256 MB in the Quick preview showed Photoshop's small built-in
+  thumbnail and never replaced it with the real picture, with nothing in the log to say why:
+  the second pass that fetches the full composite was reading the file through the limit
+  meant for Explorer thumbnails, and the preview's own worker was missing the setup the
+  Windows imaging codecs need, so its fast path for oversized files silently failed. Both are
+  fixed, and when a composite genuinely cannot be produced the verbose log now says which
+  step stopped and why.
+
 - **Converting very large Photoshop files did nothing at all.** Converting a folder of PSDs
   quietly skipped every file over about 270 MB, no error, no output, just a smaller number in
   the "converted N of M" summary. Those files were being turned away by a size limit meant for
