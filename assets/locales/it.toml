@@ -571,6 +571,6 @@ biznag_body_revoked = "La licenza aziendale di questa copia (chiave {key}) è st
 biznag_btn = "Apri licenza"
 licence_nag_toast_body = "SageThumbs 2K è installato per uso aziendale e richiede una chiave di licenza. Apri Impostazioni > Licenza."
 licence_downgrade_notice = "Questo computer in precedenza usava SageThumbs 2K con una licenza aziendale (chiave {key}). Ora è installato per uso personale. Se è ancora un computer aziendale, reinstalla e scegli Aziendale, oppure inserisci la chiave di licenza in Impostazioni > Licenza."
-licence_deauthorized_notice = "La licenza aziendale di questo computer (chiave {key}) è stata revocata. SageThumbs 2K continua a funzionare con tutte le funzionalità. Per rilicenziarlo, inserisci una nuova chiave in Impostazioni > Licenza."
+licence_deauthorized_notice = "La licenza aziendale di questo computer (chiave {key}) è stata revocata. SageThumbs 2K continua a funzionare con tutte le funzionalità. Per riattivarla, inserisci una nuova chiave in Impostazioni > Licenza."
 licence_check_active = "La licenza di questo computer è attiva."
 licence_check_none = "Nessuna licenza attiva per questo computer."
