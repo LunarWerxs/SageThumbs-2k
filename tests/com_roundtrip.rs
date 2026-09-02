@@ -13,6 +13,8 @@
 //! LoadLibrary below could otherwise pick up a stale cdylib.
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 
@@ -33,17 +35,6 @@ const CLSID_THUMBNAIL_PROVIDER: GUID = GUID::from_u128(0x7B2E6A14_9C3D_4F8A_B1E7
 
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
-
-/// The cdylib sits one dir above the test exe (…/debug/sagethumbs2k.dll vs
-/// …/debug/deps/<test>.exe).
-fn dll_path() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sagethumbs2k.dll")
-}
 
 /// A returned thumbnail: width, height, tightly-packed BGRA bytes, alpha tag.
 struct Thumb {
@@ -85,7 +76,7 @@ fn isolate_settings() {
     ONCE.call_once(|| {
         // SAFETY: set before any thread but this one has touched the environment, and the
         // value is only read (once) by `settings::hkcu_root`.
-        unsafe { std::env::set_var("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT) };
+        unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT) };
     });
 }
 
@@ -109,7 +100,7 @@ unsafe fn get_thumbnail(bytes: &[u8], cx: u32) -> Result<Thumb> {
     // whether the DLL is built with panic=unwind (debug) or panic=abort (release).
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-    let path = dll_path();
+    let path = common::dll_path();
     assert!(
         path.exists(),
         "cdylib not built at {path:?} — run `cargo build` first"
@@ -494,7 +485,7 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
         )
         .expect("file stream");
 
-        let path_dll = dll_path();
+        let path_dll = common::dll_path();
         let wide_dll: Vec<u16> = path_dll
             .as_os_str()
             .encode_wide()

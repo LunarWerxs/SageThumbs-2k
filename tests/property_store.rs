@@ -10,8 +10,9 @@
 //! LoadLibrary picks up a fresh cdylib, not a stale one.
 #![cfg(windows)]
 
-use std::ffi::{c_void, OsStr};
-use std::os::windows::ffi::OsStrExt;
+mod common;
+
+use std::ffi::c_void;
 
 use windows::core::{s, Error, Interface, Result, GUID, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{E_FAIL, HMODULE, PROPERTYKEY, STG_E_ACCESSDENIED};
@@ -28,19 +29,6 @@ const CLSID_PROPERTY_STORE: GUID = GUID::from_u128(0x5E1A7C92_8F3D_4B6A_A0E4_3C7
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
-fn dll_path() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sagethumbs2k.dll")
-}
-
-fn to_wide(s: &OsStr) -> Vec<u16> {
-    s.encode_wide().chain(std::iter::once(0)).collect()
-}
-
 /// Write a temp PNG of a known size and return its path.
 fn write_temp_png(w: u32, h: u32) -> std::path::PathBuf {
     let p = std::env::temp_dir().join(format!("st2k_propstore_{}_{w}x{h}.png", std::process::id()));
@@ -54,12 +42,12 @@ fn write_temp_png(w: u32, h: u32) -> std::path::PathBuf {
 unsafe fn make_store(file: &std::path::Path) -> Result<IPropertyStore> {
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-    let path = dll_path();
+    let path = common::dll_path();
     assert!(
         path.exists(),
         "cdylib not built at {path:?} — run `cargo build` first"
     );
-    let module: HMODULE = LoadLibraryW(PCWSTR(to_wide(path.as_os_str()).as_ptr()))?;
+    let module: HMODULE = LoadLibraryW(PCWSTR(common::to_wide(path.as_os_str()).as_ptr()))?;
     let proc =
         GetProcAddress(module, s!("DllGetClassObject")).ok_or_else(|| Error::from(E_FAIL))?;
     let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
@@ -71,7 +59,7 @@ unsafe fn make_store(file: &std::path::Path) -> Result<IPropertyStore> {
 
     // The shell inits a property handler with the file PATH (not a stream).
     let init: IInitializeWithFile = factory.CreateInstance(None)?;
-    init.Initialize(PCWSTR(to_wide(file.as_os_str()).as_ptr()), 0)?;
+    init.Initialize(PCWSTR(common::to_wide(file.as_os_str()).as_ptr()), 0)?;
     init.cast()
 }
 

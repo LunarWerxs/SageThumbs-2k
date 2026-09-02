@@ -6,6 +6,8 @@
 //! preview decode (which could wait two seconds) without failing due to ordinary CI noise.
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::time::{Duration, Instant};
@@ -49,23 +51,13 @@ const POPUP_INIT_BUDGET: Duration = Duration::from_millis(500);
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
-fn dll_path() -> std::path::PathBuf {
-    std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sagethumbs2k.dll")
-}
-
 unsafe fn context_menu_for(file: &std::path::Path) -> Result<IContextMenu> {
     // Keep this independent of a developer's real Explorer preferences.  The absent key
     // selects the product defaults, including the standard submenu preview placement.
-    std::env::set_var("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT);
+    common::set_test_env("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT);
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-    let path = dll_path();
+    let path = common::dll_path();
     assert!(
         path.exists(),
         "cdylib not built at {path:?} — run cargo build first"

@@ -8,6 +8,12 @@
 //! The hidden route must remain synthetic and side-effect-free. This test checks only the
 //! externally observable window contract; focused unit tests in the screenshot module cover
 //! the mode/style decisions without opening UI.
+//!
+//! Also needs a genuinely INTERACTIVE desktop: it asserts the overlay takes the foreground
+//! (`GetForegroundWindow`), which is a session with no logged-on user (a Windows service's
+//! Session 0, many CI runners) can never grant no matter what the app does. The test detects
+//! that case itself (`running_on_interactive_desktop`) and skips with a message rather than
+//! failing on a box that was never a candidate to pass.
 #![cfg(windows)]
 
 use std::ffi::c_void;
@@ -60,6 +66,36 @@ impl Drop for TestChild {
     }
 }
 
+/// Whether this process is attached to an INTERACTIVE window station — false in a
+/// non-interactive session (a Windows service's Session 0, some CI runners with no
+/// logged-on user). `SetForegroundWindow`/foreground-focus checks are unwinnable there
+/// regardless of anything the app does, which is exactly the assertion further down that
+/// needs this test skipped rather than failed on such a box. Needs the
+/// `Win32_System_StationsAndDesktops` `windows` crate feature.
+unsafe fn running_on_interactive_desktop() -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::StationsAndDesktops::{
+        GetProcessWindowStation, GetUserObjectInformationW, UOI_FLAGS, USEROBJECTFLAGS,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::WSF_VISIBLE;
+
+    let Ok(hwinsta) = (unsafe { GetProcessWindowStation() }) else {
+        return false;
+    };
+    let mut flags = USEROBJECTFLAGS::default();
+    let mut needed = 0u32;
+    let queried = unsafe {
+        GetUserObjectInformationW(
+            HANDLE(hwinsta.0),
+            UOI_FLAGS,
+            Some(&mut flags as *mut _ as *mut c_void),
+            std::mem::size_of::<USEROBJECTFLAGS>() as u32,
+            Some(&mut needed),
+        )
+    };
+    queried.is_ok() && (flags.dwFlags as i32 & WSF_VISIBLE) != 0
+}
+
 unsafe fn automation_window() -> Option<windows::Win32::Foundation::HWND> {
     FindWindowW(w!("SageThumbs2KShotAutomation"), PCWSTR::null()).ok()
 }
@@ -82,6 +118,14 @@ fn point_lparam(x: i32, y: i32) -> LPARAM {
 #[test]
 #[ignore = "opens the synthetic full-screen screenshot automation overlay"]
 fn synthetic_overlay_is_discoverable_by_windows_automation() {
+    if !unsafe { running_on_interactive_desktop() } {
+        eprintln!(
+            "skipping: no interactive window station (Session 0 service, or a CI runner \
+             with no logged-on user) — SetForegroundWindow can never succeed here"
+        );
+        return;
+    }
+
     // Match the PMv2-aware app before comparing virtual-screen metrics/window
     // bounds. Without this, Windows may DPI-virtualize the test caller and make an
     // exact full-screen window look smaller on mixed-DPI desktops.

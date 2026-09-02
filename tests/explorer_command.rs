@@ -20,6 +20,8 @@
 //! write settings, so nothing is created and there's nothing to clean up.
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 
@@ -52,15 +54,6 @@ const CLSID_QUICK_ROTATE: GUID = GUID::from_u128(0x4FAC7B5D_2096_4EB8_D3C4_AB5F8
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
-fn dll_path() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sagethumbs2k.dll")
-}
-
 /// A scratch HKCU subkey that is never created, so every settings read under it misses and
 /// falls back to its default (see the module docs). All tests use this ONE value: the
 /// `settings::hkcu_root` cache resolves the env var once per process, so a single constant
@@ -71,9 +64,9 @@ unsafe fn create_for(clsid: GUID) -> Result<IExplorerCommand> {
     // Hermetic menu settings (see the module docs). Every test obtains its command(s)
     // through here, before any settings read, so the whole file is covered; the var is
     // only ever SET (never cleared), so parallel test threads can't race it off.
-    std::env::set_var("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT);
+    common::set_test_env("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT);
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    let path = dll_path();
+    let path = common::dll_path();
     assert!(path.exists(), "cdylib not built at {path:?}");
     let wide: Vec<u16> = path
         .as_os_str()
@@ -245,7 +238,7 @@ fn convert_verb_invoke_creates_file() {
     unsafe {
         // Don't pop an Explorer window during the test — the Convert verb's success
         // path calls ActionReport::reveal() (explorer /select,<out>); this gates it.
-        std::env::set_var("ST2K_NO_REVEAL", "1");
+        common::set_test_env("ST2K_NO_REVEAL", "1");
         let cmd = create_command().expect("create");
         // Navigate root -> "Convert into" -> "JPG".
         let subs = collect_subcommands(&cmd);
@@ -289,6 +282,120 @@ fn convert_verb_invoke_creates_file() {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         assert!(out.exists(), "Invoke should have created v.jpg");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Same shape as `convert_verb_invoke_creates_file`, but through "Resize ▸ Scale to 50%"
+/// — `resize_one`'s in-process path (`resize_file`) writes a `<stem> (resized).<ext>`
+/// sibling, never the source's own name.
+#[test]
+fn resize_verb_invoke_creates_file() {
+    unsafe {
+        common::set_test_env("ST2K_NO_REVEAL", "1");
+        let cmd = create_command().expect("create");
+        // Navigate root -> "Resize" -> "Scale to 50%".
+        let subs = collect_subcommands(&cmd);
+        let resize = subs
+            .iter()
+            .find(|c| title_of(c) == "Resize")
+            .expect("Resize group");
+        let items = collect_subcommands(resize);
+        let scale50 = items
+            .iter()
+            .find(|c| title_of(c) == "Scale to 50%")
+            .expect("Scale to 50% verb");
+
+        let dir = std::env::temp_dir().join(format!("st2k_resize_invoke_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("v.png");
+        let mut img = image::RgbaImage::new(16, 16);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([10, 200, 30, 255]);
+        }
+        image::DynamicImage::ImageRgba8(img)
+            .save_with_format(&png, ImageFormat::Png)
+            .unwrap();
+
+        let pw: Vec<u16> = png
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let item: IShellItem =
+            SHCreateItemFromParsingName(PCWSTR(pw.as_ptr()), None).expect("shell item");
+        let arr: IShellItemArray = SHCreateShellItemArrayFromShellItem(&item).expect("item array");
+
+        scale50.Invoke(&arr, None).expect("Invoke");
+        // Invoke dispatches to a DETACHED worker; poll for the sibling file.
+        let out = dir.join("v (resized).png");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !out.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(out.exists(), "Invoke should have created v (resized).png");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Same shape again, through "Rotate / flip ▸ Rotate right 90°" — `transform_one`'s
+/// in-process path (`transform_file`) writes a `<stem> (edited).<ext>` sibling.
+#[test]
+fn rotate_verb_invoke_creates_file() {
+    unsafe {
+        common::set_test_env("ST2K_NO_REVEAL", "1");
+        let cmd = create_command().expect("create");
+        // Navigate root -> "Rotate / flip" -> "Rotate right 90°".
+        let subs = collect_subcommands(&cmd);
+        let rotate = subs
+            .iter()
+            .find(|c| title_of(c) == "Rotate / flip")
+            .expect("Rotate / flip group");
+        let items = collect_subcommands(rotate);
+        let rotate_right = items
+            .iter()
+            .find(|c| title_of(c) == "Rotate right 90°")
+            .expect("Rotate right 90° verb");
+
+        let dir = std::env::temp_dir().join(format!("st2k_rotate_invoke_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("v.png");
+        let mut img = image::RgbaImage::new(16, 12);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([10, 200, 30, 255]);
+        }
+        image::DynamicImage::ImageRgba8(img)
+            .save_with_format(&png, ImageFormat::Png)
+            .unwrap();
+
+        let pw: Vec<u16> = png
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let item: IShellItem =
+            SHCreateItemFromParsingName(PCWSTR(pw.as_ptr()), None).expect("shell item");
+        let arr: IShellItemArray = SHCreateShellItemArrayFromShellItem(&item).expect("item array");
+
+        rotate_right.Invoke(&arr, None).expect("Invoke");
+        // Invoke dispatches to a DETACHED worker; poll for the sibling file.
+        let out = dir.join("v (edited).png");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !out.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(out.exists(), "Invoke should have created v (edited).png");
+        // A 90° turn swaps the aspect ratio: source is 16x12, so the rotated sibling
+        // must come back 12x16 — this is the pin that the transform actually ran, not
+        // just that SOME file landed at the expected name.
+        let img = image::open(&out).expect("the rotated sibling must be a valid, openable image");
+        assert_eq!(
+            (img.width(), img.height()),
+            (12, 16),
+            "rotate right 90° should swap width/height"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

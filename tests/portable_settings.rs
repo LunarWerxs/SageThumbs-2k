@@ -10,6 +10,8 @@
 //! here read-modify-writes the same ini, which parallel tests would race on. A single test
 //! that runs sections in order is the honest shape, not a limitation worked around.
 
+mod common;
+
 use sagethumbs2k_core::settings;
 
 /// A snapshot of `HKCU\Software\SageThumbs2K` — root values plus one level of subkeys —
@@ -52,7 +54,7 @@ fn portable_mode_uses_the_ini_and_never_touches_the_registry() {
     let ini = std::env::temp_dir().join(format!("st2k-portable-{}.ini", std::process::id()));
     let _ = std::fs::remove_file(&ini);
     // Must happen before ANY settings call — see the module docs.
-    std::env::set_var("ST2K_PORTABLE_INI", &ini);
+    unsafe { common::set_test_env("ST2K_PORTABLE_INI", &ini) };
 
     assert!(
         settings::portable(),

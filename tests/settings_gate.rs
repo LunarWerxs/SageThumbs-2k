@@ -15,6 +15,8 @@
 //! plain `cargo test` does not refresh target/<profile>/*.dll.
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 
@@ -41,20 +43,11 @@ const TEST_ROOT: &str = r"Software\SageThumbs2K\__test_gate";
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
-fn dll_path() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sagethumbs2k.dll")
-}
-
 /// Run a full GetThumbnail handshake on `bytes`; Ok means a thumbnail was
 /// produced, Err means the provider declined (disabled / oversized / undecodable).
 unsafe fn get_thumbnail(bytes: &[u8], cx: u32) -> Result<()> {
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    let path = dll_path();
+    let path = common::dll_path();
     // The cdylib is a build artifact that MUST be present for this in-process
     // probe — there is no meaningful "skip" here. If it's missing the harness
     // built the test but not the DLL (e.g. `cargo test` without first running
@@ -106,7 +99,7 @@ unsafe fn get_thumbnail_from_file(path: &std::path::Path, cx: u32) -> Result<()>
     use windows::Win32::UI::Shell::{BHID_Stream, IShellItem, SHCreateItemFromParsingName};
 
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    let dll = dll_path();
+    let dll = common::dll_path();
     assert!(dll.exists(), "cdylib not built at {dll:?}");
     let wide: Vec<u16> = dll
         .as_os_str()
@@ -201,7 +194,7 @@ fn settings_gate_the_provider() {
     // get_thumbnail LoadLibrary's the cdylib, whose `settings::hkcu_root` caches this env var
     // once. Only the ROOT PATH is cached; the provider still re-reads the VALUES per
     // GetThumbnail (see settings::thumb_settings), so flipping them between calls takes effect.
-    std::env::set_var("ST2K_SETTINGS_ROOT", TEST_ROOT);
+    unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
     reset_scratch(); // clean slate — no stale values from a prior aborted run
 
     let small = encode(solid(80, 60, [10, 200, 30, 255]), ImageFormat::Png);
@@ -257,7 +250,7 @@ fn time_one_file() {
     let Ok(path) = std::env::var("ST2K_TIME_FILE") else {
         panic!("set ST2K_TIME_FILE to the file to time");
     };
-    std::env::set_var("ST2K_SETTINGS_ROOT", TEST_ROOT);
+    unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
     reset_scratch();
     put("EnableThumbs", 1);
     put("MaxSize", 0); // unlimited, so the size gate is never what is being measured
@@ -302,7 +295,7 @@ fn time_one_file() {
 #[test]
 fn oversized_file_backed_stream_is_rescued() {
     let _serial = lock_settings();
-    std::env::set_var("ST2K_SETTINGS_ROOT", TEST_ROOT);
+    unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
     reset_scratch();
 
     // Uncompressed BMP: comfortably over the 1 MB cap set below, and a format the OS

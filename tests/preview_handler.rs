@@ -21,6 +21,8 @@
 //! LoadLibrary below could otherwise pick up a stale cdylib.
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::c_void;
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
@@ -65,21 +67,10 @@ const PANE_H: i32 = 240;
 type DllGetClassObjectFn =
     unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
-/// The cdylib sits one dir above the test exe
-/// (`target/<profile>/sagethumbs2k.dll` vs `target/<profile>/deps/<test>.exe`).
-fn dll_path() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sagethumbs2k.dll")
-}
-
 /// Load the DLL and create the preview handler asking for the initializer, the
 /// same handshake prevhost performs.
 unsafe fn create_handler() -> Result<IInitializeWithStream> {
-    let path = dll_path();
+    let path = common::dll_path();
     assert!(
         path.exists(),
         "cdylib not built at {path:?} — run `cargo build` first"
@@ -109,7 +100,7 @@ unsafe fn create_handler() -> Result<IInitializeWithStream> {
 
 /// Same handshake, for the THUMBNAIL coclass.
 unsafe fn create_thumb_provider() -> Result<IInitializeWithStream> {
-    let path = dll_path();
+    let path = common::dll_path();
     let wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
@@ -554,13 +545,18 @@ fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
         .collect();
 
     // Explorer's thumbnail pass over the neighbours: keep hammering GetThumbnail on
-    // background threads for as long as the pane test runs.
+    // background threads for as long as the pane test runs. One counter PER LANE (rather
+    // than one shared total) so readiness can be checked per lane below — a shared total
+    // could clear its floor from three fast lanes while a fourth had not started at all.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let thumb_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    const LANES: usize = 4;
+    let lane_calls: Vec<std::sync::Arc<std::sync::atomic::AtomicUsize>> = (0..LANES)
+        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)))
+        .collect();
     let mut load = Vec::new();
-    for lane in 0..4 {
+    for (lane, calls) in lane_calls.iter().enumerate() {
         let stop = stop.clone();
-        let calls = thumb_calls.clone();
+        let calls = calls.clone();
         let paths = paths.clone();
         load.push(std::thread::spawn(move || unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -590,8 +586,26 @@ fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
         }));
     }
 
-    // Give the thumbnail storm a moment to actually be running before we click.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Wait for the thumbnail storm to actually be running on EVERY lane, rather than
+    // hoping a fixed sleep was long enough: poll each lane's own counter until it has
+    // completed at least MIN_CALLS_PER_LANE full GetThumbnail round trips. A deadline
+    // still bounds the wait so a genuinely stuck lane fails the test instead of hanging.
+    const MIN_CALLS_PER_LANE: usize = 1;
+    let readiness_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let ready = lane_calls
+            .iter()
+            .all(|c| c.load(std::sync::atomic::Ordering::Relaxed) >= MIN_CALLS_PER_LANE);
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < readiness_deadline,
+            "thumbnail load storm never reached {MIN_CALLS_PER_LANE} call(s) on every lane \
+             within the deadline — the storm this test depends on never really started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 
     let mut blanks: Vec<String> = Vec::new();
     unsafe {
@@ -662,7 +676,10 @@ fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
     for t in load {
         let _ = t.join();
     }
-    let calls = thumb_calls.load(std::sync::atomic::Ordering::Relaxed);
+    let calls: usize = lane_calls
+        .iter()
+        .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        .sum();
     let _ = std::fs::remove_dir_all(&dir);
 
     eprintln!("competing thumbnail decodes during the run: {calls}");
