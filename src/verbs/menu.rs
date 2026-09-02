@@ -399,8 +399,11 @@ pub fn slot_for(offset: u32, n_leaves: u32) -> Option<CmdSlot> {
 }
 
 /// Total leaf verbs in the whole `MENU` tree (the preview's offset). Cheap walk
-/// shared by [`id_for`] so we don't allocate a `leaves()` Vec just to count.
-fn leaf_count() -> u32 {
+/// shared by [`id_for`] so we don't allocate a `leaves()` Vec just to count. `pub(crate)`
+/// so `contextmenu/com.rs`'s `QueryContextMenu` can read just the count on every
+/// right-click instead of calling `leaves()` (which allocates and fills a ~46-entry
+/// `Vec`) only to immediately discard it and keep `.len()`.
+pub(crate) fn leaf_count() -> u32 {
     MENU.iter().map(count_leaves).sum()
 }
 

@@ -87,7 +87,9 @@ use std::process::{Command, Stdio};
 
 use image::{DynamicImage, ImageFormat};
 use windows::core::{Error, Result, PCWSTR};
-use windows::Win32::Foundation::E_FAIL;
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, E_FAIL,
+};
 use windows::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 use windows::Win32::Storage::FileSystem::{
     GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_READONLY,
@@ -101,8 +103,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::encode::{
-    compress_to_size, edit_output_ext, predict_unique_suffix, read_capped, reserve_unique_suffix,
-    resize_file, shrink_for_email, transform_file, with_tmp_suffix, Resize, Target,
+    compress_to_size, edit_output_ext, predict_unique_suffix, read_full_fidelity_capped,
+    reserve_unique_suffix, resize_file, shrink_for_email, transform_file, Resize, Target,
 };
 use super::fileops::{
     combine_to_cbz, combined_path, files_to_folder, reserve_dest, sanitize_component,
@@ -290,6 +292,28 @@ fn reveal_is_noise(out: &std::path::Path, sources: &[String]) -> bool {
         .any(|s| std::path::Path::new(s).parent() == Some(out_dir))
 }
 
+/// Per-call unique temp-staging name for an atomic write to a FIXED destination
+/// (folder-icon's `SageThumbsFolder.ico`/`desktop.ini`, wallpaper's `wallpaper.png`)
+/// — unlike `super::encode`'s `write_atomic`/`OutSlot`, which reserves a fresh,
+/// collision-free OUTPUT name per call, these two verbs always write to the SAME
+/// destination path. A bare `<out>.st2ktmp` staging name is then shared by every
+/// call against that destination, so two quick clicks (two Set-as-folder-icon runs
+/// in one folder, in quick succession) write through separate handles to the
+/// identical temp file. Stamp a per-process atomic counter into the name — the
+/// same fix `launch_with_list` already applies to its listfile names.
+fn unique_tmp(out: &Path) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut s = out.to_path_buf().into_os_string();
+    s.push(format!(".{}_{n}.st2ktmp", std::process::id()));
+    PathBuf::from(s)
+}
+
+/// The parent window for the error box, rebuilt from the `isize` the caller passed.
+fn owner_hwnd(owner: Option<isize>) -> Option<windows::Win32::Foundation::HWND> {
+    owner.map(|h| windows::Win32::Foundation::HWND(h as *mut core::ffi::c_void))
+}
+
 /// Run a context-menu action on a DETACHED worker thread, then surface any error and
 /// reveal new-folder output — so the shell's `IContextMenu::InvokeCommand` /
 /// `IExplorerCommand::Invoke` returns immediately instead of blocking explorer.exe's UI
@@ -299,14 +323,21 @@ fn reveal_is_noise(out: &std::path::Path, sources: &[String]) -> bool {
 /// keeps NO reference to the COM object that launched it. `owner` is the parent HWND (as
 /// `isize`) for the error MessageBox, or `None`.
 pub fn run_action_detached(action: VerbAction, paths: Vec<String>, owner: Option<isize>) {
-    let _ = std::thread::Builder::new()
+    let attempted = paths.len();
+    // Pin the DLL BEFORE `spawn`, not as the worker closure's first line: `spawn` only
+    // schedules the thread, it doesn't run it, so a `ModuleRef` taken inside the closure
+    // leaves a window — between `spawn` returning here and that first line actually
+    // executing — where the DLL could unload out from under a thread that's about to
+    // touch it. `ModuleRef::default()` is NOT a no-op — its `Default` impl does the
+    // `dll_add_ref()`; clippy's "use `ModuleRef`" suggestion would skip it.
+    #[allow(clippy::default_constructed_unit_structs)]
+    let module = crate::ModuleRef::default();
+    let spawned = std::thread::Builder::new()
         .name("st2k-verb".into())
         .spawn(move || {
-            // Keep the DLL pinned for the action's lifetime (a detached thread outlives the
-            // Invoke call that spawned it). `ModuleRef::default()` is NOT a no-op — its `Default`
-            // impl does the `dll_add_ref()`; clippy's "use `ModuleRef`" suggestion would skip it.
-            #[allow(clippy::default_constructed_unit_structs)]
-            let _module = crate::ModuleRef::default();
+            let _module = module;
+            // `HWND` wraps a raw pointer and is not `Send`; the owner crosses as an `isize`.
+            let parent = owner_hwnd(owner);
             // STA matches the shell thread the verb used to run on (ShellExecute / clipboard /
             // WIC all behave there). S_OK / S_FALSE add a ref to balance; RPC_E_CHANGED_MODE
             // (already an MTA thread) does not, so only CoUninitialize when we actually inited.
@@ -318,14 +349,22 @@ pub fn run_action_detached(action: VerbAction, paths: Vec<String>, owner: Option
             }
             .is_ok();
             let report = run_action(action, &paths);
-            let parent =
-                owner.map(|h| windows::Win32::Foundation::HWND(h as *mut core::ffi::c_void));
             report.surface(parent);
             report.reveal(&paths);
             if inited {
                 unsafe { windows::Win32::System::Com::CoUninitialize() };
             }
         });
+    // A spawn failure used to vanish silently (the menu item just "did nothing"). Log it
+    // and show the same error box a failed verb would, instead of leaving the click
+    // unexplained — `module` (still held here) drops right after, releasing the pin this
+    // aborted action never used.
+    if let Err(e) = spawned {
+        crate::safety::log(&format!("run_action_detached: spawn failed: {e}"));
+        ActionReport::applied(attempted, 0)
+            .with_note("couldn't start the action")
+            .surface(owner_hwnd(owner));
+    }
 }
 
 /// Dispatch a verb over the selected paths (best-effort). Returns an
@@ -338,9 +377,15 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
         VerbAction::Upload => {
             // Upload the selected image(s) to the keyless host in the companion app,
             // which copies the resulting link(s) to the clipboard. The originals are
-            // never modified; the app owns the network + result UX (delegated).
-            launch_upload(paths);
-            ActionReport::delegated()
+            // never modified; the app owns the network + result UX (delegated) —
+            // unless the listfile handoff itself couldn't be written, in which case
+            // there's no window coming to explain the silently dead menu item.
+            match launch_upload(paths) {
+                ListLaunch::Failed => {
+                    ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
+                }
+                _ => ActionReport::delegated(),
+            }
         }
         VerbAction::Wallpaper(mode) => handle_wallpaper(paths, mode),
         VerbAction::CombineToPdf => handle_combine_to_pdf(paths),
@@ -354,10 +399,12 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             ActionReport::delegated()
         }
         VerbAction::StripMetadata => handle_strip_metadata(paths),
-        VerbAction::ConvertDialog => {
-            launch_convert_dialog(paths);
-            ActionReport::delegated()
-        }
+        VerbAction::ConvertDialog => match launch_convert_dialog(paths) {
+            ListLaunch::Failed => {
+                ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
+            }
+            _ => ActionReport::delegated(),
+        },
         VerbAction::OpenSettings => {
             launch_app(&[]);
             ActionReport::delegated()
@@ -520,10 +567,24 @@ fn handle_combine_to_cbz(paths: &[String]) -> ActionReport {
     let slot = combined_path(&imgs[0], "cbz");
     let out = slot.path().to_path_buf();
     match combine_to_cbz(&imgs, &out) {
-        Ok(()) => ActionReport {
-            output: Some(out),
-            ..ActionReport::applied(1, 1)
-        },
+        // `dropped` is how many of `imgs` couldn't be read and so were left out of the
+        // archive — mirrors `handle_combine_to_pdf`'s reporting of `combine_to_pdf_paged`'s
+        // dropped count, which this used to lack: any `Ok(())` reported a flat
+        // `applied(1, 1)` no matter how many of a multi-image combine actually made it in.
+        Ok(dropped) => {
+            let attempted = imgs.len();
+            let done = attempted.saturating_sub(dropped);
+            let report = ActionReport {
+                output: Some(out),
+                ..ActionReport::applied(attempted, done)
+            };
+            if dropped > 0 {
+                let plural = if dropped == 1 { "" } else { "s" };
+                report.with_note(format!("{dropped} image{plural} couldn't be read"))
+            } else {
+                report
+            }
+        }
         Err(e) => {
             crate::safety::log(&format!("Combine to CBZ failed: {e:?}"));
             ActionReport::applied(1, 0).with_note("couldn't build the CBZ archive")
@@ -630,7 +691,14 @@ fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport
         .cloned()
         .collect();
     let target = size.target_bytes();
-    let outs: Vec<PathBuf> = crate::parallel::map(&imgs, |_, p| compress_to_size(p, target).ok())
+    let outs: Vec<PathBuf> =
+        crate::parallel::map(&imgs, |_, p| match compress_to_size(p, target) {
+            Ok(out) => Some(out),
+            Err(e) => {
+                crate::safety::log(&format!("Compress to size failed for {p}: {e:?}"));
+                None
+            }
+        })
         .into_iter()
         .flatten()
         .collect();
@@ -671,18 +739,30 @@ fn handle_files_to_folder(paths: &[String]) -> ActionReport {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("New Folder");
+            // `files_to_folder` now reports (dir, moved, skipped) instead of a bare `Ok`/`Err`
+            // (the multi-file dialog case's fix — see the companion app's `files_to_folder.rs`
+            // — applies here too): a single-file move that silently skipped would otherwise
+            // still read as a clean `applied(1, 1)`.
             match files_to_folder(paths, stem) {
-                Ok(_) => ActionReport::applied(1, 1),
+                Ok((_, moved, skipped)) => {
+                    let mut r = ActionReport::applied(moved + skipped, moved);
+                    if skipped > 0 {
+                        r.note = Some("couldn't move the file into the new folder".into());
+                    }
+                    r
+                }
                 Err(e) => {
                     crate::safety::log(&format!("Files to folder failed: {e:?}"));
                     ActionReport::applied(1, 0).with_note("couldn't create or fill the folder")
                 }
             }
         }
-        _ => {
-            launch_files_to_folder(paths);
-            ActionReport::delegated()
-        }
+        _ => match launch_files_to_folder(paths) {
+            ListLaunch::Failed => {
+                ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
+            }
+            _ => ActionReport::delegated(),
+        },
     }
 }
 
@@ -709,10 +789,13 @@ fn handle_tags_to_folders(paths: &[String]) -> ActionReport {
         .cloned()
         .collect();
     if audio.is_empty() {
-        ActionReport::default()
-    } else {
-        launch_tags_to_folders(&audio);
-        ActionReport::delegated()
+        return ActionReport::default();
+    }
+    match launch_tags_to_folders(&audio) {
+        ListLaunch::Failed => {
+            ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
+        }
+        _ => ActionReport::delegated(),
     }
 }
 
@@ -789,6 +872,18 @@ mod launch_probe {
     }
 }
 
+/// Whether [`launch_with_list`] actually handed the list off to the companion app.
+enum ListLaunch {
+    /// Nothing in `paths` matched the filter — no list to hand off (not a failure;
+    /// the caller reports this the same as [`ListLaunch::Launched`]).
+    Nothing,
+    /// The list file was written and the companion app launched.
+    Launched,
+    /// The list file couldn't be written (a full or redirected `%TEMP%`) — the menu
+    /// item would otherwise silently do nothing, with no trace of why.
+    Failed,
+}
+
 /// Write `paths` (after `filter`) to a uniquely-named temp `.lst` file and launch the
 /// companion EXE with `flag <listfile>` — the shared body behind the four
 /// "handoff a file list to a companion-app dialog" launchers below, which used to
@@ -801,52 +896,67 @@ mod launch_probe {
 /// first before the spawned app read it. The counter makes every call's filename
 /// unique for the life of the host process. No cleanup is needed here: the companion
 /// app's `read_listfile` deletes the file once it's read.
-fn launch_with_list(paths: &[String], filter: impl Fn(&str) -> bool, prefix: &str, flag: &str) {
+fn launch_with_list(
+    paths: &[String],
+    filter: impl Fn(&str) -> bool,
+    prefix: &str,
+    flag: &str,
+) -> ListLaunch {
     let filtered: Vec<String> = paths
         .iter()
         .filter(|p| filter(p.as_str()))
         .cloned()
         .collect();
     if filtered.is_empty() {
-        return;
+        return ListLaunch::Nothing;
     }
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut lf = std::env::temp_dir();
     lf.push(format!("st2k_{prefix}_{}_{n}.lst", std::process::id()));
-    if std::fs::write(&lf, filtered.join("\r\n")).is_err() {
-        return;
+    if let Err(e) = std::fs::write(&lf, filtered.join("\r\n")) {
+        crate::safety::log_error(&format!(
+            "launch_with_list: couldn't write {}: {e}",
+            lf.display()
+        ));
+        return ListLaunch::Failed;
     }
-    if let Some(s) = lf.to_str() {
-        launch_app(&[flag, s]);
-    }
+    let Some(s) = lf.to_str() else {
+        crate::safety::log_error(&format!(
+            "launch_with_list: temp path {} isn't valid Unicode",
+            lf.display()
+        ));
+        return ListLaunch::Failed;
+    };
+    launch_app(&[flag, s]);
+    ListLaunch::Launched
 }
 
 /// Launch the companion EXE's Convert… dialog over the selected images. Resolves the
 /// EXE from the DLL's OWN directory (NOT current_exe(), which in the shell host
 /// returns explorer.exe/dllhost.exe) — a temp-file handoff is robust to many files /
 /// odd names where a command line would overflow or mis-quote.
-fn launch_convert_dialog(paths: &[String]) {
-    launch_with_list(paths, is_image, "convert", "--convert");
+fn launch_convert_dialog(paths: &[String]) -> ListLaunch {
+    launch_with_list(paths, is_image, "convert", "--convert")
 }
 
 /// Launch the companion EXE's keyless uploader over the selected images. The app
 /// POSTs each file and copies the resulting link(s) to the clipboard; the ORIGINAL
 /// files are never modified or deleted (the app's `--upload-keep` path keeps them,
 /// unlike the screenshot `--upload` path which deletes its throwaway capture).
-fn launch_upload(paths: &[String]) {
-    launch_with_list(paths, is_image, "upload", "--upload-keep");
+fn launch_upload(paths: &[String]) -> ListLaunch {
+    launch_with_list(paths, is_image, "upload", "--upload-keep")
 }
 
 /// Launch the companion EXE's "Files to folder" name-prompt dialog over the
 /// selected files (unfiltered — any file type).
-fn launch_files_to_folder(paths: &[String]) {
-    launch_with_list(paths, |_| true, "f2f", "--files-to-folder");
+fn launch_files_to_folder(paths: &[String]) -> ListLaunch {
+    launch_with_list(paths, |_| true, "f2f", "--files-to-folder")
 }
 
 /// Launch the companion EXE's "Tags to folders" dialog over the selected audio files.
-fn launch_tags_to_folders(audio: &[String]) {
-    launch_with_list(audio, |_| true, "ttf", "--tags-to-folders");
+fn launch_tags_to_folders(audio: &[String]) -> ListLaunch {
+    launch_with_list(audio, |_| true, "ttf", "--tags-to-folders")
 }
 
 /// Open the verbose, copyable "Image info" window in the companion app (it gathers the
@@ -959,6 +1069,65 @@ mod tests {
             report.output.is_some(),
             "the partial PDF is still a real output to reveal"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `combine_to_cbz` used to abort the WHOLE archive on the first unreadable
+    /// page (`read_full_fidelity_capped(p)?` propagating straight out of `write_atomic`'s closure), unlike
+    /// its `combine_to_pdf` sibling. Select 2 real images + 1 path that's been deleted out
+    /// from under the selection (the "deleted between selection and invocation" case P40's
+    /// own evidence calls out) and check a partial CBZ is still produced, with a note.
+    #[test]
+    fn combine_to_cbz_reports_a_partial_success_when_a_page_cannot_be_read() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_actions_cbz_drop_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let good: Vec<String> = (0..2)
+            .map(|i| {
+                let p = dir.join(format!("page{i}.png"));
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                    12,
+                    8,
+                    image::Rgb([i as u8 * 50, 40, 40]),
+                ))
+                .save(&p)
+                .unwrap();
+                p.to_str().unwrap().to_string()
+            })
+            .collect();
+        // Selected, but gone by the time the combine actually reads it.
+        let vanished = dir.join("page2.png");
+        std::fs::write(&vanished, b"placeholder").unwrap();
+        let vanished_str = vanished.to_str().unwrap().to_string();
+        std::fs::remove_file(&vanished).unwrap();
+
+        let mut paths = good;
+        paths.push(vanished_str);
+
+        let report = run_action(VerbAction::CombineToCbz, &paths);
+        assert_eq!(report.attempted, 3, "all 3 selected images were attempted");
+        assert_eq!(
+            report.done, 2,
+            "only the 2 readable pages made it into the CBZ"
+        );
+        assert!(
+            report.note.is_some(),
+            "a partial combine must carry an explanatory note, not report silent full success"
+        );
+        let out = report
+            .output
+            .as_ref()
+            .expect("the partial CBZ is still a real output to reveal");
+        assert!(out.exists(), "the partial CBZ must actually be written");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

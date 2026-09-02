@@ -38,6 +38,9 @@ pub use menu::{
     MenuItem, QuickItem, RenamePattern, Transform, VerbAction, WallpaperMode, MENU, MENU_SEP_TOKEN,
     QUICK_KEYS,
 };
+// The leaf COUNT alone, for the QueryContextMenu id budget: cheaper than `leaves().len()`,
+// which allocated the whole ~46-entry Vec on every right-click just to read its length.
+pub(crate) use menu::leaf_count;
 
 // Encode / convert / resize primitives and descriptors.
 #[allow(unused_imports)]
@@ -47,7 +50,7 @@ pub use encode::{
     convert_to_magick_in_named, resize_file, shrink_for_email, transform_file, ConvertOpts, Resize,
     Target,
 };
-pub(crate) use encode::{flatten_onto_white, read_capped};
+pub(crate) use encode::{flatten_onto_white, read_full_fidelity_capped};
 
 // Folder/sort verbs + the CBZ archiver.
 #[allow(unused_imports)]
@@ -65,7 +68,8 @@ pub use actions::{
 // in a normal (non-test) lib build — they're reached only via `super::*` in tests.
 #[cfg(test)]
 pub(crate) use actions::{rename_one, set_folder_icon, tag_base};
-#[cfg(test)]
+// `write_atomic` is reachable in normal builds too: `topdf` writes through it.
+#[allow(unused_imports)]
 pub(crate) use encode::{apply_resize, with_tmp_suffix, write_atomic};
 #[cfg(test)]
 pub(crate) use fileops::{combined_path, expand_template, sanitize_component};
@@ -1029,8 +1033,9 @@ mod tests {
             paths.push(p.to_str().unwrap().to_string());
         }
 
-        let folder = files_to_folder(&paths, "My Group").unwrap();
+        let (folder, moved, skipped) = files_to_folder(&paths, "My Group").unwrap();
         assert_eq!(folder, dir.join("My Group"));
+        assert_eq!((moved, skipped), (3, 0));
         assert!(
             folder.join("a.txt").exists()
                 && folder.join("b.txt").exists()
@@ -1042,12 +1047,14 @@ mod tests {
         // A second call with the same name makes a *fresh* folder, never merges.
         let p2 = dir.join("d.txt");
         std::fs::write(&p2, b"y").unwrap();
-        let folder2 = files_to_folder(&[p2.to_str().unwrap().to_string()], "My Group").unwrap();
+        let (folder2, _, _) =
+            files_to_folder(&[p2.to_str().unwrap().to_string()], "My Group").unwrap();
         assert_eq!(folder2, dir.join("My Group (2)"));
         // Illegal filename chars in the name are sanitized.
         let p3 = dir.join("e.txt");
         std::fs::write(&p3, b"z").unwrap();
-        let folder3 = files_to_folder(&[p3.to_str().unwrap().to_string()], "a/b:c").unwrap();
+        let (folder3, _, _) =
+            files_to_folder(&[p3.to_str().unwrap().to_string()], "a/b:c").unwrap();
         assert_eq!(folder3, dir.join("a-b-c"));
         let _ = std::fs::remove_dir_all(&dir);
     }

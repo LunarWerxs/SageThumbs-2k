@@ -19,7 +19,7 @@ use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 use crate::pdf::block_op;
-use crate::verbs::read_capped;
+use crate::verbs::read_full_fidelity_capped;
 
 mod table;
 
@@ -27,7 +27,7 @@ mod table;
 /// (no text found, no OCR language pack, unreadable image) leave the clipboard
 /// untouched.
 pub fn ocr_to_clipboard(path: &str) -> Result<()> {
-    let text = recognize_bytes(read_capped(path)?)?;
+    let text = recognize_bytes(read_full_fidelity_capped(path)?)?;
     if text.trim().is_empty() {
         return Err(Error::from(E_FAIL));
     }

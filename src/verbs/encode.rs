@@ -72,19 +72,21 @@ pub(crate) fn flatten_onto_white(img: &DynamicImage) -> DynamicImage {
 /// `decode::limits::MAX_FULL_FIDELITY_INPUT_BYTES` (checked via metadata before the
 /// allocation) so a multi-GB file can't be loaded wholesale.
 ///
-/// Issue #34: this used to share the thumbnail path's much smaller
-/// `MAX_INPUT_BYTES`, which silently dropped every PSD over 256 MiB from a Convert
-/// batch. See [`crate::decode::read_full_fidelity`] for why the user-chosen file gets
-/// its own, larger budget.
+/// The name says which cap applies: `decode::read_capped` refuses past the much
+/// smaller thumbnail ceiling (`MAX_INPUT_BYTES`, 256 MiB), and the preview tier's
+/// reader truncates instead of refusing. Issue #34: this used to share the thumbnail
+/// ceiling under the same name, which silently dropped every PSD over 256 MiB from a
+/// Convert batch. See [`crate::decode::read_full_fidelity`] for why the user-chosen
+/// file gets its own, larger budget.
 ///
-/// The io error is logged before it is flattened to `E_FAIL`, because that flattening
-/// is what made the failure unexplainable: the verb call sites have no room for an
-/// error string, so without this line the size refusal reached the user as a file that
-/// simply was not there.
-pub(crate) fn read_capped(path: &str) -> Result<Vec<u8>> {
+/// The io error is logged and carried in the returned error's message, because a
+/// bare `E_FAIL` is what made the failure unexplainable: the verb call sites have
+/// no room for an error string, so without the log line the size refusal reached
+/// the user as a file that simply was not there.
+pub(crate) fn read_full_fidelity_capped(path: &str) -> Result<Vec<u8>> {
     crate::decode::read_full_fidelity(path).map_err(|e| {
         crate::safety::log(&format!("cannot read {path}: {e}"));
-        Error::from(E_FAIL)
+        Error::new(E_FAIL, format!("read {path}: {e}"))
     })
 }
 
@@ -139,7 +141,7 @@ pub(crate) fn edit_output_ext(source_ext: &str) -> &str {
 /// writing via a temp file + rename so a failed encode leaves no partial file.
 /// Returns the output path on success.
 pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
-    let bytes = read_capped(path)?;
+    let bytes = read_full_fidelity_capped(path)?;
     let img = decode::decode_full_for_path(&bytes, path)?;
 
     let slot = unique_output(Path::new(path), target.ext);
@@ -199,7 +201,7 @@ fn src_ext(path: &str) -> String {
 /// next to the original — never overwrites the source (a JPEG would re-compress).
 /// Keeps the source format. Returns the output path.
 pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
-    let bytes = read_capped(path)?;
+    let bytes = read_full_fidelity_capped(path)?;
     let src = Path::new(path);
     let ext = src
         .extension()
@@ -210,20 +212,13 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
     // LOSSLESS path for baseline JPEGs: rotate/flip the DCT coefficients directly
     // (no decode-to-pixels, no re-quantize → zero quality loss). Falls through to
     // the lossy re-encode below if the JPEG is outside the supported scope
-    // (progressive, non-block-aligned dimensions, etc.).
+    // (progressive, non-block-aligned dimensions, a multi-picture index, etc.).
     if matches!(ext.as_str(), "jpg" | "jpeg" | "jpe" | "jfif") {
-        let op = match t {
-            Transform::Right90 => crate::jpegtran::Op::Rot90,
-            Transform::Left90 => crate::jpegtran::Op::Rot270,
-            Transform::Rotate180 => crate::jpegtran::Op::Rot180,
-            Transform::FlipH => crate::jpegtran::Op::FlipH,
-            Transform::FlipV => crate::jpegtran::Op::FlipV,
-        };
-        if let Some(out_bytes) = crate::jpegtran::transform(&bytes, op) {
-            let out_bytes = neutralize_lossless_jpeg_orientation(out_bytes);
+        if let Some(out_bytes) = lossless_jpeg_transform(&bytes, t) {
             let slot = reserve_unique_suffix(src, "edited", &ext);
             write_atomic(slot.path(), |tmp| {
-                std::fs::write(tmp, &out_bytes).map_err(|_| Error::from(E_FAIL))
+                std::fs::write(tmp, &out_bytes)
+                    .map_err(|e| Error::new(E_FAIL, format!("write {}: {e}", tmp.display())))
             })?;
             preserve_src_time(src, slot.path());
             return Ok(slot.path().to_path_buf());
@@ -267,16 +262,134 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
     Ok(slot.path().to_path_buf())
 }
 
-/// A273: after a lossless rotate/flip, reset a stale EXIF Orientation tag to 1.
+/// One of the eight symmetries of a rectangle, written as "transpose, then flip
+/// horizontally, then flip vertically" (each step optional, always in that order).
+///
+/// Both an EXIF Orientation and a menu [`Transform`] are members of this group, and
+/// the lossless JPEG path needs their COMPOSITION: the stored pixels of an
+/// `Orientation=6` phone photo lie on their side and the viewer rotates them, so a
+/// "rotate right" request must act on what the viewer shows, not on the stored grid.
+/// Composing the two picks the single [`crate::jpegtran::Op`] that turns the stored
+/// grid into the requested result, after which the tag is reset to 1.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Dihedral {
+    transpose: bool,
+    flip_h: bool,
+    flip_v: bool,
+}
+
+impl Dihedral {
+    /// The operation a viewer applies to the stored pixels for EXIF Orientation `o`
+    /// (1..=8 per the EXIF spec; anything else is treated as 1, "normal").
+    fn from_exif_orientation(o: u32) -> Self {
+        let (transpose, flip_h, flip_v) = match o {
+            2 => (false, true, false),
+            3 => (false, true, true),
+            4 => (false, false, true),
+            5 => (true, false, false),
+            6 => (true, true, false), // rotate 90° CW = transpose then flip-H
+            7 => (true, true, true),
+            8 => (true, false, true), // rotate 270° CW = transpose then flip-V
+            _ => (false, false, false),
+        };
+        Self {
+            transpose,
+            flip_h,
+            flip_v,
+        }
+    }
+
+    fn from_transform(t: Transform) -> Self {
+        let (transpose, flip_h, flip_v) = match t {
+            Transform::Right90 => (true, true, false),
+            Transform::Left90 => (true, false, true),
+            Transform::Rotate180 => (false, true, true),
+            Transform::FlipH => (false, true, false),
+            Transform::FlipV => (false, false, true),
+        };
+        Self {
+            transpose,
+            flip_h,
+            flip_v,
+        }
+    }
+
+    /// `self` first, then `next`.
+    ///
+    /// Moving `next`'s transpose in front of `self`'s flips swaps their axes, because
+    /// `transpose(flip_h(x)) == flip_v(transpose(x))`; flips then combine by parity.
+    fn then(self, next: Self) -> Self {
+        let (flip_h, flip_v) = if next.transpose {
+            (self.flip_v, self.flip_h)
+        } else {
+            (self.flip_h, self.flip_v)
+        };
+        Self {
+            transpose: self.transpose ^ next.transpose,
+            flip_h: flip_h ^ next.flip_h,
+            flip_v: flip_v ^ next.flip_v,
+        }
+    }
+
+    /// The jpegtran operation with this effect; `None` for the identity.
+    fn to_op(self) -> Option<crate::jpegtran::Op> {
+        use crate::jpegtran::Op;
+        Some(match (self.transpose, self.flip_h, self.flip_v) {
+            (false, false, false) => return None,
+            (false, true, false) => Op::FlipH,
+            (false, false, true) => Op::FlipV,
+            (false, true, true) => Op::Rot180,
+            (true, true, false) => Op::Rot90,
+            (true, false, true) => Op::Rot270,
+            (true, false, false) => Op::Transpose,
+            (true, true, true) => Op::Transverse,
+        })
+    }
+}
+
+/// The source JPEG's EXIF Orientation tag, if it has one.
+fn exif_orientation(bytes: &[u8]) -> Option<u32> {
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(bytes))
+        .ok()?;
+    exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
+        .value
+        .get_uint(0)
+}
+
+/// The lossless JPEG branch of [`transform_file`]: compose the source Orientation with
+/// the request, transform the DCT grid with the resulting operation, and reset the
+/// tag. `None` when the file is outside `jpegtran`'s scope, so the caller takes the
+/// pixel path (which decodes with the orientation applied and so is correct by
+/// construction).
+fn lossless_jpeg_transform(bytes: &[u8], t: Transform) -> Option<Vec<u8>> {
+    let stored = Dihedral::from_exif_orientation(exif_orientation(bytes).unwrap_or(1));
+    let out = match stored.then(Dihedral::from_transform(t)).to_op() {
+        Some(op) => crate::jpegtran::transform(bytes, op)?,
+        // The request exactly undoes the stored orientation: the stored grid already IS
+        // the result, so the bytes are kept as they are and only the tag changes. A
+        // multi-picture index is declined for the same reason `transform` declines it:
+        // the EXIF rewrite below can change the segment's length.
+        None => {
+            if crate::jpegtran::has_multi_picture_index(bytes) {
+                return None;
+            }
+            bytes.to_vec()
+        }
+    };
+    Some(neutralize_lossless_jpeg_orientation(out))
+}
+
+/// A273: after a lossless rotate/flip, reset the EXIF Orientation tag to 1 and drop the
+/// IFD1 thumbnail.
 ///
 /// `crate::jpegtran::transform` keeps APPn/EXIF segments byte-for-byte verbatim while
 /// physically transforming the DCT grid (that's the whole point — zero requantize loss), so
-/// a source whose Orientation was non-1 now has a tag describing the WRONG transform: an
-/// orientation-aware viewer rotates the already-rotated pixels a second time. This branch
-/// returns straight to the caller before `carry` is ever consulted (there is no fresh
-/// re-encode here for `carry::apply` to graft onto), so nothing else neutralizes it — mirrors
-/// `carry::normalize_orientation`'s bit layout exactly, just applied to the OUTPUT file's own
-/// already-present segment instead of a metadata block lifted off the source.
+/// the tag still describes the SOURCE grid and the embedded thumbnail still shows the source
+/// framing. This branch returns straight to the caller before `carry` is ever consulted
+/// (there is no fresh re-encode here for `carry::apply` to graft onto), so the same two
+/// rewrites `carry` applies to a lifted block are applied here to the output file's own
+/// segment.
 ///
 /// Best-effort: any parse surprise returns `bytes` unchanged rather than risk corrupting a
 /// file whose pixel transform already succeeded. A file with no EXIF, or none of the shapes
@@ -298,7 +411,8 @@ fn neutralize_lossless_jpeg_orientation(bytes: Vec<u8>) -> Vec<u8> {
         return bytes; // no EXIF segment — nothing to neutralize
     };
     let mut tiff = segs[idx].contents()[EXIF_PREFIX.len()..].to_vec();
-    zero_out_ifd0_orientation(&mut tiff);
+    carry::reset_orientation_to_1(&mut tiff);
+    carry::drop_ifd1_thumbnail(&mut tiff);
     let mut new_contents = EXIF_PREFIX.to_vec();
     new_contents.extend_from_slice(&tiff);
     segs[idx] = JpegSegment::new_with_contents(markers::APP1, Bytes::from(new_contents));
@@ -312,69 +426,10 @@ fn neutralize_lossless_jpeg_orientation(bytes: Vec<u8>) -> Vec<u8> {
     out.to_vec()
 }
 
-/// Rewrite IFD0's Orientation entry (tag 0x0112) to 1 ("normal"), in place.
-///
-/// Same bit layout `carry::normalize_orientation` rewrites: the entry is a single SHORT
-/// stored inline in its own 4-byte value field, so this never changes the block's length
-/// or any offset within it. Best-effort: any parse surprise (bad byte-order marker,
-/// out-of-range offsets, an entry shaped unlike a plain SHORT/count-1) leaves `tiff`
-/// untouched rather than guess at a layout we do not recognise.
-fn zero_out_ifd0_orientation(tiff: &mut [u8]) {
-    const TAG_ORIENTATION: u16 = 0x0112;
-
-    let le = match tiff.first_chunk::<2>() {
-        Some(b"II") => true,
-        Some(b"MM") => false,
-        _ => return,
-    };
-    let u16at = |b: &[u8], o: usize| -> Option<u16> {
-        let v = b.get(o..o + 2)?.first_chunk::<2>()?;
-        Some(if le {
-            u16::from_le_bytes(*v)
-        } else {
-            u16::from_be_bytes(*v)
-        })
-    };
-    let u32at = |b: &[u8], o: usize| -> Option<u32> {
-        let v = b.get(o..o + 4)?.first_chunk::<4>()?;
-        Some(if le {
-            u32::from_le_bytes(*v)
-        } else {
-            u32::from_be_bytes(*v)
-        })
-    };
-    let Some(ifd0) = u32at(tiff, 4).map(|v| v as usize) else {
-        return;
-    };
-    let Some(count) = u16at(tiff, ifd0) else {
-        return;
-    };
-    for i in 0..count as usize {
-        let entry = ifd0 + 2 + i * 12;
-        if u16at(tiff, entry) != Some(TAG_ORIENTATION) {
-            continue;
-        }
-        // Type 3 (SHORT), count 1 — anything else is malformed; leave it alone rather
-        // than guess at a layout we do not recognise.
-        if u16at(tiff, entry + 2) != Some(3) || u32at(tiff, entry + 4) != Some(1) {
-            return;
-        }
-        let one: [u8; 2] = if le {
-            1u16.to_le_bytes()
-        } else {
-            1u16.to_be_bytes()
-        };
-        if let Some(slot) = tiff.get_mut(entry + 8..entry + 10) {
-            slot.copy_from_slice(&one);
-        }
-        return;
-    }
-}
-
 /// Resize via a menu preset and write a new "(resized)" file next to the source,
 /// keeping the original format. Never upscales. Returns the output path.
 pub fn resize_file(path: &str, r: Resize) -> Result<PathBuf> {
-    let bytes = read_capped(path)?;
+    let bytes = read_full_fidelity_capped(path)?;
     let img = apply_resize(decode::decode_full_for_path(&bytes, path)?, r);
     let src = Path::new(path);
     let ext = src
@@ -437,8 +492,10 @@ fn encode_to_opts(
     // is encoded losslessly via `image` and the quality is irrelevant.
     #[cfg(not(feature = "webp-lossy"))]
     let _ = webp_quality;
-    let file = std::fs::File::create(path).map_err(|_| Error::from(E_FAIL))?;
+    let file = std::fs::File::create(path)
+        .map_err(|e| Error::new(E_FAIL, format!("create {}: {e}", path.display())))?;
     let mut w = std::io::BufWriter::new(file);
+    let fail = |e: &dyn std::fmt::Display| Error::new(E_FAIL, format!("encode {format:?}: {e}"));
     // ICO frames are at most 256×256; downscale (preserving aspect) to fit.
     let resized;
     let img = if matches!(format, ImageFormat::Ico) && (img.width() > 256 || img.height() > 256) {
@@ -453,26 +510,25 @@ fn encode_to_opts(
                 &mut w,
                 jpeg_quality,
             ))
-            .map_err(|_| Error::from(E_FAIL)),
+            .map_err(|e| fail(&e)),
         // Lossy WebP via libwebp (image-webp only encodes lossless). Smaller
         // files for photos; alpha is preserved. Optional: without `webp-lossy`,
         // WebP falls through to the lossless `other` arm (the `image` encoder).
         #[cfg(feature = "webp-lossy")]
         ImageFormat::WebP if webp_quality.is_some() => encode_lossy_webp(&mut w, img, webp_quality),
         ImageFormat::Png => encode_png_variant(&mut w, img, png_level),
-        ImageFormat::OpenExr => encode_exr_bounded(&mut w, img).map_err(|_| Error::from(E_FAIL)),
-        ImageFormat::Hdr => encode_hdr_bounded(&mut w, img).map_err(|_| Error::from(E_FAIL)),
-        ImageFormat::Farbfeld => {
-            encode_farbfeld_streaming(&mut w, img).map_err(|_| Error::from(E_FAIL))
-        }
+        ImageFormat::OpenExr => encode_exr_bounded(&mut w, img).map_err(|e| fail(&e)),
+        ImageFormat::Hdr => encode_hdr_bounded(&mut w, img).map_err(|e| fail(&e)),
+        ImageFormat::Farbfeld => encode_farbfeld_streaming(&mut w, img).map_err(|e| fail(&e)),
         ImageFormat::Pnm => encode_pnm_variant(&mut w, img, target_ext),
-        other => img.write_to(&mut w, other).map_err(|_| Error::from(E_FAIL)),
+        other => img.write_to(&mut w, other).map_err(|e| fail(&e)),
     };
     res?;
     // Flush the buffered tail explicitly: BufWriter::drop discards flush errors,
     // so a disk-full on the final block would otherwise let the caller rename a
     // TRUNCATED temp file over the destination (breaking the atomic-write promise).
-    w.flush().map_err(|_| Error::from(E_FAIL))?;
+    w.flush()
+        .map_err(|e| Error::new(E_FAIL, format!("flush {}: {e}", path.display())))?;
     Ok(())
 }
 
@@ -488,15 +544,19 @@ fn encode_lossy_webp(
 ) -> Result<()> {
     let quality = match webp_quality {
         Some(quality) => quality,
-        None => return Err(Error::from(E_FAIL)),
+        None => return Err(Error::new(E_FAIL, "lossy webp: no quality given")),
     };
     let (pw, ph) = (img.width(), img.height());
     if pw == 0 || ph == 0 || pw > 16383 || ph > 16383 {
-        return Err(Error::from(E_FAIL));
+        return Err(Error::new(
+            E_FAIL,
+            format!("lossy webp: {pw}x{ph} is outside libwebp's 16383 px limit"),
+        ));
     }
     let rgba = img.to_rgba8();
     let mem = webp::Encoder::from_rgba(rgba.as_raw(), pw, ph).encode(quality.clamp(1, 100) as f32);
-    w.write_all(&mem).map_err(|_| Error::from(E_FAIL))
+    w.write_all(&mem)
+        .map_err(|e| Error::new(E_FAIL, format!("write lossy webp: {e}")))
 }
 
 /// PNG: `image`'s encoder takes a coarse Fast/Default/Best level, not the legacy 0-9
@@ -516,7 +576,7 @@ fn encode_png_variant(
         ct,
         image::codecs::png::FilterType::Adaptive,
     ))
-    .map_err(|_| Error::from(E_FAIL))
+    .map_err(|e| Error::new(E_FAIL, format!("encode png: {e}")))
 }
 
 /// PNM subtype by target extension: PAM/PPM get their own streaming encoders; anything
@@ -530,12 +590,12 @@ fn encode_pnm_variant(
     let is_pam = target_ext.eq_ignore_ascii_case("pam");
     let is_ppm = target_ext.eq_ignore_ascii_case("ppm");
     if is_pam {
-        encode_pam_streaming(w, img).map_err(|_| Error::from(E_FAIL))
+        encode_pam_streaming(w, img).map_err(|e| Error::new(E_FAIL, format!("encode pam: {e}")))
     } else if is_ppm {
-        encode_ppm_streaming(w, img).map_err(|_| Error::from(E_FAIL))
+        encode_ppm_streaming(w, img).map_err(|e| Error::new(E_FAIL, format!("encode ppm: {e}")))
     } else {
         img.write_to(w, ImageFormat::Pnm)
-            .map_err(|_| Error::from(E_FAIL))
+            .map_err(|e| Error::new(E_FAIL, format!("encode pnm: {e}")))
     }
 }
 
@@ -640,7 +700,7 @@ pub fn convert_file_opts_named(
     out_dir: &Path,
     tag: Option<&str>,
 ) -> Result<PathBuf> {
-    let bytes = read_capped(path)?;
+    let bytes = read_full_fidelity_capped(path)?;
     let mut img = apply_resize(decode::decode_full_for_path(&bytes, path)?, opts.resize);
     if matches!(opts.target.format, ImageFormat::Jpeg) {
         img = flatten_onto_white(&img);
@@ -703,7 +763,12 @@ pub fn convert_to(
         .extension()
         .and_then(|e| e.to_str())
         .filter(|e| !e.is_empty())
-        .ok_or_else(|| Error::from(E_FAIL))?
+        .ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                format!("convert: {} has no extension", out.display()),
+            )
+        })?
         .to_ascii_lowercase();
     // Route every explicitly supported Magick target through its named coder.
     if ext_needs_magick(&ext) {
@@ -715,8 +780,9 @@ pub fn convert_to(
     // Validate the requested writer before touching the input. Besides avoiding
     // wasted decode work, this guarantees an unknown suffix fails even when the
     // input path is missing or hostile.
-    let format = native_output_format(&ext).ok_or_else(|| Error::from(E_FAIL))?;
-    let bytes = read_capped(input)?;
+    let format = native_output_format(&ext)
+        .ok_or_else(|| Error::new(E_FAIL, format!("convert: no writer for .{ext}")))?;
+    let bytes = read_full_fidelity_capped(input)?;
     let mut img = apply_resize(decode::decode_full_for_path(&bytes, input)?, resize);
     if matches!(format, ImageFormat::Jpeg) {
         img = flatten_onto_white(&img);
@@ -749,11 +815,19 @@ pub fn convert_to_magick(
     let target_ext = out
         .extension()
         .and_then(|extension| extension.to_str())
-        .ok_or_else(|| Error::from(E_FAIL))?;
+        .ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                format!("magick: {} has no extension", out.display()),
+            )
+        })?;
     if !decode::magick_output_supported(target_ext) {
-        return Err(Error::from(E_FAIL));
+        return Err(Error::new(
+            E_FAIL,
+            format!("magick: .{target_ext} is not a supported output format"),
+        ));
     }
-    let bytes = read_capped(input)?;
+    let bytes = read_full_fidelity_capped(input)?;
     let img = apply_resize(decode::decode_full_for_path(&bytes, input)?, resize);
     write_atomic(out, |tmp| {
         decode::encode_via_magick(&img, tmp, target_ext, quality)
@@ -791,7 +865,10 @@ pub fn convert_to_magick_in_named(
     tag: Option<&str>,
 ) -> Result<PathBuf> {
     if !decode::magick_output_supported(ext) {
-        return Err(Error::from(E_FAIL));
+        return Err(Error::new(
+            E_FAIL,
+            format!("magick: .{ext} is not a supported output format"),
+        ));
     }
     let stem = Path::new(input)
         .file_stem()
@@ -841,7 +918,7 @@ pub fn convert_image_to_pdf_in(input: &str, out_dir: &Path, quality: u8) -> Resu
 /// "(email)" JPEG sibling (flattened onto white — JPEG has no alpha). Never
 /// upscales; never touches the original. Returns the output path.
 pub fn shrink_for_email(path: &str, size: EmailSize) -> Result<PathBuf> {
-    let bytes = read_capped(path)?;
+    let bytes = read_full_fidelity_capped(path)?;
     let edge = size.max_edge();
     let img = flatten_onto_white(&apply_resize(
         decode::decode_full_for_path(&bytes, path)?,
@@ -1426,52 +1503,229 @@ mod bounded_native_encoder_tests {
         png.encoder().bytes().to_vec()
     }
 
-    /// A273: `transform_file`'s LOSSLESS jpegtran path keeps a source's APP1 EXIF segment
-    /// byte-for-byte verbatim while physically rotating the DCT grid, so a stale
-    /// Orientation=6 must come back reset to 1 — otherwise an orientation-aware viewer
-    /// rotates the already-rotated pixels a second time.
+    /// Pixel-level apply of a `Dihedral`, independent of the jpegtran code path.
+    fn dihedral_apply(img: &DynamicImage, d: Dihedral) -> DynamicImage {
+        let mut out = if d.transpose {
+            img.rotate90().fliph() // rotate90 = transpose then flip-H
+        } else {
+            img.clone()
+        };
+        if d.flip_h {
+            out = out.fliph();
+        }
+        if d.flip_v {
+            out = out.flipv();
+        }
+        out
+    }
+
+    /// What a viewer does with EXIF Orientation `o`, spelled out per the EXIF spec.
+    fn viewer_upright(img: &DynamicImage, o: u32) -> DynamicImage {
+        match o {
+            2 => img.fliph(),
+            3 => img.rotate180(),
+            4 => img.flipv(),
+            5 => img.rotate90().fliph(),
+            6 => img.rotate90(),
+            7 => img.rotate270().fliph(),
+            8 => img.rotate270(),
+            _ => img.clone(),
+        }
+    }
+
+    fn transform_apply(img: &DynamicImage, t: Transform) -> DynamicImage {
+        match t {
+            Transform::Right90 => img.rotate90(),
+            Transform::Left90 => img.rotate270(),
+            Transform::Rotate180 => img.rotate180(),
+            Transform::FlipH => img.fliph(),
+            Transform::FlipV => img.flipv(),
+        }
+    }
+
+    /// `Transform` derives no `Debug`; a name for the assertion messages.
+    fn transform_name(t: Transform) -> &'static str {
+        match t {
+            Transform::Right90 => "Right90",
+            Transform::Left90 => "Left90",
+            Transform::Rotate180 => "Rotate180",
+            Transform::FlipH => "FlipH",
+            Transform::FlipV => "FlipV",
+        }
+    }
+
+    /// A small non-square image with no symmetry at all, so every one of the eight
+    /// dihedral results is distinguishable from every other.
+    fn asymmetric(w: u32, h: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([
+                (x * 37 % 256) as u8,
+                (y * 91 % 256) as u8,
+                ((x * x + 3 * y) % 256) as u8,
+            ])
+        }))
+    }
+
+    const TRANSFORMS: [Transform; 5] = [
+        Transform::Right90,
+        Transform::Left90,
+        Transform::Rotate180,
+        Transform::FlipH,
+        Transform::FlipV,
+    ];
+
+    /// The group arithmetic behind the lossless path: for every EXIF orientation and every
+    /// menu request, the composed operation applied to the STORED pixels must equal the
+    /// request applied to what the viewer shows.
     #[test]
-    fn transform_file_lossless_jpeg_path_resets_stale_orientation() {
+    fn dihedral_composition_matches_viewer_then_request() {
+        let stored = asymmetric(6, 4);
+        for o in 1..=8u32 {
+            for t in TRANSFORMS {
+                let name = transform_name(t);
+                let want = transform_apply(&viewer_upright(&stored, o), t).to_rgb8();
+                let composed = Dihedral::from_exif_orientation(o).then(Dihedral::from_transform(t));
+                let got = dihedral_apply(&stored, composed).to_rgb8();
+                assert_eq!(
+                    got.dimensions(),
+                    want.dimensions(),
+                    "orientation {o} then {name}: {composed:?}"
+                );
+                assert_eq!(
+                    got.into_raw(),
+                    want.into_raw(),
+                    "orientation {o} then {name}: {composed:?}"
+                );
+            }
+        }
+        // `to_op` is a bijection onto the seven non-identity operations.
+        let identity = Dihedral::from_exif_orientation(1);
+        assert_eq!(identity.to_op(), None);
+        assert_eq!(
+            Dihedral::from_exif_orientation(8)
+                .then(Dihedral::from_transform(Transform::Right90))
+                .to_op(),
+            None,
+            "270 then 90 is the identity"
+        );
+    }
+
+    /// A273 / P8: the lossless jpegtran path keeps the source EXIF segment verbatim while it
+    /// rotates the DCT grid. The tag must come back reset to 1 AND the pixels must be what
+    /// "rotate what I see" means: for a stored-sideways `Orientation=6` photo, "rotate
+    /// right" is a 180° turn of the stored grid, not another 90°. Checked against the pixel
+    /// path's own definition (decode with the orientation applied, then transform).
+    #[test]
+    fn transform_file_lossless_jpeg_path_composes_orientation_and_resets_the_tag() {
         let dir = scratch_dir("lossless-orient");
+
+        // 32x16 is MCU-aligned for both 4:2:0 and 4:4:4 chroma subsampling, so the lossless
+        // jpegtran path takes every case here rather than falling through to the pixel path.
+        let mut base = Vec::new();
+        asymmetric(32, 16)
+            .write_to(&mut std::io::Cursor::new(&mut base), ImageFormat::Jpeg)
+            .unwrap();
+        let stored = image::load_from_memory(&base).unwrap();
+
+        // (orientation, request): a rotate that composes to 180°, one that composes to the
+        // identity (bytes kept, tag reset), a flip that composes to a transpose, and a plain
+        // orientation-1 request that must keep behaving exactly as before.
+        for (i, (o, t)) in [
+            (6, Transform::Right90),
+            (8, Transform::Right90),
+            (6, Transform::FlipH),
+            (1, Transform::Left90),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let name = transform_name(t);
+            let input = dir.join(format!("source{i}.jpg"));
+            std::fs::write(&input, jpeg_with_exif(&base, &tiff_with_orientation(o))).unwrap();
+
+            let edited = transform_file(input.to_str().unwrap(), t).unwrap();
+            assert_eq!(
+                edited.extension().and_then(|e| e.to_str()),
+                Some("jpg"),
+                "the lossless path keeps the source extension"
+            );
+
+            let out_bytes = std::fs::read(&edited).unwrap();
+            let jpeg = img_parts::jpeg::Jpeg::from_bytes(img_parts::Bytes::from(out_bytes.clone()))
+                .unwrap();
+            let exif_seg = jpeg
+                .segments()
+                .iter()
+                .find(|s| {
+                    s.marker() == img_parts::jpeg::markers::APP1
+                        && s.contents().starts_with(b"Exif\0\0")
+                })
+                .expect("lossless transform must not drop the EXIF segment entirely");
+            assert_eq!(
+                orientation_of(&exif_seg.contents()[6..]),
+                1,
+                "orientation {o} then {name}: the tag must be reset, or viewers double-rotate"
+            );
+
+            let want = transform_apply(&viewer_upright(&stored, u32::from(o)), t);
+            let got = image::load_from_memory(&out_bytes).unwrap();
+            assert_eq!(
+                got.dimensions(),
+                want.dimensions(),
+                "orientation {o} then {name}: wrong shape"
+            );
+            let (g, w) = (got.to_luma8().into_raw(), want.to_luma8().into_raw());
+            let maxd = g
+                .iter()
+                .zip(&w)
+                .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                .max()
+                .unwrap();
+            // Transposing ops may differ from a pixel rotate by 1 (integer IDCT); a wrong
+            // rotation differs by whole pixel values everywhere.
+            assert!(
+                maxd <= 1,
+                "orientation {o} then {name}: not the composed rotation (max diff {maxd})"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The IFD1 thumbnail shows the pre-rotation framing; after the lossless rotate it
+    /// must be gone, while IFD0's own values survive.
+    #[test]
+    fn transform_file_lossless_jpeg_path_drops_the_stale_ifd1_thumbnail() {
+        let dir = scratch_dir("lossless-ifd1");
         let input = dir.join("source.jpg");
 
-        // 32x32 is MCU-aligned for both 4:2:0 and 4:4:4 chroma subsampling, so the lossless
-        // jpegtran path is guaranteed to take the transform rather than falling through to
-        // the pixel path this test isn't exercising.
         let mut base = Vec::new();
-        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-            32,
-            32,
-            image::Rgb([90, 140, 30]),
-        ))
-        .write_to(&mut std::io::Cursor::new(&mut base), ImageFormat::Jpeg)
-        .unwrap();
-        let with_exif = jpeg_with_exif(&base, &tiff_with_orientation(6));
-        std::fs::write(&input, &with_exif).unwrap();
+        asymmetric(32, 16)
+            .write_to(&mut std::io::Cursor::new(&mut base), ImageFormat::Jpeg)
+            .unwrap();
+        // IFD0 (Orientation) -> IFD1 (JPEGInterchangeFormat) -> thumbnail bytes.
+        let mut tiff = tiff_with_orientation(6);
+        let ifd1 = tiff.len() as u32;
+        let next_ptr_at = 8 + 2 + 12;
+        tiff[next_ptr_at..next_ptr_at + 4].copy_from_slice(&ifd1.to_le_bytes());
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0201u16.to_le_bytes());
+        tiff.extend_from_slice(&4u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&(ifd1 + 2 + 12 + 4).to_le_bytes());
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+        tiff.extend_from_slice(b"\xFF\xD8stale-thumbnail\xFF\xD9");
+        std::fs::write(&input, jpeg_with_exif(&base, &tiff)).unwrap();
 
         let edited = transform_file(input.to_str().unwrap(), Transform::Right90).unwrap();
-        assert_eq!(
-            edited.extension().and_then(|e| e.to_str()),
-            Some("jpg"),
-            "the lossless path keeps the source extension"
+        let out = std::fs::read(&edited).unwrap();
+        assert!(
+            !out.windows(15).any(|w| w == b"stale-thumbnail"),
+            "the un-rotated IFD1 thumbnail survived the lossless rotate"
         );
-
-        let out_bytes = std::fs::read(&edited).unwrap();
-        let jpeg = img_parts::jpeg::Jpeg::from_bytes(img_parts::Bytes::from(out_bytes)).unwrap();
-        let exif_seg = jpeg
-            .segments()
-            .iter()
-            .find(|s| {
-                s.marker() == img_parts::jpeg::markers::APP1
-                    && s.contents().starts_with(b"Exif\0\0")
-            })
-            .expect("lossless transform must not drop the EXIF segment entirely");
-        let tiff_out = &exif_seg.contents()[6..];
-        assert_eq!(
-            orientation_of(tiff_out),
-            1,
-            "a stale non-identity Orientation must be reset after the lossless rotate, \
-             or viewers double-rotate it"
+        assert!(
+            out.windows(6).any(|w| w == b"Exif\0\0"),
+            "IFD0 itself must survive"
         );
 
         let _ = std::fs::remove_dir_all(dir);

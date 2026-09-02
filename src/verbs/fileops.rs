@@ -12,7 +12,7 @@ use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR, SHCNF_PATHW};
 
 use super::actions::is_image;
-use super::encode::{read_capped, reserve, write_atomic, OutSlot};
+use super::encode::{read_full_fidelity_capped, reserve, write_atomic, OutSlot};
 
 /// Case-insensitive whole-path comparison (Windows file names are case-folding,
 /// so `Photo.JPG` and `photo.jpg` are the same file — don't bump the counter or
@@ -158,7 +158,13 @@ fn comic_info_xml(dims: &[Option<(u32, u32)>]) -> String {
 /// A `ComicInfo.xml` goes in as the **first** entry, which is what the community
 /// CBZ RFC asks for so a reader can pull metadata without scanning the whole
 /// central directory. It is the one deflated entry: it is text, and it is small.
-pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<()> {
+///
+/// Returns how many of `imgs` couldn't be read (deleted between selection and
+/// combine, a permission error, or past `read_full_fidelity_capped`'s size cap) and so were left
+/// out of the archive — like `combine_to_pdf_paged`'s `dropped`, this used to
+/// propagate the FIRST such failure straight out of the write, aborting the whole
+/// archive instead of building one from whatever pages WERE readable.
+pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<usize> {
     use std::io::Write;
 
     // Pre-encode each file name to UTF-16 ONCE (the sort key), then natural-sort
@@ -168,11 +174,28 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<()> {
     keyed.sort_by(|a, b| natural_key_cmp(&a.0, &b.0));
     let sorted: Vec<&String> = keyed.into_iter().map(|(_, p)| p).collect();
 
+    // Read every page UP FRONT (in parallel — mirrors `combine_to_pdf_paged`), so a
+    // page that can't be read drops out here instead of aborting the zip write
+    // already in progress. `dropped` is counted before the `flatten()` below
+    // discards the `None`s, exactly as `combine_to_pdf_paged` counts its own.
+    let reads: Vec<Option<Vec<u8>>> =
+        crate::parallel::map(&sorted, |_, p| read_full_fidelity_capped(p.as_str()).ok());
+    let dropped = reads.iter().filter(|r| r.is_none()).count();
+    let pages: Vec<(&String, Vec<u8>)> = sorted
+        .into_iter()
+        .zip(reads)
+        .filter_map(|(p, r)| r.map(|bytes| (p, bytes)))
+        .collect();
+    if pages.is_empty() {
+        return Err(Error::from(E_FAIL));
+    }
+
     // Header-only probe, before anything is written: the sidecar has to be the
-    // FIRST zip entry, so the per-page facts must all be known up front.
-    let dims: Vec<Option<(u32, u32)>> = sorted
+    // FIRST zip entry, so the per-page facts must all be known up front. Only over
+    // the pages that actually survived the read above — a dropped page has no row.
+    let dims: Vec<Option<(u32, u32)>> = pages
         .iter()
-        .map(|p| page_dims_from_head(p.as_str()))
+        .map(|(p, _)| page_dims_from_head(p.as_str()))
         .collect();
 
     write_atomic(out, |tmp| {
@@ -188,8 +211,7 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<()> {
         .map_err(|_| Error::from(E_FAIL))?;
         zw.write_all(comic_info_xml(&dims).as_bytes())
             .map_err(|_| Error::from(E_FAIL))?;
-        for (i, p) in sorted.iter().enumerate() {
-            let bytes = read_capped(p)?;
+        for (i, (p, bytes)) in pages.iter().enumerate() {
             let stem = Path::new(p.as_str())
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -197,11 +219,12 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<()> {
             // Zero-padded index prefix keeps page order stable in any reader.
             let name = format!("{:03}_{stem}", i + 1);
             zw.start_file(name, opts).map_err(|_| Error::from(E_FAIL))?;
-            zw.write_all(&bytes).map_err(|_| Error::from(E_FAIL))?;
+            zw.write_all(bytes).map_err(|_| Error::from(E_FAIL))?;
         }
         zw.finish().map_err(|_| Error::from(E_FAIL))?;
         Ok(())
-    })
+    })?;
+    Ok(dropped)
 }
 
 /// Atomically reserve a collision-free destination for `stem[.ext]` (`src`'s
@@ -250,7 +273,10 @@ fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
     // from its zero-byte-cleanup drop AFTER that succeeds, so a failed rename still
     // leaves the empty placeholder to be cleaned up, and a legitimately empty `src`
     // isn't mistaken for an abandoned reservation and deleted right after landing.
-    crate::fsutil::rename_retrying(src, slot.path()).map_err(|_| Error::from(E_FAIL))?;
+    // Keep `{e}` rather than mapping to a bare E_FAIL: it's the only place a caller
+    // could learn WHY a file didn't move (locked, cross-volume, permission denied).
+    crate::fsutil::rename_retrying(src, slot.path())
+        .map_err(|e| Error::new(E_FAIL, format!("move {}: {e}", src.display())))?;
     Ok(slot.release())
 }
 
@@ -266,7 +292,9 @@ fn copy_into(src: &Path, dir: &Path) -> Result<PathBuf> {
         // a still-ZERO-byte placeholder (its normal job: an untouched reservation), so a
         // partial write wouldn't be caught by it. Remove the destination explicitly here
         // instead of relying on Drop to notice a partial write it structurally can't see.
-        cleanup_failed_dest(slot.path());
+        if slot.created() {
+            cleanup_failed_dest(slot.path());
+        }
         return Err(Error::from(E_FAIL));
     }
     Ok(slot.release())
@@ -294,8 +322,11 @@ fn refresh_dir(dir: &Path) {
 
 /// Create a fresh folder named `folder_name` (sanitized, deduped) next to the
 /// first selected file and move every selected file into it. Shared by the DLL's
-/// single-file path and the companion app's multi-file dialog. Returns the folder.
-pub fn files_to_folder(paths: &[String], folder_name: &str) -> Result<PathBuf> {
+/// single-file path and the companion app's multi-file dialog. Returns `(folder,
+/// moved, skipped)` — a caller used to see only `Ok(dir)` once AT LEAST ONE file
+/// moved, which read as full success even when some of `paths` were locked or on
+/// another volume; the counts let it report the real outcome instead.
+pub fn files_to_folder(paths: &[String], folder_name: &str) -> Result<(PathBuf, usize, usize)> {
     if paths.is_empty() {
         return Err(Error::from(E_FAIL));
     }
@@ -327,21 +358,27 @@ pub fn files_to_folder(paths: &[String], folder_name: &str) -> Result<PathBuf> {
         }
     }
 
-    // Count successful moves so a TOTAL failure (permissions, cross-volume, locked files)
-    // surfaces as an error instead of a fake success — callers build the user-facing report
-    // (and the dialog message) off this Result. (A partial move still succeeds: the common
-    // failure modes fail every file, which the 0-moved check catches.)
-    let moved = paths
-        .iter()
-        .filter(|p| move_into(Path::new(p), &dir).is_ok())
-        .count();
+    // Count successful moves AND failures — a total failure (permissions, cross-volume,
+    // locked files) still surfaces as an Err below (the 0-moved check), but a PARTIAL
+    // failure used to be silently reported as full success (`Ok(dir)` regardless of how
+    // many of `paths` actually landed). Callers build the user-facing report off both
+    // counts now.
+    let mut moved = 0usize;
+    let mut skipped = 0usize;
+    for p in paths {
+        if move_into(Path::new(p), &dir).is_ok() {
+            moved += 1;
+        } else {
+            skipped += 1;
+        }
+    }
     refresh_dir(&parent);
     if moved == 0 {
         // Nothing landed in the new folder — clean up the empty dir we just made.
         let _ = std::fs::remove_dir(&dir);
         return Err(Error::from(E_FAIL));
     }
-    Ok(dir)
+    Ok((dir, moved, skipped))
 }
 
 /// Read an image's pixel dimensions: a cheap header read first, falling back to a
@@ -352,7 +389,7 @@ fn dims(path: &str) -> Option<(u32, u32)> {
             return Some(d);
         }
     }
-    let bytes = read_capped(path).ok()?;
+    let bytes = read_full_fidelity_capped(path).ok()?;
     // Container header probe (PSD canvas size) first, falling back to the full-fidelity
     // decode (may spawn ImageMagick) — the same chain `strip::read_info_impl` uses, shared
     // via `real_or_decoded_dims` rather than hand-copied here.
@@ -377,6 +414,11 @@ pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
         match d {
             Some((w, h)) => {
                 let dir = parent.join(format!("{w}x{h}"));
+                // Whether THIS call is the one creating the bucket — if the move into it
+                // then fails, the bucket is empty junk we just made and should remove,
+                // not a pre-existing folder (from an earlier file, or the user) that
+                // simply doesn't have this file's dimensions in it.
+                let bucket_is_new = !dir.exists();
                 if std::fs::create_dir_all(&dir).is_ok() && move_into(src, &dir).is_ok() {
                     moved += 1;
                     if !touched.iter().any(|t| t == parent) {
@@ -384,6 +426,9 @@ pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
                     }
                 } else {
                     skipped += 1;
+                    if bucket_is_new {
+                        let _ = std::fs::remove_dir(&dir);
+                    }
                 }
             }
             None => skipped += 1,
@@ -658,6 +703,146 @@ mod tests {
             !p.exists(),
             "a non-empty truncated leftover must still be removed, not just an empty one"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One unreadable page must not abort the whole CBZ — a page selected but
+    /// deleted before the combine runs (the concrete case P40's evidence calls out) has
+    /// to drop out and be COUNTED, with the rest still written.
+    #[test]
+    fn combine_to_cbz_drops_and_counts_an_unreadable_page_instead_of_aborting() {
+        let dir = std::env::temp_dir().join(format!("st2k_cbz_drop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let good = vec![
+            png(&dir, "page1.png", 10, 10),
+            png(&dir, "page3.png", 10, 10),
+        ];
+        // Selected, but gone by read time.
+        let vanished = dir.join("page2.png");
+        std::fs::write(&vanished, b"placeholder").unwrap();
+        let vanished = vanished.to_string_lossy().into_owned();
+        std::fs::remove_file(&vanished).unwrap();
+
+        let mut imgs = good;
+        imgs.push(vanished);
+        let out = dir.join("book.cbz");
+
+        let dropped = combine_to_cbz(&imgs, &out).unwrap();
+        assert_eq!(
+            dropped, 1,
+            "exactly the one unreadable page must be counted dropped"
+        );
+
+        let f = std::fs::File::open(&out).unwrap();
+        let zip = zip::ZipArchive::new(f).unwrap();
+        assert_eq!(
+            zip.len(),
+            3,
+            "sidecar + the 2 readable pages, not aborted to nothing"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `files_to_folder` must report which of `paths` actually moved, not just
+    /// "at least one moved". Two real files + one already-gone path (the same "deleted
+    /// between selection and invocation" shape G27's evidence describes) must come back
+    /// as moved=2, skipped=1 — not a bare `Ok` a caller could mistake for total success.
+    #[test]
+    fn files_to_folder_reports_moved_and_skipped_counts() {
+        let dir = std::env::temp_dir().join(format!("st2k_f2f_counts_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut paths = Vec::new();
+        for n in ["a.txt", "b.txt"] {
+            let p = dir.join(n);
+            std::fs::write(&p, b"x").unwrap();
+            paths.push(p.to_str().unwrap().to_string());
+        }
+        // Selected, but gone by move time.
+        let vanished = dir.join("c.txt");
+        std::fs::write(&vanished, b"x").unwrap();
+        let vanished_str = vanished.to_str().unwrap().to_string();
+        std::fs::remove_file(&vanished).unwrap();
+        paths.push(vanished_str);
+
+        let (folder, moved, skipped) = files_to_folder(&paths, "Group").unwrap();
+        assert_eq!(folder, dir.join("Group"));
+        assert_eq!(moved, 2, "the two real files must be counted moved");
+        assert_eq!(
+            skipped, 1,
+            "the vanished file must be counted skipped, not silently ignored"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// This fix only removes a bucket dir THIS call created — this pins the other,
+    /// equally important half: something already sitting at the bucket's path (here, a
+    /// plain file blocking `create_dir_all`, so the move never even starts) must be left
+    /// completely alone. A cleanup that fired unconditionally on any failed move — rather
+    /// than only for a bucket this call is responsible for — would delete a user's
+    /// unrelated file here instead.
+    #[test]
+    fn sort_by_dimensions_never_touches_a_pre_existing_non_directory_at_the_bucket_path() {
+        let dir = std::env::temp_dir().join(format!("st2k_dims_cleanup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A bucket dir already occupied by a SAME-NAMED file (not a directory) makes
+        // `create_dir_all` fail for that one image's move, without touching anything else.
+        let bucket_path = dir.join("5x5");
+        std::fs::write(&bucket_path, b"in the way").unwrap();
+        let img = png(&dir, "photo.png", 5, 5);
+
+        let (moved, skipped) = sort_by_dimensions(&[img]);
+        assert_eq!(moved, 0);
+        assert_eq!(skipped, 1);
+        assert!(
+            bucket_path.is_file(),
+            "a pre-existing blocker at the bucket's path must never be removed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of G105: an empty bucket dir this SAME call created for a file
+    /// whose move then fails must be removed, not left behind as junk. Made deterministic
+    /// (no race) by holding the SOURCE open for DELETE access is denied for the entire
+    /// call: `dims()`'s read still succeeds (reads stay shared), the bucket gets created
+    /// for it, but the rename out of it fails with a sharing violation every time while
+    /// the handle is held.
+    #[test]
+    fn sort_by_dimensions_removes_a_bucket_it_created_when_the_move_into_it_fails() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = std::env::temp_dir().join(format!("st2k_dims_cleanup2_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let img = png(&dir, "photo.png", 5, 5);
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ only — no FILE_SHARE_DELETE
+            .open(Path::new(&img))
+            .unwrap();
+
+        let (moved, skipped) = sort_by_dimensions(&[img]);
+        drop(held);
+
+        assert_eq!(
+            moved, 0,
+            "the rename must fail while the source denies delete access"
+        );
+        assert_eq!(skipped, 1);
+        assert!(
+            !dir.join("5x5").exists(),
+            "the bucket this call created must be removed after its only move failed"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

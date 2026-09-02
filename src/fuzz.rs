@@ -123,7 +123,8 @@ fn header_targets() -> Vec<Target> {
             let _ = crate::container::extract_cover(b);
         }),
         ("container::archive_covers", |b| {
-            let _ = crate::container::archive_covers(b, 4);
+            let prefs = crate::container::select::CoverPrefs::from_settings();
+            let _ = crate::container::archive_covers(b, 4, &prefs);
         }),
         ("container::list_archive", |b| {
             let _ = crate::container::list_archive(b);
@@ -182,6 +183,13 @@ fn inner_targets() -> Vec<Target> {
         ("apk::arsc_resolve", apk::arsc_resolve),
         ("apk::string_pool", apk::string_pool),
         ("apk::type_chunk", apk::type_chunk),
+        // The lossless JPEG transform: a hand-written Huffman/scan decoder fed the user's own
+        // file by the Rotate/Flip verbs, whose output is written back over that file. It had
+        // no target at all; a non-Kraft DHT reached a wrong symbol before build_dec learned to
+        // refuse one.
+        ("jpegtran::transform", |b| {
+            let _ = crate::jpegtran::transform(b, crate::jpegtran::Op::Rot90);
+        }),
         // The DDS block decoder, which had NO target at all until 2026-08-19. It indexes a
         // compressed payload using a width, height and mip offset that all come out of the
         // file, and the classic right-click preview tile reaches it IN-PROCESS inside

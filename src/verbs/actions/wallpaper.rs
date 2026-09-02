@@ -19,19 +19,18 @@ fn appdata_dir() -> Result<PathBuf> {
 /// real `%APPDATA%` (writing the production wallpaper.png from a test would
 /// pollute the live desktop state).
 pub fn prepare_wallpaper_in(dir: &Path, path: &str) -> Result<PathBuf> {
-    let bytes = read_capped(path)?;
+    let bytes = read_full_fidelity_capped(path)?;
     // A wallpaper never needs more than screen resolution; downscale large
     // sources so we don't re-encode (and block the shell thread on) a giant PNG.
     let img = cap_to_screen(decode::decode_full(&bytes)?);
     let out = dir.join("wallpaper.png");
     // Atomic write (temp + rename) so a failed/interrupted encode can never
     // leave the live, OS-referenced wallpaper file half-written (the desktop
-    // re-reads this exact path at logon). Mirrors `convert_file`.
-    let tmp = {
-        let mut s = out.clone().into_os_string();
-        s.push(".st2ktmp");
-        PathBuf::from(s)
-    };
+    // re-reads this exact path at logon). Mirrors `convert_file`. A per-call
+    // unique staging name (not a bare `<out>.st2ktmp`): `out` is always the SAME
+    // fixed path, so two quick Set-as-wallpaper clicks would otherwise write
+    // through separate handles to the identical temp file.
+    let tmp = unique_tmp(&out);
     img.save_with_format(&tmp, ImageFormat::Png).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         Error::new(E_FAIL, format!("encode wallpaper PNG: {e}"))
@@ -146,14 +145,25 @@ mod tests {
         // release and blocked it. Anchoring to the staged file makes it deterministic without
         // making it vacuous - shortening the hold instead would let the lock expire during
         // setup, so the rename would never meet a locked destination at all.
-        let staged = {
-            let mut s = dest.clone().into_os_string();
-            s.push(".st2ktmp");
-            std::path::PathBuf::from(s)
-        };
+        //
+        // The staged name can't be predicted exactly any more (`unique_tmp` stamps a
+        // per-process counter shared with every other test that stages a write), so poll
+        // the directory for the SHAPE instead of a fixed path: any file starting with
+        // `wallpaper.png.` and ending `.st2ktmp`.
+        let watch_dir = dir.clone();
         let lock_thread = std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while !staged.exists() && std::time::Instant::now() < deadline {
+            loop {
+                let staged = std::fs::read_dir(&watch_dir).ok().is_some_and(|rd| {
+                    rd.filter_map(|e| e.ok()).any(|e| {
+                        e.file_name().to_str().is_some_and(|n| {
+                            n.starts_with("wallpaper.png.") && n.ends_with(".st2ktmp")
+                        })
+                    })
+                });
+                if staged || std::time::Instant::now() >= deadline {
+                    break;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             std::thread::sleep(crate::fsutil::RENAME_BACKOFF);

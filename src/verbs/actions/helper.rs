@@ -36,23 +36,29 @@ enum RunOutcome {
 }
 
 /// Run the `st2k` CLI helper synchronously with the given args, no console window.
-/// stdin is unused; stdout/stderr are dropped — the routed verbs communicate only
-/// through the file they write + the exit code. A spawn error is logged once here
-/// (it's a routing-level problem, not a per-file one) and surfaced as
+/// stdin is unused; stdout is dropped; stderr is captured so a non-zero exit can be
+/// logged with the REAL decoder/IO error instead of a name-only "failed for {path}"
+/// — `path` is the file this call is acting on, for that log line (not passed to the
+/// child; it's already one of `args`). A spawn error is logged once here (it's a
+/// routing-level problem, not a per-file one) and surfaced as
 /// [`RunOutcome::SpawnFailed`] so the caller can fall back to in-process.
-fn run_st2k(exe: &Path, args: &[&str]) -> RunOutcome {
+fn run_st2k(exe: &Path, path: &str, args: &[&str]) -> RunOutcome {
     match Command::new(exe)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
-        .status()
+        .output()
     {
-        Ok(s) if s.success() => RunOutcome::Ok,
-        Ok(_) => RunOutcome::Failed,
+        Ok(out) if out.status.success() => RunOutcome::Ok,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            crate::safety::log_error(&format!("st2k helper failed for {path}: {}", stderr.trim()));
+            RunOutcome::Failed
+        }
         Err(e) => {
-            crate::safety::log(&format!(
+            crate::safety::log_error(&format!(
                 "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
             ));
             RunOutcome::SpawnFailed
@@ -74,28 +80,33 @@ enum CaptureOutcome {
 /// Like [`run_st2k`], but reads the child's stdout back instead of discarding it —
 /// for verbs (like `rotate`) whose one line of stdout on success IS the real output
 /// path `main.rs`'s `println!("{out}")` prints, so the caller can read back what
-/// `st2k` actually produced instead of predicting the name it will pick.
-fn run_st2k_capture(exe: &Path, args: &[&str]) -> CaptureOutcome {
+/// `st2k` actually produced instead of predicting the name it will pick. `path` is
+/// the file this call is acting on, for the failure log line only (see [`run_st2k`]).
+fn run_st2k_capture(exe: &Path, path: &str, args: &[&str]) -> CaptureOutcome {
     match Command::new(exe)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .output()
     {
         Ok(out) if out.status.success() => {
             // `println!` adds the trailing newline; trim it (and any stray CR) off.
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if path.is_empty() {
+            let stdout_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if stdout_path.is_empty() {
                 CaptureOutcome::Failed
             } else {
-                CaptureOutcome::Ok(PathBuf::from(path))
+                CaptureOutcome::Ok(PathBuf::from(stdout_path))
             }
         }
-        Ok(_) => CaptureOutcome::Failed,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            crate::safety::log_error(&format!("st2k helper failed for {path}: {}", stderr.trim()));
+            CaptureOutcome::Failed
+        }
         Err(e) => {
-            crate::safety::log(&format!(
+            crate::safety::log_error(&format!(
                 "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
             ));
             CaptureOutcome::SpawnFailed
@@ -151,7 +162,7 @@ pub(super) fn convert_one(exe: Option<&Path>, p: &str, target: Target) -> Option
                 args.push("--webp-quality");
                 args.push(wq.as_str());
             }
-            match run_st2k(exe, &args) {
+            match run_st2k(exe, p, &args) {
                 RunOutcome::Ok => Some(slot.path().to_path_buf()),
                 RunOutcome::Failed => {
                     crate::safety::log(&format!("Convert (st2k) failed for {p}"));
@@ -190,7 +201,7 @@ pub(super) fn transform_one(exe: Option<&Path>, p: &str, t: Transform) -> Option
             // can be stolen by a concurrent rotate landing in the gap between our
             // prediction and st2k's own atomic reserve, which would report a name
             // st2k didn't actually produce.
-            match run_st2k_capture(exe, &["rotate", p, "--by", by]) {
+            match run_st2k_capture(exe, p, &["rotate", p, "--by", by]) {
                 CaptureOutcome::Ok(path) => {
                     // Cheap self-check against the OLD predict-then-hope approach: a
                     // mismatch here IS the exact race A277 was about (a concurrent
@@ -235,6 +246,7 @@ pub(super) fn resize_one(exe: Option<&Path>, p: &str, r: Resize) -> Option<PathB
             let q = crate::settings::jpeg_quality().to_string();
             match run_st2k(
                 exe,
+                p,
                 &["convert", p, out_s, "--quality", &q, "--resize", &rs],
             ) {
                 RunOutcome::Ok => Some(slot.path().to_path_buf()),
@@ -283,6 +295,7 @@ pub(super) fn shrink_one(exe: Option<&Path>, p: &str, size: EmailSize) -> Option
             let quality = crate::verbs::encode::EMAIL_JPEG_QUALITY.to_string();
             match run_st2k(
                 exe,
+                p,
                 &[
                     "convert",
                     p,
@@ -315,7 +328,7 @@ pub(super) fn shrink_one(exe: Option<&Path>, p: &str, size: EmailSize) -> Option
 /// `strip::strip_metadata`), else falls back to the in-process call.
 pub(super) fn strip_one(exe: Option<&Path>, p: &str) -> bool {
     match exe {
-        Some(exe) => match run_st2k(exe, &["strip", p]) {
+        Some(exe) => match run_st2k(exe, p, &["strip", p]) {
             RunOutcome::Ok => true,
             RunOutcome::Failed => {
                 crate::safety::log(&format!("Strip metadata (st2k) failed for {p}"));
@@ -415,7 +428,11 @@ mod tests {
         let cmd_exe = Path::new(&system_root).join("System32").join("cmd.exe");
         // No spaces/parens in the echoed path — keeps this test independent of
         // Windows' argv quoting rules, which aren't what's under test here.
-        let outcome = run_st2k_capture(&cmd_exe, &["/c", "echo", "C:\\out\\file_edited.jpg"]);
+        let outcome = run_st2k_capture(
+            &cmd_exe,
+            "C:\\out\\file.jpg",
+            &["/c", "echo", "C:\\out\\file_edited.jpg"],
+        );
         match outcome {
             CaptureOutcome::Ok(path) => {
                 assert_eq!(path, PathBuf::from("C:\\out\\file_edited.jpg"));
@@ -423,5 +440,34 @@ mod tests {
             CaptureOutcome::Failed => panic!("cmd.exe echo should have exited 0 with output"),
             CaptureOutcome::SpawnFailed => panic!("cmd.exe should always be spawnable in CI"),
         }
+    }
+
+    /// `run_st2k` used to discard the child's stderr entirely (`Stdio::null()`),
+    /// so a non-zero exit logged only a generic "failed for {path}" with no hint of
+    /// WHY (access denied, disk full, an unsupported target — all indistinguishable).
+    /// Exercises a real subprocess that writes a known marker to stderr and exits
+    /// non-zero, and checks that marker actually reaches the diagnostics log.
+    #[test]
+    fn run_st2k_logs_the_real_stderr_on_a_non_zero_exit() {
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let cmd_exe = Path::new(&system_root).join("System32").join("cmd.exe");
+        let marker = format!("st2k_helper_stderr_marker_{}", std::process::id());
+
+        let outcome = run_st2k(
+            &cmd_exe,
+            "C:\\some\\path.jpg",
+            &["/c", "echo", &marker, "1>&2", "&", "exit", "1"],
+        );
+        assert!(
+            matches!(outcome, RunOutcome::Failed),
+            "a non-zero exit must report Failed"
+        );
+
+        let log_path = crate::safety::log_file().expect("LOCALAPPDATA must be set to find the log");
+        let contents = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            contents.contains(&marker),
+            "the child's real stderr must reach the diagnostics log"
+        );
     }
 }

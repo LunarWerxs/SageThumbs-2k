@@ -20,12 +20,26 @@ use super::*;
 /// abandoned/failed reservation never litters, while a real (non-empty) output is
 /// never touched. No explicit "commit" is needed — a successful write leaves a
 /// non-empty file behind, which drop keeps.
-pub(crate) struct OutSlot(PathBuf);
+pub(crate) struct OutSlot {
+    path: PathBuf,
+    /// True when `reserve` created the placeholder itself. A slot handed back after a
+    /// failed `create_new` (missing directory, permission) names a path this process
+    /// does not own, so neither `Drop` nor a caller's failed-write cleanup may delete
+    /// whatever is there.
+    created: bool,
+}
 
 impl OutSlot {
     /// The reserved path — hand this to the encoder / `st2k`.
     pub(crate) fn path(&self) -> &Path {
-        &self.0
+        &self.path
+    }
+
+    /// Whether this process created the placeholder at [`path`](Self::path). `false`
+    /// means the reservation failed and the path is unowned: callers that delete a
+    /// destination after a failed write must check this first.
+    pub(crate) fn created(&self) -> bool {
+        self.created
     }
 
     /// Consume the slot without running its drop cleanup, returning the reserved
@@ -33,23 +47,29 @@ impl OutSlot {
     /// an encoder write — e.g. `fs::rename`/`fs::copy` landing an existing file on
     /// top of it — where a legitimately empty source would otherwise trip the
     /// zero-byte-placeholder heuristic and get deleted right after the move.
+    ///
+    /// `ManuallyDrop` skips `Drop`; `take` moves the path's allocation out so it is
+    /// returned rather than leaked (a `forget` of `self` would leak the buffer).
     pub(crate) fn release(self) -> PathBuf {
-        let path = self.0.clone();
-        std::mem::forget(self);
-        path
+        let mut me = std::mem::ManuallyDrop::new(self);
+        std::mem::take(&mut me.path)
     }
 }
 
 impl Drop for OutSlot {
     fn drop(&mut self) {
+        // A path this process never created is not ours to clean up.
+        if !self.created {
+            return;
+        }
         // Remove only a still-empty placeholder: a successful write replaced it with
         // a non-empty file (keep it); a failed/abandoned one left it at zero bytes
         // (clean it up). Image encoders never produce a 0-byte success.
-        if std::fs::metadata(&self.0)
+        if std::fs::metadata(&self.path)
             .map(|m| m.len() == 0)
             .unwrap_or(false)
         {
-            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(&self.path);
         }
     }
 }
@@ -65,11 +85,25 @@ pub(crate) fn reserve(name: impl Fn(u32) -> PathBuf) -> OutSlot {
             .create_new(true)
             .open(&cand)
         {
-            Ok(_) => return OutSlot(cand), // the placeholder handle closes here
+            // The placeholder handle closes here.
+            Ok(_) => {
+                return OutSlot {
+                    path: cand,
+                    created: true,
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
             // Couldn't create (permission / missing dir): hand the name back anyway —
             // the encode will surface the real error. Don't loop on a non-Exists error.
-            Err(_) => return OutSlot(cand),
+            // The slot records that it owns nothing at that path, and the io error is
+            // logged here because the encode's own failure message names only E_FAIL.
+            Err(e) => {
+                crate::safety::log(&format!("cannot reserve {}: {e}", cand.display()));
+                return OutSlot {
+                    path: cand,
+                    created: false,
+                };
+            }
         }
     }
 }
@@ -123,9 +157,12 @@ pub(crate) fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) 
     write(&tmp).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })?;
-    crate::fsutil::rename_retrying(&tmp, out).map_err(|_| {
+    crate::fsutil::rename_retrying(&tmp, out).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        Error::from(E_FAIL)
+        Error::new(
+            E_FAIL,
+            format!("rename {} -> {}: {e}", tmp.display(), out.display()),
+        )
     })
 }
 
@@ -208,6 +245,70 @@ mod tests {
         let slot = unique_output(&src, "png");
         assert_eq!(slot.path(), dir.join("img (2).png"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reservation that could not create its placeholder (here: the directory does not
+    /// exist yet) names a path this process does not own. It must say so, and its `Drop`
+    /// must leave whatever later appears at that path alone — before this, a zero-byte
+    /// file someone else created there was deleted on drop.
+    #[test]
+    fn a_failed_reservation_owns_nothing_and_drop_leaves_the_path_alone() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_slots_unowned_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let missing = dir.join("not-yet");
+        let target = missing.join("out.png");
+
+        let slot = reserve(|_| target.clone());
+        assert!(
+            !slot.created(),
+            "create_new cannot have succeeded in a missing dir"
+        );
+        assert_eq!(slot.path(), target);
+
+        // Someone else now creates the directory and an empty file at that exact path.
+        std::fs::create_dir_all(&missing).unwrap();
+        std::fs::write(&target, b"").unwrap();
+        drop(slot);
+        assert!(
+            target.exists(),
+            "Drop deleted a zero-byte file the slot never created"
+        );
+
+        // The normal case still cleans up its own abandoned placeholder.
+        let owned = reserve(|_| missing.join("mine.png"));
+        assert!(owned.created());
+        let p = owned.path().to_path_buf();
+        drop(owned);
+        assert!(!p.exists(), "an abandoned placeholder must be removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `release` hands the path back without running `Drop`: the placeholder survives
+    /// even at zero bytes, which is the whole reason the method exists.
+    #[test]
+    fn release_returns_the_path_and_keeps_an_empty_placeholder() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_slots_release_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let slot = reserve(|_| dir.join("kept.png"));
+        let expected = slot.path().to_path_buf();
+        let released = slot.release();
+        assert_eq!(released, expected);
+        assert!(released.exists(), "release must not delete the placeholder");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

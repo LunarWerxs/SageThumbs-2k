@@ -16,7 +16,7 @@ pub(super) fn jpeg_bytes(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
     img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
         &mut buf, quality,
     ))
-    .map_err(|_| Error::from(E_FAIL))?;
+    .map_err(|e| Error::new(E_FAIL, format!("jpeg encode at q{quality}: {e}")))?;
     Ok(buf)
 }
 
@@ -50,9 +50,11 @@ pub(super) fn jpeg_under(img: &DynamicImage, target: u64) -> Result<Option<Vec<u
 /// overwrites the original. With an unreasonably tiny target it ships the smallest it can
 /// make (which may slightly exceed it). Reusable by the CLI and a future menu/dialog.
 pub fn compress_to_size(path: &str, target_bytes: u64) -> Result<PathBuf> {
-    let bytes = read_capped(path)?;
+    let bytes = read_full_fidelity_capped(path)?;
     // JPEG has no alpha → flatten transparency onto white, like shrink-for-email.
-    let mut img = flatten_onto_white(&decode::decode_full(&bytes)?);
+    // `decode_full_for_path` (not `decode_full`): the path-aware decode is what every
+    // sibling verb uses, so a camera RAW gets the same full-resolution re-read here.
+    let mut img = flatten_onto_white(&decode::decode_full_for_path(&bytes, path)?);
     let target = target_bytes.max(1);
 
     let mut chosen = None;
@@ -79,7 +81,8 @@ pub fn compress_to_size(path: &str, target_bytes: u64) -> Result<PathBuf> {
     let src = Path::new(path);
     let slot = reserve_unique_suffix(src, "compressed", "jpg");
     write_atomic(slot.path(), |tmp| {
-        std::fs::write(tmp, &data).map_err(|_| Error::from(E_FAIL))
+        std::fs::write(tmp, &data)
+            .map_err(|e| Error::new(E_FAIL, format!("write {}: {e}", tmp.display())))
     })?;
     preserve_src_time(src, slot.path());
     Ok(slot.path().to_path_buf())
