@@ -643,13 +643,26 @@ pub(crate) fn connect() -> Result<String, String> {
     } else {
         push_snapshot(&tokens.access_token)?;
     }
-    Ok(if !name.is_empty() {
+    let who = if !name.is_empty() {
         name
     } else if !email.is_empty() {
         email
     } else {
         sub
-    })
+    };
+    // Issue #227/G117: the credential and identity this sign-in just wrote now live in the
+    // portable ini (see `cred_store`'s doc), not this PC's own account — say so on the very
+    // screen that reports success, since that is the one moment every sign-in path (the
+    // banner, the sync button, a credential this machine already had) is guaranteed to pass
+    // through. Folded into the returned label rather than a second dialog: the caller
+    // (`settings_dlg::sync`) already shows this string in its one "signed in" message box.
+    if settings::portable() {
+        return Ok(format!(
+            "{who}\n\n{}",
+            crate::win::t("sync_portable_notice")
+        ));
+    }
+    Ok(who)
 }
 
 /// Pull remote settings and apply them locally; seed the cloud if it's empty. Returns

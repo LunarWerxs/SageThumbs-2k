@@ -15,18 +15,19 @@
 use core::ffi::c_void;
 
 use windows::core::{w, Interface, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IDispatch, IPersistFile,
-    IServiceProvider, CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, STGM_READ,
+    CoCreateInstance, CoTaskMemFree, IDispatch, IPersistFile, IServiceProvider, CLSCTX_ALL,
+    CLSCTX_INPROC_SERVER, STGM_READ,
 };
 use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 use windows::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Controls::{
@@ -41,29 +42,22 @@ use windows::Win32::UI::Shell::{
     SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, SendMessageTimeoutW, GUITHREADINFO,
-    SMTO_ABORTIFHUNG,
+    CreateWindowExW, DestroyWindow, FindWindowExW, GetClassNameW, GetForegroundWindow,
+    GetGUIThreadInfo, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible, SendMessageTimeoutW, GUITHREADINFO, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE,
+    WS_POPUP,
 };
 
 use crate::win::wide;
-
-/// Initialise COM (STA) for the lifetime of a scope, undoing it on drop. Mirrors the
-/// pattern in `win.rs`'s file-dialog helpers.
-struct ComGuard(bool);
-impl Drop for ComGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe { CoUninitialize() };
-        }
-    }
-}
 
 /// Target files for a hotkey verb: the foreground Explorer selection, or — when that's empty
 /// — a multi-select file picker. `images_only` filters the picker to image extensions (for the
 /// verbs that only make sense on images). Returns an empty Vec if the user cancels.
 pub(crate) unsafe fn selection_or_pick(images_only: bool) -> Vec<String> {
-    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    // Apartment-threaded COM for the shell automation interfaces below. `sta()` is
+    // `None` (rather than a guard that no-ops on drop) when `CoInitializeEx` itself
+    // failed, so `Drop` only ever balances a real init (issue #158/C17).
+    let _com = sagethumbs2k_core::parallel::ComGuard::sta();
     // Everything is a real answer, not a "no selection" — without this the picker would open
     // over a window that is already pointing at the exact file the user meant.
     if let Some(p) = everything_selection() {
@@ -109,7 +103,7 @@ unsafe fn settled_explorer_selection() -> Vec<String> {
 /// Everything is asked FIRST because it is cheap and unambiguous: the shell automation below can
 /// only ever say "I have never heard of that window", and it would spend [`SETTLE_MS`] proving it.
 pub(crate) unsafe fn preview_target() -> Option<String> {
-    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let _com = sagethumbs2k_core::parallel::ComGuard::sta();
     let raw = match everything_selection().or_else(|| foreground_dialog_selection()) {
         Some(p) => p,
         None => settled_explorer_selection()
@@ -124,7 +118,7 @@ pub(crate) unsafe fn preview_target() -> Option<String> {
 /// preview of a shortcut shows the pointed-at file), leaving anything else unchanged. Inits its
 /// own COM STA (the explicit path doesn't otherwise touch the shell).
 pub(crate) unsafe fn resolve_explicit(path: &str) -> String {
-    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let _com = sagethumbs2k_core::parallel::ComGuard::sta();
     resolve_lnk(path)
 }
 
@@ -310,10 +304,63 @@ unsafe fn everything_selection() -> Option<String> {
     if fg.0.is_null() || !is_everything_class(&class_name(fg)) {
         return None;
     }
+    // Issue #209/P15: the class-name check above matches any local process that
+    // registers a window whose class merely STARTS WITH "EVERYTHING" — nothing
+    // stops another process on the same desktop from doing that and becoming
+    // foreground. Without this, a spoofed window's self-reported text/cells would
+    // be trusted as the selection and fed straight into a hotkey-bound action
+    // (Upload, Convert, StripMetadata, …) that mutates files or talks to the
+    // network. Verify the window's OWNING PROCESS is really some build of
+    // Everything before trusting anything it reports.
+    if !owning_process_is_everything(fg) {
+        return None;
+    }
     if caret_active(fg) {
         return None;
     }
     everything_focus_path(fg).or_else(|| everything_listview_path(fg))
+}
+
+/// Best-effort check that `hwnd` is owned by a process whose EXE is (some build
+/// of) Everything, by name — `voidtools` ships `Everything.exe`, `Everything64.exe`,
+/// alpha builds like `Everything-1.5a.exe`, and portable copies renamed with a
+/// leading "Everything" (matching how [`is_everything_class`] treats the window
+/// class's stem as the only stable part of the name). Any failure to resolve the
+/// owning process's image path is treated as "not Everything" — the safe default
+/// for a check that exists to keep an untrusted window from being trusted.
+unsafe fn owning_process_is_everything(hwnd: HWND) -> bool {
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return false;
+    }
+    let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+        return false;
+    };
+    let mut buf = [0u16; 260];
+    let mut len = buf.len() as u32;
+    let ok = QueryFullProcessImageNameW(
+        process,
+        PROCESS_NAME_WIN32,
+        PWSTR(buf.as_mut_ptr()),
+        &mut len,
+    )
+    .is_ok();
+    let _ = CloseHandle(process);
+    if !ok {
+        return false;
+    }
+    std::path::Path::new(&String::from_utf16_lossy(&buf[..len as usize]))
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(is_everything_exe_name)
+}
+
+/// Is `file_name` (just the EXE's own name, no directory) one voidtools would ship —
+/// pure and separately testable, unlike the process-handle plumbing around it.
+pub(crate) fn is_everything_exe_name(file_name: &str) -> bool {
+    let f = file_name.to_ascii_lowercase();
+    f.starts_with("everything") && f.ends_with(".exe")
 }
 
 /// The focused result as Everything 1.5+ publishes it: the window TEXT of its hidden focus child.
@@ -625,6 +672,42 @@ unsafe fn resolve_lnk(path: &str) -> String {
     }
 }
 
+/// Create an invisible, unowned top-level window to own the file-picker dialog, and give
+/// it the foreground + keyboard focus before the dialog shows (issue #42/P42).
+///
+/// A dialog shown with no owner (`dlg.Show(None)`), from a process spawned by the
+/// background hotkey daemon — which never itself received the triggering keypress —
+/// can be refused the foreground grant Windows requires: it still appears (topmost),
+/// but reads as "the hotkey did nothing" because it opens BEHIND the user's current
+/// window with only a taskbar flash. [`crate::win::force_foreground`] is the same fix
+/// already used for the eyedropper/capture overlay, spawned from this same context.
+///
+/// Uses the built-in `STATIC` class: this window is never shown, so it needs no
+/// window procedure of its own — it exists only to be an owner HWND and a foreground
+/// grant target, and is destroyed by the caller once the dialog closes.
+unsafe fn create_picker_owner() -> Option<HWND> {
+    let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+        .ok()?
+        .into();
+    let hwnd = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("STATIC"),
+        PCWSTR::null(),
+        WS_POPUP,
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        Some(hinst),
+        None,
+    )
+    .ok()?;
+    crate::win::force_foreground(hwnd);
+    Some(hwnd)
+}
+
 /// A multi-select "open files" dialog. `images_only` restricts the filter to image types.
 /// Returns the chosen paths, or `None` if the user cancelled. COM is already initialised by
 /// the caller ([`selection_or_pick`]).
@@ -645,7 +728,12 @@ unsafe fn pick_files(images_only: bool) -> Option<Vec<String>> {
         }];
         let _ = dlg.SetFileTypes(&specs);
     }
-    dlg.Show(None).ok()?;
+    let owner = create_picker_owner();
+    let shown = dlg.Show(owner);
+    if let Some(o) = owner {
+        let _ = DestroyWindow(o);
+    }
+    shown.ok()?;
     let results: IShellItemArray = dlg.GetResults().ok()?;
     let n = results.GetCount().ok()?;
     let mut out = Vec::with_capacity(n as usize);
@@ -666,7 +754,9 @@ unsafe fn pick_files(images_only: bool) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_everything_class, is_rooted_path, join_under, resolve_result_row};
+    use super::{
+        is_everything_class, is_everything_exe_name, is_rooted_path, join_under, resolve_result_row,
+    };
 
     /// Build the cell vector for a row, as `lv_cell` would return it.
     fn cells(v: &[&str]) -> Vec<String> {
@@ -772,5 +862,27 @@ mod tests {
         assert!(!is_everything_class("SageThumbs2KViewer"));
         assert!(!is_everything_class("Everything")); // window classes are case-sensitive
         assert!(!is_everything_class(""));
+    }
+
+    /// Issue #209/P15: the class-name check alone trusts any local process that
+    /// registers a window under a lookalike class — the owning-process EXE name
+    /// is the actual gate. Every real voidtools shape must pass.
+    #[test]
+    fn everything_exe_name_matches_every_real_build() {
+        assert!(is_everything_exe_name("Everything.exe"));
+        assert!(is_everything_exe_name("Everything64.exe"));
+        assert!(is_everything_exe_name("Everything-1.5a.exe"));
+        assert!(is_everything_exe_name("EVERYTHING.EXE")); // exe names are case-insensitive
+        assert!(is_everything_exe_name("EverythingPortable.exe"));
+    }
+
+    /// A spoofing process is free to register a window class that starts with
+    /// "EVERYTHING", but it cannot rename its own EXE to pass this check too.
+    #[test]
+    fn everything_exe_name_rejects_a_lookalike_process() {
+        assert!(!is_everything_exe_name("evil.exe"));
+        assert!(!is_everything_exe_name("notepad.exe"));
+        assert!(!is_everything_exe_name("Everything.exe.bat")); // not a .exe
+        assert!(!is_everything_exe_name(""));
     }
 }

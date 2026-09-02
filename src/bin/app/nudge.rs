@@ -199,12 +199,52 @@ fn persist(state: &NudgeState) {
     let _ = sagethumbs2k_core::settings::set_string(STATE_VALUE, &to_json(state).to_string());
 }
 
+/// A NAMED mutex so every process (the settings EXE, `st2k`, the shell extension host) shares
+/// the one kernel object around [`with_state`]'s read-modify-write (issue #94) — without it, two
+/// processes racing a load-edit-write can silently drop one edit (an ask recorded in one process
+/// disappearing because another process's stale read overwrote it). `Local\` scopes it to this
+/// logon session, mirroring `settings.rs`'s portable-ini `IniLock`.
+struct NudgeLock(windows::Win32::Foundation::HANDLE);
+
+impl NudgeLock {
+    /// Best-effort: a lock that could not be created, or a wait that timed out, returns `None`
+    /// and the caller proceeds unlocked rather than blocking a shell/host thread forever — a
+    /// leaked/wedged mutex must never hang a settings write.
+    fn acquire() -> Option<Self> {
+        use windows::core::w;
+        use windows::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+        let h = unsafe { CreateMutexW(None, false, w!("Local\\SageThumbs2K.NudgeState")) }.ok()?;
+        match unsafe { WaitForSingleObject(h, 2_000) } {
+            // WAIT_ABANDONED means a previous holder died mid-edit without releasing; we still
+            // got ownership, and `persist` only ever replaces the whole value in one write.
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(NudgeLock(h)),
+            _ => {
+                let _ = unsafe { CloseHandle(h) };
+                None
+            }
+        }
+    }
+}
+
+impl Drop for NudgeLock {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
 fn with_state<T>(f: impl FnOnce(&mut NudgeState) -> T) -> T {
     // Read-modify-write against the registry each time rather than caching in a static.
     //
     // This app is several processes — the settings EXE, the CLI, the shell extension host — and a
     // cached copy in one of them would be stale the moment another wrote. There are at most a
-    // handful of these calls per run, so the read costs nothing worth optimizing away.
+    // handful of these calls per run, so the read costs nothing worth optimizing away. The named
+    // mutex (issue #94) is what keeps two of those processes from racing the load-edit-write
+    // itself and dropping one edit.
+    let _lock = NudgeLock::acquire();
     let mut state = load();
     let out = f(&mut state);
     persist(&state);
@@ -472,5 +512,34 @@ mod tests {
     fn app_id_matches_the_landing_page_slug() {
         assert_eq!(APP_ID, "sagethumbs");
         assert!(config().link_base.contains("connections.icu"));
+    }
+
+    /// Issue #94: the whole point of a NAMED (not process-local) mutex is that a second
+    /// holder — standing in for a second PROCESS, since a named mutex is shared by name
+    /// regardless of which process asks for it — must block until the first releases it,
+    /// instead of both racing straight through to a read-modify-write.
+    #[test]
+    fn nudge_lock_serializes_concurrent_acquires() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let Some(first) = NudgeLock::acquire() else {
+            eprintln!("nudge_lock_serializes_concurrent_acquires: mutex unavailable, skipping");
+            return;
+        };
+        let released = Arc::new(AtomicBool::new(false));
+        let released2 = released.clone();
+        let handle = std::thread::spawn(move || {
+            // Blocks until `first` is dropped below (WaitForSingleObject wakes on release).
+            let _second = NudgeLock::acquire();
+            assert!(
+                released2.load(Ordering::SeqCst),
+                "the second acquire returned before the first lock was released"
+            );
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        released.store(true, Ordering::SeqCst);
+        drop(first);
+        handle.join().unwrap();
     }
 }

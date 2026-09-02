@@ -272,14 +272,39 @@ fn catch_code(
     }
 }
 
+/// Largest request this loopback callback will buffer while waiting for the header
+/// terminator — generous for a browser's own redirect GET, bounded so a misbehaving local
+/// connection can't grow `buf` without limit.
+const MAX_CALLBACK_REQUEST_BYTES: usize = 64 * 1024;
+
 /// Handle one accepted connection. Returns `Some(Ok(code))` / `Some(Err(..))` when this was
 /// the real callback (success or an explicit provider error), or `None` for an unrelated
 /// request (which was answered with 404) so the caller keeps waiting.
 fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<String, String>> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let mut buf = [0u8; 8192];
-    let n = stream.read(&mut buf).unwrap_or(0);
-    let req = String::from_utf8_lossy(&buf[..n]);
+    // Issue #94/G98: a single `read()` only sees whatever arrived in the first TCP segment —
+    // a request split across reads (the callback's query string is long enough to straddle a
+    // packet boundary on some networks) 404s here instead of completing sign-in. Loop reads
+    // until the header terminator `\r\n\r\n` shows up, the byte cap is hit, the peer closes,
+    // or the read times out (the existing 5s timeout above bounds the whole loop, since a
+    // timed-out `read()` returns an error and the loop just works with what arrived so far).
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break, // peer closed
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n")
+                    || buf.len() >= MAX_CALLBACK_REQUEST_BYTES
+                {
+                    break;
+                }
+            }
+            Err(_) => break, // timed out or a real read error — work with whatever arrived
+        }
+    }
+    let req = String::from_utf8_lossy(&buf);
     let target = req
         .lines()
         .next()
@@ -485,6 +510,33 @@ mod tests {
                 "Ada Lovelace".into(),
                 "https://example.com/p.jpg".into()
             ))
+        );
+    }
+
+    /// Issue #94/G98: a request split across two TCP writes (simulating two packets) must
+    /// still be recognized as the callback instead of 404ing on a truncated first read.
+    #[test]
+    fn handle_conn_reassembles_a_request_split_across_two_reads() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("loopback bind");
+        let addr = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(addr).expect("loopback connect");
+            let request = "GET /oauth/callback?code=abc&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+            let (first, second) = request.split_at(request.len() / 2);
+            client.write_all(first.as_bytes()).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            client.write_all(second.as_bytes()).unwrap();
+            // The trailing blank line that terminates the header block.
+            std::thread::sleep(Duration::from_millis(50));
+            client.write_all(b"\r\n").unwrap();
+        });
+        let (mut stream, _) = listener.accept().expect("loopback accept");
+        let result = handle_conn(&mut stream, "xyz");
+        writer.join().unwrap();
+        assert_eq!(
+            result,
+            Some(Ok("abc".to_string())),
+            "a request split across reads must still be parsed as the real callback"
         );
     }
 }

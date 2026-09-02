@@ -16,10 +16,11 @@ use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Networking::WinInet::{
     HttpOpenRequestW, HttpQueryInfoW, HttpSendRequestW, InternetCloseHandle, InternetConnectW,
-    InternetOpenW, InternetReadFile, InternetSetOptionW, HTTP_QUERY_ETAG, HTTP_QUERY_FLAG_NUMBER,
-    HTTP_QUERY_STATUS_CODE, INTERNET_FLAG_NO_CACHE_WRITE, INTERNET_FLAG_PRAGMA_NOCACHE,
-    INTERNET_FLAG_RELOAD, INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT,
-    INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP,
+    InternetOpenW, InternetSetOptionW, HTTP_QUERY_ETAG, HTTP_QUERY_FLAG_NUMBER,
+    HTTP_QUERY_STATUS_CODE, INTERNET_FLAG_NO_AUTO_REDIRECT, INTERNET_FLAG_NO_CACHE_WRITE,
+    INTERNET_FLAG_PRAGMA_NOCACHE, INTERNET_FLAG_RELOAD, INTERNET_FLAG_SECURE,
+    INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
+    INTERNET_SERVICE_HTTP,
 };
 
 use crate::win::wide;
@@ -96,7 +97,10 @@ pub(crate) fn request(
 /// can share this ONE WinINet core instead of hand-rolling their own (A130): `reload` controls
 /// whether WinINet is told to bypass its cache (the manifest/self-update checks want a fresh
 /// origin fetch every time; versioned/immutable sponsor images don't), and `on_progress` — when
-/// given — is polled after every chunk read (return `false` to abort, e.g. a user Cancel).
+/// given — is polled after every chunk read with the bytes read so far. It is a progress readout
+/// only (issue #218/C18: this now routes through the shared `win::wininet_drain`, which has no
+/// abort-callback contract) — a caller that wants to abort mid-download polls its own progress
+/// counter on a separate thread instead, the way `sponsors::http_download_streaming` does.
 ///
 /// `overall_timeout_secs` bounds the WHOLE call end-to-end (A123): WinINet's own
 /// `INTERNET_OPTION_*_TIMEOUT`s are per-phase and — critically — the receive one resets on
@@ -110,7 +114,7 @@ pub(crate) fn request_ex(
     timeout_secs: u64,
     overall_timeout_secs: u64,
     max_resp: usize,
-    on_progress: Option<&mut dyn FnMut(u64) -> bool>,
+    on_progress: Option<&mut dyn FnMut(u64)>,
 ) -> Option<Resp> {
     let (host, path) = split_https(url)?;
     let deadline = Instant::now() + Duration::from_secs(overall_timeout_secs.max(1));
@@ -128,6 +132,17 @@ pub(crate) fn request_ex(
             on_progress,
         )
     }
+}
+
+/// Whether `headers` (the `\r\n`-separated block passed to [`request`]/[`request_ex`]) carries
+/// an `Authorization` header — the signal `request_raw_ex` uses to set
+/// `INTERNET_FLAG_NO_AUTO_REDIRECT` (issue #227/P61). Line-anchored (checked per header line,
+/// not a raw substring search of the whole block) so a value that happened to contain the text
+/// `Authorization:` couldn't itself flip this on.
+fn carries_authorization(headers: &str) -> bool {
+    headers
+        .split("\r\n")
+        .any(|line| line.to_ascii_lowercase().starts_with("authorization:"))
 }
 
 unsafe fn request_raw(
@@ -167,7 +182,7 @@ unsafe fn request_raw_ex(
     timeout_secs: u64,
     deadline: Option<Instant>,
     max_resp: usize,
-    on_progress: Option<&mut dyn FnMut(u64) -> bool>,
+    on_progress: Option<&mut dyn FnMut(u64)>,
 ) -> Option<Resp> {
     let agent = wide("SageThumbs2K");
     let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
@@ -211,6 +226,13 @@ unsafe fn request_raw_ex(
     if reload {
         flags |= INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_PRAGMA_NOCACHE;
     }
+    // Issue #227/P61: a request carrying an `Authorization` header (the sync client's Bearer
+    // token) must never let WinINet chase a redirect on its own — a malicious or MITM'd 30x
+    // could otherwise send the token's request to an attacker-controlled host. A non-redirect
+    // 3xx status is then just another non-2xx response to the caller, same as any other error.
+    if carries_authorization(headers) {
+        flags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
+    }
     let req = HttpOpenRequestW(
         conn,
         PCWSTR(verb.as_ptr()),
@@ -246,10 +268,19 @@ unsafe fn request_raw_ex(
     let resp = if sent {
         let status = query_status(req).unwrap_or(0);
         let etag = query_text_header(req, HTTP_QUERY_ETAG);
-        // `drain` returns Some(empty) for a 0-byte body (e.g. 204), None only on a read
-        // error, an over-cap body, an expired deadline, or an aborted callback — either
-        // way we still hand back the status.
-        let body = drain(req, max_resp, deadline, on_progress).unwrap_or_default();
+        // `crate::win::wininet_drain` (issue #218/C18: the fork that used to live here was
+        // folded back into that shared helper) returns Some(empty) for a 0-byte body (e.g.
+        // 204), None only on a read error, an over-cap body, or an expired deadline — either
+        // way we still hand back the status. Its progress callback takes `usize`; ours takes
+        // `u64` (matching the byte counts the rest of this module already uses).
+        let body = match on_progress {
+            Some(cb) => {
+                let mut wrapped = |n: usize| cb(n as u64);
+                crate::win::wininet_drain(req, max_resp, deadline, Some(&mut wrapped))
+            }
+            None => crate::win::wininet_drain(req, max_resp, deadline, None),
+        }
+        .unwrap_or_default();
         Some(Resp { status, etag, body })
     } else {
         None
@@ -259,54 +290,6 @@ unsafe fn request_raw_ex(
     let _ = InternetCloseHandle(conn);
     let _ = InternetCloseHandle(session);
     resp
-}
-
-/// Read a WinInet request handle to EOF, capped at `max_bytes`. Returns the FULL body, or
-/// `None` on a read error, an over-cap response, an expired `deadline`, or an abort from
-/// `on_progress` returning `false` — never a truncated body (mirrors
-/// `crate::win::wininet_drain`'s contract; this is `http.rs`'s own copy because it additionally
-/// needs the wall-clock deadline and progress callback that shared helper doesn't take).
-unsafe fn drain(
-    req: *mut c_void,
-    max_bytes: usize,
-    deadline: Option<Instant>,
-    mut on_progress: Option<&mut dyn FnMut(u64) -> bool>,
-) -> Option<Vec<u8>> {
-    let mut data = Vec::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        // Checked before each read, not just once up front: this is what actually bounds a
-        // slow trickle — WinINet's own RECEIVE_TIMEOUT only bounds the gap BETWEEN reads and
-        // resets on every partial one, so it never fires for a server that keeps sending a
-        // few bytes just often enough (see this function's doc + A123).
-        if deadline.is_some_and(|d| Instant::now() >= d) {
-            return None;
-        }
-        let mut read = 0u32;
-        if InternetReadFile(
-            req,
-            buf.as_mut_ptr() as *mut c_void,
-            buf.len() as u32,
-            &mut read,
-        )
-        .is_err()
-        {
-            return None; // read error → response is incomplete, don't trust it
-        }
-        if read == 0 {
-            break; // end of stream
-        }
-        data.extend_from_slice(&buf[..read as usize]);
-        if data.len() > max_bytes {
-            return None; // oversized / never-ending → reject (no truncated bodies)
-        }
-        if let Some(cb) = on_progress.as_deref_mut() {
-            if !cb(data.len() as u64) {
-                return None; // caller asked to stop (cancel)
-            }
-        }
-    }
-    Some(data)
 }
 
 /// Read the numeric HTTP status code off a completed request via `HttpQueryInfoW`
@@ -392,5 +375,23 @@ mod tests {
     fn request_ex_rejects_non_https_before_touching_wininet() {
         assert!(request_ex("GET", "http://example.com/", true, 5, 30, 4096, None).is_none());
         assert!(request_ex("GET", "not a url", true, 5, 30, 4096, None).is_none());
+    }
+
+    /// Issue #227/P61: `carries_authorization` is the gate `request_raw_ex` uses to add
+    /// `INTERNET_FLAG_NO_AUTO_REDIRECT` — it must fire for the real header shape
+    /// `sync_client::auth_headers` builds, and it must be a per-line match, not a raw
+    /// substring search that a header VALUE could accidentally trip.
+    #[test]
+    fn carries_authorization_matches_a_real_header_and_is_line_anchored() {
+        assert!(carries_authorization(
+            "Authorization: Bearer abc123\r\nContent-Type: application/json"
+        ));
+        assert!(carries_authorization("authorization: bearer x")); // header names are case-insensitive
+        assert!(!carries_authorization(""));
+        assert!(!carries_authorization("Content-Type: application/json"));
+        // The word appearing inside a header VALUE (not as a header name) must not match.
+        assert!(!carries_authorization(
+            "X-Note: no Authorization: header here"
+        ));
     }
 }

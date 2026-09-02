@@ -87,9 +87,14 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// The tiny throttle/cache file ("`<unix_secs>\n<latest_tag>\n`"), next to the diagnostics
-/// log in `%LOCALAPPDATA%`.
+/// The tiny throttle/cache file ("`<unix_secs>\n<latest_tag>\n`"). Beside the portable ini
+/// when running portable (issue #118/G118 — a portable copy must not leave anything in the
+/// host's `%LOCALAPPDATA%`, the same split `settings.rs`/`sync_client.rs` already apply to
+/// every other setting); next to the diagnostics log in `%LOCALAPPDATA%` otherwise.
 fn cache_path() -> Option<PathBuf> {
+    if let Some(ini) = sagethumbs2k_core::settings::ini_path() {
+        return ini.parent().map(|d| d.join("SageThumbs2K-update.txt"));
+    }
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("SageThumbs2K-update.txt"))
 }
 
@@ -712,6 +717,19 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     use windows::Win32::UI::Shell::{
         CLSID_ProgressDialog, IProgressDialog, PROGDLG_AUTOTIME, PROGDLG_NORMAL,
     };
+
+    // Issue #12: the portable zip's whole promise is "no installer, no admin rights". This is
+    // the actual choke point every caller funnels through, so it is refused here even if a
+    // caller (e.g. the About page's Update button) forgets its own `!settings::portable()`
+    // check — `launch_installer_silent` below is what elevates and writes Program Files, and
+    // it must never run for a portable copy on a PC the user may not have admin rights to.
+    if sagethumbs2k_core::settings::portable() {
+        return Err(UpdateError::Blocked(format!(
+            "This is the portable copy of SageThumbs 2K, which never installs itself or asks \
+             for administrator rights. Download the latest portable zip from {RELEASES_URL} \
+             and replace the old files with the new ones."
+        )));
+    }
 
     let (tag, asset) = latest_installer_asset().ok_or_else(|| {
         UpdateError::Failed(

@@ -81,8 +81,15 @@ fn manifest_bytes() -> Option<&'static [u8]> {
             let prev = is_new
                 .then(sagethumbs2k_core::settings::tombstone_version)
                 .flatten();
+            // Issue #227/P62: every other outbound value in this query goes through
+            // `http::form_enc`; the tombstone version is a free-form string read from HKCU
+            // (or the portable INI), so it is capped and percent-encoded here the same way
+            // before it is spliced into the query string.
             let reinstall = match &prev {
-                Some(v) => format!("&reinstall=1&prev={v}"),
+                Some(v) => {
+                    let capped: String = v.chars().take(32).collect();
+                    format!("&reinstall=1&prev={}", crate::http::form_enc(&capped))
+                }
                 None => String::new(),
             };
             // The developer's own test box (HKCU DevMachine=1) tags the request with `&dev=1`.
@@ -338,12 +345,18 @@ pub(crate) fn http_fetch_capped(
         .filter(|b| !b.is_empty())
 }
 
-/// Stream an HTTPS download into memory, invoking `on_progress(downloaded_bytes)` after each
-/// chunk — return `false` from it to abort (e.g. the user hit Cancel). Always reloads (no
-/// cache), bounded by `max_bytes` + per-phase timeouts + an overall wall-clock budget (see
-/// [`http_fetch_capped`]'s doc for why the latter matters). The self-updater uses this to
-/// drive a live progress bar while pulling the installer. None on a non-HTTPS URL, any
-/// WinINet failure, a non-2xx status, an abort, or an over-cap / empty body.
+/// Stream an HTTPS download into memory on a background thread, polling
+/// `on_progress(downloaded_bytes)` roughly every 100ms on the CALLING thread instead of from
+/// the network thread — the self-updater's caller drives a `IProgressDialog` COM object,
+/// which isn't `Send`, so the progress/cancel check has to happen here rather than inside the
+/// WinINet read loop (issue #218/C18: the shared `win::wininet_drain` behind `request_ex` has
+/// no abort-callback contract of its own, only a `deadline`). Return `false` from `on_progress`
+/// to abandon the wait: this call returns `None` immediately, while the network thread keeps
+/// running to completion (bounded by `max_bytes` + the timeouts below) and its eventual result
+/// is simply discarded — the same abandon-on-timeout shape [`manifest_bytes`] already uses.
+/// Always reloads (no cache), bounded by `max_bytes` + per-phase timeouts + an overall
+/// wall-clock budget (see [`http_fetch_capped`]'s doc for why the latter matters). None on a
+/// non-HTTPS URL, any WinINet failure, a non-2xx status, an abandon, or an over-cap/empty body.
 pub(crate) fn http_download_streaming(
     url: &str,
     max_bytes: usize,
@@ -353,18 +366,42 @@ pub(crate) fn http_download_streaming(
     if !is_https_url(url) {
         return None;
     }
-    let resp = crate::http::request_ex(
-        "GET",
-        url,
-        true,
-        timeout_secs,
-        overall_timeout_secs(timeout_secs),
-        max_bytes,
-        Some(on_progress),
-    )?;
-    is_success_status(resp.status)
-        .then_some(resp.body)
-        .filter(|b| !b.is_empty())
+    let url = url.to_string();
+    let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let progress_writer = progress.clone();
+    let overall = overall_timeout_secs(timeout_secs);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let resp = crate::http::request_ex(
+            "GET",
+            &url,
+            true,
+            timeout_secs,
+            overall,
+            max_bytes,
+            Some(&mut |n: u64| {
+                progress_writer.store(n, std::sync::atomic::Ordering::Relaxed);
+            }),
+        );
+        let _ = tx.send(resp);
+    });
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(resp) => {
+                return resp
+                    .filter(|r| is_success_status(r.status))
+                    .map(|r| r.body)
+                    .filter(|b| !b.is_empty());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let done = progress.load(std::sync::atomic::Ordering::Relaxed);
+                if !on_progress(done) {
+                    return None; // abandoned — the network thread finishes on its own
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
+    }
 }
 
 /// The overall wall-clock backstop for [`http_fetch_capped`] / [`http_download_streaming`]

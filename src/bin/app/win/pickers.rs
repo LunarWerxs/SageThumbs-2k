@@ -1,14 +1,12 @@
 //! File-dialog pickers + clipboard (extracted from win.rs; behavior unchanged).
 
 use core::ffi::c_void;
+use std::path::Path;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
-};
+use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
@@ -16,20 +14,32 @@ use windows::Win32::UI::Shell::{
     KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
 };
 
+use sagethumbs2k_core::parallel::ComGuard;
+
 use super::wide;
 
-/// RAII `CoUninitialize` for the four file-dialog pickers below, each of which calls
-/// `CoInitializeEx` on entry: `.0` is whether that call actually succeeded (a caller
-/// already on an initialized apartment gets `RPC_E_CHANGED_MODE` or similar, and must
-/// NOT uninitialize an apartment it didn't start). Was defined identically four times,
-/// once per function; hoisted to one module-level definition.
-struct ComGuard(bool);
-impl Drop for ComGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe { CoUninitialize() };
-        }
-    }
+/// Absolute path in the grammar `SHCreateItemFromParsingName` accepts.
+///
+/// Local copy of `sagethumbs2k_core::prebuild::parsing_path` (`prebuild.rs:248`), which is
+/// `pub(crate)` to the core lib and so not reachable from this binary crate — see G86 in the
+/// paired review docs. Keep the two in step: `canonicalize` returns the extended-length
+/// form and the parsing-name grammar rejects it, so strip it back: `\\?\C:\…` -> `C:\…`, and
+/// the UNC form `\\?\UNC\server\share` -> the plain `\\server\share` (stripping only `\\?\`
+/// there would leave `UNC\…`, which resolves nowhere).
+fn parsing_path(path: &str) -> String {
+    Path::new(path)
+        .canonicalize()
+        .map(|p| {
+            let s = p.to_string_lossy().into_owned();
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{rest}")
+            } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+                rest.to_string()
+            } else {
+                s
+            }
+        })
+        .unwrap_or_else(|_| path.to_string())
 }
 
 pub(crate) unsafe fn desktop_dir() -> String {
@@ -45,7 +55,7 @@ pub(crate) unsafe fn desktop_dir() -> String {
 
 /// Folder picker via IFileOpenDialog (FOS_PICKFOLDERS).
 pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
-    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let _com = ComGuard::sta();
     let dlg: IFileOpenDialog =
         CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     let opts = dlg.GetOptions().ok()?;
@@ -64,7 +74,7 @@ pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
 /// centres itself on the owner, so it can't get lost. Seeds the dialog with folder `dir`
 /// and default file `name`. Returns the chosen path (a `.png`), or None if cancelled.
 pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option<String> {
-    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let _com = ComGuard::sta();
     let dlg: IFileSaveDialog =
         CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     let spec_name = wide("PNG image");
@@ -79,7 +89,10 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
     let nm = wide(name);
     let _ = dlg.SetFileName(PCWSTR(nm.as_ptr()));
     if !dir.is_empty() {
-        let dw = wide(dir);
+        // `SHCreateItemFromParsingName` wants the extended-length-prefix-free absolute form
+        // (see `parsing_path`'s doc); a raw path here silently fails to resolve on some
+        // inputs (G86 in the paired review docs).
+        let dw = wide(&parsing_path(dir));
         if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(dw.as_ptr()), None)
         {
             let _ = dlg.SetFolder(&item);
@@ -96,7 +109,7 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
 /// "Save settings as" dialog (a `.json` file) via IFileSaveDialog — centres on `owner`
 /// like [`pick_save_png`]. Seeds the default file `name`; returns the chosen path or None.
 pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<String> {
-    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let _com = ComGuard::sta();
     let dlg: IFileSaveDialog =
         CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     let spec_name = wide("SageThumbs 2K settings");
@@ -121,7 +134,7 @@ pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<Strin
 /// "Open settings" dialog (a `.json` file) via IFileOpenDialog. Returns the chosen path
 /// or None. Open dialogs default to file-must-exist, so a bad pick can't reach us.
 pub(crate) unsafe fn pick_open_settings(owner: HWND) -> Option<String> {
-    let _com = ComGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+    let _com = ComGuard::sta();
     let dlg: IFileOpenDialog =
         CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     if let Ok(opts) = dlg.GetOptions() {
@@ -150,4 +163,31 @@ pub(crate) unsafe fn set_clipboard_text(text: &str) -> bool {
         sagethumbs2k_core::clipboard::CF_UNICODETEXT,
         &bytes,
     )
+}
+
+#[cfg(test)]
+mod parsing_path_tests {
+    use super::*;
+
+    /// `canonicalize`'s extended-length prefix must be stripped, or
+    /// `SHCreateItemFromParsingName` refuses the result.
+    #[test]
+    fn parsing_path_strips_the_extended_length_prefix() {
+        let dir = std::env::temp_dir();
+        let got = parsing_path(&dir.to_string_lossy());
+        assert!(
+            !got.starts_with(r"\\?\"),
+            "parsing_path must strip the \\\\?\\ prefix, got {got:?}"
+        );
+    }
+
+    /// A path that doesn't exist can't be canonicalized — must pass through unchanged
+    /// rather than panicking or returning empty.
+    #[test]
+    fn parsing_path_passes_through_a_missing_path() {
+        assert_eq!(
+            parsing_path(r"Z:\definitely\not\here"),
+            r"Z:\definitely\not\here"
+        );
+    }
 }

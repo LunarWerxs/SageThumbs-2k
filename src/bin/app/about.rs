@@ -53,6 +53,15 @@ const ID_FEEDBACK_PILL: i32 = 1206;
 /// `LPARAM` = a `Box<String>` (the newer tag) when WPARAM==1 — the handler reclaims it.
 const WM_ABOUT_CHECKED: u32 = WM_APP + 1;
 
+/// Posted from the download+install worker thread back to the About window: the
+/// one-click update attempt finished. `LPARAM` is
+/// `Box::into_raw(Box<Result<String, update::UpdateError>>)` — the handler reclaims it.
+/// `WPARAM` is unused. See [`start_install`]: this replaces calling
+/// `update::download_and_install` directly on the UI thread, which used to block the
+/// whole message loop (and everything else on it, including Settings behind it) for
+/// the entire multi-MB download.
+const WM_ABOUT_INSTALLED: u32 = WM_APP + 2;
+
 /// Timer id driving the status-pill spinner animation.
 const SPIN_TIMER_ID: usize = 1;
 /// Spinner repaint interval (ms) — ~25 fps: smooth motion, negligible cost.
@@ -96,6 +105,10 @@ struct About {
     status: Status,
     /// A network check is in flight — ignore extra status-pill clicks until it lands.
     checking: bool,
+    /// A download+install attempt is in flight on a worker thread — ignore extra
+    /// status-pill clicks until [`WM_ABOUT_INSTALLED`] lands (or the process exits,
+    /// on the success path).
+    installing: bool,
     /// Spinner animation phase; doubles as the elapsed-frame counter for the faux timer.
     spin_frame: u32,
     /// A finished check whose result is held back until the faux timer's minimum elapses.
@@ -549,7 +562,17 @@ unsafe fn reveal(hwnd: HWND, result: Status) {
 /// The status pill was clicked while an update is available: offer the same one-click,
 /// in-place update the Settings button used to (download → verify → elevated install),
 /// falling back to the releases page if it can't complete.
+///
+/// The actual download+install runs on a worker thread ([`start_install`]) — this used to
+/// call `update::download_and_install` directly, blocking the About window's (and Settings'
+/// behind it) message loop for the whole download, up to `overall_timeout_secs(120) = 480`
+/// wall-clock seconds; the shell `IProgressDialog` pumps on its own thread regardless, which
+/// is why its bar stayed smooth while every other window of ours went "(Not Responding)".
 unsafe fn offer_update(hwnd: HWND) {
+    let st = about_state(hwnd);
+    if st.is_null() || (*st).installing {
+        return;
+    }
     let cap = wide(crate::win::t("upd_confirm_title"));
     let prompt = wide(crate::win::t("upd_confirm"));
     if MessageBoxW(
@@ -561,7 +584,45 @@ unsafe fn offer_update(hwnd: HWND) {
     {
         return;
     }
-    match update::download_and_install(hwnd) {
+    (*st).installing = true;
+    start_install(hwnd);
+}
+
+/// Kick off `update::download_and_install` on a worker thread; it posts the outcome back
+/// to `hwnd` via [`WM_ABOUT_INSTALLED`]. HWND isn't `Send`, so the raw handle value crosses
+/// the thread boundary and is rebuilt for both the (still `IProgressDialog`-owning) call and
+/// the (thread-safe) post — same pattern as [`start_check`].
+unsafe fn start_install(hwnd: HWND) {
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let owner = HWND(raw as *mut c_void);
+        let result = update::download_and_install(owner);
+        let lp = Box::into_raw(Box::new(result)) as isize;
+        let posted = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(lp));
+        if posted.is_err() {
+            // Window torn down between spawn and post — nobody will ever reclaim this box,
+            // so reclaim it right here (mirrors `post_failed_leaks_tag` for the check path).
+            drop(Box::from_raw(
+                lp as *mut Result<String, update::UpdateError>,
+            ));
+        }
+    });
+}
+
+/// [`WM_ABOUT_INSTALLED`] handler: reclaim the boxed result and do what `offer_update` used
+/// to do inline once the call returned — exit on success (the installer closes us and
+/// relaunches), stay silent on a user cancel, or show the failure and fall back to the
+/// releases page.
+unsafe fn on_about_installed(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    if lparam.0 == 0 {
+        return LRESULT(0);
+    }
+    let result = *Box::from_raw(lparam.0 as *mut Result<String, update::UpdateError>);
+    let st = about_state(hwnd);
+    if !st.is_null() {
+        (*st).installing = false;
+    }
+    match result {
         // Installer launched: it closes us, upgrades in place, and relaunches — so exit.
         Ok(_) => {
             crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
@@ -584,6 +645,7 @@ unsafe fn offer_update(hwnd: HWND) {
             open_url(update::RELEASES_URL);
         }
     }
+    LRESULT(0)
 }
 
 /// Status-pill click: install a waiting update, otherwise re-run the check (unless one is
@@ -819,6 +881,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let state = Box::new(About {
         status: if auto { Status::Checking } else { Status::Idle },
         checking: false,
+        installing: false,
         spin_frame: 0,
         pending: None,
         gh_icon: None,
@@ -955,6 +1018,7 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             WM_CREATE => on_create(hwnd),
             WM_DRAWITEM => on_drawitem(hwnd, lparam),
             WM_ABOUT_CHECKED => on_about_checked(hwnd, wparam, lparam),
+            WM_ABOUT_INSTALLED => on_about_installed(hwnd, lparam),
             WM_TIMER if wparam.0 == SPIN_TIMER_ID => on_spin_timer(hwnd),
             WM_COMMAND => on_command(hwnd, wparam),
             WM_SETCURSOR => on_setcursor(hwnd, msg, wparam, lparam),

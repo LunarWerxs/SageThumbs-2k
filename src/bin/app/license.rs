@@ -178,12 +178,24 @@ pub(crate) fn history_path() -> Option<std::path::PathBuf> {
 /// Read the breadcrumb, tolerating absence and hostility alike: no file, oversized
 /// file, malformed JSON, wrong types - all `None`, never an error the caller must
 /// route. "No history" is a legitimate answer and the common one.
+///
+/// Bounded through the SAME open handle the read uses (issue #227/P63), rather than a
+/// `metadata()` size check followed by a separate `fs::read()`: the file lives in
+/// `%ProgramData%\SageThumbs2K`, which the installer creates with user-modify permissions so
+/// any account on the machine can rewrite it between those two calls, and `fs::read` reads to
+/// EOF regardless of the size `metadata` reported.
 pub(crate) fn read_history(path: &std::path::Path) -> Option<History> {
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > HISTORY_MAX_BYTES {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(HISTORY_MAX_BYTES + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > HISTORY_MAX_BYTES {
         return None;
     }
-    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let v: Value = serde_json::from_slice(&buf).ok()?;
     History::from_json(&v)
 }
 
@@ -477,12 +489,36 @@ mod tests {
             "absent reads as no history"
         );
 
-        // Oversized: refused before it is read, per HISTORY_MAX_BYTES.
+        // Oversized: the bounded `File::take` read never grows past HISTORY_MAX_BYTES + 1
+        // regardless of the file's real size, so an oversized prank costs one small read.
         std::fs::write(&p, vec![b' '; (HISTORY_MAX_BYTES + 1) as usize]).unwrap();
+        assert_eq!(read_history(&p), None, "an oversized prank is refused");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #227/P63: the old `metadata()`-then-`fs::read()` shape checked the size before
+    /// the read, which is TOCTOU on a users-writable file. Pin the boundary the `File::take`
+    /// fix must land on exactly: a file of exactly `HISTORY_MAX_BYTES` is still read (trailing
+    /// whitespace after a JSON value parses fine), one byte over is refused (already pinned by
+    /// `read_write_round_trip_and_every_bad_shape`'s oversized case above).
+    #[test]
+    fn read_history_accepts_a_file_exactly_at_the_byte_cap() {
+        let dir = temp_dir("bounded_read");
+        let p = dir.join("license-history.json");
+
+        let mut at_cap = serde_json::to_vec(&History::default().to_json()).unwrap();
+        assert!(
+            (at_cap.len() as u64) <= HISTORY_MAX_BYTES,
+            "fixture must fit under the cap before padding"
+        );
+        at_cap.resize(HISTORY_MAX_BYTES as usize, b' '); // trailing whitespace, still valid JSON
+        assert_eq!(at_cap.len() as u64, HISTORY_MAX_BYTES);
+        std::fs::write(&p, &at_cap).unwrap();
         assert_eq!(
             read_history(&p),
-            None,
-            "an oversized prank costs a metadata call"
+            Some(History::default()),
+            "a file exactly at HISTORY_MAX_BYTES must still be read"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

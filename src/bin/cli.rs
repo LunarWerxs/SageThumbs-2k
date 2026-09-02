@@ -17,8 +17,10 @@ st2k — SageThumbs 2K command line
 
 USAGE:
   st2k thumbnail <in> <out.png> [--size N]      render any format to an image (N px, default 256)
-  st2k batch <thumbnail|convert> <in|dir...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%]
-                                                bulk-process many files/folders in parallel (one process)
+  st2k batch <thumbnail|convert|info> <in|dir...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%]
+                                                bulk-process many files/folders in parallel (one process);
+                                                each input dir is scanned one level deep unless --recurse;
+                                                'info' returns a JSON array (dimensions/EXIF/audio tags)
   st2k convert   <in> <out> [--quality N] [--webp-quality N] [--resize WxH|N%]   (--webp-quality → lossy WebP)
   st2k prebuild  <dir|file...> [--recurse] [--size N,N] [--rebuild-all] [--jobs N]
                                                 fill Explorer's thumbnail cache ahead of browsing
@@ -28,9 +30,11 @@ USAGE:
   st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG/WebP/SVG(Z)/HEIC/HEIF/AVIF, lossless)
   st2k ocr       <in>                           recognize text → stdout
   st2k pdf       <out.pdf> <in> [in...]         combine images into one PDF
-  st2k info      <in> [--json]                  dimensions + camera/date/GPS
+  st2k cbz       <out.cbz> <in> [in...]         combine images into one CBZ (comic-book zip)
+  st2k info      <in> [--json]                  dimensions + camera/date/GPS/bit depth/DPI, or audio tags
   st2k formats   [--json]                       list supported input formats
-  st2k doctor    [file]                         self-check: why are thumbnails not showing? (add a file to probe it)
+  st2k doctor    [file] [--bundle out.zip]       self-check: why are thumbnails not showing? (add a file to probe it;
+                                                --bundle zips the report + log tail + formats --json for a bug report)
   st2k register  [--off|--status]               portable build: turn Explorer thumbnails on for this user
   st2k upload-hosts [--open]                     show (or open) the editable upload-hosts config file
   st2k devmode   [on|off|status]                toggle the developer test-box flag
@@ -56,6 +60,9 @@ const VALUE_FLAGS: &[&str] = &[
     // bench-decode's repeat count. It MUST be here or its value is parsed as an input path:
     // `--runs 3` left a bare "3" in the positionals, which then reported as `3<TAB>FAIL`.
     "--runs",
+    // `doctor --bundle out.zip`'s destination path — must be excluded the same way `--out`
+    // is, or "out.zip" would be read as a second doctor probe target.
+    "--bundle",
 ];
 
 /// Flags that take NO value — excluded from `pos` on their own, without consuming the
@@ -151,7 +158,7 @@ fn run_convert(pos: &[&String], rest: &[String]) -> Result<String, String> {
     cli::convert(i, o, q, wq, resize)
 }
 
-/// `batch <op> <inputs...> [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...]`
+/// `batch <op> <inputs...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...]`
 fn run_batch(pos: &[&String], rest: &[String]) -> Result<String, String> {
     let op = need(pos, 0)?;
     let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
@@ -164,6 +171,7 @@ fn run_batch(pos: &[&String], rest: &[String]) -> Result<String, String> {
     cli::batch(
         op,
         &inputs,
+        has_flag(rest, "--recurse") || has_flag(rest, "-r"),
         flag(rest, "--out").as_deref(),
         size,
         flag(rest, "--to").as_deref(),
@@ -256,6 +264,11 @@ fn run(args: &[String]) -> Result<String, String> {
             let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
             cli::pdf(out, &inputs)
         }
+        "cbz" => {
+            let out = need(&pos, 0)?;
+            let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
+            cli::cbz(out, &inputs)
+        }
         "info" => cli::info(need(&pos, 0)?, has_flag(rest, "--json")),
         "bench-decode" => run_bench_decode(&pos, rest),
         "formats" => Ok(cli::list_formats(has_flag(rest, "--json"))),
@@ -263,9 +276,18 @@ fn run(args: &[String]) -> Result<String, String> {
         // a user running this already has something broken. An optional file path adds a
         // per-file probe ("st2k doctor C:\path\to\that.xcf") that actually tries to decode
         // THAT file — the check that explains "registered fine but this one file is blank".
-        "doctor" | "diag" => Ok(sagethumbs2k_core::doctor::report(
-            pos.first().map(|s| s.as_str()),
-        )),
+        // `--bundle <out.zip>` writes the report + the log's tail + `formats --json` into
+        // one attachment instead of printing the report to stdout.
+        "doctor" | "diag" => match flag(rest, "--bundle") {
+            Some(out) => sagethumbs2k_core::doctor::bundle(
+                std::path::Path::new(&out),
+                pos.first().map(|s| s.as_str()),
+            )
+            .map(|_| format!("Diagnostics bundle written to {out}")),
+            None => Ok(sagethumbs2k_core::doctor::report(
+                pos.first().map(|s| s.as_str()),
+            )),
+        },
         "register" | "unregister" => run_register(verb, &pos, rest),
         "upload-hosts" | "upload-host" => {
             let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");

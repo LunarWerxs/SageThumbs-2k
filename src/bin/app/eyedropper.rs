@@ -8,8 +8,6 @@
 
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::OnceLock;
-
 use std::sync::Mutex;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -17,8 +15,8 @@ use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
     DrawTextW, EndPaint, FillRect, FrameRect, GetDC, GetPixel, GetStockObject, InvalidateRect,
     ReleaseDC, SelectObject, SetBkMode, SetDCBrushColor, SetStretchBltMode, SetTextColor,
-    StretchBlt, COLORONCOLOR, DC_BRUSH, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HGDIOBJ,
-    PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+    StretchBlt, COLORONCOLOR, DC_BRUSH, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBITMAP, HBRUSH, HDC,
+    HGDIOBJ, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -32,15 +30,39 @@ use crate::win::{app_icon, gui_font, set_clipboard_text, t, wide};
 const EYE_K: i32 = 7; // half-window: a (2K+1)² block of screen pixels in the loupe
 const EYE_SPAN: i32 = 2 * EYE_K + 1; // 15 px sampled across
 const EYE_MAG: i32 = 150; // magnified loupe size (px) → 10× zoom
-const EYE_LBL: i32 = 78; // loupe label strip (px): value row + swatch row + two hint rows
+                          // Loupe label strip (px): value row + swatch row + two hint rows + the HDR disclosure row
+                          // (issue #116/P116). Every rect that derives the box height from this constant grows with
+                          // it, so this is the only place the strip's height is declared.
+const EYE_LBL: i32 = 96;
 /// Stash swatch size and how many fit on the row before the count takes over.
 const EYE_SW: i32 = 12;
 const EYE_SW_MAX: i32 = 11;
 
 /// The frozen screen snapshot: a memory DC (with its bitmap selected) we BitBlt
 /// to display, StretchBlt for the loupe, and GetPixel for sampling.
-static EYE_SHOT: OnceLock<usize> = OnceLock::new(); // HDC
-static EYE_SHOT_BMP: OnceLock<usize> = OnceLock::new(); // HBITMAP (freed on close)
+///
+/// `Mutex`, not `OnceLock` (issue #95): a second invocation of the picker in one
+/// process used to silently keep pointing at the FIRST snapshot's already-freed
+/// DC/bitmap, because `OnceLock::set` after the first call is a no-op —
+/// `set_snapshot` frees whatever was there before storing the new one.
+static EYE_SHOT: Mutex<Option<(usize, usize)>> = Mutex::new(None); // (HDC, HBITMAP)
+
+/// Store a freshly captured snapshot, freeing any previous one first (issue #95).
+unsafe fn set_snapshot(dc: HDC, bmp: HBITMAP) {
+    free_snapshot();
+    *EYE_SHOT.lock().unwrap() = Some((dc.0 as usize, bmp.0 as usize));
+}
+
+/// Free the current snapshot's DC/bitmap, if any, and clear the slot. Safe to
+/// call more than once (a no-op once the slot is empty) — used both from
+/// `WM_DESTROY` and from a window-creation failure path that never reaches
+/// `WM_DESTROY` (issue #95).
+unsafe fn free_snapshot() {
+    if let Some((dc, bmp)) = EYE_SHOT.lock().unwrap().take() {
+        let _ = DeleteDC(HDC(dc as *mut c_void));
+        let _ = DeleteObject(HGDIOBJ(bmp as *mut c_void));
+    }
+}
 static EYE_VW: AtomicI32 = AtomicI32::new(0); // snapshot / window size
 static EYE_VH: AtomicI32 = AtomicI32::new(0);
 /// Last cursor client position (drives the loupe; starts off-screen).
@@ -198,8 +220,7 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     SelectObject(mem, HGDIOBJ(bmp.0)); // keep selected → mem is a readable copy of the screen
     let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
     ReleaseDC(None, screen);
-    let _ = EYE_SHOT.set(mem.0 as usize);
-    let _ = EYE_SHOT_BMP.set(bmp.0 as usize);
+    set_snapshot(mem, bmp);
     EYE_VW.store(vw, Ordering::Relaxed);
     EYE_VH.store(vh, Ordering::Relaxed);
 
@@ -216,7 +237,7 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
 
     // Fullscreen, borderless, topmost — covers the whole virtual screen so the
     // cursor is always over us (no global hook needed to catch clicks).
-    if let Ok(hwnd) = CreateWindowExW(
+    match CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         class,
         w!("Pick color"),
@@ -230,19 +251,25 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
         Some(hinst),
         None,
     ) {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        // Same trap as the capture overlay: without this the picker takes mouse
-        // clicks but no keys, so Space and Esc silently do nothing.
-        crate::win::force_foreground(hwnd);
-        let mut msg = MSG::default();
-        loop {
-            let r = GetMessageW(&mut msg, None, 0, 0).0;
-            if r == 0 || r == -1 {
-                break;
+        Ok(hwnd) => {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            // Same trap as the capture overlay: without this the picker takes mouse
+            // clicks but no keys, so Space and Esc silently do nothing.
+            crate::win::force_foreground(hwnd);
+            let mut msg = MSG::default();
+            loop {
+                let r = GetMessageW(&mut msg, None, 0, 0).0;
+                if r == 0 || r == -1 {
+                    break;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
         }
+        // Issue #95: window creation failed, so `WM_DESTROY` (which normally
+        // frees the snapshot) never fires — free it here instead of leaking the
+        // DC/bitmap for the rest of the process's life.
+        Err(_) => free_snapshot(),
     }
 }
 
@@ -274,8 +301,7 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
     SelectObject(mem, HGDIOBJ(bmp.0));
     let _ = BitBlt(mem, 0, 0, pw, ph, Some(screen), 0, 0, SRCCOPY);
     ReleaseDC(None, screen);
-    let _ = EYE_SHOT.set(mem.0 as usize);
-    let _ = EYE_SHOT_BMP.set(bmp.0 as usize);
+    set_snapshot(mem, bmp);
     EYE_VW.store(pw, Ordering::Relaxed);
     EYE_VH.store(ph, Ordering::Relaxed);
     // Park the loupe near the centre so it actually draws (WM_PAINT only draws it when a
@@ -314,6 +340,9 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
         Some(hinst),
         None,
     ) else {
+        // Issue #95: `WM_DESTROY` never fires for a window that was never
+        // created, so the snapshot taken above must be freed here instead.
+        free_snapshot();
         return false;
     };
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -321,13 +350,13 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
     crate::win::force_repaint(hwnd);
     crate::win::pump_msgs(6);
     let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd); // WM_DESTROY frees EYE_SHOT / EYE_SHOT_BMP
+    let _ = DestroyWindow(hwnd); // WM_DESTROY frees the snapshot (EYE_SHOT)
     ok
 }
 
 /// Sample the screen-snapshot pixel at (x, y) as (r, g, b) via GetPixel.
 fn eye_sample(x: i32, y: i32) -> (u8, u8, u8) {
-    let Some(&dc) = EYE_SHOT.get() else {
+    let Some((dc, _)) = *EYE_SHOT.lock().unwrap() else {
         return (0, 0, 0);
     };
     let (vw, vh) = (
@@ -481,12 +510,7 @@ unsafe fn on_keydown_digit(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 }
 
 unsafe fn on_destroy() -> LRESULT {
-    if let Some(&dc) = EYE_SHOT.get() {
-        let _ = DeleteDC(HDC(dc as *mut c_void));
-    }
-    if let Some(&bmp) = EYE_SHOT_BMP.get() {
-        let _ = DeleteObject(HGDIOBJ(bmp as *mut c_void));
-    }
+    free_snapshot();
     PostQuitMessage(0);
     LRESULT(0)
 }
@@ -494,7 +518,7 @@ unsafe fn on_destroy() -> LRESULT {
 unsafe fn eye_paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
-    if let Some(&shot) = EYE_SHOT.get() {
+    if let Some((shot, _)) = *EYE_SHOT.lock().unwrap() {
         let shotdc = HDC(shot as *mut c_void);
         let pr = ps.rcPaint;
         // Restore the snapshot under the invalid region (erasing the old loupe).
@@ -715,12 +739,30 @@ unsafe fn eye_draw_loupe(hdc: HDC, shotdc: HDC, cx: i32, cy: i32) {
         left: bx + 6,
         top: by + EYE_MAG + 58,
         right: bx + EYE_MAG,
-        bottom: by + EYE_MAG + EYE_LBL,
+        bottom: by + EYE_MAG + 78,
     };
     DrawTextW(
         hdc,
         &mut hint2[..h2n],
         &mut h2r,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+    // Issue #116/P116: plain GDI `GetPixel` only ever sees the desktop's SDR-tonemapped 8-bit
+    // composition (GDI has no HDR read path), so a colour sampled from HDR content can differ
+    // from what an HDR-aware viewer reports for the same pixel. Disclose the approximation
+    // rather than silently returning a value the user has no reason to distrust.
+    let mut hint3 = wide(t("eye_hint_hdr"));
+    let h3n = hint3.len().saturating_sub(1);
+    let mut h3r = RECT {
+        left: bx + 6,
+        top: by + EYE_MAG + 78,
+        right: bx + EYE_MAG,
+        bottom: by + EYE_MAG + EYE_LBL,
+    };
+    DrawTextW(
+        hdc,
+        &mut hint3[..h3n],
+        &mut h3r,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE,
     );
 
@@ -822,5 +864,42 @@ mod tests {
         let (sx, sy, kx, ky) = eye_sample_window(2, 2, 4, 4);
         assert_eq!((sx, sy), (0, 0));
         assert!(kx < EYE_SPAN && ky < EYE_SPAN);
+    }
+
+    /// Issue #95: a second snapshot must free the previous one's DC/bitmap instead
+    /// of leaking it — the old `OnceLock` could not be re-set, so it silently kept
+    /// pointing at whatever was captured FIRST, even after that snapshot was
+    /// deleted by `on_destroy` (a stale, freed handle read by the second run).
+    #[test]
+    fn set_snapshot_frees_the_previous_one() {
+        unsafe {
+            let screen = GetDC(None);
+            let dc1 = CreateCompatibleDC(Some(screen));
+            let bmp1 = CreateCompatibleBitmap(screen, 4, 4);
+            let dc2 = CreateCompatibleDC(Some(screen));
+            let bmp2 = CreateCompatibleBitmap(screen, 4, 4);
+            ReleaseDC(None, screen);
+
+            set_snapshot(dc1, bmp1);
+            assert_eq!(
+                *EYE_SHOT.lock().unwrap(),
+                Some((dc1.0 as usize, bmp1.0 as usize))
+            );
+
+            // Must free dc1/bmp1 before storing dc2/bmp2, not just clobber the slot.
+            set_snapshot(dc2, bmp2);
+            assert_eq!(
+                *EYE_SHOT.lock().unwrap(),
+                Some((dc2.0 as usize, bmp2.0 as usize)),
+                "the slot must hold the SECOND snapshot, not still the first"
+            );
+
+            free_snapshot();
+            assert_eq!(
+                *EYE_SHOT.lock().unwrap(),
+                None,
+                "free_snapshot must clear the slot"
+            );
+        }
     }
 }

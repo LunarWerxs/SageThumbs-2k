@@ -300,8 +300,19 @@ unsafe fn apply_persona(hwnd: HWND) {
     // Offered here rather than defaulted on, because it MODIFIES the picture the user asked to
     // see. Two separate reports (#17, #22) asked for a way to tell file types apart in a folder
     // — worth putting the switch in front of people once, not worth deciding for them.
+    //
+    // Goes through `set_corner_mark(Badge)`, not the retired `FormatBadge` DWORD directly:
+    // `CornerMark` is what `corner_mark()`/`format_badge()` actually read (the legacy DWORD is
+    // only consulted as a fallback when `CornerMark` is absent entirely), and writing only the
+    // DWORD skipped the two other steps that go with it — suppressing Explorer's own type
+    // overlay (`typeoverlay::sync`, so it doesn't stamp its icon on top of our badge in the
+    // same corner) and clearing the thumbnail cache so the badge actually shows up on files
+    // Explorer already thumbnailed. This mirrors what `settings_dlg/values.rs`'s own
+    // badge-changed handling does when the same checkbox is ticked from Settings.
     if checked(hwnd, ID_P_BADGE) {
-        let _ = s::set_dword("FormatBadge", 1);
+        let _ = s::set_corner_mark(s::CornerMark::Badge);
+        sagethumbs2k_core::typeoverlay::sync(true);
+        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
     }
 }
 

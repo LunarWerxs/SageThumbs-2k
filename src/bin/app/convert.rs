@@ -217,7 +217,33 @@ const CV_RESIZE: &[(&str, ResizeMode)] = &[
 ];
 
 pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
-    let files = read_listfile(listfile);
+    let listed = read_listfile(listfile);
+    if listed.is_empty() {
+        return;
+    }
+    // Cloud placeholders (OneDrive/Dropbox "free up space" files) are dropped before the
+    // batch is queued, same as `st2k batch` (issue #87) — opening one to convert it would
+    // hydrate/download the whole file for a click the user never asked for. Symlink
+    // metadata, so a reparse point never triggers a download just to answer the question.
+    let mut files = Vec::with_capacity(listed.len());
+    let mut skipped_cloud = 0usize;
+    for f in listed {
+        if sagethumbs2k_core::prebuild::is_cloud_placeholder(std::path::Path::new(&f)) {
+            skipped_cloud += 1;
+        } else {
+            files.push(f);
+        }
+    }
+    if skipped_cloud > 0 {
+        let text = wide(&t("cv_skipped_cloud").replace("{n}", &skipped_cloud.to_string()));
+        let cap = wide("SageThumbs 2K");
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(cap.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
     if files.is_empty() {
         return;
     }
@@ -703,6 +729,33 @@ fn produce_convert_job(
 /// reads and decodes the source itself. Sharing one decode across the sizes would
 /// mean holding a full-resolution image while three encodes run, which is the
 /// trade this deliberately does not make.
+/// Reduces one file's per-job outputs (in job order) into the first produced output
+/// (for the "open folder" reveal) and whether EVERY job succeeded (issue #28: a
+/// file used to count as fully converted the moment job 0 succeeded, even when
+/// "write every preset size" left jobs 1/2 unwritten). `is_pdf` suppresses the
+/// duplicate-PDF-job case: `produce_convert_job` intentionally returns `None` for
+/// every PDF job after the first (a PDF ignores resize, so re-running it would
+/// only emit identical copies), and that intentional `None` must not count as a
+/// failure.
+///
+/// Pure and separately testable on purpose, same reasoning as `failed_summary`
+/// below: the surrounding `convert_one_file` does real file I/O per job, which no
+/// unit test here can drive without a fixture image on disk.
+fn reduce_job_outputs(is_pdf: bool, produced: &[Option<PathBuf>]) -> (Option<PathBuf>, bool) {
+    let mut first: Option<PathBuf> = None;
+    let mut all_ok = true;
+    for (i, out) in produced.iter().enumerate() {
+        let pdf_duplicate = is_pdf && i > 0;
+        if out.is_none() && !pdf_duplicate {
+            all_ok = false;
+        }
+        if first.is_none() {
+            first = out.clone();
+        }
+    }
+    (first.clone(), all_ok && first.is_some())
+}
+
 fn convert_one_file(
     f: &str,
     tgt: CvTarget,
@@ -711,33 +764,36 @@ fn convert_one_file(
     png_level: u32,
     webp_quality: Option<u8>,
     outdir: &Option<PathBuf>,
-) -> Option<PathBuf> {
+) -> (Option<PathBuf>, bool) {
     // Cancelled mid-run: skip the rest cheaply so the batch winds down fast.
     if CONVERT_CANCEL.load(Ordering::Relaxed) {
-        return None;
+        return (None, false);
     }
-    let dir = outdir
+    let dir = match outdir
         .clone()
-        .or_else(|| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))?;
-    let mut first: Option<PathBuf> = None;
-    for (resize, tag) in jobs {
-        let (resize, tag) = (*resize, tag.as_deref());
+        .or_else(|| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))
+    {
+        Some(d) => d,
+        None => return (None, false),
+    };
+    let is_pdf = matches!(tgt, CvTarget::Pdf);
+    let mut produced_per_job: Vec<Option<PathBuf>> = Vec::with_capacity(jobs.len());
+    for (i, (resize, tag)) in jobs.iter().enumerate() {
+        let pdf_already_written = is_pdf && i > 0;
         let produced = produce_convert_job(
             f,
             tgt,
             &dir,
-            resize,
-            tag,
+            *resize,
+            tag.as_deref(),
             quality,
             png_level,
             webp_quality,
-            first.is_some(),
+            pdf_already_written,
         );
-        if first.is_none() {
-            first = produced;
-        }
+        produced_per_job.push(produced);
     }
-    first
+    reduce_job_outputs(is_pdf, &produced_per_job)
 }
 
 /// Read the dialog options and run the batch conversion on a worker thread,
@@ -794,7 +850,9 @@ unsafe fn start_convert(hwnd: HWND) {
         // Progress is posted as each file finishes (from worker threads;
         // `PostMessageW` is thread-safe), keeping the bar live.
         let done = std::sync::atomic::AtomicUsize::new(0);
-        let outs: Vec<Option<PathBuf>> = sagethumbs2k_core::parallel::map_indexed(
+        // Each entry is (first produced output, whether EVERY requested size/job for
+        // that file was written — issue #28).
+        let outs: Vec<(Option<PathBuf>, bool)> = sagethumbs2k_core::parallel::map_indexed(
             &files,
             0, // auto worker count = available_parallelism
             |_, f| convert_one_file(f, tgt, &jobs, quality, png_level, webp_quality, &outdir),
@@ -808,24 +866,26 @@ unsafe fn start_convert(hwnd: HWND) {
                 );
             },
         );
-        let ok = outs.iter().flatten().count();
-        // Name the ones that did NOT convert (issue #34). `map_indexed` returns results in
-        // input order, so a `None` at index i IS `files[i]` — no plumbing needed to find out
-        // which. Skipped when the user cancelled: everything queued behind the cancel is a
-        // `None` too, and listing those as failures would be a lie about the user's own act.
+        let ok = outs.iter().filter(|(_, all_ok)| *all_ok).count();
+        // Name the ones that did NOT fully convert (issue #34, #28). `map_indexed` returns
+        // results in input order, so entry i IS `files[i]` — no plumbing needed to find out
+        // which. A file whose first job wrote output but a later preset size did not is now
+        // listed here too, rather than being silently folded into "N of N converted".
+        // Skipped when the user cancelled: everything queued behind the cancel is a `None`
+        // too, and listing those as failures would be a lie about the user's own act.
         *FAILED_FILES.lock().unwrap() = if CONVERT_CANCEL.load(Ordering::Relaxed) {
             Vec::new()
         } else {
             files
                 .iter()
                 .zip(&outs)
-                .filter(|(_, out)| out.is_none())
+                .filter(|(_, (_, all_ok))| !*all_ok)
                 .map(|(f, _)| f.clone())
                 .collect()
         };
         // Remember the first produced output (ordered results → lowest-index success,
         // matching the old first-in-iteration reveal) so completion can offer it.
-        if let Some(first) = outs.into_iter().flatten().next() {
+        if let Some(first) = outs.into_iter().find_map(|(out, _)| out) {
             *LAST_OUTPUT.lock().unwrap() = Some(first);
         }
         let _ = PostMessageW(
@@ -1316,6 +1376,43 @@ mod tests {
             !s.contains(&format!("f{}.psd", MAX_LISTED_FAILURES)),
             "names past the limit must be summarised, not listed: {s}"
         );
+    }
+
+    /// Issue #28: "write every preset size" must not report a file as fully
+    /// converted just because its FIRST job produced output — every job in the
+    /// list has to succeed, and the ones that did not must not be masked from the
+    /// completion summary.
+    #[test]
+    fn reduce_job_outputs_catches_a_later_job_failing() {
+        // Job 0 wrote a file, job 1 (a second preset size) did not: not fully ok,
+        // but the first output is still offered for "open folder".
+        let one_of_two = vec![Some(PathBuf::from(r"C:\out\a_1080.png")), None];
+        let (first, all_ok) = reduce_job_outputs(false, &one_of_two);
+        assert_eq!(first, Some(PathBuf::from(r"C:\out\a_1080.png")));
+        assert!(
+            !all_ok,
+            "one of two requested sizes missing must not read as a full success"
+        );
+
+        // Every job wrote: fully ok.
+        let two_of_two = vec![
+            Some(PathBuf::from(r"C:\out\a_1080.png")),
+            Some(PathBuf::from(r"C:\out\a_720.png")),
+        ];
+        let (_, all_ok) = reduce_job_outputs(false, &two_of_two);
+        assert!(all_ok, "every requested size present must read as ok");
+
+        // Nothing wrote at all: not ok, no reveal path.
+        let (first, all_ok) = reduce_job_outputs(false, &[None, None]);
+        assert_eq!(first, None);
+        assert!(!all_ok);
+
+        // PDF's intentionally-suppressed duplicate job (index > 0 returns `None`
+        // by design) must not count against `all_ok`.
+        let pdf = vec![Some(PathBuf::from(r"C:\out\a.pdf")), None, None];
+        let (first, all_ok) = reduce_job_outputs(true, &pdf);
+        assert_eq!(first, Some(PathBuf::from(r"C:\out\a.pdf")));
+        assert!(all_ok, "a suppressed duplicate PDF job is not a failure");
     }
 
     /// A016: a typed dimension must be capped, not passed straight through toward

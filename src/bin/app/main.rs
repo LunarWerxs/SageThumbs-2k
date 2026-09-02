@@ -69,12 +69,9 @@ mod win;
 use core::ffi::c_void;
 
 use windows::core::w;
-use windows::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM,
-};
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_BAR_CLASSES, ICC_LINK_CLASS, ICC_LISTVIEW_CLASSES,
     ICC_PROGRESS_CLASS, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX,
@@ -191,6 +188,21 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         // Restarts Explorer and exits; piggybacking an update check onto that would leave a
         // network call running out of a process whose whole job was one `cmd` line.
         "--rebuild-thumbnail-cache",
+        "--rebuild-thumbnail-cache-now",
+        // The hidden dev measurement flags: console-output-only, no window, no side effects —
+        // a network call spawned mid-benchmark would be a stray side effect in a mode whose
+        // whole point is a clean, repeatable number.
+        "--bench-preview",
+        "--bench-nav",
+        "--bench-mash",
+        // Documented as read-only and side-effect-free ("prints what a global hotkey would
+        // act on right now... and exits"); it must stay that way even under `--after-ms`.
+        "--explorer-selection",
+        // Install/uninstall-time one-shots, same reasoning as `--heal-hotkeys`/`--updated`.
+        "--sync-user-shell",
+        "--remove-user-shell",
+        "--remove-user-state",
+        "--queue-cache-rebuild",
     ];
     !args.iter().any(|a| EXCLUDED.contains(&a.as_str()))
 }
@@ -277,7 +289,22 @@ fn main() {
         // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
         // shell). Never silent-by-default: setup only runs this if the box is ticked.
         if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
+            // `restart_explorer_clearing_cache` can take up to ~30s (it waits out the
+            // taskkill, then polls for the taskbar to come back). This flag is invoked
+            // synchronously from the installer's postinstall [Run] step, which by default
+            // blocks Setup's own UI for however long we take — so detach: re-spawn ourselves
+            // with the actual work and return immediately, rather than making the installer
+            // (or whatever else launched us this way) sit through it.
+            detach_rebuild_thumbnail_cache();
+            return;
+        }
+        // The detached half of the above: does the real (blocking) work and exits. Not
+        // reachable from a normal launch — only from the re-spawn just above.
+        if args.iter().any(|a| a == "--rebuild-thumbnail-cache-now") {
             let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+            return;
+        }
+        if dispatch_user_state_modes(&args) {
             return;
         }
 
@@ -691,6 +718,7 @@ unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
             .get(pos + 1)
             .map_or(env!("CARGO_PKG_VERSION"), String::as_str);
         crate::update::show_updated_toast(ver);
+        offer_thumbnail_refresh(ver);
         return true;
     }
     if args.iter().any(|a| a == "--heal-hotkeys") {
@@ -698,6 +726,120 @@ unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
         return true;
     }
     false
+}
+
+/// Re-spawn this EXE with `--rebuild-thumbnail-cache-now` (detached — no wait, no window)
+/// and return, so a caller invoking `--rebuild-thumbnail-cache` synchronously (the
+/// installer's postinstall [Run] step) is not blocked for the ~30s
+/// `restart_explorer_clearing_cache` can take. If the re-spawn itself fails, fall back to
+/// doing the work directly rather than silently skipping what the postinstall checkbox
+/// promised.
+fn detach_rebuild_thumbnail_cache() {
+    use std::os::windows::process::CommandExt;
+    let Ok(exe) = std::env::current_exe() else {
+        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        return;
+    };
+    let spawned = std::process::Command::new(&exe)
+        .arg("--rebuild-thumbnail-cache-now")
+        .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+        .spawn();
+    if spawned.is_err() {
+        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+    }
+}
+
+/// After a silent self-update relaunch, a decoder/format fix shows no difference for any
+/// file Explorer already thumbnailed — only clearing `thumbcache_*.db` does, and until now
+/// the only UI for that was a postinstall checkbox `/UPDATED` deliberately skips (see G88 /
+/// review #88: "silent self-update never invalidates the thumbcache"). Records
+/// `CacheStaleSince=<ver>` in HKCU so the state is visible even if the toast is missed or
+/// dismissed unread, offers a one-click fix, and clears the marker once the refresh
+/// actually completes. The restart runs INSIDE the click handler, on this thread: this is
+/// the short-lived relaunch process `show_updated_toast` pops its balloon from, and it exits
+/// the moment the toast returns, so a detached worker would be torn down mid-restart, its
+/// verify loop and explorer.exe fallback with it. Blocking here for the ~30 s cycle costs
+/// nothing: the process has no other work, and the restart takes the tray icon with it.
+unsafe fn offer_thumbnail_refresh(ver: &str) {
+    let _ = sagethumbs2k_core::settings::set_string("CacheStaleSince", ver);
+    crate::win::notify_toast_action(
+        "Refresh thumbnails now?",
+        "New thumbnails won't appear for files Explorer already cached until the cache is \
+         cleared. Click to refresh thumbnails now (restarts Explorer).",
+        std::time::Duration::from_secs(8),
+        || {
+            let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+            let _ = sagethumbs2k_core::settings::set_string("CacheStaleSince", "");
+        },
+    );
+}
+
+/// `--queue-cache-rebuild` (the installer, running this as the ORIGINAL user): queue a
+/// one-shot `--rebuild-thumbnail-cache` in this user's RunOnce for the next sign-in. The
+/// installer asks for it when the DLL swap is waiting on a restart; written from the
+/// elevated installer itself the value would land in whichever admin's hive answered the
+/// UAC prompt, not the user's.
+fn queue_cache_rebuild() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let cmd = format!("\"{}\" --rebuild-thumbnail-cache", exe.display());
+    if let Ok(k) =
+        windows_registry::CURRENT_USER.create(r"Software\Microsoft\Windows\CurrentVersion\RunOnce")
+    {
+        let _ = k.set_string("SageThumbs2KRebuildCache", &cmd);
+    }
+}
+
+/// `--sync-user-shell` / `--remove-user-shell` (register.rs's per-user shell hooks, run
+/// `runasoriginaluser` by the installer so they land in the interactive user's hive rather
+/// than the elevated [Code] process's) and `--remove-user-state` (uninstall-time: wipe this
+/// user's HKCU settings, leave the reinstall tombstone, and drop the daemon's autostart
+/// entry). Returns `true` if a flag fired (caller should return).
+unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
+    if args.iter().any(|a| a == "--sync-user-shell") {
+        if let Err(e) = sagethumbs2k_core::register::sync_user_shell() {
+            sagethumbs2k_core::safety::log(&format!("--sync-user-shell failed: {e}"));
+        }
+        return true;
+    }
+    if args.iter().any(|a| a == "--remove-user-shell") {
+        sagethumbs2k_core::register::remove_user_shell();
+        return true;
+    }
+    if args.iter().any(|a| a == "--remove-user-state") {
+        remove_user_state();
+        return true;
+    }
+    if args.iter().any(|a| a == "--queue-cache-rebuild") {
+        queue_cache_rebuild();
+        return true;
+    }
+    false
+}
+
+/// The body of `--remove-user-state`: for the CURRENT user only, wipe every trace of us
+/// that an elevated, machine-wide uninstall step cannot reach — this app never runs
+/// elevated by itself (see [`is_elevated`]'s doc above), so the installer must invoke this
+/// `runasoriginaluser` for it to land in the right hive at all.
+///
+/// Wipes `HKCU\Software\SageThumbs2K` entirely, then re-leaves the reinstall tombstone —
+/// the same "wipe the root, then leave one value behind" shape
+/// [`sagethumbs2k_core::settings::clear_tombstone`]'s doc comment describes the machine-wide
+/// uninstaller performing — via the general string setter (which targets the exact same
+/// key `tombstone_version`/`clear_tombstone` read and clear), and drops the screenshot
+/// daemon's logon autostart entry. `RUN_KEY`/`RUN_NAME` mirror the private constants in
+/// `screenshot::enable` (that module owns the daemon's own add/remove of the same value;
+/// its consts aren't `pub`, so the literal is repeated here — keep both in sync).
+unsafe fn remove_user_state() {
+    let _ = windows_registry::CURRENT_USER.remove_tree(sagethumbs2k_core::settings::ROOT);
+    let _ = sagethumbs2k_core::settings::set_string("Tombstone", env!("CARGO_PKG_VERSION"));
+
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const RUN_NAME: &str = "SageThumbs2KScreenshot";
+    if let Ok(k) = windows_registry::CURRENT_USER.open(RUN_KEY) {
+        let _ = k.remove_value(RUN_NAME);
+    }
 }
 
 /// If another instance is already up (or mid-boot), activate ITS window instead of
@@ -741,12 +883,30 @@ unsafe fn activate_existing_instance(want_tab: Option<usize>) -> bool {
 /// Returns `true` if another instance already held the mutex (caller should return
 /// without creating a window).
 unsafe fn handle_single_instance(want_tab: Option<usize>) -> bool {
-    let single_instance = CreateMutexW(None, true, w!("SageThumbs2K.App.Single"));
-    if single_instance.is_ok() && GetLastError() == ERROR_ALREADY_EXISTS {
-        activate_existing_instance(want_tab);
-        return true;
+    // Owner-only DACL: another account's process on the same machine cannot open the mutex
+    // (the default descriptor is used only when this process's token cannot be read). The
+    // helper also captures `GetLastError` right after the create, before anything clobbers it.
+    let (mutex, last_err) = win::create_mutex_user_only(true, w!("SageThumbs2K.App.Single"));
+    match mutex {
+        Ok(_) if last_err == ERROR_ALREADY_EXISTS => {
+            activate_existing_instance(want_tab);
+            true
+        }
+        // We now hold the mutex ourselves: genuinely the first (and only) instance.
+        Ok(_) => false,
+        // CreateMutexW itself failed — we CANNOT establish whether another instance holds
+        // it. The old code treated `single_instance.is_ok()` being false the exact same way
+        // as "definitely no other instance" (silently falling through to open a second
+        // window), which is the bug: a failure here means "unknown", not "no". Log it (this
+        // used to be silent) and proceed best-effort rather than either claim.
+        Err(e) => {
+            sagethumbs2k_core::safety::log(&format!(
+                "single-instance mutex could not be created/opened ({e}) — cannot verify \
+                 whether another instance is already running"
+            ));
+            false
+        }
     }
-    false
 }
 
 /// Registers the window class, sizes and positions it for the monitor under the cursor,
@@ -921,6 +1081,15 @@ mod tests {
             vec!["--updated", "1.7.0"],
             vec!["--heal-hotkeys"],
             vec!["--rebuild-thumbnail-cache"],
+            vec!["--rebuild-thumbnail-cache-now"],
+            vec!["--bench-preview", "C:\\pics"],
+            vec!["--bench-nav", "C:\\pics", "20"],
+            vec!["--bench-mash", "C:\\pics", "20"],
+            vec!["--explorer-selection"],
+            vec!["--explorer-selection", "--after-ms", "300"],
+            vec!["--sync-user-shell"],
+            vec!["--remove-user-shell"],
+            vec!["--remove-user-state"],
         ] {
             assert!(
                 !update_piggyback_wanted(&argv(&excluded)),

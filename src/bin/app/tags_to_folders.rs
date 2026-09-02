@@ -3,12 +3,16 @@
 //! folder-name template, and copy-vs-move. The sort engine is in the lib
 //! (`sagethumbs2k_core::tags_to_folders`).
 
-use std::sync::OnceLock;
+use core::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
@@ -23,7 +27,19 @@ const CID_TTF_TEMPLATE: i32 = 5103;
 const CID_TTF_MISSING: i32 = 5104;
 const CID_TTF_MOVE: i32 = 5105;
 const CID_TTF_COPY: i32 = 5106;
+const CID_TTF_PROGRESS: i32 = 5107;
+/// Posted by the worker thread when the sort finishes.
+const WM_TTF_DONE: u32 = 0x8000 + 41; // WM_APP + 41
+
 static TTF_FILES: OnceLock<Vec<String>> = OnceLock::new();
+/// Set while the worker thread owns the sort, so `request_close` can defer
+/// destroying the window until it posts `WM_TTF_DONE` (issue #29 — the pump used
+/// to freeze for the whole batch, with Windows flagging the window Not
+/// Responding; the sort now runs off the UI thread).
+static TTF_RUNNING: AtomicBool = AtomicBool::new(false);
+/// (done, skipped, move_files), set by the worker thread just before it posts
+/// `WM_TTF_DONE`; read once, on the UI thread, by `on_ttf_done`.
+static TTF_RESULT: Mutex<Option<(usize, usize, bool)>> = Mutex::new(None);
 
 pub(crate) unsafe fn run_tags_to_folders_dialog(_hinst: HINSTANCE, listfile: &str) {
     let files = read_listfile(listfile);
@@ -50,12 +66,16 @@ extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         match msg {
             WM_CREATE => on_create(hwnd),
             WM_COMMAND => on_command(hwnd, wparam),
+            WM_TTF_DONE => on_ttf_done(hwnd),
             WM_DPICHANGED => {
                 wm_dpichanged(hwnd, lparam);
                 LRESULT(0)
             }
+            // Mirror IDCANCEL's deferred close: a sort started on the worker
+            // thread must not be torn out from under it by an unconditional
+            // DestroyWindow.
             WM_CLOSE => {
-                let _ = DestroyWindow(hwnd);
+                request_close(hwnd);
                 LRESULT(0)
             }
             WM_DESTROY => {
@@ -206,6 +226,23 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     );
     SendMessageW(mv, BM_SETCHECK_MSG, Some(WPARAM(1)), Some(LPARAM(0))); // default: Move
 
+    // Indeterminate progress bar, hidden until a sort is actually running (issue
+    // #29): the sort runs on a worker thread so this pump keeps pumping instead
+    // of Windows flagging the window Not Responding.
+    let prog = ctl(
+        hwnd,
+        w!("msctls_progress32"),
+        "",
+        WINDOW_STYLE(PBS_MARQUEE),
+        16,
+        180,
+        414,
+        8,
+        CID_TTF_PROGRESS,
+        hinst,
+    );
+    let _ = ShowWindow(prog, SW_HIDE);
+
     // Anchor the button row to the REAL client bottom — `run_dialog`'s h is
     // the TOTAL window height, so a hardcoded y put the row's bottom below
     // the client edge (clipped). GetClientRect is physical px → back to
@@ -251,17 +288,20 @@ unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
             }
         }
         IDOK => on_command_ok(hwnd),
-        IDCANCEL => {
-            let _ = DestroyWindow(hwnd);
-        }
+        IDCANCEL => request_close(hwnd),
         _ => {}
     }
     LRESULT(0)
 }
 
-/// `IDOK`: read the destination/template/missing-token fields (falling back to their
-/// defaults when blank), run the sort, and report the done/skipped counts.
+/// `IDOK`: read the destination/template/missing-token fields (falling back to
+/// their defaults when blank), then run the sort on a worker thread (issue #29)
+/// so the UI pump stays responsive instead of freezing for the whole batch.
+/// `on_ttf_done` picks the done/skipped counts back up on the UI thread.
 unsafe fn on_command_ok(hwnd: HWND) {
+    if TTF_RUNNING.load(Ordering::Relaxed) {
+        return;
+    }
     let mut dest = get_edit_text(hwnd, CID_TTF_DEST).trim().to_string();
     if dest.is_empty() {
         dest = TTF_FILES
@@ -280,33 +320,85 @@ unsafe fn on_command_ok(hwnd: HWND) {
         missing = t("ttf_missing_default").to_string();
     }
     let move_files = checked(hwnd, CID_TTF_MOVE);
-    let (done, skipped) = if let Some(files) = TTF_FILES.get() {
-        sagethumbs2k_core::tags_to_folders(
-            files,
+    let Some(files) = TTF_FILES.get().cloned() else {
+        return;
+    };
+
+    for id in [
+        CID_TTF_DEST,
+        CID_TTF_BROWSE,
+        CID_TTF_TEMPLATE,
+        CID_TTF_MISSING,
+        CID_TTF_MOVE,
+        CID_TTF_COPY,
+        IDOK,
+    ] {
+        if let Ok(ctrl) = GetDlgItem(Some(hwnd), id) {
+            let _ = EnableWindow(ctrl, false);
+        }
+    }
+    if let Ok(prog) = GetDlgItem(Some(hwnd), CID_TTF_PROGRESS) {
+        let _ = ShowWindow(prog, SW_SHOW);
+        SendMessageW(prog, PBM_SETMARQUEE, Some(WPARAM(1)), Some(LPARAM(30)));
+    }
+    TTF_RUNNING.store(true, Ordering::Relaxed);
+
+    let raw = hwnd.0 as usize;
+    std::thread::spawn(move || {
+        let (done, skipped) = sagethumbs2k_core::tags_to_folders(
+            &files,
             std::path::Path::new(&dest),
             &template,
             &missing,
             move_files,
-        )
-    } else {
-        (0, 0)
-    };
-    let key = if move_files {
-        "ttf_done_moved"
-    } else {
-        "ttf_done_copied"
-    };
-    let m = wide(
-        &t(key)
-            .replace("{done}", &done.to_string())
-            .replace("{skipped}", &skipped.to_string()),
-    );
-    let cap = wide("SageThumbs 2K");
-    MessageBoxW(
-        Some(hwnd),
-        PCWSTR(m.as_ptr()),
-        PCWSTR(cap.as_ptr()),
-        MB_OK | MB_ICONINFORMATION,
-    );
+        );
+        *TTF_RESULT.lock().unwrap() = Some((done, skipped, move_files));
+        let _ = PostMessageW(
+            Some(HWND(raw as *mut c_void)),
+            WM_TTF_DONE,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    });
+}
+
+/// `WM_TTF_DONE`: report the done/skipped counts the worker thread produced, then close.
+unsafe fn on_ttf_done(hwnd: HWND) -> LRESULT {
+    TTF_RUNNING.store(false, Ordering::Relaxed);
+    if let Some((done, skipped, move_files)) = TTF_RESULT.lock().unwrap().take() {
+        let key = if move_files {
+            "ttf_done_moved"
+        } else {
+            "ttf_done_copied"
+        };
+        let m = wide(
+            &t(key)
+                .replace("{done}", &done.to_string())
+                .replace("{skipped}", &skipped.to_string()),
+        );
+        let cap = wide("SageThumbs 2K");
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR(m.as_ptr()),
+            PCWSTR(cap.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
     let _ = DestroyWindow(hwnd);
+    LRESULT(0)
+}
+
+/// Close the dialog, or defer the close if a sort is still running. There is no
+/// per-file cancellation checkpoint inside `tags_to_folders` (it is one lib call,
+/// not a loop this dialog drives) — Cancel while running just refuses to close
+/// early, so `on_ttf_done`'s `DestroyWindow` is the one that actually tears the
+/// window down, instead of destroying it out from under the worker thread mid-sort.
+unsafe fn request_close(hwnd: HWND) {
+    if TTF_RUNNING.load(Ordering::Relaxed) {
+        if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
+            let _ = EnableWindow(b, false);
+        }
+    } else {
+        let _ = DestroyWindow(hwnd);
+    }
 }

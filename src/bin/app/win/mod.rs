@@ -22,8 +22,10 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use sagethumbs2k_core::i18n;
+mod dacl;
 mod pickers;
 mod scaling;
+pub(crate) use dacl::{create_mutex_user_only, with_user_only_dacl};
 pub(crate) use pickers::{
     desktop_dir, pick_folder, pick_open_settings, pick_save_png, pick_save_settings,
     set_clipboard_text,
@@ -358,17 +360,37 @@ pub(crate) fn wide(s: &str) -> Vec<u16> {
 }
 
 /// Read a WinInet request handle to EOF, capped at `max_bytes`. Returns the FULL
-/// body, or `None` on a read error or an over-cap response — never a truncated
-/// body. Both remote clients (the sponsor GET in `sponsors.rs` and the screenshot POST in
-/// `screenshot/upload.rs`) parse/decode the result, so partial bytes must not be
-/// handed back looking like success. Shared so the read loop and the over-cap
-/// policy live in exactly one place (the POST path used to return the truncated
-/// body on over-cap — a corrupt URL; this fixes it for both).
-pub(crate) unsafe fn wininet_drain(req: *mut c_void, max_bytes: usize) -> Option<Vec<u8>> {
+/// body, or `None` on a read error, an over-cap response, an expired `deadline`, or a
+/// `false` from `on_progress` — never a truncated body. Both remote clients (the sponsor
+/// GET in `sponsors.rs` and the screenshot POST in `screenshot/upload.rs`) parse/decode the
+/// result, so partial bytes must not be handed back looking like success. Shared so the
+/// read loop and the over-cap policy live in exactly one place (the POST path used to
+/// return the truncated body on over-cap — a corrupt URL; this fixes it for both).
+///
+/// `deadline` bounds the WHOLE read, checked before every single `InternetReadFile` call —
+/// not just once up front. That is what actually stops a slow trickle:
+/// `INTERNET_OPTION_RECEIVE_TIMEOUT` only bounds the gap BETWEEN reads and resets on every
+/// partial one, so it never fires for a server that keeps sending a few bytes just often
+/// enough to stay under it (this is `http.rs::drain`'s documented reason for forking this
+/// function in the first place — folded back in here so both callers share one deadline
+/// check). `on_progress`, when given, is called after every read with the bytes read SO FAR
+/// (a progress readout only — this helper has no cancel-callback contract; a caller that
+/// wants to abort mid-read does so through `deadline`).
+pub(crate) unsafe fn wininet_drain(
+    req: *mut c_void,
+    max_bytes: usize,
+    deadline: Option<std::time::Instant>,
+    mut on_progress: Option<&mut dyn FnMut(usize)>,
+) -> Option<Vec<u8>> {
     use windows::Win32::Networking::WinInet::InternetReadFile;
     let mut data = Vec::new();
     let mut buf = [0u8; 16384];
     loop {
+        // Checked before EVERY read, not just once up front — see the doc above for why
+        // that's what actually bounds a slow trickle.
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return None; // wall-clock deadline expired → reject (no truncated bodies)
+        }
         let mut read = 0u32;
         if InternetReadFile(
             req,
@@ -386,6 +408,9 @@ pub(crate) unsafe fn wininet_drain(req: *mut c_void, max_bytes: usize) -> Option
         data.extend_from_slice(&buf[..read as usize]);
         if data.len() > max_bytes {
             return None; // oversized / never-ending → reject (no truncated bodies)
+        }
+        if let Some(cb) = on_progress.as_deref_mut() {
+            cb(data.len());
         }
     }
     Some(data)
@@ -981,6 +1006,42 @@ pub(crate) unsafe fn load_art(
         .map(|h| HBITMAP(h as *mut c_void))
 }
 
+/// How many pid-suffixed names to try before giving up on the temp-icon fallback (mirrors
+/// `decode::magick::NamedTemp`'s `MAX_STAGE_ATTEMPTS`). The counter alone already makes a
+/// collision improbable; the loop exists so `create_new` can't turn one squatted name into
+/// a permanent "no icon" for the whole process.
+const MAX_ICON_TEMP_ATTEMPTS: u32 = 8;
+
+/// Claim a pid-suffixed `%TEMP%` path EXCLUSIVELY and fill it with the embedded icon, or
+/// give up. `create_new`, never `std::fs::write`: write/truncate follows hard links and
+/// reparse points, so a name pre-planted in `%TEMP%` (a fixed `sagethumbs2k.ico` used to be
+/// exactly that — predictable and shared by every process) would have our icon bytes
+/// written straight THROUGH it into whatever it really points at. The pid+counter suffix
+/// already makes the name unpredictable across processes; `create_new` refusing an existing
+/// name (reparse point or not) is the actual guard.
+fn claim_icon_temp_file() -> Option<std::path::PathBuf> {
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+    for n in 0..MAX_ICON_TEMP_ATTEMPTS {
+        let path = dir.join(format!("sagethumbs2k-{pid}-{n}.ico"));
+        let Ok(mut f) = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        else {
+            continue;
+        };
+        if f.write_all(APP_ICO).is_ok() {
+            drop(f); // close before LoadImageW opens the same path
+            return Some(path);
+        }
+        drop(f);
+        let _ = std::fs::remove_file(&path); // partial write — don't leave it claimed
+    }
+    None
+}
+
 /// Load the app icon for the title bar + taskbar. Prefers an `app.ico` next to
 /// the EXE (swappable), else the embedded icon written to a temp file (LoadImageW
 /// needs a path). None if unavailable.
@@ -995,12 +1056,9 @@ pub(crate) unsafe fn app_icon() -> Option<HICON> {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("app.ico")))
             .filter(|p| p.exists());
-        let path = beside.unwrap_or_else(|| {
-            let mut p = std::env::temp_dir();
-            p.push("sagethumbs2k.ico");
-            let _ = std::fs::write(&p, APP_ICO);
-            p
-        });
+        let Some(path) = beside.or_else(claim_icon_temp_file) else {
+            return 0;
+        };
         let w = wide(&path.to_string_lossy());
         match LoadImageW(
             None,
@@ -1015,6 +1073,39 @@ pub(crate) unsafe fn app_icon() -> Option<HICON> {
         }
     });
     (p != 0).then_some(HICON(p as *mut c_void))
+}
+
+#[cfg(test)]
+mod icon_temp_tests {
+    use super::*;
+
+    /// `claim_icon_temp_file` must never write through an already-claimed name: a second
+    /// call while the first candidate is still held must land on a DIFFERENT path, proving
+    /// `create_new` (not `std::fs::write`) is what decides the name — the guard against a
+    /// pre-planted hard link or reparse point at the predictable-looking first candidate.
+    #[test]
+    fn claim_icon_temp_file_never_reuses_a_held_name() {
+        let first = claim_icon_temp_file().expect("must claim a %TEMP% name");
+        assert_eq!(
+            std::fs::read(&first).expect("claimed file must be readable"),
+            APP_ICO,
+            "the claimed temp file must hold exactly the embedded icon bytes"
+        );
+
+        let second = claim_icon_temp_file().expect("must fall through to the next candidate");
+        assert_ne!(
+            first, second,
+            "a still-held name must never be reused/overwritten by a later claim"
+        );
+        assert_eq!(
+            std::fs::read(&first).expect("the first file must be untouched"),
+            APP_ICO,
+            "the first claim's file must be unaffected by the second claim"
+        );
+
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
+    }
 }
 
 /// Set a static control's bitmap, freeing whatever bitmap it held before.
@@ -1155,6 +1246,111 @@ pub(crate) unsafe fn notify_toast(title: &str, body: &str, linger: std::time::Du
     }
     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
     let _ = DestroyWindow(hwnd);
+}
+
+/// Like [`notify_toast`], but with ONE clickable action: clicking the balloon runs
+/// `on_click` before the icon is torn down; letting it dismiss unclicked for `linger` runs
+/// nothing. Used by the post-self-update "refresh thumbnails now" offer, which needs
+/// a one-click follow-up action a plain informational balloon can't carry.
+///
+/// Routes the balloon click through `NIF_MESSAGE` + a custom callback message the way
+/// `screenshot::daemon`'s resident tray icon does for its own balloons — this is a one-shot
+/// version of that same mechanism for a throwaway helper window, since a raw
+/// `extern "system"` wndproc can't capture `on_click` directly, the click is flagged via
+/// `GWLP_USERDATA` and the pump loop below polls it.
+pub(crate) unsafe fn notify_toast_action(
+    title: &str,
+    body: &str,
+    linger: std::time::Duration,
+    on_click: impl FnOnce(),
+) {
+    use windows::Win32::UI::Shell::{
+        Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIIF_INFO, NIM_ADD, NIM_DELETE,
+        NIM_MODIFY, NOTIFYICONDATAW,
+    };
+
+    /// Balloon-click notification code, delivered via the icon's own callback message
+    /// (`NOTIFYICONDATAW::uCallbackMessage`) — not a distinct window message of its own.
+    const NIN_BALLOONUSERCLICK: u32 = 0x0405;
+
+    unsafe extern "system" fn action_toast_wndproc(
+        h: HWND,
+        m: u32,
+        w: WPARAM,
+        l: LPARAM,
+    ) -> LRESULT {
+        if m == WM_USER + 1 && (l.0 & 0xffff) as u32 == NIN_BALLOONUSERCLICK {
+            // No closures in an `extern "system"` fn — flag the click on the window itself;
+            // the pump loop below polls it and owns running `on_click`.
+            SetWindowLongPtrW(h, GWLP_USERDATA, 1);
+            return LRESULT(0);
+        }
+        DefWindowProcW(h, m, w, l)
+    }
+
+    let hmod = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+    let hinst = windows::Win32::Foundation::HINSTANCE(hmod.0);
+    let class = windows::core::w!("SageThumbs2KActionToast");
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(action_toast_wndproc),
+        hInstance: hinst,
+        lpszClassName: class,
+        ..Default::default()
+    };
+    RegisterClassW(&wc); // ok if already registered (one-shot process)
+    let Ok(hwnd) = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        class,
+        windows::core::w!("st2k-action-toast"),
+        WS_OVERLAPPED, // never shown — it only owns the tray icon
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        Some(hinst),
+        None,
+    ) else {
+        return;
+    };
+
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 0xA2,
+        uFlags: NIF_ICON | NIF_MESSAGE,
+        uCallbackMessage: WM_USER + 1,
+        hIcon: app_icon().unwrap_or_default(),
+        ..Default::default()
+    };
+    let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    copy_wide_capped(&mut nid.szInfoTitle, title);
+    copy_wide_capped(&mut nid.szInfo, body);
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+
+    let start = std::time::Instant::now();
+    let mut msg = MSG::default();
+    let mut clicked = false;
+    while start.elapsed() < linger {
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+            clicked = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+    let _ = DestroyWindow(hwnd);
+    if clicked {
+        on_click();
+    }
 }
 
 // ---- Small control helpers ---------------------------------------------
