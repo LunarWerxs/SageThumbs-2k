@@ -31,13 +31,22 @@ fn cell_for(edge: u32) -> u32 {
 /// checkerboard. No-ops on a buffer too small for the claimed size, and skips the work
 /// entirely when the image has no transparent pixel to reveal.
 pub fn compose_under(rgba: &mut [u8], w: u32, h: u32) {
-    let px = (w as usize) * (h as usize);
-    if w == 0 || h == 0 || rgba.len() < px * 4 {
+    // Release builds run with overflow-checks off (see Cargo.toml), so a plain `w * h * 4`
+    // could wrap and silently defeat this truncated-buffer guard, leading to out-of-bounds
+    // indexing in the pixel loop below — matching the `checked_mul` `dib.rs` and
+    // `safety::composite_rgba_over_bg` already use for the same shape of buffer check.
+    let Some(px) = (w as usize).checked_mul(h as usize) else {
+        return;
+    };
+    let Some(need) = px.checked_mul(4) else {
+        return;
+    };
+    if w == 0 || h == 0 || rgba.len() < need {
         return;
     }
     // A fully opaque thumbnail (the overwhelming majority) would come out bit-identical, so
     // the scan is strictly cheaper than the blend it avoids.
-    if rgba[3..px * 4].iter().step_by(4).all(|&a| a == 255) {
+    if rgba[3..need].iter().step_by(4).all(|&a| a == 255) {
         return;
     }
 
@@ -117,5 +126,15 @@ mod tests {
     fn does_not_panic_on_a_truncated_buffer() {
         let mut px = vec![0u8; 10];
         compose_under(&mut px, 256, 256);
+    }
+
+    /// `w * h * 4` must not wrap. `w == h == u32::MAX` fits in a 64-bit `usize`
+    /// product on its own but overflows once multiplied by 4 — the exact case a plain
+    /// (unchecked, release-build) multiply would silently wrap on, defeating the
+    /// length check below it and reading out of bounds.
+    #[test]
+    fn does_not_panic_on_dimensions_whose_byte_count_overflows_usize() {
+        let mut px = vec![0u8; 16];
+        compose_under(&mut px, u32::MAX, u32::MAX);
     }
 }

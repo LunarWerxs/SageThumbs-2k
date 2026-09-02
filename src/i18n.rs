@@ -432,4 +432,55 @@ mod tests {
         assert_eq!(LOCALES[CURRENT.load(Ordering::Relaxed)].0, "fr");
         set_locale("en");
     }
+
+    /// Item 115: `codes()` is derived from the build-generated `LOCALES` table (i.e. from
+    /// `assets/locales/*.toml`), but the picker's display name comes from two hand-maintained
+    /// match tables that nothing ties to it. Add a locale `.toml` without adding a
+    /// `native_name_*` arm and it silently lists in the language dropdown as a second
+    /// "English" (the `unwrap_or` fallback in [`native_name`]) rather than failing a build.
+    #[test]
+    fn every_shipped_locale_has_a_native_display_name() {
+        for c in codes() {
+            assert!(
+                native_name_a_to_i(c)
+                    .or_else(|| native_name_j_to_z(c))
+                    .is_some(),
+                "locale {c:?} has no entry in native_name_a_to_i/j_to_z — it would render as a \
+                 second \"English\" in the language picker instead of its own name"
+            );
+        }
+    }
+
+    /// Item 115's other half: a shipped locale that `system_ui_code_a_to_i`/`_j_to_z` never
+    /// produce can never be auto-selected from the Windows UI language, and a code either
+    /// table DOES produce but that isn't actually shipped would auto-select a locale that does
+    /// not exist. The union of both tables' outputs — including BOTH `zh` variants, which
+    /// `zh_variant` only distinguishes via sublang bits no `primary`-only sweep can set — must
+    /// equal exactly the `codes()` set.
+    #[test]
+    fn system_ui_tables_map_onto_exactly_the_shipped_locale_set() {
+        use std::collections::HashSet;
+        let mut mapped: HashSet<&'static str> = HashSet::new();
+        for primary in 0u16..=0x03ff {
+            if let Some(c) = system_ui_code_a_to_i(primary) {
+                mapped.insert(c);
+            }
+            // `langid == primary` here never sets sublang bits (primary alone is < 0x400), so
+            // this leg of the sweep only ever reaches the `zh_variant` default arm — both
+            // variants are exercised explicitly below.
+            if let Some(c) = system_ui_code_j_to_z(primary, primary) {
+                mapped.insert(c);
+            }
+        }
+        mapped.insert(system_ui_code_j_to_z(0x04, (0x01u16 << 10) | 0x04).expect("zh-TW sublang"));
+        mapped.insert(system_ui_code_j_to_z(0x04, 0x04).expect("zh-CN sublang"));
+
+        let shipped: HashSet<&'static str> = codes().collect();
+        assert_eq!(
+            mapped, shipped,
+            "system_ui_code_a_to_i/j_to_z must map onto exactly the shipped locale set: a \
+             locale missing from `mapped` can never be auto-selected, and an entry not in \
+             `shipped` maps to a locale that isn't actually built"
+        );
+    }
 }

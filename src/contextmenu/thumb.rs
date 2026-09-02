@@ -68,14 +68,6 @@ fn release_menu_preview_slot(index: usize, expiry: usize) {
     }
 }
 
-/// Whether `len` bytes is small enough for the in-process menu-preview worker to read -
-/// the same two-part budget `contextmenu::build_preview` checks before composing the
-/// tile at all, re-applied here immediately before the worker's own read so a file that
-/// grows or gets replaced after that first gate can't slip an oversized read in.
-fn preview_len_ok(len: u64) -> bool {
-    len <= PREVIEW_MAX_BYTES && len <= settings::max_file_size_bytes()
-}
-
 pub(crate) struct MenuPreviewWorker {
     index: usize,
     expiry: usize,
@@ -98,13 +90,18 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<std::sync::mpsc::Receiver<O
     let expiry = now.saturating_add(MENU_PREVIEW_LEASE_MS);
 
     let path = path.to_string();
+    // Taken BEFORE `spawn`, not inside the closure: `ModuleRef::default()`'s live-object
+    // add-ref must be visible to `DllCanUnloadNow` from the moment this worker is
+    // committed to running, not from whenever the new thread happens to get scheduled —
+    // see `safety.rs`'s note on why the in-closure form is the weaker one.
+    #[allow(clippy::default_constructed_unit_structs)]
+    let module = crate::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::Builder::new()
         .name("st2k-menu-preview".into())
         .spawn(move || {
             let _worker = MenuPreviewWorker { index, expiry };
-            #[allow(clippy::default_constructed_unit_structs)]
-            let _module = crate::ModuleRef::default();
+            let _module = module;
             let inited = unsafe {
                 windows::Win32::System::Com::CoInitializeEx(
                     None,
@@ -116,9 +113,9 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<std::sync::mpsc::Receiver<O
                 // Re-check size right before the read, not just once back in Initialize: a
                 // file that grows or gets replaced between that gate and this worker running
                 // (download in progress, rename onto a bigger file) must not be read in full
-                // into explorer.exe unbounded. Same two-part budget `build_preview` re-checks.
+                // into explorer.exe unbounded. Same shared budget `build_preview` re-checks.
                 let meta = std::fs::metadata(&path).ok()?;
-                if !preview_len_ok(meta.len()) {
+                if !within_preview_budget(meta.len()) {
                     return None;
                 }
                 let bytes = std::fs::read(&path).ok()?;
@@ -233,14 +230,17 @@ mod tests {
         }
     }
 
+    /// The worker's own pre-read check (G148: now the same shared
+    /// `within_preview_budget` `build_preview` and `preview_metadata` use, not a
+    /// fourth independent copy).
     #[test]
-    fn preview_len_ok_rejects_anything_over_the_menu_preview_cap() {
+    fn within_preview_budget_rejects_anything_over_the_menu_preview_cap() {
         assert!(
-            preview_len_ok(1024),
+            within_preview_budget(1024),
             "a 1 KiB file must be well within budget"
         );
         assert!(
-            !preview_len_ok(100 * 1024 * 1024),
+            !within_preview_budget(100 * 1024 * 1024),
             "a 100 MiB file must exceed the 32 MiB menu-preview cap regardless of settings"
         );
     }

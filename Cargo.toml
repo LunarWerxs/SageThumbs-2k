@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/dll", "crates/dlghook"]
-exclude = ["crates/vendor/exr"]
+exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
 # `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
 # CI + the integration tests rely on the DLL existing. `dlghook` is the third artifact
@@ -370,6 +370,7 @@ features = [
     "Win32_Security_Cryptography", # BCryptHash (SHA-256): verify the downloaded installer before the self-update runs it
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation", # GetLocalTime for screenshot filenames
+    "Win32_System_StationsAndDesktops", # GetProcessWindowStation + UOI_FLAGS: the screenshot automation test skips itself on a non-interactive desktop
     "Win32_System_RemoteDesktop", # WTSRegisterSessionNotification: re-arm the screenshot hotkeys on session lock/unlock + RDP reconnect (they get silently dropped otherwise)
     "Win32_System_Threading", # CreateMutexW: TOCTOU-safe single-instance guards (FindWindow alone races at logon/double-click)
     "Win32_System_JobObjects", # the `st2k flv-frame` child caps its OWN memory before reading stdin: a subprocess contains a crash, not an 8 GB allocation from a crafted Sorenson header
@@ -396,6 +397,7 @@ features = [
     "Win32_System_Memory",
     "Win32_System_Diagnostics_Debug", # Read/WriteProcessMemory: read the focused row out of Everything 1.4's result list (it publishes no focus window, unlike 1.5)
     "Win32_System_Ole",
+    "Win32_System_ProcessStatus", # K32EnumProcessModules: recognise a menu-skin DLL by its name stem on any architecture
     "Win32_System_Registry",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls",

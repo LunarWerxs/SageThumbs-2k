@@ -22,8 +22,8 @@
 
 use core::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Once, OnceLock};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Once, OnceLock};
 use std::time::{Duration, Instant};
 use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::E_FAIL;
@@ -31,6 +31,16 @@ use windows::Win32::Graphics::Gdi::{
     CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP,
 };
 use windows_registry::CURRENT_USER;
+
+/// Longest edge the Explorer preview pane renders at, and the ceiling handed to the decoders
+/// on that path. The stream cascade scales to the same value, so the two cannot drift.
+pub const PREVIEW_TARGET_EDGE: u32 = 1024;
+
+/// Wall-clock budget for one preview decode, enforced off the host thread (see
+/// `previewhandler::decode_preview_budgeted` and the Quick preview's `content.rs`) so a
+/// slow decode never freezes the host's message pump. Sized above a typical ImageMagick
+/// decode (1-4 s) and well under the ~20 s the host could otherwise be frozen for.
+pub const PREVIEW_DECODE_BUDGET: Duration = Duration::from_secs(12);
 
 /// Wrap a COM method body that returns a raw `HRESULT`.
 pub fn guard_hr<F: FnOnce() -> HRESULT>(f: F) -> HRESULT {
@@ -231,10 +241,8 @@ pub(crate) fn elapsed_ms() -> u64 {
 ///
 /// A raw, uncached, un-overridden probe — every call re-reads the registry. Shared by
 /// `contextmenu::paint::menu_dark` (the classic context-menu preview tile), `previewhandler`'s
-/// own `theme_is_dark` (the Explorer preview pane) — used to be two independent copies of this
-/// exact read, and `paint.rs`'s own doc comment already admitted as much ("matching
-/// bin/app/dark.rs and previewhandler.rs") without anything actually enforcing it — and, via a
-/// thin wrapper, the app EXE's `dark::is_dark` (which layers a `ST2K_THEME=light|dark` test
+/// `theme_default_bg` / `SetBackgroundColor` (the Explorer preview pane) and, via a thin
+/// wrapper, the app EXE's `dark::is_dark` (which layers a `ST2K_THEME=light|dark` test
 /// override and a process-lifetime `OnceLock` cache on top; that layering is call-site-specific
 /// and deliberately NOT duplicated in here, only the raw registry read is shared).
 pub fn apps_use_dark_theme() -> bool {
@@ -273,28 +281,160 @@ pub fn apps_use_dark_theme() -> bool {
 /// deliberately does not, to stay cheap on Explorer's/SearchIndexer's UI/indexing paths).
 ///
 /// Shared by the preview-pane decode (`previewhandler::decode_preview_budgeted`), the property
-/// probe (`propstore::probe_budgeted`), and screen/file OCR (`ocr::recognize_bytes`) — three
-/// hand-copied "ModuleRef pin + channel + recv_timeout" implementations that had already
-/// drifted (previewhandler.rs's own comments used to say "mirrors propstore.rs" without the
-/// mirroring being enforced by anything).
+/// probe (`propstore::probe_budgeted`), screen/file OCR (`ocr::recognize_bytes`) and the
+/// metadata probe (`decode::metadata_budgeted`).
+///
+/// Abandoned workers are counted process-wide (see [`abandoned_workers`]): a worker that ran
+/// past its budget cannot be cancelled, so each one is a thread, its stack, and a `ModuleRef`
+/// pin held for as long as its read stays blocked. Past [`MAX_ABANDONED_WORKERS`] live ones
+/// this refuses to start another (returning `None`, and logging once per process) until some
+/// of them finish, so a tree of cloud placeholders or a dropped share cannot grow the host's
+/// thread count without bound.
 pub fn spawn_budgeted<R, F>(thread_name: &str, timeout: Duration, op: F) -> Option<R>
 where
     R: Send + 'static,
     F: FnOnce() -> R + Send + 'static,
 {
+    if ABANDONED_WORKERS.load(Ordering::Acquire) >= MAX_ABANDONED_WORKERS {
+        static LOGGED: Once = Once::new();
+        LOGGED.call_once(|| {
+            log_error(&format!(
+                "spawn_budgeted: {MAX_ABANDONED_WORKERS} workers are still running past their \
+                 budget; refusing new '{thread_name}' workers until some finish"
+            ));
+        });
+        return None;
+    }
     #[allow(clippy::default_constructed_unit_structs)]
     let module = crate::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
+    let state = Arc::new(AtomicU8::new(WORKER_RUNNING));
+    let worker_state = Arc::clone(&state);
     let worker = std::thread::Builder::new()
         .name(thread_name.to_string())
         .spawn(move || {
             let _module = module;
             let _ = tx.send(op());
+            if worker_finished(&worker_state) {
+                // `checked_sub`: a count that is already zero is left alone rather than
+                // wrapped, though the handshake above makes that unreachable.
+                let _ = ABANDONED_WORKERS
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+            }
         });
     // The OS refusing a new thread is the same terminal state as a timeout: no result, and
     // (per the doc above) any guard `op` captured has already been dropped by `spawn` itself.
     worker.ok()?;
-    rx.recv_timeout(timeout).ok()
+    match rx.recv_timeout(timeout) {
+        Ok(r) => Some(r),
+        Err(_) => {
+            if worker_abandoned(&state) {
+                ABANDONED_WORKERS.fetch_add(1, Ordering::AcqRel);
+            }
+            None
+        }
+    }
+}
+
+/// Live workers that ran past their [`spawn_budgeted`] budget and have not finished yet.
+static ABANDONED_WORKERS: AtomicU64 = AtomicU64::new(0);
+
+/// Once this many abandoned workers are alive in the process, [`spawn_budgeted`] refuses to
+/// start more. Each one is a blocked thread pinning the DLL; eight is well past what a
+/// healthy host ever accumulates and small enough that a hung share cannot exhaust the host.
+pub const MAX_ABANDONED_WORKERS: u64 = 8;
+
+/// The number of budgeted workers currently running past their budget.
+pub fn abandoned_workers() -> u64 {
+    ABANDONED_WORKERS.load(Ordering::Acquire)
+}
+
+// Per-worker handshake between the caller (which may give up waiting) and the worker (which
+// may finish before or after that). Exactly one of the two `swap`s sees the other's mark, so
+// the abandoned count is incremented and decremented for the same worker, never twice and
+// never for a worker that finished first.
+const WORKER_RUNNING: u8 = 0;
+const WORKER_DONE: u8 = 1;
+const WORKER_ABANDONED: u8 = 2;
+
+/// Caller side: mark the worker abandoned. True when it was still running, so the caller
+/// owns the increment; false when the worker had already finished (nothing to count).
+fn worker_abandoned(state: &AtomicU8) -> bool {
+    state.swap(WORKER_ABANDONED, Ordering::AcqRel) == WORKER_RUNNING
+}
+
+/// Worker side: mark the worker done. True when the caller had already abandoned it, so the
+/// worker owns the decrement; false when it finished in time (nothing was counted).
+fn worker_finished(state: &AtomicU8) -> bool {
+    state.swap(WORKER_DONE, Ordering::AcqRel) == WORKER_ABANDONED
+}
+
+/// A fixed number of concurrency slots, each held under a LEASE rather than a permanent
+/// claim, for callers that start [`spawn_budgeted`] workers whose reads may never return.
+///
+/// A slot that is a plain counter decremented by the worker's own `Drop` is held for the
+/// life of the process by a worker blocked forever (a OneDrive online-only placeholder, a
+/// dropped SMB share). Two such files permanently exhausted the property store's two slots,
+/// after which EVERY property query in that host returned nothing. A lease keeps the
+/// original guarantee, at most `N` workers started in any lease window, while making the
+/// failure self-healing: a worker that finishes normally releases its slot at once; one that
+/// hangs loses it at expiry. `lease_ms` is generous on purpose, bounding the damage from a
+/// hung read without cutting short a slow one that would have succeeded.
+///
+/// Time is [`elapsed_ms`]; `0` in a slot means free. Pools are `static`s so a [`Lease`] can
+/// point straight at its slot.
+pub struct LeasePool<const N: usize> {
+    slots: [AtomicU64; N],
+    lease_ms: u64,
+}
+
+/// An acquired slot in a [`LeasePool`]. Dropping it frees the slot, unless the lease already
+/// expired and another worker took the slot over (then the stored expiry no longer matches
+/// and the drop leaves the successor's claim alone).
+pub struct Lease {
+    slot: &'static AtomicU64,
+    expiry: u64,
+}
+
+impl<const N: usize> LeasePool<N> {
+    /// `lease_ms` must be non-zero, or a slot claimed at time 0 would read as free.
+    pub const fn new(lease_ms: u64) -> Self {
+        Self {
+            slots: [const { AtomicU64::new(0) }; N],
+            lease_ms,
+        }
+    }
+
+    /// Claim a slot now. `None` when every slot holds an unexpired lease.
+    pub fn acquire(&'static self) -> Option<Lease> {
+        self.acquire_at(elapsed_ms())
+    }
+
+    /// [`acquire`](Self::acquire) with an injected clock, so the policy is testable
+    /// without sleeping.
+    pub fn acquire_at(&'static self, now_ms: u64) -> Option<Lease> {
+        let expiry = now_ms.saturating_add(self.lease_ms.max(1));
+        for slot in &self.slots {
+            let held = slot.load(Ordering::Acquire);
+            // Free, or the previous holder's lease has run out and may be taken over.
+            if (held == 0 || held <= now_ms)
+                && slot
+                    .compare_exchange(held, expiry, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                return Some(Lease { slot, expiry });
+            }
+        }
+        None
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self
+            .slot
+            .compare_exchange(self.expiry, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
 }
 
 /// Build a top-down 32bpp DIB of `rgba` (straight, non-premultiplied) composited over the
@@ -306,12 +446,10 @@ where
 /// fully opaque (skips the `O(px)` alpha scan below); `None` to have this function work it
 /// out itself.
 ///
-/// Shared by the preview-pane host (`previewhandler::make_dib`, in-process in `prevhost`) and
-/// the Quick preview viewer EXE (`bin/app/preview/content::make_dib`) — both composite a
-/// decoded RGBA image over an opaque host/theme background identically, and used to be two
-/// hand-copied implementations that had already drifted (only the EXE copy took the opacity
-/// hint, so it alone skipped the scan for images it already knew were opaque). Homed here,
-/// not next to either caller, because `safety` is the one `pub` (crate-external-visible)
+/// Shared by the preview-pane host (`previewhandler`'s `WM_PREVIEW_RENDER` arm, in-process
+/// in `prevhost`, which passes `opaque: None`) and the Quick preview viewer EXE
+/// (`bin/app/preview/content::make_dib`, which passes the opacity it already knows). Homed
+/// here, not next to either caller, because `safety` is the one `pub` (crate-external-visible)
 /// module this reaches: the app EXE is a SEPARATE crate (its own `[[bin]]`) that can only
 /// call `pub` items, and neither `previewhandler` nor the app's own `preview` module is a
 /// `pub mod` in `lib.rs`.
@@ -440,5 +578,135 @@ mod dib_tests {
             assert!(composite_rgba_over_bg(2, 2, &[0u8; 4], 0, None).is_none());
             assert!(composite_rgba_over_bg(i32::MAX, i32::MAX, &[0u8; 4], 0, None).is_none());
         }
+    }
+
+    /// The alpha-over-background compositing math the preview pane's `WM_PAINT` later
+    /// StretchBlts (moved here from `previewhandler.rs` when its private `make_dib` copy was
+    /// retired). `bg` is a COLORREF 0x00BBGGRR; 0x00FF_0000 is opaque blue.
+    #[test]
+    fn composite_rgba_over_bg_composites_alpha_over_background() {
+        unsafe {
+            // Opaque red over blue copies straight through -> BGRA [0,0,255,255].
+            let red = composite_rgba_over_bg(1, 1, &[255, 0, 0, 255], 0x00FF_0000, None).unwrap();
+            assert_eq!(first_px(red), [0, 0, 255, 255], "opaque red");
+
+            // 50% red over blue: R ≈ 200*128/255 ≈ 100, B ≈ 255*127/255 ≈ 127.
+            let half = composite_rgba_over_bg(1, 1, &[200, 0, 0, 128], 0x00FF_0000, None).unwrap();
+            let [b, g, r, a] = first_px(half);
+            assert_eq!((g, a), (0, 255), "no green; DIB opaque");
+            assert!((r as i32 - 100).abs() <= 2, "R composited ~100, got {r}");
+            assert!((b as i32 - 127).abs() <= 2, "B composited ~127, got {b}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::*;
+
+    /// The caller/worker handshake behind the abandoned-worker count: whichever side marks
+    /// second sees the other's mark, so an increment is always paired with exactly one
+    /// decrement, and a worker that finished before the caller gave up counts for nothing.
+    #[test]
+    fn abandoned_handshake_pairs_increment_with_decrement() {
+        // Caller gives up first, worker finishes later: count, then uncount.
+        let s = AtomicU8::new(WORKER_RUNNING);
+        assert!(worker_abandoned(&s), "caller owns the increment");
+        assert!(worker_finished(&s), "worker owns the decrement");
+
+        // Worker finishes first: nothing to count on either side.
+        let s = AtomicU8::new(WORKER_RUNNING);
+        assert!(!worker_finished(&s));
+        assert!(!worker_abandoned(&s));
+    }
+
+    /// A worker that outlives its budget is counted while it runs and uncounted when it
+    /// finishes, through the real `spawn_budgeted` path. Only relative facts are asserted
+    /// (other tests in this binary may run budgeted workers concurrently).
+    #[test]
+    fn spawn_budgeted_counts_a_worker_that_outlives_its_budget() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let r = spawn_budgeted(
+            "st2k-test-abandoned",
+            Duration::from_millis(20),
+            move || {
+                let _ = release_rx.recv();
+                let _ = done_tx.send(());
+                7u8
+            },
+        );
+        assert_eq!(r, None, "a blocked worker must time out");
+        assert!(
+            abandoned_workers() >= 1,
+            "our still-blocked worker must be counted as abandoned"
+        );
+        let _ = release_tx.send(());
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the abandoned worker must still run to completion on its own"
+        );
+    }
+
+    /// A worker that finishes inside its budget hands back its result.
+    #[test]
+    fn spawn_budgeted_returns_a_prompt_result() {
+        let r = spawn_budgeted("st2k-test-prompt", Duration::from_secs(10), || 42u32);
+        assert_eq!(r, Some(42));
+    }
+
+    static POOL: LeasePool<2> = LeasePool::new(1_000);
+
+    /// The slots must be a LEASE, not a permanent claim. Two files whose reads hang forever
+    /// used to hold both property-probe slots for the life of the process, after which every
+    /// property query in that host returned nothing. Driven with an injected clock, so it
+    /// asserts the real policy without sleeping or spawning a thread.
+    #[test]
+    fn hung_holders_lose_their_slot_when_the_lease_expires() {
+        let t0 = 1_000_000u64;
+        let lease_ms = POOL.lease_ms;
+
+        // Fill every slot, then confirm the cap actually holds.
+        let first: Vec<Lease> = (0..2).map(|_| POOL.acquire_at(t0).expect("slot")).collect();
+        assert!(
+            POOL.acquire_at(t0).is_none(),
+            "the cap must bound live holders"
+        );
+
+        // Still held part-way through the lease: a slow-but-progressing read keeps its slot.
+        assert!(POOL.acquire_at(t0 + lease_ms - 1).is_none());
+
+        // Past the lease, the slots are reclaimable even though the holders never finished.
+        let second: Vec<Lease> = (0..2)
+            .map(|_| {
+                POOL.acquire_at(t0 + lease_ms + 1)
+                    .expect("an expired lease must be reclaimable")
+            })
+            .collect();
+
+        // A late release from the FIRST generation must not free the slot its successor now
+        // owns: the drop is keyed to the exact expiry it claimed.
+        let held: Vec<u64> = POOL
+            .slots
+            .iter()
+            .map(|s| s.load(Ordering::Acquire))
+            .collect();
+        drop(first);
+        let after: Vec<u64> = POOL
+            .slots
+            .iter()
+            .map(|s| s.load(Ordering::Acquire))
+            .collect();
+        assert_eq!(
+            held, after,
+            "a stale release must not steal the current holder's slot"
+        );
+
+        // A holder that finishes normally frees its slot immediately.
+        drop(second);
+        assert!(
+            POOL.slots.iter().all(|s| s.load(Ordering::Acquire) == 0),
+            "released slots must read as free"
+        );
     }
 }

@@ -145,6 +145,7 @@ static MODULE_REFS: AtomicI64 = AtomicI64::new(0);
 static HMODULE_PTR: AtomicIsize = AtomicIsize::new(0);
 
 const DLL_PROCESS_ATTACH: u32 = 1;
+const DLL_PROCESS_DETACH: u32 = 0;
 
 pub fn dll_add_ref() {
     MODULE_REFS.fetch_add(1, Ordering::SeqCst);
@@ -224,9 +225,17 @@ impl Drop for ModuleRef {
 
 /// DllMain: capture our `HMODULE` (as a raw `isize`, so the cdylib shim needs no
 /// `windows` types) on process-attach to resolve our own path later.
-pub fn dll_main(hmodule: isize, reason: u32) {
+///
+/// On process-detach with a null `reserved` (the DLL is being unloaded by `FreeLibrary`
+/// while the process lives on; a non-null value means the process itself is exiting and
+/// the OS reclaims everything) the classic menu's cached logo bitmap is released. That
+/// bitmap is created once per LOAD, so without this every unload/reload cycle of the DLL
+/// inside a long-lived `explorer.exe` leaked one GDI object.
+pub fn dll_main(hmodule: isize, reason: u32, reserved: *mut c_void) {
     if reason == DLL_PROCESS_ATTACH {
         HMODULE_PTR.store(hmodule, Ordering::SeqCst);
+    } else if reason == DLL_PROCESS_DETACH && reserved.is_null() {
+        contextmenu::free_menu_logo();
     }
 }
 

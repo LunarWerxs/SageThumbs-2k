@@ -13,10 +13,15 @@
 //! provider uses `IInitializeWithStream`, but the property host's stream carries no name, so the
 //! path-based extractors (`read_info`/`read_audio_tags`) need the real path. Properties are built
 //! LAZILY on the first query, so the indexer pays nothing until something actually asks.
+//!
+//! The coclass is registered `ThreadingModel=Both` (`register.rs`), so an MTA host such as
+//! `SearchIndexer.exe` may call it from several threads at once with no COM serialisation.
+//! Its two pieces of state therefore sit behind `Mutex`es, taken with `try_lock`: a call that
+//! would have to wait (or that arrives re-entrantly on the same thread) gets `E_FAIL` for
+//! that one query rather than blocking an indexing thread or racing a `RefCell` borrow flag.
 
-use core::cell::RefCell;
 use core::mem::ManuallyDrop;
-use core::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use windows::core::{Error, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
@@ -56,60 +61,25 @@ const PROBE_BUDGET: core::time::Duration = core::time::Duration::from_millis(250
 const MAX_ACTIVE_PROBES: usize = 2;
 
 /// How long one detached worker may hold its slot before the slot is reclaimed for a new
-/// probe. This is the difference between a bounded trail and a permanent outage.
-///
-/// The slots used to be a plain counter decremented by the worker's own `Drop`. A worker
-/// blocked forever — a OneDrive online-only placeholder, a dropped SMB share — never runs
-/// that `Drop`, so it held its slot for the life of the process. Two such files (one folder
-/// of cloud placeholders will do it) permanently exhausted both slots, and from then on
-/// EVERY property query in that `dllhost.exe`/`SearchIndexer.exe` returned no properties at
-/// all: the Details pane went blank for healthy local files too, with no error and no
-/// recovery short of the host being recycled.
-///
-/// A lease keeps the original guarantee — at most [`MAX_ACTIVE_PROBES`] workers started in
-/// any lease window — while making the failure self-healing rather than terminal. It is
-/// generous on purpose: it bounds the damage from a hung read without cutting short a slow
-/// one that would have succeeded.
+/// probe (see [`safety::LeasePool`] for why a lease and not a counter: two hung reads used
+/// to exhaust both slots for the life of the host, blanking the Details pane for every file
+/// after them). Generous on purpose: it bounds the damage from a hung read without cutting
+/// short a slow one that would have succeeded.
 const PROBE_LEASE_MS: u64 = 30_000;
 
-/// Lease expiry per slot, in [`safety::elapsed_ms`] units. `0` = free. A worker that
-/// finishes normally releases its slot immediately; one that hangs loses it at expiry.
-static PROBE_SLOTS: [AtomicU64; MAX_ACTIVE_PROBES] =
-    [const { AtomicU64::new(0) }; MAX_ACTIVE_PROBES];
+/// The probe slots. A worker that finishes normally releases its slot immediately; one that
+/// hangs loses it at lease expiry.
+static PROBE_POOL: safety::LeasePool<MAX_ACTIVE_PROBES> = safety::LeasePool::new(PROBE_LEASE_MS);
 
-/// Claim a probe slot, returning its index. `None` when every slot holds an unexpired lease.
-/// Pure in `now_ms` so the policy is unit-testable without sleeping.
-fn acquire_probe_slot(now_ms: u64) -> Option<usize> {
-    let expiry = now_ms.saturating_add(PROBE_LEASE_MS);
-    for (i, slot) in PROBE_SLOTS.iter().enumerate() {
-        let held = slot.load(Ordering::Acquire);
-        // Free, or the previous holder's lease has run out and we may take it over.
-        if (held == 0 || held <= now_ms)
-            && slot
-                .compare_exchange(held, expiry, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        {
-            return Some(i);
-        }
-    }
-    None
-}
-
-/// Release a slot claimed by [`acquire_probe_slot`], unless the lease already expired and
-/// another probe took it over (in which case `expiry` no longer matches and we must not
-/// clear someone else's claim).
-fn release_probe_slot(index: usize, expiry: u64) {
-    if let Some(slot) = PROBE_SLOTS.get(index) {
-        let _ = slot.compare_exchange(expiry, 0, Ordering::AcqRel, Ordering::Acquire);
-    }
-}
-
+/// `Mutex`, not `RefCell`: see the module doc. Nothing here is `Sync` (a `PROPVARIANT` holds
+/// raw pointers), which is the same as before; the lock is what makes concurrent calls from
+/// an MTA host fail cleanly instead of racing the borrow flag.
 #[implement(IPropertyStore, IInitializeWithFile)]
 pub struct PropertyStore {
     _ref: crate::ModuleRef,
-    path: RefCell<Option<String>>,
+    path: Mutex<Option<String>>,
     /// Built lazily from the file on the first query, then cached for this instance.
-    props: RefCell<Option<Vec<(PROPERTYKEY, PROPVARIANT)>>>,
+    props: Mutex<Option<Vec<(PROPERTYKEY, PROPVARIANT)>>>,
 }
 
 impl Default for PropertyStore {
@@ -117,8 +87,8 @@ impl Default for PropertyStore {
     fn default() -> Self {
         Self {
             _ref: crate::ModuleRef::default(),
-            path: RefCell::new(None),
-            props: RefCell::new(None),
+            path: Mutex::new(None),
+            props: Mutex::new(None),
         }
     }
 }
@@ -134,19 +104,18 @@ impl IInitializeWithFile_Impl for PropertyStore_Impl {
                 return Err(Error::from(E_POINTER));
             }
             let path = unsafe { pszfilepath.to_string() }.map_err(|_| Error::from(E_FAIL))?;
-            *self
-                .path
-                .try_borrow_mut()
-                .map_err(|_| Error::from(E_FAIL))? = Some(path);
             // A host is free to re-Initialize one PropertyStore instance across several files
             // (a documented, real shell pattern) — without clearing the cache here,
             // `with_props`'s `get_or_insert_with` only ever builds it on the FIRST query, so
             // every query after that silently answers with the PREVIOUS file's metadata under
-            // the new file's path, with no error to signal it.
-            *self
-                .props
-                .try_borrow_mut()
-                .map_err(|_| Error::from(E_FAIL))? = None;
+            // the new file's path, with no error to signal it. The cache lock is taken FIRST
+            // and held across both writes: a query on another thread (ThreadingModel=Both,
+            // no COM serialisation) locks only `props`, so this makes the path swap and the
+            // clear one step — nothing can read the old cache under the new path. Same lock
+            // order as `with_props` -> `build_props` (props, then path), so no deadlock.
+            let mut props = self.props.try_lock().map_err(|_| Error::from(E_FAIL))?;
+            *self.path.try_lock().map_err(|_| Error::from(E_FAIL))? = Some(path);
+            *props = None;
             Ok(())
         })
     }
@@ -199,15 +168,15 @@ impl IPropertyStore_Impl for PropertyStore_Impl {
 }
 
 impl PropertyStore_Impl {
-    /// Run `f` against the (lazily built, cached) property list.
+    /// Run `f` against the (lazily built, cached) property list. `try_lock`: a second thread
+    /// (or a re-entrant call) arriving while the list is being built gets `E_FAIL` for that
+    /// query instead of blocking an indexing thread; a poisoned lock is unreachable under
+    /// `panic = "abort"` and is treated the same way.
     fn with_props<T>(
         &self,
         f: impl FnOnce(&[(PROPERTYKEY, PROPVARIANT)]) -> Result<T>,
     ) -> Result<T> {
-        let mut slot = self
-            .props
-            .try_borrow_mut()
-            .map_err(|_| Error::from(E_FAIL))?;
+        let mut slot = self.props.try_lock().map_err(|_| Error::from(E_FAIL))?;
         let props = slot.get_or_insert_with(|| self.build_props());
         f(props)
     }
@@ -215,7 +184,7 @@ impl PropertyStore_Impl {
     /// Extract the properties from the file. Never fails loudly — returns whatever it could read.
     fn build_props(&self) -> Vec<(PROPERTYKEY, PROPVARIANT)> {
         let mut out = Vec::new();
-        let Some(path) = self.path.borrow().clone() else {
+        let Some(path) = self.path.try_lock().ok().and_then(|p| p.clone()) else {
             return out;
         };
 
@@ -427,23 +396,13 @@ fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
 /// recognizer) — see that function's doc for the ModuleRef-pin / slot-guard / spawn-failure
 /// contract this relies on.
 fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip::AudioTags)> {
-    let now = safety::elapsed_ms();
-    let slot = acquire_probe_slot(now)?;
-    let lease = now.saturating_add(PROBE_LEASE_MS);
-
-    struct ActiveProbe(usize, u64);
-    impl Drop for ActiveProbe {
-        fn drop(&mut self) {
-            release_probe_slot(self.0, self.1);
-        }
-    }
-    // Constructed here (not inside the worker closure) and moved into `op` below, so
+    // Acquired here (not inside the worker closure) and moved into `op` below, so
     // `spawn_budgeted`'s spawn-failure path drops it (and so releases the slot) exactly like a
     // normal worker exit would — see that function's doc.
-    let active = ActiveProbe(slot, lease);
+    let lease = PROBE_POOL.acquire()?;
 
     safety::spawn_budgeted("st2k-property-probe", PROBE_BUDGET, move || {
-        let _active = active;
+        let _lease = lease;
         let is_audio = property_path_is_audio(&path);
         let tags = if is_audio {
             crate::strip::read_audio_tags(&path)
@@ -492,61 +451,24 @@ mod tests {
         assert!(!property_path_is_audio(r"C:\photos\extensionless"));
     }
 
-    /// The probe slots must be a LEASE, not a permanent claim. Two files whose reads hang
-    /// forever (cloud placeholders, a dropped share) used to hold both slots for the life
-    /// of the process, after which every property query in that host returned nothing —
-    /// blank Details pane for healthy local files, no error, no recovery.
-    ///
-    /// Drives the pure slot policy directly with an injected clock, so it asserts the
-    /// real behaviour without sleeping or spawning a thread.
+    /// The probe slots must be a LEASE, not a permanent claim (the policy itself is pinned by
+    /// `safety::worker_tests::hung_holders_lose_their_slot_when_the_lease_expires`); this
+    /// pins that the pool this coclass actually uses is sized and leased as documented.
     #[test]
-    fn hung_probes_release_their_slot_when_the_lease_expires() {
-        // Start from a clean slate — other tests in this binary don't touch the slots,
-        // but be explicit so ordering can never matter.
-        for slot in PROBE_SLOTS.iter() {
-            slot.store(0, Ordering::Release);
-        }
-        let t0 = 1_000_000u64;
-
-        // Fill every slot, then confirm the cap actually holds.
-        let claimed: Vec<usize> = (0..MAX_ACTIVE_PROBES)
-            .map(|_| acquire_probe_slot(t0).expect("slot available"))
+    fn probe_pool_holds_the_documented_cap() {
+        let t0 = 5_000_000u64;
+        let held: Vec<safety::Lease> = (0..MAX_ACTIVE_PROBES)
+            .map(|_| PROBE_POOL.acquire_at(t0).expect("slot available"))
             .collect();
-        assert_eq!(claimed.len(), MAX_ACTIVE_PROBES);
-        assert_eq!(
-            acquire_probe_slot(t0),
-            None,
-            "the concurrency cap must still bound live probes"
+        assert!(
+            PROBE_POOL.acquire_at(t0).is_none(),
+            "the concurrency cap must bound live probes"
         );
-
-        // Still held part-way through the lease: a slow-but-progressing read keeps its slot.
-        assert_eq!(acquire_probe_slot(t0 + PROBE_LEASE_MS - 1), None);
-
-        // Past the lease, the slots are reclaimable even though the workers never finished.
-        for _ in 0..MAX_ACTIVE_PROBES {
-            assert!(
-                acquire_probe_slot(t0 + PROBE_LEASE_MS + 1).is_some(),
-                "an expired lease must be reclaimable, or the outage is permanent"
-            );
-        }
-
-        // A late worker from the FIRST generation must not free the slot its successor
-        // now owns; release is keyed to the exact lease it claimed.
-        let successor = PROBE_SLOTS[claimed[0]].load(Ordering::Acquire);
-        release_probe_slot(claimed[0], t0.saturating_add(PROBE_LEASE_MS));
-        assert_eq!(
-            PROBE_SLOTS[claimed[0]].load(Ordering::Acquire),
-            successor,
-            "a stale release must not steal the current holder's slot"
+        assert!(
+            PROBE_POOL.acquire_at(t0 + PROBE_LEASE_MS + 1).is_some(),
+            "an expired lease must be reclaimable, or the outage is permanent"
         );
-
-        // A worker that finishes normally frees its slot immediately.
-        release_probe_slot(claimed[0], successor);
-        assert_eq!(PROBE_SLOTS[claimed[0]].load(Ordering::Acquire), 0);
-
-        for slot in PROBE_SLOTS.iter() {
-            slot.store(0, Ordering::Release);
-        }
+        drop(held);
     }
 
     /// A COM host is free to re-Initialize one `PropertyStore` instance across several files
@@ -566,7 +488,7 @@ mod tests {
         // Seed a stale cache directly, as if a first Initialize + query already ran for a
         // different file — cheaper and more deterministic than driving a real probe through
         // GetCount/GetValue.
-        *com.get().props.borrow_mut() = Some(vec![(PKEY_Title, PROPVARIANT::default())]);
+        *com.get().props.lock().unwrap() = Some(vec![(PKEY_Title, PROPVARIANT::default())]);
 
         let init: IInitializeWithFile = com.to_interface();
         let w = crate::wide(r"C:\second\file.jpg");
@@ -574,7 +496,7 @@ mod tests {
         unsafe { init.Initialize(pc, 0) }.expect("Initialize should succeed");
 
         assert!(
-            com.get().props.borrow().is_none(),
+            com.get().props.lock().unwrap().is_none(),
             "Initialize must drop the previous file's cached props, or with_props's \
              get_or_insert_with never rebuilds them for the new path"
         );

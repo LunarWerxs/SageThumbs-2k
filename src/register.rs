@@ -5,6 +5,15 @@
 //! and that ships as a signed sparse package — see `scripts/packaging/make-msix.ps1`), and the shell
 //! runs us out-of-process in its isolated host automatically.
 //!
+//! Every machine-wide write goes to `HKLM\SOFTWARE\Classes` EXPLICITLY, never through
+//! `HKEY_CLASSES_ROOT`: Windows routes an HKCR write to `HKCU\Software\Classes` whenever the
+//! key already exists there, so with a portable per-user registration present a
+//! `CLASSES_ROOT.create(...)` would silently land the Program Files path and every shellex
+//! value in the elevated user's own hive. HKLM would never receive the CLSID, the merged
+//! view would still read as registered, other accounts would get nothing, and the uninstall
+//! would delete the HKCU copy instead. [`register`] also clears such a per-user registration
+//! first, for the same reason `cli.rs` refuses the reverse order (portable-on-installed).
+//!
 //! KNOWN LIMITATION: Windows resolves a thumbnail handler in priority order —
 //! per-user UserChoice ProgID, then the extension's default ProgID's `shellex`,
 //! then `SystemFileAssociations`, then the bare-extension key. We register the
@@ -15,20 +24,29 @@
 //! `fileTypeAssociation/ThumbnailHandler` path would sidestep this precedence
 //! entirely if it's ever needed.
 
-use windows::core::Result;
+use windows::core::{Error, Result, HRESULT};
+use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
-use windows_registry::{Key, CLASSES_ROOT, CURRENT_USER, LOCAL_MACHINE};
+use windows_registry::{Key, CURRENT_USER, LOCAL_MACHINE};
 
+use crate::formats::{Category, FORMATS, REMOVED_EXTENSIONS};
 use crate::guids::{
     CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
-    CLSID_THUMBNAIL_PROVIDER_STR,
+    CLSID_THUMBNAIL_PROVIDER_STR, PREVHOST_APPID, PREVIEW_HANDLER_CATEGORY, THUMB_HANDLER_CATEGORY,
 };
-use crate::settings;
+use crate::safety::{log, log_error};
+use crate::settings::{self, FormatEnabledSnapshot};
 
 const NAME: &str = "SageThumbs 2K Thumbnail Provider";
 const CM_NAME: &str = "SageThumbs 2K Context Menu";
 const PV_NAME: &str = "SageThumbs 2K Preview Handler";
 const PS_NAME: &str = "SageThumbs 2K Property Handler";
+/// The machine-wide half of `HKEY_CLASSES_ROOT` (see the module doc for why it is named
+/// explicitly). The per-user half is [`user_classes`].
+const MACHINE_CLASSES: &str = r"SOFTWARE\Classes";
+/// The classic `IContextMenu` handler's `shellex` slot, under `*` (all files); the handler
+/// filters to images inside `QueryContextMenu`.
+const CONTEXT_MENU_KEY: &str = "*\\shellex\\ContextMenuHandlers\\SageThumbs2K";
 /// The machine-wide list mapping an extension to its IPropertyStore handler CLSID.
 const PROPERTY_HANDLERS: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem\PropertyHandlers";
@@ -59,123 +77,256 @@ const PROP_ADDITIONAL: &str = "prop:System.Image.Dimensions;System.Image.BitDept
 /// Marker value written next to a `PerceivedType` WE set, so [`unhook_perceived_type`] can remove
 /// ours without clobbering a value Windows or another app owns.
 const PERCEIVED_TYPE_MARK: &str = "SageThumbs2K.PerceivedTypeOwner";
-/// The IThumbnailProvider shell-extension handler category GUID.
-const THUMB_HANDLER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
-/// The IPreviewHandler category GUID — the `shellex` slot the preview host reads.
-const PREVIEW_HANDLER: &str = "{8895b1c6-b41f-4c1c-a562-0d564250836f}";
-/// The x64 preview-host surrogate AppID (`system32\prevhost.exe`) — verified
-/// against the in-box TXT/RTF/Font preview handlers on this Win11 box. Setting it
-/// on our CLSID makes the shell load us OUT of process, never inside explorer.exe.
-const PREVHOST_APPID: &str = "{6d2b5079-2f0b-48dd-ab7f-97cec514d30b}";
 /// The machine-wide list the preview pane consults for registered handlers.
 const PREVIEW_HANDLERS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers";
 const APPROVED: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
 /// Where we remember a thumbnail handler that occupied a `shellex` slot BEFORE we took it,
-/// keyed by the exact HKCR key path we overwrote. Unlike the preview/property handlers (which
-/// step aside for an incumbent — Windows' built-ins are richer there), the thumbnail provider
-/// IS the product and does take the slot. But taking it must be REVERSIBLE: without this
-/// record, `unhook`/uninstall deleted our value and left the slot empty forever, so a user who
-/// had Icaros/Adobe/a codec pack thumbnailing a format never got it back — uninstalling
-/// SageThumbs did not undo the damage. Machine-wide, mirroring the HKCR/HKLM registration.
+/// keyed by the exact classes-relative key path we overwrote. Unlike the preview/property
+/// handlers (which step aside for an incumbent — Windows' built-ins are richer there), the
+/// thumbnail provider IS the product and does take the slot. But taking it must be REVERSIBLE:
+/// without this record, `unhook`/uninstall deleted our value and left the slot empty forever, so
+/// a user who had Icaros/Adobe/a codec pack thumbnailing a format never got it back —
+/// uninstalling SageThumbs did not undo the damage. Machine-wide, mirroring the HKLM registration.
 const DISPLACED: &str = r"SOFTWARE\SageThumbs2K\DisplacedThumbHandlers";
+/// Image formats whose `PerceivedType=image` is safe to stamp: WIC (and so Photos) opens them,
+/// so the verbs Windows attaches to that type (Rotate, Print, Set as background, Edit with
+/// Photos) work. The rest of the Image category (PSD, KRA, XCF, …) would get the same verbs
+/// and have them fail on a file WIC cannot encode, so those get no `PerceivedType` from us.
+/// Camera RAW keeps `image`: the in-box RAW codec opens it.
+const WIC_IMAGE_EXTS: &[&str] = &[
+    "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "dib", "tif", "tiff", "heic", "heif", "hif",
+    "avif", "webp", "jxr", "wdp", "hdp", "ico", "dds",
+];
 
-/// (Re-)register the shell extension machine-wide under HKCR/HKLM. NOTE: the
-/// per-extension on/off flags this reads via [`settings::format_enabled`] live
-/// in the elevated user's HKCU, but the registration they gate is MACHINE-WIDE
-/// (HKCR) and so applies to ALL users — there is no per-user thumbnail gate, by
-/// design. (See the matching note on [`settings::format_enabled`].)
-pub fn register(dll_path: &str) -> Result<()> {
-    // "Approved Shell Extensions" is mandatory on locked-down systems.
-    let approved = LOCAL_MACHINE.create(APPROVED)?;
+/// `HKLM\SOFTWARE\Classes`, opened for writing. See the module doc for why this and never
+/// `CLASSES_ROOT`.
+fn machine_classes() -> Result<Key> {
+    LOCAL_MACHINE.create(MACHINE_CLASSES)
+}
 
-    // The thumbnail provider's COM server.
-    register_inproc_server(CLSID_THUMBNAIL_PROVIDER_STR, NAME, dll_path, &approved)?;
+/// Outcome tally of one best-effort per-extension pass, so a pass that silently wrote
+/// nothing (an ACL-locked `SystemFileAssociations`, say) is reported instead of passing as a
+/// clean install with no thumbnails and no log line.
+#[derive(Default)]
+struct Pass {
+    written: usize,
+    failed: usize,
+    /// The first failure's key path and HRESULT, for the log line.
+    first_failure: Option<(String, HRESULT)>,
+}
 
-    // Hook each enabled extension; explicitly unhook disabled ones so a
-    // re-register reflects the Options format list (matches the legacy
-    // RegisterExtensions-on-OK behavior). Best-effort per extension: a single
-    // failing key (transient lock, locked-down subtree) must NOT abort the whole
-    // register and skip the context-menu setup + shell-notify below.
-    for (ext, _) in crate::formats::FORMATS {
-        if settings::format_enabled(ext) {
-            let _ = hook_ext(ext);
-        } else {
-            unhook_ext(ext);
+impl Pass {
+    fn note(&mut self, path: &str, r: Result<()>) {
+        match r {
+            Ok(()) => self.written += 1,
+            Err(e) => {
+                self.failed += 1;
+                if self.first_failure.is_none() {
+                    self.first_failure = Some((path.to_string(), e.code()));
+                }
+            }
         }
     }
+
+    /// Log the pass when anything failed. True when something was attempted and NOTHING was
+    /// written, i.e. the pass as a whole did not happen.
+    fn report(&self, what: &str) -> bool {
+        if let Some((path, hr)) = &self.first_failure {
+            log_error(&format!(
+                "register: {what}: {} of {} keys failed; first {path}: hr={:#010x}",
+                self.failed,
+                self.written + self.failed,
+                hr.0
+            ));
+        }
+        self.written == 0 && self.failed > 0
+    }
+}
+
+/// (Re-)register the shell extension machine-wide under `HKLM\SOFTWARE\Classes` + HKLM.
+/// NOTE: the per-extension on/off flags this reads live in the elevated user's HKCU, but the
+/// registration they gate is MACHINE-WIDE and so applies to ALL users — there is no per-user
+/// thumbnail gate, by design. (See the matching note on [`settings::format_enabled`].)
+///
+/// The per-user pieces (the folder verb, the type-overlay suppression) are NOT written here:
+/// this runs elevated, in whichever account `regsvr32` was launched as, so it cannot write
+/// the installing user's HKCU. The installer runs [`sync_user_shell`] as the original user
+/// afterwards.
+///
+/// Returns `Err` when the thumbnail pass wrote no key at all although formats were enabled,
+/// or when the preview or property registration failed, so `regsvr32`/the installer see a
+/// failure instead of a clean install that draws nothing. Every pass still runs to the end
+/// first: a partial registration is better than none, and the log names what failed.
+pub fn register(dll_path: &str) -> Result<()> {
+    // A per-user (portable) registration in this account's hive would shadow the machine-wide
+    // one in the merged HKCR view and outlive the uninstall, pointing at a DLL that is gone.
+    if let Some(prev) = user_registration_path() {
+        log(&format!(
+            "register: clearing the per-user registration at {prev}, which would shadow the \
+             machine-wide one"
+        ));
+        if let Err(e) = unregister_user_classes() {
+            log_error(&format!(
+                "register: could not clear the per-user registration: hr={:#010x}",
+                e.code().0
+            ));
+        }
+    }
+
+    let classes = machine_classes()?;
+    // "Approved Shell Extensions" is mandatory on locked-down systems.
+    let approved = LOCAL_MACHINE.create(APPROVED)?;
+    // One settings snapshot for all four per-extension sweeps below.
+    let fmt = settings::format_enabled_snapshot();
+
+    // The thumbnail provider's COM server.
+    register_inproc_server(
+        &classes,
+        CLSID_THUMBNAIL_PROVIDER_STR,
+        NAME,
+        dll_path,
+        &approved,
+    )?;
+
+    // Hook each enabled extension; explicitly unhook disabled ones so a
+    // re-register reflects the Settings format list (matches the legacy
+    // RegisterExtensions-on-OK behavior). Best-effort per extension: a single
+    // failing key (transient lock, locked-down subtree) must NOT abort the whole
+    // register and skip the context-menu setup + shell-notify below, but it IS
+    // counted, and a pass that wrote nothing fails the call at the end.
+    let mut thumbs = Pass::default();
+    for (ext, _) in FORMATS {
+        if fmt.enabled(ext) {
+            hook_ext(&classes, ext, &mut thumbs);
+        } else {
+            unhook_ext(&classes, ext);
+        }
+    }
+    let thumbs_failed = thumbs.report("thumbnail shellex pass");
 
     // Sweep away stale hooks from extensions OLDER builds registered but we've since dropped
     // (they're no longer in FORMATS, so the loop above never touches their keys → an upgrade
     // would leave orphan shellex entries pointing at our CLSID). Disjoint from FORMATS (tested),
     // so this never unhooks a live format. Best-effort, one pass per (re-)register.
-    for ext in crate::formats::REMOVED_EXTENSIONS {
-        unhook_ext_and_prune(ext);
-        unhook_ext_preview_and_prune(ext);
-        unhook_ext_propstore(ext);
+    for ext in REMOVED_EXTENSIONS {
+        unhook_ext_and_prune(&classes, ext);
+        unhook_ext_preview_and_prune(&classes, ext);
+        unhook_ext_propstore(&classes, ext);
     }
 
     // The classic IContextMenu handler's COM server (for classic-menu machines:
     // StartAllBack, ExplorerPatcher, or the {86ca1aa0…} tweak). Registered under
     // "*" (all files) and filtered to images inside QueryContextMenu.
-    register_inproc_server(CLSID_CONTEXT_MENU_STR, CM_NAME, dll_path, &approved)?;
+    register_inproc_server(
+        &classes,
+        CLSID_CONTEXT_MENU_STR,
+        CM_NAME,
+        dll_path,
+        &approved,
+    )?;
     // Best-effort like the preview/property registration below: the format loop above has
     // already displaced third-party thumbnail handlers, so a policy-locked "*" subtree here
     // must not abort before we ever reach preview/property, leaving thumbs hooked but
     // nothing else set up.
-    if let Ok(k) = CLASSES_ROOT.create("*\\shellex\\ContextMenuHandlers\\SageThumbs2K") {
-        let _ = k.set_string("", CLSID_CONTEXT_MENU_STR);
+    if let Err(e) = set_shellex_key(&classes, CONTEXT_MENU_KEY, CLSID_CONTEXT_MENU_STR) {
+        log_error(&format!(
+            "register: context menu key {CONTEXT_MENU_KEY}: hr={:#010x}",
+            e.code().0
+        ));
     }
 
-    // The preview-pane handler. Best-effort: a failure here (e.g. a locked-down
-    // PreviewHandlers list) must never break the thumbnail/context-menu setup above.
-    let _ = register_preview_handler(dll_path, &approved);
-
-    // The property handler (Details pane / info-tip / columns). Best-effort: a locked-down
-    // PropertySystem subtree must never break the thumbnail/context-menu setup above.
-    let _ = register_property_handler(dll_path, &approved);
-
-    // The folder right-click entry. Written HERE and not only from Settings, because a normal
-    // install never opens Settings — without this the verb would exist for nobody until they
-    // happened to visit that page. It records an absolute path to the companion EXE, so
-    // re-running registration after a move is also what repoints it.
-    crate::foldermenu::sync(settings::folder_prebuild_verb());
-
-    // Explorer's own type-icon overlay, for the same reason and by the same argument: it is one
-    // half of the `CornerMark` choice (see `settings::CornerMark`), the installer can offer that
-    // choice but cannot apply this half of it (suppression is per-ProgID, resolved from the
-    // format list this crate owns), and a normal install never opens Settings. Registration is
-    // the one moment that knows every hooked format, which is exactly why `unregister` already
-    // calls `typeoverlay::remove_all` as its mirror image.
-    //
-    // Doing nothing is the default answer, not a no-op: `hide_type_overlay()` is false for
-    // `CornerMark::SystemIcon`, and `sync(false)` REMOVES any suppression we previously wrote
-    // rather than skipping. That is what makes switching back to Windows' icon work.
-    crate::typeoverlay::sync(settings::hide_type_overlay());
+    // The preview-pane handler and the property handler (Details pane / info-tip / columns).
+    // Neither aborts the other or the shell-notify below; both are reported at the end.
+    let preview = register_preview_handler(&classes, dll_path, &approved, &fmt);
+    if let Err(e) = &preview {
+        log_error(&format!(
+            "register: preview handler registration failed: hr={:#010x}",
+            e.code().0
+        ));
+    }
+    let property = register_property_handler(&classes, dll_path, &approved, &fmt);
+    if let Err(e) = &property {
+        log_error(&format!(
+            "register: property handler registration failed: hr={:#010x}",
+            e.code().0
+        ));
+    }
 
     notify_shell();
+    if thumbs_failed || preview.is_err() || property.is_err() {
+        return Err(Error::from(E_FAIL));
+    }
     Ok(())
+}
+
+/// Bring the CURRENT user's per-user shell pieces in line with their settings: the folder
+/// right-click entry ([`crate::foldermenu`]) and the suppression of Explorer's own type-icon
+/// overlay ([`crate::typeoverlay`]). Both live in HKCU, which the elevated machine-wide
+/// [`register`] cannot write for the user who ran the installer, so the installer runs
+/// `SageThumbs2K.exe --sync-user-shell` as the original user after `regsvr32`. Written
+/// here and not only from Settings because a normal install never opens Settings; the folder
+/// verb records an absolute path to the companion EXE, so re-running this after a move is also
+/// what repoints it.
+///
+/// Doing nothing is the default answer, not a no-op: `hide_type_overlay()` is false for
+/// `CornerMark::SystemIcon`, and `typeoverlay::sync(false)` REMOVES any suppression previously
+/// written rather than skipping. That is what makes switching back to Windows' icon work.
+pub fn sync_user_shell() -> Result<()> {
+    crate::foldermenu::sync(settings::folder_prebuild_verb());
+    crate::typeoverlay::sync(settings::hide_type_overlay());
+    notify_shell();
+    Ok(())
+}
+
+/// Undo everything [`sync_user_shell`] wrote for the CURRENT user, regardless of the settings.
+/// The uninstaller runs `SageThumbs2K.exe --remove-user-shell` as the original user before
+/// `regsvr32 /u`; nothing else would ever clean these up, and a leftover verb would point at an
+/// EXE that is no longer installed while a leftover empty `TypeOverlay` would keep suppressing
+/// another program's icon.
+pub fn remove_user_shell() {
+    crate::typeoverlay::remove_all();
+    crate::foldermenu::remove_all();
+    notify_shell();
 }
 
 /// Register the IPropertyStore coclass: its COM server (threaded "Both" — it also loads in the
 /// MTA SearchIndexer), the per-extension `PropertyHandlers\.<ext>` binding, and a combined
 /// info-tip / full-details property list so the values actually surface in Explorer.
-fn register_property_handler(dll_path: &str, approved: &windows_registry::Key) -> Result<()> {
-    register_inproc_server(CLSID_PROPERTY_STORE_STR, PS_NAME, dll_path, approved)?;
+fn register_property_handler(
+    classes: &Key,
+    dll_path: &str,
+    approved: &Key,
+    fmt: &FormatEnabledSnapshot,
+) -> Result<()> {
+    register_inproc_server(
+        classes,
+        CLSID_PROPERTY_STORE_STR,
+        PS_NAME,
+        dll_path,
+        approved,
+    )?;
+    let clsid_key = classes.create(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"))?;
     // Property handlers prefer "Both" (the shared helper defaults to Apartment).
-    CLASSES_ROOT
-        .create(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}\\InprocServer32"))?
+    clsid_key
+        .create("InprocServer32")?
         .set_string("ThreadingModel", "Both")?;
-    for (ext, _) in crate::formats::FORMATS {
-        if settings::format_enabled(ext) {
-            let _ = hook_ext_propstore(ext);
+    // The handler initialises with `IInitializeWithFile` (its extractors need the real path).
+    // Windows loads property handlers in its isolated property host by default, and a
+    // file-initialised handler is not loaded there unless it declares this value, so without
+    // it the indexer never asked us for anything. Removed with the CLSID tree in `unregister`.
+    clsid_key.set_u32("DisableProcessIsolation", 1)?;
+    for (ext, _) in FORMATS {
+        if fmt.enabled(ext) {
+            let _ = hook_ext_propstore(classes, ext);
         } else {
-            unhook_ext_propstore(ext);
+            unhook_ext_propstore(classes, ext);
         }
     }
     Ok(())
 }
 
-/// `(HKLM PropertyHandlers\.<ext>, HKCR SystemFileAssociations\.<ext>)` for one extension.
+/// `(HKLM PropertyHandlers\.<ext>, classes-relative SystemFileAssociations\.<ext>)` for one
+/// extension.
 fn propstore_keys(ext: &str) -> (String, String) {
     (
         format!("{PROPERTY_HANDLERS}\\.{ext}"),
@@ -188,7 +339,7 @@ fn propstore_keys(ext: &str) -> (String, String) {
 /// property handler: jpg/png/heic/mp3/mp4/mkv/flac/… all have a built-in handler that knows far
 /// more than we do, so they keep it. Our value is the formats with NO property handler at all
 /// (PSD/RAW/EPUB/comics/CAD/Krita/SVG/…), where dimensions in the Details pane is a pure win.
-fn hook_ext_propstore(ext: &str) -> Result<()> {
+fn hook_ext_propstore(classes: &Key, ext: &str) -> Result<()> {
     let (handler, assoc) = propstore_keys(ext);
     let existing = LOCAL_MACHINE
         .open(&handler)
@@ -203,7 +354,7 @@ fn hook_ext_propstore(ext: &str) -> Result<()> {
     LOCAL_MACHINE
         .create(&handler)?
         .set_string("", CLSID_PROPERTY_STORE_STR)?;
-    let a = CLASSES_ROOT.create(&assoc)?;
+    let a = classes.create(&assoc)?;
     // A third-party app can write these SystemFileAssociations values directly, without ever
     // registering a property handler — so the `handler` guard above (which only looked at
     // PropertyHandlers\.<ext>) can't see it. Fill each value only where it's genuinely empty,
@@ -212,7 +363,7 @@ fn hook_ext_propstore(ext: &str) -> Result<()> {
     set_assoc_value_if_empty(&a, "FullDetails", PROP_FULLDETAILS);
     set_assoc_value_if_empty(&a, "PreviewDetails", PROP_PREVIEWDETAILS);
     set_assoc_value_if_empty(&a, "AdditionalProperties", PROP_ADDITIONAL);
-    set_perceived_type(ext);
+    set_perceived_type(classes, ext);
     Ok(())
 }
 
@@ -226,31 +377,40 @@ fn set_assoc_value_if_empty(key: &Key, name: &str, value: &str) {
     let _ = key.set_string(name, value);
 }
 
-/// Set `HKCR\.<ext>`'s `PerceivedType` so `kind:` search + library grouping can classify the
+/// The `PerceivedType` we stamp for `ext`, or `None` for a format we leave unclassified.
+/// Image formats WIC cannot open get `None` (see [`WIC_IMAGE_EXTS`]).
+fn perceived_type_for(ext: &str) -> Option<&'static str> {
+    Some(match crate::formats::category(ext) {
+        Category::Audio => "audio",
+        Category::Video => "video",
+        Category::Ebook | Category::Document => "document",
+        Category::Raw => "image",
+        Category::Image if WIC_IMAGE_EXTS.contains(&ext) => "image",
+        Category::Image => return None,
+        // In practice Windows itself already stamps .zip/.rar/.7z as "compressed",
+        // so the already-present guard in `set_perceived_type` usually skips these anyway.
+        Category::Archive => "compressed",
+    })
+}
+
+/// Set `.<ext>`'s `PerceivedType` so `kind:` search + library grouping can classify the
 /// formats Windows otherwise doesn't know (kra/ora/blend/epub/djvu/svg/xcf/…). Written ONLY when
-/// absent — we never overwrite a value Windows or another app already set. NOT removed on unhook:
-/// a correct classification is harmless to leave behind, and since we only ever write into an empty
-/// slot we also can't prove on removal that the current value is ours rather than one a freshly
-/// installed app added later — so leaving it avoids clobbering that.
-fn set_perceived_type(ext: &str) {
+/// absent — we never overwrite a value Windows or another app already set — and marked with
+/// [`PERCEIVED_TYPE_MARK`] so [`unhook_perceived_type`] removes exactly the values we wrote
+/// (on every disable and uninstall) and nothing another app set later.
+fn set_perceived_type(classes: &Key, ext: &str) {
     let key = format!(".{ext}");
-    let already = CLASSES_ROOT
+    let already = classes
         .open(&key)
         .ok()
         .and_then(|k| k.get_string("PerceivedType").ok());
     if matches!(already.as_deref(), Some(s) if !s.is_empty()) {
         return; // a value is already present (Windows or another app) — leave it
     }
-    let pt = match crate::formats::category(ext) {
-        crate::formats::Category::Audio => "audio",
-        crate::formats::Category::Video => "video",
-        crate::formats::Category::Ebook | crate::formats::Category::Document => "document",
-        crate::formats::Category::Image | crate::formats::Category::Raw => "image",
-        // In practice Windows itself already stamps .zip/.rar/.7z as "compressed",
-        // so the already-present guard above usually skips these anyway.
-        crate::formats::Category::Archive => "compressed",
+    let Some(pt) = perceived_type_for(ext) else {
+        return;
     };
-    if let Ok(k) = CLASSES_ROOT.create(&key) {
+    if let Ok(k) = classes.create(&key) {
         if k.set_string("PerceivedType", pt).is_ok() {
             // Marker so unhook can remove OUR PerceivedType without clobbering one another app
             // sets later (we only ever fill an empty slot, but can't otherwise prove ownership).
@@ -261,12 +421,12 @@ fn set_perceived_type(ext: &str) {
 
 /// Remove the `PerceivedType` we set — but ONLY where our [`PERCEIVED_TYPE_MARK`] marker proves it
 /// was ours, so a value Windows or another app owns is never clobbered.
-fn unhook_perceived_type(ext: &str) {
+fn unhook_perceived_type(classes: &Key, ext: &str) {
     let key = format!(".{ext}");
     // `create`, not `open`: `open` hands back a read-only handle in this crate and
     // `remove_value` on it silently no-ops (see the note on `restore_displaced`), which left
     // PerceivedType/the marker behind on every uninstall/disable.
-    if let Ok(k) = CLASSES_ROOT.create(&key) {
+    if let Ok(k) = classes.create(&key) {
         if k.get_string(PERCEIVED_TYPE_MARK).is_ok() {
             let _ = k.remove_value("PerceivedType");
             let _ = k.remove_value(PERCEIVED_TYPE_MARK);
@@ -276,7 +436,7 @@ fn unhook_perceived_type(ext: &str) {
 
 /// Remove our property-handler binding + the prop lists, but ONLY where they're still ours
 /// (never clobber a handler / info-tip another product set).
-fn unhook_ext_propstore(ext: &str) {
+fn unhook_ext_propstore(classes: &Key, ext: &str) {
     let (handler, assoc) = propstore_keys(ext);
     let was_ours = LOCAL_MACHINE
         .open(&handler)
@@ -293,7 +453,7 @@ fn unhook_ext_propstore(ext: &str) {
         // `create`, not `open`: same read-only-handle trap as `unhook_perceived_type` above —
         // `open`'s handle makes `remove_value` a silent no-op, so these four values survived
         // every uninstall/disable.
-        if let Ok(k) = CLASSES_ROOT.create(&assoc) {
+        if let Ok(k) = classes.create(&assoc) {
             for v in [
                 "InfoTip",
                 "FullDetails",
@@ -304,25 +464,36 @@ fn unhook_ext_propstore(ext: &str) {
             }
         }
     }
-    unhook_perceived_type(ext);
+    unhook_perceived_type(classes, ext);
 }
 
 /// Register the IPreviewHandler coclass: its COM server, the surrogate `AppID`
 /// (so it runs in `prevhost.exe`, out of process), the global `PreviewHandlers`
 /// list entry, and the per-extension `shellex` slot for each enabled format.
-fn register_preview_handler(dll_path: &str, approved: &windows_registry::Key) -> Result<()> {
-    register_inproc_server(CLSID_PREVIEW_HANDLER_STR, PV_NAME, dll_path, approved)?;
+fn register_preview_handler(
+    classes: &Key,
+    dll_path: &str,
+    approved: &Key,
+    fmt: &FormatEnabledSnapshot,
+) -> Result<()> {
+    register_inproc_server(
+        classes,
+        CLSID_PREVIEW_HANDLER_STR,
+        PV_NAME,
+        dll_path,
+        approved,
+    )?;
     // "Both" (the shared helper defaults to Apartment): the preview host loads us into its
     // own STA but our render worker self-inits an MTA apartment (`previewhandler.rs`), so the
     // accurate declaration is Both — matching the property handler. (Apartment worked only
     // because prevhost.exe tolerated the mismatch.)
-    CLASSES_ROOT
+    classes
         .create(format!(
             "CLSID\\{CLSID_PREVIEW_HANDLER_STR}\\InprocServer32"
         ))?
         .set_string("ThreadingModel", "Both")?;
     // The AppID on our CLSID points the shell at the out-of-process preview host.
-    CLASSES_ROOT
+    classes
         .create(format!("CLSID\\{CLSID_PREVIEW_HANDLER_STR}"))?
         .set_string("AppID", PREVHOST_APPID)?;
     // The machine-wide registered-handlers list (value name = CLSID, data = name).
@@ -330,29 +501,34 @@ fn register_preview_handler(dll_path: &str, approved: &windows_registry::Key) ->
         .create(PREVIEW_HANDLERS)?
         .set_string(CLSID_PREVIEW_HANDLER_STR, PV_NAME)?;
     // Hook each enabled extension's preview slot; unhook disabled ones (mirrors the
-    // thumbnail per-extension loop, gated by the same Options format list).
-    for (ext, _) in crate::formats::FORMATS {
-        if settings::format_enabled(ext) {
-            let _ = hook_ext_preview(ext);
+    // thumbnail per-extension loop, gated by the same Settings format list). A slot another
+    // product owns is skipped, not counted, so this pass legitimately writes nothing on a
+    // machine where every format already has a richer preview handler.
+    let mut pass = Pass::default();
+    for (ext, _) in FORMATS {
+        if fmt.enabled(ext) {
+            hook_ext_preview(classes, ext, &mut pass);
         } else {
-            unhook_ext_preview(ext);
+            unhook_ext_preview(classes, ext);
         }
     }
+    let _ = pass.report("preview shellex pass");
     Ok(())
 }
 
 /// Register one in-proc COM server: `CLSID\{guid}` (friendly name) +
 /// `InprocServer32` (dll path, Apartment threading) + the Approved entry.
-/// Both of our coclasses configure identically through here.
+/// All of our coclasses configure identically through here.
 fn register_inproc_server(
+    classes: &Key,
     clsid_str: &str,
     name: &str,
     dll_path: &str,
-    approved: &windows_registry::Key,
+    approved: &Key,
 ) -> Result<()> {
     let base = format!("CLSID\\{clsid_str}");
-    CLASSES_ROOT.create(&base)?.set_string("", name)?;
-    let inproc = CLASSES_ROOT.create(format!("{base}\\InprocServer32"))?;
+    classes.create(&base)?.set_string("", name)?;
+    let inproc = classes.create(format!("{base}\\InprocServer32"))?;
     inproc.set_string("", dll_path)?;
     inproc.set_string("ThreadingModel", "Apartment")?;
     approved.set_string(clsid_str, name)?;
@@ -365,8 +541,8 @@ fn register_inproc_server(
 /// ProgID-level handler). One source of truth for the key layout.
 fn thumb_keys(ext: &str) -> [String; 2] {
     [
-        format!(".{ext}\\shellex\\{THUMB_HANDLER}"),
-        format!("SystemFileAssociations\\.{ext}\\shellex\\{THUMB_HANDLER}"),
+        format!(".{ext}\\shellex\\{THUMB_HANDLER_CATEGORY}"),
+        format!("SystemFileAssociations\\.{ext}\\shellex\\{THUMB_HANDLER_CATEGORY}"),
     ]
 }
 
@@ -375,23 +551,25 @@ fn thumb_keys(ext: &str) -> [String; 2] {
 ///
 /// Each key is attempted independently (see [`set_shellex_key`]): the module doc above says
 /// `SystemFileAssociations` is checked BEFORE the bare-extension key, so a failure on the
-/// lower-priority bare key must never skip the higher-priority one.
-fn hook_ext(ext: &str) -> Result<()> {
+/// lower-priority bare key must never skip the higher-priority one. Each outcome is counted
+/// in `pass`.
+fn hook_ext(classes: &Key, ext: &str, pass: &mut Pass) {
     for path in thumb_keys(ext) {
-        remember_displaced(&path);
-        set_shellex_key(CLASSES_ROOT, &path, CLSID_THUMBNAIL_PROVIDER_STR);
+        remember_displaced(classes, &path);
+        pass.note(
+            &path,
+            set_shellex_key(classes, &path, CLSID_THUMBNAIL_PROVIDER_STR),
+        );
     }
-    Ok(())
 }
 
-/// Write `clsid` as `path`'s default value under `root`, best-effort — a failure on one key
-/// (e.g. the bare-extension key) must never stop a caller from still attempting its sibling
-/// key (e.g. `SystemFileAssociations`). Shared by [`hook_ext`], [`hook_ext_preview`], and
-/// [`register_user`]'s per-user loop, which had each hand-rolled this same create+set_string.
-fn set_shellex_key(root: &Key, path: &str, clsid: &str) {
-    if let Ok(k) = root.create(path) {
-        let _ = k.set_string("", clsid);
-    }
+/// Write `clsid` as `path`'s default value under `root`, one key at a time, handing the
+/// outcome back rather than swallowing it: a failure on one key (e.g. the bare-extension key)
+/// must never stop a caller from still attempting its sibling key (e.g.
+/// `SystemFileAssociations`), but it must be counted and its HRESULT logged. Shared by
+/// [`hook_ext`], [`hook_ext_preview`], and [`register_user`]'s per-user loop.
+fn set_shellex_key(root: &Key, path: &str, clsid: &str) -> Result<()> {
+    root.create(path)?.set_string("", clsid)
 }
 
 /// Note the handler currently in `path` under [`DISPLACED`] so unhooking can restore it.
@@ -401,14 +579,14 @@ fn set_shellex_key(root: &Key, path: &str, clsid: &str) {
 /// rather than overwriting it with ourselves (which would silently discard the thing we are
 /// meant to give back). If a third product takes the slot from us and we re-register later,
 /// recording that one is correct: restore returns the slot to whoever held it last.
-fn remember_displaced(path: &str) {
-    remember_displaced_in(CLASSES_ROOT, LOCAL_MACHINE, path);
+fn remember_displaced(classes: &Key, path: &str) {
+    remember_displaced_in(classes, LOCAL_MACHINE, path);
 }
 
 /// [`remember_displaced`] against an explicit pair of hives, so the machine-wide path and the
 /// PORTABLE per-user path share one implementation. The per-user path must record into HKCU:
 /// a zip has no HKLM write access, and it evicts incumbents from `HKCU\Software\Classes` just
-/// as destructively as the installer does from HKCR. (`SOFTWARE\...` resolves under either
+/// as destructively as the installer does from HKLM. (`SOFTWARE\...` resolves under either
 /// hive — the registry is case-insensitive, and HKCU keeps the record beside the settings.)
 fn remember_displaced_in(classes: &Key, records: &Key, path: &str) {
     let Some(existing) = classes.open(path).ok().and_then(|k| k.get_string("").ok()) else {
@@ -432,8 +610,8 @@ fn remember_displaced_in(classes: &Key, records: &Key, path: &str) {
 /// clearing it needs the writable handle `create` returns (`create` opens an existing key).
 /// With the read-only handle the slot WAS restored and the record survived anyway, so
 /// `st2k doctor` kept reporting a handler we no longer displaced.
-fn restore_displaced(path: &str) {
-    restore_displaced_in(CLASSES_ROOT, LOCAL_MACHINE, path);
+fn restore_displaced(classes: &Key, path: &str) {
+    restore_displaced_in(classes, LOCAL_MACHINE, path);
 }
 
 /// [`restore_displaced`] against an explicit pair of hives — the twin of
@@ -501,9 +679,9 @@ pub(crate) fn displaced_handlers() -> Vec<(String, String)> {
 /// Remove one extension's thumbnail `shellex` keys — but only the ones that
 /// actually point at OUR CLSID, so we never clobber a handler another product
 /// (or Windows) registered in that slot.
-fn unhook_ext(ext: &str) {
+fn unhook_ext(classes: &Key, ext: &str) {
     for path in thumb_keys(ext) {
-        remove_if_ours(&path);
+        remove_if_ours(classes, &path);
     }
 }
 
@@ -513,10 +691,10 @@ fn unhook_ext(ext: &str) {
 /// must only run on the unregister path — a normal settings-apply re-register
 /// disables individual formats with [`unhook_ext`] and must NOT prune parents
 /// (the user may re-enable, and a foreign sibling may share the chain).
-fn unhook_ext_and_prune(ext: &str) {
+fn unhook_ext_and_prune(classes: &Key, ext: &str) {
     for path in thumb_keys(ext) {
-        remove_if_ours(&path);
-        prune_empty_parents(&path);
+        remove_if_ours(classes, &path);
+        prune_empty_parents(classes, &path);
     }
 }
 
@@ -524,8 +702,8 @@ fn unhook_ext_and_prune(ext: &str) {
 /// it's a genuinely empty husk safe to delete. A missing key, or any I/O error
 /// while probing, returns `false` (conservative: never delete what we can't
 /// confirm is empty).
-fn is_empty_key(path: &str) -> bool {
-    let Ok(key) = CLASSES_ROOT.open(path) else {
+fn is_empty_key(classes: &Key, path: &str) -> bool {
+    let Ok(key) = classes.open(path) else {
         return false;
     };
     let no_subkeys = key
@@ -544,67 +722,67 @@ fn is_empty_key(path: &str) -> bool {
 /// `.<ext>` (or `SystemFileAssociations\.<ext>`) key. Stops at the first
 /// non-empty (or missing) parent, so a populated foreign key — or the shared
 /// `SystemFileAssociations` root itself — is never touched. `path` is one of
-/// the `thumb_keys` entries: `<assoc>\shellex\{THUMB_HANDLER}`, whose two
+/// the `thumb_keys` entries: `<assoc>\shellex\{THUMB_HANDLER_CATEGORY}`, whose two
 /// ancestors we care about are `<assoc>\shellex` and `<assoc>`.
-fn prune_empty_parents(path: &str) {
-    // Drop the `\{THUMB_HANDLER}` leaf component -> `<assoc>\shellex`.
+fn prune_empty_parents(classes: &Key, path: &str) {
+    // Drop the `\{THUMB_HANDLER_CATEGORY}` leaf component -> `<assoc>\shellex`.
     let Some(shellex) = path.rsplit_once('\\').map(|(parent, _)| parent) else {
         return;
     };
-    if !is_empty_key(shellex) {
+    if !is_empty_key(classes, shellex) {
         return;
     }
-    let _ = CLASSES_ROOT.remove_tree(shellex);
+    let _ = classes.remove_tree(shellex);
 
     // Drop the `\shellex` component -> `<assoc>` (`.ext` or
     // `SystemFileAssociations\.ext`). Only prune if it too is now empty.
     let Some(assoc) = shellex.rsplit_once('\\').map(|(parent, _)| parent) else {
         return;
     };
-    if is_empty_key(assoc) {
-        let _ = CLASSES_ROOT.remove_tree(assoc);
+    if is_empty_key(classes, assoc) {
+        let _ = classes.remove_tree(assoc);
     }
 }
 
 /// Delete a thumbnail-handler `shellex` key only if its default value is our
 /// CLSID, then hand the slot back to whoever we took it from. A foreign handler
 /// in that slot is left untouched.
-fn remove_if_ours(path: &str) {
-    if let Ok(key) = CLASSES_ROOT.open(path) {
+fn remove_if_ours(classes: &Key, path: &str) {
+    if let Ok(key) = classes.open(path) {
         if key.get_string("").ok().as_deref() == Some(CLSID_THUMBNAIL_PROVIDER_STR) {
-            let _ = CLASSES_ROOT.remove_tree(path);
-            restore_displaced(path);
+            let _ = classes.remove_tree(path);
+            restore_displaced(classes, path);
         }
     }
 }
 
+/// Undo [`register`] machine-wide. The per-user pieces of THIS (elevated) account are also
+/// swept (marker-gated, so only what we wrote); the installing user's own are removed by the
+/// uninstaller running [`remove_user_shell`] as that user first.
 pub fn unregister() -> Result<()> {
-    // Written per ProgID under HKCU by the opt-in "hide Windows' file-type icon" setting.
-    // Nothing else would ever clean these up, and a leftover empty `TypeOverlay` would keep
-    // suppressing another program's icon long after we are gone.
+    let classes = machine_classes()?;
     crate::typeoverlay::remove_all();
-    // The folder right-click entry is ours alone under HKCU, but nothing else would ever take
-    // it out, and a leftover verb would point at an EXE that is no longer installed.
     crate::foldermenu::remove_all();
     // Order matters: remove the property-store VALUES on `SystemFileAssociations\.<ext>` FIRST,
     // so the subsequent thumbnail/preview `*_and_prune` calls find that key empty and prune it —
     // otherwise the lingering InfoTip/FullDetails/… values keep the key alive as orphan litter.
-    for (ext, _) in crate::formats::FORMATS {
-        unhook_ext_propstore(ext);
-        unhook_ext_and_prune(ext);
-        unhook_ext_preview_and_prune(ext);
+    for (ext, _) in FORMATS {
+        unhook_ext_propstore(&classes, ext);
+        unhook_ext_and_prune(&classes, ext);
+        unhook_ext_preview_and_prune(&classes, ext);
     }
     // Also sweep historically-dropped extensions (orphans from older builds — see register()).
-    for ext in crate::formats::REMOVED_EXTENSIONS {
-        unhook_ext_propstore(ext);
-        unhook_ext_and_prune(ext);
-        unhook_ext_preview_and_prune(ext);
+    for ext in REMOVED_EXTENSIONS {
+        unhook_ext_propstore(&classes, ext);
+        unhook_ext_and_prune(&classes, ext);
+        unhook_ext_preview_and_prune(&classes, ext);
     }
-    let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
-    let _ = CLASSES_ROOT.remove_tree("*\\shellex\\ContextMenuHandlers\\SageThumbs2K");
-    let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
-    let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_PREVIEW_HANDLER_STR}"));
-    let _ = CLASSES_ROOT.remove_tree(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"));
+    let _ = classes.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
+    let _ = classes.remove_tree(CONTEXT_MENU_KEY);
+    let _ = classes.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
+    let _ = classes.remove_tree(format!("CLSID\\{CLSID_PREVIEW_HANDLER_STR}"));
+    // Takes `DisableProcessIsolation` and the "Both" threading model with it.
+    let _ = classes.remove_tree(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"));
     // `create`, not `open`: `open` is read-only in this crate and `remove_value` on a
     // read-only handle silently does nothing, so these two lists kept our CLSIDs after an
     // uninstall. Both keys are in-box Windows keys that always exist, so `create` only ever
@@ -632,8 +810,8 @@ pub fn unregister() -> Result<()> {
 /// The two `shellex` preview-handler key paths for one extension.
 fn preview_keys(ext: &str) -> [String; 2] {
     [
-        format!(".{ext}\\shellex\\{PREVIEW_HANDLER}"),
-        format!("SystemFileAssociations\\.{ext}\\shellex\\{PREVIEW_HANDLER}"),
+        format!(".{ext}\\shellex\\{PREVIEW_HANDLER_CATEGORY}"),
+        format!("SystemFileAssociations\\.{ext}\\shellex\\{PREVIEW_HANDLER_CATEGORY}"),
     ]
 }
 
@@ -641,12 +819,9 @@ fn preview_keys(ext: &str) -> [String; 2] {
 /// is empty or already ours. Never displace another product's preview handler (mirrors
 /// [`hook_ext_propstore`]'s guard): a foreign CLSID in the slot means a real handler owns the
 /// format, and clobbering it would replace a richer preview with our static frame.
-fn hook_ext_preview(ext: &str) -> Result<()> {
+fn hook_ext_preview(classes: &Key, ext: &str, pass: &mut Pass) {
     for path in preview_keys(ext) {
-        let existing = CLASSES_ROOT
-            .open(&path)
-            .ok()
-            .and_then(|k| k.get_string("").ok());
+        let existing = classes.open(&path).ok().and_then(|k| k.get_string("").ok());
         if !matches!(
             existing.as_deref(),
             None | Some("") | Some(CLSID_PREVIEW_HANDLER_STR)
@@ -655,33 +830,35 @@ fn hook_ext_preview(ext: &str) -> Result<()> {
         }
         // Best-effort per key, same reasoning as `hook_ext`: a failure on one key must not
         // skip its sibling (the loop used to hard-`?` here and abort on the first failure).
-        set_shellex_key(CLASSES_ROOT, &path, CLSID_PREVIEW_HANDLER_STR);
+        pass.note(
+            &path,
+            set_shellex_key(classes, &path, CLSID_PREVIEW_HANDLER_STR),
+        );
     }
-    Ok(())
 }
 
 /// Remove one extension's preview `shellex` keys, but only where they point at OUR
 /// preview CLSID (never clobber another product's handler).
-fn unhook_ext_preview(ext: &str) {
+fn unhook_ext_preview(classes: &Key, ext: &str) {
     for path in preview_keys(ext) {
-        remove_if_ours_preview(&path);
+        remove_if_ours_preview(classes, &path);
     }
 }
 
 /// Full-uninstall variant: remove our preview leaf and sweep now-empty parents
 /// (reuses the thumbnail path's [`prune_empty_parents`]).
-fn unhook_ext_preview_and_prune(ext: &str) {
+fn unhook_ext_preview_and_prune(classes: &Key, ext: &str) {
     for path in preview_keys(ext) {
-        remove_if_ours_preview(&path);
-        prune_empty_parents(&path);
+        remove_if_ours_preview(classes, &path);
+        prune_empty_parents(classes, &path);
     }
 }
 
 /// Delete a preview `shellex` key only if its default value is our preview CLSID.
-fn remove_if_ours_preview(path: &str) {
-    if let Ok(key) = CLASSES_ROOT.open(path) {
+fn remove_if_ours_preview(classes: &Key, path: &str) {
+    if let Ok(key) = classes.open(path) {
         if key.get_string("").ok().as_deref() == Some(CLSID_PREVIEW_HANDLER_STR) {
-            let _ = CLASSES_ROOT.remove_tree(path);
+            let _ = classes.remove_tree(path);
         }
     }
 }
@@ -690,17 +867,18 @@ fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 
-/// Is the thumbnail provider registered *right now*?
+/// Is the thumbnail provider registered machine-wide *right now*?
 ///
-/// Reading back the CLSID is the cheapest true test that `DllRegisterServer` actually
-/// ran: our own registration writes this key and nothing else does. Used by the Settings
-/// "Repair file associations" button to check whether the elevated `regsvr32` it just
-/// launched really succeeded — launching a process tells you nothing about the outcome,
-/// and reporting "repaired" after a silent failure is worse than reporting nothing.
+/// Reading back the CLSID from `HKLM\SOFTWARE\Classes` (not the merged HKCR view, which a
+/// per-user registration would satisfy just as well) is the cheapest true test that
+/// `DllRegisterServer` actually ran: our own registration writes this key and nothing else
+/// does. Used by the Settings "Repair file associations" button to check whether the elevated
+/// `regsvr32` it just launched really succeeded — launching a process tells you nothing about
+/// the outcome, and reporting "repaired" after a silent failure is worse than reporting nothing.
 pub fn is_registered() -> bool {
-    CLASSES_ROOT
+    LOCAL_MACHINE
         .open(format!(
-            "CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}\\InprocServer32"
+            "{MACHINE_CLASSES}\\CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}\\InprocServer32"
         ))
         .ok()
         .and_then(|k| k.get_string("").ok())
@@ -752,49 +930,74 @@ pub fn register_user(dll_path: &str) -> Result<()> {
     }
 
     // Same per-extension layout as the machine-wide path, so precedence behaves identically.
-    // Best-effort per extension: one locked-down key must not abort the rest.
-    for (ext, _) in crate::formats::FORMATS {
-        if settings::format_enabled(ext) {
+    // Best-effort per extension: one locked-down key must not abort the rest, but every
+    // outcome is counted and a pass that wrote nothing fails the call (see `register`).
+    let fmt = settings::format_enabled_snapshot();
+    let mut thumbs = Pass::default();
+    for (ext, _) in FORMATS {
+        if fmt.enabled(ext) {
             for path in thumb_keys(ext) {
                 // Same non-destructive claim as the machine-wide path: note whoever held this
                 // slot in the user's own hive so `remove_user_if_ours` can hand it straight
                 // back. Portable mode is still a real install from the shell's point of view.
                 remember_displaced_in(&classes, CURRENT_USER, &path);
-                set_shellex_key(&classes, &path, CLSID_THUMBNAIL_PROVIDER_STR);
+                thumbs.note(
+                    &path,
+                    set_shellex_key(&classes, &path, CLSID_THUMBNAIL_PROVIDER_STR),
+                );
             }
         } else {
             remove_user_if_ours(&classes, ext);
         }
     }
+    let thumbs_failed = thumbs.report("per-user thumbnail shellex pass");
     // Sweep stale hooks from extensions older builds registered but we've since dropped —
     // mirrors register()/unregister()/unregister_user(), all three of which already do this.
     // Without it, a portable copy upgraded past a dropped extension keeps a stale HKCU
     // shellex entry for it forever (the FORMATS loop above never touches it again).
-    for ext in crate::formats::REMOVED_EXTENSIONS {
+    for ext in REMOVED_EXTENSIONS {
         remove_user_if_ours(&classes, ext);
     }
 
-    if let Ok(k) = classes.create("*\\shellex\\ContextMenuHandlers\\SageThumbs2K") {
-        let _ = k.set_string("", CLSID_CONTEXT_MENU_STR);
+    if let Err(e) = set_shellex_key(&classes, CONTEXT_MENU_KEY, CLSID_CONTEXT_MENU_STR) {
+        log_error(&format!(
+            "register_user: context menu key {CONTEXT_MENU_KEY}: hr={:#010x}",
+            e.code().0
+        ));
     }
 
     notify_shell();
+    if thumbs_failed {
+        return Err(Error::from(E_FAIL));
+    }
     Ok(())
 }
 
 /// Undo [`register_user`]. Removes only keys whose value is OUR CLSID, so a handler another
-/// product owns is never collateral damage, and leaves the machine-wide hive alone.
+/// product owns is never collateral damage, and leaves the machine-wide hive alone. The
+/// per-user shell pieces go first, mirroring [`unregister`]: after the documented "run
+/// `--off`, then delete the folder", a leftover folder verb would point at an EXE that is
+/// gone and a leftover `TypeOverlay` would keep suppressing another program's icon.
 pub fn unregister_user() -> Result<()> {
+    remove_user_shell();
+    unregister_user_classes()
+}
+
+/// The class-key half of [`unregister_user`]: the per-user CLSIDs and `shellex` hooks, and
+/// nothing under the user's settings or shell pieces. Also what the machine-wide [`register`]
+/// runs to clear a portable registration that would shadow it, where taking the folder verb
+/// and overlay suppression away too would be wrong.
+fn unregister_user_classes() -> Result<()> {
     let classes = user_classes()?;
-    for (ext, _) in crate::formats::FORMATS {
+    for (ext, _) in FORMATS {
         remove_user_if_ours(&classes, ext);
     }
-    for ext in crate::formats::REMOVED_EXTENSIONS {
+    for ext in REMOVED_EXTENSIONS {
         remove_user_if_ours(&classes, ext);
     }
-    if let Ok(k) = classes.open("*\\shellex\\ContextMenuHandlers\\SageThumbs2K") {
+    if let Ok(k) = classes.open(CONTEXT_MENU_KEY) {
         if k.get_string("").ok().as_deref() == Some(CLSID_CONTEXT_MENU_STR) {
-            let _ = classes.remove_tree("*\\shellex\\ContextMenuHandlers\\SageThumbs2K");
+            let _ = classes.remove_tree(CONTEXT_MENU_KEY);
         }
     }
     let _ = classes.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
@@ -981,9 +1184,15 @@ mod registry_write_tests {
         let unwritable = "x".repeat(300);
         let good = "good-sibling";
 
-        for name in [unwritable.as_str(), good] {
-            set_shellex_key(&root, name, "TEST-CLSID");
-        }
+        let outcomes: Vec<bool> = [unwritable.as_str(), good]
+            .iter()
+            .map(|name| set_shellex_key(&root, name, "TEST-CLSID").is_ok())
+            .collect();
+        assert_eq!(
+            outcomes,
+            [false, true],
+            "the failure must be handed back (so the pass can count and log it), not swallowed"
+        );
 
         assert!(
             root.open(&unwritable).is_err(),
@@ -1000,9 +1209,63 @@ mod registry_write_tests {
     #[test]
     fn set_shellex_key_round_trips_on_a_writable_path() {
         let (_guard, root) = Scratch::new("roundtrip");
-        set_shellex_key(&root, "child\\grandchild", "TEST-CLSID");
+        set_shellex_key(&root, "child\\grandchild", "TEST-CLSID").expect("write");
         let k = root.open("child\\grandchild").expect("key created");
         assert_eq!(k.get_string("").as_deref(), Ok("TEST-CLSID"));
+    }
+
+    /// A pass that attempted keys and wrote none is the "clean install, no thumbnails, no
+    /// log line" failure `register` used to report as S_OK; a pass with a partial failure is
+    /// logged but is not a failure of the pass as a whole.
+    #[test]
+    fn a_pass_that_wrote_nothing_is_reported_as_failed() {
+        let (_guard, root) = Scratch::new("pass-tally");
+        let unwritable = "y".repeat(300);
+
+        let mut all_failed = Pass::default();
+        all_failed.note(&unwritable, set_shellex_key(&root, &unwritable, "X"));
+        assert!(all_failed.report("test pass: all failed"));
+        assert_eq!((all_failed.written, all_failed.failed), (0, 1));
+        assert!(
+            all_failed.first_failure.is_some(),
+            "the first HRESULT is kept for the log"
+        );
+
+        let mut partial = Pass::default();
+        partial.note(&unwritable, set_shellex_key(&root, &unwritable, "X"));
+        partial.note("ok", set_shellex_key(&root, "ok", "X"));
+        assert!(!partial.report("test pass: partial"));
+        assert_eq!((partial.written, partial.failed), (1, 1));
+
+        let empty = Pass::default();
+        assert!(!empty.report("test pass: nothing attempted"));
+    }
+
+    /// `PerceivedType=image` pulls Windows' image verbs (Rotate, Print, Set as background)
+    /// onto a type; those fail on formats WIC cannot open, so the Image category is stamped
+    /// only for the WIC-openable extensions. Camera RAW and the other categories keep their
+    /// classification.
+    #[test]
+    fn perceived_type_is_image_only_where_wic_can_open_it() {
+        assert_eq!(perceived_type_for("png"), Some("image"));
+        assert_eq!(perceived_type_for("heic"), Some("image"));
+        assert_eq!(
+            perceived_type_for("cr2"),
+            Some("image"),
+            "camera RAW keeps image"
+        );
+        assert_eq!(perceived_type_for("psd"), None, "WIC cannot open a PSD");
+        assert_eq!(perceived_type_for("xcf"), None);
+        assert_eq!(perceived_type_for("flac"), Some("audio"));
+        for ext in WIC_IMAGE_EXTS {
+            assert!(
+                matches!(
+                    crate::formats::category(ext),
+                    crate::formats::Category::Image | crate::formats::Category::Raw
+                ) || !crate::formats::is_known(ext),
+                ".{ext} is listed as WIC-openable but is not an image format"
+            );
+        }
     }
 
     /// A054's companion in the property-store path (A055): `set_assoc_value_if_empty` must fill

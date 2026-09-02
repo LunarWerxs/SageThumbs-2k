@@ -41,9 +41,9 @@
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use windows::core::{w, Error, Ref, Result, HRESULT, HSTRING, PCWSTR, PSTR};
+use windows::core::{Error, Ref, Result, HRESULT, HSTRING, PCWSTR, PSTR};
 use windows::Win32::Foundation::{
-    COLORREF, E_FAIL, E_NOTIMPL, LPARAM, LRESULT, RECT, SIZE, S_OK, WPARAM,
+    COLORREF, E_FAIL, E_NOTIMPL, HMODULE, LPARAM, LRESULT, RECT, SIZE, S_OK, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     AlphaBlend, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW,
@@ -54,9 +54,10 @@ use windows::Win32::Graphics::Gdi::{
     DT_END_ELLIPSIS, DT_SINGLELINE, HBITMAP, HDC, HFONT, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::ReleaseStgMedium;
+use windows::Win32::System::ProcessStatus::{K32EnumProcessModules, K32GetModuleBaseNameW};
 use windows::Win32::System::Registry::HKEY;
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED, ODT_MENU};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
@@ -64,7 +65,7 @@ use windows::Win32::UI::Shell::{
     IShellExtInit, IShellExtInit_Impl, ShellExecuteW, CMINVOKECOMMANDINFO, HDROP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, GetSystemMetrics, InsertMenuW, SetMenuItemInfoW,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetSystemMetrics, InsertMenuW, SetMenuItemInfoW,
     SystemParametersInfoW, HMENU, MENUITEMINFOW, MF_BITMAP, MF_BYPOSITION, MF_OWNERDRAW, MF_POPUP,
     MF_SEPARATOR, MF_STRING, MIIM_BITMAP, NONCLIENTMETRICSW, SM_CXMENUCHECK, SM_CYMENUCHECK,
     SPI_GETNONCLIENTMETRICS, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_DRAWITEM,
@@ -102,6 +103,11 @@ pub(crate) struct Preview {
     h: i32,
     name: Vec<u16>, // file name, UTF-16 (no NUL — DrawTextW takes a slice)
     info: Vec<u16>, // "1500 × 1500 px – 96 KB"
+    /// The "checker backdrop under a transparent thumbnail" setting, snapshotted once
+    /// when the preview is built rather than re-read by `paint_preview` on every
+    /// `WM_DRAWITEM` (mousing up and down a portable install's menu used to mean one
+    /// ini read + parse per repaint).
+    checker: bool,
 }
 
 impl Drop for Preview {
@@ -124,6 +130,15 @@ pub struct ContextMenu {
     /// Snapshot of the cheap single-image/size gate taken during initialization,
     /// avoiding a second filesystem metadata query in `QueryContextMenu`.
     preview_eligible: Cell<bool>,
+    /// The `std::fs::metadata` result from the same `Initialize`-time gate, handed to
+    /// `build_preview` so it doesn't stat the file a second time on top of the one
+    /// `preview_eligible` was computed from.
+    preview_meta: RefCell<Option<std::fs::Metadata>>,
+    /// Set once `ensure_preview` has tried and failed to build a preview (a corrupt
+    /// file, an expired budget, a vanished path). Without this, every `WM_DRAWITEM`
+    /// on the owner-drawn preview item re-ran the whole bounded stat + decode attempt
+    /// and re-spawned a worker, since only success was cached.
+    preview_failed: Cell<bool>,
     /// Absolute menu command id of the preview item (set in QueryContextMenu).
     preview_cmd: Cell<Option<u32>>,
     /// The composed tile handed to the menu on the BITMAP branch (unskinned hosts).
@@ -144,6 +159,8 @@ impl Default for ContextMenu {
             preview: RefCell::new(None),
             preview_job: RefCell::new(None),
             preview_eligible: Cell::new(false),
+            preview_meta: RefCell::new(None),
+            preview_failed: Cell::new(false),
             preview_cmd: Cell::new(None),
             tile: Cell::new(HBITMAP::default()),
         }
@@ -201,34 +218,51 @@ unsafe fn hdrop_paths(obj: &IDataObject) -> Result<Vec<String>> {
 /// worker in this codebase: the call is simply abandoned, not cancelled.
 fn metadata_budgeted(path: &str) -> Option<std::fs::Metadata> {
     let path = path.to_owned();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = std::thread::Builder::new()
-        .spawn(move || {
-            let _ = tx.send(std::fs::metadata(&path).ok());
-        })
-        .ok()?;
-    rx.recv_timeout(MENU_PREVIEW_BUDGET).ok().flatten()
+    // Route through `safety::spawn_budgeted` so the detached worker holds a `ModuleRef` for its
+    // whole life: on a hung share the stat outlives this call, and without the pin
+    // `DllCanUnloadNow` would report the DLL free while the worker still executes its code inside
+    // explorer.exe — an access violation when it resumes into unmapped memory. Every other
+    // detached worker in the crate pins this way; this hand-rolled one (from the A002 fix) did not.
+    crate::safety::spawn_budgeted("st2k-menu-metadata", MENU_PREVIEW_BUDGET, move || {
+        std::fs::metadata(&path).ok()
+    })
+    .flatten()
+}
+
+/// Whether `len` bytes is small enough for the in-process menu-preview to read or
+/// decode. The one definition shared by [`preview_metadata`]'s pre-gate,
+/// [`build_preview`]'s own check immediately before decoding, and the off-thread
+/// worker's own pre-read check in `thumb.rs` — three independently-drifting copies
+/// of the same two-part budget before this.
+pub(crate) fn within_preview_budget(len: u64) -> bool {
+    len <= PREVIEW_MAX_BYTES && len <= settings::max_file_size_bytes()
 }
 
 /// Cheap pre-gate (metadata only, NO read/decode): the file exists and is within
-/// the preview size budget. `QueryContextMenu` checks this before composing the
-/// tile at all, so an oversized file costs one `metadata` call. The decode itself
-/// still runs on a detached worker under [`MENU_PREVIEW_BUDGET`] (see
-/// [`ContextMenu::ensure_preview`]), so a slow file cannot freeze the menu paint.
-fn preview_size_ok(path: &str) -> bool {
-    metadata_budgeted(path)
-        .map(|m| m.len() <= PREVIEW_MAX_BYTES && m.len() <= settings::max_file_size_bytes())
-        .unwrap_or(false)
+/// the preview size budget. `Initialize` checks this before reserving the preview
+/// slot at all, so an oversized file costs one `metadata` call — and hands the
+/// `Metadata` back so [`build_preview`] can reuse it instead of statting the file a
+/// second time.
+fn preview_metadata(path: &str) -> Option<std::fs::Metadata> {
+    let m = metadata_budgeted(path)?;
+    within_preview_budget(m.len()).then_some(m)
 }
 
 /// Decode `path` into the menu-preview payload (thumbnail DIB + caption lines).
-/// Called only when a preview is about to be inserted or painted.
+/// Called only when a preview is about to be inserted or painted. `meta`, when
+/// given, is the `Initialize`-time [`preview_metadata`] result — reusing it here
+/// avoids a second `metadata_budgeted` stat (each one its own bounded worker
+/// thread) for the same file on the same right-click.
 fn build_preview(
     path: &str,
     prefetched: Option<std::sync::mpsc::Receiver<Option<MenuThumb>>>,
+    meta: Option<std::fs::Metadata>,
 ) -> Option<Preview> {
-    let meta = metadata_budgeted(path)?;
-    if meta.len() > PREVIEW_MAX_BYTES || meta.len() > settings::max_file_size_bytes() {
+    let meta = match meta {
+        Some(m) => m,
+        None => metadata_budgeted(path)?,
+    };
+    if !within_preview_budget(meta.len()) {
         return None;
     }
     let name: Vec<u16> = std::path::Path::new(path)
@@ -279,6 +313,7 @@ fn build_preview(
         h,
         name,
         info: info.encode_utf16().collect(),
+        checker: settings::preview_checker(),
     })
 }
 
@@ -286,55 +321,135 @@ fn build_preview(
 /// icon in front of the "SageThumbs 2K" submenu anchor.
 const MENU_LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
 
-/// The logo as a 32-bpp premultiplied-alpha bitmap at the system menu-check
-/// size (DPI-aware) — Vista+ menus alpha-blend such `hbmpItem` bitmaps natively.
-/// Created once per process and never freed: live menus may reference it for
-/// the host's lifetime, and it's a single small bitmap.
+/// The logo as a 32-bpp premultiplied-alpha bitmap at the system menu-check size
+/// (DPI-aware) — Vista+ menus alpha-blend such `hbmpItem` bitmaps natively. Built at
+/// most once per DLL *load* (a `Mutex` rather than a lock-free cache so two racing
+/// callers can't each build and leak a competing bitmap) and cached here for the
+/// life of that load: live menus may reference it for the host's lifetime, and it's
+/// a single small bitmap. Freed on [`free_menu_logo`], called from `DLL_PROCESS_DETACH`
+/// — a load/unload cycle inside a long-lived `explorer.exe` used to leak one GDI
+/// object every time, since a `OnceLock` is "once per load", not "once ever".
 fn menu_logo() -> HBITMAP {
-    use std::sync::OnceLock;
-    static LOGO: OnceLock<isize> = OnceLock::new();
-    let h = *LOGO.get_or_init(|| {
-        let cx = unsafe { GetSystemMetrics(SM_CXMENUCHECK) }.max(16);
-        let cy = unsafe { GetSystemMetrics(SM_CYMENUCHECK) }.max(16);
-        let Ok(img) = image::load_from_memory(MENU_LOGO_PNG) else {
-            return 0;
-        };
-        let rgba = img
-            .resize_exact(cx as u32, cy as u32, image::imageops::FilterType::Lanczos3)
-            .to_rgba8();
-        unsafe { crate::dib::create_premultiplied_dib(cx, cy, rgba.as_raw()) }
-            .map(|b| b.0 as isize)
-            .unwrap_or(0)
-    });
+    let mut cached = logo_slot().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = *cached {
+        return HBITMAP(h as *mut core::ffi::c_void);
+    }
+    let cx = unsafe { GetSystemMetrics(SM_CXMENUCHECK) }.max(16);
+    let cy = unsafe { GetSystemMetrics(SM_CYMENUCHECK) }.max(16);
+    let h = image::load_from_memory(MENU_LOGO_PNG)
+        .ok()
+        .map(|img| {
+            img.resize_exact(cx as u32, cy as u32, image::imageops::FilterType::Lanczos3)
+                .to_rgba8()
+        })
+        .and_then(|rgba| {
+            unsafe { crate::dib::create_premultiplied_dib(cx, cy, rgba.as_raw()) }.ok()
+        })
+        .map(|b| b.0 as isize)
+        .unwrap_or(0);
+    *cached = Some(h);
     HBITMAP(h as *mut core::ffi::c_void)
 }
 
-/// Menu-skinning shells whose own measurement pass clips a bitmap menu item to an
+/// Backing store for [`menu_logo`]'s cache: `Some(0)` means "tried and there is no
+/// logo" (a decode failure), `None` means "not built yet".
+fn logo_slot() -> &'static std::sync::Mutex<Option<isize>> {
+    static LOGO: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
+    &LOGO
+}
+
+/// Release the cached logo bitmap and clear the cache, so a later `menu_logo()` call
+/// (the next DLL load) rebuilds it rather than returning a freed handle. Called from
+/// `lib.rs`'s `dll_main` on `DLL_PROCESS_DETACH`.
+pub(crate) fn free_menu_logo() {
+    let mut cached = logo_slot().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = cached.take() {
+        if h != 0 {
+            unsafe {
+                let _ = DeleteObject(HBITMAP(h as *mut core::ffi::c_void).into());
+            }
+        }
+    }
+}
+
+/// Case-insensitive STEMS (base file name, no extension, lower-cased) of the
+/// menu-skinning shells whose own measurement pass clips a bitmap menu item to an
 /// icon-sized sliver. A skin is injected into `explorer.exe`, and the classic handler
 /// runs *inside* `explorer.exe`, so an in-process module check is the direct signal —
-/// no registry sniffing, no process enumeration, nothing that can go stale.
-const MENU_SKIN_MODULES: [PCWSTR; 3] = [
-    w!("StartAllBackX64.dll"),
-    w!("DarkMagicX64.dll"),
-    w!("ExplorerPatcher.amd64.dll"),
-];
+/// no registry sniffing, no process enumeration of OTHER processes, nothing that can
+/// go stale. Matched by stem rather than one fixed file name per architecture: the
+/// earlier x64-only exact names (`StartAllBackX64.dll`, `DarkMagicX64.dll`,
+/// `ExplorerPatcher.amd64.dll`) could never match on ARM64 Windows, where
+/// explorer.exe and the skins' own modules are ARM64 builds under different names —
+/// permanently shipping the sliver regression on a platform this project ships.
+const MENU_SKIN_STEMS: [&str; 3] = ["startallback", "darkmagic", "explorerpatcher"];
 
 /// Is a menu-skinning shell loaded into THIS process?
 ///
 /// Cached: the answer cannot change without the host process restarting, and this is
 /// consulted on every right-click. **A false answer here is safe by construction** —
 /// see the module header: `false` picks the bitmap item, which is exactly what every
-/// user gets today, so an unrecognized skin degrades to the status quo rather than to
-/// something new. That is why the list is a positive-match allowlist and never a
-/// blocklist.
+/// user gets today, so an unrecognized or unreadable skin degrades to the status quo
+/// rather than to something new. That is why the stem list is a positive-match
+/// allowlist and never a blocklist.
 fn menu_skin_loaded() -> bool {
     use std::sync::OnceLock;
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        MENU_SKIN_MODULES
-            .iter()
-            .any(|n| unsafe { GetModuleHandleW(*n) }.is_ok())
-    })
+    *CACHED.get_or_init(|| unsafe { any_loaded_module_stem_matches(&MENU_SKIN_STEMS) })
+}
+
+/// Enumerate this process's own loaded modules (Psapi) and test each base file
+/// name's stem (lower-cased, extension stripped) against `stems` with `starts_with`.
+/// Grows the module-handle buffer and retries a bounded number of times so a module
+/// loading between the sizing call and the fetch doesn't silently truncate the list;
+/// gives up and returns `false` — the safe default, see [`menu_skin_loaded`] — rather
+/// than looping forever.
+unsafe fn any_loaded_module_stem_matches(stems: &[&str]) -> bool {
+    let proc = GetCurrentProcess();
+    let mut count = 256usize; // generous starting guess; a real process rarely nears this
+    for _ in 0..4 {
+        let mut modules = vec![HMODULE::default(); count];
+        let Ok(bytes) = u32::try_from(
+            modules
+                .len()
+                .saturating_mul(core::mem::size_of::<HMODULE>()),
+        ) else {
+            return false;
+        };
+        let mut needed: u32 = 0;
+        if !K32EnumProcessModules(proc, modules.as_mut_ptr(), bytes, &mut needed).as_bool() {
+            return false;
+        }
+        let got = (needed as usize) / core::mem::size_of::<HMODULE>();
+        if got > modules.len() {
+            // The real list outgrew our guess; grow and retry instead of matching
+            // against a truncated read.
+            count = got;
+            continue;
+        }
+        modules.truncate(got);
+        for h in modules {
+            let mut name = [0u16; 260]; // MAX_PATH; a base file name never needs more
+            let len = K32GetModuleBaseNameW(proc, Some(h), &mut name) as usize;
+            let Some(base) = name.get(..len) else {
+                continue;
+            };
+            if stem_matches(&String::from_utf16_lossy(base), stems) {
+                return true;
+            }
+        }
+        return false;
+    }
+    false
+}
+
+/// Pure matching logic behind [`any_loaded_module_stem_matches`]: does `base_name`'s
+/// stem (lower-cased, extension stripped) start with one of `stems`? Split out so the
+/// case/extension handling is unit-testable without enumerating real process modules.
+fn stem_matches(base_name: &str, stems: &[&str]) -> bool {
+    let lower = base_name.to_lowercase();
+    let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
+    stems.iter().any(|s| stem.starts_with(s))
 }
 
 /// Compose the preview tile into a screen-compatible **DDB** for an `MF_BITMAP` item.
@@ -479,13 +594,22 @@ unsafe fn build_menu_into(
                     let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
                     sep_pending = false;
                 }
-                let _ = AppendMenuW(
+                if AppendMenuW(
                     parent,
                     MF_POPUP | MF_STRING,
                     sub.0 as usize,
                     &HSTRING::from(crate::i18n::t(title)),
-                );
-                has_emitted = true;
+                )
+                .is_ok()
+                {
+                    has_emitted = true;
+                } else {
+                    // `sub` only becomes `parent`'s responsibility once the attach
+                    // succeeds; an unattached popup is a USER object nothing else
+                    // frees, and attach failures cluster right at the 10,000-handle
+                    // process quota this would otherwise help exhaust.
+                    let _ = DestroyMenu(sub);
+                }
             }
             verbs::MenuItem::Verb(title, _) => {
                 if *next_leaf >= budget {
@@ -524,20 +648,35 @@ unsafe fn build_menu_into(
 impl ContextMenu {
     /// Build the preview on first demand. Both placements normally have a worker
     /// already running; this waits only for the small fixed budget. Idempotent:
-    /// builds at most once, caching into `self.preview`.
+    /// builds (or gives up) at most once, caching into `self.preview` on success or
+    /// setting `self.preview_failed` on failure — without the failure cache, every
+    /// `WM_DRAWITEM` repaint on an undecodable/timed-out file re-ran the whole
+    /// bounded attempt and re-spawned a worker, since only success was cached.
     unsafe fn ensure_preview(&self) -> bool {
         if self.preview.borrow().is_some() {
             return true;
         }
+        if self.preview_failed.get() {
+            return false;
+        }
         let path = self.paths.borrow().first().cloned();
-        if let Some(path) = path {
+        let built = path.and_then(|path| {
             let prefetched = self.preview_job.borrow_mut().take();
-            if let Some(p) = build_preview(&path, prefetched) {
+            // Reuse the `Initialize`-time metadata (see `preview_eligible`) instead
+            // of statting the file again here.
+            let meta = self.preview_meta.borrow_mut().take();
+            build_preview(&path, prefetched, meta)
+        });
+        match built {
+            Some(p) => {
                 *self.preview.borrow_mut() = Some(p);
-                return true;
+                true
+            }
+            None => {
+                self.preview_failed.set(true);
+                false
             }
         }
-        false
     }
 
     /// Decode the selection (if not already) and compose the tile bitmap for the
@@ -683,6 +822,7 @@ mod tests {
             h: 0,
             name: crate::wide("photo.jpg"),
             info: crate::wide("1500 x 1500 px - 96 KB"),
+            checker: true,
         };
         unsafe {
             let (iw, ih) = tile_size(&p);
@@ -742,6 +882,7 @@ mod tests {
                 h: 0,
                 name: crate::wide("photo.jpg"),
                 info: crate::wide("1500 x 1500 px - 96 KB"),
+                checker: true,
             };
             let bmp = preview_ddb(&p);
             assert!(!bmp.is_invalid(), "the caption-only tile must compose");
@@ -788,6 +929,37 @@ mod tests {
             menu_skin_loaded(),
             menu_skin_loaded(),
             "the host probe must be stable within a process"
+        );
+    }
+
+    /// Regression: the allowlist used to hold only exact x64/amd64 file
+    /// names, so an ARM64 build of the same skin (a different module name on that
+    /// architecture) could never match. The stem match must catch it regardless of
+    /// case or which architecture suffix the vendor picked.
+    #[test]
+    fn skin_stem_match_is_architecture_and_case_independent() {
+        assert!(stem_matches("StartAllBackX64.dll", &MENU_SKIN_STEMS));
+        assert!(
+            stem_matches("StartAllBackA64.dll", &MENU_SKIN_STEMS),
+            "an ARM64 StartAllBack module must match too"
+        );
+        assert!(stem_matches("ExplorerPatcher.ARM64.dll", &MENU_SKIN_STEMS));
+        assert!(stem_matches("DARKMAGICARM64.DLL", &MENU_SKIN_STEMS));
+        assert!(
+            !stem_matches("explorer.exe", &MENU_SKIN_STEMS),
+            "an unrelated module must not match (the allowlist's false-is-safe default)"
+        );
+    }
+
+    /// The two-part size budget must be one definition, not three independently
+    /// drifting copies: the file itself must fit `PREVIEW_MAX_BYTES`, and it
+    /// must also fit whatever the user configured as the overall max file size.
+    #[test]
+    fn within_preview_budget_enforces_both_caps() {
+        assert!(within_preview_budget(1024));
+        assert!(
+            !within_preview_budget(PREVIEW_MAX_BYTES + 1),
+            "must reject anything over the fixed menu-preview cap"
         );
     }
 

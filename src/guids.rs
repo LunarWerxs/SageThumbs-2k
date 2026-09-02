@@ -51,6 +51,22 @@ pub const CLSID_PREVIEW_HANDLER_STR: &str = "{2C8F1A3D-6B4E-4D9C-A1F2-7E3B5C8D0A
 pub const CLSID_PROPERTY_STORE: GUID = GUID::from_u128(0x5E1A7C92_8F3D_4B6A_A0E4_3C7B9D2F1A68);
 pub const CLSID_PROPERTY_STORE_STR: &str = "{5E1A7C92-8F3D-4B6A-A0E4-3C7B9D2F1A68}";
 
+// Windows-defined shell-extension category GUIDs. These are not ours; they are the fixed
+// `shellex` subkey names the shell reads a handler CLSID from, and the surrogate AppID the
+// preview host is registered under. One copy here so `register.rs`, `doctor.rs` and the
+// probe scripts (via `st2k register --status`) cannot drift apart on a hand-typed hex digit.
+
+/// The IThumbnailProvider handler category: `<assoc>\shellex\{E357FCCD-...}`.
+pub const THUMB_HANDLER_CATEGORY: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
+
+/// The IPreviewHandler handler category: `<assoc>\shellex\{8895b1c6-...}`.
+pub const PREVIEW_HANDLER_CATEGORY: &str = "{8895b1c6-b41f-4c1c-a562-0d564250836f}";
+
+/// The x64 preview-host surrogate AppID (`system32\prevhost.exe`), verified against the
+/// in-box TXT/RTF/Font preview handlers. Set as `AppID` on the preview CLSID so the shell
+/// loads it out of process, never inside `explorer.exe`.
+pub const PREVHOST_APPID: &str = "{6d2b5079-2f0b-48dd-ab7f-97cec514d30b}";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +111,31 @@ mod tests {
             CLSID_PROPERTY_STORE_STR,
             format!("{{{}}}", bare(CLSID_PROPERTY_STORE))
         );
+    }
+
+    /// The category and AppID strings are Windows-defined and hand-typed once; a wrong hex
+    /// digit would register under a `shellex` subkey the shell never reads, with no error.
+    #[test]
+    fn shell_category_guid_strings_are_well_formed() {
+        for s in [
+            THUMB_HANDLER_CATEGORY,
+            PREVIEW_HANDLER_CATEGORY,
+            PREVHOST_APPID,
+        ] {
+            assert_eq!(s.len(), 38, "{s}: a braced GUID is 38 chars");
+            assert!(s.starts_with('{') && s.ends_with('}'), "{s}");
+            let inner = &s[1..37];
+            let parts: Vec<&str> = inner.split('-').collect();
+            assert_eq!(
+                parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+                [8, 4, 4, 4, 12],
+                "{s}: group lengths"
+            );
+            assert!(
+                inner.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
+                "{s}: hex digits only"
+            );
+        }
     }
 
     /// Every CLSID literal in the package manifest must be one of the coclass GUIDs

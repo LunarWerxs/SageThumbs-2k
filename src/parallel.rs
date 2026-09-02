@@ -24,28 +24,45 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{
+    CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
+};
 
-/// Per-worker COM lifetime: `CoInitializeEx` on construction, `CoUninitialize` on
-/// drop — so each pool thread has a COM apartment for the WIC / WinRT decode tiers
-/// and tears it down cleanly when it exits.
-struct ComGuard(bool);
+/// Per-thread COM lifetime: `CoInitializeEx` on construction, `CoUninitialize` on
+/// drop — so a pool worker (or any other thread that needs one) has a COM
+/// apartment for the WIC / WinRT decode tiers / shell object access, and tears it
+/// down cleanly when it exits.
+///
+/// Returned as `Option` rather than always constructing: `CoInitializeEx` returning
+/// `RPC_E_CHANGED_MODE` (the thread already has an apartment of the OTHER kind)
+/// adds no ref, so there is nothing for `Drop` to balance and no guard should exist
+/// — `None` in that case, not a guard whose `Drop` would call `CoUninitialize`
+/// without a matching init. `S_OK` / `S_FALSE` both DO add a ref (a fresh init, or
+/// a repeat init of the SAME apartment kind on this thread) and return `Some`.
+pub struct ComGuard;
 
 impl ComGuard {
-    fn new() -> Self {
-        // S_OK / S_FALSE both mean "this thread now holds a COM ref" → balance them
-        // with CoUninitialize. RPC_E_CHANGED_MODE (already an MTA thread) does NOT
-        // add a ref, so it must NOT be balanced — track that with the bool.
-        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        ComGuard(hr.is_ok())
+    /// Apartment-threaded COM — the WIC / WinRT decode tiers and shell-object
+    /// access all expect this on the calling thread.
+    pub fn sta() -> Option<ComGuard> {
+        Self::init(COINIT_APARTMENTTHREADED)
+    }
+
+    /// Multithreaded COM — for a worker that never touches STA-only shell
+    /// interfaces and doesn't want an implicit per-thread message queue.
+    pub fn mta() -> Option<ComGuard> {
+        Self::init(COINIT_MULTITHREADED)
+    }
+
+    fn init(model: windows::Win32::System::Com::COINIT) -> Option<ComGuard> {
+        let hr = unsafe { CoInitializeEx(None, model) };
+        hr.is_ok().then_some(ComGuard)
     }
 }
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
-        if self.0 {
-            unsafe { CoUninitialize() };
-        }
+        unsafe { CoUninitialize() };
     }
 }
 
@@ -79,7 +96,7 @@ where
     // Single-item / single-core: skip the thread machinery entirely (still init
     // COM so the decode tiers work, and still fire the progress callback).
     if workers == 1 {
-        let _com = ComGuard::new();
+        let _com = ComGuard::sta();
         return items
             .iter()
             .enumerate()
@@ -96,7 +113,7 @@ where
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
-                    let _com = ComGuard::new();
+                    let _com = ComGuard::sta();
                     // Each worker accumulates (index, result) for the items it
                     // grabs; results are reordered by index after the join, so a
                     // work-stealing (out-of-order) run still returns input order.
@@ -132,4 +149,59 @@ where
     R: Send,
 {
     map_indexed(items, 0, f, || {})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ComGuard;
+
+    /// A fresh thread has no COM apartment yet, so the FIRST init on it must add a
+    /// ref (`Some`) — this is the case `Drop` has to balance with `CoUninitialize`.
+    #[test]
+    fn sta_succeeds_on_a_fresh_thread() {
+        let guard = std::thread::spawn(ComGuard::sta).join().unwrap();
+        assert!(
+            guard.is_some(),
+            "the first CoInitializeEx on a fresh thread must add a ref"
+        );
+    }
+
+    /// Re-initializing the SAME apartment kind on a thread that already has one
+    /// returns S_FALSE, which STILL adds a ref (must still be balanced) — so a
+    /// second `sta()` call on a thread that already called `sta()` must also be
+    /// `Some`, not `None`.
+    #[test]
+    fn sta_still_returns_some_on_a_repeat_init_of_the_same_kind() {
+        let (first_some, second_some) = std::thread::spawn(|| {
+            let first = ComGuard::sta();
+            let second = ComGuard::sta();
+            (first.is_some(), second.is_some())
+        })
+        .join()
+        .unwrap();
+        assert!(first_some, "the first init must add a ref");
+        assert!(
+            second_some,
+            "a same-kind repeat init (S_FALSE) also adds a ref"
+        );
+    }
+
+    /// Asking for the OTHER apartment kind on a thread already committed to one
+    /// hits `RPC_E_CHANGED_MODE`, which adds NO ref — the guard must be `None` so
+    /// `Drop` never fires an unbalanced `CoUninitialize`.
+    #[test]
+    fn mta_after_sta_on_the_same_thread_adds_no_ref() {
+        let (sta_some, mta_some) = std::thread::spawn(|| {
+            let sta = ComGuard::sta();
+            let mta = ComGuard::mta();
+            (sta.is_some(), mta.is_some())
+        })
+        .join()
+        .unwrap();
+        assert!(sta_some, "the STA init on a fresh thread must add a ref");
+        assert!(
+            !mta_some,
+            "asking for the other apartment kind on the same thread must not add a ref"
+        );
+    }
 }

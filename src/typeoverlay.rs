@@ -166,8 +166,11 @@ pub fn sync(on: bool) {
     let Ok(classes) = user_classes() else {
         return;
     };
+    // One settings snapshot for the whole sweep; the per-extension lookup below is then an
+    // in-memory hit instead of a full ini parse per format in portable mode.
+    let fmt = crate::settings::format_enabled_snapshot();
     for (ext, _) in formats::FORMATS {
-        if on && crate::settings::format_enabled(ext) {
+        if on && fmt.enabled(ext) {
             apply_ext(&classes, ext);
         } else {
             remove_ext(&classes, ext);
@@ -191,8 +194,9 @@ pub fn remove_all() {
 /// work out from the symptom.
 pub fn foreign_overlays() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
+    let fmt = crate::settings::format_enabled_snapshot();
     for (ext, _) in formats::FORMATS {
-        if !crate::settings::format_enabled(ext) {
+        if !fmt.enabled(ext) {
             continue;
         }
         for progid in progids_for(ext) {

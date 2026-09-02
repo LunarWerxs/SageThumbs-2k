@@ -31,12 +31,23 @@ impl IShellExtInit_Impl for ContextMenu_Impl {
             let obj = pdtobj.ok()?;
             let paths = unsafe { hdrop_paths(obj)? };
             let preview_mode = settings::menu_preview();
-            let eligible = settings::menu_enabled()
+            // One registry open for all three menu-gate flags (see `settings::MenuGate`)
+            // instead of a separate one for `menu_enabled` here.
+            let gate = settings::menu_gate();
+            // Also captures the file's `Metadata` so `ensure_preview`/`build_preview`
+            // don't stat it a second time later.
+            let meta = if gate.enabled
                 && preview_mode != 0
                 && paths.len() == 1
                 && verbs::is_image(&paths[0])
-                && preview_size_ok(&paths[0]);
+            {
+                preview_metadata(&paths[0])
+            } else {
+                None
+            };
+            let eligible = meta.is_some();
             self.preview_eligible.set(eligible);
+            *self.preview_meta.borrow_mut() = meta;
             *self.preview_job.borrow_mut() = if eligible {
                 start_menu_thumb(&paths[0])
             } else {
@@ -113,14 +124,21 @@ unsafe fn insert_quick_verb_groups(
                 };
                 let mut n = start;
                 build_menu_into(qsub, children, idcmdfirst, &mut n, budget, vis);
-                let _ = InsertMenuW(
+                if InsertMenuW(
                     hmenu,
                     pos,
                     MF_BYPOSITION | MF_POPUP | MF_STRING,
                     qsub.0 as usize,
                     &HSTRING::from(crate::i18n::t(title)),
-                );
-                pos += 1;
+                )
+                .is_ok()
+                {
+                    pos += 1;
+                } else {
+                    // `qsub` never became `hmenu`'s responsibility; an unattached
+                    // popup is a USER object nothing else frees.
+                    let _ = DestroyMenu(qsub);
+                }
             }
             verbs::QuickItem::Leaf(title, idx) => {
                 // A top-level leaf reusing its submenu command id: same global leaf
@@ -197,13 +215,22 @@ impl ContextMenu_Impl {
                 vis,
             );
         }
-        let _ = InsertMenuW(
+        if InsertMenuW(
             hmenu,
             pos,
             MF_BYPOSITION | MF_POPUP | MF_STRING,
             hsub.0 as usize,
             &HSTRING::from("SageThumbs 2K"),
-        );
+        )
+        .is_err()
+        {
+            // Nothing under `hsub` ever became visible — the preview item (if any)
+            // and every verb inside it go away with the popup, so report no preview
+            // inserted rather than shifting the next handler's command-id range for
+            // an item that isn't on the menu (see `consumed_ids`'s doc comment).
+            let _ = DestroyMenu(hsub);
+            return (pos, false);
+        }
         // Brand icon in front of "SageThumbs 2K" (hbmpItem, alpha-blended).
         let logo = menu_logo();
         if !logo.is_invalid() {
@@ -237,18 +264,23 @@ impl IContextMenu_Impl for ContextMenu_Impl {
             if uflags & CMF_DEFAULTONLY != 0 {
                 return S_OK; // no default action to add
             }
-            if !settings::menu_enabled() {
-                return S_OK; // menu disabled in Options
+            // One registry open for all three menu-gate flags, reused below instead of
+            // a separate `settings::menu_enabled/all_file_types/quick_verbs()` call each.
+            let gate = settings::menu_gate();
+            if !gate.enabled {
+                return S_OK; // menu disabled in Settings
             }
             let paths = self.paths.borrow();
             let (any_image, condensed, audio_only) = selection_kinds(&paths);
             // "Show on all file types": on an UNSUPPORTED selection, fall through to a
             // CONDENSED menu (file-agnostic utilities only) when the user opted in;
             // otherwise add nothing, as before.
-            if condensed && !settings::menu_all_file_types() {
+            if condensed && !gate.all_file_types {
                 return S_OK; // nothing for non-image selections
             }
-            let leaves_n = verbs::leaves().len();
+            // `leaf_count()`, not `leaves().len()`: the latter allocates and fills the
+            // whole ~46-entry Vec on every right-click just to read its length.
+            let leaves_n = verbs::leaf_count() as usize;
             let (budget, avail) = command_budget(idcmdfirst, idcmdlast, leaves_n);
             if budget == 0 {
                 return S_OK;
@@ -259,6 +291,7 @@ impl IContextMenu_Impl for ContextMenu_Impl {
             // InvokeCommand mapping stays stable even if leaves were clamped).
             self.preview_cmd.set(None);
             *self.preview.borrow_mut() = None;
+            self.preview_failed.set(false);
             let mode = settings::menu_preview();
             // For a 1-file selection, `any_image` already == is_image(paths[0]).
             let single = paths.len() == 1 && any_image;
@@ -300,7 +333,7 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 }
 
                 // 2) Quick-verb groups (see `insert_quick_verb_groups`).
-                if settings::menu_quick_verbs() && !condensed && !audio_only {
+                if gate.quick_verbs && !condensed && !audio_only {
                     pos = insert_quick_verb_groups(hmenu, pos, idcmdfirst, budget, &vis);
                 }
 

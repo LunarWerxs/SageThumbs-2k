@@ -26,9 +26,9 @@ use windows::Win32::Foundation::{
     COLORREF, E_FAIL, E_POINTER, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject,
-    EndPaint, FillRect, InvalidateRect, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO,
-    BITMAPINFOHEADER, DIB_RGB_COLORS, HALFTONE, HBITMAP, PAINTSTRUCT, SRCCOPY,
+    BeginPaint, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect,
+    InvalidateRect, SelectObject, SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP, PAINTSTRUCT,
+    SRCCOPY,
 };
 use windows::Win32::System::Com::IStream;
 use windows::Win32::System::Ole::{IObjectWithSite, IObjectWithSite_Impl};
@@ -52,37 +52,29 @@ use windows_implement::implement;
 const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 /// Posted (with `lparam` = `Box::into_raw(Box<(DecodedRgba, bg)>)`) to hand a freshly-decoded
 /// image to the window-owning UI thread, which builds the DIB + repaints THERE. Rendering must
-/// happen on the window's own thread — doing the make_dib / RenderData swap from the COM thread
+/// happen on the window's own thread — doing the DIB build / RenderData swap from the COM thread
 /// would race the UI thread's WM_PAINT (use-after-free of the old RenderData).
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
 use crate::streamsrc::{self, StreamSource};
 use crate::{decode, safety, settings, stream_name};
 
-/// Wall-clock budget for a single preview decode, enforced OFF the host thread (see
-/// [`decode_preview_budgeted`]) so a slow/exotic decode can never freeze prevhost's
-/// message pump. The image/WIC fast tiers finish far under this; the ImageMagick
-/// subprocess long tail is the only thing that can approach it. On expiry the pane
-/// shows empty and the worker finishes + drops its result on its own. Sized above a
-/// typical magick decode (~1–4s) so normal exotic previews still render, but well
-/// under the ~20s the host could otherwise be frozen for.
-const PREVIEW_DECODE_BUDGET: core::time::Duration = core::time::Duration::from_secs(12);
+/// Decodes this host may have in flight at once (see [`safety::LeasePool`]). `prevhost`
+/// hosts one pane, so a couple of slots cover a decode still running past its budget when
+/// the next selection arrives; four leaves room for a host that runs several panes in one
+/// process (the integration tests do), and a fifth selection while all four are stuck gets
+/// an empty pane instead of a fifth detached worker.
+const PREVIEW_DECODE_SLOTS: usize = 4;
 
-/// Longest edge the pane can actually use, and the ceiling handed to the decoders. Matches
-/// the 1024 the stream cascade scales to (see `DoPreview`), so the two cannot drift.
-const PREVIEW_TARGET_EDGE: u32 = 1024;
+/// A decode that never returns loses its slot after this long (five budgets), so a stalled
+/// ImageMagick child or a hung read cannot blank the pane for the life of the host.
+const PREVIEW_DECODE_LEASE_MS: u64 = 60_000;
+
+static DECODE_SLOTS: safety::LeasePool<PREVIEW_DECODE_SLOTS> =
+    safety::LeasePool::new(PREVIEW_DECODE_LEASE_MS);
 
 /// Our child window class name (registered once per process).
 const CLASS_NAME: windows::core::PCWSTR = windows::core::w!("SageThumbs2KPreview");
-
-/// True when the OS *app* theme is dark (`AppsUseLightTheme == 0`).
-fn theme_is_dark() -> bool {
-    windows_registry::CURRENT_USER
-        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-        .and_then(|k| k.get_u32("AppsUseLightTheme"))
-        .map(|v| v == 0)
-        .unwrap_or(false)
-}
 
 /// Background the preview pane uses for the current OS theme. The Windows file-open dialog hands
 /// the preview pane WHITE even in a dark dialog, which left us glaring white; defaulting to the OS
@@ -90,7 +82,7 @@ fn theme_is_dark() -> bool {
 /// pane and the letterbox around an aspect-fit image blend in. COLORREF (0x00BBGGRR); 0x202020 ≈
 /// the Win11 dark content surface.
 fn theme_default_bg() -> u32 {
-    if theme_is_dark() {
+    if safety::apps_use_dark_theme() {
         0x0020_2020
     } else {
         0x00FF_FFFF
@@ -256,35 +248,66 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 // 1024 px matches the PDF/contact-sheet rasterize target below —
                 // crisp at any pane size, and it is what the streaming EXR tier
                 // scales to as it reads.
-                unsafe { streamsrc::stream_source(stream, cfg.max_file_bytes, 1024, "DoPreview") }
+                unsafe {
+                    streamsrc::stream_source(
+                        stream,
+                        &cfg,
+                        crate::safety::PREVIEW_TARGET_EDGE,
+                        "DoPreview",
+                    )
+                }
             };
 
             // A cascade miss (oversized past every rescue, artless audio, undecodable
-            // video) leaves the pane empty — same terminal state as a failed decode.
+            // video) leaves the pane empty — same terminal state as a failed decode. Each
+            // miss leaves one always-on `ERROR` line naming the file, so a "blank pane"
+            // report can be read from the log without `Debug=1`.
             let decoded = match source {
                 // A video frame arrives already decoded by Media Foundation.
                 Ok(StreamSource::Frame(frame)) => Some(frame),
                 // Decode bytes OFF the host thread under a wall-clock budget so a
                 // slow/exotic decode can't freeze the preview host's message pump.
                 Ok(StreamSource::Bytes(bytes)) => {
-                    safety::log_debug(&format!(
-                        "DoPreview: read {} bytes from stream",
-                        bytes.len()
-                    ));
-                    decode_preview_budgeted(bytes)
+                    let len = bytes.len();
+                    safety::log_debug(&format!("DoPreview: read {len} bytes from stream"));
+                    match decode_preview_budgeted(bytes) {
+                        Ok(img) => Some(img),
+                        Err(why) => {
+                            safety::log_error(&format!(
+                                "DoPreview: decode failed for {} ({len} bytes): {why}",
+                                self.stream_label()
+                            ));
+                            None
+                        }
+                    }
                 }
                 // A generic archive's contact sheet: the covers are ordinary
                 // JPEG/PNG members decoded by the CHEAP tiers only (no subprocess,
-                // no video/PDF), so no wall-clock budget is needed. 1024px edge
+                // no video/PDF), so no wall-clock budget is needed. The pane's edge
                 // matches the PDF rasterize target — crisp at any pane size.
                 Ok(StreamSource::Covers(covers)) => {
                     safety::log_debug(&format!("DoPreview: {} archive covers", covers.len()));
-                    decode::thumbnail_from_covers(&covers, 1024)
-                        .ok()
-                        .and_then(|d| image::RgbaImage::from_raw(d.width, d.height, d.rgba))
-                        .map(image::DynamicImage::ImageRgba8)
+                    match decode::thumbnail_from_covers(&covers, safety::PREVIEW_TARGET_EDGE) {
+                        Ok(d) => image::RgbaImage::from_raw(d.width, d.height, d.rgba)
+                            .map(image::DynamicImage::ImageRgba8),
+                        Err(e) => {
+                            safety::log_error(&format!(
+                                "DoPreview: contact sheet failed for {} hr={:#010x}",
+                                self.stream_label(),
+                                e.code().0
+                            ));
+                            None
+                        }
+                    }
                 }
-                Err(_) => None,
+                Err(e) => {
+                    safety::log_error(&format!(
+                        "DoPreview: stream_source failed for {} hr={:#010x}",
+                        self.stream_label(),
+                        e.code().0
+                    ));
+                    None
+                }
             };
             match &decoded {
                 Some(img) => safety::log_debug(&format!(
@@ -357,7 +380,7 @@ impl IPreviewHandlerVisuals_Impl for PreviewHandler_Impl {
             // "Agrees with the theme" = light colour in light mode, or dark colour in dark mode,
             // i.e. host-is-light XOR theme-is-dark is false → the two booleans differ. (`a != b`,
             // which clippy prefers over the equivalent `a == !b`.)
-            let bg = if colorref_is_light(color.0) != theme_is_dark() {
+            let bg = if colorref_is_light(color.0) != safety::apps_use_dark_theme() {
                 color.0
             } else {
                 theme_default_bg()
@@ -382,6 +405,16 @@ impl IPreviewHandlerVisuals_Impl for PreviewHandler_Impl {
 impl PreviewHandler_Impl {
     fn child(&self) -> HWND {
         HWND(self.hwnd.get() as *mut c_void)
+    }
+
+    /// The stream's reported name for a log line, or a placeholder when it has none.
+    /// `try_borrow`: a log line must never turn into a `RefCell` panic under `panic = "abort"`.
+    fn stream_label(&self) -> String {
+        self.stream
+            .try_borrow()
+            .ok()
+            .and_then(|b| b.as_ref().and_then(|s| unsafe { stream_name(s) }))
+            .unwrap_or_else(|| "<unnamed stream>".to_string())
     }
 
     /// Create the child window if we have a parent and don't already have a LIVE one.
@@ -430,44 +463,55 @@ impl PreviewHandler_Impl {
         // is INSTANT instead of the ~133s timeout caused by prevhost's idle COM thread never pumping
         // window messages (measured). The thread holds a `ModuleRef`, pinning the DLL for the whole
         // window+thread lifetime (the wndproc lives in this DLL), so it can't unload underneath it.
-        let handle = std::thread::spawn(move || {
-            #[allow(clippy::default_constructed_unit_structs)]
-            let _module = crate::ModuleRef::default();
-            ensure_class();
-            let hwnd = unsafe {
-                CreateWindowExW(
-                    WINDOW_EX_STYLE(0),
-                    CLASS_NAME,
-                    windows::core::w!(""),
-                    WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-                    r.left,
-                    r.top,
-                    (r.right - r.left).max(0),
-                    (r.bottom - r.top).max(0),
-                    Some(HWND(parent_isize as *mut c_void)),
-                    None,
-                    Some(HINSTANCE(hinst_isize as *mut c_void)),
-                    None,
-                )
-            };
-            match hwnd {
-                Ok(h) => {
-                    unsafe { _ = ShowWindow(h, SW_SHOW) };
-                    let _ = tx.send(h.0 as isize);
-                    // Pump THIS window's messages until it's destroyed (WM_NCDESTROY posts WM_QUIT).
-                    let mut msg = MSG::default();
-                    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
-                        unsafe {
-                            _ = TranslateMessage(&msg);
-                            DispatchMessageW(&msg);
+        // `Builder::spawn`, never `thread::spawn`: the latter panics when the OS refuses a
+        // thread, which under `panic = "abort"` takes prevhost down; here it is an empty pane.
+        let spawned = std::thread::Builder::new()
+            .name("st2k-preview-ui".to_string())
+            .spawn(move || {
+                #[allow(clippy::default_constructed_unit_structs)]
+                let _module = crate::ModuleRef::default();
+                ensure_class();
+                let hwnd = unsafe {
+                    CreateWindowExW(
+                        WINDOW_EX_STYLE(0),
+                        CLASS_NAME,
+                        windows::core::w!(""),
+                        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+                        r.left,
+                        r.top,
+                        (r.right - r.left).max(0),
+                        (r.bottom - r.top).max(0),
+                        Some(HWND(parent_isize as *mut c_void)),
+                        None,
+                        Some(HINSTANCE(hinst_isize as *mut c_void)),
+                        None,
+                    )
+                };
+                match hwnd {
+                    Ok(h) => {
+                        unsafe { _ = ShowWindow(h, SW_SHOW) };
+                        let _ = tx.send(h.0 as isize);
+                        // Pump THIS window's messages until it's destroyed (WM_NCDESTROY posts WM_QUIT).
+                        let mut msg = MSG::default();
+                        while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+                            unsafe {
+                                _ = TranslateMessage(&msg);
+                                DispatchMessageW(&msg);
+                            }
                         }
                     }
+                    Err(_) => {
+                        let _ = tx.send(0);
+                    }
                 }
-                Err(_) => {
-                    let _ = tx.send(0);
-                }
+            });
+        let handle = match spawned {
+            Ok(h) => h,
+            Err(e) => {
+                safety::log_error(&format!("preview: could not start the UI thread: {e}"));
+                return false;
             }
-        });
+        };
         let hwnd = rx.recv().unwrap_or(0);
         if hwnd == 0 {
             return false;
@@ -503,7 +547,7 @@ impl PreviewHandler_Impl {
     }
 
     /// Hand the cached decoded pixels to the window-OWNING UI thread, which builds the composited
-    /// DIB + repaints THERE. The make_dib / RenderData swap MUST happen on the window's own thread:
+    /// DIB + repaints THERE. The DIB build / RenderData swap MUST happen on the window's own thread:
     /// doing it from the COM thread would race the UI thread's WM_PAINT (use-after-free of the old
     /// RenderData). No-op until the window exists.
     ///
@@ -662,7 +706,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let p = lparam.0 as *mut (DecodedRgba, u32);
             if !p.is_null() {
                 let (dec, bg) = *Box::from_raw(p);
-                if let Some(hbmp) = make_dib(dec.w as i32, dec.h as i32, &dec.rgba, bg) {
+                // `opaque: None`: nothing upstream has scanned the alpha channel, so the
+                // shared compositor works it out itself (the same scan the private copy did).
+                let hbmp =
+                    safety::composite_rgba_over_bg(dec.w as i32, dec.h as i32, &dec.rgba, bg, None);
+                if let Some(hbmp) = hbmp {
                     let rd = Box::new(RenderData {
                         hbmp,
                         iw: dec.w as i32,
@@ -741,162 +789,67 @@ unsafe fn draw(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC, rc: &RECT) {
     }
 }
 
-/// Build a top-down 32bpp DIB of `rgba` composited over the opaque `bg`
-/// (`COLORREF` 0x00BBGGRR), so painting is a plain `StretchBlt`. `None` on a
-/// malformed size / allocation failure.
-unsafe fn make_dib(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Option<HBITMAP> {
-    if iw <= 0 || ih <= 0 {
-        return None;
-    }
-    let px = (iw as usize).checked_mul(ih as usize)?;
-    if rgba.len() < px.checked_mul(4)? {
-        return None;
-    }
-    let mut bmi = BITMAPINFO::default();
-    bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = iw;
-    bmi.bmiHeader.biHeight = -ih; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-    let mut bits: *mut c_void = core::ptr::null_mut();
-    let hbmp = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-    if bits.is_null() {
-        _ = DeleteObject(hbmp.into());
-        return None;
-    }
-    let (bg_r, bg_g, bg_b) = (bg & 0xFF, (bg >> 8) & 0xFF, (bg >> 16) & 0xFF);
-    let dst = core::slice::from_raw_parts_mut(bits as *mut u8, px * 4);
-    // "Opaque pixels copy through" was true of the arithmetic and false of the cost: the loop
-    // below still ran three multiplies and three divides per pixel to arrive at its own input.
-    // A photo is always fully opaque, so that was 36 million of each on a 12 MP image, for
-    // nothing. Ask once, then take the plain swizzle when there is no transparency to honour.
-    // Measured in the Quick preview, which had the identical loop: 48 ms -> 17 ms at 12 MP.
-    if (0..px).all(|i| rgba[i * 4 + 3] == 255) {
-        for i in 0..px {
-            dst[i * 4] = rgba[i * 4 + 2]; // B
-            dst[i * 4 + 1] = rgba[i * 4 + 1]; // G
-            dst[i * 4 + 2] = rgba[i * 4]; // R
-            dst[i * 4 + 3] = 255;
-        }
-        return Some(hbmp);
-    }
-    for i in 0..px {
-        let r = rgba[i * 4] as u32;
-        let g = rgba[i * 4 + 1] as u32;
-        let b = rgba[i * 4 + 2] as u32;
-        let a = rgba[i * 4 + 3] as u32;
-        // out = (src*a + bg*(255-a)) / 255, rounded.
-        let comp = |s: u32, d: u32| (((s * a) + (d * (255 - a)) + 127) / 255) as u8;
-        dst[i * 4] = comp(b, bg_b); // B
-        dst[i * 4 + 1] = comp(g, bg_g); // G
-        dst[i * 4 + 2] = comp(r, bg_r); // R
-        dst[i * 4 + 3] = 255;
-    }
-    Some(hbmp)
-}
-
-/// Run [`decode::decode_preview`] on a detached worker thread, returning its result
-/// only if it finishes within [`PREVIEW_DECODE_BUDGET`]. On timeout returns `None` and
-/// leaves the worker running — it sends into a now-dropped channel (the send simply
-/// errors) and exits on its own — so the calling host thread is blocked for at most the
-/// budget. Safe off the apartment thread: `DynamicImage` is `Send` and the worker
-/// touches only the pure decoder, no COM/GDI/HWND state.
-fn decode_preview_budgeted(bytes: Vec<u8>) -> Option<image::DynamicImage> {
+/// Run [`decode::decode_preview_capped`] on a budgeted worker (see
+/// [`safety::spawn_budgeted`]), returning the image only if it finishes within
+/// [`safety::PREVIEW_DECODE_BUDGET`]. The `Err` text names which of the three ways it can
+/// fail happened (no free slot, the decoder's own error, the budget expiring) so `DoPreview`
+/// can log it. On expiry the worker keeps running on its own, holding its DLL pin and its
+/// [`DECODE_SLOTS`] lease until it finishes or the lease runs out; the host thread is blocked
+/// for at most the budget. Safe off the apartment thread: `DynamicImage` is `Send` and the
+/// worker touches only the pure decoder, no GDI/HWND state.
+fn decode_preview_budgeted(bytes: Vec<u8>) -> std::result::Result<image::DynamicImage, String> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        // Pin the DLL for this detached worker's whole lifetime. On a timeout we return but
-        // leave this thread running, and `MODULE_REFS`/`DllCanUnloadNow` does NOT count it —
-        // so when the host releases the preview object (the dialog CLOSING), the DLL could
-        // unload while this thread is still executing its code → crash-on-close. Mirrors
-        // `verbs::actions::run_action_detached`. `ModuleRef::default()`'s side effect IS the
-        // `dll_add_ref`; clippy's "use `ModuleRef`" would skip it.
-        #[allow(clippy::default_constructed_unit_structs)]
-        let _module = crate::ModuleRef::default();
-        // This worker MUST hold a COM apartment: the WIC decode tier (HEIC / camera-RAW /
-        // JPEG-XR — exactly the phone-photo & camera formats) calls `CoCreateInstance` and
-        // fails with `CoInitialize has not been called (0x800401F0)` on a bare thread. When
-        // that happened the preview came up BLANK (white pane) and fell through to the slow
-        // ImageMagick subprocess — a pegged core for nothing. MTA matches the shell's own
-        // out-of-process thumbnail host and the apartment the video (Media Foundation) and
-        // PDF (WinRT) tiers self-init, so every tier resolves here. Balance `CoUninitialize`
-        // only when we actually took a ref (S_OK/S_FALSE); `RPC_E_CHANGED_MODE` did not.
-        // Mirrors the per-worker guard in `parallel.rs` / `propstore.rs`.
-        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        // Cap what the decoders render at the pane's own target (the same 1024 the stream
-        // cascade scales to). Without it a 76 MP JPEG 2000 spent 15.6s producing a 4096px
-        // surface we immediately threw away, blew the budget below, and left the pane
-        // blank on a perfectly good file (issue #11).
-        let out = decode::decode_preview_capped(&bytes, PREVIEW_TARGET_EDGE).ok();
-        // `out` is a plain `DynamicImage`; all WIC/MF objects are already dropped inside
-        // `decode_preview`, so the apartment holds no live COM ref at teardown.
-        if inited {
-            unsafe { CoUninitialize() };
+    // The lease is taken HERE and moved into the worker, so a refused `Builder::spawn` drops
+    // it (freeing the slot) exactly like a normal worker exit would. A burst of selections
+    // waits for a slot rather than being refused on the spot: the wait is bounded by one
+    // decode budget (the slot holders are bounded by the same budget, and a hung one loses
+    // its lease), so the worker cap still holds and only a pane whose earlier decodes are
+    // genuinely stuck ends up empty.
+    let slot_deadline = std::time::Instant::now() + safety::PREVIEW_DECODE_BUDGET;
+    let lease = loop {
+        if let Some(lease) = DECODE_SLOTS.acquire() {
+            break lease;
         }
-        let _ = tx.send(out);
-    });
-    rx.recv_timeout(PREVIEW_DECODE_BUDGET).ok().flatten()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::make_dib;
-    use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP, HBITMAP};
-
-    /// Read the top-left BGRA quad out of a DIB-section HBITMAP, then free it.
-    unsafe fn first_px(hbmp: HBITMAP) -> [u8; 4] {
-        let mut bm = BITMAP::default();
-        let n = GetObjectW(
-            hbmp.into(),
-            core::mem::size_of::<BITMAP>() as i32,
-            Some(&mut bm as *mut _ as *mut core::ffi::c_void),
-        );
-        assert!(
-            n != 0 && !bm.bmBits.is_null(),
-            "make_dib must produce a real DIB section"
-        );
-        let px = core::slice::from_raw_parts(bm.bmBits as *const u8, 4);
-        let out = [px[0], px[1], px[2], px[3]];
-        let _ = DeleteObject(hbmp.into());
-        out
-    }
-
-    /// Untrusted decoded dimensions must be rejected (None), never deref/overflow —
-    /// this runs in prevhost on attacker-influenced sizes.
-    #[test]
-    fn make_dib_rejects_bad_dims_without_crashing() {
-        unsafe {
-            assert!(make_dib(0, 5, &[0u8; 64], 0).is_none(), "zero width");
-            assert!(make_dib(5, 0, &[0u8; 64], 0).is_none(), "zero height");
-            assert!(make_dib(-3, 4, &[0u8; 64], 0).is_none(), "negative width");
-            assert!(
-                make_dib(2, 2, &[0u8; 4], 0).is_none(),
-                "buffer too short (2x2 needs 16 bytes)"
-            );
-            assert!(
-                make_dib(i32::MAX, i32::MAX, &[0u8; 4], 0).is_none(),
-                "w*h overflow guard"
-            );
+        if std::time::Instant::now() >= slot_deadline {
+            return Err(format!(
+                "all {PREVIEW_DECODE_SLOTS} decode slots are held by earlier decodes still running"
+            ));
         }
-    }
-
-    /// The alpha-over-background compositing math (the bit `WM_PAINT` later StretchBlts).
-    /// `bg` is a COLORREF 0x00BBGGRR; 0x00FF_0000 is opaque blue.
-    #[test]
-    fn make_dib_composites_alpha_over_background() {
-        unsafe {
-            // Opaque red over blue copies straight through -> BGRA [0,0,255,255].
-            let red = make_dib(1, 1, &[255, 0, 0, 255], 0x00FF_0000).unwrap();
-            assert_eq!(first_px(red), [0, 0, 255, 255], "opaque red");
-
-            // 50% red over blue: R ≈ 200*128/255 ≈ 100, B ≈ 255*127/255 ≈ 127.
-            let half = make_dib(1, 1, &[200, 0, 0, 128], 0x00FF_0000).unwrap();
-            let [b, g, r, a] = first_px(half);
-            assert_eq!((g, a), (0, 255), "no green; DIB opaque");
-            assert!((r as i32 - 100).abs() <= 2, "R composited ~100, got {r}");
-            assert!((b as i32 - 127).abs() <= 2, "B composited ~127, got {b}");
-        }
-    }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let outcome = safety::spawn_budgeted(
+        "st2k-preview-decode",
+        safety::PREVIEW_DECODE_BUDGET,
+        move || {
+            let _lease = lease;
+            // This worker MUST hold a COM apartment: the WIC decode tier (HEIC / camera-RAW /
+            // JPEG-XR — exactly the phone-photo & camera formats) calls `CoCreateInstance` and
+            // fails with `CoInitialize has not been called (0x800401F0)` on a bare thread.
+            // When that happened the preview came up BLANK (white pane) and fell through to
+            // the slow ImageMagick subprocess — a pegged core for nothing. MTA matches the
+            // shell's own out-of-process thumbnail host and the apartment the video (Media
+            // Foundation) and PDF (WinRT) tiers self-init, so every tier resolves here.
+            // Balance `CoUninitialize` only when we actually took a ref (S_OK/S_FALSE);
+            // `RPC_E_CHANGED_MODE` did not. Mirrors the per-worker guard in `parallel.rs`.
+            let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+            // Cap what the decoders render at the pane's own target (the same edge the
+            // stream cascade scales to). Without it a 76 MP JPEG 2000 spent 15.6s producing
+            // a 4096px surface we immediately threw away, blew the budget, and left the pane
+            // blank on a perfectly good file (issue #11).
+            let out = decode::decode_preview_capped(&bytes, safety::PREVIEW_TARGET_EDGE)
+                .map_err(|e| e.to_string());
+            // `out` is a plain `DynamicImage`; all WIC/MF objects are already dropped inside
+            // the decoder, so the apartment holds no live COM ref at teardown.
+            if inited {
+                unsafe { CoUninitialize() };
+            }
+            out
+        },
+    );
+    outcome.unwrap_or_else(|| {
+        Err(format!(
+            "decode did not finish within {:?} (or the host is over its abandoned-worker cap)",
+            safety::PREVIEW_DECODE_BUDGET
+        ))
+    })
 }

@@ -15,7 +15,7 @@ use core::cell::RefCell;
 use windows::core::{Error, Ref, Result};
 use windows::Win32::Foundation::{E_FAIL, E_POINTER};
 use windows::Win32::Graphics::Gdi::HBITMAP;
-use windows::Win32::System::Com::IStream;
+use windows::Win32::System::Com::{IStream, STATFLAG_NONAME, STATSTG};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithStream, IInitializeWithStream_Impl,
 };
@@ -69,19 +69,64 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
         pdwalpha: *mut WTS_ALPHATYPE,
     ) -> Result<()> {
         safety::guard(|| {
-            let r = self.get_thumbnail_inner(cx, phbmp, pdwalpha);
+            // One HKCU key open for ALL four settings this call needs (master
+            // switch, size cap, thumb edge, embedded pref) instead of ~5 separate
+            // opens — see `settings::thumb_settings`. Still a fresh read per request,
+            // so Settings changes take effect immediately for the next thumbnail.
+            let cfg = settings::thumb_settings();
+
+            // Option: master switch. Returning a failure lets the shell fall
+            // back to the file's default icon. Checked BEFORE the failure logging
+            // below: a disabled provider fails every call by design, and that must
+            // not write an `ERROR` line per file.
+            if !cfg.enabled {
+                safety::log_debug("GetThumbnail: disabled via EnableThumbs=0");
+                return Err(Error::from(E_FAIL));
+            }
+
+            let r = self.get_thumbnail_inner(cx, phbmp, pdwalpha, &cfg);
             if let Err(e) = &r {
-                // Leave a one-line breadcrumb so a failed thumbnail isn't
-                // diagnostically silent even with Debug=1 (the shell swallows
-                // the HRESULT and just falls back to the default icon).
-                safety::log_debug(&format!("GetThumbnail: failed hr={:#010x}", e.code().0));
+                // Always-on breadcrumb: the shell swallows the HRESULT and just falls
+                // back to the default icon, so without this line the most common report
+                // ("X shows the generic icon") produced an empty log.
+                self.log_failure(e);
             }
             r
         })
     }
 }
 
+/// The stream's total size via `IStream::Stat`, for the failure log line only. `None` when
+/// the stream does not report one.
+unsafe fn stream_len(stream: &IStream) -> Option<u64> {
+    let mut stat = STATSTG::default();
+    stream.Stat(&mut stat, STATFLAG_NONAME).ok()?;
+    Some(stat.cbSize)
+}
+
 impl ThumbnailProvider_Impl {
+    /// One `ERROR` line for a thumbnail that could not be produced: the HRESULT plus the
+    /// stream's extension and size, so the log names what failed without `Debug=1`.
+    /// `try_borrow`: a log line must never become a `RefCell` panic under `panic = "abort"`.
+    fn log_failure(&self, e: &Error) {
+        let (ext, size) = self
+            .stream
+            .try_borrow()
+            .ok()
+            .and_then(|b| {
+                b.as_ref()
+                    .map(|s| unsafe { (streamsrc::stream_extension(s), stream_len(s)) })
+            })
+            .unwrap_or((None, None));
+        safety::log_error(&format!(
+            "GetThumbnail: failed hr={:#010x} ext={} size={}",
+            e.code().0,
+            ext.as_deref().unwrap_or("?"),
+            size.map(|n| n.to_string())
+                .unwrap_or_else(|| "?".to_string()),
+        ));
+    }
+
     /// Every registered-format tier declined a `StreamSource::Bytes` payload. A few
     /// registered formats (Wavefront RLA, PSX TIM, MacPaint, Dr Halo CUT, …) have no
     /// signature ImageMagick can sniff, so the nameless stdin pipe could never reach their
@@ -145,6 +190,7 @@ impl ThumbnailProvider_Impl {
         cx: u32,
         phbmp: *mut HBITMAP,
         pdwalpha: *mut WTS_ALPHATYPE,
+        cfg: &settings::ThumbSettings,
     ) -> Result<()> {
         // Reject null out-params up front (mirrors DllGetClassObject) so the
         // later writes are provably safe and no HBITMAP is allocated/leaked.
@@ -154,19 +200,6 @@ impl ThumbnailProvider_Impl {
         unsafe {
             *phbmp = HBITMAP::default();
             *pdwalpha = WTSAT_UNKNOWN;
-        }
-
-        // One HKCU key open for ALL four settings this call needs (master
-        // switch, size cap, thumb edge, embedded pref) instead of ~5 separate
-        // opens — see `settings::thumb_settings`. Still a fresh read per request,
-        // so Settings changes take effect immediately for the next thumbnail.
-        let cfg = settings::thumb_settings();
-
-        // Option: master switch. Returning a failure lets the shell fall
-        // back to the file's default icon.
-        if !cfg.enabled {
-            safety::log_debug("GetThumbnail: disabled via EnableThumbs=0");
-            return Err(Error::from(E_FAIL));
         }
 
         // Option: cap the generated edge at the user's max (default 256,
@@ -180,7 +213,7 @@ impl ThumbnailProvider_Impl {
         let source = {
             let borrow = self.stream.borrow();
             let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
-            unsafe { streamsrc::stream_source(stream, cfg.max_file_bytes, cx, "GetThumbnail") }?
+            unsafe { streamsrc::stream_source(stream, cfg, cx, "GetThumbnail") }?
         };
 
         // A168: unlike `pdf.rs`/`ocr.rs`, this decode runs INLINE on the calling COM thread —
@@ -195,7 +228,7 @@ impl ThumbnailProvider_Impl {
         // it. Adding a second worker thread here would duplicate that host-side budget for a
         // hang the OS-level isolation already survives, at the cost of a second COM-apartment
         // hazard on whatever the tiered decoders (WIC/magick) assume about the calling thread.
-        let img = self.decode_thumb_source(source, cx, &cfg)?;
+        let img = self.decode_thumb_source(source, cx, cfg)?;
         safety::log_debug(&format!(
             "GetThumbnail: decoded {}x{}",
             img.width, img.height

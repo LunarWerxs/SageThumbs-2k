@@ -77,7 +77,7 @@ pub(crate) unsafe fn caption_width_of(p: &Preview) -> i32 {
 #[doc(hidden)]
 pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
     unsafe {
-        let Some(p) = build_preview(path, None) else {
+        let Some(p) = build_preview(path, None, None) else {
             return false;
         };
         let text_w = caption_width_of(&p);
@@ -272,7 +272,9 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
     if !p.hbm.is_invalid() && p.w > 0 && p.h > 0 {
         // Subtle checkerboard behind the thumbnail so transparent images stay visible
         // against the flat menu colour (default on; toggleable in Settings).
-        if settings::preview_checker() {
+        // Snapshotted once when the preview was built (`Preview::checker`), not
+        // re-read here — this runs on every `WM_DRAWITEM` repaint.
+        if p.checker {
             let (c0, c1) = checker_shades(bg);
             let cr = RECT {
                 left: bx,

@@ -18,11 +18,13 @@ use core::ffi::c_void;
 use windows_core::{GUID, HRESULT};
 
 /// The loader calls `DllMain` on attach/detach. We forward the HMODULE (as a raw
-/// pointer-sized `isize`, so this crate needs no `windows` Win32 types) to the core,
-/// which stashes it to resolve our own install path later. Always returns TRUE.
+/// pointer-sized `isize`, so this crate needs no `windows` Win32 types) and the
+/// `lpReserved` pointer to the core, which stashes the module handle to resolve our own
+/// install path later and, on a `FreeLibrary` detach (null `lpReserved`), releases the
+/// per-load GDI objects it cached. Always returns TRUE.
 #[no_mangle]
-pub extern "system" fn DllMain(hmodule: isize, reason: u32, _reserved: *mut c_void) -> i32 {
-    st2k_core::dll_main(hmodule, reason);
+pub extern "system" fn DllMain(hmodule: isize, reason: u32, reserved: *mut c_void) -> i32 {
+    st2k_core::dll_main(hmodule, reason, reserved);
     1
 }
 
