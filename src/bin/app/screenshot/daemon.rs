@@ -53,6 +53,9 @@ const IDM_OCR: usize = 105;
 /// Periodic update check (only this already-resident process runs it — no scheduled task).
 const UPDATE_TIMER_ID: usize = 9;
 /// Re-attempt every 6h; `update::lazy_check_worker` throttles the actual network hit to 1/day.
+/// That same worker thread is also where the licence entitlement re-check piggybacks (see
+/// the call to `license::refresh_entitlement` inside `lazy_check_worker`) — this timer is
+/// the only cadence either one needs.
 const UPDATE_TIMER_MS: u32 = 6 * 60 * 60 * 1000;
 /// Periodic re-assertion of the global hotkey registrations. A `RegisterHotKey` binding can be
 /// silently dropped while THIS process keeps running — most notably across sleep/resume, session

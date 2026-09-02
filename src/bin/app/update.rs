@@ -217,7 +217,21 @@ fn check_throttled() -> Option<String> {
 /// [`check_throttled`] on a background thread — the resident screenshot helper's timer path.
 pub(crate) fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F) {
     std::thread::spawn(move || {
-        if let Some(tag) = check_throttled() {
+        let tag = check_throttled();
+        // The licence entitlement re-check rides this same worker thread and cadence rather
+        // than getting a timer, task, or setting of its own: this is the one place the daily
+        // update check actually does its network work off the UI thread on a long-lived
+        // process (the piggyback launcher's `--update-check` one-shot runs synchronously and
+        // exits immediately, so it stays excluded — see `spawn_due_check` / `main.rs`).
+        // `refresh_entitlement` throttles its own network hit internally (~6 h) and is a
+        // no-op for a machine with no reason to care about a business seat, so calling it
+        // every time this worker fires — daemon startup, its periodic re-arm, or whichever
+        // ordinary launch next finds the daily cache stale — is correct. Per its own
+        // contract it fails open and returns `None` on any error (offline, rejected,
+        // unparsable) without ever surfacing anything to the user, so the result is
+        // discarded here exactly like a skipped (not-due) check — nothing to log or react to.
+        let _ = crate::license::refresh_entitlement();
+        if let Some(tag) = tag {
             on_newer(tag);
         }
     });
