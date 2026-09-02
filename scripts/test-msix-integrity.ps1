@@ -15,17 +15,14 @@ if (-not $version) { throw 'could not determine test MSIX version' }
 $scratch = Join-Path (
     [IO.Path]::GetTempPath()
 ) ("st2k-msix-integrity-" + [guid]::NewGuid().ToString('N'))
-# Certificates this run mints get cleaned up by THUMBPRINT, never by re-scanning the shared
-# "CN=SageThumbs2K" subject: two concurrent -Lint runs (the documented 10-20-session norm
-# here) used to snapshot every cert with that subject and delete whatever was "new" in
-# `finally`, so whichever run finished first deleted the OTHER run's still-in-use signing
-# certificate out of the store mid-test. The subject itself cannot become per-run (it has to
-# stay exactly "CN=SageThumbs2K" - AppxManifest.xml's static Publisher attribute, which this
-# script does not own, must equal the signing certificate's Subject or every MSIX assertion
-# in this file fails); `make-msix.ps1 -FreshCertificate` fixes the actual race instead, by
-# minting a certificate dedicated to THIS call rather than reusing/sharing whatever the store
-# happens to already hold under that subject.
-$script:mintedThumbprints = @()
+# The signing certificate is the developer's reusable "CN=SageThumbs2K" one, exactly as a
+# real build uses it, and it is LEFT in the store afterwards. Deleting "new" certificates in
+# `finally` (the old cleanup) raced concurrent -Lint runs (the documented 10-20-session norm
+# here): whichever run finished first deleted the other run's still-in-use signing
+# certificate mid-test. Minting a dedicated certificate per run avoided that race but made
+# every run need a temporary machine-wide trust entry, which only an elevated shell can
+# add, so the gate failed for every unelevated developer. Reusing one persistent
+# certificate, trusted once (the installer adds it to TrustedPeople), needs neither.
 $script:passed = 0
 . (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
@@ -87,11 +84,10 @@ function Set-ZipTextEntry {
 
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
-    & (Join-Path $root 'scripts\packaging\make-msix.ps1') -OutDir $scratch -FreshCertificate *> $null
+    & (Join-Path $root 'scripts\packaging\make-msix.ps1') -OutDir $scratch *> $null
     if ($LASTEXITCODE -ne 0) { throw 'test MSIX build/sign failed' }
     $msix = Join-Path $scratch 'SageThumbs2K.msix'
     $certificate = Join-Path $scratch 'SageThumbs2K.cer'
-    $script:mintedThumbprints += ([Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)).Thumbprint
 
     Assert-Passes 'real signature, signer certificate, and manifest identity' {
         Assert-ReleaseMsixPackage `
@@ -101,11 +97,8 @@ try {
     }
 
     $arm64Out = Join-Path $scratch 'arm64'
-    & (Join-Path $root 'scripts\packaging\make-msix.ps1') -OutDir $arm64Out -Architecture arm64 -FreshCertificate *> $null
+    & (Join-Path $root 'scripts\packaging\make-msix.ps1') -OutDir $arm64Out -Architecture arm64 *> $null
     if ($LASTEXITCODE -ne 0) { throw 'ARM64 test MSIX build/sign failed' }
-    $script:mintedThumbprints += ([Security.Cryptography.X509Certificates.X509Certificate2]::new(
-        (Join-Path $arm64Out 'SageThumbs2K.cer')
-    )).Thumbprint
     Assert-Passes 'ARM64 signature, signer certificate, and manifest identity' {
         Assert-ReleaseMsixPackage `
             -Path (Join-Path $arm64Out 'SageThumbs2K.msix') `
@@ -203,14 +196,6 @@ try {
 } finally {
     if (Test-Path -LiteralPath $scratch) {
         [IO.Directory]::Delete($scratch, $true)
-    }
-    # By THUMBPRINT only - this run's own -FreshCertificate certs, never a subject-based scan
-    # that could sweep up a concurrent run's still-live certificate or a real dev/release cert.
-    foreach ($thumbprint in ($script:mintedThumbprints | Select-Object -Unique)) {
-        $storeCert = Get-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -ErrorAction SilentlyContinue
-        if ($storeCert) {
-            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force
-        }
     }
 }
 
