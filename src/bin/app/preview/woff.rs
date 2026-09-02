@@ -40,26 +40,29 @@ struct WoffTable {
 
 /// Read one table-directory entry and decompress (or copy) its data.
 ///
-/// `total` is the whole-font size already checked against the 64 MiB cap in
-/// [`to_sfnt`]; capping the per-table decompression by `orig.min(total)` too
-/// keeps a small WOFF with a small `total` from decompressing far past that
-/// cap via an inflated per-table `orig` field.
-fn read_woff_table(bytes: &[u8], entry_offset: usize, total: usize) -> Option<WoffTable> {
+/// `remaining` is how much of the whole-font size budget ([`to_sfnt`]'s 64 MiB-capped
+/// `total`) is still unspent. A table may not claim more decompressed bytes than that,
+/// which bounds the SUM across all tables — not just each one individually. Without it,
+/// up to `MAX_TABLES` directory entries can all point at the same small deflate stream
+/// and each declare `orig` near `total`, reconstructing tens of GiB from a tiny file.
+fn read_woff_table(bytes: &[u8], entry_offset: usize, remaining: &mut usize) -> Option<WoffTable> {
     let tag = be32(bytes, entry_offset)?;
     let off = be32(bytes, entry_offset + 4)? as usize;
     let comp = be32(bytes, entry_offset + 8)? as usize;
     let orig = be32(bytes, entry_offset + 12)? as usize;
     let checksum = be32(bytes, entry_offset + 16)?;
+    if orig > *remaining {
+        return None; // this table alone would overrun the whole font's declared size
+    }
     let raw = bytes.get(off..off.checked_add(comp)?)?;
     // compLength == origLength means the table was stored, not deflated.
     let data = if comp == orig {
         raw.to_vec()
     } else {
-        let cap = orig.min(total);
-        let mut out = Vec::with_capacity(cap);
+        let mut out = Vec::with_capacity(orig);
         use std::io::Read;
         flate2::read::ZlibDecoder::new(raw)
-            .take(cap as u64)
+            .take(orig as u64)
             .read_to_end(&mut out)
             .ok()?;
         if out.len() != orig {
@@ -67,6 +70,8 @@ fn read_woff_table(bytes: &[u8], entry_offset: usize, total: usize) -> Option<Wo
         }
         out
     };
+    // Charge the 4-byte-aligned placed size, matching `assemble_sfnt`'s layout.
+    *remaining = remaining.saturating_sub(orig.next_multiple_of(4));
     Some(WoffTable {
         tag,
         checksum,
@@ -79,8 +84,13 @@ fn read_woff_table(bytes: &[u8], entry_offset: usize, total: usize) -> Option<Wo
 /// reject the result).
 fn read_woff_tables(bytes: &[u8], num_tables: usize, total: usize) -> Option<Vec<WoffTable>> {
     let mut tables = Vec::with_capacity(num_tables);
+    // The output sfnt is a 12-byte header + 16 bytes per directory entry + the table data, so
+    // only `total` minus that fixed overhead is available for the tables themselves. Thread the
+    // remaining budget through every entry so the cumulative decompressed size can never exceed
+    // the header's own declared (and 64 MiB-capped) `total`.
+    let mut remaining = total.saturating_sub(12 + num_tables.saturating_mul(16));
     for i in 0..num_tables {
-        tables.push(read_woff_table(bytes, HDR + i * DIR_ENTRY, total)?);
+        tables.push(read_woff_table(bytes, HDR + i * DIR_ENTRY, &mut remaining)?);
     }
     tables.sort_by_key(|t| t.tag);
     Some(tables)
@@ -265,6 +275,38 @@ mod tests {
         assert!(
             to_sfnt(&w).is_none(),
             "a table's own origLength let decompression run past the checked total cap"
+        );
+    }
+
+    #[test]
+    fn the_sum_of_table_sizes_cannot_exceed_the_declared_total() {
+        // MAX_TABLES directory entries all pointing at ONE tiny deflate stream, each declaring a
+        // 64 MiB original length against a 64 MiB total. Per table that "fits" the old per-table
+        // cap; summed it is 32 GiB. The cumulative budget must refuse it up front rather than
+        // reconstruct any of it.
+        const N: usize = MAX_TABLES;
+        let total: u32 = 64 * 1024 * 1024;
+        let stream = deflate(b"tiny");
+        let stream_off = HDR + N * DIR_ENTRY;
+        let mut v = b"wOFF".to_vec();
+        v.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // flavor
+        v.extend_from_slice(&0u32.to_be_bytes()); // length
+        v.extend_from_slice(&(N as u16).to_be_bytes()); // numTables
+        v.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        v.extend_from_slice(&total.to_be_bytes()); // totalSfntSize
+        v.extend_from_slice(&[0; 24]);
+        assert_eq!(v.len(), HDR);
+        for i in 0..N {
+            v.extend_from_slice(&(0x1000_0000u32 + i as u32).to_be_bytes()); // distinct tag
+            v.extend_from_slice(&(stream_off as u32).to_be_bytes()); // same offset
+            v.extend_from_slice(&(stream.len() as u32).to_be_bytes()); // compLength
+            v.extend_from_slice(&total.to_be_bytes()); // origLength = 64 MiB each
+            v.extend_from_slice(&0u32.to_be_bytes()); // checksum
+        }
+        v.extend_from_slice(&stream);
+        assert!(
+            to_sfnt(&v).is_none(),
+            "tables summing past the declared total must be refused, not summed to 32 GiB"
         );
     }
 

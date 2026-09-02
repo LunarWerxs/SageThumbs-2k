@@ -13,11 +13,22 @@ fn same_file(a: Option<&str>, b: Option<&str>) -> bool {
     matches!((a, b), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b))
 }
 
-/// Handle a `WM_COPYDATA` command from the daemon (or the single-instance forwarder).
+/// True for a UNC path — `\\server\share\...` or its extended form `\\?\UNC\server\share\...`
+/// — but NOT `\\?\C:\...`, the extended-length prefix for an ordinary local drive path.
+fn is_unc_path(path: &str) -> bool {
+    let upper = path.to_ascii_uppercase();
+    upper.starts_with(r"\\?\UNC\") || (path.starts_with(r"\\") && !path.starts_with(r"\\?\"))
+}
+
+/// Handle a `WM_COPYDATA` command from the daemon (or the single-instance forwarder). The
+/// window class this listens on is receivable from any same-desktop process, so a UNC path
+/// (`\\host\share\...`) is rejected before it ever reaches `load` — opening one starts an
+/// SMB/NTLM handshake with whatever host it names.
 pub(in crate::preview) unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
     let Some((cmd, path)) = parse_command(lparam) else {
         return;
     };
+    let path = path.filter(|p| !is_unc_path(p));
     let st = &*state(hwnd);
     let in_grace = GetTickCount64().saturating_sub(st.born.get()) < SETTLE_CLOSE_MS;
     match cmd {
@@ -57,6 +68,7 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
         Btn::Close => request_close(hwnd),
         Btn::Pin => on_btn_pin(hwnd, st),
         Btn::Copy => on_btn_copy(path),
+        Btn::SavePage => on_btn_save_page(hwnd, st, path),
         Btn::Ocr => on_btn_ocr(st, path),
         Btn::Info => on_btn_info(path),
         Btn::Upload => on_btn_upload(path),
@@ -132,6 +144,43 @@ unsafe fn on_btn_copy(path: Option<String>) {
     }
 }
 
+/// Save the currently-shown PDF page / animation frame as a standalone PNG (`Btn::SavePage` /
+/// Ctrl+S). Self-guarding: returns immediately when the file isn't navigated to a page or frame
+/// (i.e. `btn_visible` would hide the button), so the Ctrl+S accelerator is safe to wire
+/// unconditionally rather than duplicating the visibility check.
+unsafe fn on_btn_save_page(hwnd: HWND, st: &ViewerState, path: Option<String>) {
+    let Some(p) = path else { return };
+    let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
+    let anim_frame = {
+        let frames = st.frames.borrow();
+        (frames.len() > 1).then(|| st.cur_frame.get())
+    };
+    if pdf_page.is_none() && anim_frame.is_none() {
+        return;
+    }
+    let dir = std::path::Path::new(&p)
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = std::path::Path::new(&p)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "page".to_string());
+    let suggested = match (pdf_page, anim_frame) {
+        (Some(pg), _) => format!("{stem}_page{}.png", pg + 1),
+        (_, Some(fr)) => format!("{stem}_frame{}.png", fr + 1),
+        _ => format!("{stem}.png"),
+    };
+    let Some(dest) = crate::win::pick_save_png(hwnd, &dir, &suggested) else {
+        return; // user cancelled the picker
+    };
+    if !save_shown_image(&p, pdf_page, anim_frame, &dest) {
+        sagethumbs2k_core::safety::log(&format!(
+            "preview: could not save the shown page/frame from {p} to {dest}"
+        ));
+    }
+}
+
 /// `--ocr-keep`, NOT `--ocr`: the capture path hands the helper a throwaway PNG it is expected
 /// to delete, and this is the user's own file.
 ///
@@ -176,7 +225,7 @@ fn on_btn_upload(path: Option<String>) {
 unsafe fn on_btn_open(hwnd: HWND, path: Option<String>) {
     let Some(p) = path else { return };
     let w = crate::win::wide(&p);
-    ShellExecuteW(
+    let ret = ShellExecuteW(
         Some(hwnd),
         w!("open"),
         PCWSTR(w.as_ptr()),
@@ -184,12 +233,25 @@ unsafe fn on_btn_open(hwnd: HWND, path: Option<String>) {
         PCWSTR::null(),
         SW_SHOWNORMAL,
     );
-    // Open hands off to the default app, then closes. Route through `request_close` (not a
-    // direct `DestroyWindow`): a reentrant click while a WebView2 `create` is pumping its own
-    // message loop would otherwise free `ViewerState` (WM_DESTROY) while that create still
-    // holds `hwnd`. `request_close` defers the destroy until the create returns, same as every
-    // other close path.
-    request_close(hwnd);
+    // ShellExecuteW returns an HINSTANCE-like value > 32 on success; <= 32 is one of its
+    // SE_ERR_* codes (e.g. a deleted or unreachable file). Only close the viewer when the
+    // launch actually started — closing unconditionally used to lose the preview with no
+    // error shown for a file that no longer opens.
+    if shell_execute_succeeded(ret.0 as usize) {
+        // Open hands off to the default app, then closes. Route through `request_close` (not
+        // a direct `DestroyWindow`): a reentrant click while a WebView2 `create` is pumping
+        // its own message loop would otherwise free `ViewerState` (WM_DESTROY) while that
+        // create still holds `hwnd`. `request_close` defers the destroy until the create
+        // returns, same as every other close path.
+        request_close(hwnd);
+    }
+}
+
+/// True for a `ShellExecuteW` return value that indicates success (`> 32`); everything `<= 32`
+/// is one of its `SE_ERR_*` codes. Split out so the failure-vs-success branch has something to
+/// unit-test without actually launching a process.
+fn shell_execute_succeeded(code: usize) -> bool {
+    code > 32
 }
 
 /// The shell "openas" verb shows the Open With dialog (no `SHOpenWithDialog` needed).
@@ -286,5 +348,35 @@ mod tests {
         assert!(!same_file(None, Some("a")));
         assert!(!same_file(Some("a"), None));
         assert!(!same_file(None, None));
+    }
+
+    #[test]
+    fn is_unc_path_rejects_a_bare_unc_share() {
+        assert!(is_unc_path(r"\\attacker\share\x.jpg"));
+    }
+
+    #[test]
+    fn is_unc_path_rejects_the_extended_unc_prefix() {
+        assert!(is_unc_path(r"\\?\UNC\attacker\share\x.jpg"));
+        assert!(is_unc_path(r"\\?\unc\attacker\share\x.jpg")); // case-insensitive
+    }
+
+    #[test]
+    fn is_unc_path_accepts_an_ordinary_local_path() {
+        assert!(!is_unc_path(r"C:\Users\me\photo.jpg"));
+    }
+
+    #[test]
+    fn is_unc_path_accepts_the_extended_local_prefix() {
+        // `\\?\C:\...` is a local extended-length path, not a UNC share — must not be rejected.
+        assert!(!is_unc_path(r"\\?\C:\Users\me\photo.jpg"));
+    }
+
+    #[test]
+    fn shell_execute_succeeded_uses_the_32_threshold() {
+        assert!(!shell_execute_succeeded(2)); // SE_ERR_FNF: file not found
+        assert!(!shell_execute_succeeded(32));
+        assert!(shell_execute_succeeded(33));
+        assert!(shell_execute_succeeded(42));
     }
 }

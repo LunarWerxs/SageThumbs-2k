@@ -16,11 +16,13 @@ pub(in crate::preview) const RUST_KW: &[&str] = &[
 pub(in crate::preview) const PY_KW: &[&str] = &[
     "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
     "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is",
-    "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "try", "while",
-    "with", "yield", "self", "print", "len", "range", "int", "str", "float", "bool", "list",
-    "dict", "set", "tuple",
+    "lambda", "match", "case", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+    "try", "while", "with", "yield", "self", "print", "len", "range", "int", "str", "float",
+    "bool", "list", "dict", "set", "tuple",
 ];
 pub(in crate::preview) const JS_KW: &[&str] = &[
+    "abstract",
+    "as",
     "async",
     "await",
     "break",
@@ -30,6 +32,7 @@ pub(in crate::preview) const JS_KW: &[&str] = &[
     "const",
     "continue",
     "debugger",
+    "declare",
     "default",
     "delete",
     "do",
@@ -47,10 +50,17 @@ pub(in crate::preview) const JS_KW: &[&str] = &[
     "in",
     "instanceof",
     "interface",
+    "keyof",
     "let",
+    "namespace",
+    "never",
     "new",
     "null",
     "of",
+    "override",
+    "private",
+    "protected",
+    "public",
     "return",
     "static",
     "super",
@@ -62,6 +72,7 @@ pub(in crate::preview) const JS_KW: &[&str] = &[
     "type",
     "typeof",
     "undefined",
+    "unknown",
     "var",
     "void",
     "while",
@@ -675,4 +686,17 @@ pub(in crate::preview) const SWIFT_KW: &[&str] = &[
     "Dictionary",
     "Optional",
     "Void",
+];
+
+pub(in crate::preview) const BATCH_KW: &[&str] = &[
+    "call", "cd", "cls", "copy", "del", "dir", "do", "echo", "else", "endlocal", "erase", "exist",
+    "exit", "for", "goto", "if", "md", "mkdir", "move", "not", "pause", "pushd", "popd", "rd",
+    "ren", "rename", "rmdir", "set", "setlocal", "shift", "start", "type", "xcopy",
+];
+
+pub(in crate::preview) const PERL_KW: &[&str] = &[
+    "and", "bless", "die", "do", "each", "elsif", "else", "eq", "eval", "for", "foreach", "ge",
+    "gt", "if", "keys", "last", "le", "local", "lt", "my", "ne", "next", "not", "or", "our",
+    "package", "pop", "print", "push", "qw", "redo", "ref", "require", "return", "shift", "sub",
+    "undef", "unless", "until", "use", "values", "while",
 ];

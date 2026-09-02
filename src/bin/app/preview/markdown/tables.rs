@@ -38,9 +38,10 @@ pub(super) unsafe fn draw_table(
     // out every character of every cell. Both symptoms are the same defect.
     //
     // So there is a readable floor, and columns past what fits at that floor are reported rather
-    // than drawn. Same philosophy as the MAX_ROWS / MAX_COLS caps this file already has: a
-    // preview shows you what a file is, and a promise it cannot keep is worth less than an
-    // honest limit.
+    // than drawn. Same philosophy as `parse.rs`'s MAX_TABLE_ROWS / MAX_TABLE_COLS caps on the
+    // Builder that produced this table's `header`/`rows` in the first place (this file itself
+    // has no such cap — this is a DISPLAY-width truncation, not a memory-bound one): a preview
+    // shows you what a file is, and a promise it cannot keep is worth less than an honest limit.
     let ncols = columns_that_fit(all_cols, avail, 2 * sc(6) + sc(46));
     let dropped_cols = all_cols - ncols;
     let vpad = sc(6);

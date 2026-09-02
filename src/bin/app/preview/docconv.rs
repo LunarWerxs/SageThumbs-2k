@@ -6,6 +6,10 @@
 //! Conversion is bounded (row/cell caps with a truncation note), read-only, and lossy by
 //! design (it's a PREVIEW, not an editor).
 
+// Shared with `highlight::lex`'s own UTF-8 stepping so a multibyte-boundary fix only has to
+// happen once.
+use super::highlight::utf8_len;
+
 /// A converted document: the synthesized markdown plus any notebook cell attachments
 /// (image bytes that live base64-encoded INSIDE the file — the loader pre-decodes them into
 /// the viewer's image cache under their `attachment:<cell>/<name>` keys).
@@ -70,16 +74,19 @@ fn sniff_delim(text: &str) -> u8 {
 /// leading `#` column carries the 1-based data-row number (QuickLook parity: it lets a user
 /// cross-reference a row in a large file), and runs through `md_cell` like every other cell.
 fn delimited_table(text: &str, delim: u8) -> String {
-    let (rows, total_rows) = parse_delimited_rows(text, delim);
+    let (rows, total_rows, max_cols_seen) = parse_delimited_rows(text, delim);
     if rows.is_empty() {
         return "*(empty file)*".to_string();
     }
-    render_row_table(text.len(), &rows, total_rows)
+    render_row_table(text.len(), &rows, total_rows, max_cols_seen)
 }
 
 /// End the current field: push it onto `row` (capped at [`MAX_COLS`], past which extra fields
-/// are silently dropped rather than growing the row unbounded).
-fn end_field(row: &mut Vec<String>, field: &mut String) {
+/// are dropped rather than growing the row unbounded) and count it toward `field_count`, the
+/// caller's uncapped tally of how many fields this record actually had — the only way to learn
+/// later how far past [`MAX_COLS`] a wide row went, since the dropped fields themselves are gone.
+fn end_field(row: &mut Vec<String>, field: &mut String, field_count: &mut usize) {
+    *field_count += 1;
     if row.len() < MAX_COLS {
         row.push(std::mem::take(field));
     } else {
@@ -113,8 +120,10 @@ fn step_in_quotes(b: &[u8], i: usize, c: u8, field: &mut String, in_q: &mut bool
 
 /// One `\n`/`\r` byte outside quotes: closes the current record (finishing its trailing field,
 /// bumping `total_rows`, and pushing `row` unless the [`MAX_ROWS`] cap was already hit) unless
-/// the record is empty (a blank line contributes nothing). Absorbs a following `\n` when `c` was
-/// `\r` (CRLF as one line break). Returns the number of bytes consumed (1, or 2 for CRLF).
+/// the record is empty (a blank line contributes nothing). Rolls the record's `field_count` into
+/// `max_cols_seen` and resets it for the next record. Absorbs a following `\n` when `c` was `\r`
+/// (CRLF as one line break). Returns the number of bytes consumed (1, or 2 for CRLF).
+#[allow(clippy::too_many_arguments)] // one CSV-record-boundary step; every param is load-bearing
 fn step_newline(
     b: &[u8],
     i: usize,
@@ -123,10 +132,14 @@ fn step_newline(
     field: &mut String,
     rows: &mut Vec<Vec<String>>,
     total_rows: &mut usize,
+    field_count: &mut usize,
+    max_cols_seen: &mut usize,
 ) -> usize {
     let crlf = c == b'\r' && b.get(i + 1) == Some(&b'\n');
     if !field.is_empty() || !row.is_empty() {
-        end_field(row, field);
+        end_field(row, field, field_count);
+        *max_cols_seen = (*max_cols_seen).max(*field_count);
+        *field_count = 0;
         *total_rows += 1;
         if rows.len() < MAX_ROWS {
             rows.push(std::mem::take(row));
@@ -142,14 +155,17 @@ fn step_newline(
 }
 
 /// RFC-4180-ish parse (quoted fields, `""` escapes, embedded delimiters/newlines) into
-/// capped `(rows, total_data_rows_seen)`. `total_rows` can exceed `rows.len()` when the
-/// [`MAX_ROWS`] cap dropped some.
-fn parse_delimited_rows(text: &str, delim: u8) -> (Vec<Vec<String>>, usize) {
+/// capped `(rows, total_data_rows_seen, widest_row_field_count)`. `total_rows` can exceed
+/// `rows.len()` when the [`MAX_ROWS`] cap dropped some; `widest_row_field_count` can exceed
+/// [`MAX_COLS`] when some row's fields were dropped by the column cap instead.
+fn parse_delimited_rows(text: &str, delim: u8) -> (Vec<Vec<String>>, usize, usize) {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut field = String::new();
     let mut in_q = false;
     let mut total_rows = 0usize;
+    let mut field_count = 0usize;
+    let mut max_cols_seen = 0usize;
     let b = text.as_bytes();
     let mut i = 0;
     while i < b.len() {
@@ -160,28 +176,47 @@ fn parse_delimited_rows(text: &str, delim: u8) -> (Vec<Vec<String>>, usize) {
             in_q = true;
             1
         } else if c == delim {
-            end_field(&mut row, &mut field);
+            end_field(&mut row, &mut field, &mut field_count);
             1
         } else if c == b'\n' || c == b'\r' {
-            step_newline(b, i, c, &mut row, &mut field, &mut rows, &mut total_rows)
+            step_newline(
+                b,
+                i,
+                c,
+                &mut row,
+                &mut field,
+                &mut rows,
+                &mut total_rows,
+                &mut field_count,
+                &mut max_cols_seen,
+            )
         } else {
             push_char_bytes(&mut field, b, i)
         };
     }
     if !field.is_empty() || !row.is_empty() {
-        end_field(&mut row, &mut field);
+        end_field(&mut row, &mut field, &mut field_count);
+        max_cols_seen = max_cols_seen.max(field_count);
         total_rows += 1;
         if rows.len() < MAX_ROWS {
             rows.push(row);
         }
     }
-    (rows, total_rows)
+    (rows, total_rows, max_cols_seen)
 }
 
 /// Render already-parsed `rows` (first = header) as a GFM pipe table with a leading `#`
-/// row-number column and a truncation note when `total_rows` exceeds what was kept.
-/// `text_len_hint` sizes the output buffer; it need not be exact.
-fn render_row_table(text_len_hint: usize, rows: &[Vec<String>], total_rows: usize) -> String {
+/// row-number column, a row-truncation note when `total_rows` exceeds what was kept, and a
+/// column-truncation note when `max_cols_seen` (the widest record's true field count) exceeds
+/// [`MAX_COLS`] — every other cap in this file reports itself; this one silently dropped
+/// columns with no note before this fix. `text_len_hint` sizes the output buffer; it need not
+/// be exact.
+fn render_row_table(
+    text_len_hint: usize,
+    rows: &[Vec<String>],
+    total_rows: usize,
+    max_cols_seen: usize,
+) -> String {
     let ncols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let mut out = String::with_capacity(text_len_hint + rows.len() * 4);
     for (ri, r) in rows.iter().enumerate() {
@@ -218,7 +253,29 @@ fn render_row_table(text_len_hint: usize, rows: &[Vec<String>], total_rows: usiz
             total_rows.saturating_sub(1)
         ));
     }
+    if max_cols_seen > MAX_COLS {
+        out.push_str(&format!(
+            "\n*+{} more column(s) not shown (capped at {MAX_COLS}).*\n",
+            max_cols_seen - MAX_COLS
+        ));
+    }
     out
+}
+
+/// True for the Unicode bidi-control and zero-width Cf (format) characters a hostile string
+/// can use to visually reorder or hide text — the classic RLO filename-spoofing trick, now
+/// reachable through a crafted SQLite cell (`dbdoc.rs`) or a mail Subject/From/attachment name
+/// (`mailmsg.rs`), both of which route through `md_cell`. Not exhaustive of Unicode's Cf
+/// category, but covers every character actually capable of the attack: the explicit
+/// direction-override/embedding/isolate controls and the zero-width joiners/marks that hide a
+/// character run entirely.
+fn is_bidi_or_zero_width(ch: char) -> bool {
+    matches!(ch as u32,
+        0x200B..=0x200F   // zero width space/ZWNJ/ZWJ, left-to-right mark, right-to-left mark
+        | 0x202A..=0x202E // LRE, RLE, PDF, LRO, RLO
+        | 0x2060..=0x2069 // word joiner, invisible math ops, LRI/RLI/FSI/PDI isolates
+        | 0xFEFF // zero width no-break space (BOM)
+    )
 }
 
 /// Escape one GFM table cell. Shared with the database view (`dbdoc`), which has the same
@@ -226,11 +283,14 @@ fn render_row_table(text_len_hint: usize, rows: &[Vec<String>], total_rows: usiz
 /// because the cell is DATA, not authored markdown — without this a hostile spreadsheet (or
 /// database row) cell like `[click me](https://evil)` renders as a live styled link (spoofing;
 /// review finding, 2026-07-13). Backslash-escapes are consumed by the parser, so normal text is
-/// unchanged. Newlines become spaces so a multi-line value can't break the row.
+/// unchanged. Newlines become spaces so a multi-line value can't break the row. Bidi-override
+/// and zero-width characters ([`is_bidi_or_zero_width`]) are dropped outright — not escaped,
+/// since escaping keeps them in the text and they carry no visible glyph to neutralise this way.
 pub(super) fn md_cell(s: &str) -> String {
     let mut e = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
+            _ if is_bidi_or_zero_width(ch) => {}
             '\\' | '|' | '[' | ']' | '`' | '*' | '_' | '!' | '<' | '~' => {
                 e.push('\\');
                 e.push(ch);
@@ -242,25 +302,16 @@ pub(super) fn md_cell(s: &str) -> String {
     e
 }
 
-/// Byte-length of the UTF-8 char starting with `b` (1 for ASCII/continuation garbage).
-fn utf8_len(b: u8) -> usize {
-    match b {
-        0xC0..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF7 => 4,
-        _ => 1,
-    }
-}
-
 // ---- Jupyter notebook -----------------------------------------------------------------------
 
 /// A code-fence string of backticks that `content` cannot close early. CommonMark ends a
 /// fence at the first line carrying at least as many backticks as opened it, so wrapping
 /// untrusted file content (cell source, cell output, raw cells, the not-a-notebook fallback)
 /// in a fixed ``` fence lets a bare ``` line inside that content close the block early and
-/// have everything after it render as LIVE markdown. Mirrors `dbdoc::longest_backtick_run`,
-/// which fixes the identical problem for the DDL fence there.
-fn fence_for(content: &str) -> String {
+/// have everything after it render as LIVE markdown. The single shared implementation of this
+/// fix: `dbdoc`'s DDL fence and `markdown/parse.rs`'s front-matter fence both call this instead
+/// of keeping their own copy of the counting loop.
+pub(super) fn fence_for(content: &str) -> String {
     let mut longest = 0usize;
     let mut run = 0usize;
     for c in content.chars() {
@@ -563,6 +614,16 @@ mod tests {
         assert_eq!(md_cell("~~word~~"), "\\~\\~word\\~\\~");
     }
 
+    /// The classic RLO filename-spoof trick: U+202E flips everything after it to render
+    /// right-to-left, so "cod\u{202E}gpj.exe" DISPLAYS as "cod...exe.jpg". `md_cell` must drop
+    /// the override, not merely leave it unescaped.
+    #[test]
+    fn md_cell_strips_bidi_override_and_zero_width_chars() {
+        assert_eq!(md_cell("cod\u{202E}gpj.exe"), "codgpj.exe");
+        assert_eq!(md_cell("a\u{200B}b\u{FEFF}c"), "abc");
+        assert_eq!(md_cell("plain text"), "plain text");
+    }
+
     /// The row cap must engage at exactly MAX_ROWS kept rows (header + data), not
     /// MAX_ROWS + 1. Feeding exactly MAX_ROWS data rows (MAX_ROWS + 1 total with the
     /// header) must drop the last one and print a truncation note - the old `<=` kept
@@ -582,6 +643,29 @@ mod tests {
             "expected the cap to drop exactly one row and note it; md tail was: {}",
             &md[md.len().saturating_sub(200)..]
         );
+    }
+
+    /// A row wider than [`MAX_COLS`] silently dropped its extra fields before this fix, with
+    /// no sign anything was missing — unlike the row cap, which always notes itself.
+    #[test]
+    fn csv_col_cap_notes_the_dropped_columns() {
+        let header = (0..MAX_COLS + 5)
+            .map(|i| format!("c{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let md = delimited_table(&format!("{header}\n"), b',');
+        assert!(
+            md.contains("*+5 more column(s) not shown (capped at 64).*"),
+            "md tail was: {}",
+            &md[md.len().saturating_sub(200)..]
+        );
+    }
+
+    /// A row at or under the cap prints no column note at all.
+    #[test]
+    fn csv_under_col_cap_notes_nothing() {
+        let md = delimited_table("a,b,c\n1,2,3\n", b',');
+        assert!(!md.contains("more column"));
     }
 
     /// A fixed 3-backtick fence around untrusted code-cell source is breakable: a source

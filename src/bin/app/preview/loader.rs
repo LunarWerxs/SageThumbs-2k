@@ -107,6 +107,26 @@ unsafe fn reset_viewer_state(hwnd: HWND, st: &ViewerState, path: &str) -> u64 {
     gen
 }
 
+/// Set `st`'s text + kind for an archive listing — the one state-setting body shared by the
+/// async `load` hook ([`try_show_archive_listing`]) and the headless `load_static` hook
+/// ([`try_static_archive_listing`]), which differ only in whether they also touch the window.
+fn set_archive_listing_state(st: &ViewerState, listing: String) {
+    *st.text.borrow_mut() = Some(listing);
+    st.kind.set(ContentKind::Text);
+}
+
+/// Set `st`'s text + kind for a generated Markdown document (the DB schema view or the mail
+/// headers/body view) — the one state-setting body shared by both the async `load` hooks
+/// ([`try_show_db_markdown`], [`try_show_mail_markdown`]) and their `load_static` counterparts
+/// ([`try_static_db_markdown`], [`try_static_mail_markdown`]). Both sources are generated text
+/// with nothing remote in it, so `md_remote_ok` always stays off.
+fn set_markdown_doc_state(st: &ViewerState, md: String) {
+    *st.text.borrow_mut() = Some(md);
+    st.md_has_headings.set(true);
+    st.md_remote_ok.set(false);
+    st.kind.set(ContentKind::Markdown);
+}
+
 /// Archives (zip/7z/rar-family with no cover): show a file listing in the text pane. Returns
 /// `true` (having already updated state, repainted, and refreshed search) if `path` was a
 /// recognized archive; `false` to fall through to normal classification.
@@ -117,8 +137,7 @@ unsafe fn try_show_archive_listing(hwnd: HWND, st: &ViewerState, path: &str) -> 
     let Some(listing) = content::archive_listing(path) else {
         return false;
     };
-    *st.text.borrow_mut() = Some(listing);
-    st.kind.set(ContentKind::Text);
+    set_archive_listing_state(st, listing);
     ensure_shown(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
     set_title(hwnd);
@@ -133,10 +152,7 @@ unsafe fn try_show_db_markdown(hwnd: HWND, st: &ViewerState, path: &str) -> bool
     let Some(md) = db_markdown(path) else {
         return false;
     };
-    *st.text.borrow_mut() = Some(md);
-    st.md_has_headings.set(true);
-    st.md_remote_ok.set(false); // generated content, nothing remote to fetch
-    st.kind.set(ContentKind::Markdown);
+    set_markdown_doc_state(st, md);
     ensure_shown(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
     set_title(hwnd);
@@ -151,10 +167,7 @@ unsafe fn try_show_mail_markdown(hwnd: HWND, st: &ViewerState, path: &str) -> bo
     let Some(md) = mail_markdown(path) else {
         return false;
     };
-    *st.text.borrow_mut() = Some(md);
-    st.md_has_headings.set(true);
-    st.md_remote_ok.set(false); // bodies are flattened to text; nothing remote to fetch
-    st.kind.set(ContentKind::Markdown);
+    set_markdown_doc_state(st, md);
     ensure_shown(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
     set_title(hwnd);
@@ -439,8 +452,7 @@ unsafe fn try_static_archive_listing(st: &ViewerState, path: &str) -> bool {
     let Some(listing) = content::archive_listing(path) else {
         return false;
     };
-    *st.text.borrow_mut() = Some(listing);
-    st.kind.set(ContentKind::Text);
+    set_archive_listing_state(st, listing);
     true
 }
 
@@ -449,10 +461,7 @@ unsafe fn try_static_db_markdown(st: &ViewerState, path: &str) -> bool {
     let Some(md) = db_markdown(path) else {
         return false;
     };
-    *st.text.borrow_mut() = Some(md);
-    st.md_has_headings.set(true);
-    st.md_remote_ok.set(false);
-    st.kind.set(ContentKind::Markdown);
+    set_markdown_doc_state(st, md);
     true
 }
 
@@ -461,10 +470,7 @@ unsafe fn try_static_mail_markdown(st: &ViewerState, path: &str) -> bool {
     let Some(md) = mail_markdown(path) else {
         return false;
     };
-    *st.text.borrow_mut() = Some(md);
-    st.md_has_headings.set(true);
-    st.md_remote_ok.set(false);
-    st.kind.set(ContentKind::Markdown);
+    set_markdown_doc_state(st, md);
     true
 }
 
@@ -763,6 +769,12 @@ pub(super) fn source_capable(ext: &str) -> bool {
     #[cfg(feature = "html-preview")]
     if matches!(ext, "html" | "htm" | "xhtml") {
         return settings::preview_html();
+    }
+    // .eml is genuine RFC-822/MIME plain text, gated the same as any other text preview. .msg's
+    // raw bytes are an OLE compound file, not text, so it stays excluded — there is no source
+    // view for it to show.
+    if ext.eq_ignore_ascii_case("eml") {
+        return settings::preview_text();
     }
     // SVG renders as an image (resvg) but is plain XML underneath.
     ext == "svg"
@@ -1093,9 +1105,20 @@ pub(super) unsafe fn forget_size(hwnd: HWND) {
 
 #[cfg(test)]
 mod tests {
-    use super::clamp_remembered_size;
     #[cfg(feature = "html-preview")]
     use super::parse_url_shortcut;
+    use super::{clamp_remembered_size, source_capable};
+
+    #[test]
+    fn source_capable_reaches_eml_but_not_msg() {
+        // .eml is genuine RFC-822 text (same gate as any other text preview); .msg's raw
+        // bytes are an OLE compound file with no text view to show.
+        assert_eq!(
+            source_capable("eml"),
+            sagethumbs2k_core::settings::preview_text()
+        );
+        assert!(!source_capable("msg"));
+    }
 
     /// Windows commonly writes a `.url` shortcut with a non-ASCII target as UTF-16 LE
     /// with a BOM — a plain `read_to_string` (UTF-8 only) used to fail on these outright,

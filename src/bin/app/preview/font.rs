@@ -30,6 +30,46 @@ impl Drop for TempFont {
     }
 }
 
+/// Write `sfnt` to a fresh, exclusively-claimed `%TEMP%\st2k_woff_<pid>_<n>.ttf` and return its
+/// path, or `None` if every attempt collided. `n` is a process-local counter (not the byte
+/// length the old name used), so two same-size WOFFs previewed back to back can never fight
+/// over one name.
+///
+/// `create_new`, never a plain `std::fs::write`: Windows' create-and-truncate follows hard
+/// links and reparse points, so a pre-planted name in the shared, world-writable `%TEMP%`
+/// directory would have the rebuilt font bytes written straight THROUGH it into whatever it
+/// really points at. The name is predictable — the pid is public and the counter restarts at 0
+/// each process — so refusing an existing name is the actual guard here, not the name's
+/// obscurity. Mirrors `sagethumbs2k_core::decode::magick`'s `NamedTemp`, which solved the same
+/// problem for its own coder staging; that struct is private to its crate/module so this is a
+/// second, matching implementation rather than a shared one.
+fn claim_temp_ttf(sfnt: &[u8]) -> Option<std::path::PathBuf> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    const MAX_ATTEMPTS: u32 = 8;
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+    for _ in 0..MAX_ATTEMPTS {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("st2k_woff_{pid}_{n}.ttf"));
+        let Ok(mut file) = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        else {
+            continue; // name already taken (or claimed by a concurrent attempt) — try the next
+        };
+        if file.write_all(sfnt).is_ok() {
+            drop(file); // close before AddFontResourceExW opens it by name
+            return Some(path);
+        }
+        drop(file);
+        let _ = std::fs::remove_file(&path); // partial write (e.g. a full disk) — don't leak it
+    }
+    None
+}
+
 /// `FR_PRIVATE`: the font loads for THIS process only and is removed on `RemoveFontResourceExW`.
 const FR_PRIVATE: FONT_RESOURCE_CHARACTERISTICS = FONT_RESOURCE_CHARACTERISTICS(0x10);
 
@@ -186,12 +226,7 @@ pub(super) unsafe fn render_specimen(
     let unwrapped = super::woff::is_woff(&bytes).then(|| super::woff::to_sfnt(&bytes));
     let (bytes, temp) = match unwrapped {
         Some(Some(sfnt)) => {
-            let tmp = std::env::temp_dir().join(format!(
-                "st2k_woff_{}_{}.ttf",
-                std::process::id(),
-                bytes.len()
-            ));
-            std::fs::write(&tmp, &sfnt).ok()?;
+            let tmp = claim_temp_ttf(&sfnt)?;
             (sfnt, Some(tmp))
         }
         Some(None) => return None, // a WOFF we could not rebuild — show the info card
@@ -346,5 +381,45 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bug: `std::fs::write` truncates through an existing name (hard link or reparse
+    /// point) instead of refusing it. `claim_temp_ttf` must claim a name EXCLUSIVELY — proven
+    /// here by pre-creating the very first name it would try and confirming it lands on a
+    /// different one instead of writing through the pre-existing file.
+    #[test]
+    fn claim_temp_ttf_never_writes_through_a_pre_existing_name() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        // The counter is a shared static across the whole test binary, so pin down the very
+        // next name this call will try by pre-creating names 0..4 and confirming the claim
+        // still succeeds on a fresh one within MAX_ATTEMPTS, never reusing any of them.
+        let blocked: Vec<_> = (0..4)
+            .map(|n| dir.join(format!("st2k_woff_{pid}_{n}.ttf")))
+            .collect();
+        for p in &blocked {
+            if !p.exists() {
+                std::fs::write(p, b"PRE-EXISTING, MUST NOT BE OVERWRITTEN").unwrap();
+            }
+        }
+
+        let got = claim_temp_ttf(b"fake sfnt bytes").expect("a free name must be claimable");
+        assert!(
+            !blocked.contains(&got),
+            "must not have claimed one of the pre-existing names: {got:?}"
+        );
+        assert_eq!(std::fs::read(&got).unwrap(), b"fake sfnt bytes");
+        for p in &blocked {
+            let content = std::fs::read_to_string(p).unwrap_or_default();
+            assert_eq!(
+                content, "PRE-EXISTING, MUST NOT BE OVERWRITTEN",
+                "a pre-existing name must survive untouched: {p:?}"
+            );
+        }
+
+        let _ = std::fs::remove_file(&got);
+        for p in &blocked {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }

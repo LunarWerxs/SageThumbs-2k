@@ -5,6 +5,45 @@ use std::borrow::Cow;
 
 // ---- markdown -> blocks ------------------------------------------------------------------
 
+/// Row/column caps for a hand-authored table (GFM `| a | b |` or raw-HTML `<table>`), matching
+/// the philosophy `docconv`'s CSV/TSV/PSV import already applies — a crafted `.md`/README table
+/// had NO limit at all before this, unlike every CSV-derived table, which already carried one.
+/// Independent of (and enforced well before) `tables.rs::columns_that_fit`'s DISPLAY-width
+/// truncation: this bounds how much a hostile document can make the Builder allocate in the
+/// first place, regardless of how wide the eventual viewer window is.
+const MAX_TABLE_ROWS: usize = 10_000;
+const MAX_TABLE_COLS: usize = 64;
+
+/// The truncation-note runs for a table that hit [`MAX_TABLE_ROWS`]/[`MAX_TABLE_COLS`] while
+/// being built, or `None` when neither cap was hit. Shared by the GFM (`handle_table_event`)
+/// and raw-HTML (`Builder::html_table_close`) table builders — every other cap in this area
+/// (docconv's CSV import, this file's own display-width column fit) already says so when it
+/// truncates; this one silently dropped rows/cells with no note before this fix.
+fn table_cap_note(rows_dropped: bool, cols_dropped: bool) -> Option<Vec<Run>> {
+    let text = match (rows_dropped, cols_dropped) {
+        (false, false) => return None,
+        (true, true) => format!(
+            "This table was too large to show in full and was capped at {MAX_TABLE_ROWS} rows \
+             and {MAX_TABLE_COLS} columns."
+        ),
+        (true, false) => format!(
+            "This table was too large to show in full and was capped at {MAX_TABLE_ROWS} rows."
+        ),
+        (false, true) => format!(
+            "This table was too large to show in full and was capped at {MAX_TABLE_COLS} \
+             columns."
+        ),
+    };
+    Some(vec![Run {
+        text,
+        bold: false,
+        italic: true,
+        code: false,
+        strike: false,
+        link: None,
+    }])
+}
+
 /// Shared block-builder state driven by BOTH the pulldown-cmark event loop and the raw-HTML
 /// feeder in [`super::super::mdhtml`]. Raw HTML toggles the same inline-style counters and emits the
 /// same [`Block`]s, so `<b>`/`<h1>`/`<img>`/`<table>` render identically to their markdown twins.
@@ -32,6 +71,10 @@ pub(in crate::preview) struct Builder {
     tbl_header: Vec<Vec<Run>>,
     tbl_rows: Vec<Vec<Vec<Run>>>,
     tbl_aligns: Vec<u8>,
+    /// Set when the current GFM table dropped a row/cell past [`MAX_TABLE_ROWS`]/
+    /// [`MAX_TABLE_COLS`]; consumed (and reset) at `TagEnd::Table` to append a note.
+    tbl_rows_dropped: bool,
+    tbl_cols_dropped: bool,
     // markdown image capture (alt text arrives as Text events between Start/End)
     img: Option<(String, String)>, // (dest url, alt buffer)
     // raw-HTML state (owned here so it persists across separate HtmlBlock events — a
@@ -54,10 +97,26 @@ struct HtmlTbl {
     cur_row: Vec<Vec<Run>>,
     cur_cell: Option<Vec<Run>>,
     row_all_th: bool,
+    /// Same purpose as `Builder`'s own `tbl_rows_dropped`/`tbl_cols_dropped`, for a raw-HTML
+    /// `<table>` instead of a GFM one.
+    rows_dropped: bool,
+    cols_dropped: bool,
+}
+
+impl HtmlTbl {
+    /// Push `c` onto the row under construction unless [`MAX_TABLE_COLS`] was already reached,
+    /// in which case the cell is dropped and noted rather than growing the row unbounded.
+    fn push_cell(&mut self, c: Vec<Run>) {
+        if self.cur_row.len() < MAX_TABLE_COLS {
+            self.cur_row.push(c);
+        } else {
+            self.cols_dropped = true;
+        }
+    }
 }
 
 impl Builder {
-    fn new(remote_ok: bool) -> Builder {
+    pub(in crate::preview) fn new(remote_ok: bool) -> Builder {
         Builder {
             remote_ok,
             out: Vec::new(),
@@ -79,6 +138,8 @@ impl Builder {
             tbl_header: Vec::new(),
             tbl_rows: Vec::new(),
             tbl_aligns: Vec::new(),
+            tbl_rows_dropped: false,
+            tbl_cols_dropped: false,
             img: None,
             center: 0,
             html_stack: Vec::new(),
@@ -252,9 +313,7 @@ impl Builder {
             .trim_start()
             .to_ascii_lowercase()
             .starts_with("https://");
-        let remote = (is_remote_src(src) && !(self.remote_ok && fetchable))
-            || src.starts_with("//")
-            || src.starts_with("data:");
+        let remote = is_gated_image_src(src) && !(self.remote_ok && fetchable);
         let in_cell = self.in_cell || self.h_tbl.as_ref().is_some_and(|t| t.cur_cell.is_some());
         // Inside a list item or blockquote a block-level image would SPLIT the block (flush mid-
         // item duplicates the marker; a quote's bar breaks in two) and escape its indent — degrade
@@ -309,6 +368,8 @@ impl Builder {
             cur_row: Vec::new(),
             cur_cell: None,
             row_all_th: true,
+            rows_dropped: false,
+            cols_dropped: false,
         });
     }
     pub(in crate::preview) fn html_tr_open(&mut self) {
@@ -321,7 +382,7 @@ impl Builder {
     pub(in crate::preview) fn html_cell_open(&mut self, th: bool) {
         if let Some(t) = &mut self.h_tbl {
             if let Some(c) = t.cur_cell.take() {
-                t.cur_row.push(c); // unclosed previous cell
+                t.push_cell(c); // unclosed previous cell
             }
             t.cur_cell = Some(Vec::new());
             t.row_all_th &= th;
@@ -330,14 +391,14 @@ impl Builder {
     pub(in crate::preview) fn html_cell_close(&mut self) {
         if let Some(t) = &mut self.h_tbl {
             if let Some(c) = t.cur_cell.take() {
-                t.cur_row.push(c);
+                t.push_cell(c);
             }
         }
     }
     pub(in crate::preview) fn html_tr_close(&mut self) {
         if let Some(t) = &mut self.h_tbl {
             if let Some(c) = t.cur_cell.take() {
-                t.cur_row.push(c);
+                t.push_cell(c);
             }
             let row = core::mem::take(&mut t.cur_row);
             if row.is_empty() {
@@ -345,20 +406,26 @@ impl Builder {
             }
             if t.row_all_th && t.header.is_empty() && t.rows.is_empty() {
                 t.header = row;
-            } else {
+            } else if t.rows.len() < MAX_TABLE_ROWS {
                 t.rows.push(row);
+            } else {
+                t.rows_dropped = true;
             }
         }
     }
     pub(in crate::preview) fn html_table_close(&mut self) {
         self.html_tr_close(); // forgive an unclosed final row
         if let Some(t) = self.h_tbl.take() {
+            let dropped_note = table_cap_note(t.rows_dropped, t.cols_dropped);
             if !t.header.is_empty() || !t.rows.is_empty() {
                 self.out.push(Block::Table {
                     header: t.header,
                     rows: t.rows,
                     aligns: Vec::new(),
                 });
+                if let Some(note) = dropped_note {
+                    self.out.push(Block::Para(note, false));
+                }
             }
         }
     }
@@ -551,8 +618,20 @@ fn scan_url_bytes(rest: &str, scheme_len: usize) -> Option<usize> {
 
 /// Trim trailing punctuation off `raw` down to `scheme_len`; keep a trailing `)` only if
 /// the URL has more `(` than `)`. None if nothing survives past the scheme.
+///
+/// `opens`/`closes` are the paren counts over the CURRENT `raw[..e]`, maintained incrementally
+/// rather than recounted from scratch every time a `)` is examined — a URL trailed by a run of
+/// `k` `)` bytes used to recount both totals over the whole shrinking prefix on every one of
+/// those `k` steps (O(k²): `https://a.a/` followed by 500,000 `)` was 2.5e11 byte comparisons
+/// on the paint thread). Only `)` bytes ever change the running counts (every other trimmed byte
+/// is neither `(` nor `)`), so each step needs at most one decrement, not a rescan.
 fn trim_trailing_punct(raw: &[u8], scheme_len: usize) -> Option<usize> {
     let mut e = raw.len();
+    // `opens` never needs to change: trimming only ever removes non-`(` bytes (plain
+    // punctuation, or a `)` — never `(`), so the open-paren count over the shrinking `raw[..e]`
+    // prefix is the same as over the whole slice for every `e` this loop ever reaches.
+    let opens = raw.iter().filter(|&&x| x == b'(').count();
+    let mut closes = raw.iter().filter(|&&x| x == b')').count();
     while e > scheme_len {
         let c = raw[e - 1];
         if matches!(
@@ -561,10 +640,9 @@ fn trim_trailing_punct(raw: &[u8], scheme_len: usize) -> Option<usize> {
         ) {
             e -= 1;
         } else if c == b')' {
-            let opens = raw[..e].iter().filter(|&&x| x == b'(').count();
-            let closes = raw[..e].iter().filter(|&&x| x == b')').count();
             if closes > opens {
                 e -= 1;
+                closes -= 1; // this `)` is no longer part of raw[..e]
             } else {
                 break;
             }
@@ -610,7 +688,9 @@ fn fence_front_matter(md: &str) -> Cow<'_, str> {
     let body = &md[open.len()..body_end];
     // A fence exactly 3 backticks wide could be closed early by a field value that itself
     // contains a code fence; widen it past the longest backtick run already inside `body`.
-    let fence = "`".repeat(fence_len(body));
+    // Shared with `docconv`'s notebook/CSV fence wrapping and `dbdoc`'s DDL fence, so this fix
+    // has one home instead of a third copy of the same counting loop.
+    let fence = super::super::docconv::fence_for(body);
     let mut out = String::with_capacity(md.len() + fence.len() * 2 + 8);
     out.push_str(&fence);
     out.push_str("yaml\n");
@@ -622,19 +702,6 @@ fn fence_front_matter(md: &str) -> Cow<'_, str> {
     out.push('\n');
     out.push_str(&md[close_end..]);
     Cow::Owned(out)
-}
-
-/// Backtick count for [`fence_front_matter`]'s wrapper: 3, or one more than the longest
-/// all-backtick line already inside `body` (CommonMark fences match on run length).
-fn fence_len(body: &str) -> usize {
-    let longest = body
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && l.bytes().all(|b| b == b'`'))
-        .map(str::len)
-        .max()
-        .unwrap_or(0);
-    (longest + 1).max(3)
 }
 
 /// Per-event code-fence state threaded through the dispatchers below: a fenced/indented
@@ -731,6 +798,8 @@ fn handle_table_event<'e>(ev: Event<'e>, b: &mut Builder) -> Option<Event<'e>> {
             b.flush();
             b.tbl_header.clear();
             b.tbl_rows.clear();
+            b.tbl_rows_dropped = false;
+            b.tbl_cols_dropped = false;
             b.tbl_aligns = aligns
                 .iter()
                 .map(|a| match a {
@@ -744,18 +813,26 @@ fn handle_table_event<'e>(ev: Event<'e>, b: &mut Builder) -> Option<Event<'e>> {
             let header = core::mem::take(&mut b.tbl_header);
             let rows = core::mem::take(&mut b.tbl_rows);
             let aligns = core::mem::take(&mut b.tbl_aligns);
+            let note = table_cap_note(b.tbl_rows_dropped, b.tbl_cols_dropped);
             b.out.push(Block::Table {
                 header,
                 rows,
                 aligns,
             });
+            if let Some(note) = note {
+                b.out.push(Block::Para(note, false));
+            }
         }
         Event::Start(Tag::TableHead) => b.cur_row.clear(),
         Event::End(TagEnd::TableHead) => b.tbl_header = core::mem::take(&mut b.cur_row),
         Event::Start(Tag::TableRow) => b.cur_row.clear(),
         Event::End(TagEnd::TableRow) => {
             let row = core::mem::take(&mut b.cur_row);
-            b.tbl_rows.push(row);
+            if b.tbl_rows.len() < MAX_TABLE_ROWS {
+                b.tbl_rows.push(row);
+            } else {
+                b.tbl_rows_dropped = true;
+            }
         }
         Event::Start(Tag::TableCell) => {
             b.in_cell = true;
@@ -764,7 +841,11 @@ fn handle_table_event<'e>(ev: Event<'e>, b: &mut Builder) -> Option<Event<'e>> {
         Event::End(TagEnd::TableCell) => {
             b.in_cell = false;
             let cell = core::mem::take(&mut b.cur_cell);
-            b.cur_row.push(cell);
+            if b.cur_row.len() < MAX_TABLE_COLS {
+                b.cur_row.push(cell);
+            } else {
+                b.tbl_cols_dropped = true;
+            }
         }
         other => return Some(other),
     }
@@ -839,6 +920,109 @@ fn heading_num(level: HeadingLevel) -> u8 {
         HeadingLevel::H4 => 4,
         HeadingLevel::H5 => 5,
         HeadingLevel::H6 => 6,
+    }
+}
+
+#[cfg(test)]
+mod table_cap_tests {
+    use super::*;
+
+    /// A GFM table wider than [`MAX_TABLE_COLS`] must cap the row instead of growing it
+    /// unbounded, and say so in a trailing note — before this fix a hand-authored (or crafted)
+    /// table had no limit at all, unlike every CSV-derived table.
+    #[test]
+    fn gfm_table_caps_columns_and_notes_it() {
+        let n = MAX_TABLE_COLS + 5;
+        let cells: String = (0..n).map(|i| format!(" c{i} |")).collect();
+        let seps: String = (0..n).map(|_| " --- |").collect();
+        let md = format!("|{cells}\n|{seps}\n");
+        let blocks = parse_blocks(&md, false);
+        let Block::Table { header, .. } = &blocks[0] else {
+            panic!("expected the first block to be a table");
+        };
+        assert_eq!(header.len(), MAX_TABLE_COLS, "the row must be capped");
+        assert!(
+            matches!(blocks.get(1), Some(Block::Para(..))),
+            "a truncation note must follow the table"
+        );
+    }
+
+    /// A table within both caps gets no note at all.
+    #[test]
+    fn gfm_table_under_caps_notes_nothing() {
+        let blocks = parse_blocks("| a | b |\n| --- | --- |\n| 1 | 2 |\n", false);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "no trailing note block for an unwounded table"
+        );
+    }
+
+    /// The raw-HTML table builder enforces the same column cap as the GFM one, and notes it —
+    /// a README `<table>` is just as capable of being hand-crafted absurdly wide.
+    #[test]
+    fn html_table_caps_columns_and_notes_it() {
+        let n = MAX_TABLE_COLS + 3;
+        let mut html = String::from("<table><tr>");
+        for i in 0..n {
+            html.push_str(&format!("<td>c{i}</td>"));
+        }
+        html.push_str("</tr></table>");
+        let md = format!("{html}\n");
+        let blocks = parse_blocks(&md, false);
+        let Block::Table { rows, .. } = &blocks[0] else {
+            panic!("expected the first block to be a table");
+        };
+        assert_eq!(rows[0].len(), MAX_TABLE_COLS, "the row must be capped");
+        assert!(
+            matches!(blocks.get(1), Some(Block::Para(..))),
+            "a truncation note must follow the table"
+        );
+    }
+}
+
+#[cfg(test)]
+mod trim_trailing_punct_tests {
+    use super::*;
+
+    /// The balanced-paren case the function exists for: a trailing `)` that closes an earlier
+    /// `(` inside the URL (a Wikipedia-style `Foo_(bar)` link) must survive trimming.
+    #[test]
+    fn a_balanced_trailing_paren_is_kept() {
+        let (len, url) = url_at("https://en.wikipedia.org/wiki/Foo_(bar)", 0).unwrap();
+        assert_eq!(len, "https://en.wikipedia.org/wiki/Foo_(bar)".len());
+        assert_eq!(url, "https://en.wikipedia.org/wiki/Foo_(bar)");
+    }
+
+    /// An unbalanced trailing `)` (prose punctuation, not part of the URL) is trimmed.
+    #[test]
+    fn an_unbalanced_trailing_paren_is_trimmed() {
+        let (len, url) = url_at("(see https://example.com/x)", 5).unwrap();
+        assert_eq!(
+            &"(see https://example.com/x)"[5..5 + len],
+            "https://example.com/x"
+        );
+        assert_eq!(url, "https://example.com/x");
+    }
+
+    /// The bug this guards: `trim_trailing_punct` used to recount `(`/`)` over the whole
+    /// shrinking prefix on every trailing `)` it examined — O(k²) for k trailing close-parens,
+    /// so a URL followed by hundreds of thousands of `)` (an accepted URL byte) hung the paint
+    /// thread. The counts are now maintained incrementally, so this must return promptly.
+    #[test]
+    fn a_flood_of_trailing_close_parens_does_not_hang() {
+        let mut s = String::from("https://a.a/");
+        for _ in 0..500_000 {
+            s.push(')');
+        }
+        let started = std::time::Instant::now();
+        let (len, _) = url_at(&s, 0).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "trim_trailing_punct took too long on a flood of trailing ')'"
+        );
+        // None of the flood is balanced by an opening '(', so every one of them is trimmed.
+        assert_eq!(len, "https://a.a/".len());
     }
 }
 

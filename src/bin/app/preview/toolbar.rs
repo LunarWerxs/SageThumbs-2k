@@ -94,6 +94,7 @@ pub(super) fn btn_tip(b: Btn, pinned: bool, src_view: bool) -> &'static str {
         Btn::Pin if pinned => "preview_tip_unpin",
         Btn::Pin => "preview_tip_pin",
         Btn::Copy => "preview_tip_copy",
+        Btn::SavePage => "preview_tip_savepage",
         Btn::Ocr => "preview_tip_ocr",
         Btn::Info => "preview_tip_info",
         Btn::Upload => "preview_tip_upload",

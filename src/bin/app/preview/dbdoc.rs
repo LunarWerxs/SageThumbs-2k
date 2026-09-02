@@ -28,6 +28,9 @@ use std::ops::ControlFlow;
 
 use super::content::human_size;
 use super::docconv::md_cell;
+// Shared with `highlight::lex`'s own UTF-8 stepping so a multibyte-boundary fix only has to
+// happen once.
+use super::highlight::utf8_len;
 use sagethumbs2k_core::sqlite_prim::{local_size, serial_size, varint};
 
 /// Extensions offered the database view. Kept here rather than in `formats.rs` for the same
@@ -120,8 +123,14 @@ impl Val {
 }
 
 /// Render a float keeping a visible decimal point (`{}` prints 2.0 as "2", which would make a
-/// REAL column indistinguishable from an INTEGER one).
+/// REAL column indistinguishable from an INTEGER one). NaN is checked explicitly first: a REAL
+/// column's stored 8-byte value can legally be a NaN bit pattern, and `f64::NAN.to_string()` is
+/// "NaN" (capital N, no match for the lowercase `'n'`/`'i'` the generic contains-check looks
+/// for), so it fell through to the `else` branch and printed the nonsensical "NaN.0".
 fn real_str(r: f64) -> String {
+    if r.is_nan() {
+        return "NaN".to_string();
+    }
     let s = r.to_string();
     if s.contains(['.', 'e', 'E', 'n', 'i']) {
         s
@@ -556,25 +565,6 @@ struct Obj {
     sql: String,
 }
 
-/// The longest run of consecutive backticks anywhere in these objects' DDL.
-///
-/// Used to pick a code fence the content cannot close early — see the call site in `render`.
-fn longest_backtick_run(objs: &[&Obj]) -> usize {
-    let mut longest = 0usize;
-    for o in objs {
-        let mut run = 0usize;
-        for c in o.sql.chars() {
-            if c == '`' {
-                run += 1;
-                longest = longest.max(run);
-            } else {
-                run = 0;
-            }
-        }
-    }
-    longest
-}
-
 impl<R: Read + Seek> Db<R> {
     /// Read `sqlite_master` (always rooted at page 1) into its rows, plus whether more schema
     /// objects existed than the [`MAX_SCHEMA_OBJECTS`] cap could decode (a lower bound past
@@ -870,16 +860,6 @@ fn strip_sql_comments(s: &str) -> String {
     out
 }
 
-/// Byte length of the UTF-8 char starting with `b` (1 for ASCII).
-fn utf8_len(b: u8) -> usize {
-    match b {
-        0xC0..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF7 => 4,
-        _ => 1,
-    }
-}
-
 /// Offset of the first `(` that is outside quotes/comments.
 fn find_top_level_open_paren(s: &str) -> Option<usize> {
     let b = s.as_bytes();
@@ -1125,20 +1105,24 @@ impl<R: Read + Seek> Db<R> {
 
         let ddl: Vec<&Obj> = objs.iter().filter(|o| !o.sql.trim().is_empty()).collect();
         if !ddl.is_empty() {
+            let mut body = String::new();
+            for o in &ddl {
+                body.push_str(o.sql.trim());
+                body.push_str(";\n");
+            }
             // The DDL is stored text from an UNTRUSTED file, and this is the one place it is not
             // routed through `md_cell`. CommonMark closes a fence at the first line of >= as many
             // backticks as opened it, so a `sqlite_master.sql` value containing a line of ``` on
             // its own would end the block early and render everything after it as LIVE markdown —
             // headings and clickable links sourced from database bytes. Opening with a run longer
-            // than anything inside makes that unrepresentable rather than merely escaped.
-            let fence = "`".repeat(longest_backtick_run(&ddl).max(2) + 1);
+            // than anything inside makes that unrepresentable rather than merely escaped. Shared
+            // with the notebook/CSV code-fence wrapping in `docconv::fence_for` so this fix has
+            // one home instead of a second copy that could silently drift out of sync.
+            let fence = super::docconv::fence_for(&body);
             out.push_str("## Schema\n\n");
             out.push_str(&fence);
             out.push_str("sql\n");
-            for o in ddl {
-                out.push_str(o.sql.trim());
-                out.push_str(";\n");
-            }
+            out.push_str(&body);
             out.push_str(&fence);
             out.push('\n');
         }
@@ -1317,6 +1301,22 @@ mod tests {
         assert_eq!(decode_text(&le, Enc::Utf16Le), "héllo");
         let be: Vec<u8> = "héllo".encode_utf16().flat_map(u16::to_be_bytes).collect();
         assert_eq!(decode_text(&be, Enc::Utf16Be), "héllo");
+    }
+
+    /// A REAL column's stored bytes can legally decode to a NaN bit pattern. `f64::NAN`'s own
+    /// `to_string()` is "NaN" (capital N), which the generic contains-check's lowercase
+    /// `'n'`/`'i'` never matched, so it fell into the `else` branch and printed "NaN.0".
+    #[test]
+    fn real_str_renders_nan_as_nan_not_nan_dot_zero() {
+        assert_eq!(real_str(f64::NAN), "NaN");
+        assert_eq!(real_str(-f64::NAN), "NaN");
+    }
+
+    /// Ordinary floats still keep their visible decimal point, unaffected by the NaN check.
+    #[test]
+    fn real_str_keeps_decimal_point_for_whole_numbers() {
+        assert_eq!(real_str(2.0), "2.0");
+        assert_eq!(real_str(2.5), "2.5");
     }
 
     /// Column names, for assertions.
@@ -1633,43 +1633,21 @@ mod tests {
     /// through `md_cell`. CommonMark ends a fence at the first line carrying at least as many
     /// backticks as opened it, so a crafted `sqlite_master.sql` could close the block early and
     /// have everything after it rendered as live markdown — headings and clickable links built
-    /// from database bytes. The opening fence therefore has to outgrow anything inside it.
+    /// from database bytes. The opening fence therefore has to outgrow anything inside it. This
+    /// now goes through the shared `docconv::fence_for` (see `render`'s call site) rather than a
+    /// second, dbdoc-only counting loop, so the fence-width behaviour is asserted directly on
+    /// the fence characters `fence_for` returns.
     #[test]
-    fn schema_fence_outgrows_backticks_in_the_ddl() {
-        let obj = |sql: &str| Obj {
-            kind: "table".into(),
-            name: "t".into(),
-            root: 2,
-            sql: sql.into(),
-        };
-
+    fn fence_for_outgrows_backticks_in_the_content() {
         // Nothing to escape: the familiar three backticks.
-        let plain = obj("CREATE TABLE t(a)");
-        assert_eq!(longest_backtick_run(&[&plain]), 0);
+        assert_eq!(super::super::docconv::fence_for("CREATE TABLE t(a)"), "```");
 
         // The attack: a bare ``` line, then markdown that must never come alive.
-        let evil = obj("CREATE TABLE t(a)\n```\n# pwned\n[click](https://example.invalid)");
-        assert_eq!(longest_backtick_run(&[&evil]), 3);
+        let evil = "CREATE TABLE t(a)\n```\n# pwned\n[click](https://example.invalid);\n";
+        assert_eq!(super::super::docconv::fence_for(evil), "````");
 
-        // Longer runs, and a run split across two objects — the max is taken over all of them.
-        let worse = obj("x ````` y");
-        assert_eq!(longest_backtick_run(&[&plain, &evil, &worse]), 5);
-
-        // The rule the call site applies. For every case the fence must be STRICTLY longer than
-        // the longest run inside, and never shorter than a legal markdown fence.
-        for objs in [
-            vec![&plain],
-            vec![&evil],
-            vec![&worse],
-            vec![&plain, &evil, &worse],
-        ] {
-            let run = longest_backtick_run(&objs);
-            let fence = run.max(2) + 1;
-            assert!(
-                fence > run,
-                "fence {fence} must outgrow the {run}-backtick run"
-            );
-            assert!(fence >= 3, "fence {fence} is not a valid markdown fence");
-        }
+        // A longer run still gets outgrown, one wider than anything inside.
+        let worse = "x ````` y;\n";
+        assert_eq!(super::super::docconv::fence_for(worse), "``````");
     }
 }

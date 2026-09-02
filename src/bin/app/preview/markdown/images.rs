@@ -5,6 +5,7 @@
 //! in, because a preview silently reaching the network is a tracking pixel.
 
 use super::*;
+use std::path::{Component, Prefix};
 
 /// Draw one image block: local src -> decoded DIB (cached per document, synchronous — the
 /// extension gate keeps it on the fast pure-Rust tiers); remote src (opt-in toggle) -> async
@@ -130,7 +131,21 @@ pub(super) unsafe fn pill_fallback(
 }
 
 /// Resolve a (non-remote) image src against the document folder, percent-decoding and dropping
-/// any `?query`/`#fragment` suffix.
+/// any `?query`/`#fragment` suffix. `None` unless the result canonicalises to a real path that
+/// is still under `dir` — a src with nowhere to be confined to (`dir` is `None`) never resolves.
+///
+/// A `p` that is rooted, or that carries a Windows path-prefix component, is rejected outright
+/// rather than joined — per `PathBuf::push`'s own documented replace rules, ALL three shapes
+/// make `Path::join` bypass `dir` instead of confining `p` under it:
+/// - drive-absolute (`C:\other\x.png`, prefix + root) replaces `dir` entirely;
+/// - drive-RELATIVE (`C:x.png`, prefix, no root) also replaces `dir` entirely;
+/// - root-only (`\other\x.png` or a `\\`/`//` UNC prefix, either spelling — Rust's Windows path
+///   parser recognises both) replaces everything but `dir`'s own prefix (its drive letter, if
+///   any), landing outside `dir` all the same, and for a UNC prefix specifically would make the
+///   eventual `fs::read` open an outbound SMB connection to an attacker-named host.
+///
+/// `..` components have no such shortcut through `join`, so they are instead caught by the
+/// canonicalize-and-confine check below, which also closes a symlink-based escape.
 pub(super) fn resolve_src(src: &str, dir: Option<&Path>) -> Option<PathBuf> {
     let s = src.split(['?', '#']).next().unwrap_or("");
     if s.is_empty() {
@@ -139,11 +154,52 @@ pub(super) fn resolve_src(src: &str, dir: Option<&Path>) -> Option<PathBuf> {
     let s = percent_decode(s);
     let s = s.strip_prefix("./").unwrap_or(&s);
     let p = Path::new(s);
-    if p.is_absolute() {
-        Some(p.to_path_buf())
-    } else {
-        dir.map(|d| d.join(p))
+    if p.has_root() || p.components().any(|c| matches!(c, Component::Prefix(_))) {
+        return None;
     }
+    let dir = dir?;
+    let canon_dir = std::fs::canonicalize(dir).ok()?;
+    let canon = std::fs::canonicalize(dir.join(p)).ok()?;
+    if canon.starts_with(&canon_dir) {
+        Some(canon)
+    } else {
+        None
+    }
+}
+
+/// True when `path`'s file stem (its name with the extension stripped) is a reserved Windows
+/// device name — `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`. Windows resolves
+/// `NUL.png` to the NUL device regardless of the trailing extension, so a crafted README could
+/// otherwise point an `<img>` at a device instead of a file on the synchronous paint path.
+fn is_dos_device_stem(path: &Path) -> bool {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 /// Minimal %XX decoder (image paths with spaces). Byte-wise throughout — a `&str` slice here
@@ -191,8 +247,21 @@ pub(super) unsafe fn load_img(src: &str, dir: Option<&Path>, bg: u32) -> Option<
         return None;
     }
     let path = resolve_src(src, dir)?;
-    if path.as_os_str().to_string_lossy().starts_with("\\\\") {
+    // Belt-and-suspenders alongside `resolve_src`'s own prefix rejection: check the resolved,
+    // now-canonical path's actual `Prefix` component rather than a raw string spelling, since
+    // `fs::canonicalize` renders every Windows path (local or UNC) in its `\\?\`-prefixed
+    // verbatim form, where a naive `starts_with("\\\\")`/`starts_with("//")` would match a
+    // perfectly normal LOCAL path too. `Prefix::kind()` tells local and network apart directly,
+    // and it recognises a UNC prefix under either separator spelling.
+    if matches!(
+        path.components().next(),
+        Some(Component::Prefix(p))
+            if matches!(p.kind(), Prefix::UNC(..) | Prefix::VerbatimUNC(..))
+    ) {
         return None; // a relative src must not join into a UNC target either
+    }
+    if is_dos_device_stem(&path) {
+        return None;
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     if !matches!(
@@ -224,3 +293,103 @@ pub(crate) unsafe fn decode_bytes_to_dib(bytes: &[u8], bg: u32) -> Option<Render
 }
 
 // ---- inline run layout -------------------------------------------------------------------
+
+#[cfg(test)]
+mod resolve_src_tests {
+    use super::*;
+
+    /// A throwaway `doc/` folder with one legitimate sibling image and one secret file one
+    /// level up. Unique per call (process id plus a call counter — these tests run as
+    /// concurrent threads in the same process, so the pid alone is not enough to keep them
+    /// from colliding on the same directory).
+    fn scratch_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("st2k_imgtest_{}_{n}", std::process::id()));
+        let doc = root.join("doc");
+        std::fs::create_dir_all(&doc).unwrap();
+        std::fs::write(doc.join("ok.png"), b"x").unwrap();
+        std::fs::write(root.join("secret.png"), b"x").unwrap();
+        root
+    }
+
+    /// A src that stays inside the document folder resolves, canonicalised.
+    #[test]
+    fn resolve_src_allows_a_sibling_of_the_document() {
+        let root = scratch_dir();
+        let dir = root.join("doc");
+        let got = resolve_src("ok.png", Some(&dir)).unwrap();
+        assert_eq!(got, std::fs::canonicalize(dir.join("ok.png")).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `..` walks the src out of the document folder — refused, not silently resolved to the
+    /// escaped file.
+    #[test]
+    fn resolve_src_refuses_a_traversal_out_of_the_document_folder() {
+        let root = scratch_dir();
+        let dir = root.join("doc");
+        assert!(resolve_src("../secret.png", Some(&dir)).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A drive-relative src (`C:x.png`, no root separator) would make `Path::join` silently
+    /// REPLACE `dir` per its own documented semantics — refused before it ever reaches `join`.
+    #[test]
+    fn resolve_src_refuses_a_drive_relative_src() {
+        let root = scratch_dir();
+        let dir = root.join("doc");
+        assert!(resolve_src("C:secret.png", Some(&dir)).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A drive-absolute src points straight past `dir` — refused.
+    #[test]
+    fn resolve_src_refuses_a_drive_absolute_src() {
+        let root = scratch_dir();
+        let dir = root.join("doc");
+        assert!(resolve_src("C:\\Windows\\x.png", Some(&dir)).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rooted-but-no-prefix src (`\windows\x.png`) would make `Path::join` replace
+    /// everything but `dir`'s own drive prefix, per its documented semantics — refused.
+    #[test]
+    fn resolve_src_refuses_a_root_only_src() {
+        let root = scratch_dir();
+        let dir = root.join("doc");
+        assert!(resolve_src("\\windows\\x.png", Some(&dir)).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A UNC src, either slash spelling, is refused — the pre-decode string guard in
+    /// `load_img` normally catches these first, but `resolve_src` itself must refuse them too.
+    #[test]
+    fn resolve_src_refuses_unc_srcs_both_spellings() {
+        let root = scratch_dir();
+        let dir = root.join("doc");
+        assert!(resolve_src("\\\\attacker\\share\\x.png", Some(&dir)).is_none());
+        assert!(resolve_src("//attacker/share/x.png", Some(&dir)).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With no document directory to confine a relative src to, nothing resolves — not even a
+    /// drive-absolute src, which used to bypass `dir` entirely.
+    #[test]
+    fn resolve_src_resolves_nothing_without_a_document_dir() {
+        assert!(resolve_src("ok.png", None).is_none());
+        assert!(resolve_src("C:\\Windows\\x.png", None).is_none());
+    }
+
+    /// Reserved Windows device names are refused regardless of the extension pasted onto them.
+    #[test]
+    fn is_dos_device_stem_matches_case_insensitively_with_any_extension() {
+        assert!(is_dos_device_stem(Path::new("NUL.png")));
+        assert!(is_dos_device_stem(Path::new("con.jpg")));
+        assert!(is_dos_device_stem(Path::new("COM3.gif")));
+        assert!(is_dos_device_stem(Path::new("LPT9.bmp")));
+        assert!(!is_dos_device_stem(Path::new("normal.png")));
+        assert!(!is_dos_device_stem(Path::new("console.png")));
+    }
+}

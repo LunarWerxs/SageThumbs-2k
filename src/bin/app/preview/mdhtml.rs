@@ -30,6 +30,12 @@ fn advance_in_comment(b: &mut Builder, s: &str, i: usize) -> ControlFlow<(), usi
 
 /// `feed`'s step while inside `<style>`/`<script>`/`<svg>`, dropping everything until the
 /// matching close tag. `Break(())` when the close tag doesn't land in this fragment.
+///
+/// A raw substring match on `</tag` is not enough: `</styled-component>` contains `</style` as
+/// a substring, so a naive `find` would end the skip there and let the rest of the script/style
+/// source render as prose (and its embedded tags render live). The byte right after the tag
+/// name must be `>`, `/`, ASCII whitespace, or end of input — never another name character —
+/// and a false match keeps searching forward for a real close tag instead of giving up.
 fn advance_in_skip_tag(
     b: &mut Builder,
     s: &str,
@@ -38,15 +44,28 @@ fn advance_in_skip_tag(
 ) -> ControlFlow<(), usize> {
     let low = s[i..].to_ascii_lowercase();
     let needle = format!("</{tag}");
-    let Some(p) = low.find(&needle) else {
-        return ControlFlow::Break(());
-    };
-    let after = i + p;
-    let Some(q) = s[after..].find('>') else {
-        return ControlFlow::Break(());
-    };
-    b.skip_tag = None;
-    ControlFlow::Continue(after + q + 1)
+    let mut from = 0usize;
+    loop {
+        let Some(rel) = low[from..].find(&needle) else {
+            return ControlFlow::Break(());
+        };
+        let p = from + rel;
+        let after_name = p + needle.len();
+        let is_boundary = low
+            .as_bytes()
+            .get(after_name)
+            .is_none_or(|&c| c == b'>' || c == b'/' || c.is_ascii_whitespace());
+        if !is_boundary {
+            from = after_name;
+            continue;
+        }
+        let after = i + after_name;
+        let Some(q) = s[after..].find('>') else {
+            return ControlFlow::Break(());
+        };
+        b.skip_tag = None;
+        return ControlFlow::Continue(after + q + 1);
+    }
 }
 
 /// `feed`'s step when the next byte is `<`: a comment/doctype opener, a real tag (dispatched),
@@ -469,8 +488,10 @@ fn collapse_ws(s: &str) -> String {
 }
 
 /// Decode the entities READMEs actually use (+ numeric forms). Unknown entities pass through
-/// literally.
-fn decode_entities(s: &str) -> String {
+/// literally. Shared with `mailmsg`'s HTML-mail body decoding, which used to keep its own
+/// 7-entity copy that had drifted from this one's ~27 named entities plus numeric forms — an
+/// email body containing `&mdash;` rendered the literal text instead of the dash.
+pub(super) fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
@@ -563,5 +584,65 @@ fn named_entity_typographic(ent: &str) -> Option<char> {
         "uarr" => Some('↑'),
         "darr" => Some('↓'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod skip_tag_tests {
+    use super::*;
+
+    /// The bug: `</styled-component>` contains `</style` as a bare substring, so a naive
+    /// `find` ended the skip there, treating the rest of the style block (and even the real
+    /// `</style>` inside it) as ordinary content to render. The skip must run past that false
+    /// match to the actual closing tag.
+    #[test]
+    fn a_prefix_match_inside_a_longer_tag_name_does_not_end_the_skip() {
+        let mut b = Builder::new(false);
+        b.skip_tag = Some("style");
+        let s = "<style>.a{}</styled-component>fake close, still inside</style>SAFE";
+        let start = "<style>".len();
+        match advance_in_skip_tag(&mut b, s, start, "style") {
+            ControlFlow::Continue(next) => {
+                assert_eq!(
+                    &s[next..],
+                    "SAFE",
+                    "must skip past the REAL </style>, not the </styled-component> substring"
+                );
+                assert!(
+                    b.skip_tag.is_none(),
+                    "the real close tag must clear skip_tag"
+                );
+            }
+            ControlFlow::Break(()) => panic!("a real closing tag exists in this fragment"),
+        }
+    }
+
+    /// A close tag immediately followed by `/` (a stray self-closing-style slash) or
+    /// whitespace before the `>` is still a real boundary, not a false match to reject.
+    #[test]
+    fn whitespace_or_slash_before_the_closing_angle_bracket_is_still_a_real_close() {
+        let mut b = Builder::new(false);
+        b.skip_tag = Some("script");
+        let s = "<script>var x=1;</script >after";
+        let start = "<script>".len();
+        let ControlFlow::Continue(next) = advance_in_skip_tag(&mut b, s, start, "script") else {
+            panic!("a real closing tag exists in this fragment");
+        };
+        assert_eq!(&s[next..], "after");
+    }
+
+    /// No closing tag anywhere in the fragment: the skip stays open, carried to the next
+    /// `feed` call via `b.skip_tag` (unchanged here).
+    #[test]
+    fn no_close_tag_breaks_and_leaves_skip_tag_set() {
+        let mut b = Builder::new(false);
+        b.skip_tag = Some("style");
+        let s = "<style>still going, no close in this fragment";
+        let start = "<style>".len();
+        assert_eq!(
+            advance_in_skip_tag(&mut b, s, start, "style"),
+            ControlFlow::Break(())
+        );
+        assert_eq!(b.skip_tag, Some("style"));
     }
 }

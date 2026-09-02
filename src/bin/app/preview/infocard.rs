@@ -52,9 +52,10 @@ pub(super) unsafe fn gather(path: &str) -> InfoCard {
     let icon = shell_icon(path);
     let detail = if p.is_dir() {
         let count = std::fs::read_dir(p).map(|it| it.count()).unwrap_or(0);
+        let items = crate::i18n::t("ic_items");
         match modified_string(path) {
-            Some(w) => format!("{count} items  ·  {w}"),
-            None => format!("{count} items"),
+            Some(w) => format!("{count} {items}  ·  {w}"),
+            None => format!("{count} {items}"),
         }
     } else {
         let sz = human_size(std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));

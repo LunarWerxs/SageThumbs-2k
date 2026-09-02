@@ -44,14 +44,12 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM,
-};
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, FindWindowW, GetMessageW, SendMessageW, TranslateMessage, MSG, WM_COPYDATA,
+    DispatchMessageW, FindWindowW, GetMessageW, SendMessageTimeoutW, TranslateMessage, MSG,
+    SMTO_ABORTIFHUNG, WM_COPYDATA,
 };
 
 /// Last time we spawned a `--preview` in response to a Space press (ms tick), or 0. Serializes
@@ -81,24 +79,33 @@ pub(super) const CMD_CLOSE: usize = 3;
 /// the viewer window, kicks off the initial decode, and runs the message loop until close.
 pub(crate) unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
     // Mutex-first single-instance (TOCTOU-safe; mirrors `daemon::run_daemon` +
-    // `main`'s `SageThumbs2K.App.Single`). `GetLastError` must be read immediately after
-    // `CreateMutexW`, before any other Win32 call clobbers it.
-    let mutex = CreateMutexW(None, true, VIEWER_MUTEX);
-    if mutex.is_ok() && GetLastError() == ERROR_ALREADY_EXISTS {
-        // Another viewer owns the window — hand it the new selection and exit. Retry the
-        // FindWindow briefly in case the winner is still mid-create.
-        for _ in 0..25 {
-            if let Ok(existing) = FindWindowW(VIEWER_CLASS, PCWSTR::null()) {
-                if let Some(p) = initial_path {
-                    send_command(existing, CMD_SET_PATH, Some(p));
+    // `main`'s `SageThumbs2K.App.Single`). The helper reads `GetLastError` immediately after
+    // `CreateMutexW`, before any other Win32 call clobbers it, and gives the mutex an
+    // owner-only DACL so another account's process cannot open it.
+    let (mutex, last_err) = crate::win::create_mutex_user_only(true, VIEWER_MUTEX);
+    // `mutex.is_err()` is NOT the same question as "does someone else already own it" —
+    // `CreateMutexW` can also fail outright (e.g. an access-denied against a differently-DACL'd
+    // object of the same name). Either case means this process cannot establish itself as the
+    // single-instance owner, so both route through the same forward-or-bail path below instead
+    // of one of them silently falling through to create a second, uncoordinated viewer window.
+    let mutex = match mutex {
+        Ok(m) if last_err != ERROR_ALREADY_EXISTS => m,
+        _ => {
+            // Retry the FindWindow briefly in case the (real or presumed) owner is still
+            // mid-create.
+            for _ in 0..25 {
+                if let Ok(existing) = FindWindowW(VIEWER_CLASS, PCWSTR::null()) {
+                    if let Some(p) = initial_path {
+                        send_command(existing, CMD_SET_PATH, Some(p));
+                    }
+                    crate::win::force_foreground(existing);
+                    return;
                 }
-                crate::win::force_foreground(existing);
-                return;
+                std::thread::sleep(std::time::Duration::from_millis(40));
             }
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            return; // no window to forward to, and no safe way to become the owner either
         }
-        return; // winner vanished between the mutex check and now — nothing to forward to
-    }
+    };
     // Held (leaked) for the life of the viewer on purpose — dropping it early would let a
     // third launch create a second window. `_mutex` binds it so it isn't dropped now.
     let _mutex = mutex;
@@ -143,8 +150,10 @@ pub(crate) unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
     // `_mutex` drops here, releasing single-instance ownership as the process exits.
 }
 
-/// Send a `WM_COPYDATA` command (+ optional path payload) to a viewer window. Uses
-/// `SendMessageW` (blocking) because `WM_COPYDATA`'s buffer is only valid for the call.
+/// Send a `WM_COPYDATA` command (+ optional path payload) to a viewer window. Blocking, because
+/// `WM_COPYDATA`'s buffer is only valid for the call — but bounded with `SMTO_ABORTIFHUNG` and a
+/// 2 s timeout, so a viewer wedged on its own UI thread (a WebView2/COM call, a modal) can't
+/// park the sender forever.
 pub(super) unsafe fn send_command(hwnd: HWND, cmd: usize, path: Option<&str>) {
     let wide = path.map(crate::win::wide).unwrap_or_default();
     let cds = COPYDATASTRUCT {
@@ -156,11 +165,15 @@ pub(super) unsafe fn send_command(hwnd: HWND, cmd: usize, path: Option<&str>) {
             wide.as_ptr() as *mut c_void
         },
     };
-    SendMessageW(
+    let mut result = 0usize;
+    let _ = SendMessageTimeoutW(
         hwnd,
         WM_COPYDATA,
-        Some(WPARAM(0)),
-        Some(LPARAM(&cds as *const _ as isize)),
+        WPARAM(0),
+        LPARAM(&cds as *const _ as isize),
+        SMTO_ABORTIFHUNG,
+        2000,
+        Some(&mut result),
     );
 }
 

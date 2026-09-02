@@ -24,6 +24,9 @@ pub(in crate::preview) enum Lang {
     Kotlin,
     Swift,
     Sh,
+    Batch,
+    PowerShell,
+    Perl,
     Html,
     Css,
     Xml,
@@ -31,7 +34,7 @@ pub(in crate::preview) enum Lang {
     Plain,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(in crate::preview) enum Tag {
     Plain,
     Comment,
@@ -62,6 +65,9 @@ pub(in crate::preview) fn lang_tag(l: Lang) -> Option<&'static str> {
         Lang::Kotlin => "kotlin",
         Lang::Swift => "swift",
         Lang::Sh => "sh",
+        Lang::Batch => "batch",
+        Lang::PowerShell => "powershell",
+        Lang::Perl => "perl",
         Lang::Html => "html",
         Lang::Css => "css",
         Lang::Xml => "xml",
@@ -88,7 +94,10 @@ pub(in crate::preview) fn lang_from_ext(ext: &str) -> Lang {
         "lua" => Lang::Lua,
         "kt" | "kts" => Lang::Kotlin,
         "swift" => Lang::Swift,
-        "sh" | "bash" | "zsh" | "ps1" | "bat" | "cmd" => Lang::Sh,
+        "sh" | "bash" | "zsh" => Lang::Sh,
+        "bat" | "cmd" => Lang::Batch,
+        "ps1" | "psm1" | "psd1" => Lang::PowerShell,
+        "pl" | "pm" => Lang::Perl,
         "html" | "htm" | "xhtml" => Lang::Html,
         "css" | "scss" | "less" => Lang::Css,
         // svg is XML — reachable via the caption's "view source" toggle on a rendered SVG.
@@ -119,7 +128,10 @@ pub(in crate::preview) fn lang_from_fence(tag: &str) -> Lang {
         "lua" => Lang::Lua,
         "kotlin" | "kt" => Lang::Kotlin,
         "swift" => Lang::Swift,
-        "sh" | "bash" | "shell" | "zsh" | "ps1" | "powershell" | "bat" | "console" => Lang::Sh,
+        "sh" | "bash" | "shell" | "zsh" | "console" => Lang::Sh,
+        "bat" | "cmd" | "batch" => Lang::Batch,
+        "ps1" | "powershell" | "pwsh" => Lang::PowerShell,
+        "perl" | "pl" => Lang::Perl,
         "html" | "htm" => Lang::Html,
         "css" | "scss" | "less" => Lang::Css,
         "xml" | "svg" => Lang::Xml,
@@ -134,6 +146,11 @@ pub(in crate::preview) struct Spec {
     block: Option<(&'static str, &'static str)>,
     strings: &'static [u8], // quote chars
     keywords: &'static [&'static str],
+    /// Colour a string immediately followed by `:` as an object KEY (`Tag::Keyword`) rather than
+    /// a plain string. Only meaningful for the data-serialization languages where a leading key
+    /// really is what precedes `:` — everywhere else (every C-family language included) a string
+    /// followed by `:` is just as likely the middle branch of a ternary (`cond ? "yes" : "no"`).
+    key_heuristic: bool,
 }
 
 /// The per-language tuple `spec()` builds from: (line comments, block comment, quotes, keywords).
@@ -162,6 +179,16 @@ pub(in crate::preview) fn spec(lang: Lang) -> Spec {
         Lang::Kotlin => (&["//"], Some(("/*", "*/")), b"\"", KOTLIN_KW),
         Lang::Swift => (&["//"], Some(("/*", "*/")), b"\"", SWIFT_KW),
         Lang::Sh => (&["#"], None, b"\"'", SH_KW),
+        // Batch comments are conventionally `REM` (any case) or `::` at the start of a
+        // statement; matched here as plain substrings like every other language's markers.
+        Lang::Batch => (&["REM", "Rem", "rem", "::"], None, b"\"", BATCH_KW),
+        // PowerShell's block comment is `<# ... #>`; its keyword set overlaps `SH_KW` heavily
+        // (param/foreach/begin/process/end and the flow-control words) so it reuses that table
+        // rather than duplicating it.
+        Lang::PowerShell => (&["#"], Some(("<#", "#>")), b"\"'", SH_KW),
+        // POD documentation blocks (`=pod` ... `=cut`) are Perl's nearest equivalent to a block
+        // comment; real POD also accepts `=head1`/`=item`/etc, which this lexer does not chase.
+        Lang::Perl => (&["#"], Some(("=pod", "=cut")), b"\"'", PERL_KW),
         Lang::Html | Lang::Xml => (&[], Some(("<!--", "-->")), b"\"'", &[]),
         Lang::Css => (&[], Some(("/*", "*/")), b"\"'", &[]),
         Lang::Sql => (&["--"], Some(("/*", "*/")), b"'", SQL_KW),
@@ -172,12 +199,17 @@ pub(in crate::preview) fn spec(lang: Lang) -> Spec {
         block: bl,
         strings: st,
         keywords: kw,
+        key_heuristic: matches!(lang, Lang::Json | Lang::Yaml | Lang::Toml),
     }
 }
 
 /// UTF-8 byte length of the char starting with lead byte `b`.
 pub(in crate::preview) fn utf8_len(b: u8) -> usize {
-    if b >= 0xF0 {
+    if b >= 0xF8 {
+        // 0xF8-0xFF are not valid UTF-8 lead bytes (the encoding tops out at 0xF4, for
+        // U+10FFFF) — step one byte instead of overrunning into whatever follows.
+        1
+    } else if b >= 0xF0 {
         4
     } else if b >= 0xE0 {
         3
@@ -305,9 +337,13 @@ fn try_string_literal<'a>(
         j += 1;
     }
     let end = j.min(n);
-    let is_key = line
-        .get(end..)
-        .is_some_and(|r| r.trim_start().starts_with(':'));
+    // Only Json/Yaml/Toml colour a string-then-colon as an object key — everywhere else
+    // (every C-family language included) that shape is just as likely a ternary's middle
+    // branch (`cond ? "yes" : "no"`), which used to mis-colour as a key on every such line.
+    let is_key = sp.key_heuristic
+        && line
+            .get(end..)
+            .is_some_and(|r| r.trim_start().starts_with(':'));
     out.push((
         if is_key { Tag::Keyword } else { Tag::Str },
         &line[start..end],
@@ -454,4 +490,95 @@ pub(in crate::preview) fn tokenize<'a>(
         out.push((Tag::Plain, &line[seg..n]));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utf8_len_steps_one_on_an_invalid_lead_byte() {
+        // 0xF8-0xFF cannot start a valid UTF-8 char; the old `>= 0xF0` branch reported 4 for
+        // these and could walk the scan past whatever byte actually follows.
+        assert_eq!(utf8_len(0xF8), 1);
+        assert_eq!(utf8_len(0xFF), 1);
+    }
+
+    #[test]
+    fn utf8_len_still_reports_four_for_a_real_four_byte_lead() {
+        assert_eq!(utf8_len(0xF0), 4);
+        assert_eq!(utf8_len(0xF4), 4);
+    }
+
+    #[test]
+    fn ternary_string_is_not_coloured_as_a_key_in_a_c_family_language() {
+        let sp = spec(Lang::Js);
+        let mut in_block = false;
+        let runs = tokenize(r#"cond ? "yes" : "no";"#, &sp, &mut in_block);
+        assert!(
+            runs.iter()
+                .all(|(t, s)| !(*s == "\"yes\"" && *t == Tag::Keyword)),
+            "a ternary branch must not be coloured as an object key: {runs:?}"
+        );
+    }
+
+    #[test]
+    fn json_still_colours_a_string_before_a_colon_as_a_key() {
+        let sp = spec(Lang::Json);
+        let mut in_block = false;
+        let runs = tokenize(r#""name": "value""#, &sp, &mut in_block);
+        assert!(
+            runs.iter()
+                .any(|(t, s)| *s == "\"name\"" && *t == Tag::Keyword),
+            "Json must keep colouring the key before `:`: {runs:?}"
+        );
+    }
+
+    #[test]
+    fn batch_rem_and_double_colon_are_comments() {
+        let sp = spec(Lang::Batch);
+        let mut in_block = false;
+        assert!(matches!(
+            tokenize("REM this is a note", &sp, &mut in_block)[..],
+            [(Tag::Comment, _)]
+        ));
+        assert!(matches!(
+            tokenize(":: also a note", &sp, &mut in_block)[..],
+            [(Tag::Comment, _)]
+        ));
+    }
+
+    #[test]
+    fn powershell_block_comment_spans_lines() {
+        let sp = spec(Lang::PowerShell);
+        let mut in_block = false;
+        let runs = tokenize("<# starts here", &sp, &mut in_block);
+        assert!(matches!(runs[..], [(Tag::Comment, _)]));
+        assert!(in_block); // no closing #> on this line — carries to the next
+        let runs2 = tokenize("still inside #> Write-Host 'done'", &sp, &mut in_block);
+        assert!(!in_block); // closed partway through this line
+        assert!(matches!(runs2[0], (Tag::Comment, _)));
+    }
+
+    #[test]
+    fn perl_pod_block_and_keywords() {
+        let sp = spec(Lang::Perl);
+        let mut in_block = false;
+        assert!(matches!(
+            tokenize("=pod", &sp, &mut in_block)[..],
+            [(Tag::Comment, _)]
+        ));
+        assert!(in_block);
+        let runs = tokenize("my $x = shift;", &spec(Lang::Perl), &mut false);
+        assert!(runs.iter().any(|(t, s)| *t == Tag::Keyword && *s == "my"));
+    }
+
+    #[test]
+    fn lang_from_ext_separates_batch_and_powershell_from_sh() {
+        assert!(matches!(lang_from_ext("bat"), Lang::Batch));
+        assert!(matches!(lang_from_ext("cmd"), Lang::Batch));
+        assert!(matches!(lang_from_ext("ps1"), Lang::PowerShell));
+        assert!(matches!(lang_from_ext("sh"), Lang::Sh));
+        assert!(matches!(lang_from_ext("pl"), Lang::Perl));
+    }
 }

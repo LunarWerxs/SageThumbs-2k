@@ -892,6 +892,7 @@ pub(super) fn btn_glyph(btn: Btn, pinned: bool) -> u16 {
         Btn::Pin if pinned => 0xE840,                   // Pinned (filled)
         Btn::Pin => 0xE718,                             // Pin
         Btn::Copy => 0xE8C8,                            // Copy
+        Btn::SavePage => 0xE74E,                        // Save
         // Never reached: `draw_button` short-circuits Ocr to the vector mark above. Kept so
         // this match stays exhaustive (and harmless if someone routes it back through a font).
         Btn::Ocr => 0xE8D2,      // Font ("A")

@@ -61,14 +61,23 @@ pub(in crate::preview) unsafe fn copy_content(hwnd: HWND, raw: bool) {
                 let frames = st.frames.borrow();
                 (frames.len() > 1).then(|| st.cur_frame.get())
             };
+            // Captured on the UI thread, at the keypress — NOT read from `st` again inside the
+            // worker, which runs on its own thread and must never touch `ViewerState`'s
+            // `Cell`/`RefCell` fields without the UI thread's synchronization. `copy_shown_image`
+            // re-checks this against the live generation right before the clipboard write, so a
+            // fast file-switch during the decode drops the copy instead of putting the file just
+            // left on the clipboard under the still-held Ctrl+C.
+            let gen = st.decode_gen.get();
             std::thread::spawn(move || {
                 use windows::Win32::System::Com::{
                     CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
                 };
                 let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-                if !copy_shown_image(&p, pdf_page, anim_frame) {
+                if !copy_shown_image(&p, pdf_page, anim_frame, gen) {
                     // The viewer has no toast/status surface, so a failed copy is otherwise
                     // indistinguishable from the keypress not registering — say so in the log.
+                    // (Also reached when the copy was dropped as stale, not just a real decode
+                    // failure — both cases end in "nothing landed on the clipboard".)
                     sagethumbs2k_core::safety::log(&format!("preview: Ctrl+C could not copy {p}"));
                 }
                 if inited {
@@ -80,24 +89,23 @@ pub(in crate::preview) unsafe fn copy_content(hwnd: HWND, raw: bool) {
     }
 }
 
-/// Copy the image the viewer is SHOWING: the given PDF page / animation frame when navigated,
-/// else the file's full-fidelity decode (the context menu's Copy verb path). Falls back to the
-/// static decode when frame extraction fails, so Ctrl+C still yields SOMETHING.
-pub(in crate::preview) fn copy_shown_image(
+/// Build the RGBA pixels the viewer is currently SHOWING: the given PDF page / animation frame
+/// when navigated. `None` for anything else (the caller decides what to fall back to) — this
+/// deliberately does NOT cover the "neither navigated" case, since that one differs between the
+/// two callers (clipboard falls back to the file's own full-fidelity decode; a save has nothing
+/// sensible to fall back to when the toolbar button is only shown while one of the two applies).
+fn navigated_shown_image_rgba(
     path: &str,
     pdf_page: Option<u32>,
     anim_frame: Option<usize>,
-) -> bool {
+) -> Option<(i32, i32, Vec<u8>)> {
     if let Some(page) = pdf_page {
         let png = sagethumbs2k_core::decode::read_capped(path)
             .ok()
             .and_then(|b| sagethumbs2k_core::pdf::render_page_counted(&b, page, 1600));
-        if let Some(img) = png.and_then(|(png, _)| image::load_from_memory(&png).ok()) {
-            let rgba = img.to_rgba8();
-            let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-            return sagethumbs2k_core::copy_rgba_to_clipboard(w, h, &rgba.into_raw()).is_ok();
-        }
-        return false; // page N failed to render — copying page 1 instead would be a silent lie
+        let img = png.and_then(|(png, _)| image::load_from_memory(&png).ok())?;
+        let rgba = img.to_rgba8();
+        return Some((rgba.width() as i32, rgba.height() as i32, rgba.into_raw()));
     }
     if let Some(frame) = anim_frame {
         let ext = std::path::Path::new(path)
@@ -107,15 +115,57 @@ pub(in crate::preview) fn copy_shown_image(
             .unwrap_or_default();
         let frames = sagethumbs2k_core::decode::read_preview_capped(path)
             .ok()
-            .and_then(|b| crate::preview::anim::decode_animation(&b, &ext));
-        if let Some(frames) = frames {
-            if let Some((d, _)) = frames.get(frame) {
-                return sagethumbs2k_core::copy_rgba_to_clipboard(d.w, d.h, &d.rgba).is_ok();
-            }
-        }
-        // fall through: static decode (first frame) beats copying nothing
+            .and_then(|b| crate::preview::anim::decode_animation(&b, &ext))?;
+        let (d, _) = frames.get(frame)?;
+        return Some((d.w, d.h, d.rgba.clone()));
     }
-    sagethumbs2k_core::copy_to_clipboard(path).is_ok()
+    None
+}
+
+/// Copy the image the viewer is SHOWING: the given PDF page / animation frame when navigated,
+/// else the file's full-fidelity decode (the context menu's Copy verb path). Falls back to the
+/// static decode when frame extraction fails, so Ctrl+C still yields SOMETHING.
+///
+/// `gen` is the `decode_gen` captured at the moment this copy was requested — checked against
+/// the live generation right before EVERY clipboard write, never earlier: the decode above can
+/// take a while (a RAW/HEIC decode, a PDF page render), and the user may have already switched
+/// files by the time it finishes. Landing the wrong image on the clipboard silently is worse
+/// than a dropped Ctrl+C, so a stale generation drops the copy instead.
+pub(in crate::preview) fn copy_shown_image(
+    path: &str,
+    pdf_page: Option<u32>,
+    anim_frame: Option<usize>,
+    gen: u64,
+) -> bool {
+    if let Some((w, h, rgba)) = navigated_shown_image_rgba(path, pdf_page, anim_frame) {
+        return content::generation_current(gen)
+            && sagethumbs2k_core::copy_rgba_to_clipboard(w, h, &rgba).is_ok();
+    }
+    if pdf_page.is_some() {
+        return false; // page N failed to render — copying page 1 instead would be a silent lie
+    }
+    // Either not navigated at all, or an animation frame that failed to extract — either way
+    // the file's own full-fidelity decode (first frame, for an animation) beats nothing.
+    content::generation_current(gen) && sagethumbs2k_core::copy_to_clipboard(path).is_ok()
+}
+
+/// Save the image the viewer is currently SHOWING (the navigated-to PDF page / animation frame)
+/// as a PNG at `dest`. `false` if nothing could be decoded, or the write itself failed. Unlike
+/// [`copy_shown_image`] there is no "not navigated" fallback: the toolbar's `SavePage` button
+/// only shows while one of the two applies (see `window::btn_visible`).
+pub(in crate::preview) fn save_shown_image(
+    path: &str,
+    pdf_page: Option<u32>,
+    anim_frame: Option<usize>,
+    dest: &str,
+) -> bool {
+    let Some((w, h, rgba)) = navigated_shown_image_rgba(path, pdf_page, anim_frame) else {
+        return false;
+    };
+    let Some(img) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) else {
+        return false;
+    };
+    img.save(dest).is_ok()
 }
 
 // ===== Phase 4: zoom / pan / scroll =====

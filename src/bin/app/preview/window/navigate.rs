@@ -8,7 +8,7 @@ use std::cell::RefCell;
 /// True if `ext` (lowercase, no dot) is something the viewer can render — used to filter the
 /// folder listing for ←/→ navigation so arrows skip files nothing can preview. Must stay in sync
 /// with what `loader::load` actually handles: decoded formats + text/markdown + archives + fonts
-/// + SQLite databases.
+/// + SQLite databases + mail messages + web shortcuts.
 pub(in crate::preview) fn is_previewable_ext(ext: &str) -> bool {
     use sagethumbs2k_core::formats;
     formats::is_known(ext)
@@ -18,6 +18,21 @@ pub(in crate::preview) fn is_previewable_ext(ext: &str) -> bool {
         || content::is_archive_ext(ext)
         || crate::preview::font::is_font_ext(ext)
         || crate::preview::dbdoc::is_db_ext(ext)
+        || crate::preview::mailmsg::is_mail_ext(ext)
+        || is_url_shortcut_ext(ext)
+}
+
+/// `.url`/`.webloc` shortcuts — previewable only when the WebView2-backed loader can actually
+/// show them (`loader::try_load_web`, `feature = "html-preview"`). Without that feature they
+/// fall through to "nothing to show", so listing them here unconditionally would let arrow-nav
+/// land on a file the loader has no view for.
+#[cfg(feature = "html-preview")]
+fn is_url_shortcut_ext(ext: &str) -> bool {
+    matches!(ext, "url" | "webloc")
+}
+#[cfg(not(feature = "html-preview"))]
+fn is_url_shortcut_ext(_ext: &str) -> bool {
+    false
 }
 
 /// Explorer-style filename order (`image2` before `image10`). Precompute each UTF-16 key once
@@ -159,6 +174,14 @@ pub(in crate::preview) unsafe fn nav_sibling(hwnd: HWND, delta: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_previewable_ext_includes_mail_messages() {
+        // Without this, opening an .eml/.msg and pressing an arrow key silently snapped to
+        // whatever file sorts first in the folder — the current file wasn't even in the list.
+        assert!(is_previewable_ext("eml"));
+        assert!(is_previewable_ext("msg"));
+    }
 
     #[test]
     fn position_case_insensitive_matches_differently_cased_names() {

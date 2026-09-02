@@ -352,9 +352,11 @@ unsafe fn ensure_visible_text(hwnd: HWND, st: &ViewerState, c: RECT, m: i32, off
 ///
 /// Markdown only has rects for what it PAINTED, so an off-screen target has nothing to aim at,
 /// and `md_focus_hit`'s nearest-hit fallback would return an already visible token and "succeed"
-/// without scrolling anywhere. Document start/end are exact jumps; otherwise the target is at
-/// most a line or two away (a char/word hop), so walk toward it: each scroll repaints
-/// synchronously, which records fresh rects.
+/// without scrolling anywhere. Document start/end are exact jumps; a target inside an already-
+/// measured block gets an exact jump too, straight to that block's own top (`y_for_offset`,
+/// below); from there — or when nothing that far has been measured yet — the target is at most
+/// a line or two away (a char/word hop), so walk toward it: each scroll repaints synchronously,
+/// which records fresh rects.
 unsafe fn ensure_visible_markdown(hwnd: HWND, st: &ViewerState, c: RECT, off: usize) {
     let len = with_doc(st, |d| d.len()).unwrap_or(0);
     if off == 0 {
@@ -364,6 +366,25 @@ unsafe fn ensure_visible_markdown(hwnd: HWND, st: &ViewerState, c: RECT, off: us
     if off >= len {
         scroll_by(hwnd, st.text_h.get()); // Ctrl+Shift+End (scroll_by clamps)
         return;
+    }
+    // Exact jump: `y_for_offset` reads the already-measured layout for the pure document-space
+    // y of the target's own block (the same coordinate `TocEntry::target` uses for outline
+    // clicks — independent of the CURRENT scroll), so this reaches it in one hop regardless of
+    // distance. Without it, a Find hit more than 8 * 24 = 192 device px away was simply
+    // unreachable: the counter advanced but nothing on screen ever moved, because the fine
+    // stepper below was built only for a same-block char/word hop. It falls through to that
+    // stepper for the final on-screen adjustment (and as the whole path when nothing has been
+    // measured that far yet).
+    if let Some(target_y) = {
+        let l = st.md_layout.borrow();
+        super::markdown::y_for_offset(&l, off)
+    } {
+        let margin = crate::win::dpi_scale(hwnd, 18); // matches render()'s own content margin
+        let want = (target_y - margin).max(0);
+        if want != st.text_scroll.get() && set_text_scroll(hwnd, want) {
+            st.toc_sel.set(None);
+            let _ = UpdateWindow(hwnd);
+        }
     }
     let step = crate::win::dpi_scale(hwnd, 24);
     for _ in 0..8 {

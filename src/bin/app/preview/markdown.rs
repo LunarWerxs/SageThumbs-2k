@@ -117,6 +117,17 @@ pub(super) fn is_remote_src(src: &str) -> bool {
     l.starts_with("http://") || l.starts_with("https://")
 }
 
+/// Is this image src ever pilled instead of rendered inline, i.e. does the "load web images"
+/// toolbar button need to exist for this document at all? Matches exactly what `Builder::image`
+/// treats as remote: `http(s)://` (unlockable via the toggle) plus protocol-relative `//` and
+/// embedded `data:` (never unlockable — `Builder::image` pills those unconditionally). One
+/// shared predicate for `has_remote_images`, `html_has_remote_img`, and `Builder::image` itself,
+/// so a document whose only images are protocol-relative can never silently fail to show the
+/// button that explains why they are pills.
+pub(super) fn is_gated_image_src(src: &str) -> bool {
+    is_remote_src(src) || src.starts_with("//") || src.starts_with("data:")
+}
+
 /// The pulldown-cmark [`Options`] shared by every markdown pass over a document: the real
 /// render ([`parse::parse_blocks`]) and the pre-decide toolbar-visibility scans below
 /// ([`has_headings`], [`has_remote_images`]). One source of truth so a flag added here
@@ -152,21 +163,36 @@ pub(super) fn has_headings(md: &str) -> bool {
 pub(super) fn has_remote_images(md: &str) -> bool {
     let opts = md_options();
     Parser::new_ext(md, opts).any(|ev| match ev {
-        Event::Start(Tag::Image { dest_url, .. }) => is_remote_src(&dest_url),
+        Event::Start(Tag::Image { dest_url, .. }) => is_gated_image_src(&dest_url),
         Event::Html(s) | Event::InlineHtml(s) => html_has_remote_img(&s),
         _ => false,
     })
 }
 
-/// `<img …src="http…">` in a raw-HTML chunk. Deliberately loose (it does not parse attributes,
-/// it just looks for an `src` pointing at a web scheme in a chunk that contains an `<img`), which
-/// is the right trade for a button-visibility check.
+/// The `src="…` attribute-value openers `html_has_remote_img`'s loose scan looks for: one per
+/// quote style, for each scheme `is_gated_image_src` treats as gated. Kept as one list so the
+/// two checks cannot drift the way they did before this fix.
+const GATED_IMG_SRC_NEEDLES: [&str; 9] = [
+    "src=\"http",
+    "src='http",
+    "src=http",
+    "src=\"//",
+    "src='//",
+    "src=//",
+    "src=\"data:",
+    "src='data:",
+    "src=data:",
+];
+
+/// `<img …src="http…">` (or `//…`/`data:…`) in a raw-HTML chunk. Deliberately loose (it does not
+/// parse attributes, it just looks for an `src` pointing at a gated scheme in a chunk that
+/// contains an `<img`), which is the right trade for a button-visibility check.
 fn html_has_remote_img(s: &str) -> bool {
     let low = s.to_ascii_lowercase();
     if !low.contains("<img") {
         return false;
     }
-    low.contains("src=\"http") || low.contains("src='http") || low.contains("src=http")
+    GATED_IMG_SRC_NEEDLES.iter().any(|n| low.contains(n))
 }
 
 fn html_has_heading(s: &str) -> bool {
@@ -281,6 +307,56 @@ fn refresh_height_cache(layout: &mut MdLayout, full_w: i32) {
         layout.heights = vec![-1; layout.blocks.len()];
         layout.width_key = Some(full_w);
     }
+}
+
+/// The `doc` byte offset of the block `base` starts at, or `None` for a block with no
+/// selectable text (a rule/image — [`DocBase::None`]).
+fn block_start_offset(base: &DocBase) -> Option<usize> {
+    match base {
+        DocBase::Runs(offs) => offs.first().copied(),
+        DocBase::Code(off) => Some(*off),
+        DocBase::Table(rows) => rows
+            .iter()
+            .flat_map(|row| row.iter())
+            .flat_map(|cell| cell.iter())
+            .next()
+            .copied(),
+        DocBase::None => None,
+    }
+}
+
+/// The document-px y of the top of the block containing selection offset `off`, from the
+/// already-measured [`MdLayout`] alone — an EXACT jump target, unlike the fine 24px stepper
+/// [`super::selection::ensure_visible`] falls back to for a target still inside the same block
+/// (or when no full measurement exists yet). `None` when `heights` isn't fully measured for
+/// every block up to and including the one `off` lands in (nothing painted it yet, so there is
+/// no y to trust), or when `off` doesn't land inside any block's own text.
+pub(super) fn y_for_offset(layout: &MdLayout, off: usize) -> Option<i32> {
+    if !layout.ready || layout.heights.len() != layout.bases.len() {
+        return None;
+    }
+    let mut y = 0i32;
+    let mut best: Option<i32> = None;
+    for (h, base) in layout.heights.iter().zip(layout.bases.iter()) {
+        let start = block_start_offset(base);
+        if start.is_some_and(|s| s > off) {
+            // Offsets only increase, so every later block starts even further past `off` —
+            // `best` (if set) is already the containing block; nothing more to check.
+            break;
+        }
+        if *h < 0 {
+            // This block starts at or before `off` and was never measured, so the
+            // containing block is this one or a later one and its y is unknown.
+            return None;
+        }
+        if start.is_some() {
+            best = Some(y);
+        }
+        // A block with no offset (a rule/image) carries no information either way — just fold
+        // its height in and keep scanning; it neither confirms nor rules out `best`.
+        y += h;
+    }
+    best
 }
 
 /// Push `block`'s outline entry when it's a heading, called unconditionally (before any
@@ -782,6 +858,65 @@ use parse::{linkify_into, url_at};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `y_for_offset` must return the CONTAINING block's own top, not merely some earlier
+    /// block that also starts before `off` — this is the exact-jump path `ensure_visible`'s
+    /// Find-hit scrolling depends on to reach a match many screens away in one hop.
+    #[test]
+    fn y_for_offset_returns_the_target_blocks_own_top() {
+        let l = MdLayout {
+            ready: true,
+            heights: vec![10, 20, 30],
+            bases: vec![
+                DocBase::Runs(vec![0]),  // block 0: doc offsets starting at 0
+                DocBase::Runs(vec![10]), // block 1: starts at 10
+                DocBase::Code(30),       // block 2: starts at 30
+            ],
+            ..Default::default()
+        };
+        assert_eq!(y_for_offset(&l, 0), Some(0));
+        assert_eq!(y_for_offset(&l, 5), Some(0)); // still inside block 0
+        assert_eq!(y_for_offset(&l, 10), Some(10)); // exactly block 1's start
+        assert_eq!(y_for_offset(&l, 25), Some(10)); // inside block 1
+        assert_eq!(y_for_offset(&l, 30), Some(30)); // block 2
+        assert_eq!(y_for_offset(&l, 999), Some(30)); // past everything: last block wins
+    }
+
+    /// A block with no selectable text (`DocBase::None` — a rule or image) must not break the
+    /// scan: its height still counts toward later blocks' y, and it neither confirms nor rules
+    /// out the running `best` match.
+    #[test]
+    fn y_for_offset_skips_over_offsetless_blocks_without_losing_its_place() {
+        let l = MdLayout {
+            ready: true,
+            heights: vec![10, 5, 20], // middle block is a rule/image
+            bases: vec![
+                DocBase::Runs(vec![0]),
+                DocBase::None,
+                DocBase::Runs(vec![10]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(y_for_offset(&l, 12), Some(15)); // block 2's top: 10 (b0) + 5 (rule)
+    }
+
+    /// A block that was never measured (`h == -1`, nothing has painted that far yet) makes the
+    /// exact jump untrustworthy past that point — `None`, so the caller falls back to the fine
+    /// stepper instead of scrolling to a wrong y.
+    #[test]
+    fn y_for_offset_is_none_before_the_target_block_is_measured() {
+        let l = MdLayout {
+            ready: true,
+            heights: vec![10, -1, 30], // block 1 never measured
+            bases: vec![
+                DocBase::Runs(vec![0]),
+                DocBase::Runs(vec![10]),
+                DocBase::Code(30),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(y_for_offset(&l, 25), None);
+    }
 
     /// The real render, `has_headings`, and `has_remote_images` used to each build their
     /// own copy of the same 3-line `Options` block, so a flag added to one could silently

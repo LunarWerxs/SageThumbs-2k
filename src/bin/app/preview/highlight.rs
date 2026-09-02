@@ -68,9 +68,18 @@ struct BlockCache {
     /// could only ever mis-seed `in_block` for one paint of a syntax-highlighted VIEW — a
     /// cosmetic miscolour, not a correctness or safety issue; this window renders, it never lets
     /// the user edit, so there is no "flush stale colours before a write" concern either.
-    key: (usize, usize, u8),
+    /// Buffer address, length, language, and the load generation the buffer belongs to: a
+    /// later file of the same length can land at the same address once the old `String`
+    /// is freed, and without the generation a hit would paint the previous file's tokens.
+    key: (usize, usize, u8, u64),
     /// `in_block` at the START of each line (index = 0-based line number), one entry per line.
     before: Vec<bool>,
+    /// Tokenized runs for each line (same indexing as `before`), captured on the same MISS pass
+    /// that builds it. A later repaint of a line already covered by this table — a scroll, a
+    /// resize, or a cursor-blink repaint of the same viewport — draws straight from here instead
+    /// of re-running the tokenizer (and the tab-expansion allocation ahead of it) over content
+    /// that has not changed.
+    runs: Vec<Vec<(Tag, String)>>,
 }
 
 thread_local! {
@@ -114,31 +123,44 @@ pub(super) unsafe fn paint_lines(
     let mut tm = TEXTMETRICW::default();
     let _ = GetTextMetricsW(hdc, &mut tm);
     let line_h = tm.tmHeight + tm.tmExternalLeading;
-
-    // Left gutter: right-aligned 1-based line numbers in a muted colour, like QuickLook / an editor.
-    // Its width is sized to the digit count of the last line, so the code column shifts right by it.
     let char_w = tm.tmAveCharWidth.max(1);
-    let (gutter_w, gutter_pad, code_x, code_right) = gutter_metrics(text, x, width, char_w);
     let gutter_fg = crate::dark::HEADER_TEXT().0;
     let sel_bg = crate::dark::SEL_BG().0;
 
     // Cache lookup: same buffer (address+length), same language → reuse the per-line `in_block`
-    // table instead of re-lexing lines this call won't even draw. Cloning the cached `Vec<bool>`
-    // (one byte per line — a few hundred KB even for a huge file) is far cheaper than re-running
-    // the tokenizer over every line, and side-steps holding the thread-local borrowed across the
-    // loop below (which also writes to it on a miss).
-    let key = (text.as_ptr() as usize, text.len(), lang as u8);
+    // table AND the already-tokenized runs instead of re-lexing lines this call has already
+    // drawn before (a scroll, a resize, or a cursor-blink repaint of the same viewport). Cloning
+    // the cached `Vec<bool>` (one bool per line) is cheap even for a huge file; `runs` is only
+    // ever cloned per line, on demand, for the handful of lines actually drawn below — never the
+    // whole document.
+    let key = (
+        text.as_ptr() as usize,
+        text.len(),
+        lang as u8,
+        super::content::live_generation(),
+    );
     let cached_before: Option<Vec<bool>> = BLOCK_CACHE.with(|c| {
         c.borrow()
             .as_ref()
             .and_then(|bc| (bc.key == key).then(|| bc.before.clone()))
     });
+
+    // Left gutter: right-aligned 1-based line numbers in a muted colour, like QuickLook / an
+    // editor. Its width is sized to the digit count of the last line, so the code column shifts
+    // right by it. The line count comes straight from the cache on a HIT (`before` has one entry
+    // per line) instead of re-scanning the whole document for a newline count on every repaint.
+    let total_lines = cached_before
+        .as_ref()
+        .map(|b| b.len())
+        .unwrap_or_else(|| text.split('\n').count());
+    let (gutter_w, gutter_pad, code_x, code_right) = gutter_metrics(total_lines, x, width, char_w);
+
     // A MISS lexes every line unconditionally (identical to the old always-lex behaviour) and
-    // records the `in_block` state entering each one, so the NEXT call for this same buffer
-    // (the common case: a scroll or resize repaint of the document already on screen) can hit
-    // the cache instead. `seeded` is already true for a MISS: there is nothing to seed FROM.
+    // records the `in_block` state entering each one, plus its tokenized runs, so the NEXT call
+    // for this same buffer (the common case: a scroll or resize repaint of the document already
+    // on screen) can hit the cache instead.
     let mut fresh_before: Vec<bool> = Vec::new();
-    let mut seeded = cached_before.is_none();
+    let mut fresh_runs: Vec<Vec<(Tag, String)>> = Vec::new();
 
     let mut in_block = false;
     let mut y = y0;
@@ -148,6 +170,52 @@ pub(super) unsafe fn paint_lines(
         let line_no0 = line_no; // 0-based index, before the increment below
         line_no += 1;
         let visible = y + line_h > clip_top && y < clip_bottom;
+
+        // A line the MISS pass already tokenized draws straight from that cache — no re-lex, no
+        // tab-expansion allocation, nothing. A line the cache doesn't (yet) cover — which cannot
+        // happen once a MISS has run for this buffer, but costs nothing to guard — falls through
+        // to the real lexer below instead.
+        let cached_run: Option<Vec<(Tag, String)>> = if visible && cached_before.is_some() {
+            BLOCK_CACHE.with(|c| {
+                c.borrow().as_ref().and_then(|bc| {
+                    if bc.key == key {
+                        bc.runs.get(line_no0).cloned()
+                    } else {
+                        None
+                    }
+                })
+            })
+        } else {
+            None
+        };
+        if let Some(owned) = cached_run {
+            let line = raw.strip_suffix('\r').unwrap_or(raw);
+            let runs: Vec<(Tag, &str)> = owned.iter().map(|(t, s)| (*t, s.as_str())).collect();
+            draw_visible_line(
+                hdc,
+                sink.as_deref_mut(),
+                line,
+                line_start,
+                sel,
+                code_x,
+                code_right,
+                y,
+                line_h,
+                char_w,
+                sel_bg,
+                line_no,
+                x,
+                gutter_w,
+                gutter_pad,
+                gutter_fg,
+                &runs,
+                &colors,
+            );
+            y += line_h;
+            line_start += raw.len() + 1;
+            continue;
+        }
+
         // On a cache HIT, only lines that might actually be drawn need the real lexer — every
         // other line's `in_block` contribution is already sitting in `cached_before`. On a MISS
         // every line must still be lexed (to draw correctly AND to build the cache for next
@@ -164,38 +232,38 @@ pub(super) unsafe fn paint_lines(
                 Cow::Borrowed(line)
             };
             match &cached_before {
-                Some(before) if !seeded => {
-                    // The first line we actually lex on a hit: jump `in_block` straight to the
-                    // cached state instead of the (never advanced) `false` default.
-                    in_block = before.get(line_no0).copied().unwrap_or(false);
-                    seeded = true;
-                }
+                // Reaching the real lexer on a HIT only happens for a line the cache didn't
+                // cover (see the guard above) — seed straight from the per-line table rather
+                // than tracking a running state across lines this call never visited.
+                Some(before) => in_block = before.get(line_no0).copied().unwrap_or(false),
                 None => fresh_before.push(in_block), // record state BEFORE this line, for the cache
-                _ => {}
             }
             let runs = tokenize(&disp, &sp, &mut in_block);
+            if cached_before.is_none() {
+                // Building the complete table this call — bank the owned runs alongside it.
+                fresh_runs.push(runs.iter().map(|&(t, s)| (t, s.to_owned())).collect());
+            }
             if visible {
-                // Selection fill FIRST — the runs draw transparent-bk on top of it.
-                if let Some((s, e)) = sel {
-                    paint_sel_line(
-                        hdc, line, line_start, s, e, code_x, code_right, y, line_h, char_w, sel_bg,
-                    );
-                }
-                // One hit per drawn line: this is a mono grid, so hit-testing re-measures inside
-                // it for a char-precise offset (`text_x` = code_x, past the line-number gutter).
-                record_line_hit(
+                draw_visible_line(
+                    hdc,
                     sink.as_deref_mut(),
+                    line,
                     line_start,
-                    line.len(),
+                    sel,
                     code_x,
                     code_right,
                     y,
                     line_h,
+                    char_w,
+                    sel_bg,
+                    line_no,
+                    x,
+                    gutter_w,
+                    gutter_pad,
+                    gutter_fg,
+                    &runs,
+                    &colors,
                 );
-                draw_gutter_line_number(
-                    hdc, line_no, x, gutter_w, gutter_pad, y, line_h, gutter_fg,
-                );
-                draw_code_runs(hdc, &runs, code_x, code_right, y, line_h, &colors);
             }
         }
         y += line_h;
@@ -209,18 +277,55 @@ pub(super) unsafe fn paint_lines(
             *c.borrow_mut() = Some(BlockCache {
                 key,
                 before: fresh_before,
+                runs: fresh_runs,
             });
         });
     }
     y - y0
 }
 
+/// Selection fill, hit-test record, gutter number and token runs for one drawn line — shared by
+/// the cached-run fast path and the freshly-lexed path in [`paint_lines`], which differ only in
+/// where `runs` came from.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_visible_line(
+    hdc: HDC,
+    sink: Option<&mut LineSel>,
+    line: &str,
+    line_start: usize,
+    sel: Option<(usize, usize)>,
+    code_x: i32,
+    code_right: i32,
+    y: i32,
+    line_h: i32,
+    char_w: i32,
+    sel_bg: u32,
+    line_no: usize,
+    x: i32,
+    gutter_w: i32,
+    gutter_pad: i32,
+    gutter_fg: u32,
+    runs: &[(Tag, &str)],
+    colors: &Colors,
+) {
+    // Selection fill FIRST — the runs draw transparent-bk on top of it.
+    if let Some((s, e)) = sel {
+        paint_sel_line(
+            hdc, line, line_start, s, e, code_x, code_right, y, line_h, char_w, sel_bg,
+        );
+    }
+    // One hit per drawn line: this is a mono grid, so hit-testing re-measures inside it for a
+    // char-precise offset (`text_x` = code_x, past the line-number gutter).
+    record_line_hit(sink, line_start, line.len(), code_x, code_right, y, line_h);
+    draw_gutter_line_number(hdc, line_no, x, gutter_w, gutter_pad, y, line_h, gutter_fg);
+    draw_code_runs(hdc, runs, code_x, code_right, y, line_h, colors);
+}
+
 /// Left-gutter geometry: right-aligned 1-based line numbers, sized to the digit count of the
 /// LAST line so the code column shifts right by exactly its width. Returns
 /// `(gutter_w, gutter_pad, code_x, code_right)`.
-fn gutter_metrics(text: &str, x: i32, width: i32, char_w: i32) -> (i32, i32, i32, i32) {
-    let total_lines = text.split('\n').count().max(1);
-    let digits = total_lines.to_string().len() as i32;
+fn gutter_metrics(total_lines: usize, x: i32, width: i32, char_w: i32) -> (i32, i32, i32, i32) {
+    let digits = total_lines.max(1).to_string().len() as i32;
     let gutter_pad = char_w; // gap between the numbers and the code
     let gutter_w = digits * char_w + gutter_pad * 2;
     let code_x = x + gutter_w;
@@ -585,9 +690,9 @@ pub(super) fn lang_from_name_or_shebang(name: &str, leading_text: &str) -> Lang 
 }
 
 /// Reads a `#!` interpreter line (first line only) and maps it to a `Lang`. Matches by prefix so
-/// versioned interpreters (`python3`, `ruby2.7`) still hit; `env`'s own argument is unwrapped
-/// first (`#!/usr/bin/env python3` names `env`, not `python3`, as the literal program). Perl has
-/// no `Lang` variant to land on, so it (and anything else unrecognised) falls through to `Plain`.
+/// versioned interpreters (`python3`, `ruby2.7`, `perl5`) still hit; `env`'s own argument is
+/// unwrapped first (`#!/usr/bin/env python3` names `env`, not `python3`, as the literal program).
+/// Anything unrecognised falls through to `Plain`.
 fn lang_from_shebang(leading_text: &str) -> Lang {
     let first = leading_text.lines().next().unwrap_or("");
     let Some(rest) = first.strip_prefix("#!") else {
@@ -618,6 +723,8 @@ fn lang_from_shebang(leading_text: &str) -> Lang {
         Lang::Ruby
     } else if prog.starts_with("php") {
         Lang::Php
+    } else if prog.starts_with("perl") {
+        Lang::Perl
     } else {
         Lang::Plain
     }
@@ -899,10 +1006,14 @@ mod tests {
             lang_from_shebang("#!/usr/bin/php\n<?php"),
             Lang::Php
         ));
-        // perl has no Lang variant to land on.
         assert!(matches!(
             lang_from_shebang("#!/usr/bin/perl\nprint 1;"),
-            Lang::Plain
+            Lang::Perl
+        ));
+        // versioned interpreter names must still hit by prefix, same as python3/ruby2.7.
+        assert!(matches!(
+            lang_from_shebang("#!/usr/bin/env perl5\nprint 1;"),
+            Lang::Perl
         ));
         // the first line isn't a shebang at all (one appears later, which must not count).
         assert!(matches!(

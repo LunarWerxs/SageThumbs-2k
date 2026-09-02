@@ -15,8 +15,8 @@ use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
-    VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F11, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN,
-    VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
+    VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F11, VK_HOME, VK_LEFT, VK_NEXT, VK_OEM_MINUS,
+    VK_OEM_PLUS, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::Shell::{ShellExecuteW, StrCmpLogicalW};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -126,6 +126,11 @@ pub(super) enum Btn {
     Theme,
     Pin,
     Copy,
+    /// Save the currently-shown PDF page / animation frame as a standalone PNG (Ctrl+S). Only
+    /// shown while one of those two applies (see [`btn_visible`]) — a plain image with no
+    /// navigation has nothing beyond what [`Btn::Copy`] already puts on the clipboard, and
+    /// there is no "save the whole file" fallback for this one (unlike Copy's).
+    SavePage,
     /// Read the text out of the picture you're looking at (OCR) and put it on the clipboard.
     /// Only shown for image-ish content (see [`btn_visible`]) — there is nothing to recognize
     /// in a text or Markdown pane, where you can already select the words.
@@ -141,7 +146,7 @@ pub(super) enum Btn {
 }
 
 /// All buttons, in left-to-right caption order (rightmost drawn is Close).
-pub(super) const BTNS: [Btn; 15] = [
+pub(super) const BTNS: [Btn; 16] = [
     Btn::Toc,
     Btn::MdImages,
     Btn::Source,
@@ -151,6 +156,7 @@ pub(super) const BTNS: [Btn; 15] = [
     Btn::Theme,
     Btn::Pin,
     Btn::Copy,
+    Btn::SavePage,
     Btn::Ocr,
     Btn::Info,
     Btn::Upload,
@@ -182,6 +188,12 @@ pub(super) fn btn_visible(st: &ViewerState, b: Btn) -> bool {
         Btn::Toc => st.kind.get() == ContentKind::Markdown && st.md_has_headings.get(),
         Btn::MdImages => st.kind.get() == ContentKind::Markdown && st.md_has_remote.get(),
         Btn::Source => st.src_capable.get(),
+        // Same navigated-or-not condition `clipboard::navigated_shown_image_rgba` uses: a
+        // multi-page PDF actually paged, or an animation actually holding more than one frame.
+        Btn::SavePage => {
+            st.kind.get() == ContentKind::Image
+                && (st.pdf_pages.get() > 1 || st.frames.borrow().len() > 1)
+        }
         // OCR needs pixels to read. A text/Markdown/HTML pane already has selectable words
         // (Ctrl+C), and an InfoCard is our own chrome, so the button would be a no-op there.
         Btn::Ocr => st.kind.get() == ContentKind::Image,
@@ -1453,8 +1465,9 @@ fn is_selection_extend_key(vk: u16) -> bool {
         || v == VK_PRIOR.0 || v == VK_NEXT.0)
 }
 
-/// Ctrl+A / Ctrl+C / Ctrl+U / bare W / Shift+nav / Ctrl+F / an already-open find bar: the
-/// "editing and search" cluster of `WM_KEYDOWN`. `Some` means the key was consumed.
+/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S / bare W / Ctrl+=/Ctrl+-/Ctrl+0 (image zoom) / Shift+nav /
+/// Ctrl+F / an already-open find bar: the "editing and search" cluster of `WM_KEYDOWN`.
+/// `Some` means the key was consumed.
 unsafe fn keydown_copy_select(
     hwnd: HWND,
     st: &ViewerState,
@@ -1485,6 +1498,13 @@ unsafe fn keydown_copy_select(
         toggle_source(hwnd);
         return Some(LRESULT(0));
     }
+    // Ctrl+S: save the shown PDF page / animation frame as a PNG — same action as the
+    // `Btn::SavePage` toolbar button, self-guarding via `on_btn_save_page` when neither
+    // applies (a plain image has nothing to save beyond what Ctrl+C already copies).
+    if ctrl && vk == 'S' as u16 {
+        do_action(hwnd, Btn::SavePage);
+        return Some(LRESULT(0));
+    }
     // Bare "W": toggle fit-width vs aspect-fit — the mode a portrait page (a
     // scanned document, a tall screenshot) needs in a landscape-shaped preview
     // window, where aspect-fit leaves empty margins on both sides instead of using
@@ -1494,6 +1514,25 @@ unsafe fn keydown_copy_select(
     if !ctrl && !shift && vk == 'W' as u16 && st.kind.get() == ContentKind::Image {
         toggle_fit_width(hwnd);
         return Some(LRESULT(0));
+    }
+    // Ctrl+=/Ctrl+- : keyboard zoom, one wheel notch per press, anchored on the content
+    // pane's centre (there is no cursor position to anchor on from the keyboard). Not gated
+    // on `!shift`: the `=`/`+` key is the same VK regardless of the Shift needed to type `+`
+    // on most layouts, and Ctrl+Shift+= is the same browser-zoom-in convention users already
+    // know. Ctrl+0 resets to fit/100%, same as double-click.
+    if ctrl && st.kind.get() == ContentKind::Image {
+        if vk == VK_OEM_PLUS.0 {
+            zoom_step_at_center(hwnd, 1);
+            return Some(LRESULT(0));
+        }
+        if vk == VK_OEM_MINUS.0 {
+            zoom_step_at_center(hwnd, -1);
+            return Some(LRESULT(0));
+        }
+        if vk == '0' as u16 {
+            toggle_fit_100(hwnd);
+            return Some(LRESULT(0));
+        }
     }
     // Shift+<nav key> extends the selection (plain arrows stay file navigation).
     if shift && is_selection_extend_key(vk) && selection::extend(hwnd, vk, ctrl) {

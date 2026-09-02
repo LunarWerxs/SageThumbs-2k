@@ -14,6 +14,7 @@
 //! loads (the markdown pipeline fetches nothing; mail bodies are reduced to text first), and
 //! attachments are LISTED, never extracted, opened, or written anywhere.
 
+use super::content::read_capped;
 use super::docconv::md_cell;
 use sagethumbs2k_core::ole;
 
@@ -30,23 +31,38 @@ const MAX_IO_BYTES: u64 = 16 * 1024 * 1024;
 /// note says when a generated monster got cut.
 const MAX_BODY_LINES: usize = 2_000;
 
-/// The mail at `path` as markdown, or `None` when it isn't mail this module understands
-/// (the caller then falls through to the text/info-card path).
-pub(super) fn to_markdown(path: &str) -> Option<String> {
-    let bytes = read_capped(path)?;
-    if ole::looks_like_ole(&bytes) {
-        msg_to_markdown(&bytes)
-    } else {
-        eml_to_markdown(&bytes)
-    }
-}
+/// `.eml` attachment names kept in the rendered list — matches the cap the `.msg` path already
+/// applies via `ole::read_streams(bytes, ..., 64)` and the notebook path's `MAX_ATTACHMENTS` in
+/// `docconv.rs`. Before this, a multipart `.eml` with many filenamed parts grew
+/// `Mail.attachments` unboundedly, then `assemble` joined the whole thing into one markdown
+/// line with no truncation note — the one list in this family with no analogous cap.
+const MAX_EML_ATTACHMENTS: usize = 64;
+/// Parts a multipart body is split into at most: each is only a slice, so this bounds work
+/// on a hostile boundary count without capping the attachment tally at the visible list.
+const MAX_MIME_PARTS: usize = 1024;
 
-fn read_capped(path: &str) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let f = std::fs::File::open(path).ok()?;
-    let mut out = Vec::new();
-    f.take(MAX_IO_BYTES).read_to_end(&mut out).ok()?;
-    (!out.is_empty()).then_some(out)
+/// The mail at `path` as markdown, or `None` when it isn't mail this module understands
+/// (the caller then falls through to the text/info-card path). Reuses `content::read_capped`
+/// (one of four differently-behaved `read_capped`s the codebase used to carry) instead of a
+/// private copy, and surfaces its truncated flag as a note — a message actually longer than
+/// [`MAX_IO_BYTES`] used to be silently cut with no sign anything was missing.
+pub(super) fn to_markdown(path: &str) -> Option<String> {
+    let (bytes, truncated) = read_capped(path, MAX_IO_BYTES as usize)?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut md = if ole::looks_like_ole(&bytes) {
+        msg_to_markdown(&bytes)?
+    } else {
+        eml_to_markdown(&bytes)?
+    };
+    if truncated {
+        md.push_str(&format!(
+            "\n*{}*\n",
+            md_cell(crate::win::t("mail_truncated_file"))
+        ));
+    }
+    Some(md)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -157,8 +173,18 @@ fn eml_to_markdown(bytes: &[u8]) -> Option<String> {
     let ctype = header(&headers, "content-type").unwrap_or_default();
     let cte = header(&headers, "content-transfer-encoding").unwrap_or_default();
     let mut attachments = Vec::new();
-    let body = mime_body(&bytes[body_off..], &ctype, &cte, &mut attachments, 0).unwrap_or_default();
-    Some(assemble(&Mail {
+    let mut attachments_total = 0usize;
+    let body = mime_body(
+        &bytes[body_off..],
+        &ctype,
+        &cte,
+        &mut attachments,
+        &mut attachments_total,
+        0,
+    )
+    .unwrap_or_default();
+    let dropped = attachments_total.saturating_sub(attachments.len());
+    let mut md = assemble(&Mail {
         subject: decode_words(&header(&headers, "subject").unwrap_or_default()),
         from: decode_words(&header(&headers, "from").unwrap_or_default()),
         to: decode_words(&header(&headers, "to").unwrap_or_default()),
@@ -166,7 +192,14 @@ fn eml_to_markdown(bytes: &[u8]) -> Option<String> {
         date: header(&headers, "date").unwrap_or_default(),
         body,
         attachments,
-    }))
+    });
+    if dropped > 0 {
+        md.push_str(&format!(
+            "\n*+{dropped} more attachment{} not shown.*\n",
+            if dropped == 1 { "" } else { "s" }
+        ));
+    }
+    Some(md)
 }
 
 /// Collapse `\r\r\n` back to `\r\n`, but ONLY when EVERY line ending in the file is doubled.
@@ -247,11 +280,15 @@ fn header(headers: &[String], name: &str) -> Option<String> {
 }
 
 /// Classify one multipart part for `mime_body`'s multipart branch: a filenamed part collects
-/// as an attachment (whatever its type claims), a nested multipart recurses at `depth + 1`,
-/// and the first `text/plain`/`text/html` part found wins its respective slot.
+/// as an attachment (whatever its type claims, capped at [`MAX_EML_ATTACHMENTS`] — `total` still
+/// counts every one seen so the caller can note how many were dropped), a nested multipart
+/// recurses at `depth + 1`, and the first `text/plain`/`text/html` part found wins its
+/// respective slot.
+#[allow(clippy::too_many_arguments)] // one MIME-part classification step; every param load-bearing
 fn handle_multipart_part(
     part: &[u8],
     attachments: &mut Vec<String>,
+    total: &mut usize,
     depth: usize,
     plain: &mut Option<String>,
     html: &mut Option<String>,
@@ -263,12 +300,15 @@ fn handle_multipart_part(
     let pcte = header(&ph, "content-transfer-encoding").unwrap_or_default();
     // An attachment is anything with a filename, whatever its type claims.
     if let Some(name) = part_filename(&ph) {
-        attachments.push(name);
+        *total += 1;
+        if attachments.len() < MAX_EML_ATTACHMENTS {
+            attachments.push(name);
+        }
         return;
     }
     let pl = pct.to_ascii_lowercase();
     if pl.starts_with("multipart/") {
-        if let Some(t) = mime_body(&part[poff..], &pct, &pcte, attachments, depth + 1) {
+        if let Some(t) = mime_body(&part[poff..], &pct, &pcte, attachments, total, depth + 1) {
             plain.get_or_insert(t);
         }
     } else if pl.starts_with("text/plain") && plain.is_none() {
@@ -278,15 +318,16 @@ fn handle_multipart_part(
     }
 }
 
-/// Resolve a (possibly multipart) body to displayable TEXT, collecting attachment filenames.
-/// Prefers `text/plain`; falls back to tag-stripped `text/html`. Depth-capped: real mail
-/// nests `multipart/mixed(multipart/alternative(text, html), attachment)` — two levels; four
-/// is hostile.
+/// Resolve a (possibly multipart) body to displayable TEXT, collecting attachment filenames
+/// (capped — see `handle_multipart_part`). Prefers `text/plain`; falls back to tag-stripped
+/// `text/html`. Depth-capped: real mail nests `multipart/mixed(multipart/alternative(text,
+/// html), attachment)` — two levels; four is hostile.
 fn mime_body(
     raw: &[u8],
     ctype: &str,
     cte: &str,
     attachments: &mut Vec<String>,
+    total: &mut usize,
     depth: usize,
 ) -> Option<String> {
     if depth > 4 {
@@ -298,7 +339,7 @@ fn mime_body(
         let mut plain: Option<String> = None;
         let mut html: Option<String> = None;
         for part in split_multipart(raw, &boundary) {
-            handle_multipart_part(part, attachments, depth, &mut plain, &mut html);
+            handle_multipart_part(part, attachments, total, depth, &mut plain, &mut html);
         }
         plain.or(html)
     } else if lower.starts_with("text/html") {
@@ -347,16 +388,14 @@ fn part_filename(headers: &[String]) -> Option<String> {
 fn split_multipart<'a>(raw: &'a [u8], boundary: &str) -> Vec<&'a [u8]> {
     let delim = format!("--{boundary}");
     let db = delim.as_bytes();
-    let mut parts = Vec::new();
     let mut starts: Vec<usize> = Vec::new();
     let mut i = 0usize;
     while let Some(p) = find(&raw[i..], db) {
         starts.push(i + p);
         i += p + db.len();
-        if parts.len() > 64 {
+        if starts.len() > MAX_MIME_PARTS {
             break;
         }
-        parts.push(()); // count only; slices are built below
     }
     let mut out = Vec::new();
     for w in starts.windows(2) {
@@ -530,7 +569,9 @@ fn b64_decode(raw: &[u8]) -> Vec<u8> {
 /// into; a mail body is remote-authored and gets flattened to text, always.
 fn strip_html(html: &str) -> String {
     let cleaned = strip_tags_to_text(html);
-    let unescaped = unescape_html_entities(&cleaned);
+    // Shared with `mdhtml`'s raw-HTML feeder instead of a private 7-entity copy — see
+    // `decode_entities`'s own doc comment for the bug this fixes (`&mdash;` and friends).
+    let unescaped = super::mdhtml::decode_entities(&cleaned);
     collapse_blank_lines(&unescaped)
 }
 
@@ -585,39 +626,6 @@ fn strip_tags_to_text(html: &str) -> String {
         }
     }
     cleaned
-}
-
-/// Decode the handful of HTML entities a mail body realistically uses.
-fn unescape_html_entities(rest: &str) -> String {
-    let mut out = String::with_capacity(rest.len());
-    let mut chars = rest.char_indices();
-    while let Some((i, c)) = chars.next() {
-        if c != '&' {
-            out.push(c);
-            continue;
-        }
-        let tail = &rest[i..];
-        let known = [
-            ("&amp;", '&'),
-            ("&lt;", '<'),
-            ("&gt;", '>'),
-            ("&quot;", '"'),
-            ("&#39;", '\''),
-            ("&apos;", '\''),
-            ("&nbsp;", ' '),
-        ]
-        .iter()
-        .find(|(e, _)| tail.starts_with(e));
-        if let Some((e, ch)) = known {
-            out.push(*ch);
-            for _ in 0..e.chars().count() - 1 {
-                let _ = chars.next();
-            }
-        } else {
-            out.push('&');
-        }
-    }
-    out
 }
 
 /// Collapse the blank-line stutter block tags leave behind, and trim the result.
@@ -764,6 +772,34 @@ mod tests {
         assert!(md.contains("ada@example.com"));
         assert!(md.contains("Are you free at noon?"));
         assert!(md.contains("Bring the notes."));
+    }
+
+    /// A message longer than [`MAX_IO_BYTES`] used to be silently cut with nothing on screen
+    /// to say so — `to_markdown` now surfaces `content::read_capped`'s truncated flag as a
+    /// trailing note, and a message that fits entirely gets none.
+    #[test]
+    fn to_markdown_notes_a_file_actually_truncated_by_the_read_cap() {
+        let dir = std::env::temp_dir();
+        let big = dir.join(format!("st2k_mailtest_big_{}.eml", std::process::id()));
+        let small = dir.join(format!("st2k_mailtest_small_{}.eml", std::process::id()));
+
+        let mut body = String::from("Subject: long\r\n\r\n");
+        body.push_str(&"x".repeat(MAX_IO_BYTES as usize + 1024));
+        std::fs::write(&big, body.as_bytes()).unwrap();
+        std::fs::write(&small, b"Subject: short\r\n\r\nhi\r\n").unwrap();
+
+        let note = md_cell(crate::win::t("mail_truncated_file"));
+        let big_md = to_markdown(big.to_str().unwrap()).expect("still parses as mail");
+        let small_md = to_markdown(small.to_str().unwrap()).expect("still parses as mail");
+
+        assert!(big_md.contains(&note), "truncated file must carry the note");
+        assert!(
+            !small_md.contains(&note),
+            "a file that fits must not carry the note"
+        );
+
+        let _ = std::fs::remove_file(&big);
+        let _ = std::fs::remove_file(&small);
     }
 
     /// A hostile subject must arrive ESCAPED — the whole reason everything routes through
@@ -1236,6 +1272,42 @@ mod tests {
         for needle in ["SECRETSCRIPT", "SECRETSTYLE", "SECRETTITLE"] {
             assert!(!md.contains(needle), "{needle} leaked into the body: {md}");
         }
+    }
+
+    /// A multipart message with more than [`MAX_EML_ATTACHMENTS`] filenamed parts must cap the
+    /// rendered list (not grow `Mail.attachments` unbounded) and note how many were dropped —
+    /// before this fix the list had no cap at all, unlike every sibling list in this module
+    /// (notebook attachments, `.msg` attachments, the body's own line cap).
+    #[test]
+    fn eml_attachment_list_caps_and_notes_the_overflow() {
+        let n = MAX_EML_ATTACHMENTS + 5;
+        let mut eml = String::from(
+            "Subject: many attachments\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n",
+        );
+        for i in 0..n {
+            eml.push_str(&format!(
+                "--b\r\nContent-Type: application/octet-stream\r\n\
+                 Content-Disposition: attachment; filename=\"f{i}.bin\"\r\n\r\nx\r\n"
+            ));
+        }
+        eml.push_str("--b--\r\n");
+        let md = eml_to_markdown(eml.as_bytes()).expect("multipart mail parses");
+        // Exactly the cap's worth of filenames actually rendered...
+        for i in 0..MAX_EML_ATTACHMENTS {
+            assert!(md.contains(&format!("f{i}.bin")), "f{i}.bin missing: {md}");
+        }
+        // ...and the ones past the cap are not, but the overflow is noted.
+        for i in MAX_EML_ATTACHMENTS..n {
+            assert!(
+                !md.contains(&format!("f{i}.bin")),
+                "f{i}.bin should be dropped: {md}"
+            );
+        }
+        assert!(
+            md.contains("+5 more attachments not shown."),
+            "expected the overflow note; md tail was: {}",
+            &md[md.len().saturating_sub(200)..]
+        );
     }
 
     /// Pathological multipart must TERMINATE, and quickly.

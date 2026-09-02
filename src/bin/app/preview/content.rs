@@ -4,7 +4,6 @@
 //! worker), which does exactly this for the Explorer preview pane.
 
 use core::ffi::c_void;
-use core::time::Duration;
 use std::cell::RefCell;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT, WPARAM};
@@ -16,9 +15,6 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use super::window::{ContentKind, WM_APP_ANIM, WM_APP_PDFINFO, WM_APP_RENDER};
-
-/// Wall-clock budget for a single decode (plan §7 uses 12 s, matching the preview pane).
-const DECODE_BUDGET: Duration = Duration::from_secs(12);
 
 /// A decoded image ready to become a DIB. `Send`, so it crosses the worker→UI post.
 pub(super) struct DecodedRgba {
@@ -139,6 +135,22 @@ fn abandoned(gen: u64) -> bool {
         ABANDONED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     stale
+}
+
+/// Same `LIVE_GEN` counter [`abandoned`] reads, for a CORRECTNESS fence rather than a decode
+/// worker's optional early-exit — the Ctrl+C image-copy worker uses this to drop a stale copy
+/// instead of landing the wrong image on the clipboard. Unlike `abandoned`, this is
+/// never suppressed by `ST2K_NO_CANCEL` (the fix must hold even while that dev switch is set)
+/// and never touches `ABANDONED` (a dropped clipboard write is not a cancelled decode worker,
+/// and must not skew `--bench-mash`'s count of those).
+/// The current load generation, for cache keys that must not outlive the file they were
+/// built for.
+pub(super) fn live_generation() -> u64 {
+    LIVE_GEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub(super) fn generation_current(gen: u64) -> bool {
+    LIVE_GEN.load(std::sync::atomic::Ordering::SeqCst) <= gen
 }
 
 /// How many workers have given up so far. Reported by `--bench-mash`.
@@ -603,7 +615,7 @@ pub(super) fn read_text(path: &str) -> Option<String> {
     if is_binary(&bytes) {
         return None;
     }
-    let mut text = truncate_long_lines(&decode_text(&bytes), 10_000);
+    let mut text = truncate_long_lines(&decode_text(&bytes, capped), 10_000);
     if capped {
         text.push_str("\n\n… (file truncated at 5 MB)");
     }
@@ -616,11 +628,11 @@ pub(super) fn read_text(path: &str) -> Option<String> {
 /// reject + BOM-aware decode. `None` if unreadable or binary.
 pub(super) fn read_doc(path: &str) -> Option<String> {
     const CAP: usize = 5 * 1024 * 1024;
-    let (bytes, _capped) = read_capped(path, CAP)?;
+    let (bytes, capped) = read_capped(path, CAP)?;
     if is_binary(&bytes) {
         return None;
     }
-    Some(decode_text(&bytes))
+    Some(decode_text(&bytes, capped))
 }
 
 /// Extensions shown as a file LISTING (container formats with no cover/thumbnail — deliberately
@@ -712,7 +724,7 @@ fn looks_like_text(path: &str) -> bool {
 }
 
 /// Read up to `cap` bytes of `path`; the bool is whether the file was longer (i.e. truncated).
-fn read_capped(path: &str, cap: usize) -> Option<(Vec<u8>, bool)> {
+pub(super) fn read_capped(path: &str, cap: usize) -> Option<(Vec<u8>, bool)> {
     use std::io::Read;
     let f = std::fs::File::open(path).ok()?;
     let mut buf = Vec::new();
@@ -734,13 +746,14 @@ fn is_binary(bytes: &[u8]) -> bool {
 
 /// Decode bytes to a String: honor a UTF-16 LE/BE or UTF-8 BOM, sniff BOM-less UTF-16, take
 /// strict UTF-8 when it validates, and otherwise fall back to the legacy codepage tiers in
-/// [`decode_legacy`].
+/// [`decode_legacy`]. `capped` is whether `bytes` was cut short by [`read_capped`]'s cap — see
+/// the back-off below.
 ///
 /// The UTF-8-lossy-everything shortcut this replaced turned every non-Unicode CJK file into a
 /// solid wall of U+FFFD: GBK/GB18030 is still a Chinese national standard, and Shift-JIS,
 /// Big5 and EUC-KR are all over real-world `.txt`/`.csv`/`.srt` files. Those users saw
 /// nothing but replacement characters.
-fn decode_text(bytes: &[u8]) -> String {
+fn decode_text(bytes: &[u8], capped: bool) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8_lossy(rest).into_owned();
     }
@@ -772,7 +785,22 @@ fn decode_text(bytes: &[u8]) -> String {
     // than something to paper over with U+FFFD.
     match core::str::from_utf8(bytes) {
         Ok(s) => s.to_owned(),
-        Err(_) => decode_legacy(bytes),
+        Err(e) => {
+            // The read cap can land mid-character: the cut lands inside the LAST char's
+            // multi-byte sequence, `from_utf8` fails on the whole (otherwise perfectly valid)
+            // buffer, and every byte in it would get re-guessed as a legacy codepage — for a
+            // pure-ASCII file, THAT can validate as a DBCS reading and come out as mojibake
+            // A truncation can only ever cost the last 1-3 bytes of one UTF-8 char
+            // (4 bytes is the longest encoding), so back off to the last valid boundary and
+            // keep the strict reading instead of falling to `decode_legacy` — but only when
+            // the read was actually capped AND the invalid tail is that small; a longer
+            // invalid run past a capped read is still real evidence of a non-UTF-8 file.
+            let valid_up_to = e.valid_up_to();
+            if capped && bytes.len() - valid_up_to <= 3 {
+                return String::from_utf8_lossy(&bytes[..valid_up_to]).into_owned();
+            }
+            decode_legacy(bytes)
+        }
     }
 }
 
@@ -1388,6 +1416,21 @@ mod render_size_tests {
         begin_generation(0); // leave the global as other tests expect to find it
     }
 
+    /// The clipboard-write fence must accept the live generation and reject anything
+    /// older — the same direction `abandoned` tests above, but through the side effect-free
+    /// accessor `copy_shown_image` actually calls.
+    #[test]
+    fn generation_current_rejects_only_a_superseded_generation() {
+        begin_generation(100);
+        assert!(generation_current(100), "the live generation is current");
+        assert!(!generation_current(99), "a superseded generation is not");
+        assert!(
+            generation_current(101),
+            "a generation AHEAD of the published one must not be treated as stale"
+        );
+        begin_generation(0); // leave the global as other tests expect to find it
+    }
+
     /// And the other end: at zero alpha the background must survive untouched, which is what
     /// makes the loop a real source-over rather than a lerp with rounding bias.
     #[test]
@@ -1665,7 +1708,8 @@ fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgba> {
 }
 
 /// Run `decode::decode_preview` on a detached sub-thread, returning its result only if it
-/// finishes within [`DECODE_BUDGET`]. On timeout returns `None` and abandons the
+/// finishes within [`sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET`]. On timeout returns
+/// `None` and abandons the
 /// sub-thread (it sends into a dropped channel and exits on its own). The sub-thread holds
 /// a COM MTA apartment because the WIC decode tier (HEIC/RAW/JPEG-XR) needs it — the
 /// detach/timeout shape is verbatim from `previewhandler::decode_preview_budgeted`, minus the
@@ -1691,7 +1735,9 @@ fn decode_preview_budgeted(bytes: std::sync::Arc<Vec<u8>>) -> Option<image::Dyna
         }
         let _ = tx.send(out);
     });
-    rx.recv_timeout(DECODE_BUDGET).ok().flatten()
+    rx.recv_timeout(sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET)
+        .ok()
+        .flatten()
 }
 
 /// Build a top-down 32bpp DIB of `rgba` composited over the opaque `bg` (`COLORREF`
@@ -2056,33 +2102,36 @@ mod encoding_tests {
 
     #[test]
     fn utf8_wins_outright() {
-        assert_eq!(decode_text("hello — 世界 🌏".as_bytes()), "hello — 世界 🌏");
-        assert_eq!(decode_text(b"plain ascii\n"), "plain ascii\n");
-        assert_eq!(decode_text(b""), "");
+        assert_eq!(
+            decode_text("hello — 世界 🌏".as_bytes(), false),
+            "hello — 世界 🌏"
+        );
+        assert_eq!(decode_text(b"plain ascii\n", false), "plain ascii\n");
+        assert_eq!(decode_text(b"", false), "");
     }
 
     #[test]
     fn strips_boms() {
         let mut b = vec![0xEF, 0xBB, 0xBF];
         b.extend_from_slice("héllo".as_bytes());
-        assert_eq!(decode_text(&b), "héllo");
+        assert_eq!(decode_text(&b, false), "héllo");
 
         let mut le = vec![0xFF, 0xFE];
         le.extend("hi".encode_utf16().flat_map(u16::to_le_bytes));
-        assert_eq!(decode_text(&le), "hi");
+        assert_eq!(decode_text(&le, false), "hi");
 
         let mut be = vec![0xFE, 0xFF];
         be.extend("hi".encode_utf16().flat_map(u16::to_be_bytes));
-        assert_eq!(decode_text(&be), "hi");
+        assert_eq!(decode_text(&be, false), "hi");
     }
 
     #[test]
     fn bomless_utf16_is_sniffed() {
         let text = "the quick brown fox jumps over the lazy dog";
         let le: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        assert_eq!(decode_text(&le), text);
+        assert_eq!(decode_text(&le, false), text);
         let be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
-        assert_eq!(decode_text(&be), text);
+        assert_eq!(decode_text(&be, false), text);
     }
 
     /// GBK is still a Chinese national standard; before this these bytes were a wall of U+FFFD.
@@ -2093,7 +2142,7 @@ mod encoding_tests {
             0xCA, 0xC7, 0xD2, 0xBB, 0xB8, 0xF6, 0xB2, 0xE2, 0xCA, 0xD4, 0xCE, 0xC4, 0xBC, 0xFE,
             0xA1, 0xA3,
         ];
-        assert_eq!(decode_text(GBK), "你好，世界！这是一个测试文件。");
+        assert_eq!(decode_text(GBK, false), "你好，世界！这是一个测试文件。");
     }
 
     /// Kana is the signal that keeps Shift-JIS from being read as GBK.
@@ -2103,7 +2152,7 @@ mod encoding_tests {
             0x82, 0xB1, 0x82, 0xEA, 0x82, 0xCD, 0x93, 0xFA, 0x96, 0x7B, 0x8C, 0xEA, 0x82, 0xCC,
             0x83, 0x65, 0x83, 0x4C, 0x83, 0x58, 0x83, 0x67, 0x82, 0xC5, 0x82, 0xB7, 0x81, 0x42,
         ];
-        assert_eq!(decode_text(SJIS), "これは日本語のテキストです。");
+        assert_eq!(decode_text(SJIS, false), "これは日本語のテキストです。");
     }
 
     /// Hangul is the equivalent signal for EUC-KR.
@@ -2114,7 +2163,7 @@ mod encoding_tests {
             0xB9, 0xBE, 0xEE, 0x20, 0xC5, 0xD8, 0xBD, 0xBA, 0xC6, 0xAE, 0xC0, 0xD4, 0xB4, 0xCF,
             0xB4, 0xD9, 0x2E,
         ];
-        assert_eq!(decode_text(EUCKR), "안녕하세요 한국어 텍스트입니다.");
+        assert_eq!(decode_text(EUCKR, false), "안녕하세요 한국어 텍스트입니다.");
     }
 
     /// The regression that matters in the other direction: ordinary accented Latin text must
@@ -2125,7 +2174,7 @@ mod encoding_tests {
             0x43, 0x61, 0x66, 0xE9, 0x20, 0x72, 0xE9, 0x73, 0x75, 0x6D, 0xE9, 0x20, 0x6E, 0x61,
             0xEF, 0x76, 0x65, 0x20, 0x73, 0x65, 0xF1, 0x6F, 0x72,
         ];
-        let out = decode_text(L1);
+        let out = decode_text(L1, false);
         assert!(!has_cjk(&out), "Latin-1 text decoded as CJK: {out:?}");
         assert!(out.starts_with("Caf"), "unexpected decode: {out:?}");
     }
@@ -2134,7 +2183,27 @@ mod encoding_tests {
     #[test]
     fn ascii_is_never_reinterpreted() {
         let src = "fn main() { println!(\"hi\"); }\n";
-        assert_eq!(decode_text(src.as_bytes()), src);
+        assert_eq!(decode_text(src.as_bytes(), false), src);
+    }
+
+    /// A capped read that lands mid-character must back off to the last valid UTF-8
+    /// boundary instead of misreading the whole (otherwise valid) buffer as a legacy codepage.
+    #[test]
+    fn a_capped_cut_mid_character_backs_off_instead_of_going_legacy() {
+        let mut bytes = "hello 世".as_bytes().to_vec(); // "世" = E4 B8 96 (3 bytes)
+        bytes.truncate(bytes.len() - 1); // cut the last byte of "世" — an incomplete lead+cont pair
+        assert_eq!(decode_text(&bytes, true), "hello ");
+    }
+
+    /// The SAME cut bytes, but NOT reported as capped (e.g. the file is genuinely that length) —
+    /// must still fall through to the legacy tiers, not silently drop trailing garbage.
+    #[test]
+    fn an_uncapped_truncated_sequence_still_falls_to_legacy() {
+        let mut bytes = "hello 世".as_bytes().to_vec();
+        bytes.truncate(bytes.len() - 1);
+        // Not capped: the ASCII prefix decodes fine under any codepage, so the legacy path
+        // returns something containing the ASCII text rather than silently truncating it.
+        assert!(decode_text(&bytes, false).starts_with("hello "));
     }
 
     #[test]

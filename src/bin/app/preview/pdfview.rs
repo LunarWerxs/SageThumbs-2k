@@ -64,6 +64,12 @@ const PREFETCH: usize = 1;
 /// session and invisible next to the cost of keeping them.
 const MAX_LIVE_PAGES: usize = 12;
 
+/// Same ceiling as `MAX_LIVE_PAGES`, for the strip's own thumbnail cache. Kept as a separate
+/// constant (even though the value matches today) because the two caches serve different
+/// windows — the strip and the reader rarely show the same pages — and tying them together
+/// would make a future change to one silently change the other.
+const MAX_LIVE_STRIP_TILES: usize = 12;
+
 /// Width of the page-thumbnail strip, in unscaled px. Wide enough that a page is recognisable
 /// (you are looking for "the one with the table on it"), narrow enough not to be the point.
 const STRIP_W: i32 = 116;
@@ -302,8 +308,10 @@ pub(in crate::preview) struct PdfDoc {
     /// The document's searchable text, read in the background when someone presses Ctrl+F.
     index: PdfIndex,
     /// Set when this document is dropped, so a text index still grinding through a two hundred
-    /// page file stops instead of burning a minute of CPU on a file the reader has left. Shared
-    /// with the worker, which checks it between pages.
+    /// page file stops instead of burning a minute of CPU on a file the reader has left, and so
+    /// an in-flight tile/strip render (`spawn_render`) skips its work and its post rather than
+    /// waking a window whose `PdfDoc` no longer exists. Shared with every such worker, which
+    /// checks it before starting and again before posting.
     cancel: Arc<AtomicBool>,
     /// Bumped when the document is replaced, so a tile from the previous file is dropped.
     pub(in crate::preview) gen: u64,
@@ -497,12 +505,27 @@ impl PdfDoc {
 
     /// Keep memory bounded: drop tiles far from the pages currently on screen.
     fn evict_outside(&mut self, first: usize, last: usize) {
-        if self.tiles.len() <= MAX_LIVE_PAGES {
+        let Some((keep_lo, keep_hi)) =
+            eviction_keep_range(first, last, self.tiles.len(), MAX_LIVE_PAGES)
+        else {
             return;
-        }
-        let keep_lo = first.saturating_sub(PREFETCH);
-        let keep_hi = (last + PREFETCH).min(self.tiles.len());
+        };
         for (i, t) in self.tiles.iter_mut().enumerate() {
+            if i < keep_lo || i >= keep_hi {
+                *t = None;
+            }
+        }
+    }
+
+    /// Keep strip-thumbnail memory bounded the same way `evict_outside` bounds the main view:
+    /// drop thumbnails far from the strip's currently visible window.
+    fn evict_strip_outside(&mut self, first: usize, last: usize) {
+        let Some((keep_lo, keep_hi)) =
+            eviction_keep_range(first, last, self.strip_tiles.len(), MAX_LIVE_STRIP_TILES)
+        else {
+            return;
+        };
+        for (i, t) in self.strip_tiles.iter_mut().enumerate() {
             if i < keep_lo || i >= keep_hi {
                 *t = None;
             }
@@ -540,6 +563,24 @@ impl PdfDoc {
     }
 }
 
+/// The `[keep_lo, keep_hi)` slice of a `len`-long tile cache to keep, given the wanted
+/// `[first, last)` range plus a `PREFETCH` margin — `None` when the cache is at or under `cap`
+/// and eviction is not worth doing. Pulled out of `evict_outside`/`evict_strip_outside` so the
+/// range arithmetic is testable without a live `PdfDoc`/`PdfSession`.
+fn eviction_keep_range(
+    first: usize,
+    last: usize,
+    len: usize,
+    cap: usize,
+) -> Option<(usize, usize)> {
+    if len <= cap {
+        return None;
+    }
+    let keep_lo = first.saturating_sub(PREFETCH);
+    let keep_hi = (last + PREFETCH).min(len);
+    Some((keep_lo, keep_hi))
+}
+
 /// Ask a worker for page `page` at `width`, unless one is already in flight.
 ///
 /// The session serialises renders on its own thread, so several requests queue rather than
@@ -550,9 +591,41 @@ unsafe fn request_tile(hwnd: HWND, doc: &mut PdfDoc, page: usize, width: i32, ge
         return;
     }
     doc.pending[page] = true;
-    let session = Arc::clone(&doc.session);
+    spawn_render(
+        hwnd,
+        Arc::clone(&doc.session),
+        Arc::clone(&doc.cancel),
+        page,
+        width,
+        gen,
+        WM_APP_PDFTILE,
+    );
+}
+
+/// Render page `page` at `width` on a worker and post the result as `msg` (`WM_APP_PDFTILE` or
+/// `WM_APP_PDFSTRIP`), shared by `request_tile` and `request_strip_tile` — the two previously
+/// duplicated the whole render body.
+///
+/// `cancel` is the document's own drop flag: checked before the render starts (so a worker
+/// still queued behind a slow page skips the work entirely once the document is gone) and again
+/// before posting (so a worker that was already rendering does not post into a window whose
+/// `PdfDoc` no longer exists). A render that finishes before the document is dropped is always
+/// posted, success or failure, so `pending`/`strip_pending` is cleared and the page can be
+/// retried rather than staying blank forever behind a flag nobody resets.
+unsafe fn spawn_render(
+    hwnd: HWND,
+    session: Arc<PdfSession>,
+    cancel: Arc<AtomicBool>,
+    page: usize,
+    width: i32,
+    gen: u64,
+    msg: u32,
+) {
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
         let decoded = session
             .render_to_width(page, width.max(1) as u32)
@@ -563,11 +636,12 @@ unsafe fn request_tile(hwnd: HWND, doc: &mut PdfDoc, page: usize, width: i32, ge
                     (w, h, rgba.into_raw())
                 })
             });
-        // Always post, even on failure, so `pending` is cleared and the page can be retried
-        // rather than staying blank forever behind a flag nobody resets.
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let payload: Box<TilePayload> = Box::new((gen, page, width, decoded));
         let raw = Box::into_raw(payload);
-        if PostMessageW(Some(hwnd), WM_APP_PDFTILE, WPARAM(0), LPARAM(raw as isize)).is_err() {
+        if PostMessageW(Some(hwnd), msg, WPARAM(0), LPARAM(raw as isize)).is_err() {
             drop(Box::from_raw(raw));
         }
     });
@@ -766,6 +840,16 @@ fn strip_pitch(hwnd: HWND, thumb_h: i32) -> i32 {
     thumb_h + crate::win::dpi_scale(hwnd, 22)
 }
 
+/// Strip thumbnail height for a `tw`-wide cell, from page one's aspect ratio (every page keeps
+/// its own aspect, so this follows the FIRST page rather than assuming a uniform document; a
+/// mixed-orientation file still lays out evenly enough to click). Shared by `paint_strip` and
+/// `strip_click`, which previously computed this formula separately and could disagree.
+fn strip_thumb_height(doc: &PdfDoc, tw: i32) -> i32 {
+    let sz = doc.session.size(0);
+    let th = ((f64::from(sz.h) / f64::from(sz.w.max(1.0))) * f64::from(tw)).round() as i32;
+    th.clamp(8, 1 << 14)
+}
+
 /// Which page a click at `y` inside the strip lands on, or `None` for the empty tail.
 ///
 /// Pure so the arithmetic is testable: an off-by-one here sends the reader to the wrong page,
@@ -815,12 +899,7 @@ pub(in crate::preview) unsafe fn paint_strip(hwnd: HWND, hdc: HDC, bg: u32, shee
             *p = false;
         }
     }
-    // Every page keeps its own aspect, so the pitch follows the FIRST page rather than assuming
-    // a uniform document; a mixed-orientation file still lays out evenly enough to click.
-    let first_sz = doc.session.size(0);
-    let th =
-        ((f64::from(first_sz.h) / f64::from(first_sz.w.max(1.0))) * f64::from(tw)).round() as i32;
-    let th = th.clamp(8, 1 << 14);
+    let th = strip_thumb_height(doc, tw);
     let pitch = strip_pitch(hwnd, th);
 
     // Keep the current page on screen without yanking the strip on every scroll.
@@ -893,6 +972,7 @@ pub(in crate::preview) unsafe fn paint_strip(hwnd: HWND, hdc: HDC, bg: u32, shee
     let _ = DeleteObject(sheet_brush.into());
     let _ = DeleteObject(sel_brush.into());
 
+    doc.evict_strip_outside(doc.strip_top, (doc.strip_top + visible + 1).min(pages));
     for page in wanted {
         request_strip_tile(hwnd, doc, page, width_now, gen);
     }
@@ -905,32 +985,15 @@ unsafe fn request_strip_tile(hwnd: HWND, doc: &mut PdfDoc, page: usize, width: i
         return;
     }
     doc.strip_pending[page] = true;
-    let session = Arc::clone(&doc.session);
-    let hwnd_raw = hwnd.0 as isize;
-    std::thread::spawn(move || {
-        let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
-        let decoded = session
-            .render_to_width(page, width.max(1) as u32)
-            .and_then(|png| {
-                image::load_from_memory(&png).ok().map(|img| {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    (w, h, rgba.into_raw())
-                })
-            });
-        let payload: Box<TilePayload> = Box::new((gen, page, width, decoded));
-        let raw = Box::into_raw(payload);
-        if PostMessageW(
-            Some(hwnd),
-            super::window::WM_APP_PDFSTRIP,
-            WPARAM(0),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            drop(Box::from_raw(raw));
-        }
-    });
+    spawn_render(
+        hwnd,
+        Arc::clone(&doc.session),
+        Arc::clone(&doc.cancel),
+        page,
+        width,
+        gen,
+        super::window::WM_APP_PDFSTRIP,
+    );
 }
 
 /// A click in the strip: jump to that page. Returns whether it was handled.
@@ -947,9 +1010,7 @@ pub(in crate::preview) unsafe fn strip_click(hwnd: HWND, x: i32, y: i32) -> bool
         };
         let pad = crate::win::dpi_scale(hwnd, 8);
         let tw = ((rc.right - rc.left) - 2 * pad).max(8);
-        let sz = doc.session.size(0);
-        let th = (((f64::from(sz.h) / f64::from(sz.w.max(1.0))) * f64::from(tw)).round() as i32)
-            .clamp(8, 1 << 14);
+        let th = strip_thumb_height(doc, tw);
         (strip_pitch(hwnd, th), doc.strip_top, doc.page_count())
     };
     let pad = crate::win::dpi_scale(hwnd, 8);
@@ -1364,5 +1425,22 @@ mod tests {
         assert_eq!(l.total, 0);
         assert_eq!(visible_range(&l, 0, 500), (0, 0));
         assert_eq!(page_at(&l, 0, 500), 0);
+    }
+
+    /// Shared by `evict_outside` and `evict_strip_outside`: a cache at or under the cap is left
+    /// alone entirely, and a bigger one keeps only the visible range plus one page of margin —
+    /// the strip's thumbnail cache had no such limit before this fix.
+    #[test]
+    fn eviction_keep_range_spares_small_caches_and_margins_the_visible_window() {
+        assert_eq!(
+            super::eviction_keep_range(4, 6, 6, 12),
+            None,
+            "cache at or under the cap is never evicted"
+        );
+        // 20-entry cache, visible 4..6, PREFETCH=1: keep 3..7.
+        assert_eq!(super::eviction_keep_range(4, 6, 20, 12), Some((3, 7)));
+        // The margin clamps instead of underflowing at the start or overflowing past the end.
+        assert_eq!(super::eviction_keep_range(0, 2, 20, 12), Some((0, 3)));
+        assert_eq!(super::eviction_keep_range(18, 20, 20, 12), Some((17, 20)));
     }
 }

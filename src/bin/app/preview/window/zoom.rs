@@ -35,19 +35,27 @@ pub(in crate::preview) fn true_100_zoom(fit: f64) -> f64 {
     (1.0 / fit).max(1.0)
 }
 
-/// Video-only: the render child's rect = content area minus the bottom scrub strip.
-/// Zoom the image in/out by a wheel notch, keeping the image point under the cursor fixed.
-pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: LPARAM) {
+/// The zoom ceiling a wheel notch / keyboard step may reach: `full.max(8.0)`, NOT a bare 8.0.
+///
+/// A hard 8x ceiling here understated true 1:1 scale for any image more than 8x the pane's fit
+/// scale (a large photo opened in a small/default window) — double-click's [`toggle_fit_100`]
+/// reached true 100% fine, but the wheel silently stopped 2.5x short of it. Split out so
+/// the fix is testable without a window.
+fn zoom_ceiling(full: f64) -> f64 {
+    full.max(8.0)
+}
+
+/// Zoom the image in/out by a wheel notch, keeping image point `pt` (CLIENT coords) fixed.
+/// Shared by [`zoom_at_cursor`] (mouse wheel, screen coords converted to client) and
+/// [`zoom_step_at_center`] (the Ctrl+=/Ctrl+- keyboard step, which has no cursor position to
+/// anchor on and uses the content pane's centre instead).
+unsafe fn zoom_step_at(hwnd: HWND, delta: i32, pt: POINT) {
     let st = &*state(hwnd);
     let Some((iw, ih)) = image_dims(st) else {
         return;
     };
     let c = content_rect(hwnd);
     let (cw, ch) = (c.right - c.left, c.bottom - c.top);
-    // WM_MOUSEWHEEL's lparam is in SCREEN coords.
-    let (sx, sy) = lparam_xy(lparam);
-    let mut pt = POINT { x: sx, y: sy };
-    let _ = ScreenToClient(hwnd, &mut pt);
     let fit = content::fit_scale(iw, ih, cw, ch);
     let old_zoom = st.zoom.get();
     let raw_zoom = old_zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 };
@@ -58,7 +66,7 @@ pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: 
     } else {
         snap_zoom_step(old_zoom, raw_zoom, full, ZOOM_SNAP_TOLERANCE)
     };
-    let new_zoom = snapped.clamp(1.0, 8.0);
+    let new_zoom = snapped.clamp(1.0, zoom_ceiling(full));
     if (new_zoom - old_zoom).abs() < 1e-6 {
         return;
     }
@@ -83,6 +91,27 @@ pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: 
     st.pan.set((new_px, new_py));
     clamp_pan(hwnd);
     let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+}
+
+/// Zoom the image in/out by a wheel notch, keeping the image point under the cursor fixed.
+pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: LPARAM) {
+    // WM_MOUSEWHEEL's lparam is in SCREEN coords.
+    let (sx, sy) = lparam_xy(lparam);
+    let mut pt = POINT { x: sx, y: sy };
+    let _ = ScreenToClient(hwnd, &mut pt);
+    zoom_step_at(hwnd, delta, pt);
+}
+
+/// Ctrl+=/Ctrl+- keyboard zoom (G22 — the viewer had wheel/double-click zoom only, no keyboard
+/// path at all): the same wheel-notch step [`zoom_at_cursor`] takes, anchored on the content
+/// pane's CENTRE rather than a cursor position, since a keypress has none.
+pub(in crate::preview) unsafe fn zoom_step_at_center(hwnd: HWND, delta: i32) {
+    let c = content_rect(hwnd);
+    let pt = POINT {
+        x: (c.left + c.right) / 2,
+        y: (c.top + c.bottom) / 2,
+    };
+    zoom_step_at(hwnd, delta, pt);
 }
 
 /// Toggle between aspect-fit and 100% (native pixels), recentering.
@@ -296,5 +325,18 @@ mod tests {
     #[test]
     fn fit_width_zoom_falls_back_to_one_for_degenerate_width() {
         assert_eq!(fit_width_zoom(0, 100, 800, 400), 1.0);
+    }
+
+    #[test]
+    fn zoom_ceiling_uses_true_100_when_it_exceeds_8x() {
+        // A large photo in a small window: true 100% is well past 8x, and the wheel must be
+        // able to reach it rather than stopping at the old hard cap.
+        assert_eq!(zoom_ceiling(20.0), 20.0);
+    }
+
+    #[test]
+    fn zoom_ceiling_never_drops_below_8x() {
+        // The ordinary case: true 100% is UNDER 8x, so 8x stays the ceiling exactly as before.
+        assert_eq!(zoom_ceiling(3.0), 8.0);
     }
 }
