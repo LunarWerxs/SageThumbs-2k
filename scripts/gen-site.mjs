@@ -8,7 +8,10 @@
 //
 // Run before deploying the site (the site lives at sagethumbs2k.github.io):
 //   node scripts/gen-site.mjs [path\to\st2k.exe]
-// st2k.exe resolution order: arg -> $ST2K -> D:\.DevScratch\build-cache\st2k-target\release -> installed -> PATH.
+// st2k.exe resolution order: arg -> $ST2K -> resolved cargo target dir -> installed -> PATH.
+// The resolved target dir follows scripts/_targetdir.ps1's own order (CARGO_TARGET_DIR env,
+// then a `target-dir` redirect in .cargo/config.toml, then the default ./target next to the
+// workspace), never a hardcoded dev-machine path.
 // Idempotent: running it twice is a no-op. CRLF-preserving.
 
 import fs from 'node:fs';
@@ -19,13 +22,23 @@ import { execFileSync } from 'node:child_process';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = path.join(ROOT, 'site', 'index.html');
 
+// ---- resolve the cargo target dir, mirroring scripts/_targetdir.ps1 --------
+function resolveTargetDir() {
+  if (process.env.CARGO_TARGET_DIR) return process.env.CARGO_TARGET_DIR;
+  const cfg = path.join(ROOT, '.cargo', 'config.toml');
+  if (fs.existsSync(cfg)) {
+    const m = fs.readFileSync(cfg, 'utf8').match(/target-dir\s*=\s*"([^"]+)"/);
+    if (m) return m[1];
+  }
+  return path.join(ROOT, 'target');
+}
+
 // ---- locate st2k.exe -------------------------------------------------------
 function findSt2k() {
   const cands = [
     process.argv[2],
     process.env.ST2K,
-    'D:/.DevScratch/build-cache/st2k-target/release/st2k.exe',
-    path.join(ROOT, 'target', 'release', 'st2k.exe'),
+    path.join(resolveTargetDir(), 'release', 'st2k.exe'),
     'C:/Program Files/SageThumbs2K/st2k.exe',
     'st2k',
   ].filter(Boolean);

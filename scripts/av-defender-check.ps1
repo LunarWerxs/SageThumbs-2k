@@ -41,20 +41,40 @@ if (-not $Path) {
 }
 if (-not $Path) { Write-Host "[av] no installers in dist\ - nothing to scan." -ForegroundColor Yellow; exit 0 }
 
+$scratch = Join-Path ([System.IO.Path]::GetTempPath()) ('st2k-av-check-' + [System.Diagnostics.Process]::GetCurrentProcess().Id)
+New-Item -ItemType Directory -Force $scratch | Out-Null
+
 $flagged = @()
-foreach ($f in $Path) {
-    $item = Get-Item -LiteralPath $f
-    $out = (& $mp -Scan -ScanType 3 -File $item.FullName 2>&1 | Out-String)
-    if ($out -match 'found no threats') {
-        Write-Host ("[av] CLEAN   {0}" -f $item.Name) -ForegroundColor Green
-    } else {
-        # `-match` on the singular/plural forms Defender uses for a per-file scan hit.
-        $name = ([regex]::Match($out, '(?m)^\s*Threat\s+(?:name:\s*)?(\S+)')).Groups[1].Value
-        if (-not $name) { $name = '(see the output above)' }
-        $sha = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
-        Write-Host ("[av] FLAGGED {0}" -f $item.Name) -ForegroundColor Red
-        $flagged += [pscustomobject]@{ Name = $item.Name; Sha = $sha; Threat = $name; Raw = $out }
+try {
+    foreach ($f in $Path) {
+        $item = Get-Item -LiteralPath $f
+        $beforeHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+        # Scan a THROWAWAY COPY, never the real dist\ artifact directly. `-Scan` with no
+        # `-DisableRemediation` lets live remediation policy quarantine whatever it scans - on
+        # the actual release installer that means the next pipeline step (SourceForge upload)
+        # can lose the file it is about to upload. -DisableRemediation also keeps the copy
+        # itself from being silently removed before the threat-name regex below can read it.
+        $copy = Join-Path $scratch $item.Name
+        Copy-Item -LiteralPath $item.FullName -Destination $copy -Force
+        $out = (& $mp -Scan -ScanType 3 -DisableRemediation -File $copy 2>&1 | Out-String)
+        # Post-scan hash check: prove the real installer in dist\ was not touched, regardless
+        # of what the copy went through.
+        $afterHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+        if ($afterHash -ne $beforeHash) {
+            throw "the original installer's hash changed during the scan ($($item.FullName)) - it must not have been touched"
+        }
+        if ($out -match 'found no threats') {
+            Write-Host ("[av] CLEAN   {0}" -f $item.Name) -ForegroundColor Green
+        } else {
+            # `-match` on the singular/plural forms Defender uses for a per-file scan hit.
+            $name = ([regex]::Match($out, '(?m)^\s*Threat\s+(?:name:\s*)?(\S+)')).Groups[1].Value
+            if (-not $name) { $name = '(see the output above)' }
+            Write-Host ("[av] FLAGGED {0}" -f $item.Name) -ForegroundColor Red
+            $flagged += [pscustomobject]@{ Name = $item.Name; Sha = $beforeHash; Threat = $name; Raw = $out }
+        }
     }
+} finally {
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if (-not $flagged) {

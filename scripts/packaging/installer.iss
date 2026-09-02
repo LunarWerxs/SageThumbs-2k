@@ -211,6 +211,22 @@ Root: HKLM; Subkey: "Software\SageThumbs2K"; ValueType: none; ValueName: "Modern
 ; Register the thumbnail provider + classic context-menu handler (HKLM).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
   StatusMsg: "Registering the shell extension..."; Flags: runhidden waituntilterminated
+; Per-user shell config (the folder verb + the per-ProgID TypeOverlay="" suppression) used to
+; be written by DllRegisterServer itself - which regsvr32 above just ran ELEVATED, so on any
+; machine where a standard user supplied a DIFFERENT admin's credentials at the UAC prompt,
+; that per-user state landed in the WRONG account's HKCU (the admin's, not the person actually
+; using this PC). Doing it here instead, `runasoriginaluser`, writes it to the real user's own
+; hive. [Run] (unlike [UninstallRun] - see the uninstall half of this fix in [Code]) accepts
+; the flag; three entries below already rely on it for the same reason.
+Filename: "{app}\{#AppExe}"; Parameters: "--sync-user-shell"; \
+  StatusMsg: "Setting up the classic context menu..."; \
+  Flags: runhidden waituntilterminated runasoriginaluser
+; The DLL swap is waiting on a restart (StaleAfterInstall): queue the per-user thumbnail
+; cache rebuild for the next sign-in from the ORIGINAL user's own context. Written by the
+; elevated installer it would land in whichever admin's hive answered the UAC prompt.
+Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
+  StatusMsg: "Scheduling a thumbnail refresh for the next sign-in..."; \
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: CacheRebuildPending
 ; Modern Win11 context menu (signed sparse package): trust our self-signed cert
 ; (machine TrustedPeople - app packages only, not a root CA), then sideload the
 ; package bound to the install dir. ONE -NoProfile powershell call using native
@@ -239,15 +255,25 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 ; Single quotes only - no double quote appears anywhere inside the command - so the Inno
 ; string below needs no nested "" escaping that could go wrong.
 ;
+; {app} is NOT embedded in this command as a quoted literal. `{app}` is expanded to the real
+; install path at RUN time (not compile time), textually, inside what would otherwise be a
+; single-quoted PowerShell string - so an install path containing an apostrophe (a real,
+; reported shape: `D:\Bob's Apps\...`) breaks out of the quote and fails the whole command
+; with no exit-code check, silently leaving the modern menu unregistered. `SetEnvironmentVariableW`
+; in CurStepChanged (ssInstall) sets ST2K_APPDIR on Setup's own process before this [Run] entry
+; executes; a `[Run]`-launched child inherits the parent's environment, so PowerShell reads the
+; path from $env:ST2K_APPDIR at ITS OWN runtime instead - no path text is ever spliced into the
+; command string, so no character in it can break the command, apostrophe included.
+;
 ; EVERY PowerShell BRACE IS DOUBLED, and it has to be. Inno reads `{` as the start of one of
 ; its own constants, so a PowerShell block like `catch{...}` is read as a constant named
 ; "catch" and the compile ABORTS with `Unknown constant`. `{{` is how Inno spells a literal
-; brace; a closing `}` needs no escape. `{app}` stays single because it really is a constant.
-; This is not theoretical: the first version of this line shipped with bare braces and broke
-; the release build outright, which nothing but a full installer compile catches - hence
-; `installer_iss::powershell_braces_are_escaped_for_inno`, which now catches it in a second.
+; brace; a closing `}` needs no escape. This is not theoretical: the first version of this line
+; shipped with bare braces and broke the release build outright, which nothing but a full
+; installer compile catches - hence `installer_iss::powershell_braces_are_escaped_for_inno`,
+; which now catches it in a second.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 '{app}\SageThumbs2K.cer').Thumbprint; if(-not(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t))){{Import-Certificate -FilePath '{app}\SageThumbs2K.cer' -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null}; try{{Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path '{app}\SageThumbs2K.msix' -ExternalLocation '{app}' -ForceUpdateFromAnyVersion}"""; \
+  Parameters: "-NoProfile -Command ""$d=$env:ST2K_APPDIR; $t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ($d+'\SageThumbs2K.cer')).Thumbprint; if(-not(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t))){{Import-Certificate -FilePath ($d+'\SageThumbs2K.cer') -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null}; try{{Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion}"""; \
   StatusMsg: "Registering the modern context menu (this can take a moment)..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
 ; UPGRADE ONLY: suppress the first-run welcome window. Someone who already had SageThumbs
 ; installed has long since decided about Quick preview and the capture hotkey, and greeting
@@ -335,6 +361,10 @@ Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 Type: files; Name: "{app}\{#AppDll}.old*"
 
 [Code]
+// Kernel32 import: the script engine has no built-in setter for the process environment,
+// and CurStepChanged uses one to hand the install path to the modern-menu [Run] entry.
+function SetEnvironmentVariableW(lpName, lpValue: String): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
 // Set by PrepareToInstall (the last moment it is knowable) and read by IsUpgrade.
 var
   WasUpgrade: Boolean;
@@ -410,6 +440,13 @@ begin
     Result := '{#AppExe}';
 end;
 
+// [Run] check for the per-user cache-rebuild queue (see that entry): only when the swap is
+// waiting on a restart. Evaluated when [Run] executes, after the files are in place.
+function CacheRebuildPending: Boolean;
+begin
+  Result := StaleAfterInstall <> '';
+end;
+
 // ---- the one install-time question: what goes in a thumbnail's corner -------------------
 //
 // This is NOT a return of the Full/Compact [Components] page removed in 2026-08-12 (see the
@@ -429,17 +466,25 @@ var
 
 function CornerMarkAlreadyChosen: Boolean;
 begin
-  Result := RegValueExists(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark');
+  // HKLM: this installer only ever writes CornerMark to HKLM (ApplyCornerMarkChoice, above -
+  // see its comment for why). A value in HKCU can only have come from the app's own Settings
+  // dialog making a live per-user change, which is exactly an already-declared answer too.
+  Result := RegValueExists(HKEY_LOCAL_MACHINE, 'Software\SageThumbs2K', 'CornerMark')
+    or RegValueExists(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark');
 end;
 
 // What to preselect. An upgrader from the two-checkbox era has no CornerMark yet, so derive it
 // from the pair it replaced - the same mapping `CornerMark::from_legacy` uses, for the same
-// reason: an upgrade must not silently move the corner they already chose.
+// reason: an upgrade must not silently move the corner they already chose. HKCU is checked
+// FIRST here (unlike CornerMarkAlreadyChosen's either/or): a live Settings change is the more
+// recent, more specific answer, and should win over the HKLM value this installer itself wrote
+// at a possibly much earlier install.
 function CornerMarkInitial: Integer;
 var
   V: Cardinal;
 begin
-  if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark', V) then
+  if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark', V) or
+     RegQueryDWordValue(HKEY_LOCAL_MACHINE, 'Software\SageThumbs2K', 'CornerMark', V) then
   begin
     if V > 2 then
       Result := 0
@@ -545,10 +590,16 @@ begin
   end;
 end;
 
+// HKLM, like LicenseMode just above and for the identical reason: this is written by the
+// ELEVATED installer, and an HKCU write here can land in the wrong account's hive on a
+// machine where a standard user supplied a DIFFERENT admin's UAC credentials. The app's own
+// settings::corner_mark() falls back to this HKLM value only when the per-user HKCU value is
+// absent, so a live change from Settings (which IS unelevated, and correctly per-user) still
+// takes precedence once the user has ever touched the setting there.
 procedure ApplyCornerMarkChoice;
 begin
   if not WizardSilent then
-    RegWriteDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'CornerMark',
+    RegWriteDWordValue(HKEY_LOCAL_MACHINE, 'Software\SageThumbs2K', 'CornerMark',
       Cardinal(CornerPage.SelectedValueIndex));
 end;
 
@@ -560,21 +611,43 @@ begin
   begin
     ApplyCornerMarkChoice;
     ApplyLicenseModeChoice;
+    // For the modern-menu [Run] powershell entry below: see its own comment for why the
+    // install path travels through the environment instead of a quoted {app} literal.
+    SetEnvironmentVariableW('ST2K_APPDIR', ExpandConstant('{app}'));
   end;
   if CurStep = ssPostInstall then
   begin
     Stale := StaleAfterInstall;
     if Stale <> '' then
+    begin
+      // The [Run] regsvr32 above just re-registered whichever DLL was actually on disk at
+      // that moment - the OLD one, since the new one is only queued for the next restart
+      // (SwapAsideInUseDll's restartreplace path). Nothing else re-registers after that
+      // restart finishes the swap, so the user would boot into the new EXE talking to the
+      // stale-registered old DLL (old FORMATS list, no REMOVED_EXTENSIONS sweep) until they
+      // found Repair by themselves. These two RunOnce entries close that gap automatically,
+      // the next time each principal signs in: HKLM re-registers the DLL machine-wide (any
+      // user who logs in next triggers it), and the `--queue-cache-rebuild` [Run] entry,
+      // running as the ORIGINAL user, queues a RunOnce in that user's own hive to rebuild
+      // the thumbnail cache once Explorer is back up in THAT session (this elevated process
+      // must not write HKCU: it may be another admin's hive). `/s` matches the [Run] entry
+      // above; the write overwrites a leftover RunOnce value from an earlier stale install
+      // that never got its restart.
+      RegWriteStringValue(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+        'SageThumbs2KReregister',
+        ExpandConstant('"{sys}\regsvr32.exe" /s "{app}\{#AppDll}"'));
       MsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
         + ' OLD VERSION.'
         + #13#10#13#10
         + 'Windows keeps that file open while File Explorer or another app is using it, and'
         + ' it can only be swapped on the next restart.'
         + #13#10#13#10
-        + 'To finish the update: restart Windows. If the version still does not change after'
-        + ' a restart, security software is most likely blocking the file - allow the install'
-        + ' folder in your antivirus and run this installer again.',
+        + 'This will finish automatically the next time you restart and sign in - no action'
+        + ' needed. If the version still has not changed after that, security software is'
+        + ' most likely blocking the file - allow the install folder in your antivirus and'
+        + ' run this installer again.',
         mbError, MB_OK);
+    end;
     if not RegKeyExists(HKEY_CLASSES_ROOT,
          'CLSID\{7B2E6A14-9C3D-4F8A-B1E7-2A5D9F0C6E31}\InprocServer32') then
       MsgBox('SageThumbs 2K installed its files, but registering the shell extension with'
@@ -962,36 +1035,105 @@ begin
   end;
 end;
 
-// Best-effort one-shot HTTPS GET on uninstall, over WinHttp with short timeouts and all
+// Best-effort one-shot HTTPS POST on uninstall, over WinHttp with short timeouts and all
 // errors swallowed so it never blocks or slows the uninstall. Only a real uninstall
 // reaches it - an in-place upgrade does not run the uninstaller. Carries the optional
 // survey answer (reason bucket + note + optional reply contact) from the uninstall prompt.
+// POST BODY, not a query string: a query string lands the reply-to email address (an
+// opt-in but still personal value) in every access/proxy log line between here and the
+// server, for no reason - the body is exactly as easy to send over WinHttp and logs nothing.
 procedure NotifyUninstall;
 var
   Http: Variant;
-  Url: String;
+  Body: String;
   DevFlag: Cardinal;
 begin
   try
-    Url := 'https://st2k.lunarwerx.com/sponsor?uninstall=1&v={#AppVer}';
+    Body := 'uninstall=1&v={#AppVer}';
     // The developer's own test box (HKCU DevMachine=1) tags the request with &dev=1. The
-    // subtree is still present here (it's deleted AFTER this), so read it before the delete.
+    // subtree is still present here (it's deleted AFTER this - now by --remove-user-state,
+    // run as the original user; see CurUninstallStepChanged below), so read it before then.
     if RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'DevMachine', DevFlag) and (DevFlag = 1) then
-      Url := Url + '&dev=1';
+      Body := Body + '&dev=1';
     if UninstallReason <> '' then
-      Url := Url + '&reason=' + UninstallReason;
+      Body := Body + '&reason=' + UninstallReason;
     if UninstallNote <> '' then
-      Url := Url + '&note=' + UrlEncode(UninstallNote);
+      Body := Body + '&note=' + UrlEncode(UninstallNote);
     if UninstallContact <> '' then
-      Url := Url + '&contact=' + UrlEncode(UninstallContact);
+      Body := Body + '&contact=' + UrlEncode(UninstallContact);
     Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
     // resolve, connect, send, receive (ms) - capped so a dead network fails fast.
     Http.SetTimeouts(1500, 1500, 1500, 2000);
-    Http.Open('GET', Url, False);
+    Http.Open('POST', 'https://st2k.lunarwerx.com/sponsor', False);
     Http.SetRequestHeader('User-Agent', 'SageThumbs2K-Uninstaller');
-    Http.Send('');
+    Http.SetRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    Http.Send(Body);
   except
     // best-effort only - never surface or block on failure.
+  end;
+end;
+
+// Run <Exe> <Params> as the ORIGINAL INTERACTIVE user, from this ELEVATED [Code] context.
+// Exists because Inno's own `runasoriginaluser` [Run]/[UninstallRun] flag is not an option
+// for the uninstall side of this fix: ISCC REJECTS `runasoriginaluser` outright on
+// [UninstallRun] entries (verified by a real compile - see docs/ROADMAP.md; "any installer.iss
+// edit needs a real compile before it is believed" is exactly why this is spelled out here
+// instead of just adding the flag). Mirrors main.rs's own `heal_after_install()` fix for the
+// same family of problem (an elevated process has no "original" unelevated token to drop
+// back to): a ONE-SHOT `/RL LIMITED` Scheduled Task, which the Task Scheduler resolves to the
+// INTERACTIVE user's standard token regardless of the elevation of the process that created
+// and triggered it. Best-effort: every step is allowed to fail (a missing schtasks.exe, or no
+// interactive session at all - a headless uninstall) without blocking the rest of removal.
+procedure RunAsOriginalUser(const Exe, Params: String);
+var
+  TaskName, SchTasks, Args: String;
+  R: Integer;
+begin
+  SchTasks := ExpandConstant('{sys}\schtasks.exe');
+  TaskName := 'SageThumbs2K-RunAsUser-' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
+  // /RL LIMITED is the load-bearing part - see the procedure comment. /TR takes ONE
+  // double-quoted command; the exe path itself needs its own quotes nested inside that via
+  // Inno's \" escape (this repo's own path can contain a space, "SageThumbs 2K").
+  Args := '/Create /TN "' + TaskName + '" /TR "\"' + Exe + '\" ' + Params
+    + '" /SC ONCE /ST 00:00 /RL LIMITED /F';
+  if not Exec(SchTasks, Args, '', SW_HIDE, ewWaitUntilTerminated, R) or (R <> 0) then
+    Exit;
+  Exec(SchTasks, '/Run /TN "' + TaskName + '"', '', SW_HIDE, ewWaitUntilTerminated, R);
+  // /Run triggers the task and returns immediately, before it finishes - not before it even
+  // STARTS. Give the short-lived CLI call a moment to actually run before tearing the task
+  // down; both operations are themselves best-effort so a slow machine loses nothing worse
+  // than a task definition left behind for the next uninstall's /F to overwrite.
+  Sleep(1500);
+  Exec(SchTasks, '/Delete /TN "' + TaskName + '" /F', '', SW_HIDE, ewWaitUntilTerminated, R);
+end;
+
+// Sweep the Run-key autostart value across EVERY loaded user hive, not just whichever account
+// happens to be HKEY_CURRENT_USER in this elevated process. HKEY_USERS enumerates every
+// profile Windows currently has loaded (every signed-in user on a shared/RDS machine, plus
+// service accounts); skip the ones that are never a real interactive user so this does not
+// waste time or risk touching something unrelated.
+procedure RemoveRunKeyForAllUsers;
+var
+  Sids: TArrayOfString;
+  I: Integer;
+  Sid: String;
+begin
+  if not RegGetSubkeyNames(HKEY_USERS, '', Sids) then
+    Exit;
+  for I := 0 to GetArrayLength(Sids) - 1 do
+  begin
+    Sid := Sids[I];
+    // Skip: '.DEFAULT' (the default profile template, not a real user), any SID already
+    // suffixed '_Classes' (the same profile's separate low-privilege hive, enumerated
+    // alongside the real one - writing both would be redundant, not wrong, but the plain SID
+    // covers it), and the three well-known SERVICE SIDs (LocalSystem S-1-5-18, LocalService
+    // S-1-5-19, NetworkService S-1-5-20) which never run an interactive shell and so never
+    // have a Run-key autostart worth clearing.
+    if (Sid = '.DEFAULT') or (Pos('_Classes', Sid) > 0) or
+       (Sid = 'S-1-5-18') or (Sid = 'S-1-5-19') or (Sid = 'S-1-5-20') then
+      Continue;
+    RegDeleteValue(HKEY_USERS, Sid + '\Software\Microsoft\Windows\CurrentVersion\Run',
+      'SageThumbs2KScreenshot');
   end;
 end;
 
@@ -999,18 +1141,28 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
     // Ask why first (interactive uninstalls only), then send the optional survey answer.
-    if not UninstallSilent then
+    // NotifyUninstall itself stays gated the same way: an unattended/SCCM/Intune uninstall
+    // should not phone home OR pop a dialog that has nobody there to answer it.
+    if not UninstallSilent then begin
       AskUninstallReason;
-    NotifyUninstall;
-    // Tidy the per-user leftovers Windows keeps on uninstall: drop our whole HKCU settings
-    // subtree, then leave only a tiny marker noting the version last installed.
-    RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\SageThumbs2K');
-    RegWriteStringValue(HKEY_CURRENT_USER, 'Software\SageThumbs2K', 'Tombstone', '{#AppVer}');
-    // The screenshot daemon's autostart entry lives in a SEPARATE registry location
-    // (…\CurrentVersion\Run, not our own Software\SageThumbs2K subtree — see
-    // screenshot/enable.rs's RUN_KEY/RUN_NAME), so the delete above never touches it. Left
-    // behind, it points at the now-deleted exe and fails silently at every logon. Mirrors
-    // install.ps1's dev-uninstaller, which already removes this same value.
-    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'SageThumbs2KScreenshot');
+      NotifyUninstall;
+    end;
+    // Per-user cleanup - the folder-verb/TypeOverlay shell config `--sync-user-shell` wrote
+    // at install (undone here by its mirror `--remove-user-shell`), and the HKCU settings
+    // subtree + reinstall Tombstone + Run-key autostart value (`--remove-user-state`) - runs
+    // as the ORIGINAL interactive user via RunAsOriginalUser, not directly here: this Pascal
+    // code is running ELEVATED, and on a machine where a standard user supplied a DIFFERENT
+    // admin's UAC credentials, a direct HKEY_CURRENT_USER write here would land in the wrong
+    // account's hive entirely - the exact bug this whole fix exists to close. Both run BEFORE
+    // the [UninstallRun] regsvr32 /u below (Pascal step handlers complete before Inno moves on
+    // to that section), matching the order the per-user shell sync uses on install.
+    RunAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--remove-user-shell');
+    RunAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--remove-user-state');
+    // Belt and braces for a shared/RDS machine: --remove-user-state above only ever reaches
+    // the ONE original interactive user's hive. Every OTHER signed-in account's Run-key entry
+    // (which --sync-user-shell never touched for them in the first place, since it also only
+    // ever runs for one user at a time) is swept here directly - this is a plain value delete
+    // with no per-user answer to get wrong, so it does not need RunAsOriginalUser's indirection.
+    RemoveRunKeyForAllUsers;
   end;
 end;

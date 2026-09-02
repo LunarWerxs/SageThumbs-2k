@@ -42,7 +42,8 @@ param(
     # Corpus directory holding the samples. Defaults to the repo's sibling test-corpus.
     [string]$CorpusPath,
     # Directory holding the freshly built DLL, for the installed==built hash assertion.
-    [string]$BuiltDir = 'D:\.DevScratch\build-cache\st2k-target\release',
+    # Resolved through _targetdir.ps1, never a hardcoded dev-machine path.
+    [string]$BuiltDir = (Join-Path (& (Join-Path $PSScriptRoot '_targetdir.ps1')) 'release'),
     # Keep the scratch directory (and its captures) for inspection.
     [switch]$Keep
 )

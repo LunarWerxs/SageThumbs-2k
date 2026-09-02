@@ -7,28 +7,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("st2k-dev-architecture-" + [guid]::NewGuid().ToString('N'))
 $script:passed = 0
-
-function Assert-Passes([string]$Name, [scriptblock]$Body) {
-    try {
-        & $Body *> $null
-        Write-Host "  PASS  $Name" -ForegroundColor Green
-        $script:passed++
-    } catch {
-        throw "expected PASS for '$Name', got: $($_.Exception.Message)"
-    }
-}
-
-function Assert-FailsLike([string]$Name, [string]$Pattern, [scriptblock]$Body) {
-    try { & $Body *> $null } catch {
-        if ($_.Exception.Message -notlike $Pattern) {
-            throw "expected '$Name' to fail like '$Pattern', got: $($_.Exception.Message)"
-        }
-        Write-Host "  PASS  $Name (failed closed)" -ForegroundColor Green
-        $script:passed++
-        return
-    }
-    throw "expected FAILURE for '$Name'"
-}
+. (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
 function Assert-Parseable([string]$Path) {
     $tokens = $null

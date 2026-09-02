@@ -28,27 +28,11 @@ if (-not $ObjdumpPath) {
     $ObjdumpPath = $inspector.Source
 }
 
-$passed = 0
+$script:passed = 0
+. (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 function Pass-Test([string]$Name) {
     $script:passed++
     Write-Host "  PASS $Name" -ForegroundColor Green
-}
-
-function Assert-ThrowsLike {
-    param(
-        [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][scriptblock]$Action,
-        [Parameter(Mandatory)][string]$Pattern
-    )
-    try {
-        & $Action
-        throw "Expected failure did not occur: $Name"
-    } catch {
-        if ($_.Exception.Message -notmatch $Pattern) {
-            throw "Wrong failure for '$Name'. Expected /$Pattern/; got: $($_.Exception.Message)"
-        }
-        Pass-Test $Name
-    }
 }
 
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("st2k-magick-tests-" + [Guid]::NewGuid().ToString('N'))

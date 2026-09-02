@@ -15,7 +15,7 @@ OFF-SCREEN and renders it with PrintWindow), so nothing appears on screen, nothi
 focus, and this is safe to run at any time. Same guarantee as scripts/make-shots.ps1, which
 produces the single-window assets; this one produces the composite.
 
-Needs Pillow (`pip install pillow`).
+Needs Pillow: `pip install -r scripts/requirements-dev.txt`.
 """
 
 from __future__ import annotations

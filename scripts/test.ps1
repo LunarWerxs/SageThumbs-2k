@@ -8,10 +8,25 @@
   profiles (release also exercises panic="abort").
 #>
 $ErrorActionPreference = 'Stop'
+
+# $ErrorActionPreference only governs terminating PowerShell errors; a native
+# process like cargo signals failure through $LASTEXITCODE, which PowerShell
+# does not turn into a terminating error on its own. Without an explicit check
+# after every call, a failing `cargo test` still let this script fall through
+# to "All green." - the four calls below used to do exactly that.
+function Invoke-Cargo {
+    param([string[]]$CargoArgs)
+    Write-Host "  > cargo $($CargoArgs -join ' ')" -ForegroundColor DarkGray
+    & cargo @CargoArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo $($CargoArgs -join ' ') failed with exit code $LASTEXITCODE"
+    }
+}
+
 Write-Host "== debug =="
-cargo build
-cargo test
+Invoke-Cargo @('build')
+Invoke-Cargo @('test')
 Write-Host "== release =="
-cargo build --release
-cargo test --release
+Invoke-Cargo @('build', '--release')
+Invoke-Cargo @('test', '--release')
 Write-Host "All green."

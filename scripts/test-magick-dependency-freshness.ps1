@@ -9,24 +9,8 @@ $ErrorActionPreference = 'Stop'
 $check = Join-Path $PSScriptRoot 'check-magick-dependency-freshness.ps1'
 . $check -LoadOnly
 
-$passed = 0
-function Assert-Equal {
-    param([string]$Name, $Actual, $Expected)
-    if ($Actual -cne $Expected) { throw "${Name}: expected '$Expected', got '$Actual'" }
-    $script:passed++
-    Write-Host "  PASS $Name" -ForegroundColor Green
-}
-function Assert-ThrowsLike {
-    param([string]$Name, [scriptblock]$Action, [string]$Pattern)
-    try {
-        & $Action
-        throw "Expected failure did not occur: $Name"
-    } catch {
-        if ($_.Exception.Message -notmatch $Pattern) { throw "${Name}: expected /$Pattern/, got '$($_.Exception.Message)'" }
-        $script:passed++
-        Write-Host "  PASS $Name" -ForegroundColor Green
-    }
-}
+$script:passed = 0
+. (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
 $zlibFixture = @'
 <html><body><h1>zlib 1.3.2</h1><p>Older zlib 1.2.13 remains documented here.</p></body></html>

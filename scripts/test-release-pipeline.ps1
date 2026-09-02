@@ -8,16 +8,7 @@ $root = Split-Path $PSScriptRoot -Parent
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("st2k-release-pipeline-" + [guid]::NewGuid().ToString('N'))
 $script:passed = 0
-
-function Assert-Passes([string]$Name, [scriptblock]$Body) {
-    try {
-        & $Body *> $null
-        Write-Host "  PASS  $Name" -ForegroundColor Green
-        $script:passed++
-    } catch {
-        throw "expected PASS for '$Name', got: $($_.Exception.Message)"
-    }
-}
+. (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
 function Assert-Fails([string]$Name, [scriptblock]$Body) {
     $failed = $false
@@ -25,20 +16,6 @@ function Assert-Fails([string]$Name, [scriptblock]$Body) {
     if (-not $failed) { throw "expected FAILURE for '$Name'" }
     Write-Host "  PASS  $Name (failed closed)" -ForegroundColor Green
     $script:passed++
-}
-
-function Assert-FailsLike([string]$Name, [string]$MessagePattern, [scriptblock]$Body) {
-    try {
-        & $Body *> $null
-    } catch {
-        if ($_.Exception.Message -notlike $MessagePattern) {
-            throw "expected '$Name' to fail like '$MessagePattern', got: $($_.Exception.Message)"
-        }
-        Write-Host "  PASS  $Name (failed at the intended gate)" -ForegroundColor Green
-        $script:passed++
-        return
-    }
-    throw "expected FAILURE for '$Name'"
 }
 
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null

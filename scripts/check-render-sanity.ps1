@@ -107,7 +107,8 @@ if (-not $py) {
 
 if ($Render) {
     if (-not $St2kPath) {
-        $St2kPath = 'D:\.DevScratch\build-cache\st2k-target\release\st2k.exe'
+        # Resolved through _targetdir.ps1, never a hardcoded dev-machine path.
+        $St2kPath = Join-Path (& (Join-Path $PSScriptRoot '_targetdir.ps1')) 'release\st2k.exe'
     }
     if (-not (Test-Path $St2kPath)) {
         Write-Host "[sanity] no st2k at $St2kPath — SKIPPED" -ForegroundColor Yellow

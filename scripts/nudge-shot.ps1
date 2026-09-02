@@ -41,7 +41,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$exe = 'D:\.DevScratch\build-cache\st2k-target\release\SageThumbs2K.exe'
+# Resolved through _targetdir.ps1, never a hardcoded dev-machine path.
+$exe = Join-Path (& (Join-Path $PSScriptRoot '_targetdir.ps1')) 'release\SageThumbs2K.exe'
 if (-not (Test-Path $exe)) { throw "exe not found: $exe -- build it first" }
 if ([string]::IsNullOrWhiteSpace($Out)) {
     $Out = Join-Path $projectRoot "nudge-shot-$Theme.png"

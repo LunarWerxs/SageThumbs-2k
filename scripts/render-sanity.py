@@ -50,7 +50,8 @@ import tempfile
 try:
     from PIL import Image, ImageStat
 except ImportError:
-    print("render-sanity: needs Pillow (pip install pillow) — SKIPPED", file=sys.stderr)
+    print("render-sanity: needs Pillow (pip install -r scripts/requirements-dev.txt) — SKIPPED",
+          file=sys.stderr)
     sys.exit(2)
 
 # ── TRUNCATED ────────────────────────────────────────────────────────────────────────────

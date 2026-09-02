@@ -24,8 +24,8 @@ Re-run whenever a toolbar gains a button:
     python scripts/build-icon-font.py            # downloads upstream, writes the asset
     python scripts/build-icon-font.py --src X.ttf   # or point it at a local copy
 
-Needs `fonttools` (pip install fonttools). The generated font is COMMITTED, so a normal build
-and CI never need this script or the network.
+Needs `fonttools`: `pip install -r scripts/requirements-dev.txt`. The generated font is
+COMMITTED, so a normal build and CI never need this script or the network.
 """
 
 from __future__ import annotations
@@ -279,7 +279,7 @@ def main() -> int:
         from fontTools.merge import Merger
         from fontTools.ttLib import TTFont
     except ImportError:
-        print("needs fonttools:  pip install fonttools", file=sys.stderr)
+        print("needs fonttools:  pip install -r scripts/requirements-dev.txt", file=sys.stderr)
         return 2
 
     src = Path(args.src) if args.src else REPO / ".icon-font-src.ttf"

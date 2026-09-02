@@ -119,8 +119,59 @@ jobs:
       # Keep the single invocation here so all of them share the freshly built DLL.
       - name: Build debug test DLL
         run: cargo build --locked
+
+      # Stage a real magick.exe on PATH before any test runs. Without it, the ImageMagick
+      # subprocess tier had zero CI coverage: named_coders.rs and preview_capping.rs each
+      # check `magick_available()` and self-skip with a loud eprintln! when it is absent
+      # (so they silently never ran here), and magick_subprocess_decodes is #[ignore]d
+      # outright because it needs the binary. Same pinned 7.1.2-29 release the x64/ARM64
+      # packaging already trusts (scripts/packaging/imagemagick-source.json's provenance
+      # block) - downloaded and SHA-256-verified before a silent install, never trusted on
+      # a version string alone.
+      - name: Stage ImageMagick for the subprocess tests
+        shell: pwsh
+        run: |
+          $pin = Get-Content -Raw 'scripts\packaging\imagemagick-source.json' | ConvertFrom-Json
+          $installer = Join-Path $env:RUNNER_TEMP $pin.provenance.upstreamAsset
+          Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $pin.provenance.upstreamSha256) {
+            throw "ImageMagick installer hash mismatch: expected $($pin.provenance.upstreamSha256), got $hash"
+          }
+          $dest = Join-Path $env:RUNNER_TEMP 'imagemagick-ci'
+          $p = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dest") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "ImageMagick silent install failed (exit $($p.ExitCode))" }
+          if (-not (Test-Path (Join-Path $dest 'magick.exe'))) { throw "magick.exe not found under $dest after install" }
+          $dest | Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
+          & (Join-Path $dest 'magick.exe') -version
+
       - name: Unit and integration tests
         run: cargo test --locked --tests
+      - name: ImageMagick subprocess decode (ignored by default; needs the staged magick.exe)
+        run: cargo test --locked --lib magick_subprocess_decodes -- --ignored
+
+      # Generic shell thumbnail API (personalisation pickers, file dialogs, most first-party
+      # UI that asks for a thumbnail through IShellItemImageFactory instead of Explorer's own
+      # view) was never exercised on x64 - only the arm64-native job registered a handler at
+      # all, and it did so through a separate script. tests/shell_thumbnail_api.rs is
+      # #[ignore]d because it needs the DLL actually registered, so give it that here: a plain
+      # regsvr32 register, the ignored test, then an unconditional unregister (`if: always()`,
+      # mirroring the ARM64 job's "always unregisters, including on failure" discipline).
+      # windows-latest runners are administrators, so regsvr32 needs no elevation step.
+      - name: Register debug DLL for shell surface tests
+        shell: pwsh
+        run: |
+          $dll = Join-Path (Join-Path (& ./scripts/_targetdir.ps1) 'debug') 'sagethumbs2k.dll'
+          regsvr32 /s $dll
+          if ($LASTEXITCODE -ne 0) { throw "regsvr32 register failed ($LASTEXITCODE)" }
+      - name: Generic shell thumbnail API (IShellItemImageFactory)
+        run: cargo test --locked --test shell_thumbnail_api -- --ignored --test-threads=1
+      - name: Unregister debug DLL
+        if: always()
+        shell: pwsh
+        run: |
+          $dll = Join-Path (Join-Path (& ./scripts/_targetdir.ps1) 'debug') 'sagethumbs2k.dll'
+          regsvr32 /s /u $dll
 
       # Gates on ALL debug-profile clippy lints across every target (bins, lib, tests).
       # Any new warning is promoted to an error and fails the build. The tree is kept
@@ -359,8 +410,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust 1.93 MSVC
         run: rustup toolchain install 1.93.0-x86_64-pc-windows-msvc --profile minimal
-      - name: Check workspace at MSRV
+      - name: Check workspace at MSRV (no features)
         run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked --workspace
+      # A no-features check only proves the FLOOR of the API surface, not what actually ships.
+      # build-test always builds with these feature combinations (:90-93 above); an MSRV-
+      # incompatible API reachable only behind one of them would pass the bare check above and
+      # only break for a real user building at the 1.93 floor, since build-test itself floats
+      # on whatever `stable` currently resolves to (rust-toolchain.toml) and never pins 1.93.
+      - name: Check sagethumbs2k at MSRV (shipping features)
+        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
+      - name: Check sagethumbs2k-dll at MSRV (shipping features)
+        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
 
   # Drift guard (no build needed): every asset referenced by include_bytes!/include_str!
   # or a README/docs <img> must be git-tracked; the README badge + FEATURES format count
@@ -400,8 +460,14 @@ jobs:
         shell: pwsh
         run: ./scripts/check-vendored-exr.ps1
       # The jxl vendor tree is GENERATED from crates.io sources plus crates/vendor/jxl-patches,
-      # so this catches a hand-edit that the next regeneration would silently discard. It skips
-      # loudly when the registry cache is absent, since this job does not build.
+      # so this catches a hand-edit that the next regeneration would silently discard. Without
+      # a populated registry source cache, vendor-jxl.ps1 -Check has nothing to diff against
+      # and skips loudly instead of comparing anything - this job does no `cargo build`, so
+      # that cache never existed here on its own. `cargo fetch --locked` populates it (no
+      # compile, just download+extract) so the check performs a REAL comparison in CI, the
+      # same one a manual `verify.ps1 -Lint` run gets locally after building.
+      - name: Fetch cargo registry sources (for the jxl vendor-drift check below)
+        run: cargo fetch --locked
       - name: vendored jxl tree matches pristine + patches
         shell: pwsh
         run: ./scripts/vendor-jxl.ps1 -Check
@@ -424,6 +490,11 @@ jobs:
       - name: every module declaration has a tracked file
         shell: pwsh
         run: ./scripts/check-untracked-mods.ps1
+      # deny.toml cannot express a wildcard "-sys" ban, only named crates - see the script's
+      # own header. A new native dependency (direct or transitive) fails here until reviewed.
+      - name: no unreviewed native (*-sys) dependency
+        shell: pwsh
+        run: ./scripts/check-native-deps.ps1
 
   # The patched dependency is excluded from the application workspace, so its
   # own tests do not run under `cargo test --workspace`. Keep the focused,

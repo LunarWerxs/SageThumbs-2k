@@ -13,12 +13,7 @@ $scripts = @(
     'scripts\vm\new-win10-vm.ps1'
 )
 $script:passed = 0
-
-function Assert-Passes([string]$Name, [scriptblock]$Body) {
-    try { & $Body } catch { throw "expected PASS for '$Name', got: $($_.Exception.Message)" }
-    Write-Host "  PASS  $Name" -ForegroundColor Green
-    $script:passed++
-}
+. (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
 function Script-Text([string]$Path) {
     Get-Content -LiteralPath (Join-Path $root $Path) -Raw

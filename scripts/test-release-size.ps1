@@ -5,6 +5,7 @@ $checker = Join-Path $PSScriptRoot 'check-release-size.ps1'
 $productionPolicy = Join-Path $root 'scripts\packaging\size-budget.json'
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("st2k-size-guard-" + [guid]::NewGuid().ToString('N'))
 $script:passed = 0
+. (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
 function Set-SparseLength([string]$path, [int64]$length) {
     New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force | Out-Null
@@ -67,19 +68,6 @@ function Set-StageTotal([string]$stage, [int64]$total) {
 }
 
 function Set-MagickTotal([string]$stage, [int64]$total) { Set-SparseLength (Join-Path $stage 'magick\payload.bin') $total }
-function Assert-Passes([string]$name, [scriptblock]$body) {
-    try { & $body *> $null } catch { throw "expected PASS for '$name', got: $($_.Exception.Message)" }
-    Write-Host "  PASS  $name" -ForegroundColor Green; $script:passed++
-}
-function Assert-FailsLike([string]$name, [string]$pattern, [scriptblock]$body) {
-    try { & $body *> $null; throw "expected FAILURE for '$name'" }
-    catch {
-        if ($_.Exception.Message -notlike $pattern) {
-            throw "expected '$name' to match '$pattern', got: $($_.Exception.Message)"
-        }
-    }
-    Write-Host "  PASS  $name (failed closed)" -ForegroundColor Green; $script:passed++
-}
 # Size overruns REPORT rather than gate (owner call, 2026-08-10: the sub-10 MB target is long
 # gone, so failing a release on it bought nothing). The coverage is kept rather than deleted,
 # because "did it still NOTICE the overrun" is the part that was ever worth testing — only the

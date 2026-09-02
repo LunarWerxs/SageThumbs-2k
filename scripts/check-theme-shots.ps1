@@ -25,7 +25,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ExePath = (Join-Path 'D:\.DevScratch\build-cache\st2k-target\release' 'SageThumbs2K.exe'),
+    # Resolved through _targetdir.ps1, never a hardcoded dev-machine path.
+    [string]$ExePath = (Join-Path (& (Join-Path $PSScriptRoot '_targetdir.ps1')) 'release\SageThumbs2K.exe'),
     [switch]$Keep
 )
 

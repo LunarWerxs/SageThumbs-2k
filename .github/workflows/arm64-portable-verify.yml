@@ -141,9 +141,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $st2k = Join-Path $env:drop 'st2k.exe'
           # Sorenson Spark FLV: the decoder runs in the spawned child, not in-process.
+          # Hash-pinned: an unpinned third-party download that gets fed straight to a decoder
+          # is exactly the "SHA-256 per URL, fail loudly on mismatch" gap check-magick-source.ps1
+          # and check-vendored-exr.ps1 already close for their own downloads.
           $flv = Join-Path $env:drop 'probe.flv'
           Invoke-WebRequest 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv' `
             -OutFile $flv -UseBasicParsing -TimeoutSec 120
+          $flvHash = (Get-FileHash -LiteralPath $flv -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($flvHash -ne 'f61d4a1696000cbb6d1e6a8bd7e4682656da3ad017c49fd6d7c47a7f28d8aefe') {
+            throw "clip1024.flv hash mismatch: expected f61d4a1696000cbb6d1e6a8bd7e4682656da3ad017c49fd6d7c47a7f28d8aefe, got $flvHash"
+          }
           $png = Join-Path $env:drop 'probe-flv.png'
           $out = & $st2k thumbnail $flv $png 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $png)) {
@@ -157,6 +164,10 @@ jobs:
           $apk = Join-Path $env:drop 'probe.apk'
           Invoke-WebRequest 'https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk' `
             -OutFile $apk -UseBasicParsing -TimeoutSec 120
+          $apkHash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($apkHash -ne '3bb32dd50129690bce850124ea120aa334e708eaa7987cf2329fd1ea0467a0eb') {
+            throw "TestActivity.apk hash mismatch: expected 3bb32dd50129690bce850124ea120aa334e708eaa7987cf2329fd1ea0467a0eb, got $apkHash"
+          }
           $apkPng = Join-Path $env:drop 'probe-apk.png'
           $out = & $st2k thumbnail $apk $apkPng 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $apkPng)) {

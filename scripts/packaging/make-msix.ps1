@@ -26,7 +26,16 @@ param(
     # identity for seamless updates; ARM64 needs an ARM64 identity because its
     # in-process shell extension cannot load in an x64 Explorer process.
     [ValidateSet('x64', 'arm64')]
-    [string]$Architecture = 'x64'
+    [string]$Architecture = 'x64',
+
+    # Skip the reuse-an-existing-cert lookup below and always mint a brand new one. For a
+    # real release build the reuse is exactly right (same publisher, same update trust, across
+    # separate days); for scripts/test-msix-integrity.ps1, which can run several times
+    # concurrently (the documented 10-20-session norm here), sharing one cert across runs let
+    # whichever run finished first delete a certificate a still-running sibling was relying on.
+    # The Subject stays the same either way - AppxManifest.xml's Publisher attribute is static
+    # and must equal it - only the cert OBJECT (and thumbprint) minted for this call is unique.
+    [switch]$FreshCertificate
 )
 $ErrorActionPreference = 'Stop'
 $pkgdir = $PSScriptRoot   # ...\scripts\packaging
@@ -43,10 +52,15 @@ $signtool = "$($sdk.FullName)\x64\signtool.exe"
 Write-Host "      SDK: $($sdk.Name)" -ForegroundColor DarkGray
 
 # 2) Ensure a self-signed code-signing cert (10-year) in CurrentUser\My. ------
-#    Reused across builds so the publisher (and thus update trust) stays stable.
-$cert = Get-ChildItem Cert:\CurrentUser\My |
-    Where-Object { $_.Subject -eq $Subject -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) } |
-    Select-Object -First 1
+#    Reused across builds so the publisher (and thus update trust) stays stable, unless the
+#    caller asked for a dedicated one (-FreshCertificate; see the param comment above).
+$cert = if ($FreshCertificate) {
+    $null
+} else {
+    Get-ChildItem Cert:\CurrentUser\My |
+        Where-Object { $_.Subject -eq $Subject -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) } |
+        Select-Object -First 1
+}
 if (-not $cert) {
     Write-Host "      generating self-signed code-signing cert ($Subject)" -ForegroundColor DarkGray
     $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $Subject `
@@ -61,7 +75,11 @@ $msix = Join-Path $OutDir "SageThumbs2K.msix"
 Export-Certificate -Cert $cert -FilePath $cer -Force | Out-Null
 
 # 3) Stage the package payload (manifest + assets only) and pack. -------------
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) "st2k_msix_stage"
+# Process-ID-scoped, not a fixed "st2k_msix_stage" name: two concurrent make-msix.ps1 calls
+# (e.g. the x64 and ARM64 test packages built back-to-back by test-msix-integrity.ps1, or two
+# concurrent -Lint runs) would otherwise delete and overwrite the same staging directory out
+# from under each other mid-build.
+$stage = Join-Path ([System.IO.Path]::GetTempPath()) "st2k_msix_stage_$PID"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory $stage -Force | Out-Null
 Copy-Item (Join-Path $pkgdir 'AppxManifest.xml') $stage -Force

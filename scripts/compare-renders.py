@@ -11,26 +11,30 @@ green.
 Comparing PIXELS between a known-good build and a candidate build closes both, across every
 format at once, with no per-format work and no judgement calls. Run it before a release
 against the previous release's portable `st2k.exe` (they are all in `dist\\`) and require every
-difference to be one you meant:
+difference to be one you meant. `--new` defaults to `<cargo target dir>\\release\\st2k.exe`
+(resolved with `cargo metadata`, so it honours CARGO_TARGET_DIR and any .cargo\\config.toml
+redirect - never a hardcoded dev-machine path), so it can usually be left out:
 
-  python scripts/compare-renders.py --corpus ..\\test-corpus --out D:\\rendercmp ^
-      --old D:\\old\\st2k.exe --new D:\\.DevScratch\\build-cache\\st2k-target\\release\\st2k.exe
+  python scripts/compare-renders.py --corpus ..\\test-corpus --out D:\\rendercmp --old D:\\old\\st2k.exe
 
 A second mode checks a rendered colour against what the file is KNOWN to flatten to, which is
 what `make-xcf-fixture.py` builds its files to make possible:
 
-  python scripts/compare-renders.py --corpus ..\\test-corpus --out D:\\rendercmp ^
-      --new D:\\.DevScratch\\build-cache\\st2k-target\\release\\st2k.exe --expect expected-colors.txt
+  python scripts/compare-renders.py --corpus ..\\test-corpus --out D:\\rendercmp --expect expected-colors.txt
 
 `expected-colors.txt` is `filename<TAB>r,g,b` per line; blank lines and `#` comments ignored.
+Pass --target-dir explicitly to point at a target dir `cargo metadata` would not itself find
+(e.g. comparing against a build made with a different CARGO_TARGET_DIR than this shell has).
 """
 
 import argparse
 import concurrent.futures as cf
+import json
 import os
 import subprocess
 import sys
 
+# pip install -r scripts/requirements-dev.txt
 from PIL import Image, ImageChops
 
 # Compared at a common small size so an encoder's own rounding cannot masquerade as a change.
@@ -116,11 +120,30 @@ def load_expected(path):
     return want
 
 
+def cargo_target_dir():
+    """Ask cargo for its resolved target directory (honours CARGO_TARGET_DIR and any
+    .cargo\\config.toml `target-dir` redirect) instead of a hardcoded dev-machine path.
+    Returns None on any failure - the caller falls back to requiring --new explicitly."""
+    try:
+        out = subprocess.run(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        return json.loads(out.stdout)["target_directory"]
+    except Exception:
+        return None
+
+
 def build_arg_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--out", default=None)
-    ap.add_argument("--new", default=None)
+    ap.add_argument("--new", default=None,
+                    help="the candidate st2k.exe; defaults to "
+                         "<target-dir>\\release\\st2k.exe")
+    ap.add_argument("--target-dir", default=None,
+                    help="cargo target dir to resolve --new from when --new is omitted "
+                         "(default: `cargo metadata`'s target_directory)")
     ap.add_argument("--old", help="the known-good build; omit when using --expect")
     ap.add_argument("--expect", help="file of `name<TAB>r,g,b` known flattened colours")
     ap.add_argument("--rendered", default=None,
@@ -134,11 +157,22 @@ def build_arg_parser():
     return ap
 
 
+def resolve_new(ap, a):
+    """Fill in --new from --target-dir / `cargo metadata` when the caller left it out."""
+    if a.new or a.rendered:
+        return
+    target_dir = a.target_dir or cargo_target_dir()
+    if not target_dir:
+        ap.error("need --new (a build to render with), --rendered (existing PNGs), or a "
+                 "resolvable target dir (--target-dir, or run inside the cargo workspace "
+                 "so `cargo metadata` can find one)")
+    a.new = os.path.join(target_dir, "release", "st2k.exe")
+
+
 def validate_args(ap, a):
     if not a.old and not a.expect:
         ap.error("need --old (differential mode) or --expect (known-colour mode)")
-    if not a.new and not a.rendered:
-        ap.error("need --new (a build to render with) or --rendered (existing PNGs)")
+    resolve_new(ap, a)
     if a.old and not a.out:
         ap.error("differential mode needs --out to render into")
 

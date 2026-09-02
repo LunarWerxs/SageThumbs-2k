@@ -46,15 +46,42 @@ if (-not $failed) {
         }
     }
 }
-if (-not $failed) { Step 'unit + integration tests' { cargo test --release --tests } }
+# CI's build-test job additionally builds a DEBUG cdylib and runs tests against IT, not just
+# the release binary - the release-only ladder above does not exercise that profile at all,
+# despite this script's own header claiming to mirror that job. Debug and release are
+# documented elsewhere in this repo as behaviorally different for the DLL (Media Foundation
+# delay-load / video decode paths), and the COM integration tests LoadLibrary whichever cdylib
+# was built last, so a push could go green here in release and still fail CI's debug leg. Run
+# CI's own two steps, verbatim (ci.yml "Build debug test DLL" / "Unit and integration tests"),
+# in ADDITION to the release ladder above rather than instead of it - the release-profile
+# checks below stay, because release-only failures (e.g. panic=abort link errors) are real too.
+if (-not $failed) { Step 'build debug test DLL (mirrors CI)' { cargo build --locked } }
+if (-not $failed) { Step 'unit + integration tests, debug profile (mirrors CI)' { cargo test --locked --tests } }
+
+# `--lib` is explicit and not left to ride along with `--tests`: ci.yml's own build-test job
+# comment asserts `--tests` alone already covers library unit tests, but that reading is not
+# how `--tests` is documented (it selects the integration-test targets under tests/, not the
+# lib target) - and docs/TODO.md separately calls `cargo test --lib --bin SageThumbs2K` "the
+# correct gate" for exactly the ~1190 #[test]s under src/. Passing both selectors here is
+# correct under either reading, so this step no longer depends on resolving that disagreement.
+if (-not $failed) { Step 'unit + integration tests (lib + tests)' { cargo test --release --lib --tests } }
 if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
 # Rustfmt was MISSING here until 2026-08-05, so this gate printed "safe to push" on a commit
 # CI then failed on formatting alone. Cheap, and the last step of the job we claim to mirror.
 if (-not $failed) { Step 'rustfmt (--check)'     { cargo fmt --all --check } }
 
 # Mirror the `deny` job — only if cargo-deny is installed locally (deny.toml at repo root).
-if (-not $failed -and (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {
-    Step 'cargo-deny' { cargo deny check }
+# A missing tool used to fall straight through to "PREFLIGHT PASSED" with no printed line at
+# all, so advisories/licenses/bans went unchecked on a machine that never noticed the gate was
+# absent (docs/DEVELOPMENT_GOTCHAS.md names this exact failure class from a shipped incident).
+if (-not $failed) {
+    if (Get-Command cargo-deny -ErrorAction SilentlyContinue) {
+        Step 'cargo-deny' { cargo deny check }
+    } else {
+        Write-Host ""
+        Write-Host "==> cargo-deny" -ForegroundColor Cyan
+        Write-Host "SKIPPED: cargo-deny is not installed (cargo install cargo-deny) — advisories, licenses and bans were NOT checked locally." -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""

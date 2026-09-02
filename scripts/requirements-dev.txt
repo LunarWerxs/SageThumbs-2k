@@ -1,0 +1,11 @@
+# Pinned versions for the dev-tooling scripts that do calibrated pixel-level image work
+# (render-sanity.py, compare-renders.py, make-collage.py) or font instancing/subsetting
+# (build-icon-font.py). None of these ship in the product; they only run on a dev machine
+# or in CI to check the DECODER's output, which is exactly the kind of drift these gates
+# exist to catch - so the tools doing the checking need to be reproducible too.
+#
+#   pip install -r scripts\requirements-dev.txt
+#
+# Versions pinned to what this repo's checks were last verified against.
+Pillow==12.3.0
+fonttools==4.61.1

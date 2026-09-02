@@ -77,7 +77,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $root   = Split-Path $PSScriptRoot -Parent                     # project root (Cargo.toml)
 $corpus = Join-Path (Split-Path $root -Parent) 'test-corpus'   # sibling of project root
-$target = 'D:\.DevScratch\build-cache\st2k-target'                                     # fixed in .cargo\config.toml
+# Resolved through _targetdir.ps1 (CARGO_TARGET_DIR / .cargo\config.toml redirect / default
+# .\target), never a hardcoded path - a machine without this repo's own dev redirect used to
+# get a target dir that does not exist on it.
+$target = & (Join-Path $PSScriptRoot '_targetdir.ps1')
 Set-Location $root
 
 $script:timings = @()
@@ -132,8 +135,16 @@ if ($Lint) {
     # Unused dependencies (a dep that compiles in but nothing references).
     Stage 'cargo machete' {
         cargo machete 2>&1 | Where-Object { $_ -notmatch '^Analyzing|^Done' } | Write-Host
-        if ($LASTEXITCODE -eq 1) { Write-Host '[verify] unused dependencies found' -ForegroundColor Red }
-        else { $global:LASTEXITCODE = 0 }
+        if ($LASTEXITCODE -eq 1) {
+            # The one code that genuinely means "unused dependencies found" - a real fail.
+            Write-Host '[verify] unused dependencies found' -ForegroundColor Red
+        } elseif ($LASTEXITCODE -eq 0) {
+            $global:LASTEXITCODE = 0
+        } else {
+            # Anything else - cargo-machete missing, or it crashed - used to be forced to 0
+            # here, so a broken or absent tool reported the same PASS as a clean run.
+            Write-Host "[verify] cargo machete exited $LASTEXITCODE (not installed, or crashed) - treating this as a FAILURE, not a silent pass" -ForegroundColor Red
+        }
     }
     # Same script the `consistency` CI job runs (and release.ps1 runs before tagging):
     # untracked referenced assets, format counts, AppxManifest version, and locale key
@@ -182,6 +193,12 @@ if ($Lint) {
     Stage 'registration symmetry' {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-registration-symmetry.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'check-registration-symmetry.ps1 failed' }
+    }
+    # deny.toml cannot express a wildcard "-sys" ban, only named crates - see the script's
+    # own header. A new native dependency (direct or transitive) fails here until reviewed.
+    Stage 'no unreviewed native (*-sys) dependency' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-native-deps.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'check-native-deps.ps1 failed' }
     }
     # The remaining 5 of ci.yml's 10 `consistency`-job scripts that used to be missing
     # from -Lint entirely: a green local -Lint said nothing about them, so a regression
@@ -253,6 +270,15 @@ if ($Samples) {
         $reg = Get-ItemProperty 'HKCU:\Software\SageThumbs2K' -ErrorAction SilentlyContinue
         if ($null -ne $reg -and $null -ne $reg.MaxSize) { $maxMb = [int]$reg.MaxSize }
         $maxBytes = if ($maxMb -le 0) { [long]::MaxValue } else { [long]$maxMb * 1MB }
+        # Print what was read and why: `size:`-gated expectations only hold while this
+        # machine's live, unpinned HKCU MaxSize is below the sample's size, so a run on a
+        # machine with a raised limit needs this line to explain why those samples now SKIP
+        # instead of silently reporting green for a different reason than the corpus intends.
+        if ($null -ne $reg -and $null -ne $reg.MaxSize) {
+            Write-Host "[verify] size-gated expectations use HKCU MaxSize = $maxMb MB (read from this machine's SageThumbs2K settings)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "[verify] size-gated expectations use the DEFAULT_MAX_FILE_MB = $maxMb MB (no HKCU MaxSize override on this machine)" -ForegroundColor DarkGray
+        }
         $files = Get-ChildItem $corpus -Filter $Samples -File |
                  Where-Object { $_.Name -notlike '_*' -and $_.Name -ne 'contact.png' }
         if (-not $files) { Write-Host "[verify] no corpus files match '$Samples'" -ForegroundColor Red; exit 1 }
@@ -407,6 +433,20 @@ exit `$code
         }
         Write-Host "  installed == built (SHA256 $($a.Substring(0,12))...)"
         $global:LASTEXITCODE = 0
+    }
+    # The two deepest installed-surface probes existed but were wired into nothing (found
+    # 2026-09-01): the only tests of the out-of-process st2k.exe spawn from dllhost, and of
+    # Explorer actually selecting our PreviewHandler over a foreign one. Both need a real
+    # elevated install, which is exactly what the stage above just did.
+    Stage 'installed surface: EPS thumbnail + preview handler' {
+        # -Sta, via Windows PowerShell (not pwsh): the script's own apartment-state check
+        # throws outside it, matching the .EXAMPLE in its header.
+        & powershell.exe -NoProfile -Sta -File (Join-Path $PSScriptRoot 'verify-installed-epsi-explorer.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'verify-installed-epsi-explorer.ps1 failed' }
+    }
+    Stage 'installed surface: thumbnails via dllhost' {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'verify-installed-thumbnails-explorer.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'verify-installed-thumbnails-explorer.ps1 failed' }
     }
 }
 

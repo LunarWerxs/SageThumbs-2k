@@ -421,6 +421,26 @@ $lic = Get-Content -Raw "$root/src/bin/app/license.rs"
 if ($lic -notmatch [regex]::Escape("license-history.json")) { $fail.Add("license.rs no longer references license-history.json - installer and app disagree on the breadcrumb") }
 if ($lic -notmatch [regex]::Escape('join("SageThumbs2K")')) { $fail.Add("license.rs breadcrumb path no longer matches the installer-created {commonappdata}\SageThumbs2K directory") }
 
+# --- 7) no script hardcodes this dev machine's target-dir redirect ------------
+# One machine's own .cargo/config.toml target-dir redirect (a dot-prefixed scratch directory
+# name, "Dev" + "Scratch", under a bare drive root) is not a path any other machine or CI runner
+# has. A script that hardcodes it instead of resolving through _targetdir.ps1 (or, for Python,
+# `cargo metadata`; for Node, the same order re-implemented) silently breaks - or silently keeps
+# a STALE value - everywhere else. Built from parts so this very check does not itself match.
+$devScratchPattern = [regex]::Escape('D:') + '[\\/]\.' + 'Dev' + 'Scratch' + '[\\/]'
+Get-ChildItem $root/scripts -Recurse -File -Include *.ps1, *.py, *.mjs |
+  Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' -and $_.Name -ne 'check-consistency.ps1' } |
+  ForEach-Object {
+    $lineNum = 0
+    foreach ($line in (Get-Content -LiteralPath $_.FullName)) {
+      $lineNum++
+      if ($line -match "(?i)$devScratchPattern") {
+        $rel = $_.FullName.Substring($root.Length + 1) -replace '\\', '/'
+        $fail.Add("$($rel):$($lineNum): hardcodes this dev machine's target-dir - route through _targetdir.ps1 (or cargo metadata in Python, the same order in Node) instead: $($line.Trim())")
+      }
+    }
+  }
+
 # --- report -------------------------------------------------------------------
 if ($fail.Count) {
   Write-Host "[consistency] FAILED ($($fail.Count)):" -ForegroundColor Red

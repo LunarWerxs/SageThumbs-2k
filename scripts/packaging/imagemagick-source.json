@@ -15,5 +15,12 @@
   "requiredLegalFiles": [
     "License.txt",
     "NOTICE.txt"
-  ]
+  ],
+  "provenance": {
+    "upstreamAsset": "ImageMagick-7.1.2-29-Q16-HDRI-x64-dll.exe",
+    "upstreamUrl": "https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-29/ImageMagick-7.1.2-29-Q16-HDRI-x64-dll.exe",
+    "upstreamSha256": "94c025d0f572b1f7db03c380002485b49069c6d02796f462ffd7052874ba7467",
+    "obtainedOn": "2026-09-01",
+    "note": "SAME upstream release as the ARM64 pin (7.1.2-29), so it carries the same 2026 policy.xml bypass fixes including CVE-2026-49219 and CVE-2025-66628. Downloaded once from the GitHub release to compute upstreamSha256, then installed to %ProgramFiles%\\ImageMagick-7.1.2-Q16-HDRI with the DLL install option so check-magick-source.ps1's 195-file inventory algorithm (magick.exe, root DLL/XML files, License.txt, NOTICE.txt, and everything below modules) matches this pin."
+  }
 }

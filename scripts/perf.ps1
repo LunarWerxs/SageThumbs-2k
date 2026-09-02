@@ -1,11 +1,18 @@
 <#
-  perf.ps1 — time every real-content corpus sample through st2k and flag slow outliers.
+  perf.ps1 — SUPERSEDED by check-decode-speed.ps1 (2026-08-18); kept only because
+  docs/ROADMAP.md still references it by name. Do not add new callers.
 
-  The "trip every slow filter at once" guard: run it after any decode change to catch a
-  format that suddenly got slow — e.g. the legacy-Office WMF render that quietly cost ~5 s
-  for a release before anyone noticed. It prints the slowest files (so you always see the
-  tail) AND flags anything over -Threshold for a closer look (embedded preview missing?
-  wrong decode tier? a render that hangs?).
+  This flags a sample as slow only against one flat -Threshold across every format, with no
+  per-format baseline and no comparison against what Windows itself achieves. That is exactly
+  the blind spot check-decode-speed.ps1 was written to close (see its own header): a format
+  that is legitimately slower than the others (a big multi-layer PSD) trips this file's single
+  threshold, while a format that regressed but stayed under the flat line does not. Use
+  `pwsh scripts\check-decode-speed.ps1` instead — Gate A compares against native Windows
+  decode per format, Gate B compares against this build's own recorded baseline per format.
+
+  What follows is the original perf.ps1, unchanged, for anyone who still invokes it directly:
+
+  time every real-content corpus sample through st2k and flag slow outliers.
 
       pwsh scripts\perf.ps1                 # default: real corpus, 3000 ms threshold
       pwsh scripts\perf.ps1 -Threshold 1500 # stricter

@@ -319,16 +319,27 @@ if ($imageMagickBundled) {
     throw 'an engine-less stage must not contain ImageMagick files'
 }
 
-# Re-run the pinned-source identity/inventory gate and the staged dependency-
-# closure + real decode smoke tests for the x64 Full payload. ARM64 Compact
-# intentionally has no ImageMagick and cannot execute on this x64 verifier.
-if ($Architecture -eq 'x64') {
-    $magickPinPath = Join-Path $root 'scripts\packaging\imagemagick-source.json'
+# Re-run the pinned-source identity/inventory gate and the staged dependency-closure check for
+# BOTH architectures - a payload built on this x64 host only, per the ARM64 pin's own
+# `provenance.runtimeIdentityCheck` note: the 195-file SHA-256 inventory and the PE
+# FileVersion identify an ARM64 binary just as surely as an x64 one, and neither reads it, so
+# this x64 verifier needs no emulation to run them. Only the REAL DECODE smoke test
+# (test-staged-regression.ps1, which executes st2k.exe against samples) stays x64-only - it
+# genuinely cannot run an ARM64 binary on this host, and IS covered instead by the native
+# `windows-11-arm` CI job (arm64-portable-verify.yml) before a release publishes.
+if ($imageMagickBundled) {
+    $magickPinPath = if ($Architecture -eq 'x64') {
+        Join-Path $root 'scripts\packaging\imagemagick-source.json'
+    } else {
+        Join-Path $root 'scripts\packaging\imagemagick-source-arm64.json'
+    }
     $magickPin = Get-Content -LiteralPath $magickPinPath -Raw | ConvertFrom-Json
     $sourceDirectoryName = [string](Get-ReleaseRequiredProperty -Object $magickPin.identity -Name 'installDirectoryName')
     $magickSource = Join-Path $env:ProgramFiles $sourceDirectoryName
-    & (Join-Path $PSScriptRoot 'check-magick-source.ps1') -SourcePath $magickSource -PinPath $magickPinPath
+    & (Join-Path $PSScriptRoot 'check-magick-source.ps1') -SourcePath $magickSource -PinPath $magickPinPath -Architecture $Architecture
     & (Join-Path $PSScriptRoot 'check-magick-bundle.ps1') -BundlePath (Join-Path $stage.FullName 'magick')
+}
+if ($Architecture -eq 'x64') {
     & (Join-Path $PSScriptRoot 'test-staged-regression.ps1') -StagePath $stage.FullName
 }
 

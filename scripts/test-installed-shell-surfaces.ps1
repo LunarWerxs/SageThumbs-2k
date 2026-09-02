@@ -35,7 +35,7 @@
   that the CLI does not - the stream name lookup in particular, which the CLI gets from
   its own argv and the shell has to be asked for:
 
-      pwsh scripts\test-installed-shell-surfaces.ps1 -TargetDir D:\.DevScratch\build-cache\st2k-target\release `
+      pwsh scripts\test-installed-shell-surfaces.ps1 -TargetDir path\to\your\st2k-target\release `
           -ExtraSamples ..\..\test-corpus\sample.rla, ..\..\test-corpus\sample.tim, `
                         ..\..\test-corpus\sample.scr=255,0,0
 
