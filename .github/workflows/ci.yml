@@ -162,8 +162,12 @@ jobs:
         shell: pwsh
         run: |
           $dll = Join-Path (Join-Path (& ./scripts/_targetdir.ps1) 'debug') 'sagethumbs2k.dll'
-          regsvr32 /s $dll
-          if ($LASTEXITCODE -ne 0) { throw "regsvr32 register failed ($LASTEXITCODE)" }
+          # regsvr32 is a GUI-subsystem program, so pwsh does not wait for it and
+          # $LASTEXITCODE is left unset: `$null -ne 0` is true, and this step threw
+          # "regsvr32 register failed ()" on runs 6323170 and f057cfd with the DLL
+          # registered fine. Wait for it and read the real exit code instead.
+          $p = Start-Process -FilePath regsvr32 -ArgumentList '/s', $dll -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "regsvr32 register failed ($($p.ExitCode))" }
       - name: Generic shell thumbnail API (IShellItemImageFactory)
         run: cargo test --locked --test shell_thumbnail_api -- --ignored --test-threads=1
       - name: Unregister debug DLL
@@ -171,7 +175,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = Join-Path (Join-Path (& ./scripts/_targetdir.ps1) 'debug') 'sagethumbs2k.dll'
-          regsvr32 /s /u $dll
+          Start-Process -FilePath regsvr32 -ArgumentList '/s', '/u', $dll -Wait | Out-Null
 
       # Gates on ALL debug-profile clippy lints across every target (bins, lib, tests).
       # Any new warning is promoted to an error and fails the build. The tree is kept
