@@ -46,6 +46,15 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     (out.len() as u64 <= super::MAX_COVER).then_some(out)
 }
 
+/// Real FB2 binary ids are short identifiers (a handful of characters). Capping the
+/// accepted href/id length here keeps `binary_by_id`'s needle search from ever being
+/// handed an attacker-chosen multi-megabyte needle: `util::find`'s plain
+/// `windows(needle.len())` scan costs O(needle.len()) per failed window, so a long
+/// needle sharing a long common prefix with the haystack turns the whole lookup
+/// O(n*m). Rejecting an oversized id here, before it reaches `binary_by_id`, keeps
+/// the needle small regardless of how large the crafted href was.
+const MAX_ID_LEN: usize = 256;
+
 /// The binary id referenced by `<coverpage>`'s image href (leading '#'s stripped).
 fn coverpage_id(bytes: &[u8]) -> Option<Vec<u8>> {
     let cp = find(bytes, b"<coverpage")?;
@@ -56,7 +65,7 @@ fn coverpage_id(bytes: &[u8]) -> Option<Vec<u8>> {
     while let Some(rest) = id.strip_prefix(b"#") {
         id = rest;
     }
-    (!id.is_empty()).then(|| id.to_vec())
+    (!id.is_empty() && id.len() <= MAX_ID_LEN).then(|| id.to_vec())
 }
 
 /// Last index of a single byte in `hay`, or `None`.
@@ -183,5 +192,28 @@ mod tests {
     fn extract_rejects_oversized_input() {
         let huge = vec![b'a'; (super::super::MAX_COVER * 2 + 1) as usize];
         assert_eq!(extract(&huge), None);
+    }
+
+    /// A crafted long href/id (sharing a long common prefix with a large document,
+    /// so a naive substring scan would cost O(needle.len()) per failed window) must
+    /// be rejected by `coverpage_id` itself, before `binary_by_id` ever builds a
+    /// needle from it, and must not stall doing so.
+    #[test]
+    fn overlong_cover_id_is_rejected_quickly_not_scanned() {
+        let long_id = vec![b'a'; MAX_ID_LEN + 1];
+        // A large body sharing the same repeated-'a' prefix is exactly the shape
+        // that makes an unbounded needle search quadratic.
+        let filler = vec![b'a'; 4 * 1024 * 1024];
+        let bytes = doc("utf-8", &long_id, &filler, b"cover-bytes");
+
+        let start = std::time::Instant::now();
+        let result = extract(&bytes);
+        let elapsed = start.elapsed();
+
+        assert_eq!(result, None);
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "extract took {elapsed:?} for an overlong id — looks like it wasn't rejected before the scan"
+        );
     }
 }

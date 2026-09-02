@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use rars::ArchiveReader;
 
-use super::select::{dedupe_by_name, pick_covers, Entry};
+use super::select::{dedupe_by_name, pick_covers, CoverPrefs, Entry};
 
 /// Ceiling on how much of the archive we'll decompress-and-throw-away while walking TOWARDS the
 /// picked covers. RAR is sequential (a solid archive can't be entered mid-stream), so entries
@@ -84,8 +84,12 @@ impl Write for CapBuf {
     }
 }
 
+/// Called only from the in-memory `extract_cover` dispatch, which has no per-request
+/// settings snapshot to thread through, so it reads the preferences itself here
+/// rather than carrying a `prefs` parameter its caller can't supply.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
-    extract_n(bytes, 1).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
+    extract_n(bytes, 1, &CoverPrefs::from_settings())
+        .and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
 }
 
 /// Up to `want` cover images — the multi-image generalization of [`extract`],
@@ -94,7 +98,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 /// mid-stream at all), so this is ONE pass that captures each picked entry as it
 /// streams by and aborts right after the last one — a 100-file archive whose
 /// pictures sort early never fully decompresses in Explorer's thumbnail host.
-pub fn extract_n(bytes: &[u8], want: usize) -> Option<Vec<Vec<u8>>> {
+pub fn extract_n(bytes: &[u8], want: usize, prefs: &CoverPrefs) -> Option<Vec<Vec<u8>>> {
     let archive = ArchiveReader::read(bytes).ok()?;
 
     // List members → pick the cover entries (no decompression here).
@@ -107,7 +111,7 @@ pub fn extract_n(bytes: &[u8], want: usize) -> Option<Vec<Vec<u8>>> {
             size: m.meta.unpacked_size,
         })
         .collect();
-    let picks = dedupe_by_name(pick_covers(&entries, want), &entries);
+    let picks = dedupe_by_name(pick_covers(&entries, want, prefs), &entries);
     if picks.is_empty() {
         return None;
     }

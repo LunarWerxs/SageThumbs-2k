@@ -11,7 +11,7 @@ use std::io::{Read, Seek};
 
 use zip::ZipArchive;
 
-use super::util::{contains_ci, decodable_image};
+use super::util::{contains_ci, decodable_image, xml_attr};
 use super::zipfmt::read_named;
 
 pub enum Kind {
@@ -115,16 +115,7 @@ fn thumbnail_target(rels_xml: &[u8]) -> Option<String> {
 /// permits both, and the thumbnail-relationship match previously tested for `'` as well,
 /// so honoring only `"` here would have quietly dropped support for single-quoted rels.
 fn attr(s: &str, key: &str) -> Option<String> {
-    for quote in ['"', '\''] {
-        let pat = format!("{key}={quote}");
-        if let Some(at) = s.find(&pat) {
-            let start = at + pat.len();
-            if let Some(rel_end) = s[start..].find(quote) {
-                return Some(s[start..start + rel_end].to_string());
-            }
-        }
-    }
-    None
+    xml_attr(s, key)
 }
 
 #[cfg(test)]

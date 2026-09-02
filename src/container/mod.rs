@@ -57,7 +57,7 @@ mod psd;
 mod psp;
 mod rar;
 mod rhino;
-mod select;
+pub(crate) mod select;
 mod sevenz;
 mod skp;
 mod tarfmt;
@@ -301,17 +301,29 @@ pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
 
 /// Generic archive containers: APK/zip/7z/rar.
 fn try_generic_archive_cover(bytes: &[u8]) -> Option<CoverOut> {
-    // Android packages and their split-bundle wrappers: the REAL launcher icon via
-    // AndroidManifest.xml / resources.arsc. Must stay BEFORE the generic zip branch —
-    // an APK is a zip, and the generic image-pick would grab an arbitrary res/
-    // drawable instead of the declared icon. The sniff is a central-directory name
-    // check only, so a plain zip pays one directory parse, no decompression.
-    if apk::looks_like_apk(bytes) {
-        return apk::extract(bytes).map(CoverOut::Bytes);
-    }
-    // ZIP family: EPUB / CBZ / FBZ (and any zip of images).
+    // ZIP family: Android packages (and their split-bundle wrappers) FIRST, then
+    // EPUB / CBZ / FBZ / any zip of images. The archive is opened and its central
+    // directory parsed exactly ONCE and shared between the APK dispatch check and
+    // whichever extractor claims it — `apk::looks_like_apk` used to open its own
+    // `ZipArchive` for the check and `apk::extract`/`zipfmt::extract` opened a
+    // second one for the real read, parsing the same directory twice per file.
     if is_zip(bytes) {
-        return zipfmt::extract(bytes).map(CoverOut::Bytes);
+        let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+            return None;
+        };
+        // Android packages and their split-bundle wrappers: the REAL launcher icon
+        // via AndroidManifest.xml / resources.arsc. Must stay BEFORE the generic
+        // zip branch — an APK is a zip, and the generic image-pick would grab an
+        // arbitrary res/ drawable instead of the declared icon. A `.apk`-suffixed
+        // entry that turns out not to be a real wrapper (nothing resolvable behind
+        // it) falls through to the generic zip cover pick below instead of losing
+        // the cover entirely.
+        if apk::archive_is_apk(&mut zip) {
+            if let Some(icon) = apk::extract_from_archive(&mut zip) {
+                return Some(CoverOut::Bytes(icon));
+            }
+        }
+        return zipfmt::extract_from_archive(&mut zip).map(CoverOut::Bytes);
     }
     // 7-Zip: CB7.
     if is_7z(bytes) {
@@ -481,6 +493,7 @@ fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
 pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
     reader: R,
     head: &[u8],
+    prefs: &select::CoverPrefs,
 ) -> Option<Vec<u8>> {
     // ZIP family: CBZ / ZIP (and any zip of images).
     if is_zip(head) {
@@ -489,20 +502,22 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
         // bundled drawable instead of its launcher icon. Oversized is not the rare case here:
         // `.xapk`/`.apks` split bundles for big games are precisely the ones that pass
         // `limits::MAX_INPUT_BYTES` and reach this path rather than the buffered one.
-        // Opening the archive costs one central-directory read; handing the reader back with
-        // `into_inner` lets the generic path re-open it unchanged. That double read only ever
-        // happens on files past 256 MiB, where it is noise against the decode that follows.
+        // The already-open archive is shared with `extract_from_archive` instead of being
+        // re-parsed, and a `.apk`-suffixed entry that turns out not to be a real wrapper
+        // falls through to the generic pick below instead of losing the cover entirely.
         let Ok(mut zip) = zip::ZipArchive::new(reader) else {
             return None;
         };
         if apk::archive_is_apk(&mut zip) {
-            return apk::extract_seek(zip.into_inner());
+            if let Some(icon) = apk::extract_from_archive(&mut zip) {
+                return Some(icon);
+            }
         }
-        return zipfmt::cover_from_reader(zip.into_inner());
+        return zipfmt::cover_from_reader(zip.into_inner(), prefs);
     }
     // 7-Zip: CB7.
     if is_7z(head) {
-        return sevenz::extract_seek(reader);
+        return sevenz::extract_seek(reader, prefs);
     }
     // Clip Studio Paint: the preview PNG from the tail CHNKSQLi database.
     if head.starts_with(b"CSFCHUNK") {
@@ -532,15 +547,19 @@ pub fn archive_needs_buffer(head: &[u8]) -> bool {
 /// extraction is bounded per entry ([`MAX_COVER`]) and, for solid archives, one
 /// budgeted sequential pass. `None` when the archive holds no readable image —
 /// the caller fails the thumbnail and Explorer shows the stock icon.
-pub fn archive_covers(bytes: &[u8], want: usize) -> Option<Vec<Vec<u8>>> {
+pub fn archive_covers(
+    bytes: &[u8],
+    want: usize,
+    prefs: &select::CoverPrefs,
+) -> Option<Vec<Vec<u8>>> {
     if is_zip(bytes) {
-        return zipfmt::covers_from_reader(std::io::Cursor::new(bytes), want);
+        return zipfmt::covers_from_reader(std::io::Cursor::new(bytes), want, prefs);
     }
     if is_7z(bytes) {
-        return sevenz::extract_seek_n(std::io::Cursor::new(bytes), want);
+        return sevenz::extract_seek_n(std::io::Cursor::new(bytes), want, prefs);
     }
     if is_rar(bytes) {
-        return rar::extract_n(bytes, want);
+        return rar::extract_n(bytes, want, prefs);
     }
     None
 }
@@ -554,12 +573,13 @@ pub fn archive_covers_seek<R: std::io::Read + std::io::Seek>(
     reader: R,
     head: &[u8],
     want: usize,
+    prefs: &select::CoverPrefs,
 ) -> Option<Vec<Vec<u8>>> {
     if is_zip(head) {
-        return zipfmt::covers_from_reader(reader, want);
+        return zipfmt::covers_from_reader(reader, want, prefs);
     }
     if is_7z(head) {
-        return sevenz::extract_seek_n(reader, want);
+        return sevenz::extract_seek_n(reader, want, prefs);
     }
     None
 }
@@ -741,6 +761,15 @@ pub(crate) use util::{jpeg_sof_is_decodable, jpeg_span, jpeg_span_len};
 mod tests {
     use super::*;
 
+    /// Registry-default cover prefs, for tests that don't care about the values.
+    fn default_prefs() -> select::CoverPrefs {
+        select::CoverPrefs {
+            prefer_cover: true,
+            sort: true,
+            skip_scanlation: false,
+        }
+    }
+
     /// **The assertion every gate in this repo was missing, applied to every extractor at
     /// once.** `extract_cover` returning `Some` proves nothing: the InDesign carver returned
     /// a spliced JPEG that started `FFD8FF`, ended `FFD9`, was the largest candidate in the
@@ -891,7 +920,7 @@ mod tests {
         let mut head = [0u8; 8];
         file.read_exact(&mut head).unwrap();
         file.rewind().unwrap();
-        let cover = archive_cover_seek(file, &head);
+        let cover = archive_cover_seek(file, &head, &default_prefs());
         let _ = std::fs::remove_file(&path);
         assert_eq!(cover.as_deref(), Some(&png[..]));
     }
@@ -918,7 +947,7 @@ mod tests {
         let mut head = [0u8; 8];
         file.read_exact(&mut head).unwrap();
         file.rewind().unwrap();
-        let cover = archive_cover_seek(file, &head);
+        let cover = archive_cover_seek(file, &head, &default_prefs());
         let _ = std::fs::remove_file(&path);
         assert_eq!(cover.as_deref(), Some(&b"\xFF\xD8\xFFcover-bytes"[..]));
     }
@@ -957,7 +986,7 @@ mod tests {
         let mut head = [0u8; 8];
         file.read_exact(&mut head).unwrap();
         file.rewind().unwrap();
-        let cover = archive_cover_seek(file, &head);
+        let cover = archive_cover_seek(file, &head, &default_prefs());
         let _ = std::fs::remove_file(&path);
         assert_eq!(
             cover.as_deref(),
@@ -1020,7 +1049,7 @@ mod tests {
         let mut head = [0u8; 8];
         file.read_exact(&mut head).unwrap();
         file.rewind().unwrap();
-        let streamed = archive_cover_seek(file, &head);
+        let streamed = archive_cover_seek(file, &head, &default_prefs());
         let in_memory = zipfmt::extract(&bytes);
         let _ = std::fs::remove_file(&path);
 

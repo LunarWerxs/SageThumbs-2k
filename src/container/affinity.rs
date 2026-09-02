@@ -17,7 +17,9 @@ const IEND: [u8; 8] = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
 /// can't run away. The embedded preview sits near the start or end of a valid
 /// file, so 64 MiB comfortably covers real inputs while bounding pathological
 /// ones — both the signature search and each IEND search span stay within it.
-const MAX_SCAN: usize = 64 * 1024 * 1024;
+/// Derived from the canonical cover budget rather than a separately picked
+/// magic number.
+const MAX_SCAN: usize = super::MAX_COVER as usize * 2;
 
 /// True if `head` looks like an Affinity container.
 pub fn looks_like_affinity(head: &[u8]) -> bool {

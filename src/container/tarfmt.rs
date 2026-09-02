@@ -3,8 +3,11 @@
 //! padded up to a 512-byte boundary. We collect the image entries and reuse the
 //! shared cover-selection (natural sort / "cover" preference / junk skip).
 
-use super::select::{pick_cover, Entry};
+use super::select::{pick_cover, CoverPrefs, Entry};
 
+/// Called only from the in-memory `extract_cover` dispatch, which has no per-request
+/// settings snapshot to thread through, so it reads the preferences itself here
+/// rather than carrying a `prefs` parameter its caller can't supply.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut ranges: Vec<(usize, usize)> = Vec::new(); // (data offset, size), parallel to entries
@@ -48,7 +51,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         pos = next;
     }
 
-    let idx = pick_cover(&entries)?;
+    let idx = pick_cover(&entries, &CoverPrefs::from_settings())?;
     let (off, size) = ranges[idx];
     if size as u64 > super::MAX_COVER {
         return None;

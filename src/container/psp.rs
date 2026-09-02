@@ -31,8 +31,9 @@ const BLOCK_PREFIX: usize = 10;
 
 /// Bound the block walk / JPEG scan so a hostile or huge PSP can't run away. The
 /// composite preview lives early in the file, so this comfortably covers real
-/// inputs while capping pathological ones.
-const MAX_SCAN: usize = 64 * 1024 * 1024;
+/// inputs while capping pathological ones. Derived from the canonical cover
+/// budget rather than a separately picked magic number.
+const MAX_SCAN: usize = super::MAX_COVER as usize * 2;
 
 /// At most this many JPEG candidates are examined — a crafted run of pseudo-SOI
 /// markers can't make the scan loop.

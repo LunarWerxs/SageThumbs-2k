@@ -13,7 +13,7 @@ use std::io::{Cursor, Read, Seek};
 
 use zip::ZipArchive;
 
-use super::select::{pick_covers, Entry};
+use super::select::{pick_covers, CoverPrefs, Entry};
 
 /// Stream a comic/image-zip cover from a SEEKABLE reader without buffering the whole
 /// archive — the `zip` crate seeks to the central directory and reads only the chosen
@@ -23,8 +23,8 @@ use super::select::{pick_covers, Entry};
 /// a media-heavy deck likewise), and for those the generic image-pick grabs an
 /// arbitrary layer/media image — ORA's `data/layer*.png` natural-sorts BEFORE the real
 /// composite — so run the same dedicated-preview dispatch as the in-memory `extract`.
-pub(crate) fn cover_from_reader<R: Read + Seek>(reader: R) -> Option<Vec<u8>> {
-    covers_from_reader(reader, 1).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
+pub(crate) fn cover_from_reader<R: Read + Seek>(reader: R, prefs: &CoverPrefs) -> Option<Vec<u8>> {
+    covers_from_reader(reader, 1, prefs).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
 }
 
 /// Up to `want` cover images from a seekable ZIP-family reader — the multi-image
@@ -34,11 +34,15 @@ pub(crate) fn cover_from_reader<R: Read + Seek>(reader: R) -> Option<Vec<u8>> {
 /// collage of layer/media internals is never right), so only a plain image zip /
 /// CBZ ever returns more than one image. Each returned entry is one bounded read;
 /// the archive is never fully decompressed.
-pub(crate) fn covers_from_reader<R: Read + Seek>(reader: R, want: usize) -> Option<Vec<Vec<u8>>> {
+pub(crate) fn covers_from_reader<R: Read + Seek>(
+    reader: R,
+    want: usize,
+    prefs: &CoverPrefs,
+) -> Option<Vec<Vec<u8>>> {
     let mut zip = ZipArchive::new(reader).ok()?;
     match dedicated_preview(&mut zip) {
         Dedicated::Final(cover) => cover.map(|c| vec![c]),
-        Dedicated::FallThrough => covers_image_only(&mut zip, want),
+        Dedicated::FallThrough => covers_image_only(&mut zip, want, prefs),
     }
 }
 
@@ -97,8 +101,13 @@ fn dedicated_preview<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Dedicated {
 }
 
 /// The generic CBZ / image-zip cover: natural-first cover image, one entry read.
+///
+/// Called only from the in-memory [`extract_from_archive`] dispatch, which has no
+/// per-request settings snapshot to thread through, so it reads the preferences
+/// itself here rather than carrying a `prefs` parameter its caller can't supply.
 pub(crate) fn cover_image_only<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
-    covers_image_only(zip, 1).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
+    let prefs = CoverPrefs::from_settings();
+    covers_image_only(zip, 1, &prefs).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
 }
 
 /// Aggregate decode ceiling for a CONTACT SHEET's cover picks (`want` > 1), mirroring
@@ -116,13 +125,18 @@ const CONTACT_SHEET_COVERS_BUDGET: u64 = 8 * 1024 * 1024;
 /// each. An entry that fails to read (corrupt / encrypted / unsupported method)
 /// is skipped rather than failing the set — the sheet degrades gracefully.
 ///
-/// Each pick is charged against [`CONTACT_SHEET_COVERS_BUDGET`] by its DECLARED size
-/// (capped at MAX_COVER, matching what `read_index` would actually spend reading it)
-/// BEFORE the read runs and regardless of whether that read then succeeds — so a run
-/// of picks that all fail to decode still can't dodge the budget by never charging it.
+/// Each pick is charged against [`CONTACT_SHEET_COVERS_BUDGET`] from the bytes it
+/// ACTUALLY reads, and the read itself is capped at what is left of the budget
+/// (`read_index_bounded`): the `zip` crate never enforces the central directory's
+/// declared uncompressed size against the real deflate output, so a crafted archive can
+/// declare any number and still inflate to the cap. Bounding the read is the only thing
+/// that holds; a declared-size pre-check can neither trust the number nor tell a lie
+/// from an honestly incompressible page whose deflate stream came out a few bytes larger
+/// than the original.
 pub(crate) fn covers_image_only<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     want: usize,
+    prefs: &CoverPrefs,
 ) -> Option<Vec<Vec<u8>>> {
     let entries = list_entries(zip);
     let mut remaining = if want > 1 {
@@ -131,29 +145,35 @@ pub(crate) fn covers_image_only<R: Read + Seek>(
         u64::MAX
     };
     let mut out = Vec::new();
-    for idx in pick_covers(&entries, want) {
-        let Some(entry) = entries.get(idx) else {
+    for idx in pick_covers(&entries, want, prefs) {
+        if entries.get(idx).is_none() {
+            continue;
+        }
+        let Some(bytes) = read_index_bounded(zip, idx, remaining) else {
             continue;
         };
-        let cost = entry.size.min(super::MAX_COVER);
-        if cost > remaining {
-            continue;
-        }
-        remaining -= cost;
-        if let Some(bytes) = read_index(zip, idx) {
-            out.push(bytes);
-        }
+        remaining = remaining.saturating_sub(bytes.len() as u64);
+        out.push(bytes);
     }
     (!out.is_empty()).then_some(out)
 }
 
-/// Extract the cover bytes from a ZIP-family container.
-pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
+/// [`extract_from_archive`] over an in-memory zip, for tests.
+#[cfg(test)]
+pub(crate) fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
-    match dedicated_preview(&mut zip) {
+    extract_from_archive(&mut zip)
+}
+
+/// Extract the cover bytes from a ZIP-family archive the caller already opened — e.g. after
+/// [`super::apk::archive_is_apk`] decided this ZIP is not an Android package — so
+/// the central directory is parsed once per file instead of once for that check
+/// and again here.
+pub(crate) fn extract_from_archive<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
+    match dedicated_preview(zip) {
         Dedicated::Final(cover) => cover,
         // CBZ / generic image zip: natural-first cover image.
-        Dedicated::FallThrough => cover_image_only(&mut zip),
+        Dedicated::FallThrough => cover_image_only(zip),
     }
 }
 
@@ -162,18 +182,14 @@ fn has_entry<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> bool {
 }
 
 fn find_entry_ext<R: Read + Seek>(zip: &mut ZipArchive<R>, dot_ext: &str) -> Option<String> {
-    // Bounded like `list_entries` below: the FBZ probe now also runs on the
-    // SEEKABLE path, and this allocates a String per entry.
-    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
-        // Skip a member that fails to open rather than abandoning the whole scan —
-        // one corrupt entry shouldn't hide a valid match later in the archive.
-        let Ok(f) = zip.by_index(i) else { continue };
-        let name = f.name().to_string();
-        if name.to_ascii_lowercase().ends_with(dot_ext) {
-            return Some(name);
-        }
-    }
-    None
+    // `file_names()` reads straight off the already-parsed central directory, no
+    // per-entry local-header touch — unlike `by_index`, which used to run here for
+    // every one of up to MAX_LIST_ENTRIES entries just to read a name. Bounded like
+    // `list_entries` below: the FBZ probe now also runs on the SEEKABLE path.
+    zip.file_names()
+        .take(super::MAX_LIST_ENTRIES)
+        .find(|name| name.to_ascii_lowercase().ends_with(dot_ext))
+        .map(str::to_string)
 }
 
 pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry> {
@@ -240,12 +256,27 @@ fn prefer_utf8(raw: &[u8], decoded: &str) -> String {
 }
 
 pub(crate) fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>, idx: usize) -> Option<Vec<u8>> {
+    read_index_bounded(zip, idx, super::MAX_COVER)
+}
+
+/// [`read_index`] with the read capped at `cap` as well as `MAX_COVER`. An entry that
+/// inflates past the smaller of the two is refused whole (`None`), not handed back cut
+/// off: the declared size is only a hint for the allocation, never the bound.
+fn read_index_bounded<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    idx: usize,
+    cap: u64,
+) -> Option<Vec<u8>> {
+    let cap = cap.min(super::MAX_COVER);
     let f = zip.by_index(idx).ok()?;
-    if f.size() > super::MAX_COVER {
+    if f.size() > cap {
         return None;
     }
-    let mut buf = Vec::with_capacity(f.size().min(super::MAX_COVER) as usize);
-    f.take(super::MAX_COVER).read_to_end(&mut buf).ok()?;
+    let mut buf = Vec::with_capacity(f.size().min(cap) as usize);
+    f.take(cap.saturating_add(1)).read_to_end(&mut buf).ok()?;
+    if buf.len() as u64 > cap {
+        return None;
+    }
     (!buf.is_empty()).then_some(buf)
 }
 
@@ -263,6 +294,15 @@ pub(crate) fn read_named<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) ->
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Registry-default cover prefs, for tests that don't care about the values.
+    fn default_prefs() -> CoverPrefs {
+        CoverPrefs {
+            prefer_cover: true,
+            sort: true,
+            skip_scanlation: false,
+        }
+    }
 
     #[test]
     fn cbz_utf8_entry_name_extracts_and_lists_unchanged() {
@@ -283,7 +323,7 @@ mod tests {
         assert_eq!(list_bytes(&bytes, 1).unwrap()[0].name, name);
         assert_eq!(extract(&bytes).as_deref(), Some(png.as_slice()));
         assert_eq!(
-            covers_from_reader(Cursor::new(&bytes), 1).unwrap()[0].as_slice(),
+            covers_from_reader(Cursor::new(&bytes), 1, &default_prefs()).unwrap()[0].as_slice(),
             png.as_slice()
         );
     }
@@ -312,7 +352,7 @@ mod tests {
         // budget: one ~3.34 MiB pick is nowhere near either ceiling.
         let mut zip1 = ZipArchive::new(Cursor::new(&bytes)).unwrap();
         assert_eq!(
-            covers_image_only(&mut zip1, 1).map(|v| v.len()),
+            covers_image_only(&mut zip1, 1, &default_prefs()).map(|v| v.len()),
             Some(1),
             "single-cover extraction must be unaffected by the contact-sheet aggregate budget"
         );
@@ -321,12 +361,61 @@ mod tests {
         // the 3 that are individually eligible under MAX_COVER alone, proving the picks
         // now share one budget instead of each getting a fresh MAX_COVER allowance.
         let mut zip4 = ZipArchive::new(Cursor::new(&bytes)).unwrap();
-        let out = covers_image_only(&mut zip4, 4).expect("the first pick alone must fit");
+        let out = covers_image_only(&mut zip4, 4, &default_prefs())
+            .expect("the first pick alone must fit");
         assert_eq!(
             out.len(),
             2,
             "2 x ~3.34 MiB fits the 8 MiB budget, a 3rd does not; got {} covers",
             out.len()
+        );
+    }
+
+    /// The contact-sheet budget is spent by the bytes an entry REALLY inflates to, and an
+    /// entry that does not fit what is left is refused whole. Four 3 MiB pages that all
+    /// declare 1 byte: the first two fit the 8 MiB budget, the third would need 3 MiB of
+    /// the remaining 2 MiB and is skipped, and so is the fourth.
+    #[test]
+    fn contact_sheet_budget_is_spent_by_real_bytes_not_the_declared_size() {
+        let real = vec![0xABu8; 3_000_000]; // inflates to ~3 MiB
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for name in ["a.png", "b.png", "c.png", "d.png"] {
+            writer.start_file(name, opts).unwrap();
+            writer.write_all(&real).unwrap();
+        }
+        let mut bytes = writer.finish().unwrap().into_inner();
+
+        // Patch every local file header's and central directory header's uncompressed_size
+        // field down to 1 (offsets 22 and 24 respectively), leaving compressed_size and the
+        // actual compressed bytes untouched — a shape the real writer never produces, but a
+        // crafted archive can.
+        for (sig, off) in [(&b"PK\x03\x04"[..], 22usize), (&b"PK\x01\x02"[..], 24)] {
+            let mut from = 0;
+            while let Some(rel) = bytes[from..].windows(4).position(|w| w == sig) {
+                let at = from + rel;
+                bytes[at + off..at + off + 4].copy_from_slice(&1u32.to_le_bytes());
+                from = at + 4;
+            }
+        }
+
+        let mut zip = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        assert_eq!(
+            zip.by_index(0).unwrap().size(),
+            1,
+            "the lie must be in place"
+        );
+        let covers = covers_image_only(&mut zip, 4, &default_prefs())
+            .expect("the pages that fit the budget are still served");
+        assert_eq!(
+            covers.len(),
+            2,
+            "two real 3 MiB pages fit an 8 MiB budget, not four"
+        );
+        assert!(
+            covers.iter().all(|c| c.len() == real.len()),
+            "never a truncated page"
         );
     }
 

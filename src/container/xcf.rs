@@ -76,6 +76,25 @@ const TILE: u32 = 64;
 /// the read, and every parse inside it is bounds-checked as before.
 const LAYER_HEAD_WINDOW: usize = 1 << 20;
 
+/// Total bytes the layer-header prescan (see `extract_seek_within`) may read across EVERY
+/// layer pointer combined, checked BEFORE each read rather than only bounding one at a time.
+///
+/// [`LAYER_HEAD_WINDOW`] alone bounds a single read, but the prescan runs it once per pointer
+/// in [`MAX_LAYERS`] (8192) — up to ~8 GiB of buffer copies — and it runs unconditionally,
+/// before [`select_layers`] has decided a single layer is even worth decoding. A pointer needs
+/// only look like a plausible offset with at least a window's worth of file left after it; no
+/// valid layer record is required to make `read_at` copy the full window — `read_at` cannot
+/// tell a real header record from filler, so in practice it reads the FULL window for every
+/// layer of a real file too, whenever there is more file content after it (there almost always
+/// is: the next layer, the hierarchy, tile pixels). So this budget has to stay generous enough
+/// that a real project with a great many layers still gets every one of them prescanned: 128
+/// covers any real GIMP file this decoder has been asked to open, while still cutting a
+/// crafted [`MAX_LAYERS`]-pointer file's worst case by 64x (~8 GiB down to ~128 MiB) — a large
+/// but now FINITE and fast (pure memory copy, no allocation) amount of work, instead of an
+/// unbounded one. A layer reached after the budget is spent is treated the same as one whose
+/// read failed outright: no header, no draw — never a panic or a hang.
+const LAYER_HEAD_PRESCAN_BUDGET: usize = 128 * 1024 * 1024;
+
 /// Read up to `len` bytes at `off` into `buf`, replacing its contents.
 ///
 /// A SHORT read is not an error: the file may simply end there, and every parser downstream
@@ -265,7 +284,12 @@ pub fn looks_like_xcf(b: &[u8]) -> bool {
 
 /// Decode an in-memory XCF into a flattened RGBA thumbnail, or `None` on any malformation.
 pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
-    extract_seek_within(std::io::Cursor::new(bytes), MAX_LAYER_PIXELS, None)
+    extract_seek_within(
+        std::io::Cursor::new(bytes),
+        MAX_LAYER_PIXELS,
+        LAYER_HEAD_PRESCAN_BUDGET,
+        None,
+    )
 }
 
 /// [`extract`] for a caller that only wants a tile `target_edge` px on its longest side.
@@ -282,7 +306,12 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
 /// [`blit_tile_scaled`]. `None` reproduces the old behaviour exactly, byte for byte, which is
 /// what the full-fidelity callers (Convert/Resize/Image-info) keep getting.
 pub fn extract_scaled(bytes: &[u8], target_edge: Option<u32>) -> Option<DynamicImage> {
-    extract_seek_within(std::io::Cursor::new(bytes), MAX_LAYER_PIXELS, target_edge)
+    extract_seek_within(
+        std::io::Cursor::new(bytes),
+        MAX_LAYER_PIXELS,
+        LAYER_HEAD_PRESCAN_BUDGET,
+        target_edge,
+    )
 }
 
 /// How many source pixels collapse into one output pixel, per axis.
@@ -314,24 +343,32 @@ fn step_for(width: u32, height: u32, target_edge: Option<u32>) -> u32 {
 /// at one offset per 64x64 tile. Nothing requires the middle of the file to be in memory, only
 /// the piece being looked at, and the largest such piece is one tile.
 pub fn extract_seek<R: Read + Seek>(src: R, target_edge: Option<u32>) -> Option<DynamicImage> {
-    extract_seek_within(src, MAX_LAYER_PIXELS, target_edge)
+    extract_seek_within(
+        src,
+        MAX_LAYER_PIXELS,
+        LAYER_HEAD_PRESCAN_BUDGET,
+        target_edge,
+    )
 }
 
-/// [`extract_seek`], with the layer budget as an argument.
+/// [`extract_seek`], with the layer budget and the layer-header prescan budget as arguments.
 ///
-/// The budget exists to bound a file that declares thousands of full-size layers, so every
-/// case worth testing about it is one where honouring the declaration costs gigabytes. Passing
-/// the budget in lets those cases be tested at two-by-two scale — an exhausted budget behaves
-/// the same whether it ran out after eleven 24-megapixel layers or after two 4-pixel ones —
-/// which is the difference between a test that runs on every `cargo test` and one nobody runs.
+/// Both budgets exist to bound a file that declares thousands of full-size layers, so every
+/// case worth testing about them is one where honouring the declaration costs gigabytes.
+/// Passing them in lets those cases be tested at two-by-two scale — an exhausted budget
+/// behaves the same whether it ran out after eleven 24-megapixel layers or after two 4-pixel
+/// ones — which is the difference between a test that runs on every `cargo test` and one
+/// nobody runs.
 ///
-/// It is also the only honest way to test this at all. The shipped bug was invisible to a suite
-/// that checked the budget's ARITHMETIC (that test passed throughout) because the defect was in
-/// which layers the arithmetic was spent on, and that is only observable in the pixels that
-/// come out the far end.
+/// It is also the only honest way to test either at all. The shipped layer-selection bug was
+/// invisible to a suite that checked the pixel budget's ARITHMETIC (that test passed
+/// throughout) because the defect was in which layers the arithmetic was spent on, and that is
+/// only observable in the pixels that come out the far end; the prescan budget below is
+/// likewise only observable in how many bytes actually got read.
 fn extract_seek_within<R: Read + Seek>(
     mut src: R,
     layer_budget: u64,
+    prescan_budget: usize,
     target_edge: Option<u32>,
 ) -> Option<DynamicImage> {
     let r = &mut src;
@@ -361,11 +398,29 @@ fn extract_seek_within<R: Read + Seek>(
     // MAX_PIXELS, so charging it would refuse legal images (see MAX_LAYER_PIXELS). Only the
     // layer pile is speculative, and the per-edge and per-count caps cannot bound its total on
     // their own, which is what the budget is for.
+    //
+    // The prescan's OWN cost is bounded separately, interleaved with each read rather than
+    // only checked once at the end: `prescan_budget` (see [`LAYER_HEAD_PRESCAN_BUDGET`]) is
+    // spent BEFORE every `read_at`, and the window itself shrinks to whatever is left so the
+    // final read of the allowance can't overshoot it. A pointer reached once the budget is
+    // spent gets no header at all — the same as one whose read failed outright.
     let mut heads: Vec<Option<LayerHead>> = Vec::with_capacity(pro.layer_ptrs.len());
+    let mut prescan_left = prescan_budget;
     for &lptr in &pro.layer_ptrs {
-        heads.push(match read_at(r, lptr, LAYER_HEAD_WINDOW, &mut win) {
-            Some(()) => read_layer_head(&win, 0, wide),
-            None => None,
+        if prescan_left == 0 {
+            heads.push(None);
+            continue;
+        }
+        let window = LAYER_HEAD_WINDOW.min(prescan_left);
+        heads.push(match read_at(r, lptr, window, &mut win) {
+            Some(()) => {
+                prescan_left = prescan_left.saturating_sub(win.len());
+                read_layer_head(&win, 0, wide)
+            }
+            None => {
+                prescan_left = prescan_left.saturating_sub(window);
+                None
+            }
         });
     }
     let keep = select_layers(layer_budget, &heads, width, height);
@@ -1294,7 +1349,95 @@ mod tests {
     /// [`extract_seek_within`] over a byte slice, so the budget cases read as plainly as the
     /// ordinary ones. The in-memory entry point takes exactly this route in production.
     fn extract_within(bytes: &[u8], layer_budget: u64) -> Option<DynamicImage> {
-        extract_seek_within(std::io::Cursor::new(bytes), layer_budget, None)
+        extract_seek_within(
+            std::io::Cursor::new(bytes),
+            layer_budget,
+            LAYER_HEAD_PRESCAN_BUDGET,
+            None,
+        )
+    }
+
+    // ── Layer-header prescan budget ───────────────────────────────────────────
+    // A crafted file can declare thousands of layer pointers, each needing only
+    // "an offset with at least a window's worth of file left after it" (no valid layer record
+    // required) to make the OLD prescan copy the full LAYER_HEAD_WINDOW per pointer — up to
+    // ~8 GiB of buffer copies for MAX_LAYERS pointers, before a single pixel decision is made.
+
+    /// Counts bytes actually handed back by `read()`, so the assertion below is about real
+    /// I/O rather than about the loop's own bookkeeping.
+    struct CountingReader<R> {
+        inner: R,
+        reads: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+    impl<R: Read> Read for CountingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.reads.set(self.reads.get() + n as u64);
+            Ok(n)
+        }
+    }
+    impl<R: Seek> Seek for CountingReader<R> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    /// A structurally valid v011 (wide-pointer) prologue declaring `n` layer pointers, ALL
+    /// pointing at the SAME offset — a zero-filled blob big enough that every successful read
+    /// gets its full (possibly shrunk) window's worth of bytes, so the fixture stays a few MB
+    /// regardless of how large `n` gets instead of needing `n` distinct targets.
+    fn crafted_many_layer_pointers(n: usize, filler_len: usize) -> Vec<u8> {
+        fn u32b(v: u32) -> [u8; 4] {
+            v.to_be_bytes()
+        }
+        fn u64b(v: u64) -> [u8; 8] {
+            v.to_be_bytes()
+        }
+        let mut b = Vec::new();
+        b.extend_from_slice(b"gimp xcf v011\0");
+        b.extend_from_slice(&u32b(4)); // width
+        b.extend_from_slice(&u32b(4)); // height
+        b.extend_from_slice(&u32b(0)); // base type RGB
+        b.extend_from_slice(&u32b(150)); // 8-bit gamma precision
+        b.extend_from_slice(&u32b(0)); // PROP_END
+        b.extend_from_slice(&u32b(0));
+        let filler_at = (b.len() + 8 * n + 8) as u64;
+        for _ in 0..n {
+            b.extend_from_slice(&u64b(filler_at));
+        }
+        b.extend_from_slice(&u64b(0)); // end of layer pointer list
+        assert_eq!(b.len() as u64, filler_at, "computed filler offset drifted");
+        b.resize(b.len() + filler_len, 0u8);
+        b
+    }
+
+    /// Total bytes actually read off the source during the whole prescan must stay bounded by
+    /// (roughly) the prescan budget, NOT scale with how many layer pointers the file declares
+    /// — 4000 crafted pointers must cost about the same real I/O as 8 of them.
+    #[test]
+    fn layer_header_prescan_reads_are_bounded_by_the_running_budget_not_by_pointer_count() {
+        const FILLER: usize = 2 * 1024 * 1024; // over any shrunk per-read window
+        const SMALL_BUDGET: usize = 300_000; // far under LAYER_HEAD_WINDOW (1 MiB)
+                                             // A generous ceiling: the one prologue probe read (<= 256 KiB) plus the one prescan
+                                             // read the budget actually buys (<= SMALL_BUDGET), with slack — nowhere near what
+                                             // thousands of unconditional 1 MiB reads would cost.
+        const CEILING: u64 = 1_048_576;
+
+        for n in [8usize, 4000] {
+            let bytes = crafted_many_layer_pointers(n, FILLER);
+            let reads = std::rc::Rc::new(std::cell::Cell::new(0u64));
+            let src = CountingReader {
+                inner: std::io::Cursor::new(bytes),
+                reads: std::rc::Rc::clone(&reads),
+            };
+            let _ = extract_seek_within(src, MAX_LAYER_PIXELS, SMALL_BUDGET, None);
+            assert!(
+                reads.get() < CEILING,
+                "prescan for {n} layer pointers read {} bytes off the source -- must stay \
+                 bounded by the prescan budget, not scale with pointer count",
+                reads.get()
+            );
+        }
     }
 
     // ── Reduced-grid flatten ──────────────────────────────────────────────────

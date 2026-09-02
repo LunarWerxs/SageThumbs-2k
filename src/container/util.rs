@@ -31,6 +31,22 @@ pub(super) fn decodable_image(data: Vec<u8>) -> Option<Vec<u8>> {
     super::looks_like_raster(&data).then_some(data)
 }
 
+/// Value of `key="..."` or `key='...'` within `s` (the first occurrence). XML
+/// permits either quote style, so both are tried — a reader that only checked `"`
+/// would silently miss an attribute a producer wrote with `'`.
+pub(super) fn xml_attr(s: &str, key: &str) -> Option<String> {
+    for quote in ['"', '\''] {
+        let pat = format!("{key}={quote}");
+        if let Some(at) = s.find(&pat) {
+            let start = at + pat.len();
+            if let Some(rel_end) = s[start..].find(quote) {
+                return Some(s[start..start + rel_end].to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Big-endian `u16` at byte offset `o`, bounds-checked.
 pub(super) fn be16(b: &[u8], o: usize) -> Option<u16> {
     b.get(o..o + 2).map(|s| u16::from_be_bytes([s[0], s[1]]))
@@ -285,6 +301,19 @@ mod tests {
         // Case-insensitive match still works.
         assert!(contains_ci(b"AbCOpenDocumentXyz", b"opendocument"));
         assert!(!contains_ci(b"nope", b"zzz"));
+    }
+
+    #[test]
+    fn xml_attr_accepts_either_quote_style() {
+        assert_eq!(
+            xml_attr(r#"<item id="x" href="a.png"/>"#, "href").as_deref(),
+            Some("a.png")
+        );
+        assert_eq!(
+            xml_attr(r#"<item id='x' href='b.png'/>"#, "href").as_deref(),
+            Some("b.png")
+        );
+        assert_eq!(xml_attr(r#"<item id="x"/>"#, "href"), None);
     }
 
     #[test]

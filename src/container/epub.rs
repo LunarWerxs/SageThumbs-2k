@@ -14,6 +14,7 @@ use std::io::{Read, Seek};
 
 use zip::ZipArchive;
 
+use super::util::xml_attr;
 use super::zipfmt::{read_index, read_named};
 
 /// Generic over the archive's reader so the SEEKABLE path (an oversized EPUB read
@@ -189,29 +190,35 @@ fn tag_around(s: &str, pos: usize) -> Option<&str> {
     s.get(start..pos + rel_end + 1)
 }
 
-/// Value of `attr="..."` within `tag`.
+/// Value of `attr="..."` or `attr='...'` within `tag`. Single-quoted OPF/OCF
+/// attributes are valid XML and must not silently miss the cover cascade.
 fn tag_attr(tag: &str, attr: &str) -> Option<String> {
-    let key = format!("{attr}=\"");
-    let start = tag.find(&key)? + key.len();
-    let end = tag.get(start..)?.find('"')? + start;
-    Some(tag.get(start..end)?.to_string())
+    xml_attr(tag, attr)
 }
 
-/// First `attr="..."` value anywhere in the document.
+/// First `attr="..."` or `attr='...'` value anywhere in the document.
 fn tag_attr_anywhere(s: &str, attr: &str) -> Option<String> {
-    let key = format!("{attr}=\"");
-    let start = s.find(&key)? + key.len();
-    let end = s.get(start..)?.find('"')? + start;
-    Some(s.get(start..end)?.to_string())
+    xml_attr(s, attr)
+}
+
+/// Byte position of `attr="value"` or `attr='value'`, whichever comes first: the OPF may
+/// use either quoting and the cover cascade must locate the tag under both.
+fn find_attr_eq(s: &str, attr: &str, value: &str) -> Option<usize> {
+    let dq = s.find(&format!("{attr}=\"{value}\""));
+    let sq = s.find(&format!("{attr}='{value}'"));
+    match (dq, sq) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 fn meta_cover(opf: &str) -> Option<String> {
-    let pos = opf.find("name=\"cover\"")?;
+    let pos = find_attr_eq(opf, "name", "cover")?;
     tag_attr(tag_around(opf, pos)?, "content")
 }
 
 fn item_href_by_id(opf: &str, id: &str) -> Option<String> {
-    let pos = opf.find(&format!("id=\"{id}\""))?;
+    let pos = find_attr_eq(opf, "id", id)?;
     tag_attr(tag_around(opf, pos)?, "href")
 }
 
@@ -339,6 +346,18 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(500),
             "first_html_image took {elapsed:?} for a 40k-tag page — looks quadratic again"
+        );
+    }
+
+    #[test]
+    fn single_quoted_opf_attributes_are_not_missed() {
+        // Single-quoted attributes are valid XML; the cover cascade must find them
+        // exactly like double-quoted ones instead of silently falling through.
+        let opf = r#"<package><metadata><meta name='cover' content='cvr'/></metadata>
+            <manifest><item id='cvr' href='Images/cover.jpg'/></manifest></package>"#;
+        assert_eq!(
+            cover_from_opf(opf, "OEBPS/").as_deref(),
+            Some("OEBPS/Images/cover.jpg")
         );
     }
 

@@ -99,7 +99,17 @@ fn collect_fat_sectors(bytes: &[u8], first_difat: u32, sector_size: usize) -> Op
         fat_sectors.push(v);
     }
     let mut difat = first_difat;
+    // Bound the DIFAT chain by a hop counter INDEPENDENT of whether `fat_sectors` grew, the way
+    // `follow()` bounds every other chain in this file. Without it a crafted DIFAT sector whose
+    // n-1 FAT entries are all FREESECT/ENDOFCHAIN (so none are pushed) and whose trailing next
+    // pointer self-references loops forever — a true hang, reachable for anything the sniffer
+    // classifies as OLE2 (legacy Office, .msi, .max, .msg) in the thumbnail/preview host.
+    let mut difat_hops = 0usize;
     while difat != ENDOFCHAIN && difat != FREESECT && fat_sectors.len() <= MAX_SECTORS {
+        if difat_hops >= MAX_SECTORS {
+            return None; // DIFAT chain longer than any real file could need: a cycle.
+        }
+        difat_hops += 1;
         let sec = read_sector(bytes, difat, sector_size)?;
         let n = sector_size / 4;
         for i in 0..n - 1 {

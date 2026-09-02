@@ -13,18 +13,53 @@ pub struct Entry {
     pub size: u64,
 }
 
+/// The three cover-selection preferences, read once and passed in, so a caller that
+/// already holds a settings snapshot does not cost one registry open per preference per
+/// archive.
+#[derive(Clone, Copy, Debug)]
+pub struct CoverPrefs {
+    /// `ContainerPreferCover`: an image whose name contains "cover" leads.
+    pub prefer_cover: bool,
+    /// `ContainerSort`: natural-sort the pages (else archive order).
+    pub sort: bool,
+    /// `ContainerSkipScanlation`: drop scanlation filler pages.
+    pub skip_scanlation: bool,
+}
+
+impl CoverPrefs {
+    /// The preferences as the individual accessors read them (three registry opens).
+    pub fn from_settings() -> Self {
+        Self {
+            prefer_cover: crate::settings::container_prefer_cover(),
+            sort: crate::settings::container_sort(),
+            skip_scanlation: crate::settings::container_skip_scanlation(),
+        }
+    }
+
+    /// The preferences out of an existing per-request settings snapshot (no registry
+    /// access).
+    pub fn from_thumb_settings(cfg: &crate::settings::ThumbSettings) -> Self {
+        Self {
+            prefer_cover: cfg.container_prefer_cover,
+            sort: cfg.container_sort,
+            skip_scanlation: cfg.container_skip_scanlation,
+        }
+    }
+}
+
 /// Index of the chosen cover entry among `entries`, or None if none qualify.
-pub fn pick_cover(entries: &[Entry]) -> Option<usize> {
-    pick_covers(entries, 1).into_iter().next()
+pub fn pick_cover(entries: &[Entry], prefs: &CoverPrefs) -> Option<usize> {
+    pick_covers(entries, 1, prefs).into_iter().next()
 }
 
 /// Up to `want` cover entries, best-first — the same filter pipeline as the single
 /// cover: "cover"-named images lead (when that preference is on), the remaining
 /// pages follow, each group in natural-sort order (when sorting is on, else archive
 /// order). `want = 1` reproduces [`pick_cover`] exactly; the contact-sheet thumbnail
-/// asks for 4. Empty when nothing qualifies.
-pub fn pick_covers(entries: &[Entry], want: usize) -> Vec<usize> {
-    let candidates = cover_candidates(entries);
+/// asks for 4. Empty when nothing qualifies. The preferences come from the caller —
+/// read once per request and passed down, never read from the registry here.
+pub fn pick_covers(entries: &[Entry], want: usize, prefs: &CoverPrefs) -> Vec<usize> {
+    let candidates = cover_candidates(entries, prefs);
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -32,17 +67,16 @@ pub fn pick_covers(entries: &[Entry], want: usize) -> Vec<usize> {
     // Split off images whose filename contains "cover" (default on) — they lead the
     // result. With `want = 1` a non-empty cover group IS the pool, so behavior
     // matches the historical single-cover pick; the rest only matter for `want > 1`.
-    let (mut covers, mut rest): (Vec<usize>, Vec<usize>) =
-        if crate::settings::container_prefer_cover() {
-            candidates
-                .into_iter()
-                .partition(|&i| filename(&entries[i].name).contains("cover"))
-        } else {
-            (Vec::new(), candidates)
-        };
+    let (mut covers, mut rest): (Vec<usize>, Vec<usize>) = if prefs.prefer_cover {
+        candidates
+            .into_iter()
+            .partition(|&i| filename(&entries[i].name).contains("cover"))
+    } else {
+        (Vec::new(), candidates)
+    };
 
     // Natural sort (default on) each group; else keep archive order.
-    if crate::settings::container_sort() {
+    if prefs.sort {
         natural_sort(&mut covers, entries);
         natural_sort(&mut rest, entries);
     }
@@ -58,8 +92,10 @@ pub fn pick_covers(entries: &[Entry], want: usize) -> Vec<usize> {
 /// Solid 7z scanning needs membership plus physical order: sorting tens of
 /// thousands of project-archive paths only to throw that order away made header-only
 /// misses needlessly CPU-heavy. Keeping the filtering in one helper prevents the
-/// cheap solid path from drifting from the normal name-ranked picker.
-pub fn cover_candidates(entries: &[Entry]) -> Vec<usize> {
+/// cheap solid path from drifting from the normal name-ranked picker. The
+/// preferences come from the caller — read once per request and passed down,
+/// never read from the registry here.
+pub fn cover_candidates(entries: &[Entry], prefs: &CoverPrefs) -> Vec<usize> {
     let candidates: Vec<usize> = (0..entries.len())
         .filter(|&i| {
             let e = &entries[i];
@@ -78,7 +114,7 @@ pub fn cover_candidates(entries: &[Entry]) -> Vec<usize> {
     // scanlators slip in and that otherwise sort ahead of page 1 (DarkThumbs'
     // opt-in filter, conservatively worded). Only applied when real images
     // remain, so a comic whose every page name matches still yields a thumbnail.
-    let candidates = if crate::settings::container_skip_scanlation() {
+    let candidates = if prefs.skip_scanlation {
         let clean: Vec<usize> = candidates
             .iter()
             .copied()

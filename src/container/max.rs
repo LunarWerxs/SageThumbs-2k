@@ -22,7 +22,8 @@ const CF_ENHMETAFILE: u32 = 14;
 /// 3ds Max / Visio / Publisher all write the outer clipboard tag as 0xFFFFFFFF and
 /// encode the real format inside the payload — see [`sentinel_payload`].
 const SENTINEL: u32 = 0xFFFF_FFFF;
-const MAX_DIM: u32 = 8192;
+/// Same edge cap as every raster decode tier, not a re-picked number.
+const MAX_DIM: u32 = crate::decode::limits::MAX_DIM;
 
 pub fn looks_like_max(head: &[u8]) -> bool {
     ole::looks_like_ole(head)

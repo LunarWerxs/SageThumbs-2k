@@ -29,6 +29,13 @@ use std::io::{Cursor, Read, Seek};
 
 use zip::ZipArchive;
 
+/// `Read + Seek` as one object-safe bound. A wrapper's inner archive is opened over a
+/// boxed reader of this type: [`from_archive`] is generic over its reader, and recursing
+/// with the concrete `ZipFileSeek<'_, R>` would hand the compiler a new, deeper type at
+/// every level (the runtime depth cap cannot stop monomorphisation).
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
 use super::util::{le16, le32};
 use super::zipfmt;
 
@@ -88,93 +95,104 @@ const MAX_RESOLVE_WORK: u32 = 4_096;
 const MAX_PACKAGES: usize = 256;
 const MAX_MANIFEST: usize = 4 * 1024 * 1024;
 const MAX_ICON: usize = 8 * 1024 * 1024;
-/// A real `base.apk` routinely exceeds [`super::MAX_COVER`], so the wrapper path reads
-/// the inner APK with its own (much larger, still bounded) cap.
+/// A real `base.apk` routinely exceeds [`super::MAX_COVER`]. [`wrapper_icon`] streams it
+/// (no materialization at all) when the inner member is stored uncompressed, which is the
+/// common case for a real XAPK/APKM/APKS; this cap only bounds the fallback for the rarer
+/// compressed-inner-member case, which still has to be read into memory to open as a zip.
 const MAX_INNER_APK: u64 = 256 * 1024 * 1024;
 
-/// Is this zip an Android package (root `AndroidManifest.xml`) or a split-bundle
-/// wrapper (an inner `.apk` payload)? Central-directory name check only — no entry is
-/// decompressed, so this is cheap enough to gate every zip through.
-///
-/// Deliberately does NOT treat a root `icon.png` alone as a wrapper marker: plenty of
-/// ordinary zips carry one, and claiming them would steal the generic image-zip cover.
+/// [`archive_is_apk`] over an in-memory zip, for the tests that build packages in memory.
+#[cfg(test)]
 pub(crate) fn looks_like_apk(bytes: &[u8]) -> bool {
     if !super::is_zip(bytes) {
         return false;
     }
-    // ACCEPTED BOUND, not a gap in this file: the `zip` crate's own `ZipArchive::new`
-    // fully parses the central directory before any entry-count cap here (or in
-    // `zipfmt.rs`'s MAX_LIST_ENTRIES-bounded calls below) has a chance to run, so a
-    // crafted zip of many tiny entries pays that parse cost regardless of what this
-    // module does afterward. There is no bounded-directory constructor to switch to;
-    // `MAX_INPUT_BYTES` (the whole-file cap upstream of every container extractor) is
-    // what actually limits it.
-    let Ok(mut zip) = ZipArchive::new(Cursor::new(bytes)) else {
-        return false;
-    };
-    if zip.by_name("AndroidManifest.xml").is_ok() {
-        return true;
+    match ZipArchive::new(Cursor::new(bytes)) {
+        Ok(mut zip) => archive_is_apk(&mut zip),
+        Err(_) => false,
     }
-    // (A `for` loop, not a tail `.any()` expression: the iterator borrows `zip`, and a
-    // borrowing temporary in tail position outlives the local it borrows — E0597.)
-    for name in zip.file_names().take(super::MAX_LIST_ENTRIES) {
-        if ends_with_ci(name, ".apk") {
-            return true;
-        }
-    }
-    false
+}
+
+/// Is `name` shallow enough to be a real split-bundle member? Every real
+/// XAPK/APKS/APKM this module has seen keeps its `.apk` splits at the archive root
+/// or one folder deep (`base.apk`, `config.arm64_v8a.apk`,
+/// `Split_apks/config.en.apk`). A `.apk`-suffixed entry buried deeper than that is
+/// far more likely to be a stray file inside an unrelated ordinary zip (a device
+/// backup, a mod pack) than a real wrapper, and routing THAT to the APK path used
+/// to throw away the generic zip cover pick for a wrapper extraction that has
+/// nothing to find — see [`wrapper_icon`]'s caller in `mod.rs`, which now falls
+/// back to the generic pick when this module declines instead of giving up.
+fn is_shallow(name: &str) -> bool {
+    name.bytes().filter(|&b| b == b'/').count() <= 1
 }
 
 /// The launcher-icon file bytes (PNG/WebP/JPEG — re-decoded by the normal image tiers),
 /// or `None`; the caller falls back to the stock icon.
+#[cfg(test)]
 pub(crate) fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     extract_inner(bytes, 0)
 }
 
 fn extract_inner(bytes: &[u8], depth: u8) -> Option<Vec<u8>> {
-    let zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
-    from_archive(zip, depth)
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
+    from_archive(&mut zip, depth)
 }
 
-/// Is this seekable archive an Android package? The streaming twin of
-/// [`looks_like_apk`], for a file too large to buffer.
+/// Is this zip an Android package (root `AndroidManifest.xml`) or a split-bundle
+/// wrapper (a shallow inner `.apk` payload)? Central-directory name check only — no
+/// entry is decompressed, so this is cheap enough to gate every zip through.
+///
+/// Deliberately does NOT treat a root `icon.png` alone as a wrapper marker: plenty of
+/// ordinary zips carry one, and claiming them would steal the generic image-zip cover.
+///
+/// Accepted bound, not a gap in this file: the `zip` crate's `ZipArchive::new` fully
+/// parses the central directory before any entry-count cap here (or in `zipfmt.rs`'s
+/// `MAX_LIST_ENTRIES`-bounded calls) can run, so a crafted zip of many tiny entries pays
+/// that parse cost regardless. There is no bounded-directory constructor to switch to;
+/// `MAX_INPUT_BYTES` (the whole-file cap upstream of every container extractor) is what
+/// actually limits it.
 pub(crate) fn archive_is_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> bool {
     if zip.by_name("AndroidManifest.xml").is_ok() {
         return true;
     }
     for name in zip.file_names().take(super::MAX_LIST_ENTRIES) {
-        if ends_with_ci(name, ".apk") {
+        if ends_with_ci(name, ".apk") && is_shallow(name) {
             return true;
         }
     }
     false
 }
 
-/// The streaming twin of [`extract`], for an APK past `limits::MAX_INPUT_BYTES` that the
-/// caller never buffered.
+/// Extract from an archive the caller already opened — typically after
+/// [`archive_is_apk`] confirmed the dispatch — so the central directory is parsed once per
+/// file instead of once for the sniff and again for extraction. `None` means this
+/// wasn't a real wrapper after all (e.g. a borderline `.apk` entry with nothing
+/// resolvable behind it); the caller falls through to the generic zip cover pick
+/// rather than giving up on the archive entirely.
 ///
-/// Without this, an oversized APK reached `archive_cover_seek`'s generic `is_zip` branch and
-/// got the ordinary zip cover pick: an ARBITRARY `res/` drawable rather than the declared
-/// launcher icon, which is the exact wrong-but-plausible thumbnail this module exists to
-/// prevent. It matters most for the files most likely to be that big in the first place, which
-/// are the `.xapk`/`.apks` split bundles for large games that [`wrapper_icon`] was written for.
+/// Also what oversized APKs (past `limits::MAX_INPUT_BYTES`) stream through:
+/// without this, one reached `archive_cover_seek`'s generic `is_zip` branch and
+/// got the ordinary zip cover pick — an ARBITRARY `res/` drawable rather than the
+/// declared launcher icon, which is the exact wrong-but-plausible thumbnail this
+/// module exists to prevent. It matters most for the files most likely to be that
+/// big in the first place, which are the `.xapk`/`.apks` split bundles for large
+/// games that [`wrapper_icon`] was written for.
 ///
-/// Only the top-level read is streamed. A wrapper still buffers its INNER apk (bounded by
-/// [`MAX_INNER_APK`]), because resolving an icon needs random access to two separate entries.
-pub(crate) fn extract_seek<R: Read + Seek>(reader: R) -> Option<Vec<u8>> {
-    let zip = ZipArchive::new(reader).ok()?;
+/// A wrapper still buffers its INNER apk (bounded by [`MAX_INNER_APK`]), because
+/// resolving an icon needs random access to two separate entries.
+pub(crate) fn extract_from_archive<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     from_archive(zip, 0)
 }
 
 /// The rung ladder itself, over any already-opened archive. Shared so the buffered and
 /// streaming entry points cannot drift into finding different icons for the same file.
-fn from_archive<R: Read + Seek>(mut zip: ZipArchive<R>, depth: u8) -> Option<Vec<u8>> {
+fn from_archive<R: Read + Seek>(zip: &mut ZipArchive<R>, depth: u8) -> Option<Vec<u8>> {
     if zip.by_name("AndroidManifest.xml").is_err() {
-        return wrapper_icon(&mut zip, depth);
+        return wrapper_icon(zip, depth);
     }
     // Rungs 1-2: the manifest-declared icon, directly or resolved through the arsc.
-    if let Some(path) = manifest_icon_path(&mut zip) {
-        if let Some(icon) = read_icon(&mut zip, &path) {
+    if let Some(path) = manifest_icon_path(zip) {
+        if let Some(icon) = read_icon(zip, &path) {
             return Some(icon);
         }
     }
@@ -182,8 +200,8 @@ fn from_archive<R: Read + Seek>(mut zip: ZipArchive<R>, depth: u8) -> Option<Vec
     // adaptive-icon-only lookups; release builds with aapt2 path obfuscation
     // (`res/a1.png`) have no `ic_launcher` to find, which is why the arsc rung above
     // is the primary path and this is only the safety net.
-    let name = scan_for_launcher(&mut zip)?;
-    read_icon(&mut zip, &name)
+    let name = scan_for_launcher(zip)?;
+    read_icon(zip, &name)
 }
 
 /// Resolve the manifest's icon declaration to a raster path inside the zip.
@@ -249,6 +267,22 @@ fn wrapper_icon<R: Read + Seek>(zip: &mut ZipArchive<R>, depth: u8) -> Option<Ve
         }
     }
     let (_, _, idx) = pick?;
+    // Real XAPK/APKM/APKS bundlers commonly store the inner `.apk` members UNCOMPRESSED
+    // (STORED) — a compressed inner `.apk` buys nothing, since it is already compressed
+    // itself — so this is the common case in practice, not a rare one. When it holds,
+    // stream the inner archive off a seekable view of THIS entry: no materialization at
+    // all, regardless of how large `base.apk` is (previously up to MAX_INNER_APK, 256 MiB,
+    // buffered just to find a few KB icon).
+    if let Ok(seek_reader) = zip.by_index_seek(idx) {
+        let boxed: Box<dyn ReadSeek + '_> = Box::new(seek_reader);
+        let mut inner_zip = ZipArchive::new(boxed).ok()?;
+        return from_archive(&mut inner_zip, depth.saturating_add(1));
+    }
+    // Fallback for a COMPRESSED inner member: the `zip` crate has no seekable reader for
+    // a compressed entry (`by_index_seek` refuses anything but Stored — see zip-8.6.0
+    // read/zip_archive.rs), so there is no way to open it as an archive without
+    // materializing its bytes first. Bounded the same as before this streamed the common
+    // case out of this path.
     let f = zip.by_index(idx).ok()?;
     let mut inner = Vec::new();
     // Not `read_named`: its 32 MiB cover cap is far too small for a real base.apk.
@@ -1224,6 +1258,90 @@ mod tests {
         // A wrapper INSIDE a wrapper is refused by the depth cap, not recursed into.
         let nested = zip_of(&[("inner.apk", &xapk)]);
         assert!(extract(&nested).is_none());
+    }
+
+    /// `zip_of`'s fixtures (used above) store every entry UNCOMPRESSED, so
+    /// `wrapper_prefers_base_apk_and_refuses_nested_wrappers` already exercises the new
+    /// streaming path (`by_index_seek`, no materialization) for a Stored `base.apk`. This
+    /// pins the other branch: a DEFLATED inner member has no seekable reader in the `zip`
+    /// crate and must still resolve correctly through the bounded materialize fallback.
+    #[test]
+    fn wrapper_extracts_from_a_deflated_inner_apk_via_the_materialize_fallback() {
+        let icon = png(12, 12);
+        let path = "res/mipmap/ic_launcher.png";
+        let inner = zip_of(&[
+            ("AndroidManifest.xml", &axml_string_icon(path)),
+            (path, &icon),
+        ]);
+
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let deflated = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        w.start_file("base.apk", deflated).unwrap();
+        w.write_all(&inner).unwrap();
+        let xapk = w.finish().unwrap().into_inner();
+
+        assert!(looks_like_apk(&xapk));
+        assert_eq!(extract(&xapk).as_deref(), Some(icon.as_slice()));
+    }
+
+    /// A `.apk`-suffixed entry buried several folders deep is far more likely
+    /// to be a stray file inside an unrelated ordinary zip than a real split-bundle
+    /// member. It must not trip the wrapper sniff — a plain zip carrying one still
+    /// gets its ordinary cover pick.
+    #[test]
+    fn deeply_nested_apk_entry_does_not_trigger_wrapper_sniff() {
+        let cover = png(6, 6);
+        let z = zip_of(&[
+            (
+                "backups/2019/android/random.apk",
+                b"not really an apk" as &[u8],
+            ),
+            ("cover.png", &cover),
+        ]);
+        assert!(
+            !looks_like_apk(&z),
+            "a .apk entry 3 folders deep must not read as a split-bundle wrapper"
+        );
+        match crate::container::extract_cover(&z) {
+            Some(crate::container::CoverOut::Bytes(b)) => assert_eq!(b, cover),
+            Some(crate::container::CoverOut::Image(_)) => {
+                panic!("expected the ordinary zip Bytes cover, got an Image variant")
+            }
+            None => panic!("expected the ordinary zip cover pick, got None"),
+        }
+    }
+
+    /// A shallow `.apk` entry still trips the wrapper sniff (it looks like a
+    /// real split), but when it resolves to nothing (garbage bytes, not a real
+    /// inner APK) the dispatcher must fall through to the generic zip cover pick
+    /// instead of losing the cover entirely.
+    #[test]
+    fn stray_shallow_apk_entry_falls_through_to_generic_cover() {
+        let cover = png(6, 6);
+        let z = zip_of(&[
+            ("random.apk", b"not a zip, not an apk, just junk" as &[u8]),
+            ("cover.png", &cover),
+        ]);
+        assert!(
+            looks_like_apk(&z),
+            "a root-level .apk entry must still trip the wrapper sniff"
+        );
+        assert!(
+            extract(&z).is_none(),
+            "the bogus inner .apk must not itself resolve to an icon"
+        );
+        match crate::container::extract_cover(&z) {
+            Some(crate::container::CoverOut::Bytes(b)) => assert_eq!(b, cover),
+            Some(crate::container::CoverOut::Image(_)) => panic!(
+                "a wrapper sniff that resolves to nothing must fall through to the \
+                 generic Bytes cover pick, got an Image variant instead"
+            ),
+            None => panic!(
+                "a wrapper sniff that resolves to nothing must fall through to the \
+                 generic cover pick instead of losing the cover, got None"
+            ),
+        }
     }
 
     #[test]

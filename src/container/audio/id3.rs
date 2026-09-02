@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// Cap on the trailing ID3v2 tag a `.dsf` file's metadata pointer can claim, same
+/// budget as the sibling ASF/APEv2 tag caps (`asf::MAX_ASF_HEADER`, `ape::MAX_APE_TAG`).
+const MAX_DSF_ID3_TAG: u64 = crate::container::MAX_COVER + 1024 * 1024;
+
 /// DSD (`.dsf`) album art. lofty 0.22 has no DSF reader, so — like the hand-rolled
 /// ASF and APEv2 paths above — we parse it directly: the `DSD ` header chunk holds a
 /// pointer to a trailing **ID3v2** tag (the same tag MP3 puts at the *front*), and we
@@ -28,7 +32,7 @@ pub(super) fn dsf_cover<R: Read + Seek>(reader: &mut R) -> Option<Vec<u8>> {
     let major = id3[3];
     // The ID3v2 tag size is always synchsafe. Cap the read so a bogus size can't
     // force a huge allocation; a real cover tag is comfortably under this.
-    let tag_len = (id3_synchsafe(&id3[6..10])? as usize).min(64 * 1024 * 1024);
+    let tag_len = (id3_synchsafe(&id3[6..10])? as usize).min(MAX_DSF_ID3_TAG as usize);
     let mut body = vec![0u8; tag_len];
     reader.read_exact(&mut body).ok()?;
     id3v2_front_cover(&body, major)

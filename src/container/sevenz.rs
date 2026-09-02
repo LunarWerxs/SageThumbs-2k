@@ -11,7 +11,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 
 use sevenz_rust2::{Archive, ArchiveReader, BlockDecoder, Password};
 
-use super::select::{cover_candidates, dedupe_by_name, pick_covers, Entry};
+use super::select::{cover_candidates, dedupe_by_name, pick_covers, CoverPrefs, Entry};
 
 /// Coalesce sevenz-rust2's many small reads before they reach a shell `IStream`.
 ///
@@ -63,15 +63,18 @@ fn complete_item_fits(prefix: u64, item: u64, budget: u64) -> bool {
 /// allocation. Well above any real cover archive, finite against a crafted one.
 const SOLID_MAX_BLOCKS: usize = 4096;
 
+/// Called only from the in-memory `extract_cover` dispatch, which has no per-request
+/// settings snapshot to thread through, so it reads the preferences itself here
+/// rather than carrying a `prefs` parameter its caller can't supply.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
-    extract_seek(Cursor::new(bytes))
+    extract_seek(Cursor::new(bytes), &CoverPrefs::from_settings())
 }
 
 /// Like [`extract`], but over any seekable reader — used to stream an oversized CB7
 /// cover off the shell's IStream (sevenz-rust2 reads metadata + the one entry without
 /// buffering the whole archive).
-pub fn extract_seek<R: Read + Seek>(source: R) -> Option<Vec<u8>> {
-    extract_seek_n(source, 1).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
+pub fn extract_seek<R: Read + Seek>(source: R, prefs: &CoverPrefs) -> Option<Vec<u8>> {
+    extract_seek_n(source, 1, prefs).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
 }
 
 /// Up to `want` cover images over any seekable reader — the multi-image
@@ -80,7 +83,11 @@ pub fn extract_seek<R: Read + Seek>(source: R) -> Option<Vec<u8>> {
 /// stream); a solid archive is drained in ONE sequential pass that captures the
 /// targets as they stream by and stops after the last one (repeated `read_file`
 /// calls would re-decode the block once per image).
-pub fn extract_seek_n<R: Read + Seek>(source: R, want: usize) -> Option<Vec<Vec<u8>>> {
+pub fn extract_seek_n<R: Read + Seek>(
+    source: R,
+    want: usize,
+    prefs: &CoverPrefs,
+) -> Option<Vec<Vec<u8>>> {
     if want == 0 {
         return None;
     }
@@ -135,12 +142,13 @@ pub fn extract_seek_n<R: Read + Seek>(source: R, want: usize) -> Option<Vec<Vec<
             want,
             &entries,
             SOLID_MAX_BLOCKS,
+            prefs,
         )
     } else {
         // Non-solid: every entry seeks to its own pack stream, so decoding a chosen
         // cover never touches its neighbors. Pick by name (page order) and read only
         // the picks, under one aggregate cover-byte budget.
-        let picks = dedupe_by_name(pick_covers(&entries, want), &entries);
+        let picks = dedupe_by_name(pick_covers(&entries, want, prefs), &entries);
         if picks.is_empty() {
             return None;
         }
@@ -222,19 +230,58 @@ fn non_solid_covers<R: Read + Seek>(
     found
 }
 
+/// Does this entry's filename (lowercased, last path component) look like an
+/// explicit cover name? Mirrors `select::pick_covers`'s "cover"-named preference
+/// grouping — that helper's own `filename()` is private to its module, so this
+/// repeats the same lowercase-final-component check rather than widening its
+/// visibility for one caller.
+fn is_cover_named(name: &str) -> bool {
+    name.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .to_ascii_lowercase()
+        .contains("cover")
+}
+
+/// The `want`-sized target list for a solid cover scan, in the order the scan
+/// should try to capture them: cover-eligible entries (the junk / scanlation /
+/// exotic-vs-native rules `pick_covers` applies), cover-named ones first when
+/// `prefs.prefer_cover` is set, archive/physical order preserved WITHIN each group —
+/// mirrors `pick_covers`'s grouping without natural-sorting either group, since a
+/// solid block's decode cost depends on physical order, not name order. Pure and
+/// archive-decode-free so it can be pinned directly against synthetic entries.
+fn solid_targets(entries: &[Entry], want: usize, prefs: &CoverPrefs) -> Vec<usize> {
+    let eligible_idx = cover_candidates(entries, prefs);
+    let ordered: Vec<usize> = if prefs.prefer_cover {
+        let (mut covers, rest): (Vec<usize>, Vec<usize>) = eligible_idx
+            .into_iter()
+            .partition(|&i| is_cover_named(&entries[i].name));
+        covers.extend(rest);
+        covers
+    } else {
+        eligible_idx
+    };
+    ordered.into_iter().take(want).collect()
+}
+
 /// Cover images from a SOLID archive, cost-bounded. A solid block decodes only
-/// front-to-back, so covers are picked by PHYSICAL (archive) order — the earliest
-/// images are the cheapest to reach — and the scan never decodes past
-/// [`SOLID_SCAN_BUDGET`] decompressed bytes.
+/// front-to-back, so covers are picked by PHYSICAL (archive) order among the
+/// eligible entries — the earliest images are the cheapest to reach — except that
+/// an explicit "cover"-named entry (the same preference [`pick_covers`] applies
+/// non-solid, when the caller's `CoverPrefs::prefer_cover` is on) still leads
+/// the pick even when a plainer page sits physically ahead of it: reaching it may
+/// cost more to decode, but showing a random early page instead of the comic's own
+/// declared cover is the wrong trade for a thumbnail. The scan never decodes past
+/// [`SOLID_SCAN_BUDGET`] decompressed bytes either way.
 ///
-/// The reach cost of the physically-first eligible image (the decompressed bytes
-/// stored ahead of it) is predicted from the entry sizes BEFORE any decode: prior
-/// solid folders decode in full and its own folder decodes up to it, which is
-/// exactly the sum of the preceding entries' sizes. If even that first cover sits
+/// The reach cost of the chosen first target (the decompressed bytes stored ahead
+/// of it, cover-named or not) is predicted from the entry sizes BEFORE any decode:
+/// prior solid folders decode in full and its own folder decodes up to it, which is
+/// exactly the sum of the preceding entries' sizes. If even that first target sits
 /// past the budget we bail with ZERO decode (the stock icon, cheaply) — this is
 /// what keeps clicking a huge project `.7z` from spiking the CPU/disk. Otherwise
-/// one sequential pass captures the first `want` eligible images as the block
-/// streams by, in archive order.
+/// one sequential pass captures the chosen `want` targets as the block streams by,
+/// draining (not capturing) every entry in between, cover-eligible or not.
 ///
 /// `max_blocks` bounds how many compression blocks the underlying walk may engage
 /// with (see [`SOLID_MAX_BLOCKS`]) — an archive declaring more is refused from
@@ -247,6 +294,7 @@ fn solid_covers<R: Read + Seek>(
     want: usize,
     entries: &[Entry],
     max_blocks: usize,
+    prefs: &CoverPrefs,
 ) -> Vec<Vec<u8>> {
     use std::collections::HashSet;
 
@@ -258,26 +306,25 @@ fn solid_covers<R: Read + Seek>(
         return Vec::new();
     }
 
-    // The name-filtered candidate set (the junk / scanlation / exotic-vs-native
-    // rules `pick_covers` applies), membership only — physical order is imposed
-    // below. `cover_candidates` deliberately skips the name sort that would be
-    // thrown away here.
-    let eligible: HashSet<&str> = cover_candidates(entries)
-        .into_iter()
-        .map(|i| entries[i].name.as_str())
-        .collect();
-    let Some(first) = entries
-        .iter()
-        .position(|e| eligible.contains(e.name.as_str()))
-    else {
+    let targets = solid_targets(entries, want, prefs);
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let target_names: HashSet<&str> = targets.iter().map(|&i| entries[i].name.as_str()).collect();
+    // The walk is sequential, so the cost to reach ANY chosen target is the sum of
+    // every entry (eligible or not) before it — the smallest physical index among
+    // the chosen targets is therefore the one the budget precheck must cover first.
+    // `targets` was already checked non-empty above, but `min()` is matched rather
+    // than `.expect()`-ed: no panicking accessor in shell-crate non-test code.
+    let Some(&first) = targets.iter().min() else {
         return Vec::new();
     };
-    // Predicted reach cost of that first cover. Saturating in case a crafted header
-    // declares absurd sizes (the sum can't then panic on overflow).
+    // Predicted reach cost of that first target. Saturating in case a crafted
+    // header declares absurd sizes (the sum can't then panic on overflow).
     let reach = entries[..first]
         .iter()
         .fold(0u64, |acc, e| acc.saturating_add(e.size));
-    // Include the complete first cover itself. The old check bounded only the
+    // Include the complete first target itself. The old check bounded only the
     // bytes BEFORE it, then allowed a 32 MiB cover read after almost exhausting
     // the 8 MiB budget. If the first useful result cannot fit in full, decline
     // without decoding anything.
@@ -297,7 +344,7 @@ fn solid_covers<R: Read + Seek>(
             return Ok(false);
         }
         let name = entry.name();
-        if eligible.contains(name) && !captured.contains(name) {
+        if target_names.contains(name) && !captured.contains(name) {
             let room = SOLID_SCAN_BUDGET.saturating_sub(drained);
             if entry.size() > room {
                 // A partial image is useless and would violate the advertised hard
@@ -375,20 +422,38 @@ mod tests {
     const SOLID_ORDER: &[u8] = include_bytes!("../../tests/fixtures/sevenz/solid_order.7z");
     const SOLID_BURIED: &[u8] = include_bytes!("../../tests/fixtures/sevenz/solid_buried.7z");
 
+    /// Registry-default cover prefs, for tests that don't care about the values.
+    fn default_prefs() -> CoverPrefs {
+        CoverPrefs {
+            prefer_cover: true,
+            sort: true,
+            skip_scanlation: false,
+        }
+    }
+
+    /// [`default_prefs`] with `prefer_cover` overridden, for the tests that toggle it.
+    fn prefs_with_cover(prefer_cover: bool) -> CoverPrefs {
+        CoverPrefs {
+            prefer_cover,
+            ..default_prefs()
+        }
+    }
+
     /// A solid block decodes front-to-back, so the cover is chosen by PHYSICAL
     /// (archive) order, not by name. `solid_order.7z` stores [m.png, a.png]; "a.png"
     /// sorts first by name (the old pick), but m.png is physically first and cheapest
     /// to reach, so it must win now.
     #[test]
     fn solid_cover_is_physically_first_not_name_sorted() {
-        let covers = extract_seek_n(Cursor::new(SOLID_ORDER), 1).expect("a cover");
+        let covers =
+            extract_seek_n(Cursor::new(SOLID_ORDER), 1, &default_prefs()).expect("a cover");
         assert_eq!(covers, vec![b"PHYSICALLY-FIRST-IMAGE".to_vec()]);
     }
 
     /// The contact sheet (want > 1) captures the eligible images in ARCHIVE order.
     #[test]
     fn solid_contact_sheet_is_in_archive_order() {
-        let covers = extract_seek_n(Cursor::new(SOLID_ORDER), 4).expect("covers");
+        let covers = extract_seek_n(Cursor::new(SOLID_ORDER), 4, &default_prefs()).expect("covers");
         assert_eq!(
             covers,
             vec![
@@ -405,7 +470,7 @@ mod tests {
     /// from the header, so this decodes nothing.
     #[test]
     fn solid_cover_past_budget_declines() {
-        assert!(extract_seek_n(Cursor::new(SOLID_BURIED), 4).is_none());
+        assert!(extract_seek_n(Cursor::new(SOLID_BURIED), 4, &default_prefs()).is_none());
     }
 
     /// Rebuild the `Entry` list `extract_seek_n` feeds `solid_covers`, so the block-cap
@@ -448,6 +513,7 @@ mod tests {
             1,
             &entries,
             SOLID_MAX_BLOCKS,
+            &default_prefs(),
         );
         assert_eq!(covers, vec![b"PHYSICALLY-FIRST-IMAGE".to_vec()]);
     }
@@ -464,7 +530,15 @@ mod tests {
             !archive.blocks.is_empty(),
             "fixture must have at least one block for a cap of 0 to trip the guard"
         );
-        let covers = solid_covers(&mut source, &archive, &password, 4, &entries, 0);
+        let covers = solid_covers(
+            &mut source,
+            &archive,
+            &password,
+            4,
+            &entries,
+            0,
+            &default_prefs(),
+        );
         assert!(
             covers.is_empty(),
             "over-cap block count must decline to no cover"
@@ -499,7 +573,7 @@ mod tests {
             inner: Cursor::new(SOLID_ORDER),
             reads: Rc::clone(&reads),
         };
-        let covers = extract_seek_n(source, 1).expect("cover");
+        let covers = extract_seek_n(source, 1, &default_prefs()).expect("cover");
         assert_eq!(covers, vec![b"PHYSICALLY-FIRST-IMAGE".to_vec()]);
         assert!(
             reads.get() <= 8,
@@ -537,6 +611,76 @@ mod tests {
             !complete_item_fits(reach, entries[first].size, SOLID_SCAN_BUDGET),
             "production budget helper must reject the incomplete fit"
         );
+    }
+
+    /// A solid comic with an explicit `cover.jpg` must not show a random
+    /// earlier page. `page01.png` is physically first — the OLD pick — but
+    /// `cover.jpg` is cover-named and must win when the preference is on.
+    #[test]
+    fn solid_targets_prefers_a_cover_named_entry_over_an_earlier_plain_page() {
+        let entries = [
+            Entry {
+                name: "page01.png".into(),
+                is_dir: false,
+                size: 100,
+            },
+            Entry {
+                name: "cover.jpg".into(),
+                is_dir: false,
+                size: 100,
+            },
+            Entry {
+                name: "page02.png".into(),
+                is_dir: false,
+                size: 100,
+            },
+        ];
+        assert_eq!(
+            solid_targets(&entries, 1, &prefs_with_cover(true)),
+            vec![1],
+            "cover.jpg (index 1) must be the sole target when the preference is on"
+        );
+        // With the preference off, physical order alone decides (the pre-G66 rule).
+        assert_eq!(
+            solid_targets(&entries, 1, &prefs_with_cover(false)),
+            vec![0],
+            "page01.png (index 0, physically first) must win with the preference off"
+        );
+    }
+
+    /// A contact sheet still fills out with the remaining pages, in archive order,
+    /// after the cover-named entry leads.
+    #[test]
+    fn solid_targets_contact_sheet_leads_with_cover_then_archive_order() {
+        let entries = [
+            Entry {
+                name: "page01.png".into(),
+                is_dir: false,
+                size: 100,
+            },
+            Entry {
+                name: "cover.jpg".into(),
+                is_dir: false,
+                size: 100,
+            },
+            Entry {
+                name: "page02.png".into(),
+                is_dir: false,
+                size: 100,
+            },
+        ];
+        assert_eq!(
+            solid_targets(&entries, 3, &prefs_with_cover(true)),
+            vec![1, 0, 2]
+        );
+    }
+
+    #[test]
+    fn cover_named_detection_is_case_insensitive_and_path_aware() {
+        assert!(is_cover_named("COVER.jpg"));
+        assert!(is_cover_named("scans/Cover.png"));
+        assert!(is_cover_named("front-cover.png"));
+        assert!(!is_cover_named("page01.png"));
     }
 
     /// A four-cell contact sheet used to admit four MAX_COVER entries (128 MiB
@@ -584,7 +728,8 @@ mod tests {
         assert!(!parsed.archive().is_solid, "fixture must be non-solid");
         drop(parsed);
 
-        let covers = extract_seek_n(Cursor::new(bytes), 1).expect("first exact cover");
+        let covers =
+            extract_seek_n(Cursor::new(bytes), 1, &default_prefs()).expect("first exact cover");
         assert_eq!(covers, vec![b"FIRST".to_vec()]);
     }
 }
