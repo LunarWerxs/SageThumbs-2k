@@ -381,16 +381,26 @@ fn rotate_verb_invoke_creates_file() {
 
         rotate_right.Invoke(&arr, None).expect("Invoke");
         // Invoke dispatches to a DETACHED worker; poll for the sibling file.
+        //
+        // Poll until the file OPENS as an image, not merely until it exists. The verb
+        // reserves the output name first (an empty placeholder, so two concurrent verbs
+        // cannot claim the same "(edited)" name) and renames the finished bytes over it a
+        // moment later, so "exists" is true while the file is still zero bytes. On this
+        // box the rename won the race every time; on both CI runners it lost it often
+        // enough to keep main red from e8bede4 onward (`IoError(Kind(UnexpectedEof))`
+        // at the open below). The dimension pin that follows is unchanged.
         let out = dir.join("v (edited).png");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while !out.exists() && std::time::Instant::now() < deadline {
+        let mut opened = image::open(&out);
+        while opened.is_err() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(25));
+            opened = image::open(&out);
         }
         assert!(out.exists(), "Invoke should have created v (edited).png");
         // A 90° turn swaps the aspect ratio: source is 16x12, so the rotated sibling
         // must come back 12x16 — this is the pin that the transform actually ran, not
         // just that SOME file landed at the expected name.
-        let img = image::open(&out).expect("the rotated sibling must be a valid, openable image");
+        let img = opened.expect("the rotated sibling must be a valid, openable image");
         assert_eq!(
             (img.width(), img.height()),
             (12, 16),
