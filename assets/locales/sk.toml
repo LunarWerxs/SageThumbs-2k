@@ -516,3 +516,24 @@ nudge_body_generic = "Majte nastavenia {app} na každom počítači, ktorý pou�
 nudge_action = "Prihlásiť sa"
 nudge_later = "Teraz nie"
 nudge_month = "Pripomenúť o mesiac"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Niektoré nastavenia sa nepodarilo uložiť: {path}."
+save_failed_registry = "register"
+sync_disconnected_body = "Synchronizácia odpojená. Vaše nastavenia zostávajú v tomto počítači."
+sync_portable_notice = "Prenosná kópia: toto prihlásenie sa ukladá vedľa tejto kópie SageThumbs 2K, nie v účte tohto počítača. Ktokoľvek, kto použije rovnakú prenosnú kópiu, môže synchronizovať vaše nastavenia, preto sa pred odovzdaním disku odhláste."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Preskočených {n} súborov len v cloude, ktoré neboli stiahnuté."
+f2f_done_partial = "Presunutých {moved} položiek; {skipped} sa nepodarilo presunúť."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "Obsah HDR sa zobrazuje ako SDR (približne)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Uložiť stránku ako PNG"
+ic_items = "položiek"
+mail_truncated_file = "Táto správa bola orezaná na limite veľkosti; časť obsahu môže chýbať."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— sa nespustí pri prihlásení"

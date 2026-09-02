@@ -6,6 +6,39 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **The command line and MCP tools gained a `cbz` command, folder recursion, and richer batch
+  info.** You can now combine a folder of images straight into a comic-book archive (`.cbz`)
+  from the command line or through the MCP tool used by AI assistants and scripts, matching
+  the existing PDF command. Batch jobs can now recurse into subfolders with a `--recurse` flag,
+  and a new batch "info" option returns details for every file in one call, including proper
+  tag data (artist, album, title, and more) for audio files.
+
+- **The built-in diagnostics tool can now spot when another program has taken over your
+  thumbnails, and export its findings as a file you can share.** Running SageThumbs 2K's
+  doctor/diagnostics check now detects when a different program's icon handler has silently
+  replaced SageThumbs' own for a file type, and shows which handler took over. Its report can also be
+  exported as a single zip file, including the relevant tail of the error log, handy when
+  asking for help.
+
+- **A Save button in the preview window.** Viewing a PDF page or an animated image and want to
+  keep just that page or frame? A new Save button (and the Ctrl+S shortcut) saves the page or
+  frame you're currently looking at as a PNG image.
+
+- **Batch, PowerShell, and Perl script files are now colour-highlighted in the text preview.**
+  Previewing a `.bat`, `.ps1`, or Perl script now shows proper syntax colouring, including files
+  that only identify their type through a `#!` line at the top rather than their extension.
+
+- **Ctrl+U now triggers "Upload & copy" in the screenshot overlay.** Uploading a screenshot and
+  copying its link no longer requires reaching for the mouse.
+
+- **The eyedropper tool now tells you when a colour reading is approximate.** Picking a colour
+  from an HDR display now shows a small note explaining that the value is sampled from the
+  tone-mapped (SDR) picture, since a true HDR value can't be read this way.
+
+- **After SageThumbs updates itself, a notification offers to refresh your thumbnails right
+  away.** Previously you'd only see the new thumbnails once Explorer's cache naturally expired;
+  a click on the notification now refreshes them immediately.
+
 - **The installer now asks how you will use SageThumbs 2K: personal (free) or business.**
   Personal, non-commercial use stays free with every feature, exactly as before. Business and
   other commercial use requires a commercial licence under the PolyForm Noncommercial license
@@ -13,7 +46,218 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   the licence text nobody reads. Your answer is remembered across updates, and changing it
   means reinstalling. Nothing about thumbnails, previews, or any feature changes either way.
 
+### Changed
+
+- **The right-click menu's preview tile no longer renders SVG files.** That tile is drawn
+  inside Explorer's own process, where a slow or hostile vector file cannot be cut off the
+  way it can in the isolated thumbnail and preview hosts, so the tile now shows the caption
+  only for `.svg` and `.svgz`. Thumbnails, the preview pane and the Quick preview still
+  render them exactly as before.
+
+- **Importing a settings file now fully replaces your settings instead of merging with them.**
+  Previously, an imported settings file only added or updated values, leaving anything not
+  present in the file untouched, so an old setting could survive an import that was meant to
+  reset it. Importing now removes anything the imported file doesn't include, matching what
+  most people expect "import" to do. Your sign-in stays intact either way.
+
+- **Portable copies of SageThumbs 2K keep more of what they touch inside their own folder.** A
+  portable copy's sign-in details, its custom screenshot-upload host list, its HTML-preview
+  browser data, and its update-check cache now all live beside the portable copy instead of
+  leaking into the host PC's own storage. Signing in on a portable copy also now shows a
+  reminder that anyone using that same copy can see your synced settings, and a portable copy
+  now consistently refuses to install an update on its own, as intended.
+
+- **Zooming the preview window with the keyboard now matches the mouse wheel.** Ctrl+= and
+  Ctrl+- now zoom in one step at a time, centred on the image, the same way the mouse wheel
+  does, and can now reach true 100% even in a small window showing a very large image,
+  previously only double-clicking could get you there.
+
 ### Fixed
+
+- **The preview window's Previous and Next buttons no longer skip over mail files and internet
+  shortcuts.** Stepping through a folder now lands on `.eml` and `.msg` messages, and on `.url`
+  and `.webloc` shortcuts where the optional web-preview feature is built in, instead of jumping
+  past them to the next image.
+
+- **The right-click menu opens faster and no longer slowly leaks memory the longer Explorer
+  stays open.** Building the menu used to re-check the same file information and re-read the
+  same settings on every single right-click; it's now reused instead, which is especially
+  noticeable on network drives, videos, and RAW photos. A couple of small drawing resources that
+  used to leak a little on every menu open are now properly freed, and, for anyone running a
+  Start-menu or Explorer skin such as StartAllBack, DarkMagic, or ExplorerPatcher on an ARM64
+  PC, the menu's logo now recognises those tools correctly there too.
+
+- **Thumbnails and previews decode a little faster, and some special image types are more
+  accurate.** A JPEG carrying a large embedded colour profile now shows the correct colours in
+  its thumbnail and preview, instead of an approximation. DDS texture files, including 3D
+  "volume" textures, thumbnail more accurately and pre-size correctly for the right-click menu
+  preview instead of decoding at full size first. Downsizing an extremely large image, or
+  compositing a transparent image over the checkerboard background, can no longer silently
+  overflow and produce a corrupted thumbnail.
+
+- **3D model previews are more robust against malformed or truncated files.** An `.obj`,
+  `.ply`, or `.stl` file that's been cut short, has an unusual property type, or contains an
+  invalid vertex no longer fails outright or misaligns the whole model; SageThumbs now renders
+  as much of it as it validly can, the same way it already handled a few other kinds of damage.
+
+- **Malformed JPEG2000 and JPEG files can no longer hang or crash SageThumbs while decoding.**
+  A `.jp2` file crafted with an extreme number of layers or an implausible internal structure
+  is now refused quickly instead of being processed, and JPEG2000 images decode with the
+  correct brightness in more cases than before. A JPEG with a corrupted internal compression
+  table is now refused instead of risking a crash or a hang.
+
+- **Cover art from archives, comics, and ebooks is more reliable.** APK/XAPK/APKM Android
+  package files no longer mistake an unrelated, similarly-named entry for the real package;
+  7-Zip solid archives now prefer a file actually named "cover" when choosing one; and a ZIP
+  file whose declared size doesn't match its real contents can no longer make cover-art
+  extraction spend far more effort than it should. An EPUB book cover written with single
+  quotes in its metadata now shows correctly too, previously it depended on which program
+  made the file.
+
+- **Matroska (.mkv/.webm) video thumbnails find a real keyframe more often.** Some Matroska
+  files previously produced a black or blank thumbnail because the frame SageThumbs tried first
+  wasn't actually a keyframe; it now checks and falls back to a real one, including for a less
+  common file structure where the last section doesn't declare its own size up front.
+
+- **Opening a malformed or crafted video file for a thumbnail can no longer hang, crash, or use
+  excessive memory.** A handful of size and time limits are now enforced while reading MP4 and
+  other container files, so a damaged or deliberately unusual file is refused cleanly instead
+  of stalling the thumbnail process.
+
+- **The "Max file size" setting is now honoured by a couple of preview paths that used to
+  ignore it.** Some in-process video preview tiers, and RAR archive cover-art extraction,
+  previously read past the size you'd set in Settings; both now respect it.
+
+- **SageThumbs is more stable when previewing many files in quick succession.** It no longer
+  risks running out of background worker slots during a burst of preview activity, and Windows
+  Explorer no longer occasionally stalls while waiting on a busy file-properties read.
+
+- **The installer and repair tool now tell you when thumbnail registration genuinely failed.**
+  Previously a registration failure during install or repair could be reported as a success;
+  it's now surfaced properly so you know to try again or ask for help.
+
+- **Rotating or flipping a JPEG that already had a rotation tag now turns out correctly.**
+  Applying a rotate or flip to a photo that a camera or another app had already marked as
+  rotated could previously end up rotated the wrong way; the two are now combined correctly.
+
+- **Editing a "multi-picture" JPEG from a dual-camera or 3D-photo app no longer corrupts the
+  second picture inside it.** Stripping metadata or otherwise editing such a file used to risk
+  damaging the second embedded image; SageThumbs now recognises this format and avoids it.
+
+- **Converting a HEIC or AVIF photo now carries its camera and location metadata across, and
+  compressing to a target file size is more consistent across formats.** Converting from HEIC
+  or AVIF previously dropped EXIF details (like camera model) and XMP data (like GPS location)
+  entirely; both are now preserved, the same way they already were for other source formats.
+  Compressing an image to a specific file size used to go through a more limited decoding path
+  than the rest of SageThumbs's editing tools, which could make it fail on formats everything
+  else handles fine; it now uses the same path as everything else.
+
+- **Saving an edited file back to itself now preserves its other attributes.** Rotating,
+  resizing, or converting a file in place could previously lose attributes like Hidden,
+  alternate NTFS data streams, or permissions; those now survive the save. A save that fails
+  partway through also no longer leaves a stray temporary file behind.
+
+- **Your settings are more resistant to corruption and to being lost on export/import.** If the
+  settings file becomes briefly unreadable (for example, a security tool has it locked for a
+  moment), SageThumbs no longer overwrites it with a blank file, wiping everything you'd
+  configured. A value that could have corrupted the settings file the next time it was read is
+  now refused instead of being written. Exporting and re-importing your settings also no longer
+  loses your sign-in, which could previously happen due to a capitalisation mismatch in an
+  internal key.
+
+- **JPEG quality can no longer be saved as 0.** A quality setting of 0 produced a nearly blank
+  image; quality is now kept between 1 and 100 wherever it can be set, whether from Settings,
+  the command line, or a batch conversion.
+
+- **Dark title bars and High Contrast mode both render correctly in more situations.** Older
+  Windows 10 builds use a different, unofficial way of requesting a dark title bar than modern
+  Windows does; SageThumbs now picks the right one for your version instead of always assuming
+  the modern one. Settings and the preview window previously ignored Windows' High Contrast
+  mode entirely; both now switch to your system's high-contrast colours like the rest of
+  Windows does.
+
+- **Clicking Install in the About window's update checker no longer freezes the window.** The
+  window used to lock up while the update downloaded in the background; it now stays responsive
+  and you can still see it progress.
+
+- **Installing, first-run setup, and uninstalling all work more thoroughly.** A fresh install
+  now properly sets up the right-click folder-icon menu entry and format-overlay icons for your
+  account right away, instead of only after you'd opened Settings once; choosing a corner-mark
+  style during first-run setup also now takes effect immediately rather than waiting for
+  something else to trigger a refresh. Uninstalling now removes those same pieces, plus the
+  screenshot tool's start-at-logon entry, across every account on the PC instead of sometimes
+  leaving them behind. A rare timing issue that could leave thumbnails broken right after an
+  update now heals itself automatically the next time you sign in, and says so, and installing
+  to a folder whose path contains an apostrophe no longer breaks the modern right-click menu
+  setup step.
+
+- **Signing in no longer intermittently fails when your browser's request arrives in more than
+  one piece.** The local sign-in helper previously only read the first chunk of the browser's
+  request; it now waits for and reassembles the whole thing.
+
+- **Large text file previews no longer occasionally show in the wrong character encoding.** If
+  the first chunk SageThumbs read happened to end in the middle of a multi-byte character, it
+  could misjudge the whole file's encoding; that edge case is now handled correctly.
+
+- **The preview window is more reliable when you're moving quickly or it's had trouble.** Its
+  Open button no longer closes the preview if the app it tried to hand the file to actually
+  failed to launch. Pressing Ctrl+C to copy the currently previewed image, then switching files
+  right away, no longer occasionally copies the previous file's picture instead of the one you
+  just switched to. And commanding the preview window to open, close, or toggle from the tray
+  icon or a hotkey now times out instead of hanging the whole app if the window has stopped
+  responding.
+
+- **A privacy gap in the Markdown and HTML preview is closed, and a referenced image can no
+  longer point outside the document's own folder.** Turning off "load remote images" didn't
+  consistently stop one particular kind of image reference from loading anyway; it's now
+  blocked the same way as every other case. An image referenced by a Markdown file also can no
+  longer use a traversal trick, a drive letter, or a network path to load and display a file
+  from elsewhere on your PC.
+
+- **Document previews handle very large or unusual content more gracefully, and Find jumps
+  straight to a distant match.** A table with tens of thousands of rows, an extreme number of
+  columns, or a link followed by an unusual run of punctuation could previously make a document
+  preview slow to the point of appearing frozen; each is now capped, with a small note
+  explaining what was left out. Using Find to jump to a match far down a Markdown document now
+  jumps straight there instead of slowly stepping down the page. Mail previews also now decode
+  HTML entities correctly and cap a very long attachment list with a note about how many more
+  there are.
+
+- **The HTML preview (for `.html` files, where the optional web-preview feature is available)
+  is more locked down.** It now only ever loads the local file itself, opens any link in your
+  regular browser instead of a popup inside the preview, and never triggers a file download.
+  Each preview also now uses its own temporary browser profile that's deleted afterward, instead
+  of one shared between previews.
+
+- **Several batch tools now show progress and correctly report when part of the job didn't
+  finish.** The "Files to Folder" and "Tags to Folder" tools used to freeze their dialog for the
+  whole batch; both now show a progress bar and stay responsive while working. The Convert
+  dialog now skips OneDrive "cloud-only" files that haven't actually downloaded, and tells you
+  how many it skipped. Moving files into a folder, combining images into a PDF or CBZ, launching
+  an external app on a selection, and converting to several preset sizes at once could all
+  previously report success even when part of the job silently failed; each of these now tells
+  you when that happens.
+
+- **The screenshot tool's hotkey and preview toggle no longer lag your keyboard system-wide.**
+  Both used to run directly on the low-level keyboard hook, so a busy moment, launching an app
+  or opening the preview, could make typing anywhere on your PC feel briefly sluggish. That work
+  now happens off the hook entirely.
+
+- **The screenshot tool is more reliable overall.** Capturing an HDR screen is more stable, and
+  across multiple monitors it's faster, since it no longer sets up a fresh rendering device for
+  every monitor. Quitting the screenshot helper from its tray icon now actually keeps it
+  stopped instead of occasionally restarting itself, and the tray tooltip now warns you if it
+  couldn't set itself to start automatically at logon. If copying a screenshot to the clipboard
+  fails, the overlay now stays open instead of closing as though it worked, and dragging a
+  selection, moving text, or drawing a shape in the overlay is smoother, with less flicker.
+  Uploading a screenshot whose filename contains quote marks or line breaks no longer risks
+  corrupting the upload request either.
+
+- **A few internal communication channels are more tightly locked down.** Communication used to
+  detect the current file selection, and a message used to signal update checks, are now
+  scoped to your own account and verified with a one-time code, so another program on the same
+  PC can't read or interfere with them. The preview window and the command-line/AI tool also
+  now refuse a raw network-share path, accepting only a properly resolved local one.
 
 - **A video you rotated without re-encoding now thumbnails the right way up.** Turning a
   clip with `ffmpeg -display_rotation 90 -i in.mp4 -c copy out.mp4` is instant and keeps

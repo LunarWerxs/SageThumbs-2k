@@ -516,3 +516,24 @@ nudge_body_generic = "Запазете настройките си за {app} н
 nudge_action = "Вход"
 nudge_later = "Не сега"
 nudge_month = "Напомни ми след месец"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Някои настройки не можаха да бъдат запазени в {path}."
+save_failed_registry = "регистъра"
+sync_disconnected_body = "Синхронизацията е прекъсната. Настройките ви остават на този компютър."
+sync_portable_notice = "Преносимо копие: този вход се съхранява до това копие на SageThumbs 2K, а не в акаунта на този компютър. Всеки, който използва същото преносимо копие, може да синхронизира настройките ви, затова излезте от профила си, преди да предадете устройството."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Пропуснати са {n} файл(а), налични само в облака и незаредени."
+f2f_done_partial = "Преместени са {moved} елемент(а); {skipped} не можаха да бъдат преместени."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR съдържанието се извежда като SDR (приблизително)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Запазване на страницата като PNG"
+ic_items = "елемента"
+mail_truncated_file = "Това съобщение е отрязано при ограничението за размер; част от съдържанието може да липсва."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— няма да стартира при вход в системата"

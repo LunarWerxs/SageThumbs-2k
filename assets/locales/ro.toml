@@ -519,3 +519,24 @@ nudge_body_generic = "Păstrează setările tale {app} pe fiecare PC pe care îl
 nudge_action = "Conectare"
 nudge_later = "Nu acum"
 nudge_month = "Amintește-mi peste o lună"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Unele setări nu au putut fi salvate în {path}."
+save_failed_registry = "registrul"
+sync_disconnected_body = "Sincronizare deconectată. Setările tale rămân pe acest PC."
+sync_portable_notice = "Copie portabilă: această autentificare este stocată lângă această copie a SageThumbs 2K, nu în contul acestui PC. Oricine folosește aceeași copie portabilă îți poate sincroniza setările, așa că deconectează-te înainte să predai unitatea."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Au fost omise {n} fișier(e) doar din cloud, care nu au fost descărcate."
+f2f_done_partial = "{moved} element(e) mutate; {skipped} nu au putut fi mutate."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "Conținutul HDR este afișat ca SDR (aproximativ)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Salvează pagina ca PNG"
+ic_items = "elemente"
+mail_truncated_file = "Acest mesaj a fost trunchiat la limita de dimensiune; este posibil să lipsească o parte din conținut."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— nu va porni la conectare"

@@ -518,3 +518,24 @@ nudge_body_generic = "เก็บการตั้งค่า {app} ของ
 nudge_action = "ลงชื่อเข้าใช้"
 nudge_later = "ไว้ทีหลัง"
 nudge_month = "เตือนอีกครั้งในอีกหนึ่งเดือน"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "บันทึกการตั้งค่าบางส่วนไปยัง {path} ไม่ได้"
+save_failed_registry = "รีจิสทรี"
+sync_disconnected_body = "การซิงค์ถูกตัดการเชื่อมต่อแล้ว การตั้งค่าของคุณจะยังอยู่บนเครื่องนี้"
+sync_portable_notice = "สำเนาแบบพกพา: การลงชื่อเข้าใช้นี้จะถูกเก็บไว้ข้างสำเนา SageThumbs 2K นี้ ไม่ใช่ในบัญชีของเครื่องนี้ ใครก็ตามที่ใช้สำเนาแบบพกพาเดียวกันสามารถซิงค์การตั้งค่าของคุณได้ ดังนั้นให้ลงชื่อออกก่อนส่งมอบไดรฟ์"
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "ข้าม {n} ไฟล์ที่มีเฉพาะในคลาวด์ซึ่งยังไม่ได้ดาวน์โหลด"
+f2f_done_partial = "ย้ายแล้ว {moved} รายการ ย้ายไม่ได้ {skipped} รายการ"
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "เนื้อหา HDR แสดงผลแบบ SDR (โดยประมาณ)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "บันทึกหน้าเป็น PNG"
+ic_items = "รายการ"
+mail_truncated_file = "ข้อความนี้ถูกตัดที่ขีดจำกัดขนาด เนื้อหาบางส่วนอาจหายไป"
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— จะไม่เริ่มทำงานเมื่อเข้าสู่ระบบ"

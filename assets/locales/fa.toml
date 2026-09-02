@@ -514,3 +514,24 @@ nudge_body_generic = "تنظیمات {app} خود را روی هر رایانه�
 nudge_action = "ورود"
 nudge_later = "الان نه"
 nudge_month = "یک ماه دیگر یادآوری کن"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "برخی تنظیمات در {path} ذخیره نشدند."
+save_failed_registry = "رجیستری"
+sync_disconnected_body = "همگام‌سازی قطع شد. تنظیمات شما روی همین رایانه باقی می‌مانند."
+sync_portable_notice = "نسخهٔ پرتابل: این ورود در کنار همین نسخه از SageThumbs 2K ذخیره می‌شود، نه در حساب این رایانه. هر کسی که از همین نسخهٔ پرتابل استفاده کند می‌تواند تنظیمات شما را همگام‌سازی کند، پس پیش از تحویل درایو از حساب خارج شوید."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "{n} فایل فقط-ابری که دانلود نشده بودند رد شدند."
+f2f_done_partial = "{moved} مورد جابه‌جا شد؛ {skipped} مورد جابه‌جا نشد."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "محتوای HDR به‌صورت SDR نمونه‌برداری می‌شود (تقریبی)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "ذخیرهٔ صفحه به‌صورت PNG"
+ic_items = "مورد"
+mail_truncated_file = "این پیام در محدودیت حجم بریده شد؛ ممکن است بخشی از محتوا از دست رفته باشد."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— هنگام ورود به سیستم اجرا نمی‌شود"

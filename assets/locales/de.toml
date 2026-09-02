@@ -518,3 +518,24 @@ nudge_body_generic = "Behalte deine {app}-Einstellungen auf jedem PC, den du nut
 nudge_action = "Anmelden"
 nudge_later = "Jetzt nicht"
 nudge_month = "In einem Monat erinnern"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Einige Einstellungen konnten nicht gespeichert werden: {path}."
+save_failed_registry = "die Registrierung"
+sync_disconnected_body = "Synchronisierung getrennt. Deine Einstellungen bleiben auf diesem PC."
+sync_portable_notice = "Portable Version: Diese Anmeldung wird neben dieser Kopie von SageThumbs 2K gespeichert, nicht im Konto dieses PCs. Jeder, der dieselbe portable Kopie nutzt, kann deine Einstellungen synchronisieren – melde dich also ab, bevor du das Laufwerk weitergibst."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "{n} Cloud-Datei(en) übersprungen, die nicht heruntergeladen wurden."
+f2f_done_partial = "{moved} Element(e) verschoben; {skipped} konnten nicht verschoben werden."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR-Inhalte werden als SDR abgetastet (ungefähr)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Seite als PNG speichern"
+ic_items = "Elemente"
+mail_truncated_file = "Diese Nachricht wurde bei der Größenbegrenzung abgeschnitten; einige Inhalte fehlen möglicherweise."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— startet nicht bei der Anmeldung"

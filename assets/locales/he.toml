@@ -522,3 +522,24 @@ nudge_body_generic = "שמרו על ההגדרות שלכם ב-{app} בכל מח
 nudge_action = "כניסה"
 nudge_later = "לא עכשיו"
 nudge_month = "להזכיר לי בעוד חודש"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "חלק מההגדרות לא נשמרו ב-{path}."
+save_failed_registry = "הרישום"
+sync_disconnected_body = "הסנכרון נותק. ההגדרות שלכם נשארות במחשב הזה."
+sync_portable_notice = "עותק נייד: ההתחברות הזו נשמרת ליד העותק הזה של SageThumbs 2K, לא בחשבון של המחשב הזה. כל מי שמשתמש באותו עותק נייד יכול לסנכרן את ההגדרות שלכם, אז התנתקו לפני שאתם מוסרים את הכונן."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "דילוג על {n} קבצים שקיימים רק בענן ולא הורדו."
+f2f_done_partial = "הועברו {moved} פריטים; לא ניתן היה להעביר {skipped}."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "תוכן HDR מוצג כ-SDR (בקירוב)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "שמירת הדף כ-PNG"
+ic_items = "פריטים"
+mail_truncated_file = "ההודעה הזו נחתכה במגבלת הגודל; ייתכן שחלק מהתוכן חסר."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— לא תופעל בעת הכניסה למערכת"

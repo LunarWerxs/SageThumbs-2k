@@ -523,3 +523,24 @@ nudge_body_generic = "Behoud je {app}-instellingen op elke pc die je gebruikt."
 nudge_action = "Aanmelden"
 nudge_later = "Niet nu"
 nudge_month = "Herinner me over een maand"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Sommige instellingen konden niet worden opgeslagen in {path}."
+save_failed_registry = "het register"
+sync_disconnected_body = "Synchronisatie verbroken. Je instellingen blijven op deze pc."
+sync_portable_notice = "Draagbare kopie: deze aanmelding wordt opgeslagen naast deze kopie van SageThumbs 2K, niet in het account van deze pc. Iedereen die dezelfde draagbare kopie gebruikt, kan je instellingen synchroniseren, dus meld je af voordat je de schijf overhandigt."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "{n} alleen-cloudbestand(en) overgeslagen die niet waren gedownload."
+f2f_done_partial = "{moved} item(s) verplaatst; {skipped} konden niet worden verplaatst."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR-inhoud wordt weergegeven als SDR (bij benadering)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Pagina opslaan als PNG"
+ic_items = "items"
+mail_truncated_file = "Dit bericht is afgekapt bij de groottelimiet; sommige inhoud kan ontbreken."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— start niet bij aanmelding"

@@ -524,3 +524,24 @@ nudge_body_generic = "Őrizze meg a {app} beállításait minden használt gép�
 nudge_action = "Bejelentkezés"
 nudge_later = "Most nem"
 nudge_month = "Emlékeztessen egy hónap múlva"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Néhány beállítást nem sikerült menteni: {path}."
+save_failed_registry = "a rendszerleíró adatbázis"
+sync_disconnected_body = "A szinkronizálás megszakadt. A beállításai ezen a gépen maradnak."
+sync_portable_notice = "Hordozható másolat: ez a bejelentkezés a SageThumbs 2K ezen másolata mellett tárolódik, nem ennek a gépnek a fiókjában. Bárki, aki ugyanezt a hordozható másolatot használja, szinkronizálhatja a beállításait, ezért jelentkezzen ki, mielőtt átadja a meghajtót."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "{n} csak felhőben elérhető, le nem töltött fájl kihagyva."
+f2f_done_partial = "{moved} elem áthelyezve; {skipped} elemet nem sikerült áthelyezni."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "A HDR-tartalom SDR-ként jelenik meg (közelítő)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Oldal mentése PNG-ként"
+ic_items = "elem"
+mail_truncated_file = "Ez az üzenet a mérethatárnál levágásra került; előfordulhat, hogy tartalom hiányzik."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— nem indul el bejelentkezéskor"

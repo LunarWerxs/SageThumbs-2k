@@ -523,3 +523,24 @@ nudge_body_generic = "{app} ayarlarınızı kullandığınız her bilgisayarda k
 nudge_action = "Oturum aç"
 nudge_later = "Şimdi değil"
 nudge_month = "Bir ay sonra hatırlat"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Bazı ayarlar kaydedilemedi: {path}."
+save_failed_registry = "kayıt defteri"
+sync_disconnected_body = "Senkronizasyon bağlantısı kesildi. Ayarlarınız bu bilgisayarda kalır."
+sync_portable_notice = "Taşınabilir kopya: bu oturum açma bilgisi, bu bilgisayarın hesabında değil, SageThumbs 2K'nın bu kopyasının yanında saklanır. Aynı taşınabilir kopyayı kullanan herkes ayarlarınızı senkronize edebilir, bu yüzden sürücüyü teslim etmeden önce oturumu kapatın."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "İndirilmemiş {n} yalnızca bulut dosyası atlandı."
+f2f_done_partial = "{moved} öğe taşındı; {skipped} öğe taşınamadı."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR içeriği SDR olarak örneklenir (yaklaşık)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Sayfayı PNG olarak kaydet"
+ic_items = "öğe"
+mail_truncated_file = "Bu ileti boyut sınırında kesildi; bazı içerikler eksik olabilir."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— oturum açılışında başlamaz"

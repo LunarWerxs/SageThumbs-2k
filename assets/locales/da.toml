@@ -516,3 +516,24 @@ nudge_body_generic = "Behold dine {app}-indstillinger på hver pc, du bruger."
 nudge_action = "Log ind"
 nudge_later = "Ikke nu"
 nudge_month = "Mind mig om det om en måned"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Nogle indstillinger kunne ikke gemmes til {path}."
+save_failed_registry = "registreringsdatabasen"
+sync_disconnected_body = "Synkronisering afbrudt. Dine indstillinger bliver på denne pc."
+sync_portable_notice = "Bærbar kopi: dette login gemmes ved siden af denne kopi af SageThumbs 2K, ikke i denne pc's konto. Alle, der bruger samme bærbare kopi, kan synkronisere dine indstillinger, så log ud, før du afleverer drevet."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Sprang {n} skybaseret fil/filer over, som ikke blev downloadet."
+f2f_done_partial = "Flyttede {moved} element(er); {skipped} kunne ikke flyttes."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR-indhold vises som SDR (omtrentligt)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Gem side som PNG"
+ic_items = "elementer"
+mail_truncated_file = "Denne besked blev afskåret ved størrelsesgrænsen; noget indhold kan mangle."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— starter ikke ved log på"

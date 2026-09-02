@@ -522,3 +522,24 @@ nudge_body_generic = "अपनी {app} सेटिंग्स अपने �
 nudge_action = "साइन इन"
 nudge_later = "अभी नहीं"
 nudge_month = "एक महीने बाद याद दिलाएँ"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "कुछ सेटिंग्स {path} में सेव नहीं हो सकीं।"
+save_failed_registry = "रजिस्ट्री"
+sync_disconnected_body = "सिंक डिस्कनेक्ट हो गया। आपकी सेटिंग्स इसी कंप्यूटर पर रहेंगी।"
+sync_portable_notice = "पोर्टेबल कॉपी: यह साइन-इन SageThumbs 2K की इस कॉपी के साथ सेव होता है, इस कंप्यूटर के खाते में नहीं। वही पोर्टेबल कॉपी इस्तेमाल करने वाला कोई भी व्यक्ति आपकी सेटिंग्स सिंक कर सकता है, इसलिए ड्राइव सौंपने से पहले साइन आउट करें।"
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "{n} क्लाउड-ओनली फ़ाइल(ें) छोड़ी गईं जो डाउनलोड नहीं हुई थीं।"
+f2f_done_partial = "{moved} आइटम ले जाए गए; {skipped} को ले जाया नहीं जा सका।"
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR सामग्री को SDR के रूप में सैंपल किया जाता है (अनुमानित)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "पेज को PNG के रूप में सेव करें"
+ic_items = "आइटम"
+mail_truncated_file = "यह मैसेज साइज़ सीमा पर कट गया था; कुछ सामग्री गायब हो सकती है।"
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— लॉगऑन पर शुरू नहीं होगा"

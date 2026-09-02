@@ -514,3 +514,24 @@ nudge_body_generic = "Pidä {app}-asetuksesi jokaisella käyttämälläsi tietok
 nudge_action = "Kirjaudu sisään"
 nudge_later = "Ei nyt"
 nudge_month = "Muistuta kuukauden kuluttua"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Joitakin asetuksia ei voitu tallentaa: {path}."
+save_failed_registry = "rekisteri"
+sync_disconnected_body = "Synkronointi katkaistu. Asetuksesi pysyvät tällä koneella."
+sync_portable_notice = "Kannettava kopio: tämä kirjautuminen tallennetaan tämän SageThumbs 2K -kopion viereen, ei tämän koneen tilille. Kuka tahansa samaa kannettavaa kopiota käyttävä voi synkronoida asetuksesi, joten kirjaudu ulos ennen aseman luovuttamista."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Ohitettiin {n} vain pilvessä oleva(a) tiedosto(a), joita ei ladattu."
+f2f_done_partial = "Siirrettiin {moved} kohde(tta); {skipped} ei voitu siirtää."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR-sisältö näytetään SDR:nä (arvio)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Tallenna sivu PNG-muodossa"
+ic_items = "kohdetta"
+mail_truncated_file = "Tämä viesti katkaistiin kokorajassa; osa sisällöstä saattaa puuttua."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— ei käynnisty kirjautumisen yhteydessä"

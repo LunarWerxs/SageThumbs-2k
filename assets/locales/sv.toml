@@ -518,3 +518,24 @@ nudge_body_generic = "Behåll dina {app}-inställningar på varje dator du anvä
 nudge_action = "Logga in"
 nudge_later = "Inte nu"
 nudge_month = "Påminn mig om en månad"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Vissa inställningar kunde inte sparas till {path}."
+save_failed_registry = "registret"
+sync_disconnected_body = "Synkroniseringen är frånkopplad. Dina inställningar stannar på den här datorn."
+sync_portable_notice = "Portabel kopia: den här inloggningen sparas bredvid den här kopian av SageThumbs 2K, inte i kontot för den här datorn. Alla som använder samma portabla kopia kan synkronisera dina inställningar, så logga ut innan du lämnar ifrån dig enheten."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Hoppade över {n} molnfil(er) som inte hade laddats ned."
+f2f_done_partial = "Flyttade {moved} objekt; {skipped} kunde inte flyttas."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR-innehåll visas som SDR (ungefärligt)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Spara sida som PNG"
+ic_items = "objekt"
+mail_truncated_file = "Det här meddelandet klipptes av vid storleksgränsen; en del innehåll kan saknas."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— startar inte vid inloggning"

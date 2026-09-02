@@ -521,3 +521,24 @@ nudge_body_generic = "在你使用的每一台電腦上保留 {app} 設定。"
 nudge_action = "登入"
 nudge_later = "稍後再說"
 nudge_month = "一個月後提醒我"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "部分設定未能儲存到{path}。"
+save_failed_registry = "登錄檔"
+sync_disconnected_body = "同步已中斷。你的設定仍保留在這台電腦上。"
+sync_portable_notice = "可攜式版本：這個登入資訊會儲存在這份 SageThumbs 2K 副本旁邊，而不是這台電腦的帳戶中。任何使用同一可攜式副本的人都能同步你的設定，因此在交出這個磁碟機之前請先登出。"
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "已略過 {n} 個未下載的僅雲端檔案。"
+f2f_done_partial = "已移動 {moved} 個項目；{skipped} 個無法移動。"
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR 內容會以 SDR 取樣顯示（近似值）"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "將頁面另存為 PNG"
+ic_items = "個項目"
+mail_truncated_file = "這封郵件在大小限制處被截斷；部分內容可能遺失。"
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— 不會在登入時啟動"

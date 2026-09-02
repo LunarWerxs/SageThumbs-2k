@@ -523,3 +523,24 @@ nudge_body_generic = "{app} の設定を使用するすべての PC で保持し
 nudge_action = "サインイン"
 nudge_later = "後で"
 nudge_month = "1 か月後に通知"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "一部の設定を{path}に保存できませんでした。"
+save_failed_registry = "レジストリ"
+sync_disconnected_body = "同期が切断されました。設定はこの PC に残ります。"
+sync_portable_notice = "ポータブル版: このサインインは SageThumbs 2K のこのコピーの隣に保存され、この PC のアカウントには保存されません。同じポータブルコピーを使う人は誰でも設定を同期できるため、ドライブを渡す前にサインアウトしてください。"
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "ダウンロードされていないクラウド専用ファイル {n} 件をスキップしました。"
+f2f_done_partial = "{moved} 件のアイテムを移動しました。{skipped} 件は移動できませんでした。"
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR コンテンツは SDR としてサンプリングされます（近似）"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "ページを PNG として保存"
+ic_items = "件"
+mail_truncated_file = "このメッセージはサイズの上限で切り捨てられました。一部のコンテンツが欠落している可能性があります。"
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— ログオン時に起動しません"

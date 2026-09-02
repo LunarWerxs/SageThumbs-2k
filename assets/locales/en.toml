@@ -547,3 +547,24 @@ nudge_body_generic = "Keep your {app} settings across every machine you use."
 nudge_action = "Sign in"
 nudge_later = "Not now"
 nudge_month = "Remind me in a month"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Some settings could not be saved to {path}."
+save_failed_registry = "the registry"
+sync_disconnected_body = "Sync disconnected. Your settings stay on this PC."
+sync_portable_notice = "Portable copy: this sign-in is stored next to this copy of SageThumbs 2K, not in this PC's account. Anyone using the same portable copy can sync your settings, so sign out before handing off the drive."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Skipped {n} cloud-only file(s) that were not downloaded."
+f2f_done_partial = "Moved {moved} item(s); {skipped} couldn't be moved."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "HDR content is sampled as SDR (approximate)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Save page as PNG"
+ic_items = "items"
+mail_truncated_file = "This message was cut off at the size limit; some content may be missing."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— will not start at logon"

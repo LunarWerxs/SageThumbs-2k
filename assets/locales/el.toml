@@ -514,3 +514,24 @@ nudge_body_generic = "Κρατήστε τις ρυθμίσεις σας στο {
 nudge_action = "Σύνδεση"
 nudge_later = "Όχι τώρα"
 nudge_month = "Υπενθύμιση σε έναν μήνα"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Ορισμένες ρυθμίσεις δεν ήταν δυνατό να αποθηκευτούν: {path}."
+save_failed_registry = "το μητρώο"
+sync_disconnected_body = "Ο συγχρονισμός αποσυνδέθηκε. Οι ρυθμίσεις σας παραμένουν σε αυτόν τον υπολογιστή."
+sync_portable_notice = "Φορητό αντίγραφο: αυτή η σύνδεση αποθηκεύεται δίπλα σε αυτό το αντίγραφο του SageThumbs 2K, όχι στον λογαριασμό αυτού του υπολογιστή. Όποιος χρησιμοποιεί το ίδιο φορητό αντίγραφο μπορεί να συγχρονίσει τις ρυθμίσεις σας, γι' αυτό αποσυνδεθείτε πριν παραδώσετε τον δίσκο."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Παραλείφθηκαν {n} αρχείο(α) μόνο στο cloud που δεν είχαν ληφθεί."
+f2f_done_partial = "Μετακινήθηκαν {moved} στοιχείο(α)· {skipped} δεν ήταν δυνατό να μετακινηθούν."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "Το περιεχόμενο HDR δειγματοληπτείται ως SDR (κατά προσέγγιση)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Αποθήκευση σελίδας ως PNG"
+ic_items = "στοιχεία"
+mail_truncated_file = "Αυτό το μήνυμα αποκόπηκε στο όριο μεγέθους· ενδέχεται να λείπει περιεχόμενο."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— δεν θα εκκινηθεί κατά τη σύνδεση"

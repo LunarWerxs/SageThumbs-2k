@@ -521,3 +521,24 @@ nudge_body_generic = "Giữ cài đặt {app} của bạn trên mọi máy tính
 nudge_action = "Đăng nhập"
 nudge_later = "Để sau"
 nudge_month = "Nhắc tôi sau một tháng"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Không thể lưu một số cài đặt vào {path}."
+save_failed_registry = "registry"
+sync_disconnected_body = "Đồng bộ đã ngắt kết nối. Cài đặt của bạn vẫn ở trên máy tính này."
+sync_portable_notice = "Bản sao di động: thông tin đăng nhập này được lưu bên cạnh bản sao SageThumbs 2K này, không phải trong tài khoản của máy tính này. Bất kỳ ai dùng cùng bản sao di động đều có thể đồng bộ cài đặt của bạn, vì vậy hãy đăng xuất trước khi giao ổ đĩa cho người khác."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Đã bỏ qua {n} tệp chỉ có trên đám mây chưa được tải xuống."
+f2f_done_partial = "Đã di chuyển {moved} mục; không thể di chuyển {skipped} mục."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "Nội dung HDR được hiển thị dưới dạng SDR (gần đúng)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Lưu trang dưới dạng PNG"
+ic_items = "mục"
+mail_truncated_file = "Tin nhắn này đã bị cắt bớt tại giới hạn kích thước; một số nội dung có thể bị thiếu."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— sẽ không khởi động khi đăng nhập"

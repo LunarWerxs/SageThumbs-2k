@@ -521,3 +521,24 @@ nudge_body_generic = "Simpan tetapan {app} anda pada setiap PC yang anda guna."
 nudge_action = "Log masuk"
 nudge_later = "Bukan sekarang"
 nudge_month = "Ingatkan saya sebulan lagi"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Sesetengah tetapan tidak dapat disimpan ke {path}."
+save_failed_registry = "registri"
+sync_disconnected_body = "Penyegerakan terputus. Tetapan anda kekal pada PC ini."
+sync_portable_notice = "Salinan mudah alih: log masuk ini disimpan di sebelah salinan SageThumbs 2K ini, bukan dalam akaun PC ini. Sesiapa yang menggunakan salinan mudah alih yang sama boleh menyegerakkan tetapan anda, jadi log keluar sebelum menyerahkan pemacu itu."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Melangkau {n} fail khas awan yang tidak dimuat turun."
+f2f_done_partial = "{moved} item dialihkan; {skipped} tidak dapat dialihkan."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "Kandungan HDR dipaparkan sebagai SDR (anggaran)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "Simpan halaman sebagai PNG"
+ic_items = "item"
+mail_truncated_file = "Mesej ini dipotong pada had saiz; sebahagian kandungan mungkin hilang."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— tidak akan bermula semasa log masuk"

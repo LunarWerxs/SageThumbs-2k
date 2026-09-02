@@ -518,3 +518,24 @@ nudge_body_generic = "احتفظ بإعدادات {app} على كل جهاز ت�
 nudge_action = "تسجيل الدخول"
 nudge_later = "ليس الآن"
 nudge_month = "ذكّرني بعد شهر"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "تعذّر حفظ بعض الإعدادات في {path}."
+save_failed_registry = "السجل"
+sync_disconnected_body = "انقطعت المزامنة. تبقى إعداداتك على هذا الكمبيوتر."
+sync_portable_notice = "نسخة محمولة: يُخزَّن تسجيل الدخول هذا بجانب هذه النسخة من SageThumbs 2K، وليس في حساب هذا الكمبيوتر. يمكن لأي شخص يستخدم النسخة المحمولة نفسها مزامنة إعداداتك، لذا سجّل الخروج قبل تسليم القرص."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "تم تخطي {n} من الملفات السحابية فقط التي لم يتم تنزيلها."
+f2f_done_partial = "تم نقل {moved} عنصرًا؛ تعذّر نقل {skipped}."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "يُؤخذ محتوى HDR كعيّنة بصيغة SDR (تقريبي)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "حفظ الصفحة بصيغة PNG"
+ic_items = "عناصر"
+mail_truncated_file = "تم اقتطاع هذه الرسالة عند حد الحجم؛ قد يكون بعض المحتوى مفقودًا."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— لن يبدأ التشغيل عند تسجيل الدخول"

@@ -514,3 +514,24 @@ nudge_body_generic = "Panatilihin ang iyong mga setting ng {app} sa bawat PC na 
 nudge_action = "Mag-sign in"
 nudge_later = "Hindi ngayon"
 nudge_month = "Ipaalala sa isang buwan"
+
+# Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
+msg_save_failed = "Hindi ma-save ang ilang setting sa {path}."
+save_failed_registry = "registry"
+sync_disconnected_body = "Naputol ang pag-sync. Nananatili sa PC na ito ang mga setting mo."
+sync_portable_notice = "Portable na kopya: naka-save ang sign-in na ito katabi ng kopyang ito ng SageThumbs 2K, hindi sa account ng PC na ito. Kahit sino na gumamit ng parehong portable na kopya ay pwedeng mag-sync ng mga setting mo, kaya mag-sign out ka bago ibigay ang drive."
+
+# Convert / Files to folder: partial-result notices
+cv_skipped_cloud = "Nilaktawan ang {n} cloud-only na file na hindi na-download."
+f2f_done_partial = "{moved} item ang inilipat; hindi maisalin ang {skipped}."
+
+# Eyedropper: HDR displays are sampled through the SDR composition
+eye_hint_hdr = "Ipinapakita ang HDR content bilang SDR (tinatantya)"
+
+# Quick preview: save the shown page/frame, the info card's item count, a truncated mail file
+preview_tip_savepage = "I-save ang page bilang PNG"
+ic_items = "item"
+mail_truncated_file = "Naputol ang mensaheng ito sa limitasyon ng laki; posibleng may nawawalang content."
+
+# Screenshot tray tip suffix when the logon autostart entry could not be written
+shot_tray_no_autostart = "— hindi magsisimula sa pag-log on"
