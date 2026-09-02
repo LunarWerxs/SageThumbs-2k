@@ -182,12 +182,21 @@ appease a dice roll would be chasing noise.
 
 ## Fixing it properly
 
-### Code signing is OFF THE TABLE - do not propose it
+### Code signing: reopened by the owner on 2026-09-01
 
-Settled owner decision (2026-07-18), not an open trade-off. Do not raise it, do not list it
-under "next steps," and do not resurrect it in a later session because the context looks new.
-It is recorded here only because it is the first thing anyone researching AV false positives
-will reach for, and re-litigating it wastes everyone's time.
+The 2026-07-18 decision below stood for six weeks. On 2026-09-01 the owner reopened it: an
+Azure Trusted Signing account is being set up, and once it is live the release pipeline signs
+the installer, the portable zip's binaries and the MSIX. Until it is live, everything below
+this heading still describes the shipping position, and nothing in the release flow assumes a
+certificate exists. What changed the calculus was the 2.5.0 x64 installer reaching 9/70 on
+VirusTotal, including Microsoft's own ML engine (`Trojan:Win32/Wacatac.B!ml`, issue #30), which
+is the one verdict users see without going looking.
+
+#### The 2026-07-18 position, kept for the record
+
+Settled owner decision (2026-07-18), not an open trade-off at the time. It is recorded here
+because it is the first thing anyone researching AV false positives will reach for, and the
+reasoning still holds for everything except a tier-1 ML flag on the installer itself.
 
 (This does not touch the **self-signed** cert for the MSIX sparse package - Windows will not
 load an unsigned sparse package at all, so that one is a technical requirement and stays.)
