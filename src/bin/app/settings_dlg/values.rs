@@ -116,6 +116,7 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     );
     check(hwnd, ID_BADGE_ICON, true); // ...but when it IS on, colour beats three letters
     check(hwnd, ID_THUMB_CHECKER, false); // real alpha is the better default
+    check(hwnd, ID_VIDEO_COVER_ART, false); // see settings::prefer_cover_art's documented default
     update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, true);
     check(hwnd, ID_MENU_ALL_TYPES, false);
@@ -133,7 +134,7 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_C_PREFER_COVER, true);
     check(hwnd, ID_C_SKIP_SCAN, false);
     check(hwnd, ID_C_ARCHIVE_SHEET, true);
-    check(hwnd, ID_MENU_QUICK, true);
+    check(hwnd, ID_MENU_QUICK, false); // see settings::menu_quick_verbs's documented default
     check(hwnd, ID_MENU_CHECKER, true);
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
         // 0 = follow Windows: the pre-existing behaviour, so "Defaults" restores it.
@@ -409,9 +410,69 @@ pub(super) unsafe fn banner_rotator(hwnd: HWND) -> Option<(HWND, *mut SponsorRot
     (!rot.is_null()).then_some((banner, rot))
 }
 
+/// A background thumbnail-cache-rebuild / Explorer-restart worker (see [`spawn_cache_rebuild`])
+/// finished → posted back with the boxed follow-up (WM_APP + 10; distinct from the sponsor
+/// (+7) / update (+8) / sync (+9) app messages).
+pub(super) const WM_APP_CACHE: u32 = 0x8000 + 10;
+
+/// What to do on the UI thread once [`spawn_cache_rebuild`]'s worker finishes: re-enable the
+/// window, plus an optional (text, caption) message to show — deferred to here rather than
+/// shown immediately after firing the worker, since showing it before the restart has actually
+/// run would claim success too early.
+pub(super) struct CacheRebuiltEvent {
+    pub(super) after: Option<(&'static str, &'static str)>,
+}
+
+/// Run `restart_explorer_clearing_cache` (up to ~33s: an unconditional 3s sleep, then up to
+/// two 15s polls) on a worker thread instead of blocking the Settings window's UI thread —
+/// the shape `apply_settings`, `rebuild_thumbnail_cache`, and `repair_associations` all used
+/// to share. The window is disabled for the duration (so a second click/Save can't race the
+/// same restart) and re-enabled by the `WM_APP_CACHE` handler once the worker posts back,
+/// along with `after`'s message, if any.
+pub(super) unsafe fn spawn_cache_rebuild(hwnd: HWND, after: Option<(&'static str, &'static str)>) {
+    let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(hwnd, false);
+    let target = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        let raw = Box::into_raw(Box::new(CacheRebuiltEvent { after }));
+        unsafe {
+            let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(HWND(target as *mut core::ffi::c_void)),
+                WM_APP_CACHE,
+                WPARAM(0),
+                LPARAM(raw as isize),
+            );
+            if posted.is_err() {
+                drop(Box::from_raw(raw));
+            }
+        }
+    });
+}
+
+thread_local! {
+    /// Sticky within one [`apply_settings`] call: set the moment any tracked write fails and
+    /// never cleared again until the next `apply_settings` resets it, so a later successful
+    /// write can't paper over an earlier failure.
+    static SAVE_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Every `settings::set_*` call in the `apply_*` chain below is wrapped in this instead of
+/// the bare `let _ = ...;` the whole file used to write everywhere: a failed HKCU write (a
+/// portable ini on read-only media, a sharing violation, permissions) used to vanish with no
+/// error and no log line — the dialog closed clean, the file/registry never changed, and
+/// there was nothing anywhere to say why. This just records that SOMETHING failed; the
+/// caller decides what to do with it. Passes the result through unchanged.
+fn note<T, E>(r: Result<T, E>) -> Result<T, E> {
+    if r.is_err() {
+        SAVE_FAILED.with(|f| f.set(true));
+    }
+    r
+}
+
 /// Persist all settings (and re-register formats if the list changed). Apply-only
 /// — does NOT close the window, so the user can save and keep tweaking.
 pub(super) unsafe fn apply_settings(hwnd: HWND) {
+    SAVE_FAILED.with(|f| f.set(false));
     let badge_changed = apply_thumbnail_and_badge_settings(hwnd);
     apply_menu_and_misc_toggles(hwnd);
     apply_menu_item_list_order(hwnd);
@@ -419,10 +480,23 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
     apply_screenshot_tool_prefs(hwnd);
     apply_container_settings(hwnd);
     apply_tuning_numbers(hwnd);
-    let _ = settings::set_lang(selected_lang(hwnd).unwrap_or(""));
+    let _ = note(settings::set_lang(selected_lang(hwnd).unwrap_or("")));
     apply_screenshot_hotkeys(hwnd);
     apply_quick_preview_and_screenshot_enable(hwnd);
     apply_format_flags(hwnd);
+    // One message covers every tracked write above — apply_format_flags' own elevation
+    // failure already shows its own (more specific, "admin required") message, so it is
+    // deliberately not routed through `note`.
+    if SAVE_FAILED.with(|f| f.get()) {
+        let where_ = settings::ini_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| t("save_failed_registry").to_string());
+        message_box(
+            hwnd,
+            &t("msg_save_failed").replace("{path}", &where_),
+            "SageThumbs 2K",
+        );
+    }
 
     // Nudge the shell to drop its cached file-association / context-menu state so a
     // menu toggle (e.g. MenuQuickVerbs, per-item visibility, the reorder) takes
@@ -434,17 +508,25 @@ pub(super) unsafe fn apply_settings(hwnd: HWND) {
 
     // The badge lives INSIDE the cached bitmap, so a toggle is invisible until the shell's
     // thumbnail cache is discarded. Do it for the user, and only when the value actually
-    // changed - an unrelated Apply must never blow away everyone's cached tiles.
+    // changed - an unrelated Apply must never blow away everyone's cached tiles. Backgrounded
+    // (see `spawn_cache_rebuild`) — this used to block Apply's caller for up to ~33s with no
+    // feedback, the exact freeze the explicit "Rebuild Thumbnail Cache" button already avoided.
     if badge_changed {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        spawn_cache_rebuild(hwnd, None);
     }
 }
 
 /// The thumbnail-generation + format-badge settings, returning whether anything baked into
 /// the cached bitmap changed (the caller purges the shell's thumbnail cache only then).
 unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
-    let _ = settings::set_dword("EnableThumbs", checked(hwnd, ID_ENABLE_THUMBS) as u32);
-    let _ = settings::set_dword("UseEmbedded", checked(hwnd, ID_USE_EMBEDDED) as u32);
+    let _ = note(settings::set_dword(
+        "EnableThumbs",
+        checked(hwnd, ID_ENABLE_THUMBS) as u32,
+    ));
+    let _ = note(settings::set_dword(
+        "UseEmbedded",
+        checked(hwnd, ID_USE_EMBEDDED) as u32,
+    ));
     // The format badge is baked INTO the bitmap the shell caches, so flipping it changes
     // nothing the user can see until the thumbnail cache is discarded. Detect the change
     // here and purge, otherwise the first thing every user reports is "I ticked it and
@@ -465,10 +547,10 @@ unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
         || icon_now != settings::format_badge_icon()
         || checker_now != settings::thumb_checker()
         || cover_now != settings::prefer_cover_art();
-    let _ = settings::set_corner_mark(mark_now);
-    let _ = settings::set_format_badge_icon(icon_now);
-    let _ = settings::set_thumb_checker(checker_now);
-    let _ = settings::set_prefer_cover_art(cover_now);
+    let _ = note(settings::set_corner_mark(mark_now));
+    let _ = note(settings::set_format_badge_icon(icon_now));
+    let _ = note(settings::set_thumb_checker(checker_now));
+    let _ = note(settings::set_prefer_cover_art(cover_now));
     // The corner mark's OTHER half. Explorer draws its own overlay on top of what it cached,
     // so suppressing it is not a bitmap change and needs no purge — but it DOES need the
     // per-ProgID registry written and the shell told, which `typeoverlay::sync` does for every
@@ -488,26 +570,50 @@ unsafe fn apply_menu_and_misc_toggles(hwnd: HWND) {
     // needs writing and syncing but no thumbnail purge.
     let folder_verb_now = checked(hwnd, ID_FOLDER_PREBUILD);
     if folder_verb_now != settings::folder_prebuild_verb() {
-        let _ = settings::set_folder_prebuild_verb(folder_verb_now);
+        let _ = note(settings::set_folder_prebuild_verb(folder_verb_now));
         sagethumbs2k_core::foldermenu::sync(folder_verb_now);
     }
-    let _ = settings::set_dword("EnableMenu", checked(hwnd, ID_ENABLE_MENU) as u32);
-    let _ = settings::set_dword("MenuAllFileTypes", checked(hwnd, ID_MENU_ALL_TYPES) as u32);
-    let _ = settings::set_dword("MenuQuickVerbs", checked(hwnd, ID_MENU_QUICK) as u32);
-    let _ = settings::set_dword("PreviewChecker", checked(hwnd, ID_MENU_CHECKER) as u32);
-    let _ = settings::set_dword("PreserveFileDate", checked(hwnd, ID_PRESERVE_DATE) as u32);
-    let _ = settings::set_dword("KeepMetadata", checked(hwnd, ID_KEEP_METADATA) as u32);
+    let _ = note(settings::set_dword(
+        "EnableMenu",
+        checked(hwnd, ID_ENABLE_MENU) as u32,
+    ));
+    let _ = note(settings::set_dword(
+        "MenuAllFileTypes",
+        checked(hwnd, ID_MENU_ALL_TYPES) as u32,
+    ));
+    let _ = note(settings::set_dword(
+        "MenuQuickVerbs",
+        checked(hwnd, ID_MENU_QUICK) as u32,
+    ));
+    let _ = note(settings::set_dword(
+        "PreviewChecker",
+        checked(hwnd, ID_MENU_CHECKER) as u32,
+    ));
+    let _ = note(settings::set_dword(
+        "PreserveFileDate",
+        checked(hwnd, ID_PRESERVE_DATE) as u32,
+    ));
+    let _ = note(settings::set_dword(
+        "KeepMetadata",
+        checked(hwnd, ID_KEEP_METADATA) as u32,
+    ));
     // Only ever toggles between tight (0) and margin (1); a registry-chosen sheet mode
     // (2/3) is left alone unless the user actually unticks the box.
     if checked(hwnd, ID_PDF_MARGIN) {
         if settings::pdf_page() == sagethumbs2k_core::PdfPage::Tight {
-            let _ = settings::set_dword("PdfLayout", 1);
+            let _ = note(settings::set_dword("PdfLayout", 1));
         }
     } else {
-        let _ = settings::set_dword("PdfLayout", 0);
+        let _ = note(settings::set_dword("PdfLayout", 0));
     }
-    let _ = settings::set_dword("Debug", checked(hwnd, ID_VERBOSE_LOG) as u32);
-    let _ = settings::set_update_auto_check(checked(hwnd, ID_UPDATE_AUTO));
+    let _ = note(settings::set_dword(
+        "Debug",
+        checked(hwnd, ID_VERBOSE_LOG) as u32,
+    ));
+    let _ = note(settings::set_update_auto_check(checked(
+        hwnd,
+        ID_UPDATE_AUTO,
+    )));
     // The periodic check is a per-user Scheduled Task, not a resident process, so the
     // toggle has to create/remove that task — otherwise turning it OFF would leave the
     // task running (and turning it back ON after an install where task creation failed
@@ -532,11 +638,11 @@ unsafe fn apply_menu_item_list_order(hwnd: HWND) {
             order.push(MENU_SEP_TOKEN);
         } else if param >= 0 && (param as usize) < MENU_ITEM_TOGGLES.len() {
             let key = MENU_ITEM_TOGGLES[param as usize].1;
-            let _ = settings::set_menu_item_shown(key, is_checked(mlist, row));
+            let _ = note(settings::set_menu_item_shown(key, is_checked(mlist, row)));
             order.push(key);
         }
     }
-    let _ = settings::set_menu_order(&order);
+    let _ = note(settings::set_menu_order(&order));
 }
 
 /// The preview-mode combo (Explorer icon/classic/menu-preview toggle) and the app theme
@@ -546,13 +652,13 @@ unsafe fn apply_menu_item_list_order(hwnd: HWND) {
 unsafe fn apply_menu_preview_and_theme(hwnd: HWND) {
     if let Ok(prev) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
         let sel = SendMessageW(prev, CB_GETCURSEL, None, None).0.clamp(0, 2);
-        let _ = settings::set_dword("MenuPreview", sel as u32);
+        let _ = note(settings::set_dword("MenuPreview", sel as u32));
     }
     let theme_before = settings::app_theme();
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
         // CB_ERR is -1 (nothing selected); clamp instead of storing it.
         let sel = SendMessageW(c, CB_GETCURSEL, None, None).0.clamp(0, 2);
-        let _ = settings::set_app_theme(sel as u32);
+        let _ = note(settings::set_app_theme(sel as u32));
         if sel as u32 != theme_before {
             crate::preview::request_close();
         }
@@ -564,7 +670,7 @@ unsafe fn apply_screenshot_tool_prefs(hwnd: HWND) {
     if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
         // CB_ERR is -1 (no selection); clamp to a real index rather than storing it.
         let sel = SendMessageW(tool, CB_GETCURSEL, None, None).0.max(0);
-        let _ = settings::set_screenshot_default_tool(sel as u32);
+        let _ = note(settings::set_screenshot_default_tool(sel as u32));
     }
     if let Ok(delay) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
         let sel = SendMessageW(delay, CB_GETCURSEL, None, None).0.max(0) as usize;
@@ -572,23 +678,29 @@ unsafe fn apply_screenshot_tool_prefs(hwnd: HWND) {
             .get(sel)
             .copied()
             .unwrap_or_default();
-        let _ = settings::set_screenshot_delay_sec(secs);
+        let _ = note(settings::set_screenshot_delay_sec(secs));
     }
 }
 
 /// The four container-format checkboxes (sort, prefer cover, skip scanlation, archive
 /// contact sheet).
 unsafe fn apply_container_settings(hwnd: HWND) {
-    let _ = settings::set_dword("ContainerSort", checked(hwnd, ID_C_SORT) as u32);
-    let _ = settings::set_dword(
+    let _ = note(settings::set_dword(
+        "ContainerSort",
+        checked(hwnd, ID_C_SORT) as u32,
+    ));
+    let _ = note(settings::set_dword(
         "ContainerPreferCover",
         checked(hwnd, ID_C_PREFER_COVER) as u32,
-    );
-    let _ = settings::set_dword(
+    ));
+    let _ = note(settings::set_dword(
         "ContainerSkipScanlation",
         checked(hwnd, ID_C_SKIP_SCAN) as u32,
-    );
-    let _ = settings::set_dword("ArchiveCollage", checked(hwnd, ID_C_ARCHIVE_SHEET) as u32);
+    ));
+    let _ = note(settings::set_dword(
+        "ArchiveCollage",
+        checked(hwnd, ID_C_ARCHIVE_SHEET) as u32,
+    ));
 }
 
 /// The numeric tuning fields (MaxSize, thumbnail size, video offset, JPEG/PNG quality).
@@ -609,7 +721,7 @@ unsafe fn apply_container_settings(hwnd: HWND) {
 unsafe fn apply_tuning_numbers(hwnd: HWND) {
     let mut ok = Default::default();
     let max_mb = GetDlgItemInt(hwnd, ID_MAXSIZE, Some(&mut ok), false);
-    let _ = settings::set_dword_tracking_default(
+    let _ = note(settings::set_dword_tracking_default(
         "MaxSize",
         if ok.as_bool() {
             max_mb
@@ -617,7 +729,7 @@ unsafe fn apply_tuning_numbers(hwnd: HWND) {
             settings::DEFAULT_MAX_FILE_MB
         },
         settings::DEFAULT_MAX_FILE_MB,
-    );
+    ));
 
     let size = GetDlgItemInt(hwnd, ID_SIZE, Some(&mut ok), false);
     let size = if ok.as_bool() {
@@ -625,37 +737,45 @@ unsafe fn apply_tuning_numbers(hwnd: HWND) {
     } else {
         settings::DEFAULT_THUMB_SIZE
     };
-    let _ = settings::set_dword_tracking_default("Width", size, settings::DEFAULT_THUMB_SIZE);
-    let _ = settings::set_dword_tracking_default("Height", size, settings::DEFAULT_THUMB_SIZE);
+    let _ = note(settings::set_dword_tracking_default(
+        "Width",
+        size,
+        settings::DEFAULT_THUMB_SIZE,
+    ));
+    let _ = note(settings::set_dword_tracking_default(
+        "Height",
+        size,
+        settings::DEFAULT_THUMB_SIZE,
+    ));
 
     // How far into a video the thumbnail frame comes from (issue #26.4). An empty or
     // non-numeric box restores the default rather than silently meaning 0 %, which would give
     // the first frame — the black one people are trying to get AWAY from.
     let offset = GetDlgItemInt(hwnd, ID_VIDEO_OFFSET, Some(&mut ok), false);
-    let _ = settings::set_video_offset_pct(if ok.as_bool() {
+    let _ = note(settings::set_video_offset_pct(if ok.as_bool() {
         offset
     } else {
         settings::DEFAULT_VIDEO_OFFSET_PCT
-    });
+    }));
 
-    let jpeg = GetDlgItemInt(hwnd, ID_JPEG, Some(&mut ok), false).min(100);
-    let _ = settings::set_dword(
+    let jpeg = GetDlgItemInt(hwnd, ID_JPEG, Some(&mut ok), false).clamp(1, 100);
+    let _ = note(settings::set_dword(
         "JPEG",
         if ok.as_bool() {
             jpeg
         } else {
             settings::DEFAULT_JPEG
         },
-    );
+    ));
     let png = GetDlgItemInt(hwnd, ID_PNG, Some(&mut ok), false).min(9);
-    let _ = settings::set_dword(
+    let _ = note(settings::set_dword(
         "PNG",
         if ok.as_bool() {
             png
         } else {
             settings::DEFAULT_PNG
         },
-    );
+    ));
 }
 
 /// Screenshot capture service: hotkey, quick hotkey, hide-tray, save-dir, and the
@@ -673,7 +793,7 @@ unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
         if sel >= 0 {
             let packed =
                 SendMessageW(shot, CB_GETITEMDATA, Some(WPARAM(sel as usize)), None).0 as u32;
-            let _ = settings::set_screenshot_hotkey(packed);
+            let _ = note(settings::set_screenshot_hotkey(packed));
         }
     }
     // Instant screenshot: the checkbox is the on/off switch. On → save the combo's
@@ -691,19 +811,22 @@ unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
     } else {
         0
     };
-    let _ = settings::set_screenshot_quick_hotkey(qpacked);
-    let _ = settings::set_dword(
+    let _ = note(settings::set_screenshot_quick_hotkey(qpacked));
+    let _ = note(settings::set_dword(
         "ScreenshotHideTray",
         checked(hwnd, ID_SHOT_HIDE_TRAY) as u32,
-    );
-    let _ = settings::set_screenshot_use_save_dir(checked(hwnd, ID_SHOT_USE_DIR));
+    ));
+    let _ = note(settings::set_screenshot_use_save_dir(checked(
+        hwnd,
+        ID_SHOT_USE_DIR,
+    )));
     // Custom action hotkey: persist the chosen action + its chord (item 0 of the hotkey combo
     // = "(none)" = unbound). Written BEFORE set_enabled() below so the daemon reconcile — which
     // keeps the daemon resident whenever a custom hotkey is bound — sees the new state.
     if let Ok(act) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
         let sel = SendMessageW(act, CB_GETCURSEL, None, None).0;
         if let Some(&(id, _)) = crate::hotkey::ACTIONS.get(sel.max(0) as usize) {
-            let _ = settings::set_custom_action(id);
+            let _ = note(settings::set_custom_action(id));
         }
     }
     if let Ok(ahk) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
@@ -716,7 +839,7 @@ unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
         } else {
             SendMessageW(ahk, CB_GETITEMDATA, Some(WPARAM(sel as usize)), None).0 as u32
         };
-        let _ = settings::set_custom_action_hotkey(packed);
+        let _ = note(settings::set_custom_action_hotkey(packed));
     }
 }
 
@@ -728,16 +851,34 @@ unsafe fn apply_quick_preview_and_screenshot_enable(hwnd: HWND) {
     // set_enabled() below so the daemon reconcile — which keeps the daemon resident
     // whenever Quick preview is enabled (via daemon_wanted) — sees the new state and
     // starts/stops the daemon + autostart entry to match.
-    let _ = settings::set_preview_enabled(checked(hwnd, ID_PREVIEW_ENABLED));
-    let _ = settings::set_preview_hold_peek(checked(hwnd, ID_PREVIEW_HOLD_PEEK));
-    let _ = settings::set_preview_close_on_focus_loss(checked(hwnd, ID_PREVIEW_CLOSE_FOCUS));
-    let _ = settings::set_preview_open_front(checked(hwnd, ID_PREVIEW_TOPMOST));
-    let _ = settings::set_preview_text(checked(hwnd, ID_PREVIEW_TEXT));
-    let _ = settings::set_preview_markdown(checked(hwnd, ID_PREVIEW_MARKDOWN));
+    let _ = note(settings::set_preview_enabled(checked(
+        hwnd,
+        ID_PREVIEW_ENABLED,
+    )));
+    let _ = note(settings::set_preview_hold_peek(checked(
+        hwnd,
+        ID_PREVIEW_HOLD_PEEK,
+    )));
+    let _ = note(settings::set_preview_close_on_focus_loss(checked(
+        hwnd,
+        ID_PREVIEW_CLOSE_FOCUS,
+    )));
+    let _ = note(settings::set_preview_open_front(checked(
+        hwnd,
+        ID_PREVIEW_TOPMOST,
+    )));
+    let _ = note(settings::set_preview_text(checked(hwnd, ID_PREVIEW_TEXT)));
+    let _ = note(settings::set_preview_markdown(checked(
+        hwnd,
+        ID_PREVIEW_MARKDOWN,
+    )));
     #[cfg(feature = "html-preview")]
     {
-        let _ = settings::set_preview_html(checked(hwnd, ID_PREVIEW_HTML));
-        let _ = settings::set_preview_url_live(checked(hwnd, ID_PREVIEW_URL_LIVE));
+        let _ = note(settings::set_preview_html(checked(hwnd, ID_PREVIEW_HTML)));
+        let _ = note(settings::set_preview_url_live(checked(
+            hwnd,
+            ID_PREVIEW_URL_LIVE,
+        )));
     }
 
     let shot_on = checked(hwnd, ID_SHOT_ENABLE);
@@ -780,7 +921,28 @@ unsafe fn apply_format_flags(hwnd: HWND) {
         for &(ext, _, old) in &changes {
             let _ = settings::set_format_enabled(ext, old);
         }
+        // The rollback above reverted HKCU, but FMT_STATE (the model the checklist
+        // paints from) and the ID_LIST checkboxes still show the attempted state the
+        // registry write just reverted — refresh both so the list matches reality.
+        revert_format_list_view(hwnd);
         message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
+    }
+}
+
+/// Re-seed [`FMT_STATE`] from the persisted per-format flags and repopulate the file-type
+/// list from it, preserving whatever the filter box currently shows. Used after a rollback
+/// (Save or Import) so the checklist reflects the registry state that actually won, not the
+/// attempted state that was just reverted.
+unsafe fn revert_format_list_view(hwnd: HWND) {
+    FMT_STATE.with(|s| {
+        *s.borrow_mut() = formats::FORMATS
+            .iter()
+            .map(|&(ext, _)| settings::format_enabled(ext))
+            .collect();
+    });
+    if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
+        let text = get_edit_text(hwnd, ID_SEARCH);
+        populate_list(list, &text);
     }
 }
 
@@ -846,8 +1008,19 @@ pub(super) unsafe fn import_settings_from_file(hwnd: HWND) {
                 .enumerate()
                 .any(|(i, &(ext, _))| settings::format_enabled(ext) != before[i]);
             if formats_changed {
-                // Sync the machine-wide HKCR hooks to the imported per-format flags.
-                let _ = reregister_elevated();
+                // Sync the machine-wide HKCR hooks to the imported per-format flags. A
+                // declined UAC prompt or a failed regsvr32 must not be reported as success —
+                // roll the imported per-format flags back to their pre-import state (the
+                // same rule `apply_format_flags` follows) so HKCU never disagrees with the
+                // (unchanged) HKCR hooks, and refresh the model + list to match.
+                if !matches!(reregister_elevated(), Reg::Ok) {
+                    for (i, &(ext, _)) in formats::FORMATS.iter().enumerate() {
+                        let _ = settings::set_format_enabled(ext, before[i]);
+                    }
+                    revert_format_list_view(hwnd);
+                    message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
+                    return;
+                }
             }
             msg(
                 hwnd,
@@ -947,14 +1120,18 @@ pub(super) fn custom_action_hk_combo_index(packed: u32, vk: u32) -> usize {
 }
 
 /// Re-select every combo whose current index [`load_values`] cannot restore on its own — it
-/// has no `CB_SETCURSEL` calls of its own, because these six combos are seeded ONCE, inline,
+/// has no `CB_SETCURSEL` calls of its own, because these combos are seeded ONCE, inline,
 /// when `build::build_controls` creates them. That is fine for the dialog's normal lifetime
-/// (the combo keeps whatever the user last picked), but `refresh_from_settings` (post-Import)
-/// calls `load_values` WITHOUT re-running `build_controls`, so without this the six combos
-/// below kept showing the PRE-import on-screen selection — and `apply_settings` then read that
-/// stale index back via `CB_GETCURSEL` and silently overwrote the just-imported value on Save.
-/// (`ID_LANG` is deliberately not here: `apply_settings` never reads it, so Save can't revert
-/// it — see `mod.rs`'s live `CBN_SELCHANGE` handling instead.)
+/// (the combo keeps whatever the user last picked), but `refresh_from_settings` (post-Import
+/// and after an unattended sync pull) calls `load_values` WITHOUT re-running `build_controls`,
+/// so without this the combos below kept showing the PRE-import on-screen selection — and
+/// `apply_settings` then read that stale index back via `CB_GETCURSEL` and silently overwrote
+/// the just-imported value on Save. `ID_LANG` IS included: `apply_settings` reads it on every
+/// Save (`settings::set_lang(selected_lang(hwnd)...)`), so leaving it stale here reverted an
+/// imported language exactly like the other combos, despite an earlier comment here claiming
+/// otherwise. The custom-action Enable checkbox (not a combo, but the same "derived from a
+/// setting `load_values` doesn't touch" shape) and its dependent greying are re-derived here
+/// too, for the same reason.
 pub(super) unsafe fn seed_combo_selections(hwnd: HWND) {
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
         SendMessageW(
@@ -1011,6 +1188,29 @@ pub(super) unsafe fn seed_combo_selections(hwnd: HWND) {
             None,
         );
     }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
+        let sel = shot_delay_combo_index(settings::screenshot_delay_sec());
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_LANG) {
+        let current = settings::lang_override();
+        let mut sel = 0i32;
+        for (i, code) in lang_codes().iter().enumerate() {
+            if current.as_deref() == Some(*code) {
+                sel = (i + 1) as i32;
+            }
+        }
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    // Not a combo, but the same "derived from a setting `load_values` doesn't restore"
+    // shape: re-derive the custom-action Enable checkbox from whether a hotkey is bound,
+    // then re-grey its two dependent combos to match.
+    check(
+        hwnd,
+        ID_CUSTOM_ACTION_ENABLE,
+        settings::custom_action_hotkey().1 != 0,
+    );
+    update_custom_action_enabled(hwnd);
 }
 
 /// An OK message box with an explicit info/error icon, for the import/export feedback.
@@ -1048,12 +1248,14 @@ pub(super) unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
     // Kill Explorer (releases the cache files' lock), delete thumbcache_*.db, relaunch.
     // Must go through `shellcmd::cmd_c` — `Command::args` would escape the quotes for
     // the MSVCRT convention and `cmd` would misread them (see shellcmd, issue #5).
-    let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-    msg(
+    // Backgrounded — see `spawn_cache_rebuild`; the success message shows once it's back.
+    spawn_cache_rebuild(
         hwnd,
-        "Thumbnail cache cleared and Explorer restarted. Thumbnails will rebuild as you browse.",
-        "Rebuild Thumbnail Cache",
-        MB_ICONINFORMATION,
+        Some((
+            "Thumbnail cache cleared and Explorer restarted. Thumbnails will rebuild as you \
+             browse.",
+            "Rebuild Thumbnail Cache",
+        )),
     );
 }
 
@@ -1233,12 +1435,13 @@ pub(super) unsafe fn repair_associations(hwnd: HWND) {
     sagethumbs2k_core::foldermenu::sync(sagethumbs2k_core::settings::folder_prebuild_verb());
     // Registration rewrote the hooks; drop the stale cached thumbnails + restart Explorer so
     // the repaired ones render right away. (The cmd sequence gives regsvr32 time to finish.)
-    let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-    msg(
+    // Backgrounded — see `spawn_cache_rebuild`; the success message shows once it's back.
+    spawn_cache_rebuild(
         hwnd,
-        "File associations repaired. Thumbnails will rebuild as you browse.",
-        "Repair File Associations",
-        MB_ICONINFORMATION,
+        Some((
+            "File associations repaired. Thumbnails will rebuild as you browse.",
+            "Repair File Associations",
+        )),
     );
 }
 
@@ -1315,5 +1518,26 @@ mod combo_reseed_tests {
         // An unrecognized-but-bound chord still falls back to "(none)" rather than panicking
         // or pointing at the wrong row.
         assert_eq!(custom_action_hk_combo_index(0xFFFF, 1), 0);
+    }
+
+    /// `note` must record the FIRST failure and stay recorded across later successes — a
+    /// settings write that fails silently used to vanish with `let _ = ...;` and no trace
+    /// anywhere; `apply_settings` now shows one message when ANY tracked write failed, so a
+    /// later success clearing the flag would hide the earlier failure from the user.
+    #[test]
+    fn note_records_a_failure_and_a_later_success_does_not_clear_it() {
+        SAVE_FAILED.with(|f| f.set(false));
+        let _ = note(Ok::<(), &str>(()));
+        assert!(
+            !SAVE_FAILED.with(|f| f.get()),
+            "a success must not set the flag"
+        );
+        let _ = note(Err::<(), &str>("boom"));
+        assert!(SAVE_FAILED.with(|f| f.get()), "a failure must set the flag");
+        let _ = note(Ok::<(), &str>(()));
+        assert!(
+            SAVE_FAILED.with(|f| f.get()),
+            "a later success must not clear an earlier failure"
+        );
     }
 }

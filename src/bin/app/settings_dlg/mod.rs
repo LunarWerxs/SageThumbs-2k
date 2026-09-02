@@ -254,33 +254,10 @@ impl LeftCol {
             id,
             self.hinst,
         );
-        SendMessageW(
-            list,
-            LVM_SETEXTENDEDLISTVIEWSTYLE,
-            Some(WPARAM(0)),
-            Some(LPARAM((LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT) as isize)),
-        );
         // Theme the list surface (SURFACE()/DARK_TEXT() are theme-aware). NOT
         // applying DarkMode_Explorer in either theme — it gives dark check glyphs +
         // a scrollbar that vanishes on the surface.
-        SendMessageW(
-            list,
-            LVM_SETBKCOLOR,
-            None,
-            Some(LPARAM(SURFACE().0 as isize)),
-        );
-        SendMessageW(
-            list,
-            LVM_SETTEXTBKCOLOR,
-            None,
-            Some(LPARAM(SURFACE().0 as isize)),
-        );
-        SendMessageW(
-            list,
-            LVM_SETTEXTCOLOR,
-            None,
-            Some(LPARAM(DARK_TEXT().0 as isize)),
-        );
+        theme_checkbox_list(list);
         // Reuse the format list's subclass (SPACE bulk-toggle; header custom-draw is
         // a no-op with no header).
         let _ = SetWindowSubclass(list, Some(list::list_subclass), 0, 0);
@@ -1021,7 +998,7 @@ pub(super) unsafe fn on_resize(hwnd: HWND, client_h: i32) {
 /// How many Settings pages exist — the bound `--tab N` is validated against.
 pub(crate) const NAV_CATEGORY_COUNT: usize = navrail::NCAT;
 /// Control id of the FIRST nav-rail item; page `n`'s item is `NAV_ID_BASE + n`.
-pub(crate) const NAV_ID_BASE: i32 = navrail::ID_NAV_BASE;
+pub(crate) const NAV_ID_BASE: i32 = ID_NAV_BASE;
 
 /// Show Settings page `ci`. The wrapper exists so `main`'s `--tab` can reach the nav rail
 /// without `navrail`'s internals becoming crate-visible.
@@ -1145,6 +1122,7 @@ unsafe fn on_lifecycle_msg(
         WM_CREATE => Some(on_create(hwnd)),
         crate::update::WM_APP_UPDATE => Some(on_update_available(hwnd, lparam)),
         WM_APP_SYNC => Some(on_app_sync(hwnd, lparam)),
+        WM_APP_CACHE => Some(on_app_cache(hwnd, lparam)),
         WM_GETMINMAXINFO => Some(on_getminmaxinfo(lparam)),
         WM_SIZE => {
             let client_h = ((lparam.0 >> 16) & 0xFFFF) as i32;
@@ -1157,13 +1135,21 @@ unsafe fn on_lifecycle_msg(
             Some(LRESULT(0))
         }
         WM_CLOSE => {
-            crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
-            let _ = DestroyWindow(hwnd);
+            close_settings(hwnd);
             Some(LRESULT(0))
         }
         WM_DESTROY => Some(on_destroy(hwnd)),
         _ => None,
     }
+}
+
+/// The dialog's one exit path — WM_CLOSE (the window X / Alt+F4) and IDCANCEL (the "Close"
+/// button) used to each carry their own copy of this. Blocks up to 6s flushing any pending
+/// sync push before tearing the window down, so a Save right before closing isn't lost to a
+/// race with the background push.
+unsafe fn close_settings(hwnd: HWND) {
+    crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
+    let _ = DestroyWindow(hwnd);
 }
 
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
@@ -1229,6 +1215,21 @@ unsafe fn on_app_sync(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     if lparam.0 != 0 {
         let event = *Box::from_raw(lparam.0 as *mut SyncEvent);
         handle_sync_event(hwnd, event);
+    }
+    LRESULT(0)
+}
+
+/// A background `spawn_cache_rebuild` worker finished (thumbnail cache clear + Explorer
+/// restart). Reclaim the boxed event, re-enable the window, and show its follow-up message
+/// (if any) now that the restart has actually completed.
+unsafe fn on_app_cache(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+    if lparam.0 != 0 {
+        let event = *Box::from_raw(lparam.0 as *mut CacheRebuiltEvent);
+        let _ = EnableWindow(hwnd, true);
+        if let Some((text, caption)) = event.after {
+            msg(hwnd, text, caption, MB_ICONINFORMATION);
+        }
     }
     LRESULT(0)
 }
@@ -1365,10 +1366,7 @@ unsafe fn on_command_dialog(hwnd: HWND, id: i32, notify: u32) {
             apply_settings(hwnd); // Save = apply only, keep the window open
             spawn_sync_push(hwnd); // if signed in, mirror the change to the cloud
         }
-        IDCANCEL => {
-            crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
-            let _ = DestroyWindow(hwnd);
-        }
+        IDCANCEL => close_settings(hwnd),
         ID_SELECT_ALL | ID_CLEAR_ALL => on_select_clear_all(hwnd, id),
         // Settings-wide search: filter on every keystroke, jump on pick.
         ID_SEARCH_GLOBAL if notify == EN_CHANGE => search::on_change(hwnd),

@@ -11,7 +11,7 @@ use super::*;
 /// format list, the search dropdown) otherwise poke out of the rounded look everything
 /// else in the pane has. The system takes ownership of the region after `SetWindowRgn`.
 pub(super) unsafe fn round_corners(parent: HWND, ctl: HWND, radius_dp: i32) {
-    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
     let mut rc = RECT::default();
     let _ = GetWindowRect(ctl, &mut rc);
@@ -21,7 +21,14 @@ pub(super) unsafe fn round_corners(parent: HWND, ctl: HWND, radius_dp: i32) {
     }
     let r = crate::win::dpi_scale(parent, radius_dp);
     let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2);
-    let _ = SetWindowRgn(ctl, Some(rgn), true);
+    // SetWindowRgn only takes ownership of the HRGN on success (a nonzero return); on
+    // failure the caller must delete it, or every failed call leaks a GDI region handle
+    // toward the per-process object cap. round_corners is cheaply reachable (every
+    // results-dropdown resize, every popup open), so a failure here is not rare enough
+    // to shrug off.
+    if SetWindowRgn(ctl, Some(rgn), true) == 0 {
+        let _ = DeleteObject(rgn.into());
+    }
 }
 use crate::gdip;
 
@@ -353,12 +360,13 @@ unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     let (rx, ry) = (rc.left, rc.top);
     let (rw, rh) = (rc.right - inset - rc.left, rc.bottom - inset - rc.top);
     gdip::with_aa(hdc, |g| {
-        let b = gdip::brush(face);
+        // Cached, like `draw_check_glyph`/`draw_switch_glyph` — the button palette is a
+        // handful of fixed theme colors, so create-then-immediately-free on every repaint
+        // (custom-draw fires per button, per paint) is pure waste.
+        let b = glyph_cache::brush(face);
         gdip::fill_round(g, b, rx, ry, rw, rh, rad);
-        gdip::drop_brush(b);
-        let p = gdip::pen(border, bw);
+        let p = glyph_cache::pen(border, bw);
         gdip::stroke_round(g, p, rx, ry, rw, rh, rad);
-        gdip::drop_pen(p);
     });
 
     SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
@@ -500,12 +508,13 @@ pub(super) unsafe fn draw_rounded_panel(
     let (px, py) = (tl.x - ix, tl.y - iy_top);
     let (pw, ph) = ((br.x + ix) - px, (br.y + iy_bottom) - py);
     gdip::with_aa(hdc, |g| {
-        let b = gdip::brush(fill_c);
+        // Cached (see `glyph_cache`'s doc comment): `paint_chrome` calls this once per
+        // field/card on every WM_PAINT, and the fill/border palette is a handful of fixed
+        // theme colors, so a fresh create+drop pair per call per repaint is pure waste.
+        let b = glyph_cache::brush(fill_c);
         gdip::fill_round(g, b, px, py, pw, ph, e);
-        gdip::drop_brush(b);
-        let p = gdip::pen(border_c, bw);
+        let p = glyph_cache::pen(border_c, bw);
         gdip::stroke_round(g, p, px, py, pw, ph, e);
-        gdip::drop_pen(p);
     });
 }
 
@@ -528,7 +537,13 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
     // Only frame controls that are actually visible. A left-column field scrolled
     // out of the viewport is SW_HIDE'd; drawing its panel anyway leaks a faint
     // rounded rect below the clip mask (it was bleeding around the footer credit).
-    for id in [ID_MAXSIZE, ID_SIZE, ID_JPEG, ID_PNG] {
+    //
+    // The two id lists are DERIVED from every page's `Row::Pair` rows (`navrail::
+    // pair_field_ids`) rather than hand-kept here — a hand-kept list silently stopped
+    // covering a `Pair` row the moment one was added without a matching edit here (six
+    // input fields never got their frame this way; see `pair_field_ids`'s doc comment).
+    let (edit_ids, combo_ids) = navrail::pair_field_ids();
+    for id in edit_ids {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             if IsWindowVisible(c).as_bool() {
                 draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 6, 2);
@@ -543,13 +558,7 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
             draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 5, 3);
         }
     }
-    for id in [
-        ID_MENU_PREVIEW,
-        ID_APP_THEME,
-        ID_SHOT_TOOL,
-        ID_LANG,
-        ID_SHOT_HOTKEY,
-    ] {
+    for id in combo_ids {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             if IsWindowVisible(c).as_bool() {
                 draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 2, 2);

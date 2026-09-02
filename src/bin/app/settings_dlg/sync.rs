@@ -269,10 +269,13 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
         }
         SyncEvent::Disconnected => {
             refresh_sync_ui(hwnd);
+            // Every other branch in this function routes its message through `t()`;
+            // this one was left hardcoded English. `sync_title` already exists (used
+            // above); `sync_disconnected_body` is new — see the locale handoff.
             msg(
                 hwnd,
-                "Sync disconnected. Your settings remain on this PC.",
-                "Settings Sync",
+                t("sync_disconnected_body"),
+                t("sync_title"),
                 MB_ICONINFORMATION,
             );
         }

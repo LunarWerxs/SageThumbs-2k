@@ -287,6 +287,17 @@ pub(super) const ID_NUDGE_ACTION: i32 = 1241;
 pub(super) const ID_NUDGE_LATER: i32 = 1242;
 pub(super) const ID_NUDGE_MONTH: i32 = 1243;
 
+// v3 nav rail (navrail.rs). Moved here (from navrail.rs) so `control_ids_are_unique`
+// below — which only parses THIS file — actually covers them; see NCAT's build-time
+// assert in navrail.rs for the id-space relationship between the two.
+pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT
+pub(super) const ID_PANE_HEADER: i32 = 1710;
+
+// Menu-items popup editor (menuitems.rs). Moved here for the same reason as the nav-rail
+// ids above. NOT 1: that is IDOK, and a colliding id would route the popup's Done button
+// into Reset.
+pub(super) const ID_POP_RESET: i32 = 100;
+
 #[cfg(test)]
 mod tests {
     /// Every control id in this file must be unique.

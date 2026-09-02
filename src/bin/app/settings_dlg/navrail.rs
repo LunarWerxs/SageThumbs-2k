@@ -3,6 +3,10 @@
 use super::*;
 use crate::gdip;
 use windows::Win32::Graphics::Gdi::{GetTextMetricsW, DT_END_ELLIPSIS, TEXTMETRICW};
+use windows::Win32::UI::Accessibility::NotifyWinEvent;
+// EVENT_OBJECT_SELECTION, OBJID_CLIENT and CHILDID_SELF come from
+// `windows::Win32::UI::WindowsAndMessaging`, already glob-imported by `mod.rs` and visible
+// here through `use super::*` above.
 use windows::Win32::UI::Controls::ODS_FOCUS;
 use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_RETURN, VK_UP};
 
@@ -17,15 +21,16 @@ pub(super) const PANE_X: i32 = 212;
 pub(super) const PANE_W: i32 = 528;
 pub(super) const PANE_TOP: i32 = 16;
 pub(super) const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
-pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT
-pub(super) const ID_PANE_HEADER: i32 = 1710;
 pub(super) const NCAT: usize = 10;
-// The nav ids and ID_PANE_HEADER share one id space, and at NCAT = 10 they fit with exactly
-// ZERO headroom: nav owns 1700..=1709 and the header sits on 1710. An eleventh category would
-// silently hand the pane header a nav item's identity, and the two `(ID_NAV_BASE..ID_NAV_BASE +
-// NCAT)` range tests in `mod.rs`'s WM_COMMAND would start routing clicks on the header as a
-// category switch. Nothing about that fails to compile or looks wrong in a diff, which is
-// exactly the shape of bug this repo keeps paying for, so it fails the BUILD instead.
+// ID_NAV_BASE and ID_PANE_HEADER live in ids.rs now (so `control_ids_are_unique` there
+// covers them), but the id-space relationship is this module's invariant to keep, so the
+// build-time check stays here. The nav ids and ID_PANE_HEADER share one id space, and at
+// NCAT = 10 they fit with exactly ZERO headroom: nav owns 1700..=1709 and the header sits
+// on 1710. An eleventh category would silently hand the pane header a nav item's identity,
+// and the two `(ID_NAV_BASE..ID_NAV_BASE + NCAT)` range tests in `mod.rs`'s WM_COMMAND
+// would start routing clicks on the header as a category switch. Nothing about that fails
+// to compile or looks wrong in a diff, which is exactly the shape of bug this repo keeps
+// paying for, so it fails the BUILD instead.
 // (The stale comment this replaces still said the range ended at 1708, from when NCAT was 8.)
 const _: () = assert!(
     ID_NAV_BASE as usize + NCAT <= ID_PANE_HEADER as usize,
@@ -127,6 +132,35 @@ const ADVANCED: [Row; 11] = {
         Switch(ID_SHOT_HIDE_TRAY),
     ]
 };
+
+/// Every field id from every page's `Row::Pair` rows, split into the two rounded-frame
+/// shapes `restyle::paint_chrome` draws them with: numeric edits (`field_h <= 40`, the
+/// digit-biased 4/6/2 frame) and combos (`field_h > 40`, the symmetric 4/2/2 frame) — see
+/// the `Row::Pair` doc comment for the `field_h > 40` convention. `paint_chrome` used to
+/// hand-list these ids itself, so a new `Pair` row (`ID_VIDEO_OFFSET`, `ID_SHOT_QUICK_HOTKEY`,
+/// `ID_SHOT_DELAY`, `ID_SHOT_ACTION`, `ID_SHOT_ACTION_HK`, `ID_CORNER_MARK`) got created and
+/// laid out but never framed, because nothing forced the two lists to stay in sync with the
+/// row data they were duplicating. Deriving them here means a page can never again add a
+/// Pair row this misses.
+pub(super) fn pair_field_ids() -> (Vec<i32>, Vec<i32>) {
+    let mut edits = Vec::new();
+    let mut combos = Vec::new();
+    for ci in 0..NCAT {
+        for &row in cat_rows(ci) {
+            if let Row::Pair(_, field, _, field_h) = row {
+                let bucket = if field_h > 40 {
+                    &mut combos
+                } else {
+                    &mut edits
+                };
+                if !bucket.contains(&field) {
+                    bucket.push(field);
+                }
+            }
+        }
+    }
+    (edits, combos)
+}
 
 pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
     use Row::*;
@@ -504,6 +538,12 @@ pub(super) fn page_has_non_defaults(ci: usize) -> bool {
                 || s::prefer_cover_art()
                 || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
         }
+        // File types: every extension defaults to enabled (`s::format_enabled`'s own doc
+        // comment — "Enabled unless an explicit 0 is stored"), so the page has changed the
+        // moment any one of them is unchecked.
+        2 => formats::FORMATS
+            .iter()
+            .any(|&(ext, _)| !s::format_enabled(ext)),
         // Ebook/comic: also where ID_PDF_MARGIN actually lives (moved here from General,
         // see `cat_rows`), so its non-Tight PDF page layout counts toward this page's dot.
         3 => {
@@ -639,7 +679,7 @@ pub(super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, active: bool)
         hdc,
         &mut label[..n],
         &mut tr,
-        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
     );
     // Keyboard focus cue: `ODS_FOCUS` is set automatically once `nav_item_subclass`'s
     // WM_GETDLGCODE lets this owner-draw static actually receive focus. Without some visible
@@ -815,6 +855,9 @@ unsafe extern "system" fn nav_item_subclass(
                     if let Ok(target) = GetDlgItem(Some(parent), ID_NAV_BASE + next as i32) {
                         let _ = SetFocus(Some(target));
                     }
+                    // Match the click path: an arrow key switches the page immediately
+                    // instead of only moving focus and waiting for a second Enter/Space.
+                    switch_category(parent, next);
                     return LRESULT(0);
                 }
             }
@@ -853,6 +896,17 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
         let _ = InvalidateRect(Some(sb), None, true);
     }
     let _ = InvalidateRect(Some(hwnd), None, true);
+    // Tell assistive tech the active nav item changed: the owner-draw rail never fires
+    // WM_GETOBJECT/selection notifications on its own, so a screen reader has no way to
+    // know which page is now current without this.
+    if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + ci as i32) {
+        NotifyWinEvent(
+            EVENT_OBJECT_SELECTION,
+            nav,
+            OBJID_CLIENT.0,
+            CHILDID_SELF as i32,
+        );
+    }
 }
 
 /// Controls this dialog creates but the v3 nav-rail layout hides on EVERY page, with
@@ -1246,6 +1300,41 @@ mod nav_key_tests {
     #[test]
     fn the_quick_preview_page_exists() {
         assert!(category_index("nav_quickpreview").is_some());
+    }
+}
+
+#[cfg(test)]
+mod pair_field_ids_tests {
+    use super::*;
+
+    /// Regression for `paint_chrome`'s hardcoded id lists silently falling out of sync with
+    /// `cat_rows`: these six fields all have a `Row::Pair` row (so they were laid out and
+    /// live on some page) but a Pair row added since the hand-kept lists were last updated
+    /// meant `paint_chrome` never framed them — no rounded field frame behind the control,
+    /// unlike every sibling input. `pair_field_ids` must find every one of them without
+    /// anyone having to remember to extend a list by hand.
+    #[test]
+    fn every_pair_field_is_covered_and_bucketed_correctly() {
+        let (edits, combos) = pair_field_ids();
+        // The edits missed before this fix.
+        assert!(edits.contains(&ID_VIDEO_OFFSET), "ID_VIDEO_OFFSET missing");
+        // The combos missed before this fix.
+        for id in [
+            ID_CORNER_MARK,
+            ID_SHOT_QUICK_HOTKEY,
+            ID_SHOT_DELAY,
+            ID_SHOT_ACTION,
+            ID_SHOT_ACTION_HK,
+        ] {
+            assert!(combos.contains(&id), "combo id {id} missing");
+        }
+        // A field never appears in both buckets (its field_h picks exactly one shape).
+        for id in &edits {
+            assert!(
+                !combos.contains(id),
+                "id {id} classified as both edit and combo"
+            );
+        }
     }
 }
 

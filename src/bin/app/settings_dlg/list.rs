@@ -543,7 +543,10 @@ unsafe fn on_notify_header_endtrack(h: HWND, hdn: *const windows::Win32::UI::Con
     // (Defaults resets the format ticks, not the layout). Snapping back to a
     // usable minimum keeps the column reachable; the user can still make it
     // genuinely narrow, just not vanish it.
-    const MIN_COL_W: i32 = 40;
+    // 40 design px, scaled to this window's DPI — `LVM_GETCOLUMNWIDTH` reports device px,
+    // so comparing it against a bare 40 floored the column far too aggressively (or not at
+    // all) off the 96-DPI display this constant was tuned on.
+    let min_col_w = dpi_scale(h, 40);
     let col = (*hdn).iItem;
     if (0..2).contains(&col) {
         let w = SendMessageW(
@@ -553,12 +556,12 @@ unsafe fn on_notify_header_endtrack(h: HWND, hdn: *const windows::Win32::UI::Con
             None,
         )
         .0 as i32;
-        if w < MIN_COL_W {
+        if w < min_col_w {
             SendMessageW(
                 h,
                 LVM_SETCOLUMNWIDTH,
                 Some(WPARAM(col as usize)),
-                Some(LPARAM(MIN_COL_W as isize)),
+                Some(LPARAM(min_col_w as isize)),
             );
         }
     }

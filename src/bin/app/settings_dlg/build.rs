@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
-    let cb = WINDOW_STYLE(BS_AUTOCHECKBOX as u32);
+    let cb = WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP;
     // Dark mode: borderless, right-aligned number fields (a rounded field frame is
     // drawn behind them in WM_PAINT). Light mode: the original bordered,
     // left-aligned native edits.
@@ -564,32 +564,9 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LIST,
         hinst,
     );
-    SendMessageW(
-        list,
-        LVM_SETEXTENDEDLISTVIEWSTYLE,
-        Some(WPARAM(0)),
-        Some(LPARAM((LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT) as isize)),
-    );
     // Lift the list onto SURFACE() (a card) so the zebra alternates against it —
     // theme-aware: a white card in light, a near-black one in dark.
-    SendMessageW(
-        list,
-        LVM_SETBKCOLOR,
-        None,
-        Some(LPARAM(SURFACE().0 as isize)),
-    );
-    SendMessageW(
-        list,
-        LVM_SETTEXTBKCOLOR,
-        None,
-        Some(LPARAM(SURFACE().0 as isize)),
-    );
-    SendMessageW(
-        list,
-        LVM_SETTEXTCOLOR,
-        None,
-        Some(LPARAM(DARK_TEXT().0 as isize)),
-    );
+    theme_checkbox_list(list);
     let header = HWND(SendMessageW(list, LVM_GETHEADER, None, None).0 as *mut c_void);
     // COLUMNS ARE DRAG-RESIZABLE. This used to OR in `HDS_NOSIZING`, on the reasoning that
     // `fit_columns` already sized Description to exactly fill the list so a drag could only
@@ -695,8 +672,12 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // `sponsors_enabled()` still runs: its manifest fetch is also where the
     // one-shot install/reinstall report gets sent (`manifest_bytes` in
     // `sponsors.rs`), and that side effect stays live regardless of whether the
-    // banner shows. The boolean result itself is no longer needed for layout.
-    let _ = sponsors_enabled();
+    // banner shows. The boolean result itself is no longer needed for layout, so
+    // the call is fired on a detached thread instead of blocking WM_CREATE on the
+    // manifest fetch's up-to-5s network wait.
+    std::thread::spawn(|| {
+        let _ = sponsors_enabled();
+    });
     let layout = sponsor_layout(is_dark());
     ctl(
         hwnd,

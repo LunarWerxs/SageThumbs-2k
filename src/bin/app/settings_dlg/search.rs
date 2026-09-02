@@ -15,14 +15,21 @@
 //! every control — and rebuilt on a live language change (`relabel` calls `invalidate`).
 
 use super::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP};
 
 /// One searchable control: the page that owns it, the control whose TEXT is the label,
 /// and the control that should receive FOCUS on a jump (differs for label+field pairs).
+/// The three `_lc` fields are computed ONCE when the index is built (`ensure_index`), not
+/// re-derived on every keystroke — see that function's doc comment.
 struct Entry {
     page: usize,
     label_id: i32,
     focus_id: i32,
+    /// Lower-cased label text, cached at index-build time.
+    label_lc: String,
+    /// Lower-cased tooltip text for `label_id` / `focus_id`, cached at index-build time.
+    tip_label_lc: String,
+    tip_focus_lc: String,
 }
 
 /// The lazily-built index + the hit list backing the visible dropdown rows.
@@ -86,6 +93,9 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
         Some(WPARAM(1)), // keep the cue while focused, until typing starts
         Some(LPARAM(cue.as_ptr() as isize)),
     );
+    // Keyboard path into the results dropdown: VK_DOWN moves the highlighted row,
+    // VK_RETURN commits it (or the first row when none is highlighted yet).
+    let _ = SetWindowSubclass(edit, Some(search_edit_subclass), 1, 0);
     // Owner-drawn (hover highlight, dark rows) with LBS_HASSTRINGS so the row text
     // still lives in the listbox itself. Borderless for the same reason as the box above:
     // the outline is stroked anti-aliased in `paint_dropdown_border`, along the rounded
@@ -104,6 +114,100 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
     );
     hover_subclass(list);
     let _ = ShowWindow(list, SW_HIDE);
+}
+
+/// Keyboard path for the search box itself: the dialog's own accelerator table never
+/// sees these keys because the box is a plain EDIT with no `DLGC_WANTALLKEYS` claim, so
+/// Down/Enter used to fall through to `IsDialogMessageW` and do nothing (Down) or click
+/// the default button (Enter) instead of reaching the results dropdown.
+unsafe extern "system" fn search_edit_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(search_edit_subclass), 1);
+        }
+        WM_GETDLGCODE => {
+            let base = DefSubclassProc(hwnd, msg, wparam, lparam).0 as u32;
+            // Claim only the keys the dropdown consumes (Down/Up/Return/Escape), and only
+            // while it is showing results. Claiming every key would swallow Tab out of this
+            // box while the list is open, and an unconditional claim would also swallow
+            // Enter (Save) on ordinary keystrokes. `lparam` is the MSG the dialog manager is
+            // asking about, or null for a generic query.
+            let list_open = GetParent(hwnd)
+                .and_then(|p| GetDlgItem(Some(p), ID_SEARCH_RESULTS))
+                .is_ok_and(|l| IsWindowVisible(l).as_bool());
+            if !list_open {
+                return LRESULT(base as isize);
+            }
+            let asked = (lparam.0 as *const MSG).as_ref();
+            let wanted = asked.is_some_and(|m| {
+                m.message == WM_KEYDOWN
+                    && [VK_DOWN.0, VK_UP.0, VK_RETURN.0, VK_ESCAPE.0].contains(&(m.wParam.0 as u16))
+            });
+            if wanted {
+                return LRESULT((base | DLGC_WANTMESSAGE) as isize);
+            }
+            return LRESULT((base | DLGC_WANTARROWS) as isize);
+        }
+        WM_KEYDOWN => {
+            let vk = wparam.0 as u16;
+            let Ok(parent) = GetParent(hwnd) else {
+                return DefSubclassProc(hwnd, msg, wparam, lparam);
+            };
+            let Ok(list) = GetDlgItem(Some(parent), ID_SEARCH_RESULTS) else {
+                return DefSubclassProc(hwnd, msg, wparam, lparam);
+            };
+            if !IsWindowVisible(list).as_bool() {
+                return DefSubclassProc(hwnd, msg, wparam, lparam);
+            }
+            let count = SendMessageW(list, LB_GETCOUNT, None, None).0 as i32;
+            if count <= 0 {
+                return DefSubclassProc(hwnd, msg, wparam, lparam);
+            }
+            if vk == VK_ESCAPE.0 {
+                // Close the dropdown, not the dialog: Escape reaches here only while the
+                // list is open (see WM_GETDLGCODE), so the dialog's own cancel is untouched.
+                let _ = ShowWindow(list, SW_HIDE);
+                return LRESULT(0);
+            }
+            if vk == VK_DOWN.0 || vk == VK_UP.0 {
+                let cur = SendMessageW(list, LB_GETCURSEL, None, None).0 as i32;
+                let next = if vk == VK_DOWN.0 {
+                    if cur < 0 {
+                        0
+                    } else {
+                        (cur + 1) % count
+                    }
+                } else if cur < 0 {
+                    count - 1
+                } else {
+                    (cur + count - 1) % count
+                };
+                SendMessageW(list, LB_SETCURSEL, Some(WPARAM(next as usize)), None);
+                // The dropdown's owner-draw highlight is driven by `HOT` (mouse hover), not
+                // by LB_GETCURSEL, so a keyboard move has to update it too or the highlighted
+                // row would only ever track the mouse.
+                HOT.with(|h| h.set(next));
+                let _ = InvalidateRect(Some(list), None, false);
+                return LRESULT(0);
+            }
+            if vk == VK_RETURN.0 {
+                let cur = SendMessageW(list, LB_GETCURSEL, None, None).0 as i32;
+                let sel = if cur < 0 { 0 } else { cur };
+                SendMessageW(list, LB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+                on_pick(parent);
+                return LRESULT(0);
+            }
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
 /// Row height for the owner-drawn dropdown, 96-DPI design px.
@@ -219,7 +323,6 @@ unsafe fn paint_dropdown_border(list: HWND) {
 /// WM_MOUSELEAVE), leave clears it. Repaints only the rows that changed. Also owns the
 /// dropdown's background + rounded outline (see `paint_dropdown_border`).
 unsafe fn hover_subclass(list: HWND) {
-    use windows::Win32::UI::Shell::SetWindowSubclass;
     let _ = SetWindowSubclass(list, Some(hover_proc), 1, 0);
 }
 
@@ -235,7 +338,6 @@ unsafe extern "system" fn hover_proc(
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
     };
-    use windows::Win32::UI::Shell::DefSubclassProc;
     match msg {
         WM_MOUSEMOVE => {
             let hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, None, Some(lparam)).0;
@@ -299,15 +401,28 @@ pub(super) unsafe fn refresh_cue(hwnd: HWND) {
     }
 }
 
-/// Walk every page's rows and collect the controls a user would search FOR. Labels are
-/// read live from the controls (already localized); tooltips join the haystack at match
-/// time via the shared `TOOLTIPS` table.
-unsafe fn ensure_index() {
+/// Walk every page's rows and collect the controls a user would search FOR, caching each
+/// entry's lower-cased label + tooltip text ONCE here instead of re-deriving it from the
+/// live control (two `GetDlgItem`/`WM_GETTEXT` round trips) and re-scanning `TOOLTIPS`
+/// (two linear scans) on every keystroke `on_change` runs — EN_CHANGE fires per character,
+/// and this index runs ~90 entries deep. Rebuilt on the next keystroke after `invalidate()`
+/// (a live language change), so the cache can't go stale.
+unsafe fn ensure_index(hwnd: HWND) {
     SEARCH.with(|s| {
         let mut s = s.borrow_mut();
         if !s.entries.is_empty() {
             return;
         }
+        let push = |page: usize, label_id: i32, focus_id: i32, entries: &mut Vec<Entry>| {
+            entries.push(Entry {
+                page,
+                label_id,
+                focus_id,
+                label_lc: label_lc(hwnd, label_id),
+                tip_label_lc: tip_lc(label_id),
+                tip_focus_lc: tip_lc(focus_id),
+            });
+        };
         for page in 0..navrail::NCAT {
             for &row in navrail::cat_rows(page) {
                 use navrail::Row::*;
@@ -318,22 +433,14 @@ unsafe fn ensure_index() {
                     // Btn3 rows are Select all/Clear all/Defaults — reachable, useful.
                     Btn3(a, b, c) => {
                         for id in [a, b, c] {
-                            s.entries.push(Entry {
-                                page,
-                                label_id: id,
-                                focus_id: id,
-                            });
+                            push(page, id, id, &mut s.entries);
                         }
                         continue;
                     }
                     // The format filter box and the two lists aren't setting rows.
                     Wide(_) | ListFill(_) | Status(_) => continue,
                 };
-                s.entries.push(Entry {
-                    page,
-                    label_id,
-                    focus_id,
-                });
+                push(page, label_id, focus_id, &mut s.entries);
             }
         }
     });
@@ -376,26 +483,25 @@ pub(super) unsafe fn on_change(hwnd: HWND) {
         let _ = ShowWindow(list, SW_HIDE);
         return;
     }
-    ensure_index();
+    ensure_index(hwnd);
     SendMessageW(list, LB_RESETCONTENT, None, None);
     let mut shown = 0usize;
     SEARCH.with(|s| {
         let mut s = s.borrow_mut();
         let mut hits: Vec<usize> = Vec::new();
         for (i, e) in s.entries.iter().enumerate() {
-            let label = label_lc(hwnd, e.label_id);
-            if label.is_empty() {
+            if e.label_lc.is_empty() {
                 continue;
             }
             let page_name = navrail::nav_label(e.page).to_lowercase();
-            if label.contains(&needle)
+            if e.label_lc.contains(&needle)
                 || page_name.contains(&needle)
-                || tip_lc(e.label_id).contains(&needle)
-                || tip_lc(e.focus_id).contains(&needle)
+                || e.tip_label_lc.contains(&needle)
+                || e.tip_focus_lc.contains(&needle)
             {
                 // Row text: "Page > Label", both already localized. Re-fetch the label in its
-                // real casing: `label` above is `label_lc`'s lowercased copy, kept for the
-                // `contains()` match only, and must not leak into what the user sees.
+                // real casing: the cached `label_lc` is lowercased for matching only, and must
+                // not leak into what the user sees.
                 let row = format!(
                     "{}  >  {}",
                     navrail::nav_label(e.page),

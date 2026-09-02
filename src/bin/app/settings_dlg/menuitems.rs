@@ -26,8 +26,7 @@ thread_local! {
 const POP_W: i32 = 400;
 const POP_H: i32 = 470;
 const M: i32 = 14;
-// NOT 1: that is IDOK, and a colliding id would route the Done button into Reset.
-const ID_POP_RESET: i32 = 100;
+// ID_POP_RESET lives in ids.rs now (so `control_ids_are_unique` there covers it).
 // IDOK (the "Done" button) comes from crate::win.
 
 /// Open the editor, modal over `settings`. Returns after it closes.
@@ -50,7 +49,7 @@ unsafe fn settings_hwnd() -> Option<HWND> {
 
 /// Take the checklist from Settings, fill the popup with it, and add Reset/Done.
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
-    use crate::win::{ctl, dpi_scale, BUTTON, IDOK};
+    use crate::win::{ctl, dpi_scale, dpi_unscale, BUTTON, IDOK};
     let Some(settings) = settings_hwnd() else {
         return;
     };
@@ -61,9 +60,11 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
 
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    let cw = (rc.right - rc.left) * 100 / unit;
-    let ch = (rc.bottom - rc.top) * 100 / unit;
+    // 96-DPI design px, so the M/btn_h constants below (already design px) compare
+    // like-for-like — the existing `dpi_scale(hwnd, 100)`-ratio trick computed the same
+    // thing less directly; this is the actual inverse of `dpi_scale`.
+    let cw = dpi_unscale(hwnd, rc.right - rc.left);
+    let ch = dpi_unscale(hwnd, rc.bottom - rc.top);
     let btn_h = 28;
     let list_h = ch - M * 2 - btn_h - 10;
     let _ = SetWindowPos(

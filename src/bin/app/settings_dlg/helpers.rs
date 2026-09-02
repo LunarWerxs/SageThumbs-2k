@@ -40,6 +40,38 @@ pub(super) unsafe fn is_button_class(h: HWND) -> bool {
     n > 0 && String::from_utf16_lossy(&buf[..n as usize]).eq_ignore_ascii_case("button")
 }
 
+/// Theme a checkbox ListView with the dialog's dark-mode-aware palette: checkboxes +
+/// full-row select, `SURFACE()` background (both the row background and the text
+/// background, so selection doesn't leave a mismatched band), `DARK_TEXT()` text. Shared
+/// by `build.rs`'s file-type list and `LeftCol::checklist`'s menu-items checklist — the
+/// two used to carry byte-identical copies of this sequence.
+pub(super) unsafe fn theme_checkbox_list(list: HWND) {
+    SendMessageW(
+        list,
+        LVM_SETEXTENDEDLISTVIEWSTYLE,
+        Some(WPARAM(0)),
+        Some(LPARAM((LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT) as isize)),
+    );
+    SendMessageW(
+        list,
+        LVM_SETBKCOLOR,
+        None,
+        Some(LPARAM(SURFACE().0 as isize)),
+    );
+    SendMessageW(
+        list,
+        LVM_SETTEXTBKCOLOR,
+        None,
+        Some(LPARAM(SURFACE().0 as isize)),
+    );
+    SendMessageW(
+        list,
+        LVM_SETTEXTCOLOR,
+        None,
+        Some(LPARAM(DARK_TEXT().0 as isize)),
+    );
+}
+
 // ---- Small ListView check helpers --------------------------------------
 
 pub(super) unsafe fn set_check(list: HWND, item: i32, on: bool) {

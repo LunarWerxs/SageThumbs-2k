@@ -229,6 +229,46 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         }
         SendMessageW(tool, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
     }
+    // The corner-mark, app-theme, and capture-delay combos also hold translated items
+    // (same fixed orders as their build.rs creation loops): rebuild, keep selection. These
+    // three used to be skipped here, so a live language switch left them showing the old
+    // language's items next to a relabelled caption.
+    if let Ok(corner) = GetDlgItem(Some(hwnd), ID_CORNER_MARK) {
+        let sel = SendMessageW(corner, CB_GETCURSEL, None, None).0.max(0);
+        SendMessageW(corner, CB_RESETCONTENT, None, None);
+        for key in [
+            "corner_mark_system",
+            "corner_mark_badge",
+            "corner_mark_none",
+        ] {
+            let w = wide(t(key));
+            SendMessageW(
+                corner,
+                CB_ADDSTRING,
+                None,
+                Some(LPARAM(w.as_ptr() as isize)),
+            );
+        }
+        SendMessageW(corner, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    if let Ok(theme) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
+        let sel = SendMessageW(theme, CB_GETCURSEL, None, None).0.max(0);
+        SendMessageW(theme, CB_RESETCONTENT, None, None);
+        for key in ["theme_system", "theme_light", "theme_dark"] {
+            let w = wide(t(key));
+            SendMessageW(theme, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+        }
+        SendMessageW(theme, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    if let Ok(delay) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
+        let sel = SendMessageW(delay, CB_GETCURSEL, None, None).0.max(0);
+        SendMessageW(delay, CB_RESETCONTENT, None, None);
+        for key in ["delay_off", "delay_1", "delay_2", "delay_3", "delay_5"] {
+            let w = wide(t(key));
+            SendMessageW(delay, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+        }
+        SendMessageW(delay, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
     // The custom-action combo: same curated `hotkey::ACTIONS` list build.rs seeded it from,
     // re-labeled via `action_label` (which itself goes through `t()`) rather than a
     // duplicated key table.

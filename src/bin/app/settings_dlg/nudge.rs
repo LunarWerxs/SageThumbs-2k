@@ -321,15 +321,8 @@ unsafe fn hide(hwnd: HWND) {
 /// that reads as "faintly accented" on a dark page and on a light one. A saturated fill would read
 /// as an error state, which this is the opposite of.
 fn tint() -> COLORREF {
-    let a = ACCENT().0;
-    let bg = DARK_BG().0;
-    let weight = if is_dark() { 22u32 } else { 12u32 };
-    let mix = |shift: u32| {
-        let ac = (a >> shift) & 0xFF;
-        let bc = (bg >> shift) & 0xFF;
-        ((ac * weight + bc * (100 - weight)) / 100) & 0xFF
-    };
-    COLORREF(mix(0) | (mix(8) << 8) | (mix(16) << 16))
+    let weight = if is_dark() { 22 } else { 12 };
+    navrail::blend(ACCENT(), DARK_BG(), weight)
 }
 
 /// Draw the card: a tinted rounded panel, a bold headline, and the body wrapped beside the buttons.
