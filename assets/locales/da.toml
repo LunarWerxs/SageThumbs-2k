@@ -231,7 +231,7 @@ tip_shot_quick_hotkey = "Genvejtaststroget for øjeblikkelig lagring af hele sk�
 cv_open_folder = "Åbn outputmappen?"
 
 # Quick preview
-nav_quickpreview = "Hurtig forhåndsvisning"
+nav_quickpreview = "Hurtigforhåndsvisning"
 blurb_quickpreview = "Mellemrum viser den valgte fil."
 chk_preview_enabled = "Aktivér hurtig forhåndsvisning (tryk på mellemrum)"
 chk_preview_hold_peek = "Hold mellemrum nede for at kigge (lukker ved slip)"

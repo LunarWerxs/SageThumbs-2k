@@ -332,7 +332,7 @@ blurb_screenshots = "Built-in screen capture with a global hotkey."
 blurb_quickaction = "Run a tool from a global keyboard shortcut."
 blurb_advanced = "Diagnostics, updates, and the hotkey service."
 blurb_quickpreview = "Press Space in Explorer to preview the selected file."
-blurb_databackup = "Move, back up, and sync your settings across devices."
+blurb_databackup = "Move, back up, and sync settings across devices."
 blurb_licence = "This copy's licence — how it was installed and its current key."
 # Group sub-headers
 grp_lang_files = "Language & files"
