@@ -198,17 +198,41 @@ fn attrs(p: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+/// True when `path` is a cloud placeholder (a OneDrive/Dropbox file not yet downloaded to this
+/// machine): a `symlink_metadata` attribute check ONLY, so calling this never itself triggers
+/// hydration. `pub` (not `pub(crate)`): `cli.rs`'s `expand_inputs` cloud guard and
+/// `bin/app/tools/convert.rs` check the exact same trio and used to each hand-type their own
+/// copy of [`OFFLINE_ATTRS`] (one of which, `doctor.rs`, drifted to missing a flag) — one
+/// definition now, reused everywhere a caller needs to decide "would extracting this file's
+/// thumbnail download the whole thing?" (item C13).
+pub fn is_cloud_placeholder(path: &Path) -> bool {
+    attrs(path) & OFFLINE_ATTRS != 0
+}
+
 /// Is this extension one we hook AND the user still has enabled? A format they turned off has
 /// no SageThumbs thumbnail to build, and asking the shell for one just burns a round trip.
-fn wanted(p: &Path) -> bool {
+/// Takes a pre-taken [`crate::settings::FormatEnabledSnapshot`] rather than calling
+/// [`crate::settings::format_enabled`] per file: in portable mode that reparses the WHOLE ini
+/// from disk on every single call, so a 50,000-file prebuild used to do 50,000 full ini parses
+/// to decide what it wanted (item 134).
+fn wanted(p: &Path, snap: &crate::settings::FormatEnabledSnapshot) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| formats::is_known(e) && crate::settings::format_enabled(&e.to_lowercase()))
+        .is_some_and(|e| formats::is_known(e) && snap.enabled(&e.to_lowercase()))
 }
 
 /// Collect the supported files under `root`. Non-recursive by default; never follows a
-/// reparse point, and stops at `max_depth` so a junction cycle cannot spin forever.
-fn walk(root: &Path, opts: &Options, depth: u32, out: &mut Vec<String>, rep: &mut Report) {
+/// reparse point, and stops at `max_depth` so a junction cycle cannot spin forever. `snap` is
+/// one [`crate::settings::format_enabled_snapshot`] shared across the whole walk — see
+/// [`wanted`].
+fn walk(
+    root: &Path,
+    opts: &Options,
+    depth: u32,
+    out: &mut Vec<String>,
+    rep: &mut Report,
+    snap: &crate::settings::FormatEnabledSnapshot,
+) {
     if depth > opts.max_depth {
         return;
     }
@@ -224,10 +248,10 @@ fn walk(root: &Path, opts: &Options, depth: u32, out: &mut Vec<String>, rep: &mu
         }
         if p.is_dir() {
             if opts.recurse {
-                walk(&p, opts, depth + 1, out, rep);
+                walk(&p, opts, depth + 1, out, rep, snap);
             }
-        } else if p.is_file() && wanted(&p) {
-            if a & OFFLINE_ATTRS != 0 {
+        } else if p.is_file() && wanted(&p, snap) {
+            if is_cloud_placeholder(&p) {
                 rep.skipped_offline += 1;
                 continue;
             }
@@ -537,11 +561,14 @@ pub fn run(
 ) -> Report {
     let mut rep = Report::default();
     let mut files: Vec<String> = Vec::new();
+    // ONE snapshot for the whole sweep (the walk plus this per-input loop), not one ini
+    // reparse per file (item 134).
+    let snap = crate::settings::format_enabled_snapshot();
     for i in inputs {
         let p = Path::new(i);
         if p.is_dir() {
-            walk(p, opts, 0, &mut files, &mut rep);
-        } else if p.is_file() && wanted(p) {
+            walk(p, opts, 0, &mut files, &mut rep, &snap);
+        } else if p.is_file() && wanted(p, &snap) {
             files.push(i.clone());
         }
     }
@@ -764,8 +791,9 @@ mod tests {
         std::fs::write(root.join("notes.txt"), b"x").expect("txt");
 
         let mut rep = Report::default();
+        let snap = crate::settings::format_enabled_snapshot();
         let mut shallow = Vec::new();
-        walk(&root, &Options::default(), 0, &mut shallow, &mut rep);
+        walk(&root, &Options::default(), 0, &mut shallow, &mut rep, &snap);
         assert_eq!(shallow.len(), 1, "non-recursive must stop at the top level");
         assert!(
             shallow[0].ends_with("a.png"),
@@ -777,7 +805,7 @@ mod tests {
             recurse: true,
             ..Default::default()
         };
-        walk(&root, &opts, 0, &mut deep, &mut rep);
+        walk(&root, &opts, 0, &mut deep, &mut rep, &snap);
         assert_eq!(deep.len(), 2, "recursive must reach the subfolder");
 
         let _ = std::fs::remove_dir_all(&root);
@@ -792,13 +820,14 @@ mod tests {
         std::fs::write(deep.join("x.png"), b"x").expect("x");
 
         let mut rep = Report::default();
+        let snap = crate::settings::format_enabled_snapshot();
         let mut out = Vec::new();
         let opts = Options {
             recurse: true,
             max_depth: 1,
             ..Default::default()
         };
-        walk(&root, &opts, 0, &mut out, &mut rep);
+        walk(&root, &opts, 0, &mut out, &mut rep, &snap);
         assert!(out.is_empty(), "a file below the cap must not be collected");
 
         let _ = std::fs::remove_dir_all(&root);

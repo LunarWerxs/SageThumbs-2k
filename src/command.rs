@@ -18,6 +18,13 @@ use windows_implement::implement;
 
 use crate::{safety, settings, verbs};
 
+/// COM's documented `IExplorerCommand::GetState` signal for "this would be slow and
+/// `fOkToBeSlow` said not to block — ask again once it's OK to be slow" (`Urlmon`'s
+/// `E_PENDING`, `0x8000000A`). Spelled out as a literal `HRESULT` rather than pulling
+/// in `Win32_System_Com_Urlmon` (this crate's only reason to touch that feature) for
+/// one constant.
+const E_PENDING: HRESULT = HRESULT(0x8000_000A_u32 as i32);
+
 /// Allocate a NUL-terminated wide string with CoTaskMemAlloc; the shell frees it.
 fn alloc_pwstr(s: &str) -> Result<PWSTR> {
     let wide = crate::wide(s);
@@ -63,7 +70,7 @@ unsafe fn items_to_paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
 /// into a Vec — each display name is freed right after its extension is tested
 /// and no String is kept. Mirrors the classic `is_image` gate. Takes `items` by
 /// reference (windows-rs `Ref` is neither `Copy` nor `Clone`) so the same handle
-/// can also feed `selection_is_audio_only` in `menu_item_state`.
+/// can also feed `selection_is_audio_only` in `MenuCommand::state`.
 unsafe fn selection_has_image(items: &Ref<'_, IShellItemArray>) -> bool {
     let Ok(arr) = items.ok() else {
         return false;
@@ -121,10 +128,11 @@ unsafe fn selection_is_audio_only(items: &Ref<'_, IShellItemArray>) -> bool {
 /// behaves the same. `ECS_HIDDEN` removes the verb from the flyout entirely.
 /// The enabled/hidden verdict shared by both `IExplorerCommand::GetState` impls: the
 /// verb shows only when the menu is enabled AND the selection holds a supported image.
-/// The menu_enabled() gate is re-checked every call so a settings change is honored
-/// without a new command object.
-fn state_for(has_image: bool) -> u32 {
-    if settings::menu_enabled() && has_image {
+/// `gate` is a snapshot (see [`settings::MenuGate`]), not a fresh registry read here —
+/// the caller re-fetches it each `GetState` call, so a settings change is still
+/// honored without a new command object, but without a separate open per flag.
+fn state_for(gate: settings::MenuGate, has_image: bool) -> u32 {
+    if gate.enabled && has_image {
         ECS_ENABLED.0 as u32
     } else {
         ECS_HIDDEN.0 as u32
@@ -137,16 +145,12 @@ fn state_for(has_image: bool) -> u32 {
 /// modern Win11 flyout hid itself on any non-image selection regardless of the setting, so the
 /// toggle was a silent no-op for stock Win11 users. The condensed item set is chosen in
 /// `EnumSubCommands` from the same cached `has_image` verdict GetState computes here.
-fn root_state(has_image: bool) -> u32 {
-    if settings::menu_enabled() && (has_image || settings::menu_all_file_types()) {
+fn root_state(gate: settings::MenuGate, has_image: bool) -> u32 {
+    if gate.enabled && (has_image || gate.all_file_types) {
         ECS_ENABLED.0 as u32
     } else {
         ECS_HIDDEN.0 as u32
     }
-}
-
-unsafe fn image_state(items: &Ref<'_, IShellItemArray>) -> u32 {
-    state_for(selection_has_image(items))
 }
 
 /// Whether a top-level modern-menu QUICK verb should be visible at all, ahead of the
@@ -160,31 +164,6 @@ fn quick_root_visible(quick_verbs_on: bool, item_shown: bool) -> bool {
     quick_verbs_on && item_shown
 }
 
-/// Per-item visibility for a top-level flyout command. The modern flyout's
-/// `EnumSubCommands` lists every top-level verb with NO selection context (it can't
-/// filter the list like the classic `QueryContextMenu` does), so the audio gate lands
-/// here instead: start from the shared image gate (menu enabled + supported selection),
-/// then HIDE an image-only TOP-LEVEL verb when the selection is audio-only — those verbs
-/// no-op or produce garbage on a sound file. Audio-ok top-level items
-/// (files_to_folder/rename/sort/settings, per [`verbs::top_level_audio_ok`]) and every
-/// nested child stay on the base gate (so e.g. the Rename ▸ flyout keeps its audio
-/// patterns). `top_level` is false for items created by a group's own `EnumSubCommands`,
-/// so the gate only ever hides whole top-level groups, never their leaves.
-unsafe fn menu_item_state(
-    item: &verbs::MenuItem,
-    top_level: bool,
-    items: &Ref<'_, IShellItemArray>,
-) -> u32 {
-    let base = image_state(items);
-    if base != ECS_ENABLED.0 as u32 {
-        return base; // menu off or unsupported selection — already hidden
-    }
-    if top_level && !verbs::top_level_audio_ok(item.title()) && selection_is_audio_only(items) {
-        return ECS_HIDDEN.0 as u32;
-    }
-    base
-}
-
 // ---- Modern-menu quick verbs --------------------------------------------
 //
 // Each quick verb (Convert into ▸ / Convert… / Resize ▸ / Rotate ▸) is its OWN top-level
@@ -192,9 +171,10 @@ unsafe fn menu_item_state(
 // surfaces it DIRECTLY on the modern context menu instead of two levels deep inside the root
 // flyout — the modern twin of the classic "quick verbs on main menu" Option (the limitation the
 // root `EnumSubCommands` note describes). They reuse the `MenuCommand` flyout machinery: a quick
-// verb is a `MenuCommand` flagged `quick_root`, gated by `menu_quick_verbs()` ON TOP of the shared
-// image+audio gate (`menu_item_state` with `top_level: true`), so it's hidden by default, hidden
-// when the toggle is off, and hidden on an audio-only selection — exactly like the classic copy.
+// verb is a `MenuCommand` flagged `quick_root`, gated by the `gate.quick_verbs` snapshot ON
+// TOP of the shared image+audio gate (`MenuCommand::state` with `top_level: true`), so it's
+// hidden by default, hidden when the toggle is off, and hidden on an audio-only selection —
+// exactly like the classic copy.
 
 /// Binds each quick-verb CLSID to the `MENU` item it surfaces and its manifest `desktop5:Verb`
 /// id. The keys MUST equal [`verbs::QUICK_KEYS`] in order (a test pins this) so the modern quick
@@ -284,20 +264,24 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
         // S_OK + null GUID the shell would treat as meaningful.
         Err(Error::from(E_NOTIMPL))
     }
-    fn GetState(&self, items: Ref<'_, IShellItemArray>, _slow: BOOL) -> Result<u32> {
+    fn GetState(&self, items: Ref<'_, IShellItemArray>, slow: BOOL) -> Result<u32> {
         safety::guard_val(|| {
-            // Cache the (selection-fixed) image verdict per instance; re-check
-            // the cheap menu_enabled() gate each call so a settings change is
-            // honored without a new command object.
+            // Cache the (selection-fixed) image verdict per instance; re-fetch the
+            // (now one-open) menu gate each call so a settings change is honored
+            // without a new command object.
             let has = match self.has_image.get() {
                 Some(v) => v,
+                // A full array walk is the "slow" work `fOkToBeSlow` exists to
+                // defer; with nothing cached yet, ask the shell to try again once
+                // it's OK to be slow instead of walking on its say-so.
+                None if !slow.as_bool() => return Err(Error::from(E_PENDING)),
                 None => {
                     let v = unsafe { selection_has_image(&items) };
                     self.has_image.set(Some(v));
                     v
                 }
             };
-            Ok(root_state(has))
+            Ok(root_state(settings::menu_gate(), has))
         })
     }
     fn Invoke(&self, _items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
@@ -320,6 +304,10 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
             // One snapshot of the visibility subkey for this enumeration (instead of
             // a key-open per item).
             let vis = settings::menu_visibility();
+            // One registry open for the whole enumeration, shared with every `MenuCommand`
+            // this call creates — each child's own `GetState` reuses this snapshot instead
+            // of re-opening the same three flags itself.
+            let gate = settings::menu_gate();
             // CONDENSED mode: an UNSUPPORTED selection with "show on all file types" enabled gets
             // the file-agnostic utility set (Files-to-folder / Sort / Rename / Pick color / Settings),
             // mirroring the classic handler. GetState ran first and cached has_image; `Some(false)`
@@ -328,7 +316,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
             // (has_image == None) AND the toggle is on, default to the condensed set — the safe
             // choice for "show on all file types", since the full image menu would otherwise show
             // (and no-op) on an unsupported file.
-            let condensed = self.has_image.get() != Some(true) && settings::menu_all_file_types();
+            let condensed = self.has_image.get() != Some(true) && gate.all_file_types;
             let items: Vec<IExplorerCommand> = if condensed {
                 verbs::condensed_top_level()
                     .into_iter()
@@ -336,7 +324,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
                     .filter(|it| !matches!(it, verbs::MenuItem::Separator))
                     .filter(|it| vis.shown(it.title()))
                     // Condensed items are file-agnostic → always enabled (the `true` condensed flag).
-                    .map(|it| MenuCommand::new(it, true, true).into())
+                    .map(|it| MenuCommand::new(it, true, true, gate).into())
                     .collect()
             } else {
                 // `ordered_top_level()` (not raw `MENU`) so the user's drag-reorder in Settings
@@ -351,7 +339,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
                     .filter(|it| vis.shown(it.title()))
                     // These ARE the top-level items — `top_level: true` so `GetState` can hide
                     // the image-only ones on an audio-only selection.
-                    .map(|it| MenuCommand::new(it, true, false).into())
+                    .map(|it| MenuCommand::new(it, true, false, gate).into())
                     .collect()
             };
             Ok(SubCommandEnum::new(items).into())
@@ -368,7 +356,7 @@ pub struct MenuCommand {
     /// True when this command is a TOP-LEVEL flyout entry (created by the root's
     /// `EnumSubCommands`), false when it's a child created by a group's own
     /// `EnumSubCommands`. Only top-level image-only verbs are hidden on an audio-only
-    /// selection (see [`menu_item_state`]); children inherit the base gate.
+    /// selection (see [`Self::state`]); children inherit the base gate.
     top_level: bool,
     /// True for the CONDENSED items shown on an unsupported selection ("show on all file
     /// types"). These are file-agnostic, so they're enabled whenever the menu is on — they
@@ -383,23 +371,48 @@ pub struct MenuCommand {
     /// `top_level: true`, `condensed: false`; never propagated to children (a group's leaves
     /// are plain `MenuCommand::new` items).
     quick_root: bool,
+    /// Snapshot of the enabled/all-file-types/quick-verbs flags, taken once — by the root's
+    /// `EnumSubCommands` for every item it creates in one call, propagated to a group's own
+    /// children, or (for a top-level quick verb, which `factory.rs` creates with no
+    /// enumeration context to share) taken fresh at construction — rather than re-opened by
+    /// every one of the ~15 top-level commands' own `GetState`.
+    gate: settings::MenuGate,
+    /// Cached "selection has an image" verdict for THIS instance, mirroring
+    /// `ExplorerCommand::has_image`: the shell may call `GetState` more than once on the
+    /// same command for a fixed selection, so the array is walked at most once per instance
+    /// rather than once per call.
+    has_image: Cell<Option<bool>>,
+    /// Cached "selection is audio-only" verdict, computed lazily — only a top-level item
+    /// that isn't already audio-ok ever needs it (see [`Self::state`]) — and at most once
+    /// per instance.
+    audio_only: Cell<Option<bool>>,
 }
 
 impl MenuCommand {
     // ModuleRef::default()'s side effect (live-object add-ref) must run; keep the Default call.
     #[allow(clippy::default_constructed_unit_structs)]
-    fn new(item: &'static verbs::MenuItem, top_level: bool, condensed: bool) -> Self {
+    fn new(
+        item: &'static verbs::MenuItem,
+        top_level: bool,
+        condensed: bool,
+        gate: settings::MenuGate,
+    ) -> Self {
         Self {
             _ref: crate::ModuleRef::default(),
             item,
             top_level,
             condensed,
             quick_root: false,
+            gate,
+            has_image: Cell::new(None),
+            audio_only: Cell::new(None),
         }
     }
 
     /// A top-level modern-menu quick verb wrapping a `MENU` group/leaf (see [`QUICK_VERBS`]).
-    /// Top-level (so the audio-only gate applies) and never condensed.
+    /// Top-level (so the audio-only gate applies) and never condensed. `factory.rs` creates
+    /// this directly from a CLSID with no enumeration context to share a gate snapshot from,
+    /// so it takes its own here — still once per instance rather than once per `GetState` call.
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn quick_root(item: &'static verbs::MenuItem) -> Self {
         Self {
@@ -408,7 +421,48 @@ impl MenuCommand {
             top_level: true,
             condensed: false,
             quick_root: true,
+            gate: settings::menu_gate(),
+            has_image: Cell::new(None),
+            audio_only: Cell::new(None),
         }
+    }
+
+    /// Cached, `fSlowOk`-honoring image/audio verdict for this instance (see the
+    /// `has_image`/`audio_only` field docs). A full array walk is exactly the "slow"
+    /// work `fOkToBeSlow` exists to defer: when nothing is cached yet and the shell
+    /// says not to block, this returns `E_PENDING` (the documented
+    /// `IExplorerCommand::GetState` contract) instead of walking, so Explorer asks
+    /// again once it's OK to be slow rather than stalling its own thread once per
+    /// top-level item on a large selection.
+    unsafe fn state(&self, items: &Ref<'_, IShellItemArray>, slow_ok: bool) -> Result<u32> {
+        let has_image = match self.has_image.get() {
+            Some(v) => v,
+            None if !slow_ok => return Err(Error::from(E_PENDING)),
+            None => {
+                let v = selection_has_image(items);
+                self.has_image.set(Some(v));
+                v
+            }
+        };
+        let base = state_for(self.gate, has_image);
+        if base != ECS_ENABLED.0 as u32 {
+            return Ok(base); // menu off or unsupported selection — already hidden
+        }
+        if self.top_level && !verbs::top_level_audio_ok(self.item.title()) {
+            let audio_only = match self.audio_only.get() {
+                Some(v) => v,
+                None if !slow_ok => return Err(Error::from(E_PENDING)),
+                None => {
+                    let v = selection_is_audio_only(items);
+                    self.audio_only.set(Some(v));
+                    v
+                }
+            };
+            if audio_only {
+                return Ok(ECS_HIDDEN.0 as u32);
+            }
+        }
+        Ok(base)
     }
 }
 
@@ -436,35 +490,43 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
         // matching the root command and the rest of the COM surface.
         Err(Error::from(E_NOTIMPL))
     }
-    fn GetState(&self, items: Ref<'_, IShellItemArray>, _slow: BOOL) -> Result<u32> {
+    fn GetState(&self, items: Ref<'_, IShellItemArray>, slow: BOOL) -> Result<u32> {
         safety::guard_val(|| {
+            let slow_ok = slow.as_bool();
             // A top-level quick verb also requires the quick-verbs Option (so it's hidden by
             // default), then the shared image+audio gate (`top_level: true` → hidden on an
-            // audio-only selection). Re-read each call so a settings change is honored live.
+            // audio-only selection). `menu_visibility()` is a separate per-item setting, not
+            // part of the `gate` snapshot, and stays a live read like before.
             if self.quick_root {
                 let visible = quick_root_visible(
-                    settings::menu_quick_verbs(),
+                    self.gate.quick_verbs,
                     settings::menu_visibility().shown(self.item.title()),
                 );
                 if !visible {
                     return Ok(ECS_HIDDEN.0 as u32);
                 }
-                return Ok(unsafe { menu_item_state(self.item, true, &items) });
+                return unsafe { self.state(&items, slow_ok) };
             }
             // Condensed (file-agnostic) items skip the image/audio gate: enabled while the menu is on.
             if self.condensed {
-                return Ok(if settings::menu_enabled() {
+                return Ok(if self.gate.enabled {
                     ECS_ENABLED.0 as u32
                 } else {
                     ECS_HIDDEN.0 as u32
                 });
             }
-            Ok(unsafe { menu_item_state(self.item, self.top_level, &items) })
+            unsafe { self.state(&items, slow_ok) }
         })
     }
     fn Invoke(&self, items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
         safety::guard(|| {
             if let verbs::MenuItem::Verb(_, action) = self.item {
+                // `items_to_paths` still walks the whole `IShellItemArray` HERE, on the
+                // thread the shell called `Invoke` on — a large selection pays that cost
+                // before `run_action_detached`'s worker (which only offloads the batch
+                // action itself) ever starts. Moving the array walk off this thread would
+                // need either marshaling `IShellItemArray` across the apartment boundary
+                // or handing the extraction into `run_action_detached` itself; deferred.
                 let paths = unsafe { items_to_paths(items) };
                 // Detached worker (see contextmenu.rs): return from Invoke immediately so
                 // the shell thread isn't blocked for the batch. No parent HWND handy here,
@@ -490,8 +552,9 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
                     .filter(|c| !matches!(c, verbs::MenuItem::Separator))
                     // Children of a group — `top_level: false` so the audio gate never
                     // hides individual leaves (e.g. the Rename ▸ audio patterns). Propagate
-                    // `condensed` so a condensed group's leaves stay enabled too.
-                    .map(|c| MenuCommand::new(c, false, self.condensed).into())
+                    // `condensed` and the same `gate` snapshot so a condensed group's leaves
+                    // stay enabled too and don't re-open the registry either.
+                    .map(|c| MenuCommand::new(c, false, self.condensed, self.gate).into())
                     .collect();
                 Ok(SubCommandEnum::new(items).into())
             }

@@ -25,14 +25,21 @@
 use crate::formats::FORMATS;
 use crate::guids::{
     CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
-    CLSID_THUMBNAIL_PROVIDER_STR,
+    CLSID_THUMBNAIL_PROVIDER_STR, THUMB_HANDLER_CATEGORY,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use windows_registry::{CLASSES_ROOT, CURRENT_USER, LOCAL_MACHINE};
 
-const THUMB_HANDLER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
+/// C9: was a hand-typed local copy of the exact same GUID `register.rs` also hand-typed
+/// (`{E357FCCD-A995-4576-B01F-234630154E96}`, the shell's `IThumbnailProvider` category) —
+/// now the one shared constant both files read.
+const THUMB_HANDLER: &str = THUMB_HANDLER_CATEGORY;
 const APPROVED: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
+/// {BB2E617C-0920-11D1-9A0B-00C04FC2D6C1} — the legacy `IExtractImage` shellex slot some
+/// side-by-side thumbnailers (MysticThumbs, XnShellEx, the original SageThumbs) bind under
+/// instead of, or alongside, the modern `IThumbnailProvider` one `THUMB_HANDLER` names.
+const EXTRACT_IMAGE_HANDLER: &str = "{BB2E617C-0920-11D1-9A0B-00C04FC2D6C1}";
 
 /// One line of the report. `Fail` means "this alone explains no thumbnails".
 #[derive(PartialEq, Clone, Copy)]
@@ -457,7 +464,13 @@ fn effective_thumb_handler(
 /// The per-extension half: for each format we claim, does `.ext\shellex` actually point
 /// at us? Reports hijacks separately from plain absences — "another program took it" is
 /// a completely different fix from "registration never ran".
-fn check_extensions(r: &mut Report) {
+///
+/// `snap`: G134 — this loop is exactly the ~330-lookup sweep `FormatEnabledSnapshot`'s own
+/// doc comment names (`register.rs`, `typeoverlay.rs`, and this file's per-format audit); in
+/// portable mode `format_enabled` re-reads and re-parses the WHOLE ini file from disk on
+/// EVERY call, so a per-extension `crate::settings::format_enabled(ext)` call here meant one
+/// full ini parse per format. Take the snapshot once in [`report`] and reuse it.
+fn check_extensions(r: &mut Report, snap: &crate::settings::FormatEnabledSnapshot) {
     r.head("Per-format file associations");
 
     let (mut ours, mut missing, mut stolen, mut disabled) = (0usize, 0usize, 0usize, 0usize);
@@ -465,7 +478,7 @@ fn check_extensions(r: &mut Report) {
     let mut missing_examples: Vec<String> = Vec::new();
 
     for &(ext, _) in FORMATS.iter() {
-        if !crate::settings::format_enabled(ext) {
+        if !snap.enabled(ext) {
             disabled += 1;
             continue;
         }
@@ -545,6 +558,110 @@ fn check_extensions(r: &mut Report) {
             S::Warn,
             "  owned by another program",
             &format!("{stolen}  e.g. {}", stolen_examples.join(", ")),
+        );
+    }
+}
+
+/// Every ProgID that could resolve `.ext`'s thumbnail before Explorer ever reaches the
+/// SystemFileAssociations/bare-extension keys [`check_extensions`] audits: the per-user
+/// `UserChoice` the shell honours first, then the class default under `.ext`. Mirrors
+/// `typeoverlay.rs`'s private `progids_for` (same two sources, same rules) — duplicated
+/// here rather than called because that function is not `pub(crate)` and this module stays
+/// read-only registry access by design (see the module doc's "nothing is written").
+fn progid_candidates(ext: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: Option<String>| {
+        if let Some(s) = s {
+            let s = s.trim().to_string();
+            if !s.is_empty() && !s.contains('\\') && !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    };
+    let user_choice =
+        format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}\UserChoice");
+    push(
+        CURRENT_USER
+            .open(&user_choice)
+            .ok()
+            .and_then(|k| k.get_string("ProgId").ok()),
+    );
+    push(hkcr_default(&format!(".{ext}")));
+    out
+}
+
+/// The ProgID-level half `check_extensions` cannot see: Windows resolves a thumbnail
+/// handler at the **ProgID** level BEFORE it ever reaches the SystemFileAssociations or
+/// bare-extension keys (`register.rs`'s module doc names the exact precedence: per-user
+/// UserChoice ProgID, then the extension's default ProgID's shellex, THEN
+/// SystemFileAssociations, THEN the bare-extension key). A side-by-side thumbnailer
+/// (MysticThumbs, XnShellEx, the original SageThumbs) bound at that level wins for every
+/// file of that type — invisibly to `check_extensions` AND to the user, who installed us
+/// for exactly those formats and sees `check_extensions` report "Hooked by SageThumbs 2K"
+/// while nothing changes on screen.
+/// A handler whose DLL lives under the Windows directory is the OS's own (the Photos
+/// thumbnailer that `.jpg`/`.png`'s default ProgID carries, say): `register.rs` documents
+/// that one winning at the ProgID level as accepted, so it is not a competitor to report.
+fn is_windows_own_handler(clsid: &str) -> bool {
+    let Some(p) = inproc_path(clsid) else {
+        return false;
+    };
+    let lower = p.trim_start_matches('"').to_ascii_lowercase();
+    if lower.starts_with("%systemroot%") || lower.starts_with("%windir%") {
+        return true;
+    }
+    std::env::var("SystemRoot")
+        .map(|root| lower.starts_with(&root.to_ascii_lowercase()))
+        .unwrap_or(false)
+}
+
+fn check_progid_handlers(r: &mut Report, snap: &crate::settings::FormatEnabledSnapshot) {
+    r.head("ProgID-level thumbnail handlers (checked before our own keys)");
+
+    let mut total = 0usize;
+    let mut examples: Vec<String> = Vec::new();
+
+    for &(ext, _) in FORMATS.iter() {
+        if !snap.enabled(ext) {
+            continue;
+        }
+        for progid in progid_candidates(ext) {
+            let thumb = hkcr_default(&format!(r"{progid}\shellex\{THUMB_HANDLER}"));
+            let extract = hkcr_default(&format!(r"{progid}\shellex\{EXTRACT_IMAGE_HANDLER}"));
+            for (kind, clsid) in [("IThumbnailProvider", thumb), ("IExtractImage", extract)] {
+                let Some(clsid) = clsid else { continue };
+                if clsid.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR)
+                    || is_windows_own_handler(&clsid)
+                {
+                    continue;
+                }
+                total += 1;
+                if examples.len() < 8 {
+                    let dll = inproc_path(&clsid)
+                        .and_then(|p| {
+                            Path::new(&p)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                        })
+                        .unwrap_or_else(|| "(no InprocServer32)".to_string());
+                    examples.push(format!(".{ext} -> {progid} [{kind} {clsid}] {dll}"));
+                }
+            }
+        }
+    }
+
+    if total == 0 {
+        r.line(S::Ok, "Foreign ProgID handlers", "none found");
+    } else {
+        r.fail_with_fix(
+            "Foreign ProgID handlers",
+            &format!(
+                "{total} found — these win for their format no matter how healthy our own \
+                 registration is:\n         {}",
+                examples.join("\n         ")
+            ),
+            "another program's ProgID-level handler is checked before ours; uninstall or \
+             reconfigure it, or reassociate the file type to remove its ProgID-level hook.",
         );
     }
 }
@@ -1028,7 +1145,7 @@ fn video_codec_note(r: &mut Report, path: &str) {
     }
 }
 
-fn probe_file(r: &mut Report, path: &str) {
+fn probe_file(r: &mut Report, path: &str, snap: &crate::settings::FormatEnabledSnapshot) {
     r.head("This file");
     let p = Path::new(path);
     r.line(S::Info, "Path", path);
@@ -1067,7 +1184,7 @@ fn probe_file(r: &mut Report, path: &str) {
     r.line(S::Ok, &format!(".{ext}"), "a supported format");
     cloud_placeholder_note(r, p, &ext);
     cloud_sync_root_note(r, p);
-    if !crate::settings::format_enabled(&ext) {
+    if !snap.enabled(&ext) {
         r.fail_with_fix(
             "Enabled in settings",
             "this format is unchecked in Settings > File types",
@@ -1262,6 +1379,112 @@ fn check_space_preview(r: &mut Report) {
     }
 }
 
+/// Bounded read: the last `max_bytes` of `path`, lossy-decoded (a seek can land mid a
+/// multi-byte UTF-8 character at the boundary; `String::from_utf8_lossy` degrades that one
+/// character instead of losing the whole tail). Read the log's ~1 MiB rotation cap ([`crate::
+/// safety`]'s `maybe_rotate`) makes this cheap either way, but a bounded read stays cheap
+/// even if that cap is ever raised.
+fn tail_bytes(path: &Path, max_bytes: u64) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(max_bytes);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    let _ = f.take(max_bytes).read_to_end(&mut buf);
+    buf
+}
+
+fn read_log_tail(path: &Path, max_bytes: u64) -> String {
+    String::from_utf8_lossy(&tail_bytes(path, max_bytes)).into_owned()
+}
+
+/// Bounded read + the last `limit` lines containing any of `needles` — used for the ERROR/
+/// PANIC scan below, and shared with [`bundle`]'s log-tail file.
+const LOG_TAIL_SCAN_BYTES: u64 = 256 * 1024;
+const LOG_TAIL_LINES: usize = 20;
+
+fn tail_matching_lines(path: &Path, max_bytes: u64, needles: &[&str], limit: usize) -> Vec<String> {
+    let text = read_log_tail(path, max_bytes);
+    let mut out: Vec<String> = text
+        .lines()
+        .filter(|l| needles.iter().any(|n| l.contains(n)))
+        .map(str::to_string)
+        .collect();
+    if out.len() > limit {
+        let drop = out.len() - limit;
+        out.drain(0..drop);
+    }
+    out
+}
+
+/// `log_error` (`ERROR ...`) and the panic hook (`PANIC [...] at ...: ...`, which
+/// itself goes through `log_error` and so also matches) had no reader anywhere but the
+/// panic hook itself — the doctor report printed only the log's path and size, so the most
+/// common issue report ("X shows the generic icon") produced an empty-looking paste with
+/// nothing in it. Appends the last [`LOG_TAIL_LINES`] matching lines from `path` and its
+/// `.old` rotation sibling, oldest first.
+fn append_log_tail(r: &mut Report, path: &Path) {
+    const NEEDLES: [&str; 2] = [" ERROR ", "PANIC"];
+    let mut tail = tail_matching_lines(path, LOG_TAIL_SCAN_BYTES, &NEEDLES, LOG_TAIL_LINES);
+    if tail.len() < LOG_TAIL_LINES {
+        let old = path.with_file_name("SageThumbs2K.log.old");
+        if old.exists() {
+            let need = LOG_TAIL_LINES - tail.len();
+            let mut older = tail_matching_lines(&old, LOG_TAIL_SCAN_BYTES, &NEEDLES, need);
+            older.extend(tail);
+            tail = older;
+        }
+    }
+    if tail.is_empty() {
+        r.line(S::Info, "  recent ERROR/PANIC lines", "none found");
+        return;
+    }
+    r.head("Recent ERROR/PANIC lines from the diagnostics log");
+    for line in &tail {
+        let _ = writeln!(r.out, "{line}");
+    }
+}
+
+/// `st2k doctor --bundle <out.zip>`: the report, the log's tail, and `formats
+/// --json` in one file. `docs/FAQ.md` tells a confused user to run `st2k doctor` and paste
+/// its output, but the crash/panic log lives at a separate path found via Settings ->
+/// Advanced -> "Open diagnostics log" — nothing bundled the two (plus the format list, for
+/// "which formats does this build even enable") into one attachment a support triage or a
+/// Send-feedback box could accept as-is.
+pub fn bundle(out: &Path, file: Option<&str>) -> Result<(), String> {
+    use std::io::Write;
+
+    let report_text = report(file);
+    let formats_json = crate::cli::list_formats(true);
+    let log_tail = match crate::safety::log_file() {
+        Some(p) if p.exists() => read_log_tail(&p, LOG_TAIL_SCAN_BYTES),
+        Some(_) => "(no diagnostics log yet)".to_string(),
+        None => "(LOCALAPPDATA is unset — no diagnostics log path)".to_string(),
+    };
+
+    let f =
+        std::fs::File::create(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+    let mut zw = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let write_entry =
+        |zw: &mut zip::ZipWriter<std::fs::File>, name: &str, bytes: &[u8]| -> Result<(), String> {
+            zw.start_file(name, opts)
+                .map_err(|e| format!("zip: {name}: {e}"))?;
+            zw.write_all(bytes).map_err(|e| format!("zip: {name}: {e}"))
+        };
+    write_entry(&mut zw, "doctor-report.txt", report_text.as_bytes())?;
+    write_entry(&mut zw, "formats.json", formats_json.as_bytes())?;
+    write_entry(&mut zw, "log-tail.txt", log_tail.as_bytes())?;
+    zw.finish().map_err(|e| format!("zip: {e}"))?;
+    Ok(())
+}
+
 pub fn report(file: Option<&str>) -> String {
     let mut r = Report::new();
 
@@ -1302,6 +1525,7 @@ pub fn report(file: Option<&str>) -> String {
                 "Diagnostics log",
                 &format!("{} ({size} bytes)", p.display()),
             );
+            append_log_tail(&mut r, &p);
         }
         Some(p) => r.line(
             S::Info,
@@ -1311,15 +1535,21 @@ pub fn report(file: Option<&str>) -> String {
         None => r.line(S::Warn, "Diagnostics log", "LOCALAPPDATA is unset"),
     }
 
+    // One snapshot for the whole report, instead of `check_extensions`'s ~330-format
+    // sweep (and, now, `check_progid_handlers`'s matching sweep) each re-reading and
+    // re-parsing the whole portable ini once per format.
+    let snap = crate::settings::format_enabled_snapshot();
+
     check_windows_switches(&mut r);
     check_registration(&mut r);
-    check_extensions(&mut r);
+    check_extensions(&mut r, &snap);
+    check_progid_handlers(&mut r, &snap);
     check_displaced(&mut r);
     check_settings(&mut r);
     check_space_preview(&mut r);
     check_engine(&mut r);
     if let Some(f) = file {
-        probe_file(&mut r, f);
+        probe_file(&mut r, f, &snap);
     }
 
     r.head("Verdict");
@@ -1540,5 +1770,91 @@ mod tests {
             max_file_size_detail(500 * 1024 * 1024),
             "500 MB (larger files are skipped)"
         );
+    }
+
+    /// Only lines containing " ERROR " or "PANIC" survive the scan, in file order, and
+    /// the result is capped at `limit` — the last N, not the first N (a doctor paste should
+    /// show the MOST RECENT failures, not the oldest ones from a long-lived log).
+    #[test]
+    fn tail_matching_lines_filters_and_caps_to_the_most_recent() {
+        let dir = std::env::temp_dir().join(format!("st2k_doctor_logtail_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("test.log");
+        let mut body = String::new();
+        for i in 0..25 {
+            body.push_str(&format!("[pid 1 +{i}ms] ERROR failure number {i}\n"));
+            body.push_str(&format!("[pid 1 +{i}ms] just a debug line {i}\n"));
+        }
+        body.push_str("[pid 1 +999ms] ERROR PANIC [thumbprovider] at foo.rs:1: boom\n");
+        std::fs::write(&log, &body).unwrap();
+
+        let lines = tail_matching_lines(&log, LOG_TAIL_SCAN_BYTES, &[" ERROR ", "PANIC"], 20);
+        assert_eq!(lines.len(), 20, "must cap at the requested limit");
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.contains(" ERROR ") || l.contains("PANIC")),
+            "every returned line must match a needle: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("just a debug line")),
+            "a non-matching line must never survive the filter"
+        );
+        // The most recent 20 of 26 matching lines were kept, so "failure number 0..4" (the
+        // oldest 5) must have been dropped and the trailing PANIC line must be present.
+        assert!(!lines.iter().any(|l| l.contains("failure number 4")));
+        assert!(lines.last().unwrap().contains("PANIC"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file with no matching lines returns an empty vec, not an error or a panic — the
+    /// common case (a healthy install whose log has no ERROR/PANIC lines at all).
+    #[test]
+    fn tail_matching_lines_on_a_clean_log_is_empty() {
+        let dir =
+            std::env::temp_dir().join(format!("st2k_doctor_logtail_clean_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("clean.log");
+        std::fs::write(&log, "[pid 1 +1ms] everything is fine\n").unwrap();
+
+        let lines = tail_matching_lines(&log, LOG_TAIL_SCAN_BYTES, &[" ERROR ", "PANIC"], 20);
+        assert!(lines.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `bundle` must produce a zip with exactly the three named entries, each
+    /// non-empty, and readable back — the whole point is a single self-contained
+    /// attachment a support triage can accept as-is.
+    #[test]
+    fn bundle_writes_a_zip_with_report_formats_and_log_tail() {
+        let dir = std::env::temp_dir().join(format!("st2k_doctor_bundle_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("bundle.zip");
+
+        bundle(&out, None).unwrap();
+        assert!(out.exists());
+
+        let f = std::fs::File::open(&out).unwrap();
+        let mut zip = zip::ZipArchive::new(f).unwrap();
+        let names: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .collect();
+        for expect in ["doctor-report.txt", "formats.json", "log-tail.txt"] {
+            assert!(
+                names.contains(&expect.to_string()),
+                "missing {expect}: {names:?}"
+            );
+        }
+        let mut report_text = String::new();
+        std::io::Read::read_to_string(
+            &mut zip.by_name("doctor-report.txt").unwrap(),
+            &mut report_text,
+        )
+        .unwrap();
+        assert!(report_text.contains("SageThumbs 2K"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

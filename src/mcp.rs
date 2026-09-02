@@ -217,17 +217,25 @@ fn tool_defs() -> Value {
         },
         {
             "name": "pdf",
-            "description": "Combine one or more images into a single PDF (one image per page).",
+            "description": "Combine one or more images into a single PDF (one image per page). Refuses to overwrite an existing file at 'output' unless its extension is .pdf.",
             "inputSchema": { "type": "object", "properties": {
                 "output": str_prop("destination .pdf path"),
                 "inputs": { "type": "array", "items": { "type": "string" }, "description": "image paths, in page order" }
             }, "required": ["output", "inputs"] }
         },
         {
-            "name": "info",
-            "description": "Read an image's dimensions and EXIF camera/date/GPS. Returns JSON.",
+            "name": "cbz",
+            "description": "Combine one or more images into a single CBZ (comic-book zip) archive, natural-sorted, with a ComicInfo.xml sidecar. Refuses to overwrite an existing file at 'output' unless its extension is .cbz.",
             "inputSchema": { "type": "object", "properties": {
-                "input": str_prop("image path")
+                "output": str_prop("destination .cbz path"),
+                "inputs": { "type": "array", "items": { "type": "string" }, "description": "image paths, in page order" }
+            }, "required": ["output", "inputs"] }
+        },
+        {
+            "name": "info",
+            "description": "Read an image's dimensions, bit depth, DPI and EXIF camera/date/GPS — or, for an audio file (mp3/flac/wma/dsf/…), its artist/album/title/track/genre/year/duration/bitrate tags. Returns JSON.",
+            "inputSchema": { "type": "object", "properties": {
+                "input": str_prop("image or audio file path")
             }, "required": ["input"] }
         },
         {
@@ -244,16 +252,28 @@ fn tool_defs() -> Value {
         },
         {
             "name": "batch",
-            "description": "Bulk-process many files/folders in one process (thumbnail or convert every supported image found, recursively).",
+            "description": "Bulk-process many files/folders in one process: thumbnail, convert, or read info (dimensions/EXIF/audio tags, as one JSON array) for every supported file found. Each input directory is scanned ONE level deep unless 'recurse' is true.",
             "inputSchema": { "type": "object", "properties": {
-                "op": { "type": "string", "enum": ["thumbnail", "convert"], "description": "operation to run on every input" },
+                "op": { "type": "string", "enum": ["thumbnail", "convert", "info"], "description": "operation to run on every input" },
                 "inputs": { "type": "array", "items": { "type": "string" }, "description": "file and/or folder paths" },
-                "out": str_prop("output directory (default: alongside each source file)"),
-                "size": { "type": "integer", "description": "thumbnail max long-edge in px (default 256; ignored for convert)" },
+                "recurse": { "type": "boolean", "description": "walk input directories recursively (default false = one level deep)" },
+                "out": str_prop("output directory (default: alongside each source file; ignored for info)"),
+                "size": { "type": "integer", "description": "thumbnail max long-edge in px (default 256; ignored for convert/info)" },
                 "to": str_prop("output extension, required when op is \"convert\""),
-                "quality": { "type": "integer", "description": "encoder quality 1-100 (default 90)" },
+                "quality": { "type": "integer", "description": "encoder quality 1-100 (default 90; ignored for info)" },
                 "resize": str_prop("optional 'WxH' (fit, no upscale) or 'N%' (scale), convert only")
             }, "required": ["op", "inputs"] }
+        },
+        {
+            "name": "prebuild",
+            "description": "Pre-build Explorer's thumbnail cache for whole folders (so browsing them later is instant). Refuses to run elevated (the cache is per-user). Returns a built/cached/failed summary.",
+            "inputSchema": { "type": "object", "properties": {
+                "inputs": { "type": "array", "items": { "type": "string" }, "description": "file and/or folder paths" },
+                "recurse": { "type": "boolean", "description": "walk input directories recursively (default false = one level deep)" },
+                "sizes": { "type": "array", "items": { "type": "integer" }, "description": "edge sizes in px to build (default 96,256,768 — Explorer's Medium/Large/Extra-large buckets)" },
+                "rebuild_all": { "type": "boolean", "description": "skip the already-cached probe and rebuild every file (default false)" },
+                "jobs": { "type": "integer", "description": "worker threads (default 3)" }
+            }, "required": ["inputs"] }
         },
         {
             "name": "register_status",
@@ -261,6 +281,41 @@ fn tool_defs() -> Value {
             "inputSchema": { "type": "object", "properties": {} }
         }
     ])
+}
+
+/// True for a UNC path — `\\server\share\...` or its extended-length spelling
+/// `\\?\UNC\server\share\...` — which starts an SMB negotiation (and, by default, an NTLM
+/// handshake) merely by being opened, driveable by a prompt-injected tool argument.
+/// `\\?\C:\...` (the extended-length LOCAL form) is NOT UNC and stays usable.
+fn is_unc_path(p: &str) -> bool {
+    // Windows' path parser turns a leading `//` into `\\` before the redirector sees it, so
+    // a forward-slash spelling reaches the network exactly like the backslash one.
+    let p = p.trim_start().replace('/', "\\");
+    let p = p.as_str();
+    match p.strip_prefix(r"\\?\") {
+        // `get(..4)` rather than a byte-range index: a panicking slice on a non-char-
+        // boundary is exactly what this crate's `unwrap_used`/`expect_used` deny exists to
+        // rule out for a hostile/malformed path, and `get` degrades to `None` (not a UNC
+        // match) instead of aborting the process.
+        Some(rest) => rest
+            .get(..4)
+            .is_some_and(|s| s.eq_ignore_ascii_case(r"UNC\")),
+        None => p.starts_with(r"\\"),
+    }
+}
+
+/// Walk every string value in `args` — including array elements, so `pdf`/`batch`'s
+/// `inputs` list is covered without a second copy of this check — and return the first
+/// one that is a UNC path. Centralised as ONE call at the top of [`tools_call`] rather
+/// than per-tool/per-field, so a future path-taking argument on either surface (`view` or
+/// `dispatch_tool`) is covered automatically instead of needing its own copy.
+fn find_unc_arg(v: &Value) -> Option<&str> {
+    match v {
+        Value::String(s) if is_unc_path(s) => Some(s.as_str()),
+        Value::Array(a) => a.iter().find_map(find_unc_arg),
+        Value::Object(o) => o.values().find_map(find_unc_arg),
+        _ => None,
+    }
 }
 
 /// Run a `tools/call`: validate params, invoke the verb, wrap the text result.
@@ -274,6 +329,16 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
     let empty = json!({});
     let args = params.get("arguments").unwrap_or(&empty);
 
+    // Reject a UNC path anywhere in the arguments before EITHER of the two dispatch paths
+    // below ever sees them — a same-desktop or prompt-injected caller could otherwise force
+    // an SMB/NTLM handshake against an attacker-controlled path.
+    if let Some(bad) = find_unc_arg(args) {
+        return result(
+            id,
+            json!({ "content": [{ "type": "text", "text": format!("UNC paths are not accepted: {bad}") }], "isError": true }),
+        );
+    }
+
     // `view` returns an IMAGE content block (base64 PNG) so the agent can SEE the file —
     // handled before the text-returning dispatch below.
     if name == "view" {
@@ -283,12 +348,31 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
                 json!({ "content": [{ "type": "text", "text": "missing string argument 'input'" }], "isError": true }),
             );
         };
-        let size = saturating_u32(args.get("size").and_then(|v| v.as_u64()).unwrap_or(512));
+        // Clamp to the decoder's own bomb-guard ceiling — 0 stays 0 ("full size", the
+        // documented sentinel `cli::view_png` already handles); anything above the ceiling
+        // is clamped rather than reaching the decoder unbounded.
+        let size = clamp_requested_size(args.get("size").and_then(|v| v.as_u64()).unwrap_or(512));
         return match cli::view_png(input, size) {
-            Ok(png) => result(
-                id,
-                json!({ "content": [{ "type": "image", "data": STANDARD.encode(&png), "mimeType": "image/png" }], "isError": false }),
-            ),
+            Ok(png) => {
+                // `view` has no output-size cap, unlike the strict inbound
+                // `MAX_MSG_BYTES` — a legitimate large image (or `size: 0`, "full size")
+                // can base64-encode into tens-to-hundreds of MB written into ONE JSON-RPC
+                // line with nothing warning the caller. Refuse rather than write it.
+                const MAX_VIEW_PNG_BYTES: usize = 24 * 1024 * 1024;
+                if png.len() > MAX_VIEW_PNG_BYTES {
+                    return result(
+                        id,
+                        json!({ "content": [{ "type": "text", "text": format!(
+                            "decoded image is {} MB, over the {}-MB view limit — pass a smaller 'size'",
+                            png.len() / (1024 * 1024), MAX_VIEW_PNG_BYTES / (1024 * 1024)
+                        ) }], "isError": true }),
+                    );
+                }
+                result(
+                    id,
+                    json!({ "content": [{ "type": "image", "data": STANDARD.encode(&png), "mimeType": "image/png" }], "isError": false }),
+                )
+            }
             Err(msg) => result(
                 id,
                 json!({ "content": [{ "type": "text", "text": msg }], "isError": true }),
@@ -308,17 +392,49 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
     }
 }
 
-/// Collect the string array at `k` (missing/non-array/non-string entries silently
-/// dropped), for the two tools that take a file list.
-fn want_str_array(args: &Value, k: &str) -> Vec<String> {
-    args.get(k)
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(String::from))
-                .collect()
+/// Collect the string array at `k`. `Err` when the key is present as an array but carries a
+/// non-string element (before this fix, such an element was silently DROPPED — a mixed-type
+/// `inputs` array built a PDF/CBZ/batch with fewer pages/files than requested and reported
+/// success); missing/non-array/absent stays `Ok(vec![])`, same as before.
+fn want_str_array(args: &Value, k: &str) -> Result<Vec<String>, String> {
+    let Some(v) = args.get(k) else {
+        return Ok(Vec::new());
+    };
+    let Some(a) = v.as_array() else {
+        return Ok(Vec::new());
+    };
+    a.iter()
+        .map(|x| {
+            x.as_str()
+                .map(String::from)
+                .ok_or_else(|| format!("'{k}' must be an array of strings; found {x}"))
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// Refuse to let a write tool clobber a file that already EXISTS at `output` when its
+/// extension isn't one this tool produces. `pdf`/`cbz` write raw bytes to whatever path
+/// they're given with no extension check at all (unlike `thumbnail`/`convert`, which
+/// already refuse an unrecognized output extension before writing anything) — so a
+/// prompt-injected `output` could otherwise silently overwrite any file the process
+/// account can write, regardless of what it actually was. Never blocks writing a NEW path.
+fn refuse_foreign_overwrite(output: &str, produced_exts: &[&str]) -> Result<(), String> {
+    let p = std::path::Path::new(output);
+    if !p.is_file() {
+        return Ok(());
+    }
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if produced_exts.iter().any(|e| e.eq_ignore_ascii_case(&ext)) {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to overwrite existing file '{output}': its extension \".{ext}\" is not one this tool writes ({})",
+        produced_exts.join("/")
+    ))
 }
 
 /// `convert`: input/output paths, JPEG/WebP quality, and an optional resize spec.
@@ -348,7 +464,22 @@ fn dispatch_pdf(args: &Value) -> Result<String, String> {
             .map(|s| s.to_string())
             .ok_or_else(|| format!("missing string argument '{k}'"))
     };
-    cli::pdf(&need("output")?, &want_str_array(args, "inputs"))
+    let output = need("output")?;
+    refuse_foreign_overwrite(&output, &["pdf"])?;
+    cli::pdf(&output, &want_str_array(args, "inputs")?)
+}
+
+/// `cbz`: same shape as `pdf`, writing a comic-book zip instead.
+fn dispatch_cbz(args: &Value) -> Result<String, String> {
+    let need = |k: &str| {
+        args.get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("missing string argument '{k}'"))
+    };
+    let output = need("output")?;
+    refuse_foreign_overwrite(&output, &["cbz"])?;
+    cli::cbz(&output, &want_str_array(args, "inputs")?)
 }
 
 /// `batch`: an operation name over the input file list, plus the same
@@ -357,16 +488,53 @@ fn dispatch_batch(args: &Value) -> Result<String, String> {
     let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
     let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
     let u64_or = |k: &str, d: u64| args.get(k).and_then(|v| v.as_u64()).unwrap_or(d);
-    let u32_or = |k: &str, d: u64| saturating_u32(u64_or(k, d));
+    let recurse = args
+        .get("recurse")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     cli::batch(
         &need("op")?,
-        &want_str_array(args, "inputs"),
+        &want_str_array(args, "inputs")?,
+        recurse,
         want("out").as_deref(),
-        u32_or("size", 256),
+        clamp_requested_size(u64_or("size", 256)),
         want("to").as_deref(),
         u64_or("quality", 90).clamp(1, 100) as u8,
         cli::parse_resize(want("resize").as_deref())?,
     )
+}
+
+/// `prebuild`: fill Explorer's thumbnail cache for whole folders.
+fn dispatch_prebuild(args: &Value) -> Result<String, String> {
+    let inputs = want_str_array(args, "inputs")?;
+    if inputs.is_empty() {
+        return Err("missing or empty array argument 'inputs'".to_string());
+    }
+    let recurse = args
+        .get("recurse")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let sizes: Vec<u32> = args
+        .get("sizes")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_u64())
+                .map(saturating_u32)
+                .collect::<Vec<u32>>()
+        })
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| crate::prebuild::DEFAULT_SIZES.to_vec());
+    let rebuild_all = args
+        .get("rebuild_all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let jobs = args
+        .get("jobs")
+        .and_then(|v| v.as_u64())
+        .map(|j| j as usize)
+        .unwrap_or(3);
+    cli::prebuild(&inputs, recurse, sizes, rebuild_all, jobs)
 }
 
 /// Map a tool name + arguments to a [`crate::cli`] verb. `Err` = a tool error
@@ -375,7 +543,7 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
     let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
     let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
     let u32_or =
-        |k: &str, d: u64| saturating_u32(args.get(k).and_then(|v| v.as_u64()).unwrap_or(d));
+        |k: &str, d: u64| clamp_requested_size(args.get(k).and_then(|v| v.as_u64()).unwrap_or(d));
 
     match name {
         "thumbnail" => cli::thumbnail(&need("input")?, &need("output")?, u32_or("size", 256)),
@@ -385,10 +553,12 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
         "strip" => cli::strip_meta(&need("input")?),
         "ocr" => cli::ocr(&need("input")?),
         "pdf" => dispatch_pdf(args),
+        "cbz" => dispatch_cbz(args),
         "info" => cli::info(&need("input")?, true),
         "formats" => Ok(cli::list_formats(true)),
         "doctor" => Ok(crate::doctor::report(want("file").as_deref())),
         "batch" => dispatch_batch(args),
+        "prebuild" => dispatch_prebuild(args),
         "register_status" => cli::register_portable(false, true),
         other => Err(format!("unknown tool '{other}'")),
     }
@@ -401,6 +571,21 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
 /// for instead of a large-but-sane clamp.
 fn saturating_u32(v: u64) -> u32 {
     v.min(u32::MAX as u64) as u32
+}
+
+/// [`saturating_u32`], additionally clamped to the decoder's own bomb-guard ceiling
+/// — `0` is left alone (every size-taking tool here treats it as "full size", a
+/// documented sentinel, not a request for `MAX_DIM`). A very large explicit `size` used to
+/// reach `decode::pdf_raster_edge` (whose only bound is a FLOOR at 1024, no ceiling) and
+/// request a multi-billion-pixel raster; `pdf.rs`'s own doc notes it accepts a leaked
+/// worker "in a disposable [dllhost/prevhost] host" — the MCP server is not disposable.
+fn clamp_requested_size(v: u64) -> u32 {
+    let v = saturating_u32(v);
+    if v == 0 {
+        0
+    } else {
+        v.min(crate::decode::limits::MAX_DIM)
+    }
 }
 
 fn result(id: Value, result: Value) -> Value {
@@ -445,10 +630,12 @@ mod tests {
             "strip",
             "ocr",
             "pdf",
+            "cbz",
             "info",
             "formats",
             "doctor",
             "batch",
+            "prebuild",
             "register_status",
         ] {
             assert!(names.contains(&v), "tools/list missing '{v}'");
@@ -592,6 +779,136 @@ mod tests {
             resp["result"]["isError"],
             json!(true),
             "missing 'op' is a tool error"
+        );
+    }
+
+    /// A UNC path anywhere in the arguments — bare `\\server\share\...` or the
+    /// extended-length `\\?\UNC\server\share\...` spelling — must be refused before any
+    /// tool touches it, since merely opening one starts an SMB (and, by default, NTLM)
+    /// negotiation. An extended-length LOCAL path (`\\?\C:\...`) must NOT be refused.
+    #[test]
+    fn unc_paths_are_rejected_in_both_view_and_dispatch_tool() {
+        assert!(is_unc_path(r"\\attacker\share\x.jpg"));
+        assert!(is_unc_path(r"\\?\UNC\attacker\share\x.jpg"));
+        assert!(!is_unc_path(r"\\?\C:\local\path.jpg"));
+        assert!(!is_unc_path(r"C:\local\path.jpg"));
+
+        let req = json!({ "jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {
+            "name": "view", "arguments": { "input": r"\\attacker\share\x.jpg" } } });
+        let resp = handle(&req).unwrap();
+        assert_eq!(resp["result"]["isError"], json!(true), "got {resp}");
+
+        // Also covered inside an ARRAY argument (pdf/batch's `inputs`), not just a bare
+        // string field — `find_unc_arg` walks arrays, so this must be caught too.
+        let req = json!({ "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {
+            "name": "pdf", "arguments": { "output": "out.pdf", "inputs": [r"\\attacker\share\x.jpg"] } } });
+        let resp = handle(&req).unwrap();
+        assert_eq!(resp["result"]["isError"], json!(true), "got {resp}");
+    }
+
+    /// The `want_str_array` half: a non-string element in an `inputs` array must ERROR,
+    /// not be silently dropped — before this fix, `["a.png", 5, "b.png"]` quietly became
+    /// `["a.png", "b.png"]`, e.g. building a PDF with fewer pages than requested while
+    /// still reporting success.
+    #[test]
+    fn want_str_array_errors_on_a_non_string_element_instead_of_dropping_it() {
+        let args = json!({ "inputs": ["a.png", 5, "b.png"] });
+        let err = want_str_array(&args, "inputs").unwrap_err();
+        assert!(err.contains("inputs"));
+
+        // Still fine when every element really is a string, or the key is absent.
+        let args = json!({ "inputs": ["a.png", "b.png"] });
+        assert_eq!(
+            want_str_array(&args, "inputs").unwrap(),
+            vec!["a.png".to_string(), "b.png".to_string()]
+        );
+        assert_eq!(
+            want_str_array(&json!({}), "inputs").unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The overwrite half: `pdf` must refuse to clobber a file that already exists at
+    /// `output` when its extension isn't `.pdf` — the concrete gap: `combine_to_pdf` writes
+    /// raw PDF bytes to whatever path it's given with no extension check of its own.
+    #[test]
+    fn pdf_tool_refuses_to_overwrite_a_foreign_extension() {
+        let dir = std::env::temp_dir().join(format!("st2k_mcp_overwrite_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("important.docx");
+        std::fs::write(&victim, b"not actually a docx, just needs to exist").unwrap();
+
+        let err = refuse_foreign_overwrite(victim.to_str().unwrap(), &["pdf"]).unwrap_err();
+        assert!(err.contains("docx"));
+
+        // A NEW path (nothing there yet) must never be blocked.
+        let new_path = dir.join("brand_new.pdf");
+        assert!(refuse_foreign_overwrite(new_path.to_str().unwrap(), &["pdf"]).is_ok());
+        // An EXISTING file with the tool's own extension must never be blocked either —
+        // overwriting a same-purpose file is the whole point of the `output` argument.
+        let existing_pdf = dir.join("existing.pdf");
+        std::fs::write(&existing_pdf, b"pdf bytes").unwrap();
+        assert!(refuse_foreign_overwrite(existing_pdf.to_str().unwrap(), &["pdf"]).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `cbz` tool must exist end-to-end through the JSON-RPC surface, mirroring
+    /// `pdf`'s own coverage — this was the exact gap the review found (PDF had a CLI/MCP
+    /// front door, CBZ never did).
+    #[test]
+    fn tools_call_cbz_runs_the_verb() {
+        let dir = std::env::temp_dir().join(format!("st2k_mcp_cbz_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("p1.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+            .save(&a)
+            .unwrap();
+        let out = dir.join("out.cbz");
+
+        let req = json!({ "jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {
+            "name": "cbz",
+            "arguments": { "output": out.to_str().unwrap(), "inputs": [a.to_str().unwrap()] }
+        }});
+        let resp = handle(&req).unwrap();
+        assert_eq!(resp["result"]["isError"], json!(false), "got {resp}");
+        assert!(out.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `prebuild` tool must exist and reach `cli::prebuild` — checked against the
+    /// elevation guard's error text rather than actually filling the thumbnail cache (this
+    /// test process is not guaranteed to run un-elevated), the same way `cli.rs`'s own
+    /// prebuild tests avoid depending on the live shell.
+    #[test]
+    fn tools_call_prebuild_reaches_cli_prebuild() {
+        let dir = std::env::temp_dir().join(format!("st2k_mcp_prebuild_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let req = json!({ "jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {
+            "name": "prebuild", "arguments": { "inputs": [dir.to_str().unwrap()] } } });
+        let resp = handle(&req).unwrap();
+        // Either outcome proves the tool reached `cli::prebuild` rather than "unknown tool":
+        // a real (un-elevated) run succeeds, an elevated test process gets that guard's error.
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            !text.contains("unknown tool"),
+            "prebuild tool must be wired up, got {text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A request far above the decoder's own ceiling must be clamped down to it, not
+    /// forwarded as-is — `0` ("full size") must be left alone.
+    #[test]
+    fn clamp_requested_size_bounds_to_max_dim_but_leaves_zero_alone() {
+        assert_eq!(clamp_requested_size(0), 0);
+        assert_eq!(clamp_requested_size(500), 500);
+        assert_eq!(
+            clamp_requested_size(50_000_000),
+            crate::decode::limits::MAX_DIM
         );
     }
 }

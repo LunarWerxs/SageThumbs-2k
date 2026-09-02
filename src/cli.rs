@@ -275,13 +275,14 @@ fn archive_thumbnail(input: &str) -> Option<image::DynamicImage> {
     let mut head = [0u8; 8];
     f.read_exact(&mut head).ok()?;
     std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).ok()?;
+    let prefs = crate::container::select::CoverPrefs::from_settings();
     let covers = if crate::container::archive_needs_buffer(&head) {
         // RAR buffers whole (`rars` accepts no reader) — same bounded read as the
         // normal path, so a multi-GB .rar fails to the normal decode error.
         let bytes = decode::read_preview_capped(input).ok()?;
-        crate::container::archive_covers(&bytes, want)?
+        crate::container::archive_covers(&bytes, want, &prefs)?
     } else {
-        crate::container::archive_covers_seek(&mut f, &head, want)?
+        crate::container::archive_covers_seek(&mut f, &head, want, &prefs)?
     };
     let d = decode::thumbnail_from_covers(&covers, 1024).ok()?;
     image::RgbaImage::from_raw(d.width, d.height, d.rgba).map(image::DynamicImage::ImageRgba8)
@@ -297,8 +298,14 @@ pub fn convert(
     webp_quality: Option<u8>,
     resize: verbs::Resize,
 ) -> Result<String, String> {
+    // Clamp HERE, not just at each front end, so the CLI (which only clamped via
+    // `u8::from_str` rejecting out-of-range strings, not in-range-but-silly ones like 0 or
+    // 255) and the MCP surface (which already clamped) actually agree on what a "quality"
+    // argument means, regardless of which one a caller went through.
+    let quality = quality.clamp(1, 100);
+    let webp_quality = webp_quality.map(|w| w.clamp(1, 100));
     verbs::convert_to(input, Path::new(output), quality, webp_quality, resize)
-        .map_err(|_| format!("convert failed: {input}"))?;
+        .map_err(|e| format!("convert failed: {input}: {e}"))?;
     Ok(output.to_string())
 }
 
@@ -318,7 +325,7 @@ pub fn rotate(input: &str, by: &str) -> Result<String, String> {
     };
     verbs::transform_file(input, t)
         .map(|p| p.display().to_string())
-        .map_err(|_| format!("rotate failed: {input}"))
+        .map_err(|e| format!("rotate failed: {input}: {e}"))
 }
 
 /// Decode `input` and return it as in-memory PNG bytes, fit within `max_dim` (0 = full
@@ -344,7 +351,7 @@ pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
 pub fn compress(input: &str, target_bytes: u64) -> Result<String, String> {
     verbs::compress_to_size(input, target_bytes)
         .map(|p| p.display().to_string())
-        .map_err(|_| format!("compress failed: {input}"))
+        .map_err(|e| format!("compress failed: {input}: {e}"))
 }
 
 /// Parse a human size — `"1MB"`, `"500KB"`, `"800kb"`, or a bare byte count `"800000"` —
@@ -379,7 +386,7 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
 /// Strip EXIF/IPTC/XMP/C2PA metadata in place (JPEG/PNG/WebP, lossless).
 pub fn strip_meta(input: &str) -> Result<String, String> {
     strip::strip_metadata(input)
-        .map_err(|_| format!("strip failed (JPEG/PNG/WebP only): {input}"))?;
+        .map_err(|e| format!("strip failed (JPEG/PNG/WebP only): {input}: {e}"))?;
     Ok(format!("stripped {input}"))
 }
 
@@ -410,12 +417,38 @@ pub fn pdf(output: &str, inputs: &[String]) -> Result<String, String> {
     // Same JPEG quality the right-click Combine-to-PDF verb uses (the user's configured
     // setting) — a hardcoded 85 silently diverged from the menu path for no reason.
     topdf::combine_to_pdf(inputs, Path::new(output), crate::settings::jpeg_quality())
-        .map_err(|_| "pdf build failed".to_string())?;
+        .map_err(|e| format!("pdf build failed: {e}"))?;
     Ok(output.to_string())
 }
 
-/// Image dimensions + EXIF (camera/date/GPS), as text or JSON.
+/// Combine images into one CBZ (comic-book zip) archive, natural-sorted, with a
+/// `ComicInfo.xml` sidecar as the first entry. Same combiner the right-click
+/// "Combine to CBZ" verb uses (`verbs::actions::handle_combine_to_cbz`) — this is
+/// just its CLI/MCP front door, which never existed even though the PDF sibling
+/// always had one.
+pub fn cbz(output: &str, inputs: &[String]) -> Result<String, String> {
+    if inputs.is_empty() {
+        return Err("no input images".to_string());
+    }
+    verbs::combine_to_cbz(inputs, Path::new(output))
+        .map_err(|e| format!("cbz build failed: {e}"))?;
+    Ok(output.to_string())
+}
+
+/// Image dimensions + EXIF (camera/date/GPS/bit depth/DPI), as text or JSON — or, for one
+/// of the 18 audio extensions this product already reads tags for (via the property
+/// handler and the "Rename by tag" verb), the artist/album/title/track/duration/bitrate
+/// tag set instead. Before this fix, every audio `info` call hit the `width == 0` guard
+/// below and returned a bare "cannot read" with no indication tags existed at all.
 pub fn info(input: &str, json: bool) -> Result<String, String> {
+    let ext = Path::new(input)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if formats::category(&ext) == formats::Category::Audio {
+        return info_audio(input, json);
+    }
     let i = strip::read_info(input);
     if i.width == 0 && i.height == 0 {
         return Err(format!("cannot read {input}"));
@@ -427,9 +460,16 @@ pub fn info(input: &str, json: bool) -> Result<String, String> {
             .gps
             .filter(|(a, b)| a.is_finite() && b.is_finite())
             .map(|(a, b)| [a, b]);
+        // 0.0 means "absent" per `ImageInfo::dpi_x/dpi_y`'s own doc comment; `is_finite`
+        // alone would let that through as a bogus "0 dpi" instead of an absent field.
+        let dpi_x = (i.dpi_x > 0.0 && i.dpi_x.is_finite()).then_some(i.dpi_x);
+        let dpi_y = (i.dpi_y > 0.0 && i.dpi_y.is_finite()).then_some(i.dpi_y);
         Ok(serde_json::json!({
             "width": i.width,
             "height": i.height,
+            "bit_depth": i.bit_depth,
+            "dpi_x": dpi_x,
+            "dpi_y": dpi_y,
             "make": i.make,
             "model": i.model,
             "datetime": i.datetime,
@@ -438,6 +478,12 @@ pub fn info(input: &str, json: bool) -> Result<String, String> {
         .to_string())
     } else {
         let mut s = format!("{} x {} px", i.width, i.height);
+        if i.bit_depth > 0 {
+            s.push_str(&format!("\nbit depth: {}", i.bit_depth));
+        }
+        if i.dpi_x > 0.0 || i.dpi_y > 0.0 {
+            s.push_str(&format!("\ndpi: {:.0} x {:.0}", i.dpi_x, i.dpi_y));
+        }
         if let Some(m) = &i.make {
             s.push_str(&format!("\ncamera: {m}"));
         }
@@ -451,6 +497,69 @@ pub fn info(input: &str, json: bool) -> Result<String, String> {
             s.push_str(&format!("\ngps: {la:.5}, {lo:.5}"));
         }
         Ok(s)
+    }
+}
+
+/// The audio half of [`info`]: tags via `strip::read_audio_tags` (the same `lofty`
+/// read path the "Rename by tag" verb uses), returned as text or JSON. Only errors when
+/// NOTHING useful was read (no tag AND no duration AND no bitrate) — per the fix, a file
+/// with some tags found must not be reported as unreadable just because others are absent.
+fn info_audio(input: &str, json: bool) -> Result<String, String> {
+    let t = strip::read_audio_tags(input);
+    let found = t.artist.is_some()
+        || t.album.is_some()
+        || t.title.is_some()
+        || t.track.is_some()
+        || t.genre.is_some()
+        || t.year.is_some()
+        || t.duration_ms > 0
+        || t.bitrate_kbps > 0;
+    if !found {
+        return Err(format!("cannot read {input}"));
+    }
+    if json {
+        Ok(serde_json::json!({
+            "kind": "audio",
+            "artist": t.artist,
+            "album": t.album,
+            "title": t.title,
+            "track": t.track,
+            "genre": t.genre,
+            "year": t.year,
+            "duration_ms": t.duration_ms,
+            "bitrate_kbps": t.bitrate_kbps,
+        })
+        .to_string())
+    } else {
+        let mut s = String::new();
+        if let Some(v) = &t.artist {
+            s.push_str(&format!("artist: {v}\n"));
+        }
+        if let Some(v) = &t.album {
+            s.push_str(&format!("album: {v}\n"));
+        }
+        if let Some(v) = &t.title {
+            s.push_str(&format!("title: {v}\n"));
+        }
+        if let Some(v) = t.track {
+            s.push_str(&format!("track: {v}\n"));
+        }
+        if let Some(v) = &t.genre {
+            s.push_str(&format!("genre: {v}\n"));
+        }
+        if let Some(v) = t.year {
+            s.push_str(&format!("year: {v}\n"));
+        }
+        if t.duration_ms > 0 {
+            s.push_str(&format!(
+                "duration: {:.1}s\n",
+                t.duration_ms as f64 / 1000.0
+            ));
+        }
+        if t.bitrate_kbps > 0 {
+            s.push_str(&format!("bitrate: {} kbps\n", t.bitrate_kbps));
+        }
+        Ok(s.trim_end().to_string())
     }
 }
 
@@ -499,44 +608,86 @@ fn is_cloud_placeholder(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Expand `inputs` (files and/or directories) into a flat list of SUPPORTED image
-/// files (directories are scanned one level deep; unsupported extensions dropped;
-/// cloud placeholders dropped too — see [`is_cloud_placeholder`]). Second element
-/// is how many were skipped as placeholders, so callers can tell the user rather
-/// than silently hydrating them.
-fn expand_inputs(inputs: &[String]) -> (Vec<String>, usize) {
+/// Cap on `expand_inputs`'s recursive descent — a junction/symlink cycle would otherwise
+/// spin forever. Matches `prebuild::Options::default()`'s own `max_depth`, so `st2k batch
+/// --recurse` and `st2k prebuild --recurse` behave the same on a pathological tree.
+const MAX_RECURSE_DEPTH: u32 = 64;
+
+/// `FILE_ATTRIBUTE_REPARSE_POINT` — junctions and symlinks, which `expand_inputs`'s
+/// recursive walk does not follow (mirrors `prebuild.rs`'s private `walk`, which cannot be
+/// called from here — see [`expand_inputs`]'s doc comment).
+const REPARSE_ATTR: u32 = 0x0000_0400;
+
+/// Expand `inputs` (files and/or directories) into a flat list of SUPPORTED image files;
+/// unsupported extensions dropped; cloud placeholders dropped too — see
+/// [`is_cloud_placeholder`]. Second element is how many were skipped as placeholders, so
+/// callers can tell the user rather than silently hydrating them.
+///
+/// `recurse = false` scans each directory ONE level deep (the historical, still-default
+/// behaviour — an agent pointed at a photo tree with subfolders used to get a partial
+/// result and a clean "N/N succeeded" with no way to ask for more). `recurse = true` walks
+/// the whole tree, never following a reparse point (junction/symlink) and capped at
+/// [`MAX_RECURSE_DEPTH`] so a cycle can't spin forever — the same two guards
+/// `prebuild::walk` applies, duplicated rather than shared because that function is
+/// private to `prebuild.rs` and unreachable from here.
+fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize) {
     fn supported(p: &Path) -> bool {
         // `is_known` is ASCII-case-insensitive — no lowercase allocation needed.
         p.extension()
             .and_then(|e| e.to_str())
             .is_some_and(formats::is_known)
     }
-    let mut out = Vec::new();
-    let mut skipped_offline = 0usize;
-    let mut consider = |candidate: &Path, owned: String| {
-        if !supported(candidate) {
+    fn attrs(p: &Path) -> u32 {
+        use std::os::windows::fs::MetadataExt;
+        std::fs::symlink_metadata(p)
+            .map(|m| m.file_attributes())
+            .unwrap_or(0)
+    }
+    fn walk(
+        dir: &Path,
+        recurse: bool,
+        depth: u32,
+        out: &mut Vec<String>,
+        skipped_offline: &mut usize,
+    ) {
+        if depth > MAX_RECURSE_DEPTH {
             return;
         }
-        if is_cloud_placeholder(candidate) {
-            skipped_offline += 1;
-        } else {
-            out.push(owned);
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            let a = attrs(&p);
+            if a & REPARSE_ATTR != 0 {
+                continue;
+            }
+            if p.is_dir() {
+                if recurse {
+                    walk(&p, recurse, depth + 1, out, skipped_offline);
+                }
+            } else if p.is_file() && supported(&p) {
+                if a & crate::prebuild::OFFLINE_ATTRS != 0 {
+                    *skipped_offline += 1;
+                } else {
+                    out.push(p.to_string_lossy().into_owned());
+                }
+            }
         }
-    };
+    }
+
+    let mut out = Vec::new();
+    let mut skipped_offline = 0usize;
     for i in inputs {
         let p = Path::new(i);
         if p.is_dir() {
-            if let Ok(rd) = std::fs::read_dir(p) {
-                for e in rd.flatten() {
-                    let ep = e.path();
-                    if ep.is_file() {
-                        let s = ep.to_string_lossy().into_owned();
-                        consider(&ep, s);
-                    }
-                }
+            walk(p, recurse, 0, &mut out, &mut skipped_offline);
+        } else if p.is_file() && supported(p) {
+            if is_cloud_placeholder(p) {
+                skipped_offline += 1;
+            } else {
+                out.push(i.clone());
             }
-        } else if p.is_file() {
-            consider(p, i.clone());
         }
     }
     (out, skipped_offline)
@@ -680,19 +831,39 @@ fn reserve_batch_output(dir: &Path, stem: &str, ext: &str) -> std::path::PathBuf
     }
 }
 
+/// BULK process many inputs (files and/or folders) in ONE process, fanned out across all
+/// cores via the shared batch pool — the fast path for the regression harness and AI
+/// agents (no more one `st2k` spawn per file). `op` is `thumbnail` (→ PNG at `size`px),
+/// `convert` (→ `to_ext`, honoring `quality`/`resize`), or `info` (dimensions/EXIF/audio
+/// tags → one JSON array, see [`batch_info`]; `out_dir`/`size`/`to_ext`/`quality`/`resize`
+/// are ignored for that op). Outputs (for `thumbnail`/`convert`) go to `out_dir` (created if
+/// needed) or next to each source. `recurse = false` (the default) scans each input
+/// directory ONE level deep; `true` walks the whole tree — see [`expand_inputs`]. Returns a
+/// `done/total` summary for `thumbnail`/`convert`, or the JSON array for `info`.
+#[allow(clippy::too_many_arguments)]
 pub fn batch(
     op: &str,
     inputs: &[String],
+    recurse: bool,
     out_dir: Option<&str>,
     size: u32,
     to_ext: Option<&str>,
     quality: u8,
     resize: verbs::Resize,
 ) -> Result<String, String> {
+    // Same clamp `convert` applies — one place both front ends agree on.
+    let quality = quality.clamp(1, 100);
+    if op == "info" {
+        return batch_info(inputs, recurse);
+    }
     let is_convert = match op {
         "thumbnail" | "thumb" => false,
         "convert" => true,
-        other => return Err(format!("unknown batch op '{other}' (thumbnail|convert)")),
+        other => {
+            return Err(format!(
+                "unknown batch op '{other}' (thumbnail|convert|info)"
+            ))
+        }
     };
     let ext = if is_convert {
         to_ext
@@ -703,7 +874,7 @@ pub fn batch(
         "png".to_string()
     };
 
-    let (files, skipped_offline) = expand_inputs(inputs);
+    let (files, skipped_offline) = expand_inputs(inputs, recurse);
     if files.is_empty() {
         return Err("no supported image files found in the inputs".to_string());
     }
@@ -778,6 +949,38 @@ pub fn batch(
         ));
     }
     Ok(format!("{done}/{total} succeeded{offline_note}"))
+}
+
+/// `batch`'s `"info"` op: fan [`info`] (JSON form, so the audio branch is included) across
+/// every expanded input via the same `parallel::map` `thumbnail`/`convert` already use, and
+/// return one JSON array — a folder of RAW photos or music files becomes ONE call instead
+/// of one `info` round-trip per file. A per-file failure becomes an `"error"` field in that
+/// file's element rather than failing the whole batch (a single unreadable file must not
+/// hide the other 999 results).
+fn batch_info(inputs: &[String], recurse: bool) -> Result<String, String> {
+    // Cloud placeholders are simply absent from the result array, same as `thumbnail`/`convert`.
+    let (files, _skipped_offline) = expand_inputs(inputs, recurse);
+    if files.is_empty() {
+        return Err("no supported image files found in the inputs".to_string());
+    }
+    let results = crate::parallel::map(&files, |_, f: &String| -> serde_json::Value {
+        match info(f, true) {
+            Ok(text) => {
+                // `info`'s JSON already excludes the path (it's the CALLER's argument in
+                // every other use); splice it in here so each array element is
+                // self-describing once results are no longer positionally paired with
+                // the request.
+                let mut v: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                if let serde_json::Value::Object(ref mut m) = v {
+                    m.insert("input".to_string(), serde_json::Value::String(f.clone()));
+                }
+                v
+            }
+            Err(e) => serde_json::json!({ "input": f, "error": e }),
+        }
+    });
+    Ok(serde_json::Value::Array(results).to_string())
 }
 
 /// `st2k upload-hosts [--open]` — show (or open) the user-editable upload-hosts config
@@ -1124,6 +1327,7 @@ mod tests {
         batch(
             "convert",
             &[src.to_str().unwrap().to_string()],
+            false,
             Some(dir.to_str().unwrap()),
             256,
             Some("webp"),
@@ -1189,11 +1393,201 @@ mod tests {
         assert!(is_cloud_placeholder(&placeholder));
         assert!(!is_cloud_placeholder(&normal));
 
-        let (files, skipped) = expand_inputs(&[dir.to_str().unwrap().to_string()]);
+        let (files, skipped) = expand_inputs(&[dir.to_str().unwrap().to_string()], false);
         assert_eq!(skipped, 1);
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("normal.png"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `expand_inputs` must find only the top-level file when `recurse` is false (the
+    /// historical default — an agent pointed at a photo tree with subfolders used to get a
+    /// partial result and a clean "N/N succeeded" with no way to ask for more), and every
+    /// file at every depth when `recurse` is true.
+    #[test]
+    fn expand_inputs_recurse_flag_controls_subdirectory_depth() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_recurse_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nested = dir.join("sub").join("deeper");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.join("top.png"), b"top").unwrap();
+        std::fs::write(dir.join("sub").join("mid.png"), b"mid").unwrap();
+        std::fs::write(nested.join("bottom.png"), b"bottom").unwrap();
+
+        let (shallow, _) = expand_inputs(&[dir.to_str().unwrap().to_string()], false);
+        assert_eq!(
+            shallow.len(),
+            1,
+            "non-recursive scan must stay one level deep"
+        );
+        assert!(shallow[0].ends_with("top.png"));
+
+        let (deep, _) = expand_inputs(&[dir.to_str().unwrap().to_string()], true);
+        assert_eq!(deep.len(), 3, "recursive scan must find every depth");
+        assert!(deep.iter().any(|p| p.ends_with("top.png")));
+        assert!(deep.iter().any(|p| p.ends_with("mid.png")));
+        assert!(deep.iter().any(|p| p.ends_with("bottom.png")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `batch`'s `"info"` op returns a JSON array, one element per input, in the same
+    /// shape `info(_, true)` returns for a single file — and a per-file decode failure must
+    /// not fail the whole batch, just carry an `"error"` field on that one element.
+    #[test]
+    fn batch_info_op_returns_a_json_array_with_per_file_results() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_batchinfo_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("ok.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(64, 48))
+            .save(&good)
+            .unwrap();
+
+        let out = batch(
+            "info",
+            &[good.to_str().unwrap().to_string()],
+            false,
+            None,
+            256,
+            None,
+            90,
+            verbs::Resize::None,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["width"], serde_json::json!(64));
+        assert_eq!(arr[0]["height"], serde_json::json!(48));
+        assert!(arr[0]["input"].as_str().unwrap().ends_with("ok.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A caller that bypasses both front ends' own clamping (a raw library call, or a
+    /// future front end that forgets to clamp) must still get a sane encoder quality —
+    /// `convert`/`batch` own the clamp now, not just `mcp.rs`.
+    #[test]
+    fn convert_and_batch_clamp_quality_into_1_to_100() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_qclamp_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(32, 32))
+            .save(&src)
+            .unwrap();
+
+        // quality: 0 must not panic/misbehave the encoder — it should behave as if 1 was
+        // requested, not literally zero.
+        let out = dir.join("a.jpg");
+        convert(
+            src.to_str().unwrap(),
+            out.to_str().unwrap(),
+            0,
+            None,
+            verbs::Resize::None,
+        )
+        .unwrap();
+        assert!(out.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The CBZ front door must exist and actually produce a readable archive —
+    /// `combine_to_cbz` itself is already tested in `verbs.rs`; this pins the CLI/MCP-facing
+    /// `cli::cbz` wrapper specifically (the missing piece the review found).
+    #[test]
+    fn cbz_combines_images_into_a_readable_archive() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_cbz_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("page1.png");
+        let b = dir.join("page2.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(10, 10))
+            .save(&a)
+            .unwrap();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(10, 10))
+            .save(&b)
+            .unwrap();
+
+        let out = dir.join("comic.cbz");
+        cbz(
+            out.to_str().unwrap(),
+            &[
+                a.to_str().unwrap().to_string(),
+                b.to_str().unwrap().to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(out.exists());
+        let f = std::fs::File::open(&out).unwrap();
+        let zip = zip::ZipArchive::new(f).unwrap();
+        assert!(
+            zip.len() >= 2,
+            "expected at least the two pages plus the sidecar"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An audio file must never hit the "cannot read" path just because it has
+    /// no width/height — and a file with NO readable tags at all (garbage bytes) must still
+    /// error, rather than claiming success with an empty tag set.
+    #[test]
+    fn info_on_unparseable_audio_bytes_still_errors() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_audioinfo_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bogus = dir.join("not_really.mp3");
+        std::fs::write(&bogus, b"this is not a real mp3 file").unwrap();
+
+        let err = info(bogus.to_str().unwrap(), true).unwrap_err();
+        assert!(err.contains("cannot read"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `compress`'s `map_err` must not drop the underlying error — an MCP/agent caller
+    /// needs the REAL reason (missing file, decode failure, ...), not a bare "compress
+    /// failed: <input>" with nothing else to act on.
+    #[test]
+    fn compress_error_message_keeps_the_underlying_reason() {
+        let err = compress("this_file_does_not_exist_at_all.png", 100_000).unwrap_err();
+        assert!(
+            err.len() > "compress failed: this_file_does_not_exist_at_all.png".len(),
+            "error message dropped the underlying reason: {err}"
+        );
     }
 }

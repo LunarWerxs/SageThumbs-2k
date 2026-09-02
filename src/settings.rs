@@ -51,6 +51,20 @@ pub fn portable_set(sub: Option<&str>, name: &str, value: &str) -> windows_regis
     io_result(store::set_string(sub, name, value))
 }
 
+/// Remove one value from the portable ini. See [`portable_values`]. Used by the settings
+/// import "replace, don't merge" pass to drop a stored name the imported document doesn't
+/// carry (item 33/221).
+pub fn portable_remove(sub: Option<&str>, name: &str) {
+    store::remove_value(sub, name)
+}
+
+/// Remove a whole subkey section from the portable ini. See [`portable_subkeys`]. Used by the
+/// same import "replace, don't merge" pass to drop a whole section the document doesn't
+/// mention at all (item 33/221).
+pub fn portable_remove_subkey(name: &str) {
+    store::remove_section(name)
+}
+
 /// The HKCU subkey path every settings read/write below opens — normally [`ROOT`], but
 /// redirectable to a scratch subkey via the `ST2K_SETTINGS_ROOT` env var for TEST
 /// ISOLATION. The in-process integration tests (`tests/explorer_command.rs`,
@@ -73,6 +87,17 @@ fn hkcu_root() -> &'static str {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| ROOT.to_string())
     })
+}
+
+/// Public window onto [`hkcu_root`], for the ONE other place in the codebase that opens the
+/// settings key directly by name rather than through a getter/setter here:
+/// `settings_io.rs`'s export/import. It used to open the literal [`ROOT`] constant instead,
+/// which silently escaped the `ST2K_SETTINGS_ROOT` test-isolation redirect — the in-process
+/// integration tests would export/import the developer's REAL settings even while every other
+/// read/write in the same process was safely sandboxed (item 95). Anything that needs "the
+/// HKCU subkey settings live under" should call this rather than hand-typing [`ROOT`].
+pub fn hkcu_root_path() -> &'static str {
+    hkcu_root()
 }
 
 /// The storage backend every getter/setter in this module goes through.
@@ -169,7 +194,15 @@ mod store {
     /// hand-written file that omits the `[Settings]` header still work. A trailing
     /// `; comment` after a value on the same line is stripped too (see
     /// [`strip_inline_comment`]).
+    ///
+    /// A leading UTF-8 BOM (PowerShell's default `Set-Content`/`Out-File -Encoding UTF8`, and
+    /// several editors) is stripped first. Left in place, it lands on the first line and
+    /// neither the comment check (`starts_with(';')`) nor the section-header check
+    /// (`strip_prefix('[')`) recognizes it, so that whole line — often the first
+    /// `[section]` header in a hand-edited file — is silently dropped and everything after
+    /// it misfiles into the root section instead (item 24/P24).
     fn parse(text: &str) -> Doc {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut doc = Doc::new();
         let mut section = ROOT_SECTION.to_string();
         for line in text.lines() {
@@ -213,24 +246,34 @@ mod store {
         out
     }
 
-    /// The parsed file. A missing file parses as empty (every getter then sees its default),
-    /// which is what makes shipping a zero-byte marker ini a valid "factory defaults" state.
+    /// The parsed file. A MISSING file (`NotFound`) parses as empty (every getter then sees
+    /// its default), which is what makes shipping a zero-byte marker ini a valid "factory
+    /// defaults" state.
     ///
-    /// DELIBERATELY UNCACHED, matching the module-level rule that settings reads aren't
-    /// cached so an edit takes effect immediately. A cache keyed on `(mtime, len)` was tried
-    /// and is WRONG: flipping `1` to `0`, or `512` to `256`, changes neither, so a same-length
-    /// edit landing in the same filesystem clock tick as the previous write is invisible —
-    /// `tests/portable_settings.rs` reproduced exactly that. Re-reading costs a warm page-cache
-    /// read of a file measured in hundreds of bytes, and the two callers that would otherwise
-    /// read per-item ([`super::thumb_settings`], [`super::menu_visibility`]) already take one
-    /// snapshot per operation, so there is no hot path this protects.
-    fn load() -> Doc {
+    /// Any OTHER read error — non-UTF-8 bytes from a Notepad "ANSI" save, a sharing violation
+    /// from AV/backup, an I/O hiccup — is returned as `Err` rather than collapsed to the same
+    /// empty `Doc`. That distinction is the whole point: [`update`] must not treat "I could
+    /// not read the real file" as "the file is empty" and then write that emptiness back over
+    /// it, which used to make one unreadable read followed by any setting write silently
+    /// destroy the user's whole portable configuration (item 9/204/P9).
+    ///
+    /// DELIBERATELY UNCACHED on success, matching the module-level rule that settings reads
+    /// aren't cached so an edit takes effect immediately. A cache keyed on `(mtime, len)` was
+    /// tried and is WRONG: flipping `1` to `0`, or `512` to `256`, changes neither, so a
+    /// same-length edit landing in the same filesystem clock tick as the previous write is
+    /// invisible — `tests/portable_settings.rs` reproduced exactly that. Re-reading costs a
+    /// warm page-cache read of a file measured in hundreds of bytes, and the two callers that
+    /// would otherwise read per-item ([`super::thumb_settings`], [`super::menu_visibility`])
+    /// already take one snapshot per operation, so there is no hot path this protects.
+    fn load() -> io::Result<Doc> {
         let Some(path) = ini_path() else {
-            return Doc::new();
+            return Ok(Doc::new());
         };
-        std::fs::read_to_string(path)
-            .map(|t| parse(&t))
-            .unwrap_or_default()
+        match std::fs::read_to_string(path) {
+            Ok(t) => Ok(parse(&t)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Doc::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Short-lived cross-process lock guarding one `update()` call, so two writers to the
@@ -241,26 +284,38 @@ mod store {
     struct IniLock(windows::Win32::Foundation::HANDLE);
 
     impl IniLock {
-        /// Best-effort: a lock that could not be created, or a wait that timed out (a
+        /// Best-effort: a lock that could not be created, or two waits that both timed out (a
         /// leaked/wedged mutex must never hang a settings write forever — the same
         /// reasoning as `decode::magick_gate`'s finite wait), returns `None` and the
         /// caller proceeds unlocked rather than blocking a shell/host thread forever.
+        ///
+        /// Two waits, not one: the first (2000 ms) is the original budget; a SHORT retry
+        /// (500 ms) after it catches the common case of a holder that was mid-edit and about
+        /// to finish, instead of falling through unlocked on the first miss and silently
+        /// risking a lost concurrent write (item 93). Still bounded — a genuinely wedged or
+        /// leaked mutex gives up after ~2.5 s total, and the fallthrough is logged so a
+        /// degraded run leaves a trace instead of degrading silently.
         fn acquire() -> Option<Self> {
             use windows::core::w;
             use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
             use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
             let h =
                 unsafe { CreateMutexW(None, false, w!("Local\\SageThumbs2K.PortableIni")) }.ok()?;
-            match unsafe { WaitForSingleObject(h, 2_000) } {
-                // WAIT_ABANDONED means a previous holder died mid-edit without releasing;
-                // we still got ownership, and the file itself is never left half-written
-                // because `write_atomic` only replaces it via a completed rename.
-                WAIT_OBJECT_0 | WAIT_ABANDONED => Some(IniLock(h)),
-                _ => {
-                    let _ = unsafe { windows::Win32::Foundation::CloseHandle(h) };
-                    None
+            for timeout_ms in [2_000u32, 500] {
+                match unsafe { WaitForSingleObject(h, timeout_ms) } {
+                    // WAIT_ABANDONED means a previous holder died mid-edit without releasing;
+                    // we still got ownership, and the file itself is never left half-written
+                    // because `write_atomic` only replaces it via a completed rename.
+                    WAIT_OBJECT_0 | WAIT_ABANDONED => return Some(IniLock(h)),
+                    _ => {}
                 }
             }
+            crate::safety::log_debug(
+                "portable ini: IniLock wait timed out twice; proceeding unlocked (a concurrent \
+                 write may be lost)",
+            );
+            let _ = unsafe { windows::Win32::Foundation::CloseHandle(h) };
+            None
         }
     }
 
@@ -291,12 +346,28 @@ mod store {
     /// Apply `edit` to the parsed file and write it back. Held under [`IniLock`] for the
     /// whole load-edit-write so two writers can't race and silently drop one edit, and
     /// written via [`write_atomic`] so a crash mid-write can't leave a truncated ini
-    /// behind. The cache re-`stat`s, so the next read picks the new content up without
-    /// extra bookkeeping here.
+    /// behind.
+    ///
+    /// **Aborts without writing when [`load`] fails with a real error** (anything but a
+    /// missing file) rather than treating the unreadable file as empty — the old
+    /// `unwrap_or_default` behaviour rendered that empty `Doc` straight back over the real
+    /// file, so one unreadable read followed by any setting write destroyed the user's whole
+    /// portable configuration with no error anywhere (item 9/204/P9). Logged via
+    /// `log_debug` so the failure leaves a trace even though every public setter here is
+    /// best-effort.
     fn update(edit: impl FnOnce(&mut Doc)) -> io::Result<()> {
         let path = ini_path().ok_or_else(|| io::Error::other("not in portable mode"))?;
         let _lock = IniLock::acquire();
-        let mut doc = load();
+        let mut doc = match load() {
+            Ok(d) => d,
+            Err(e) => {
+                crate::safety::log_debug(&format!(
+                    "portable ini: aborting write, could not read the existing file at {}: {e}",
+                    path.display()
+                ));
+                return Err(e);
+            }
+        };
         edit(&mut doc);
         write_atomic(path, &render(&doc))
     }
@@ -307,14 +378,36 @@ mod store {
     }
 
     pub fn get_string(sub: Option<&str>, name: &str) -> Option<String> {
-        load().get(section(sub))?.get(name).cloned()
+        // An unreadable file reads as "value absent" here (same outcome as a missing file),
+        // matching the pre-existing read-side contract; only `update`'s WRITE path treats the
+        // two differently (see `load`'s and `update`'s doc comments).
+        load().ok()?.get(section(sub))?.get(name).cloned()
     }
 
     pub fn get_u32(sub: Option<&str>, name: &str) -> Option<u32> {
         get_string(sub, name)?.parse().ok()
     }
 
+    /// Whether `value` is safe to store as `name=value` in the ini. It must not contain a
+    /// newline — `render` writes one `key=value` line per entry, so an embedded `\r`/`\n`
+    /// would inject a literal extra line that `parse` then reads back as a bogus new key, or
+    /// (if it starts with `[`) a spoofed `[section]` header, on the very next load. It must
+    /// also not itself START WITH `[`, `;` or `#`, the same three lead characters `parse`
+    /// treats as syntax rather than a value. Mirrors the `ini_safe()` guard
+    /// `settings_io.rs`'s import already applies to its own writes — this generic setter did
+    /// not share it (item 112).
+    fn value_is_ini_safe(value: &str) -> bool {
+        !value.contains(['\r', '\n']) && !value.starts_with(['[', ';', '#'])
+    }
+
     pub fn set_string(sub: Option<&str>, name: &str, value: &str) -> io::Result<()> {
+        if !value_is_ini_safe(value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "value contains a newline or starts with an ini syntax character ([, ;, #) \
+                 and cannot be safely stored",
+            ));
+        }
         let (sec, name) = (section(sub).to_string(), name.to_string());
         update(|doc| {
             doc.entry(sec).or_default().insert(name, value.to_string());
@@ -334,17 +427,31 @@ mod store {
         });
     }
 
-    /// Every value in one section, for the settings export/import round-trip.
+    /// Remove a whole subkey section (everything under it), for the settings import
+    /// "replace, don't merge" pass — a section the imported document doesn't carry at all is
+    /// dropped in one call rather than one `remove_value` per stored name (item 33/221).
+    pub fn remove_section(name: &str) {
+        let sec = name.to_string();
+        let _ = update(|doc| {
+            doc.remove(&sec);
+        });
+    }
+
+    /// Every value in one section, for the settings export/import round-trip. An unreadable
+    /// file reads as empty here, same as [`get_string`].
     pub fn section_values(sub: Option<&str>) -> Vec<(String, String)> {
         load()
+            .unwrap_or_default()
             .get(section(sub))
             .map(|v| v.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
     }
 
-    /// The names of every non-root section (i.e. what would be registry subkeys).
+    /// The names of every non-root section (i.e. what would be registry subkeys). An
+    /// unreadable file reads as empty here, same as [`get_string`].
     pub fn subkey_names() -> Vec<String> {
         load()
+            .unwrap_or_default()
             .keys()
             .filter(|s| *s != ROOT_SECTION)
             .cloned()
@@ -355,9 +462,10 @@ mod store {
     /// caller that's about to look up many different sections (e.g. [`super::format_enabled_snapshot`]
     /// sweeping every registered extension). Every other getter above calls `load()` itself per
     /// lookup, which is fine for a handful of reads but reparses the file from scratch on each
-    /// one — see [`load`]'s own doc comment for why that isn't cached at THIS layer.
+    /// one — see [`load`]'s own doc comment for why that isn't cached at THIS layer. An
+    /// unreadable file reads as empty here, same as [`get_string`].
     pub fn full_doc() -> BTreeMap<String, BTreeMap<String, String>> {
-        load()
+        load().unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -421,6 +529,56 @@ mod store {
             // No leading whitespace before the `#` -> not a comment, kept literally: the
             // value legitimately contains the character (e.g. a URL fragment).
             assert_eq!(doc[ROOT_SECTION]["Label"], "x#not-a-comment");
+        }
+
+        /// PowerShell's default `Set-Content`/`Out-File -Encoding UTF8` (and several editors)
+        /// writes a UTF-8 BOM. Without stripping it, the byte sits on the first content line
+        /// and neither the comment check nor the `[section]` check recognizes it, so a
+        /// hand-edited file's leading `[section]` header used to be silently dropped and
+        /// everything after it misfiled into the root section (item 24/P24).
+        #[test]
+        fn parse_strips_a_leading_utf8_bom() {
+            let doc = parse("\u{feff}[MenuItems]\nmenu_convert_into=0\n");
+            assert_eq!(doc["MenuItems"]["menu_convert_into"], "0");
+            assert!(
+                !doc.contains_key(ROOT_SECTION),
+                "the BOM'd [MenuItems] header must be recognized, not dropped into the root \
+                 section: {doc:?}"
+            );
+
+            // A BOM'd value-only file (no header at all) still lands in the root section, same
+            // as an un-BOM'd one — the strip must not eat a real leading character of content.
+            let doc2 = parse("\u{feff}EnableThumbs=0\n");
+            assert_eq!(doc2[ROOT_SECTION]["EnableThumbs"], "0");
+        }
+
+        /// A value containing a newline, or starting with `[`/`;`/`#`, would corrupt the ini on
+        /// the next parse: an embedded `\n` injects a literal extra line (a bogus key, or a
+        /// spoofed `[section]` header), and a leading `[`/`;`/`#` makes the WHOLE value read
+        /// back as syntax instead of data. `set_string` must refuse these rather than writing
+        /// them verbatim (item 112).
+        #[test]
+        fn set_string_rejects_values_that_would_corrupt_the_ini_on_reparse() {
+            for bad in [
+                "a\nEnableThumbs=0",
+                "a\r\nb",
+                "[Settings]",
+                ";a comment",
+                "#a comment",
+            ] {
+                assert!(
+                    !value_is_ini_safe(bad),
+                    "{bad:?} must be rejected as unsafe to store"
+                );
+            }
+            for good in [
+                "ordinary value",
+                r"C:\Users\me\Desktop",
+                "x#not-a-comment",
+                "",
+            ] {
+                assert!(value_is_ini_safe(good), "{good:?} must be accepted");
+            }
         }
 
         #[test]
@@ -830,6 +988,18 @@ pub struct ThumbSettings {
     /// the reverse is true, which is what this is for. Cover art is used as a FALLBACK
     /// whatever this says, since a file whose codec Windows lacks has no frame to show.
     pub prefer_cover_art: bool,
+    /// `VideoOffset` resolved to the [0.0, 0.95] fraction every seek site wants — see
+    /// [`video_offset_frac`].
+    pub video_offset_frac: f64,
+    /// `ArchiveCollage` — see [`archive_collage`]. The raw stored DWORD rather than a bool: the
+    /// consuming container code (P06b) reads it as a count/strength knob, not a pure toggle.
+    pub archive_collage: u32,
+    /// `ContainerPreferCover` — see [`container_prefer_cover`].
+    pub container_prefer_cover: bool,
+    /// `ContainerSort` — see [`container_sort`].
+    pub container_sort: bool,
+    /// `ContainerSkipScanlation` — see [`container_skip_scanlation`].
+    pub container_skip_scanlation: bool,
 }
 
 /// Read the per-`GetThumbnail` settings in one HKCU key open. Missing values fall
@@ -882,6 +1052,14 @@ pub fn thumb_settings() -> ThumbSettings {
         )),
         thumb_checker: g("ThumbChecker", 0) != 0,
         prefer_cover_art: g("VideoCoverArt", 0) != 0,
+        video_offset_frac: f64::from(clamp_video_offset_pct(g(
+            "VideoOffset",
+            DEFAULT_VIDEO_OFFSET_PCT,
+        ))) / 100.0,
+        archive_collage: g("ArchiveCollage", 1),
+        container_prefer_cover: g("ContainerPreferCover", 1) != 0,
+        container_sort: g("ContainerSort", 1) != 0,
+        container_skip_scanlation: g("ContainerSkipScanlation", 0) != 0,
     }
 }
 
@@ -958,18 +1136,33 @@ impl CornerMark {
     }
 }
 
-/// `CornerMark` — see [`CornerMark`]. Falls back to the pre-2.5 pair when it has never been
-/// written, so an upgrading install keeps the corner it already had.
+/// The install wizard's `CornerMark` choice, written by the elevated installer under
+/// `HKLM\Software\SageThumbs2K\CornerMark` — the same key path as [`ROOT`], but the machine
+/// hive, the same way `bin/app/license.rs`'s `LicenseMode` is written. `None` on a portable
+/// build (no installer, no HKLM write) or when the value has never been written.
+fn hklm_corner_mark() -> Option<u32> {
+    windows_registry::LOCAL_MACHINE
+        .open(ROOT)
+        .and_then(|k| k.get_u32("CornerMark"))
+        .ok()
+}
+
+/// `CornerMark` — see [`CornerMark`]. Resolution order: the user's own HKCU choice; failing
+/// that, the installer's wizard choice recorded in HKLM (item C3); failing that, the pre-2.5
+/// legacy pair, so an upgrading install keeps the corner it already had.
 pub fn corner_mark() -> CornerMark {
     match get_dword_opt("CornerMark") {
         Some(v) => CornerMark::from_dword(v),
-        // The legacy pair is READ here and never written again. Leaving the old values in place
-        // rather than deleting them costs nothing (this branch stops being reached the moment
-        // `CornerMark` exists) and keeps a downgrade working.
-        None => CornerMark::from_legacy(
-            get_dword("FormatBadge", 0) != 0,
-            get_dword("HideTypeOverlay", 0) != 0,
-        ),
+        None => match hklm_corner_mark() {
+            Some(v) => CornerMark::from_dword(v),
+            // The legacy pair is READ here and never written again. Leaving the old values in
+            // place rather than deleting them costs nothing (this branch stops being reached
+            // the moment `CornerMark` exists somewhere) and keeps a downgrade working.
+            None => CornerMark::from_legacy(
+                get_dword("FormatBadge", 0) != 0,
+                get_dword("HideTypeOverlay", 0) != 0,
+            ),
+        },
     }
 }
 
@@ -1078,10 +1271,13 @@ pub fn set_folder_prebuild_verb(on: bool) -> windows_registry::Result<()> {
 
 // ---- Convert-verb quality settings --------------------------------------
 
-/// Clamp a stored JPEG quality DWORD into the 0..=100 byte range. Pure so it
-/// can be tested without HKCU.
+/// Clamp a stored JPEG quality DWORD into the 1..=100 byte range. Pure so it
+/// can be tested without HKCU. `0` is refused rather than passed through — a saved quality of
+/// 0 is not "as small as possible", it silently produces a degenerate/near-blank JPEG (item
+/// 104), so the floor matches the lower bound every other quality knob in this module already
+/// uses (`cv_jpeg_quality`, `cv_webp_quality`, `cv_magick_quality` are all `.clamp(1, 100)`).
 pub(crate) fn clamp_quality(q: u32) -> u8 {
-    q.min(100) as u8
+    q.clamp(1, 100) as u8
 }
 
 /// Clamp a stored PNG compression DWORD into the legacy 0..=9 zlib range. Pure
@@ -1208,6 +1404,46 @@ pub fn set_screenshot_default_tool(index: u32) -> windows_registry::Result<()> {
 /// its submenu, so we don't crowd the main menu unless the user opts in.
 pub fn menu_quick_verbs() -> bool {
     get_dword("MenuQuickVerbs", 0) != 0
+}
+
+/// A snapshot of the three menu-gate settings ([`menu_enabled`], [`menu_all_file_types`],
+/// [`menu_quick_verbs`]), read with a SINGLE HKCU key open instead of one open per getter —
+/// the same collapsing [`ThumbSettings`]/[`thumb_settings`] already does for the per-thumbnail
+/// settings. `explorer.exe`'s modern-menu `GetState`/`EnumSubCommands` calls all three
+/// separately today, once per top-level menu item per right-click (item 132).
+#[derive(Clone, Copy, Debug)]
+pub struct MenuGate {
+    /// `EnableMenu` — master on/off for the right-click menu.
+    pub enabled: bool,
+    /// `MenuAllFileTypes` — show a condensed menu on unsupported selections too.
+    pub all_file_types: bool,
+    /// `MenuQuickVerbs` — surface the top verbs directly on the main right-click menu.
+    pub quick_verbs: bool,
+}
+
+/// Read the menu-gate settings in one HKCU key open. Missing values fall back to the same
+/// defaults the individual getters use, so the result is identical to calling
+/// [`menu_enabled`]/[`menu_all_file_types`]/[`menu_quick_verbs`] separately — just without the
+/// repeated opens.
+pub fn menu_gate() -> MenuGate {
+    let ini: Option<std::collections::HashMap<String, String>> =
+        store::portable().then(|| store::section_values(None).into_iter().collect());
+    let key = match ini {
+        Some(_) => None,
+        None => CURRENT_USER.open(hkcu_root()).ok(),
+    };
+    let gopt = |name: &str| -> Option<u32> {
+        if let Some(ini) = ini.as_ref() {
+            return ini.get(name).and_then(|v| v.parse().ok());
+        }
+        key.as_ref().and_then(|k| k.get_u32(name).ok())
+    };
+    let g = |name: &str, default: u32| gopt(name).unwrap_or(default);
+    MenuGate {
+        enabled: g("EnableMenu", 1) != 0,
+        all_file_types: g("MenuAllFileTypes", 0) != 0,
+        quick_verbs: g("MenuQuickVerbs", 0) != 0,
+    }
 }
 
 // NOTE: the old `modern_menu_active()` (HKLM `ModernMenuActive`) was REMOVED 2026-07-21.
@@ -1962,9 +2198,13 @@ mod tests {
         }
     }
 
+    /// Item 104: `0` used to pass through unchanged (a JPEG quality of 0 persists as a
+    /// near-blank file, a UX trap rather than a crash) — this test's own expectation changed
+    /// from asserting `clamp_quality(0) == 0` to asserting the floor, which is the fix.
     #[test]
-    fn clamp_quality_caps_at_100() {
-        assert_eq!(clamp_quality(0), 0);
+    fn clamp_quality_stays_within_one_to_hundred() {
+        assert_eq!(clamp_quality(0), 1, "0 must be refused, not stored as-is");
+        assert_eq!(clamp_quality(1), 1);
         assert_eq!(clamp_quality(DEFAULT_JPEG), DEFAULT_JPEG as u8);
         assert_eq!(clamp_quality(100), 100);
         // Over 100 is pinned to 100 (and must not wrap when cast to u8).
