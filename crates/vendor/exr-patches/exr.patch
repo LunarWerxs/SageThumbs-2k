@@ -1,0 +1,254 @@
+diff --git a/pristine/Cargo.toml b/patched/Cargo.toml
+index e1f9562..b96444f 100644
+--- a/pristine/Cargo.toml
++++ b/patched/Cargo.toml
+@@ -27,7 +27,7 @@ autobins = false
+ autoexamples = false
+ autotests = false
+ autobenches = false
+-description = "Read and write OpenEXR files without any unsafe code"
++description = "Read and write OpenEXR files"
+ readme = "README.md"
+ keywords = [
+     "exr",
+@@ -45,6 +45,11 @@ categories = [
+ license = "BSD-3-Clause"
+ repository = "https://github.com/johannesvollmer/exrs"
+ 
++[package.metadata.cargo-machete]
++# Intentional transitive-version pin for pulp. exr's Cargo.toml.orig documents
++# that pulp needs num-complex's 0.4.6 consts even though exr does not import it.
++ignored = ["num-complex"]
++
+ [badges.maintenance]
+ status = "actively-developed"
+ 
+diff --git a/pristine/Cargo.toml.orig b/patched/Cargo.toml.orig
+index 1ebbdd9..513ba93 100644
+--- a/pristine/Cargo.toml.orig
++++ b/patched/Cargo.toml.orig
+@@ -1,6 +1,6 @@
+ [package]
+ name = "exr"
+-description = "Read and write OpenEXR files without any unsafe code"
++description = "Read and write OpenEXR files"
+ keywords = ["exr", "openexr", "file", "binary", "io"]
+ categories = ["encoding", "filesystem", "graphics", "multimedia"]
+ 
+diff --git a/pristine/src/compression/dwa/lossy_dct/transfer_curve.rs b/patched/src/compression/dwa/lossy_dct/transfer_curve.rs
+index 88b7847..ad84897 100644
+--- a/pristine/src/compression/dwa/lossy_dct/transfer_curve.rs
++++ b/patched/src/compression/dwa/lossy_dct/transfer_curve.rs
+@@ -2,22 +2,81 @@
+ // half-float lookup tables the encoder and decoder use to apply them: linear
+ // values are stored nonlinearly before the DCT and converted back afterwards.
+ 
+-use std::sync::OnceLock;
++use std::{cell::UnsafeCell, mem::MaybeUninit, sync::OnceLock};
+ 
+ use half::f16;
+ 
+-pub(super) fn to_nonlinear_table() -> &'static [u16; 65536] {
+-    static TABLE: OnceLock<[u16; 65536]> = OnceLock::new();
++const TABLE_LEN: usize = u16::MAX as usize + 1;
++type TransferTable = [u16; TABLE_LEN];
+ 
+-    TABLE.get_or_init(|| {
+-        // Build the forward transfer table lazily so the hot path stays cheap
+-        // once the table is initialized.
+-        let mut table = [0u16; 65536];
+-        for (bits, slot) in table.iter_mut().enumerate() {
+-            *slot = dwa_convert_to_nonlinear(f16::from_bits(bits as u16)).to_bits();
++/// Loader-zeroed storage kept separate from the initialized flag. Combining
++/// the 128 KiB array and `OnceLock` in one static makes MSVC emit the whole
++/// object into the PE's file-backed `.data` section.
++struct TransferTableStorage {
++    table: UnsafeCell<MaybeUninit<TransferTable>>,
++}
++
++impl TransferTableStorage {
++    const fn new() -> Self {
++        Self {
++            table: UnsafeCell::new(MaybeUninit::uninit()),
++        }
++    }
++
++    fn get_or_init(
++        &'static self,
++        initialized: &'static OnceLock<()>,
++        convert: impl FnMut(f16) -> f16,
++    ) -> &'static TransferTable {
++        initialized.get_or_init(|| self.initialize(convert));
++        self.assume_init_ref()
++    }
++
++    /// Write every element before the paired `OnceLock` publishes completion.
++    ///
++    /// The pointer writes avoid creating a 128 KiB stack temporary. This method
++    /// is called only by `get_or_init`, whose lock excludes concurrent writers.
++    #[allow(unsafe_code, reason = "write-only access is serialized by the paired OnceLock")]
++    fn initialize(&self, mut convert: impl FnMut(f16) -> f16) {
++        let destination = self.table.get().cast::<u16>();
++
++        for bits in 0..=u16::MAX {
++            let converted = convert(f16::from_bits(bits)).to_bits();
++
++            // SAFETY: `destination` points at TABLE_LEN contiguous u16 slots,
++            // `bits` visits each valid index exactly once, and the paired
++            // OnceLock permits only one initializer at a time.
++            unsafe {
++                destination.add(bits as usize).write(converted);
++            }
+         }
+-        table
+-    })
++    }
++
++    /// Borrow the table only after the paired lock's acquire operation has
++    /// observed successful initialization.
++    #[allow(unsafe_code, reason = "the paired OnceLock publishes a fully initialized table")]
++    fn assume_init_ref(&'static self) -> &'static TransferTable {
++        // SAFETY: `get_or_init` calls this only after all TABLE_LEN elements
++        // were written and the OnceLock synchronized that write with readers.
++        // Initialization never mutates the table again.
++        unsafe { (&*self.table.get()).assume_init_ref() }
++    }
++}
++
++// SAFETY: all mutation is private to `initialize`, which runs under the paired
++// OnceLock exactly once. Readers are handed a shared reference only after that
++// lock publishes completion, and the table is immutable thereafter.
++#[allow(
++    unsafe_code,
++    reason = "interior mutation is serialized and published by the paired OnceLock"
++)]
++unsafe impl Sync for TransferTableStorage {}
++
++pub(super) fn to_nonlinear_table() -> &'static TransferTable {
++    static TABLE: TransferTableStorage = TransferTableStorage::new();
++    static INITIALIZED: OnceLock<()> = OnceLock::new();
++
++    TABLE.get_or_init(&INITIALIZED, dwa_convert_to_nonlinear)
+ }
+ 
+ fn dwa_convert_to_nonlinear(x: f16) -> f16 {
+@@ -45,18 +104,11 @@ fn dwa_convert_to_nonlinear(x: f16) -> f16 {
+ }
+ 
+ /// The stored nonlinear --> linear lookup table for all half bit patterns
+-pub(super) fn to_linear_table() -> &'static [u16; 65536] {
+-    static TABLE: OnceLock<[u16; 65536]> = OnceLock::new();
+-
+-    TABLE.get_or_init(|| {
+-        // Build the nonlinear -> linear transfer table lazily and reuse it
+-        // across every chunk.
+-        let mut table = [0u16; 65536];
+-        for (bits, slot) in table.iter_mut().enumerate() {
+-            *slot = dwa_convert_to_linear(f16::from_bits(bits as u16)).to_bits();
+-        }
+-        table
+-    })
++pub(super) fn to_linear_table() -> &'static TransferTable {
++    static TABLE: TransferTableStorage = TransferTableStorage::new();
++    static INITIALIZED: OnceLock<()> = OnceLock::new();
++
++    TABLE.get_or_init(&INITIALIZED, dwa_convert_to_linear)
+ }
+ 
+ fn dwa_convert_to_linear(x: f16) -> f16 {
+@@ -86,6 +138,10 @@ fn dwa_convert_to_linear(x: f16) -> f16 {
+ #[cfg(test)]
+ mod test {
+     use rand::{Rng, SeedableRng};
++    use std::sync::{
++        atomic::{AtomicUsize, Ordering},
++        Barrier,
++    };
+ 
+     use super::*;
+     use crate::image::validate_results::ValidateResult;
+@@ -137,4 +193,60 @@ mod test {
+             value.assert_approx_equals_result(&restored);
+         }
+     }
++
++    /// BSS storage must not change a single generated lookup value. Check all
++    /// 65,536 half-float bit patterns in both directions against the scalar
++    /// conversion functions that populated the original inline tables.
++    #[test]
++    fn transfer_tables_match_scalar_conversions_exactly() {
++        let to_nonlinear = to_nonlinear_table();
++        let to_linear = to_linear_table();
++
++        for bits in 0..=u16::MAX {
++            let value = f16::from_bits(bits);
++            assert_eq!(to_nonlinear[bits as usize], dwa_convert_to_nonlinear(value).to_bits());
++            assert_eq!(to_linear[bits as usize], dwa_convert_to_linear(value).to_bits());
++        }
++    }
++
++    /// Contending readers must publish one fully initialized table and execute
++    /// the conversion exactly once per possible half-float bit pattern.
++    #[test]
++    fn concurrent_first_access_initializes_once() {
++        const THREAD_COUNT: usize = 16;
++
++        static TABLE: TransferTableStorage = TransferTableStorage::new();
++        static INITIALIZED: OnceLock<()> = OnceLock::new();
++        static CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
++
++        let barrier = Barrier::new(THREAD_COUNT);
++        let pointers = std::thread::scope(|scope| {
++            let mut handles = Vec::with_capacity(THREAD_COUNT);
++
++            for _ in 0..THREAD_COUNT {
++                handles.push(scope.spawn(|| {
++                    barrier.wait();
++                    let table = TABLE.get_or_init(&INITIALIZED, |value| {
++                        CONVERSIONS.fetch_add(1, Ordering::Relaxed);
++                        value
++                    });
++
++                    table as *const TransferTable as usize
++                }));
++            }
++
++            handles
++                .into_iter()
++                .map(|handle| handle.join().expect("table initializer thread must not panic"))
++                .collect::<Vec<_>>()
++        });
++
++        assert_eq!(CONVERSIONS.load(Ordering::Relaxed), TABLE_LEN);
++        assert!(pointers.windows(2).all(|pair| pair[0] == pair[1]));
++
++        let table = TABLE.get_or_init(&INITIALIZED, |value| value);
++        for bits in 0..=u16::MAX {
++            assert_eq!(table[bits as usize], bits);
++        }
++    }
+ }
+diff --git a/pristine/src/lib.rs b/patched/src/lib.rs
+index 5747e00..c7f8eeb 100644
+--- a/pristine/src/lib.rs
++++ b/patched/src/lib.rs
+@@ -1,5 +1,7 @@
+ //! Read and write OpenEXR images.
+-//! This library uses no foreign code or unsafe Rust.
++//! This library uses no foreign code. The SageThumbs vendored build contains
++//! one narrowly scoped unsafe implementation for leak-free, loader-zeroed DWA
++//! transfer-table storage; see `SAGETHUMBS-PATCH.md`.
+ //!
+ //! See the [README.md](https://github.com/johannesvollmer/exrs/blob/master/README.md) for crate information.
+ //! Read __the [GUIDE.md](https://github.com/johannesvollmer/exrs/blob/master/GUIDE.md) for a API introduction__.
+@@ -26,7 +28,9 @@
+     trivial_numeric_casts,
+     redundant_semicolons
+ )]
+-#![forbid(unsafe_code)]
++// Keep unsafe code denied crate-wide while allowing the DWA transfer-table
++// storage implementation to opt in on three individually documented items.
++#![deny(unsafe_code)]
+ #![warn(missing_docs)]
+ 
+ pub mod io; // public to allow for custom attribute byte parsing

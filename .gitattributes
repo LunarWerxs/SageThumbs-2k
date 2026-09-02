@@ -8,3 +8,17 @@
 # CRLF patch, every context line would miss, and vendor-jxl.ps1 would fail on a clean clone
 # for a reason that has nothing to do with the tree. Keep them exactly as committed.
 /crates/vendor/jxl-patches/*.patch -text
+
+# Same reasoning as the jxl-patches line below: `git apply -p2` matches context BYTE for
+# byte, and vendor-exr.ps1 normalizes the pristine tarball's 4 touched files to LF before
+# diffing/applying (see that script's header for why this crate needs that extra step, unlike
+# jxl). A Windows checkout with core.autocrlf=true would hand it a CRLF patch instead.
+/crates/vendor/exr-patches/*.patch -text
+
+# Same reasoning as the exr line above, for the two trees the jxl patches are applied to:
+# vendor-jxl.ps1 -Check regenerates them from pristine (LF) sources and diffs the result
+# against the committed copy. Without this, a Windows checkout with core.autocrlf=true hands
+# the diff a CRLF-converted committed tree against an LF-regenerated one, and every line
+# reports as drift that has nothing to do with the actual vendored content.
+/crates/vendor/jxl-render/** -text
+/crates/vendor/jxl-oxide/** -text

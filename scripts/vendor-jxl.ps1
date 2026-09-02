@@ -48,8 +48,19 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is requir
 # The pristine sources: cargo's own extracted registry cache, which is already on disk for
 # any tree that has built once. Preferred over downloading because it is exactly what cargo
 # compiled, so there is no chance of patching a different tarball than the one in Cargo.lock.
-$registry = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Directory -ErrorAction SilentlyContinue |
-    Select-Object -First 1
+#
+# A machine can carry MORE THAN ONE `...\registry\src\<dir>` (a stale one from an older cargo,
+# a different index mirror, etc.), and picking whichever sorts first alphabetically used to
+# mean this could patch a tarball that has nothing to do with what Cargo.lock actually
+# resolved - the exact "patching a different codebase than the one that was tested" risk this
+# script's own header warns about. Prefer the directory that genuinely HAS both pinned
+# crate/version pairs on disk; that is the one Cargo.lock's resolution can have populated.
+$registryCandidates = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Directory -ErrorAction SilentlyContinue
+$registry = $registryCandidates | Where-Object {
+    $dir = $_.FullName
+    -not ($crates.Keys | ForEach-Object { Test-Path (Join-Path $dir "$_-$($crates[$_])") } | Where-Object { -not $_ })
+} | Select-Object -First 1
+if (-not $registry) { $registry = $registryCandidates | Select-Object -First 1 }
 if (-not $registry) {
     # -Check also runs in CI's consistency job, which does not build, so the extracted registry
     # cache may not exist there. Skip LOUDLY rather than going red for a reason that says
