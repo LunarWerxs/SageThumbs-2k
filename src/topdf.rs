@@ -3,6 +3,7 @@
 //! dependencies; the output was verified to load in the OS `Windows.Data.Pdf`
 //! engine (the same one our thumbnailer uses).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use image::codecs::jpeg::JpegEncoder;
@@ -12,8 +13,7 @@ use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::Shell::StrCmpLogicalW;
 
 use crate::decode;
-use crate::fsutil::rename_retrying;
-use crate::verbs::{flatten_onto_white, read_capped};
+use crate::verbs::{flatten_onto_white, read_full_fidelity_capped, write_atomic};
 
 /// Decode → flatten onto white → baseline-JPEG bytes (3-component DeviceRGB).
 /// `.to_rgb8()` (NOT `encode_image` on a `DynamicImage`, whose view pixel is
@@ -24,8 +24,94 @@ fn image_to_baseline_jpeg(img: &DynamicImage, quality: u8) -> Result<(Vec<u8>, u
     let mut buf = Vec::new();
     JpegEncoder::new_with_quality(&mut buf, quality)
         .encode_image(&rgb)
-        .map_err(|_| Error::from(E_FAIL))?;
+        .map_err(|e| Error::new(E_FAIL, format!("jpeg encode for pdf: {e}")))?;
     Ok((buf, w, h))
+}
+
+/// One decoded page: baseline JPEG bytes plus pixel width and height.
+type Page = (Vec<u8>, u32, u32);
+
+/// A writer that counts the bytes passed through it, so the xref table's object
+/// offsets are known while the PDF is streamed rather than read off a `Vec`'s length.
+struct Counted<W: Write> {
+    inner: W,
+    pos: usize,
+}
+
+impl<W: Write> Write for Counted<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.pos = self.pos.saturating_add(n);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Stream the PDF for `pages` into `w`. Consumes `pages`, so each page's compressed
+/// bytes are freed as soon as they have been written: the decode stage kept only JPEG
+/// bytes to bound memory, and holding a second full copy of all of them while the
+/// document is assembled undid that on a hundreds-of-pages combine.
+fn write_pdf<W: Write>(w: &mut Counted<W>, pages: Vec<Page>, page: PdfPage) -> std::io::Result<()> {
+    let n = pages.len();
+    let total = 2 + n * 3; // 1=Catalog, 2=Pages, then page/content/image per image
+    let mut off = vec![0usize; total + 1];
+    let mark = |off: &mut [usize], i: usize, pos: usize| {
+        if let Some(o) = off.get_mut(i) {
+            *o = pos;
+        }
+    };
+
+    w.write_all(b"%PDF-1.7\n")?;
+    w.write_all(&[b'%', 0xE2, 0xE3, 0xCF, 0xD3, b'\n'])?; // binary marker
+
+    mark(&mut off, 1, w.pos);
+    write!(w, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")?;
+
+    mark(&mut off, 2, w.pos);
+    let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + i * 3)).collect();
+    write!(
+        w,
+        "2 0 obj\n<< /Type /Pages /Count {} /Kids [{}] >>\nendobj\n",
+        n,
+        kids.join(" ")
+    )?;
+
+    for (i, (jpeg, iw, ih)) in pages.into_iter().enumerate() {
+        let (pw, ph, dx, dy, dw, dh) = page.place(iw as f64, ih as f64);
+        let (pg, ct, im) = (3 + i * 3, 4 + i * 3, 5 + i * 3);
+
+        mark(&mut off, pg, w.pos);
+        write!(w, "{pg} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] /Resources << /XObject << /Im0 {im} 0 R >> >> /Contents {ct} 0 R >>\nendobj\n")?;
+
+        // The `cm` matrix is scale-x, 0, 0, scale-y, translate-x, translate-y.
+        let content = format!("q\n{dw} 0 0 {dh} {dx} {dy} cm\n/Im0 Do\nQ\n");
+        mark(&mut off, ct, w.pos);
+        write!(w, "{ct} 0 obj\n<< /Length {} >>\nstream\n", content.len())?;
+        w.write_all(content.as_bytes())?;
+        w.write_all(b"endstream\nendobj\n")?;
+
+        mark(&mut off, im, w.pos);
+        write!(w, "{im} 0 obj\n<< /Type /XObject /Subtype /Image /Width {iw} /Height {ih} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n", jpeg.len())?;
+        w.write_all(&jpeg)?; // raw JPEG bytes — never string-formatted
+        w.write_all(b"\nendstream\nendobj\n")?;
+        // `jpeg` drops here: one page's compressed bytes at a time.
+    }
+
+    let xref = w.pos;
+    write!(w, "xref\n0 {}\n", total + 1)?;
+    w.write_all(b"0000000000 65535 f \n")?;
+    for &o in off.iter().skip(1) {
+        writeln!(w, "{:010} 00000 n ", o)?;
+    }
+    write!(
+        w,
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        total + 1,
+        xref
+    )?;
+    Ok(())
 }
 
 /// How each image is placed on its page.
@@ -131,91 +217,45 @@ pub fn combine_to_pdf_paged(
     // pass would peak at N x decoded-image size on a hundreds-of-pages comic
     // combine. Per-worker COM init + the global magick cap are handled inside the
     // pool / decoder.
-    let attempts: Vec<Option<(Vec<u8>, u32, u32)>> = crate::parallel::map(&paths, |_, p| {
-        let img = read_capped(p)
+    // Each failure is logged with its path (`read_full_fidelity_capped` logs its own), so
+    // a dropped page can be traced in the doctor log.
+    let attempts: Vec<Option<Page>> = crate::parallel::map(&paths, |_, p| {
+        let bytes = read_full_fidelity_capped(p).ok()?;
+        let img = decode::decode_full(&bytes)
+            .inspect_err(|e| crate::safety::log(&format!("pdf: cannot decode {p}: {e}")))
+            .ok()?;
+        image_to_baseline_jpeg(&img, quality)
+            .inspect_err(|e| crate::safety::log(&format!("pdf: cannot encode {p}: {e}")))
             .ok()
-            .and_then(|b| decode::decode_full(&b).ok())?;
-        image_to_baseline_jpeg(&img, quality).ok()
     });
     // Undecodable inputs drop out (the `flatten` below), exactly as the old sequential
     // `filter_map` did — but now counted first, rather than silently discarded, so a partial
     // combine can be reported as partial instead of a bare, misleadingly-total success.
     let dropped = attempts.iter().filter(|a| a.is_none()).count();
-    let pages: Vec<(Vec<u8>, u32, u32)> = attempts.into_iter().flatten().collect();
+    let pages: Vec<Page> = attempts.into_iter().flatten().collect();
     if pages.is_empty() {
-        return Err(Error::from(E_FAIL));
+        return Err(Error::new(
+            E_FAIL,
+            format!("pdf: none of the {} inputs could be decoded", paths.len()),
+        ));
     }
 
-    let mut pdf: Vec<u8> = Vec::new();
-    let n = pages.len();
-    let total = 2 + n * 3; // 1=Catalog, 2=Pages, then page/content/image per image
-    let mut off = vec![0usize; total + 1];
-    macro_rules! txt {
-        ($($a:tt)*) => { pdf.extend_from_slice(format!($($a)*).as_bytes()); };
-    }
-
-    pdf.extend_from_slice(b"%PDF-1.7\n");
-    pdf.extend_from_slice(&[b'%', 0xE2, 0xE3, 0xCF, 0xD3, b'\n']); // binary marker
-
-    off[1] = pdf.len();
-    txt!("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
-
-    off[2] = pdf.len();
-    let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + i * 3)).collect();
-    txt!(
-        "2 0 obj\n<< /Type /Pages /Count {} /Kids [{}] >>\nendobj\n",
-        n,
-        kids.join(" ")
-    );
-
-    for (i, (jpeg, w, h)) in pages.iter().enumerate() {
-        let (w, h) = (*w, *h);
-        let (pw, ph, dx, dy, dw, dh) = page.place(w as f64, h as f64);
-        let (pg, ct, im) = (3 + i * 3, 4 + i * 3, 5 + i * 3);
-
-        off[pg] = pdf.len();
-        txt!("{pg} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] /Resources << /XObject << /Im0 {im} 0 R >> >> /Contents {ct} 0 R >>\nendobj\n");
-
-        // The `cm` matrix is scale-x, 0, 0, scale-y, translate-x, translate-y.
-        let content = format!("q\n{dw} 0 0 {dh} {dx} {dy} cm\n/Im0 Do\nQ\n");
-        off[ct] = pdf.len();
-        txt!("{ct} 0 obj\n<< /Length {} >>\nstream\n", content.len());
-        pdf.extend_from_slice(content.as_bytes());
-        pdf.extend_from_slice(b"endstream\nendobj\n");
-
-        off[im] = pdf.len();
-        txt!("{im} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n", jpeg.len());
-        pdf.extend_from_slice(jpeg); // raw JPEG bytes — never string-formatted
-        pdf.extend_from_slice(b"\nendstream\nendobj\n");
-    }
-
-    let xref = pdf.len();
-    txt!("xref\n0 {}\n", total + 1);
-    pdf.extend_from_slice(b"0000000000 65535 f \n");
-    for &o in &off[1..=total] {
-        txt!("{:010} 00000 n \n", o);
-    }
-    txt!(
-        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
-        total + 1,
-        xref
-    );
-
-    let tmp: PathBuf = {
-        let mut s = out.to_path_buf().into_os_string();
-        s.push(".st2ktmp");
-        PathBuf::from(s)
-    };
-    std::fs::write(&tmp, &pdf).map_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-        Error::from(E_FAIL)
-    })?;
-    // A transient Explorer/thumbnail-cache lock on `out` (Windows os error 5/32)
-    // can make a fresh rename fail even though nothing is really wrong; retry past
-    // it like every other atomic writer in the codebase instead of failing once.
-    rename_retrying(&tmp, out).map_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-        Error::from(E_FAIL)
+    // Streamed straight into the temp file through a BufWriter (no second in-memory copy
+    // of every page), then renamed into place by the shared atomic writer, which owns
+    // the temp naming, the on-error cleanup and the transient-lock rename retry.
+    write_atomic(out, |tmp| {
+        let file = std::fs::File::create(tmp)
+            .map_err(|e| Error::new(E_FAIL, format!("create {}: {e}", tmp.display())))?;
+        let mut w = Counted {
+            inner: std::io::BufWriter::new(file),
+            pos: 0,
+        };
+        write_pdf(&mut w, pages, page)
+            .map_err(|e| Error::new(E_FAIL, format!("write {}: {e}", tmp.display())))?;
+        // Explicit flush: BufWriter::drop discards flush errors, and a disk-full on the
+        // final block must fail the write rather than rename a truncated PDF into place.
+        w.flush()
+            .map_err(|e| Error::new(E_FAIL, format!("flush {}: {e}", tmp.display())))
     })?;
     Ok((out.to_path_buf(), dropped))
 }

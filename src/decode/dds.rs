@@ -51,6 +51,12 @@ const OFF_PF_BITCOUNT: usize = 4 + 72 + 12;
 const OFF_PF_MASK_R: usize = 4 + 72 + 16;
 const OFF_DXGI_FORMAT: usize = DATA_OFF;
 const OFF_MISC_FLAGS2: usize = DATA_OFF + 16;
+const OFF_DEPTH: usize = 4 + 20;
+const OFF_CAPS2: usize = 4 + 108;
+
+/// `DDS_HEADER.dwCaps2` bit: the surface is a 3D volume texture, so `dwDepth` names a
+/// real slice count rather than being an unused field a 2D exporter left as garbage.
+const DDSCAPS2_VOLUME: u32 = 0x0020_0000;
 
 // `DDS_PIXELFORMAT.dwFlags`
 const DDPF_ALPHAPIXELS: u32 = 0x1;
@@ -160,6 +166,12 @@ struct Surface {
     /// First byte of mip 0.
     data: usize,
     alpha_mode: u32,
+    /// Depth-slice count of the CURRENT mip level: 1 for every ordinary 2D texture, and
+    /// `dwDepth` (halving each mip step, floor 1) for a `DDSCAPS2_VOLUME` texture. Only
+    /// [`select_mip`] uses this — depth slices beyond slice 0 are never decoded (see the
+    /// module doc), but they still occupy space in each mip level that must be skipped to
+    /// reach the next one.
+    depth: u32,
 }
 
 fn le32(b: &[u8], off: usize) -> Option<u32> {
@@ -295,21 +307,26 @@ fn select_mip(bytes: &[u8], s: &mut Surface, target: u32) {
     // past the file or reaches 1x1.
     let count = count.min(32);
 
-    let (mut w, mut h, mut off) = (s.width, s.height, s.data);
+    let (mut w, mut h, mut off, mut depth) = (s.width, s.height, s.data, s.depth);
     for _ in 1..count {
         if w.max(h) <= target || (w == 1 && h == 1) {
             break;
         }
-        let Some(this_level) = surface_bytes(s.layout, w, h) else {
+        // A volume texture's mip level is `depth` full slices, not one — the file lays
+        // them out contiguously, and `depth` itself halves (floor 1) with every mip step.
+        let Some(this_level) =
+            surface_bytes(s.layout, w, h).and_then(|slice| slice.checked_mul(depth as usize))
+        else {
             break;
         };
         let Some(next_off) = off.checked_add(this_level) else {
             break;
         };
         let (nw, nh) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
+        let nd = depth.div_ceil(2).max(1);
         // Only step down when the NEXT level is genuinely there; a file whose chain is
         // truncated must still render the level we already have.
-        match surface_bytes(s.layout, nw, nh) {
+        match surface_bytes(s.layout, nw, nh).and_then(|slice| slice.checked_mul(nd as usize)) {
             Some(n) if next_off.checked_add(n).is_some_and(|e| e <= bytes.len()) => {}
             _ => break,
         }
@@ -321,10 +338,12 @@ fn select_mip(bytes: &[u8], s: &mut Surface, target: u32) {
         w = nw;
         h = nh;
         off = next_off;
+        depth = nd;
     }
     s.width = w;
     s.height = h;
     s.data = off;
+    s.depth = depth;
 }
 
 fn fail(msg: impl AsRef<str>) -> Error {
@@ -348,12 +367,22 @@ fn parse_header(bytes: &[u8]) -> Result<Surface> {
     }
     let pf_flags = le32(bytes, OFF_PF_FLAGS).ok_or_else(|| fail("truncated pixel format"))?;
     let (layout, data, alpha_mode) = resolve_pixel_layout(bytes, pf_flags)?;
+    // dwDepth only names real slices under DDSCAPS2_VOLUME; otherwise it is either
+    // absent or, for a 2D texture, an unused field some exporters leave non-zero.
+    // Bomb-guarded the same way width/height are.
+    let caps2 = le32(bytes, OFF_CAPS2).unwrap_or(0);
+    let depth = if caps2 & DDSCAPS2_VOLUME != 0 {
+        le32(bytes, OFF_DEPTH).unwrap_or(1).clamp(1, MAX_DIM)
+    } else {
+        1
+    };
     Ok(Surface {
         width,
         height,
         layout,
         data,
         alpha_mode,
+        depth,
     })
 }
 
@@ -1996,6 +2025,71 @@ mod mip_tests {
         dds[4 + 24..4 + 28].copy_from_slice(&20u32.to_le_bytes());
         let img = decode_dds(&dds, Some(1)).expect("must not fail on a lying header");
         assert_eq!((img.width(), img.height()), (64, 64));
+    }
+
+    /// A `DDSCAPS2_VOLUME` texture stores `dwDepth` full slices per mip level, not one, and
+    /// `dwDepth` halves (floor 1) with every mip step. Mip 0 here has 4 depth slices; its
+    /// second slice is coloured YELLOW — a colour that belongs to neither level — so an
+    /// offset walk that (bug) advances by only one slice's bytes lands inside that yellow
+    /// slice instead of mip 1's actual (GREEN) data.
+    #[test]
+    fn volume_texture_mip_offsets_account_for_depth() {
+        fn bc1_block(c: [u8; 3]) -> [u8; 8] {
+            let c565 =
+                (((c[0] as u16 >> 3) << 11) | ((c[1] as u16 >> 2) << 5) | (c[2] as u16 >> 3))
+                    .to_le_bytes();
+            [c565[0], c565[1], c565[0], c565[1], 0, 0, 0, 0]
+        }
+        fn slice(colour: [u8; 3], blocks: usize) -> Vec<u8> {
+            (0..blocks).flat_map(|_| bc1_block(colour)).collect()
+        }
+
+        const W: u32 = 8;
+        const H: u32 = 8;
+        const DEPTH: u32 = 4;
+        let red = [255, 0, 0];
+        let yellow = [255, 255, 0];
+        let green = [0, 255, 0];
+        let black = [0, 0, 0];
+
+        let mut v = Vec::new();
+        v.extend_from_slice(b"DDS ");
+        let mut hdr = [0u8; HEADER_LEN];
+        hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+        hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes()); // incl. MIPMAPCOUNT
+        hdr[8..12].copy_from_slice(&H.to_le_bytes());
+        hdr[12..16].copy_from_slice(&W.to_le_bytes());
+        hdr[20..24].copy_from_slice(&DEPTH.to_le_bytes()); // dwDepth
+        hdr[24..28].copy_from_slice(&2u32.to_le_bytes()); // dwMipMapCount
+        hdr[72..76].copy_from_slice(&32u32.to_le_bytes());
+        hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+        hdr[80..84].copy_from_slice(b"DXT1");
+        hdr[108..112].copy_from_slice(&DDSCAPS2_VOLUME.to_le_bytes()); // dwCaps2
+        v.extend_from_slice(&hdr);
+
+        // Mip 0: 4 depth slices of 8x8 (2x2 blocks each, 8 bytes/block = 32 bytes/slice).
+        v.extend(slice(red, 4)); // slice 0: what an untargeted decode must show
+        v.extend(slice(yellow, 4)); // slice 1: caught if the offset misses the depth factor
+        v.extend(slice(black, 4)); // slice 2
+        v.extend(slice(black, 4)); // slice 3
+
+        // Mip 1: 4x4 (1 block), depth halved to 2.
+        v.extend(slice(green, 1)); // slice 0: what target=4 must land on
+        v.extend(slice(black, 1)); // slice 1
+
+        let full = decode_dds(&v, None).expect("level 0 must decode");
+        assert_eq!((full.width(), full.height()), (W, H));
+        assert!(
+            near(centre(&full), red),
+            "untargeted decode must stay on mip 0, slice 0"
+        );
+
+        let mip1 = decode_dds(&v, Some(4)).expect("mip 1 must decode");
+        assert_eq!((mip1.width(), mip1.height()), (4, 4));
+        assert!(
+            near(centre(&mip1), green),
+            "mip 1's offset must skip past ALL of mip 0's depth slices, not just one"
+        );
     }
 }
 

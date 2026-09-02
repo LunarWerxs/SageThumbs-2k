@@ -16,11 +16,15 @@ use std::path::{Path, PathBuf};
 use img_parts::jpeg::{markers, Jpeg};
 use img_parts::png::Png;
 use img_parts::Bytes;
-use windows::core::{Error, Result};
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::E_FAIL;
+use windows::Win32::Storage::FileSystem::{
+    ReplaceFileW, REPLACEFILE_IGNORE_ACL_ERRORS, REPLACEFILE_IGNORE_MERGE_ERRORS,
+    REPLACE_FILE_FLAGS,
+};
 use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEITEM, SHCNF_PATHW};
 
-use crate::verbs::read_capped;
+use crate::verbs::read_full_fidelity_capped;
 
 mod ddsinfo;
 // `pub(crate)`: the decode tier reuses this hardened item parser to locate the primary
@@ -64,20 +68,14 @@ fn app11_identity(contents: &[u8]) -> Option<(u16, u32)> {
     Some((instance, sequence))
 }
 
-/// Inflate a `.svgz` gzip stream with a hard output cap (decompression-bomb guard),
-/// mirroring `decode::svg::gunzip_bounded` (not shared directly: that helper is private
-/// to the decode module for its one caller, and duplicating this small a read loop here
-/// is cheaper than widening its visibility). Bounded to the same ceiling every other
-/// decode path uses for untrusted input, so a highly-compressible hostile payload can't
-/// expand without limit. `None` on any inflate error or empty output.
+/// Inflate a `.svgz` gzip stream with a hard output cap (decompression-bomb guard) — a
+/// thin wrapper over the shared [`decode::svg::gunzip_bounded`](crate::decode::svg)
+/// (C5), passing this module's own, larger ceiling rather than `decode::svg`'s (that
+/// one is sized for a thumbnail-sized SVG/EMF; this one is sized for the same
+/// full-fidelity input every other in-place rewrite in this file accepts). `None` on any
+/// inflate error or empty output.
 fn gunzip_bounded(bytes: &[u8]) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let mut out = Vec::new();
-    flate2::read::GzDecoder::new(bytes)
-        .take(crate::decode::limits::MAX_INPUT_BYTES)
-        .read_to_end(&mut out)
-        .ok()?;
-    (!out.is_empty()).then_some(out)
+    crate::decode::svg::gunzip_bounded(bytes, crate::decode::limits::MAX_INPUT_BYTES)
 }
 
 /// Re-gzip stripped SVG source for the `.svgz` output path, so the file's own
@@ -86,14 +84,16 @@ fn gunzip_bounded(bytes: &[u8]) -> Option<Vec<u8>> {
 fn regzip(bytes: &[u8]) -> Result<Vec<u8>> {
     use std::io::Write;
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    gz.write_all(bytes).map_err(|_| Error::from(E_FAIL))?;
-    gz.finish().map_err(|_| Error::from(E_FAIL))
+    gz.write_all(bytes)
+        .map_err(|e| Error::new(E_FAIL, format!("gzip: {e}")))?;
+    gz.finish()
+        .map_err(|e| Error::new(E_FAIL, format!("gzip finish: {e}")))
 }
 
 /// Strip metadata from `path` in place (JPEG / PNG / WebP). Re-parses the rewritten
 /// bytes before swapping, so a malformed rewrite can never clobber the original.
 pub fn strip_metadata(path: &str) -> Result<()> {
-    let input = Bytes::from(read_capped(path)?);
+    let input = Bytes::from(read_full_fidelity_capped(path)?);
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -113,25 +113,52 @@ pub fn strip_metadata(path: &str) -> Result<()> {
         // file-controlled payload without limit), strip the decompressed XML, then re-gzip so
         // the file's own ".svgz" extension stays truthful.
         "svgz" => {
-            let inflated = gunzip_bounded(&input).ok_or_else(|| Error::from(E_FAIL))?;
+            let inflated = gunzip_bounded(&input)
+                .ok_or_else(|| Error::new(E_FAIL, "svgz: not a gzip stream, or empty"))?;
             let stripped = svgmeta::strip(&inflated)?;
             regzip(&stripped)?
         }
         // HEIC/AVIF items are rewritten in place (see `isobmff`); `None` means the
         // layout was not one we can touch without risking the picture.
-        "heic" | "heif" | "hif" | "avif" => {
-            isobmff::strip(&input).ok_or_else(|| Error::from(E_FAIL))?
+        "heic" | "heif" | "hif" | "avif" => isobmff::strip(&input).ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                "heif: no strippable item, or a layout not rewritten in place",
+            )
+        })?,
+        // Unsupported: refuse, never lossy-convert.
+        _ => {
+            let why = format!("strip: .{ext} is not a format this can rewrite");
+            return Err(Error::new(E_FAIL, why));
         }
-        _ => return Err(Error::from(E_FAIL)), // unsupported: refuse, never lossy-convert
     };
 
     atomic_overwrite(Path::new(path), &out_bytes)
 }
 
+/// The APP2 payload prefix of a Multi-Picture Format index (CIPA DC-007).
+const MPF_PREFIX: &[u8] = b"MPF\0";
+
 /// JPEG arm of [`strip_metadata`]: drop EXIF/IPTC/XMP/COM (APP1/APP13/COM), plus any C2PA
 /// "Content Credentials" JUMBF box (APP11), see [`jumbf`]. ICC (APP2) is deliberately kept.
+///
+/// A Multi-Picture Format file (an APP2 `MPF\0` index: iPhone HDR/Portrait, Pixel and
+/// Samsung Ultra HDR) is refused whole. The index records this image's byte length and
+/// the offsets of the pictures stored after its EOI; removing segments ahead of the scan
+/// moves every byte it points at while the index itself would be kept verbatim, and the
+/// result is written over the original. Same all-or-nothing rule as [`isobmff::strip`].
 fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
-    let mut jpeg = Jpeg::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
+    let mut jpeg =
+        Jpeg::from_bytes(input).map_err(|e| Error::new(E_FAIL, format!("jpeg parse: {e}")))?;
+    if jpeg
+        .segments()
+        .iter()
+        .any(|s| s.marker() == markers::APP2 && s.contents().starts_with(MPF_PREFIX))
+    {
+        let why = "multi-picture (MPF) JPEG: its index would no longer match the file";
+        crate::safety::log(&format!("strip refused: {why}"));
+        return Err(Error::new(E_FAIL, why));
+    }
     // C2PA / Content Credentials: a JUMBF box spread over APP11 segments. Only the
     // FIRST packet of a box carries the LBox/TBox header `is_jumbf_app11` looks for;
     // once a manifest exceeds ~64KB it continues in more APP11 segments that share the
@@ -167,30 +194,38 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
         true
     });
     let bytes = jpeg.encoder().bytes();
-    Jpeg::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?; // sanity re-parse
+    // Sanity re-parse.
+    Jpeg::from_bytes(bytes.clone())
+        .map_err(|e| Error::new(E_FAIL, format!("jpeg re-parse: {e}")))?;
     Ok(bytes.to_vec())
 }
 
 /// PNG arm of [`strip_metadata`]: drop EXIF/text/time chunks plus any C2PA chunk. iCCP (color
 /// profile) is intentionally NOT removed, stripping it shifts colors on wide-gamut displays.
 fn strip_png(input: Bytes) -> Result<Vec<u8>> {
-    let mut png = Png::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
+    let mut png =
+        Png::from_bytes(input).map_err(|e| Error::new(E_FAIL, format!("png parse: {e}")))?;
     for k in [b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"] {
         png.remove_chunks_by_type(*k);
     }
     png.remove_chunks_by_type(jumbf::PNG_C2PA_CHUNK);
     let bytes = png.encoder().bytes();
-    Png::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?;
+    Png::from_bytes(bytes.clone()).map_err(|e| Error::new(E_FAIL, format!("png re-parse: {e}")))?;
     Ok(bytes.to_vec())
 }
 
-/// In-place overwrite via a same-volume temp + rename, with a short retry so a
+/// In-place overwrite via a same-volume temp + swap, with a short retry so a
 /// transient Explorer/thumbnail-cache lock (os error 5/32) doesn't fail it.
 fn atomic_overwrite(dst: &Path, data: &[u8]) -> Result<()> {
     atomic_overwrite_with(dst, data, notify_item_updated)
 }
 
 /// Atomically replace `dst`, then report the changed item to Explorer.
+///
+/// The swap goes through [`replace_retrying`], so the rewritten file keeps the
+/// original's attributes, ACL, creation time and alternate data streams. Its
+/// last-write time is put back too when the user keeps original file dates
+/// (`settings::preserve_file_date`, the same switch every new-file verb honours).
 ///
 /// Keeping the notification callback explicit lets the rewrite path be tested
 /// without depending on a running Explorer shell.
@@ -200,16 +235,62 @@ fn atomic_overwrite_with(dst: &Path, data: &[u8], notify: impl FnOnce(&Path)) ->
         s.push(".st2ktmp");
         PathBuf::from(s)
     };
-    std::fs::write(&tmp, data).map_err(|_| {
+    let mtime = std::fs::metadata(dst).and_then(|m| m.modified()).ok();
+    std::fs::write(&tmp, data).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        Error::from(E_FAIL)
+        Error::new(E_FAIL, format!("write {}: {e}", tmp.display()))
     })?;
-    crate::fsutil::rename_retrying(&tmp, dst).map_err(|_| {
+    replace_retrying(&tmp, dst).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        Error::from(E_FAIL)
+        Error::new(E_FAIL, format!("replace {}: {e}", dst.display()))
     })?;
+    if crate::settings::preserve_file_date() {
+        if let Some(m) = mtime {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(dst) {
+                let _ = f.set_modified(m);
+            }
+        }
+    }
     notify(dst);
     Ok(())
+}
+
+/// Retry count for [`replace_retrying`]; mirrors `fsutil::rename_retrying`'s.
+const REPLACE_RETRIES: u32 = 5;
+
+/// Swap `tmp` into `dst`'s place with `ReplaceFileW`. Unlike a rename, which gives
+/// `dst`'s name to a brand-new file, `ReplaceFileW` keeps the replaced file's
+/// attributes (hidden/system/read-only), DACL, creation time and alternate data
+/// streams (the Zone.Identifier mark, for one). Retried past a transient lock with
+/// the same backoff `fsutil::rename_retrying` uses. A `dst` that does not exist has
+/// nothing to preserve and takes the plain rename.
+fn replace_retrying(tmp: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        return crate::fsutil::rename_retrying(tmp, dst);
+    }
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(once(0)).collect() };
+    let (replaced, replacement) = (wide(dst), wide(tmp));
+    let flags =
+        REPLACE_FILE_FLAGS(REPLACEFILE_IGNORE_MERGE_ERRORS.0 | REPLACEFILE_IGNORE_ACL_ERRORS.0);
+    let mut last: std::io::Result<()> = Ok(());
+    for _ in 0..REPLACE_RETRIES {
+        let swapped = unsafe {
+            ReplaceFileW(
+                PCWSTR(replaced.as_ptr()),
+                PCWSTR(replacement.as_ptr()),
+                PCWSTR::null(),
+                flags,
+                None,
+                None,
+            )
+        };
+        match swapped {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Err(std::io::Error::other(e)),
+        }
+        std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
+    }
+    last
 }
 
 /// Tell Explorer that one existing file was rewritten in place.
@@ -288,6 +369,44 @@ fn head_prefix(path: &str) -> Option<Vec<u8>> {
     (buf.len() >= 26).then_some(buf)
 }
 
+/// How much of a file the in-process (`bounded`) EXIF probe may read. `exif::Reader`
+/// reads a TIFF-magic file whole, and every camera RAW the property handler is hooked
+/// for is a TIFF container, so the property handler's probe stops here rather than copy a
+/// multi-GB file into Explorer or the indexer.
+const EXIF_SCAN_CAP: u64 = 32 * 1024 * 1024;
+
+/// A `Read + Seek` view of the first `cap` bytes of `inner`: reads at or past the cap
+/// return end-of-file, seeks are passed through. `exif::Reader::read_from_container`
+/// needs both traits, which a plain `Take` does not provide.
+struct CappedReader<R> {
+    inner: R,
+    pos: u64,
+    cap: u64,
+}
+
+impl<R: std::io::Read> std::io::Read for CappedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let room = self.cap.saturating_sub(self.pos);
+        let want = (buf.len() as u64).min(room) as usize;
+        let Some(window) = buf.get_mut(..want) else {
+            return Ok(0);
+        };
+        if window.is_empty() {
+            return Ok(0);
+        }
+        let n = self.inner.read(window)?;
+        self.pos = self.pos.saturating_add(n as u64);
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for CappedReader<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.pos = self.inner.seek(pos)?;
+        Ok(self.pos)
+    }
+}
+
 fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
     use exif::Reader;
     let mut info = resolve_image_dimensions(path, bounded);
@@ -295,8 +414,18 @@ fn read_info_impl(path: &str, bounded: bool) -> ImageInfo {
     let Ok(file) = std::fs::File::open(path) else {
         return info;
     };
-    let mut buf = std::io::BufReader::new(file);
-    let Ok(exif) = Reader::new().read_from_container(&mut buf) else {
+    let exif = if bounded {
+        let mut buf = std::io::BufReader::new(CappedReader {
+            inner: file,
+            pos: 0,
+            cap: EXIF_SCAN_CAP,
+        });
+        Reader::new().read_from_container(&mut buf)
+    } else {
+        let mut buf = std::io::BufReader::new(file);
+        Reader::new().read_from_container(&mut buf)
+    };
+    let Ok(exif) = exif else {
         return info;
     };
     apply_exif_metadata(&mut info, &exif);
@@ -794,6 +923,99 @@ mod tests {
         assert!(atomic_overwrite_with(&missing, b"new", |_| failed_notify = true).is_err());
         assert!(!failed_notify, "a failed rewrite must not notify Explorer");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The in-place rewrite must keep the file's identity: a plain temp+rename gave the
+    /// name to a brand-new file, which dropped the Hidden attribute and every alternate
+    /// data stream (the Zone.Identifier mark-of-the-web among them). `ReplaceFileW` keeps
+    /// both, and the content is still the new bytes.
+    #[test]
+    fn atomic_overwrite_keeps_attributes_and_alternate_streams() {
+        use windows::Win32::Storage::FileSystem::{
+            GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL,
+        };
+        let dir = std::env::temp_dir().join(format!("st2k_strip_attrs_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("marked.jpg");
+        std::fs::write(&path, b"old").unwrap();
+        // An NTFS alternate data stream; a non-NTFS temp volume cannot hold one, in which
+        // case only the attribute half is checked.
+        let ads = format!("{}:Zone.Identifier", path.display());
+        let has_ads = std::fs::write(&ads, b"[ZoneTransfer]\r\nZoneId=3\r\n").is_ok();
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(once(0)).collect();
+        unsafe { SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_ATTRIBUTE_HIDDEN) }.unwrap();
+
+        atomic_overwrite_with(&path, b"new", |_| {}).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let attrs = unsafe { GetFileAttributesW(PCWSTR(wide.as_ptr())) };
+        assert_ne!(
+            attrs & FILE_ATTRIBUTE_HIDDEN.0,
+            0,
+            "the Hidden attribute was lost across the rewrite"
+        );
+        if has_ads {
+            assert!(
+                std::fs::read(&ads)
+                    .map(|b| b.starts_with(b"[ZoneTransfer]"))
+                    .unwrap_or(false),
+                "the alternate data stream was lost across the rewrite"
+            );
+        }
+        assert!(
+            !path.with_extension("jpg.st2ktmp").exists(),
+            "temp file left behind"
+        );
+
+        unsafe { SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_ATTRIBUTE_NORMAL) }.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Multi-Picture Format JPEG (APP2 `MPF\0`) is refused whole: its index names byte
+    /// offsets that stripping would move, and the result is written over the original.
+    #[test]
+    fn refuses_to_strip_a_multi_picture_mpf_jpeg() {
+        let dir = std::env::temp_dir().join(format!("st2k_strip_mpf_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg = dir.join("hdr.jpg");
+
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            16,
+            12,
+            image::Rgb([40, 90, 160]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut base),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+        let mut out = base[0..2].to_vec(); // SOI
+        for (marker, payload) in [
+            (markers::APP1, &b"Exif\0\0sometagdata"[..]),
+            (
+                markers::APP2,
+                &b"MPF\0II*\0\x08\0\0\0secondary-image-index"[..],
+            ),
+        ] {
+            out.extend_from_slice(&[0xFF, marker]);
+            out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            out.extend_from_slice(payload);
+        }
+        out.extend_from_slice(&base[2..]);
+        out.extend_from_slice(b"\xFF\xD8appended-gain-map\xFF\xD9");
+        std::fs::write(&jpg, &out).unwrap();
+
+        assert!(
+            strip_metadata(jpg.to_str().unwrap()).is_err(),
+            "MPF must refuse"
+        );
+        assert_eq!(
+            std::fs::read(&jpg).unwrap(),
+            out,
+            "a refused strip must leave the file byte-for-byte as it was"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

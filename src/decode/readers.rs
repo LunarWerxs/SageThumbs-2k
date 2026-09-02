@@ -22,6 +22,7 @@ pub(crate) fn effective_input_cap(configured_max: u64) -> u64 {
 /// MCP tools), which otherwise `std::fs::read` an arbitrarily large file wholesale
 /// before decoding. So "too big to load" means the same thing on every path.
 pub fn read_capped(path: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
     let len = std::fs::metadata(path)?.len();
     if len > limits::MAX_INPUT_BYTES {
         return Err(std::io::Error::new(
@@ -32,7 +33,16 @@ pub fn read_capped(path: &str) -> std::io::Result<Vec<u8>> {
             ),
         ));
     }
-    std::fs::read(path)
+    // The metadata length above is a SNAPSHOT, not a bound: `std::fs::read` (plain
+    // `read_to_end`) keeps reading to EOF regardless of what `len` said, so a file that
+    // grows between the check and the read (a download in progress, a log, a share) would
+    // sail past the cap. Read through `Read::take` so the ceiling is enforced by the reader
+    // itself, not by a metadata call that can already be stale by the time it returns.
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?
+        .take(limits::MAX_INPUT_BYTES)
+        .read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 /// Read a whole file for a **user-initiated full-fidelity verb** (Convert, Resize, Rotate,
@@ -73,7 +83,15 @@ pub fn read_full_fidelity(path: &str) -> std::io::Result<Vec<u8>> {
             format!("not enough memory to load this {len}-byte file"),
         )
     })?;
-    std::fs::File::open(path)?.read_to_end(&mut buf)?;
+    // `len` is a metadata SNAPSHOT, not a bound: plain `read_to_end` keeps reading past it
+    // to EOF, so a file that grows between the check above and this read (a download in
+    // progress, a log, a share) would both sail past the ceiling just checked AND grow the
+    // `Vec` past its fallible reservation via `read_to_end`'s own infallible `reserve` —
+    // which aborts the process under `panic = "abort"`, defeating the whole point of the
+    // fallible reserve above. `Read::take(len)` makes the reader itself stop at `len`
+    // bytes, so growth past the reservation can't happen regardless of how the file behaves
+    // on disk while this reads it.
+    std::fs::File::open(path)?.take(len).read_to_end(&mut buf)?;
     Ok(buf)
 }
 
@@ -285,8 +303,14 @@ pub fn wic_scaled_from_bytes_if_codec_scales(
     if scaled_prepass_declines(bytes) {
         return None;
     }
-    let head = &bytes[..bytes.len().min(COLOR_HEAD_BYTES)];
-    match unsafe { wic::wic_decode_bytes_if_codec_scales(bytes, target_edge, head) } {
+    // The FULL bytes, not a `COLOR_HEAD_BYTES` head: unlike the by-path/by-stream twins
+    // (where a bounded head is the whole point — it avoids reading a document past what
+    // colour management needs), `bytes` is already resident here, so truncating it before
+    // the ICC lookup buys nothing and can silently drop a profile whose APP2 chain runs
+    // past 256 KiB. `jpeg_icc`'s marker walk is bounded by SOS (where the entropy-coded
+    // scan starts) regardless of how much of the file is handed to it, so this costs
+    // nothing extra for the common case either.
+    match unsafe { wic::wic_decode_bytes_if_codec_scales(bytes, target_edge, bytes) } {
         Ok(img) => Some(img),
         Err(e) => {
             crate::safety::log_debug(&format!("WIC scaled-from-bytes declined: {e}"));
@@ -442,7 +466,8 @@ pub(super) fn read_preview_capped_at(
         return Ok(head);
     }
     // The magic sets are disjoint, so this runs only when the head path didn't.
-    if let Some(cover) = crate::container::archive_cover_seek(&mut f, &magic) {
+    let prefs = crate::container::select::CoverPrefs::from_settings();
+    if let Some(cover) = crate::container::archive_cover_seek(&mut f, &magic, &prefs) {
         return Ok(cover);
     }
     Err(std::io::Error::new(
@@ -700,5 +725,53 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&big);
+    }
+
+    /// `len` from `std::fs::metadata` is a SNAPSHOT, not a bound — a plain
+    /// `read_to_end` keeps reading to EOF regardless, so a file that grows WHILE this reads
+    /// it (a download in progress, a log, a share) used to come back larger than what was
+    /// checked against the ceiling, and could grow the `Vec` past its fallible reservation
+    /// via `read_to_end`'s own infallible growth. `Read::take(len)` must cap the read at
+    /// exactly the metadata-time size no matter how much more the file grows underneath it.
+    #[test]
+    fn read_full_fidelity_caps_at_the_metadata_time_length_even_if_the_file_grows() {
+        let path = std::env::temp_dir().join(format!(
+            "st2k_full_fidelity_growing_{}.bin",
+            std::process::id()
+        ));
+        let initial = vec![b'a'; 4096];
+        std::fs::write(&path, &initial).expect("stage temp file");
+        let p = path.to_string_lossy().into_owned();
+
+        // Grow the file well past its checked size WHILE the read is (likely) in flight, so
+        // the fix is exercised rather than merely re-reading a static file.
+        let grow_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&grow_path)
+                .expect("reopen for append");
+            for _ in 0..200 {
+                let _ = f.write_all(&[b'b'; 4096]);
+                let _ = f.flush();
+            }
+        });
+
+        let got = read_full_fidelity(&p).expect("must still read the checked-size prefix");
+        writer.join().expect("writer thread must not panic");
+
+        assert_eq!(
+            got.len(),
+            initial.len(),
+            "the read must stop at the metadata-time length ({}), not follow the file's growth",
+            initial.len()
+        );
+        assert!(
+            got.iter().all(|&b| b == b'a'),
+            "must be exactly the original bytes, no appended ones"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

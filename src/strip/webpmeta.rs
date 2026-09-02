@@ -17,13 +17,15 @@ const VP8X_XMP: u8 = 0x04;
 /// `ICCP` is deliberately KEPT, the same rule the JPEG APP2 and PNG iCCP paths
 /// follow: dropping the colour profile shifts colours on wide-gamut displays.
 pub(super) fn strip(input: Bytes) -> Result<Vec<u8>> {
-    let mut webp = WebP::from_bytes(input).map_err(|_| Error::from(E_FAIL))?;
+    let mut webp =
+        WebP::from_bytes(input).map_err(|e| Error::new(E_FAIL, format!("webp parse: {e}")))?;
     webp.remove_chunks_by_id(*b"EXIF");
     webp.remove_chunks_by_id(*b"XMP ");
     clear_vp8x_flags(&mut webp);
     let bytes = webp.encoder().bytes();
     // Sanity re-parse before the caller is allowed to overwrite the original.
-    WebP::from_bytes(bytes.clone()).map_err(|_| Error::from(E_FAIL))?;
+    WebP::from_bytes(bytes.clone())
+        .map_err(|e| Error::new(E_FAIL, format!("webp re-parse: {e}")))?;
     Ok(bytes.to_vec())
 }
 

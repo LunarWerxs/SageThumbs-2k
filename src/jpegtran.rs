@@ -13,14 +13,29 @@
 //! odd-frequency rows/cols equals mirroring them. So `decode(transform(jpeg))`
 //! equals `rotate(decode(jpeg))` exactly — which the round-trip test asserts.
 
-/// The lossless operations we support (mapped from `verbs::Transform`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The lossless operations we support: the five `verbs::Transform` requests plus the
+/// two remaining members of the dihedral group, which a request composed with a
+/// source EXIF Orientation can land on (`Transpose` = flip across the main diagonal,
+/// `Transverse` = flip across the anti-diagonal; EXIF values 5 and 7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Op {
     Rot90,
     Rot180,
     Rot270,
     FlipH,
     FlipV,
+    Transpose,
+    Transverse,
+}
+
+impl Op {
+    /// Whether the operation swaps width and height.
+    fn transposes(self) -> bool {
+        matches!(
+            self,
+            Op::Rot90 | Op::Rot270 | Op::Transpose | Op::Transverse
+        )
+    }
 }
 
 /// Natural (row-major) position of each zig-zag-ordered coefficient.
@@ -82,7 +97,11 @@ struct HuffEnc {
 }
 
 /// Build the canonical (size-list, code-list) from a `bits[16]` count array.
-fn canonical(bits: &[u8]) -> (Vec<u8>, Vec<i32>) {
+///
+/// `None` when the counts over-subscribe the code space (Annex C's Kraft
+/// condition): a canonical code at length `l` that reaches `1 << l` cannot exist,
+/// and a table built from it decodes to `code - mincode[l]` values below zero.
+fn canonical(bits: &[u8]) -> Option<(Vec<u8>, Vec<i32>)> {
     let mut sizes = Vec::new();
     for (l, &n) in bits.iter().enumerate() {
         for _ in 0..n {
@@ -92,10 +111,13 @@ fn canonical(bits: &[u8]) -> (Vec<u8>, Vec<i32>) {
     let mut codes = Vec::with_capacity(sizes.len());
     let mut code = 0i32;
     let mut k = 0;
-    if !sizes.is_empty() {
-        let mut si = sizes[0];
+    if let Some(&first) = sizes.first() {
+        let mut si = first;
         loop {
             while k < sizes.len() && sizes[k] == si {
+                if code >= 1i32 << si {
+                    return None; // over-subscribed at this length
+                }
                 codes.push(code);
                 code += 1;
                 k += 1;
@@ -109,43 +131,56 @@ fn canonical(bits: &[u8]) -> (Vec<u8>, Vec<i32>) {
             }
         }
     }
-    (sizes, codes)
+    Some((sizes, codes))
 }
 
-fn build_dec(bits: &[u8], vals: &[u8]) -> HuffDec {
-    let (_, codes) = canonical(bits);
+/// Build a decode table. `None` for a table the file must not be trusted with: an
+/// over-subscribed code space, a value list whose length disagrees with the counts,
+/// or more than the 256 symbols one byte can name.
+fn build_dec(bits: &[u8], vals: &[u8]) -> Option<HuffDec> {
+    let (sizes, codes) = canonical(bits)?;
+    if vals.len() != sizes.len() || vals.len() > 256 {
+        return None;
+    }
     let vals = vals.to_vec();
     let mut mincode = [0i32; 17];
     let mut maxcode = [-1i32; 17];
     let mut valptr = [0usize; 17];
     let mut p = 0;
     for l in 1..=16usize {
-        let n = bits[l - 1] as usize;
+        let n = *bits.get(l - 1)? as usize;
         if n > 0 {
             valptr[l] = p;
-            mincode[l] = codes[p];
+            mincode[l] = *codes.get(p)?;
             p += n;
-            maxcode[l] = codes[p - 1];
+            maxcode[l] = *codes.get(p - 1)?;
         }
     }
-    HuffDec {
+    Some(HuffDec {
         mincode,
         maxcode,
         valptr,
         vals,
-    }
+    })
 }
 
+/// Build an encode table from one of the standard Annex K tables above. Those are
+/// valid by construction; if one ever were not, the empty table returned makes
+/// `encode_block` decline and the caller falls back to the lossy path.
 fn build_enc(bits: &[u8], vals: &[u8]) -> HuffEnc {
-    let (sizes, codes) = canonical(bits);
     let mut enc = HuffEnc {
         code: [0; 256],
         len: [0; 256],
     };
-    for i in 0..sizes.len() {
-        let sym = vals[i] as usize;
-        enc.code[sym] = codes[i] as u32;
-        enc.len[sym] = sizes[i];
+    let Some((sizes, codes)) = canonical(bits) else {
+        return enc;
+    };
+    for (i, (&size, &code)) in sizes.iter().zip(&codes).enumerate() {
+        let Some(&sym) = vals.get(i) else {
+            break;
+        };
+        enc.code[sym as usize] = code as u32;
+        enc.len[sym as usize] = size;
     }
     enc
 }
@@ -234,11 +269,11 @@ fn decode_huff(br: &mut BitReader, h: &HuffDec) -> Option<u8> {
     let mut code = 0i32;
     for l in 1..=16usize {
         code = (code << 1) | br.bit()? as i32;
-        if h.maxcode[l] >= 0 && code <= h.maxcode[l] {
-            return h
-                .vals
-                .get(h.valptr[l] + (code - h.mincode[l]) as usize)
-                .copied();
+        // Both bounds: `code < mincode[l]` would make the index below negative, which
+        // wraps in release and lands on an unrelated symbol.
+        if h.maxcode[l] >= 0 && code >= h.mincode[l] && code <= h.maxcode[l] {
+            let idx = h.valptr[l].checked_add((code - h.mincode[l]) as usize)?;
+            return h.vals.get(idx).copied();
         }
     }
     None
@@ -426,6 +461,8 @@ fn be16(d: &[u8], i: usize) -> usize {
 /// horizontal flip (u = column freq), and transpose F'(u,v)=F(v,u).
 ///   rot90 (CW)  = transpose then flip-H  → negate odd SOURCE rows
 ///   rot270 (CCW)= transpose then flip-V  → negate odd SOURCE cols
+///   transpose   = plain transpose, no sign change
+///   transverse  = transpose then rot-180  → negate odd (row + col) parity
 fn xform_cell(op: Op, r: usize, c: usize) -> (usize, usize, i32) {
     match op {
         Op::Rot90 => (c, r, if r & 1 == 1 { -1 } else { 1 }),
@@ -433,6 +470,8 @@ fn xform_cell(op: Op, r: usize, c: usize) -> (usize, usize, i32) {
         Op::Rot180 => (r, c, if (r + c) & 1 == 1 { -1 } else { 1 }),
         Op::FlipH => (r, c, if c & 1 == 1 { -1 } else { 1 }),
         Op::FlipV => (r, c, if r & 1 == 1 { -1 } else { 1 }),
+        Op::Transpose => (c, r, 1),
+        Op::Transverse => (c, r, if (r + c) & 1 == 1 { -1 } else { 1 }),
     }
 }
 
@@ -457,6 +496,8 @@ fn dst_pos(op: Op, gw: usize, gh: usize, c: usize, r: usize) -> (usize, usize) {
         Op::Rot180 => (gw - 1 - c, gh - 1 - r),
         Op::FlipH => (gw - 1 - c, r),
         Op::FlipV => (c, gh - 1 - r),
+        Op::Transpose => (r, c),                    // new grid gh×gw
+        Op::Transverse => (gh - 1 - r, gw - 1 - c), // new grid gh×gw
     }
 }
 
@@ -527,11 +568,12 @@ fn parse_dht(d: &[u8], i: usize, huff: &mut [[Option<HuffDec>; 4]; 2]) -> Option
         let bits = d.get(p + 1..p + 17)?;
         let total: usize = bits.iter().map(|&b| b as usize).sum();
         let vals = d.get(p + 17..p + 17 + total)?;
-        // Guard ids 0..4 and classes 0..2; out-of-range → bail (None).
+        // Guard ids 0..4 and classes 0..2; out-of-range → bail (None). A table whose
+        // counts over-subscribe the code space is rejected the same way (see build_dec).
         if tc >= 2 || th >= 4 {
             return None;
         }
-        huff[tc][th] = Some(build_dec(bits, vals));
+        huff[tc][th] = Some(build_dec(bits, vals)?);
         p += 17 + total;
     }
     Some(end)
@@ -819,7 +861,7 @@ fn decode_scan(
 /// Transform each component's block grid + the blocks themselves in place.
 /// Returns the output image dimensions.
 fn apply_transform(comps: &mut [Comp], op: Op, width: usize, height: usize) -> (usize, usize) {
-    let transpose = matches!(op, Op::Rot90 | Op::Rot270);
+    let transpose = op.transposes();
     for c in comps.iter_mut() {
         let (gw, gh) = (c.grid_w, c.grid_h);
         let (ngw, ngh) = if transpose { (gh, gw) } else { (gw, gh) };
@@ -894,12 +936,72 @@ fn encode_scan(comps: &[Comp], out_w: usize, out_h: usize) -> Option<Vec<u8>> {
     Some(bw.out)
 }
 
+/// Does this JPEG carry an index to further pictures stored after its EOI: a
+/// Multi-Picture Format APP2 segment (`MPF\0`, CIPA DC-007: iPhone HDR/Portrait,
+/// Pixel and Samsung Ultra HDR gain maps) or an XMP `Container:Directory`
+/// (Google's GContainer, which names the same trailing images by byte length)?
+///
+/// Both index the file by absolute byte offsets or lengths. [`transform`] rebuilds
+/// `SOI…EOI` with re-coded scan data and keeps nothing after the source EOI, so the
+/// index would survive verbatim while everything it points at moves or disappears;
+/// such a file is declined instead. Walks the segments ahead of the scan only.
+pub fn has_multi_picture_index(jpeg: &[u8]) -> bool {
+    const MPF: &[u8] = b"MPF\0";
+    const XMP: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+    const DIRECTORY: &[u8] = b"Container:Directory";
+    let d = jpeg;
+    if d.len() < 4 || d[0] != 0xFF || d[1] != 0xD8 {
+        return false;
+    }
+    let mut i = 2usize;
+    while i + 4 <= d.len() {
+        if d[i] != 0xFF {
+            return false; // not a segment stream we understand
+        }
+        let marker = d[i + 1];
+        match marker {
+            0xFF => {
+                i += 1; // fill byte
+                continue;
+            }
+            0x01 | 0xD0..=0xD9 => {
+                i += 2; // standalone marker, no length
+                continue;
+            }
+            0xDA => return false, // SOS: every APP segment is behind us
+            _ => {}
+        }
+        let len = be16(d, i + 2);
+        if len < 2 {
+            return false;
+        }
+        let Some(payload) = d.get(i + 4..i + 2 + len) else {
+            return false;
+        };
+        if marker == 0xE2 && payload.starts_with(MPF) {
+            return true;
+        }
+        if marker == 0xE1
+            && payload.starts_with(XMP)
+            && payload.windows(DIRECTORY.len()).any(|w| w == DIRECTORY)
+        {
+            return true;
+        }
+        i += 2 + len;
+    }
+    false
+}
+
 /// Transform a JPEG losslessly. Returns the new JPEG bytes, or None if the input
-/// is outside our supported scope (caller falls back to a lossy re-encode).
+/// is outside our supported scope (caller falls back to a lossy re-encode), or if
+/// it carries a multi-picture index (see [`has_multi_picture_index`]).
 pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
     let d = jpeg;
     if d.len() < 4 || d[0] != 0xFF || d[1] != 0xD8 {
         return None; // not a JPEG
+    }
+    if has_multi_picture_index(d) {
+        return None;
     }
 
     let ParsedHeader {
@@ -925,7 +1027,7 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
     )?;
 
     let (out_w, out_h) = apply_transform(&mut comps, op, width, height);
-    let transpose = matches!(op, Op::Rot90 | Op::Rot270);
+    let transpose = op.transposes();
     let scan = encode_scan(&comps, out_w, out_h)?;
 
     // --- Reassemble: SOI · kept segments · DHT · SOF0 · SOS · scan · EOI. ---
@@ -1041,10 +1143,21 @@ mod tests {
             Op::Rot270 => img.rotate270(),
             Op::FlipH => img.fliph(),
             Op::FlipV => img.flipv(),
+            // rotate90 = transpose then flip-H, so undoing the flip leaves the transpose.
+            Op::Transpose => img.rotate90().fliph(),
+            Op::Transverse => img.rotate90().flipv(),
         }
     }
 
-    const ALL: [Op; 5] = [Op::Rot90, Op::Rot180, Op::Rot270, Op::FlipH, Op::FlipV];
+    const ALL: [Op; 7] = [
+        Op::Rot90,
+        Op::Rot180,
+        Op::Rot270,
+        Op::FlipH,
+        Op::FlipV,
+        Op::Transpose,
+        Op::Transverse,
+    ];
 
     fn gray_jpeg() -> Vec<u8> {
         let mut g = image::GrayImage::new(32, 24); // 8-aligned, single component
@@ -1123,7 +1236,7 @@ mod tests {
     fn rot90_270_match_pixel_rotate_within_one() {
         let jpeg = gray_jpeg();
         let orig = image::load_from_memory(&jpeg).unwrap();
-        for op in [Op::Rot90, Op::Rot270] {
+        for op in [Op::Rot90, Op::Rot270, Op::Transpose, Op::Transverse] {
             let out = transform(&jpeg, op).expect("in scope");
             let got = image::load_from_memory(&out).expect("decodes");
             let want = img_apply(&orig, op);
@@ -1158,6 +1271,111 @@ mod tests {
             .into_raw();
         let b = image::load_from_memory(&cur).unwrap().to_luma8().into_raw();
         assert_eq!(a, b, "rot90×4 must round-trip to the identical image");
+    }
+
+    /// Transpose and transverse are their own inverses: applied twice there is no net
+    /// transpose, so the result must decode bit-for-bit identically to the original.
+    #[test]
+    fn transpose_and_transverse_twice_are_identity() {
+        let jpeg = gray_jpeg();
+        let a = image::load_from_memory(&jpeg)
+            .unwrap()
+            .to_luma8()
+            .into_raw();
+        for op in [Op::Transpose, Op::Transverse] {
+            let once = transform(&jpeg, op).expect("in scope");
+            let twice = transform(&once, op).expect("in scope");
+            let b = image::load_from_memory(&twice)
+                .unwrap()
+                .to_luma8()
+                .into_raw();
+            assert_eq!(a, b, "{op:?} twice must round-trip to the identical image");
+        }
+    }
+
+    /// A DHT whose counts over-subscribe the code space (three 1-bit codes, where only two
+    /// can exist) used to build a table whose `code - mincode[l]` went negative on the
+    /// first decoded symbol: a wrap in release, a corrupted "lossless" rotate written in
+    /// place. Such a table is refused at parse time now.
+    #[test]
+    fn over_subscribed_huffman_table_is_rejected() {
+        let mut bits = [0u8; 16];
+        bits[0] = 3;
+        assert!(
+            build_dec(&bits, &[1, 2, 3]).is_none(),
+            "3 one-bit codes cannot exist"
+        );
+        // Kraft-exact tables still build: two 1-bit codes, and the standard AC luma table.
+        bits[0] = 2;
+        assert!(build_dec(&bits, &[1, 2]).is_some());
+        assert!(build_dec(&AC_LUMA_BITS, &AC_LUMA_VALS).is_some());
+        // A value list that disagrees with the counts is refused too.
+        assert!(build_dec(&bits, &[1]).is_none());
+
+        // End to end: patch a real JPEG's first DHT count byte to over-subscribe it and the
+        // whole transform must decline rather than decode garbage.
+        let good = gray_jpeg();
+        let dht = good
+            .windows(2)
+            .position(|w| w == [0xFF, 0xC4])
+            .expect("a DHT segment");
+        let mut bad = good.clone();
+        bad[dht + 5] = 200; // bits[0]: 200 one-bit codes
+        assert!(transform(&bad, Op::FlipH).is_none());
+    }
+
+    /// `decode_huff` must never index below `valptr[l]`: a code smaller than `mincode[l]`
+    /// while still `<= maxcode[l]` (only possible with a malformed table) is a miss, not a
+    /// wrapped subtraction that lands on an unrelated symbol.
+    #[test]
+    fn decode_huff_rejects_a_code_below_mincode() {
+        let mut h = HuffDec {
+            mincode: [0; 17],
+            maxcode: [-1; 17],
+            valptr: [0; 17],
+            vals: vec![0xAA, 0xBB],
+        };
+        h.mincode[1] = 1;
+        h.maxcode[1] = 1;
+        h.valptr[1] = 1;
+        let data = [0x00u8]; // first bit 0: code 0 < mincode[1]
+        let mut br = BitReader::new(&data, 0);
+        assert!(decode_huff(&mut br, &h).is_none());
+    }
+
+    /// A JPEG carrying a Multi-Picture Format index (APP2 `MPF\0`) or an XMP GContainer
+    /// directory is declined outright: the rebuilt file would keep the index while the
+    /// bytes it points at are re-coded or dropped past EOI.
+    #[test]
+    fn multi_picture_jpegs_are_declined() {
+        let good = gray_jpeg();
+        assert!(!has_multi_picture_index(&good));
+        let splice = |marker: u8, payload: &[u8]| {
+            let mut v = good[..2].to_vec();
+            v.extend_from_slice(&[0xFF, marker]);
+            v.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            v.extend_from_slice(payload);
+            v.extend_from_slice(&good[2..]);
+            v
+        };
+        let mpf = splice(0xE2, b"MPF\0II*\0\x08\0\0\0secondary-image-index");
+        assert!(has_multi_picture_index(&mpf));
+        assert!(transform(&mpf, Op::Rot90).is_none(), "MPF must decline");
+        let xmp = splice(
+            0xE1,
+            b"http://ns.adobe.com/xap/1.0/\0<x:xmpmeta><Container:Directory/></x:xmpmeta>",
+        );
+        assert!(has_multi_picture_index(&xmp));
+        assert!(
+            transform(&xmp, Op::FlipH).is_none(),
+            "GContainer must decline"
+        );
+        // An ICC APP2 or a plain XMP packet is not an index and stays in scope.
+        let icc = splice(0xE2, b"ICC_PROFILE\0\x01\x01profile-bytes");
+        assert!(!has_multi_picture_index(&icc));
+        assert!(transform(&icc, Op::Rot90).is_some());
+        let plain_xmp = splice(0xE1, b"http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>");
+        assert!(!has_multi_picture_index(&plain_xmp));
     }
 
     /// Color: chroma upsampling may not commute with rotation at block edges, so
@@ -1259,8 +1477,8 @@ mod tests {
     /// a coefficient is stored, tripping the guard.
     #[test]
     fn ac_run_length_past_63_declines_instead_of_truncating() {
-        let dc = build_dec(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], &[0]);
-        let ac = build_dec(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], &[0xF1]);
+        let dc = build_dec(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], &[0]).unwrap();
+        let ac = build_dec(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], &[0xF1]).unwrap();
         // Every code AND every data bit here is 1-bit-"0", so 9 zero bits cover the DC symbol
         // plus 4 AC iterations (huffman bit + 1 data bit each); the trailing zero bits are
         // never reached once the guard fires.

@@ -127,7 +127,7 @@ pub(super) const PREVIEW_SOFT_MAX: usize = 1024 * 1024;
 /// LARGEST embedded JPEG preview and decoding that — instead of demosaicing the raw
 /// sensor data via WIC/ImageMagick. The carved JPEG is re-decoded through the safe
 /// `image` tier (bomb-guard limits apply). Returns Err when there's no real embedded
-/// preview, so [`decode_any`] falls through to the WIC/magick tiers unchanged.
+/// preview, so [`decode_any_with_wic_target`] falls through to the WIC/magick tiers unchanged.
 pub(super) fn decode_raw_preview(bytes: &[u8], thumbnail_cx: Option<u32>) -> Result<DynamicImage> {
     let jpeg = largest_embedded_jpeg(bytes, MIN_RAW_PREVIEW).ok_or_else(|| Error::from(E_FAIL))?;
     // The carved preview can be a FULL-RESOLUTION JPEG, and for some cameras it is the only

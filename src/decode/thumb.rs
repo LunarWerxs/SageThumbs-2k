@@ -78,16 +78,27 @@ pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicI
     let cx = cx.max(1);
     if bytes.starts_with(b"8BPS") && psd_composite_wanted(bytes, cx) {
         match decode_psd_composite(bytes) {
-            Ok(img) if composite_beats_baked_preview(&img, bytes) => return Ok(img),
-            Ok(_) => crate::safety::log_debug(
-                "PSD composite decoded blank; keeping the baked preview instead",
-            ),
+            Ok(img) => match composite_beats_baked_preview(img, bytes) {
+                CompositeVerdict::UseComposite(img) => return Ok(img),
+                // Reuse the decode `composite_beats_baked_preview` already did to answer
+                // its own question, instead of falling through to the normal PSD path
+                // below and decoding the same baked JPEG a second time (G145a).
+                CompositeVerdict::UseBakedPreview(preview) => return Ok(preview),
+            },
             Err(e) => crate::safety::log_debug(&format!(
                 "PSD composite failed ({e}); using baked preview"
             )),
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx))
+}
+
+/// Verdict from [`composite_beats_baked_preview`]: which already-decoded image the caller
+/// should use. Both variants carry a ready `DynamicImage` — the baked-preview arm exists so
+/// the caller never has to decode it a second time through the normal PSD path.
+enum CompositeVerdict {
+    UseComposite(DynamicImage),
+    UseBakedPreview(DynamicImage),
 }
 
 /// Is the composite we just decoded actually WORTH having, next to the preview it would
@@ -109,16 +120,26 @@ pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicI
 /// The flat-composite branch is the only one that pays for a second decode, and it is rare.
 /// A genuinely single-colour document lands there and keeps its composite, because its baked
 /// preview is that same single colour and has nothing more to offer.
-fn composite_beats_baked_preview(composite: &DynamicImage, bytes: &[u8]) -> bool {
+///
+/// Takes `composite` by value and hands it back inside the verdict (G145a): the caller no
+/// longer needs to hold its own copy just to return it, and when the baked preview wins,
+/// THAT decode — already paid for here to answer this very question — comes back too,
+/// instead of the caller decoding the identical baked JPEG a second time through the
+/// normal PSD path.
+fn composite_beats_baked_preview(composite: DynamicImage, bytes: &[u8]) -> CompositeVerdict {
     // `REDUCED_IFD0_MIN_SD` is reused deliberately rather than copied to a new name: it is
     // calibrated for a different format but answers the identical question — does this
     // bitmap hold a picture, or is it a rectangle of one colour? A flat fill scores 0.00.
-    if luma_sd(composite) >= REDUCED_IFD0_MIN_SD {
-        return true;
+    if luma_sd(&composite) >= REDUCED_IFD0_MIN_SD {
+        return CompositeVerdict::UseComposite(composite);
     }
     match crate::container::psd_baked_preview(bytes).and_then(|p| decode_with_image(&p).ok()) {
-        Some(preview) => luma_sd(&preview) < REDUCED_IFD0_MIN_SD,
-        None => true, // nothing to fall back to; a flat composite still beats no thumbnail
+        Some(preview) if luma_sd(&preview) >= REDUCED_IFD0_MIN_SD => {
+            CompositeVerdict::UseBakedPreview(preview)
+        }
+        // Either the baked preview is itself flat, or there's nothing to fall back to —
+        // either way a flat composite still beats no thumbnail.
+        _ => CompositeVerdict::UseComposite(composite),
     }
 }
 
@@ -321,10 +342,11 @@ where
 /// not a multiple of `k` keeps its last partial block instead of being cropped. Rounded, not
 /// truncated, so a flat area round-trips to its own colour.
 ///
-/// One body per sample type rather than a generic, because the accumulator width is the whole
-/// question: `k` is bounded only by the image dimension, so 16-bit samples need 64 bits to add
-/// up a large block without wrapping, and paying that on the 8-bit path (which is the hot one)
-/// would be a waste.
+/// One body per sample type rather than a generic, so each instantiation keeps its own
+/// concrete `$t`/`$acc` pair. Both the 8-bit and 16-bit accumulators are 64-bit: `k` is
+/// bounded only by the image dimension (a small requested edge against a large source
+/// drives it close to MAX_DIM), and even 8-bit samples can sum past `u32::MAX` in one
+/// block at that size — see the size note beside the instantiations below.
 macro_rules! box_reduce {
     ($name:ident, $t:ty, $acc:ty) => {
         fn $name(src: &[$t], w: usize, h: usize, ch: usize, k: usize) -> Vec<$t> {
@@ -358,7 +380,12 @@ macro_rules! box_reduce {
     };
 }
 
-box_reduce!(box_reduce_u8, u8, u32);
+// Both accumulators are u64: `k` is bounded only by the image dimension (a tiny requested
+// edge against a large source drives it close to MAX_DIM), so an 8-bit block sum can reach
+// ~2.7e8 samples * 255 ~= 6.9e10 — already past u32::MAX on its own, before the 16-bit twin's
+// wider samples are even considered. u32 here silently wrapped (release has no overflow
+// check), producing a wrong-but-plausible-looking average rather than a crash.
+box_reduce!(box_reduce_u8, u8, u64);
 box_reduce!(box_reduce_u16, u16, u64);
 
 /// The float twin of [`box_reduce`]. Written out rather than folded into the macro because the
@@ -656,6 +683,37 @@ pub(super) fn apply_exif_orientation(img: DynamicImage, bytes: &[u8]) -> Dynamic
     }
 }
 
+/// EXIF Orientation (tag `0x0112`) straight out of IFD0, walking only the entry table
+/// with the existing [`r16`]/[`r32`] helpers — the bounded, zero-copy sibling of
+/// [`tiff_thumbnail`]'s IFD1 walk, for the one question this call site actually needs
+/// answered. `exif::Reader::read_from_container` reads a TIFF-magic buffer whole to
+/// answer this same one-tag question, and every camera RAW this handler is hooked for
+/// IS a TIFF container, so this is what keeps a 150 MB scanner TIFF (or a multi-GB RAW)
+/// from paying that internal cost just to orient a thumbnail. Fully bounds-checked —
+/// never panics on a truncated or hostile IFD.
+fn tiff_ifd0_orientation(tiff: &[u8]) -> Option<u32> {
+    let le = match tiff.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    if r16(tiff, 2, le)? != 42 {
+        return None;
+    }
+    let ifd0 = r32(tiff, 4, le)? as usize;
+    let n0 = r16(tiff, ifd0, le)? as usize;
+    for e in 0..n0 {
+        let entry = ifd0.checked_add(2)?.checked_add(e.checked_mul(12)?)?;
+        if r16(tiff, entry, le)? != 0x0112 {
+            continue;
+        }
+        // Orientation is SHORT (type 3) and left-justified in the 4-byte value field in
+        // both endiannesses, the same read `rawsniff.rs`'s NewSubfileType entry uses.
+        return r16(tiff, entry.checked_add(8)?, le).map(u32::from);
+    }
+    None
+}
+
 pub(super) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
     // Magic-gate before handing the bytes to `exif::Reader`: it only reads EXIF from
     // JPEG / TIFF / PNG / WebP / HEIF, returning an error (→ None) for anything else.
@@ -664,6 +722,12 @@ pub(super) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
     // thumbnail. (PNG/WebP/HEIF stay in — they CAN carry an EXIF orientation.)
     if !has_exif_container(bytes) {
         return None;
+    }
+    // TIFF magic (classic and camera-RAW TIFF containers): read Orientation directly out
+    // of IFD0 rather than handing the whole buffer to `exif::Reader` — see
+    // `tiff_ifd0_orientation`. JPEG/PNG/WebP/HEIF keep the general-purpose reader.
+    if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        return tiff_ifd0_orientation(bytes);
     }
     let exif = exif::Reader::new()
         .read_from_container(&mut std::io::Cursor::new(bytes))
@@ -705,6 +769,24 @@ mod fit_tests {
             *p = image::Rgb([v(0), v(20), v(-25)]);
         }
         DynamicImage::ImageRgb8(buf)
+    }
+
+    /// A single 8-bit box-reduce block large enough that `sum * 255` exceeds
+    /// `u32::MAX` (a tiny requested edge — `--size 1` — against a large source drives `k`
+    /// this high) must still average correctly. A flat fill must round-trip to its own
+    /// colour per this function's own contract; a wrapped `u32` accumulator would not.
+    #[test]
+    fn box_reduce_u8_does_not_overflow_on_a_huge_block() {
+        // k=4200 over one output pixel: 4200*4200*255 ~= 4.498e9, already past u32::MAX
+        // (4.295e9) for a SINGLE channel's accumulator, before summing anything else.
+        let (w, h, k) = (4200usize, 4200usize, 4200usize);
+        let src = vec![255u8; w * h];
+        let out = box_reduce_u8(&src, w, h, 1, k);
+        assert_eq!(
+            out,
+            vec![255u8],
+            "a flat 255 fill must reduce to 255, not a wrapped value"
+        );
     }
 
     /// The pre-reduction is a SPEED change, and a speed change that quietly altered every
@@ -973,5 +1055,58 @@ mod fit_tests {
         // stretched to meet its own limit.
         let wide = reduce_to_fit(photographic(2000, 1000), 220, 88);
         assert_eq!((wide.width(), wide.height()), (176, 88));
+    }
+
+    /// A minimal, real TIFF with a single IFD0 entry (Orientation, tag 0x0112, SHORT):
+    /// header + one 12-byte entry + the 4-byte "next IFD" terminator, in the endianness
+    /// requested. Mirrors `tiff_thumbnail`'s own layout expectations.
+    fn minimal_tiff_with_orientation(le: bool, orientation: u16) -> Vec<u8> {
+        let mut t = Vec::new();
+        t.extend_from_slice(if le { b"II" } else { b"MM" });
+        let u16b = |v: u16| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+        let u32b = |v: u32| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+        t.extend_from_slice(&u16b(42));
+        t.extend_from_slice(&u32b(8)); // IFD0 starts right after the 8-byte header
+        t.extend_from_slice(&u16b(1)); // one entry
+        t.extend_from_slice(&u16b(0x0112)); // tag: Orientation
+        t.extend_from_slice(&u16b(3)); // type: SHORT
+        t.extend_from_slice(&u32b(1)); // count: 1
+        t.extend_from_slice(&u16b(orientation)); // value, left-justified in the 4-byte field
+        t.extend_from_slice(&u16b(0)); // padding to fill the value field
+        t.extend_from_slice(&u32b(0)); // next-IFD offset: none
+        t
+    }
+
+    /// The second half: a TIFF-magic buffer must read Orientation straight out of IFD0
+    /// via the bounded `r16`/`r32` walk, not through `exif::Reader` — both endiannesses,
+    /// and it must agree with whatever `exif::Reader` would have said.
+    #[test]
+    fn exif_orientation_reads_tiff_ifd0_directly() {
+        for le in [true, false] {
+            let tiff = minimal_tiff_with_orientation(le, 6);
+            assert_eq!(
+                tiff_ifd0_orientation(&tiff),
+                Some(6),
+                "le={le}: IFD0 walk must find the Orientation tag"
+            );
+            assert_eq!(
+                exif_orientation(&tiff),
+                Some(6),
+                "le={le}: exif_orientation must route TIFF magic through the IFD0 walk"
+            );
+        }
+        // No Orientation tag at all: a bare, entry-less IFD0 must yield None, not panic.
+        let mut t = Vec::new();
+        t.extend_from_slice(b"II");
+        t.extend_from_slice(&42u16.to_le_bytes());
+        t.extend_from_slice(&8u32.to_le_bytes());
+        t.extend_from_slice(&0u16.to_le_bytes()); // zero entries
+        t.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(tiff_ifd0_orientation(&t), None);
+
+        // Truncated/garbage TIFF-shaped input must decline cleanly, never panic.
+        assert_eq!(tiff_ifd0_orientation(b"II*\0"), None);
+        assert_eq!(tiff_ifd0_orientation(b""), None);
+        assert_eq!(tiff_ifd0_orientation(b"not a tiff at all"), None);
     }
 }

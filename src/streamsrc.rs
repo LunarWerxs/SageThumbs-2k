@@ -12,12 +12,13 @@
 use core::ffi::c_void;
 
 use windows::core::{Error, Result};
-use windows::Win32::Foundation::E_FAIL;
+use windows::Win32::Foundation::{E_FAIL, E_OUTOFMEMORY};
 use windows::Win32::System::Com::{
-    CoTaskMemFree, IStream, STATFLAG_DEFAULT, STATFLAG_NONAME, STATSTG, STREAM_SEEK,
-    STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET,
+    CoTaskMemFree, IStream, STATFLAG_DEFAULT, STATSTG, STREAM_SEEK, STREAM_SEEK_CUR,
+    STREAM_SEEK_END, STREAM_SEEK_SET,
 };
 
+use crate::settings::ThumbSettings;
 use crate::{decode, safety};
 
 mod archive;
@@ -41,6 +42,11 @@ pub(crate) use rawsniff::tiff_ifd0_is_reduced;
 // `decode::limits::MAX_INPUT_BYTES` (one DoS budget, not two copies).
 const MAX_BYTES: usize = decode::limits::MAX_INPUT_BYTES as usize;
 
+/// Read-ahead for the `std::io` readers handed to the zip and lofty parsers. Both seek to
+/// a small index and then read it in small pieces; over a marshaled `IStream` each piece
+/// would otherwise be one cross-process `Read` round trip.
+const READ_AHEAD_BYTES: usize = 256 * 1024;
+
 /// What [`stream_source`] hands back: a video frame Media Foundation already
 /// decoded (no bytes to re-decode), bounded raw bytes for the caller's tiered
 /// byte decoder, or a generic archive's picked cover images for the
@@ -53,7 +59,9 @@ pub enum StreamSource {
 
 /// Turn the shell's `IStream` into a decodable source without ever buffering an
 /// unbounded file. `who` prefixes the debug-log lines ("GetThumbnail" /
-/// "DoPreview"); `max_file_bytes` is the user's MaxSize cap. Purpose-built
+/// "DoPreview"); `cfg` is the caller's settings snapshot, whose `max_file_bytes`
+/// is the user's MaxSize cap (one registry read per request, shared by every tier
+/// here instead of each tier reading its own value). Purpose-built
 /// previews may sidestep it when their cost is inherently small (one video frame,
 /// album art, or a comic's declared cover); generic ZIP/RAR/7z contact sheets
 /// honor it because discovering pictures in an arbitrary project archive can
@@ -85,13 +93,13 @@ pub enum StreamSource {
 /// tier consumes it (a smaller target lets it skip more of the file).
 pub unsafe fn stream_source(
     stream: &IStream,
-    max_file_bytes: u64,
+    cfg: &ThumbSettings,
     target_edge: u32,
     who: &str,
 ) -> Result<StreamSource> {
     stream_source_with_caps(
         stream,
-        max_file_bytes,
+        cfg,
         decode::limits::MAX_INPUT_BYTES,
         target_edge,
         who,
@@ -104,16 +112,22 @@ pub unsafe fn stream_source(
 /// [`decode::limits::MAX_INPUT_BYTES`].
 pub(crate) unsafe fn stream_source_with_caps(
     stream: &IStream,
-    max_file_bytes: u64,
+    cfg: &ThumbSettings,
     hard_cap: u64,
     target_edge: u32,
     who: &str,
 ) -> Result<StreamSource> {
-    if let Some(resolved) = try_video_source(stream, who) {
+    let max_file_bytes = cfg.max_file_bytes;
+    // One head read and one `Stat`, shared by every probe below instead of each probe
+    // seeking, reading and rewinding its own copy of the same first bytes and calling
+    // `Stat` again for the same size and name.
+    let head = stream_head(stream);
+
+    if let Some(resolved) = try_video_source(stream, &head, cfg, who) {
         return resolved;
     }
 
-    match audio_art(stream) {
+    match audio_art(stream, &head) {
         AudioArt::Art(art) => return Ok(StreamSource::Bytes(art)),
         AudioArt::NoArt => {
             safety::log_debug(&format!("{who}: audio file has no embedded art"));
@@ -122,7 +136,7 @@ pub(crate) unsafe fn stream_source_with_caps(
         AudioArt::NotAudio => {}
     }
 
-    if let Some(src) = try_exr_source(stream, who, target_edge) {
+    if let Some(src) = try_exr_source(stream, &head, who, target_edge) {
         return Ok(src);
     }
 
@@ -132,7 +146,7 @@ pub(crate) unsafe fn stream_source_with_caps(
     // then pull only those. Gated on the Stat-recovered file extension so the
     // magic alone can't reroute a comic, and on MaxSize before any archive parser
     // runs so a huge project backup remains a cheap stock icon.
-    match generic_archive(stream, max_file_bytes, who) {
+    match generic_archive(stream, &head, cfg, who) {
         ArchiveProbe::NotGeneric => {}
         ArchiveProbe::NoCover => {
             // A recognized generic archive with no readable image: fail now so
@@ -159,7 +173,7 @@ pub(crate) unsafe fn stream_source_with_caps(
     // needs the full bytes. So does a PSD whose ~160px baked preview is too small
     // for `target_edge` (issue #33): the prefix would otherwise be the only bytes
     // the decoder ever sees, and the composite unreachable however big the request.
-    if let Some(prefix) = head_preview_fast(stream, target_edge) {
+    if let Some(prefix) = head_preview_fast(stream, &head, target_edge) {
         safety::log_debug(&format!(
             "{who}: head-preview fast path ({} bytes)",
             prefix.len()
@@ -173,7 +187,7 @@ pub(crate) unsafe fn stream_source_with_caps(
     // extension or RAW-specific container metadata, plus a structurally valid
     // preview. On a miss (including a preview beyond this bounded prefix) the
     // old whole-file path remains the correctness backstop.
-    if let Some(src) = try_raw_preview_fast(stream, max_file_bytes, who)? {
+    if let Some(src) = try_raw_preview_fast(stream, &head, max_file_bytes, who)? {
         return Ok(src);
     }
 
@@ -182,8 +196,7 @@ pub(crate) unsafe fn stream_source_with_caps(
     // never above the hard MAX_BYTES ceiling ("0 = unlimited" means "up to
     // MAX_BYTES").
     let max = max_file_bytes.min(hard_cap);
-    let size = stream_size(stream);
-    match size {
+    match head.size {
         // Oversized: the whole-file read is a DoS risk, so we skip it —
         // EXCEPT a seek-streamable container: a giant ZIP comic archive
         // (CBZ) reads only its central directory + one cover entry
@@ -194,9 +207,9 @@ pub(crate) unsafe fn stream_source_with_caps(
         // rescue: their baked thumbnail sits in the first bytes, so a
         // bounded prefix read suffices no matter the file size (issue #1).
         Some(size) if size > max => {
-            oversized_rescue(stream, size, max_file_bytes, target_edge, who)
+            oversized_rescue(stream, &head, size, max_file_bytes, target_edge, who)
         }
-        None if peek_is_7z(stream) => {
+        None if head.is_7z() => {
             // A provider stream with neither a recoverable name nor a Stat size
             // cannot prove this is a bounded CB7 rather than a huge project 7z.
             // Do not pull up to hundreds of MiB over a marshaled/network stream
@@ -208,7 +221,11 @@ pub(crate) unsafe fn stream_source_with_caps(
         }
         _ => {
             let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-            Ok(StreamSource::Bytes(read_all(stream, max as usize, size)?))
+            Ok(StreamSource::Bytes(read_all(
+                stream,
+                max as usize,
+                head.size,
+            )?))
         }
     }
 }
@@ -217,8 +234,13 @@ pub(crate) unsafe fn stream_source_with_caps(
 /// video, or OggS ambiguously falling through" - the caller continues to the
 /// audio-art path below exactly as before; `Some(result)` means the cascade is
 /// already resolved (a decoded frame, a cover-art rescue, or a hard failure).
-unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamSource>> {
-    if !peek_is_video(stream) {
+unsafe fn try_video_source(
+    stream: &IStream,
+    head: &StreamHead,
+    cfg: &ThumbSettings,
+    who: &str,
+) -> Option<Result<StreamSource>> {
+    if !head.is_video() {
         return None;
     }
     // OPTION: prefer the embedded poster over a frame from the film (`VideoCoverArt`,
@@ -233,7 +255,7 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     // keyframe_mini_mp4, cover_art again) was the actual A032 cost on a HEVC-with-no-
     // cover-and-no-OS-codec file.
     let mut tried_cover_art = false;
-    if crate::settings::prefer_cover_art() {
+    if cfg.prefer_cover_art {
         tried_cover_art = true;
         if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
             stream: stream.clone(),
@@ -259,10 +281,27 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     // removal, through the real provider on a 163 MB 1080p clip: 1.2 s with the index at
     // the END and 1.7 s with it at the front, in a DEBUG build.
     // WHERE in the video: the user's `VideoOffset` (30 % unless changed - see
-    // `settings::video_offset_frac`). Read ONCE here so every tier below seeks to the same
-    // mark; a per-tier read could disagree if the setting changed mid-decode, and the
-    // fallbacks would then show a different frame from the tier that was meant to run.
-    let at = crate::settings::video_offset_frac();
+    // `settings::video_offset_frac`). Taken from the caller's snapshot so every tier below
+    // seeks to the same mark; a per-tier read could disagree if the setting changed
+    // mid-decode, and the fallbacks would then show a different frame from the tier that
+    // was meant to run.
+    let at = cfg.video_offset_frac;
+    // Media Foundation is delay-loaded and absent on the N/KN editions and Server Core.
+    // Every in-process tier below hands its bytes to MF, so without it each can only fail,
+    // after paying its reads (up to 64 MiB for the prefix tier, 128 + 96 MiB for the
+    // remux). Checked once here; the two out-of-process tiers (Flash-era FLV, VP9 profile
+    // 2/3) decode in the sibling st2k.exe and run either way.
+    let mf = crate::video::media_foundation_available();
+    if !mf {
+        safety::log_debug(&format!(
+            "{who}: Media Foundation unavailable, in-process frame tiers skipped"
+        ));
+    }
+    // The user's MaxSize gates the two non-targeted fallbacks (tiers 4 and 5): they read
+    // a bounded head, or head plus tail, wherever the keyframe is, and a file the user has
+    // excluded by size must not pay for that. A stream with no reported size stays
+    // eligible; both reads are bounded on their own.
+    let within_max = prefix_tiers_allowed(head.size, cfg.max_file_bytes);
     // Tiers, each fast or a fast miss:
     //   1. SMART TARGETED READ (MP4/MOV): parse the moov index, build a tiny
     //      one-keyframe MP4 for the sync sample nearest the mark, decode that -
@@ -284,74 +323,116 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek. They read a
     // bounded head prefix, so they CANNOT honour a late offset - there are no bytes there
     // to seek into. That is a property of the fallback, not a bug to fix here.
-    let frame = crate::mp4::keyframe_mini_mp4(
-        &mut IStreamReader {
-            stream: stream.clone(),
-        },
-        at,
-    )
-    .and_then(crate::video::frame_from_owned_bytes)
-    .or_else(|| {
+    // The MP4/MKV keyframe tiers hand back the display rotation they already parsed out of
+    // the same moov/Tracks they read for the mini-clip - captured here, once,
+    // so the rotation decision below (after the tier chain converges) never re-reads the
+    // container a second time. Gated on `mf` like every in-process tier: without Media
+    // Foundation neither clip could ever decode to a frame. The MKV parse only runs when the
+    // MP4 one didn't even locate a container to parse - a file the MP4 tier mapped is not
+    // Matroska, so trying `keyframe_mini_mkv` on it would just be a second failing read.
+    let mp4_clip = if mf {
+        crate::mp4::keyframe_mini_mp4(
+            &mut IStreamReader {
+                stream: stream.clone(),
+            },
+            at,
+        )
+    } else {
+        None
+    };
+    let mkv_clip = if mf && mp4_clip.is_none() {
         crate::mkv::keyframe_mini_mkv(
             &mut IStreamReader {
                 stream: stream.clone(),
             },
             at,
         )
+    } else {
+        None
+    };
+    let container_ran = mp4_clip.is_some() || mkv_clip.is_some();
+    let container_rotation = mp4_clip
+        .as_ref()
+        .and_then(|(_, r)| *r)
+        .or_else(|| mkv_clip.as_ref().and_then(|(_, r)| *r));
+    let frame = mp4_clip
+        .map(|(b, _)| b)
+        .or_else(|| mkv_clip.map(|(b, _)| b))
         .and_then(crate::video::frame_from_owned_bytes)
-    })
-    .or_else(|| {
-        crate::flv::keyframe_mini_mp4(&mut IStreamReader {
-            stream: stream.clone(),
+        .or_else(|| {
+            tier_if(mf, || {
+                crate::flv::keyframe_mini_mp4(&mut IStreamReader {
+                    stream: stream.clone(),
+                })
+                .and_then(crate::video::frame_from_owned_bytes)
+            })
         })
-        .and_then(crate::video::frame_from_owned_bytes)
-    })
-    .or_else(|| {
-        // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
-        //     decoded out of process by the sibling st2k.exe (`flv::flash_frame` - the
-        //     pure-Rust Flash decoders panic on hostile input and must never run inside
-        //     the shell host). Self-gated on the FLV magic + codec id; bounded head read.
-        crate::flv::flash_frame(&mut IStreamReader {
-            stream: stream.clone(),
-        })
-    })
-    .or_else(|| {
-        // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
-        // seek reads cheap (the old shell-IStream meltdown was thousands
-        // of tiny marshaled reads - here they coalesce into a few big ones).
-        stream_size(stream).and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
-    })
-    .or_else(|| video_prefix(stream).and_then(crate::video::frame_from_owned_bytes))
-    .or_else(|| mp4_remux_moov(stream).and_then(crate::video::frame_from_owned_bytes))
-    .or_else(|| {
-        // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
-        //    Profile 0/1 even with the Store extension installed, so when every tier
-        //    above came back empty AND the container says V_VP9, the keyframe (located
-        //    via the same Cues read as tier 2) is decoded out of process by the sibling
-        //    st2k.exe (`crate::vp9`). Deliberately LAST: Profile 0 must keep hitting the
-        //    hardware-accelerated in-process MF path, and only otherwise-blank tiles pay
-        //    for a process spawn. Self-gated on the codec id; bounded targeted reads.
-        crate::vp9::vp9_frame(
-            &mut IStreamReader {
+        .or_else(|| {
+            // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
+            //     decoded out of process by the sibling st2k.exe (`flv::flash_frame` - the
+            //     pure-Rust Flash decoders panic on hostile input and must never run inside
+            //     the shell host). Self-gated on the FLV magic + codec id; bounded head read.
+            crate::flv::flash_frame(&mut IStreamReader {
                 stream: stream.clone(),
-            },
-            at,
-        )
-    });
+            })
+        })
+        .or_else(|| {
+            // MF demuxes AVI/WMV/etc. directly; the block-caching stream makes its
+            // seek reads cheap (the old shell-IStream meltdown was thousands
+            // of tiny marshaled reads - here they coalesce into a few big ones).
+            tier_if(mf, || {
+                head.size
+                    .and_then(|size| crate::video::frame_from_block_stream(stream, size, at))
+            })
+        })
+        .or_else(|| {
+            tier_if(mf && within_max, || {
+                video_prefix(stream, head.size).and_then(crate::video::frame_from_owned_bytes)
+            })
+        })
+        .or_else(|| {
+            tier_if(mf && within_max, || {
+                head.size
+                    .and_then(|total| mp4_remux_moov(stream, total))
+                    .and_then(crate::video::frame_from_owned_bytes)
+            })
+        })
+        .or_else(|| {
+            // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
+            //    Profile 0/1 even with the Store extension installed, so when every tier
+            //    above came back empty AND the container says V_VP9, the keyframe (located
+            //    via the same Cues read as tier 2) is decoded out of process by the sibling
+            //    st2k.exe (`crate::vp9`). Deliberately LAST: Profile 0 must keep hitting the
+            //    hardware-accelerated in-process MF path, and only otherwise-blank tiles pay
+            //    for a process spawn. Self-gated on the codec id; bounded targeted reads.
+            crate::vp9::vp9_frame(
+                &mut IStreamReader {
+                    stream: stream.clone(),
+                },
+                at,
+            )
+        });
     if let Some(frame) = frame {
         // ISSUE #32, applied HERE because here is where every tier above converges. A clip
         // rotated losslessly (metadata only, no re-encode) must thumbnail the way it plays,
         // which is what Windows' own thumbnailer does; doing it per-tier would mean six
-        // chances to forget. Not-an-MP4, or an upright one, costs one bounded moov read and
-        // changes nothing.
-        let rotation = crate::mp4::display_rotation(&mut IStreamReader {
-            stream: stream.clone(),
-        })
-        .or_else(|| {
-            crate::mkv::display_rotation(&mut IStreamReader {
+        // chances to forget. The MP4/MKV keyframe tiers above already parsed this rotation
+        // out of the same moov/Tracks they read for the mini-clip - only a
+        // tier that did NOT parse the container needs this standalone probe to re-read it.
+        // Not-an-MP4, or an upright one, costs at most one bounded moov read and changes
+        // nothing.
+        let rotation = if container_ran {
+            container_rotation
+        } else {
+            crate::mp4::display_rotation(&mut IStreamReader {
                 stream: stream.clone(),
             })
-        });
+            .or_else(|| {
+                crate::mkv::display_rotation(&mut IStreamReader {
+                    stream: stream.clone(),
+                })
+            })
+        };
         let frame = match rotation {
             Some(deg) => {
                 safety::log_debug(&format!("{who}: display matrix asks for {deg} deg"));
@@ -373,7 +454,7 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
     // a missing OS codec (HEVC/AV1 are Store add-ons, not inbox), and library rips
     // routinely attach a poster, so show the film instead of a blank tile. Bounded:
     // the attachment element is read via the container's own index, never the stream.
-    if !peek_is_ogg(stream) {
+    if !head.is_ogg() {
         if needs_fallback_cover_art(tried_cover_art) {
             if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
                 stream: stream.clone(),
@@ -399,8 +480,13 @@ unsafe fn try_video_source(stream: &IStream, who: &str) -> Option<Result<StreamS
 /// memory and time than the tile we were asked for. Files the scaled decoder
 /// declines (deep, chroma-subsampled, non-RGB channel names) fall through to the
 /// unchanged cascade below (`None`).
-unsafe fn try_exr_source(stream: &IStream, who: &str, target_edge: u32) -> Option<StreamSource> {
-    if !peek_is_exr(stream) {
+unsafe fn try_exr_source(
+    stream: &IStream,
+    head: &StreamHead,
+    who: &str,
+    target_edge: u32,
+) -> Option<StreamSource> {
+    if !head.is_exr() {
         return None;
     }
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
@@ -429,10 +515,11 @@ unsafe fn try_exr_source(stream: &IStream, who: &str, target_edge: u32) -> Optio
 /// continue the cascade below" - a miss, not an error.
 unsafe fn try_raw_preview_fast(
     stream: &IStream,
+    head: &StreamHead,
     max_file_bytes: u64,
     who: &str,
 ) -> Result<Option<StreamSource>> {
-    let Some(raw) = raw_preview_fast(stream, max_file_bytes) else {
+    let Some(raw) = raw_preview_fast(stream, head, max_file_bytes) else {
         return Ok(None);
     };
     match raw {
@@ -464,16 +551,17 @@ unsafe fn try_raw_preview_fast(
 /// in turn before giving up on a file too big to buffer.
 unsafe fn oversized_rescue(
     stream: &IStream,
+    head: &StreamHead,
     size: u64,
     max_file_bytes: u64,
     target_edge: u32,
     who: &str,
 ) -> Result<StreamSource> {
-    if let Some(cover) = archive_cover_streamed(stream) {
+    if let Some(cover) = archive_cover_streamed(stream, head) {
         safety::log_debug(&format!("{who}: streamed cover from {size}-byte archive"));
         return Ok(StreamSource::Bytes(cover));
     }
-    if let Some(prefix) = head_preview_prefix(stream) {
+    if let Some(prefix) = head_preview_prefix(stream, head) {
         safety::log_debug(&format!(
             "{who}: head-preview prefix ({} bytes) of {size}-byte file",
             prefix.len()
@@ -549,91 +637,141 @@ fn needs_fallback_cover_art(already_tried_cover_art: bool) -> bool {
     !already_tried_cover_art
 }
 
+/// Run a frame tier only when its precondition holds (Media Foundation present, the file
+/// inside MaxSize). A false precondition is a miss like any other, so the chain continues
+/// to the next tier without paying this one's reads.
+fn tier_if<F>(enabled: bool, tier: F) -> Option<image::DynamicImage>
+where
+    F: FnOnce() -> Option<image::DynamicImage>,
+{
+    if enabled {
+        tier()
+    } else {
+        None
+    }
+}
+
+/// May the two non-targeted video fallbacks (the 64 MiB prefix and the head + tail remux)
+/// run for a stream of `size`? Only inside the user's MaxSize, the same test
+/// `oversized_rescue` applies; a stream with no reported size stays eligible because both
+/// reads are bounded on their own.
+fn prefix_tiers_allowed(size: Option<u64>, max_file_bytes: u64) -> bool {
+    size.is_none_or(|size| size <= max_file_bytes)
+}
+
 /// First `max` bytes of `stream`, rewinding afterwards. Short reads are fine: the only
 /// consumer is the ISOBMFF colour-box probe, which simply finds nothing and lets WIC's own
 /// colour context answer instead.
 unsafe fn read_prefix(stream: &IStream, max: usize) -> Vec<u8> {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     let mut buf = vec![0u8; max];
-    let mut got: u32 = 0;
-    let hr = stream.Read(buf.as_mut_ptr() as *mut c_void, max as u32, Some(&mut got));
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    if hr.is_err() {
-        return Vec::new();
-    }
-    // Never trust the reported count past the buffer we supplied (same clamp the sibling
-    // reads use, for the same hostile-stream reason).
-    buf.truncate((got as usize).min(max));
+    let got = read_head(stream, &mut buf).unwrap_or(0);
+    buf.truncate(got);
     buf
 }
 
-/// The stream's total size in bytes via `IStream::Stat`, or None if the stream
-/// doesn't support it (then the general read is bounded by the effective user +
-/// hard cap, while expensive name-less 7z input fails closed).
-unsafe fn stream_size(stream: &IStream) -> Option<u64> {
+/// How much of the stream head [`stream_head`] reads up front for every probe in the
+/// cascade. 4 KiB covers every magic sniff (the longest, the MPEG-TS / M2TS sync-byte
+/// stride check, wants 197 bytes) and the IFD0 walk of a TIFF-shaped camera RAW.
+const HEAD_BYTES: usize = 4096;
+
+/// One head read and one `Stat` per stream, taken at the top of the cascade and handed to
+/// every probe. Before this each probe seeked, read and rewound its own copy of the same
+/// first bytes and called `Stat` again for the same size and name.
+pub(crate) struct StreamHead {
+    /// The first bytes of the stream: at most [`HEAD_BYTES`], fewer for a shorter stream
+    /// (or none when the stream refuses the read).
+    bytes: Vec<u8>,
+    /// `STATSTG::cbSize`, when the stream reports one.
+    size: Option<u64>,
+    /// Lowercased extension of `STATSTG::pwcsName`, when the stream reports a name.
+    ext: Option<String>,
+}
+
+impl StreamHead {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The first `n` head bytes, or all of them when the head is shorter than `n`.
+    fn first(&self, n: usize) -> &[u8] {
+        self.bytes.get(..n).unwrap_or(self.bytes.as_slice())
+    }
+
+    /// Does the extension the stream reported satisfy `pred`? False for a name-less
+    /// stream.
+    fn extension_is(&self, pred: impl FnOnce(&str) -> bool) -> bool {
+        self.ext.as_deref().is_some_and(pred)
+    }
+
+    /// A video container we can frame-grab (Matroska/WebM, MP4/MOV, AVI, ASF/WMV, ...).
+    /// HEIC/AVIF and M4A/M4B share MP4's `ftyp` box but are excluded by `is_video_magic`.
+    fn is_video(&self) -> bool {
+        crate::video::is_video_magic(&self.bytes)
+    }
+
+    /// The OpenEXR magic.
+    fn is_exr(&self) -> bool {
+        self.bytes.len() >= 4 && decode::is_exr_magic(self.first(4))
+    }
+
+    /// The Ogg container magic (`OggS`). Ogg carries both video (.ogv) and audio
+    /// (Vorbis/Opus/Speex), so a video frame-grab miss on an Ogg means it is audio-only
+    /// and the caller falls back to the album-art path instead of failing.
+    fn is_ogg(&self) -> bool {
+        self.bytes.starts_with(b"OggS")
+    }
+
+    /// The 7z signature. Used only for the unknown-size fail-closed gate; ZIP remains
+    /// eligible for its deliberate seek-only CBZ cover rescue.
+    fn is_7z(&self) -> bool {
+        self.bytes
+            .starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
+    }
+}
+
+/// Read the [`StreamHead`] for `stream`: the head bytes (rewinding afterwards) and one
+/// `Stat`. A stream that refuses the read yields an empty head, one that refuses `Stat`
+/// yields no size and no extension; every probe then simply misses.
+unsafe fn stream_head(stream: &IStream) -> StreamHead {
+    let mut bytes = vec![0u8; HEAD_BYTES];
+    let got = read_head(stream, &mut bytes).unwrap_or(0);
+    bytes.truncate(got);
+    let (size, ext) = stream_stat(stream);
+    StreamHead { bytes, size, ext }
+}
+
+/// Seek to 0, fill as much of `buf` as the stream yields (looping over short reads,
+/// stopping at the end of the stream), and seek back to 0. Returns the filled length,
+/// never more than `buf.len()` whatever count the stream reports; None when a read fails.
+unsafe fn read_head(stream: &IStream, buf: &mut [u8]) -> Option<usize> {
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let filled = fill_from_current(stream, buf);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    filled
+}
+
+/// One `IStream::Stat` (`STATFLAG_DEFAULT`, so the name comes with the size): the reported
+/// size and the lowercased extension of the reported name. `(None, None)` when the stream
+/// does not support `Stat`. `pwcsName` is a CoTaskMem allocation we own and must free.
+unsafe fn stream_stat(stream: &IStream) -> (Option<u64>, Option<String>) {
     let mut stat = STATSTG::default();
-    stream.Stat(&mut stat, STATFLAG_NONAME).ok()?;
-    Some(stat.cbSize)
-}
-
-/// Read just enough to recognize a 7z signature and rewind. Used only for the
-/// unknown-size fail-closed gate; ZIP remains eligible for its deliberate
-/// seek-only CBZ cover rescue.
-unsafe fn peek_is_7z(stream: &IStream) -> bool {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut signature = [0u8; 6];
-    let mut got = 0u32;
-    let result = stream.Read(
-        signature.as_mut_ptr() as *mut c_void,
-        signature.len() as u32,
-        Some(&mut got),
-    );
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    result.is_ok()
-        && got as usize == signature.len()
-        && signature == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]
-}
-
-/// Sniff the stream head for a video container we can frame-grab (Matroska/WebM, MP4/MOV,
-/// AVI, ASF/WMV, …). Rewinds to 0 either way so the subsequent MF / whole-file read starts
-/// clean. HEIC/AVIF and M4A/M4B share MP4's `ftyp` box but are excluded by `is_video_magic`.
-unsafe fn peek_is_video(stream: &IStream) -> bool {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    // 208 bytes: enough to verify the MPEG-TS / M2TS sync-byte STRIDE (a second 0x47 at
-    // offset 188 / 196) so we don't false-match any file that merely starts with 'G'.
-    let mut head = [0u8; 208];
-    let mut got: u32 = 0;
-    let hr = stream.Read(
-        head.as_mut_ptr() as *mut c_void,
-        head.len() as u32,
-        Some(&mut got),
-    );
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let got = (got as usize).min(head.len());
-    hr.is_ok() && crate::video::is_video_magic(&head[..got])
-}
-
-/// Is the stream head the OpenEXR magic? Rewinds either way so the scaled decode
-/// (or, on a miss, the rest of the cascade) starts clean.
-unsafe fn peek_is_exr(stream: &IStream) -> bool {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 4];
-    let mut got: u32 = 0;
-    let hr = stream.Read(head.as_mut_ptr() as *mut c_void, 4, Some(&mut got));
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    hr.is_ok() && got == 4 && decode::is_exr_magic(&head)
-}
-
-/// Is the stream head the Ogg container magic (`OggS`)? Ogg carries both video (.ogv) and
-/// audio (Vorbis/Opus/Speex), so a video frame-grab miss on an Ogg means it's audio-only —
-/// the caller then falls back to the album-art path instead of failing.
-unsafe fn peek_is_ogg(stream: &IStream) -> bool {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 4];
-    let mut got: u32 = 0;
-    let hr = stream.Read(head.as_mut_ptr() as *mut c_void, 4, Some(&mut got));
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    hr.is_ok() && got == 4 && &head == b"OggS"
+    if stream.Stat(&mut stat, STATFLAG_DEFAULT).is_err() {
+        return (None, None);
+    }
+    let name = if stat.pwcsName.is_null() {
+        None
+    } else {
+        let name = stat.pwcsName.to_string().ok();
+        CoTaskMemFree(Some(stat.pwcsName.0 as *const c_void));
+        name
+    };
+    let ext = name.as_deref().and_then(|name| {
+        std::path::Path::new(name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+    });
+    (Some(stat.cbSize), ext)
 }
 
 /// Recover the backing file path from the shell's `IStream` via `IStream::Stat`
@@ -681,49 +819,55 @@ unsafe fn stream_path(stream: &IStream) -> Option<String> {
 /// report only a display name; that is still enough for a conservative format
 /// gate, whereas [`stream_path`] intentionally rejects it for direct file I/O.
 pub(crate) unsafe fn stream_extension(stream: &IStream) -> Option<String> {
-    let mut stat = STATSTG::default();
-    stream.Stat(&mut stat, STATFLAG_DEFAULT).ok()?;
-    if stat.pwcsName.is_null() {
-        return None;
-    }
-    let name = stat.pwcsName.to_string().ok();
-    CoTaskMemFree(Some(stat.pwcsName.0 as *const c_void));
-    name.and_then(|name| {
-        std::path::Path::new(&name)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase())
-    })
+    stream_stat(stream).1
 }
 
 /// Read up to `max` bytes off the stream head in big sequential gulps, rewinding to 0
-/// before and after. Shared by the video-prefix decode and the head-preview rescue —
-/// the bounded read is the same, only the cap differs.
-unsafe fn stream_prefix(stream: &IStream, max: usize) -> Option<Vec<u8>> {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let cap = stream_size(stream).map_or(max, |sz| (sz as usize).min(max));
-    let mut buf = vec![0u8; cap];
-    let mut filled = 0usize;
-    while filled < cap {
-        let mut got: u32 = 0;
-        let hr = stream.Read(
-            buf[filled..].as_mut_ptr() as *mut c_void,
-            (cap - filled) as u32,
-            Some(&mut got),
-        );
-        if hr.is_err() || got == 0 {
-            break;
-        }
-        filled += got as usize;
+/// before and after. `size` is the stream's reported size, which caps the buffer so a
+/// small file does not allocate the whole `max`. Shared by the video-prefix decode and
+/// the head-preview rescue — the bounded read is the same, only the cap differs. None for
+/// a failed read or fewer than 64 bytes.
+unsafe fn stream_prefix(stream: &IStream, size: Option<u64>, max: usize) -> Option<Vec<u8>> {
+    stream_prefix_from(stream, Vec::new(), size, max)
+}
+
+/// [`stream_prefix`] continuing from bytes already in hand: `out` holds the stream's first
+/// `out.len()` bytes verbatim and only the remainder up to the cap is read, so a probe
+/// that has already pulled part of the head does not read those bytes a second time.
+/// Rewinds to 0 afterwards.
+unsafe fn stream_prefix_from(
+    stream: &IStream,
+    mut out: Vec<u8>,
+    size: Option<u64>,
+    max: usize,
+) -> Option<Vec<u8>> {
+    let cap = size.map_or(max, |sz| usize::try_from(sz).map_or(max, |sz| sz.min(max)));
+    let start = out.len().min(cap);
+    out.truncate(start);
+    if start < cap {
+        stream
+            .Seek(i64::try_from(start).ok()?, STREAM_SEEK_SET, None)
+            .ok()?;
+        out.resize(cap, 0);
+        let filled = fill_from_current(stream, &mut out[start..]);
+        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+        out.truncate(start.saturating_add(filled?));
+    } else {
+        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     }
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    buf.truncate(filled);
-    (filled >= 64).then_some(buf)
+    (out.len() >= 64).then_some(out)
 }
 
 /// Read exactly `buf.len()` bytes starting at the stream's current position (looping over
-/// short reads). None if the stream ends early.
+/// short reads). None if the stream ends early or a read fails.
 unsafe fn read_full(stream: &IStream, buf: &mut [u8]) -> Option<()> {
+    (fill_from_current(stream, buf)? == buf.len()).then_some(())
+}
+
+/// Read into `buf` from the stream's current position until it is full or the stream
+/// ends. Returns the filled length, clamped to `buf.len()` whatever count the stream
+/// reports; None when a read fails.
+unsafe fn fill_from_current(stream: &IStream, buf: &mut [u8]) -> Option<usize> {
     let mut filled = 0usize;
     while filled < buf.len() {
         let mut got: u32 = 0;
@@ -733,12 +877,15 @@ unsafe fn read_full(stream: &IStream, buf: &mut [u8]) -> Option<()> {
             want,
             Some(&mut got),
         );
-        if hr.is_err() || got == 0 {
+        if hr.is_err() {
+            return None;
+        }
+        if got == 0 {
             break;
         }
-        filled += got as usize;
+        filled = filled.saturating_add(got as usize).min(buf.len());
     }
-    (filled == buf.len()).then_some(())
+    Some(filled)
 }
 
 /// Result of the audio-art probe. The three cases are distinct so the caller can
@@ -754,24 +901,20 @@ enum AudioArt {
 /// Sniff the stream for audio and, if so, extract only the embedded art via a
 /// seek-only read (lofty seeks to the metadata — we never buffer the whole file,
 /// so even a multi-GB audiobook thumbnails). Rewinds the stream to 0 either way.
-unsafe fn audio_art(stream: &IStream) -> AudioArt {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 16];
-    let mut got: u32 = 0;
-    let hr = stream.Read(
-        head.as_mut_ptr() as *mut c_void,
-        head.len() as u32,
-        Some(&mut got),
-    );
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    // Never trust the IStream-reported count past the buffer it filled.
-    let got = (got as usize).min(head.len());
-    if hr.is_err() || got < 12 || !crate::container::looks_like_audio(&head[..got]) {
+unsafe fn audio_art(stream: &IStream, head: &StreamHead) -> AudioArt {
+    let head = head.first(16);
+    if head.len() < 12 || !crate::container::looks_like_audio(head) {
         return AudioArt::NotAudio;
     }
-    match crate::container::audio_art_from_reader(IStreamReader {
-        stream: stream.clone(),
-    }) {
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    // Buffered: lofty reads its tag blocks in small pieces, and each piece would otherwise
+    // be one marshaled `IStream::Read` round trip.
+    match crate::container::audio_art_from_reader(std::io::BufReader::with_capacity(
+        READ_AHEAD_BYTES,
+        IStreamReader {
+            stream: stream.clone(),
+        },
+    )) {
         Some(art) => AudioArt::Art(art),
         None => AudioArt::NoArt,
     }
@@ -832,36 +975,59 @@ unsafe fn read_all_append(
     if out.len() > max {
         return Err(Error::from(E_FAIL));
     }
-    // Pre-size from the (already size-checked) stream length to skip the doubling
-    // realloc churn on multi-MB images. Cap the upfront reservation so a stream that
-    // lies about its size can't trick us into a giant allocation — the growth loop +
-    // the `max` check below still bound the true read.
-    let cap = size_hint.map_or(0, |h| (h as usize).min(max).min(64 << 20));
-    if cap > out.len() {
-        out.reserve(cap - out.len());
+    // Pre-size from the (already size-checked) stream length so every read lands straight
+    // in the buffer's spare capacity: no scratch chunk, no second copy, and no doubling
+    // reallocation at 64/128/256 MiB. The reservation is capped by `max`, so a stream that
+    // lies about its size cannot force a giant allocation, and the `max` test in the loop
+    // still bounds the true read. A refused reservation is reported, not aborted on.
+    let hint = size_hint.map_or(0, |h| usize::try_from(h).map_or(max, |h| h.min(max)));
+    if hint > out.len() {
+        out.try_reserve(hint - out.len())
+            .map_err(|_| Error::from(E_OUTOFMEMORY))?;
     }
-    // 1 MiB chunks: the stream is marshaled (often cross-process), so per-Read
-    // overhead is real — 64 KiB chunks cost a 100 MB file ~1,600 round trips.
-    let mut chunk = vec![0u8; 1 << 20];
+    // 1 MiB steps: the stream is marshaled (often cross-process), so per-Read overhead is
+    // real — 64 KiB steps cost a 100 MB file ~1,600 round trips. Each step is zeroed and
+    // then filled in place; within the reservation that is a memset, never a copy.
+    const STEP: usize = 1 << 20;
     loop {
+        let len = out.len();
+        let room = max.saturating_sub(len);
+        if room == 0 {
+            // At the cap: one probe read tells a stream of exactly `max` bytes from a
+            // longer one, which is refused exactly as it always was.
+            let mut probe = [0u8; 1];
+            let mut got: u32 = 0;
+            stream
+                .Read(probe.as_mut_ptr() as *mut c_void, 1, Some(&mut got))
+                .ok()?;
+            return if got == 0 {
+                Ok(out)
+            } else {
+                Err(Error::from(E_FAIL))
+            };
+        }
+        let want = room.min(STEP);
+        out.try_reserve(want)
+            .map_err(|_| Error::from(E_OUTOFMEMORY))?;
+        out.resize(len.saturating_add(want), 0);
         let mut got: u32 = 0;
         let hr = stream.Read(
-            chunk.as_mut_ptr() as *mut c_void,
-            chunk.len() as u32,
+            out[len..].as_mut_ptr() as *mut c_void,
+            want as u32,
             Some(&mut got),
         );
         // S_OK and S_FALSE are both successes; a failing HRESULT is a real transport
         // error (network/cloud-placeholder stream), NOT end-of-stream — don't mistake
         // it for EOF and silently feed a truncated buffer to the decoder.
-        hr.ok()?;
-        if got == 0 {
+        if let Err(e) = hr.ok() {
+            out.truncate(len);
+            return Err(e);
+        }
+        let n = (got as usize).min(want); // never trust got > buffer
+        out.truncate(len.saturating_add(n));
+        if n == 0 {
             break; // success + 0 bytes == genuine EOF
         }
-        let n = (got as usize).min(chunk.len()); // never trust got > buffer
-        if n > max - out.len() {
-            return Err(Error::from(E_FAIL));
-        }
-        out.extend_from_slice(&chunk[..n]);
     }
     Ok(out)
 }
@@ -877,11 +1043,20 @@ mod tests {
     };
     use windows::Win32::UI::Shell::{SHCreateMemStream, SHCreateStreamOnFileEx};
 
+    /// A settings snapshot with `max_file_bytes` set and every other value at the user's
+    /// current setting, which is what the provider passes in production.
+    fn test_cfg(max_file_bytes: u64) -> ThumbSettings {
+        ThumbSettings {
+            max_file_bytes,
+            ..crate::settings::thumb_settings()
+        }
+    }
+
     /// Run the full source cascade on `bytes` (100 MB cap, like the default
     /// MaxSize) and return the byte payload it hands the decode tiers.
     fn source_bytes(bytes: &[u8]) -> Vec<u8> {
         let stream = unsafe { SHCreateMemStream(Some(bytes)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, 100 << 20, 256, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(100 << 20), 256, "test") } {
             Ok(StreamSource::Bytes(b)) => b,
             other => panic!(
                 "expected StreamSource::Bytes, got {}",
@@ -921,7 +1096,8 @@ mod tests {
         // what refuses the buffered read, which is exactly the production shape.
         // Generous user allowance, tiny HARD cap: the file is refused by OUR buffering
         // ceiling, which is precisely the production shape for a half-gigabyte scan.
-        let got = unsafe { stream_source_with_caps(&stream, u64::MAX, 1024, 64, "test") };
+        let got =
+            unsafe { stream_source_with_caps(&stream, &test_cfg(u64::MAX), 1024, 64, "test") };
         match got {
             Ok(StreamSource::Frame(img)) => {
                 // Scaled DURING decode, so the rescue never materialises the full image.
@@ -972,7 +1148,9 @@ mod tests {
         );
         // Same shape as production: the user's allowance is the default, and the (scaled-down)
         // hard cap is what refuses the buffered read.
-        let got = unsafe { stream_source_with_caps(&stream, default_allowance, 1024, 64, "test") };
+        let got = unsafe {
+            stream_source_with_caps(&stream, &test_cfg(default_allowance), 1024, 64, "test")
+        };
         assert!(
             matches!(got, Ok(StreamSource::Frame(_))),
             "the default setting must still reach the oversized rescue"
@@ -991,7 +1169,7 @@ mod tests {
         let jpeg = substantial_jpeg();
         let stream = unsafe { SHCreateMemStream(Some(&jpeg)) }.expect("SHCreateMemStream");
         // User allows only 1 KB; the fixture is bigger, so this is THEIR refusal, not ours.
-        let got = unsafe { stream_source_with_caps(&stream, 1024, 1 << 30, 64, "test") };
+        let got = unsafe { stream_source_with_caps(&stream, &test_cfg(1024), 1 << 30, 64, "test") };
         assert!(
             got.is_err(),
             "a file over the user's MaxSize must stay refused"
@@ -1171,14 +1349,14 @@ mod tests {
         raw[jpeg_start..jpeg_start + jpeg.len()].copy_from_slice(&jpeg);
 
         let stream = unsafe { SHCreateMemStream(Some(&raw)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, u64::MAX, 256, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(u64::MAX), 256, "test") } {
             Ok(StreamSource::Bytes(bytes)) => assert_eq!(bytes, jpeg),
             _ => panic!("unnamed RAW stream should use its embedded preview"),
         }
 
         let stream = unsafe { SHCreateMemStream(Some(&raw)) }.expect("SHCreateMemStream");
         assert!(
-            unsafe { stream_source(&stream, 1024 * 1024, 256, "test") }.is_err(),
+            unsafe { stream_source(&stream, &test_cfg(1024 * 1024), 256, "test") }.is_err(),
             "RAW fast path must not bypass the configured MaxSize"
         );
         drop(stream);
@@ -1186,7 +1364,7 @@ mod tests {
         raw[jpeg_start..jpeg_start + jpeg.len()].fill(0);
         *raw.last_mut().unwrap() = 0xA5;
         let stream = unsafe { SHCreateMemStream(Some(&raw)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, u64::MAX, 256, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(u64::MAX), 256, "test") } {
             Ok(StreamSource::Bytes(bytes)) => {
                 assert_eq!(bytes.len(), raw.len());
                 assert_eq!(bytes.last(), Some(&0xA5));
@@ -1221,7 +1399,7 @@ mod tests {
             )
             .expect("SHCreateStreamOnFileEx")
         };
-        match unsafe { stream_source(&stream, u64::MAX, 256, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(u64::MAX), 256, "test") } {
             Ok(StreamSource::Bytes(bytes)) => {
                 assert!(bytes.len() >= decode::MIN_RAW_PREVIEW);
                 assert!(
@@ -1251,7 +1429,7 @@ mod tests {
     fn oversized_exr_is_scaled_off_the_stream_instead_of_refused() {
         let exr = crate::decode::tests::ramp_exr_bytes(600, 400);
         let stream = unsafe { SHCreateMemStream(Some(&exr)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, 1, 64, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(1), 64, "test") } {
             // step = floor(600 / 64) = 9 -> ceil(600/9) x ceil(400/9) = 67x45.
             Ok(StreamSource::Frame(img)) => {
                 assert_eq!((img.width(), img.height()), (67, 45));
@@ -1270,7 +1448,7 @@ mod tests {
 
         // The requested edge really drives the decode (a smaller tile reads less).
         let stream = unsafe { SHCreateMemStream(Some(&exr)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, u64::MAX, 256, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(u64::MAX), 256, "test") } {
             // step = floor(600 / 256) = 2 -> 300x200.
             Ok(StreamSource::Frame(img)) => assert_eq!((img.width(), img.height()), (300, 200)),
             _ => panic!("EXR should scale to the requested edge"),
@@ -1298,7 +1476,7 @@ mod tests {
         bytes.extend_from_slice(b"payload");
         let stream = unsafe { SHCreateMemStream(Some(&bytes)) }.expect("SHCreateMemStream");
 
-        assert!(unsafe { peek_is_7z(&stream) });
+        assert!(unsafe { stream_head(&stream) }.is_7z());
         let mut first = [0u8; 6];
         let mut got = 0u32;
         unsafe {
@@ -1315,7 +1493,7 @@ mod tests {
 
         let not_7z =
             unsafe { SHCreateMemStream(Some(b"PK\x03\x04zip")) }.expect("SHCreateMemStream");
-        assert!(!unsafe { peek_is_7z(&not_7z) });
+        assert!(!unsafe { stream_head(&not_7z) }.is_7z());
     }
 
     #[test]
@@ -1365,7 +1543,7 @@ mod tests {
         // read then fails the decode tiers exactly as it did before this path.
         let (dwg, _) = crate::container::dwg_testutil::synthetic_dwg(false, 1 << 20);
         let stream = unsafe { SHCreateMemStream(Some(&dwg)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, 100 << 20, 256, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(100 << 20), 256, "test") } {
             Ok(StreamSource::Bytes(b)) => assert_eq!(b.len(), dwg.len()),
             Ok(_) => panic!("expected Bytes"),
             Err(_) => panic!("expected the whole-file read, not a failure"),
@@ -1382,7 +1560,7 @@ mod tests {
         let (dwg, head_len) = crate::container::dwg_testutil::synthetic_dwg(true, 4 << 20);
         let stream = unsafe { SHCreateMemStream(Some(&dwg)) }.expect("SHCreateMemStream");
         // A 1 MiB cap puts this 4 MB+ file firmly over the limit.
-        match unsafe { stream_source(&stream, 1 << 20, 256, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(1 << 20), 256, "test") } {
             Ok(StreamSource::Bytes(b)) => {
                 assert_eq!(b.len(), head_len);
                 assert!(crate::container::extract_cover(&b).is_some());
@@ -1409,7 +1587,7 @@ mod tests {
         // A 32 px baked preview: ample for an icon, hopeless for a preview pane.
         let (psd, head_len) = synthetic_psd_preview(3, Some(32), 1 << 20);
         let stream = unsafe { SHCreateMemStream(Some(&psd)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, 100 << 20, 96, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(100 << 20), 96, "test") } {
             Ok(StreamSource::Bytes(b)) => assert_eq!(
                 b.len(),
                 head_len,
@@ -1418,7 +1596,7 @@ mod tests {
             other => panic!("expected Bytes, got {}", other.is_ok()),
         }
         let stream = unsafe { SHCreateMemStream(Some(&psd)) }.expect("SHCreateMemStream");
-        match unsafe { stream_source(&stream, 100 << 20, 1024, "test") } {
+        match unsafe { stream_source(&stream, &test_cfg(100 << 20), 1024, "test") } {
             Ok(StreamSource::Bytes(b)) => assert_eq!(
                 b.len(),
                 psd.len(),
@@ -1445,7 +1623,7 @@ mod tests {
         let mut seen: Vec<usize> = Vec::new();
         for cx in [96u32, 2048] {
             let stream = unsafe { SHCreateMemStream(Some(&blend)) }.expect("SHCreateMemStream");
-            match unsafe { stream_source(&stream, 100 << 20, cx, "test") } {
+            match unsafe { stream_source(&stream, &test_cfg(100 << 20), cx, "test") } {
                 Ok(StreamSource::Bytes(b)) => {
                     assert!(
                         b.len() < blend.len(),
@@ -1513,7 +1691,7 @@ mod tests {
             "extension must still be recoverable from a stream that exposes no path"
         );
         assert!(
-            unsafe { stream_source(&stream, 1, 256, "test") }.is_err(),
+            unsafe { stream_source(&stream, &test_cfg(1), 256, "test") }.is_err(),
             "over-MaxSize name-less 7z must keep the stock icon"
         );
         drop(stream);
@@ -1522,5 +1700,82 @@ mod tests {
             unsafe { CoUninitialize() };
         }
         let _ = std::fs::remove_file(path);
+    }
+
+    /// The whole-file read honours `max` exactly: a stream of exactly `max` bytes is
+    /// accepted in full, one byte more is refused, and a size hint far past the cap
+    /// changes neither answer (it only sizes the reservation). 3 MiB spans several of
+    /// the 1 MiB read steps, so the in-place growth path is exercised, not just one read.
+    #[test]
+    fn read_all_accepts_exactly_max_and_refuses_one_more() {
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(3 << 20).collect();
+        let max = bytes.len();
+        let stream = unsafe { SHCreateMemStream(Some(&bytes)) }.expect("SHCreateMemStream");
+        let got = unsafe { read_all(&stream, max, Some(u64::MAX)) }.expect("exactly max bytes");
+        assert_eq!(got, bytes);
+
+        let stream = unsafe { SHCreateMemStream(Some(&bytes)) }.expect("SHCreateMemStream");
+        assert!(
+            unsafe { read_all(&stream, max - 1, Some(max as u64)) }.is_err(),
+            "one byte past the cap must be refused"
+        );
+    }
+
+    /// `stream_prefix_from` keeps the bytes it was handed verbatim and reads only the
+    /// remainder: the RAW fast path relies on this to read its 16 MiB prefix exactly once
+    /// across the shared head, the 1 MiB sniff and the prefix itself.
+    #[test]
+    fn stream_prefix_from_continues_after_the_bytes_in_hand() {
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(8192).collect();
+        let stream = unsafe { SHCreateMemStream(Some(&bytes)) }.expect("SHCreateMemStream");
+        // A head copy carrying a marker the stream does not contain: if the helper re-read
+        // those bytes, the marker would be gone.
+        let mut in_hand = bytes[..1000].to_vec();
+        in_hand[0] = 0xEE;
+        let size = Some(bytes.len() as u64);
+        let out = unsafe { stream_prefix_from(&stream, in_hand, size, 4096) };
+        let out = out.expect("prefix");
+        assert_eq!(out.len(), 4096);
+        assert_eq!(out[0], 0xEE, "bytes already in hand must not be re-read");
+        assert_eq!(&out[1..], &bytes[1..4096]);
+        // And the stream is rewound for the next probe.
+        let mut first = [0u8; 4];
+        let mut got = 0u32;
+        unsafe { stream.Read(first.as_mut_ptr() as *mut c_void, 4, Some(&mut got)) }.unwrap();
+        assert_eq!(&first, &bytes[..4]);
+    }
+
+    /// The RAR buffer is bounded by the same effective cap the size gate used, not by the
+    /// hard ceiling, so a stream that delivers more than its `Stat` size declared stops at
+    /// the user's MaxSize.
+    #[test]
+    fn rar_read_cap_is_the_effective_cap_not_the_hard_ceiling() {
+        assert_eq!(rar_buffer_cap(1 << 20), 1 << 20);
+        assert_eq!(rar_buffer_cap(u64::MAX), MAX_BYTES);
+    }
+
+    /// MaxSize reaches the two non-targeted video fallbacks: a file past it must not pay
+    /// their 64 MiB / 128 + 96 MiB reads, a file inside it still may, and a stream with no
+    /// reported size stays eligible because both reads are bounded on their own.
+    #[test]
+    fn prefix_video_tiers_are_gated_on_max_size() {
+        assert!(prefix_tiers_allowed(Some(10 << 20), 100 << 20));
+        assert!(prefix_tiers_allowed(Some(100 << 20), 100 << 20));
+        assert!(!prefix_tiers_allowed(Some((100 << 20) + 1), 100 << 20));
+        assert!(prefix_tiers_allowed(None, 1));
+    }
+
+    /// A tier whose precondition is false is never entered: without Media Foundation the
+    /// in-process tiers must not pay their reads only to fail.
+    #[test]
+    fn disabled_tier_never_runs() {
+        assert!(tier_if(false, || unreachable!("a disabled tier must not run")).is_none());
+        let ran = std::cell::Cell::new(false);
+        assert!(tier_if(true, || {
+            ran.set(true);
+            None
+        })
+        .is_none());
+        assert!(ran.get());
     }
 }

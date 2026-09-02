@@ -24,26 +24,44 @@ pub(super) fn raw_preview_size_allowed(size: u64, max_file_bytes: u64) -> bool {
 /// Read only a bounded RAW head and return its best complete embedded JPEG.
 /// A RAW with no early preview retains the prefix so the existing bounded
 /// whole-file fallback can append only the unread tail.
+///
+/// The head already in hand decides most streams with no I/O: a file that is neither
+/// TIFF-shaped nor carries a RAW signature is rejected outright, and one whose RAW
+/// marker sits inside the head goes straight to the prefix read. Only a TIFF-shaped
+/// file whose IFD0 lies past the head pays the 1 MiB sniff, and every read continues
+/// from the bytes already fetched, so no byte of the prefix is read twice.
 pub(super) unsafe fn raw_preview_fast(
     stream: &IStream,
+    head: &StreamHead,
     max_file_bytes: u64,
 ) -> Option<RawFastSource> {
-    let raw_extension = stream_extension(stream).is_some_and(|ext| is_raw_extension(&ext));
-    let size = stream_size(stream)?;
+    let size = head.size?;
     if !raw_preview_size_allowed(size, max_file_bytes) {
         return None; // no I/O or allocation saving versus the normal bounded read
+    }
+    let raw_extension = head.extension_is(is_raw_extension);
+    // With `raw_extension` forced on this accepts any TIFF/BigTIFF magic or RAW
+    // signature: the widest shape a RAW container can have. Anything else cannot become
+    // one further in, so the prefix read is skipped.
+    if !looks_like_raw_container(head.bytes(), true) {
+        return None;
     }
 
     // Explorer commonly hands IInitializeWithStream an unnamed file stream. Prefer
     // the extension when its STATSTG exposes one, but retain a conservative content
     // fallback for those normal unnamed streams: RAW-specific signatures or
     // structurally parsed CFA/DNG IFD markers. A plain TIFF does not qualify.
-    let sniff = stream_prefix(stream, RAW_SNIFF_BYTES)?;
-    if !looks_like_raw_container(&sniff, raw_extension) {
-        return None;
-    }
+    let sniff = if looks_like_raw_container(head.bytes(), raw_extension) {
+        head.bytes().to_vec()
+    } else {
+        let sniff = stream_prefix_from(stream, head.bytes().to_vec(), Some(size), RAW_SNIFF_BYTES)?;
+        if !looks_like_raw_container(&sniff, raw_extension) {
+            return None;
+        }
+        sniff
+    };
 
-    let prefix = stream_prefix(stream, RAW_PREFIX_BYTES)?;
+    let prefix = stream_prefix_from(stream, sniff, Some(size), RAW_PREFIX_BYTES)?;
     match decode::largest_embedded_jpeg(&prefix, decode::MIN_RAW_PREVIEW) {
         Some(jpeg) => Some(RawFastSource::Preview(jpeg.to_vec())),
         None => Some(RawFastSource::Prefix(prefix, size)),

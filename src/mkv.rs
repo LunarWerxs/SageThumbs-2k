@@ -92,6 +92,10 @@ struct SegmentMap {
     /// Absolute file size (bounds checks) and Segment data start (Positions are relative to it).
     total: u64,
     seg_data: u64,
+    /// Absolute end of the Segment (its declared end, or `total` for an unknown-size
+    /// Segment). The bound an unknown-size Cluster resolves against — see
+    /// [`unknown_cluster_end`].
+    seg_end: u64,
     info: Option<u64>,
     tracks: Option<u64>,
     cues: Option<u64>,
@@ -227,6 +231,7 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
         ebml,
         total,
         seg_data,
+        seg_end,
         info: scan.info,
         tracks: scan.tracks,
         cues: scan.cues,
@@ -236,38 +241,67 @@ fn segment_map<R: Read + Seek>(r: &mut R) -> Option<SegmentMap> {
 }
 
 /// Build a one-cluster mini-MKV for the keyframe nearest `fraction` of the running time, for
-/// [`crate::video::frame_from_bytes`]. `None` if the source isn't a Cues-indexed Matroska/WebM
-/// (caller falls back to the bounded head-prefix tier).
-pub fn keyframe_mini_mkv<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>> {
+/// [`crate::video::frame_from_bytes`], plus the display rotation this same `Tracks` element
+/// already carried — a caller that already has this need not re-read Tracks a
+/// second time through [`display_rotation`] just to ask). `None` if the source isn't a
+/// Cues-indexed Matroska/WebM (caller falls back to the bounded head-prefix tier).
+pub fn keyframe_mini_mkv<R: Read + Seek>(
+    r: &mut R,
+    fraction: f64,
+) -> Option<(Vec<u8>, Option<u32>)> {
     let map = segment_map(r)?;
-    let (total, seg_data, ebml) = (map.total, map.seg_data, map.ebml);
 
-    let (_, info_hlen, mut info) = read_element_full(r, map.info?, META_MAX, ID_INFO)?;
+    let (_, info_hlen, info) = read_element_full(r, map.info?, META_MAX, ID_INFO)?;
     let (_, tracks_hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
     let (_, cues_hlen, cues) = read_element_full(r, map.cues?, CUES_MAX, ID_CUES)?;
+    let tracks_body = &tracks[tracks_hlen..];
+    let rotation = video_track_roll(tracks_body).and_then(rotation_from_roll);
 
     // Pick the cluster: video track number, the Cue list, then the cue nearest `fraction`.
-    let video_track = video_track_number(&tracks[tracks_hlen..]);
+    let video_track = video_track_number(tracks_body);
     let cluster_rel = cue_cluster_position(
         &cues[cues_hlen..],
         &info[info_hlen..],
         video_track,
         fraction,
     )?;
-    let cluster_abs = seg_data.checked_add(cluster_rel)?;
-    if cluster_abs >= total {
-        return None;
+    let cluster_abs = map.seg_data.checked_add(cluster_rel)?;
+
+    // Cues only promise the keyframe is SOMEWHERE in the cluster — verify it with
+    // `cluster_keyframe` when the video track is known (mirroring `vp9_keyframe`'s own
+    // candidate list below), falling back to the file's first Cluster when the cue-indexed
+    // one turns out to hold no keyframe for that track.
+    let mut candidates: Vec<u64> = Vec::new();
+    if cluster_abs < map.total {
+        candidates.push(cluster_abs);
+    }
+    if let Some(first) = map.first_cluster {
+        if !candidates.contains(&first) {
+            candidates.push(first);
+        }
     }
 
-    // Copy that one Cluster, then zero its Timecode so the mini-clip starts at t=0 (otherwise
-    // `frame_from_bytes`'s near-the-head seek would land before the cluster's real timestamp
-    // and grab nothing). Likewise zero Info's Duration so that seek computes ~0.
-    let (_, cluster_hlen, mut cluster) =
-        read_element_full(r, cluster_abs, CLUSTER_MAX, ID_CLUSTER)?;
-    zero_child(&mut cluster, cluster_hlen, ID_CLUSTER_TIMECODE);
-    zero_child(&mut info, info_hlen, ID_DURATION);
-
-    Some(build_mini_mkv(&ebml, &info, &tracks, &cluster))
+    for candidate_abs in candidates {
+        let Some((cluster_hlen, mut cluster)) = read_cluster(r, &map, candidate_abs) else {
+            continue;
+        };
+        if let Some(vt) = video_track {
+            if cluster_keyframe(&cluster[cluster_hlen..], vt).is_none() {
+                continue; // no keyframe for the video track in this cluster — try the fallback
+            }
+        }
+        // Zero the Cluster's Timecode so the mini-clip starts at t=0 (otherwise
+        // `frame_from_bytes`'s near-the-head seek would land before the cluster's real
+        // timestamp and grab nothing). Likewise zero Info's Duration so that seek computes ~0.
+        zero_child(&mut cluster, cluster_hlen, ID_CLUSTER_TIMECODE);
+        let mut info = info.clone();
+        zero_child(&mut info, info_hlen, ID_DURATION);
+        return Some((
+            build_mini_mkv(&map.ebml, &info, &tracks, &cluster),
+            rotation,
+        ));
+    }
+    None
 }
 
 /// The Segment-relative position of the Cluster holding the keyframe nearest `fraction` of
@@ -356,8 +390,7 @@ pub fn vp9_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>>
         if cluster_abs >= map.total {
             continue;
         }
-        let Some((_, chlen, cluster)) = read_element_full(r, cluster_abs, CLUSTER_MAX, ID_CLUSTER)
-        else {
+        let Some((chlen, cluster)) = read_cluster(r, &map, cluster_abs) else {
             continue;
         };
         if let Some(frame) = cluster_keyframe(&cluster[chlen..], video_track) {
@@ -467,35 +500,11 @@ pub fn display_rotation<R: Read + Seek>(r: &mut R) -> Option<u32> {
 
 /// `ProjectionPoseRoll` of the first video TrackEntry, in degrees, or `None`.
 fn video_track_roll(tracks_data: &[u8]) -> Option<f64> {
-    for (id, _, entry) in children(tracks_data) {
-        if id != ID_TRACK_ENTRY {
-            continue;
-        }
-        let mut ttype = None;
-        let mut roll = None;
-        for (cid, _, cd) in children(entry) {
-            match cid {
-                ID_TRACK_TYPE => ttype = Some(ebml_uint(cd)),
-                ID_VIDEO => {
-                    for (vid, _, vd) in children(cd) {
-                        if vid != ID_PROJECTION {
-                            continue;
-                        }
-                        for (pid, _, pd) in children(vd) {
-                            if pid == ID_PROJECTION_POSE_ROLL {
-                                roll = ebml_float(pd);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if ttype == Some(TRACK_TYPE_VIDEO) {
-            return roll;
-        }
-    }
-    None
+    let entry = video_track_entry(tracks_data)?;
+    let (_, _, video) = children(entry).find(|(id, _, _)| *id == ID_VIDEO)?;
+    let (_, _, proj) = children(video).find(|(id, _, _)| *id == ID_PROJECTION)?;
+    let (_, _, roll) = children(proj).find(|(id, _, _)| *id == ID_PROJECTION_POSE_ROLL)?;
+    ebml_float(roll)
 }
 
 /// Map a `ProjectionPoseRoll` to the clockwise angle to apply, or `None` for upright video
@@ -649,6 +658,47 @@ fn read_full_at<R: Read + Seek>(r: &mut R, pos: u64, len: u64) -> Option<Vec<u8>
     Some(buf)
 }
 
+/// The real end of a Cluster at `pos` whose EBML size marker is "unknown" (all-ones) —
+/// real, never-finalized files write this for the last Cluster (and some streaming muxers
+/// write it for every Cluster). A Cluster is a top-level Segment child, so its end is either
+/// the position of the next top-level element the front-of-segment walk already resolved
+/// (only meaningful when `pos` is that walk's own [`SegmentMap::first_cluster`], since later
+/// clusters were never individually located) or the Segment's own end, whichever comes
+/// first — capped at `pos + CLUSTER_MAX` like every other cluster read in this module.
+fn unknown_cluster_end(map: &SegmentMap, pos: u64) -> u64 {
+    let next_known = [map.info, map.tracks, map.cues, map.attachments]
+        .into_iter()
+        .flatten()
+        .filter(|&p| p > pos)
+        .min();
+    let end = next_known
+        .unwrap_or(map.seg_end)
+        .min(map.seg_end)
+        .min(map.total);
+    end.min(pos.saturating_add(CLUSTER_MAX))
+}
+
+/// Read the Cluster at `pos`, resolving an EBML "unknown size" marker to a real byte range
+/// (see [`unknown_cluster_end`]) instead of declining outright the way [`read_element_full`]
+/// does. Returns `(header_len, full_element_bytes)`.
+fn read_cluster<R: Read + Seek>(r: &mut R, map: &SegmentMap, pos: u64) -> Option<(usize, Vec<u8>)> {
+    let (id, size, hlen, unknown) = header_at(r, pos)?;
+    if id != ID_CLUSTER {
+        return None;
+    }
+    let total = if unknown {
+        unknown_cluster_end(map, pos).checked_sub(pos)?
+    } else {
+        hlen.checked_add(size)?
+    };
+    if total < hlen || total > CLUSTER_MAX {
+        return None;
+    }
+    let mut buf = vec![0u8; total as usize];
+    read_exact_at(r, pos, &mut buf)?;
+    Some((hlen as usize, buf))
+}
+
 // ---------------------------------------------------------------------------------------------
 // EBML slice parsing (over already-buffered elements)
 // ---------------------------------------------------------------------------------------------
@@ -733,54 +783,40 @@ fn ebml_float(data: &[u8]) -> Option<f64> {
     }
 }
 
-/// TrackNumber of the first video TrackEntry (TrackType == 1), or `None`.
-fn video_track_number(tracks_data: &[u8]) -> Option<u64> {
+/// The first video (`TrackType == 1`) TrackEntry's body within a `Tracks` element, or `None`
+/// when the file has no video track. Shared by [`video_track_number`], [`video_track_codec`]
+/// and [`video_track_roll`], which each used to repeat this same "find TrackEntry, check
+/// TrackType" walk independently.
+fn video_track_entry(tracks_data: &[u8]) -> Option<&[u8]> {
     for (id, _, entry) in children(tracks_data) {
         if id != ID_TRACK_ENTRY {
             continue;
         }
-        let mut number = None;
-        let mut ttype = None;
-        for (cid, _, cd) in children(entry) {
-            match cid {
-                ID_TRACK_NUMBER => number = Some(ebml_uint(cd)),
-                ID_TRACK_TYPE => ttype = Some(ebml_uint(cd)),
-                _ => {}
-            }
-        }
+        let ttype =
+            children(entry).find_map(|(cid, _, cd)| (cid == ID_TRACK_TYPE).then(|| ebml_uint(cd)));
         if ttype == Some(TRACK_TYPE_VIDEO) {
-            return number;
+            return Some(entry);
         }
     }
     None
 }
 
+/// TrackNumber of the first video TrackEntry (TrackType == 1), or `None`.
+fn video_track_number(tracks_data: &[u8]) -> Option<u64> {
+    let entry = video_track_entry(tracks_data)?;
+    children(entry).find_map(|(cid, _, cd)| (cid == ID_TRACK_NUMBER).then(|| ebml_uint(cd)))
+}
+
 /// CodecID string of the first video TrackEntry (TrackType == 1), or `None`.
 fn video_track_codec(tracks_data: &[u8]) -> Option<String> {
-    for (id, _, entry) in children(tracks_data) {
-        if id != ID_TRACK_ENTRY {
-            continue;
-        }
-        let mut ttype = None;
-        let mut codec = None;
-        for (cid, _, cd) in children(entry) {
-            match cid {
-                ID_TRACK_TYPE => ttype = Some(ebml_uint(cd)),
-                ID_CODEC_ID => {
-                    codec = Some(
-                        String::from_utf8_lossy(cd)
-                            .trim_end_matches('\0')
-                            .to_string(),
-                    );
-                }
-                _ => {}
-            }
-        }
-        if ttype == Some(TRACK_TYPE_VIDEO) {
-            return codec;
-        }
-    }
-    None
+    let entry = video_track_entry(tracks_data)?;
+    children(entry).find_map(|(cid, _, cd)| {
+        (cid == ID_CODEC_ID).then(|| {
+            String::from_utf8_lossy(cd)
+                .trim_end_matches('\0')
+                .to_string()
+        })
+    })
 }
 
 /// Pick the cover image out of an Attachments body: an AttachedFile named `cover.*` wins
@@ -1334,6 +1370,231 @@ mod tests {
         assert_eq!(frame[0] >> 6, 0b10, "payload should start a VP9 frame");
     }
 
+    /// A Cluster whose EBML size is "unknown" (the all-ones marker) — real,
+    /// never-finalized encoder output for the LAST Cluster in a file — must be resolved to
+    /// its real extent (here, the Segment's own end, since nothing follows it) instead of
+    /// being declined outright.
+    #[test]
+    fn vp9_keyframe_resolves_an_unknown_size_last_cluster() {
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_NUMBER, &[1]),
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_VP9"),
+                ]
+                .concat(),
+            ),
+        );
+        let cluster_body = [
+            elem(ID_CLUSTER_TIMECODE, &[0]),
+            simple_block(0x80, &[0x86, 0x00, 0x42, 0x11, 0x22]),
+        ]
+        .concat();
+        // Hand-built unknown-size Cluster header: the 4-byte Cluster ID + a 1-byte
+        // all-ones size vint (0xFF), which `elem` (definite-size only) cannot produce.
+        let mut cluster = vec![0x1F, 0x43, 0xB6, 0x75, 0xFF];
+        cluster.extend_from_slice(&cluster_body);
+
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &[tracks, cluster].concat()));
+
+        let frame = vp9_keyframe(&mut Cursor::new(&file), 0.30)
+            .expect("an unknown-size last Cluster must still be resolved and read");
+        assert_eq!(frame, [0x86, 0x00, 0x42, 0x11, 0x22]);
+    }
+
+    /// The Cue-indexed cluster only PROMISES a keyframe is somewhere inside it —
+    /// `keyframe_mini_mkv` must verify with `cluster_keyframe` and fall back to the file's
+    /// first Cluster (mirroring `vp9_keyframe`'s own candidate list) when the cued one turns
+    /// out to hold none for the video track.
+    #[test]
+    fn keyframe_mini_mkv_falls_back_when_the_cued_cluster_has_no_keyframe() {
+        let (file, _bad_rel) = mini_mkv_two_clusters(true);
+        let (mini, _rotation) = keyframe_mini_mkv(&mut Cursor::new(&file), 0.30)
+            .expect("must fall back to the good first cluster");
+        assert!(
+            mini.windows(4).any(|w| w == [0x86, 0x00, 0x11, 0x22]),
+            "the GOOD cluster's keyframe payload must be in the mini-mkv"
+        );
+        assert!(
+            !mini.windows(4).any(|w| w == [0xEE, 0xEE, 0xEE, 0xEE]),
+            "the BAD (keyframe-less) cluster must not have been used"
+        );
+    }
+
+    /// The decline half of the same fix: when NEITHER the cued cluster NOR the file's first
+    /// cluster holds a keyframe for the video track, `keyframe_mini_mkv` must give up rather
+    /// than build a mini-clip around a cluster it never verified.
+    #[test]
+    fn keyframe_mini_mkv_declines_when_no_candidate_cluster_has_a_keyframe() {
+        let (file, _bad_rel) = mini_mkv_two_clusters(false);
+        assert_eq!(keyframe_mini_mkv(&mut Cursor::new(&file), 0.30), None);
+    }
+
+    /// Build a Segment: SeekHead (pointing at Cues), Info, Tracks, a "good" first Cluster
+    /// (a real video keyframe), a "bad" second Cluster (no keyframe — an inter block), then
+    /// Cues whose one entry points at the BAD cluster. `good_cluster_has_keyframe` swaps the
+    /// good cluster's block for another keyframe-less one, for the decline-path test.
+    /// Returns `(file_bytes, bad_cluster_segment_relative_position)`.
+    fn mini_mkv_two_clusters(good_cluster_has_keyframe: bool) -> (Vec<u8>, u32) {
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_NUMBER, &[1]),
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_VP9"),
+                ]
+                .concat(),
+            ),
+        );
+        let info = elem(ID_INFO, &[]);
+        let good_block = if good_cluster_has_keyframe {
+            simple_block(0x80, &[0x86, 0x00, 0x11, 0x22])
+        } else {
+            simple_block(0x00, &[0xEE; 4])
+        };
+        let cluster_good = elem(
+            ID_CLUSTER,
+            &[elem(ID_CLUSTER_TIMECODE, &[0]), good_block].concat(),
+        );
+        let cluster_bad = elem(
+            ID_CLUSTER,
+            &[
+                elem(ID_CLUSTER_TIMECODE, &[0]),
+                simple_block(0x00, &[0xEE; 4]),
+            ]
+            .concat(),
+        );
+        let seekhead_for = |pos: u16| {
+            elem(
+                ID_SEEKHEAD,
+                &elem(
+                    ID_SEEK,
+                    &[
+                        elem(ID_SEEK_ID, &[0x1C, 0x53, 0xBB, 0x6B]), // Cues
+                        elem(ID_SEEK_POSITION, &pos.to_be_bytes()),
+                    ]
+                    .concat(),
+                ),
+            )
+        };
+        let bad_rel =
+            (seekhead_for(0).len() + info.len() + tracks.len() + cluster_good.len()) as u32;
+        let cues_rel = bad_rel + cluster_bad.len() as u32;
+        let cues = elem(
+            ID_CUES,
+            &elem(
+                ID_CUE_POINT,
+                &[
+                    elem(ID_CUE_TIME, &[0]),
+                    elem(
+                        ID_CUE_TRACK_POSITIONS,
+                        &[
+                            elem(ID_CUE_TRACK, &[1]),
+                            elem(ID_CUE_CLUSTER_POSITION, &bad_rel.to_be_bytes()),
+                        ]
+                        .concat(),
+                    ),
+                ]
+                .concat(),
+            ),
+        );
+        let body = [
+            seekhead_for(cues_rel as u16),
+            info,
+            tracks,
+            cluster_good,
+            cluster_bad,
+            cues,
+        ]
+        .concat();
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+        (file, bad_rel)
+    }
+
+    /// `keyframe_mini_mkv` must hand back the rotation it already read off the
+    /// same `Tracks` element it walked for the video track/keyframe, instead of making the
+    /// caller re-scan Tracks a second time through `display_rotation`.
+    #[test]
+    fn keyframe_mini_mkv_returns_the_rotation_it_already_parsed() {
+        let tracks = elem(
+            ID_TRACKS,
+            &elem(
+                ID_TRACK_ENTRY,
+                &[
+                    elem(ID_TRACK_NUMBER, &[1]),
+                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                    elem(ID_CODEC_ID, b"V_VP9"),
+                    elem(
+                        ID_VIDEO,
+                        &elem(
+                            ID_PROJECTION,
+                            &elem(ID_PROJECTION_POSE_ROLL, &90.0f64.to_be_bytes()),
+                        ),
+                    ),
+                ]
+                .concat(),
+            ),
+        );
+        let info = elem(ID_INFO, &[]);
+        let cluster = elem(
+            ID_CLUSTER,
+            &[
+                elem(ID_CLUSTER_TIMECODE, &[0]),
+                simple_block(0x80, &[0x86, 0x00, 0x11, 0x22]),
+            ]
+            .concat(),
+        );
+        let seekhead_for = |pos: u16| {
+            elem(
+                ID_SEEKHEAD,
+                &elem(
+                    ID_SEEK,
+                    &[
+                        elem(ID_SEEK_ID, &[0x1C, 0x53, 0xBB, 0x6B]), // Cues
+                        elem(ID_SEEK_POSITION, &pos.to_be_bytes()),
+                    ]
+                    .concat(),
+                ),
+            )
+        };
+        let cluster_rel = (seekhead_for(0).len() + info.len() + tracks.len()) as u32;
+        let cues_rel = cluster_rel + cluster.len() as u32;
+        let cues = elem(
+            ID_CUES,
+            &elem(
+                ID_CUE_POINT,
+                &[
+                    elem(ID_CUE_TIME, &[0]),
+                    elem(
+                        ID_CUE_TRACK_POSITIONS,
+                        &[
+                            elem(ID_CUE_TRACK, &[1]),
+                            elem(ID_CUE_CLUSTER_POSITION, &cluster_rel.to_be_bytes()),
+                        ]
+                        .concat(),
+                    ),
+                ]
+                .concat(),
+            ),
+        );
+        let body = [seekhead_for(cues_rel as u16), info, tracks, cluster, cues].concat();
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+
+        let (_mini, rotation) = keyframe_mini_mkv(&mut Cursor::new(&file), 0.30)
+            .expect("synthetic Cues-indexed mkv should yield a mini-mkv");
+        // ProjectionPoseRoll of +90 (counter-clockwise) maps to 270 clockwise — the same
+        // measured mapping `rotation_from_roll`'s own tests pin.
+        assert_eq!(rotation, Some(270));
+    }
+
     /// End-to-end: parse a real MKV (path in `ST2K_TEST_MKV`) into a one-cluster mini-MKV and
     /// decode it through Media Foundation. Skipped when the env var isn't set / file is absent,
     /// so CI stays green without an adult-content fixture in the repo.
@@ -1347,7 +1608,7 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read sample mkv");
-        let mini = keyframe_mini_mkv(&mut Cursor::new(&bytes), 0.30)
+        let (mini, _rotation) = keyframe_mini_mkv(&mut Cursor::new(&bytes), 0.30)
             .expect("build mini-mkv from real sample");
         assert!(
             mini[0..4] == [0x1A, 0x45, 0xDF, 0xA3],

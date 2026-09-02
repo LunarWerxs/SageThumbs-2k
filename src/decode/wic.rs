@@ -7,6 +7,16 @@
 
 use super::*;
 
+/// A fresh `IWICImagingFactory` for this call. Deliberately NOT cached per thread: a COM
+/// object outlives nothing past `CoUninitialize` on the thread that created it, and the
+/// worker threads here initialise and tear down their apartment per job (the tests do
+/// the same), so a cached factory was a dangling pointer the first decode after a
+/// teardown dereferenced (an access violation in the thumbnail host). The class-object
+/// lookup costs microseconds against a decode; it is not the hot part.
+fn wic_factory() -> Result<IWICImagingFactory> {
+    unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
+}
+
 /// Decode via Windows Imaging Component using whatever codecs the OS has
 /// installed — this is what gives HEIC/HEIF, AVIF, camera RAW (with the
 /// Microsoft Raw Image Extension), and JPEG 2000 without bundling C/LGPL Rust
@@ -27,12 +37,19 @@ pub(super) unsafe fn wic_decode_with_thumbnail(
     thumbnail_cx: Option<u32>,
 ) -> Result<DynamicImage> {
     // The host thread has COM initialized; in unit tests we CoInitialize first.
-    let factory: IWICImagingFactory =
-        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+    let factory: IWICImagingFactory = wic_factory()?;
 
     let stream = SHCreateMemStream(Some(bytes)).ok_or_else(|| Error::from(E_FAIL))?;
-    let decoder =
-        factory.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)?;
+    // `OnDemand`, matching the by-path/by-stream-if-scales/by-bytes-if-scales twins below:
+    // nothing on this path reads WIC's cached metadata graph (EXIF comes from
+    // `kamadak-exif` over the raw bytes, ICC from `GetColorContexts`, a frame API), so
+    // eagerly parsing every EXIF/XMP/MakerNote block before the dimension guard even
+    // runs is pure loss.
+    let decoder = factory.CreateDecoderFromStream(
+        &stream,
+        std::ptr::null(),
+        WICDecodeMetadataCacheOnDemand,
+    )?;
     let frame = decoder.GetFrame(0)?;
     wic_decode_frame(&factory, &frame, thumbnail_cx, bytes)
 }
@@ -67,10 +84,16 @@ pub(super) unsafe fn wic_decode_stream(
     thumbnail_cx: Option<u32>,
     head: &[u8],
 ) -> Result<DynamicImage> {
-    let factory: IWICImagingFactory =
-        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
-    let decoder =
-        factory.CreateDecoderFromStream(stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)?;
+    let factory: IWICImagingFactory = wic_factory()?;
+    // `OnDemand`, matching the by-path/by-bytes twins — see `wic_decode_with_thumbnail`'s
+    // comment: nothing here reads WIC's cached metadata graph, so parsing it eagerly over
+    // the shell's own (often LRPC-backed) stream before the dimension guard runs is pure
+    // loss, and on this path it is loss paid over IPC rather than local memory.
+    let decoder = factory.CreateDecoderFromStream(
+        stream,
+        std::ptr::null(),
+        WICDecodeMetadataCacheOnDemand,
+    )?;
     let frame = decoder.GetFrame(0)?;
     wic_decode_frame(&factory, &frame, thumbnail_cx, head)
 }
@@ -80,8 +103,7 @@ pub(super) unsafe fn wic_decode_path(
     thumbnail_cx: Option<u32>,
     head: &[u8],
 ) -> Result<DynamicImage> {
-    let factory: IWICImagingFactory =
-        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+    let factory: IWICImagingFactory = wic_factory()?;
     let wide = crate::wide(path);
     // `OnDemand`, not `OnLoad`: we want the pixels, and eagerly slurping every metadata block
     // is exactly the cost this path exists to avoid on a very large file. THE COMMENT SAID THIS
@@ -123,8 +145,7 @@ pub(super) unsafe fn wic_decode_path_if_codec_scales(
     target_edge: u32,
     head: &[u8],
 ) -> Result<DynamicImage> {
-    let factory: IWICImagingFactory =
-        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+    let factory: IWICImagingFactory = wic_factory()?;
     let wide = crate::wide(path);
     // `OnDemand` for the same reason, and it matters more here: this function often decides it
     // cannot help (PNG) and returns without decoding anything, so any metadata parsed eagerly
@@ -159,8 +180,7 @@ pub(super) unsafe fn wic_decode_bytes_if_codec_scales(
     target_edge: u32,
     head: &[u8],
 ) -> Result<DynamicImage> {
-    let factory: IWICImagingFactory =
-        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+    let factory: IWICImagingFactory = wic_factory()?;
     let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes))
         .ok_or_else(|| Error::from(E_FAIL))?;
     // `OnDemand` for the same reason as the by-path twin: this often decides it cannot help and

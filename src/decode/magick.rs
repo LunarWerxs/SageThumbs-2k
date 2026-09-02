@@ -205,6 +205,17 @@ fn add_metafile_magick_limits(cmd: &mut Command) {
 /// visually, not just by timing. Do not reach for it again without checking the pixels.
 ///
 /// `max_edge` is clamped to the 4096 guard, so a caller can only ask for less, never more.
+fn resize_spec(max_edge: Option<u32>) -> String {
+    match max_edge {
+        Some(e) => {
+            // `>` keeps it shrink-only, so a small image is never blown up to the cap.
+            let e = e.clamp(1, MAGICK_MAX_EDGE_PX);
+            format!("{e}x{e}>")
+        }
+        None => MAGICK_MAX_EDGE.to_string(),
+    }
+}
+
 pub(super) fn decode_via_magick_capped(
     bytes: &[u8],
     max_edge: Option<u32>,
@@ -243,12 +254,8 @@ pub(super) fn decode_via_magick_capped(
         Some(d) => vec!["-density", d],
         None => Vec::new(),
     };
-    // `>` keeps it shrink-only, so a small image is never blown up to the cap.
-    let capped = max_edge
-        .map(|e| e.clamp(1, MAGICK_MAX_EDGE_PX))
-        .map(|e| format!("{e}x{e}>"));
-    let edge = capped.as_deref().unwrap_or(MAGICK_MAX_EDGE);
-    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, edge, budget)
+    let edge = resize_spec(max_edge);
+    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, &edge, budget, is_meta)
 }
 
 /// Extensions whose ImageMagick coder is chosen by FILE NAME and never by
@@ -398,15 +405,8 @@ pub(super) fn decode_named_extension(
     ext: &str,
     max_edge: Option<u32>,
 ) -> Result<DynamicImage> {
-    let capped = max_edge
-        .map(|e| e.clamp(1, MAGICK_MAX_EDGE_PX))
-        .map(|e| format!("{e}x{e}>"));
-    decode_named_extension_spec(
-        bytes,
-        ext,
-        capped.as_deref().unwrap_or(MAGICK_MAX_EDGE),
-        TILE_CAPS,
-    )
+    let edge = resize_spec(max_edge);
+    decode_named_extension_spec(bytes, ext, &edge, TILE_CAPS)
 }
 
 /// As [`decode_named_extension`], at NATIVE resolution: the resize cap is the MAX_DIM bomb
@@ -444,9 +444,20 @@ fn decode_named_extension_spec(
     let Some(spec) = temp.0.to_str() else {
         return Err(Error::from(E_FAIL));
     };
+    // Select the budget and the metafile limits from the REAL bytes, same as
+    // `decode_via_magick_capped` — the stdin argument below stays empty (the child
+    // reads the staged file, not the pipe), but that emptiness must not also blind
+    // the metafile check, or a metafile routed here would silently run under the
+    // wider general-purpose budget instead of its tighter one.
+    let is_meta = looks_like_metafile(bytes);
+    let budget = if is_meta {
+        METAFILE_BUDGET
+    } else {
+        RASTER_BUDGET
+    };
     // Empty stdin on purpose: the child reads the file, so shovelling the bytes down a
     // pipe nobody drains would only duplicate the write (and, for a big RAW, the wait).
-    let out = decode_via_magick_spec_alloc(&[], &[], spec, &[], edge, caps, RASTER_BUDGET);
+    let out = decode_via_magick_spec_alloc(&[], &[], spec, &[], edge, caps, budget, is_meta);
     drop(temp);
     out
 }
@@ -606,6 +617,7 @@ pub(super) fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
         limits::FULL_FIDELITY_EDGE,
         FULL_FIDELITY_CAPS,
         RASTER_BUDGET,
+        false, // PSD is never a metafile
     )
 }
 
@@ -621,9 +633,10 @@ fn decode_via_magick_spec(
     pre_ops: &[&str],
     max_edge: &str,
     budget: MagickBudget,
+    is_meta: bool,
 ) -> Result<DynamicImage> {
     decode_via_magick_spec_alloc(
-        bytes, pre_input, input, pre_ops, max_edge, TILE_CAPS, budget,
+        bytes, pre_input, input, pre_ops, max_edge, TILE_CAPS, budget, is_meta,
     )
 }
 
@@ -677,6 +690,9 @@ const FULL_FIDELITY_CAPS: DecodeCaps = DecodeCaps {
 
 /// As [`decode_via_magick_spec`], but with explicit memory caps — used by the
 /// full-fidelity paths, whose larger resize edge needs both raised in step.
+// Every parameter is a distinct knob its two callers set differently; bundling them would
+// only move the list into a struct literal.
+#[allow(clippy::too_many_arguments)]
 fn decode_via_magick_spec_alloc(
     bytes: &[u8],
     pre_input: &[&str],
@@ -685,6 +701,7 @@ fn decode_via_magick_spec_alloc(
     max_edge: &str,
     caps: DecodeCaps,
     budget: MagickBudget,
+    is_meta: bool,
 ) -> Result<DynamicImage> {
     let DecodeCaps { max_alloc, png_cap } = caps;
     let Some(exe) = magick_exe() else {
@@ -693,7 +710,7 @@ fn decode_via_magick_spec_alloc(
     };
     let mut cmd = Command::new(exe);
     add_magick_limits(&mut cmd);
-    if looks_like_metafile(bytes) {
+    if is_meta {
         // Must follow the shared caps: ImageMagick applies the last resource
         // setting, leaving every non-metafile invocation on the normal budget.
         add_metafile_magick_limits(&mut cmd);
@@ -987,6 +1004,27 @@ fn encode_wait_decision(
     }
 }
 
+/// ImageMagick opens the Convert dialog's output path (`verbs/encode/slots.rs` derives it
+/// from the source name plus a suffix) as a raw, unprefixed path — no `\\?\` long-path
+/// prefix — so a name past Windows' legacy limits is silently truncated or refused by the
+/// OS rather than by us. Same two ceilings NTFS itself enforces without the prefix: a
+/// 255 UTF-16-unit file-name component, and a ~32000 UTF-16-unit full path.
+const MAGICK_TARGET_NAME_MAX_UTF16: usize = 255;
+const MAGICK_TARGET_PATH_MAX_UTF16: usize = 32_000;
+
+/// Is `out` short enough for ImageMagick's raw, unprefixed `coder:path` spec to reach
+/// reliably? Checked before spawning so an oversized name fails as a distinct, logged
+/// error instead of a silent truncation or a bare "encode failed".
+fn encode_target_length_ok(out: &std::path::Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    let name_len = out
+        .file_name()
+        .map(|n| n.encode_wide().count())
+        .unwrap_or(0);
+    let path_len = out.as_os_str().encode_wide().count();
+    name_len <= MAGICK_TARGET_NAME_MAX_UTF16 && path_len <= MAGICK_TARGET_PATH_MAX_UTF16
+}
+
 /// Resolve the magick executable and the `coder:path` output target for `target_ext`.
 /// Self-defend: this is the single chokepoint for the magick-backed Convert targets,
 /// so gate the capability here rather than trusting every caller to pre-check
@@ -1004,6 +1042,14 @@ fn magick_encode_target(
         crate::safety::log_debug("encode_via_magick: unsupported output extension");
         Error::from(E_FAIL)
     })?;
+    if !encode_target_length_ok(out) {
+        crate::safety::log_debug(&format!(
+            "encode_via_magick: target path too long for magick's raw, unprefixed coder \
+             spec: {}",
+            out.display()
+        ));
+        return Err(Error::from(E_FAIL));
+    }
     let out_str = out.to_str().ok_or_else(|| Error::from(E_FAIL))?;
     Ok((exe, format!("{coder}:{out_str}")))
 }
@@ -1087,13 +1133,26 @@ fn wait_for_magick_child(
     child: &mut std::process::Child,
     rx: std::sync::mpsc::Receiver<()>,
 ) -> (bool, bool, bool, Option<std::process::ExitStatus>) {
+    use std::sync::mpsc::RecvTimeoutError;
     let deadline = std::time::Instant::now() + MAGICK_TIMEOUT;
-    let mut timed_out = rx.recv_timeout(MAGICK_TIMEOUT).is_err();
+    let mut timed_out = false;
     let mut cpu_exceeded = false;
     let mut wait_failed = false;
     let mut status = None;
+    // Poll in WATCHDOG_SLICE steps from the very first iteration, exactly like the decode
+    // path's `await_magick_output`. The previous shape blocked on ONE `recv_timeout` for the
+    // full wall ceiling before ever entering the CPU-check loop, so a child that spins on a
+    // malformed re-encode input without closing stdout was bounded only by the 120 s wall
+    // clock, never by the much tighter CPU budget this watchdog exists to enforce.
+    let mut stdout_closed = false;
 
     while !timed_out && !cpu_exceeded && status.is_none() {
+        if !stdout_closed {
+            match rx.recv_timeout(WATCHDOG_SLICE) {
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => stdout_closed = true,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
         match child.try_wait() {
             Ok(Some(value)) => status = Some(value),
             Ok(None) => {
@@ -1103,9 +1162,13 @@ fn wait_for_magick_child(
                     EncodeWait::CpuExceeded => cpu_exceeded = true,
                     EncodeWait::TimedOut => timed_out = true,
                     EncodeWait::Continue => {
-                        std::thread::sleep(
-                            std::time::Duration::from_millis(10).min(deadline - now),
-                        );
+                        // While stdout is still open the `recv_timeout` above already paced this
+                        // loop; once it has closed, pace it here instead of spinning.
+                        if stdout_closed {
+                            std::thread::sleep(
+                                std::time::Duration::from_millis(10).min(deadline - now),
+                            );
+                        }
                     }
                 }
             }
@@ -1501,6 +1564,26 @@ mod tests {
             FULL_FIDELITY_PNG_CAP >= 2 * measured_mef_native_png,
             "FULL_FIDELITY_PNG_CAP must cover a native medium-format 16-bit PNG with headroom"
         );
+    }
+
+    /// A Convert target whose file name or full path is too long for ImageMagick's raw,
+    /// unprefixed `coder:path` spec must be refused before spawning, not silently
+    /// truncated by the OS.
+    #[test]
+    fn encode_target_length_is_refused_past_windows_limits() {
+        let dir = std::env::temp_dir();
+
+        assert!(super::encode_target_length_ok(&dir.join("thumbnail.dds")));
+
+        let long_name = format!("{}.dds", "a".repeat(300));
+        assert!(!super::encode_target_length_ok(&dir.join(long_name)));
+
+        let mut deep = dir.clone();
+        for _ in 0..5000 {
+            deep = deep.join("segment");
+        }
+        deep = deep.join("thumbnail.dds");
+        assert!(!super::encode_target_length_ok(&deep));
     }
 }
 

@@ -38,32 +38,22 @@ pub(super) fn checked_generic_archive_size(size: Option<u64>, max_file_bytes: u6
 /// tens of thousands of paths, and no meaningful image at all.
 pub(super) unsafe fn generic_archive(
     stream: &IStream,
-    max_file_bytes: u64,
+    head: &StreamHead,
+    cfg: &ThumbSettings,
     who: &str,
 ) -> ArchiveProbe {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 8];
-    let mut got: u32 = 0;
-    let hr = stream.Read(
-        head.as_mut_ptr() as *mut c_void,
-        head.len() as u32,
-        Some(&mut got),
-    );
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let got = (got as usize).min(head.len());
-    if hr.is_err() || got < head.len() || !crate::container::is_generic_archive_magic(&head[..got])
-    {
+    let max_file_bytes = cfg.max_file_bytes;
+    let first = head.first(8);
+    if first.len() < 8 || !crate::container::is_generic_archive_magic(first) {
         return ArchiveProbe::NotGeneric;
     }
-    // `stream_extension`, NOT `stream_path`: this only needs to know the file TYPE, and a
-    // shell stream reports a bare leaf name rather than a path. `stream_path` deliberately
-    // rejects a name it cannot resolve to a real file (a relative name would otherwise be
-    // resolved against our own working directory), so asking it for an extension here meant
-    // this gate answered "not a generic archive" for every stream Explorer ever handed us.
-    let is_generic_ext = stream_extension(stream)
-        .map(|ext| matches!(ext.as_str(), "zip" | "rar" | "7z"))
-        .unwrap_or(false);
-    if !is_generic_ext {
+    // The extension comes from the head's `Stat`, NOT from `stream_path`: this only needs
+    // to know the file TYPE, and a shell stream reports a bare leaf name rather than a
+    // path. `stream_path` deliberately rejects a name it cannot resolve to a real file (a
+    // relative name would otherwise be resolved against our own working directory), so
+    // asking it for an extension here meant this gate answered "not a generic archive"
+    // for every stream Explorer ever handed us.
+    if !head.extension_is(|ext| matches!(ext, "zip" | "rar" | "7z")) {
         return ArchiveProbe::NotGeneric;
     }
 
@@ -74,7 +64,7 @@ pub(super) unsafe fn generic_archive(
     // the hard decoder ceiling as well as the user's MaxSize: Settings represents
     // "0 / unlimited" as u64::MAX, but it is only unlimited within that ceiling.
     let max = decode::effective_input_cap(max_file_bytes);
-    let reported_size = stream_size(stream);
+    let reported_size = head.size;
     let Some(size) = checked_generic_archive_size(reported_size, max_file_bytes) else {
         let detail = reported_size
             .map(|n| format!("{n} > {max} bytes"))
@@ -86,27 +76,35 @@ pub(super) unsafe fn generic_archive(
     };
 
     // Contact sheet (up to 4 images) or classic single cover, per Settings.
-    let want = if crate::settings::archive_collage() {
-        4
-    } else {
-        1
-    };
+    // `ArchiveCollage` is stored as a DWORD; nonzero means on.
+    let want = if cfg.archive_collage != 0 { 4 } else { 1 };
 
-    let covers = if crate::container::archive_needs_buffer(&head) {
+    let covers = if crate::container::archive_needs_buffer(first) {
         // RAR: same bounded whole-file read as the normal path, then the one-pass
-        // multi-target extraction over the buffer.
+        // multi-target extraction over the buffer. Bounded by the effective cap the gate
+        // above was computed from, not the hard ceiling: a stream that delivers more than
+        // its `Stat` size declared stops at the user's MaxSize.
         let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-        let Ok(bytes) = read_all(stream, MAX_BYTES, Some(size)) else {
+        let Ok(bytes) = read_all(stream, rar_buffer_cap(max_file_bytes), Some(size)) else {
             return ArchiveProbe::NoCover;
         };
-        crate::container::archive_covers(&bytes, want)
+        let prefs = crate::container::select::CoverPrefs::from_thumb_settings(cfg);
+        crate::container::archive_covers(&bytes, want, &prefs)
     } else {
+        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+        // Buffered: the zip central directory and the 7z header are read in small pieces,
+        // and each piece would otherwise be one marshaled `IStream::Read` round trip.
+        let prefs = crate::container::select::CoverPrefs::from_thumb_settings(cfg);
         crate::container::archive_covers_seek(
-            IStreamReader {
-                stream: stream.clone(),
-            },
-            &head,
+            std::io::BufReader::with_capacity(
+                READ_AHEAD_BYTES,
+                IStreamReader {
+                    stream: stream.clone(),
+                },
+            ),
+            first,
             want,
+            &prefs,
         )
     };
 
@@ -134,27 +132,36 @@ pub(super) unsafe fn generic_archive(
 /// a name-less shell stream, where we cannot distinguish a comic from an
 /// arbitrary project backup. Returns None for everything else (including CBR,
 /// which `rars` can't read without a full buffer), so the caller skips it.
-pub(super) unsafe fn archive_cover_streamed(stream: &IStream) -> Option<Vec<u8>> {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 8];
-    let mut got: u32 = 0;
-    let hr = stream.Read(
-        head.as_mut_ptr() as *mut c_void,
-        head.len() as u32,
-        Some(&mut got),
-    );
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let got = (got as usize).min(head.len());
-    if hr.is_err() || got < head.len() {
+pub(super) unsafe fn archive_cover_streamed(
+    stream: &IStream,
+    head: &StreamHead,
+) -> Option<Vec<u8>> {
+    let first = head.first(8);
+    if first.len() < 8 || crate::container::is_7z(first) {
         return None;
     }
-    if crate::container::is_7z(&head[..got]) {
-        return None;
-    }
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    // Buffered for the same reason as the generic-archive probe: the central directory is
+    // read in small pieces over a marshaled stream. No `ThumbSettings` snapshot is
+    // reachable from this call chain (see `streamsrc::oversized_rescue`), so the
+    // preferences are read here rather than threaded from further up.
+    let prefs = crate::container::select::CoverPrefs::from_settings();
     crate::container::archive_cover_seek(
-        IStreamReader {
-            stream: stream.clone(),
-        },
-        &head[..got],
+        std::io::BufReader::with_capacity(
+            READ_AHEAD_BYTES,
+            IStreamReader {
+                stream: stream.clone(),
+            },
+        ),
+        first,
+        &prefs,
     )
+}
+
+/// The buffer cap for the RAR read in [`generic_archive`]: the effective input cap
+/// (the user's MaxSize, never above the hard ceiling), the same value the size gate
+/// before the read was computed from.
+pub(super) fn rar_buffer_cap(max_file_bytes: u64) -> usize {
+    let max = decode::effective_input_cap(max_file_bytes);
+    usize::try_from(max).map_or(MAX_BYTES, |max| max.min(MAX_BYTES))
 }

@@ -18,32 +18,28 @@ use super::*;
 /// narrow enough not to punish `.blend`/`.dwg`). Any miss returns None and the
 /// caller proceeds exactly as before this path existed. Rewinds via `stream_prefix`
 /// on the hit path and explicitly on the miss paths.
-pub(super) unsafe fn head_preview_fast(stream: &IStream, target_edge: u32) -> Option<Vec<u8>> {
-    let size = stream_size(stream)?;
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 8];
-    let mut got: u32 = 0;
-    let hr = stream.Read(
-        head.as_mut_ptr() as *mut c_void,
-        head.len() as u32,
-        Some(&mut got),
-    );
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    if hr.is_err() || (got as usize) < head.len() {
+pub(super) unsafe fn head_preview_fast(
+    stream: &IStream,
+    head: &StreamHead,
+    target_edge: u32,
+) -> Option<Vec<u8>> {
+    let size = head.size?;
+    let first = head.first(8);
+    if first.len() < 8 {
         return None;
     }
     // G-code carries no magic bytes, so it is reachable only by extension — the
     // same Stat-recovered name the generic-archive probe uses. A stream with no
     // recoverable name (rare virtual sources) simply misses that one member.
     //
-    // `stream_extension`, NOT `stream_path`: only the file TYPE is wanted here, and a shell
-    // stream reports a bare leaf name. `stream_path` refuses a name it cannot resolve to a
-    // real file (by design — a relative name would resolve against OUR working directory), so
-    // routing this through it meant G-code never matched for anything Explorer handed over.
-    let ext = stream_extension(stream);
+    // The extension comes from the head's `Stat`, NOT from `stream_path`: only the file
+    // TYPE is wanted here, and a shell stream reports a bare leaf name. `stream_path`
+    // refuses a name it cannot resolve to a real file (by design — a relative name would
+    // resolve against OUR working directory), so routing this through it meant G-code
+    // never matched for anything Explorer handed over.
     let wanted = crate::container::head_preview_len(
-        &head,
-        ext.as_deref(),
+        first,
+        head.ext.as_deref(),
         &mut IStreamReader {
             stream: stream.clone(),
         },
@@ -57,7 +53,7 @@ pub(super) unsafe fn head_preview_fast(stream: &IStream, target_edge: u32) -> Op
     if wanted >= size {
         return None; // prefix would be the whole file — the normal read is equivalent
     }
-    let prefix = stream_prefix(stream, wanted as usize)?;
+    let prefix = stream_prefix(stream, Some(size), wanted as usize)?;
     crate::container::extract_cover(&prefix)?;
     // ISSUE #33. Committing to the prefix here is not just a choice of decoder, it decides
     // what BYTES exist downstream: once we hand back 29 KB of PSD head, the merged composite
@@ -82,19 +78,10 @@ pub(super) unsafe fn head_preview_fast(stream: &IStream, target_edge: u32) -> Op
 /// 100 MB default cap while their thumbnails sit in the first kilobytes (GitHub
 /// issue #1). Every container extractor is bounds-checked, so a truncated tail just
 /// means "no preview found" (default icon — same as before), never a mis-decode.
-pub(super) unsafe fn head_preview_prefix(stream: &IStream) -> Option<Vec<u8>> {
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let mut head = [0u8; 8];
-    let mut got: u32 = 0;
-    let hr = stream.Read(
-        head.as_mut_ptr() as *mut c_void,
-        head.len() as u32,
-        Some(&mut got),
-    );
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let got = (got as usize).min(head.len());
-    if hr.is_err() || got < head.len() || !crate::container::has_head_preview(&head) {
+pub(super) unsafe fn head_preview_prefix(stream: &IStream, head: &StreamHead) -> Option<Vec<u8>> {
+    let first = head.first(8);
+    if first.len() < 8 || !crate::container::has_head_preview(first) {
         return None;
     }
-    stream_prefix(stream, decode::HEAD_PREVIEW_BYTES)
+    stream_prefix(stream, head.size, decode::HEAD_PREVIEW_BYTES)
 }

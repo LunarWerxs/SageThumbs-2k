@@ -157,7 +157,7 @@ pub fn is_video_magic(head: &[u8]) -> bool {
     // MPEG-TS (.ts/.mts): 188-byte packets, each led by the 0x47 sync byte. Requiring TWO
     // syncs (head[0] AND head[188]) avoids matching any file that merely starts with 'G'.
     // M2TS (.m2ts) prefixes each packet with a 4-byte timestamp → sync at offset 4, 192 stride.
-    // (Needs a head ≥197 bytes — `peek_is_video`/`decode` pass enough; a short head just skips.)
+    // (Needs a head ≥197 bytes — `StreamHead::is_video`/`decode` pass enough; a short head just skips.)
     if head.len() > 188 && head[0] == 0x47 && head[188] == 0x47 {
         return true;
     }

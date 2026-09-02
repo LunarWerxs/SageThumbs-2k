@@ -43,13 +43,20 @@ const MAX_TOP_LEVEL_BOXES: u32 = 4096;
 
 /// Build a one-keyframe mini-MP4 for the sync sample nearest `fraction` of the running time.
 /// `r` is the source video (the shell `IStream`, a file, or in tests a `Cursor`). Returns the
-/// mini-MP4 bytes for [`crate::video::frame_from_bytes`], or `None` if the source isn't a
-/// parseable ISO-BMFF with an indexed video track (caller falls back to the prefix path).
-pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>> {
+/// mini-MP4 bytes for [`crate::video::frame_from_bytes`] plus the display rotation this same
+/// `moov`/`tkhd` already carried — a caller that already has this need not
+/// re-read the moov a second time through [`display_rotation`] just to ask), or `None` if the
+/// source isn't a parseable ISO-BMFF with an indexed video track (caller falls back to the
+/// prefix path).
+pub fn keyframe_mini_mp4<R: Read + Seek>(
+    r: &mut R,
+    fraction: f64,
+) -> Option<(Vec<u8>, Option<u32>)> {
     let (total, ftyp, moov) = scan_top_level(r)?;
 
     // --- Locate the video track's sample tables inside the moov ------------------------------
-    let mdia_body = video_mdia(box_body(&moov))?;
+    let trak = video_trak(box_body(&moov))?;
+    let mdia_body = box_body(find(trak, b"mdia")?);
     let minf = find(mdia_body, b"minf")?;
     let stbl = box_body(find(box_body(minf), b"stbl")?);
 
@@ -88,15 +95,23 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec
     // --- Coded dimensions from the visual sample entry (display hints for tkhd/mvhd) ---------
     let (width, height) = visual_dims(stsd).unwrap_or((1920, 1080));
 
-    Some(build_mini_mp4(
-        ftyp.as_deref(),
-        stsd,
-        desc_index,
-        frame_delta.max(1),
-        media_timescale,
-        width,
-        height,
-        &keyframe,
+    // The rotation is a pure function of the SAME `tkhd` this walk already located to find
+    // `mdia` — read it here instead of making every caller re-scan the moov a second time
+    // (`display_rotation`) just to ask.
+    let rotation = find(trak, b"tkhd").and_then(rotation_from_tkhd);
+
+    Some((
+        build_mini_mp4(
+            ftyp.as_deref(),
+            stsd,
+            desc_index,
+            frame_delta.max(1),
+            media_timescale,
+            width,
+            height,
+            &keyframe,
+        ),
+        rotation,
     ))
 }
 
@@ -609,21 +624,21 @@ fn locate_chunk_for_sample(stsc: &[u8], num_chunks: u64, target: u64) -> Option<
             // debug builds from trapping and this site consistent with its neighbors.
             num_chunks.checked_add(1)?
         };
-        if next_first < first_chunk {
-            return None;
-        }
-        let samples_in_run = (next_first - first_chunk).checked_mul(spc)?;
-        if target < first_sample_of_run + samples_in_run {
-            let into = target - first_sample_of_run;
+        let run_chunks = next_first.checked_sub(first_chunk)?;
+        let samples_in_run = run_chunks.checked_mul(spc)?;
+        // checked_add: both operands are file-derived (`first_sample_of_run` accumulates
+        // across stsc entries, `samples_in_run` comes from a checked_mul above), and a
+        // crafted table can push either arbitrarily close to u64::MAX.
+        let run_end = first_sample_of_run.checked_add(samples_in_run)?;
+        if target < run_end {
+            let into = target.checked_sub(first_sample_of_run)?;
             let chunk_in_run = into / spc;
-            let chunk1 = first_chunk + chunk_in_run; // 1-based chunk holding `target`
-            let first_sample_of_chunk = first_sample_of_run + chunk_in_run * spc;
+            let chunk1 = first_chunk.checked_add(chunk_in_run)?; // 1-based chunk holding `target`
+            let first_sample_of_chunk =
+                first_sample_of_run.checked_add(chunk_in_run.checked_mul(spc)?)?;
             return Some((chunk1, first_sample_of_chunk, desc));
         }
-        // checked_add: `samples_in_run` comes from a checked_mul above and can approach
-        // u64::MAX across many stsc entries, unlike the other u32-bounded terms in this
-        // function, so this accumulator is the one term that genuinely needs the guard.
-        first_sample_of_run = first_sample_of_run.checked_add(samples_in_run)?;
+        first_sample_of_run = run_end;
     }
     None
 }
@@ -1261,6 +1276,30 @@ mod tests {
         }
     }
 
+    /// `locate_chunk_for_sample`'s arithmetic must decline crafted `stsc` tables
+    /// instead of panicking (debug/test, where overflow checks are on by default) or
+    /// wrapping to a bogus chunk (release). Two shapes: a run whose `next_first` is
+    /// smaller than `first_chunk` (an invalid decreasing table), and a `num_chunks`
+    /// large enough that `(next_first - first_chunk) * samples_per_chunk` overflows u64.
+    #[test]
+    fn locate_chunk_for_sample_declines_crafted_overflow() {
+        // Entry 1: first_chunk=5, spc=1, desc=1. Entry 2 (the terminating one, so its
+        // first_chunk is read as `next_first` for entry 1): first_chunk=2 — LESS than
+        // entry 1's first_chunk=5, an invalid decreasing table.
+        let stsc = fbx(b"stsc", 0, 0, &concat32(&[2, 5, 1, 1, 2, 1, 1]));
+        assert_eq!(locate_chunk_for_sample(full_box_body(&stsc), 10, 0), None);
+
+        // A single (i.e. terminating) run whose `next_first` comes straight from
+        // `num_chunks` — a caller-controlled u64, not a u32-bounded stsc field — so a
+        // hostile `num_chunks` alone can push `next_first - first_chunk` to ~u64::MAX;
+        // multiplying that by a near-u32::MAX samples-per-chunk must decline, not wrap.
+        let huge = fbx(b"stsc", 0, 0, &concat32(&[1, 1, u32::MAX, 1]));
+        assert_eq!(
+            locate_chunk_for_sample(full_box_body(&huge), u64::MAX - 1, 0),
+            None
+        );
+    }
+
     /// stz2 compact sizes (8- and 16-bit fields).
     #[test]
     fn stz2_sizes() {
@@ -1275,6 +1314,45 @@ mod tests {
         assert_eq!(sizes.size_of(0), Some(11));
         assert_eq!(sizes.size_of(2), Some(33));
         assert_eq!(sizes.size_of(3), None);
+    }
+
+    /// `keyframe_mini_mp4` must hand back the rotation it already read off
+    /// the same `tkhd` it walked to find `mdia`, instead of making the caller re-scan the
+    /// moov a second time through [`display_rotation`]. A synthetic single-track, one-chunk
+    /// moov (stco offset 0 so the "keyframe" bytes are just whatever header bytes happen to
+    /// sit there — this test only cares about the rotation, not the decoded frame).
+    #[test]
+    fn keyframe_mini_mp4_returns_the_rotation_it_already_parsed() {
+        const ONE: i32 = FIXED_ONE;
+        let stsd = fbx(b"stsd", 0, 0, &concat32(&[0]));
+        let stts = fbx(b"stts", 0, 0, &concat32(&[1, 10, 1000]));
+        let stsc = fbx(b"stsc", 0, 0, &concat32(&[1, 1, 10, 1]));
+        let stsz = fbx(b"stsz", 0, 0, &concat32(&[8, 10]));
+        let stco = fbx(b"stco", 0, 0, &concat32(&[1, 0]));
+        let stbl = container(b"stbl", &[&stsd, &stts, &stsc, &stsz, &stco]);
+        let minf = container(b"minf", &[&stbl]);
+        let mdia = container(b"mdia", &[&hdlr_of(b"vide"), &minf]);
+        let trak = container(
+            b"trak",
+            &[&tkhd_with_matrix(0, 0, ONE, -ONE, 0), &mdia], // 90 deg clockwise
+        );
+        let moov = container(b"moov", &[&trak]);
+        let mut file = default_ftyp();
+        file.extend_from_slice(&moov);
+
+        let (mini, rotation) = keyframe_mini_mp4(&mut Cursor::new(&file), 0.30)
+            .expect("synthetic single-track moov should yield a mini-mp4");
+        assert!(!mini.is_empty());
+        assert_eq!(rotation, Some(90));
+
+        // The upright twin: same shape, identity matrix, rotation must come back None.
+        let trak_upright = container(b"trak", &[&tkhd_with_matrix(0, ONE, 0, 0, ONE), &mdia]);
+        let moov_upright = container(b"moov", &[&trak_upright]);
+        let mut file_upright = default_ftyp();
+        file_upright.extend_from_slice(&moov_upright);
+        let (_, rotation) = keyframe_mini_mp4(&mut Cursor::new(&file_upright), 0.30)
+            .expect("upright synthetic moov should still yield a mini-mp4");
+        assert_eq!(rotation, None);
     }
 
     /// End-to-end: parse a real MP4 (the corpus `sample.mp4`, or `ST2K_TEST_VIDEO` if set)
@@ -1309,7 +1387,7 @@ mod tests {
         };
 
         let bytes = std::fs::read(&path).expect("read sample video");
-        let mini = keyframe_mini_mp4(&mut Cursor::new(&bytes), 0.30)
+        let (mini, _rotation) = keyframe_mini_mp4(&mut Cursor::new(&bytes), 0.30)
             .expect("build mini-mp4 from real sample");
         assert!(
             mini.len() < bytes.len().max(2 * 1024 * 1024),

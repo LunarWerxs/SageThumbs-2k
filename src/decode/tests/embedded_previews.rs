@@ -195,16 +195,25 @@ fn raw_preview_parsers_are_panic_safe_on_hostile_input() {
 
 #[test]
 fn full_decode_defers_raw_preview_until_real_decoders_fail() {
-    // The fast RAW-preview tier scans for embedded JPEGs before expensive
-    // external decoders on the thumbnail path. Full-fidelity callers must not
-    // take that shortcut ahead of a real decoder: this valid 2x2 TGA carries a
-    // large trailing JPEG that the early path would otherwise prefer.
+    // The fast embedded-JPEG shortcut only runs for files whose signature says RAW
+    // container, so a valid 2x2 TGA carrying a large trailing JPEG decodes as the TGA on
+    // the thumbnail path and at full fidelity alike: the trailing JPEG is never mistaken
+    // for the picture.
     let bytes = tiny_tga_with_trailing_jpeg();
-    let early = decode_any(&bytes, RawPreviewOrder::BeforeExternal, true).unwrap();
-    assert_eq!((early.width(), early.height()), (192, 192));
-
+    let early =
+        decode_any_with_wic_target(&bytes, RawPreviewOrder::BeforeExternal, true, None).unwrap();
+    assert_eq!((early.width(), early.height()), (2, 2));
     let full = decode_full(&bytes).unwrap();
     assert_eq!((full.width(), full.height()), (2, 2));
+
+    // A RAW-looking container (little-endian TIFF magic, an unreadable directory) that no
+    // real decoder can open still yields its embedded JPEG on the thumbnail path.
+    let mut raw = vec![0x49, 0x49, 0x2A, 0x00];
+    raw.extend_from_slice(&[0u8; 60]);
+    raw.extend_from_slice(&noisy_jpeg_bytes(192, 192));
+    let early =
+        decode_any_with_wic_target(&raw, RawPreviewOrder::BeforeExternal, true, None).unwrap();
+    assert_eq!((early.width(), early.height()), (192, 192));
 }
 
 #[test]

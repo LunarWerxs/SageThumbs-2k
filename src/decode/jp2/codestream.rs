@@ -23,7 +23,7 @@ pub(super) mod marker {
 /// Hard ceilings. A JPEG 2000 header is a handful of integers that each multiply into
 /// allocations, so every one of them is bounded before it is trusted — this parser runs
 /// in-process on files arriving from Explorer.
-const MAX_COMPONENTS: u16 = 4;
+pub(super) const MAX_COMPONENTS: u16 = 4;
 // The spec allows NL up to 32, but decode_tile/decode_reduced (mod.rs) compute
 // `1u32 << nb` for a per-resolution shift amount `nb` that reaches `levels`, and a u32
 // shift by 32 is UB territory that release silently wraps to `1<<0`, corrupting every
@@ -32,6 +32,12 @@ const MAX_COMPONENTS: u16 = 4;
 // just a size bomb guard.
 const MAX_DECOMPOSITION_LEVELS: u8 = 31;
 const MAX_TILES: u64 = 65_536;
+// SGcod's layer count is a u16 that multiplies straight into the number of packets a
+// tile walk visits (layers x resolutions x components x precincts). The spec allows
+// 65535; the deepest corpus file uses 30 and encoders default to a handful. The walk
+// itself is budgeted again in mod.rs against the tile body length, so this ceiling only
+// stops the multiplier at the parse stage.
+const MAX_LAYERS: u16 = 256;
 
 /// `SIZ`: image grid, tile grid, and per-component sampling.
 #[derive(Debug, Clone)]
@@ -793,6 +799,9 @@ fn parse_cod(r: &mut Reader, seg_end: usize) -> Result<Cod, Jp2Error> {
     if layers == 0 {
         return Err(Jp2Error::Malformed("zero layers"));
     }
+    if layers > MAX_LAYERS {
+        return Err(Jp2Error::Unsupported("layer count"));
+    }
     let mut c = parse_coding_params(r, seg_end, scod & 1 != 0)?;
     c.progression = progression;
     c.layers = layers;
@@ -979,6 +988,31 @@ mod tests {
     #[test]
     fn precinct_exponent_two_is_accepted() {
         let cs = minimal_codestream(1, Some(0x22)); // PPx = PPy = 2
+        assert!(parse(&cs).is_ok());
+    }
+
+    /// Overwrite the SGcod layer count of a [`minimal_codestream`]: the COD body starts
+    /// four bytes after its marker (marker + Lcod), and `layers` is body bytes 2..4.
+    fn with_layers(mut cs: Vec<u8>, layers: u16) -> Vec<u8> {
+        let cod = cs
+            .windows(2)
+            .position(|w| w == marker::COD.to_be_bytes())
+            .expect("COD marker present");
+        cs[cod + 6..cod + 8].copy_from_slice(&layers.to_be_bytes());
+        cs
+    }
+
+    /// The layer count multiplies into the packet walk; the u16 maximum is rejected at
+    /// parse time, and the ceiling itself is still accepted.
+    #[test]
+    fn layer_count_65535_is_rejected() {
+        let cs = with_layers(minimal_codestream(1, None), u16::MAX);
+        assert!(matches!(parse(&cs), Err(Jp2Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn layer_count_at_ceiling_is_accepted() {
+        let cs = with_layers(minimal_codestream(1, None), MAX_LAYERS);
         assert!(parse(&cs).is_ok());
     }
 

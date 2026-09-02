@@ -559,22 +559,30 @@ fn strip_emulation_prevention(b: &[u8]) -> Vec<u8> {
     out
 }
 
-/// MSB-first bit reader over an RBSP slice. Every read is bounds-checked (`None` past the
-/// end), so a truncated SPS aborts the parse instead of reading garbage.
-struct Bits<'a> {
+/// MSB-first bit reader over a byte slice. Every read is bounds-checked (`None` past the
+/// end), so a truncated input aborts the parse instead of reading garbage.
+///
+/// `pub`: reused by `vdec::vp9`'s VP9 keyframe-header prologue reader
+/// (`sagethumbs2k_core::flv::Bits`) — the child binary's own private copy used to drift from
+/// this one independently. Fields stay private; construct via [`Bits::new`].
+pub struct Bits<'a> {
     d: &'a [u8],
     pos: usize, // in bits
 }
 
-impl Bits<'_> {
-    fn bit(&mut self) -> Option<u32> {
+impl<'a> Bits<'a> {
+    pub fn new(d: &'a [u8]) -> Self {
+        Bits { d, pos: 0 }
+    }
+
+    pub fn bit(&mut self) -> Option<u32> {
         let byte = *self.d.get(self.pos / 8)?;
         let b = (byte >> (7 - (self.pos % 8))) & 1;
         self.pos = self.pos.checked_add(1)?;
         Some(u32::from(b))
     }
 
-    fn bits(&mut self, n: u32) -> Option<u32> {
+    pub fn bits(&mut self, n: u32) -> Option<u32> {
         let mut v = 0u32;
         for _ in 0..n.min(32) {
             v = (v << 1) | self.bit()?;
@@ -1218,7 +1226,7 @@ mod tests {
             eprintln!("real_h264_flv_round_trips: no sample.mp4 — skipping");
             return;
         };
-        let mini = crate::mp4::keyframe_mini_mp4(&mut Cursor::new(&bytes), 0.30)
+        let (mini, _rotation) = crate::mp4::keyframe_mini_mp4(&mut Cursor::new(&bytes), 0.30)
             .expect("mini-mp4 from the corpus sample");
         // Pull the avcC payload (its box header precedes the fourcc) and the mdat payload
         // (the keyframe sample) back out of the known-simple mini-MP4 layout.

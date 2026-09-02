@@ -46,7 +46,7 @@ pub fn has_content_credentials(path: &str) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
-    let Ok(bytes) = read_capped(path) else {
+    let Ok(bytes) = read_full_fidelity_capped(path) else {
         return false;
     };
     let input = Bytes::from(bytes);

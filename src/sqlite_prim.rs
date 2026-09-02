@@ -52,6 +52,23 @@ pub fn serial_size(s: u64) -> usize {
 /// threshold (`usable - 35`) over the index-page one (`(usable-12)*64/255 - 23`) — callers that
 /// only ever walk table b-trees (never index/WITHOUT-ROWID pages) always pass `true`.
 pub fn local_size(total: usize, usable: usize, table_leaf: bool) -> usize {
+    // `usable - 4` is the modulus on the overflow branch below; `usable == 4` makes that
+    // modulus exactly zero, which is an UNCONDITIONAL panic (integer division/modulo by
+    // zero, unlike an overflow check, is never disabled by the release profile) and aborts
+    // the whole process under this crate's `panic=abort`. `usable` comes straight from a
+    // page's declared page size in a file two independent hostile-input walkers
+    // (`container::clip`, `preview::dbdoc`) parse, so the precondition belongs HERE, once,
+    // rather than being re-derived and enforced at every call site. A real SQLite page's
+    // usable size is never anywhere near this small (the format's own minimum page size is
+    // 512, less at most 132 reserved bytes), so this only ever fires on corrupt/hostile
+    // input, and `total.min(usable)` — a payload can never exceed a whole page anyway — is
+    // a safe, conservative "everything is local" answer for that case.
+    // 196 is where `min_local` below stops underflowing: `(usable - 12) * 32 / 255` must
+    // reach the 23 it subtracts, and the index-page `max_local` needs `usable >= 104` the
+    // same way; a real page is never below 480 usable bytes.
+    if usable < 196 {
+        return total.min(usable);
+    }
     let max_local = if table_leaf {
         usable - 35
     } else {
@@ -103,5 +120,30 @@ mod tests {
         let idx_max = (u - 12) * 64 / 255 - 23;
         assert_eq!(local_size(idx_max, u, false), idx_max);
         assert!(local_size(u * 4, u, false) <= idx_max);
+    }
+
+    /// `usable == 4` makes the overflow branch's `usable - 4` modulus exactly zero,
+    /// which panics (mod-by-zero) unconditionally in Rust and aborts the whole process
+    /// under this crate's `panic=abort` profile — a corrupt/hostile page can set the
+    /// declared page size (and so `usable`) to whatever it likes. Every `usable` below the
+    /// guard's threshold must return WITHOUT panicking, not just the exact failing value.
+    #[test]
+    fn local_size_never_panics_on_a_tiny_usable_size() {
+        for usable in 0..200 {
+            for total in [0usize, 1, 4, 100, 10_000] {
+                let n = local_size(total, usable, true);
+                assert!(
+                    n <= total.max(usable),
+                    "local_size({total}, {usable}, true) = {n}"
+                );
+                let n = local_size(total, usable, false);
+                assert!(
+                    n <= total.max(usable),
+                    "local_size({total}, {usable}, false) = {n}"
+                );
+            }
+        }
+        // The exact reported value: usable == 4 used to divide by zero unconditionally.
+        assert_eq!(local_size(1000, 4, true), 4);
     }
 }

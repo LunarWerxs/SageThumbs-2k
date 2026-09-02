@@ -289,6 +289,32 @@ pub fn has_gain_map(bytes: &[u8]) -> bool {
     items(bytes).iter().any(|i| &i.kind == b"tmap")
 }
 
+/// The ICC profile in the `meta/iprp/ipco` property list: the first `colr` box of type
+/// `prof` or `rICC`. `None` for a file without one (a CICP `nclx` box is not a
+/// profile), or for a non-ISOBMFF file.
+pub(crate) fn color_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.get(4..8) != Some(b"ftyp") {
+        return None;
+    }
+    let find = |buf: &[u8], base: usize, kind: &[u8; 4]| -> Option<(usize, usize)> {
+        boxes(buf, base)
+            .into_iter()
+            .find(|(t, _, _)| t == kind)
+            .map(|(_, o, l)| (o, l))
+    };
+    let (moff, mlen) = find(bytes, 0, b"meta")?;
+    // `meta` is a FullBox: 4 bytes of version+flags before its children.
+    let (poff, plen) = find(bytes.get(moff + 4..moff + mlen)?, moff + 4, b"iprp")?;
+    let (coff, clen) = find(bytes.get(poff..poff + plen)?, poff, b"ipco")?;
+    boxes(bytes.get(coff..coff + clen)?, coff)
+        .into_iter()
+        .filter(|(t, _, _)| t == b"colr")
+        .find_map(|(_, o, l)| {
+            let (typ, icc) = bytes.get(o..o + l)?.split_at_checked(4)?;
+            ((typ == b"prof" || typ == b"rICC") && !icc.is_empty()).then(|| icc.to_vec())
+        })
+}
+
 /// Overwrite the EXIF and XMP item payloads in place with valid empty ones.
 ///
 /// Returns `None` when there is nothing to strip, or when any part of the layout
@@ -330,15 +356,28 @@ pub(super) fn strip(bytes: &[u8]) -> Option<Vec<u8>> {
     // another item's payload (or at the box structure), and overwriting it in place
     // would silently destroy data we were never asked to touch. Both extents fit
     // inside the file, so the bounds check alone does not catch this.
-    let all: Vec<(usize, usize)> = found.iter().filter_map(|i| i.extent).collect();
+    //
+    // The target itself is excluded by its INDEX in `found`, never by extent value:
+    // a crafted Exif extent equal byte-for-byte to the image item's extent would
+    // otherwise exclude that image item from the comparison too, and the overwrite
+    // would land on the picture.
     let meta_span = boxes(bytes, 0)
         .into_iter()
         .find(|(t, _, _)| t == b"meta")
         .map(|(_, o, l)| (o, l));
     let overlaps = |a: (usize, usize), b: (usize, usize)| a.0 < b.0 + b.1 && b.0 < a.0 + a.1;
-    for t in &targets {
+    for (ti, t) in found.iter().enumerate() {
+        if !(&t.kind == b"Exif" || (&t.kind == b"mime" && t.is_xmp)) {
+            continue;
+        }
         let te = t.extent?;
-        if all.iter().filter(|&&e| e != te).any(|&e| overlaps(te, e)) {
+        if found
+            .iter()
+            .enumerate()
+            .filter(|&(oi, _)| oi != ti)
+            .filter_map(|(_, o)| o.extent)
+            .any(|e| overlaps(te, e))
+        {
             return None;
         }
         if meta_span.is_some_and(|m| overlaps(te, m)) {
@@ -397,18 +436,18 @@ fn write_empty_xmp(slot: &mut [u8]) {
     }
 }
 
+/// Synthetic HEIC builders shared by this module's tests and by `verbs::encode::carry`'s
+/// (which reads the same items back out).
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+pub(crate) mod testutil {
+    pub(crate) fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
         v.extend_from_slice(kind);
         v.extend_from_slice(body);
         v
     }
 
-    fn infe(id: u16, kind: &[u8; 4], content_type: Option<&[u8]>) -> Vec<u8> {
+    pub(crate) fn infe(id: u16, kind: &[u8; 4], content_type: Option<&[u8]>) -> Vec<u8> {
         let mut b = vec![2u8, 0, 0, 0]; // version 2, flags
         b.extend_from_slice(&id.to_be_bytes());
         b.extend_from_slice(&0u16.to_be_bytes()); // protection index
@@ -428,7 +467,10 @@ mod tests {
     /// iloc body's LENGTH does not depend on the offset values it holds, so a
     /// throwaway first pass gives the real payload base, and the second pass
     /// writes the true offsets into an identically-sized box.
-    fn synth(payloads: &[(u16, &[u8])], extra_infe: &[Vec<u8>]) -> (Vec<u8>, Vec<(u16, usize)>) {
+    pub(crate) fn synth(
+        payloads: &[(u16, &[u8])],
+        extra_infe: &[Vec<u8>],
+    ) -> (Vec<u8>, Vec<(u16, usize)>) {
         let mut infes: Vec<Vec<u8>> = vec![
             infe(1, b"Exif", None),
             infe(2, b"mime", Some(b"application/rdf+xml")),
@@ -495,6 +537,13 @@ mod tests {
         }
         (file, spots)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testutil::{infe, synth};
+    use super::*;
+
     const EXIF_PAYLOAD: &[u8] = b"II*\x00secret-camera-data";
     const XMP_PAYLOAD: &[u8] = b"<x:xmpmeta>gps";
 
@@ -563,6 +612,100 @@ mod tests {
         // strip that reported success would be a silent metadata leak.
         let (file, _) = synth(&[(1, b"II*\0secret")], &[]);
         assert!(strip(&file).is_none());
+    }
+
+    /// A crafted Exif extent IDENTICAL to the image item's extent used to slip past the
+    /// overlap guard: the "not myself" filter compared extents by value, so the image
+    /// item was excluded from the comparison along with the target, and the empty EXIF
+    /// block landed on the picture bytes. The target is excluded by index now.
+    #[test]
+    fn refuses_when_a_target_extent_equals_another_items_extent() {
+        let xmp = b"<x:xmpmeta>gps-coordinates-secret-location-data</x:xmpmeta>";
+        let (file, spots) = synth(
+            &[
+                (1, b"II*\0secret-camera-data"),
+                (2, xmp),
+                (9, b"av01-primary-image-payload"),
+            ],
+            &[infe(9, b"av01", None)],
+        );
+        // Sanity: the honest layout strips.
+        assert!(strip(&file).is_some(), "the untampered file must strip");
+
+        // Rewrite item 1's iloc extent to item 9's (offset, length). iloc v1 entries here
+        // are 16 bytes each: id(2) method(2) dref(2) extents(2) offset(4) length(4), in
+        // payload order after a 6-byte FullBox header + size byte pair + 2-byte count.
+        let iloc_at = file
+            .windows(4)
+            .position(|w| w == b"iloc")
+            .expect("iloc box")
+            + 4;
+        let entries = iloc_at + 6 + 2;
+        let exif_entry = entries;
+        let image_entry = entries + 2 * 16;
+        let mut crafted = file.clone();
+        let (image_off, image_len) = (
+            u32::from_be_bytes(
+                crafted[image_entry + 8..image_entry + 12]
+                    .try_into()
+                    .unwrap(),
+            ),
+            u32::from_be_bytes(
+                crafted[image_entry + 12..image_entry + 16]
+                    .try_into()
+                    .unwrap(),
+            ),
+        );
+        assert_eq!(image_off as usize, spots[2].1, "entry layout assumption");
+        crafted[exif_entry + 8..exif_entry + 12].copy_from_slice(&image_off.to_be_bytes());
+        crafted[exif_entry + 12..exif_entry + 16].copy_from_slice(&image_len.to_be_bytes());
+        let items_now = items(&crafted);
+        assert_eq!(
+            items_now
+                .iter()
+                .find(|i| &i.kind == b"Exif")
+                .unwrap()
+                .extent,
+            items_now
+                .iter()
+                .find(|i| &i.kind == b"av01")
+                .unwrap()
+                .extent,
+            "the crafted Exif extent must equal the image item's"
+        );
+        assert!(
+            strip(&crafted).is_none(),
+            "an Exif item aimed at the image payload must refuse the whole file"
+        );
+        assert!(
+            crafted.windows(12).any(|w| w == b"av01-primary"),
+            "strip must not have touched the input"
+        );
+    }
+
+    /// The profile lives in a `colr` property under `meta/iprp/ipco`; a CICP `nclx`
+    /// box in the same place is a colour signal, not a profile.
+    #[test]
+    fn color_profile_comes_from_the_ipco_colr_box() {
+        use super::testutil::bx;
+        let heic_with = |colr_body: &[u8]| {
+            let ipco = bx(b"ipco", &bx(b"colr", colr_body));
+            let mut meta_body = vec![0u8; 4];
+            meta_body.extend_from_slice(&bx(b"iprp", &ipco));
+            let mut file = bx(b"ftyp", b"heic\x00\x00\x00\x00heic");
+            file.extend_from_slice(&bx(b"meta", &meta_body));
+            file
+        };
+        let mut prof = b"prof".to_vec();
+        prof.extend_from_slice(b"fake-icc-bytes");
+        assert_eq!(
+            color_profile(&heic_with(&prof)).as_deref(),
+            Some(&b"fake-icc-bytes"[..])
+        );
+        let mut nclx = b"nclx".to_vec();
+        nclx.extend_from_slice(&[0, 12, 0, 13, 0, 6, 0x80]);
+        assert!(color_profile(&heic_with(&nclx)).is_none());
+        assert!(color_profile(b"not a file at all").is_none());
     }
 
     #[test]

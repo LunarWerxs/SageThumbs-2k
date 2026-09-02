@@ -6,19 +6,24 @@
 
 use super::*;
 
-/// Inflate a gzip stream with a hard output cap (decompression-bomb guard) for
-/// the `.svgz`/`.emz` paths. `flate2` (rust_backend / miniz_oxide) is already in
-/// the tree for `zip`, so this adds no dependency and stays pure-Rust. Returns
-/// `None` on any inflate error or empty output; a truncated-at-cap inflate just
-/// fails to parse downstream and falls back to the default icon.
-pub(super) fn gunzip_bounded(bytes: &[u8]) -> Option<Vec<u8>> {
+/// The SVG/EMF gzip inflate cap this module's own callers use: an SVG/EMF that large is
+/// already pathological for a thumbnail, and it bounds a hostile highly-compressible
+/// payload. [`strip`](crate::strip)'s copy of [`gunzip_bounded`] passes its own, larger
+/// cap instead (C5) — see that function's doc comment.
+pub(crate) const GUNZIP_MAX: u64 = 64 * 1024 * 1024;
+
+/// Inflate a gzip stream with a hard output cap `cap` (decompression-bomb guard),
+/// shared by this module's `.svgz`/`.emz` callers (which pass [`GUNZIP_MAX`]) and by
+/// [`strip::gunzip_bounded`](crate::strip) (C5), which passes its own cap rather than
+/// duplicating this read loop. `flate2` (rust_backend / miniz_oxide) is already in the
+/// tree for `zip`, so this adds no dependency and stays pure-Rust. Returns `None` on any
+/// inflate error or empty output; a truncated-at-cap inflate just fails to parse
+/// downstream and falls back to the default icon.
+pub(crate) fn gunzip_bounded(bytes: &[u8], cap: u64) -> Option<Vec<u8>> {
     use std::io::Read;
-    // 64 MiB inflated cap: an SVG/EMF that large is already pathological for a
-    // thumbnail, and it bounds a hostile highly-compressible payload.
-    const GUNZIP_MAX: u64 = 64 * 1024 * 1024;
     let mut out = Vec::new();
     flate2::read::GzDecoder::new(bytes)
-        .take(GUNZIP_MAX)
+        .take(cap)
         .read_to_end(&mut out)
         .ok()?;
     (!out.is_empty()).then_some(out)
@@ -86,6 +91,15 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     use resvg::{tiny_skia, usvg};
 
     let mut opt = usvg::Options::default();
+    // SECURITY: usvg's default `<image href>` resolver opens any absolute or UNC path with
+    // `std::fs::read` (usvg 0.48's `ImageHrefResolver::default_string_resolver` -> `get_abs_path`,
+    // which with `resources_dir: None` returns the href verbatim). Reachable in-process inside
+    // explorer.exe via `decode_menu_preview`, so a ~300-byte SVG in a browsed folder could make
+    // the shell read an attacker-named file (a UNC href is an outbound SMB connect and NetNTLMv2
+    // leak) and bypass `limits::MAX_INPUT_BYTES` entirely. resvg is built without `raster-images`
+    // anyway, so the loaded bytes are never rendered — the read buys nothing. Refuse every
+    // external href; only inline `data:` URIs resolve.
+    opt.image_href_resolver.resolve_string = Box::new(|_, _| None);
     // CSS-animated SVGs (`@keyframes`) commonly HIDE their content at rest (`opacity:0` on the
     // shapes) and REVEAL it through the animation. resvg is a STATIC rasterizer — it never runs
     // CSS animations — so it renders that hidden initial state and we get a blank image. Browsers

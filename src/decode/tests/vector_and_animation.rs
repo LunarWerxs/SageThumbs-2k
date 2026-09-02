@@ -24,7 +24,7 @@ fn gzip_wrapped_svg_decodes_natively() {
 
 #[test]
 fn gunzip_bounded_rejects_non_gzip() {
-    assert!(gunzip_bounded(b"not gzip at all").is_none());
+    assert!(gunzip_bounded(b"not gzip at all", crate::decode::svg::GUNZIP_MAX).is_none());
 }
 
 #[test]
@@ -80,28 +80,29 @@ fn decodes_svg_to_thumbnail() {
 }
 
 #[test]
-fn menu_preview_now_renders_svg_but_still_skips_pdf() {
-    // The in-explorer context-menu tile used to skip SVG (caption-only). It now
-    // renders it via resvg (pure-Rust, in-process, time-bounded) — while video /
-    // PDF / ImageMagick stay excluded so a right-click can never freeze the shell.
-    // A 40px SVG is below SVG_MIN_DIM (512), so render_svg scales the vector UP to a usable
-    // 512px long edge (crisp — see `svg_small_scales_up_to_min`); the menu path shares that.
+fn menu_preview_skips_svg_and_pdf() {
+    // The in-explorer context-menu tile decodes on explorer's own thread budget. resvg has
+    // no internal timeout and its render worker cannot be killed, so SVG stays excluded
+    // there (caption-only tile) and is rendered only by the isolated thumbnail and preview
+    // hosts; PDF has no in-process rasterizer at all.
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="rgb(10,200,90)"/></svg>"#;
-    let img = decode_menu_preview(svg).expect("menu preview should now decode a plain SVG");
-    assert_eq!((img.width(), img.height()), (512, 512));
+    assert!(
+        decode_menu_preview(svg).is_err(),
+        "SVG must stay excluded from the in-explorer menu preview"
+    );
 
-    // `.svgz` (gzipped SVG) must inflate + render on the menu path too.
+    // `.svgz` (gzipped SVG) is the same renderer behind an inflate: excluded too.
     let mut gz = Vec::new();
     {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
         enc.write_all(svg).unwrap();
     }
-    let img = decode_menu_preview(&gz).expect("menu preview should decode gzipped .svgz");
-    assert_eq!((img.width(), img.height()), (512, 512));
+    assert!(
+        decode_menu_preview(&gz).is_err(),
+        "SVGZ must stay excluded from the in-explorer menu preview"
+    );
 
-    // A PDF stays deliberately excluded from the in-explorer menu tier — no
-    // WinRT rasterizer here — so it must still fail out to a caption-only tile.
     let fake_pdf = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n";
     assert!(
         decode_menu_preview(fake_pdf).is_err(),

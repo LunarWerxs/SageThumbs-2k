@@ -67,7 +67,8 @@ fn step_depth(depth_after_svg: i32, name: Option<&str>, tail: &str) -> i32 {
 ///
 /// Errors only if the input is not valid UTF-8 (an SVG must be, per the spec).
 pub(super) fn strip(input: &[u8]) -> Result<Vec<u8>> {
-    let text = std::str::from_utf8(input).map_err(|_| Error::from(E_FAIL))?;
+    let text = std::str::from_utf8(input)
+        .map_err(|e| Error::new(E_FAIL, format!("svg: not UTF-8: {e}")))?;
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     // Track nesting so a <title> inside a <path>/<g> is recognised as

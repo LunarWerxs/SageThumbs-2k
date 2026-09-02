@@ -21,6 +21,15 @@ use super::*;
 const MAX_TRIS: usize = 2_000_000;
 /// Vertex cap for the indexed formats (OBJ/PLY).
 const MAX_VERTS: usize = 2_000_000;
+/// Aggregate rasterization budget, in bounding-box PIXEL-ITERATIONS across every triangle
+/// in one render — a multiple of the (supersampled) canvas area. `MAX_TRIS` bounds parse
+/// cost, not fill cost: nothing else stops a crafted mesh whose triangles all share the
+/// model's extreme bounding-box corners (finite, non-degenerate, so they pass every other
+/// check) from each rasterizing a bbox covering roughly the whole canvas — at MAX_TRIS
+/// triangles that is on the order of 10^12-10^13 pixel-fill iterations. A real mesh, where
+/// most triangles are small relative to the whole model, never comes close to this; a
+/// pathological one is stopped after a bounded amount of work instead. See [`render`].
+const RASTER_BUDGET_CANVAS_MULTIPLE: u64 = 64;
 /// Rendered edge, before the pipeline's fit-to-box. Big enough that the preview window
 /// gets a crisp image; small enough that the z-buffer stays a transient few MB.
 const RENDER_EDGE: u32 = 1024;
@@ -195,9 +204,16 @@ pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
         let l = line.trim_start();
         if let Some(rest) = l.strip_prefix("v ") {
             let v = parse_obj_vertex(rest)?;
-            if v.iter().all(|c| c.is_finite()) {
-                verts.push(v);
-            }
+            // Push a placeholder for a non-finite vertex rather than dropping it: OBJ face
+            // indices are 1-based positions into the file's FULL `v` line sequence, so
+            // skipping an entry here would silently shift every later face's index off by
+            // one — the same desync `read_ply_ascii`/`read_ply_binary` push `[0.0; 3]` to
+            // avoid.
+            verts.push(if v.iter().all(|c| c.is_finite()) {
+                v
+            } else {
+                [0.0; 3]
+            });
             if verts.len() > MAX_VERTS {
                 return None;
             }
@@ -262,7 +278,15 @@ impl PlyHeaderState {
             self.in_vertex = false;
         } else if l.starts_with("property ") && self.in_vertex {
             self.vert_props += 1;
-            let is_float_xyz = l.ends_with(" x") || l.ends_with(" y") || l.ends_with(" z");
+            // The NAME alone (`x`/`y`/`z`) is not enough: `read_ply_binary` always reads a
+            // 4-byte `f32` per property, so a declared type other than `float`/`float32` —
+            // `double` (CloudCompare, Open3D, PCL all write it), a `short`, whatever — would
+            // be read at the wrong stride, producing garbage rather than a decode error.
+            // Requiring the type here means such a file simply never reaches `xyz_lead >= 3`
+            // and the whole parse declines instead of misreading.
+            let ty = l.split_ascii_whitespace().nth(1).unwrap_or("");
+            let is_float_xyz = matches!(ty, "float" | "float32")
+                && (l.ends_with(" x") || l.ends_with(" y") || l.ends_with(" z"));
             if is_float_xyz && self.vert_props == self.xyz_lead + 1 && self.vert_props <= 3 {
                 self.xyz_lead += 1;
             }
@@ -301,19 +325,34 @@ fn parse_ply_header(bytes: &[u8]) -> Option<PlyHeader> {
     })
 }
 
+/// Parse one PLY ASCII vertex line's leading x/y/z. `None` means the line is malformed
+/// (too few tokens, unparseable), which [`read_ply_ascii`] treats as "stop here" rather
+/// than "the whole file is invalid" — see its own doc comment.
+fn parse_ply_ascii_vertex(line: &str) -> Option<[f32; 3]> {
+    let mut it = line.split_ascii_whitespace();
+    Some([
+        it.next()?.parse::<f32>().ok()?,
+        it.next()?.parse::<f32>().ok()?,
+        it.next()?.parse::<f32>().ok()?,
+    ])
+}
+
 /// Read ASCII-encoded PLY vertex/face lines (the body after `end_header`) into triangles.
+///
+/// A truncated file (a vertex or face line cut short, or missing entirely) stops the
+/// relevant loop with `break` rather than failing the whole parse — matching
+/// `parse_binary_stl`'s "render whatever fully parsed" behaviour instead of discarding
+/// every triangle already built for a partial download or a hand-edited/corrupted tail.
 fn read_ply_ascii(body: &[u8], n_verts: usize, n_faces: usize) -> Option<Vec<[f32; 9]>> {
     let text = core::str::from_utf8(body).ok()?;
     let mut lines = text.lines();
     let mut verts: Vec<[f32; 3]> = Vec::with_capacity(n_verts.min(1 << 16));
     let mut tris: Vec<[f32; 9]> = Vec::new();
     for _ in 0..n_verts {
-        let mut it = lines.next()?.split_ascii_whitespace();
-        let v = [
-            it.next()?.parse::<f32>().ok()?,
-            it.next()?.parse::<f32>().ok()?,
-            it.next()?.parse::<f32>().ok()?,
-        ];
+        let Some(line) = lines.next() else { break };
+        let Some(v) = parse_ply_ascii_vertex(line) else {
+            break;
+        };
         if v.iter().all(|c| c.is_finite()) {
             verts.push(v);
         } else {
@@ -340,8 +379,13 @@ fn read_ply_ascii(body: &[u8], n_verts: usize, n_faces: usize) -> Option<Vec<[f3
 /// Read binary-little-endian PLY vertex/face data (the body after `end_header`) into
 /// triangles. Only all-float32 vertex properties are supported (the overwhelmingly common
 /// layout); anything else refuses rather than mis-striding. Faces assume `list uchar int`
-/// / `list uchar uint` (the standard); a first count byte outside 3..=64 refuses the whole
-/// face block rather than guessing a stride.
+/// / `list uchar uint` (the standard); a first count byte outside 3..=64 refuses the rest
+/// of the face block rather than guessing a stride.
+///
+/// A truncated file — the vertex block or a face's index list running out of bytes partway
+/// through (a partial download, a hand-edited or corrupted tail) — stops the relevant loop
+/// with `break` and keeps whatever was fully read, matching `parse_binary_stl`'s "render
+/// whatever fully parsed" behaviour instead of discarding every triangle already built.
 fn read_ply_binary(
     body: &[u8],
     n_verts: usize,
@@ -349,36 +393,54 @@ fn read_ply_binary(
     vert_props: usize,
 ) -> Option<Vec<[f32; 9]>> {
     let stride = vert_props.checked_mul(4)?;
-    let need = n_verts.checked_mul(stride)?;
-    let vbytes = body.get(..need)?;
     let mut verts: Vec<[f32; 3]> = Vec::with_capacity(n_verts.min(1 << 16));
-    for i in 0..n_verts {
-        let o = i * stride;
+    let mut o = 0usize;
+    for _ in 0..n_verts {
+        let Some(vbytes) = o.checked_add(stride).and_then(|end| body.get(o..end)) else {
+            break; // vertex block ran out of bytes: keep whatever verts we already read
+        };
         let mut v = [0f32; 3];
+        let mut complete = true;
         for (j, c) in v.iter_mut().enumerate() {
-            *c = f32::from_le_bytes(vbytes.get(o + j * 4..o + j * 4 + 4)?.try_into().ok()?);
+            let Some(b) = vbytes.get(j * 4..j * 4 + 4).and_then(|s| s.try_into().ok()) else {
+                complete = false;
+                break;
+            };
+            *c = f32::from_le_bytes(b);
+        }
+        if !complete {
+            break;
         }
         verts.push(if v.iter().all(|c| c.is_finite()) {
             v
         } else {
             [0.0; 3]
         });
+        o += stride;
     }
     let mut tris: Vec<[f32; 9]> = Vec::new();
-    let mut o = need;
     for _ in 0..n_faces {
-        let cnt = *body.get(o)? as usize;
+        let Some(&cnt_byte) = body.get(o) else { break };
+        let cnt = cnt_byte as usize;
         if !(3..=64).contains(&cnt) {
             break;
         }
         o += 1;
         let mut idx = Vec::with_capacity(cnt);
+        let mut complete = true;
         for _ in 0..cnt {
-            let i = u32::from_le_bytes(body.get(o..o + 4)?.try_into().ok()?) as usize;
+            let Some(b) = body.get(o..o + 4).and_then(|s| s.try_into().ok()) else {
+                complete = false;
+                break;
+            };
+            let i = u32::from_le_bytes(b) as usize;
             if i < verts.len() {
                 idx.push(i);
             }
             o += 4;
+        }
+        if !complete {
+            break; // face's index list ran out of bytes: keep the triangles built so far
         }
         fan(&mut tris, &verts, &idx);
         if tris.len() >= MAX_TRIS {
@@ -494,7 +556,10 @@ fn triangle_luminance(p: &[[f32; 3]], light: [f32; 3]) -> Option<u8> {
 }
 
 /// Project, light, and rasterize (barycentric over its screen-space bounding box) one
-/// triangle into the shared z-buffer/shade buffers.
+/// triangle into the shared z-buffer/shade buffers. Returns the bounding-box pixel count
+/// scanned — the cost [`RASTER_BUDGET_CANVAS_MULTIPLE`] bounds, independent of how many of
+/// those pixels the barycentric test actually accepted (the box scan itself is the work a
+/// pathological full-canvas triangle multiplies).
 #[allow(clippy::too_many_arguments)]
 fn rasterize_triangle(
     t: &[f32; 9],
@@ -506,7 +571,7 @@ fn rasterize_triangle(
     light: [f32; 3],
     zbuf: &mut [f32],
     shade: &mut [u8],
-) {
+) -> u64 {
     let p: Vec<[f32; 3]> = t
         .chunks_exact(3)
         .map(|v| view.project([v[0], v[1], v[2]]))
@@ -524,7 +589,7 @@ fn rasterize_triangle(
     let (x2, y2, z2) = sxy(&p[2]);
 
     let Some(lum) = triangle_luminance(&p, light) else {
-        return; // degenerate triangle
+        return 0; // degenerate triangle: no fill cost
     };
 
     let minx = x0.min(x1).min(x2).floor().max(0.0) as u32;
@@ -533,7 +598,15 @@ fn rasterize_triangle(
     let maxy = (y0.max(y1).max(y2).ceil() as u32).min(big - 1);
     let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
     if area.abs() < 1e-6 {
-        return;
+        return 0;
+    }
+    // The triangle may lie entirely off-canvas on one side, where only the LOWER bound of
+    // the box gets clamped (`minx`/`miny` clamp at 0, `maxx`/`maxy` clamp at `big - 1` —
+    // neither clamps the other's edge), so `minx > maxx` (or the `y` twin) is possible; the
+    // loop below already treats that as an empty range, and the cost below must too rather
+    // than underflow the `u32` subtraction.
+    if minx > maxx || miny > maxy {
+        return 0;
     }
     for py in miny..=maxy {
         for px in minx..=maxx {
@@ -552,6 +625,7 @@ fn rasterize_triangle(
             }
         }
     }
+    u64::from(maxx - minx + 1) * u64::from(maxy - miny + 1)
 }
 
 /// Box-average SS×SS down into the final image; coverage becomes alpha, so edges blend
@@ -606,8 +680,18 @@ fn render(tris: &[[f32; 9]], edge: u32) -> image::RgbaImage {
     let mut zbuf = vec![f32::NEG_INFINITY; (big * big) as usize];
     let mut shade = vec![0u8; (big * big) as usize];
     let light = mesh_light();
+    // Aggregate rasterization budget: `MAX_TRIS` bounds parse cost, not fill cost, and a
+    // crafted mesh whose triangles all cover roughly the whole canvas would otherwise multiply
+    // triangle count by full-canvas coverage — see `RASTER_BUDGET_CANVAS_MULTIPLE`. Stopping
+    // early keeps whatever fully rasterized so far, the same partial-result spirit as the
+    // parse-time caps: a shape from most of a huge model beats no thumbnail at all.
+    let budget = u64::from(big) * u64::from(big) * RASTER_BUDGET_CANVAS_MULTIPLE;
+    let mut spent = 0u64;
     for t in tris {
-        rasterize_triangle(
+        if spent >= budget {
+            break;
+        }
+        spent += rasterize_triangle(
             t, &view, scale, offx, offy, big, light, &mut zbuf, &mut shade,
         );
     }
@@ -685,6 +769,28 @@ mod tests {
           0 0 0\n1 0 0\n0.5 1 0\n0.5 0.5 1\n\
           3 0 1 2\n3 0 1 3\n3 1 2 3\n3 0 2 3\n"
             .to_vec()
+    }
+
+    /// A non-finite vertex must not shift the index of every vertex after it — OBJ
+    /// face indices are 1-based positions into the file's FULL `v` line sequence, so
+    /// dropping the bad line (instead of placeholdering it) would silently point every
+    /// later face at the wrong vertex, or off the end of a now-too-short list.
+    #[test]
+    fn obj_non_finite_vertex_does_not_desync_later_indices() {
+        let obj = b"v 0 0 0\nv nan nan nan\nv 1 0 0\nv 0 1 0\nf 1 3 4\n";
+        let tris = parse_mesh_sniffed(obj).expect("must still parse a mesh");
+        assert_eq!(
+            tris.len(),
+            1,
+            "the face referencing vertices after the bad one must still resolve"
+        );
+        // Vertices 1, 3, 4 (1-based) are (0,0,0), (1,0,0), (0,1,0) — the NaN placeholder
+        // at position 2 is skipped BY the face reference, not by shifting every index
+        // after it.
+        let t = tris[0];
+        assert_eq!(&t[0..3], &[0.0, 0.0, 0.0]);
+        assert_eq!(&t[3..6], &[1.0, 0.0, 0.0]);
+        assert_eq!(&t[6..9], &[0.0, 1.0, 0.0]);
     }
 
     /// Every format parses its own synthetic model to the expected triangle count — the
@@ -766,6 +872,95 @@ mod tests {
         assert_eq!(parse_ply(&out).unwrap().len(), 4);
     }
 
+    /// `property double x/y/z` (CloudCompare, Open3D, PCL all write it) must be
+    /// DECLINED, not read at the `float`-sized 4-byte stride `read_ply_binary` assumes —
+    /// which would desync every property after it into garbage. Same tetra as
+    /// `binary_ply_parses`, `double` (8 bytes/component) in place of `float`.
+    #[test]
+    fn binary_ply_declines_double_xyz_type() {
+        let mut out = Vec::new();
+        out.extend_from_slice(
+            b"ply\nformat binary_little_endian 1.0\nelement vertex 4\n\
+              property double x\nproperty double y\nproperty double z\n\
+              element face 4\nproperty list uchar int vertex_indices\nend_header\n",
+        );
+        for v in [[0f64, 0., 0.], [1., 0., 0.], [0.5, 1., 0.], [0.5, 0.5, 1.]] {
+            for c in v {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        for f in [[0u32, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]] {
+            out.push(3);
+            for i in f {
+                out.extend_from_slice(&i.to_le_bytes());
+            }
+        }
+        assert!(
+            parse_ply(&out).is_none(),
+            "a `double` xyz property must be declined, not misread at the float stride"
+        );
+    }
+
+    /// A binary PLY truncated partway through its FACE block must still render the
+    /// faces that fully parsed before the cut, the same way `parse_binary_stl` renders
+    /// whatever triangles are fully present — not lose every triangle to a single `?`
+    /// that ran out of the truncated file.
+    #[test]
+    fn binary_ply_renders_faces_before_a_truncated_tail() {
+        let mut out = Vec::new();
+        out.extend_from_slice(
+            b"ply\nformat binary_little_endian 1.0\nelement vertex 4\n\
+              property float x\nproperty float y\nproperty float z\n\
+              element face 4\nproperty list uchar int vertex_indices\nend_header\n",
+        );
+        for v in [[0f32, 0., 0.], [1., 0., 0.], [0.5, 1., 0.], [0.5, 0.5, 1.]] {
+            for c in v {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        for f in [[0u32, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]] {
+            out.push(3);
+            for i in f {
+                out.extend_from_slice(&i.to_le_bytes());
+            }
+        }
+        // Each face is 13 bytes (1 count + 3x4 index bytes); cutting the last 9 leaves the
+        // 4th face's count byte plus 3 of its first index's 4 bytes — a genuinely partial
+        // face, with the 3 faces before it fully intact (header claims 4 faces total).
+        out.truncate(out.len() - 9);
+        let tris = parse_ply(&out).expect("a truncated tail must still return the partial mesh");
+        assert_eq!(
+            tris.len(),
+            3,
+            "the three faces fully present before the truncation must still render"
+        );
+    }
+
+    /// The vertex block itself can be the truncated part (a cut even earlier than P65's
+    /// face-block case) — the file has no faces to show, but it must decline cleanly
+    /// (`Some(vec![])`, not `None`, matching the empty-mesh case `parse_binary_stl` already
+    /// tolerates) rather than lose the whole parse to `?`.
+    #[test]
+    fn binary_ply_survives_a_vertex_block_cut_short() {
+        let mut out = Vec::new();
+        out.extend_from_slice(
+            b"ply\nformat binary_little_endian 1.0\nelement vertex 4\n\
+              property float x\nproperty float y\nproperty float z\n\
+              element face 4\nproperty list uchar int vertex_indices\nend_header\n",
+        );
+        for v in [[0f32, 0., 0.], [1., 0., 0.]] {
+            for c in v {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&[0u8; 3]); // a partial third vertex, cut mid-float
+        assert_eq!(
+            parse_ply(&out),
+            Some(Vec::new()),
+            "a vertex block cut short must decline to an empty mesh, not None"
+        );
+    }
+
     /// The sniffers must refuse close-but-wrong inputs: prose with a "v " line but no
     /// faces, a truncated binary STL whose length equation fails, garbage.
     #[test]
@@ -798,6 +993,33 @@ mod tests {
         assert!(
             img.pixels().all(|p| p.0[3] == 0),
             "nothing to draw -> fully transparent"
+        );
+    }
+
+    /// An aggregate rasterization budget must stop a mesh whose triangles all
+    /// cover (near) the full canvas well before triangle count x canvas area, or a crafted
+    /// file can peg the surrogate for a very long time. Timing-bound rather than
+    /// instrumented, so it pins the OBSERVABLE property (bounded wall time) rather than an
+    /// internal constant a future tune could drift out of sync with.
+    #[test]
+    fn rasterizer_budget_bounds_full_canvas_triangles() {
+        // Every triangle spans far past the model's real bounding box in every direction —
+        // finite, non-degenerate, so it passes every other check — and rasterizes a bbox
+        // covering roughly the whole canvas: the pathological shape the budget bounds.
+        let full_canvas_tri: [f32; 9] = [
+            -1000.0, -1000.0, 0.0, 1000.0, -1000.0, 0.0, -1000.0, 1000.0, 0.0,
+        ];
+        let tris = vec![full_canvas_tri; 100_000];
+
+        let start = std::time::Instant::now();
+        let img = render(&tris, 64);
+        let elapsed = start.elapsed();
+
+        assert_eq!((img.width(), img.height()), (64, 64));
+        assert!(
+            elapsed.as_secs() < 5,
+            "100,000 full-canvas triangles took {elapsed:?} - the aggregate rasterization \
+             budget does not appear to be bounding the work"
         );
     }
 }

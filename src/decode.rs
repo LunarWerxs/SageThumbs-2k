@@ -32,7 +32,7 @@ use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICBitmapFrameDecode, IWICBitmapSource,
     IWICBitmapSourceTransform, IWICColorContext, IWICImagingFactory, WICBitmapDitherTypeNone,
     WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom, WICColorContextProfile,
-    WICDecodeMetadataCacheOnDemand, WICDecodeMetadataCacheOnLoad,
+    WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::SHCreateMemStream;
@@ -111,7 +111,7 @@ pub(crate) mod limits {
     ///
     /// **This ceiling is reachable ONLY from the isolated hosts.** It applies when a target edge
     /// is supplied, and the in-process path that runs inside `explorer.exe` — the classic
-    /// context menu's preview tile, via `decode_menu_preview` -> `decode_cheap` -> `decode_any` —
+    /// context menu's preview tile, via `decode_menu_preview` -> `decode_cheap` -> `decode_any_with_wic_target` —
     /// passes `None`, so it keeps the strict [`MAX_PIXELS`]/[`MAX_DIM`] guard and refuses these
     /// files at the header. That is the property that makes 4 s acceptable at all, and it is
     /// pinned by `tests::the_in_process_menu_path_never_gets_the_widened_ceiling` rather than
@@ -306,13 +306,6 @@ enum RawPreviewOrder {
     AfterExternal,
 }
 
-/// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA,
-/// except HEIC auxiliary-alpha files may prefer ImageMagick before WIC (see below).
-/// Stops at the first tier that decodes. No resize, no orientation — raw pixels.
-fn decode_any(bytes: &[u8], raw_preview: RawPreviewOrder, external: bool) -> Result<DynamicImage> {
-    decode_any_with_wic_target(bytes, raw_preview, external, None)
-}
-
 /// Apply the WIC decode's AVIF high-bit-depth curve fix when [`route_isobmff_wic_quirks`] says
 /// it's needed, and log when we're falling back to the codec we deliberately tried to route
 /// around (`magick_attempted`).
@@ -415,8 +408,11 @@ fn last_resort_tiers(
     Err(last_err)
 }
 
-/// [`decode_any`] with an optional target edge for the WIC tier only. This is kept
-/// private to thumbnail decoding so all full-fidelity paths retain their raw-pixel contract.
+/// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA,
+/// except HEIC auxiliary-alpha files may prefer ImageMagick before WIC (see below).
+/// Stops at the first tier that decodes. No resize, no orientation — raw pixels.
+/// `wic_target` is a longest-edge hint for the WIC tier only (a scaling codec decodes
+/// straight to it); every full-fidelity caller passes `None`.
 fn decode_any_with_wic_target(
     bytes: &[u8],
     raw_preview: RawPreviewOrder,
@@ -584,18 +580,22 @@ enum ImageTierOutcome {
 /// the HDR-float tone-map. See [`decode_any_with_wic_target`]'s callsite comment for
 /// why a reduced IFD0 is stashed rather than answered from immediately.
 fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutcome {
-    match decode_with_image(bytes) {
+    match decode_with_image_alloc_raw(bytes, MAX_ALLOC) {
         // The float exclusion is not fussiness: a 32-bit-float TIFF has to go through the
         // tone map below to become 8-bit sRGB at all, and stashing one would hand a caller
         // linear floats where it expects pixels. No camera-RAW preview IFD is float, so this
         // costs the fix nothing and closes the one shape that would break.
-        Ok(img)
+        Ok((img, icc))
             if crate::streamsrc::tiff_ifd0_is_reduced(bytes)
                 && !matches!(
                     img,
                     DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
                 ) =>
         {
+            // Color-manage immediately (not after a reduce) — `reduced_ifd0_serves` below
+            // reads the pixel content (`luma_sd`), so it must see the same colour-managed
+            // pixels a served result would actually return.
+            let img = apply_icc_to_srgb(img, icc);
             // Big enough for this tile AND not a blank placeholder: answer from it now and
             // skip the real decoders. This is the difference between a Hasselblad thumbnail
             // costing 1.3 seconds and costing nothing. See `reduced_ifd0_serves` for why the
@@ -611,7 +611,7 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
             );
             ImageTierOutcome::ReducedIfd0(img)
         }
-        Ok(img) => {
+        Ok((img, icc)) => {
             // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
             // be saved as PNG/JPEG or turned into an 8-bit DIB directly. Tone-map
             // it to 8-bit sRGB ourselves (native Rust) - no ImageMagick subprocess,
@@ -632,9 +632,25 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
                     Some(cx) => pre_reduce(img, cx),
                     None => img,
                 };
+                // A no-op for float variants (apply_icc_to_srgb's match falls through to
+                // `other => other` for them), kept for symmetry with the paths above.
+                let img = apply_icc_to_srgb(img, icc);
                 return ImageTierOutcome::Decoded(tone_map_float(&img));
             }
-            ImageTierOutcome::Decoded(img)
+            // The ordinary successful decode: for a thumbnail request, reduce FIRST and
+            // colour-manage the small result, instead of running the CMS transform over
+            // every source pixel only to immediately throw most of them away. For a
+            // non-sRGB profile that averages gamut-encoded values before the transform: a
+            // deviation of the same order as the gamma-space box reduce every thumbnail
+            // already accepts, visible at most as a slight shift on saturated edges, and the
+            // accepted price of not colour-managing a 50-megapixel source for a 256 px tile.
+            // Full-fidelity callers (`wic_thumbnail_cx == None`) are unaffected — no
+            // reduction happens, and the transform runs on every pixel.
+            let img = match wic_thumbnail_cx {
+                Some(cx) => pre_reduce(img, cx),
+                None => img,
+            };
+            ImageTierOutcome::Decoded(apply_icc_to_srgb(img, icc))
         }
         Err(e) => {
             crate::safety::log_debug(&format!("decode tier `image` failed: {e}"));
@@ -643,10 +659,39 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
     }
 }
 
+/// Cheap magic-byte gate for [`try_raw_preview_tier`]: does `bytes` at least start like a
+/// TIFF-based RAW container (classic or BigTIFF), or one of the handful of non-TIFF RAW
+/// signatures? Every HEIC/AVIF/JXR/WebP/etc. that reaches [`decode_any_with_wic_target`]
+/// used to pay an O(file) embedded-JPEG scan here for a preview those containers never
+/// carry — this is a byte-count check, not a decode, so it costs nothing to run first.
+/// Deliberately looser than `streamsrc::rawsniff::looks_like_raw_container` (no extension
+/// or IFD-marker refinement): a false positive here only means the real scan below still
+/// runs, same as before, while a false negative would regress a RAW that decoded fine
+/// yesterday — so this stays a strict superset of "might be RAW", not a precise classifier.
+fn looks_raw_container(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"II\x2A\0")
+        || bytes.starts_with(b"MM\0\x2A")
+        || bytes.starts_with(b"II\x2B\0")
+        || bytes.starts_with(b"MM\0\x2B")
+        || bytes.starts_with(b"FUJIFILMCCD-RAW")
+        || bytes.starts_with(b"FFF\0")
+        || bytes.starts_with(b"FOVb")
+        || bytes.starts_with(b"\0MRM")
+        || bytes.starts_with(b"IIRO")
+        || bytes.starts_with(b"MMOR")
+        || bytes.starts_with(b"IIU\0")
+        || (bytes.len() >= 12
+            && &bytes[4..8] == b"ftyp"
+            && (&bytes[8..12] == b"crx " || &bytes[8..12] == b"cr3 "))
+}
+
 /// Camera-RAW fast path: a RAW file embeds a JPEG the camera already rendered, ~10–30×
 /// faster to decode than demosaicing. Shared by both the before-external and
 /// after-external call sites in [`decode_any_with_wic_target`].
 fn try_raw_preview_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    if !looks_raw_container(bytes) {
+        return None;
+    }
     match decode_raw_preview(bytes, wic_thumbnail_cx) {
         Ok(img) => Some(img),
         Err(e) => {
@@ -871,7 +916,7 @@ use magick::{decode_psd_composite, decode_via_magick_capped};
 pub use magick::{encode_via_magick, magick_available, magick_output_supported};
 mod mesh;
 mod readers;
-mod svg;
+pub(crate) mod svg;
 mod thumb;
 mod tiers;
 mod wic;
@@ -1299,7 +1344,7 @@ pub fn decode_preview_capped(bytes: &[u8], max_edge: u32) -> Result<DynamicImage
 /// (the menu/cover paths, which just fall back to the ORIGINAL bytes) ignore it.
 fn decode_svg_if_svg(bytes: &[u8]) -> (Option<DynamicImage>, Option<Vec<u8>>) {
     if bytes.starts_with(&[0x1f, 0x8b]) {
-        let Some(inner) = gunzip_bounded(bytes) else {
+        let Some(inner) = svg::gunzip_bounded(bytes, svg::GUNZIP_MAX) else {
             return (None, None);
         };
         // A false "looks SVG-ish" match on HTML/XML, or a gzip that isn't SVG at all
@@ -1315,6 +1360,16 @@ fn decode_svg_if_svg(bytes: &[u8]) -> (Option<DynamicImage>, Option<Vec<u8>>) {
     }
 }
 
+/// Target edge passed down as `wic_thumbnail_cx` for [`decode_menu_preview`]'s in-process
+/// path. The classic menu tile itself renders at most 220x88
+/// (`contextmenu.rs`'s `PREVIEW_WIDE`/`PREVIEW_BOX`); this is a little above that rather
+/// than an exact mirror of those private constants, so it stays a safe upper bound even if
+/// the tile size changes there. Passing a real target (instead of `None`) is what lets the
+/// DDS tier's existing mip selection and block-average reduction engage here — without it,
+/// a mipless full-resolution BC1 texture decodes at its full size on explorer.exe's own UI
+/// thread before this function ever gets to shrink it.
+const MENU_PREVIEW_TARGET_EDGE: u32 = 256;
+
 /// CHEAP, in-process-only preview decode for the CLASSIC CONTEXT MENU, whose
 /// owner-drawn thumbnail is built on explorer.exe's OWN UI thread (the classic
 /// `IContextMenu` loads IN-PROCESS, unlike the isolated thumbnail/preview hosts). Uses
@@ -1326,34 +1381,41 @@ fn decode_svg_if_svg(bytes: &[u8]) -> (Option<DynamicImage>, Option<Vec<u8>>) {
 /// name + size) instead of hanging explorer. Container covers are themselves cheap (a
 /// baked JPEG/PNG slice), so epub/cbz/psd/… still show a thumbnail here.
 pub fn decode_menu_preview(bytes: &[u8]) -> Result<DynamicImage> {
-    // SVG / SVGZ is the ONE otherwise-"heavy" tier that's cheap and safe enough to run
-    // in the in-explorer menu (unlike video / PDF / ImageMagick, which stay excluded):
-    // resvg is pure-Rust and in-process (no subprocess to freeze the shell), fast for the
-    // typical icon/logo/illustration SVG, and bounded by [`SVG_TIMEOUT`] — and the caller's
-    // 125 ms menu budget ([`contextmenu::MENU_PREVIEW_BUDGET`], on a detached worker) caps the
-    // user-visible wait regardless, degrading a pathological SVG to a caption-only tile.
-    // resvg is already the SVG tier for the (isolated) thumbnail + preview handlers, so this
-    // adds no dependency and no new decode code — it just stops the menu skipping it.
-    // A gzip that isn't SVG (e.g. `.emz`) falls through to the container/cheap path
-    // unchanged — no regression versus today's caption-only tile for those.
-    if let (Some(img), _) = decode_svg_if_svg(bytes) {
-        return Ok(img);
-    }
+    // SVG / SVGZ is excluded from this in-process path, the same as video / PDF /
+    // ImageMagick: resvg's own worker thread is only killed cooperatively (it is
+    // abandoned, not terminated, once `SVG_TIMEOUT` elapses — see `svg.rs`'s
+    // `decode_svg`), and this call path runs on explorer.exe's own UI thread, which
+    // is not a disposable host. A pathological or hostile SVG would otherwise leave
+    // a permanently CPU-burning thread pinned inside the user's own explorer.exe on
+    // every right-click. SVG still decodes for the isolated thumbnail/preview hosts
+    // and the CLI via `decode_cover`/`decode_svg` — only this in-process menu path
+    // skips it, degrading to a caption-only tile like the other excluded tiers.
     if let Some(cover) = crate::container::extract_cover(bytes) {
         return match cover {
-            crate::container::CoverOut::Bytes(b) => decode_cheap(&b),
+            crate::container::CoverOut::Bytes(b) => {
+                decode_cheap(&b, Some(MENU_PREVIEW_TARGET_EDGE))
+            }
             crate::container::CoverOut::Image(img) => Ok(img),
         };
     }
-    decode_cheap(bytes)
+    decode_cheap(bytes, Some(MENU_PREVIEW_TARGET_EDGE))
 }
 
 /// The fast subset of the image tiers (jxl-signature → `image` crate → WIC → TGA →
 /// embedded-JPEG), EXIF-oriented like the full path but with NO external/subprocess
-/// tier (`external = false`) and no SVG/PDF/video. Used by [`decode_menu_preview`].
-fn decode_cheap(bytes: &[u8]) -> Result<DynamicImage> {
+/// tier (`external = false`) and no SVG/PDF/video. Used by [`decode_menu_preview`]
+/// (which passes a small target edge) and [`decode_cover`] (which passes
+/// `None`: its callers in `thumb.rs` already `fit_to_box` the full-resolution result
+/// into a contact sheet cell, so shrinking it here first would be an unrelated change
+/// to what those call sites currently do).
+fn decode_cheap(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Result<DynamicImage> {
     Ok(apply_exif_orientation(
-        decode_any(bytes, RawPreviewOrder::BeforeExternal, false)?,
+        decode_any_with_wic_target(
+            bytes,
+            RawPreviewOrder::BeforeExternal,
+            false,
+            wic_thumbnail_cx,
+        )?,
         bytes,
     ))
 }
@@ -1372,7 +1434,7 @@ fn decode_cover(bytes: &[u8]) -> Result<DynamicImage> {
     if let (Some(img), _) = decode_svg_if_svg(bytes) {
         return Ok(img);
     }
-    decode_cheap(bytes)
+    decode_cheap(bytes, None)
 }
 
 /// Longest edge to rasterize a PDF's first page at, for a request whose target is `cx`.
@@ -1384,7 +1446,12 @@ fn decode_cover(bytes: &[u8]) -> Result<DynamicImage> {
 pub(crate) fn pdf_raster_edge(wic_thumbnail_cx: Option<u32>) -> u32 {
     // Floor at the historical 1024: a big source downscales cheaply and stays crisp, and this
     // guarantees the change can never render a PDF at LOWER quality than it used to.
-    wic_thumbnail_cx.unwrap_or(1024).max(1024)
+    // ...and a ceiling at the crate-wide raster cap: an MCP/CLI caller can pass any `size`,
+    // and `pdf::scaled_page_dims` clamps the page to exactly this number before asking WinRT
+    // to rasterize it.
+    wic_thumbnail_cx
+        .unwrap_or(1024)
+        .clamp(1024, limits::MAX_DIM)
 }
 
 /// JPEG 2000 with a size cap: our own reduced-resolution decoder, which decodes ONLY
@@ -1453,7 +1520,14 @@ fn try_video_tier(
     // OPTION (`VideoCoverArt`, off by default): show the embedded poster instead of a
     // frame. Checked before the decode tiers so it costs nothing when a cover exists,
     // and falls straight through when one doesn't. Mirrors the provider in `streamsrc`.
+    //
+    // `tried_cover_art` remembers whether this pass ran (G123, mirroring streamsrc's
+    // `tried_cover_art`): if it did and found nothing, the fallback rescue below (after
+    // every frame tier also fails) must not call `vcodec::cover_art` a second time — the
+    // bytes haven't changed, so it would just re-scan the same moov to the same null answer.
+    let mut tried_cover_art = false;
     if crate::settings::prefer_cover_art() {
+        tried_cover_art = true;
         if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
             return Some(decode_image_with_raw_order(
                 &cover,
@@ -1469,12 +1543,32 @@ fn try_video_tier(
     // The mark is the user's `VideoOffset` (30 % unless changed), read ONCE so every tier
     // below seeks to the same place.
     let at = crate::settings::video_offset_frac();
-    let frame = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), at)
-        .or_else(|| crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), at))
+    // The MP4/MKV tiers hand back the display rotation they already parsed out of the same
+    // moov/Tracks they read for the mini-clip, so a tier that DID parse the
+    // container never needs the standalone `display_rotation` probe below to re-read it.
+    let mp4_clip = crate::mp4::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes), at);
+    let mkv_clip = if mp4_clip.is_none() {
+        crate::mkv::keyframe_mini_mkv(&mut std::io::Cursor::new(bytes), at)
+    } else {
+        None
+    };
+    let container_ran = mp4_clip.is_some() || mkv_clip.is_some();
+    let container_rotation = mp4_clip
+        .as_ref()
+        .and_then(|(_, r)| *r)
+        .or_else(|| mkv_clip.as_ref().and_then(|(_, r)| *r));
+    let mini = mp4_clip
+        .map(|(b, _)| b)
+        .or_else(|| mkv_clip.map(|(b, _)| b));
+
+    let frame = mini
+        .and_then(crate::video::frame_from_owned_bytes)
         // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
         // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
-        .or_else(|| crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes)))
-        .and_then(crate::video::frame_from_owned_bytes)
+        .or_else(|| {
+            crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes))
+                .and_then(crate::video::frame_from_owned_bytes)
+        })
         // FLV, VP6/Sorenson (issue #26): NO Windows decoder exists for these, so the
         // frame is decoded out of process by the sibling st2k.exe (see `flv::flash_frame`
         // for why the pure-Rust Flash decoders must never run in THIS process). Self-gated
@@ -1497,8 +1591,15 @@ fn try_video_tier(
         // re-encode) must thumbnail the way it plays on every surface, or `st2k` and Explorer
         // disagree about one file. See `video::apply_display_rotation` for why this cannot
         // double-rotate whichever tier above produced the frame.
-        let rotation = crate::mp4::display_rotation(&mut std::io::Cursor::new(bytes))
-            .or_else(|| crate::mkv::display_rotation(&mut std::io::Cursor::new(bytes)));
+        //
+        // Only fall back to the standalone probe when NEITHER container tier parsed the
+        // file — a tier that did, already answered this exact question.
+        let rotation = if container_ran {
+            container_rotation
+        } else {
+            crate::mp4::display_rotation(&mut std::io::Cursor::new(bytes))
+                .or_else(|| crate::mkv::display_rotation(&mut std::io::Cursor::new(bytes)))
+        };
         return Some(Ok(match rotation {
             Some(deg) => {
                 crate::safety::log_debug(&format!("video: display matrix asks for {deg} deg"));
@@ -1511,13 +1612,16 @@ fn try_video_tier(
     // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library
     // rips and media managers routinely write) is still a faithful picture of the file,
     // and unlike a frame it needs no codec at all. Mirrors the provider's fallback in
-    // `streamsrc`, so the CLI, the preview and Explorer all agree.
-    if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
-        return Some(decode_image_with_raw_order(
-            &cover,
-            raw_preview,
-            wic_thumbnail_cx,
-        ));
+    // `streamsrc`, so the CLI, the preview and Explorer all agree. Skipped when the
+    // prefer-cover-art pass above already tried and found nothing.
+    if !tried_cover_art {
+        if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
+            return Some(decode_image_with_raw_order(
+                &cover,
+                raw_preview,
+                wic_thumbnail_cx,
+            ));
+        }
     }
     None
 }
@@ -1676,29 +1780,24 @@ fn decode_with_image(bytes: &[u8]) -> Result<DynamicImage> {
     decode_with_image_alloc(bytes, MAX_ALLOC)
 }
 
-/// Whether a `(w, h)` frame at `bytes_per_pixel` would allocate more than `max_alloc` —
-/// pulled out of [`decode_with_image_alloc`] so the header-only bomb check is unit-testable
-/// without decoding gigabytes of real pixel data (see the call site for why the check is
-/// needed at all: not every decoder's `set_limits` enforces this itself).
-fn exceeds_alloc_budget(w: u32, h: u32, bytes_per_pixel: u64, max_alloc: u64) -> bool {
-    u64::from(w)
-        .saturating_mul(u64::from(h))
-        .saturating_mul(bytes_per_pixel)
-        > max_alloc
-}
-
-/// As [`decode_with_image`] but with an explicit allocation budget. Dimensions
-/// are still bounded by [`limits::MAX_DIM`]; only the alloc ceiling varies (the
-/// PSD-composite re-decode of OUR own bounded PNG passes a larger one).
-fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage> {
+/// As [`decode_with_image_alloc`] but with the embedded ICC profile left UN-applied,
+/// returned alongside the decoded image instead. Lets a thumbnail caller reduce the
+/// image first and run the (otherwise identical) colour transform on the small result
+/// rather than the full-resolution one — see [`try_image_tier`].
+fn decode_with_image_alloc_raw(
+    bytes: &[u8],
+    max_alloc: u64,
+) -> Result<(DynamicImage, Option<Vec<u8>>)> {
     use image::ImageDecoder;
     use std::io::Cursor;
     // CMYK JPEGs: the image crate converts CMYK→RGB naively (ignoring the embedded CMYK
     // ICC) → wrong colors. Intercept + color-manage the raw CMYK ourselves; on any miss
     // fall through to the image crate's existing conversion (never worse than today).
+    // This path is already fully colour-managed (CMYK has no separate reduce-first
+    // optimization), so it reports no ICC left to apply.
     if is_cmyk_jpeg(bytes) {
         if let Some(img) = decode_cmyk_jpeg(bytes) {
-            return Ok(img);
+            return Ok((img, None));
         }
     }
     let reader = image::ImageReader::new(Cursor::new(bytes))
@@ -1730,6 +1829,25 @@ fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage>
     }
     let icc = decoder.icc_profile().ok().flatten();
     let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
+    Ok((img, icc))
+}
+
+/// Whether a `(w, h)` frame at `bytes_per_pixel` would allocate more than `max_alloc` —
+/// pulled out of [`decode_with_image_alloc`] so the header-only bomb check is unit-testable
+/// without decoding gigabytes of real pixel data (see the call site for why the check is
+/// needed at all: not every decoder's `set_limits` enforces this itself).
+fn exceeds_alloc_budget(w: u32, h: u32, bytes_per_pixel: u64, max_alloc: u64) -> bool {
+    u64::from(w)
+        .saturating_mul(u64::from(h))
+        .saturating_mul(bytes_per_pixel)
+        > max_alloc
+}
+
+/// As [`decode_with_image`] but with an explicit allocation budget. Dimensions
+/// are still bounded by [`limits::MAX_DIM`]; only the alloc ceiling varies (the
+/// PSD-composite re-decode of OUR own bounded PNG passes a larger one).
+fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage> {
+    let (img, icc) = decode_with_image_alloc_raw(bytes, max_alloc)?;
     Ok(apply_icc_to_srgb(img, icc))
 }
 
@@ -1758,6 +1876,60 @@ mod hub_tests {
         // Saturating arithmetic must not round the boundary away in either direction.
         assert!(!exceeds_alloc_budget(1, 1, 1, 1));
         assert!(exceeds_alloc_budget(1, 1, 2, 1));
+    }
+
+    /// `try_raw_preview_tier`'s gate must accept every RAW shape it used to scan
+    /// unconditionally, and decline the container formats the fix exists to stop
+    /// scanning for (an O(file) embedded-JPEG walk those never carry a preview in).
+    #[test]
+    fn looks_raw_container_accepts_raw_signatures_and_declines_isobmff() {
+        assert!(looks_raw_container(
+            b"II\x2A\0rest of a little-endian TIFF/CR2/NEF/ARW"
+        ));
+        assert!(looks_raw_container(
+            b"MM\0\x2Arest of a big-endian TIFF/DNG"
+        ));
+        assert!(looks_raw_container(b"II\x2B\0rest of a BigTIFF"));
+        assert!(looks_raw_container(b"MM\0\x2Brest of a big-endian BigTIFF"));
+        assert!(looks_raw_container(b"FUJIFILMCCD-RAW rest of a Fuji RAF"));
+        assert!(looks_raw_container(b"FFF\0rest of a Hasselblad 3FR"));
+        assert!(looks_raw_container(b"IIU\0rest of a Panasonic RW2"));
+        assert!(looks_raw_container(
+            &[b"    ftypcrx ".as_slice(), b"rest of a Canon CR3"].concat()
+        ));
+        // HEIC/AVIF share the same `ftyp` box shape but a different brand — must not match.
+        assert!(!looks_raw_container(
+            &[b"    ftypheic".as_slice(), b"rest of an HEIC"].concat()
+        ));
+        assert!(!looks_raw_container(b"\x89PNG\r\n\x1a\nrest of a PNG"));
+        assert!(!looks_raw_container(b""));
+        assert!(!looks_raw_container(b"short"));
+    }
+
+    /// `decode_menu_preview` must hand a real target edge down through
+    /// `decode_cheap` (`MENU_PREVIEW_TARGET_EDGE`, not `None`) — that is what lets the
+    /// DDS tier's mip selection engage for a mipless texture, and it is directly
+    /// observable here for an ordinary large image via `try_image_tier`'s pre-reduce:
+    /// with `None` the source would come back at full resolution.
+    #[test]
+    fn decode_menu_preview_passes_a_target_edge_so_a_large_image_is_pre_reduced() {
+        let big = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(1200, 1200, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        }));
+        let mut bytes = Vec::new();
+        big.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode synthetic PNG");
+        let out = decode_menu_preview(&bytes).expect("must still decode");
+        assert!(
+            out.width() < 1200 && out.height() < 1200,
+            "a large source must be pre-reduced toward MENU_PREVIEW_TARGET_EDGE, not \
+             decoded at full resolution: got {}x{}",
+            out.width(),
+            out.height()
+        );
     }
 
     const TEST_SVG: &[u8] =

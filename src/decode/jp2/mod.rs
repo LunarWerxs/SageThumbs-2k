@@ -110,7 +110,7 @@ fn validate_reduced_scope(
         return Err(Jp2Error::Unsupported("palette with multiple components"));
     }
     let ncomp = c.siz.components.len();
-    if ncomp == 0 || ncomp > 4 {
+    if ncomp == 0 || ncomp > codestream::MAX_COMPONENTS as usize {
         return Err(Jp2Error::Unsupported("component count"));
     }
     // Subsampled components (4:2:0 chroma) would need per-component grids and an upsample;
@@ -118,10 +118,38 @@ fn validate_reduced_scope(
     if c.siz.components.iter().any(|k| k.dx != 1 || k.dy != 1) {
         return Err(Jp2Error::Unsupported("component subsampling"));
     }
+    // The DC level shift and the 8-bit scale at the end of `decode_reduced` are taken
+    // from component 0 and applied to every plane, so the components that reach the
+    // output must share one depth and signedness. Components past the ones the output
+    // reads (alpha) are never decoded and may differ.
+    let used = used_components(ncomp);
+    if let Some(c0) = c.siz.components.first() {
+        let mixed = c
+            .siz
+            .components
+            .iter()
+            .take(used)
+            .any(|k| k.prec != c0.prec || k.signed != c0.signed);
+        if mixed {
+            return Err(Jp2Error::Unsupported("mixed component precision"));
+        }
+    }
     if !matches!(c.cod.progression, 0..=2) {
         return Err(Jp2Error::Unsupported("progression order"));
     }
     Ok(ncomp)
+}
+
+/// How many leading components the output reads: `color_planes_to_rgb` takes the first
+/// three planes of a 3- or 4-component image and the first plane otherwise. Any component
+/// past that (alpha) is walked for its packet lengths only, never tier-1 decoded, never
+/// wavelet-reconstructed, and gets no pixel storage.
+fn used_components(ncomp: usize) -> usize {
+    if ncomp >= 3 {
+        3
+    } else {
+        1
+    }
 }
 
 /// Choose how many wavelet levels to DROP: the most that still leaves the
@@ -256,10 +284,11 @@ pub fn decode_reduced(bytes: &[u8], target_edge: u32) -> Result<(Vec<u8>, u32, u
 
     let out_w = full_w.div_ceil(1 << drop).max(1);
     let out_h = full_h.div_ceil(1 << drop).max(1);
-    check_reduced_alloc_budget(out_w, out_h, ncomp)?;
+    let nplanes = used_components(ncomp);
+    check_reduced_alloc_budget(out_w, out_h, nplanes)?;
 
-    // One plane per component at the reduced size.
-    let mut planes: Vec<Vec<f32>> = (0..ncomp)
+    // One plane per component the output reads, at the reduced size.
+    let mut planes: Vec<Vec<f32>> = (0..nplanes)
         .map(|_| vec![0.0f32; (out_w as usize) * (out_h as usize)])
         .collect();
 
@@ -394,9 +423,12 @@ fn build_res(
 /// resolutions the caller actually needs (r <= keep) get pixel storage;
 /// anything above is walked for its packet LENGTHS only (the `r as u32 >
 /// max_res` skip in `accumulate_packets`) and its band data is never read.
+/// Components at index `decode_comps` and above (alpha) get no storage at any
+/// resolution: the output never reads them (see `used_components`).
 #[allow(clippy::too_many_arguments)]
 fn build_component_resolutions(
     ncomp: usize,
+    decode_comps: usize,
     levels: u32,
     keep: u32,
     tx0: u32,
@@ -407,11 +439,11 @@ fn build_component_resolutions(
     let max_alloc_floats = crate::decode::limits::MAX_ALLOC / 4;
     let mut alloc_floats: u64 = 0;
     let mut comps: Vec<Vec<Res>> = Vec::with_capacity(ncomp);
-    for _ in 0..ncomp {
+    for ci in 0..ncomp {
         let mut rs = Vec::with_capacity(levels as usize + 1);
         for r in 0..=levels {
             let nb = levels - r;
-            let materialize = r <= keep;
+            let materialize = r <= keep && ci < decode_comps;
             rs.push(build_res(
                 r,
                 nb,
@@ -447,6 +479,103 @@ fn precinct_counts(c: &codestream::Codestream, levels: u32, comp0: &[Res]) -> Ve
         nprec.push(v);
     }
     nprec
+}
+
+/// Precinct exponents as they apply WITHIN a band at resolution `r`: the COD
+/// value at r == 0, one less above it because the bands sit at half the
+/// resolution grid.
+fn band_precinct_exps(c: &codestream::Codestream, r: usize) -> (u8, u8) {
+    let (ppx, ppy) = c.cod.precinct(r);
+    if r == 0 {
+        (ppx, ppy)
+    } else {
+        (ppx.max(1) - 1, ppy.max(1) - 1)
+    }
+}
+
+/// Code-block dimensions at resolution `r`: the COD code-block size clipped to
+/// the in-band precinct, so a block never straddles a precinct boundary.
+fn code_block_dims(c: &codestream::Codestream, r: usize) -> (usize, usize) {
+    let (bppx, bppy) = band_precinct_exps(c, r);
+    (
+        (c.cod.cblk_w as usize).min(1usize << bppx),
+        (c.cod.cblk_h as usize).min(1usize << bppy),
+    )
+}
+
+/// Per-tile ceiling on the number of packets a walk visits. Each packet costs at
+/// least one byte of tile body, so this only matters for bodies larger than it.
+const MAX_PACKETS_PER_TILE: u64 = 1 << 24;
+
+/// Heap bytes charged per precinct-band (its struct, two tag-tree headers and
+/// the block Vec header) and per code-block (its `BlockState` plus its two
+/// tag-tree leaves and their parents) by `check_packet_walk_budget`.
+const PREC_BAND_COST: u64 = 256;
+const BLOCK_COST: u64 = 32;
+
+/// Refuse a tile whose packet walk cannot complete or whose precinct
+/// bookkeeping would not fit, from header products alone and before any of it
+/// is allocated. `layers`, the precinct exponents and the code-block size all
+/// come off untrusted markers; `MAX_PIXELS` bounds the declared area and
+/// `check_reduced_alloc_budget` bounds the output, but neither bounds
+/// layers x components x precincts (the packet count) or the code-block count.
+///
+/// Two ceilings:
+///   * packets: every packet consumes at least one body byte (its "non-empty"
+///     bit and the byte alignment after it), so a walk longer than the body is
+///     certain to fail with `Truncated` after doing all that work. Also capped
+///     at `MAX_PACKETS_PER_TILE`.
+///   * bookkeeping: one `PrecBand` per (component, resolution, precinct,
+///     band) and one `BlockState` plus tag-tree leaves per code-block. Code
+///     blocks never straddle precincts (`code_block_dims`), so a band's block
+///     count over all its precincts is at most its size divided by the block
+///     size plus one partial block per axis (the block grid is anchored at 0,
+///     not at the band origin).
+fn check_packet_walk_budget(
+    c: &codestream::Codestream,
+    ncomp: usize,
+    layers: u32,
+    walk_levels: u32,
+    nprec: &[(usize, usize)],
+    comp0: &[Res],
+    body_len: usize,
+) -> Result<(), Jp2Error> {
+    let mut packets: u64 = 0;
+    let mut prec_bands: u64 = 0;
+    let mut blocks: u64 = 0;
+    for r in 0..=walk_levels as usize {
+        let (npx, npy) = nprec.get(r).copied().unwrap_or((0, 0));
+        let np = (npx as u64).saturating_mul(npy as u64);
+        let nbands: u64 = if r == 0 { 1 } else { 3 };
+        packets = packets.saturating_add(np);
+        prec_bands = prec_bands.saturating_add(np.saturating_mul(nbands));
+        let (cbw, cbh) = code_block_dims(c, r);
+        if let Some(res) = comp0.get(r) {
+            for band in &res.bands {
+                let bx = (band.w as u64).div_ceil(cbw.max(1) as u64) + 1;
+                let by = (band.h as u64).div_ceil(cbh.max(1) as u64) + 1;
+                blocks = blocks.saturating_add(bx.saturating_mul(by));
+            }
+        }
+    }
+    let packets = packets
+        .saturating_mul(ncomp as u64)
+        .saturating_mul(layers as u64);
+    if packets > body_len as u64 || packets > MAX_PACKETS_PER_TILE {
+        return Err(Jp2Error::Unsupported("packet count"));
+    }
+    let bytes = prec_bands
+        .saturating_mul(ncomp as u64)
+        .saturating_mul(PREC_BAND_COST)
+        .saturating_add(
+            blocks
+                .saturating_mul(ncomp as u64)
+                .saturating_mul(BLOCK_COST),
+        );
+    if bytes > crate::decode::limits::MAX_ALLOC / 4 {
+        return Err(Jp2Error::Unsupported("precinct bookkeeping too large"));
+    }
+    Ok(())
 }
 
 /// Build one precinct-band's tag-tree and code-block bookkeeping: the
@@ -499,14 +628,16 @@ fn build_prec_band(
 }
 
 /// Build the per (component, resolution, precinct) tag-tree and code-block
-/// bookkeeping the packet walk needs. Within a band the precinct is
-/// half-sized for r > 0, because the bands sit at half the resolution grid;
-/// code-blocks are clipped to whichever is smaller (see `build_prec_band`).
+/// bookkeeping the packet walk needs, for resolutions 0..=`walk_levels` only
+/// (the resolutions the walk visits; see `decode_tile`). Within a band the
+/// precinct is half-sized for r > 0, because the bands sit at half the
+/// resolution grid; code-blocks are clipped to whichever is smaller (see
+/// `build_prec_band`). Sized by `check_packet_walk_budget` before it is called.
 #[allow(clippy::too_many_arguments)]
 fn build_precinct_states(
     c: &codestream::Codestream,
     ncomp: usize,
-    levels: u32,
+    walk_levels: u32,
     tx0: u32,
     ty0: u32,
     nprec: &[(usize, usize)],
@@ -514,19 +645,11 @@ fn build_precinct_states(
 ) -> Vec<Vec<Vec<Vec<PrecBand>>>> {
     let mut states: Vec<Vec<Vec<Vec<PrecBand>>>> = Vec::with_capacity(ncomp);
     for ci in 0..ncomp {
-        let mut per_res = Vec::with_capacity(levels as usize + 1);
-        for r in 0..=levels as usize {
-            let (ppx, ppy) = c.cod.precinct(r);
-            // Within a band the precinct is half-sized for r > 0, because the bands sit at
-            // half the resolution grid. Code-blocks are clipped to whichever is smaller.
-            let (bppx, bppy) = if r == 0 {
-                (ppx, ppy)
-            } else {
-                (ppx.max(1) - 1, ppy.max(1) - 1)
-            };
-            let cbw = (c.cod.cblk_w as usize).min(1usize << bppx);
-            let cbh = (c.cod.cblk_h as usize).min(1usize << bppy);
-            let (npx, npy) = nprec[r];
+        let mut per_res = Vec::with_capacity(walk_levels as usize + 1);
+        for r in 0..=walk_levels as usize {
+            let (bppx, bppy) = band_precinct_exps(c, r);
+            let (cbw, cbh) = code_block_dims(c, r);
+            let (npx, npy) = nprec.get(r).copied().unwrap_or((0, 0));
             let nbands = if r == 0 { 1 } else { 3 };
             let mut per_prec = Vec::with_capacity(npx * npy);
             for py in 0..npy {
@@ -547,84 +670,60 @@ fn build_precinct_states(
     states
 }
 
-/// LRCP order: layer outermost, then resolution, component, position.
-fn order_lrcp(
-    layers: u32,
-    levels: u32,
-    ncomp: usize,
-    nprec: &[(usize, usize)],
-) -> Vec<(u32, usize, usize, usize)> {
-    let mut order = Vec::new();
-    for l in 0..layers {
-        for r in 0..=levels as usize {
-            for ci in 0..ncomp {
-                for pi in 0..(nprec[r].0 * nprec[r].1) {
-                    order.push((l, r, ci, pi));
-                }
-            }
-        }
-    }
-    order
-}
-
-/// RLCP order: resolution outermost, then layer, component, position.
-fn order_rlcp(
-    layers: u32,
-    levels: u32,
-    ncomp: usize,
-    nprec: &[(usize, usize)],
-) -> Vec<(u32, usize, usize, usize)> {
-    let mut order = Vec::new();
-    for r in 0..=levels as usize {
-        for l in 0..layers {
-            for ci in 0..ncomp {
-                for pi in 0..(nprec[r].0 * nprec[r].1) {
-                    order.push((l, r, ci, pi));
-                }
-            }
-        }
-    }
-    order
-}
-
-/// RPCL order: resolution outermost, then position, component, layer.
-fn order_rpcl(
-    layers: u32,
-    levels: u32,
-    ncomp: usize,
-    nprec: &[(usize, usize)],
-) -> Vec<(u32, usize, usize, usize)> {
-    let mut order = Vec::new();
-    for r in 0..=levels as usize {
-        for pi in 0..(nprec[r].0 * nprec[r].1) {
-            for ci in 0..ncomp {
-                for l in 0..layers {
-                    order.push((l, r, ci, pi));
-                }
-            }
-        }
-    }
-    order
-}
-
-/// Build the (layer, resolution, component, precinct-index) iteration order
-/// for the packet walk, per JPEG2000's LRCP/RLCP/RPCL-style progression
-/// orders. Position-based orders iterate precincts in raster order; with the
-/// uniform 1:1 components this path is limited to, that reduces to the
-/// precinct index. Each order's own nested walk lives in its own `order_*`
-/// helper above; this is just the progression-code dispatch.
-fn progression_order(
+/// Visit every (layer, resolution, component, precinct-index) packet address of
+/// one tile in progression order, for resolutions 0..=`walk_levels`. LRCP nests
+/// layer outermost, then resolution, component, position; RLCP resolution, then
+/// layer, component, position; RPCL resolution, then position, component,
+/// layer. Position-based orders iterate precincts in raster order; with the
+/// uniform 1:1 components this path is limited to, that reduces to the precinct
+/// index. Addresses are generated as the walk goes, never stored: their count
+/// is a product of header fields (see `check_packet_walk_budget`).
+fn for_each_packet(
     progression: u8,
     layers: u32,
-    levels: u32,
+    walk_levels: u32,
     ncomp: usize,
     nprec: &[(usize, usize)],
-) -> Vec<(u32, usize, usize, usize)> {
+    visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
+) -> Result<(), Jp2Error> {
+    let count = |r: usize| nprec.get(r).map_or(0, |&(x, y)| x * y);
+    let res = 0..=walk_levels as usize;
     match progression {
-        0 => order_lrcp(layers, levels, ncomp, nprec),
-        1 => order_rlcp(layers, levels, ncomp, nprec),
-        _ => order_rpcl(layers, levels, ncomp, nprec),
+        0 => {
+            for l in 0..layers {
+                for r in res.clone() {
+                    for ci in 0..ncomp {
+                        for pi in 0..count(r) {
+                            visit(l, r, ci, pi)?;
+                        }
+                    }
+                }
+            }
+        }
+        1 => {
+            for r in res {
+                for l in 0..layers {
+                    for ci in 0..ncomp {
+                        for pi in 0..count(r) {
+                            visit(l, r, ci, pi)?;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            for r in res {
+                for pi in 0..count(r) {
+                    for ci in 0..ncomp {
+                        for l in 0..layers {
+                            visit(l, r, ci, pi)?;
+                        }
+                    }
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 /// A code-block's segments accumulated across every layer that included it.
@@ -640,67 +739,115 @@ struct BlockAcc {
 /// within the precinct's band).
 type BlockAccMap = std::collections::HashMap<(usize, usize, usize, usize, usize), BlockAcc>;
 
-/// Walk packets in the given order, concatenating each code-block's segments
+/// Parse ONE packet's header and account its code-block segments. Segments of
+/// resolutions above `max_res` and of components at or past `decode_comps`
+/// are walked for their length only and never copied.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_one_packet(
+    br: &mut BitReader,
+    body: &[u8],
+    c: &codestream::Codestream,
+    states: &mut [Vec<Vec<Vec<PrecBand>>>],
+    acc: &mut BlockAccMap,
+    max_res: u32,
+    decode_comps: usize,
+    layer: u32,
+    r: usize,
+    ci: usize,
+    pi: usize,
+) -> Result<(), Jp2Error> {
+    if c.cod.sop {
+        let q = br.pos();
+        if body.get(q..q + 2) == Some(&[0xFF, 0x91]) {
+            br.seek(q + 6);
+        }
+    }
+    // ONE header parse per packet, covering all its bands — including packets whose
+    // bands are all zero-area, which still own their "non-empty" bit in the stream.
+    let Some(bands) = states
+        .get_mut(ci)
+        .and_then(|per_res| per_res.get_mut(r))
+        .and_then(|per_prec| per_prec.get_mut(pi))
+    else {
+        return Ok(());
+    };
+    let contributions = packet::parse_packet(br, layer, bands)?;
+    if c.cod.eph {
+        let q = br.pos();
+        if body.get(q..q + 2) == Some(&[0xFF, 0x92]) {
+            br.seek(q + 2);
+        }
+    }
+    let mut q = br.pos();
+    for (b, cb) in contributions {
+        let start = q;
+        let end = start.checked_add(cb.len).ok_or(Jp2Error::Truncated)?;
+        if end > body.len() {
+            return Err(Jp2Error::Truncated);
+        }
+        q = end;
+        if r as u32 > max_res || ci >= decode_comps {
+            continue; // walked for its length only; this is the whole saving
+        }
+        let nbx = bands.get(b).map_or(0, |pb| pb.nbx);
+        let a = acc
+            .entry((ci, r, b, pi, cb.cblk_y * nbx + cb.cblk_x))
+            .or_insert_with(|| BlockAcc {
+                bytes: Vec::new(),
+                passes: 0,
+                zero_bitplanes: cb.zero_bitplanes,
+                cblk_x: cb.cblk_x,
+                cblk_y: cb.cblk_y,
+            });
+        a.bytes.extend_from_slice(&body[start..end]);
+        a.passes += cb.passes;
+    }
+    br.seek(q);
+    Ok(())
+}
+
+/// Walk packets in progression order, concatenating each code-block's segments
 /// across every quality layer that touches it. A code-block's data may arrive
 /// spread over MANY packets (one per quality layer); the segments are
 /// CONCATENATED and tier-1-decoded ONCE with continuous state, which is what
 /// openjpeg's chunk list does — decoding each layer's slice with fresh
 /// contexts produced structured garbage on every multi-layer file.
+#[allow(clippy::too_many_arguments)]
 fn accumulate_packets(
     br: &mut BitReader,
     body: &[u8],
-    order: &[(u32, usize, usize, usize)],
     c: &codestream::Codestream,
     states: &mut [Vec<Vec<Vec<PrecBand>>>],
+    nprec: &[(usize, usize)],
+    layers: u32,
+    walk_levels: u32,
     max_res: u32,
+    decode_comps: usize,
 ) -> Result<BlockAccMap, Jp2Error> {
     let mut acc: BlockAccMap = std::collections::HashMap::new();
-
-    for &(layer, r, ci, pi) in order {
-        if c.cod.sop {
-            let q = br.pos();
-            if body.get(q..q + 2) == Some(&[0xFF, 0x91]) {
-                br.seek(q + 6);
-            }
-        }
-        // ONE header parse per packet, covering all its bands — including packets whose
-        // bands are all zero-area, which still own their "non-empty" bit in the stream.
-        let Some(bands) = states[ci][r].get_mut(pi) else {
-            continue;
-        };
-        let contributions = packet::parse_packet(br, layer, bands)?;
-        if c.cod.eph {
-            let q = br.pos();
-            if body.get(q..q + 2) == Some(&[0xFF, 0x92]) {
-                br.seek(q + 2);
-            }
-        }
-        let mut q = br.pos();
-        for (b, cb) in contributions {
-            let start = q;
-            let end = start.checked_add(cb.len).ok_or(Jp2Error::Truncated)?;
-            if end > body.len() {
-                return Err(Jp2Error::Truncated);
-            }
-            q = end;
-            if r as u32 > max_res {
-                continue; // walked for its length only; this is the whole saving
-            }
-            let nbx = states[ci][r][pi][b].nbx;
-            let a = acc
-                .entry((ci, r, b, pi, cb.cblk_y * nbx + cb.cblk_x))
-                .or_insert_with(|| BlockAcc {
-                    bytes: Vec::new(),
-                    passes: 0,
-                    zero_bitplanes: cb.zero_bitplanes,
-                    cblk_x: cb.cblk_x,
-                    cblk_y: cb.cblk_y,
-                });
-            a.bytes.extend_from_slice(&body[start..end]);
-            a.passes += cb.passes;
-        }
-        br.seek(q);
-    }
+    let ncomp = states.len();
+    for_each_packet(
+        c.cod.progression,
+        layers,
+        walk_levels,
+        ncomp,
+        nprec,
+        &mut |layer, r, ci, pi| {
+            accumulate_one_packet(
+                br,
+                body,
+                c,
+                states,
+                &mut acc,
+                max_res,
+                decode_comps,
+                layer,
+                r,
+                ci,
+                pi,
+            )
+        },
+    )?;
     Ok(acc)
 }
 
@@ -724,14 +871,7 @@ fn decode_block_into_band(
         (_, 1) => mq::Band::Lh,
         _ => mq::Band::Hh,
     };
-    let (ppx, ppy) = c.cod.precinct(r);
-    let (bppx, bppy) = if r == 0 {
-        (ppx, ppy)
-    } else {
-        (ppx.max(1) - 1, ppy.max(1) - 1)
-    };
-    let cbw_max = (c.cod.cblk_w as usize).min(1usize << bppx);
-    let cbh_max = (c.cod.cblk_h as usize).min(1usize << bppy);
+    let (cbw_max, cbh_max) = code_block_dims(c, r);
     let pb = &states[ci][r][pi][b];
     let (gx, gy) = (pb.bx0 + a.cblk_x, pb.by0 + a.cblk_y);
     let bw = comps[ci][r].bands[b].w;
@@ -789,13 +929,14 @@ fn decode_block_into_band(
     }
 }
 
-/// Inverse DWT each component's resolution pyramid up to `keep`, then copy the
-/// tile's reconstructed samples into the shared output planes.
+/// Inverse DWT the first `nplanes` components' resolution pyramids up to
+/// `keep`, then copy the tile's reconstructed samples into the shared output
+/// planes. Components past `nplanes` (alpha) have no storage and no plane.
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_tile_planes(
     comps: &mut [Vec<Res>],
     planes: &mut [Vec<f32>],
-    ncomp: usize,
+    nplanes: usize,
     keep: u32,
     drop: u32,
     siz: &codestream::Siz,
@@ -803,7 +944,7 @@ fn reconstruct_tile_planes(
     out_w: u32,
     out_h: u32,
 ) {
-    for ci in 0..ncomp {
+    for ci in 0..nplanes {
         let mut cur = std::mem::replace(&mut comps[ci][0].bands[0], SubBand::empty(0, 0));
         for r in 1..=keep as usize {
             let res = &comps[ci][r];
@@ -865,6 +1006,7 @@ fn decode_tile(
     }
 
     let ncomp = siz.components.len();
+    let decode_comps = used_components(ncomp);
     let levels = c.cod.levels as u32;
 
     // Concatenate the tile's parts; packets may straddle a tile-part boundary.
@@ -873,7 +1015,8 @@ fn decode_tile(
         body.extend_from_slice(p);
     }
 
-    let mut comps = build_component_resolutions(ncomp, levels, keep, tx0, ty0, tx1, ty1)?;
+    let mut comps =
+        build_component_resolutions(ncomp, decode_comps, levels, keep, tx0, ty0, tx1, ty1)?;
 
     // -- Packet walk, precinct-aware --------------------------------------------
     //
@@ -898,14 +1041,36 @@ fn decode_tile(
     }
 
     let mut br = BitReader::new(&body);
-
-    let nprec = precinct_counts(c, levels, &comps[0]);
-    let mut states = build_precinct_states(c, ncomp, levels, tx0, ty0, &nprec, &comps);
-
     let layers = c.cod.layers as u32;
-    let order = progression_order(c.cod.progression, layers, levels, ncomp, &nprec);
 
-    let acc = accumulate_packets(&mut br, &body, &order, c, &mut states, max_res)?;
+    // RLCP and RPCL nest resolution outermost, so every packet of a resolution above
+    // `keep` comes after every packet this decode reads: the walk stops at `keep` and
+    // builds no bookkeeping past it. LRCP interleaves resolutions within each layer, so
+    // with more than one layer the whole pyramid is walked for its packet lengths.
+    let walk_levels = if c.cod.progression == 0 && layers > 1 {
+        levels
+    } else {
+        keep
+    };
+
+    let comp0 = comps
+        .first()
+        .ok_or(Jp2Error::Unsupported("component count"))?;
+    let nprec = precinct_counts(c, levels, comp0);
+    check_packet_walk_budget(c, ncomp, layers, walk_levels, &nprec, comp0, body.len())?;
+    let mut states = build_precinct_states(c, ncomp, walk_levels, tx0, ty0, &nprec, &comps);
+
+    let acc = accumulate_packets(
+        &mut br,
+        &body,
+        c,
+        &mut states,
+        &nprec,
+        layers,
+        walk_levels,
+        max_res,
+        decode_comps,
+    )?;
 
     // Tier-1 decode: once per code-block, over its concatenated segments.
     for ((ci, r, b, pi, _), a) in &acc {
@@ -916,7 +1081,7 @@ fn decode_tile(
     // known-good pixels (reversible, so the true coefficients are recoverable exactly).
     #[cfg(test)]
     if std::env::var_os("ST2K_JP2_DUMP").is_some() {
-        for ci in 0..ncomp {
+        for ci in 0..decode_comps {
             for r in 0..=keep as usize {
                 for (b, band) in comps[ci][r].bands.iter().enumerate() {
                     eprintln!("DUMP c{ci} r{r} b{b} {}x{}", band.w, band.h);
@@ -934,7 +1099,7 @@ fn decode_tile(
     reconstruct_tile_planes(
         &mut comps,
         planes,
-        ncomp,
+        decode_comps,
         keep,
         drop,
         siz,
@@ -952,13 +1117,24 @@ fn quant_for<'a>(c: &'a codestream::Codestream, ci: usize) -> &'a codestream::Qc
         .unwrap_or(&c.qcd)
 }
 
-/// Which entry of the quantization table applies to (resolution, band).
+/// The quantization (exponent, mantissa) that applies to (resolution, band).
+///
+/// Scalar derived (style 1) signals one pair for the LL band and derives the rest
+/// per Equation E-5: `e_b = e_0 - N_L + n_b`, with `n_b` the number of decomposition
+/// levels between the image and the subband. `n_b` is `N_L` for LL and for the
+/// coarsest detail bands (r == 1), and falls by one per resolution above that, so
+/// the exponent at resolution r >= 1 is `e_0 - (r - 1)`, floored at 0 (openjpeg's
+/// `opj_j2k_read_SQcd_SQcc` does the same). The mantissa is shared. Both the
+/// dequantization step and the `Mb = G + e_b - 1` bit-plane count depend on it.
 fn subband_step(c: &codestream::Codestream, ci: usize, r: usize, b: usize) -> (u8, u16) {
     let q = quant_for(c, ci);
     let idx = if r == 0 { 0 } else { 3 * (r - 1) + b + 1 };
     match q.style {
-        // Scalar derived: one value, scaled per level by the caller.
-        1 => q.steps[0],
+        1 => {
+            let (e0, mant) = q.steps.first().copied().unwrap_or((0, 0));
+            let above_coarsest = r.saturating_sub(1).min(u8::MAX as usize) as u8;
+            (e0.saturating_sub(above_coarsest), mant)
+        }
         // `parse_quant` rejects an empty table, so `last()` is always Some; fall back to
         // a unit step rather than carry an unwrap through a parser on untrusted input.
         _ => q
@@ -1001,6 +1177,132 @@ fn dequant_factor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-tile 8x8 codestream header with no tile data, for the pure header-derived
+    /// helpers (`subband_step`, `validate_reduced_scope`).
+    fn synthetic_codestream(
+        levels: u8,
+        components: Vec<codestream::Component>,
+        qcd: codestream::Qcd,
+    ) -> codestream::Codestream<'static> {
+        let n = components.len();
+        codestream::Codestream {
+            siz: codestream::Siz {
+                xsiz: 8,
+                ysiz: 8,
+                xosiz: 0,
+                yosiz: 0,
+                xtsiz: 8,
+                ytsiz: 8,
+                xtosiz: 0,
+                ytosiz: 0,
+                components,
+            },
+            cod: codestream::Cod {
+                progression: 0,
+                layers: 1,
+                mct: false,
+                levels,
+                cblk_w: 64,
+                cblk_h: 64,
+                cblk_style: 0,
+                reversible: false,
+                precincts: Vec::new(),
+                sop: false,
+                eph: false,
+            },
+            qcd,
+            cod_comp: vec![None; n],
+            qcd_comp: vec![None; n],
+            tiles: vec![Vec::new()],
+        }
+    }
+
+    fn component(prec: u8, signed: bool) -> codestream::Component {
+        codestream::Component {
+            prec,
+            signed,
+            dx: 1,
+            dy: 1,
+        }
+    }
+
+    /// Scalar-derived quantization: LL and the coarsest detail bands use the signalled
+    /// exponent; each finer resolution's exponent is one lower, never below zero, and
+    /// the mantissa is shared. Expounded tables are read per band as before.
+    #[test]
+    fn derived_quantization_exponent_drops_one_per_resolution() {
+        let derived = codestream::Qcd {
+            style: 1,
+            guard_bits: 2,
+            steps: vec![(10, 5)],
+        };
+        let c = synthetic_codestream(3, vec![component(7, false)], derived);
+        assert_eq!(subband_step(&c, 0, 0, 0), (10, 5));
+        for b in 0..3 {
+            assert_eq!(subband_step(&c, 0, 1, b), (10, 5));
+            assert_eq!(subband_step(&c, 0, 2, b), (9, 5));
+            assert_eq!(subband_step(&c, 0, 3, b), (8, 5));
+        }
+
+        let low = codestream::Qcd {
+            style: 1,
+            guard_bits: 2,
+            steps: vec![(1, 0)],
+        };
+        let c = synthetic_codestream(5, vec![component(7, false)], low);
+        assert_eq!(subband_step(&c, 0, 5, 2), (0, 0));
+
+        let expounded = codestream::Qcd {
+            style: 2,
+            guard_bits: 2,
+            steps: vec![(10, 5), (9, 1), (9, 2), (9, 3), (8, 4), (8, 5), (8, 6)],
+        };
+        let c = synthetic_codestream(2, vec![component(7, false)], expounded);
+        assert_eq!(subband_step(&c, 0, 0, 0), (10, 5));
+        assert_eq!(subband_step(&c, 0, 1, 1), (9, 2));
+        assert_eq!(subband_step(&c, 0, 2, 2), (8, 6));
+    }
+
+    /// The output's level shift and scale come from component 0, so a colour component
+    /// with a different depth or signedness is refused; a differing alpha component is
+    /// never decoded and passes.
+    #[test]
+    fn mixed_precision_colour_components_are_refused() {
+        let qcd = codestream::Qcd {
+            style: 0,
+            guard_bits: 2,
+            steps: vec![(8, 0)],
+        };
+        let mixed_rgb = vec![
+            component(7, false),
+            component(11, false),
+            component(7, false),
+        ];
+        let c = synthetic_codestream(1, mixed_rgb, qcd.clone());
+        assert!(matches!(
+            validate_reduced_scope(&c, false),
+            Err(Jp2Error::Unsupported(_))
+        ));
+
+        let signed_g = vec![component(7, false), component(7, true), component(7, false)];
+        let c = synthetic_codestream(1, signed_g, qcd.clone());
+        assert!(matches!(
+            validate_reduced_scope(&c, false),
+            Err(Jp2Error::Unsupported(_))
+        ));
+
+        let rgb_1bit_alpha = vec![
+            component(7, false),
+            component(7, false),
+            component(7, false),
+            component(0, false),
+        ];
+        let c = synthetic_codestream(1, rgb_1bit_alpha, qcd);
+        assert_eq!(validate_reduced_scope(&c, false).ok(), Some(4));
+        assert_eq!(used_components(4), 3);
+        assert_eq!(used_components(2), 1);
+    }
 
     /// Decode the corpus's 76 MP scan at a thumbnail size and write it out for comparison.
     /// Skips when the corpus has not been built.
@@ -1302,6 +1604,115 @@ mod fuzz_tests {
             start.elapsed() < std::time::Duration::from_secs(2),
             "a hostile Psot must be rejected, not looped on"
         );
+    }
+
+    /// A one-component, one-tile codestream whose header multipliers are the caller's
+    /// (image edge, decomposition levels, layer count, progression, one precinct byte
+    /// repeated per resolution), followed by a single tile-part carrying `body` bytes.
+    /// Code-blocks are the smallest legal 4x4 so the block count is at its maximum.
+    fn hostile_codestream(
+        edge: u32,
+        levels: u8,
+        layers: u16,
+        progression: u8,
+        precinct_byte: Option<u8>,
+        body: &[u8],
+    ) -> Vec<u8> {
+        let mut cs: Vec<u8> = vec![0xFF, 0x4F]; // SOC
+
+        let mut siz = vec![0u8; 36];
+        siz[2..6].copy_from_slice(&edge.to_be_bytes()); // Xsiz
+        siz[6..10].copy_from_slice(&edge.to_be_bytes()); // Ysiz
+        siz[18..22].copy_from_slice(&edge.to_be_bytes()); // XTsiz
+        siz[22..26].copy_from_slice(&edge.to_be_bytes()); // YTsiz
+        siz[34..36].copy_from_slice(&1u16.to_be_bytes()); // Csiz
+        siz.extend_from_slice(&[7, 1, 1]); // Ssiz, XRsiz, YRsiz
+        cs.extend_from_slice(&[0xFF, 0x51]);
+        cs.extend_from_slice(&((siz.len() + 2) as u16).to_be_bytes());
+        cs.extend_from_slice(&siz);
+
+        let mut cod = vec![u8::from(precinct_byte.is_some()), progression];
+        cod.extend_from_slice(&layers.to_be_bytes());
+        cod.extend_from_slice(&[0, levels, 0, 0, 0, 1]); // MCT, NL, cbw, cbh, style, 5/3
+        if let Some(pb) = precinct_byte {
+            cod.extend(std::iter::repeat_n(pb, levels as usize + 1));
+        }
+        cs.extend_from_slice(&[0xFF, 0x52]);
+        cs.extend_from_slice(&((cod.len() + 2) as u16).to_be_bytes());
+        cs.extend_from_slice(&cod);
+
+        // QCD style 0, two guard bits, one exponent byte per subband.
+        let mut qcd = vec![0x40u8];
+        qcd.extend(std::iter::repeat_n(8u8 << 3, 3 * levels as usize + 1));
+        cs.extend_from_slice(&[0xFF, 0x5C]);
+        cs.extend_from_slice(&((qcd.len() + 2) as u16).to_be_bytes());
+        cs.extend_from_slice(&qcd);
+
+        // One tile-part: SOT (Psot spans marker, segment, SOD and body), SOD, body.
+        cs.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A]);
+        cs.extend_from_slice(&0u16.to_be_bytes()); // Isot
+        cs.extend_from_slice(&((14 + body.len()) as u32).to_be_bytes()); // Psot
+        cs.extend_from_slice(&[0x00, 0x01]); // TPsot, TNsot
+        cs.extend_from_slice(&[0xFF, 0x93]); // SOD
+        cs.extend_from_slice(body);
+        cs.extend_from_slice(&[0xFF, 0xD9]); // EOC
+        cs
+    }
+
+    /// Header-only bombs: a few hundred bytes declaring a MAX_PIXELS-sized image whose
+    /// layer x resolution x precinct product runs to billions of packets and tens of
+    /// millions of precinct-bands. Each must come back as an error promptly, before any
+    /// of that bookkeeping is allocated, whichever ceiling catches it.
+    #[test]
+    fn hostile_packet_products_are_refused_promptly() {
+        let edge = crate::decode::limits::MAX_DIM;
+        let body = [0u8; 64];
+        let cases: [(&str, Vec<u8>); 4] = [
+            (
+                "65535 layers, no precinct segment",
+                hostile_codestream(edge, 5, u16::MAX, 0, None, &body),
+            ),
+            (
+                "256 layers, 4x4 precincts, LRCP walks every resolution",
+                hostile_codestream(edge, 5, 256, 0, Some(0x22), &body),
+            ),
+            (
+                "256 layers, 4x4 precincts, RPCL walks only the kept resolution",
+                hostile_codestream(edge, 5, 256, 2, Some(0x22), &body),
+            ),
+            (
+                "one layer, 4x4 precincts, single-resolution walk",
+                hostile_codestream(edge, 3, 1, 1, Some(0x22), &body),
+            ),
+        ];
+        for (name, cs) in cases {
+            assert!(cs.len() < 512, "{name}: the bomb must be header-sized");
+            let start = std::time::Instant::now();
+            let result = decode_reduced(&cs, 64);
+            let took = start.elapsed();
+            assert!(
+                result.is_err(),
+                "{name}: a header-only bomb must not decode"
+            );
+            assert!(
+                took < std::time::Duration::from_secs(2),
+                "{name}: must be refused from the header, took {took:?}"
+            );
+        }
+    }
+
+    /// The same builder at a sane shape is not refused by the budget: a 64x64 image with
+    /// default precincts and one layer passes the ceilings, walks its three packets (an
+    /// all-zero body makes each one empty) and decodes to a flat image.
+    #[test]
+    fn sane_header_passes_the_walk_budget() {
+        let cs = hostile_codestream(64, 2, 1, 0, None, &[0u8; 64]);
+        let c = codestream::parse(&cs).expect("well-formed header");
+        assert_eq!(validate_reduced_scope(&c, false).ok(), Some(1));
+        match decode_reduced(&cs, 64) {
+            Ok((rgb, w, h)) => assert_eq!((w, h, rgb.len()), (64, 64, 64 * 64 * 3)),
+            Err(e) => panic!("a 64x64 single-layer file must not trip the walk budget: {e}"),
+        }
     }
 }
 

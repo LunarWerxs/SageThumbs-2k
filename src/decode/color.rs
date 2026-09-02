@@ -253,6 +253,50 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     image::RgbaImage::from_raw(w, h, rgba).map(DynamicImage::ImageRgba8)
 }
 
+/// The standard sRGB electro-optical transfer function (IEC 61966-2-1) — the reference
+/// curve [`icc_profile_is_srgb`] compares an embedded profile's transfer curve against.
+fn srgb_eotf(x: f32) -> f32 {
+    if x < 0.04045 {
+        x / 12.92
+    } else {
+        ((x + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Is this already-parsed profile colorimetrically indistinguishable from sRGB — same
+/// primaries, same white point, same transfer curve? Checked numerically against
+/// [`moxcms::ColorProfile::new_srgb`] rather than by name (a profile's description tag
+/// is not evidence), so this is conservative: it recognises the overwhelmingly common
+/// case of a genuinely-sRGB embedded profile — encoded either as the exact parametric
+/// curve or as a sampled LUT close to it, which is what most real-world sRGB ICC
+/// profiles (ArgyllCMS, Little CMS, Photoshop's "sRGB IEC61966-2.1") actually ship —
+/// and otherwise falls through to the real transform, never the other way around.
+fn icc_profile_is_srgb(src: &moxcms::ColorProfile) -> bool {
+    use moxcms::{ColorProfile, Xyzd};
+
+    let srgb = ColorProfile::new_srgb();
+    const EPS: f64 = 0.0005; // well above ICC's S15Fixed16 (~1/65536) encoding noise
+    let colorant_matches = |a: Xyzd, b: Xyzd| {
+        (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && (a.z - b.z).abs() < EPS
+    };
+    if !colorant_matches(src.red_colorant, srgb.red_colorant)
+        || !colorant_matches(src.green_colorant, srgb.green_colorant)
+        || !colorant_matches(src.blue_colorant, srgb.blue_colorant)
+    {
+        return false;
+    }
+    let curve_is_srgb = |trc: &Option<moxcms::ToneReprCurve>| {
+        let Some(trc) = trc else { return false };
+        let Ok(eval) = trc.make_linear_evaluator() else {
+            return false;
+        };
+        [0.0f32, 0.05, 0.18, 0.5, 0.75, 1.0]
+            .into_iter()
+            .all(|x| (eval.evaluate_value(x) - srgb_eotf(x)).abs() < 0.01)
+    };
+    curve_is_srgb(&src.red_trc) && curve_is_srgb(&src.green_trc) && curve_is_srgb(&src.blue_trc)
+}
+
 /// Color-manage an embedded ICC profile to sRGB so wide-gamut (Display-P3 / Adobe RGB /
 /// …) thumbnails match a color-managed viewer instead of rendering over-saturated — and
 /// then having Explorer cache the wrong colors. Uses the pure-Rust `moxcms` we ALREADY
@@ -269,6 +313,10 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
 /// AVIF started routing to ImageMagick (issue #9) — magick hands back a 16-bit PNG for any
 /// 10-bit source, so an Adobe RGB AVIF came out in raw wide-gamut numbers, off by 79/255 on
 /// a saturated patch, while the same file through WIC was correct.
+///
+/// Short-circuits to a pure pass-through when the embedded profile is already sRGB
+/// (checked numerically by [`icc_profile_is_srgb`]) — most PNG/TIFF/WebP exports carry
+/// one, and building a `moxcms` transform for the identity case is pure loss.
 pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> DynamicImage {
     use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
 
@@ -280,6 +328,13 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
     };
     // Only matrix/RGB display profiles here — never mangle CMYK/Lab/etc.
     if src.color_space != DataColorSpace::Rgb {
+        return img;
+    }
+    // Most PNG/TIFF/WebP exports carry an sRGB profile, so building a moxcms transform
+    // and running it over every pixel is usually paying full CMS cost for the identity
+    // transform. Short-circuit when the embedded profile IS sRGB (checked numerically,
+    // not by trusting the profile's own description tag).
+    if icc_profile_is_srgb(&src) {
         return img;
     }
     let dst = ColorProfile::new_srgb();
@@ -934,5 +989,37 @@ mod tests {
         let out = tone_map_float(&DynamicImage::ImageRgba32F(buf)).to_rgba8();
         assert_eq!(out.get_pixel(0, 0).0[3], 255);
         assert_eq!(out.get_pixel(1, 0).0[3], 0, "partial alpha must survive");
+    }
+
+    /// A genuinely-sRGB embedded profile must short-circuit `apply_icc_to_srgb` to a pure
+    /// pass-through (bit-identical output, not merely close) — the whole point of the check
+    /// is to skip the moxcms transform entirely for the common case, not just make it cheap.
+    #[test]
+    fn srgb_profile_short_circuits_to_a_pass_through() {
+        let icc = moxcms::ColorProfile::new_srgb()
+            .encode()
+            .expect("encode sRGB");
+        let img =
+            DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([30, 150, 80])));
+        let out = apply_icc_to_srgb(img.clone(), Some(icc));
+        assert_eq!(
+            out.to_rgb8(),
+            img.to_rgb8(),
+            "a real sRGB profile must pass through byte-for-byte, not merely close"
+        );
+    }
+
+    /// A Display-P3 profile must NOT be mistaken for sRGB — same rough shape of transfer
+    /// curve, different primaries — or wide-gamut files would stop being colour-managed.
+    #[test]
+    fn display_p3_is_not_mistaken_for_srgb() {
+        let icc = moxcms::ColorProfile::new_display_p3()
+            .encode()
+            .expect("encode P3");
+        let src = moxcms::ColorProfile::new_from_slice(&icc).expect("parse P3");
+        assert!(
+            !icc_profile_is_srgb(&src),
+            "Display-P3 primaries must not read as sRGB"
+        );
     }
 }
