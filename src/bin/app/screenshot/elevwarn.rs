@@ -31,7 +31,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowThreadProcessId, PostMessageW, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WM_APP,
+    GetForegroundWindow, GetWindowThreadProcessId, IsWindow, PostMessageW, EVENT_SYSTEM_FOREGROUND,
+    WINEVENT_OUTOFCONTEXT, WM_APP,
 };
 
 /// Posted to the daemon when a window we serve came to the foreground. `wparam` carries its HWND;
@@ -164,6 +165,15 @@ unsafe extern "system" fn win_event_proc(
 /// handle is far too heavy for the hook callback, which is why it lives here.
 pub(super) unsafe fn warning_for(hwnd: HWND) -> Option<&'static str> {
     if !sagethumbs2k_core::settings::preview_enabled() {
+        return None;
+    }
+    // `hwnd` was posted asynchronously by `win_event_proc`; by the time the daemon's
+    // message loop reaches it the original window can be gone, and Windows can have already
+    // recycled the same HWND value onto an unrelated new window. A stale/recycled handle must
+    // not have its class name and elevation reported as if they still described the window
+    // that actually went to the foreground, so skip silently unless it's both still a live
+    // window AND still the current foreground one.
+    if !IsWindow(Some(hwnd)).as_bool() || GetForegroundWindow() != hwnd {
         return None;
     }
     let cls = crate::explorer_selection::class_name(hwnd);

@@ -188,6 +188,13 @@ pub(super) enum Shape {
     },
 }
 
+/// Shared bounds for the Text tool's font size, so every entry point that changes it —
+/// the text-settings flyout's +/- buttons, the `[`/`]` keyboard shortcut — agrees. Before
+/// this constant pair existed the flyout allowed up to 120px while `[`/`]` capped at 96px,
+/// so a size set above 96 via the flyout silently shrank the moment the user pressed `]`.
+pub(super) const TEXT_SIZE_MIN: i32 = 8;
+pub(super) const TEXT_SIZE_MAX: i32 = 120;
+
 /// Colour palette cycled with `K` (Flameshot-ish defaults; red first).
 pub(super) const PALETTE: &[(u8, u8, u8)] = &[
     (230, 40, 40),
@@ -539,6 +546,20 @@ pub(super) unsafe fn frame(hdc: HDC, r: RECT, color: COLORREF, w: i32) {
 
 // ---- Move/select support (the Move tool) -----------------------------------
 
+/// The approximate bounding box a run of `s` at `at` in `font` occupies — shared by
+/// [`shape_bbox`]'s `Text` arm and the live typing-drag dirty-rect calc, so a placed
+/// text shape and its own in-progress drag preview can't quietly disagree about how
+/// much screen it covers.
+pub(super) fn text_extent(at: POINT, s: &str, font: &LOGFONTW) -> RECT {
+    let size = (-font.lfHeight).max(8);
+    RECT {
+        left: at.x,
+        top: at.y,
+        right: at.x + (size * 6 / 10) * s.len().max(1) as i32,
+        bottom: at.y + size * 13 / 10,
+    }
+}
+
 /// Bounding box of a shape — used to hit-test a click and to draw the selection
 /// frame. (Text is approximate; that's fine for grabbing.)
 pub(super) fn shape_bbox(sh: &Shape) -> RECT {
@@ -568,15 +589,7 @@ pub(super) fn shape_bbox(sh: &Shape) -> RECT {
                 r
             }
         }
-        Shape::Text { at, s, font, .. } => {
-            let size = (-font.lfHeight).max(8);
-            RECT {
-                left: at.x,
-                top: at.y,
-                right: at.x + (size * 6 / 10) * s.len().max(1) as i32,
-                bottom: at.y + size * 13 / 10,
-            }
-        }
+        Shape::Text { at, s, font, .. } => text_extent(*at, s, font),
         Shape::Number { at, .. } => RECT {
             left: at.x - 13,
             top: at.y - 13,

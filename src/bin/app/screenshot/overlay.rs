@@ -5,8 +5,8 @@
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, COLORREF, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
-    POINT, RECT, WPARAM,
+    COLORREF, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT,
+    WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     AlphaBlend, BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
@@ -17,7 +17,6 @@ use windows::Win32::Graphics::Gdi::{
     MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Controls::Dialogs::{
     ChooseColorW, ChooseFontW, CC_ANYCOLOR, CC_ENABLEHOOK, CC_FULLOPEN, CC_RGBINIT, CF_EFFECTS,
     CF_ENABLEHOOK, CF_INITTOLOGFONTSTRUCT, CF_SCREENFONTS, CHOOSECOLORW, CHOOSEFONTW,
@@ -121,6 +120,17 @@ struct Shot {
     // the 4 px threshold) captures exactly that rect. `None` over the bare desktop, over
     // our own overlay, and the moment a real drag starts.
     win_hint: Option<RECT>,
+    // `GetTickCount64` at the last full z-order walk `update_window_hint` did: that
+    // walk does up to two DWM calls per top-level window, so it's throttled to run at most
+    // every [`input::WINDOW_HINT_THROTTLE_MS`] rather than on every single WM_MOUSEMOVE.
+    win_hint_scan_ms: u64,
+    // Memoized `toolbar::layout`: WM_MOUSEMOVE (`update_hover_button`) and
+    // WM_SETCURSOR (`is_over_toolbar_ui`) both ask for the current toolbar layout on
+    // every tick: keyed on the selection rect + DPI so a WM_SETCURSOR right after a
+    // WM_MOUSEMOVE (the common case — Windows sends both per tick) reuses the same
+    // layout instead of rebuilding it from scratch a second time.
+    tb_cache_key: Option<(i32, i32, i32, i32, i32)>,
+    tb_cache: Vec<(Button, RECT)>,
 }
 
 /// Hover-delay timer id (one-shot, re-armed on each new hovered button).
@@ -263,8 +273,9 @@ fn overlay_ex_style() -> WINDOW_EX_STYLE {
 /// Returns the held mutex `HANDLE` on success — keep it alive for as long as the capture
 /// runs, the same way the original single-function version did.
 unsafe fn claim_single_overlay_slot(name: PCWSTR) -> windows::core::Result<HANDLE> {
-    let lock = CreateMutexW(None, true, name)?;
-    if GetLastError() == ERROR_ALREADY_EXISTS {
+    let (lock, last_err) = crate::win::create_mutex_user_only(true, name);
+    let lock = lock?;
+    if last_err == ERROR_ALREADY_EXISTS {
         return Err(windows::core::Error::from(E_FAIL));
     }
     // One overlay at a time: each hotkey press spawns a fresh `--screenshot` process, and
@@ -587,6 +598,9 @@ unsafe fn build_shot_state(
         // OCR mode even if both flags were somehow passed.
         ocr_mode: ocr_mode && !automation,
         win_hint: None,
+        win_hint_scan_ms: 0,
+        tb_cache_key: None,
+        tb_cache: Vec::new(),
     })
 }
 

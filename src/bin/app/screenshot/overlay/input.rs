@@ -275,11 +275,11 @@ unsafe fn try_text_flyout_click(
                     s.font_dropdown = false;
                 }
                 TextItem::SizeDown => {
-                    let sz = (-s.text_font.lfHeight - 2).max(8);
+                    let sz = (-s.text_font.lfHeight - 2).max(tools::TEXT_SIZE_MIN);
                     s.text_font.lfHeight = -sz;
                 }
                 TextItem::SizeUp => {
-                    let sz = (-s.text_font.lfHeight + 2).min(120);
+                    let sz = (-s.text_font.lfHeight + 2).min(tools::TEXT_SIZE_MAX);
                     s.text_font.lfHeight = -sz;
                 }
                 TextItem::Bold => {
@@ -379,8 +379,9 @@ unsafe fn on_mousemove(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let s = &mut *shot_ptr(hwnd);
     let p = pt(lparam);
     update_eyedropper_loupe(hwnd, s, p);
+    let old_cur = s.cur;
     s.cur = p;
-    update_active_drag(hwnd, s, p);
+    update_active_drag(hwnd, s, p, old_cur);
     update_window_hint(hwnd, s, p);
     update_hover_button(hwnd, s, p);
     LRESULT(0)
@@ -400,49 +401,107 @@ unsafe fn update_eyedropper_loupe(hwnd: HWND, s: &mut Shot, p: POINT) {
     let _ = InvalidateRect(Some(hwnd), Some(&new), false);
 }
 
+/// Extra margin (screen px) around a drag's old/new bounding rect before invalidating it:
+/// covers chrome drawn outside the shape's own bbox — the selection's live size
+/// badge (drawn just above the rect), the green move-selection frame's +3px halo, arrow
+/// heads, and pen/shape stroke thickness (up to 40px, see `on_key_size_or_thickness`) —
+/// so the dirty region stays generous rather than pixel-tight while remaining nowhere
+/// near a full-virtual-screen invalidate on every mouse-move tick.
+const DRAG_DIRTY_MARGIN: i32 = 100;
+
+/// `r` grown by `m` on every side.
+fn inflate(r: RECT, m: i32) -> RECT {
+    RECT {
+        left: r.left - m,
+        top: r.top - m,
+        right: r.right + m,
+        bottom: r.bottom + m,
+    }
+}
+
+/// Invalidate just the union of `old` and `new` (each margin-inflated) — the same
+/// old-rect + new-rect pattern `update_eyedropper_loupe` already uses, so a drag tick
+/// repaints only the area that actually changed instead of the whole virtual screen
+/// (the module's own doc comment on `FRAME` claims this already happens; P53 found it
+/// didn't for any drawing/selection/move drag, only for the Eyedropper loupe).
+unsafe fn invalidate_drag_span(hwnd: HWND, old: RECT, new: RECT) {
+    let _ = InvalidateRect(Some(hwnd), Some(&inflate(old, DRAG_DIRTY_MARGIN)), false);
+    let _ = InvalidateRect(Some(hwnd), Some(&inflate(new, DRAG_DIRTY_MARGIN)), false);
+}
+
 /// Whichever gesture is currently active (region drag, text-box reposition, shape move,
 /// or freehand pen) advances by this tick's cursor position. At most one of these is
-/// ever active at once.
-unsafe fn update_active_drag(hwnd: HWND, s: &mut Shot, p: POINT) {
+/// ever active at once. `old_cur` is the cursor position as of the LAST tick (before
+/// this call's caller overwrote `s.cur`), needed to compute the "old" half of each
+/// drag's before/after dirty rect.
+unsafe fn update_active_drag(hwnd: HWND, s: &mut Shot, p: POINT, old_cur: POINT) {
     if s.sel_dragging {
-        let _ = InvalidateRect(Some(hwnd), None, false);
+        let old = tools::norm(s.sel_anchor, old_cur);
+        let new = tools::norm(s.sel_anchor, p);
+        invalidate_drag_span(hwnd, old, new);
     } else if s.typing_drag {
         // Reposition the active text box by the cursor delta (still editing).
         if let Some(from) = s.move_from {
-            if let Some((at, _)) = s.typing.as_mut() {
+            if let Some((at, buf)) = s.typing.as_mut() {
+                let old_r = tools::text_extent(*at, buf, &s.text_font);
                 at.x += p.x - from.x;
                 at.y += p.y - from.y;
+                let new_r = tools::text_extent(*at, buf, &s.text_font);
+                invalidate_drag_span(hwnd, old_r, new_r);
             }
             s.move_from = Some(p);
         }
-        let _ = InvalidateRect(Some(hwnd), None, false);
     } else if let (Some(from), Some(idx)) = (s.move_from, s.selected) {
         // Drag the grabbed shape by the cursor delta.
         let (dx, dy) = (p.x - from.x, p.y - from.y);
         if idx < s.shapes.len() {
+            let old_bb = tools::shape_bbox(&s.shapes[idx]);
             tools::translate_shape(&mut s.shapes[idx], dx, dy);
             // Fold this tick's delta into the drag's running total, so Ctrl+Z can undo
             // the WHOLE drag (not just the last tick) by inverting it.
             MOVE_UNDO.with(|c| c.set(Some(accumulate_move_undo(c.get(), idx, dx, dy))));
+            let new_bb = tools::shape_bbox(&s.shapes[idx]);
+            invalidate_drag_span(hwnd, old_bb, new_bb);
         }
         s.move_from = Some(p);
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    } else if s.draw_from.is_some() {
+    } else if let Some(a) = s.draw_from {
         if s.tool == Tool::Pen {
+            // Only the newest segment is new geometry — everything before it was
+            // already painted correctly on the last tick.
+            let seg_from = s.pen_pts.last().copied().unwrap_or(old_cur);
             s.pen_pts.push(p);
+            let seg = tools::norm(seg_from, p);
+            let _ = InvalidateRect(Some(hwnd), Some(&inflate(seg, DRAG_DIRTY_MARGIN)), false);
+        } else {
+            let shift = shift_active(s);
+            let old_b = tools::drag_endpoint(s.tool, a, old_cur, shift);
+            let new_b = tools::drag_endpoint(s.tool, a, p, shift);
+            invalidate_drag_span(hwnd, tools::norm(a, old_b), tools::norm(a, new_b));
         }
-        let _ = InvalidateRect(Some(hwnd), None, false);
     }
 }
+
+/// Minimum interval between full z-order re-scans for the click-a-window hint:
+/// [`window_under`] does up to two DWM calls per top-level window it walks past, which
+/// is real cost to pay on every single WM_MOUSEMOVE tick while nothing is selected yet.
+const WINDOW_HINT_THROTTLE_MS: u64 = 50;
 
 /// Before any selection exists, track the WINDOW under the cursor so a bare click can
 /// capture it (the hint paints as a live preview). Not while the Eyedropper is armed —
 /// there a click means "sample this pixel", and a window highlight would promise
-/// something the click won't do.
+/// something the click won't do. The z-order walk itself is throttled to
+/// [`WINDOW_HINT_THROTTLE_MS`] — between scans the existing hint is kept as-is,
+/// which is imperceptible at that cadence and far cheaper than a DWM query pair per
+/// candidate window on every tick.
 unsafe fn update_window_hint(hwnd: HWND, s: &mut Shot, p: POINT) {
     if s.sel.is_some() || s.sel_dragging {
         return;
     }
+    let now = GetTickCount64();
+    if now.saturating_sub(s.win_hint_scan_ms) < WINDOW_HINT_THROTTLE_MS {
+        return;
+    }
+    s.win_hint_scan_ms = now;
     let hint = if s.tool == Tool::Eyedropper || s.automation.is_some() {
         None
     } else {
@@ -461,16 +520,29 @@ unsafe fn update_window_hint(hwnd: HWND, s: &mut Shot, p: POINT) {
     }
 }
 
+/// The toolbar's layout for `sel` at `dpi`, rebuilt only when the selection or DPI
+/// actually changed since the last call. WM_MOUSEMOVE (this function's caller)
+/// and WM_SETCURSOR (`is_over_toolbar_ui`) both ask for the layout on essentially every
+/// tick — Windows sends both messages per mouse move — so until now each rebuilt the
+/// same 24-button layout from scratch a second time.
+unsafe fn toolbar_layout_cached(s: &mut Shot, sel: RECT, dpi: i32) -> Vec<(Button, RECT)> {
+    let key = (sel.left, sel.top, sel.right, sel.bottom, dpi);
+    if s.tb_cache_key != Some(key) {
+        s.tb_cache = toolbar::layout(sel, s.vw, s.vh, dpi);
+        s.tb_cache_key = Some(key);
+    }
+    s.tb_cache.clone()
+}
+
 /// Track which toolbar button we're hovering (only when idle), and (re)arm the
 /// hover-delay timer so the tooltip pops after a beat.
 unsafe fn update_hover_button(hwnd: HWND, s: &mut Shot, p: POINT) {
     let idle = !s.sel_dragging && s.draw_from.is_none() && s.move_from.is_none();
     let hovered = match (idle, s.sel) {
-        (true, Some(sel)) => toolbar::hit(
-            &toolbar::layout(sel, s.vw, s.vh, shot_dpi_for_sel(s, sel)),
-            p.x,
-            p.y,
-        ),
+        (true, Some(sel)) => {
+            let dpi = shot_dpi_for_sel(s, sel);
+            toolbar::hit(&toolbar_layout_cached(s, sel, dpi), p.x, p.y)
+        }
         _ => None,
     };
     if hovered != s.hover_btn {
@@ -669,7 +741,7 @@ unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if (lparam.0 & 0xffff) as u32 != HTCLIENT {
         return DefWindowProcW(hwnd, WM_SETCURSOR, wparam, lparam);
     }
-    let s = &*shot_ptr(hwnd);
+    let s = &mut *shot_ptr(hwnd);
     let p = s.cur; // last client-space mouse pos (WM_SETCURSOR precedes the move)
     let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
     let over_ui = is_over_toolbar_ui(s, p);
@@ -701,28 +773,26 @@ unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 
 /// Whether client point `p` is over the toolbar itself or an open flyout panel: the
 /// cursor stays the default arrow there instead of the tool's normal crosshair/I-beam.
-unsafe fn is_over_toolbar_ui(s: &Shot, p: POINT) -> bool {
-    s.sel.is_some_and(|sel| {
-        let dpi = shot_dpi_for_sel(s, sel);
-        let buttons = toolbar::layout(sel, s.vw, s.vh, dpi);
-        if toolbar::hit(&buttons, p.x, p.y).is_some() {
-            return true;
+unsafe fn is_over_toolbar_ui(s: &mut Shot, p: POINT) -> bool {
+    let Some(sel) = s.sel else { return false };
+    let dpi = shot_dpi_for_sel(s, sel);
+    let buttons = toolbar_layout_cached(s, sel, dpi);
+    if toolbar::hit(&buttons, p.x, p.y).is_some() {
+        return true;
+    }
+    if s.color_flyout {
+        if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
+            let (panel, _) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
+            return pt_in(panel, p);
         }
-        if s.color_flyout {
-            if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
-                let (panel, _) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
-                return pt_in(panel, p);
-            }
+    }
+    if s.text_flyout {
+        if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
+            let (panel, _) = toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
+            return pt_in(panel, p);
         }
-        if s.text_flyout {
-            if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
-                let (panel, _) =
-                    toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
-                return pt_in(panel, p);
-            }
-        }
-        false
-    })
+    }
+    false
 }
 
 /// `WM_DESTROY`: free the boxed `Shot` and its GDI objects, then quit the message loop.
@@ -789,8 +859,11 @@ unsafe fn on_key_enter(hwnd: HWND, s: &mut Shot) -> bool {
     }
     // Saving to a file is the explicit Ctrl+S / Save-button action.
     commit_text(s);
-    if s.sel.is_some() {
-        finish_copy(s);
+    // A clipboard failure (finish_copy already showed a toast) must not still destroy the
+    // window — that discarded the capture with nothing copied and no way to retry it
+    // No selection at all still closes as before: there is nothing to fail at.
+    if s.sel.is_some() && !finish_copy(s) {
+        return false;
     }
     let _ = DestroyWindow(hwnd);
     false
@@ -841,8 +914,11 @@ unsafe fn on_key_clipboard_action(hwnd: HWND, s: &mut Shot, ctrl: bool, vk: u16)
         }
         if s.sel.is_some() {
             commit_text(s);
-            finish_copy(s);
-            let _ = DestroyWindow(hwnd);
+            // Only close on an actual copy — a clipboard failure (toast already
+            // shown by finish_copy) must leave the overlay open so the capture isn't lost.
+            if finish_copy(s) {
+                let _ = DestroyWindow(hwnd);
+            }
         }
         return Some(false);
     }
@@ -870,6 +946,19 @@ unsafe fn on_key_clipboard_action(hwnd: HWND, s: &mut Shot, ctrl: bool, vk: u16)
         }
         return Some(false);
     }
+    // Ctrl+U: upload & copy the link (G199b) — the toolbar's Upload button previously had
+    // no keyboard equivalent at all, unlike every other action on the bar.
+    if ctrl && vk == b'U' as u16 {
+        if block_automation_output(s, "blocked-upload") {
+            return Some(true);
+        }
+        if s.sel.is_some() {
+            commit_text(s);
+            compose_and_spawn(s, "--upload");
+            let _ = DestroyWindow(hwnd);
+        }
+        return Some(false);
+    }
     None
 }
 
@@ -894,11 +983,14 @@ fn tool_shortcut_for(vk: u16) -> Option<Tool> {
 }
 
 /// VK_OEM_4 '[' / VK_OEM_6 ']': text size while the Text tool is active, else line
-/// thickness. Returns `false` if `vk` is neither key.
+/// thickness. Returns `false` if `vk` is neither key. Text size shares
+/// [`tools::TEXT_SIZE_MIN`]/[`tools::TEXT_SIZE_MAX`] with the text-settings flyout's
+/// own +/- buttons — a size the flyout allowed used to silently shrink the moment the
+/// user next pressed `]`, because this path clamped to a smaller, different max.
 fn on_key_size_or_thickness(s: &mut Shot, vk: u16) -> bool {
     if vk == 0xDB {
         if s.tool == Tool::Text {
-            let sz = (-s.text_font.lfHeight - 2).max(10);
+            let sz = (-s.text_font.lfHeight - 2).max(tools::TEXT_SIZE_MIN);
             s.text_font.lfHeight = -sz;
         } else {
             s.thickness = (s.thickness - 1).max(1);
@@ -907,7 +999,7 @@ fn on_key_size_or_thickness(s: &mut Shot, vk: u16) -> bool {
     }
     if vk == 0xDD {
         if s.tool == Tool::Text {
-            let sz = (-s.text_font.lfHeight + 2).min(96);
+            let sz = (-s.text_font.lfHeight + 2).min(tools::TEXT_SIZE_MAX);
             s.text_font.lfHeight = -sz;
         } else {
             s.thickness = (s.thickness + 1).min(40);
@@ -1169,6 +1261,9 @@ mod tests {
             automation: None,
             ocr_mode: false,
             win_hint: None,
+            win_hint_scan_ms: 0,
+            tb_cache_key: None,
+            tb_cache: Vec::new(),
         })
     }
 
@@ -1289,6 +1384,43 @@ mod tests {
         }
     }
 
+    /// A clipboard failure via Enter or Ctrl+C must not still destroy the overlay —
+    /// the old bug discarded the capture with nothing copied and no way to retry it. A
+    /// degenerate zero-size selection makes `compose`/`finish_copy` fail without ever
+    /// touching the real clipboard, which is how this is exercised safely from a test.
+    #[test]
+    fn enter_and_ctrl_c_keep_the_overlay_open_when_the_copy_fails() {
+        unsafe {
+            let hwnd = test_window();
+            {
+                let s = &mut *shot_ptr(hwnd);
+                s.sel = Some(RECT {
+                    left: 5,
+                    top: 5,
+                    right: 5,
+                    bottom: 5,
+                }); // zero-size -> compose()/finish_copy fail with no side effects
+            }
+            let consumed = handle_key(hwnd, VK_RETURN.0);
+            assert!(!consumed);
+            assert!(
+                IsWindow(Some(hwnd)).as_bool(),
+                "Enter must not close the overlay when the copy failed"
+            );
+
+            let handled = {
+                let s = &mut *shot_ptr(hwnd);
+                on_key_clipboard_action(hwnd, s, true, b'C' as u16)
+            };
+            assert_eq!(handled, Some(false));
+            assert!(
+                IsWindow(Some(hwnd)).as_bool(),
+                "Ctrl+C must not close the overlay when the copy failed"
+            );
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
     /// Enter when NOT typing keeps its normal accept-and-close behaviour (the fix must
     /// only change the mid-typing case, not disable Enter generally).
     #[test]
@@ -1340,6 +1472,58 @@ mod tests {
                     _ => panic!("expected the deleted Number shape in redo, got a different kind"),
                 }
             }
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    /// The flyout's +/- and the `[`/`]` keyboard shortcut must not disagree on the
+    /// text-size ceiling — a size the flyout allowed used to silently shrink the moment
+    /// `]` was pressed next, because this path clamped to a smaller, different max.
+    #[test]
+    fn text_size_keyboard_shortcut_shares_the_flyout_ceiling() {
+        unsafe {
+            let hwnd = test_window();
+            {
+                let s = &mut *shot_ptr(hwnd);
+                s.tool = Tool::Text;
+                // As if the flyout's + button had just set it to ITS max.
+                s.text_font.lfHeight = -tools::TEXT_SIZE_MAX;
+            }
+            let consumed = handle_key(hwnd, 0xDD); // ']'
+            assert!(consumed);
+            {
+                let s = &*shot_ptr(hwnd);
+                assert_eq!(
+                    -s.text_font.lfHeight,
+                    tools::TEXT_SIZE_MAX,
+                    "the keyboard shortcut must not clamp below what the flyout just allowed"
+                );
+            }
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    /// Ctrl+U is the same "accept and close" shape as Ctrl+C/Ctrl+T/Ctrl+S (G199b). With
+    /// no selection yet (this harness's default `Shot`), it must be a safe, recognized
+    /// no-op rather than falling through to a tool shortcut — and must NOT actually run
+    /// `compose_and_spawn` (which would launch a real `--upload` child process).
+    #[test]
+    fn ctrl_u_with_no_selection_is_a_safe_recognized_no_op() {
+        unsafe {
+            let hwnd = test_window();
+            let handled = {
+                let s = &mut *shot_ptr(hwnd);
+                on_key_clipboard_action(hwnd, s, true, b'U' as u16)
+            };
+            assert_eq!(
+                handled,
+                Some(false),
+                "Ctrl+U must be recognized as handled, not fall through to a tool shortcut"
+            );
+            assert!(
+                IsWindow(Some(hwnd)).as_bool(),
+                "no selection means nothing to upload — the overlay must stay open"
+            );
             let _ = DestroyWindow(hwnd);
         }
     }

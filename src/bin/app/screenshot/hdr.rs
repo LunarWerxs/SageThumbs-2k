@@ -107,42 +107,50 @@ pub(super) unsafe fn capture_into(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) 
         "screenshot: HDR capture for {n} of {} monitor(s)",
         mons.len()
     ));
+    // One D3D11 device for the WHOLE capture (item 145's D3D half) instead of one per HDR
+    // monitor: creating a device is the single most expensive step in this path, and a
+    // multi-monitor HDR rig previously paid it again for every monitor on every screenshot.
+    // `None` here (a missing/refused GPU) means every HDR monitor below falls back to BitBlt,
+    // same as before — `capture_monitor` no longer has a device of its own to try.
+    let gpu = create_capture_device();
     let screen = GetDC(None);
     for (&(mon, r), &is_hdr) in mons.iter().zip(&hdr) {
         let (x, y) = (r.left - vx, r.top - vy);
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         let mut drawn = false;
         if is_hdr {
-            if let Some((bgra, cw, ch)) = capture_monitor(mon) {
-                let bmi = BITMAPINFO {
-                    bmiHeader: BITMAPINFOHEADER {
-                        biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                        biWidth: cw as i32,
-                        biHeight: -(ch as i32), // top-down, matching our buffer
-                        biPlanes: 1,
-                        biBitCount: 32,
-                        biCompression: BI_RGB.0,
+            if let Some((device, ctx, winrt_device)) = gpu.as_ref() {
+                if let Some((bgra, cw, ch)) = capture_monitor(mon, device, ctx, winrt_device) {
+                    let bmi = BITMAPINFO {
+                        bmiHeader: BITMAPINFOHEADER {
+                            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: cw as i32,
+                            biHeight: -(ch as i32), // top-down, matching our buffer
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: BI_RGB.0,
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                // The captured surface can differ from the monitor rect (scaling),
-                // so stretch rather than assuming they match.
-                drawn = StretchDIBits(
-                    dst,
-                    x,
-                    y,
-                    w,
-                    h,
-                    0,
-                    0,
-                    cw as i32,
-                    ch as i32,
-                    Some(bgra.as_ptr() as *const _),
-                    &bmi,
-                    DIB_RGB_COLORS,
-                    SRCCOPY,
-                ) != 0;
+                    };
+                    // The captured surface can differ from the monitor rect (scaling),
+                    // so stretch rather than assuming they match.
+                    drawn = StretchDIBits(
+                        dst,
+                        x,
+                        y,
+                        w,
+                        h,
+                        0,
+                        0,
+                        cw as i32,
+                        ch as i32,
+                        Some(bgra.as_ptr() as *const _),
+                        &bmi,
+                        DIB_RGB_COLORS,
+                        SRCCOPY,
+                    ) != 0;
+                }
             }
         }
         if !drawn {
@@ -185,36 +193,53 @@ pub(super) fn monitor_is_hdr(mon: HMONITOR) -> bool {
     }
 }
 
-/// Capture `mon` through Windows Graphics Capture and tone-map it to 8-bit sRGB.
-///
-/// Returns `(bgra, width, height)` with the top-down BGRA layout GDI wants, or
-/// `None` on any failure at all — a missing GPU, a refused capture, a driver that
-/// never delivers a frame. Every `None` means "use `BitBlt` instead", so the worst
-/// case is today's behaviour rather than a broken screenshot.
-pub(super) fn capture_monitor(mon: HMONITOR) -> Option<(Vec<u8>, u32, u32)> {
-    unsafe {
-        let (device, ctx, winrt_device) = create_capture_device()?;
-        let (pool, session) = start_capture_session(mon, &winrt_device)?;
+/// Closes the WinRT capture session + frame pool when it drops, covering every
+/// exit from [`capture_monitor`] instead of a hand-repeated `Close()` pair at each early
+/// return. `GraphicsCaptureSession`/`Direct3D11CaptureFramePool` are `IClosable` objects
+/// backing a live OS capture stream (and the undismissable yellow recording-border indicator
+/// this module's own doc comment describes) — relying on `Drop`/`Release` alone left 3 of the
+/// function's 5 exit paths (the staging-texture allocation, the `Map` call, and the
+/// not-quite-that-format check) leaking a session+pool on a machine where the GPU work
+/// reliably fails (low VRAM, a driver quirk), for as long as the screenshot process stays
+/// open — which, with the editor left open annotating, can be a while.
+struct CaptureGuard {
+    pool: Direct3D11CaptureFramePool,
+    session: GraphicsCaptureSession,
+}
 
-        let frame = match wait_for_frame(&pool) {
-            Some(f) => f,
-            None => {
-                let _ = session.Close();
-                let _ = pool.Close();
-                return None;
-            }
-        };
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        let _ = self.session.Close();
+        let _ = self.pool.Close();
+    }
+}
+
+/// Capture `mon` through Windows Graphics Capture and tone-map it to 8-bit sRGB, using the
+/// D3D11 device/context/WinRT-face the caller created once for the whole multi-monitor
+/// capture (item 145's D3D half — see [`capture_into`]).
+///
+/// Returns `(bgra, width, height)` with the top-down BGRA layout GDI wants, or `None` on any
+/// failure at all — a refused capture session, a driver that never delivers a frame. Every
+/// `None` means "use `BitBlt` instead", so the worst case is today's behaviour rather than a
+/// broken screenshot.
+pub(super) fn capture_monitor(
+    mon: HMONITOR,
+    device: &ID3D11Device,
+    ctx: &ID3D11DeviceContext,
+    winrt_device: &windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
+) -> Option<(Vec<u8>, u32, u32)> {
+    unsafe {
+        let (pool, session) = start_capture_session(mon, winrt_device)?;
+        let guard = CaptureGuard { pool, session };
+
+        let frame = wait_for_frame(&guard.pool)?;
 
         // --- GPU texture -> CPU staging copy --------------------------------
-        let Some((src, desc)) = frame_src_texture(&frame) else {
-            return None;
-        };
+        let (src, desc) = frame_src_texture(&frame)?;
         if desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT {
-            let _ = session.Close();
-            let _ = pool.Close();
             return None; // not the HDR surface we asked for — do not guess at it
         }
-        let staging = staged_copy(&device, &ctx, &src, &desc)?;
+        let staging = staged_copy(device, ctx, &src, &desc)?;
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
@@ -228,8 +253,8 @@ pub(super) fn capture_monitor(mon: HMONITOR) -> Option<(Vec<u8>, u32, u32)> {
         );
         ctx.Unmap(&staging, 0);
 
-        let _ = session.Close();
-        let _ = pool.Close();
+        // `guard` drops here (and on every early return above), closing the session + pool
+        // exactly once no matter which path was taken.
         Some((out, w, h))
     }
 }

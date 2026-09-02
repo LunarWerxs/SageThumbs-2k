@@ -69,8 +69,10 @@ pub(super) fn save_png_to_dir(dir: &std::path::Path, top_down_bgra: &[u8], w: i3
 /// Pick a filename in `dir` that doesn't already exist, appending " (2)", " (3)", … before the
 /// extension when `name` collides. `timestamped_name` only has 1-second resolution, so two
 /// captures started within the same second would otherwise silently overwrite each other —
-/// `img.save` has no "don't clobber" mode of its own.
-fn unique_name_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+/// `img.save` has no "don't clobber" mode of its own. `pub(super)` so `upload.rs`'s
+/// failed-upload recovery copy routes through the same collision guard as an ordinary save
+/// instead of writing `dir.join(name)` directly.
+pub(super) fn unique_name_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let candidate = dir.join(name);
     if !candidate.exists() {
         return candidate;

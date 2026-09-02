@@ -172,7 +172,7 @@ pub(super) fn button_tip(btn: Button) -> &'static str {
         Button::Copy => "Copy to the clipboard (Ctrl+C / Enter)",
         Button::Ocr => "Copy text (OCR) (Ctrl+T) — read the words in the region",
         Button::Save => "Save a PNG (Ctrl+S)",
-        Button::Upload => "Upload & copy the link",
+        Button::Upload => "Upload & copy the link (Ctrl+U)",
         Button::Close => "Close (Esc)",
         Button::Sep => "",
     }

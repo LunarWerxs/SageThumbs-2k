@@ -17,6 +17,10 @@ use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOS
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_NAME: &str = "SageThumbs2KScreenshot";
+/// Set by [`quit`], cleared by [`set_enabled`] (the single choke point every
+/// Settings ▸ Save routes through, see `settings_dlg/values.rs`). While set, nothing else
+/// wanting the daemon can bring it back — see [`daemon_wanted_from`].
+const DAEMON_STOPPED_KEY: &str = "DaemonStopped";
 
 /// Is the screenshot capture feature enabled? Stored as the `ScreenshotEnabled` DWORD.
 /// For users upgrading from before that flag existed, fall back to the autostart entry's
@@ -42,10 +46,41 @@ fn preview_wanted() -> bool {
     sagethumbs2k_core::settings::preview_enabled()
 }
 
+/// Was the daemon explicitly stopped from the tray, and hasn't Settings been
+/// saved since? See [`DAEMON_STOPPED_KEY`].
+fn daemon_stopped() -> bool {
+    sagethumbs2k_core::settings::get_dword_opt(DAEMON_STOPPED_KEY) == Some(1)
+}
+
+/// Pure core of [`daemon_wanted`], split out for testing: an explicit stop
+/// overrides every individual "something wants it" signal, so `quit()` cannot be silently
+/// undone by the very next ordinary launch — `heal_if_wanted` runs from several `main.rs`
+/// startup paths, including the background `--update-check` task, none of which should ever
+/// re-arm autostart the user just removed on purpose.
+fn daemon_wanted_from(stopped: bool, enabled: bool, custom_hotkey: bool, preview: bool) -> bool {
+    !stopped && (enabled || custom_hotkey || preview)
+}
+
 /// Does the daemon need to be resident? True if screenshots are on OR a custom hotkey is
-/// bound OR Quick preview is enabled.
+/// bound OR Quick preview is enabled — UNLESS the daemon was explicitly stopped and nothing
+/// has re-enabled anything in Settings since.
 fn daemon_wanted() -> bool {
-    is_enabled() || custom_hotkey_bound() || preview_wanted()
+    daemon_wanted_from(
+        daemon_stopped(),
+        is_enabled(),
+        custom_hotkey_bound(),
+        preview_wanted(),
+    )
+}
+
+/// True when something wants the daemon to survive logon, but the `…\Run` autostart entry
+/// isn't there to make that happen — the write in [`reconcile`] can fail silently (a
+/// locked hive, an AV product deleting the value moments later, …) while THIS session's
+/// daemon keeps running fine, so nothing else looks wrong until the next reboot, when the
+/// hotkey/Quick-preview simply never comes back. Consulted by the daemon's tray tooltip so
+/// the gap is visible somewhere the user will actually see it.
+pub(crate) fn autostart_missing_while_wanted() -> bool {
+    daemon_wanted() && autostart_allowed() && !run_entry_present()
 }
 
 /// Whether we may touch logon autostart at all.
@@ -133,6 +168,9 @@ pub(crate) fn heal_if_wanted() {
 /// repeatedly. (The daemon may still stay resident after `set_enabled(false)` if a custom
 /// hotkey is bound — that's intentional; use [`quit`] for an unconditional stop.)
 pub(crate) fn set_enabled(on: bool) {
+    // Any Settings ▸ Save clears a tray "Quit" stop — the user is actively
+    // engaging with Settings again, which is "re-enabling something" in the plainest sense.
+    let _ = sagethumbs2k_core::settings::set_dword(DAEMON_STOPPED_KEY, 0);
     let _ = sagethumbs2k_core::settings::set_dword("ScreenshotEnabled", on as u32);
     reconcile();
 }
@@ -152,11 +190,25 @@ pub(crate) fn reconcile() {
         if autostart_allowed() {
             if let Ok(exe) = std::env::current_exe() {
                 if !autostart_points_at_other_install(&exe) {
-                    if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-                        let _ = k.set_string(
-                            RUN_NAME,
-                            format!("\"{}\" --screenshot-daemon", exe.display()),
-                        );
+                    match windows_registry::CURRENT_USER.create(RUN_KEY) {
+                        Ok(k) => {
+                            // A swallowed Err here left hotkeys silently dead at the
+                            // next logon — this session's daemon starts fine regardless, so
+                            // there was no other sign anything had gone wrong.
+                            if let Err(e) = k.set_string(
+                                RUN_NAME,
+                                format!("\"{}\" --screenshot-daemon", exe.display()),
+                            ) {
+                                sagethumbs2k_core::safety::log(&format!(
+                                    "screenshot: failed to write autostart Run entry: {e}"
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            sagethumbs2k_core::safety::log(&format!(
+                                "screenshot: failed to open Run key for autostart: {e}"
+                            ));
+                        }
                     }
                 }
             }
@@ -169,7 +221,11 @@ pub(crate) fn reconcile() {
     } else {
         if autostart_allowed() {
             if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-                let _ = k.remove_value(RUN_NAME);
+                if let Err(e) = k.remove_value(RUN_NAME) {
+                    sagethumbs2k_core::safety::log(&format!(
+                        "screenshot: failed to remove autostart Run entry: {e}"
+                    ));
+                }
             }
         }
         unsafe { stop_daemon() };
@@ -177,14 +233,26 @@ pub(crate) fn reconcile() {
 }
 
 /// Hard stop from the tray "Quit": turn screenshots off, drop the autostart entry, and close
-/// the daemon now — regardless of any bound custom hotkey (an explicit "stop everything"). A
-/// bound custom hotkey won't fire again until it's re-saved in Settings (which calls
-/// [`reconcile`] and brings the daemon back).
+/// the daemon now — regardless of any bound custom hotkey (an explicit "stop everything").
+/// Sticky (see [`DAEMON_STOPPED_KEY`]): a bound custom hotkey or Quick preview
+/// won't bring the daemon back on their own, at the next logon or any other ordinary launch —
+/// only saving Settings again (which calls [`set_enabled`], clearing the stop, then
+/// [`reconcile`]) does.
 pub(crate) fn quit() {
+    // Sticky across an ordinary launch — without this, `heal_if_wanted` (run from
+    // several `main.rs` startup paths, including the background `--update-check` task) saw
+    // `daemon_wanted()` still true (a bound custom hotkey or Quick preview keeps it true even
+    // with screenshots off) and silently re-created the very autostart entry + daemon this
+    // function just removed.
+    let _ = sagethumbs2k_core::settings::set_dword(DAEMON_STOPPED_KEY, 1);
     let _ = sagethumbs2k_core::settings::set_dword("ScreenshotEnabled", 0);
     if autostart_allowed() {
         if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-            let _ = k.remove_value(RUN_NAME);
+            if let Err(e) = k.remove_value(RUN_NAME) {
+                sagethumbs2k_core::safety::log(&format!(
+                    "screenshot: quit failed to remove autostart Run entry: {e}"
+                ));
+            }
         }
     }
     unsafe { stop_daemon() };
@@ -205,5 +273,31 @@ pub(crate) fn reload_hotkey() {
         if let Ok(hwnd) = FindWindowW(super::daemon::CLASS, PCWSTR::null()) {
             let _ = PostMessageW(Some(hwnd), super::daemon::WM_RELOAD, WPARAM(0), LPARAM(0));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Once `quit()` has set the stopped flag, no individual "something wants it"
+    /// signal — screenshots on, a custom hotkey bound, Quick preview on, alone or combined —
+    /// may bring the daemon back; only the flag being clear does. This is what stops
+    /// `heal_if_wanted` (run from several `main.rs` startup paths, including the background
+    /// `--update-check` task) from silently undoing a tray "Quit" on the very next ordinary
+    /// launch, which was the bug: a bound custom hotkey kept the OLD `daemon_wanted()` true
+    /// even with screenshots off.
+    #[test]
+    fn daemon_stopped_overrides_every_individual_want() {
+        assert!(!daemon_wanted_from(true, true, true, true));
+        assert!(!daemon_wanted_from(true, true, false, false));
+        assert!(!daemon_wanted_from(true, false, true, false));
+        assert!(!daemon_wanted_from(true, false, false, true));
+        assert!(!daemon_wanted_from(true, false, false, false));
+        // Not stopped: behaves exactly like the old OR-of-three-signals check.
+        assert!(daemon_wanted_from(false, true, false, false));
+        assert!(daemon_wanted_from(false, false, true, false));
+        assert!(daemon_wanted_from(false, false, false, true));
+        assert!(!daemon_wanted_from(false, false, false, false));
     }
 }

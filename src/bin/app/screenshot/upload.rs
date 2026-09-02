@@ -63,56 +63,29 @@ struct UploadHost {
 }
 
 /// The built-in keyless hosts, tried in order until one returns a URL. All are
-/// no-account / no-API-key and rate-limit per end-user IP, and all reply with the
-/// bare link as plain text. Ordered **permanent-first, temporary-last**, so a normal
-/// upload gets a permanent link and only falls back to an expiring one when every
-/// permanent host is down.
+/// no-account / no-API-key and rate-limit per end-user IP; ordered
+/// **permanent-first, temporary-last**, so a normal upload gets a permanent link and
+/// only falls back to an expiring one when every permanent host is down.
+///
+/// Built from [`sagethumbs2k_core::upload_config::BUILTIN_HOSTS`] rather than its
+/// own hardcoded list, so this chain and the config template's "current built-in
+/// defaults" comment can never drift apart — x0.at (currently the only *up* permanent
+/// keyless host), catbox.moe (kept in the chain so uploads return to it automatically
+/// once its storage issue clears; its "paused" reply just isn't a URL while it's down),
+/// litterbox.catbox.moe (catbox's separate-storage 72h TEMPORARY host, the last-resort
+/// permanent-operator fallback), and uguu.se (a THIRD, independent operator, ~3h temp,
+/// JSON reply — `{"files":[{"url":"…"}]}` with `\/`-escaped slashes).
 fn builtin_hosts() -> Vec<UploadHost> {
-    vec![
-        // x0.at — 0x0-style keyless host; plain-text URL, field `file`, no extra
-        // fields. Retention scales with size (small screenshots are effectively
-        // long-lived). Currently the only *up* permanent keyless host.
-        UploadHost {
-            host: "x0.at".into(),
-            path: "/".into(),
-            field: "file".into(),
-            extra: vec![],
-            json: false,
-        },
-        // catbox.moe — keyless & PERMANENT. Kept in the chain so uploads return to it
-        // automatically once its storage issue is resolved; it's simply skipped (its
-        // "paused" reply isn't a URL) while it's down.
-        UploadHost {
-            host: "catbox.moe".into(),
-            path: "/user/api.php".into(),
-            field: "fileToUpload".into(),
-            extra: vec![("reqtype".into(), "fileupload".into())],
-            json: false,
-        },
-        // litterbox.catbox.moe — catbox's TEMPORARY host (separate storage), 72h max.
-        // Last-resort permanent-operator fallback: a working 72-hour link beats a failed upload.
-        UploadHost {
-            host: "litterbox.catbox.moe".into(),
-            path: "/resources/internals/api.php".into(),
-            field: "fileToUpload".into(),
-            extra: vec![
-                ("reqtype".into(), "fileupload".into()),
-                ("time".into(), "72h".into()),
-            ],
-            json: false,
-        },
-        // uguu.se — a THIRD, independent operator (not x0 / not catbox), so a full
-        // outage of one operator can't take the whole chain down. Keyless, ~3h temp,
-        // and returns the link inside a JSON reply (`{"files":[{"url":"…"}]}`, with
-        // `\/`-escaped slashes) — hence `json: true`.
-        UploadHost {
-            host: "uguu.se".into(),
-            path: "/upload.php".into(),
-            field: "files[]".into(),
-            extra: vec![],
-            json: true,
-        },
-    ]
+    sagethumbs2k_core::upload_config::BUILTIN_HOSTS
+        .iter()
+        .map(|&(host, path, field, extra, json)| UploadHost {
+            host: host.into(),
+            path: path.into(),
+            field: field.into(),
+            extra: extra.iter().map(|&(k, v)| (k.into(), v.into())).collect(),
+            json,
+        })
+        .collect()
 }
 
 /// Resolve the upload endpoint(s), in precedence order:
@@ -385,10 +358,16 @@ pub(crate) unsafe fn run_upload(path: &str) {
 /// Write `bytes` (a whole PNG) into `dir` under the standard timestamped capture
 /// name. Split out from [`save_recovery_copy`] so the write itself is testable
 /// without touching the registry-backed save-folder setting.
+///
+/// Routes through [`super::output::unique_name_in`] rather than writing
+/// `dir.join(name)` directly: `timestamped_name` only has 1-second resolution, so two
+/// failed-upload recoveries (or a recovery landing in the same second as an ordinary
+/// Ctrl+S capture) into the same folder would otherwise silently overwrite each other —
+/// in exactly the path whose whole purpose is not losing the shot.
 fn write_recovery_copy(dir: &std::path::Path, bytes: &[u8]) -> Option<std::path::PathBuf> {
     let _ = std::fs::create_dir_all(dir);
     let name = unsafe { super::output::timestamped_name() };
-    let path = dir.join(name);
+    let path = super::output::unique_name_in(dir, &name);
     std::fs::write(&path, bytes).ok()?;
     Some(path)
 }
@@ -526,6 +505,28 @@ unsafe fn upload_any(bytes: &[u8], filename: &str, hosts: &[UploadHost]) -> Resu
     Err(reasons.join("\n"))
 }
 
+/// Sanitize a value going inside a multipart `Content-Disposition` quoted string — a
+/// filename or a config-supplied field name/value. RFC 6266's rule is
+/// backslash-escape `"` and `\`; CR/LF can't be escaped at all (a raw one would terminate
+/// the header line, letting the rest of the "line" be read as extra header/part-boundary
+/// content), so those are replaced with a space rather than passed through. NTFS itself
+/// refuses `"` and control characters in a filename through the ordinary Win32 API, but the
+/// NT native API, a WSL mount, or a non-Windows SMB server can all create one that carries
+/// them anyway — and that filename reaches here unchanged (`upload_files`/`run_upload`
+/// take it straight from `Path::file_name`).
+fn mime_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\r' | '\n' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Build the multipart body and POST it to ONE host; return the response URL on
 /// success, or the host's own reason on failure (its response text, first line,
 /// clipped — surfaced to the user so an outage is visible). `filename` goes in the
@@ -533,8 +534,10 @@ unsafe fn upload_any(bytes: &[u8], filename: &str, hosts: &[UploadHost]) -> Resu
 /// returned URL off it — a `.jpg` stays viewable).
 unsafe fn upload_one(bytes: &[u8], filename: &str, h: &UploadHost) -> Result<String, String> {
     let boundary = "----st2kBoundary8x9f2aQ1z";
+    let filename = mime_escape(filename);
     let mut body: Vec<u8> = Vec::new();
     for (name, val) in &h.extra {
+        let (name, val) = (mime_escape(name), mime_escape(val));
         body.extend_from_slice(
             format!(
                 "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{val}\r\n"
@@ -545,7 +548,7 @@ unsafe fn upload_one(bytes: &[u8], filename: &str, h: &UploadHost) -> Result<Str
     body.extend_from_slice(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
-            h.field
+            mime_escape(&h.field)
         )
         .as_bytes(),
     );
@@ -644,6 +647,14 @@ struct PostResp {
     body: Vec<u8>,
 }
 
+/// Overall wall-clock budget for draining a response body (G218/C18): WinINet's own
+/// per-read receive timeout resets on every partial read, so a host that trickles the
+/// reply one byte at a time never trips it and can hang the "Uploading…" pill (and block
+/// `upload_any` from ever falling through to the next configured host) indefinitely. This
+/// matches the 20 s already set on the connect/send/receive `InternetSetOptionW` calls
+/// below — well past a slow but working upload, well short of "did it freeze?".
+const DRAIN_DEADLINE_SECS: u64 = 20;
+
 /// A minimal WinInet HTTPS POST (mirrors `sponsors.rs::http_fetch`, but with a body).
 unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<PostResp> {
     let agent = wide("SageThumbs2K");
@@ -715,7 +726,10 @@ unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<Pos
     // 4xx/5xx page can never be scraped for a URL as if it were a success.
     let resp = if sent {
         let status = query_status(req).unwrap_or(0);
-        crate::win::wininet_drain(req, MAX_RESP).map(|body| PostResp { status, body })
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(DRAIN_DEADLINE_SECS);
+        crate::win::wininet_drain(req, MAX_RESP, Some(deadline), None)
+            .map(|body| PostResp { status, body })
     } else {
         None
     };
@@ -742,7 +756,9 @@ unsafe fn query_status(req: *mut c_void) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_url, interpret_response, parse_hosts_config, write_recovery_copy};
+    use super::{
+        extract_url, interpret_response, mime_escape, parse_hosts_config, write_recovery_copy,
+    };
 
     #[test]
     fn upload_response_requires_an_exact_web_scheme() {
@@ -792,6 +808,44 @@ https://bad example/upload | file | text
         );
     }
 
+    /// A filename or extra-field value carrying a `"` or an embedded CR/LF must
+    /// not be able to break out of its `Content-Disposition` quoted string or inject a raw
+    /// header/multipart-boundary line into the body. NTFS refuses these through the ordinary
+    /// Win32 API, but the NT native API, a WSL mount, or a non-Windows SMB share can all
+    /// create a filename that carries them, and it reaches `upload_one` unchanged.
+    #[test]
+    fn mime_escape_neutralizes_quotes_and_line_breaks() {
+        assert_eq!(mime_escape("plain.png"), "plain.png");
+
+        let injected = "evil\".png\r\nContent-Disposition: form-data; name=\"x";
+        let escaped = mime_escape(injected);
+        assert!(
+            !escaped.contains('\r') && !escaped.contains('\n'),
+            "no CR/LF may survive — a raw one would let extra header/boundary lines through"
+        );
+        assert!(
+            escaped.contains("evil\\\".png") && escaped.contains("name=\\\"x"),
+            "the quote must survive, but only in escaped (backslash-preceded) form: {escaped}"
+        );
+
+        let escaped = mime_escape("a\\b\"c\r\nd");
+        assert!(!escaped.contains('\r') && !escaped.contains('\n'));
+        // Every remaining `"` must be preceded by a backslash (properly escaped), and every
+        // backslash must itself have been doubled — otherwise a `\"` sequence produced by
+        // escaping could be misread as an unescaped quote by the receiving parser.
+        let mut chars = escaped.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                assert!(
+                    matches!(chars.next(), Some('\\') | Some('"')),
+                    "a lone backslash must not appear unescaped"
+                );
+            } else {
+                assert_ne!(c, '"', "an unescaped quote must never survive");
+            }
+        }
+    }
+
     #[test]
     fn a_2xx_plain_reply_still_extracts_the_url() {
         assert_eq!(
@@ -821,6 +875,35 @@ https://bad example/upload | file | text
         let path = write_recovery_copy(&dir, bytes).expect("recovery write should succeed");
 
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two recovery copies landing in the same second (the real trigger — a batch
+    /// upload where more than one file fails, or a recovery racing an ordinary Ctrl+S save)
+    /// used to write `dir.join(timestamped_name())` directly, so the second write silently
+    /// clobbered the first. Routing through `output::unique_name_in` must give the second
+    /// call its own path and leave the first file's bytes intact.
+    #[test]
+    fn same_second_recovery_copies_do_not_clobber_each_other() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_upload_recovery_collision_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = b"first failed upload's bytes";
+        let second = b"a second, different, failed upload's bytes";
+
+        let p1 = write_recovery_copy(&dir, first).expect("first recovery write should succeed");
+        let p2 = write_recovery_copy(&dir, second).expect("second recovery write should succeed");
+
+        assert_ne!(p1, p2, "the second write must not collide with the first");
+        assert_eq!(
+            std::fs::read(&p1).unwrap(),
+            first,
+            "the first file must survive untouched"
+        );
+        assert_eq!(std::fs::read(&p2).unwrap(), second);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

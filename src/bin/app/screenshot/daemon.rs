@@ -11,15 +11,15 @@
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{mpsc, Mutex};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
+    ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::System::RemoteDesktop::{
     WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
 };
-use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
     MOD_SHIFT,
@@ -91,6 +91,66 @@ const BALLOON_ELEVATED: u32 = 2;
 
 pub(super) const CLASS: PCWSTR = w!("SageThumbs2KShotDaemon");
 
+/// Work the wndproc must NOT do itself: the thread that runs `daemon_wndproc` is
+/// the same thread that owns the `WH_KEYBOARD_LL` Quick-preview hook (`spacehook::rearm` is
+/// called from here, in `run_daemon`), and Windows delays delivery of every keystroke on the
+/// machine until that thread answers its next `GetMessage`/`PeekMessage` — then, past
+/// `LowLevelHooksTimeout`, silently drops the hook. `CreateProcess` (spawning a capture/preview/
+/// hotkey-action helper) and an inter-process `SendMessageW` (`preview::send_command`) both
+/// block for long enough to matter, so neither may run inline in the wndproc; a dedicated
+/// worker thread does the actual work instead.
+enum DaemonWork {
+    PreviewToggle,
+    PreviewClose,
+    Hotkey(i32),
+}
+
+/// The sender half of the worker's channel, set once by [`start_worker`] from [`run_daemon`]
+/// right after the window is created — before any message that could dispatch to it can
+/// arrive. `mpsc::Sender<T>` is `Send` but not `Sync`, so it can't sit in a bare `static`
+/// (which requires `Sync`) — the `Mutex` is here purely to satisfy that, not for contention:
+/// this daemon has one wndproc thread doing the (brief, non-blocking) sends.
+static WORK_TX: Mutex<Option<mpsc::Sender<DaemonWork>>> = Mutex::new(None);
+
+/// Spawn the worker thread and stash the sender the wndproc posts to.
+fn start_worker() {
+    let (tx, rx) = mpsc::channel::<DaemonWork>();
+    std::thread::spawn(move || {
+        for work in rx {
+            unsafe {
+                match work {
+                    DaemonWork::PreviewToggle => crate::preview::request_toggle(),
+                    DaemonWork::PreviewClose => crate::preview::request_close(),
+                    DaemonWork::Hotkey(id) => on_hotkey(id),
+                }
+            }
+        }
+    });
+    if let Ok(mut slot) = WORK_TX.lock() {
+        *slot = Some(tx);
+    }
+}
+
+/// Hand `work` to the worker thread. A no-op if it somehow isn't running yet (before
+/// [`run_daemon`] has called [`start_worker`]) — the hook/wndproc thread must never fall back
+/// to running this inline, which is the exact thing this whole indirection exists to avoid.
+fn dispatch_to_worker(work: DaemonWork) {
+    if let Ok(slot) = WORK_TX.lock() {
+        if let Some(tx) = slot.as_ref() {
+            let _ = tx.send(work);
+        }
+    }
+}
+
+/// Where `kick_update_check` stashes the found version tag for `on_update_found` to read.
+/// `WM_UPDATE_FOUND` is a plain `WM_APP + 3` id, not a `RegisterWindowMessageW`
+/// one, and this window's class name (`CLASS`) is a fixed, `FindWindowW`-discoverable
+/// constant — so without this, any same-desktop process could post the message itself with an
+/// arbitrary `lparam` and make us reconstruct-and-free an attacker-chosen `Box<String>`.
+/// Keeping the tag process-local and posting only a token means a forged message just finds
+/// nothing to show.
+static UPDATE_TAG: Mutex<Option<String>> = Mutex::new(None);
+
 /// Spawn a fresh instance of ourselves in the requested mode (capture overlay, or
 /// the Settings window). A separate process keeps the tray alive across captures.
 fn spawn(arg: Option<&str>) {
@@ -108,10 +168,12 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     // instant, each passing the window check before either creates its window; both
     // then register hotkeys and one silently loses. The OS arbitrates the mutex, so
     // exactly one proceeds. Held (leaked) for process life on purpose.
-    let Ok(_lock) = CreateMutexW(None, true, w!("SageThumbs2K.ShotDaemon.Single")) else {
+    let (lock, last_err) =
+        crate::win::create_mutex_user_only(true, w!("SageThumbs2K.ShotDaemon.Single"));
+    let Ok(_lock) = lock else {
         return;
     };
-    if GetLastError() == ERROR_ALREADY_EXISTS {
+    if last_err == ERROR_ALREADY_EXISTS {
         return;
     }
     // Belt-and-suspenders (and the check callers use): a daemon window already up = done.
@@ -144,6 +206,10 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     ) else {
         return;
     };
+
+    // The worker thread that runs CreateProcess / SendMessageW off the hook thread —
+    // must be up before any hotkey/hook message can be dispatched to it.
+    start_worker();
 
     // Global hotkey (user-configurable in Settings; default Ctrl+PrtScn — PrtScn
     // alone is claimed by Win11's Snipping Tool). Best-effort — if it's taken, the
@@ -299,8 +365,22 @@ unsafe fn tray_data(hwnd: HWND, with_payload: bool) -> NOTIFYICONDATAW {
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAY;
         nid.hIcon = app_icon().unwrap_or_default();
-        let tip = wide(&format!("SageThumbs 2K — Screenshot ({})", hotkey_label()));
-        for (d, s) in nid.szTip.iter_mut().zip(tip.iter()) {
+        let mut tip_text = format!("SageThumbs 2K — Screenshot ({})", hotkey_label());
+        // The autostart write can fail silently (AV, a locked hive, …) while THIS
+        // session's daemon keeps running fine, so the tray tip is the one place that gap
+        // is visible without opening the diagnostics log — a status line saying "Running"
+        // with no other sign is exactly what preceded "PrtScn and Space do nothing" after
+        // the next reboot.
+        if super::enable::autostart_missing_while_wanted() {
+            tip_text.push(' ');
+            tip_text.push_str(crate::win::t("shot_tray_no_autostart"));
+        }
+        let tip = wide(&tip_text);
+        // `szTip` is a fixed 128-`u16` buffer with no NUL guard of its own — `.take(127)`
+        // leaves the last slot at its zeroed default so the string stays NUL-terminated even
+        // if `tip` somehow reached the full 128 (dormant today: both halves above are short
+        // and fixed-table).
+        for (d, s) in nid.szTip.iter_mut().zip(tip.iter().take(127)) {
             *d = *s;
         }
     }
@@ -374,22 +454,24 @@ unsafe fn show_tray_menu(hwnd: HWND) {
 }
 
 /// Spawn the throttled, Worker-routed update check on a background thread. If it finds a
-/// newer release it posts `WM_UPDATE_FOUND` back to the daemon window (which owns the tray
-/// icon) carrying the version tag in a `Box<String>`.
+/// newer release it stashes the tag in [`UPDATE_TAG`] and posts `WM_UPDATE_FOUND` back to the
+/// daemon window (which owns the tray icon) carrying no payload at all — `lparam`
+/// used to carry a raw `Box<String>` pointer, which any same-desktop process could forge by
+/// posting the message itself.
 unsafe fn kick_update_check(hwnd: HWND) {
     let hwnd_raw = hwnd.0 as isize; // HWND isn't Send; ferry the raw handle to the worker.
-    crate::update::lazy_check_worker(move |tag| unsafe {
-        let boxed = Box::into_raw(Box::new(tag)) as isize;
-        // PostMessageW is safe cross-thread; the UI thread reclaims the box.
-        if PostMessageW(
-            Some(HWND(hwnd_raw as *mut core::ffi::c_void)),
-            WM_UPDATE_FOUND,
-            WPARAM(0),
-            LPARAM(boxed),
-        )
-        .is_err()
-        {
-            drop(Box::from_raw(boxed as *mut String)); // window gone — don't leak
+    crate::update::lazy_check_worker(move |tag| {
+        if let Ok(mut slot) = UPDATE_TAG.lock() {
+            *slot = Some(tag);
+        }
+        // PostMessageW is safe cross-thread.
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(hwnd_raw as *mut core::ffi::c_void)),
+                WM_UPDATE_FOUND,
+                WPARAM(0),
+                LPARAM(0),
+            );
         }
     });
 }
@@ -457,17 +539,22 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     unsafe {
         match msg {
             WM_HOTKEY => {
-                on_hotkey(wparam);
+                // Dispatched to the worker thread, not run inline — this wndproc
+                // runs on the same thread that owns the WH_KEYBOARD_LL hook, and the
+                // CreateProcess a hotkey triggers must never block it.
+                dispatch_to_worker(DaemonWork::Hotkey(wparam.0 as i32));
                 LRESULT(0)
             }
             // Quick preview Space hook (see `spacehook`): the hook callback posts these so the
-            // heavier FindWindow / spawn / WM_COPYDATA work happens OFF the LL-hook callback.
+            // heavier FindWindow / spawn / WM_COPYDATA work happens OFF the LL-hook callback —
+            // and, off THIS thread too (it's the same thread as the hook), so it
+            // goes to the worker rather than running here.
             m if m == super::spacehook::WM_APP_PREVIEW => {
-                crate::preview::request_toggle();
+                dispatch_to_worker(DaemonWork::PreviewToggle);
                 LRESULT(0)
             }
             m if m == super::spacehook::WM_APP_PREVIEW_CLOSE => {
-                crate::preview::request_close();
+                dispatch_to_worker(DaemonWork::PreviewClose);
                 LRESULT(0)
             }
             // A window we would have served just came to the foreground. If it is elevated,
@@ -529,9 +616,10 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
-/// `WM_HOTKEY` - dispatch by which of the three registered hotkey ids fired.
-unsafe fn on_hotkey(wparam: WPARAM) {
-    match wparam.0 as i32 {
+/// `WM_HOTKEY` - dispatch by which of the three registered hotkey ids fired. Runs on the
+/// worker thread, not the wndproc/hook thread — `spawn` is a `CreateProcess`.
+unsafe fn on_hotkey(id: i32) {
+    match id {
         HOTKEY_ID => spawn(Some("--screenshot")),
         QUICK_HOTKEY_ID => spawn(Some("--screenshot-instant")),
         CUSTOM_HOTKEY_ID => spawn(Some("--hotkey-action")),
@@ -613,10 +701,13 @@ unsafe fn on_taskbar_created(hwnd: HWND) {
     }
 }
 
-/// `WM_UPDATE_FOUND`.
-unsafe fn on_update_found(hwnd: HWND, lparam: LPARAM) {
-    if lparam.0 != 0 {
-        let tag = *Box::from_raw(lparam.0 as *mut String);
+/// `WM_UPDATE_FOUND`. `lparam` carries nothing (see [`UPDATE_TAG`]) — the tag is
+/// read from the process-local slot, so a forged message (this class name is a fixed,
+/// `FindWindowW`-discoverable constant, postable by any same-desktop process) just finds
+/// nothing to show instead of us reconstructing-and-freeing an attacker-chosen pointer.
+unsafe fn on_update_found(hwnd: HWND, _lparam: LPARAM) {
+    let tag = UPDATE_TAG.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(tag) = tag {
         show_update_toast(hwnd, &tag);
     }
 }
@@ -652,6 +743,7 @@ unsafe fn on_destroy(hwnd: HWND) {
     let _ = KillTimer(Some(hwnd), REARM_TIMER_ID);
     let _ = WTSUnRegisterSessionNotification(hwnd);
     super::spacehook::uninstall(); // drop the Space hook with the daemon
+    super::spacehook::reset_latch();
     super::elevwarn::uninstall(); // and its foreground watcher
     remove_tray_icon(hwnd);
     let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ID);

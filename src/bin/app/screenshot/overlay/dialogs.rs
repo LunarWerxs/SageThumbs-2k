@@ -110,6 +110,14 @@ pub(super) unsafe fn pick_text_font(hwnd: HWND, s: &mut Shot) {
         cf.lpfnHook = Some(center_dialog_hook);
         cf.rgbColors = s.cur_color;
         if ChooseFontW(&mut cf).as_bool() {
+            // The native picker has no min/max of its own (it stays a one-shot,
+            // unclamped pick — CF_LIMITSIZE would need extra CHOOSEFONTW fields this
+            // struct doesn't set), so re-clamp its result here to the same bounds the
+            // flyout's +/- buttons and the `[`/`]` keyboard shortcut already share —
+            // otherwise a size picked here could silently shrink or jump the next time
+            // either of those adjusts it.
+            let size = (-lf.lfHeight).clamp(tools::TEXT_SIZE_MIN, tools::TEXT_SIZE_MAX);
+            lf.lfHeight = -size;
             s.text_font = lf;
             s.cur_color = cf.rgbColors; // honour the dialog's colour control too
         }

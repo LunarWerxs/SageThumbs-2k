@@ -69,6 +69,9 @@ pub(super) unsafe fn rearm(daemon_hwnd: HWND) {
         Ordering::Relaxed,
     );
     uninstall();
+    if !sagethumbs2k_core::settings::preview_enabled() {
+        reset_latch();
+    }
     if sagethumbs2k_core::settings::preview_enabled() {
         let hmod = GetModuleHandleW(None).ok();
         let hinst = hmod
@@ -80,12 +83,25 @@ pub(super) unsafe fn rearm(daemon_hwnd: HWND) {
     }
 }
 
-/// Remove the hook if installed (called by [`rearm`] and on daemon teardown).
+/// Remove the hook if installed (called by [`rearm`] and on daemon teardown). The
+/// hold-to-peek latch is deliberately NOT touched here: the 60 s backstop timer, resume, a
+/// session change and a display change all unhook and immediately reinstall, often while
+/// Space is physically held, and the latch is process state the new hook instance reads
+/// just as well, so the eventual key-up still closes the preview. Clearing it on every
+/// re-arm made that release a no-op and left the preview open.
 pub(super) unsafe fn uninstall() {
     let h = HOOK.swap(0, Ordering::Relaxed);
     if h != 0 {
         let _ = UnhookWindowsHookEx(HHOOK(h as *mut c_void));
     }
+}
+
+/// Forget a held Space. Only for the cases where no hook will see the key-up: the preview
+/// feature being switched off, and daemon teardown. Otherwise the stale latch would make
+/// the next press read as an auto-repeat and drop it.
+pub(super) fn reset_latch() {
+    SPACE_LATCHED.store(false, Ordering::Relaxed);
+    SPACE_DOWN_TICK.store(0, Ordering::Relaxed);
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
