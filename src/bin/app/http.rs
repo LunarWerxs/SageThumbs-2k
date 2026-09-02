@@ -93,6 +93,37 @@ pub(crate) fn request(
     unsafe { request_raw(method, &host, &path, headers, body, timeout_secs, max_resp) }
 }
 
+/// [`request`] with the wall-clock backstop [`request_ex`] has: `overall_timeout_secs` bounds
+/// the whole call, so a peer that trickles bytes just inside the per-phase timeout cannot hold
+/// a worker thread open indefinitely. For callers that need a method, headers and a body,
+/// which `request_ex` does not take.
+pub(crate) fn request_with_deadline(
+    method: &str,
+    url: &str,
+    headers: &str,
+    body: &[u8],
+    timeout_secs: u64,
+    overall_timeout_secs: u64,
+    max_resp: usize,
+) -> Option<Resp> {
+    let (host, path) = split_https(url)?;
+    let deadline = Instant::now() + Duration::from_secs(overall_timeout_secs.max(1));
+    unsafe {
+        request_raw_ex(
+            method,
+            &host,
+            &path,
+            headers,
+            body,
+            true,
+            timeout_secs,
+            Some(deadline),
+            max_resp,
+            None,
+        )
+    }
+}
+
 /// Like [`request`], but exposes the knobs `sponsors.rs`'s fetch/download helpers need so they
 /// can share this ONE WinINet core instead of hand-rolling their own (A130): `reload` controls
 /// whether WinINet is told to bypass its cache (the manifest/self-update checks want a fresh
