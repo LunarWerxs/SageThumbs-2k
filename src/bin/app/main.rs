@@ -85,7 +85,7 @@ use crate::dark::{dark_bg_brush, dark_control, dark_titlebar, init_dark_app, is_
 use crate::eyedropper::run_eyedropper;
 use crate::files_to_folder::run_files_to_folder_dialog;
 use crate::tags_to_folders::run_tags_to_folders_dialog;
-use crate::win::app_icon;
+use crate::win::{app_icon, t};
 
 /// Is this process running with an ELEVATED (admin) token? The installer's post-install
 /// [Run] steps carry `runasoriginaluser`, but when Setup itself was launched pre-elevated
@@ -203,6 +203,11 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         "--remove-user-shell",
         "--remove-user-state",
         "--queue-cache-rebuild",
+        // Deployment-script one-shots: console-output-only (an exit code), no window, and
+        // (`--export-settings`) must never trigger a network call as a side effect of
+        // something a provisioning script runs unattended.
+        "--export-settings",
+        "--import-settings",
     ];
     !args.iter().any(|a| EXCLUDED.contains(&a.as_str()))
 }
@@ -793,9 +798,15 @@ fn queue_cache_rebuild() {
 
 /// `--sync-user-shell` / `--remove-user-shell` (register.rs's per-user shell hooks, run
 /// `runasoriginaluser` by the installer so they land in the interactive user's hive rather
-/// than the elevated [Code] process's) and `--remove-user-state` (uninstall-time: wipe this
+/// than the elevated [Code] process's), `--remove-user-state` (uninstall-time: wipe this
 /// user's HKCU settings, leave the reinstall tombstone, and drop the daemon's autostart
-/// entry). Returns `true` if a flag fired (caller should return).
+/// entry), and the deployment-script pair `--export-settings <file>` / `--import-settings
+/// <file>` (round-trip the whole settings tree to/from a JSON file headlessly — the same
+/// `settings_io` the Diagnostics ▸ Export/Import buttons use, without opening a window).
+/// Those two exit the process directly (0 success, 1 failure — a missing path argument is
+/// a failure, same as an I/O error) rather than returning, matching `--update-selftest`'s
+/// shape in [`dispatch_update_modes`]. Returns `true` if a flag fired (caller should
+/// return).
 unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--sync-user-shell") {
         if let Err(e) = sagethumbs2k_core::register::sync_user_shell() {
@@ -814,6 +825,21 @@ unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--queue-cache-rebuild") {
         queue_cache_rebuild();
         return true;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--export-settings") {
+        let ok = args.get(pos + 1).is_some_and(|path| {
+            std::fs::write(path, crate::settings_io::export_settings()).is_ok()
+        });
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--import-settings") {
+        let ok = args.get(pos + 1).is_some_and(|path| {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| crate::settings_io::import_settings(&text).ok())
+                .is_some()
+        });
+        std::process::exit(if ok { 0 } else { 1 });
     }
     false
 }
@@ -959,22 +985,30 @@ unsafe fn create_and_show_settings_window(
     // strip between the pane and the footer, and the page layout below it runs once and
     // cannot be re-run. See `settings_dlg::nudge`.
     nudge::start_session();
-    // Licence posture, decided once as Settings opens (the natural "the user is
-    // looking at us" moment) and logged for support threads. Today the value only
-    // drives the log line; the Business nag banner, the one-time downgrade notice
-    // and the deauthorised alert are the surfaces that will consume it as the
-    // licensing UI lands. Deciding it HERE, next to the nudge decision, is
-    // deliberate: both answer "what may this window say to the user unprompted".
-    let _license_posture = license::current_posture();
+    // Licence posture, decided once as Settings opens (the natural "the user is looking at
+    // us" moment). `current_posture()` is called first for its own sake — it logs the
+    // decision for support threads, same as before — then `snapshot()` reads the same local
+    // state again for the extra fields the notices below need (the key prefix); both are
+    // cheap local-only reads (no network), so a second one costs nothing and keeps
+    // `current_posture`'s documented logging behaviour intact rather than duplicating it.
+    let _ = license::current_posture();
+    let license_snap = license::snapshot();
     let nudge_strip = if settings_dlg::decide_sign_in_nudge() {
         settings_dlg::sign_in_nudge_height()
+    } else {
+        0
+    };
+    // The Business-nag reminder strip reserves its own room the same way, next to (not
+    // instead of) the sign-in one — see `settings_dlg::decide_business_nag`'s doc comment.
+    let biznag_strip = if settings_dlg::decide_business_nag() {
+        settings_dlg::business_nag_height()
     } else {
         0
     };
 
     // v3 nav-rail + content-pane shell: fixed 772×588 (96-dpi design), DPI-scaled.
     let win_w = win::dpi_scale_dpi(772, mon_dpi);
-    let win_h = win::dpi_scale_dpi(588 + nudge_strip, mon_dpi);
+    let win_h = win::dpi_scale_dpi(588 + nudge_strip + biznag_strip, mon_dpi);
     let x = work.left + ((work.right - work.left) - win_w).max(0) / 2;
     let y = work.top + ((work.bottom - work.top) - win_h).max(0) / 2;
     let hwnd = CreateWindowExW(
@@ -996,6 +1030,50 @@ unsafe fn create_and_show_settings_window(
     if dark {
         dark_control(hwnd, w!("DarkMode_Explorer"));
         dark_titlebar(hwnd);
+    }
+
+    // The one-shot licensing notices: the persistent nag banner (Business, unlicensed) is
+    // page chrome the window already carries; these are the notices that speak up ONCE, the
+    // moment the window is about to appear. `Silent` (Personal, or a licensed Business
+    // install) says nothing, ever — see `license.rs`'s standing "fail toward Personal/free"
+    // rule.
+    match license_snap.posture {
+        license::Posture::Silent => {}
+        license::Posture::BusinessNag => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if license::nag_due(now) {
+                // The toast pumps its own message loop for as long as it lingers; on its
+                // own thread it cannot hold up the Settings window being built here.
+                std::thread::spawn(|| {
+                    crate::win::notify_toast(
+                        "SageThumbs 2K",
+                        t("licence_nag_toast_body"),
+                        std::time::Duration::from_secs(6),
+                    );
+                });
+                license::note_nag_shown(now);
+            }
+        }
+        license::Posture::DowngradeNoticeOnce => {
+            crate::win::message_box(
+                hwnd,
+                &t("licence_downgrade_notice").replace("{key}", &license_snap.key_prefix),
+                "SageThumbs 2K",
+            );
+            license::acknowledge_downgrade();
+        }
+        license::Posture::DeauthorizedLoud => {
+            // Every Settings open until re-licensed — this one has no acknowledgement to
+            // record, unlike the downgrade notice above.
+            crate::win::message_box(
+                hwnd,
+                &t("licence_deauthorized_notice").replace("{key}", &license_snap.key_prefix),
+                "SageThumbs 2K",
+            );
+        }
     }
 
     // Land on the requested page before the window is shown, so it never flashes General
@@ -1090,6 +1168,8 @@ mod tests {
             vec!["--sync-user-shell"],
             vec!["--remove-user-shell"],
             vec!["--remove-user-state"],
+            vec!["--export-settings", "out.json"],
+            vec!["--import-settings", "in.json"],
         ] {
             assert!(
                 !update_piggyback_wanted(&argv(&excluded)),

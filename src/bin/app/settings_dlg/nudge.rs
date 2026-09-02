@@ -154,7 +154,7 @@ fn body_h() -> i32 {
 /// so measuring at design scale is what keeps one answer right at 100%, 125% and 150%. And it has
 /// to be a screen DC because there is no window yet: this measurement is what decides how tall to
 /// create it.
-unsafe fn measure_body_h(body: &str) -> i32 {
+pub(super) unsafe fn measure_body_h(body: &str) -> i32 {
     let hdc = GetDC(None);
     if hdc.is_invalid() {
         return BODY_H_MIN;
@@ -184,7 +184,7 @@ unsafe fn measure_body_h(body: &str) -> i32 {
 /// Width for one button, in design px: whatever its label needs, never less than the English
 /// floor. Measured on `hwnd` at its real DPI and converted back to design px, because that is the
 /// unit [`place`] hands to the layout pass.
-unsafe fn btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
+pub(super) unsafe fn btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
     let hdc = GetDC(Some(hwnd));
     if hdc.is_invalid() {
         return floor;

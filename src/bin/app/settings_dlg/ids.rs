@@ -183,6 +183,35 @@ pub(super) const ID_BADGE_ICON: i32 = 1216;
 /// `ID_MENU_CHECKER`, which is the same idea for the two PREVIEW surfaces — different
 /// surfaces, different mechanisms, so one switch could not honestly drive both.
 pub(super) const ID_THUMB_CHECKER: i32 = 1217;
+// ===== Licence page (`settings_dlg/licence_ui.rs`) =====
+// 1246+: the next free block above 1245 (ID_CORNER_MARK), well clear of the nav ids
+// (1700+). "Licence" is the product's own English spelling throughout this file/UI —
+// "License" only where a Win32/API name already spells it that way (see `license.rs`).
+/// "Licence" section header: the two status lines (install mode, licence state).
+pub(super) const ID_LBL_LICENCE: i32 = 1246;
+/// "Installed for business/personal use. …" / "Portable copy." — how this copy got here.
+pub(super) const ID_LICENCE_MODE_STATUS: i32 = 1247;
+/// "Licensed, last verified …" / "No licence key entered" / "Licence revoked (key …)" /
+/// "Personal use, no licence needed" — shares its formatter with the About box's line
+/// (`licence_state_line`, in this module's parent).
+pub(super) const ID_LICENCE_STATE_STATUS: i32 = 1248;
+/// "Licence key" section header, above the redeem row.
+pub(super) const ID_LBL_LICENCE_KEY: i32 = 1249;
+/// The (wide, single-line) key entry field. Never populated from a stored value — see
+/// `licence_ui`'s module doc: the key is never written anywhere but the redeem request.
+pub(super) const ID_LICENCE_KEY_EDIT: i32 = 1250;
+pub(super) const ID_LICENCE_REDEEM_BTN: i32 = 1251;
+/// Result of the last redeem attempt, beside the button (`Row::BtnStatus`).
+pub(super) const ID_LICENCE_REDEEM_STATUS: i32 = 1252;
+/// Runs `license::refresh_entitlement()` on a worker — the same status lines above are
+/// what show its result; this button carries no status of its own.
+pub(super) const ID_LICENCE_CHECK_NOW: i32 = 1253;
+
+// ===== The Business-licence reminder strip (`settings_dlg/biznag.rs`) =====
+// Mirrors the sign-in nudge banner's ids just above (1240-1243) — see that block's
+// comment for why this whole family sits below 1700 instead of packed against it.
+pub(super) const ID_BIZNAG_CARD: i32 = 1254;
+pub(super) const ID_BIZNAG_ACTION: i32 = 1255;
 /// Show a video's embedded poster instead of a frame from the film. Cover art is used as a
 /// FALLBACK regardless of this switch (a file whose codec Windows lacks has no frame at all);
 /// this makes it the PREFERENCE, which is what a ripped-film library wants.
@@ -291,7 +320,7 @@ pub(super) const ID_NUDGE_MONTH: i32 = 1243;
 // below — which only parses THIS file — actually covers them; see NCAT's build-time
 // assert in navrail.rs for the id-space relationship between the two.
 pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT
-pub(super) const ID_PANE_HEADER: i32 = 1710;
+pub(super) const ID_PANE_HEADER: i32 = 1711; // NCAT = 11 (the Licence category added it)
 
 // Menu-items popup editor (menuitems.rs). Moved here for the same reason as the nav-rail
 // ids above. NOT 1: that is IDOK, and a colliding id would route the popup's Done button

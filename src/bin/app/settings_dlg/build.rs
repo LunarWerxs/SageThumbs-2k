@@ -730,6 +730,38 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         }
     }
 
+    // ===== The Business-licence reminder strip (see `settings_dlg/biznag.rs`) =====
+    //
+    // Created only when the licence engine has decided to show it (an unlicensed Business
+    // install, or a revoked seat) — rare, same reasoning as the sign-in banner just above,
+    // and the same z-order rule (card, then its button).
+    if biznag::showing() {
+        ctl(
+            hwnd,
+            STATIC,
+            "",
+            WINDOW_STYLE(SS_OWNERDRAW),
+            0,
+            0,
+            10,
+            10,
+            ID_BIZNAG_CARD,
+            hinst,
+        );
+        ctl(
+            hwnd,
+            BUTTON,
+            t("biznag_btn"),
+            WS_TABSTOP,
+            0,
+            0,
+            10,
+            10,
+            ID_BIZNAG_ACTION,
+            hinst,
+        );
+    }
+
     // ===== Bottom row: About + credit (left), inline with Save / Cancel (right) =====
     ctl(
         hwnd,
@@ -838,6 +870,110 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         322,
         18,
         ID_LBL_HOTKEY_SVC,
+        hinst,
+    );
+
+    // ===== Licence page (v3 reorg extra, repositioned by apply_v3_layout) =====
+    // Values are seeded by `load_values` -> `licence_ui::seed_licence_ui`, below, once
+    // every control here exists.
+    ctl(
+        hwnd,
+        STATIC,
+        t("grp_licence"),
+        hdr,
+        0,
+        0,
+        322,
+        18,
+        ID_LBL_LICENCE,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        STATIC,
+        "",
+        WINDOW_STYLE(0),
+        0,
+        0,
+        300,
+        18,
+        ID_LICENCE_MODE_STATUS,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        STATIC,
+        "",
+        WINDOW_STYLE(0),
+        0,
+        0,
+        300,
+        18,
+        ID_LICENCE_STATE_STATUS,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        STATIC,
+        t("grp_licence_key"),
+        hdr,
+        0,
+        0,
+        322,
+        18,
+        ID_LBL_LICENCE_KEY,
+        hinst,
+    );
+    // Borderless + a painted rounded frame in dark mode, native bordered edit in light —
+    // same shape as the settings-wide search box (`ID_SEARCH`), which is the other wide,
+    // single-line edit on this dialog.
+    let licence_key_style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
+    ctl(
+        hwnd,
+        EDIT,
+        "",
+        licence_key_style,
+        0,
+        0,
+        300,
+        18,
+        ID_LICENCE_KEY_EDIT,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_licence_redeem"),
+        WS_TABSTOP,
+        0,
+        0,
+        160,
+        26,
+        ID_LICENCE_REDEEM_BTN,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        STATIC,
+        "",
+        WINDOW_STYLE(0),
+        0,
+        0,
+        300,
+        18,
+        ID_LICENCE_REDEEM_STATUS,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_licence_check_now"),
+        WS_TABSTOP,
+        0,
+        0,
+        184,
+        26,
+        ID_LICENCE_CHECK_NOW,
         hinst,
     );
 

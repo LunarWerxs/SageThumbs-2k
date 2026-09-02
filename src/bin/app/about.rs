@@ -47,6 +47,12 @@ const ID_COPYRIGHT: i32 = 1205;
 /// The "Send feedback" pill — same owner-drawn stadium as the version/status pills,
 /// centered on its own row in the band between them and the footer.
 const ID_FEEDBACK_PILL: i32 = 1206;
+/// The licence-state line ("Licensed, last verified …" / "No licence key entered" /
+/// "Licence revoked (key …)" / "Personal use, no licence needed") — the SAME text the
+/// Settings page's Licence status line shows, from the same shared formatter
+/// (`settings_dlg::licence_state_line`). Not `ID_LICENSE` — that one names the software
+/// LICENSE this app ships under ("PolyForm Noncommercial 1.0.0"), an unrelated fact.
+const ID_LICENCE_STATE: i32 = 1207;
 
 /// Posted from the update-check worker thread back to the About window: the check
 /// finished. `WPARAM` = outcome (0 up-to-date, 1 update available, 2 failed);
@@ -72,7 +78,10 @@ const MIN_SPIN_FRAMES: u32 = 50;
 
 /// Client size in 96-DPI design pixels (DPI-scaled per control / for the frame).
 const CW: i32 = 440;
-const CH: i32 = 300;
+/// 318, not the original 300: the bottom-left block grew a third line (the licence-state
+/// line, between the software-licence line and the copyright line) when the Licence page
+/// landed, so the card needed the extra ~18px to keep the same margin below it.
+const CH: i32 = 318;
 
 /// Logo artwork, embedded so it always renders. A `logo.png` next to the EXE overrides.
 const LOGO_PNG: &[u8] = include_bytes!("../../../assets/logo.png");
@@ -433,7 +442,7 @@ unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
         hinst,
     );
 
-    // Bottom-left: license + copyright (muted via WM_CTLCOLORSTATIC).
+    // Bottom-left: license + licence-state + copyright (muted via WM_CTLCOLORSTATIC).
     ctl(
         hwnd,
         STATIC,
@@ -449,10 +458,22 @@ unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
     ctl(
         hwnd,
         STATIC,
-        "\u{00a9} 2026 Lunarwerx",
+        &crate::settings_dlg::licence_state_line(&crate::license::snapshot()),
         WINDOW_STYLE(0),
         22,
         268,
+        228,
+        16,
+        ID_LICENCE_STATE,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        STATIC,
+        "\u{00a9} 2026 Lunarwerx",
+        WINDOW_STYLE(0),
+        22,
+        286,
         210,
         16,
         ID_COPYRIGHT,
@@ -461,7 +482,8 @@ unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
 
     // Bottom-right: the clickable LunarWerx Studios wordmark. The two theme variants have
     // different aspect ratios, so size the control to the active one (fixed height, width
-    // from the aspect) — no squish — and right-anchor it.
+    // from the aspect) — no squish — and right-anchor it. y nudged down 10 (252→262) to
+    // stay roughly centered against the bottom-left block's now-three lines.
     let (_, lw_aspect) = lw_logo();
     let lw_h = 26;
     let lw_w = (lw_h as f32 * lw_aspect).round() as i32;
@@ -471,7 +493,7 @@ unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
         "",
         WINDOW_STYLE(SS_BITMAP | SS_NOTIFY),
         CW - 22 - lw_w,
-        252,
+        262,
         lw_w,
         lw_h,
         ID_LW_LOGO,
@@ -864,7 +886,7 @@ unsafe fn muted_static_color(wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> 
     let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
     let hdc = HDC(wparam.0 as *mut c_void);
     let muted = match id {
-        ID_SUBTITLE | ID_LICENSE => Some(HEADER_TEXT()),
+        ID_SUBTITLE | ID_LICENSE | ID_LICENCE_STATE => Some(HEADER_TEXT()),
         ID_COPYRIGHT => Some(DISABLED_TEXT()),
         _ => None,
     };

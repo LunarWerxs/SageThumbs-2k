@@ -97,6 +97,9 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
     // Seed the Settings-sync row (button label + green "● Synced" badge) from the signed-in
     // state; the background pull (spawn_sync_pull) later refreshes it via WM_APP_SYNC.
     refresh_sync_ui(hwnd);
+    // Seed the Licence page's two status lines + the idle redeem-result line; Redeem/Check
+    // now later refresh them via WM_APP_LICENCE.
+    licence_ui::seed_licence_ui(hwnd);
     // LAST, after every parent checkbox has its real value: grey (or un-grey) the dependent
     // rows. The earlier `update_badge_style_enabled` call runs before the menu/preview
     // masters are loaded and would leave their children greyed under an enabled parent.

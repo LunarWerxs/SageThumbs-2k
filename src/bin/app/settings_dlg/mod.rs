@@ -76,7 +76,15 @@ mod ids;
 pub(super) use ids::*;
 mod build;
 use build::*;
+/// The Business-licence reminder strip: its pixels, its click, and where it sits. Sibling of
+/// `nudge` below (same strip mechanism), but for `license::Posture::BusinessNag` /
+/// `DeauthorizedLoud` instead of the sign-in campaign — see that module's doc comment.
+mod biznag;
 mod helpers;
+/// The Licence Settings page: seeding its two status lines, the Redeem/Check-now worker
+/// calls, and `WM_APP_LICENCE`'s completion handling. Modelled on `sync`'s
+/// `WM_APP_SYNC` pattern below.
+mod licence_ui;
 mod localize;
 mod menuitems;
 mod navrail;
@@ -96,11 +104,91 @@ pub(crate) fn decide_sign_in_nudge() -> bool {
 pub(crate) fn sign_in_nudge_height() -> i32 {
     nudge::strip_h()
 }
+
+/// Ask the licence engine whether the Business-nag strip will show, the same way
+/// [`decide_sign_in_nudge`] asks the sign-in one — before the window is created, because the
+/// answer changes how tall it is.
+pub(crate) fn decide_business_nag() -> bool {
+    biznag::decide()
+}
+
+/// Design-pixel height the Business-nag strip adds to the window. Pair with
+/// [`decide_business_nag`].
+pub(crate) fn business_nag_height() -> i32 {
+    biznag::strip_h()
+}
+
+/// The licence-state line — "Licensed, last verified …" / "No licence key entered" /
+/// "Licence revoked (key esk_XXXX)" / "Personal use, no licence needed" — the ONE formatter
+/// for it, shared between this window's status line and the About box's licence line (see
+/// `about.rs`) so the two surfaces cannot silently drift into disagreeing over what the exact
+/// same [`crate::license::snapshot`] means.
+pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> String {
+    if snap.mode == crate::license::Mode::Personal {
+        return t("licence_state_personal").to_string();
+    }
+    if snap.key_prefix.is_empty() {
+        return t("licence_state_none").to_string();
+    }
+    if snap.last_status == "revoked" {
+        return t("licence_state_revoked").replace("{key}", &snap.key_prefix);
+    }
+    t("licence_state_licensed").replace("{date}", &format_unix_date(snap.last_positive_unix))
+}
+
+/// The "how did this copy get here" line — "Installed for business use. Reinstall to
+/// change." / "Installed for personal use." / "Portable copy." — shown above
+/// [`licence_state_line`] on the Licence page. Portable wins over the recorded [`Mode`]:
+/// a portable copy never saw the installer's Personal/Business question (see
+/// `license::read_mode`'s doc comment on how it can still end up `Business` after a
+/// redeemed key), and "Reinstall to change" would be nonsense advice for a copy that was
+/// never installed.
+///
+/// [`Mode`]: crate::license::Mode
+fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> String {
+    if sagethumbs2k_core::settings::portable() {
+        return t("licence_mode_portable").to_string();
+    }
+    match snap.mode {
+        crate::license::Mode::Business => t("licence_mode_business").to_string(),
+        crate::license::Mode::Personal => t("licence_mode_personal").to_string(),
+    }
+}
+
+/// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
+/// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
+/// line has no use for a time-of-day). No chrono/time dependency for one call site.
+fn format_unix_date(unix_secs: u64) -> String {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    if unix_secs == 0 {
+        return String::new();
+    }
+    // FILETIME ticks are 100ns units since 1601-01-01; the Unix epoch (1970-01-01) is
+    // 11_644_473_600 seconds later.
+    let ticks = unix_secs
+        .saturating_add(11_644_473_600)
+        .saturating_mul(10_000_000);
+    let ft = FILETIME {
+        dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let mut utc = SYSTEMTIME::default();
+    if unsafe { FileTimeToSystemTime(&ft, &mut utc) }.is_err() {
+        return String::new();
+    }
+    let mut local = utc;
+    unsafe {
+        let _ = SystemTimeToTzSpecificLocalTime(None, &utc, &mut local);
+    }
+    format!("{:04}-{:02}-{:02}", local.wYear, local.wMonth, local.wDay)
+}
 mod search;
 mod shot;
 mod sync;
 mod values;
 use helpers::*;
+use licence_ui::*;
 use localize::*;
 use navrail::*;
 pub(crate) use shot::{run_shot, run_shot_gif, run_shot_search};
@@ -491,6 +579,9 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_RESET_ALL, "tip_reset_all"),
     (ID_IMPORT, "tip_import"),
     (ID_EXPORT, "tip_export"),
+    (ID_LICENCE_KEY_EDIT, "tip_licence_key"),
+    (ID_LICENCE_REDEEM_BTN, "tip_licence_redeem"),
+    (ID_LICENCE_CHECK_NOW, "tip_licence_check_now"),
     (ID_SELECT_ALL, "tip_select_all"),
     (ID_CLEAR_ALL, "tip_clear_all"),
     (ID_DEFAULTS, "tip_defaults"),
@@ -1106,6 +1197,55 @@ unsafe fn special_ctlcolor(
         }
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
     }
+    // The licence-state line: green when actively licensed, red when revoked, the plain
+    // theme colour otherwise (Personal / no key entered yet — a normal state, not a
+    // problem one). Same green/red pair the hotkey-service and sync badges above use.
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_LICENCE_STATE_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+    {
+        return match licence_ui::state_tone() {
+            // Not a special case: hand it to the generic class-based theming instead of
+            // returning `None` here, which would skip dark theming for this control
+            // entirely (this `if` has already committed to answering for it).
+            licence_ui::Tone::Neutral => dark_ctlcolor(msg, wparam),
+            licence_ui::Tone::Good => {
+                let hdc = HDC(wparam.0 as *mut c_void);
+                SetTextColor(hdc, COLORREF(0x0059_C734)); // green
+                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+                SetBkMode(hdc, TRANSPARENT);
+                Some(LRESULT(dark_bg_brush().0 as isize))
+            }
+            licence_ui::Tone::Bad => {
+                let hdc = HDC(wparam.0 as *mut c_void);
+                SetTextColor(hdc, COLORREF(0x004D_48E5)); // red
+                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+                SetBkMode(hdc, TRANSPARENT);
+                Some(LRESULT(dark_bg_brush().0 as isize))
+            }
+        };
+    }
+    // The redeem-result line, same tri-state (idle / just-redeemed / just-rejected).
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_LICENCE_REDEEM_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+    {
+        return match licence_ui::redeem_tone() {
+            licence_ui::Tone::Neutral => dark_ctlcolor(msg, wparam),
+            licence_ui::Tone::Good => {
+                let hdc = HDC(wparam.0 as *mut c_void);
+                SetTextColor(hdc, COLORREF(0x0059_C734)); // green
+                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+                SetBkMode(hdc, TRANSPARENT);
+                Some(LRESULT(dark_bg_brush().0 as isize))
+            }
+            licence_ui::Tone::Bad => {
+                let hdc = HDC(wparam.0 as *mut c_void);
+                SetTextColor(hdc, COLORREF(0x004D_48E5)); // red
+                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
+                SetBkMode(hdc, TRANSPARENT);
+                Some(LRESULT(dark_bg_brush().0 as isize))
+            }
+        };
+    }
     dark_ctlcolor(msg, wparam)
 }
 
@@ -1123,6 +1263,7 @@ unsafe fn on_lifecycle_msg(
         crate::update::WM_APP_UPDATE => Some(on_update_available(hwnd, lparam)),
         WM_APP_SYNC => Some(on_app_sync(hwnd, lparam)),
         WM_APP_CACHE => Some(on_app_cache(hwnd, lparam)),
+        WM_APP_LICENCE => Some(on_app_licence(hwnd, lparam)),
         WM_GETMINMAXINFO => Some(on_getminmaxinfo(lparam)),
         WM_SIZE => {
             let client_h = ((lparam.0 >> 16) & 0xFFFF) as i32;
@@ -1215,6 +1356,17 @@ unsafe fn on_app_sync(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     if lparam.0 != 0 {
         let event = *Box::from_raw(lparam.0 as *mut SyncEvent);
         handle_sync_event(hwnd, event);
+    }
+    LRESULT(0)
+}
+
+/// A background licence op (redeem / check-now) finished on a worker thread. Reclaim the
+/// boxed event and update the Licence page on this message thread — same reclaim shape as
+/// [`on_app_sync`] just above.
+unsafe fn on_app_licence(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    if lparam.0 != 0 {
+        let event = *Box::from_raw(lparam.0 as *mut LicenceEvent);
+        handle_licence_event(hwnd, event);
     }
     LRESULT(0)
 }
@@ -1355,6 +1507,7 @@ unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     on_command_shot(hwnd, id);
     on_command_sync_nav(hwnd, id, notify);
     on_command_admin(hwnd, id);
+    on_command_licence(hwnd, id);
     LRESULT(0)
 }
 
@@ -1480,6 +1633,9 @@ unsafe fn on_command_sync_nav(hwnd: HWND, id: i32, notify: u32) {
         ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH => {
             nudge::on_command(hwnd, id);
         }
+        ID_BIZNAG_ACTION => {
+            biznag::on_command(hwnd, id);
+        }
         ID_LANG if notify == CBN_SELCHANGE => on_lang_change(hwnd),
         nav if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&nav) && notify == STN_CLICKED => {
             switch_category(hwnd, (nav - ID_NAV_BASE) as usize);
@@ -1519,6 +1675,16 @@ unsafe fn on_command_admin(hwnd: HWND, id: i32) {
         ID_RUN_DOCTOR => crate::doctor_report::run_doctor_report(Some(hwnd)),
         ID_PORTABLE_REG => toggle_portable_registration(hwnd),
         ID_CHECK_UPDATES => show_about(hwnd),
+        _ => {}
+    }
+}
+
+/// The Licence page's two network buttons — Redeem and Check now. Both run on a worker
+/// thread and post back through `WM_APP_LICENCE`; see `licence_ui.rs`.
+unsafe fn on_command_licence(hwnd: HWND, id: i32) {
+    match id {
+        ID_LICENCE_REDEEM_BTN => licence_ui::on_redeem_click(hwnd),
+        ID_LICENCE_CHECK_NOW => licence_ui::on_check_now_click(hwnd),
         _ => {}
     }
 }
@@ -1719,6 +1885,8 @@ unsafe fn on_drawitem_static(hwnd: HWND, d: &DRAWITEMSTRUCT) {
         scroll::draw_left_mask(hwnd, d);
     } else if cid == ID_NUDGE_CARD {
         nudge::draw_card(hwnd, d);
+    } else if cid == ID_BIZNAG_CARD {
+        biznag::draw_card(hwnd, d);
     } else if cid == ID_PANE_HEADER {
         draw_pane_header(hwnd, d);
     } else if (ID_NAV_BASE..ID_NAV_BASE + NCAT as i32).contains(&cid) {
@@ -1851,6 +2019,80 @@ unsafe fn on_timer_rotate(hwnd: HWND) -> LRESULT {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `licence_state_line` given a hand-built snapshot for each of the four states it must
+    /// tell apart — the same four the Settings status line and the About box's line both
+    /// show. Pure over its argument (no registry, no file, no network), so every boundary
+    /// pins without touching the real breadcrumb.
+    #[test]
+    fn licence_state_line_covers_all_four_states() {
+        fn snap(
+            mode: crate::license::Mode,
+            key_prefix: &str,
+            last_status: &str,
+            last_positive_unix: u64,
+        ) -> crate::license::LicenceSnapshot {
+            crate::license::LicenceSnapshot {
+                mode,
+                // `posture` isn't read by `licence_state_line` at all (it derives the same
+                // fact from `mode`/`key_prefix`/`last_status` directly) — any value proves
+                // that independence.
+                posture: crate::license::Posture::Silent,
+                key_prefix: key_prefix.to_string(),
+                last_positive_unix,
+                last_status: last_status.to_string(),
+            }
+        }
+
+        // Personal wins over everything else — even a stale key/status from a former
+        // Business install (the downgrade notice, not this line, owns that story).
+        assert_eq!(
+            licence_state_line(&snap(
+                crate::license::Mode::Personal,
+                "esk_A1B2",
+                "active",
+                1
+            )),
+            t("licence_state_personal")
+        );
+        // Business, never redeemed anything.
+        assert_eq!(
+            licence_state_line(&snap(crate::license::Mode::Business, "", "", 0)),
+            t("licence_state_none")
+        );
+        // Business, the breadcrumb's last recorded status is a revocation.
+        assert_eq!(
+            licence_state_line(&snap(
+                crate::license::Mode::Business,
+                "esk_A1B2",
+                "revoked",
+                1_700_000_000
+            )),
+            t("licence_state_revoked").replace("{key}", "esk_A1B2")
+        );
+        // Business, a key on record and no revocation — "Licensed", with the verify date.
+        let licensed = licence_state_line(&snap(
+            crate::license::Mode::Business,
+            "esk_A1B2",
+            "active",
+            1_700_000_000,
+        ));
+        assert_eq!(
+            licensed,
+            t("licence_state_licensed").replace("{date}", &format_unix_date(1_700_000_000))
+        );
+    }
+
+    /// `format_unix_date` — the two edges a caller can actually hit: no timestamp on record
+    /// (0, the serde default for a field that was never written) reads as empty rather than
+    /// 1970-01-01, and a real timestamp comes back as a plain 4-digit year.
+    #[test]
+    fn format_unix_date_edges() {
+        assert_eq!(format_unix_date(0), "");
+        let d = format_unix_date(1_700_000_000); // 2023-11-14T22:13:20Z
+        assert_eq!(d.len(), 10, "expected YYYY-MM-DD, got {d:?}");
+        assert!(d.starts_with("202"), "expected a 2020s year, got {d:?}");
+    }
 
     /// `set_shot_status` must record the green/not-green state in `SHOT_STATUS_GREEN`
     /// regardless of the control lookup outcome: the WM_CTLCOLORSTATIC tint handler reads

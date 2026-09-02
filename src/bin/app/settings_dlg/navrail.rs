@@ -21,17 +21,18 @@ pub(super) const PANE_X: i32 = 212;
 pub(super) const PANE_W: i32 = 528;
 pub(super) const PANE_TOP: i32 = 16;
 pub(super) const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
-pub(super) const NCAT: usize = 10;
+pub(super) const NCAT: usize = 11;
 // ID_NAV_BASE and ID_PANE_HEADER live in ids.rs now (so `control_ids_are_unique` there
 // covers them), but the id-space relationship is this module's invariant to keep, so the
 // build-time check stays here. The nav ids and ID_PANE_HEADER share one id space, and at
-// NCAT = 10 they fit with exactly ZERO headroom: nav owns 1700..=1709 and the header sits
-// on 1710. An eleventh category would silently hand the pane header a nav item's identity,
+// NCAT = 11 they fit with exactly ZERO headroom: nav owns 1700..=1710 and the header sits
+// on 1711. A twelfth category would silently hand the pane header a nav item's identity,
 // and the two `(ID_NAV_BASE..ID_NAV_BASE + NCAT)` range tests in `mod.rs`'s WM_COMMAND
 // would start routing clicks on the header as a category switch. Nothing about that fails
 // to compile or looks wrong in a diff, which is exactly the shape of bug this repo keeps
 // paying for, so it fails the BUILD instead.
-// (The stale comment this replaces still said the range ended at 1708, from when NCAT was 8.)
+// (The stale comment this replaces still said the range ended at 1708, from when NCAT was 8,
+// then 1709/NCAT=10 when the Licence category — the 11th — was added.)
 const _: () = assert!(
     ID_NAV_BASE as usize + NCAT <= ID_PANE_HEADER as usize,
     "a new Settings category pushed the nav ids onto ID_PANE_HEADER: move ID_PANE_HEADER up"
@@ -52,7 +53,8 @@ pub(super) fn nav_key(ci: usize) -> &'static str {
         6 => "nav_quickaction",
         7 => "nav_advanced",
         8 => "nav_quickpreview",
-        _ => "nav_databackup",
+        9 => "nav_databackup",
+        _ => "nav_licence",
     }
 }
 
@@ -298,7 +300,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),
         ],
-        _ => &[
+        9 => &[
             // Data & Backup — settings portability: optional cloud sync + local backup/restore.
             // Controls are created in build_controls; listing them here places them into this
             // pane + registers them for nav show/hide.
@@ -308,6 +310,18 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Btn(ID_RESET_ALL, 320),
             Btn(ID_IMPORT, 320),
             Btn(ID_EXPORT, 320),
+        ],
+        _ => &[
+            // Licence — the business-seat key: what this copy currently believes about
+            // itself (mode + licence state), and the redeem/check-now actions. See
+            // `settings_dlg/licence_ui.rs`.
+            Head(ID_LBL_LICENCE),
+            Status(ID_LICENCE_MODE_STATUS),
+            Status(ID_LICENCE_STATE_STATUS),
+            Head(ID_LBL_LICENCE_KEY),
+            Wide(ID_LICENCE_KEY_EDIT),
+            BtnStatus(ID_LICENCE_REDEEM_BTN, 160, ID_LICENCE_REDEEM_STATUS),
+            Btn(ID_LICENCE_CHECK_NOW, 184),
         ],
     }
 }
@@ -481,11 +495,18 @@ pub(super) unsafe fn draw_cat_icon(hdc: HDC, ci: usize, x: i32, y: i32, sz: i32,
                 el(3, 8, 21, 16);
                 el(10, 9, 14, 15);
             }
-            _ => {
+            9 => {
                 // save/backup: a down-arrow into an open tray (Data & Backup)
                 ln(&[(12, 3), (12, 14)]);
                 ln(&[(8, 10), (12, 14), (16, 10)]);
                 ln(&[(4, 16), (4, 21), (20, 21), (20, 16)]);
+            }
+            _ => {
+                // key: a round bow + a shaft with two teeth (Licence)
+                el(3, 3, 11, 11);
+                ln(&[(9, 9), (21, 21)]);
+                ln(&[(15, 15), (18, 12)]);
+                ln(&[(18, 18), (21, 15)]);
             }
         }
         gdip::drop_pen(p);
@@ -503,7 +524,8 @@ pub(super) fn cat_blurb(ci: usize) -> &'static str {
         6 => t("blurb_quickaction"),
         7 => t("blurb_advanced"),
         8 => t("blurb_quickpreview"),
-        _ => t("blurb_databackup"),
+        9 => t("blurb_databackup"),
+        _ => t("blurb_licence"),
     }
 }
 
@@ -1151,8 +1173,11 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     //
     // Everything that lays out PAGE CONTENT (the list that fills to the bottom, and the assert
     // that each fixed page still clears the footer) uses `content_bottom`; only the footer row
-    // itself uses `footer_y`.
-    let content_bottom = footer_y - nudge::extra_height();
+    // itself uses `footer_y`. The Business-licence banner (`biznag`) reserves its own strip the
+    // same way, stacked below the sign-in one when both happen to apply at once (rare — one
+    // needs a signed-out account, the other a Business install — but neither rules the other
+    // out, so both get their own room rather than one silently overwriting the other).
+    let content_bottom = footer_y - nudge::extra_height() - biznag::extra_height();
 
     let sc = |v: i32| dpi_scale(hwnd, v);
     let place = |id: i32, x: i32, y: i32, w: i32, h: i32| -> Option<HWND> {
@@ -1246,6 +1271,18 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     nudge::place(
         hwnd,
         content_bottom + 8,
+        PANE_X,
+        PANE_W,
+        |id, x, y, w, h| {
+            place(id, x, y, w, h);
+        },
+    );
+    // The Business-licence banner, stacked directly under the sign-in one (which reserved
+    // `nudge::extra_height()` of the strip above — 0 when it isn't showing, so this sits right
+    // after content_bottom on the far more common run where neither or only this one is live).
+    biznag::place(
+        hwnd,
+        content_bottom + 8 + nudge::extra_height(),
         PANE_X,
         PANE_W,
         |id, x, y, w, h| {
