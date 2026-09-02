@@ -242,4 +242,16 @@ works.
 ### Can I use this at work?
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
-needs a separate licence. Ask through **Send feedback** or a GitHub issue.
+needs a separate licence. Ask through **Send feedback** or a GitHub issue to arrange one
+directly, or redeem a business seat key yourself, see below.
+
+### How does a business licence work?
+
+It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. The installer asks
+up front whether a copy is for personal or business use, and that answer only changes by
+reinstalling, there's no toggle for it in Settings. A portable copy has no installer to ask,
+and counts as business use as soon as a key is redeemed on it. A business copy has every
+feature the moment it's installed, key or not, it just reminds you to add one: a notice when
+you launch it, and a strip across the Settings window, on every page, that stays until you do.
+Once a key is redeemed, the licence check runs quietly in the background and tolerates about a
+week offline before the reminders start again.

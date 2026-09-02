@@ -431,7 +431,8 @@ as the screenshot/custom-action hotkeys, so turning it on adds no extra resident
 Reached from the Start-menu shortcut (`SageThumbs 2K`); the window is titled
 **Settings**. Native Win32, dark-mode aware, 36 languages. **Redesigned in 0.7.0**: a
 Windows 11-style **category rail** (General · Appearance · File types · Ebook/comic ·
-Right-click menu · Screenshots · Quick action · Advanced · Quick preview · Data & Backup) on
+Right-click menu · Screenshots · Quick action · Advanced · Quick preview · Data & Backup ·
+Licence) on
 the left with a content page on the right: **toggle switches**, category icons, and a titled
 header per page. Everyday knobs up front; Diagnostics / Updates / Backup tuck under
 **Advanced**. (Fixed-size window; the old single long scroll is gone.)
@@ -583,6 +584,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   simply don't get a reply. The box also links to the GitHub issue tracker for anyone who'd
   rather file it in public, and if the send can't get through your text is copied to the
   clipboard so nothing is lost.
+- **Licence:** shows whether the copy is running as personal or business, a field to enter
+  and redeem a seat key (`esk_...`), and a **Check now** button to re-verify immediately. For a
+  business copy with no key redeemed yet, this is also where the reminder lives, alongside the
+  launch notice and the strip across every Settings page.
 
 ---
 
@@ -725,3 +730,8 @@ anytime (it removes the cloud copy). **The shell-extension DLL never touches the
 all sign-in/sync code lives in the Settings app only, preserving the crash-isolation guarantee.
 The refresh token is stored encrypted (Windows DPAPI); the store is a settings locker (≤64 KB,
 no secrets).
+
+The same page's **Export Settings** and **Import Settings** buttons save or apply the entire
+settings tree to a JSON file by hand; **`SageThumbs2K.exe --export-settings <file>`** and
+**`--import-settings <file>`** do the same round trip headlessly, for scripted deployment
+across a fleet of installs.

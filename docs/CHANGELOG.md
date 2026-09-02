@@ -46,6 +46,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   the licence text nobody reads. Your answer is remembered across updates, and changing it
   means reinstalling. Nothing about thumbnails, previews, or any feature changes either way.
 
+- **A Licence page in Settings for redeeming a business seat key, with a background check
+  that keeps it current.** Enter the seat key you were given (`esk_...`) under Settings ▸
+  Licence and the copy is on record as licensed; personal use needs nothing and stays exactly
+  as it was. A business copy has every feature from the moment it's installed, key or not, it
+  just reminds you to add one: a notice when you launch it, and a strip on the Settings page
+  that stays until you do. The check that keeps a redeemed key valid rides the background check
+  the update feature already runs, at most once every six hours, and tolerates about a week
+  offline before it starts reminding again.
+
+- **New `--export-settings <file>` / `--import-settings <file>` command-line flags for
+  scripted deployment.** Save or apply the entire settings tree to a JSON file straight from
+  the command line, no window needed, the same round trip Settings ▸ Data & Backup's Export
+  and Import Settings buttons already do. Handy for rolling one configuration out to a fleet
+  of installs.
+
 ### Changed
 
 - **Importing a settings file now fully replaces your settings instead of merging with them.**
@@ -264,8 +279,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   and cost nothing extra. (issue #32)
 
 - **Photoshop files stayed blurry in the Explorer preview pane, however long you waited.**
-  A `.psd` carries a small ready-made thumbnail near the front of the file — usually about
-  160 pixels, whatever the size of the artwork — and SageThumbs was answering every request
+  A `.psd` carries a small ready-made thumbnail near the front of the file, usually about
+  160 pixels, whatever the size of the artwork, and SageThumbs was answering every request
   with it, including the preview pane's, which asks for something nearer 2048. You got a soft,
   undersized picture that never improved. It now uses that built-in thumbnail only when it is
   genuinely big enough for the size being asked for, and renders the real full-resolution
@@ -275,11 +290,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   preview, which was already showing the full picture, is untouched. (issue #33)
 
 - **Converting very large Photoshop files did nothing at all.** Converting a folder of PSDs
-  quietly skipped every file over about 270 MB — no error, no output, just a smaller number in
+  quietly skipped every file over about 270 MB, no error, no output, just a smaller number in
   the "converted N of M" summary. Those files were being turned away by a size limit meant for
   something else entirely: a safety budget for files that arrive unasked-for, such as whatever
   folder Explorer happens to be drawing thumbnails of. A file you picked and asked to convert
-  is not that, and it now gets a limit sized for the job — comfortably past the 2 GB ceiling
+  is not that, and it now gets a limit sized for the job, comfortably past the 2 GB ceiling
   Photoshop's own `.psd` format has. The "Max file size (MB)" setting was never involved, which
   is why changing it did not help. (issue #34)
 
