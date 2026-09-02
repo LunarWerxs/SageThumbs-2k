@@ -48,12 +48,6 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Changed
 
-- **The right-click menu's preview tile no longer renders SVG files.** That tile is drawn
-  inside Explorer's own process, where a slow or hostile vector file cannot be cut off the
-  way it can in the isolated thumbnail and preview hosts, so the tile now shows the caption
-  only for `.svg` and `.svgz`. Thumbnails, the preview pane and the Quick preview still
-  render them exactly as before.
-
 - **Importing a settings file now fully replaces your settings instead of merging with them.**
   Previously, an imported settings file only added or updated values, leaving anything not
   present in the file untouched, so an old setting could survive an import that was meant to

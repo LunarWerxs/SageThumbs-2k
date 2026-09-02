@@ -80,27 +80,32 @@ fn decodes_svg_to_thumbnail() {
 }
 
 #[test]
-fn menu_preview_skips_svg_and_pdf() {
-    // The in-explorer context-menu tile decodes on explorer's own thread budget. resvg has
-    // no internal timeout and its render worker cannot be killed, so SVG stays excluded
-    // there (caption-only tile) and is rendered only by the isolated thumbnail and preview
-    // hosts; PDF has no in-process rasterizer at all.
+fn menu_preview_renders_svg_but_still_skips_pdf() {
+    // The in-explorer context-menu tile renders SVG via resvg (pure-Rust, in-process,
+    // time-bounded, external hrefs refused, size-gated) while video / PDF / ImageMagick
+    // stay excluded so a right-click can never freeze the shell. A 40px SVG is below
+    // SVG_MIN_DIM (512), so render_svg scales the vector UP to a usable 512px long edge.
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="rgb(10,200,90)"/></svg>"#;
-    assert!(
-        decode_menu_preview(svg).is_err(),
-        "SVG must stay excluded from the in-explorer menu preview"
-    );
+    let img = decode_menu_preview(svg).expect("menu preview should decode a plain SVG");
+    assert_eq!((img.width(), img.height()), (512, 512));
 
-    // `.svgz` (gzipped SVG) is the same renderer behind an inflate: excluded too.
+    // `.svgz` (gzipped SVG) must inflate + render on the menu path too.
     let mut gz = Vec::new();
     {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
         enc.write_all(svg).unwrap();
     }
+    let img = decode_menu_preview(&gz).expect("menu preview should decode gzipped .svgz");
+    assert_eq!((img.width(), img.height()), (512, 512));
+
+    // Past the size gate the tile degrades to the caption instead of parsing a large file
+    // on explorer's own thread.
+    let mut huge = svg.to_vec();
+    huge.extend(std::iter::repeat_n(b' ', 256 * 1024));
     assert!(
-        decode_menu_preview(&gz).is_err(),
-        "SVGZ must stay excluded from the in-explorer menu preview"
+        decode_menu_preview(&huge).is_err(),
+        "an SVG past the menu size gate must not render on the in-explorer path"
     );
 
     let fake_pdf = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n";

@@ -1370,6 +1370,11 @@ fn decode_svg_if_svg(bytes: &[u8]) -> (Option<DynamicImage>, Option<Vec<u8>>) {
 /// thread before this function ever gets to shrink it.
 const MENU_PREVIEW_TARGET_EDGE: u32 = 256;
 
+/// Largest SVG/SVGZ the in-explorer menu tile will hand to resvg. A logo or icon is a few
+/// kilobytes; past this the file is not a menu-tile candidate and degrades to the caption,
+/// which bounds the parse work a hostile file can ask of explorer's own process.
+const MENU_SVG_MAX_BYTES: usize = 256 * 1024;
+
 /// CHEAP, in-process-only preview decode for the CLASSIC CONTEXT MENU, whose
 /// owner-drawn thumbnail is built on explorer.exe's OWN UI thread (the classic
 /// `IContextMenu` loads IN-PROCESS, unlike the isolated thumbnail/preview hosts). Uses
@@ -1381,15 +1386,20 @@ const MENU_PREVIEW_TARGET_EDGE: u32 = 256;
 /// name + size) instead of hanging explorer. Container covers are themselves cheap (a
 /// baked JPEG/PNG slice), so epub/cbz/psd/… still show a thumbnail here.
 pub fn decode_menu_preview(bytes: &[u8]) -> Result<DynamicImage> {
-    // SVG / SVGZ is excluded from this in-process path, the same as video / PDF /
-    // ImageMagick: resvg's own worker thread is only killed cooperatively (it is
-    // abandoned, not terminated, once `SVG_TIMEOUT` elapses — see `svg.rs`'s
-    // `decode_svg`), and this call path runs on explorer.exe's own UI thread, which
-    // is not a disposable host. A pathological or hostile SVG would otherwise leave
-    // a permanently CPU-burning thread pinned inside the user's own explorer.exe on
-    // every right-click. SVG still decodes for the isolated thumbnail/preview hosts
-    // and the CLI via `decode_cover`/`decode_svg` — only this in-process menu path
-    // skips it, degrading to a caption-only tile like the other excluded tiers.
+    // SVG / SVGZ renders here, unlike video / PDF / ImageMagick, because its cost is
+    // bounded on every axis that matters in explorer's own process: the tile waits at
+    // most `contextmenu::MENU_PREVIEW_BUDGET` (125 ms) and degrades to the caption; the
+    // render worker itself is cut off at `SVG_TIMEOUT` (it is abandoned, not killed, so a
+    // hostile file costs up to that much CPU once, and `safety::MAX_ABANDONED_WORKERS`
+    // caps how many such workers can pile up); `render_svg` refuses every external
+    // `<image href>` (no file or network read); the raster is capped at `SVG_MAX_DIM`;
+    // and the size gate above keeps the parse small. A gzip that is not SVG (`.emz`)
+    // falls through to the container and raster tiers unchanged.
+    if bytes.len() <= MENU_SVG_MAX_BYTES {
+        if let (Some(img), _) = decode_svg_if_svg(bytes) {
+            return Ok(img);
+        }
+    }
     if let Some(cover) = crate::container::extract_cover(bytes) {
         return match cover {
             crate::container::CoverOut::Bytes(b) => {
