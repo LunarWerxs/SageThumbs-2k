@@ -12,14 +12,15 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
     ICoreWebView2DownloadStartingEventArgs, ICoreWebView2Environment,
     ICoreWebView2NavigationStartingEventArgs, ICoreWebView2NewWindowRequestedEventArgs,
-    ICoreWebView2WebResourceRequestedEventArgs, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+    ICoreWebView2WebResourceRequestedEventArgs, ICoreWebView2_4,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
 };
 use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DownloadStartingEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     WebResourceRequestedEventHandler,
 };
-use windows::core::{w, HSTRING, PCWSTR, PWSTR};
+use windows::core::{w, Interface, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -386,7 +387,11 @@ unsafe fn install_local_mode_guards(
         move |_wv, args: Option<ICoreWebView2DownloadStartingEventArgs>| on_download_starting(args),
     ));
     let mut download_token: i64 = 0;
-    let _ = webview.add_DownloadStarting(&download_handler, &mut download_token);
+    // The download event arrived with the fourth revision of the WebView2 interface. A
+    // runtime too old to have it cannot refuse downloads, so the lockdown is incomplete
+    // and the caller falls back to the safe card, like any other setter that fails here.
+    let wv4 = webview.cast::<ICoreWebView2_4>().ok()?;
+    let _ = wv4.add_DownloadStarting(&download_handler, &mut download_token);
     Some(())
 }
 
