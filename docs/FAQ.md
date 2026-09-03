@@ -242,8 +242,11 @@ works.
 ### Can I use this at work?
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
-needs a separate licence. Ask through **Send feedback** or a GitHub issue to arrange one
-directly, or redeem a business seat key yourself, see below.
+needs a commercial licence: US$49 per Windows installation, perpetual, with 12 months of
+updates. Buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
+(card via Stripe); one seat key per installation arrives by email the moment payment completes.
+Redeem it yourself, see below. For volume or site licences, purchase orders or bank transfer,
+[request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?title=Commercial%20licence%20quote&labels=licensing).
 
 ### How does a business licence work?
 

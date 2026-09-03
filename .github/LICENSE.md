@@ -5,8 +5,10 @@ full text is reproduced below.
 
 **In plain terms:** you may use, copy, modify, and share SageThumbs 2K for any
 **noncommercial** purpose, free of charge. **Commercial use requires a separate
-license** — to arrange one, open an issue on the project's GitHub or contact the
-maintainer listed there.
+license** — to arrange one, buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
+(US$49 per Windows installation, perpetual, 12 months of updates; one seat key per
+installation, redeemed under Settings ▸ Licence), or open an issue on the project's GitHub for
+volume or site terms.
 
 Copyright © 2026 Lunarwerx.
 
