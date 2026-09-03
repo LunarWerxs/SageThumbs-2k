@@ -153,29 +153,24 @@ jobs:
       # Generic shell thumbnail API (personalisation pickers, file dialogs, most first-party
       # UI that asks for a thumbnail through IShellItemImageFactory instead of Explorer's own
       # view) was never exercised on x64 - only the arm64-native job registered a handler at
-      # all, and it did so through a separate script. tests/shell_thumbnail_api.rs is
-      # #[ignore]d because it needs the DLL actually registered, so give it that here: a plain
-      # regsvr32 register, the ignored test, then an unconditional unregister (`if: always()`,
-      # mirroring the ARM64 job's "always unregisters, including on failure" discipline).
+      # all. It now runs the SAME self-contained proof the ARM64 job runs: the script registers
+      # the freshly built DLL (waiting on regsvr32 and reading its real exit code - pwsh does
+      # not wait for a GUI-subsystem program on its own, which is what threw "regsvr32 register
+      # failed ()" on runs 6323170 and f057cfd), renders a TGA through IShellItemImageFactory,
+      # hosts the preview handler, and always unregisters, including on failure. One path for
+      # both architectures. It replaced a three-step register / `cargo test --ignored` /
+      # unregister sequence whose test needed `..\test-corpus\sample.*`, which nothing on a
+      # runner generates (`build-corpus.ps1` wants the full ImageMagick, ffmpeg, python and
+      # downloads) - so that step had never once been green (runs e8bede4 .. 4b42743). The
+      # corpus test stays `#[ignore]` for a developer box that has built the corpus.
       # windows-latest runners are administrators, so regsvr32 needs no elevation step.
-      - name: Register debug DLL for shell surface tests
+      - name: Prove the registered x64 shell surfaces (thumbnail + preview)
         shell: pwsh
         run: |
-          $dll = Join-Path (Join-Path (& ./scripts/_targetdir.ps1) 'debug') 'sagethumbs2k.dll'
-          # regsvr32 is a GUI-subsystem program, so pwsh does not wait for it and
-          # $LASTEXITCODE is left unset: `$null -ne 0` is true, and this step threw
-          # "regsvr32 register failed ()" on runs 6323170 and f057cfd with the DLL
-          # registered fine. Wait for it and read the real exit code instead.
-          $p = Start-Process -FilePath regsvr32 -ArgumentList '/s', $dll -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "regsvr32 register failed ($($p.ExitCode))" }
-      - name: Generic shell thumbnail API (IShellItemImageFactory)
-        run: cargo test --locked --test shell_thumbnail_api -- --ignored --test-threads=1
-      - name: Unregister debug DLL
-        if: always()
-        shell: pwsh
-        run: |
-          $dll = Join-Path (Join-Path (& ./scripts/_targetdir.ps1) 'debug') 'sagethumbs2k.dll'
-          Start-Process -FilePath regsvr32 -ArgumentList '/s', '/u', $dll -Wait | Out-Null
+          $target = Join-Path (& ./scripts/_targetdir.ps1) 'debug'
+          & ./scripts/test-installed-shell-surfaces.ps1 `
+              -TargetDir $target `
+              -ArtifactDir (Join-Path $env:RUNNER_TEMP 'x64-shell-surfaces')
 
       # Gates on ALL debug-profile clippy lints across every target (bins, lib, tests).
       # Any new warning is promoted to an error and fails the build. The tree is kept
