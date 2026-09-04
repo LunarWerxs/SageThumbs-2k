@@ -322,6 +322,7 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Wide(ID_LICENCE_KEY_EDIT),
             BtnStatus(ID_LICENCE_REDEEM_BTN, 160, ID_LICENCE_REDEEM_STATUS),
             Btn(ID_LICENCE_CHECK_NOW, 184),
+            Btn(ID_LICENCE_BUY, 184),
         ],
     }
 }

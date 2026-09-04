@@ -291,10 +291,12 @@ unsafe fn try_video_source(
     // after paying its reads (up to 64 MiB for the prefix tier, 128 + 96 MiB for the
     // remux). Checked once here; the two out-of-process tiers (Flash-era FLV, VP9 profile
     // 2/3) decode in the sibling st2k.exe and run either way.
-    let mf = crate::video::media_foundation_available();
+    // `mf_usable`, not `media_foundation_available`: a host with a decode worker stuck
+    // inside MF past its grace (issue #35) has MF but must not feed it another file.
+    let mf = crate::video::mf_usable();
     if !mf {
         safety::log_debug(&format!(
-            "{who}: Media Foundation unavailable, in-process frame tiers skipped"
+            "{who}: Media Foundation unavailable or wedged, in-process frame tiers skipped"
         ));
     }
     // The user's MaxSize gates the two non-targeted fallbacks (tiers 4 and 5): they read
@@ -355,9 +357,30 @@ unsafe fn try_video_source(
         .as_ref()
         .and_then(|(_, r)| *r)
         .or_else(|| mkv_clip.as_ref().and_then(|(_, r)| *r));
+    // ISSUE #35: decide from the container's OWN bytes whether Windows can decode this track
+    // at all, BEFORE any tier hands Media Foundation the stream. Windows' H.264 decoder does
+    // Baseline/Main/High 8-bit 4:2:0 only; Windows 11 refuses a 4:4:4 file at once, but the
+    // reporter's Windows 10 22H2 wedged inside `ReadSample` on BOTH the mini-clip and the
+    // block-stream tier, and the second of those ran inline on this thread, so Explorer's
+    // whole thumbnail pipeline hung behind one file until a reboot. The mini-clip is already
+    // in RAM and carries the `stsd` / `TrackEntry` verbatim, so this costs a few KB of box
+    // walking and no further read of the stream. A shrug (any other codec, nothing parseable)
+    // blocks nothing. Twin of the gate in `decode::try_video_tier`.
+    let mf_refused = mp4_clip
+        .as_ref()
+        .map(|(b, _)| b.as_slice())
+        .or_else(|| mkv_clip.as_ref().map(|(b, _)| b.as_slice()))
+        .and_then(|mini| crate::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(mini)));
+    if let Some(reason) = &mf_refused {
+        safety::log(&format!(
+            "{who}: {reason}; every Media Foundation tier skipped (issue #35)"
+        ));
+    }
+    let mf = mf && mf_refused.is_none();
     let frame = mp4_clip
         .map(|(b, _)| b)
         .or_else(|| mkv_clip.map(|(b, _)| b))
+        .filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
         .or_else(|| {
             tier_if(mf, || {

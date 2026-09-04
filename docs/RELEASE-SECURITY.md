@@ -192,6 +192,37 @@ certificate exists. What changed the calculus was the 2.5.0 x64 installer reachi
 VirusTotal, including Microsoft's own ML engine (`Trojan:Win32/Wacatac.B!ml`, issue #30), which
 is the one verdict users see without going looking.
 
+#### Where it stands on 2026-09-04
+
+- **The pipeline half is done and idle.** `scripts/packaging/sign-release.ps1` signs through
+  Azure Artifact Signing (`signtool /dlib Azure.CodeSigning.Dlib.dll /dmdf metadata.json`, the
+  dlib from the `Microsoft.ArtifactSigning.Client` NuGet package, timestamped by
+  `timestamp.acs.microsoft.com`) and reads every signature back through Windows before it
+  reports success. `build-release.ps1` runs it on the four staged PE files before the installer,
+  the portable zip and the MSIX are assembled, and hands it to Inno Setup as the `SignTool`
+  command so `Setup.exe` and the embedded uninstaller are signed too. It is switched on by three
+  environment variables that are names, not secrets (`ST2K_SIGN_ENDPOINT`, `ST2K_SIGN_ACCOUNT`,
+  `ST2K_SIGN_PROFILE`); the service principal's credentials are read by the Azure dlib alone,
+  through the standard `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` triple,
+  never by our scripts. Unset, every release builds exactly as before and prints one yellow
+  "unsigned" line. `-Status` says what a machine has, `-SelfTest` proves the signtool and
+  verify steps with the local self-signed certificate, `-WhatIf` prints the exact command.
+- **The account half does not exist yet.** The Connections Studio vault holds the Lunarwerx
+  Entra tenant (it can mint Graph and ARM tokens), but that tenant has **zero Azure
+  subscriptions**, and an Artifact Signing account is a billable Azure resource inside one.
+  So there is nothing to sign with today. What has to happen, in order: an Azure subscription
+  on a billing account whose type is **Organization** (the type is decided at subscription
+  creation and it decides whether the certificate can carry the company name instead of a
+  person's); an Artifact Signing account in a supported region; organisation identity
+  validation (country-gated only, no company-age rule at GA, one named human still completes
+  the phone ID scan; three document attempts, then that onboarding is dead); a Public Trust
+  certificate profile; and a service principal granted *Artifact Signing Certificate Profile
+  Signer* on it, which is the identity the three `AZURE_*` variables name. Billing starts the
+  month the account is created whether or not validation completes.
+- **Then the next release closes #30.** SmartScreen reputation is still earned per-publisher
+  over time even with a signature; the signature is what stops the ML "unknown binary"
+  verdicts and gives the false-positive submissions a name to attach to.
+
 #### The 2026-07-18 position, kept for the record
 
 Settled owner decision (2026-07-18), not an open trade-off at the time. It is recorded here

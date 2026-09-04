@@ -94,6 +94,15 @@ VersionInfoCopyright=(C) 2026 {#Publisher}
 VersionInfoOriginalFileName=SageThumbs2K-Setup-{#AppVer}{#OutputSuffix}.exe
 VersionInfoTextVersion={#AppVer}
 AppCopyright=(C) 2026 {#Publisher}
+; Code signing (issue #30). build-release.ps1 defines SignToolName and registers the matching
+; /S<name>=<command> only when Azure Artifact Signing is configured (ST2K_SIGN_*), so an
+; unconfigured build compiles exactly as before and ships unsigned, on purpose and announced.
+; With it on, Inno signs Setup.exe AND the embedded uninstaller through the same script that
+; signed the staged binaries (scripts\packaging\sign-release.ps1).
+#ifdef SignToolName
+SignTool={#SignToolName}
+SignedUninstaller=yes
+#endif
 ArchitecturesAllowed={#ArchitectureMatcher}
 ArchitecturesInstallIn64BitMode={#ArchitectureMatcher}
 ; Shell-extension registration writes HKLM + Program Files -> needs elevation.
@@ -556,7 +565,8 @@ begin
   LicensePage.Add('Personal use (free)' + #13#10
     + 'Home, hobby, and other non-commercial use. Every feature included.');
   LicensePage.Add('Business or commercial use' + #13#10
-    + 'For work. You can enter your licence key afterwards in SageThumbs 2K Settings.');
+    + 'For work. Buy a licence at st2k.lunarwerx.com/buy (US$49 per installation, yours'
+    + ' permanently) and enter the key afterwards under Settings > Licence.');
   LicensePage.SelectedValueIndex := LicenseModeInitial;
 end;
 

@@ -364,8 +364,9 @@ mod tests {
         // answer: a genuinely broken PDF fails all three attempts in milliseconds. It is the
         // same "confirm on a calm retry before crying regression" rule `regression.ps1`
         // already applies to the corpus sweep, and the sibling this codebase already paid
-        // for is `video::tests::with_watchdog_fires_only_when_f_outlives_the_timeout`, whose
-        // first fix raced the watchdog thread being scheduled at all.
+        // for is `video::tests::bounded_worker_returns_on_time_and_records_the_strand`
+        // (the watchdog test it grew out of), whose first fix raced the watchdog thread
+        // being scheduled at all.
         let rendered = (0..3).any(|attempt| {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(250));

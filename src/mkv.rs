@@ -64,6 +64,7 @@ const ID_BLOCK_GROUP: u64 = 0xA0;
 const ID_BLOCK: u64 = 0xA1;
 const ID_REFERENCE_BLOCK: u64 = 0xFB;
 pub(crate) const ID_CODEC_ID: u64 = 0x86;
+pub(crate) const ID_CODEC_PRIVATE: u64 = 0x63A2;
 pub(crate) const ID_ATTACHMENTS: u64 = 0x1941_A469;
 pub(crate) const ID_ATTACHED_FILE: u64 = 0x61A7;
 pub(crate) const ID_FILE_NAME: u64 = 0x466E;
@@ -479,6 +480,26 @@ pub fn video_codec_id<R: Read + Seek>(r: &mut R) -> Option<String> {
     let map = segment_map(r)?;
     let (_, hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
     video_track_codec(&tracks[hlen..])
+}
+
+/// The `profile_idc` of the video track's H.264 decoder configuration. Matroska stores the
+/// same `AVCDecoderConfigurationRecord` an MP4 keeps in `avcC` as the TrackEntry's
+/// `CodecPrivate`, so byte 1 is `AVCProfileIndication` here too. `None` for a non-Matroska
+/// source, a track whose CodecID is not `V_MPEG4/ISO/AVC`, or a missing / short
+/// CodecPrivate. Reads the EBML head + Tracks only. The twin of
+/// [`crate::mp4::h264_profile_idc`], feeding [`crate::vcodec::mf_undecodable_reason`]
+/// (issue #35).
+pub fn h264_profile_idc<R: Read + Seek>(r: &mut R) -> Option<u8> {
+    let map = segment_map(r)?;
+    let (_, hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
+    let tracks_body = &tracks[hlen..];
+    if video_track_codec(tracks_body).as_deref() != Some("V_MPEG4/ISO/AVC") {
+        return None;
+    }
+    let entry = video_track_entry(tracks_body)?;
+    let idc = children(entry)
+        .find_map(|(cid, _, cd)| (cid == ID_CODEC_PRIVATE).then(|| cd.get(1).copied())?);
+    idc
 }
 
 /// The CLOCKWISE rotation, in degrees (90, 180 or 270), that this Matroska file's video track
@@ -1157,6 +1178,59 @@ mod tests {
             attached_cover(&mut cur).as_deref(),
             Some(b"JPEGDATA".as_slice())
         );
+    }
+
+    /// Issue #35's Matroska half: the H.264 profile comes out of CodecPrivate byte 1, only
+    /// for an AVC track, and a missing or short CodecPrivate is a shrug, never a refusal.
+    #[test]
+    fn h264_profile_idc_reads_codec_private_for_avc_tracks_only() {
+        let file_with = |codec: &[u8], private: Option<&[u8]>| {
+            let mut entry = [
+                elem(ID_TRACK_NUMBER, &[1]),
+                elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
+                elem(ID_CODEC_ID, codec),
+            ]
+            .concat();
+            if let Some(p) = private {
+                entry.extend_from_slice(&elem(ID_CODEC_PRIVATE, p));
+            }
+            let tracks = elem(ID_TRACKS, &elem(ID_TRACK_ENTRY, &entry));
+            let mut file = elem(ID_EBML, &[0u8; 4]);
+            file.extend_from_slice(&elem(ID_SEGMENT, &tracks));
+            file
+        };
+        let avcc_444 = [1u8, 244, 0, 31, 0xFF, 0xE0, 0x00];
+        let probe = |file: Vec<u8>| h264_profile_idc(&mut Cursor::new(file));
+        assert_eq!(
+            probe(file_with(b"V_MPEG4/ISO/AVC", Some(&avcc_444))),
+            Some(244)
+        );
+        assert_eq!(
+            probe(file_with(b"V_MPEG4/ISO/AVC", Some(&[1, 100, 0, 31]))),
+            Some(100)
+        );
+        assert_eq!(
+            probe(file_with(b"V_MPEGH/ISO/HEVC", Some(&avcc_444))),
+            None,
+            "not H.264"
+        );
+        assert_eq!(
+            probe(file_with(b"V_MPEG4/ISO/AVC", None)),
+            None,
+            "no CodecPrivate"
+        );
+        assert_eq!(
+            probe(file_with(b"V_MPEG4/ISO/AVC", Some(&[1]))),
+            None,
+            "short CodecPrivate"
+        );
+        // And the gate itself, through the shared entry point.
+        let reason = crate::vcodec::mf_undecodable_reason(&mut Cursor::new(file_with(
+            b"V_MPEG4/ISO/AVC",
+            Some(&avcc_444),
+        )))
+        .expect("4:4:4 in Matroska must be refused too");
+        assert!(reason.contains("High 4:4:4 Predictive"), "{reason}");
     }
 
     /// Cues-up-front layout with NO SeekHead: Info, Tracks, Cues, Attachments, Cluster.

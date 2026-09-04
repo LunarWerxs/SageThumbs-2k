@@ -1047,10 +1047,17 @@ unsafe fn create_and_show_settings_window(
             if license::nag_due(now) {
                 // The toast pumps its own message loop for as long as it lingers; on its
                 // own thread it cannot hold up the Settings window being built here.
-                std::thread::spawn(|| {
+                // Say WHERE a licence comes from, not only that one is needed: the 2026-09-04
+                // audit found no surface inside the product ever named the shop.
+                let body = format!(
+                    "{} {}",
+                    t("licence_nag_toast_body"),
+                    t("licence_buy_pointer")
+                );
+                std::thread::spawn(move || {
                     crate::win::notify_toast(
                         "SageThumbs 2K",
-                        t("licence_nag_toast_body"),
+                        &body,
                         std::time::Duration::from_secs(6),
                     );
                 });
@@ -1067,10 +1074,17 @@ unsafe fn create_and_show_settings_window(
         }
         license::Posture::DeauthorizedLoud => {
             // Every Settings open until re-licensed — this one has no acknowledgement to
-            // record, unlike the downgrade notice above.
+            // record, unlike the downgrade notice above. Leads with WHY when the relay said
+            // (a seat the holder ejected reads very differently from a licence that ended),
+            // and ends with where a new one comes from.
+            let notice =
+                t("licence_deauthorized_notice").replace("{key}", &license_snap.key_prefix);
+            let why = settings_dlg::licence_reason_line(&license_snap.last_reason)
+                .map(|w| format!("{w} "))
+                .unwrap_or_default();
             crate::win::message_box(
                 hwnd,
-                &t("licence_deauthorized_notice").replace("{key}", &license_snap.key_prefix),
+                &format!("{why}{notice} {}", t("licence_buy_pointer")),
                 "SageThumbs 2K",
             );
         }

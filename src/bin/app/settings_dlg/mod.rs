@@ -131,9 +131,27 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
         return t("licence_state_none").to_string();
     }
     if snap.last_status == "revoked" {
-        return t("licence_state_revoked").replace("{key}", &snap.key_prefix);
+        let line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
+        return match licence_reason_line(&snap.last_reason) {
+            Some(why) => format!("{line} {why}"),
+            None => line,
+        };
     }
     t("licence_state_licensed").replace("{date}", &format_unix_date(snap.last_positive_unix))
+}
+
+/// The human sentence for the relay's `reason` behind a revocation (`seat_revoked`: the
+/// licence holder ejected this machine; `contract_ended`: the licence itself was cancelled),
+/// or `None` for anything else, including the older breadcrumbs that never recorded one.
+/// Shared by the Licence page's state line and the startup deauthorised notice, so a user
+/// reads the same explanation in both places. The 2026-09-04 audit found the relay had been
+/// sending this since 2026-09-02 and the app dropped it on the floor.
+pub(crate) fn licence_reason_line(reason: &str) -> Option<&'static str> {
+    match reason {
+        "seat_revoked" => Some(t("licence_reason_seat_revoked")),
+        "contract_ended" => Some(t("licence_reason_contract_ended")),
+        _ => None,
+    }
 }
 
 /// The "how did this copy get here" line — "Installed for business use. Reinstall to
@@ -582,6 +600,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_LICENCE_KEY_EDIT, "tip_licence_key"),
     (ID_LICENCE_REDEEM_BTN, "tip_licence_redeem"),
     (ID_LICENCE_CHECK_NOW, "tip_licence_check_now"),
+    (ID_LICENCE_BUY, "tip_licence_buy"),
     (ID_SELECT_ALL, "tip_select_all"),
     (ID_CLEAR_ALL, "tip_clear_all"),
     (ID_DEFAULTS, "tip_defaults"),
@@ -1685,6 +1704,7 @@ unsafe fn on_command_licence(hwnd: HWND, id: i32) {
     match id {
         ID_LICENCE_REDEEM_BTN => licence_ui::on_redeem_click(hwnd),
         ID_LICENCE_CHECK_NOW => licence_ui::on_check_now_click(hwnd),
+        ID_LICENCE_BUY => crate::win::open_url(crate::license::BUY_URL),
         _ => {}
     }
 }
@@ -2041,8 +2061,31 @@ mod tests {
                 key_prefix: key_prefix.to_string(),
                 last_positive_unix,
                 last_status: last_status.to_string(),
+                last_reason: String::new(),
             }
         }
+
+        // A revocation WITH the relay's reason says why; an unknown token adds nothing.
+        let mut why = snap(
+            crate::license::Mode::Business,
+            "esk_A1B2",
+            "revoked",
+            1_700_000_000,
+        );
+        why.last_reason = "contract_ended".into();
+        assert_eq!(
+            licence_state_line(&why),
+            format!(
+                "{} {}",
+                t("licence_state_revoked").replace("{key}", "esk_A1B2"),
+                t("licence_reason_contract_ended")
+            )
+        );
+        why.last_reason = "something_new".into();
+        assert_eq!(
+            licence_state_line(&why),
+            t("licence_state_revoked").replace("{key}", "esk_A1B2")
+        );
 
         // Personal wins over everything else — even a stale key/status from a former
         // Business install (the downgrade notice, not this line, owns that story).

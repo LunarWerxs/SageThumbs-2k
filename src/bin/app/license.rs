@@ -90,6 +90,10 @@ pub(crate) struct History {
     pub was_business: bool,
     /// The last state the entitlement check reported: "active" | "revoked".
     pub last_status: String,
+    /// WHY, when `last_status` is "revoked": the relay's `reason` token (`seat_revoked`,
+    /// `contract_ended`, ...), empty when it sent none or the status is not a revocation.
+    /// Display only, through `settings_dlg::licence_reason_line`; never a decision input.
+    pub last_reason: String,
     /// Unix seconds of the last POSITIVE entitlement answer. The grace window
     /// (`entitlement_from_cache`) is measured from this.
     pub last_positive_unix: u64,
@@ -123,6 +127,7 @@ impl History {
         json!({
             "was_business": self.was_business,
             "last_status": self.last_status,
+            "last_reason": self.last_reason,
             "last_positive_unix": self.last_positive_unix,
             "key_prefix": self.key_prefix,
             "downgrade_acknowledged": self.downgrade_acknowledged,
@@ -153,6 +158,12 @@ impl History {
             last_status: field(
                 obj,
                 "last_status",
+                |v| v.as_str().map(String::from),
+                String::new(),
+            )?,
+            last_reason: field(
+                obj,
+                "last_reason",
                 |v| v.as_str().map(String::from),
                 String::new(),
             )?,
@@ -414,6 +425,12 @@ pub(crate) fn posture(mode: Mode, ent: Entitlement, history: Option<&History>) -
 
 pub(crate) const RELAY_BASE: &str = "https://st2k.lunarwerx.com";
 
+/// Where a licence is bought. A relay redirect rather than the checkout's own address on
+/// purpose: the checkout is a Pay offer whose id changes with a repricing or a new product,
+/// and this string is compiled into every copy ever shipped. The redirect moves; this does
+/// not. Opened by the Licence page's Buy button and named in the business-nag notices.
+pub(crate) const BUY_URL: &str = "https://st2k.lunarwerx.com/buy";
+
 /// Per-request timeout. The relay is a small Cloudflare Worker; 15 seconds is
 /// generous for it and short enough that a dead network doesn't hang the Settings
 /// window for a user who is just trying to close it.
@@ -642,6 +659,19 @@ fn refresh_due(now_unix: u64, last_check_unix: u64) -> bool {
 struct CheckResult {
     entitled: bool,
     status: String,
+    /// The relay's optional `reason` token (a short `[a-z0-9_]` word such as
+    /// `seat_revoked` / `contract_ended`), kept only when it has that shape.
+    reason: Option<String>,
+}
+
+/// Is `s` a reason token the way the relay defines one: 1-40 chars of `[a-z0-9_]`? Anything
+/// else is dropped rather than stored, so a surprising relay can never put arbitrary text
+/// into the breadcrumb or onto the screen.
+fn is_reason_token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 40
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// Map an HTTP status + raw body from `GET /license/check` to a [`CheckResult`].
@@ -661,7 +691,16 @@ fn parse_check_response(status: u16, body: &[u8]) -> Option<CheckResult> {
         .and_then(Value::as_str)
         .unwrap_or("none")
         .to_string();
-    Some(CheckResult { entitled, status })
+    let reason = v
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|r| is_reason_token(r))
+        .map(String::from);
+    Some(CheckResult {
+        entitled,
+        status,
+        reason,
+    })
 }
 
 /// The periodic entitlement re-check. BLOCKING - run on a worker thread. Makes NO
@@ -719,10 +758,14 @@ fn refresh_entitlement_inner(force: bool) -> Option<Entitlement> {
         update_history(|h| {
             h.last_positive_unix = now;
             h.last_status = "active".to_string();
+            h.last_reason.clear();
             h.was_business = true;
         });
     } else if result.status == "revoked" {
-        update_history(|h| h.last_status = "revoked".to_string());
+        update_history(|h| {
+            h.last_status = "revoked".to_string();
+            h.last_reason = result.reason.clone().unwrap_or_default();
+        });
     }
     // else: a definite, understood "not entitled, not revoked either" (e.g. a
     // machine that never redeemed anything) - the throttle bump already happened
@@ -781,6 +824,8 @@ pub(crate) struct LicenceSnapshot {
     pub key_prefix: String,
     pub last_positive_unix: u64,
     pub last_status: String,
+    /// See [`History::last_reason`].
+    pub last_reason: String,
 }
 
 /// Build a [`LicenceSnapshot`]. Never touches the network - purely local reads, same
@@ -799,7 +844,10 @@ pub(crate) fn snapshot() -> LicenceSnapshot {
             .as_ref()
             .map_or_else(String::new, |h| h.key_prefix.clone()),
         last_positive_unix: history.as_ref().map_or(0, |h| h.last_positive_unix),
-        last_status: history.map_or_else(String::new, |h| h.last_status),
+        last_status: history
+            .as_ref()
+            .map_or_else(String::new, |h| h.last_status.clone()),
+        last_reason: history.map_or_else(String::new, |h| h.last_reason),
     }
 }
 
@@ -944,6 +992,7 @@ mod tests {
         let h = History {
             was_business: true,
             last_status: "active".into(),
+            last_reason: "contract_ended".into(),
             last_positive_unix: 1_760_000_000,
             key_prefix: "esk_A1B2".into(),
             downgrade_acknowledged: false,
@@ -1151,7 +1200,8 @@ mod tests {
             parse_check_response(200, br#"{"ok":true,"entitled":true,"status":"active"}"#),
             Some(CheckResult {
                 entitled: true,
-                status: "active".to_string()
+                status: "active".to_string(),
+                reason: None,
             })
         );
     }
@@ -1162,8 +1212,39 @@ mod tests {
             parse_check_response(200, br#"{"ok":true,"entitled":false,"status":"revoked"}"#),
             Some(CheckResult {
                 entitled: false,
-                status: "revoked".to_string()
+                status: "revoked".to_string(),
+                reason: None,
             })
+        );
+    }
+
+    /// The relay's `reason` rides along only in the shape the relay defines for it; anything
+    /// else is dropped, never stored, never shown.
+    #[test]
+    fn check_response_keeps_a_well_formed_reason_and_drops_the_rest() {
+        let with = |body: &[u8]| parse_check_response(200, body).and_then(|r| r.reason);
+        assert_eq!(
+            with(br#"{"ok":true,"entitled":false,"status":"revoked","reason":"seat_revoked"}"#),
+            Some("seat_revoked".to_string())
+        );
+        assert_eq!(
+            with(br#"{"ok":true,"entitled":false,"status":"revoked","reason":"contract_ended"}"#),
+            Some("contract_ended".to_string())
+        );
+        assert_eq!(
+            with(br#"{"ok":true,"entitled":false,"status":"revoked","reason":"Seat Revoked!"}"#),
+            None,
+            "not a token"
+        );
+        assert_eq!(
+            with(br#"{"ok":true,"entitled":false,"status":"revoked","reason":""}"#),
+            None,
+            "empty"
+        );
+        assert_eq!(
+            with(br#"{"ok":true,"entitled":false,"status":"revoked","reason":7}"#),
+            None,
+            "wrong type"
         );
     }
 

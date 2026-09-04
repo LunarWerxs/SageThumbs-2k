@@ -260,8 +260,12 @@ cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.ex
 ### Is SageThumbs 2K free?
 
 Yes, for personal use, under the [PolyForm Noncommercial License 1.0.0](#-license). Commercial
-use needs a separate license, and there are two ways to get one: open an issue to arrange it
-directly, or self-serve it. A business license comes as a seat key (`esk_...`); redeem it under
+use needs a commercial license: **US$49 per Windows installation**, perpetual, with 12 months of
+updates, bought at [checkout.connections.icu](https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs)
+(the checkout page calls what it emails you a "redemption code"; that is the seat key below,
+same thing). For volume or site licenses, purchase orders or bank transfer,
+[request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
+A business license comes as a seat key (`esk_...`); redeem it under
 **Settings ▸ Licence** and the app takes it from there. The installer asks whether a copy is
 for personal or business use, and that answer only changes by reinstalling, there's no toggle
 for it in Settings. A portable copy has no installer to ask, and counts as business use as soon
@@ -341,7 +345,7 @@ cheap to extract. Request one through Send Feedback in the app or a GitHub issue
 
 ## 📜 License
 
-**[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license**: **US$49 per Windows installation**, perpetual, with 12 months of updates, bought at [checkout.connections.icu](https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs) (card via Stripe; one key per installation is emailed on payment). It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. For volume or site licences, purchase orders or bank transfer, [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?title=Commercial%20licence%20quote&labels=licensing). The installer asks Personal or Business up front and that choice only changes by reinstalling; a business copy has every feature with no key entered, it just reminds you until you add one, and the background license check tolerates about a week offline. © 2026 Lunarwerx.
+**[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license**: **US$49 per Windows installation**, perpetual, with 12 months of updates, bought at [checkout.connections.icu](https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs) (card via Stripe; one key per installation is emailed on payment). It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. For volume or site licences, purchase orders or bank transfer, [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml). The installer asks Personal or Business up front and that choice only changes by reinstalling; a business copy has every feature with no key entered, it just reminds you until you add one, and the background license check tolerates about a week offline. © 2026 Lunarwerx.
 
 SageThumbs 2K is a **clean-room rewrite**, **not** a derivative of the GPLv2 C++ original, and it uses **no GFL**. Every decoder is pure-Rust or an OS codec (RAR/CBR comics use the pure-Rust [`rars`](https://crates.io/crates/rars) crate, no proprietary UnRAR), so the project's own code is entirely original and its dependencies are permissively licensed, which is what lets us license it as we choose. The optional bundled ImageMagick (for the exotic long tail) ships under its own permissive license and runs only as a sandboxed subprocess.
 

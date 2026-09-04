@@ -1571,11 +1571,28 @@ fn try_video_tier(
         .map(|(b, _)| b)
         .or_else(|| mkv_clip.map(|(b, _)| b));
 
+    // ISSUE #35, the by-bytes twin of the gate in `streamsrc::try_video_source`: a track
+    // whose H.264 profile Windows' decoder does not implement (4:4:4 / 4:2:2 / 10-bit) is
+    // never handed to Media Foundation, on any tier. Read off the mini-clip already in RAM.
+    let mf_refused = mini
+        .as_deref()
+        .and_then(|m| crate::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(m)));
+    if let Some(reason) = &mf_refused {
+        crate::safety::log(&format!(
+            "video: {reason}; every Media Foundation tier skipped (issue #35)"
+        ));
+    }
+    let mf = mf_refused.is_none();
+
     let frame = mini
+        .filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
         // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
         // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
         .or_else(|| {
+            if !mf {
+                return None;
+            }
             crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes))
                 .and_then(crate::video::frame_from_owned_bytes)
         })
@@ -1586,7 +1603,12 @@ fn try_video_tier(
         .or_else(|| crate::flv::flash_frame(&mut std::io::Cursor::new(bytes)))
         // Other containers (AVI/WMV/…): we hold the whole capped buffer in RAM, so let MF
         // seek its own index to the true ~30 % frame (no head-prefix depth cap).
-        .or_else(|| crate::video::frame_from_bytes_repr(bytes))
+        .or_else(|| {
+            if !mf {
+                return None;
+            }
+            crate::video::frame_from_bytes_repr(bytes)
+        })
         // VP9 Profile 2/3 (10/12-bit HDR in webm/mkv, issue #26): Media Foundation's
         // VP9 decoder stops at Profile 0/1 even with the Store extension installed, so
         // when every MF tier above came back empty AND the container says V_VP9, the

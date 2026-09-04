@@ -368,6 +368,34 @@ pub fn video_codec_fourcc<R: Read + Seek>(r: &mut R) -> Option<[u8; 4]> {
     Some([t[0], t[1], t[2], t[3]])
 }
 
+/// The fixed part of a `VisualSampleEntry`: the 8-byte box header plus 78 bytes of fields
+/// (reserved, data-reference index, dimensions, resolution, frame count, compressor name,
+/// depth). The codec configuration boxes (`avcC`, `hvcC`, `pasp`, ...) follow as children.
+const VISUAL_SAMPLE_ENTRY_LEN: usize = 8 + 78;
+
+/// The `profile_idc` of the video track's H.264 decoder configuration (`stsd` ▸ `avc1` /
+/// `avc3` ▸ `avcC`, the `AVCProfileIndication` byte), or `None` for a non-ISO-BMFF source, a
+/// track that is not H.264, or an entry with no readable `avcC`. Reads the `ftyp` gate +
+/// `moov` only. Feeds [`crate::vcodec::mf_undecodable_reason`] (issue #35), which is why it
+/// is deliberately a byte read and not a decode: the whole point is answering "can Windows
+/// decode this" without asking Windows to try.
+pub fn h264_profile_idc<R: Read + Seek>(r: &mut R) -> Option<u8> {
+    let (_, _, moov) = scan_top_level(r)?;
+    let mdia_body = video_mdia(box_body(&moov))?;
+    let minf = find(mdia_body, b"minf")?;
+    let stbl = box_body(find(box_body(minf), b"stbl")?);
+    let stsd = find(stbl, b"stsd")?;
+    // stsd: header(8) version+flags(4) entry_count(4) | entries, each a box of its own.
+    let (typ, entry) = boxes(stsd.get(16..)?).next()?;
+    if &typ != b"avc1" && &typ != b"avc3" {
+        return None;
+    }
+    let children = entry.get(VISUAL_SAMPLE_ENTRY_LEN..)?;
+    let avcc = find(children, b"avcC")?;
+    // AVCDecoderConfigurationRecord: configurationVersion, AVCProfileIndication, ...
+    box_body(avcc).get(1).copied()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Box navigation over an in-RAM moov slice
 // ---------------------------------------------------------------------------------------------
@@ -1157,6 +1185,89 @@ mod tests {
         body.extend_from_slice(kind);
         body.extend_from_slice(&[0u8; 12]);
         fbx(b"hdlr", 0, 0, &body)
+    }
+
+    /// An `stsd` with one `avc1` entry whose `avcC` declares `profile`. Built to the real
+    /// VisualSampleEntry layout (78 fixed bytes after the box header, then the children),
+    /// not to the parser's expectations.
+    fn stsd_avc1(profile: u8) -> Vec<u8> {
+        let mut fields = vec![0u8; 6]; // reserved
+        fields.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+        fields.extend_from_slice(&[0u8; 16]); // pre_defined + reserved
+        fields.extend_from_slice(&320u16.to_be_bytes()); // width
+        fields.extend_from_slice(&240u16.to_be_bytes()); // height
+        fields.extend_from_slice(&0x0048_0000u32.to_be_bytes()); // horizresolution 72 dpi
+        fields.extend_from_slice(&0x0048_0000u32.to_be_bytes()); // vertresolution
+        fields.extend_from_slice(&[0u8; 4]); // reserved
+        fields.extend_from_slice(&1u16.to_be_bytes()); // frame_count
+        fields.extend_from_slice(&[0u8; 32]); // compressorname
+        fields.extend_from_slice(&24u16.to_be_bytes()); // depth
+        fields.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined = -1
+        assert_eq!(fields.len(), 78);
+        // AVCDecoderConfigurationRecord: version 1, profile, compatibility, level 3.1,
+        // 4-byte NAL lengths, no SPS, no PPS - the shape, not a decodable stream.
+        fields.extend_from_slice(&bx(b"avcC", &[1, profile, 0x00, 31, 0xFF, 0xE0, 0x00]));
+        let entry = bx(b"avc1", &fields);
+        let mut body = 1u32.to_be_bytes().to_vec(); // entry_count
+        body.extend_from_slice(&entry);
+        fbx(b"stsd", 0, 0, &body)
+    }
+
+    /// A parseable ISO-BMFF whose video trak carries `stsd` and nothing else: enough for the
+    /// codec probes, deliberately not enough for a keyframe.
+    fn file_with_stsd(stsd: &[u8]) -> Vec<u8> {
+        let stbl = container(b"stbl", &[stsd]);
+        let minf = container(b"minf", &[&stbl]);
+        let mdia = container(b"mdia", &[&hdlr_of(b"vide"), &minf]);
+        let trak = container(b"trak", &[&mdia]);
+        let mut file = default_ftyp();
+        file.extend_from_slice(&container(b"moov", &[&trak]));
+        file
+    }
+
+    #[test]
+    fn h264_profile_idc_reads_the_avcc_profile_indication() {
+        for profile in [66u8, 77, 100, 110, 122, 244] {
+            let file = file_with_stsd(&stsd_avc1(profile));
+            assert_eq!(h264_profile_idc(&mut Cursor::new(&file)), Some(profile));
+        }
+        // An HEVC entry is not H.264, whatever its children say.
+        let mut hevc = stsd_avc1(244);
+        let at = hevc.windows(4).position(|w| w == b"avc1").unwrap();
+        hevc[at..at + 4].copy_from_slice(b"hvc1");
+        assert_eq!(
+            h264_profile_idc(&mut Cursor::new(&file_with_stsd(&hevc))),
+            None
+        );
+        assert_eq!(
+            h264_profile_idc(&mut Cursor::new(b"not a video".to_vec())),
+            None
+        );
+    }
+
+    /// The whole issue #35 gate, over a synthetic file AND over the mini-clip the cascades
+    /// actually ask about: `build_mini_mp4` copies the stsd verbatim, so the profile survives
+    /// into the clip and the refusal costs no second read of the original.
+    #[test]
+    fn mf_undecodable_reason_names_the_444_profile_and_clears_the_420_one() {
+        let stsd = stsd_avc1(244);
+        let reason = crate::vcodec::mf_undecodable_reason(&mut Cursor::new(&file_with_stsd(&stsd)))
+            .expect("High 4:4:4 Predictive must be refused");
+        assert!(
+            reason.contains("High 4:4:4 Predictive") && reason.contains("244"),
+            "{reason}"
+        );
+        let mini = build_mini_mp4(None, &stsd, 1, 512, 15360, 320, 240, &[0u8; 64]);
+        assert!(
+            crate::vcodec::mf_undecodable_reason(&mut Cursor::new(&mini)).is_some(),
+            "the mini-clip must carry the refusal"
+        );
+        let plain = build_mini_mp4(None, &stsd_avc1(100), 1, 512, 15360, 320, 240, &[0u8; 64]);
+        assert_eq!(
+            crate::vcodec::mf_undecodable_reason(&mut Cursor::new(&plain)),
+            None,
+            "High 8-bit 4:2:0 is exactly what the decoder implements"
+        );
     }
 
     #[test]

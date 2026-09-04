@@ -976,6 +976,20 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LICENCE_CHECK_NOW,
         hinst,
     );
+    // Where a licence comes from. Every other line on this page assumes the user already
+    // holds a key; this is the button for the one who does not (the 2026-09-04 audit).
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_licence_buy"),
+        WS_TABSTOP,
+        0,
+        0,
+        184,
+        26,
+        ID_LICENCE_BUY,
+        hinst,
+    );
 
     set_window_title(hwnd);
     load_values(hwnd);

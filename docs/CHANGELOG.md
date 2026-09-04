@@ -83,6 +83,18 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **One video Windows cannot decode can no longer take every thumbnail on the PC down with
+  it.** A reporter found an MP4 whose H.264 stream uses the 4:4:4 colour format, which the
+  Windows decoder does not support; on Windows 10 the decoder hung instead of declining, our
+  thumbnail code waited on it forever, and Explorer's whole thumbnail system stopped for every
+  file type until a reboot. Three things changed. SageThumbs 2K now reads the video's codec
+  profile itself and skips the Windows decoder entirely for the H.264 profiles it cannot handle
+  (4:4:4, 4:2:2 and 10-bit), so such a file just keeps its icon, instantly. Every video decode
+  the shell asks for now runs on a worker with a hard time limit, so a decoder that hangs can
+  never hold Explorer's thumbnail thread again. And if a decoder does wedge, the thumbnail host
+  turns video off for itself and, once idle, quietly restarts, which is what a reboot used to
+  buy. The built-in doctor now names this profile problem when you point it at such a file.
+
 - **The preview window's Previous and Next buttons no longer skip over mail files and internet
   shortcuts.** Stepping through a folder now lands on `.eml` and `.msg` messages, and on `.url`
   and `.webloc` shortcuts where the optional web-preview feature is built in, instead of jumping

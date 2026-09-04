@@ -397,9 +397,20 @@ try {
     # the artifact's own SHA-256, so it always points at exactly the bytes attached below and
     # cannot drift onto some other build. README.md's antivirus FAQ promises this link exists;
     # this is what makes that true.
+    # Read the truth off the artifacts rather than asserting it: once Azure Artifact Signing
+    # is live (scripts/packaging/sign-release.ps1) the installers carry a valid signature and
+    # the old sentence would be a lie in every release note that followed.
+    $allSigned = @($releaseArtifacts | ForEach-Object {
+        (Get-AuthenticodeSignature -LiteralPath $_.Setup.FullName).Status -eq 'Valid'
+    }) -notcontains $false
+    $signingLine = if ($allSigned) {
+        '**Antivirus / SmartScreen:** these builds are code-signed. A brand-new signed file can still'
+    } else {
+        '**Antivirus / SmartScreen:** these builds are unsigned, so a brand-new file with no'
+    }
     Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
         ''
-        '**Antivirus / SmartScreen:** these builds are unsigned, so a brand-new file with no'
+        $signingLine
         'download history draws reputation-based warnings. Scan results for these exact bytes:'
     )
     foreach ($artifact in $releaseArtifacts) {

@@ -1,0 +1,49 @@
+name: Commercial licence quote
+description: Volume or site licences, purchase orders, bank transfer, or anything the self-serve checkout does not cover.
+title: "Commercial licence quote: "
+labels: ["licensing"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Single installations are self-serve and need no issue: **US$49 per Windows installation**,
+        perpetual, with 12 months of updates, at
+        https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs
+        (card via Stripe; one seat key per installation is emailed the moment payment completes).
+
+        This form is for everything else. Only what you type here becomes public; if you would
+        rather not post a company name, say so and we will move the conversation to email.
+
+  - type: input
+    id: seats
+    attributes:
+      label: How many installations?
+      placeholder: "e.g. 25, or: site licence for roughly 200 machines"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: payment
+    attributes:
+      label: How would you like to pay?
+      options:
+        - Card (I just need a volume price)
+        - Purchase order / invoice
+        - Bank transfer
+        - Not sure yet
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Anything else we should know?
+      description: A deployment tool you use (Intune, SCCM, a golden image), a deadline, a reseller, the country for the invoice.
+
+  - type: input
+    id: contact
+    attributes:
+      label: Where should the quote go?
+      description: An email address, or "reply here" if the issue thread is fine.
+    validations:
+      required: true

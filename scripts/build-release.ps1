@@ -267,6 +267,17 @@ Copy-Item "$targetRel\st2k.exe" $stage  # the command-line / AI-agent tool
 # beside its own exe and simply has no dialog support when it is absent, so shipping it is
 # what turns the feature on.
 Copy-Item "$targetRel\st2k_dlghook.dll" $stage
+# Sign the shipped PE files IN THE STAGE, before the installer, the portable zip and the
+# MSIX pick them up, so every artifact carries the same signed bytes (issue #30; the owner
+# reopened code signing on 2026-09-01, docs/RELEASE-SECURITY.md). Until the Azure Artifact
+# Signing account exists this is a one-line "unsigned" notice and exit 0: nothing in the
+# release flow may assume a certificate. Once ST2K_SIGN_* is set, a failure here is fatal,
+# because a half-signed release is worse than an unsigned one.
+$signScript = Join-Path $PSScriptRoot 'packaging\sign-release.ps1'
+$signable = @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe', 'st2k_dlghook.dll') |
+    ForEach-Object { Join-Path $stage $_ }
+& $signScript -Path $signable -AllowUnsigned
+if ($LASTEXITCODE) { throw "signing the staged binaries failed (see above)" }
 foreach ($doc in 'README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE') {
     if (Test-Path "$root\$doc") { Copy-Item "$root\$doc" $stage }
 }
@@ -911,6 +922,20 @@ $isccArgs = @(
     "/DOutputSuffix=$outputSuffix"
 )
 if ($fmtCount) { $isccArgs += "/DFmtCount=$fmtCount" }
+# Setup.exe and the uninstaller it carries are signed by Inno itself, through the same
+# script that signed the staged binaries: installer.iss turns on `SignTool=st2k` only when
+# SignToolName is defined, and Inno substitutes $f with each file it signs. Not configured
+# means an unsigned installer, announced, never assumed.
+& $signScript -Configured
+if ($LASTEXITCODE -eq 0) {
+    $pwshExe = (Get-Process -Id $PID).Path
+    $q = '$q'
+    $isccArgs += '/DSignToolName=st2k'
+    $isccArgs += ('/Sst2k={0}{1}{0} -NoProfile -ExecutionPolicy Bypass -File {0}{2}{0} -Path {0}$f{0}' -f $q, $pwshExe, $signScript)
+    Write-Host "      installer + uninstaller: signed through Azure Artifact Signing" -ForegroundColor DarkGray
+} else {
+    Write-Host "      installer: UNSIGNED (ST2K_SIGN_* not configured; docs/RELEASE-SECURITY.md)" -ForegroundColor Yellow
+}
 $expectedSetupPath = "$root\dist\SageThumbs2K-Setup-$ver$outputSuffix.exe"
 # A stale same-version artifact must not survive an odd ISCC "success" and then be
 # mistaken for the installer produced from this stage.

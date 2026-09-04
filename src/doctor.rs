@@ -1075,6 +1075,23 @@ fn video_codec_note(r: &mut Report, path: &str) {
         return;
     };
     let label = format!("{} ({})", info.name, info.raw);
+    // A codec Windows DOES decode, in a profile its decoder does NOT implement (issue #35:
+    // H.264 4:4:4 / 4:2:2 / 10-bit). The cascade refuses these before Media Foundation is
+    // asked, on purpose - on Windows 10 the decoder wedged rather than declined - so the
+    // report has to name that refusal, or "a decoder is installed" below reads as a bug in us.
+    if let Some(block) = &info.mf_profile_block {
+        r.fail_with_fix(
+            "Video codec",
+            &format!(
+                "{label} - {block}; no frame can be decoded, so the thumbnail is skipped on \
+                 purpose rather than risk hanging Explorer's thumbnail host"
+            ),
+            "no decoder can be installed for this profile; re-encode as 8-bit 4:2:0 H.264 \
+             (ffmpeg: -c:v libx264 -pix_fmt yuv420p), or attach cover art, which we show \
+             when no frame can be decoded",
+        );
+        return;
+    }
     // Codecs we decode OURSELVES (FLV's VP6 / Sorenson Spark, out of process via st2k):
     // Windows has no decoder and never will, and that is fine — say so BEFORE the MF
     // probe, whose honest answer ("no decoder installed") would come with a fix

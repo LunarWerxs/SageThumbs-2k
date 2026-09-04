@@ -206,6 +206,10 @@ pub(super) const ID_LICENCE_REDEEM_STATUS: i32 = 1252;
 /// Runs `license::refresh_entitlement()` on a worker — the same status lines above are
 /// what show its result; this button carries no status of its own.
 pub(super) const ID_LICENCE_CHECK_NOW: i32 = 1253;
+/// Opens the self-serve licence shop in the browser (`license::BUY_URL`). The one place
+/// inside the product that says WHERE a licence comes from: the 2026-09-04 licensing audit
+/// found every other surface only ever said "enter your key under Settings > Licence".
+pub(super) const ID_LICENCE_BUY: i32 = 1256;
 
 // ===== The Business-licence reminder strip (`settings_dlg/biznag.rs`) =====
 // Mirrors the sign-in nudge banner's ids just above (1240-1243) — see that block's

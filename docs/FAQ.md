@@ -48,6 +48,15 @@ Advanced, **Rebuild thumbnail cache** clears Windows' cache and restarts Explore
 If it is a whole format rather than scattered files, check that format is ticked in Settings,
 File types.
 
+If it is one particular video, run `st2k doctor <that file>` and read the **Video codec** line.
+Video frames decode through the codecs Windows ships, and two things stop that: a codec Windows
+does not have (HEVC and AV1 are Store add-ons, and the doctor names the one to install), or an
+H.264 file in a profile the Windows decoder does not implement at all (4:4:4, 4:2:2 or 10-bit
+colour, which some encoders write when asked for `yuv444p` or similar). The second kind is
+skipped on purpose and instantly, because the Windows 10 decoder hangs on such files rather
+than declining them. Re-encode as ordinary 8-bit 4:2:0 H.264 (`ffmpeg -c:v libx264 -pix_fmt
+yuv420p`), or attach cover art, which is shown whenever no frame can be decoded.
+
 ### Thumbnails work in a folder, but the file is blank in OneDrive
 
 If the file is online-only, there are no bytes on the disk to read. Windows will not download a
@@ -244,9 +253,10 @@ works.
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
 needs a commercial licence: US$49 per Windows installation, perpetual, with 12 months of
 updates. Buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
-(card via Stripe); one seat key per installation arrives by email the moment payment completes.
+(card via Stripe); one seat key per installation arrives by email the moment payment completes
+(the checkout page calls it a "redemption code": same thing, it starts with `esk_`).
 Redeem it yourself, see below. For volume or site licences, purchase orders or bank transfer,
-[request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?title=Commercial%20licence%20quote&labels=licensing).
+[request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
 
 ### How does a business licence work?
 

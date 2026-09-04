@@ -10,13 +10,22 @@
 //! icon — never worse than before. A non-video ISO-BMFF (HEIC/AVIF, which share the `ftyp`
 //! box) is excluded by [`is_video_magic`] so the image tiers still handle it.
 
-use std::time::Duration;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use image::{DynamicImage, RgbaImage};
-use windows::core::{GUID, HSTRING};
+use windows::core::{Interface, GUID, HSTRING, PCWSTR};
+use windows::Win32::Foundation::{HANDLE, RPC_S_CALLPENDING, WAIT_OBJECT_0};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::StructuredStorage::{PropVariantToUInt64, PROPVARIANT};
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IStream, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CoWaitForMultipleHandles,
+    IGlobalInterfaceTable, IStream, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, COWAIT_DEFAULT,
+    COWAIT_DISPATCH_CALLS,
+};
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 
 /// D3DFMT_X8R8G8B8 — the format id for `MFVideoFormat_RGB32`, for the stride fallback.
@@ -201,6 +210,116 @@ impl Drop for MfSession {
 /// expiry we return `None` (default icon) and let the worker exit on its own.
 const VIDEO_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// How long a stranded worker may keep running before this host counts as WEDGED (see
+/// [`mf_wedged`]). Generous on purpose: a slow machine chewing a 4K HEVC frame in software
+/// can honestly overrun the 8 s budget and finish a few seconds later, and that must not
+/// switch video off for the rest of the host's life. A worker still inside Media Foundation
+/// half a minute past its budget is not slow, it is stuck.
+pub const STRAND_GRACE: Duration = Duration::from_secs(30);
+
+/// A decode worker that outlived its budget and was left running. [`grab_budgeted`] and
+/// [`frame_from_block_stream`] never kill one (a thread killed mid-COM-call can leave
+/// process-wide CRT / COM locks held forever); they give up on ITS frame, note it here, and
+/// let it finish on its own. It holds a `ModuleRef`, so the DLL cannot unload under it.
+struct Strand {
+    since: Instant,
+    /// Flipped by the worker itself as its very last act, after its COM apartment is gone.
+    done: Arc<AtomicBool>,
+}
+
+/// Every strand this process has recorded and not yet seen finish. Finished entries are
+/// swept on each insert; a process that never strands a worker never touches this.
+static STRANDS: Mutex<Vec<Strand>> = Mutex::new(Vec::new());
+
+/// How many Media Foundation grabs this process has started (every tier, every outcome).
+/// A diagnostics counter: the issue #35 profile gate is proven by this NOT moving.
+static MF_GRAB_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+
+/// Test / diagnostics hook: see [`MF_GRAB_ATTEMPTS`].
+#[doc(hidden)]
+pub fn mf_grab_attempts() -> u64 {
+    MF_GRAB_ATTEMPTS.load(Ordering::SeqCst)
+}
+
+fn strands() -> std::sync::MutexGuard<'static, Vec<Strand>> {
+    STRANDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Record a worker that overran its budget. Always-on log line: a user's log has to show
+/// WHY a video thumbnail came back blank after eight seconds, and this is the only place
+/// that knows.
+fn note_strand(done: Arc<AtomicBool>, what: &str) {
+    let mut g = strands();
+    g.retain(|s| !s.done.load(Ordering::SeqCst));
+    g.push(Strand {
+        since: Instant::now(),
+        done,
+    });
+    crate::safety::log(&format!(
+        "video: {what} still running past its {} s budget; giving up on this frame and leaving \
+         the worker to finish on its own ({} such worker(s) alive in this host, issue #35)",
+        VIDEO_TIMEOUT.as_secs(),
+        g.len()
+    ));
+}
+
+/// Stranded workers still running right now. Each one pins the module with a `ModuleRef`,
+/// which is what `dll_can_unload_now` compares against the live count (issue #35).
+pub fn stranded_workers() -> usize {
+    strands()
+        .iter()
+        .filter(|s| !s.done.load(Ordering::SeqCst))
+        .count()
+}
+
+/// Age of the longest-running stranded worker, if any is still running.
+pub fn oldest_strand_age() -> Option<Duration> {
+    let now = Instant::now();
+    strands()
+        .iter()
+        .filter(|s| !s.done.load(Ordering::SeqCst))
+        .map(|s| now.duration_since(s.since))
+        .max()
+}
+
+/// Is Media Foundation wedged in this process: a worker stranded past [`STRAND_GRACE`] that
+/// still has not finished? A decoder stuck that long is stuck for good, and it may well be
+/// holding MF-internal locks, so every further grab in this host would only strand another
+/// thread and burn another core. [`mf_usable`] turns the video tiers off while this holds.
+pub fn mf_wedged() -> bool {
+    wedged_at(Instant::now())
+}
+
+fn wedged_at(now: Instant) -> bool {
+    strands()
+        .iter()
+        .any(|s| !s.done.load(Ordering::SeqCst) && now.duration_since(s.since) >= STRAND_GRACE)
+}
+
+/// The gate every in-process Media Foundation tier checks: MF is present on this Windows
+/// ([`media_foundation_available`]) AND not wedged in this host ([`mf_wedged`]). The first
+/// is a property of the machine and answered once; the second can flip at any time and is
+/// re-asked per grab, since a wedge is exactly the state a running host walks into.
+pub fn mf_usable() -> bool {
+    if !media_foundation_available() {
+        return false;
+    }
+    if mf_wedged() {
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, Ordering::SeqCst) {
+            crate::safety::log(&format!(
+                "video: Media Foundation is wedged in this host (a decode worker has been stuck \
+                 for over {} s); video tiers are off until the host recycles (issue #35)",
+                STRAND_GRACE.as_secs()
+            ));
+        }
+        return false;
+    }
+    true
+}
+
 /// Grab a frame by FILE PATH — Media Foundation opens the file itself and seeks via its own
 /// index. **Current role: a last resort**, not the hot path the name once implied — the only
 /// caller left is `strip::read_info_verbose`'s unbounded width/height rescue when nothing
@@ -214,8 +333,9 @@ const VIDEO_TIMEOUT: Duration = Duration::from_secs(8);
 /// fails fast (default icon) instead of pegging the host.
 pub(crate) fn frame_from_path(path: &str) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
-    // structured exception under `panic = "abort"`. See `media_foundation_available`.
-    if !media_foundation_available() {
+    // structured exception under `panic = "abort"`. See `media_foundation_available`, and
+    // `mf_usable` for the wedged-host half of the gate (issue #35).
+    if !mf_usable() {
         return None;
     }
     let owned = path.to_string();
@@ -271,7 +391,7 @@ pub struct Nv12Frame {
 /// on purpose: the AV1 decoder MFT emits NV12 natively, and enabling the processor would
 /// put the component this function exists to bypass back into the chain.
 pub fn nv12_frame_from_owned_bytes(owned: Vec<u8>) -> Option<Nv12Frame> {
-    if !media_foundation_available() {
+    if !mf_usable() {
         return None;
     }
     grab_budgeted(move || unsafe {
@@ -374,8 +494,9 @@ unsafe fn read_first_nv12_sample(
 /// either way, so a caller that already has one should hand it over directly.
 pub fn frame_from_owned_bytes(owned: Vec<u8>) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
-    // structured exception under `panic = "abort"`. See `media_foundation_available`.
-    if !media_foundation_available() {
+    // structured exception under `panic = "abort"`. See `media_foundation_available`, and
+    // `mf_usable` for the wedged-host half of the gate (issue #35).
+    if !mf_usable() {
         return None;
     }
     grab_budgeted(move || unsafe {
@@ -402,8 +523,9 @@ pub fn frame_from_owned_bytes(owned: Vec<u8>) -> Option<DynamicImage> {
 /// CLI/preview fallback for non-MP4/MKV containers.
 pub fn frame_from_bytes_repr(bytes: &[u8]) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
-    // structured exception under `panic = "abort"`. See `media_foundation_available`.
-    if !media_foundation_available() {
+    // structured exception under `panic = "abort"`. See `media_foundation_available`, and
+    // `mf_usable` for the wedged-host half of the gate (issue #35).
+    if !mf_usable() {
         return None;
     }
     let owned = bytes.to_vec();
@@ -425,83 +547,131 @@ pub fn frame_from_bytes_repr(bytes: &[u8]) -> Option<DynamicImage> {
 /// [`crate::vstream::BlockCacheStream`] wrapping the shell `IStream`. `size` is the stream
 /// length (the caller already has it).
 ///
-/// Runs **inline on the calling thread** — NOT on the budgeted worker. The shell thumbnail
-/// `IStream` is apartment-bound to this thread; handing it to a worker deadlocks (the worker's
-/// reads marshal back to this thread, which would be blocked waiting on the worker). Inline is
-/// exactly how the old (deleted) `frame_from_istream` ran — but that was a 30 s meltdown because
-/// MF made thousands of tiny marshaled reads. Block-caching collapses those into a handful of big
-/// reads, and the stream's wall-clock [`VIDEO_TIMEOUT`] deadline + byte budget keep it bounded
-/// even without the worker timeout. Returns `None` (→ caller falls back) on any failure.
+/// Runs on a detached worker under [`VIDEO_TIMEOUT`], like every other tier, and the calling
+/// thread is ALWAYS free again once that budget is spent. It did not use to be: this tier ran
+/// inline on the shell thread with a side watchdog that could only log, because the shell
+/// `IStream` is bound to the caller's apartment and a worker's reads must marshal back to it.
+/// Issue #35 is what that cost. Windows 10's H.264 decoder wedged inside `ReadSample` on a
+/// 4:4:4 file, the call never returned, and Explorer's whole thumbnail pipeline sat behind
+/// it until a reboot; even a new `explorer.exe` queued up behind the same stuck surrogate.
+///
+/// The worker now gets the stream through the Global Interface Table and the caller waits
+/// with `CoWaitForMultipleHandles`, which dispatches the worker's marshaled reads on an STA
+/// caller (a preview host) and is a plain wait on an MTA one (the thumbnail host), so the
+/// marshaling that forced the inline design is serviced instead of deadlocked. On timeout the
+/// worker is left to finish on its own and recorded as stranded ([`Strand`]); a strand that
+/// outlives [`STRAND_GRACE`] turns the video tiers off for this host ([`mf_usable`]) and lets
+/// `dll_can_unload_now` recycle the surrogate. Block-caching still collapses MF's thousands
+/// of tiny reads into a handful of 1 MiB ones, and the stream's own deadline + byte budget
+/// bound its I/O as before. Returns `None` (the caller falls back) on any failure.
 pub fn frame_from_block_stream(shell: &IStream, size: u64, frac: f64) -> Option<DynamicImage> {
-    // Media Foundation is delay-loaded; calling into it when absent would raise a
-    // structured exception under `panic = "abort"`. See `media_foundation_available`.
-    if !media_foundation_available() {
+    if !mf_usable() {
         return None;
     }
-    // S_OK / S_FALSE both add a ref; RPC_E_CHANGED_MODE means COM is already up on this thread.
-    let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-    let shell = shell.clone();
-    // BlockCacheStream's own deadline only bounds time spent inside ITS Read calls; time
-    // spent inside MFCreateSourceReaderFromByteStream / ReadSample itself (codec init/parsing
-    // that never calls back into the stream) has no interrupt of its own — unlike every other
-    // frame_from_* tier, which runs on grab_budgeted's worker and is bounded by its
-    // recv_timeout. This one can't move there: the shell IStream is apartment-bound to THIS
-    // thread (see the doc comment above). Watch it from the side instead, so a stuck call
-    // leaves a log line rather than total silence. Logging, not a forced abort: killing a
-    // thread mid-COM-call can leave process-wide CRT/COM locks held forever, turning one slow
-    // file into a dead host for every OTHER file it's asked to thumbnail — and this only ever
-    // pins the isolated dllhost/prevhost host (CLAUDE.md §5), never Explorer's own UI thread.
-    let r = with_watchdog(
+    // The Global Interface Table is the one marshaling that is right whatever apartment this
+    // thread is in: an MTA caller's worker gets the same pointer back, an STA caller's gets a
+    // proxy whose calls land on this thread (served by the pumping wait). The worker fetches
+    // and revokes the entry itself, so the cookie never outlives the grab.
+    let git = unsafe { global_interface_table() }?;
+    let cookie = unsafe { git.RegisterInterfaceInGlobal(shell, &IStream::IID) }.ok()?;
+    let seek = Seek {
+        frac,
+        cap_hns: None,
+    };
+    run_bounded_pumping(
         VIDEO_TIMEOUT,
-        || {
-            crate::safety::log(
-                "frame_from_block_stream: still running past VIDEO_TIMEOUT (no interrupt inside MF's own calls)",
-            );
+        "the block-stream frame grab",
+        move || unsafe {
+            let git = global_interface_table()?;
+            let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
+            let fetched = git
+                .GetInterfaceFromGlobal(cookie, &IStream::IID, &mut raw)
+                .is_ok();
+            let _ = git.RevokeInterfaceFromGlobal(cookie);
+            if !fetched || raw.is_null() {
+                return None;
+            }
+            // SAFETY: a live, AddRef'd IStream the table just handed this apartment.
+            let inner = IStream::from_raw(raw);
+            grab_block_stream(inner, size, seek)
         },
-        || unsafe {
-            grab_block_stream(
-                shell,
-                size,
-                Seek {
-                    frac,
-                    cap_hns: None,
-                },
-            )
-        },
-    );
-    if inited {
-        unsafe { CoUninitialize() };
-    }
-    r
+    )
 }
 
-/// Run `f` on the CALLING thread while a side thread watches the wall clock: if `f` hasn't
-/// finished by `timeout`, `on_timeout` fires once (the watchdog keeps waiting for `f` after
-/// that — it never touches `f`'s thread, it only reports). The watchdog is always joined
-/// before returning, so it can never outlive this call. Used for grabs that can't run on
-/// [`grab_budgeted`]'s own worker (an apartment-bound `IStream`) but still want the same
-/// "a stuck call is visible, not silent" guarantee that worker gives every other tier.
-fn with_watchdog<T>(
-    timeout: Duration,
-    on_timeout: impl FnOnce() + Send + 'static,
-    f: impl FnOnce() -> T,
-) -> T {
-    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-    let watchdog = std::thread::Builder::new()
-        .name("st2k-video-watchdog".into())
+/// `CLSID_StdGlobalInterfaceTable`, {00000323-0000-0000-C000-000000000046}.
+const CLSID_STD_GLOBAL_INTERFACE_TABLE: GUID =
+    GUID::from_u128(0x00000323_0000_0000_c000_000000000046);
+
+/// The process-wide Global Interface Table (a COM singleton; creating it is a lookup).
+unsafe fn global_interface_table() -> Option<IGlobalInterfaceTable> {
+    CoCreateInstance(
+        &CLSID_STD_GLOBAL_INTERFACE_TABLE,
+        None,
+        CLSCTX_INPROC_SERVER,
+    )
+    .ok()
+}
+
+/// Run `f` on a detached worker and wait for it at most `timeout`, dispatching this
+/// apartment's incoming COM calls meanwhile ([`wait_pumping`]) so a worker whose reads
+/// marshal back to an STA caller is serviced rather than deadlocked. `f` runs under its own
+/// MTA apartment and a `ModuleRef`, like every other budgeted worker. On timeout the worker
+/// is left running (never killed, see [`Strand`]), its strand is recorded, and `None` comes
+/// back at once: the CALLER's thread is free again after `timeout`, whatever `f` is doing.
+fn run_bounded_pumping<T, F>(timeout: Duration, what: &'static str, f: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Option<T> + Send + 'static,
+{
+    MF_GRAB_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+    // Manual-reset, and shared: a worker finishing after the timeout signals a handle both
+    // sides still hold, which closes with the last of them, never one already recycled.
+    let raw = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.ok()?;
+    // SAFETY: a fresh event handle this function owns; wrapped so it is closed exactly once.
+    let event = Arc::new(unsafe { OwnedHandle::from_raw_handle(raw.0) });
+    let slot: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+    let done = Arc::new(AtomicBool::new(false));
+    let (w_event, w_slot, w_done) = (event.clone(), slot.clone(), done.clone());
+    let spawned = std::thread::Builder::new()
+        .name("st2k-video-worker".into())
         .spawn(move || {
-            if done_rx.recv_timeout(timeout).is_err() {
-                on_timeout();
+            // Pin the DLL for this detached worker's whole lifetime (see `grab_budgeted`).
+            #[allow(clippy::default_constructed_unit_structs)]
+            let _module = crate::ModuleRef::default();
+            let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+            let r = f();
+            if inited {
+                unsafe { CoUninitialize() };
             }
+            *w_slot.lock().unwrap_or_else(|p| p.into_inner()) = r;
+            // Last act, after the apartment is gone: "done" means done with Media Foundation.
+            w_done.store(true, Ordering::SeqCst);
+            let _ = unsafe { SetEvent(HANDLE(w_event.as_raw_handle())) };
         });
-    let r = f();
-    // Unblock the watchdog before f's caller can be logged as "still running" — a fast `f`
-    // must never race a slow watchdog thread startup into a false-positive log line.
-    let _ = done_tx.send(());
-    if let Ok(w) = watchdog {
-        let _ = w.join();
+    if spawned.is_err() {
+        return None;
     }
-    r
+    if wait_pumping(HANDLE(event.as_raw_handle()), timeout) {
+        slot.lock().unwrap_or_else(|p| p.into_inner()).take()
+    } else {
+        note_strand(done, what);
+        None
+    }
+}
+
+/// Wait for `h` up to `timeout`, dispatching this apartment's incoming COM calls while
+/// waiting: an STA caller's marshaled stream reads land on this thread and MUST be served
+/// for the worker to make progress, while an MTA caller simply waits. A thread with no
+/// apartment at all falls back to a plain wait. `true` when the handle was signaled in time.
+fn wait_pumping(h: HANDLE, timeout: Duration) -> bool {
+    let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+    let flags = (COWAIT_DEFAULT | COWAIT_DISPATCH_CALLS).0 as u32;
+    let waited = unsafe { CoWaitForMultipleHandles(flags, ms, &[h]) };
+    match waited {
+        Ok(_signaled_index) => true,
+        Err(e) if e.code() == RPC_S_CALLPENDING => false,
+        Err(_) => (unsafe { WaitForSingleObject(h, ms) }) == WAIT_OBJECT_0,
+    }
 }
 
 /// Wrap `inner` (an `IStream` valid on the current thread) in a block-caching stream and grab.
@@ -522,8 +692,9 @@ unsafe fn grab_block_stream(inner: IStream, size: u64, seek: Seek) -> Option<Dyn
 #[cfg(test)]
 pub fn frame_from_block_stream_file(path: &str, frac: f64) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
-    // structured exception under `panic = "abort"`. See `media_foundation_available`.
-    if !media_foundation_available() {
+    // structured exception under `panic = "abort"`. See `media_foundation_available`, and
+    // `mf_usable` for the wedged-host half of the gate (issue #35).
+    if !mf_usable() {
         return None;
     }
     use windows::Win32::System::Com::{STATFLAG_NONAME, STATSTG, STGM_READ};
@@ -561,13 +732,18 @@ const MAX_SEEK_HNS: i64 = 3 * 10_000_000;
 /// Run a frame-grab closure on a worker thread under [`VIDEO_TIMEOUT`]. The worker owns its
 /// inputs and initializes its own (MTA) COM apartment for the MF / WIC components; on
 /// timeout the receiver is dropped and the worker simply finishes and exits (a leaked
-/// thread in a disposable host is acceptable — same trade as `decode_svg` / `pdf`).
+/// thread in a disposable host is acceptable — same trade as `decode_svg` / `pdf`), but it
+/// is recorded as a [`Strand`] so a worker that never finishes is not invisible: past
+/// [`STRAND_GRACE`] it marks this host wedged ([`mf_wedged`]).
 fn grab_budgeted<T, F>(f: F) -> Option<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Option<T> + Send + 'static,
 {
+    MF_GRAB_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = std::sync::mpsc::channel();
+    let done = Arc::new(AtomicBool::new(false));
+    let finished = done.clone();
     std::thread::spawn(move || {
         // Pin the DLL for this detached worker's whole lifetime: on timeout we return but
         // leave it running, and `DllCanUnloadNow` ignores it, so the thumbnail host could
@@ -581,8 +757,19 @@ where
             unsafe { CoUninitialize() };
         }
         let _ = tx.send(r);
+        // Last act, after the apartment is gone: "done" means done with Media Foundation.
+        finished.store(true, Ordering::SeqCst);
     });
-    rx.recv_timeout(VIDEO_TIMEOUT).ok().flatten()
+    match rx.recv_timeout(VIDEO_TIMEOUT) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            note_strand(done, "an in-memory frame grab");
+            None
+        }
+        // The worker is gone (it can only get here by unwinding, which the shell build
+        // turns into an abort anyway): nothing is stranded, there is just no frame.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+    }
 }
 
 /// Wrap a byte stream in a source reader and grab (the in-memory + shell-IStream paths).
@@ -933,79 +1120,74 @@ mod tests {
         assert!(super::is_video_magic(&head_for(b"isom")));
     }
 
-    /// The watchdog must report an `f` that outlives the timeout, and must never mistake a
-    /// fast one for stuck — either mistake defeats its whole purpose (a silent-forever wedge,
-    /// or a log line that cries wolf on the normal case).
+    /// The bounded worker must hand back a fast `f`'s answer, and must come back EMPTY, on
+    /// time, for an `f` that overruns - leaving that worker to finish on its own and keeping
+    /// it on the strand ledger until it does. Both halves are the issue #35 contract: the
+    /// calling (shell) thread is always free again after the budget, whatever Media
+    /// Foundation is doing on the worker.
+    ///
+    /// Timing discipline inherited from the watchdog test this replaces: the FAST half gets
+    /// a ten-second budget for an instant `f`, so only a genuinely broken wait can miss the
+    /// answer (a tight budget there is a scheduling test, and it flaked exactly once under a
+    /// saturated `cargo mutants` run). The SLOW half blocks `f` on a flag we release, and then
+    /// WAITS for the ledger to clear rather than sleeping a fixed time, so a loaded box can
+    /// only make it slower, never wrong.
     #[test]
-    fn with_watchdog_fires_only_when_f_outlives_the_timeout() {
+    fn bounded_worker_returns_on_time_and_records_the_strand() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         use std::time::{Duration, Instant};
 
-        let fast_fired = Arc::new(AtomicBool::new(false));
-        let flag = fast_fired.clone();
-        // TEN SECONDS, not the 50 ms this used to allow, and the size is the whole point.
-        // `f` here returns instantly, so the only way the watchdog can fire is if the test
-        // thread is descheduled for longer than the timeout between arming and returning.
-        // At 50 ms that is entirely reachable on a loaded machine: this test failed exactly
-        // once in the whole suite, while `cargo mutants` was saturating every core, and
-        // passed alone immediately afterwards. A flaky gate is worse than no gate, because
-        // the next person reads a real failure here as "that one is just noisy".
-        //
-        // Widening the FAST half costs nothing: an instant `f` is nowhere near 10 s, so the
-        // assertion still fails the moment the watchdog genuinely misfires. Only the SLOW
-        // half needs its timeout to be small, and it stays small.
-        let r = super::with_watchdog(
-            Duration::from_secs(10),
-            move || flag.store(true, Ordering::SeqCst),
-            || 42,
-        );
-        assert_eq!(r, 42);
-        // Give a spuriously-firing watchdog time to prove itself before asserting it didn't.
-        std::thread::sleep(Duration::from_millis(120));
-        assert!(
-            !fast_fired.load(Ordering::SeqCst),
-            "watchdog fired even though f returned well inside the timeout"
+        assert_eq!(
+            super::run_bounded_pumping(Duration::from_secs(10), "test-fast", || Some(42)),
+            Some(42),
+            "a worker that finishes inside the budget must hand back its answer"
         );
 
-        let slow_fired = Arc::new(AtomicBool::new(false));
-        let flag = slow_fired.clone();
-        let observed = slow_fired.clone();
-        // WAIT for the watchdog rather than racing it against a fixed sleep. This half used
-        // to sleep 150 ms and assume the watchdog thread would be scheduled somewhere inside
-        // that window. On a machine saturated by a release build that assumption is simply
-        // untrue, and it is how this test went red on 2026-08-15 for a reason that had
-        // nothing to do with the code under test. The pass before that widened the FAST half
-        // against exactly this hazard and left this half racy, so the flake survived a fix
-        // aimed at it.
-        //
-        // Blocking until the flag is set asks the question the contract actually makes, "does
-        // the watchdog fire at all for an `f` that overruns", instead of the scheduling
-        // question "did it fire inside 150 ms". The deadline is a backstop that only a
-        // watchdog which never fires can reach, not a timing budget: a working watchdog
-        // releases this loop after one 5 ms tick no matter how loaded the box is.
-        //
-        // Note on how this was verified, because the previous pass got this wrong: an
-        // artificial load harness (96 CPU burners on 32 cores) could NOT reproduce the
-        // original failure, passing 20/20 against the OLD racy shape as well as this one. So
-        // "it passed N times under load" is not evidence here and was not treated as any. The
-        // claim this fix rests on is structural: there is no longer a window to lose. Do not
-        // re-tighten it into a fixed sleep on the strength of a green load run.
-        let r = super::with_watchdog(
-            Duration::from_millis(20),
-            move || flag.store(true, Ordering::SeqCst),
-            move || {
-                let deadline = Instant::now() + Duration::from_secs(10);
-                while !observed.load(Ordering::SeqCst) && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                7
-            },
+        let release = Arc::new(AtomicBool::new(false));
+        let gate = release.clone();
+        let before = super::stranded_workers();
+        let started = Instant::now();
+        let r = super::run_bounded_pumping(Duration::from_millis(30), "test-slow", move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !gate.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Some(7)
+        });
+        assert_eq!(
+            r, None,
+            "an overrunning worker must be given up on, not waited for"
         );
-        assert_eq!(r, 7);
         assert!(
-            slow_fired.load(Ordering::SeqCst),
-            "watchdog never fired for an f that ran past the timeout"
+            started.elapsed() < Duration::from_secs(5),
+            "the caller came back late: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            super::stranded_workers() > before,
+            "the overrun must be on the strand ledger while the worker still runs"
+        );
+        // Slow is not stuck: inside the grace period the host is NOT wedged...
+        assert!(!super::mf_wedged());
+        // ...and would be, were this same strand still running past the grace.
+        let later = Instant::now() + super::STRAND_GRACE + Duration::from_secs(1);
+        assert!(super::wedged_at(later));
+
+        release.store(true, Ordering::SeqCst);
+        // The worker flips its own `done` as its last act; wait for that, never sleep for it.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while super::stranded_workers() > before && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            super::stranded_workers(),
+            before,
+            "a worker that finishes must leave the ledger on its own"
+        );
+        assert!(
+            !super::wedged_at(later),
+            "a finished worker must not count as a wedge however old its strand is"
         );
     }
 

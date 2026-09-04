@@ -46,6 +46,12 @@ pub struct CodecInfo {
     /// and neither fact is a problem: the thumbnail works anyway, and `doctor` must say
     /// so instead of prescribing a Store extension that doesn't exist.
     pub self_decoded: bool,
+    /// Set when the codec IS one Windows decodes but the track's PROFILE is one its decoder
+    /// does not implement (H.264 4:4:4 / 4:2:2 / 10-bit, issue #35): the human-readable
+    /// reason, as [`mf_undecodable_reason`] words it. The thumbnail cascade refuses to hand
+    /// such a file to Media Foundation at all, so `doctor` must explain the skip rather than
+    /// report "a decoder is installed" and leave the user hunting for a bug in us.
+    pub mf_profile_block: Option<String>,
 }
 
 const HINT_HEVC: &str = "install 'HEVC Video Extensions' from the Microsoft Store (Microsoft \
@@ -59,16 +65,57 @@ const HINT_THEORA: &str = "install the free 'Web Media Extensions' from the Micr
 /// Each container parser self-gates on its magic, so trying them in turn is cheap. `None`:
 /// some other container (AVI/WMV/…) or no video track found.
 pub fn identify<R: Read + Seek>(r: &mut R) -> Option<CodecInfo> {
-    if let Some(id) = crate::mkv::video_codec_id(r) {
-        return Some(from_mkv_codec_id(&id));
+    let mut info = crate::mkv::video_codec_id(r)
+        .map(|id| from_mkv_codec_id(&id))
+        .or_else(|| crate::mp4::video_codec_fourcc(r).map(from_mp4_fourcc))
+        .or_else(|| crate::flv::video_codec_id(r).map(from_flv_codec_id))?;
+    // "A decoder is installed" is only half the answer for H.264: the inbox decoder stops
+    // at High 8-bit 4:2:0, and a 4:4:4 file with that decoder present is exactly the file
+    // the cascade refuses on purpose (issue #35). Say which, so the report names the cause.
+    if info.subtype == Some(MFVideoFormat_H264) {
+        info.mf_profile_block = mf_undecodable_reason(r);
     }
-    if let Some(fourcc) = crate::mp4::video_codec_fourcc(r) {
-        return Some(from_mp4_fourcc(fourcc));
+    Some(info)
+}
+
+/// H.264 `profile_idc` values Windows' own H.264 decoder does not implement, by name.
+///
+/// The inbox decoder covers Baseline, Main and High: 8-bit 4:2:0 and nothing else. The four
+/// below are the FRExt "High" family a modern x264 writes when asked for `-pix_fmt yuv444p`
+/// / `yuv422p` / a 10-bit output, and every one of them is a file that decoder cannot open.
+/// Windows 11 says so at once; the reporter's Windows 10 22H2 said nothing at all and
+/// wedged inside `ReadSample` on both the mini-clip and the block-stream tier (issue #35,
+/// a High 4:4:4 Predictive file), which is why this has to be decided from the container's
+/// own bytes BEFORE Media Foundation is handed the stream. `None` for every profile the
+/// decoder does implement, and for values we have no opinion on (the MVC / SVC extension
+/// profiles fail fast and were never a hang), so a shrug never blocks a decode.
+pub fn h264_profile_mf_cannot_decode(profile_idc: u8) -> Option<&'static str> {
+    match profile_idc {
+        44 => Some("CAVLC 4:4:4 Intra"),
+        110 => Some("High 10"),
+        122 => Some("High 4:2:2"),
+        244 => Some("High 4:4:4 Predictive"),
+        _ => None,
     }
-    if let Some(id) = crate::flv::video_codec_id(r) {
-        return Some(from_flv_codec_id(id));
-    }
-    None
+}
+
+/// Why Media Foundation must NOT be handed this source, when there is a reason: the video
+/// track's H.264 profile is one [`h264_profile_mf_cannot_decode`] names. Read from the
+/// decoder configuration record the container carries (the MP4 `avcC` box, the Matroska
+/// `CodecPrivate`), pure Rust, no MF call. `None` for every other codec and container, for
+/// a decodable profile, and for anything unparseable.
+///
+/// Cheap where it matters: the two thumbnail cascades call this on the one-keyframe mini
+/// clip they have already built in RAM (the `stsd` / `TrackEntry` are copied into it
+/// verbatim), so the answer costs a few KB of in-memory box walking and no further read of
+/// the original stream.
+pub fn mf_undecodable_reason<R: Read + Seek>(r: &mut R) -> Option<String> {
+    let idc = crate::mp4::h264_profile_idc(r).or_else(|| crate::mkv::h264_profile_idc(r))?;
+    let name = h264_profile_mf_cannot_decode(idc)?;
+    Some(format!(
+        "H.264 {name} (profile_idc {idc}): Windows' H.264 decoder implements only Baseline, \
+         Main and High 8-bit 4:2:0"
+    ))
 }
 
 /// The embedded cover image of a video file, whichever container it is: a Matroska
@@ -108,6 +155,7 @@ fn from_mkv_codec_id(id: &str) -> CodecInfo {
                 known: false,
                 install_hint: None,
                 self_decoded: false,
+                mf_profile_block: None,
             }
         }
     };
@@ -118,6 +166,7 @@ fn from_mkv_codec_id(id: &str) -> CodecInfo {
         known: true,
         install_hint: hint,
         self_decoded: false,
+        mf_profile_block: None,
     }
 }
 
@@ -145,6 +194,7 @@ fn from_mp4_fourcc(fourcc: [u8; 4]) -> CodecInfo {
                 known: false,
                 install_hint: None,
                 self_decoded: false,
+                mf_profile_block: None,
             }
         }
     };
@@ -155,6 +205,7 @@ fn from_mp4_fourcc(fourcc: [u8; 4]) -> CodecInfo {
         known: true,
         install_hint: hint,
         self_decoded: false,
+        mf_profile_block: None,
     }
 }
 
@@ -182,6 +233,7 @@ fn from_flv_codec_id(id: u8) -> CodecInfo {
                 known: false,
                 install_hint: None,
                 self_decoded: false,
+                mf_profile_block: None,
             }
         }
     };
@@ -192,6 +244,7 @@ fn from_flv_codec_id(id: u8) -> CodecInfo {
         known: true,
         install_hint: None,
         self_decoded,
+        mf_profile_block: None,
     }
 }
 
@@ -230,6 +283,33 @@ pub fn decoder_installed(subtype: GUID) -> Option<bool> {
             windows::Win32::System::Com::CoTaskMemFree(Some(activates.cast()));
         }
         Some(count > 0)
+    }
+}
+
+#[cfg(test)]
+mod profile_gate_tests {
+    /// The refusal list is exactly the FRExt "High" family the inbox decoder lacks, and
+    /// nothing else: Baseline (66), Main (77), Extended (88), High (100) and the MVC /
+    /// SVC extension profiles all fall through to Media Foundation as before. Widening this
+    /// list is how a decodable file loses its thumbnail; narrowing it is how issue #35 comes
+    /// back. Both directions are pinned.
+    #[test]
+    fn only_the_frext_high_family_is_refused() {
+        use super::h264_profile_mf_cannot_decode as refused;
+        for ok in [0u8, 66, 77, 88, 100, 118, 128, 138, 255] {
+            assert_eq!(refused(ok), None, "profile_idc {ok} must reach the decoder");
+        }
+        assert_eq!(refused(44), Some("CAVLC 4:4:4 Intra"));
+        assert_eq!(refused(110), Some("High 10"));
+        assert_eq!(refused(122), Some("High 4:2:2"));
+        assert_eq!(refused(244), Some("High 4:4:4 Predictive"));
+    }
+
+    /// Not a video at all is a shrug, never a refusal.
+    #[test]
+    fn an_unparseable_source_blocks_nothing() {
+        let mut junk = std::io::Cursor::new(b"definitely not a container".to_vec());
+        assert_eq!(super::mf_undecodable_reason(&mut junk), None);
     }
 }
 

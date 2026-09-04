@@ -130,7 +130,8 @@ pub fn magick_available() -> bool {
 }
 
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use windows::core::{Error, Interface, GUID, HRESULT};
 use windows::Win32::Foundation::{
@@ -147,8 +148,21 @@ static HMODULE_PTR: AtomicIsize = AtomicIsize::new(0);
 const DLL_PROCESS_ATTACH: u32 = 1;
 const DLL_PROCESS_DETACH: u32 = 0;
 
+/// Uptime at the most recent add-ref, in ms: the last time anyone asked this host for an
+/// object. Read by [`dll_can_unload_now`]'s wedged-host exit, which must never fire while
+/// the host is still being used.
+static LAST_ADD_REF_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Time since this module first counted a reference (a monotonic clock that needs no
+/// system-time assumptions, for the idle measurement above).
+fn uptime() -> Duration {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed()
+}
+
 pub fn dll_add_ref() {
     MODULE_REFS.fetch_add(1, Ordering::SeqCst);
+    LAST_ADD_REF_MS.store(uptime().as_millis() as u64, Ordering::Relaxed);
 }
 
 pub fn dll_release() {
@@ -243,11 +257,83 @@ pub fn dll_can_unload_now() -> HRESULT {
     // == 0 (not <= 0): the count is now clamped at zero in `dll_release`, so it can
     // never go negative; testing `<= 0` would fail dangerous on a hypothetical
     // underflow by reporting "safe to unload" while an object is still live.
-    if MODULE_REFS.load(Ordering::SeqCst) == 0 {
-        S_OK
-    } else {
-        S_FALSE
+    let refs = MODULE_REFS.load(Ordering::SeqCst);
+    if refs == 0 {
+        return S_OK;
     }
+    // ISSUE #35 self-heal. A decode worker wedged inside Media Foundation holds a
+    // `ModuleRef` forever (it must: unloading the DLL under a running thread is a crash),
+    // so this host can never report S_OK again and the surrogate never recycles - one
+    // spinning core, and a Media Foundation that may be locked for every other file, until
+    // the user reboots. When the ONLY pins left are such workers, nobody has asked this host
+    // for an object in a while, and the host is one of the shell's disposable surrogates,
+    // exit instead: Explorer starts a fresh surrogate on the next request, which is exactly
+    // what a reboot bought the reporter. Never in explorer.exe itself or any other host.
+    let view = WedgedHostView {
+        refs,
+        stranded: video::stranded_workers(),
+        oldest_strand: video::oldest_strand_age(),
+        idle_for: uptime().saturating_sub(Duration::from_millis(
+            LAST_ADD_REF_MS.load(Ordering::Relaxed),
+        )),
+        host: current_host_exe(),
+    };
+    if should_exit_wedged_host(&view) {
+        safety::log(&format!(
+            "host: every remaining pin ({}) is a decode worker wedged inside Media Foundation \
+             for {:?}, and nothing has asked this host for an object in {:?}; exiting this \
+             surrogate so Explorer starts a fresh one (issue #35)",
+            view.refs,
+            view.oldest_strand.unwrap_or_default(),
+            view.idle_for
+        ));
+        unsafe { windows::Win32::System::Threading::ExitProcess(0) };
+    }
+    S_FALSE
+}
+
+/// How long a host must have gone without an add-ref before the wedged-host exit may
+/// fire. Long enough that a user still browsing a folder (requests every few seconds) is
+/// never interrupted; the exit is for the host they have walked away from.
+const WEDGED_HOST_IDLE: Duration = Duration::from_secs(30);
+
+/// Everything [`should_exit_wedged_host`] looks at, gathered so the decision is a pure
+/// function that can be tested without a wedged worker or a real surrogate.
+pub(crate) struct WedgedHostView {
+    /// Live `MODULE_REFS`.
+    pub refs: i64,
+    /// Stranded workers still running (`video::stranded_workers`), each holding one ref.
+    pub stranded: usize,
+    /// Age of the oldest of those, `None` when there are none.
+    pub oldest_strand: Option<Duration>,
+    /// Time since the last add-ref.
+    pub idle_for: Duration,
+    /// The host process's executable name.
+    pub host: Option<String>,
+}
+
+/// The wedged-host exit decision: the host is a disposable shell surrogate, every remaining
+/// reference is a stranded worker, the oldest strand is past `video::STRAND_GRACE` (stuck,
+/// not slow), and nothing has asked for an object in [`WEDGED_HOST_IDLE`]. Any other
+/// combination keeps the host alive: a class-factory lock, a live object, a worker that may
+/// yet finish, a host that is still busy, or a host we do not own.
+pub(crate) fn should_exit_wedged_host(v: &WedgedHostView) -> bool {
+    let disposable = v.host.as_deref().is_some_and(|h| {
+        h.eq_ignore_ascii_case("dllhost.exe") || h.eq_ignore_ascii_case("prevhost.exe")
+    });
+    disposable
+        && v.stranded > 0
+        && v.refs == v.stranded as i64
+        && v.oldest_strand
+            .is_some_and(|age| age >= video::STRAND_GRACE)
+        && v.idle_for >= WEDGED_HOST_IDLE
+}
+
+/// The file name of the process hosting this DLL (`dllhost.exe`, `prevhost.exe`,
+/// `explorer.exe`, a test runner, ...).
+fn current_host_exe() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    exe.file_name()?.to_str().map(str::to_string)
 }
 
 // The Windows loader calls the cdylib's `DllGetClassObject` by name; this is its body.
@@ -406,5 +492,81 @@ mod unload_guard_tests {
         );
         release_tx.send(()).unwrap();
         ended_rx.recv().unwrap();
+    }
+
+    /// The issue #35 surrogate exit fires for exactly one shape of host and no other. Each
+    /// row below flips ONE condition of the healthy-to-exit case; every one of them must keep
+    /// the host alive, because the alternative is killing a process somebody is using.
+    #[test]
+    fn wedged_host_exit_needs_every_condition() {
+        use super::{should_exit_wedged_host, WedgedHostView, WEDGED_HOST_IDLE};
+        use std::time::Duration;
+        let grace = crate::video::STRAND_GRACE;
+        let ok = || WedgedHostView {
+            refs: 2,
+            stranded: 2,
+            oldest_strand: Some(grace),
+            idle_for: WEDGED_HOST_IDLE,
+            host: Some("DllHost.exe".into()),
+        };
+        assert!(
+            should_exit_wedged_host(&ok()),
+            "the all-conditions-met case must exit"
+        );
+        assert!(should_exit_wedged_host(&WedgedHostView {
+            host: Some("prevhost.exe".into()),
+            ..ok()
+        }));
+
+        let alive = [
+            (
+                "a live object or LockServer pins us too",
+                WedgedHostView { refs: 3, ..ok() },
+            ),
+            (
+                "nothing is stranded",
+                WedgedHostView {
+                    refs: 0,
+                    stranded: 0,
+                    oldest_strand: None,
+                    ..ok()
+                },
+            ),
+            (
+                "the strand is slow, not yet stuck",
+                WedgedHostView {
+                    oldest_strand: Some(grace - Duration::from_secs(1)),
+                    ..ok()
+                },
+            ),
+            (
+                "the host is still being used",
+                WedgedHostView {
+                    idle_for: WEDGED_HOST_IDLE - Duration::from_secs(1),
+                    ..ok()
+                },
+            ),
+            (
+                "this is Explorer itself",
+                WedgedHostView {
+                    host: Some("explorer.exe".into()),
+                    ..ok()
+                },
+            ),
+            (
+                "this is the app",
+                WedgedHostView {
+                    host: Some("SageThumbs2K.exe".into()),
+                    ..ok()
+                },
+            ),
+            ("the host is unknown", WedgedHostView { host: None, ..ok() }),
+        ];
+        for (why, view) in alive {
+            assert!(
+                !should_exit_wedged_host(&view),
+                "must stay alive when {why}"
+            );
+        }
     }
 }
