@@ -25,6 +25,10 @@ use windows::Win32::Security::Cryptography::{
 use windows_registry::CURRENT_USER;
 
 const V_REFRESH: &str = "RefreshToken";
+/// The offline licence certificate (`licence_cert`). Lives beside the refresh token, under
+/// the same DPAPI + portable-ini rules, for the same reason: it is per-user, per-machine,
+/// and must not be left behind on a PC a portable copy only borrowed.
+const V_LICENCE_CERT: &str = "LicenceCert";
 const V_SUB: &str = "Sub";
 const V_EMAIL: &str = "Email";
 const V_NAME: &str = "Name";
@@ -140,6 +144,48 @@ pub(crate) fn load_refresh_token() -> Option<String> {
         CURRENT_USER
             .open(oauth_key())
             .and_then(|k| k.get_string(V_REFRESH))
+            .ok()?
+    };
+    let enc = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
+    let plain = unsafe { dpapi(&enc, false) }?;
+    String::from_utf8(plain).ok()
+}
+
+/// DPAPI-encrypt and persist the offline licence certificate. Best-effort → returns
+/// whether it stuck.
+///
+/// Encrypted rather than stored plainly even though a certificate is far weaker than the
+/// refresh token beside it: it is signed for ONE `sub` (this installation), expires on its
+/// own, and grants nothing anywhere else, so a copy lifted off this machine is inert. It
+/// gets the same treatment anyway because it is the artifact a licence rests on, and
+/// DPAPI is already right here — see `licence_cert` for what it is and why it exists.
+pub(crate) fn save_licence_cert(cert: &str) -> bool {
+    let Some(enc) = (unsafe { dpapi(cert.as_bytes(), true) }) else {
+        return false;
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(enc);
+    if settings::portable() {
+        return settings::set_string(&portable_key(V_LICENCE_CERT), &b64).is_ok();
+    }
+    CURRENT_USER
+        .create(oauth_key())
+        .and_then(|k| k.set_string(V_LICENCE_CERT, &b64))
+        .is_ok()
+}
+
+/// Load + DPAPI-decrypt the offline licence certificate, or `None` if absent or
+/// undecryptable (a blob carried over from another machine or user, which is exactly the
+/// case it must not license). `None` is never "unlicensed" to the caller - it means "no
+/// certificate", and the relay breadcrumb decides on its own.
+pub(crate) fn load_licence_cert() -> Option<String> {
+    let b64 = if settings::portable() {
+        settings::get_string_opt(&portable_key(V_LICENCE_CERT))?
+    } else {
+        CURRENT_USER
+            .open(oauth_key())
+            .and_then(|k| k.get_string(V_LICENCE_CERT))
             .ok()?
     };
     let enc = base64::engine::general_purpose::STANDARD

@@ -40,6 +40,9 @@ mod gdip;
 mod hotkey;
 mod http;
 mod image_info;
+/// Offline licence certificates: the signed, network-free FLOOR under `license`'s relay
+/// check. Never a replacement for it — see that module's own docs for why both exist.
+mod licence_cert;
 mod license;
 /// The "you could be signed in" prompt: app glue (persistence, identity, the decision).
 mod nudge;

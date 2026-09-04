@@ -177,6 +177,15 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # decode-only zstd implementation (MIT OR Apache-2.0) — keeps the build C-free.
 ruzstd = "0.9"
 base64 = "0.23"
+# Offline licence certificates (EXE-only; see `src/bin/app/licence_cert.rs`). Pay signs
+# them Ed25519, and Windows CANNOT verify that: CNG has no Ed25519 before Windows 10
+# build 20348 / Server 2022, and the installer's floor is `MinVersion=10.0`, so the OS
+# crypto API this project already uses for SHA-256 and RNG cannot do it on a machine we
+# support. Hence a crate rather than one more `BCrypt*` call. Pure-Rust, no C, verify-only
+# for us. `default-features = false` drops the SIGNING half's `rand_core`/`zeroize` — we
+# never mint a certificate, we only check one. LTO dead-strips it from the shell-extension
+# DLL, which never touches the licence module.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 percent-encoding = "2"
 # 7-Zip (cb7 + generic .7z) — pure-Rust. `default-features = false` is LOAD-BEARING:
 # 0.21's default set pulls `bzip2` (C) and the LZMA *encoder*; with it off we get

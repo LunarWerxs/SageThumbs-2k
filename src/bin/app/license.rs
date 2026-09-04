@@ -323,6 +323,66 @@ pub(crate) fn entitlement_from_cache(now_unix: u64, last_positive_unix: u64) -> 
     }
 }
 
+/// Does a stored offline certificate license THIS machine right now?
+///
+/// Reads the breadcrumb's neighbour rather than the network: see [`crate::licence_cert`]
+/// for the whole model. Every failure - no certificate, no fingerprint, a blob from
+/// another machine, an expired one - answers `false`, which only ever means "the
+/// certificate has nothing to add", never "unlicensed".
+///
+/// Only `licensed` is consumed today. The certificate also carries `updates_allowed`, but
+/// answering that honestly needs THIS BUILD's own release date stamped in at compile time,
+/// and until that exists asking the question would compare against the wrong thing.
+fn certificate_licenses_this_machine(now_unix: u64) -> bool {
+    let Some(cert) = crate::cred_store::load_licence_cert() else {
+        return false;
+    };
+    let Some(fingerprint) = machine_fingerprint() else {
+        return false;
+    };
+    let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
+    crate::licence_cert::verify(&cert, &fingerprint, now, now).is_ok_and(|v| v.licensed)
+}
+
+/// The entitlement this machine actually has: the relay breadcrumb, with a valid offline
+/// certificate as a FLOOR under it.
+///
+/// This is the composition [`crate::licence_cert`] exists for. The relay answers sooner
+/// and says more, so it is consulted first and its positive answer is taken as-is; the
+/// certificate only speaks when the breadcrumb would otherwise degrade a machine that a
+/// signed statement says is licensed. A relay that is unreachable, misconfigured, or
+/// pointed at the wrong company therefore costs a customer nothing.
+///
+/// ⛔ A KNOWN REVOCATION OUTRANKS A CERTIFICATE, and that ordering is the reason this is
+/// a function rather than a `max()`. A certificate cannot be withdrawn - its only
+/// revocation reach is its own expiry - but the relay telling us `revoked` is strictly
+/// better information than a statement signed before the revocation happened. Letting the
+/// floor win there would keep a revoked seat running for the certificate's whole life and
+/// silently disarm [`Posture::DeauthorizedLoud`].
+fn entitlement_now(now_unix: u64, history: Option<&History>) -> Entitlement {
+    let cached = entitlement_from_cache(now_unix, history.map_or(0, |h| h.last_positive_unix));
+    let revoked = history.is_some_and(|h| h.last_status == "revoked");
+    // Only reach for the certificate when it could actually change the answer: reading and
+    // verifying one is cheap, but doing it on a machine already known to be licensed (or
+    // known to be revoked) would be work whose result is discarded.
+    if cached == Entitlement::Licensed || revoked {
+        return combine_entitlement(cached, revoked, false);
+    }
+    combine_entitlement(cached, revoked, certificate_licenses_this_machine(now_unix))
+}
+
+/// The ordering rule itself, with the I/O lifted out so it can be pinned by tests.
+/// See [`entitlement_now`] for why a known revocation beats a valid certificate.
+fn combine_entitlement(cached: Entitlement, revoked: bool, cert_licenses: bool) -> Entitlement {
+    if revoked {
+        return cached;
+    }
+    if cached == Entitlement::Licensed || cert_licenses {
+        return Entitlement::Licensed;
+    }
+    cached
+}
+
 /// What the UI should do about licensing, decided once per launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Posture {
@@ -349,7 +409,7 @@ pub(crate) fn current_posture() -> Posture {
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
     let now = now_unix();
-    let ent = entitlement_from_cache(now, history.as_ref().map_or(0, |h| h.last_positive_unix));
+    let ent = entitlement_now(now, history.as_ref());
     let p = posture(mode, ent, history.as_ref());
     sagethumbs2k_core::safety::log_debug(&format!(
         "license: mode={mode:?} entitlement={ent:?} -> posture={p:?}"
@@ -561,11 +621,23 @@ pub(crate) fn redeem(raw_key: &str) -> RedeemOutcome {
         RELAY_OVERALL_SECS,
         RELAY_MAX_RESP_BYTES,
     );
-    let outcome = match resp {
-        Some(r) => redeem_outcome_from_response(r.status, &r.body, &canonical),
-        None => RedeemOutcome::Offline,
+    // The certificate rides along on the SAME response, so it costs no extra call. Read
+    // separately from the outcome mapping rather than threaded through `RedeemOutcome`,
+    // which would change a shape the Settings page and a dozen tests already match on.
+    let (outcome, certificate) = match resp {
+        Some(r) => (
+            redeem_outcome_from_response(r.status, &r.body, &canonical),
+            certificate_from_response(&r.body),
+        ),
+        None => (RedeemOutcome::Offline, None),
     };
     if let RedeemOutcome::Redeemed { key_prefix } = &outcome {
+        // Keep the certificate before anything else: from here on this machine can prove
+        // its own licence with no network, which is the whole point of having one.
+        // Best-effort - a machine that cannot store it is exactly as licensed as before.
+        if let Some(cert) = &certificate {
+            let _ = crate::cred_store::save_licence_cert(cert);
+        }
         let now = now_unix();
         update_history(|h| {
             h.was_business = true;
@@ -580,6 +652,21 @@ pub(crate) fn redeem(raw_key: &str) -> RedeemOutcome {
         }
     }
     outcome
+}
+
+/// Pull the offline certificate out of a redeem response, if it sent one.
+///
+/// Pure, and deliberately incurious: anything that is not a non-empty string is simply
+/// absent. A relay that has not been taught to forward the certificate yet, an older
+/// deployment, a truncated body - all of them mean "no certificate", which costs nothing
+/// because the relay breadcrumb licenses the machine exactly as it did before.
+fn certificate_from_response(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Value>(body)
+        .ok()?
+        .get("certificate")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .map(String::from)
 }
 
 /// Map an HTTP status + raw body from `POST /license/redeem` to a [`RedeemOutcome`].
@@ -834,8 +921,7 @@ pub(crate) fn snapshot() -> LicenceSnapshot {
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
     let now = now_unix();
-    let entitlement =
-        entitlement_from_cache(now, history.as_ref().map_or(0, |h| h.last_positive_unix));
+    let entitlement = entitlement_now(now, history.as_ref());
     let posture = posture(mode, entitlement, history.as_ref());
     LicenceSnapshot {
         mode,
@@ -1388,6 +1474,97 @@ mod tests {
             parse_mode(None),
             Mode::Personal,
             "a portable ini with no LicenseMode value yet"
+        );
+    }
+
+    // ---- the offline certificate, as a floor under the relay ----------------------
+
+    #[test]
+    fn a_redeem_response_carrying_a_certificate_yields_it() {
+        let body = br#"{"ok":true,"keyPrefix":"esk_A1B2","certificate":"aGVhZGVy.c2ln"}"#;
+        assert_eq!(
+            certificate_from_response(body).as_deref(),
+            Some("aGVhZGVy.c2ln")
+        );
+    }
+
+    #[test]
+    fn a_redeem_response_without_one_is_simply_absent() {
+        // A relay that has not been taught to forward it yet, an empty string, a body
+        // that is not JSON at all: every one of these means "no certificate", never an
+        // error, because the breadcrumb licenses the machine exactly as it did before.
+        for body in [
+            br#"{"ok":true,"keyPrefix":"esk_A1B2"}"#.as_slice(),
+            br#"{"ok":true,"certificate":""}"#.as_slice(),
+            br#"{"ok":true,"certificate":null}"#.as_slice(),
+            br#"{"ok":true,"certificate":123}"#.as_slice(),
+            b"not json at all".as_slice(),
+            b"".as_slice(),
+        ] {
+            assert_eq!(certificate_from_response(body), None);
+        }
+    }
+
+    #[test]
+    fn a_certificate_lifts_a_lapsed_machine_back_to_licensed() {
+        // The whole point: the relay went quiet past the grace window, and a signed
+        // statement says this machine is licensed. It is.
+        assert_eq!(
+            combine_entitlement(Entitlement::Lapsed, false, true),
+            Entitlement::Licensed
+        );
+        assert_eq!(
+            combine_entitlement(Entitlement::Unlicensed, false, true),
+            Entitlement::Licensed
+        );
+    }
+
+    #[test]
+    fn without_a_certificate_nothing_changes_from_before() {
+        for cached in [
+            Entitlement::Licensed,
+            Entitlement::Lapsed,
+            Entitlement::Unlicensed,
+        ] {
+            assert_eq!(
+                combine_entitlement(cached, false, false),
+                cached,
+                "the floor must be purely additive"
+            );
+        }
+    }
+
+    #[test]
+    fn a_known_revocation_outranks_a_valid_certificate() {
+        // A certificate cannot be withdrawn, but the relay saying `revoked` is strictly
+        // newer information than a statement signed before the revocation happened.
+        // Letting the floor win here would keep a revoked seat running for the whole life
+        // of the certificate and silently disarm the deauthorised notice.
+        assert_eq!(
+            combine_entitlement(Entitlement::Lapsed, true, true),
+            Entitlement::Lapsed
+        );
+        assert_eq!(
+            combine_entitlement(Entitlement::Unlicensed, true, true),
+            Entitlement::Unlicensed
+        );
+    }
+
+    #[test]
+    fn a_revoked_seat_still_reaches_the_deauthorised_notice_with_a_certificate_present() {
+        // The end-to-end shape of the rule above, through the real posture decision.
+        let revoked = History {
+            was_business: true,
+            last_status: "revoked".to_string(),
+            ..History::default()
+        };
+        assert_eq!(
+            posture(
+                Mode::Business,
+                combine_entitlement(Entitlement::Unlicensed, true, true),
+                Some(&revoked)
+            ),
+            Posture::DeauthorizedLoud
         );
     }
 }
