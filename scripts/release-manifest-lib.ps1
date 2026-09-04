@@ -57,6 +57,7 @@ function Get-ReleaseRequiredInputPaths {
         'docs/CHANGELOG.md',
         'docs/MAGICK.md',
         'scripts/packaging/make-msix.ps1',
+        'scripts/packaging/sign-release.ps1',
         'scripts/packaging/installer.iss',
         'scripts/packaging/size-budget.json',
         'scripts/packaging/AppxManifest.xml',

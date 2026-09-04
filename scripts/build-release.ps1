@@ -273,7 +273,7 @@ Copy-Item "$targetRel\st2k_dlghook.dll" $stage
 # Signing account exists this is a one-line "unsigned" notice and exit 0: nothing in the
 # release flow may assume a certificate. Once ST2K_SIGN_* is set, a failure here is fatal,
 # because a half-signed release is worse than an unsigned one.
-$signScript = Join-Path $PSScriptRoot 'packaging\sign-release.ps1'
+$signScript = "$root\scripts\packaging\sign-release.ps1"
 $signable = @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe', 'st2k_dlghook.dll') |
     ForEach-Object { Join-Path $stage $_ }
 & $signScript -Path $signable -AllowUnsigned
