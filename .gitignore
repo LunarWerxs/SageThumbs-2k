@@ -113,3 +113,6 @@ Thumbs.db
 # items are ignored. Managed by public_todo_guard.py in the Odin repo.
 /docs/todo/*
 !/docs/todo/README.md
+
+# Azure Artifact Signing client drop (sign-release.ps1 Resolve-Dlib); never committed
+/tools/artifact-signing/

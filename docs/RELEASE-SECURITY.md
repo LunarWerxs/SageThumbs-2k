@@ -192,6 +192,27 @@ certificate exists. What changed the calculus was the 2.5.0 x64 installer reachi
 VirusTotal, including Microsoft's own ML engine (`Trojan:Win32/Wacatac.B!ml`, issue #30), which
 is the one verdict users see without going looking.
 
+#### Where it stands on 2026-09-05 (verified through the Connections vault, not assumed)
+
+- **The signing identity now exists; nothing else does.** An app registration named
+  `lunawerx-artifact-signing` (appId `71d21f76-5d65-40b3-921b-b97390cafa85`) was created in the
+  Lunarwerx tenant (`fdd11984-71bb-4c74-aca1-1d777f195b0f`) on 2026-09-05 at 18:17 UTC. It has
+  **no client secret and no certificate yet**, so there is nothing to put in `AZURE_CLIENT_SECRET`,
+  and it carries only the default `User.Read` scope, which is irrelevant to signing (the signer
+  role is an Azure RBAC assignment on the certificate profile, granted after the account exists).
+- **Still zero Azure subscriptions** as seen by every Entra credential the vault holds. A service
+  principal only lists subscriptions it has a role on, so this is either "none exists" or "one
+  exists and no principal has been granted a role on it"; the vault cannot tell the two apart, and
+  the Azure portal is the only place that can. Either way the ordered list below is unchanged and
+  the subscription is still the first item.
+- **This machine is one configuration away from READY.** `Microsoft.ArtifactSigning.Client`
+  1.0.128 is dropped under `tools/artifact-signing/` (gitignored as of today, so it can never ship
+  in the public repo); `-Status` finds the dlib and the signtool, and `-SelfTest` passes. Setting
+  the three `ST2K_SIGN_*` names plus the three `AZURE_*` values flips the verdict to READY with no
+  code change. The `AZURE_CLIENT_SECRET` must reach the build shell without ever being written into
+  a file in the repo or pasted into an agent's context: mint it on the app registration, capture
+  it into the Connections vault, and inject it into the build shell from there.
+
 #### Where it stands on 2026-09-04
 
 - **The pipeline half is done and idle.** `scripts/packaging/sign-release.ps1` signs through
