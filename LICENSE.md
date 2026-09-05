@@ -1,11 +1,11 @@
 # License
 
-SageThumbs 2K is licensed under the **PolyForm Noncommercial License 1.0.0** — the
+SageThumbs 2K is licensed under the **PolyForm Noncommercial License 1.0.0** - the
 full text is reproduced below.
 
 **In plain terms:** you may use, copy, modify, and share SageThumbs 2K for any
 **noncommercial** purpose, free of charge. **Commercial use requires a separate
-license** — to arrange one, buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
+license** - to arrange one, buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
 (US$49 per Windows installation, perpetual, 12 months of updates; one seat key per
 installation, redeemed under Settings ▸ Licence), or open an issue on the project's GitHub for
 volume or site terms.
@@ -13,7 +13,7 @@ volume or site terms.
 Copyright © 2026 Lunarwerx.
 
 **Contributions:** by opening a pull request you agree to the contribution terms in
-[CONTRIBUTING.md](.github/CONTRIBUTING.md) — you grant the maintainer a perpetual, irrevocable
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) - you grant the maintainer a perpetual, irrevocable
 right to use and **relicense** your contribution (including assignment of copyright
 where the law allows). This lets the project be relicensed in the future without
 chasing down every contributor.
@@ -24,7 +24,7 @@ SageThumbs 2K is an independent, **from-scratch reimagining** of the classic
 **SageThumbs** by Nikolay Raspopov (GPL-2.0-or-later,
 <https://github.com/raspopov/SageThumbs>), which has been unmaintained since 2017.
 SageThumbs 2K is a clean-room rewrite in Rust and contains **none of the original's
-source code** — the decode/thumbnail pipeline, the shell-extension implementation,
+source code** - the decode/thumbnail pipeline, the shell-extension implementation,
 and the tooling are all original work. Our thanks to Raspopov for the project that
 inspired this successor.
 
