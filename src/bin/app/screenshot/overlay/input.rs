@@ -904,62 +904,78 @@ fn on_key_undo_redo(s: &mut Shot, ctrl: bool, shift: bool, vk: u16) -> Option<bo
     None
 }
 
-/// Ctrl+C (copy) / Ctrl+T (OCR) / Ctrl+S (save): each accepts + closes (only once a region
-/// exists), checked before the plain-letter tool shortcuts below so 'C'/'T' alone stay tool
-/// picks. `None` if `vk` is none of the three.
+/// Ctrl+C: accept + close, but only once a region exists and the copy actually succeeds —
+/// a clipboard failure (toast already shown by `finish_copy`) must leave the overlay open
+/// so the capture isn't lost.
+unsafe fn on_ctrl_c(hwnd: HWND, s: &mut Shot) -> bool {
+    if block_automation_output(s, "blocked-copy") {
+        return true;
+    }
+    if s.sel.is_some() {
+        commit_text(s);
+        if finish_copy(s) {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+    false
+}
+
+/// Ctrl+T: accept + close via OCR (only once a region exists).
+unsafe fn on_ctrl_t(hwnd: HWND, s: &mut Shot) -> bool {
+    if block_automation_output(s, "blocked-ocr") {
+        return true;
+    }
+    if s.sel.is_some() {
+        commit_text(s);
+        finish_ocr(s);
+        let _ = DestroyWindow(hwnd);
+    }
+    false
+}
+
+/// Ctrl+S: accept + close via Save-As, which keeps the overlay open if that prompt is
+/// cancelled.
+unsafe fn on_ctrl_s(hwnd: HWND, s: &mut Shot) -> bool {
+    if block_automation_output(s, "blocked-save") {
+        return true;
+    }
+    if s.sel.is_some() {
+        commit_text(s);
+        if finish_save(hwnd, s) {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+    false
+}
+
+/// Ctrl+U: upload & copy the link (G199b) — the toolbar's Upload button previously had no
+/// keyboard equivalent at all, unlike every other action on the bar.
+unsafe fn on_ctrl_u(hwnd: HWND, s: &mut Shot) -> bool {
+    if block_automation_output(s, "blocked-upload") {
+        return true;
+    }
+    if s.sel.is_some() {
+        commit_text(s);
+        compose_and_spawn(s, "--upload");
+        let _ = DestroyWindow(hwnd);
+    }
+    false
+}
+
+/// Ctrl+C (copy) / Ctrl+T (OCR) / Ctrl+S (save) / Ctrl+U (upload): each accepts + closes
+/// (only once a region exists), checked before the plain-letter tool shortcuts below so
+/// 'C'/'T' alone stay tool picks. `None` if `vk` is none of the four, or `ctrl` is not held.
 unsafe fn on_key_clipboard_action(hwnd: HWND, s: &mut Shot, ctrl: bool, vk: u16) -> Option<bool> {
-    if ctrl && vk == b'C' as u16 {
-        if block_automation_output(s, "blocked-copy") {
-            return Some(true);
-        }
-        if s.sel.is_some() {
-            commit_text(s);
-            // Only close on an actual copy — a clipboard failure (toast already
-            // shown by finish_copy) must leave the overlay open so the capture isn't lost.
-            if finish_copy(s) {
-                let _ = DestroyWindow(hwnd);
-            }
-        }
-        return Some(false);
+    if !ctrl {
+        return None;
     }
-    if ctrl && vk == b'T' as u16 {
-        if block_automation_output(s, "blocked-ocr") {
-            return Some(true);
-        }
-        if s.sel.is_some() {
-            commit_text(s);
-            finish_ocr(s);
-            let _ = DestroyWindow(hwnd);
-        }
-        return Some(false);
+    match vk {
+        x if x == b'C' as u16 => Some(on_ctrl_c(hwnd, s)),
+        x if x == b'T' as u16 => Some(on_ctrl_t(hwnd, s)),
+        x if x == b'S' as u16 => Some(on_ctrl_s(hwnd, s)),
+        x if x == b'U' as u16 => Some(on_ctrl_u(hwnd, s)),
+        _ => None,
     }
-    // Ctrl+S keeps the overlay open if the Save-As prompt is cancelled.
-    if ctrl && vk == b'S' as u16 {
-        if block_automation_output(s, "blocked-save") {
-            return Some(true);
-        }
-        if s.sel.is_some() {
-            commit_text(s);
-            if finish_save(hwnd, s) {
-                let _ = DestroyWindow(hwnd);
-            }
-        }
-        return Some(false);
-    }
-    // Ctrl+U: upload & copy the link (G199b) — the toolbar's Upload button previously had
-    // no keyboard equivalent at all, unlike every other action on the bar.
-    if ctrl && vk == b'U' as u16 {
-        if block_automation_output(s, "blocked-upload") {
-            return Some(true);
-        }
-        if s.sel.is_some() {
-            commit_text(s);
-            compose_and_spawn(s, "--upload");
-            let _ = DestroyWindow(hwnd);
-        }
-        return Some(false);
-    }
-    None
 }
 
 /// The plain-letter tool shortcut `vk` names, or `None` if it names no tool. Callers gate
