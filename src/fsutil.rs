@@ -61,11 +61,15 @@ pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
 #[inline(always)]
 fn note_transient_failure(_attempt: u32) {}
 
+/// The hook slot's type, named so `clippy::type_complexity` has something to read. `FnMut`
+/// rather than `Fn` because the one real hook takes its handle out of an `Option` on first call.
+#[cfg(test)]
+type TransientFailureHook = std::cell::RefCell<Option<Box<dyn FnMut(u32)>>>;
+
 #[cfg(test)]
 thread_local! {
     /// Per-thread hook, so two tests running in parallel cannot see each other's.
-    static AFTER_TRANSIENT_FAILURE: std::cell::RefCell<Option<Box<dyn FnMut(u32)>>> =
-        const { std::cell::RefCell::new(None) };
+    static AFTER_TRANSIENT_FAILURE: TransientFailureHook = const { std::cell::RefCell::new(None) };
 }
 
 /// Test seam: install a hook that runs after each FAILED transient attempt, on the retrying
