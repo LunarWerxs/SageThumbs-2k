@@ -530,6 +530,69 @@ pub(super) fn cat_blurb(ci: usize) -> &'static str {
     }
 }
 
+// General: master switch, embedded pref, badge trio, checkerboard, the numbers, and the
+// JPEG/PNG quality fields (also on this page — see ID_JPEG/ID_PNG in `cat_rows`'s GENERAL
+// rows).
+fn general_page_has_non_defaults() -> bool {
+    use sagethumbs2k_core::settings as s;
+    !s::thumbnails_enabled()
+        || !s::use_embedded()
+        || s::max_file_size_bytes() != u64::from(s::DEFAULT_MAX_FILE_MB) * 1024 * 1024
+        || s::max_thumb_size() != s::DEFAULT_THUMB_SIZE
+        || s::jpeg_quality() != s::DEFAULT_JPEG as u8
+        || s::png_level() != s::DEFAULT_PNG
+}
+
+// Appearance: every control on the page, all default-off except the icon style. The corner
+// mark is one tri-state now, so ANY non-default value counts once — asking
+// `format_badge() || hide_type_overlay()` would double-count the same choice.
+fn appearance_page_has_non_defaults() -> bool {
+    use sagethumbs2k_core::settings as s;
+    s::corner_mark() != s::CornerMark::default()
+        || !s::format_badge_icon()
+        || s::thumb_checker()
+        || s::prefer_cover_art()
+        || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
+}
+
+// File types: every extension defaults to enabled (`s::format_enabled`'s own doc comment —
+// "Enabled unless an explicit 0 is stored"), so the page has changed the moment any one of
+// them is unchecked.
+fn filetypes_page_has_non_defaults() -> bool {
+    use sagethumbs2k_core::settings as s;
+    formats::FORMATS
+        .iter()
+        .any(|&(ext, _)| !s::format_enabled(ext))
+}
+
+// Ebook/comic: also where ID_PDF_MARGIN actually lives (moved here from General, see
+// `cat_rows`), so its non-Tight PDF page layout counts toward this page's dot.
+fn ebook_page_has_non_defaults() -> bool {
+    use sagethumbs2k_core::settings as s;
+    !s::container_sort()
+        || !s::container_prefer_cover()
+        || s::container_skip_scanlation()
+        || !s::archive_collage()
+        || s::pdf_page() != sagethumbs2k_core::PdfPage::Tight
+}
+
+fn menu_page_has_non_defaults() -> bool {
+    use sagethumbs2k_core::settings as s;
+    !s::menu_enabled()
+        || s::menu_all_file_types()
+        || s::menu_quick_verbs()
+        || !s::preview_checker()
+        || !s::folder_prebuild_verb()
+        || s::preserve_file_date()
+        || !s::keep_metadata_on_convert()
+}
+
+// Advanced: auto-update check defaults ON, and the "hide from tray" toggle defaults off.
+fn advanced_page_has_non_defaults() -> bool {
+    use sagethumbs2k_core::settings as s;
+    !s::update_auto_check() || s::screenshot_hide_tray()
+}
+
 /// Does this settings page hold any value the user has CHANGED from its default?
 /// Drives the little dot on the nav rail — the answer to "where did I change something"
 /// across nine pages, without opening each one. Reads the live settings (cheap registry /
@@ -540,58 +603,18 @@ pub(super) fn cat_blurb(ci: usize) -> &'static str {
 pub(super) fn page_has_non_defaults(ci: usize) -> bool {
     use sagethumbs2k_core::settings as s;
     match ci {
-        // General: master switch, embedded pref, badge trio, checkerboard, the numbers,
-        // and the JPEG/PNG quality fields (also on this page — see ID_JPEG/ID_PNG in
-        // `cat_rows`'s GENERAL rows).
-        0 => {
-            !s::thumbnails_enabled()
-                || !s::use_embedded()
-                || s::max_file_size_bytes() != u64::from(s::DEFAULT_MAX_FILE_MB) * 1024 * 1024
-                || s::max_thumb_size() != s::DEFAULT_THUMB_SIZE
-                || s::jpeg_quality() != s::DEFAULT_JPEG as u8
-                || s::png_level() != s::DEFAULT_PNG
-        }
-        // Appearance: every control on the page, all default-off except the icon style. The
-        // corner mark is one tri-state now, so ANY non-default value counts once — asking
-        // `format_badge() || hide_type_overlay()` would double-count the same choice.
-        1 => {
-            s::corner_mark() != s::CornerMark::default()
-                || !s::format_badge_icon()
-                || s::thumb_checker()
-                || s::prefer_cover_art()
-                || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
-        }
-        // File types: every extension defaults to enabled (`s::format_enabled`'s own doc
-        // comment — "Enabled unless an explicit 0 is stored"), so the page has changed the
-        // moment any one of them is unchecked.
-        2 => formats::FORMATS
-            .iter()
-            .any(|&(ext, _)| !s::format_enabled(ext)),
-        // Ebook/comic: also where ID_PDF_MARGIN actually lives (moved here from General,
-        // see `cat_rows`), so its non-Tight PDF page layout counts toward this page's dot.
-        3 => {
-            !s::container_sort()
-                || !s::container_prefer_cover()
-                || s::container_skip_scanlation()
-                || !s::archive_collage()
-                || s::pdf_page() != sagethumbs2k_core::PdfPage::Tight
-        }
-        4 => {
-            !s::menu_enabled()
-                || s::menu_all_file_types()
-                || s::menu_quick_verbs()
-                || !s::preview_checker()
-                || !s::folder_prebuild_verb()
-                || s::preserve_file_date()
-                || !s::keep_metadata_on_convert()
-        }
+        0 => general_page_has_non_defaults(),
+        1 => appearance_page_has_non_defaults(),
+        2 => filetypes_page_has_non_defaults(),
+        3 => ebook_page_has_non_defaults(),
+        4 => menu_page_has_non_defaults(),
         // Screenshots / Quick preview: their daemon-backed master switches are OFF by
         // default (first-run offers them), so ON is the changed state.
         5 => crate::screenshot::is_enabled(),
         // Quick action: unbound (vk == 0) is the default; any bound hotkey is a change.
         6 => s::custom_action_hotkey().1 != 0,
         8 => s::preview_enabled(),
-        7 => !s::update_auto_check() || s::screenshot_hide_tray(),
+        7 => advanced_page_has_non_defaults(),
         _ => false,
     }
 }
