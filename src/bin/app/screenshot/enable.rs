@@ -182,54 +182,73 @@ pub(crate) fn set_enabled(on: bool) {
 /// repeatedly.
 pub(crate) fn reconcile() {
     if daemon_wanted() {
-        // Point the autostart entry at THIS exe — unless a healthy entry already points at
-        // a DIFFERENT install. Without that guard, merely opening Settings from a dev/test
-        // build silently repointed logon autostart at a transient build path; when that
-        // path later changed or vanished, the daemon simply never came up at the next boot
-        // (hotkeys dead, no error anywhere) until something opened Settings again.
-        if autostart_allowed() {
-            if let Ok(exe) = std::env::current_exe() {
-                if !autostart_points_at_other_install(&exe) {
-                    match windows_registry::CURRENT_USER.create(RUN_KEY) {
-                        Ok(k) => {
-                            // A swallowed Err here left hotkeys silently dead at the
-                            // next logon — this session's daemon starts fine regardless, so
-                            // there was no other sign anything had gone wrong.
-                            if let Err(e) = k.set_string(
-                                RUN_NAME,
-                                format!("\"{}\" --screenshot-daemon", exe.display()),
-                            ) {
-                                sagethumbs2k_core::safety::log(&format!(
-                                    "screenshot: failed to write autostart Run entry: {e}"
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            sagethumbs2k_core::safety::log(&format!(
-                                "screenshot: failed to open Run key for autostart: {e}"
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        if is_daemon_running() {
-            reload_hotkey(); // a live daemon re-reads + re-registers all hotkeys
-        } else {
-            super::spawn_self(&["--screenshot-daemon"]); // a fresh one reads them at startup
-        }
+        reconcile_wanted();
     } else {
-        if autostart_allowed() {
-            if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-                if let Err(e) = k.remove_value(RUN_NAME) {
-                    sagethumbs2k_core::safety::log(&format!(
-                        "screenshot: failed to remove autostart Run entry: {e}"
-                    ));
-                }
+        reconcile_not_wanted();
+    }
+}
+
+/// The `daemon_wanted()` branch of [`reconcile`]: make sure autostart points at this
+/// install (when autostart is allowed at all) and that the daemon itself is up to date —
+/// either nudged to re-read its hotkeys, or spawned fresh.
+fn reconcile_wanted() {
+    if autostart_allowed() {
+        install_autostart_entry();
+    }
+    if is_daemon_running() {
+        reload_hotkey(); // a live daemon re-reads + re-registers all hotkeys
+    } else {
+        super::spawn_self(&["--screenshot-daemon"]); // a fresh one reads them at startup
+    }
+}
+
+/// Point the autostart entry at THIS exe — unless a healthy entry already points at a
+/// DIFFERENT install. Without that guard, merely opening Settings from a dev/test build
+/// silently repointed logon autostart at a transient build path; when that path later
+/// changed or vanished, the daemon simply never came up at the next boot (hotkeys dead, no
+/// error anywhere) until something opened Settings again.
+fn install_autostart_entry() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if autostart_points_at_other_install(&exe) {
+        return;
+    }
+    match windows_registry::CURRENT_USER.create(RUN_KEY) {
+        Ok(k) => {
+            // A swallowed Err here left hotkeys silently dead at the
+            // next logon — this session's daemon starts fine regardless, so
+            // there was no other sign anything had gone wrong.
+            if let Err(e) = k.set_string(
+                RUN_NAME,
+                format!("\"{}\" --screenshot-daemon", exe.display()),
+            ) {
+                sagethumbs2k_core::safety::log(&format!(
+                    "screenshot: failed to write autostart Run entry: {e}"
+                ));
             }
         }
-        unsafe { stop_daemon() };
+        Err(e) => {
+            sagethumbs2k_core::safety::log(&format!(
+                "screenshot: failed to open Run key for autostart: {e}"
+            ));
+        }
     }
+}
+
+/// The "nothing wants it" branch of [`reconcile`]: drop the autostart entry (when autostart
+/// is allowed at all) and close the daemon now.
+fn reconcile_not_wanted() {
+    if autostart_allowed() {
+        if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
+            if let Err(e) = k.remove_value(RUN_NAME) {
+                sagethumbs2k_core::safety::log(&format!(
+                    "screenshot: failed to remove autostart Run entry: {e}"
+                ));
+            }
+        }
+    }
+    unsafe { stop_daemon() };
 }
 
 /// Hard stop from the tray "Quit": turn screenshots off, drop the autostart entry, and close
