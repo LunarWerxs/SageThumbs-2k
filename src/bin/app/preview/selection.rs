@@ -367,47 +367,73 @@ unsafe fn ensure_visible_markdown(hwnd: HWND, st: &ViewerState, c: RECT, off: us
         scroll_by(hwnd, st.text_h.get()); // Ctrl+Shift+End (scroll_by clamps)
         return;
     }
-    // Exact jump: `y_for_offset` reads the already-measured layout for the pure document-space
-    // y of the target's own block (the same coordinate `TocEntry::target` uses for outline
-    // clicks — independent of the CURRENT scroll), so this reaches it in one hop regardless of
-    // distance. Without it, a Find hit more than 8 * 24 = 192 device px away was simply
-    // unreachable: the counter advanced but nothing on screen ever moved, because the fine
-    // stepper below was built only for a same-block char/word hop. It falls through to that
-    // stepper for the final on-screen adjustment (and as the whole path when nothing has been
-    // measured that far yet).
-    if let Some(target_y) = {
+    ensure_visible_markdown_exact_jump(hwnd, st, off);
+    ensure_visible_markdown_step(hwnd, st, c, off);
+}
+
+/// [`ensure_visible_markdown`]'s exact-jump step: `y_for_offset` reads the already-measured
+/// layout for the pure document-space y of the target's own block (the same coordinate
+/// `TocEntry::target` uses for outline clicks — independent of the CURRENT scroll), so this
+/// reaches it in one hop regardless of distance. Without it, a Find hit more than 8 * 24 = 192
+/// device px away was simply unreachable: the counter advanced but nothing on screen ever
+/// moved, because [`ensure_visible_markdown_step`] was built only for a same-block char/word
+/// hop. That stepper still runs after this for the final on-screen adjustment (and is the whole
+/// path when nothing this far has been measured yet).
+unsafe fn ensure_visible_markdown_exact_jump(hwnd: HWND, st: &ViewerState, off: usize) {
+    let target_y = {
         let l = st.md_layout.borrow();
         super::markdown::y_for_offset(&l, off)
-    } {
-        let margin = crate::win::dpi_scale(hwnd, 18); // matches render()'s own content margin
-        let want = (target_y - margin).max(0);
-        if want != st.text_scroll.get() && set_text_scroll(hwnd, want) {
-            st.toc_sel.set(None);
-            let _ = UpdateWindow(hwnd);
-        }
+    };
+    let Some(target_y) = target_y else {
+        return;
+    };
+    let margin = crate::win::dpi_scale(hwnd, 18); // matches render()'s own content margin
+    let want = (target_y - margin).max(0);
+    if want != st.text_scroll.get() && set_text_scroll(hwnd, want) {
+        st.toc_sel.set(None);
+        let _ = UpdateWindow(hwnd);
     }
+}
+
+/// Which painted [`SelHit`] (if any) covers `off`, and — when none does — which direction the
+/// target lies relative to everything that IS painted (-1 above, 1 below, 0 when the painted
+/// range straddles it and there's nothing sensible to do).
+fn md_hit_and_direction(st: &ViewerState, off: usize) -> (Option<SelHit>, i32) {
+    let hits = st.md_hits.borrow();
+    let exact = hits
+        .iter()
+        .find(|h| off >= h.start && off <= h.end)
+        .copied();
+    let dir = match &exact {
+        Some(_) => 0,
+        None if hits.iter().all(|h| h.start > off) => -1, // it's above us
+        None if hits.iter().all(|h| h.end < off) => 1,    // it's below us
+        None => 0,                                        // painted range straddles it
+    };
+    (exact, dir)
+}
+
+/// How far [`ensure_visible_markdown_step`] should scroll to bring `exact` on screen, or `None`
+/// when it should stop (already on screen, or nothing sensible to do).
+fn md_step_delta(exact: Option<SelHit>, dir: i32, c: RECT, step: i32) -> Option<i32> {
+    match exact {
+        Some(h) if h.rect.top < c.top => Some(h.rect.top - c.top),
+        Some(h) if h.rect.bottom > c.bottom => Some(h.rect.bottom - c.bottom),
+        Some(_) => None, // on screen
+        None if dir != 0 => Some(dir * step),
+        None => None,
+    }
+}
+
+/// [`ensure_visible_markdown`]'s fine stepper: the target is at most a line or two away (a
+/// char/word hop), so walk toward it — each scroll repaints synchronously, which records fresh
+/// [`SelHit`] rects for the next iteration.
+unsafe fn ensure_visible_markdown_step(hwnd: HWND, st: &ViewerState, c: RECT, off: usize) {
     let step = crate::win::dpi_scale(hwnd, 24);
     for _ in 0..8 {
-        let (exact, dir) = {
-            let hits = st.md_hits.borrow();
-            let exact = hits
-                .iter()
-                .find(|h| off >= h.start && off <= h.end)
-                .copied();
-            let dir = match &exact {
-                Some(_) => 0,
-                None if hits.iter().all(|h| h.start > off) => -1, // it's above us
-                None if hits.iter().all(|h| h.end < off) => 1,    // it's below us
-                None => 0, // painted range straddles it: nothing sensible to do
-            };
-            (exact, dir)
-        };
-        let dy = match exact {
-            Some(h) if h.rect.top < c.top => h.rect.top - c.top,
-            Some(h) if h.rect.bottom > c.bottom => h.rect.bottom - c.bottom,
-            Some(_) => return, // on screen
-            None if dir != 0 => dir * step,
-            None => return,
+        let (exact, dir) = md_hit_and_direction(st, off);
+        let Some(dy) = md_step_delta(exact, dir, c, step) else {
+            return;
         };
         let before = st.text_scroll.get();
         scroll_by(hwnd, dy);
