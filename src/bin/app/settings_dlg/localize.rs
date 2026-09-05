@@ -70,6 +70,23 @@ const SHOT_TOOL_KEYS: [&str; 10] = [
     "tool_invert",
 ];
 
+/// Rebuild one combo box's items from `labels`, preserving the current selection index.
+/// Shared by every translated combo in `apply_labels`: look up the control (no-op if it
+/// doesn't exist in this build), remember the selection, clear, re-add each label, restore
+/// the selection.
+unsafe fn rebuild_combo<'a>(hwnd: HWND, id: i32, labels: impl IntoIterator<Item = &'a str>) {
+    let Ok(combo) = GetDlgItem(Some(hwnd), id) else {
+        return;
+    };
+    let sel = SendMessageW(combo, CB_GETCURSEL, None, None).0.max(0);
+    SendMessageW(combo, CB_RESETCONTENT, None, None);
+    for label in labels {
+        let w = wide(label);
+        SendMessageW(combo, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    SendMessageW(combo, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+}
+
 /// Re-apply every translatable label in the active language (used after a live
 /// language change). Edits/selections are preserved (we only set text).
 pub(super) unsafe fn apply_labels(hwnd: HWND) {
@@ -209,78 +226,48 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         set_column_text(list, 2, t("col_description"));
     }
     // The preview-placement combo holds translated items: rebuild, keep selection.
-    if let Ok(prev) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
-        let sel = SendMessageW(prev, CB_GETCURSEL, None, None).0.max(0);
-        SendMessageW(prev, CB_RESETCONTENT, None, None);
-        for key in ["prev_off", "prev_submenu", "prev_main"] {
-            let w = wide(t(key));
-            SendMessageW(prev, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-        }
-        SendMessageW(prev, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
+    rebuild_combo(
+        hwnd,
+        ID_MENU_PREVIEW,
+        ["prev_off", "prev_submenu", "prev_main"].map(t),
+    );
     // The screenshot-tool combo holds translated items (same fixed order as build.rs's
     // creation loop, which the stored index is keyed to): rebuild, keep selection.
-    if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
-        let sel = SendMessageW(tool, CB_GETCURSEL, None, None).0.max(0);
-        SendMessageW(tool, CB_RESETCONTENT, None, None);
-        for key in SHOT_TOOL_KEYS {
-            let w = wide(t(key));
-            SendMessageW(tool, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-        }
-        SendMessageW(tool, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
+    rebuild_combo(hwnd, ID_SHOT_TOOL, SHOT_TOOL_KEYS.map(t));
     // The corner-mark, app-theme, and capture-delay combos also hold translated items
     // (same fixed orders as their build.rs creation loops): rebuild, keep selection. These
     // three used to be skipped here, so a live language switch left them showing the old
     // language's items next to a relabelled caption.
-    if let Ok(corner) = GetDlgItem(Some(hwnd), ID_CORNER_MARK) {
-        let sel = SendMessageW(corner, CB_GETCURSEL, None, None).0.max(0);
-        SendMessageW(corner, CB_RESETCONTENT, None, None);
-        for key in [
+    rebuild_combo(
+        hwnd,
+        ID_CORNER_MARK,
+        [
             "corner_mark_system",
             "corner_mark_badge",
             "corner_mark_none",
-        ] {
-            let w = wide(t(key));
-            SendMessageW(
-                corner,
-                CB_ADDSTRING,
-                None,
-                Some(LPARAM(w.as_ptr() as isize)),
-            );
-        }
-        SendMessageW(corner, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
-    if let Ok(theme) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
-        let sel = SendMessageW(theme, CB_GETCURSEL, None, None).0.max(0);
-        SendMessageW(theme, CB_RESETCONTENT, None, None);
-        for key in ["theme_system", "theme_light", "theme_dark"] {
-            let w = wide(t(key));
-            SendMessageW(theme, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-        }
-        SendMessageW(theme, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
-    if let Ok(delay) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
-        let sel = SendMessageW(delay, CB_GETCURSEL, None, None).0.max(0);
-        SendMessageW(delay, CB_RESETCONTENT, None, None);
-        for key in ["delay_off", "delay_1", "delay_2", "delay_3", "delay_5"] {
-            let w = wide(t(key));
-            SendMessageW(delay, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-        }
-        SendMessageW(delay, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
+        ]
+        .map(t),
+    );
+    rebuild_combo(
+        hwnd,
+        ID_APP_THEME,
+        ["theme_system", "theme_light", "theme_dark"].map(t),
+    );
+    rebuild_combo(
+        hwnd,
+        ID_SHOT_DELAY,
+        ["delay_off", "delay_1", "delay_2", "delay_3", "delay_5"].map(t),
+    );
     // The custom-action combo: same curated `hotkey::ACTIONS` list build.rs seeded it from,
     // re-labeled via `action_label` (which itself goes through `t()`) rather than a
     // duplicated key table.
-    if let Ok(act) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
-        let sel = SendMessageW(act, CB_GETCURSEL, None, None).0.max(0);
-        SendMessageW(act, CB_RESETCONTENT, None, None);
-        for &(_, key) in crate::hotkey::ACTIONS {
-            let w = wide(crate::hotkey::action_label(key));
-            SendMessageW(act, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-        }
-        SendMessageW(act, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
+    rebuild_combo(
+        hwnd,
+        ID_SHOT_ACTION,
+        crate::hotkey::ACTIONS
+            .iter()
+            .map(|&(_, key)| crate::hotkey::action_label(key)),
+    );
     // The credit SysLink's caption ("<promo text> Lunarwerx"): build.rs's ID_PROMO_LINK
     // format string, verbatim, so a language switch doesn't leave this one line English.
     if let Ok(promo) = GetDlgItem(Some(hwnd), ID_PROMO_LINK) {
