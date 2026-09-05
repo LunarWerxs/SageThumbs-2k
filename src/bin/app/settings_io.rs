@@ -145,6 +145,54 @@ fn write_values(key: &Key, obj: &Map<String, Json>) -> usize {
     n
 }
 
+/// Delete every value `key` currently has that `keep` doesn't mention — the registry half of
+/// a REPLACE-not-merge import. Shared by the root key and by each subkey (item 33/221).
+fn delete_stale_values(key: &Key, keep: &Map<String, Json>) {
+    if let Ok(existing) = key.values() {
+        for (name, _) in existing {
+            if !keep.contains_key(&name) {
+                let _ = key.remove_value(&name);
+            }
+        }
+    }
+}
+
+/// Delete every subkey `root` currently has that `keep` doesn't mention — a subkey section
+/// the document doesn't carry at all is dropped entirely, not left as a leftover from before
+/// (item 33/221). The OAuth subkey is never touched — see [`OAUTH_SUBKEY`].
+fn delete_stale_subkeys(root: &Key, keep: &Map<String, Json>) {
+    if let Ok(names) = root.keys() {
+        for name in names {
+            if name.eq_ignore_ascii_case(OAUTH_SUBKEY) {
+                continue;
+            }
+            if !keep.contains_key(&name) {
+                let _ = root.remove_tree(&name);
+            }
+        }
+    }
+}
+
+/// Apply one `subkeys` entry: create/open the subkey under `root`, replace its values (drop
+/// what the document doesn't carry, then write what it does), and return how many were
+/// written. The OAuth subkey is refused outright — an import must never clobber the local
+/// sign-in — and a `subval` that isn't a JSON object is silently ignored, same as before.
+fn import_subkey(root: &Key, subname: &str, subval: &Json) -> usize {
+    if subname.eq_ignore_ascii_case(OAUTH_SUBKEY) {
+        return 0; // never let an import clobber the local sign-in
+    }
+    let Some(obj) = subval.as_object() else {
+        return 0;
+    };
+    let Ok(sub) = root.create(subname) else {
+        return 0;
+    };
+    // Replace this subkey too: drop values it already has that the document doesn't carry,
+    // before writing the document's own values into it.
+    delete_stale_values(&sub, obj);
+    write_values(&sub, obj)
+}
+
 /// Apply a settings document to the registry `root`: REPLACE, not merge — every root value
 /// and every subkey the registry already has that this document doesn't carry is deleted
 /// first, so restoring a backup ends in exactly the document's state rather than a hybrid of
@@ -163,25 +211,10 @@ fn import_tree(root: &Key, text: &str) -> Result<usize, String> {
     let subs_obj = doc.get("subkeys").and_then(Json::as_object);
 
     if let Some(obj) = values_obj {
-        if let Ok(existing) = root.values() {
-            for (name, _) in existing {
-                if !obj.contains_key(&name) {
-                    let _ = root.remove_value(&name);
-                }
-            }
-        }
+        delete_stale_values(root, obj);
     }
     if let Some(subs) = subs_obj {
-        if let Ok(names) = root.keys() {
-            for name in names {
-                if name.eq_ignore_ascii_case(OAUTH_SUBKEY) {
-                    continue;
-                }
-                if !subs.contains_key(&name) {
-                    let _ = root.remove_tree(&name);
-                }
-            }
-        }
+        delete_stale_subkeys(root, subs);
     }
 
     let mut n = 0;
@@ -190,23 +223,7 @@ fn import_tree(root: &Key, text: &str) -> Result<usize, String> {
     }
     if let Some(subs) = subs_obj {
         for (subname, subval) in subs {
-            if subname.eq_ignore_ascii_case(OAUTH_SUBKEY) {
-                continue; // never let an import clobber the local sign-in
-            }
-            if let Some(obj) = subval.as_object() {
-                if let Ok(sub) = root.create(subname) {
-                    // Replace this subkey too: drop values it already has that the document
-                    // doesn't carry, before writing the document's own values into it.
-                    if let Ok(existing) = sub.values() {
-                        for (name, _) in existing {
-                            if !obj.contains_key(&name) {
-                                let _ = sub.remove_value(&name);
-                            }
-                        }
-                    }
-                    n += write_values(&sub, obj);
-                }
-            }
+            n += import_subkey(root, subname, subval);
         }
     }
     if n == 0 {
@@ -229,6 +246,67 @@ pub(crate) fn import_settings(text: &str) -> Result<usize, String> {
     import_tree(&root, text)
 }
 
+/// A name or value carrying the ini's own syntax would corrupt the file on the next write,
+/// so those are refused rather than escaped — no setting we store contains them.
+fn ini_safe(s: &str) -> bool {
+    !s.contains(['[', ']', '\r', '\n', '='])
+}
+
+/// Drop every existing portable subkey section the document doesn't mention at all (its
+/// individual values, for a section the document DOES mention, are handled per-section by
+/// [`portable_write_section`]). The OAuth subkey is never touched by import either way.
+fn portable_delete_stale_subkeys(subs: &Map<String, Json>) {
+    for name in settings::portable_subkeys() {
+        if name.eq_ignore_ascii_case(OAUTH_SUBKEY) {
+            continue;
+        }
+        if !subs.contains_key(&name) {
+            settings::portable_remove_subkey(&name);
+        }
+    }
+}
+
+/// Replace one portable-ini section (`sub = None` is the root section): drop every value it
+/// already has that `obj` doesn't carry, then write `obj`'s own values (as text — a JSON
+/// number becomes its decimal form, exactly how the ini stores a DWORD), skipping anything
+/// that isn't ini-safe or isn't a representable JSON type. Returns how many were written.
+fn portable_write_section(sub: Option<&str>, obj: &Map<String, Json>) -> usize {
+    for (name, _) in settings::portable_values(sub) {
+        if !obj.contains_key(&name) {
+            settings::portable_remove(sub, &name);
+        }
+    }
+    let mut written = 0;
+    for (name, val) in obj {
+        let text = match val {
+            Json::String(s) => s.clone(),
+            Json::Bool(b) => u32::from(*b).to_string(),
+            Json::Number(num) => num.to_string(),
+            _ => continue, // arrays/objects/null aren't representable here
+        };
+        if !ini_safe(name) || !ini_safe(&text) {
+            continue;
+        }
+        if settings::portable_set(sub, name, &text).is_ok() {
+            written += 1;
+        }
+    }
+    written
+}
+
+/// Apply one `subkeys` entry against the portable ini. The OAuth subkey and a non-ini-safe
+/// name are refused outright, and a `subval` that isn't a JSON object is silently ignored,
+/// same as before.
+fn import_portable_subkey(subname: &str, subval: &Json) -> usize {
+    if subname.eq_ignore_ascii_case(OAUTH_SUBKEY) || !ini_safe(subname) {
+        return 0;
+    }
+    match subval.as_object() {
+        Some(obj) => portable_write_section(Some(subname), obj),
+        None => 0,
+    }
+}
+
 /// The portable-ini counterpart of [`import_tree`]: same document, same REPLACE (not merge)
 /// semantics (item 33/221), same per-value best-effort writes, same "no settings found"
 /// rejection. Values are written as text (a JSON number becomes its decimal form), which is
@@ -236,68 +314,20 @@ pub(crate) fn import_settings(text: &str) -> Result<usize, String> {
 fn import_portable(text: &str) -> Result<usize, String> {
     let doc: Json = serde_json::from_str(text)
         .map_err(|e| format!("That isn't a valid settings file.\n\n{e}"))?;
-    // A name or value carrying the ini's own syntax would corrupt the file on the next
-    // write, so those are refused rather than escaped — no setting we store contains them.
-    fn ini_safe(s: &str) -> bool {
-        !s.contains(['[', ']', '\r', '\n', '='])
-    }
     let values_obj = doc.get("values").and_then(Json::as_object);
     let subs_obj = doc.get("subkeys").and_then(Json::as_object);
 
-    // A subkey section the document doesn't mention at all is dropped outright (its
-    // individual values, for a section the document DOES mention, are handled per-section
-    // inside `write` below). The OAuth subkey is never touched by import either way.
     if let Some(subs) = subs_obj {
-        for name in settings::portable_subkeys() {
-            if name.eq_ignore_ascii_case(OAUTH_SUBKEY) {
-                continue;
-            }
-            if !subs.contains_key(&name) {
-                settings::portable_remove_subkey(&name);
-            }
-        }
+        portable_delete_stale_subkeys(subs);
     }
 
-    let write = |sub: Option<&str>, obj: &Map<String, Json>| {
-        // Replace this section: drop every value it already has that the document doesn't
-        // carry, before writing the document's own values into it.
-        for (name, _) in settings::portable_values(sub) {
-            if !obj.contains_key(&name) {
-                settings::portable_remove(sub, &name);
-            }
-        }
-        let mut written = 0;
-        for (name, val) in obj {
-            let text = match val {
-                Json::String(s) => s.clone(),
-                Json::Bool(b) => u32::from(*b).to_string(),
-                Json::Number(num) => num.to_string(),
-                _ => continue, // arrays/objects/null aren't representable here
-            };
-            if !ini_safe(name) || !ini_safe(&text) {
-                continue;
-            }
-            if settings::portable_set(sub, name, &text).is_ok() {
-                written += 1;
-            }
-        }
-        written
-    };
     let mut n = 0;
     if let Some(obj) = values_obj {
-        n += write(None, obj);
+        n += portable_write_section(None, obj);
     }
     if let Some(subs) = subs_obj {
         for (subname, subval) in subs {
-            if subname.eq_ignore_ascii_case(OAUTH_SUBKEY) {
-                continue;
-            }
-            if !ini_safe(subname) {
-                continue;
-            }
-            if let Some(obj) = subval.as_object() {
-                n += write(Some(subname), obj);
-            }
+            n += import_portable_subkey(subname, subval);
         }
     }
     if n == 0 {
