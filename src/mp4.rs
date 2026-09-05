@@ -638,37 +638,80 @@ fn locate_chunk_for_sample(stsc: &[u8], num_chunks: u64, target: u64) -> Option<
     let mut first_sample_of_run = 0u64;
     for i in 0..n {
         let base = 4 + i * 12;
-        let first_chunk = g32(stsc, base)? as u64; // 1-based
-        let spc = g32(stsc, base + 4)? as u64; // samples per chunk
-        let desc = g32(stsc, base + 8)?;
+        let (first_chunk, spc, desc) = stsc_entry(stsc, base)?;
         if spc == 0 {
             return None;
         }
-        let next_first = if i + 1 < n {
-            g32(stsc, base + 12)? as u64
-        } else {
-            // checked_add, matching the module's own discipline for file-derived
-            // arithmetic: harmless in practice (num_chunks is u32-bounded) but keeps
-            // debug builds from trapping and this site consistent with its neighbors.
-            num_chunks.checked_add(1)?
-        };
-        let run_chunks = next_first.checked_sub(first_chunk)?;
-        let samples_in_run = run_chunks.checked_mul(spc)?;
-        // checked_add: both operands are file-derived (`first_sample_of_run` accumulates
-        // across stsc entries, `samples_in_run` comes from a checked_mul above), and a
-        // crafted table can push either arbitrarily close to u64::MAX.
-        let run_end = first_sample_of_run.checked_add(samples_in_run)?;
+        let next_first = stsc_run_upper_bound(stsc, i, n, base, num_chunks)?;
+        let run_end = stsc_run_end(first_sample_of_run, next_first, first_chunk, spc)?;
         if target < run_end {
-            let into = target.checked_sub(first_sample_of_run)?;
-            let chunk_in_run = into / spc;
-            let chunk1 = first_chunk.checked_add(chunk_in_run)?; // 1-based chunk holding `target`
-            let first_sample_of_chunk =
-                first_sample_of_run.checked_add(chunk_in_run.checked_mul(spc)?)?;
-            return Some((chunk1, first_sample_of_chunk, desc));
+            return stsc_locate_in_run(target, first_sample_of_run, first_chunk, spc, desc);
         }
         first_sample_of_run = run_end;
     }
     None
+}
+
+/// One parsed `stsc` run-length entry at `base`: `(first_chunk, samples_per_chunk,
+/// sample_description_index)`. `first_chunk` is 1-based.
+fn stsc_entry(stsc: &[u8], base: usize) -> Option<(u64, u64, u32)> {
+    let first_chunk = g32(stsc, base)? as u64; // 1-based
+    let spc = g32(stsc, base + 4)? as u64; // samples per chunk
+    let desc = g32(stsc, base + 8)?;
+    Some((first_chunk, spc, desc))
+}
+
+/// The 1-based first chunk number of the entry that follows entry `i`, needed to know how many
+/// chunks the current run spans. The last entry has no successor, so its run is defined to
+/// extend through `num_chunks`.
+fn stsc_run_upper_bound(
+    stsc: &[u8],
+    i: usize,
+    n: usize,
+    base: usize,
+    num_chunks: u64,
+) -> Option<u64> {
+    if i + 1 < n {
+        Some(g32(stsc, base + 12)? as u64)
+    } else {
+        // checked_add, matching the module's own discipline for file-derived
+        // arithmetic: harmless in practice (num_chunks is u32-bounded) but keeps
+        // debug builds from trapping and this site consistent with its neighbors.
+        num_chunks.checked_add(1)
+    }
+}
+
+/// Sample index one past the end of the run that starts at `first_sample_of_run`, spanning from
+/// `first_chunk` up to (but not including) `next_first`, at `spc` samples per chunk.
+fn stsc_run_end(
+    first_sample_of_run: u64,
+    next_first: u64,
+    first_chunk: u64,
+    spc: u64,
+) -> Option<u64> {
+    let run_chunks = next_first.checked_sub(first_chunk)?;
+    let samples_in_run = run_chunks.checked_mul(spc)?;
+    // checked_add: both operands are file-derived (`first_sample_of_run` accumulates
+    // across stsc entries, `samples_in_run` comes from a checked_mul above), and a
+    // crafted table can push either arbitrarily close to u64::MAX.
+    first_sample_of_run.checked_add(samples_in_run)
+}
+
+/// Resolve `target` to its 1-based chunk, given it's already known to fall inside the run that
+/// starts at sample `first_sample_of_run` / chunk `first_chunk`, at `spc` samples per chunk.
+/// Returns `(chunk1, first_sample_of_chunk, desc)`.
+fn stsc_locate_in_run(
+    target: u64,
+    first_sample_of_run: u64,
+    first_chunk: u64,
+    spc: u64,
+    desc: u32,
+) -> Option<(u64, u64, u32)> {
+    let into = target.checked_sub(first_sample_of_run)?;
+    let chunk_in_run = into / spc;
+    let chunk1 = first_chunk.checked_add(chunk_in_run)?; // 1-based chunk holding `target`
+    let first_sample_of_chunk = first_sample_of_run.checked_add(chunk_in_run.checked_mul(spc)?)?;
+    Some((chunk1, first_sample_of_chunk, desc))
 }
 
 /// Accumulate the byte offset of `target` within its chunk by summing the sizes of the samples
