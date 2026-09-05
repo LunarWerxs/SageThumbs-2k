@@ -325,6 +325,42 @@ unsafe fn try_video_source(
     // Tiers 4–5 stay as fallbacks for anything tier 3's demuxer can't seek. They read a
     // bounded head prefix, so they CANNOT honour a late offset - there are no bytes there
     // to seek into. That is a property of the fallback, not a bug to fix here.
+    let probe = probe_container_tiers(stream, mf, at, who);
+    let mf = probe.mf;
+    let frame = mp4_mkv_or_else_tiers(stream, head, probe.clip_bytes, mf, within_max, at);
+    if let Some(frame) = frame {
+        return Some(Ok(resolve_decoded_frame(
+            frame,
+            probe.container_ran,
+            probe.container_rotation,
+            stream,
+            who,
+        )));
+    }
+    // No decodable frame. OggS is ambiguous - an audio-only .ogg/.opus matches
+    // the video magic too, so fall THROUGH to the album-art path below instead of
+    // failing. A genuine video container the OS can't decode stops here - after one
+    // last rescue: Matroska attached cover art. The usual reason NO tier decoded is
+    // a missing OS codec (HEVC/AV1 are Store add-ons, not inbox), and library rips
+    // routinely attach a poster, so show the film instead of a blank tile. Bounded:
+    // the attachment element is read via the container's own index, never the stream.
+    video_undecodable_fallback(head, tried_cover_art, stream, who)
+}
+
+/// Tiers 1-2 of the cascade (MP4/MKV keyframe-index parse) plus the issue #35
+/// Media-Foundation-refusal gate that must run on their bytes before any later tier hands
+/// the stream to MF. Returns the winning mini-clip bytes (if either container mapped),
+/// whether a container parse ran at all, the display rotation it already parsed out (so
+/// the caller never re-reads the container for it), and `mf` downgraded to `false` when
+/// issue #35 fires.
+struct ContainerProbe {
+    clip_bytes: Option<Vec<u8>>,
+    container_ran: bool,
+    container_rotation: Option<u32>,
+    mf: bool,
+}
+
+unsafe fn probe_container_tiers(stream: &IStream, mf: bool, at: f64, who: &str) -> ContainerProbe {
     // The MP4/MKV keyframe tiers hand back the display rotation they already parsed out of
     // the same moov/Tracks they read for the mini-clip - captured here, once,
     // so the rotation decision below (after the tier chain converges) never re-reads the
@@ -377,9 +413,31 @@ unsafe fn try_video_source(
         ));
     }
     let mf = mf && mf_refused.is_none();
-    let frame = mp4_clip
+    let clip_bytes = mp4_clip
         .map(|(b, _)| b)
-        .or_else(|| mkv_clip.map(|(b, _)| b))
+        .or_else(|| mkv_clip.map(|(b, _)| b));
+    ContainerProbe {
+        clip_bytes,
+        container_ran,
+        container_rotation,
+        mf,
+    }
+}
+
+/// Tiers 2b through 6: the tier-1/2 mini-clip (if any) decoded, then FLV remux, the
+/// out-of-process Flash decode, MF's own demuxer over a block-caching stream, the
+/// head-prefix and tail-remux fallbacks, and finally out-of-process VP9 profile 2/3.
+/// `clip_bytes` is [`ContainerProbe::clip_bytes`] and `mf` is its (possibly downgraded)
+/// `mf` flag - see `probe_container_tiers` and the tier comments in `try_video_source`.
+unsafe fn mp4_mkv_or_else_tiers(
+    stream: &IStream,
+    head: &StreamHead,
+    clip_bytes: Option<Vec<u8>>,
+    mf: bool,
+    within_max: bool,
+    at: f64,
+) -> Option<image::DynamicImage> {
+    clip_bytes
         .filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
         .or_else(|| {
@@ -434,66 +492,78 @@ unsafe fn try_video_source(
                 },
                 at,
             )
-        });
-    if let Some(frame) = frame {
-        // ISSUE #32, applied HERE because here is where every tier above converges. A clip
-        // rotated losslessly (metadata only, no re-encode) must thumbnail the way it plays,
-        // which is what Windows' own thumbnailer does; doing it per-tier would mean six
-        // chances to forget. The MP4/MKV keyframe tiers above already parsed this rotation
-        // out of the same moov/Tracks they read for the mini-clip - only a
-        // tier that did NOT parse the container needs this standalone probe to re-read it.
-        // Not-an-MP4, or an upright one, costs at most one bounded moov read and changes
-        // nothing.
-        let rotation = if container_ran {
-            container_rotation
-        } else {
-            crate::mp4::display_rotation(&mut IStreamReader {
+        })
+}
+
+/// ISSUE #32, applied HERE because here is where every tier above converges. A clip
+/// rotated losslessly (metadata only, no re-encode) must thumbnail the way it plays,
+/// which is what Windows' own thumbnailer does; doing it per-tier would mean six
+/// chances to forget. The MP4/MKV keyframe tiers already parsed this rotation
+/// out of the same moov/Tracks they read for the mini-clip - only a
+/// tier that did NOT parse the container needs this standalone probe to re-read it.
+/// Not-an-MP4, or an upright one, costs at most one bounded moov read and changes
+/// nothing.
+unsafe fn resolve_decoded_frame(
+    frame: image::DynamicImage,
+    container_ran: bool,
+    container_rotation: Option<u32>,
+    stream: &IStream,
+    who: &str,
+) -> StreamSource {
+    let rotation = if container_ran {
+        container_rotation
+    } else {
+        crate::mp4::display_rotation(&mut IStreamReader {
+            stream: stream.clone(),
+        })
+        .or_else(|| {
+            crate::mkv::display_rotation(&mut IStreamReader {
                 stream: stream.clone(),
             })
-            .or_else(|| {
-                crate::mkv::display_rotation(&mut IStreamReader {
-                    stream: stream.clone(),
-                })
-            })
-        };
-        let frame = match rotation {
-            Some(deg) => {
-                safety::log_debug(&format!("{who}: display matrix asks for {deg} deg"));
-                crate::video::apply_display_rotation(frame, deg)
-            }
-            None => frame,
-        };
-        safety::log_debug(&format!(
-            "{who}: video frame {}x{}",
-            frame.width(),
-            frame.height()
-        ));
-        return Some(Ok(StreamSource::Frame(frame)));
-    }
-    // No decodable frame. OggS is ambiguous - an audio-only .ogg/.opus matches
-    // the video magic too, so fall THROUGH to the album-art path below instead of
-    // failing. A genuine video container the OS can't decode stops here - after one
-    // last rescue: Matroska attached cover art. The usual reason NO tier decoded is
-    // a missing OS codec (HEVC/AV1 are Store add-ons, not inbox), and library rips
-    // routinely attach a poster, so show the film instead of a blank tile. Bounded:
-    // the attachment element is read via the container's own index, never the stream.
-    if !head.is_ogg() {
-        if needs_fallback_cover_art(tried_cover_art) {
-            if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
-                stream: stream.clone(),
-            }) {
-                safety::log_debug(&format!(
-                    "{who}: video frame undecodable - using attached cover art ({} bytes)",
-                    cover.len()
-                ));
-                return Some(Ok(StreamSource::Bytes(cover)));
-            }
+        })
+    };
+    let frame = match rotation {
+        Some(deg) => {
+            safety::log_debug(&format!("{who}: display matrix asks for {deg} deg"));
+            crate::video::apply_display_rotation(frame, deg)
         }
-        safety::log_debug(&format!("{who}: video with no decodable frame"));
-        return Some(Err(Error::from(E_FAIL)));
+        None => frame,
+    };
+    safety::log_debug(&format!(
+        "{who}: video frame {}x{}",
+        frame.width(),
+        frame.height()
+    ));
+    StreamSource::Frame(frame)
+}
+
+/// The tail of the cascade once every frame tier has come back empty: OggS falls through
+/// to the audio-art path (`None`, same as "not video" as far as the caller is concerned),
+/// a genuine undecodable video gets one last Matroska-attached-cover-art rescue, and
+/// otherwise the file fails outright. Mirrors the tail of `try_video_source` exactly.
+unsafe fn video_undecodable_fallback(
+    head: &StreamHead,
+    tried_cover_art: bool,
+    stream: &IStream,
+    who: &str,
+) -> Option<Result<StreamSource>> {
+    if head.is_ogg() {
+        safety::log_debug(&format!("{who}: OggS not video - trying album art"));
+        return None;
     }
-    safety::log_debug(&format!("{who}: OggS not video - trying album art"));
-    None
+    if needs_fallback_cover_art(tried_cover_art) {
+        if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
+            stream: stream.clone(),
+        }) {
+            safety::log_debug(&format!(
+                "{who}: video frame undecodable - using attached cover art ({} bytes)",
+                cover.len()
+            ));
+            return Some(Ok(StreamSource::Bytes(cover)));
+        }
+    }
+    safety::log_debug(&format!("{who}: video with no decodable frame"));
+    Some(Err(Error::from(E_FAIL)))
 }
 
 /// OPENEXR - decode scaled straight off the (seekable) stream. A 12K VFX render
