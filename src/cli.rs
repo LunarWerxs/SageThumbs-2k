@@ -618,6 +618,65 @@ const MAX_RECURSE_DEPTH: u32 = 64;
 /// called from here — see [`expand_inputs`]'s doc comment).
 const REPARSE_ATTR: u32 = 0x0000_0400;
 
+fn expand_inputs_is_supported(p: &Path) -> bool {
+    // `is_known` is ASCII-case-insensitive — no lowercase allocation needed.
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(formats::is_known)
+}
+
+fn expand_inputs_attrs(p: &Path) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(p)
+        .map(|m| m.file_attributes())
+        .unwrap_or(0)
+}
+
+/// One directory entry from [`expand_inputs_walk`]'s `read_dir` loop, classified and
+/// (if it's a wanted file) pushed into `out`/`skipped_offline`. Split out so the loop
+/// body itself is a single call and the branching lives in one place.
+fn expand_inputs_visit(
+    p: &Path,
+    recurse: bool,
+    depth: u32,
+    out: &mut Vec<String>,
+    skipped_offline: &mut usize,
+) {
+    let a = expand_inputs_attrs(p);
+    if a & REPARSE_ATTR != 0 {
+        return;
+    }
+    if p.is_dir() {
+        if recurse {
+            expand_inputs_walk(p, recurse, depth + 1, out, skipped_offline);
+        }
+    } else if p.is_file() && expand_inputs_is_supported(p) {
+        if a & crate::prebuild::OFFLINE_ATTRS != 0 {
+            *skipped_offline += 1;
+        } else {
+            out.push(p.to_string_lossy().into_owned());
+        }
+    }
+}
+
+fn expand_inputs_walk(
+    dir: &Path,
+    recurse: bool,
+    depth: u32,
+    out: &mut Vec<String>,
+    skipped_offline: &mut usize,
+) {
+    if depth > MAX_RECURSE_DEPTH {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        expand_inputs_visit(&e.path(), recurse, depth, out, skipped_offline);
+    }
+}
+
 /// Expand `inputs` (files and/or directories) into a flat list of SUPPORTED image files;
 /// unsupported extensions dropped; cloud placeholders dropped too — see
 /// [`is_cloud_placeholder`]. Second element is how many were skipped as placeholders, so
@@ -631,58 +690,13 @@ const REPARSE_ATTR: u32 = 0x0000_0400;
 /// `prebuild::walk` applies, duplicated rather than shared because that function is
 /// private to `prebuild.rs` and unreachable from here.
 fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize) {
-    fn supported(p: &Path) -> bool {
-        // `is_known` is ASCII-case-insensitive — no lowercase allocation needed.
-        p.extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(formats::is_known)
-    }
-    fn attrs(p: &Path) -> u32 {
-        use std::os::windows::fs::MetadataExt;
-        std::fs::symlink_metadata(p)
-            .map(|m| m.file_attributes())
-            .unwrap_or(0)
-    }
-    fn walk(
-        dir: &Path,
-        recurse: bool,
-        depth: u32,
-        out: &mut Vec<String>,
-        skipped_offline: &mut usize,
-    ) {
-        if depth > MAX_RECURSE_DEPTH {
-            return;
-        }
-        let Ok(rd) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in rd.flatten() {
-            let p = e.path();
-            let a = attrs(&p);
-            if a & REPARSE_ATTR != 0 {
-                continue;
-            }
-            if p.is_dir() {
-                if recurse {
-                    walk(&p, recurse, depth + 1, out, skipped_offline);
-                }
-            } else if p.is_file() && supported(&p) {
-                if a & crate::prebuild::OFFLINE_ATTRS != 0 {
-                    *skipped_offline += 1;
-                } else {
-                    out.push(p.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-
     let mut out = Vec::new();
     let mut skipped_offline = 0usize;
     for i in inputs {
         let p = Path::new(i);
         if p.is_dir() {
-            walk(p, recurse, 0, &mut out, &mut skipped_offline);
-        } else if p.is_file() && supported(p) {
+            expand_inputs_walk(p, recurse, 0, &mut out, &mut skipped_offline);
+        } else if p.is_file() && expand_inputs_is_supported(p) {
             if is_cloud_placeholder(p) {
                 skipped_offline += 1;
             } else {
