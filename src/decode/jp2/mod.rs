@@ -686,39 +686,71 @@ fn for_each_packet(
     nprec: &[(usize, usize)],
     visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
 ) -> Result<(), Jp2Error> {
-    let count = |r: usize| nprec.get(r).map_or(0, |&(x, y)| x * y);
-    let res = 0..=walk_levels as usize;
     match progression {
-        0 => {
-            for l in 0..layers {
-                for r in res.clone() {
-                    for ci in 0..ncomp {
-                        for pi in 0..count(r) {
-                            visit(l, r, ci, pi)?;
-                        }
-                    }
+        0 => walk_packets_lrcp(layers, walk_levels, ncomp, nprec, visit),
+        1 => walk_packets_rlcp(layers, walk_levels, ncomp, nprec, visit),
+        _ => walk_packets_rpcl(layers, walk_levels, ncomp, nprec, visit),
+    }
+}
+
+/// Number of precincts (raster-order positions) at resolution `r`.
+fn packet_count(nprec: &[(usize, usize)], r: usize) -> usize {
+    nprec.get(r).map_or(0, |&(x, y)| x * y)
+}
+
+/// LRCP: layer outermost, then resolution, component, position.
+fn walk_packets_lrcp(
+    layers: u32,
+    walk_levels: u32,
+    ncomp: usize,
+    nprec: &[(usize, usize)],
+    visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
+) -> Result<(), Jp2Error> {
+    for l in 0..layers {
+        for r in 0..=walk_levels as usize {
+            for ci in 0..ncomp {
+                for pi in 0..packet_count(nprec, r) {
+                    visit(l, r, ci, pi)?;
                 }
             }
         }
-        1 => {
-            for r in res {
+    }
+    Ok(())
+}
+
+/// RLCP: resolution outermost, then layer, component, position.
+fn walk_packets_rlcp(
+    layers: u32,
+    walk_levels: u32,
+    ncomp: usize,
+    nprec: &[(usize, usize)],
+    visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
+) -> Result<(), Jp2Error> {
+    for r in 0..=walk_levels as usize {
+        for l in 0..layers {
+            for ci in 0..ncomp {
+                for pi in 0..packet_count(nprec, r) {
+                    visit(l, r, ci, pi)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// RPCL: resolution outermost, then position, component, layer.
+fn walk_packets_rpcl(
+    layers: u32,
+    walk_levels: u32,
+    ncomp: usize,
+    nprec: &[(usize, usize)],
+    visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
+) -> Result<(), Jp2Error> {
+    for r in 0..=walk_levels as usize {
+        for pi in 0..packet_count(nprec, r) {
+            for ci in 0..ncomp {
                 for l in 0..layers {
-                    for ci in 0..ncomp {
-                        for pi in 0..count(r) {
-                            visit(l, r, ci, pi)?;
-                        }
-                    }
-                }
-            }
-        }
-        _ => {
-            for r in res {
-                for pi in 0..count(r) {
-                    for ci in 0..ncomp {
-                        for l in 0..layers {
-                            visit(l, r, ci, pi)?;
-                        }
-                    }
+                    visit(l, r, ci, pi)?;
                 }
             }
         }
