@@ -124,6 +124,33 @@ warnings` both clean, and `cargo fmt --all --check` clean (after one `cargo fmt 
 plus a manual fix for a doc-comment left orphaned above the wrong function by one of the
 extractions, caught by the fmt-check diff and by re-reading the file rather than by any tool).
 
+**Tranche 13 (2026-09-05): the 19 rows that regrew after tranche 12 had cleared the board**,
+all through the licensing, signing and preview work of the week between - which is the standing
+risk flag at the top of this file made concrete: this repo's own gate does not run these two
+checks, so nothing here noticed. Worst first: `for_each_packet` (decode/jp2/mod.rs, cognitive
+76) dispatched its three progression-order walks into `walk_packets_lrcp` /
+`walk_packets_rlcp` / `walk_packets_rpcl` plus a `packet_count` helper; `import_tree` and
+`import_portable` (settings_io.rs) split into stale-value / stale-subkey deletion and per-subkey
+import helpers, with `ini_safe` hoisted to module scope; `search_edit_subclass`
+(settings_dlg/search.rs) into a dialog-code handler, a key-down handler and a next-index
+helper; `tiff_write_ifd`, `drop_ifd1_thumbnail` and `read` (verbs/encode/carry.rs);
+`try_video_source` (streamsrc.rs, over both gates) into a dispatcher plus four source-specific
+`unsafe fn` helpers; `locate_chunk_for_sample` (mp4.rs); `expand_inputs` (cli.rs); `reconcile`
+(screenshot/enable.rs); `paint_lines` (preview/highlight.rs, a second time); `ensure_visible_markdown`
+(preview/selection.rs); `keydown_copy_select` (preview/window.rs); `apply_labels`
+(settings_dlg/localize.rs); `on_key_clipboard_action` (screenshot/overlay/input.rs);
+`page_has_non_defaults` (settings_dlg/navrail.rs, cyclomatic); and the
+`preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load` test (tests/preview_handler.rs),
+whose nested logic moved into module-scope helpers. No behaviour change anywhere: every split
+was reviewed against the original for early returns, error values, side-effect order and
+unsafe scopes before it was merged. Verified per file (scoped `cargo test`, `cargo clippy
+--all-targets -D warnings`) and at the end on the merged tree: `cargo test --workspace` (1455
+passed, 0 failed, 22 ignored across 26 targets; `set_folder_icon_survives_a_transient_lock_*`
+failed once under the full parallel suite and passed 5/5 in isolation, the timing shape this
+repo already knows), clippy and fmt clean, portable scan 19 -> 0. The local pre-push gate now
+measures the tree with the portable scan on every code push and blocks at the gate, so the next
+regrowth is caught before it leaves the machine rather than found on a fleet board a week later.
+
 **Tranche 13 (2026-08-28): the next 10 worst rows cleared**, worst first: `shot_paint`
 (screenshot/overlay/paint.rs) split into `selection_rect`, `blit_selection_bright`,
 `paint_annotations`, `paint_selection_chrome`, `paint_eyedropper_loupe`, and
