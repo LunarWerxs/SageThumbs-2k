@@ -101,59 +101,91 @@ pub(super) fn read(bytes: &[u8], src_ext: &str) -> Option<Carried> {
     if !crate::settings::keep_metadata_on_convert() {
         return None;
     }
-    let input = Bytes::from(bytes.to_vec());
-    let mut out = Carried::default();
-    match src_ext {
-        "jpg" | "jpeg" | "jpe" | "jfif" => {
-            let jpeg = Jpeg::from_bytes(input).ok()?;
-            for seg in jpeg.segments() {
-                let c = seg.contents();
-                match seg.marker() {
-                    markers::APP1 if c.starts_with(EXIF_PREFIX) => {
-                        out.exif = Some(c[EXIF_PREFIX.len()..].to_vec());
-                    }
-                    markers::APP1 if c.starts_with(XMP_PREFIX) => {
-                        out.xmp = Some(c[XMP_PREFIX.len()..].to_vec());
-                    }
-                    markers::APP13 => out.iptc = Some(c.to_vec()),
-                    _ => {}
-                }
-            }
-            // The APP2 chunks, joined in sequence order.
-            out.icc = jpeg.icc_profile().map(|b| b.to_vec());
-        }
-        "png" => {
-            let png = Png::from_bytes(input).ok()?;
-            out.exif = png.chunk_by_type(*b"eXIf").map(|c| c.contents().to_vec());
-            out.xmp = png
-                .chunks_by_type(*b"iTXt")
-                .find_map(|c| itxt_xmp(c.contents()));
-            out.icc = png
-                .chunk_by_type(*b"iCCP")
-                .and_then(|c| iccp_profile(c.contents()));
-        }
-        "webp" => {
-            let webp = WebP::from_bytes(input).ok()?;
-            let data = |id: [u8; 4]| {
-                webp.chunk_by_id(id)
-                    .and_then(|c| c.content().data())
-                    .map(|d| d.to_vec())
-            };
-            out.exif = data(*b"EXIF");
-            out.xmp = data(*b"XMP ");
-            out.icc = data(*b"ICCP");
-        }
-        "heic" | "heif" | "hif" | "avif" => {
-            let (exif, xmp) = read_isobmff(bytes);
-            out.exif = exif;
-            out.xmp = xmp;
-            out.icc = crate::strip::isobmff::color_profile(bytes);
-        }
+    let mut out = match src_ext {
+        "jpg" | "jpeg" | "jpe" | "jfif" => read_jpeg_metadata(bytes)?,
+        "png" => read_png_metadata(bytes)?,
+        "webp" => read_webp_metadata(bytes)?,
+        "heic" | "heif" | "hif" | "avif" => read_heif_metadata(bytes),
         "tif" | "tiff" => {
+            let mut out = Carried::default();
             read_tiff(bytes, &mut out);
+            out
         }
         _ => return None,
+    };
+    finalize_carried(&mut out);
+    (!out.is_empty()).then_some(out)
+}
+
+/// The EXIF, XMP, IPTC (APP13) and ICC data of a JPEG.
+fn read_jpeg_metadata(bytes: &[u8]) -> Option<Carried> {
+    let input = Bytes::from(bytes.to_vec());
+    let jpeg = Jpeg::from_bytes(input).ok()?;
+    let mut out = Carried::default();
+    for seg in jpeg.segments() {
+        let c = seg.contents();
+        match seg.marker() {
+            markers::APP1 if c.starts_with(EXIF_PREFIX) => {
+                out.exif = Some(c[EXIF_PREFIX.len()..].to_vec());
+            }
+            markers::APP1 if c.starts_with(XMP_PREFIX) => {
+                out.xmp = Some(c[XMP_PREFIX.len()..].to_vec());
+            }
+            markers::APP13 => out.iptc = Some(c.to_vec()),
+            _ => {}
+        }
     }
+    // The APP2 chunks, joined in sequence order.
+    out.icc = jpeg.icc_profile().map(|b| b.to_vec());
+    Some(out)
+}
+
+/// The EXIF, XMP and ICC data of a PNG (`eXIf`, XMP `iTXt`, `iCCP`).
+fn read_png_metadata(bytes: &[u8]) -> Option<Carried> {
+    let input = Bytes::from(bytes.to_vec());
+    let png = Png::from_bytes(input).ok()?;
+    let out = Carried {
+        exif: png.chunk_by_type(*b"eXIf").map(|c| c.contents().to_vec()),
+        xmp: png
+            .chunks_by_type(*b"iTXt")
+            .find_map(|c| itxt_xmp(c.contents())),
+        icc: png
+            .chunk_by_type(*b"iCCP")
+            .and_then(|c| iccp_profile(c.contents())),
+        ..Default::default()
+    };
+    Some(out)
+}
+
+/// The EXIF, XMP and ICC data of a WebP (`EXIF`, `XMP `, `ICCP` chunks).
+fn read_webp_metadata(bytes: &[u8]) -> Option<Carried> {
+    let input = Bytes::from(bytes.to_vec());
+    let webp = WebP::from_bytes(input).ok()?;
+    let mut out = Carried::default();
+    let data = |id: [u8; 4]| {
+        webp.chunk_by_id(id)
+            .and_then(|c| c.content().data())
+            .map(|d| d.to_vec())
+    };
+    out.exif = data(*b"EXIF");
+    out.xmp = data(*b"XMP ");
+    out.icc = data(*b"ICCP");
+    Some(out)
+}
+
+/// The EXIF, XMP and ICC data of a HEIC/AVIF.
+fn read_heif_metadata(bytes: &[u8]) -> Carried {
+    let mut out = Carried::default();
+    let (exif, xmp) = read_isobmff(bytes);
+    out.exif = exif;
+    out.xmp = xmp;
+    out.icc = crate::strip::isobmff::color_profile(bytes);
+    out
+}
+
+/// Normalize the orientation and drop the stale thumbnail from a carried TIFF block,
+/// and drop an ICC profile that is empty or too large to carry.
+fn finalize_carried(out: &mut Carried) {
     if let Some(e) = out.exif.as_mut() {
         reset_orientation_to_1(e);
         drop_ifd1_thumbnail(e);
@@ -165,7 +197,6 @@ pub(super) fn read(bytes: &[u8], src_ext: &str) -> Option<Carried> {
     {
         out.icc = None;
     }
-    (!out.is_empty()).then_some(out)
 }
 
 /// The profile inside a PNG `iCCP` chunk (`name\0 method(1) zlib-data`), inflated under
@@ -339,42 +370,55 @@ fn tiff_write_ifd(out: &mut Vec<u8>, le: bool, entries: &mut [TiffEntry]) -> Opt
     entries.sort_by_key(|e| e.tag);
     let n = entries.len();
     let base = out.len();
-    let put16 = |out: &mut Vec<u8>, at: usize, v: u16| -> Option<()> {
-        let b = if le { v.to_le_bytes() } else { v.to_be_bytes() };
-        out.get_mut(at..at + 2)?.copy_from_slice(&b);
-        Some(())
-    };
-    let put32 = |out: &mut Vec<u8>, at: usize, v: u32| -> Option<()> {
-        let b = if le { v.to_le_bytes() } else { v.to_be_bytes() };
-        out.get_mut(at..at + 4)?.copy_from_slice(&b);
-        Some(())
-    };
     out.resize(base + 2 + n * 12 + 4, 0); // count, entries, next-IFD pointer (none)
-    put16(out, base, u16::try_from(n).ok()?)?;
+    tiff_put16(out, base, le, u16::try_from(n).ok()?)?;
     for (i, e) in entries.iter_mut().enumerate() {
         let at = base + 2 + i * 12;
-        put16(out, at, e.tag)?;
-        put16(out, at + 2, e.typ)?;
-        put32(out, at + 4, e.count)?;
-        if let Some(sub) = e.sub.as_mut() {
-            if out.len() % 2 == 1 {
-                out.push(0);
-            }
-            let off = out.len();
-            tiff_write_ifd(out, le, sub)?;
-            put32(out, at + 8, u32::try_from(off).ok()?)?;
-        } else if e.data.len() <= 4 {
-            out.get_mut(at + 8..at + 8 + e.data.len())?
-                .copy_from_slice(&e.data);
-        } else {
-            if out.len() % 2 == 1 {
-                out.push(0);
-            }
-            let off = out.len();
-            out.extend_from_slice(&e.data);
-            put32(out, at + 8, u32::try_from(off).ok()?)?;
-        }
+        tiff_write_entry(out, le, at, e)?;
     }
+    Some(())
+}
+
+/// Write one directory entry's tag/type/count at `at`, then its value: inline when it
+/// fits in the 4-byte slot, otherwise appended out-of-line (or, for a sub-IFD, the
+/// whole sub-directory written out-of-line) with the slot patched to its offset.
+fn tiff_write_entry(out: &mut Vec<u8>, le: bool, at: usize, e: &mut TiffEntry) -> Option<()> {
+    tiff_put16(out, at, le, e.tag)?;
+    tiff_put16(out, at + 2, le, e.typ)?;
+    tiff_put32(out, at + 4, le, e.count)?;
+    if let Some(sub) = e.sub.as_mut() {
+        let off = tiff_pad_to_even(out);
+        tiff_write_ifd(out, le, sub)?;
+        tiff_put32(out, at + 8, le, u32::try_from(off).ok()?)
+    } else if e.data.len() <= 4 {
+        out.get_mut(at + 8..at + 8 + e.data.len())?
+            .copy_from_slice(&e.data);
+        Some(())
+    } else {
+        let off = tiff_pad_to_even(out);
+        out.extend_from_slice(&e.data);
+        tiff_put32(out, at + 8, le, u32::try_from(off).ok()?)
+    }
+}
+
+/// Pad `out` to an even length (TIFF values are word-aligned) and return the offset
+/// the next value written will land at.
+fn tiff_pad_to_even(out: &mut Vec<u8>) -> usize {
+    if out.len() % 2 == 1 {
+        out.push(0);
+    }
+    out.len()
+}
+
+fn tiff_put16(out: &mut [u8], at: usize, le: bool, v: u16) -> Option<()> {
+    let b = if le { v.to_le_bytes() } else { v.to_be_bytes() };
+    out.get_mut(at..at + 2)?.copy_from_slice(&b);
+    Some(())
+}
+
+fn tiff_put32(out: &mut [u8], at: usize, le: bool, v: u32) -> Option<()> {
+    let b = if le { v.to_le_bytes() } else { v.to_be_bytes() };
+    out.get_mut(at..at + 4)?.copy_from_slice(&b);
     Some(())
 }
 
@@ -781,27 +825,9 @@ const SUB_IFD_TAGS: [u16; 3] = [TAG_EXIF_IFD, TAG_GPS_IFD, TAG_INTEROP_IFD];
 /// cutting a MakerNote or GPS value in half. Any parse surprise leaves the block
 /// as it was.
 pub(super) fn drop_ifd1_thumbnail(tiff: &mut Vec<u8>) {
-    let Some(le) = tiff_is_le(tiff) else {
+    let Some((le, next_ptr_at, ifd0, ifd1)) = tiff_ifd1_pointer(tiff) else {
         return;
     };
-    let Some(ifd0) = tiff_u32(tiff, le, 4).map(|v| v as usize) else {
-        return;
-    };
-    let Some(count) = tiff_u16(tiff, le, ifd0) else {
-        return;
-    };
-    let Some(next_ptr_at) = (count as usize)
-        .checked_mul(12)
-        .and_then(|n| ifd0.checked_add(2 + n))
-    else {
-        return;
-    };
-    let Some(ifd1) = tiff_u32(tiff, le, next_ptr_at).map(|v| v as usize) else {
-        return;
-    };
-    if ifd1 == 0 {
-        return;
-    }
     let Some(slot) = tiff.get_mut(next_ptr_at..next_ptr_at + 4) else {
         return;
     };
@@ -809,58 +835,75 @@ pub(super) fn drop_ifd1_thumbnail(tiff: &mut Vec<u8>) {
 
     // Highest byte any reachable IFD entry touches. `None` means an entry was of a shape
     // this does not model, in which case the pointer reset above is all that happens.
-    let mut max_end = next_ptr_at + 4;
+    let Some(max_end) = tiff_reachable_end(tiff, le, ifd0, next_ptr_at + 4) else {
+        return;
+    };
+    if ifd1 >= max_end && ifd1 <= tiff.len() {
+        tiff.truncate(ifd1);
+    }
+}
+
+/// IFD0's next-IFD pointer, when it points somewhere (byte order, the pointer's own
+/// offset, IFD0's offset, IFD1's offset). `None` when the block doesn't parse this far
+/// or there is no IFD1 to drop.
+fn tiff_ifd1_pointer(tiff: &[u8]) -> Option<(bool, usize, usize, usize)> {
+    let le = tiff_is_le(tiff)?;
+    let ifd0 = tiff_u32(tiff, le, 4)? as usize;
+    let count = tiff_u16(tiff, le, ifd0)?;
+    let next_ptr_at = (count as usize)
+        .checked_mul(12)
+        .and_then(|n| ifd0.checked_add(2 + n))?;
+    let ifd1 = tiff_u32(tiff, le, next_ptr_at)? as usize;
+    (ifd1 != 0).then_some((le, next_ptr_at, ifd0, ifd1))
+}
+
+/// Highest byte any entry in `ifd0` or its Exif/GPS/Interoperability sub-IFDs
+/// references, starting no lower than `seed`. `None` on an entry of a shape this walk
+/// does not model, or a sub-IFD chain deep enough to look like a loop.
+fn tiff_reachable_end(tiff: &[u8], le: bool, ifd0: usize, seed: usize) -> Option<usize> {
+    let mut max_end = seed;
     let mut pending = vec![ifd0];
     let mut seen = 0usize;
     while let Some(ifd) = pending.pop() {
         seen += 1;
         if seen > 4 {
-            return; // IFD0 + three sub-IFDs is the whole EXIF tree; anything more is a loop
+            return None; // IFD0 + three sub-IFDs is the whole EXIF tree; anything more is a loop
         }
-        let Some(n) = tiff_u16(tiff, le, ifd) else {
-            return;
+        max_end = max_end.max(tiff_ifd_reach(tiff, le, ifd, &mut pending)?);
+    }
+    Some(max_end)
+}
+
+/// The highest byte one directory's own entry table or out-of-line values touch, and
+/// the offsets of any Exif/GPS/Interoperability sub-IFD it points at (pushed onto
+/// `pending`). `None` on an entry of a shape this walk does not model.
+fn tiff_ifd_reach(tiff: &[u8], le: bool, ifd: usize, pending: &mut Vec<usize>) -> Option<usize> {
+    let n = tiff_u16(tiff, le, ifd)?;
+    let mut end = (n as usize)
+        .checked_mul(12)
+        .and_then(|e| ifd.checked_add(2 + e + 4))?;
+    for i in 0..n as usize {
+        let entry = ifd + 2 + i * 12;
+        let (Some(tag), Some(typ), Some(cnt)) = (
+            tiff_u16(tiff, le, entry),
+            tiff_u16(tiff, le, entry + 2),
+            tiff_u32(tiff, le, entry + 4),
+        ) else {
+            return None;
         };
-        let Some(end) = (n as usize)
-            .checked_mul(12)
-            .and_then(|e| ifd.checked_add(2 + e + 4))
-        else {
-            return;
-        };
-        max_end = max_end.max(end);
-        for i in 0..n as usize {
-            let entry = ifd + 2 + i * 12;
-            let (Some(tag), Some(typ), Some(cnt)) = (
-                tiff_u16(tiff, le, entry),
-                tiff_u16(tiff, le, entry + 2),
-                tiff_u32(tiff, le, entry + 4),
-            ) else {
-                return;
-            };
-            let Some(size) = tiff_type_size(typ) else {
-                return;
-            };
-            let Some(total) = size.checked_mul(cnt as usize) else {
-                return;
-            };
-            if total > 4 {
-                let Some(off) = tiff_u32(tiff, le, entry + 8).map(|v| v as usize) else {
-                    return;
-                };
-                let Some(e) = off.checked_add(total) else {
-                    return;
-                };
-                max_end = max_end.max(e);
-            }
-            if SUB_IFD_TAGS.contains(&tag) && typ == 4 && cnt == 1 {
-                if let Some(sub) = tiff_u32(tiff, le, entry + 8) {
-                    pending.push(sub as usize);
-                }
+        let size = tiff_type_size(typ)?;
+        let total = size.checked_mul(cnt as usize)?;
+        if total > 4 {
+            let off = tiff_u32(tiff, le, entry + 8)? as usize;
+            end = end.max(off.checked_add(total)?);
+        }
+        if SUB_IFD_TAGS.contains(&tag) && typ == 4 && cnt == 1 {
+            if let Some(sub) = tiff_u32(tiff, le, entry + 8) {
+                pending.push(sub as usize);
             }
         }
     }
-    if ifd1 >= max_end && ifd1 <= tiff.len() {
-        tiff.truncate(ifd1);
-    }
+    Some(end)
 }
 
 #[cfg(test)]
