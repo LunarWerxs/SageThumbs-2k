@@ -89,6 +89,47 @@ thread_local! {
     static BLOCK_CACHE: RefCell<Option<BlockCache>> = const { RefCell::new(None) };
 }
 
+/// Immutable per-call state threaded through the per-line helpers below — geometry, theme
+/// colours, the lexer spec, and the cache-lookup identity that every line consults but none of
+/// them mutate. Split out of [`paint_lines`]'s locals purely so those helpers don't each need a
+/// dozen positional parameters.
+struct PaintCtx<'a> {
+    hdc: HDC,
+    colors: &'a Colors,
+    sp: &'a Spec,
+    x: i32,
+    code_x: i32,
+    code_right: i32,
+    gutter_w: i32,
+    gutter_pad: i32,
+    gutter_fg: u32,
+    line_h: i32,
+    char_w: i32,
+    sel_bg: u32,
+    sel: Option<(usize, usize)>,
+    key: (usize, usize, u8, u64),
+}
+
+/// Which line the current loop iteration in [`paint_lines`] is on, and where it draws.
+struct LineCtx {
+    /// 0-based line index — indexes `BlockCache::before`/`runs`.
+    line_no0: usize,
+    /// 1-based line number — what the gutter shows.
+    line_no: usize,
+    /// Raw byte offset of this line's first char in the source text.
+    line_start: usize,
+    y: i32,
+    visible: bool,
+}
+
+/// The table a cache MISS builds as it lexes every line, banked into [`BLOCK_CACHE`] after the
+/// loop; `in_block` is also the running block-comment state carried line-to-line during lexing.
+struct LexState {
+    in_block: bool,
+    fresh_before: Vec<bool>,
+    fresh_runs: Vec<Vec<(Tag, String)>>,
+}
+
 /// Draw `text` as syntax-highlighted monospace lines starting at `(x, y0)`, one line per source
 /// line, each run clipped to `[x, x+width]` (long code lines clip at the pane edge rather than
 /// wrapping — normal for a code view). Lines fully outside `[clip_top, clip_bottom)` are not drawn
@@ -155,116 +196,61 @@ pub(super) unsafe fn paint_lines(
         .unwrap_or_else(|| text.split('\n').count());
     let (gutter_w, gutter_pad, code_x, code_right) = gutter_metrics(total_lines, x, width, char_w);
 
+    let ctx = PaintCtx {
+        hdc,
+        colors: &colors,
+        sp: &sp,
+        x,
+        code_x,
+        code_right,
+        gutter_w,
+        gutter_pad,
+        gutter_fg,
+        line_h,
+        char_w,
+        sel_bg,
+        sel,
+        key,
+    };
+    let has_cache = cached_before.is_some();
+    let cached_before_slice = cached_before.as_deref();
+
     // A MISS lexes every line unconditionally (identical to the old always-lex behaviour) and
     // records the `in_block` state entering each one, plus its tokenized runs, so the NEXT call
     // for this same buffer (the common case: a scroll or resize repaint of the document already
     // on screen) can hit the cache instead.
-    let mut fresh_before: Vec<bool> = Vec::new();
-    let mut fresh_runs: Vec<Vec<(Tag, String)>> = Vec::new();
+    let mut state = LexState {
+        in_block: false,
+        fresh_before: Vec::new(),
+        fresh_runs: Vec::new(),
+    };
 
-    let mut in_block = false;
     let mut y = y0;
-    let mut line_no = 0usize;
     let mut line_start = 0usize; // raw byte offset of this line's first char in `text`
-    for raw in text.split('\n') {
-        let line_no0 = line_no; // 0-based index, before the increment below
-        line_no += 1;
-        let visible = y + line_h > clip_top && y < clip_bottom;
+    for (line_no0, raw) in text.split('\n').enumerate() {
+        let line = LineCtx {
+            line_no0,
+            line_no: line_no0 + 1,
+            line_start,
+            y,
+            visible: y + line_h > clip_top && y < clip_bottom,
+        };
 
         // A line the MISS pass already tokenized draws straight from that cache — no re-lex, no
         // tab-expansion allocation, nothing. A line the cache doesn't (yet) cover — which cannot
         // happen once a MISS has run for this buffer, but costs nothing to guard — falls through
-        // to the real lexer below instead.
-        let cached_run: Option<Vec<(Tag, String)>> = if visible && cached_before.is_some() {
-            BLOCK_CACHE.with(|c| {
-                c.borrow().as_ref().and_then(|bc| {
-                    if bc.key == key {
-                        bc.runs.get(line_no0).cloned()
-                    } else {
-                        None
-                    }
-                })
-            })
-        } else {
-            None
-        };
-        if let Some(owned) = cached_run {
-            let line = raw.strip_suffix('\r').unwrap_or(raw);
-            let runs: Vec<(Tag, &str)> = owned.iter().map(|(t, s)| (*t, s.as_str())).collect();
-            draw_visible_line(
-                hdc,
+        // to the real lexer instead.
+        let drawn_from_cache =
+            try_draw_cached_line(&ctx, sink.as_deref_mut(), raw, &line, has_cache);
+        if !drawn_from_cache {
+            lex_and_draw_line(
+                &ctx,
                 sink.as_deref_mut(),
-                line,
-                line_start,
-                sel,
-                code_x,
-                code_right,
-                y,
-                line_h,
-                char_w,
-                sel_bg,
-                line_no,
-                x,
-                gutter_w,
-                gutter_pad,
-                gutter_fg,
-                &runs,
-                &colors,
+                raw,
+                &line,
+                cached_before_slice,
+                &mut state,
             );
-            y += line_h;
-            line_start += raw.len() + 1;
-            continue;
-        }
-
-        // On a cache HIT, only lines that might actually be drawn need the real lexer — every
-        // other line's `in_block` contribution is already sitting in `cached_before`. On a MISS
-        // every line must still be lexed (to draw correctly AND to build the cache for next
-        // time), matching the function's old behaviour exactly.
-        let should_lex = cached_before.is_none() || visible;
-        if should_lex {
-            let line = raw.strip_suffix('\r').unwrap_or(raw);
-            // `ExtTextOutW` doesn't expand tabs (unlike the plain path's DT_EXPANDTABS), so
-            // tab-indented code (Go, Makefiles) would collapse its indentation — expand per
-            // line, keeping the raw line addressable (selection offsets live in RAW bytes).
-            let disp: Cow<str> = if line.contains('\t') {
-                Cow::Owned(line.replace('\t', "    "))
-            } else {
-                Cow::Borrowed(line)
-            };
-            match &cached_before {
-                // Reaching the real lexer on a HIT only happens for a line the cache didn't
-                // cover (see the guard above) — seed straight from the per-line table rather
-                // than tracking a running state across lines this call never visited.
-                Some(before) => in_block = before.get(line_no0).copied().unwrap_or(false),
-                None => fresh_before.push(in_block), // record state BEFORE this line, for the cache
-            }
-            let runs = tokenize(&disp, &sp, &mut in_block);
-            if cached_before.is_none() {
-                // Building the complete table this call — bank the owned runs alongside it.
-                fresh_runs.push(runs.iter().map(|&(t, s)| (t, s.to_owned())).collect());
-            }
-            if visible {
-                draw_visible_line(
-                    hdc,
-                    sink.as_deref_mut(),
-                    line,
-                    line_start,
-                    sel,
-                    code_x,
-                    code_right,
-                    y,
-                    line_h,
-                    char_w,
-                    sel_bg,
-                    line_no,
-                    x,
-                    gutter_w,
-                    gutter_pad,
-                    gutter_fg,
-                    &runs,
-                    &colors,
-                );
-            }
         }
         y += line_h;
         line_start += raw.len() + 1; // + the '\n' this line was split on
@@ -276,12 +262,133 @@ pub(super) unsafe fn paint_lines(
         BLOCK_CACHE.with(|c| {
             *c.borrow_mut() = Some(BlockCache {
                 key,
-                before: fresh_before,
-                runs: fresh_runs,
+                before: state.fresh_before,
+                runs: state.fresh_runs,
             });
         });
     }
     y - y0
+}
+
+/// Draw line `line.line_no0` purely from the tokenized-run cache, when this call is a cache HIT
+/// and the line is visible. Returns whether it drew — `false` means the caller must fall through
+/// to the real lexer (see [`lex_and_draw_line`]).
+unsafe fn try_draw_cached_line(
+    ctx: &PaintCtx,
+    sink: Option<&mut LineSel>,
+    raw: &str,
+    line: &LineCtx,
+    has_cache: bool,
+) -> bool {
+    if !(line.visible && has_cache) {
+        return false;
+    }
+    let cached_run: Option<Vec<(Tag, String)>> = BLOCK_CACHE.with(|c| {
+        c.borrow().as_ref().and_then(|bc| {
+            if bc.key == ctx.key {
+                bc.runs.get(line.line_no0).cloned()
+            } else {
+                None
+            }
+        })
+    });
+    let Some(owned) = cached_run else {
+        return false;
+    };
+    let text = raw.strip_suffix('\r').unwrap_or(raw);
+    let runs: Vec<(Tag, &str)> = owned.iter().map(|(t, s)| (*t, s.as_str())).collect();
+    draw_visible_line(
+        ctx.hdc,
+        sink,
+        text,
+        line.line_start,
+        ctx.sel,
+        ctx.code_x,
+        ctx.code_right,
+        line.y,
+        ctx.line_h,
+        ctx.char_w,
+        ctx.sel_bg,
+        line.line_no,
+        ctx.x,
+        ctx.gutter_w,
+        ctx.gutter_pad,
+        ctx.gutter_fg,
+        &runs,
+        ctx.colors,
+    );
+    true
+}
+
+/// Seed `state.in_block` for line `line_no0` before lexing it: on a cache HIT, read the running
+/// state straight from the per-line table (seeding across lines this call never visited); on a
+/// MISS, record the state BEFORE this line into `state.fresh_before` so the complete table can be
+/// banked after the loop.
+fn seed_in_block(cached_before: Option<&[bool]>, line_no0: usize, state: &mut LexState) {
+    match cached_before {
+        // Reaching the real lexer on a HIT only happens for a line the cache didn't cover (the
+        // visibility guard in the caller) — seed straight from the per-line table rather than
+        // tracking a running state across lines this call never visited.
+        Some(before) => state.in_block = before.get(line_no0).copied().unwrap_or(false),
+        None => state.fresh_before.push(state.in_block), // record state BEFORE this line
+    }
+}
+
+/// Real-lex line `line.line_no0` with the tokenizer when needed — always on a cache MISS (to draw
+/// correctly AND build the cache for next time), or when this line is visible on a HIT (only
+/// visible lines need re-lexing there; every other line's `in_block` contribution already sits in
+/// `cached_before`) — and draw it when visible. Matches the function's old always-lex-every-line
+/// behaviour exactly.
+unsafe fn lex_and_draw_line(
+    ctx: &PaintCtx,
+    sink: Option<&mut LineSel>,
+    raw: &str,
+    line: &LineCtx,
+    cached_before: Option<&[bool]>,
+    state: &mut LexState,
+) {
+    if cached_before.is_some() && !line.visible {
+        return;
+    }
+    let text = raw.strip_suffix('\r').unwrap_or(raw);
+    // `ExtTextOutW` doesn't expand tabs (unlike the plain path's DT_EXPANDTABS), so tab-indented
+    // code (Go, Makefiles) would collapse its indentation — expand per line, keeping the raw line
+    // addressable (selection offsets live in RAW bytes).
+    let disp: Cow<str> = if text.contains('\t') {
+        Cow::Owned(text.replace('\t', "    "))
+    } else {
+        Cow::Borrowed(text)
+    };
+    seed_in_block(cached_before, line.line_no0, state);
+    let runs = tokenize(&disp, ctx.sp, &mut state.in_block);
+    if cached_before.is_none() {
+        // Building the complete table this call — bank the owned runs alongside it.
+        state
+            .fresh_runs
+            .push(runs.iter().map(|&(t, s)| (t, s.to_owned())).collect());
+    }
+    if line.visible {
+        draw_visible_line(
+            ctx.hdc,
+            sink,
+            text,
+            line.line_start,
+            ctx.sel,
+            ctx.code_x,
+            ctx.code_right,
+            line.y,
+            ctx.line_h,
+            ctx.char_w,
+            ctx.sel_bg,
+            line.line_no,
+            ctx.x,
+            ctx.gutter_w,
+            ctx.gutter_pad,
+            ctx.gutter_fg,
+            &runs,
+            ctx.colors,
+        );
+    }
 }
 
 /// Selection fill, hit-test record, gutter number and token runs for one drawn line — shared by
