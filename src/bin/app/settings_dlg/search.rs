@@ -132,82 +132,99 @@ unsafe extern "system" fn search_edit_subclass(
         WM_NCDESTROY => {
             let _ = RemoveWindowSubclass(hwnd, Some(search_edit_subclass), 1);
         }
-        WM_GETDLGCODE => {
-            let base = DefSubclassProc(hwnd, msg, wparam, lparam).0 as u32;
-            // Claim only the keys the dropdown consumes (Down/Up/Return/Escape), and only
-            // while it is showing results. Claiming every key would swallow Tab out of this
-            // box while the list is open, and an unconditional claim would also swallow
-            // Enter (Save) on ordinary keystrokes. `lparam` is the MSG the dialog manager is
-            // asking about, or null for a generic query.
-            let list_open = GetParent(hwnd)
-                .and_then(|p| GetDlgItem(Some(p), ID_SEARCH_RESULTS))
-                .is_ok_and(|l| IsWindowVisible(l).as_bool());
-            if !list_open {
-                return LRESULT(base as isize);
-            }
-            let asked = (lparam.0 as *const MSG).as_ref();
-            let wanted = asked.is_some_and(|m| {
-                m.message == WM_KEYDOWN
-                    && [VK_DOWN.0, VK_UP.0, VK_RETURN.0, VK_ESCAPE.0].contains(&(m.wParam.0 as u16))
-            });
-            if wanted {
-                return LRESULT((base | DLGC_WANTMESSAGE) as isize);
-            }
-            return LRESULT((base | DLGC_WANTARROWS) as isize);
-        }
+        WM_GETDLGCODE => return search_edit_dlgcode(hwnd, msg, wparam, lparam),
         WM_KEYDOWN => {
-            let vk = wparam.0 as u16;
-            let Ok(parent) = GetParent(hwnd) else {
-                return DefSubclassProc(hwnd, msg, wparam, lparam);
-            };
-            let Ok(list) = GetDlgItem(Some(parent), ID_SEARCH_RESULTS) else {
-                return DefSubclassProc(hwnd, msg, wparam, lparam);
-            };
-            if !IsWindowVisible(list).as_bool() {
-                return DefSubclassProc(hwnd, msg, wparam, lparam);
-            }
-            let count = SendMessageW(list, LB_GETCOUNT, None, None).0 as i32;
-            if count <= 0 {
-                return DefSubclassProc(hwnd, msg, wparam, lparam);
-            }
-            if vk == VK_ESCAPE.0 {
-                // Close the dropdown, not the dialog: Escape reaches here only while the
-                // list is open (see WM_GETDLGCODE), so the dialog's own cancel is untouched.
-                let _ = ShowWindow(list, SW_HIDE);
-                return LRESULT(0);
-            }
-            if vk == VK_DOWN.0 || vk == VK_UP.0 {
-                let cur = SendMessageW(list, LB_GETCURSEL, None, None).0 as i32;
-                let next = if vk == VK_DOWN.0 {
-                    if cur < 0 {
-                        0
-                    } else {
-                        (cur + 1) % count
-                    }
-                } else if cur < 0 {
-                    count - 1
-                } else {
-                    (cur + count - 1) % count
-                };
-                SendMessageW(list, LB_SETCURSEL, Some(WPARAM(next as usize)), None);
-                // The dropdown's owner-draw highlight is driven by `HOT` (mouse hover), not
-                // by LB_GETCURSEL, so a keyboard move has to update it too or the highlighted
-                // row would only ever track the mouse.
-                HOT.with(|h| h.set(next));
-                let _ = InvalidateRect(Some(list), None, false);
-                return LRESULT(0);
-            }
-            if vk == VK_RETURN.0 {
-                let cur = SendMessageW(list, LB_GETCURSEL, None, None).0 as i32;
-                let sel = if cur < 0 { 0 } else { cur };
-                SendMessageW(list, LB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-                on_pick(parent);
-                return LRESULT(0);
+            if let Some(result) = search_edit_keydown(hwnd, wparam) {
+                return result;
             }
         }
         _ => {}
     }
     DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+/// WM_GETDLGCODE handling for `search_edit_subclass`: claim only the keys the dropdown
+/// consumes (Down/Up/Return/Escape), and only while it is showing results. Claiming every
+/// key would swallow Tab out of this box while the list is open, and an unconditional claim
+/// would also swallow Enter (Save) on ordinary keystrokes. `lparam` is the MSG the dialog
+/// manager is asking about, or null for a generic query.
+unsafe fn search_edit_dlgcode(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let base = DefSubclassProc(hwnd, msg, wparam, lparam).0 as u32;
+    let list_open = GetParent(hwnd)
+        .and_then(|p| GetDlgItem(Some(p), ID_SEARCH_RESULTS))
+        .is_ok_and(|l| IsWindowVisible(l).as_bool());
+    if !list_open {
+        return LRESULT(base as isize);
+    }
+    let asked = (lparam.0 as *const MSG).as_ref();
+    let wanted = asked.is_some_and(|m| {
+        m.message == WM_KEYDOWN
+            && [VK_DOWN.0, VK_UP.0, VK_RETURN.0, VK_ESCAPE.0].contains(&(m.wParam.0 as u16))
+    });
+    if wanted {
+        return LRESULT((base | DLGC_WANTMESSAGE) as isize);
+    }
+    LRESULT((base | DLGC_WANTARROWS) as isize)
+}
+
+/// WM_KEYDOWN handling for `search_edit_subclass`. Returns `Some` to return that value from
+/// the subclass proc immediately, or `None` to fall through to the default `DefSubclassProc`
+/// call (same `hwnd`/`msg`/`wparam`/`lparam` the caller already holds).
+unsafe fn search_edit_keydown(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
+    let vk = wparam.0 as u16;
+    let Ok(parent) = GetParent(hwnd) else {
+        return None;
+    };
+    let Ok(list) = GetDlgItem(Some(parent), ID_SEARCH_RESULTS) else {
+        return None;
+    };
+    if !IsWindowVisible(list).as_bool() {
+        return None;
+    }
+    let count = SendMessageW(list, LB_GETCOUNT, None, None).0 as i32;
+    if count <= 0 {
+        return None;
+    }
+    if vk == VK_ESCAPE.0 {
+        // Close the dropdown, not the dialog: Escape reaches here only while the
+        // list is open (see WM_GETDLGCODE), so the dialog's own cancel is untouched.
+        let _ = ShowWindow(list, SW_HIDE);
+        return Some(LRESULT(0));
+    }
+    if vk == VK_DOWN.0 || vk == VK_UP.0 {
+        let cur = SendMessageW(list, LB_GETCURSEL, None, None).0 as i32;
+        let next = search_edit_next_index(vk, cur, count);
+        SendMessageW(list, LB_SETCURSEL, Some(WPARAM(next as usize)), None);
+        // The dropdown's owner-draw highlight is driven by `HOT` (mouse hover), not
+        // by LB_GETCURSEL, so a keyboard move has to update it too or the highlighted
+        // row would only ever track the mouse.
+        HOT.with(|h| h.set(next));
+        let _ = InvalidateRect(Some(list), None, false);
+        return Some(LRESULT(0));
+    }
+    if vk == VK_RETURN.0 {
+        let cur = SendMessageW(list, LB_GETCURSEL, None, None).0 as i32;
+        let sel = if cur < 0 { 0 } else { cur };
+        SendMessageW(list, LB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+        on_pick(parent);
+        return Some(LRESULT(0));
+    }
+    None
+}
+
+/// Next highlighted row for Up/Down in the results dropdown, wrapping at both ends.
+fn search_edit_next_index(vk: u16, cur: i32, count: i32) -> i32 {
+    if vk == VK_DOWN.0 {
+        if cur < 0 {
+            0
+        } else {
+            (cur + 1) % count
+        }
+    } else if cur < 0 {
+        count - 1
+    } else {
+        (cur + count - 1) % count
+    }
 }
 
 /// Row height for the owner-drawn dropdown, 96-DPI design px.
