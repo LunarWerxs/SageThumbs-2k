@@ -298,7 +298,7 @@ pub(super) fn merge_shell_class_info(prior: &str, ico_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::atomic::Ordering;
 
     /// Build a tiny source PNG in `dir` for `set_folder_icon` to read.
     fn make_src(dir: &Path) -> PathBuf {
@@ -310,33 +310,7 @@ mod tests {
         src_path
     }
 
-    /// Wait (bounded) for a staging file matching `<target_name>.<pid>_<n>.st2ktmp` to
-    /// appear in `dir` — the counter `unique_tmp` stamps into the name means the exact
-    /// filename can't be predicted (a shared per-process counter, bumped by every test
-    /// that stages a write), so the tests poll the directory for the SHAPE instead of a
-    /// fixed path.
-    fn wait_for_staged(dir: &Path, target_name: &str) -> Option<PathBuf> {
-        let prefix = format!("{target_name}.");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if let Ok(rd) = std::fs::read_dir(dir) {
-                for entry in rd.filter_map(|e| e.ok()) {
-                    let path = entry.path();
-                    let matches = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".st2ktmp"));
-                    if matches {
-                        return Some(path);
-                    }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
+    use crate::fsutil::lock_until_first_retry;
 
     /// A transient Explorer/shell lock on the destination `.ico` (Windows os error 5/32)
     /// must not fail the folder-icon write outright — the rename has to retry past it
@@ -358,31 +332,18 @@ mod tests {
         // transient Explorer/thumbnail-cache lock on the rename destination.
         let ico_path = dir.join("SageThumbsFolder.ico");
         std::fs::write(&ico_path, b"placeholder").unwrap();
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .open(&ico_path)
-            .unwrap();
-        // Release the lock ONE backoff interval after the code under test stages its temp
-        // file, because the rename is the very next statement. Anchoring to the CALL instead
-        // is wrong in both directions and this test has been wrong in both: a flat 140 ms
-        // against a ~200 ms retry budget is a 1.4x margin that loses whenever a release build
-        // runs beside the suite (it blocked a release), and simply shortening the hold made
-        // the test VACUOUS - the lock expired during setup, the rename never met a locked
-        // destination, and the test passed with retrying disabled entirely.
-        let dir_for_thread = dir.clone();
-        let lock_thread = std::thread::spawn(move || {
-            wait_for_staged(&dir_for_thread, "SageThumbsFolder.ico");
-            std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
-            drop(held);
-        });
+        let failures = lock_until_first_retry(&ico_path);
 
         let result = set_folder_icon(src_path.to_str().unwrap());
-        lock_thread.join().unwrap();
+        crate::fsutil::clear_transient_failure_hook();
 
         assert!(
             result.is_ok(),
             "rename must retry past the transient lock, not fail immediately: {result:?}"
+        );
+        assert!(
+            failures.load(Ordering::SeqCst) >= 1,
+            "the rename never met the lock, so nothing here exercised retrying"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -405,31 +366,18 @@ mod tests {
 
         let ini_path = dir.join("desktop.ini");
         std::fs::write(&ini_path, b"placeholder").unwrap();
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .open(&ini_path)
-            .unwrap();
-        // Release the lock ONE backoff interval after the code under test stages its temp
-        // file, because the rename is the very next statement. Anchoring to the CALL instead
-        // is wrong in both directions and this test has been wrong in both: a flat 140 ms
-        // against a ~200 ms retry budget is a 1.4x margin that loses whenever a release build
-        // runs beside the suite (it blocked a release), and simply shortening the hold made
-        // the test VACUOUS - the lock expired during setup, the rename never met a locked
-        // destination, and the test passed with retrying disabled entirely.
-        let dir_for_thread = dir.clone();
-        let lock_thread = std::thread::spawn(move || {
-            wait_for_staged(&dir_for_thread, "desktop.ini");
-            std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
-            drop(held);
-        });
+        let failures = lock_until_first_retry(&ini_path);
 
         let result = set_folder_icon(src_path.to_str().unwrap());
-        lock_thread.join().unwrap();
+        crate::fsutil::clear_transient_failure_hook();
 
         assert!(
             result.is_ok(),
             "rename must retry past the transient lock, not fail immediately: {result:?}"
+        );
+        assert!(
+            failures.load(Ordering::SeqCst) >= 1,
+            "the rename never met the lock, so nothing here exercised retrying"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

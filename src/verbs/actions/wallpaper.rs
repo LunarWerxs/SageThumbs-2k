@@ -107,7 +107,7 @@ pub fn set_wallpaper(path: &str, mode: WallpaperMode) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::atomic::Ordering;
 
     /// A transient Explorer/AV lock on the destination (Windows os error 5/32) must not
     /// fail the wallpaper write outright — `prepare_wallpaper_in`'s final rename has to
@@ -134,48 +134,23 @@ mod tests {
         // way a real Explorer/thumbnail-cache lock briefly does.
         let dest = dir.join("wallpaper.png");
         std::fs::write(&dest, b"placeholder").unwrap();
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .open(&dest)
-            .unwrap();
-        // Release ONE backoff interval after the encode stages its temp file, because the
-        // rename is the very next statement. A flat 140 ms against a ~200 ms retry budget is
-        // a 1.4x margin, and the identical pattern in foldericon.rs lost that race during a
-        // release and blocked it. Anchoring to the staged file makes it deterministic without
-        // making it vacuous - shortening the hold instead would let the lock expire during
-        // setup, so the rename would never meet a locked destination at all.
-        //
-        // The staged name can't be predicted exactly any more (`unique_tmp` stamps a
-        // per-process counter shared with every other test that stages a write), so poll
-        // the directory for the SHAPE instead of a fixed path: any file starting with
-        // `wallpaper.png.` and ending `.st2ktmp`.
-        let watch_dir = dir.clone();
-        let lock_thread = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                let staged = std::fs::read_dir(&watch_dir).ok().is_some_and(|rd| {
-                    rd.filter_map(|e| e.ok()).any(|e| {
-                        e.file_name().to_str().is_some_and(|n| {
-                            n.starts_with("wallpaper.png.") && n.ends_with(".st2ktmp")
-                        })
-                    })
-                });
-                if staged || std::time::Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
-            drop(held);
-        });
+        // The lock is released by the retry loop's own hook, so it is provably held for the
+        // first attempt and provably gone before the second. The watcher thread this used to
+        // spawn released after a hard-coded interval measured from when it HAPPENED TO NOTICE
+        // the staged temp file, which under a loaded suite can land after the whole retry
+        // budget is spent - see `fsutil::on_transient_failure`.
+        let failures = crate::fsutil::lock_until_first_retry(&dest);
 
         let result = prepare_wallpaper_in(&dir, src_path.to_str().unwrap());
-        lock_thread.join().unwrap();
+        crate::fsutil::clear_transient_failure_hook();
 
         assert!(
             result.is_ok(),
             "rename must retry past the transient lock, not fail immediately: {result:?}"
+        );
+        assert!(
+            failures.load(Ordering::SeqCst) >= 1,
+            "the rename never met the lock, so nothing here exercised retrying"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

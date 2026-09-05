@@ -745,25 +745,43 @@ The same shape bit the first version of the squat test in the other direction: i
 plain write, which TRUNCATED a name a sibling test legitimately owned, turning two unrelated
 green tests red. Both symptoms have one cause - a test reaching into state it does not own.
 
-## Anchor a "survives a transient lock" test to the RENAME, not to the call
+## A "survives a transient lock" test must be released BY the retry loop, never by a clock
 
 Three tests simulate an Explorer/thumbnail-cache lock by opening the destination with
-`share_mode(0)`, releasing it from a background thread, and asserting `fsutil::rename_retrying`
-retried past it. All three released after a flat 140 ms against a retry budget of
-`RENAME_RETRIES * RENAME_BACKOFF`, about 200 ms. That is a 1.4x margin, and this machine loses
-it whenever a release build runs beside the suite: the 2.2.0 release was blocked by exactly
-that, with both folder-icon tests red in the pre-push gate and green in isolation seconds later.
+`share_mode(0)` and asserting `fsutil::rename_retrying` retried past it. Getting the release
+right took three attempts, and the first two are worth keeping because both look correct.
+
+**A flat hold (140 ms against a ~200 ms budget) blocks releases.** That is a 1.4x margin, and
+this machine loses it whenever a release build runs beside the suite: the 2.2.0 release was
+blocked by exactly that, both folder-icon tests red in the pre-push gate and green in isolation
+seconds later.
 
 **Shortening the hold is the obvious fix and it is WRONG.** The hold has to outlast the setup
 the code under test does before it reaches the rename. Cut it to one backoff and the lock has
 already expired by then, so the rename never meets a locked destination: the tests passed with
 retrying disabled entirely. That trades a flaky test for a fake one, which is strictly worse.
 
-The fix is to anchor the release to the staged temp file. Every one of these writers does
-`write(tmp)` then `rename_retrying(tmp, dest)` as the very next statement, so the lock thread
-polls for `tmp` to appear, then holds one backoff and releases. The lock is then guaranteed to
-be held on the first attempt and guaranteed to be gone well inside the budget, with no timer
-racing a timer.
+**Anchoring the release to the staged temp file is better and still not enough.** Every one of
+these writers does `write(tmp)` then `rename_retrying(tmp, dest)` as the very next statement, so
+a watcher thread polled for `tmp`, then held one backoff and released. That removes the variance
+in how long SETUP takes, but not the variance in when the WATCHER THREAD next runs, and a full
+`cargo test --workspace` (900+ tests, every core busy) is very good at not running it. On
+2026-09-05 two of the three failed that way in one run, green individually seconds later.
+
+**The rule.** When a test has to change the world *between two attempts of a retry loop*, no
+wall-clock hold can be correct: the acceptable hold is bounded below by "long enough that the
+first attempt meets it" and above by "short enough to fall inside the retry budget", and under
+load both bounds move independently of the clock the test is reading. Stop timing it and let the
+loop order it.
+
+So `fsutil::rename_retrying` carries a `#[cfg(test)]` seam, `on_transient_failure`, which runs
+after each failed transient attempt on the retrying thread. `lock_until_first_retry` opens the
+handle, releases it from inside that hook, and counts the failures; each test asserts the count
+is non-zero. The lock is now held for attempt 1 and gone before attempt 2 on any machine at any
+load, with no clock anywhere, and the assertion means the test cannot pass vacuously, because
+the hook cannot fire unless the production path really went through the retry loop and really
+met the lock. The seam compiles to nothing outside `cfg(test)`.
 
 Verified in both directions, which is the only thing that makes any of this trustworthy: with
-`RENAME_RETRIES` forced to 1 all three tests fail; with the policy restored all three pass.
+`RENAME_RETRIES` forced to 1 all three fail on "Access is denied. (os error 5)"; with the policy
+restored all three pass, individually and inside a full workspace run.
