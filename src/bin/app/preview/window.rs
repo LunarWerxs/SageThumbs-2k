@@ -1465,10 +1465,11 @@ fn is_selection_extend_key(vk: u16) -> bool {
         || v == VK_PRIOR.0 || v == VK_NEXT.0)
 }
 
-/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S / bare W / Ctrl+=/Ctrl+-/Ctrl+0 (image zoom) / Shift+nav /
-/// Ctrl+F / an already-open find bar: the "editing and search" cluster of `WM_KEYDOWN`.
-/// `Some` means the key was consumed.
-unsafe fn keydown_copy_select(
+/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S: the content-editing quartet — select all, copy,
+/// toggle source view, save the shown page/frame. Split out of `keydown_copy_select`
+/// purely to keep that dispatcher's own weight under the complexity gate; the four
+/// checks are independent early returns, same as they were inline.
+unsafe fn keydown_edit_actions(
     hwnd: HWND,
     st: &ViewerState,
     vk: u16,
@@ -1505,6 +1506,19 @@ unsafe fn keydown_copy_select(
         do_action(hwnd, Btn::SavePage);
         return Some(LRESULT(0));
     }
+    None
+}
+
+/// Bare W and the Ctrl+=/Ctrl+-/Ctrl+0 keyboard-zoom trio: the image-view-only keys.
+/// Split out of `keydown_copy_select` purely to keep that dispatcher's own weight under
+/// the complexity gate; the checks below are unchanged from their original inline form.
+unsafe fn keydown_image_zoom_keys(
+    hwnd: HWND,
+    st: &ViewerState,
+    vk: u16,
+    ctrl: bool,
+    shift: bool,
+) -> Option<LRESULT> {
     // Bare "W": toggle fit-width vs aspect-fit — the mode a portrait page (a
     // scanned document, a tall screenshot) needs in a landscape-shaped preview
     // window, where aspect-fit leaves empty margins on both sides instead of using
@@ -1534,6 +1548,13 @@ unsafe fn keydown_copy_select(
             return Some(LRESULT(0));
         }
     }
+    None
+}
+
+/// Shift+nav selection-extend, Ctrl+F, and an already-open find bar: the search/selection
+/// tail of the cluster. Split out of `keydown_copy_select` purely to keep that dispatcher's
+/// own weight under the complexity gate; unchanged from the original inline checks.
+unsafe fn keydown_find_and_extend(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) -> Option<LRESULT> {
     // Shift+<nav key> extends the selection (plain arrows stay file navigation).
     if shift && is_selection_extend_key(vk) && selection::extend(hwnd, vk, ctrl) {
         return Some(LRESULT(0));
@@ -1549,6 +1570,26 @@ unsafe fn keydown_copy_select(
         return Some(LRESULT(0));
     }
     None
+}
+
+/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S / bare W / Ctrl+=/Ctrl+-/Ctrl+0 (image zoom) / Shift+nav /
+/// Ctrl+F / an already-open find bar: the "editing and search" cluster of `WM_KEYDOWN`.
+/// `Some` means the key was consumed. A thin dispatcher over the three helpers above, tried
+/// in the same order this cluster always checked them in.
+unsafe fn keydown_copy_select(
+    hwnd: HWND,
+    st: &ViewerState,
+    vk: u16,
+    ctrl: bool,
+    shift: bool,
+) -> Option<LRESULT> {
+    if let Some(r) = keydown_edit_actions(hwnd, st, vk, ctrl, shift) {
+        return Some(r);
+    }
+    if let Some(r) = keydown_image_zoom_keys(hwnd, st, vk, ctrl, shift) {
+        return Some(r);
+    }
+    keydown_find_and_extend(hwnd, vk, ctrl, shift)
 }
 
 /// The playing-video transport keys, and Home/End over a text/Markdown pane. Both stay
