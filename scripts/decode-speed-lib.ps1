@@ -95,6 +95,23 @@ function Get-WorstDrift($before, $after) {
     return $w
 }
 
+# A suspect's CONFIRMATION re-decode can simply FAIL - Measure-Decode omits a failed decode
+# from its returned map entirely (see its own comment above), it does not record it as slow.
+# Falling back to the suspect's ORIGINAL reading when the confirmation map lacks an entry
+# (finding F37, 2026-09-05 audit) would silently confirm-or-clear a format using a number the
+# re-decode never reproduced. Returns Inconclusive = $true rather than a stale Value when
+# there is nothing fresh to confirm with.
+function Get-ConfirmedMeasurement {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][hashtable]$Confirmed
+    )
+    if ($Confirmed.ContainsKey($Name)) {
+        return [pscustomobject]@{ Value = $Confirmed[$Name]; Inconclusive = $false }
+    }
+    return [pscustomobject]@{ Value = $null; Inconclusive = $true }
+}
+
 # The corpus files worth timing: samples only, never the manifests or the contact sheet.
 function Get-SpeedSamples([string]$corpus, [string[]]$only) {
     $skipNames = @('contact.png', 'README.md')

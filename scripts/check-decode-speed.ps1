@@ -99,7 +99,10 @@
   reason AVIF went unnoticed for so long.
 
   EXIT CODES:
-    0  both gates pass (or the box moved too much to judge — guard 5).
+    0  both gates pass (or the box moved too much to judge — guard 5). A suspect whose
+       CONFIRMATION re-decode itself failed is reported separately as INCONCLUSIVE (finding
+       F37, 2026-09-05 audit) and does not decide the gate either way - see
+       Get-ConfirmedMeasurement in decode-speed-lib.ps1.
     1  a format is materially slower than Windows without a baselined reason (A), or slower
        than its own recorded time (B).
 #>
@@ -388,8 +391,19 @@ if ($confirmNames) {
 }
 
 $aBad = @()
+$aInconclusive = @()
 foreach ($sp in $aSuspect) {
-    $now = if ($again.ContainsKey($sp.row.name)) { $again[$sp.row.name] } else { $sp.row.mine }
+    # A missing confirmation reading means the re-decode FAILED, not that it matched the
+    # original number. Falling back to $sp.row.mine here used to let a suspect "confirm" or
+    # "clear" itself using the very reading that made it a suspect (finding F37) - report it
+    # as its own outcome instead, never as a decided pass/fail.
+    $confirmed = Get-ConfirmedMeasurement -Name $sp.row.name -Confirmed $again
+    if ($confirmed.Inconclusive) {
+        $aInconclusive += $sp.row
+        Write-Host ("           A {0,-8} INCONCLUSIVE - re-decode failed during confirmation" -f $sp.row.ext) -ForegroundColor Yellow
+        continue
+    }
+    $now = $confirmed.Value
     $w = Measure-Wic $sp.row.path ($Runs * 3)
     if ($null -eq $w -or $w -le 0) { continue }
     $ratio = [Math]::Round($now / $w, 2)
@@ -400,8 +414,15 @@ foreach ($sp in $aSuspect) {
     }
 }
 $bBad = @()
+$bInconclusive = @()
 foreach ($sp in $bSuspect) {
-    $now = if ($again.ContainsKey($sp.name)) { $again[$sp.name] } else { $sp.now }
+    $confirmed = Get-ConfirmedMeasurement -Name $sp.name -Confirmed $again
+    if ($confirmed.Inconclusive) {
+        $bInconclusive += $sp
+        Write-Host ("           B {0,-24} INCONCLUSIVE - re-decode failed during confirmation" -f $sp.name) -ForegroundColor Yellow
+        continue
+    }
+    $now = $confirmed.Value
     $ratio = [Math]::Round($now / $sp.was, 2)
     if ($ratio -gt $MaxSelfRatio -and ($now - $sp.was) -ge $MinDeltaMs) {
         $bBad += [pscustomobject]@{ name = $sp.name; now = $now; was = $sp.was; ratio = $ratio }
@@ -440,5 +461,15 @@ if ($speed.Count -eq 0) {
 if ($unseen) {
     Write-Host ("[gate B] {0} sample(s) not in the baseline (new formats?): {1}" -f
         $unseen.Count, (($unseen | Select-Object -First 6) -join ', ')) -ForegroundColor DarkGray
+}
+# Named separately from a PASS ("cleared on retry") and a FAIL - the re-decode never
+# reproduced a fresh number for these, so there is no timing verdict to report either way.
+if ($aInconclusive) {
+    Write-Host ("[gate A] {0} suspect(s) INCONCLUSIVE - the confirmation re-decode failed: {1}" -f
+        $aInconclusive.Count, (($aInconclusive | ForEach-Object Name) -join ', ')) -ForegroundColor Yellow
+}
+if ($bInconclusive) {
+    Write-Host ("[gate B] {0} suspect(s) INCONCLUSIVE - the confirmation re-decode failed: {1}" -f
+        $bInconclusive.Count, (($bInconclusive | ForEach-Object Name) -join ', ')) -ForegroundColor Yellow
 }
 exit $exitCode

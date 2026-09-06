@@ -9,12 +9,19 @@
   EXIT CODES (so this can fail a pipeline):
     0  no regression  — every extension in the baseline still renders, every
                         baselined SAMPLE still renders, and every sample with a
-                        known correct colour still has it.
+                        known correct colour still has it. Printed as "OK" only
+                        when every required content gate (known-colour,
+                        check-render-sanity.ps1) actually ran; a reduced-scope
+                        pass allowed via -AllowInconclusiveGates prints
+                        "NOT QUALIFIED" instead and still exits 0.
     1  REGRESSION     — at least one previously-passing extension NEWLY fails
                         (a VALID sample is still in the corpus but no longer
-                        thumbnails, CONFIRMED on a calm sequential retry), OR a
-                        previously-passing SAMPLE stopped rendering, OR a sample
-                        rendered the WRONG picture.
+                        thumbnails, CONFIRMED on a calm sequential retry), a
+                        previously-passing SAMPLE stopped rendering, a sample
+                        rendered the WRONG picture, OR (by default) a required
+                        content gate could not run at all, see
+                        -AllowInconclusiveGates (finding F37, 2026-09-05 audit:
+                        a checker that could not run must not read as a pass).
 
   THREE GATES, and the last two exist because the first one alone shipped a bug.
   "Did a non-empty PNG appear" is all the extension sweep can ask, and it asks it
@@ -75,9 +82,21 @@ param(
     # the staged copy adjacent to St2kPath, then the installed ImageMagick.
     [string]$MagickPath,
     # Persist the current pass set as the new baseline instead of diffing.
-    [switch]$UpdateBaseline
+    [switch]$UpdateBaseline,
+    # A required content gate (check-render-sanity.ps1, the known-colour check) can report
+    # INCONCLUSIVE - it did not run at all, e.g. missing python/Pillow (finding F37, 2026-09-05
+    # audit). By default that fails the run, same as a real finding, so a reduced-scope
+    # environment cannot silently reach "OK". Pass this switch to accept a deliberately
+    # reduced-scope run instead; the final summary still names every gate that did not execute.
+    [switch]$AllowInconclusiveGates
 )
 $ErrorActionPreference = 'Continue'
+
+# Shared "ran a checker, classify the outcome" primitives - see its header for why exit 2 is
+# not the same as exit 0. Dot-sourced (not called as a script) so its functions land in this
+# scope.
+. "$PSScriptRoot\regression-lib.ps1"
+$script:requiredGateVerdicts = @()
 
 $baselineFile = "$PSScriptRoot\regression-baseline.txt"
 
@@ -346,14 +365,23 @@ if (Test-Path $expectedColors) {
     }
     if ($hasPil) {
         & $py "$PSScriptRoot\compare-renders.py" --corpus $Corpus --expect $expectedColors --rendered $render
-        if ($LASTEXITCODE -ne 0) {
+        $colorVerdict = Get-GateVerdict -Name 'known-colour (compare-renders.py)' -ExitCode $LASTEXITCODE
+        $script:requiredGateVerdicts += $colorVerdict
+        if ($colorVerdict.Status -eq 'fail') {
             Write-Host "[regression] FAIL — a sample rendered the WRONG picture (see above)." -ForegroundColor Red
             $script:contentGateFailed = $true
-        } else {
+        } elseif ($colorVerdict.Status -eq 'pass') {
             Write-Host "[regression] known-colour samples all correct" -ForegroundColor Green
+        } else {
+            Write-Host ("[regression] known-colour check exited {0} without a clear pass/fail; treated as inconclusive." -f $colorVerdict.ExitCode) -ForegroundColor Yellow
         }
     } else {
+        # Missing prerequisites, not a script that ran and returned a code - this corpus HAS a
+        # known-colour manifest, so this is a required gate that could not be attempted, not an
+        # optional one. Recorded exactly like a checker returning exit 2 (finding F37): must not
+        # let the run reach a fully-qualified "OK" while it never ran.
         Write-Host "  (known-colour check: needs python + Pillow; SKIPPED)" -ForegroundColor Yellow
+        $script:requiredGateVerdicts += New-InconclusiveGate -Name 'known-colour (compare-renders.py)' -Reason 'python + Pillow not available'
     }
 }
 
@@ -364,10 +392,17 @@ if (Test-Path $expectedColors) {
 # decoder finds a real picture. Both shipped: the InDesign preview that drew a strip of page
 # over grey, and the Kodak .dcr that thumbnailed black. Both were in this corpus the whole
 # time with every gate green. Costs only the comparison; it reads the PNGs rendered above.
-& pwsh -NoProfile -File "$PSScriptRoot\check-render-sanity.ps1" -Corpus $Corpus -Rendered $render
-if ($LASTEXITCODE -eq 1) {
+$sanityVerdict = Invoke-RequiredGate -Name 'check-render-sanity.ps1' -ScriptPath "$PSScriptRoot\check-render-sanity.ps1" -ScriptArgs @('-Corpus', $Corpus, '-Rendered', $render)
+$script:requiredGateVerdicts += $sanityVerdict
+if ($sanityVerdict.Status -eq 'fail') {
     Write-Host "[regression] FAIL — a render carries a broken-picture signature (see above)." -ForegroundColor Red
     $script:contentGateFailed = $true
+} elseif ($sanityVerdict.Status -eq 'inconclusive') {
+    # Exit 2 is check-render-sanity.ps1's own documented "could not run" (missing
+    # python/Pillow, or nothing rendered yet) - not a pass. Recording it here, rather than
+    # only checking `-eq 1` as before, is the fix for finding F37: a machine missing the
+    # checker's prerequisites must not read as a clean regression run.
+    Write-Host ("[regression] INCONCLUSIVE - check-render-sanity.ps1 could not run (exit {0}); image correctness was NOT verified this run." -f $sanityVerdict.ExitCode) -ForegroundColor Yellow
 }
 
 # CONTENT guard (beyond render-only): .dcm must decode with the RIGHT colours, not
@@ -388,9 +423,31 @@ if ($LASTEXITCODE) {
     $contentGateFailed = $true
 }
 
-if ($contentGateFailed) {
-    Write-Host "[regression] FAIL — see the red lines above; every content gate ran, so that list is complete." -ForegroundColor Red
+# Whether a required gate ran at all is a SEPARATE question from whether the baseline sweep
+# above found a regression - a run can hold zero regressions and still not be qualified,
+# because a required gate never executed (finding F37). Both must be checked before this run
+# is allowed to say "OK".
+$qualification = Get-GateQualification -Verdicts $script:requiredGateVerdicts -AllowInconclusiveGates:$AllowInconclusiveGates
+
+if ($contentGateFailed -or $qualification.ShouldFail) {
+    if ($contentGateFailed) {
+        Write-Host "[regression] FAIL - see the red lines above; every content gate ran, so that list is complete." -ForegroundColor Red
+    }
+    if ($qualification.ShouldFail) {
+        Write-Host ("[regression] FAIL - {0}" -f $qualification.Summary) -ForegroundColor Red
+    }
     exit 1
 }
-Write-Host ("[regression] OK — all {0} baseline extensions still render." -f $baseline.Count) -ForegroundColor Green
+
+$missingCount = @($missingSamples).Count
+$presentBaselineCount = $baseline.Count - $missingCount
+$coverageLine = Format-BaselineCoverageLine -BaselineCount $baseline.Count -PresentCount $presentBaselineCount -MissingCount $missingCount
+if ($qualification.Qualified) {
+    Write-Host ("[regression] OK - {0}" -f $coverageLine) -ForegroundColor Green
+} else {
+    # -AllowInconclusiveGates let this run continue instead of failing, but it must never say
+    # a plain "OK" - that is exactly the claim finding F37 caught being overstated.
+    Write-Host ("[regression] NOT QUALIFIED - {0}" -f $coverageLine) -ForegroundColor Yellow
+    Write-Host ("[regression] {0}" -f $qualification.Summary) -ForegroundColor Yellow
+}
 exit 0
