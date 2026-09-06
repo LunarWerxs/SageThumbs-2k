@@ -9,7 +9,12 @@ use super::*;
 // Not in overlay.rs's own `KeyboardAndMouse` import list (nothing there needed Alt before
 // this file's ctrl/alt gate on the tool-letter shortcuts), so pulled in directly here.
 use std::cell::Cell;
-use windows::Win32::UI::Input::KeyboardAndMouse::VK_MENU;
+// VK_MENU: the ctrl/alt gate on the tool-letter shortcuts. The rest are the keyboard focus
+// model's own keys (`on_key_focus`); none of them were read by this window before it existed,
+// which is exactly why they were free to take.
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    VK_DOWN, VK_LEFT, VK_MENU, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
+};
 
 thread_local! {
     /// The Move tool's current/most-recently-finished drag: `(shape index, total dx,
@@ -218,6 +223,59 @@ unsafe fn on_lbuttondown_selected(hwnd: HWND, s: &mut Shot, sel: RECT, p: POINT)
     LRESULT(0)
 }
 
+/// Apply a colour-palette choice: pick the colour, or open the native picker for the two
+/// cells that mean "make a new custom", then close the palette.
+///
+/// This body used to live inline in `try_color_flyout_click`, which made the mouse the ONLY
+/// thing that could ever choose a colour. `actions::handle_button` is already the shared
+/// invoke seam for the toolbar; the two flyouts had no equivalent, so the keyboard invoke
+/// would have had to be a copy, and a copy is a second truth that drifts. Extracted instead,
+/// with the mouse path now routing through it, so both callers are provably the same action.
+pub(super) unsafe fn apply_swatch(hwnd: HWND, s: &mut Shot, swatch: Swatch) {
+    match swatch {
+        Swatch::Color(c) | Swatch::Custom(Some(c)) => s.cur_color = c,
+        Swatch::Custom(None) | Swatch::Picker => pick_custom_color(hwnd, s),
+    }
+    s.color_flyout = false;
+}
+
+/// Apply a text-settings flyout choice. Extracted from `try_text_flyout_click` for the same
+/// reason as [`apply_swatch`]: the keyboard invoke has to run this exact code, not a copy of
+/// it. `More` deliberately closes the whole flyout, because it hands over to the modal
+/// native Font dialog.
+pub(super) unsafe fn apply_text_item(hwnd: HWND, s: &mut Shot, item: TextItem) {
+    match item {
+        TextItem::FontField => s.font_dropdown = !s.font_dropdown,
+        TextItem::FontOption(i) => {
+            tools::set_face(&mut s.text_font, toolbar::PRESET_FONTS[i]);
+            s.font_dropdown = false;
+        }
+        TextItem::SizeDown => {
+            let sz = (-s.text_font.lfHeight - 2).max(tools::TEXT_SIZE_MIN);
+            s.text_font.lfHeight = -sz;
+        }
+        TextItem::SizeUp => {
+            let sz = (-s.text_font.lfHeight + 2).min(tools::TEXT_SIZE_MAX);
+            s.text_font.lfHeight = -sz;
+        }
+        TextItem::Bold => {
+            s.text_font.lfWeight = if s.text_font.lfWeight >= 700 {
+                400
+            } else {
+                700
+            };
+        }
+        TextItem::Underline => {
+            s.text_font.lfUnderline = u8::from(s.text_font.lfUnderline == 0);
+        }
+        TextItem::More => {
+            pick_text_font(hwnd, s);
+            s.text_flyout = false;
+            s.font_dropdown = false;
+        }
+    }
+}
+
 /// Click routing for the open colour palette flyout: `Some(_)` means the caller must
 /// return that `LRESULT` immediately (the click was consumed); `None` means the flyout
 /// wasn't open, or it just closed and the click should keep falling through untouched.
@@ -234,11 +292,7 @@ unsafe fn try_color_flyout_click(
     if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
         let (_, sw) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
         if let Some((swatch, _)) = sw.iter().find(|(_, r)| pt_in(*r, p)) {
-            match *swatch {
-                Swatch::Color(c) | Swatch::Custom(Some(c)) => s.cur_color = c,
-                Swatch::Custom(None) | Swatch::Picker => pick_custom_color(hwnd, s),
-            }
-            s.color_flyout = false;
+            apply_swatch(hwnd, s, *swatch);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return Some(LRESULT(0));
         }
@@ -268,36 +322,7 @@ unsafe fn try_text_flyout_click(
     if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
         let (_, its) = toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
         if let Some((item, _)) = its.iter().find(|(_, r)| pt_in(*r, p)) {
-            match *item {
-                TextItem::FontField => s.font_dropdown = !s.font_dropdown,
-                TextItem::FontOption(i) => {
-                    tools::set_face(&mut s.text_font, toolbar::PRESET_FONTS[i]);
-                    s.font_dropdown = false;
-                }
-                TextItem::SizeDown => {
-                    let sz = (-s.text_font.lfHeight - 2).max(tools::TEXT_SIZE_MIN);
-                    s.text_font.lfHeight = -sz;
-                }
-                TextItem::SizeUp => {
-                    let sz = (-s.text_font.lfHeight + 2).min(tools::TEXT_SIZE_MAX);
-                    s.text_font.lfHeight = -sz;
-                }
-                TextItem::Bold => {
-                    s.text_font.lfWeight = if s.text_font.lfWeight >= 700 {
-                        400
-                    } else {
-                        700
-                    };
-                }
-                TextItem::Underline => {
-                    s.text_font.lfUnderline = u8::from(s.text_font.lfUnderline == 0);
-                }
-                TextItem::More => {
-                    pick_text_font(hwnd, s);
-                    s.text_flyout = false;
-                    s.font_dropdown = false;
-                }
-            }
+            apply_text_item(hwnd, s, *item);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return Some(LRESULT(0));
         }
@@ -1025,6 +1050,301 @@ fn on_key_size_or_thickness(s: &mut Shot, vk: u16) -> bool {
     false
 }
 
+/// The keys the keyboard focus model owns. Everything except Tab is ADDITIONALLY gated on
+/// focus already existing, at the one call site in [`on_key_focus`]; this table only says
+/// "do not bother laying the toolbar out for a key that could never be a focus key".
+///
+/// Every one of these was a dead key in this window before the focus model: Tab, Space and
+/// the four arrows fell through `handle_key` to `false`, and Esc/Enter are re-checked
+/// against focus before anything is taken from them.
+fn is_focus_key(vk: u16) -> bool {
+    [
+        VK_TAB, VK_SPACE, VK_RETURN, VK_ESCAPE, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN,
+    ]
+    .iter()
+    .any(|k| k.0 == vk)
+}
+
+/// The laid-out colour-palette items, or `None` when the palette is not open. This is the
+/// same call the mouse hit-test makes, so a focus index can never address a cell the mouse
+/// could not have clicked.
+fn color_flyout_items(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+) -> Option<Vec<(Swatch, RECT)>> {
+    if !s.color_flyout {
+        return None;
+    }
+    let (_, cbr) = buttons.iter().find(|(b, _)| *b == Button::Color)?;
+    Some(toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi).1)
+}
+
+/// The laid-out text-settings items, or `None` when that flyout is not open. Note the list
+/// LENGTHENS by one row per preset font while the dropdown is expanded, which is why nothing
+/// here may assume an index survives a state change.
+fn text_flyout_items(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+) -> Option<Vec<(TextItem, RECT)>> {
+    if !s.text_flyout {
+        return None;
+    }
+    let (_, tbr) = buttons
+        .iter()
+        .find(|(b, _)| *b == Button::Tool(Tool::Text))?;
+    Some(toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi).1)
+}
+
+/// Where `btn` sits on the bar, used to hand focus back to the button that OWNS a flyout
+/// once that flyout is gone.
+fn button_index(buttons: &[(Button, RECT)], btn: Button) -> Option<usize> {
+    buttons.iter().position(|(b, _)| *b == btn)
+}
+
+/// Reconcile `s.focus` with what is actually on screen, before any focus key acts on it.
+///
+/// Focus is an index into a list other code is free to change underneath it: expanding the
+/// font dropdown lengthens the text flyout, picking any tool closes both flyouts outright,
+/// and a plain mouse click can do either while focus is sitting in one. Rather than make
+/// every one of those call sites remember a focus rule (which is how focus ends up pointing
+/// at a cell that is no longer painted), the repair runs here, on the one path that reads
+/// focus. A flyout that has closed hands focus back to the button that owns it; an index
+/// past the end of its list is pulled back to the start.
+fn repair_focus(s: &mut Shot, buttons: &[(Button, RECT)], dpi: i32) {
+    let Some(focus) = s.focus else { return };
+    let repaired = match focus {
+        FocusTarget::Toolbar(i) => match buttons.get(i) {
+            // The bar's item table is fixed, so a bad index here is defensive only.
+            Some((b, _)) if !matches!(b, Button::Sep) => Some(FocusTarget::Toolbar(i)),
+            _ => toolbar::first_focusable(buttons).map(FocusTarget::Toolbar),
+        },
+        FocusTarget::ColorFlyout(i) => match color_flyout_items(s, buttons, dpi) {
+            Some(items) if i < items.len() => Some(FocusTarget::ColorFlyout(i)),
+            Some(_) => Some(FocusTarget::ColorFlyout(0)),
+            None => button_index(buttons, Button::Color).map(FocusTarget::Toolbar),
+        },
+        FocusTarget::TextFlyout(i) => match text_flyout_items(s, buttons, dpi) {
+            Some(items) if i < items.len() => Some(FocusTarget::TextFlyout(i)),
+            Some(_) => Some(FocusTarget::TextFlyout(0)),
+            None => button_index(buttons, Button::Tool(Tool::Text)).map(FocusTarget::Toolbar),
+        },
+    };
+    s.focus = repaired;
+}
+
+/// Follow the invoke: a flyout that just OPENED takes focus.
+///
+/// This is the user-visible point of the whole change. `handle_button` opens the palette or
+/// the text settings without knowing anything about focus, and opening a panel that a
+/// keyboard user then cannot reach is precisely the hole being closed here, so the move
+/// happens once, right after any invoke, rather than being spelled out per button.
+fn focus_into_open_flyout(s: &mut Shot) {
+    if s.color_flyout && !matches!(s.focus, Some(FocusTarget::ColorFlyout(_))) {
+        s.focus = Some(FocusTarget::ColorFlyout(0));
+    } else if s.text_flyout && !matches!(s.focus, Some(FocusTarget::TextFlyout(_))) {
+        s.focus = Some(FocusTarget::TextFlyout(0));
+    }
+}
+
+/// Space or Enter on the focused item. Returns whether a repaint is needed.
+///
+/// A toolbar button goes through `actions::handle_button`, the same seam the mouse click
+/// uses, INCLUDING its "true means the window is gone" contract: when it returns true this
+/// returns immediately and touches neither `s` nor `hwnd` again, because `DestroyWindow`
+/// delivers `WM_DESTROY` synchronously and that frees the boxed `Shot` out from under us.
+unsafe fn invoke_focus(hwnd: HWND, s: &mut Shot, buttons: &[(Button, RECT)], dpi: i32) -> bool {
+    match s.focus {
+        Some(FocusTarget::Toolbar(i)) => {
+            let Some((btn, _)) = buttons.get(i).copied() else {
+                return false;
+            };
+            if handle_button(hwnd, s, btn) {
+                return false; // window destroyed, `s` and `hwnd` are both dangling now
+            }
+            focus_into_open_flyout(s);
+            true
+        }
+        Some(FocusTarget::ColorFlyout(i)) => {
+            let Some(items) = color_flyout_items(s, buttons, dpi) else {
+                return false;
+            };
+            let Some((swatch, _)) = items.get(i).copied() else {
+                return false;
+            };
+            apply_swatch(hwnd, s, swatch);
+            // Any pick closes the palette, so focus returns to the button that opened it
+            // instead of pointing into a panel that is no longer painted.
+            s.focus = button_index(buttons, Button::Color).map(FocusTarget::Toolbar);
+            true
+        }
+        Some(FocusTarget::TextFlyout(i)) => {
+            let Some(items) = text_flyout_items(s, buttons, dpi) else {
+                return false;
+            };
+            let Some((item, _)) = items.get(i).copied() else {
+                return false;
+            };
+            let was_open = s.font_dropdown;
+            apply_text_item(hwnd, s, item);
+            if !s.text_flyout {
+                // "Font... (more)" hands over to the native dialog and closes the flyout.
+                s.focus = button_index(buttons, Button::Tool(Tool::Text)).map(FocusTarget::Toolbar);
+            } else if matches!(item, TextItem::FontField) && s.font_dropdown && !was_open {
+                // The font list is the second control with no keyboard route at all before
+                // this, so opening it from the keyboard has to land INSIDE it. Index 1 is
+                // the first option row: the field itself is always index 0, and the options
+                // follow it directly (see `toolbar::text_flyout_layout`).
+                s.focus = Some(FocusTarget::TextFlyout(1));
+            } else if matches!(item, TextItem::FontOption(_)) {
+                // Picking a font collapses the list, which shortens it back to the field.
+                s.focus = Some(FocusTarget::TextFlyout(0));
+            }
+            true
+        }
+        None => false,
+    }
+}
+
+/// Move focus one place with Tab / Shift+Tab, WITHIN the current group.
+///
+/// Traversal stays inside a group on purpose. An open flyout is modal to the mouse already
+/// (a click anywhere else closes it), so letting Tab wander out of it would leave a panel
+/// open with focus somewhere behind it. The ways out are the same two the mouse has:
+/// choose something, or press Esc.
+fn step_focus_target(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    forward: bool,
+) -> Option<FocusTarget> {
+    match s.focus {
+        // The first Tab is the entry point into the whole model.
+        None => toolbar::first_focusable(buttons).map(FocusTarget::Toolbar),
+        Some(FocusTarget::Toolbar(i)) => {
+            toolbar::step_focus(buttons, i, forward).map(FocusTarget::Toolbar)
+        }
+        Some(FocusTarget::ColorFlyout(i)) => {
+            let items = color_flyout_items(s, buttons, dpi)?;
+            toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 })
+                .map(FocusTarget::ColorFlyout)
+        }
+        Some(FocusTarget::TextFlyout(i)) => {
+            let items = text_flyout_items(s, buttons, dpi)?;
+            toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 })
+                .map(FocusTarget::TextFlyout)
+        }
+    }
+}
+
+/// Move focus with an arrow key. `vertical` steps by the group's measured column count, so
+/// the palette behaves as the grid it is and the text flyout (one item per row) behaves as
+/// the stack it is. The toolbar is a single row and is handled by the caller.
+fn arrow_focus_target(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    forward: bool,
+    vertical: bool,
+) -> Option<FocusTarget> {
+    match s.focus {
+        Some(FocusTarget::Toolbar(i)) => {
+            toolbar::step_focus(buttons, i, forward).map(FocusTarget::Toolbar)
+        }
+        Some(FocusTarget::ColorFlyout(i)) => {
+            let items = color_flyout_items(s, buttons, dpi)?;
+            let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
+            let mag = if vertical {
+                toolbar::grid_cols(&rects).max(1) as isize
+            } else {
+                1
+            };
+            toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
+                .map(FocusTarget::ColorFlyout)
+        }
+        Some(FocusTarget::TextFlyout(i)) => {
+            let items = text_flyout_items(s, buttons, dpi)?;
+            let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
+            let mag = if vertical {
+                toolbar::grid_cols(&rects).max(1) as isize
+            } else {
+                1
+            };
+            toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
+                .map(FocusTarget::TextFlyout)
+        }
+        None => None,
+    }
+}
+
+/// The keyboard focus model's key handling, and the ONLY place `s.focus` is ever set from
+/// nothing.
+///
+/// `None` means "this key is not mine here" and the caller must carry on exactly as it did
+/// before this model existed. That gate is the entire compatibility contract of this change:
+/// everything below the Tab branch is reached only when focus is ALREADY set, focus starts
+/// `None`, and only Tab can set it, so a user who never presses Tab cannot observe any of
+/// this, not even a swallowed keystroke.
+unsafe fn on_key_focus(hwnd: HWND, s: &mut Shot, vk: u16, shift: bool) -> Option<bool> {
+    // Cheap gates first: this runs on EVERY key-down, so laying the toolbar out for a key
+    // that could not be a focus key, or for a user who has never pressed Tab, is pure waste.
+    if !is_focus_key(vk) || (s.focus.is_none() && vk != VK_TAB.0) {
+        return None;
+    }
+    // No bar means nothing to focus: before the first region is committed, and in the OCR
+    // launch mode, which finishes on the drag and never shows a toolbar at all.
+    let sel = s.sel?;
+    if s.ocr_mode {
+        return None;
+    }
+    let dpi = shot_dpi_for_sel(s, sel);
+    let buttons = toolbar_layout_cached(s, sel, dpi);
+    repair_focus(s, &buttons, dpi);
+
+    if vk == VK_TAB.0 {
+        // A group with nothing focusable in it leaves the key alone rather than eating it.
+        let next = step_focus_target(s, &buttons, dpi, !shift)?;
+        s.focus = Some(next);
+        return Some(true);
+    }
+
+    // Below here focus is already set, or `repair_focus` could not find anywhere to put it.
+    s.focus?;
+
+    if vk == VK_ESCAPE.0 {
+        // Esc peels focus off FIRST and stops there: the overlay stays open, and the next
+        // Esc does exactly what Esc has always done (close a flyout, cancel an in-progress
+        // edit, deselect, then close the capture). `handle_key`'s SETTLE_CLOSE_MS guard runs
+        // before this, so the launching hotkey's in-flight keystroke is still swallowed.
+        s.focus = None;
+        return Some(true);
+    }
+
+    if vk == VK_SPACE.0 || vk == VK_RETURN.0 {
+        return Some(invoke_focus(hwnd, s, &buttons, dpi));
+    }
+
+    let arrow = match vk {
+        x if x == VK_LEFT.0 => Some((false, false)),
+        x if x == VK_RIGHT.0 => Some((true, false)),
+        x if x == VK_UP.0 => Some((false, true)),
+        x if x == VK_DOWN.0 => Some((true, true)),
+        _ => None,
+    };
+    if let Some((forward, vertical)) = arrow {
+        if vertical && matches!(s.focus, Some(FocusTarget::Toolbar(_))) {
+            return None; // the bar is one row, so Up/Down stay the no-ops they were
+        }
+        if let Some(next) = arrow_focus_target(s, &buttons, dpi, forward, vertical) {
+            s.focus = Some(next);
+            return Some(true);
+        }
+        return Some(false);
+    }
+    None
+}
+
 /// Keyboard: tool shortcuts, colour/thickness, undo/redo, accept (Enter → copy),
 /// save (Ctrl+S), cancel/close (Esc). Returns true if a repaint is needed.
 pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
@@ -1050,6 +1370,21 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
         && GetTickCount64().saturating_sub(s.born) < SETTLE_CLOSE_MS
     {
         return false;
+    }
+
+    // Keyboard focus traversal: the only route a keyboard-only user has to the colour
+    // palette and the font dropdown, both of which are coordinate-hit-tested flyouts with no
+    // child controls for Windows to move focus between.
+    //
+    // Placed AFTER the settle guard so the launching hotkey's in-flight Esc/Enter is still
+    // swallowed, and skipped entirely while text is being typed, because those keys belong
+    // to the text (the `s.typing` early return below says the same thing for every other
+    // key). `on_key_focus` returns `None` for anything it does not own, and everything it
+    // does own except Tab is gated on `s.focus` already being `Some`.
+    if s.typing.is_none() {
+        if let Some(handled) = on_key_focus(hwnd, s, vk, shift) {
+            return handled;
+        }
     }
 
     if vk == VK_ESCAPE.0 {
@@ -1273,7 +1608,8 @@ mod tests {
             font_dropdown: false,
             hover_btn: None,
             tip_show: false,
-            born: 0, // 0, not "now" — tests must not trip the just-opened SETTLE_CLOSE_MS guard
+            focus: None, // matching the real overlay: nothing is focused until Tab asks
+            born: 0,     // 0, not "now": tests must not trip the just-opened SETTLE_CLOSE_MS guard
             automation: None,
             ocr_mode: false,
             win_hint: None,
@@ -1319,6 +1655,36 @@ mod tests {
         let state = test_shot();
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         hwnd
+    }
+
+    /// The keyboard focus model may only claim keys this window did nothing with, and it
+    /// must claim ALL of them, because a key it does not list can never move focus no matter
+    /// what the traversal code says. Every letter, every digit and every bracket has to stay
+    /// out: those are the tool shortcuts and the size/thickness keys, and swallowing one
+    /// would change the editor for a user who has never pressed Tab.
+    #[test]
+    fn only_the_dead_keys_belong_to_the_focus_model() {
+        for k in [
+            VK_TAB, VK_SPACE, VK_RETURN, VK_ESCAPE, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN,
+        ] {
+            assert!(is_focus_key(k.0), "a focus key is missing from the table");
+        }
+        for vk in b'A'..=b'Z' {
+            assert!(!is_focus_key(vk as u16), "letters are tool shortcuts");
+        }
+        for vk in [
+            0xDBu16,
+            0xDD,
+            VK_DELETE.0,
+            VK_SHIFT.0,
+            VK_CONTROL.0,
+            VK_F8.0,
+        ] {
+            assert!(
+                !is_focus_key(vk),
+                "this key already means something else here"
+            );
+        }
     }
 
     /// DEL (0x7F, sent by Ctrl+Backspace on some layouts) must never land in the

@@ -52,6 +52,35 @@ use input::*;
 use loupe::*;
 use paint::*;
 
+/// Where keyboard focus currently is inside the editor's chrome.
+///
+/// The editor is a single owner-drawn popup with coordinate hit-testing and no child
+/// controls at all, so there is nothing for Windows to move focus between: a keyboard-only
+/// user had no route whatsoever to the colour palette or the font dropdown, because both
+/// only ever opened from a mouse click. This is that missing route.
+///
+/// Each variant is an INDEX into the group's own laid-out item list, i.e. exactly the list
+/// the mouse hit-test already walks (`toolbar::layout`, `toolbar::color_flyout_layout`,
+/// `toolbar::text_flyout_layout`). That is deliberate rather than a second numbering of our
+/// own: a UI Automation provider (layer 2) has to hand a screen reader the same items in the
+/// same order the mouse sees, and one shared index means the two can never disagree.
+///
+/// `Toolbar` indexes the raw layout vector, separators INCLUDED. Focus never comes to rest
+/// on a `Button::Sep` (that is the whole job of `toolbar::step_focus`), but keeping the
+/// index in the unfiltered list means paint can look the rect straight up instead of
+/// maintaining a parallel focusable-only list that could drift out of step with it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum FocusTarget {
+    /// An index into `toolbar::layout`'s vector.
+    Toolbar(usize),
+    /// An index into the open colour flyout's swatch list.
+    ColorFlyout(usize),
+    /// An index into the open text flyout's item list. The list LENGTHENS when the font
+    /// dropdown expands, which is why `input::repair_focus` re-checks it on every focus key
+    /// rather than trusting an index across a state change.
+    TextFlyout(usize),
+}
+
 /// All mutable capture state, owned by the window (`GWLP_USERDATA`).
 struct Shot {
     shot: HDC, // frozen virtual-screen snapshot (memory DC)
@@ -103,6 +132,11 @@ struct Shot {
     // Toolbar hover → delayed tooltip: the hovered button + whether to show its tip.
     hover_btn: Option<Button>,
     tip_show: bool,
+    // Keyboard focus, `None` until the user presses Tab for the very first time. Every
+    // keyboard behaviour built on it is gated on it already being `Some` (see
+    // `input::on_key_focus`), so a capture in which Tab is never pressed behaves exactly as
+    // it did before the focus model existed, down to which keys are consumed.
+    focus: Option<FocusTarget>,
     // Tick (GetTickCount64) the overlay was created — used to swallow the in-flight
     // hotkey keystroke that would otherwise instantly close it (see SETTLE_CLOSE_MS).
     born: u64,
@@ -156,6 +190,33 @@ impl Shot {
         let next = pos.map(|i| (i + 1) % PALETTE.len()).unwrap_or(0);
         let (r, g, b) = PALETTE[next];
         self.cur_color = rgb(r, g, b);
+    }
+
+    /// The focused index inside the toolbar, or `None` when focus is unset or lives in a
+    /// flyout. Paint asks each group separately because each group draws its own ring, and
+    /// asking here (rather than matching on `focus` in three places in `paint.rs`) keeps the
+    /// variant-to-group mapping in one file.
+    fn focus_in_toolbar(&self) -> Option<usize> {
+        match self.focus {
+            Some(FocusTarget::Toolbar(i)) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// The focused index inside the colour flyout, or `None`.
+    fn focus_in_color_flyout(&self) -> Option<usize> {
+        match self.focus {
+            Some(FocusTarget::ColorFlyout(i)) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// The focused index inside the text flyout, or `None`.
+    fn focus_in_text_flyout(&self) -> Option<usize> {
+        match self.focus {
+            Some(FocusTarget::TextFlyout(i)) => Some(i),
+            _ => None,
+        }
     }
 }
 
@@ -581,6 +642,8 @@ unsafe fn build_shot_state(
         font_dropdown: false,
         hover_btn: None,
         tip_show: false,
+        // No focus until the user asks for it with Tab. See `Shot::focus`.
+        focus: None,
         born: if automation {
             GetTickCount64().saturating_sub(SETTLE_CLOSE_MS)
         } else {

@@ -94,11 +94,17 @@ pub(crate) fn color_flyout_layout(
 
 /// Paint the colour flyout: a dark panel of swatches, the active colour ringed, and
 /// a four-quadrant "custom" tile.
+///
+/// `focus` is the index (into `items`) of the keyboard-focused swatch, or `None`. Its ring
+/// is drawn OUTSIDE the cell, because this panel already spends the inside of a swatch on
+/// two other meanings: white means "this is the current colour" and light blue means "this
+/// cell is customizable". Focus has to be tellable from both.
 pub(crate) unsafe fn draw_color_flyout(
     hdc: HDC,
     panel: RECT,
     items: &[(Swatch, RECT)],
     current: COLORREF,
+    focus: Option<usize>,
 ) {
     let bg = CreateSolidBrush(rgb(32, 32, 32));
     FillRect(hdc, &panel, bg);
@@ -193,6 +199,11 @@ pub(crate) unsafe fn draw_color_flyout(
                 ring(hdc, r, accent);
             }
         }
+    }
+
+    // Last, so it sits on top of whatever the focused cell painted for itself.
+    if let Some((_, r)) = focus.and_then(|i| items.get(i)) {
+        super::draw_focus_ring_outside(hdc, *r);
     }
 }
 

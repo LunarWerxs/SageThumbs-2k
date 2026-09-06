@@ -151,6 +151,139 @@ pub(super) fn hit(buttons: &[(Button, RECT)], x: i32, y: i32) -> Option<Button> 
         .map(|(b, _)| *b)
 }
 
+/// The keyboard focus ring's colour, shared by the bar and both flyouts so "you are here"
+/// looks the same wherever focus currently is. Amber on purpose, because every other state
+/// on this chrome is already spoken for: the active tool owns a blue cell fill, the palette
+/// marks the current colour with a white ring and its customizable cells with a light-blue
+/// one, and hover shows a tooltip rather than changing a cell. A keyboard user has to be
+/// able to tell focus from all three at a glance.
+const FOCUS_RING: (u8, u8, u8) = (255, 190, 40);
+
+/// The first toolbar item that can take keyboard focus, or `None` if the bar has none.
+/// Separators are painted dividers, never focus stops, exactly as `hit` refuses to click one.
+pub(super) fn first_focusable(items: &[(Button, RECT)]) -> Option<usize> {
+    items.iter().position(|(b, _)| !matches!(b, Button::Sep))
+}
+
+/// The next (`forward`) or previous focusable item after `from`, wrapping around the bar.
+/// `None` only when nothing on the bar can take focus at all.
+///
+/// Written as a bounded walk of exactly `items.len()` candidates rather than the obvious
+/// `loop { i = next(i); if focusable(i) { break } }`: an empty bar, or one that somehow held
+/// nothing but separators, spins that loop forever, and this binary is built with
+/// `panic = "abort"` so there is no unwinding to rescue a user from a hung fullscreen
+/// topmost window. The last candidate a full sweep examines is `from` itself, which is what
+/// makes a single-focusable-item bar answer "stay put" instead of "nowhere to go".
+pub(super) fn step_focus(items: &[(Button, RECT)], from: usize, forward: bool) -> Option<usize> {
+    let n = items.len();
+    if n == 0 {
+        return None;
+    }
+    let from = from.min(n - 1); // a stale index must clamp, never index out of bounds
+    for step in 1..=n {
+        let i = if forward {
+            (from + step) % n
+        } else {
+            (from + n - (step % n)) % n
+        };
+        if !matches!(items[i].0, Button::Sep) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Move `from` by `step` places through a flat list of `len` items, wrapping both ways.
+/// Horizontal movement passes ±1; vertical movement in a grid passes ±the column count, so
+/// Up/Down land in the row above/below. `None` only for an empty list.
+///
+/// The wrap is modular over the FLAT list rather than column-preserving, and that is a
+/// deliberate choice about ragged grids: the colour palette is 6 wide but holds 11 cells (6
+/// presets, then 4 custom slots plus the picker), so column 5 of the top row has nothing
+/// beneath it. A column-preserving wrap gives that cell a dead Down key, which is a worse
+/// outcome for a keyboard-only user than landing one column over. Modular stepping always
+/// moves, and repeated presses still visit every cell.
+pub(super) fn wrap_step(len: usize, from: usize, step: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let n = len as isize;
+    let from = from.min(len - 1) as isize; // clamp a stale index rather than wrap it oddly
+    Some((from + step).rem_euclid(n) as usize)
+}
+
+/// How many items sit in the laid-out grid's first row, i.e. its column count.
+///
+/// MEASURED off the rects rather than assumed, because the two flyouts are different
+/// shapes: the colour palette really is a 6-wide grid, while the text flyout is a stack of
+/// rows (some of which happen to hold two half-width controls). Deriving it here means the
+/// arrow keys work in both without either layout file having to declare its shape a second
+/// time, and a layout change cannot silently desynchronise from a hard-coded constant.
+/// A single-column result makes vertical movement identical to Tab, which is the right
+/// behaviour for a stack.
+pub(super) fn grid_cols(rects: &[RECT]) -> usize {
+    let Some(first) = rects.first() else {
+        return 0;
+    };
+    rects
+        .iter()
+        .take_while(|r| r.top == first.top)
+        .count()
+        .max(1)
+}
+
+/// Paint the keyboard focus ring for one item of a flyout panel, as a 2px amber frame drawn
+/// just INSIDE `r`.
+///
+/// Inside, unlike the toolbar's ring, because a flyout's rows can abut with no gap at all
+/// (the font dropdown's option rows share edges), so an outset ring would bleed onto the
+/// neighbouring item and read as though two things were focused. Inset costs nothing: it
+/// paints over the item's own first two pixels and changes no metric.
+pub(super) unsafe fn draw_focus_ring_inside(hdc: HDC, r: RECT) {
+    let (fr, fg, fb) = FOCUS_RING;
+    let c = rgb(fr, fg, fb);
+    for inset in 0..2 {
+        let b = CreateSolidBrush(c);
+        FrameRect(
+            hdc,
+            &RECT {
+                left: r.left + inset,
+                top: r.top + inset,
+                right: r.right - inset,
+                bottom: r.bottom - inset,
+            },
+            b,
+        );
+        let _ = DeleteObject(b.into());
+    }
+}
+
+/// Paint the keyboard focus ring for one item, as a 2px amber frame drawn just OUTSIDE `r`.
+///
+/// Outside, so it can never be confused with the rings the colour palette already draws
+/// INSIDE a swatch to mean "this is the current colour" (white) or "this cell is
+/// customizable" (light blue). It lands in the gap the layout already leaves between cells
+/// (3 design px, scaled) and inside the panel's own padding (5 design px), so it overlaps
+/// nothing and, being paint only, moves no rect: `layout` is untouched.
+pub(super) unsafe fn draw_focus_ring_outside(hdc: HDC, r: RECT) {
+    let (fr, fg, fb) = FOCUS_RING;
+    let c = rgb(fr, fg, fb);
+    for out in 1..=2 {
+        let b = CreateSolidBrush(c);
+        FrameRect(
+            hdc,
+            &RECT {
+                left: r.left - out,
+                top: r.top - out,
+                right: r.right + out,
+                bottom: r.bottom + out,
+            },
+            b,
+        );
+        let _ = DeleteObject(b.into());
+    }
+}
+
 /// One-line description of a button, shown as a hover tooltip.
 pub(super) fn button_tip(btn: Button) -> &'static str {
     match btn {
@@ -233,12 +366,17 @@ pub(super) unsafe fn draw_tooltip(hdc: HDC, anchor: RECT, text: &str, vw: i32, v
 /// Paint the bar: a rounded backdrop, rounded per-group icon cells, the group
 /// dividers, then each button's icon (a Segoe Fluent glyph, an AA vector glyph, or
 /// the colour swatch).
+///
+/// `focus` is the index (into `buttons`) of the keyboard-focused cell, or `None` when focus
+/// is unset or currently inside a flyout. It only adds a ring; it changes no metric, so a
+/// capture that never takes focus paints exactly the same pixels it always did.
 pub(super) unsafe fn draw(
     hdc: HDC,
     buttons: &[(Button, RECT)],
     active: Tool,
     color: COLORREF,
     dpi: i32,
+    focus: Option<usize>,
 ) {
     let bar = bar_rect(buttons, dpi);
 
@@ -288,6 +426,26 @@ pub(super) unsafe fn draw(
                 r_cell,
             );
             gdip::drop_brush(cb);
+        }
+        // The keyboard focus ring, in the same anti-aliased pass so it follows the cells'
+        // rounded corners, and drawn AFTER every cell fill so a neighbouring fill cannot
+        // paint over it. It sits in the gap outside the cell (the bar's own padding at the
+        // ends), which keeps it clear of the blue "active tool" fill that occupies the cell
+        // itself, and it moves nothing: `layout` never sees it.
+        if let Some((_, r)) = focus.and_then(|i| buttons.get(i)) {
+            let out = dpi_scale_dpi(2, dpi);
+            let (fr, fg, fb) = FOCUS_RING;
+            let pen = gdip::pen(rgb(fr, fg, fb), 2);
+            gdip::stroke_round(
+                g,
+                pen,
+                r.left - out,
+                r.top - out,
+                (r.right - r.left) + out * 2,
+                (r.bottom - r.top) + out * 2,
+                r_cell + out,
+            );
+            gdip::drop_pen(pen);
         }
     });
 
@@ -537,6 +695,131 @@ mod tests {
             assert!(!button_tip(btn).is_empty());
         }
         assert!(button_tip(Button::Ocr).contains("Ctrl+T"));
+    }
+
+    /// Keyboard focus has to reach every button the mouse can click, in both directions,
+    /// and has to step OVER the dividers rather than parking on one: a focus ring around a
+    /// painted line, with Space doing nothing, reads as a broken toolbar.
+    #[test]
+    fn keyboard_focus_walks_the_bar_both_ways_and_never_lands_on_a_divider() {
+        let bar = layout(sel(), 1920, 1080, 96);
+        let focusable: Vec<usize> = bar
+            .iter()
+            .enumerate()
+            .filter(|(_, (b, _))| !matches!(b, Button::Sep))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            focusable.len() > 1,
+            "this bar is supposed to have real buttons"
+        );
+        assert_eq!(first_focusable(&bar), focusable.first().copied());
+
+        // From every focusable seat, one step forward lands on the next focusable seat and
+        // one step back lands on the previous one, with the dividers between them skipped
+        // and both ends wrapping.
+        for (n, &i) in focusable.iter().enumerate() {
+            let ahead = focusable[(n + 1) % focusable.len()];
+            let behind = focusable[(n + focusable.len() - 1) % focusable.len()];
+            assert_eq!(step_focus(&bar, i, true), Some(ahead));
+            assert_eq!(step_focus(&bar, i, false), Some(behind));
+        }
+
+        // A full lap must visit every focusable button exactly once and close back on the
+        // first, which is the property a user actually feels: hold Tab and you get round the
+        // whole bar without a repeat and without a dead stop.
+        let mut seen = Vec::new();
+        let mut cur = first_focusable(&bar).expect("a focusable button");
+        for _ in 0..focusable.len() {
+            seen.push(cur);
+            cur = step_focus(&bar, cur, true).expect("the walk must always find a seat");
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, focusable);
+        assert_eq!(
+            cur, focusable[0],
+            "a full lap must close back on the first button"
+        );
+    }
+
+    /// The degenerate lists. A `loop { i = next(i) }` written the obvious way spins forever
+    /// on an empty bar or one holding nothing but dividers, and this binary is built with
+    /// `panic = "abort"`, so a hang here freezes a fullscreen topmost window with no way out.
+    /// The walk must ANSWER "nowhere to go" instead.
+    #[test]
+    fn keyboard_focus_cannot_panic_or_spin_on_a_degenerate_bar() {
+        let empty: Vec<(Button, RECT)> = Vec::new();
+        assert_eq!(first_focusable(&empty), None);
+        assert_eq!(step_focus(&empty, 0, true), None);
+        assert_eq!(step_focus(&empty, 7, false), None); // a stale index must clamp, not index
+
+        let one = vec![(Button::Copy, RECT::default())];
+        assert_eq!(first_focusable(&one), Some(0));
+        assert_eq!(step_focus(&one, 0, true), Some(0));
+        assert_eq!(step_focus(&one, 0, false), Some(0));
+
+        let dividers = vec![
+            (Button::Sep, RECT::default()),
+            (Button::Sep, RECT::default()),
+        ];
+        assert_eq!(first_focusable(&dividers), None);
+        assert_eq!(step_focus(&dividers, 0, true), None);
+        assert_eq!(step_focus(&dividers, 1, false), None);
+    }
+
+    /// The flyouts have no dividers, so they step by index, but they still have to wrap at
+    /// both ends and survive a list length that changed underneath a stale index (the text
+    /// flyout grows by eight rows the moment the font dropdown expands).
+    #[test]
+    fn wrap_step_moves_through_a_flyout_list_and_wraps_at_both_ends() {
+        assert_eq!(wrap_step(11, 0, 1), Some(1));
+        assert_eq!(wrap_step(11, 10, 1), Some(0)); // off the end, back to the start
+        assert_eq!(wrap_step(11, 0, -1), Some(10)); // off the start, round to the end
+
+        // A vertical arrow in the 6 wide palette steps a whole row. The last row is ragged
+        // (11 cells in a 6 wide grid), and the wrap there is through the flat list on
+        // purpose: a column-preserving wrap would leave the top row's last cell with a Down
+        // key that does nothing at all.
+        assert_eq!(wrap_step(11, 0, 6), Some(6));
+        assert_eq!(wrap_step(11, 5, 6), Some(0));
+        assert_eq!(wrap_step(11, 6, -6), Some(0));
+
+        assert_eq!(wrap_step(0, 0, 1), None, "an empty list has nowhere to go");
+        assert_eq!(wrap_step(1, 0, 1), Some(0));
+        assert_eq!(wrap_step(1, 0, -1), Some(0));
+        assert_eq!(wrap_step(4, 99, 1), Some(0)); // stale index clamps to the last, then steps
+    }
+
+    /// The arrow keys measure the grid off the laid-out rects rather than assuming a shape,
+    /// so this pins what that measurement actually returns for the two real flyouts. Get it
+    /// wrong for the palette and Up/Down move one swatch instead of one row; get it wrong for
+    /// the text flyout and they jump over most of the settings.
+    #[test]
+    fn grid_cols_is_measured_from_the_real_flyout_layouts() {
+        let bar = layout(sel(), 1920, 1080, 96);
+        let (_, color_cell) = bar
+            .iter()
+            .find(|(b, _)| *b == Button::Color)
+            .copied()
+            .expect("the Colour button");
+        let (_, swatches) = color_flyout_layout(color_cell, 1920, 1080, &[], 96);
+        let rects: Vec<RECT> = swatches.iter().map(|(_, r)| *r).collect();
+        assert_eq!(grid_cols(&rects), 6, "the palette is a 6 wide grid");
+
+        let (_, text_cell) = bar
+            .iter()
+            .find(|(b, _)| *b == Button::Tool(Tool::Text))
+            .copied()
+            .expect("the Text button");
+        let (_, items) = text_flyout_layout(text_cell, 1920, 1080, true, 96);
+        let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
+        assert_eq!(
+            grid_cols(&rects),
+            1,
+            "the text flyout is a stack of rows, so a vertical step is one row"
+        );
+
+        assert_eq!(grid_cols(&[]), 0);
     }
 
     /// The bar has to fit on-screen even on a small display, or the rightmost actions

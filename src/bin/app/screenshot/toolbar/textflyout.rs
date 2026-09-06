@@ -177,12 +177,17 @@ unsafe fn draw_btn(hdc: HDC, r: RECT, label: &str) {
 
 /// Paint the text settings flyout for the current `font`. `dpi` scales the design
 /// pixels (identity at 96).
+///
+/// `focus` is the index (into `items`) of the keyboard-focused row, or `None`. Its ring is
+/// drawn INSIDE the row: the font dropdown's option rows abut with no gap between them, so
+/// an outset ring would spill onto the row above and below and read as three focused items.
 pub(crate) unsafe fn draw_text_flyout(
     hdc: HDC,
     panel: RECT,
     items: &[(TextItem, RECT)],
     font: &LOGFONTW,
     dpi: i32,
+    focus: Option<usize>,
 ) {
     let bg = CreateSolidBrush(rgb(32, 32, 32));
     FillRect(hdc, &panel, bg);
@@ -329,6 +334,11 @@ pub(crate) unsafe fn draw_text_flyout(
             }
             TextItem::More => draw_btn(hdc, *r, "Font\u{2026} (more)"),
         }
+    }
+
+    // After every row has painted itself, so the ring is never half-covered.
+    if let Some((_, r)) = focus.and_then(|i| items.get(i)) {
+        super::draw_focus_ring_inside(hdc, *r);
     }
 
     // The size value, centred between the − and + buttons.
