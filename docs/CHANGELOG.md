@@ -109,6 +109,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   background decode, a bookkeeping race that could permanently refuse new work after enough
   timeouts is fixed, and a file that grows while it is being read is stopped at the size limit
   instead of read in full.
+- **Uninstalling, or switching a file type off, no longer wipes out Details-pane and tooltip
+  layouts you customised yourself.** When SageThumbs 2K provides a file type's properties, it also
+  writes the lists that tell Explorer which properties to show in the hover tooltip, the Details
+  pane and tab, and the column picker. Removing it used to delete all four of those lists
+  outright, even where you or another program had since changed one. It now removes only the
+  lists it wrote itself (including the ones written by much older versions of SageThumbs 2K) and
+  leaves anything that was changed or added afterwards exactly as it was.
 
 - **One video Windows cannot decode can no longer take every thumbnail on the PC down with
   it.** A reporter found an MP4 whose H.264 stream uses the 4:4:4 colour format, which the
