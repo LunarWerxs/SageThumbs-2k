@@ -224,6 +224,10 @@ chk_screenshot = "Aktivér genvej for skærmbillede"
 lbl_shot_hotkey = "Capture-genvej:"
 chk_instant_screenshot = "Aktivér hurtig lagring af skærmbilleder"
 lbl_shot_quick_hotkey = "Genvej til hurtig lagring:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Capture-genvej"
+hotkey_name_quick = "Genvej til hurtig lagring"
 tip_screenshot = "Kører en lille baggrundshulper, så en genvej kan tage et skærmområde, som du kan tegne på, kopiere, gemme, fastgøre eller uploade. Slukket som standard — intet kører i baggrunden før du aktiverer det."
 tip_shot_hotkey = "Den globale genvejtaststroke, der starter en capture, mens hjælperen er aktiveret."
 tip_instant_screenshot = "Slår en anden genvej til, som straks gemmer hele skærmen til udklipsholder og mappen Skærmbilleder uden editor."
@@ -519,6 +523,9 @@ nudge_month = "Mind mig om det om en måned"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Nogle indstillinger kunne ikke gemmes til {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" og \"{b}\" er sat til den samme genvej. Giv en af dem en anden tastekombination, og gem igen."
 save_failed_registry = "registreringsdatabasen"
 sync_disconnected_body = "Synkronisering afbrudt. Dine indstillinger bliver på denne pc."
 sync_portable_notice = "Bærbar kopi: dette login gemmes ved siden af denne kopi af SageThumbs 2K, ikke i denne pc's konto. Alle, der bruger samme bærbare kopi, kan synkronisere dine indstillinger, så log ud, før du afleverer drevet."

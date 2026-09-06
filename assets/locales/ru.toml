@@ -222,6 +222,10 @@ chk_screenshot = "Включить горячую клавишу для скри
 lbl_shot_hotkey = "Клавиша захвата:"
 chk_instant_screenshot = "Включить быстрое сохранение скриншота"
 lbl_shot_quick_hotkey = "Клавиша быстрого сохр.:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Клавиша захвата"
+hotkey_name_quick = "Клавиша быстрого сохранения"
 tip_screenshot = "Запускает небольшой вспомогательный фоновый процесс, позволяющий горячей клавише захватить область экрана, которую можно нарисовать, скопировать, сохранить, закрепить или загрузить. По умолчанию отключено — ничего не работает в фоне, пока вы это не включите."
 tip_shot_hotkey = "Глобальное сочетание клавиш, которое начинает захват, пока вспомогательный модуль включен."
 tip_instant_screenshot = "Включить вторую горячую клавишу, которая мгновенно сохраняет весь экран в буфер обмена и папку Снимки экрана без редактора."
@@ -521,6 +525,9 @@ nudge_month = "Напомнить через месяц"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Не удалось сохранить некоторые настройки: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" и \"{b}\" назначены на одну и ту же клавишу. Назначьте одному из них другое сочетание клавиш и сохраните снова."
 save_failed_registry = "реестр"
 sync_disconnected_body = "Синхронизация отключена. Ваши настройки остаются на этом компьютере."
 sync_portable_notice = "Портативная копия: этот вход сохраняется рядом с этой копией SageThumbs 2K, а не в учётной записи этого компьютера. Любой, кто использует ту же портативную копию, может синхронизировать ваши настройки, поэтому выйдите из аккаунта перед тем, как передать накопитель."

@@ -225,6 +225,10 @@ chk_screenshot = "Abilita hotkey di cattura"
 lbl_shot_hotkey = "Hotkey di cattura:"
 chk_instant_screenshot = "Abilita salvataggio rapido di cattura"
 lbl_shot_quick_hotkey = "Hotkey di salvataggio rapido:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Hotkey di cattura"
+hotkey_name_quick = "Hotkey di salvataggio rapido"
 tip_screenshot = "Esegue un piccolo helper in background così un hotkey cattura una regione di schermo che puoi disegnare, copiare, salvare, fissare o caricare. Disattivato per impostazione predefinita — nulla si esegue in background finché non lo abiliti."
 tip_shot_hotkey = "La combinazione di tasti globale che avvia una cattura mentre l'helper è abilitato."
 tip_instant_screenshot = "Attiva un secondo hotkey che salva istantaneamente l'intero schermo negli appunti e nella cartella Catture, senza editor."
@@ -526,6 +530,9 @@ nudge_month = "Ricordamelo tra un mese"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Alcune impostazioni non sono state salvate: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" e \"{b}\" sono impostati sulla stessa scorciatoia. Assegna a uno dei due una combinazione di tasti diversa, quindi salva di nuovo."
 save_failed_registry = "il registro"
 sync_disconnected_body = "Sincronizzazione disconnessa. Le tue impostazioni restano su questo PC."
 sync_portable_notice = "Copia portatile: questo accesso viene salvato accanto a questa copia di SageThumbs 2K, non nell'account di questo PC. Chiunque usi la stessa copia portatile può sincronizzare le tue impostazioni, quindi disconnettiti prima di consegnare l'unità."

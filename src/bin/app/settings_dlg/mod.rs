@@ -1535,8 +1535,13 @@ unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 unsafe fn on_command_dialog(hwnd: HWND, id: i32, notify: u32) {
     match id {
         IDOK => {
-            apply_settings(hwnd); // Save = apply only, keep the window open
-            spawn_sync_push(hwnd); // if signed in, mirror the change to the cloud
+            // Refuse the whole Save when two enabled hotkeys share a chord, naming both,
+            // rather than writing a duplicate whose LATER-registered half will silently
+            // never fire (2026-09-05 audit, F27). See `block_on_hotkey_conflict`.
+            if !block_on_hotkey_conflict(hwnd) {
+                apply_settings(hwnd); // Save = apply only, keep the window open
+                spawn_sync_push(hwnd); // if signed in, mirror the change to the cloud
+            }
         }
         IDCANCEL => close_settings(hwnd),
         ID_SELECT_ALL | ID_CLEAR_ALL => on_select_clear_all(hwnd, id),

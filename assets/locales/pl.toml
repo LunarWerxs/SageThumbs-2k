@@ -225,6 +225,10 @@ chk_screenshot = "Włącz skrót do zrzutów ekranu"
 lbl_shot_hotkey = "Skrót przechwytywania:"
 chk_instant_screenshot = "Włącz szybkie zapisywanie zrzutów"
 lbl_shot_quick_hotkey = "Skrót szybkiego zapisu:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Skrót przechwytywania"
+hotkey_name_quick = "Skrót szybkiego zapisu"
 tip_screenshot = "Uruchamia mały pomocniczy program w tle, który pozwala skrótowi klawiszowemu przechwycić region ekranu, który możesz narysować, skopiować, zapisać, przypiąć lub przesłać. Domyślnie wyłączony — nic nie działa w tle, dopóki go nie włączysz."
 tip_shot_hotkey = "Globalne skróty klawiszowe, które uruchamiają przechwytywanie, gdy pomocnik jest włączony."
 tip_instant_screenshot = "Włączyć drugi skrót, który natychmiast zapisuje cały ekran do schowka i folderu Zrzuty ekranu bez edytora."
@@ -526,6 +530,9 @@ nudge_month = "Przypomnij za miesiąc"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Niektórych ustawień nie udało się zapisać: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" i \"{b}\" mają ustawiony ten sam skrót. Przypisz jednemu z nich inną kombinację klawiszy i zapisz ponownie."
 save_failed_registry = "rejestr"
 sync_disconnected_body = "Synchronizacja odłączona. Twoje ustawienia pozostają na tym komputerze."
 sync_portable_notice = "Wersja przenośna: to logowanie jest zapisywane obok tej kopii SageThumbs 2K, a nie na koncie tego komputera. Każdy, kto używa tej samej wersji przenośnej, może zsynchronizować Twoje ustawienia, więc wyloguj się przed przekazaniem dysku."

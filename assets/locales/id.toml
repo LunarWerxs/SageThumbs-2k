@@ -225,6 +225,10 @@ chk_screenshot = "Aktifkan shortcut tangkapan layar"
 lbl_shot_hotkey = "Shortcut tangkap:"
 chk_instant_screenshot = "Aktifkan tangkapan layar simpan cepat"
 lbl_shot_quick_hotkey = "Shortcut simpan cepat:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Shortcut tangkap"
+hotkey_name_quick = "Shortcut simpan cepat"
 tip_screenshot = "Jalankan pembantu latar belakang kecil sehingga shortcut dapat menangkap wilayah layar yang dapat Anda gambar, salin, simpan, sematkan, atau unggah. Dimatikan secara default — tidak ada yang berjalan di latar belakang hingga Anda mengaktifkannya."
 tip_shot_hotkey = "Kombinasi tombol global yang memulai tangkapan saat pembantu diaktifkan."
 tip_instant_screenshot = "Aktifkan shortcut kedua yang langsung menyimpan seluruh layar ke clipboard dan folder Tangkapan Layar, tanpa editor."
@@ -526,6 +530,9 @@ nudge_month = "Ingatkan bulan depan"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Beberapa pengaturan tidak dapat disimpan ke {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" dan \"{b}\" diatur ke pintasan yang sama. Beri salah satunya kombinasi tombol yang berbeda, lalu simpan lagi."
 save_failed_registry = "registry"
 sync_disconnected_body = "Sinkronisasi terputus. Pengaturan Anda tetap ada di PC ini."
 sync_portable_notice = "Salinan portabel: sesi masuk ini disimpan di samping salinan SageThumbs 2K ini, bukan di akun PC ini. Siapa pun yang menggunakan salinan portabel yang sama dapat menyinkronkan pengaturan Anda, jadi keluarlah sebelum menyerahkan drive-nya."

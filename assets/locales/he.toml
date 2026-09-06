@@ -226,6 +226,10 @@ chk_screenshot = "אפשר קיצור דרך לצילום"
 lbl_shot_hotkey = "קיצור צילום:"
 chk_instant_screenshot = "אפשר שמירה מהירה של צילום"
 lbl_shot_quick_hotkey = "קיצור השמירה המהירה:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "קיצור צילום"
+hotkey_name_quick = "קיצור השמירה המהירה"
 tip_screenshot = "הפעלת תוכנית עזר קטנה בתחום כדי שקיצור דרך יצלם אזור מסך שתוכל לצייר עליו, להעתיק, לשמור, להצמיד או להעלות. כבוי כברירת מחדל — שום דבר לא רץ בתחום עד שתפעיל את זה."
 tip_shot_hotkey = "שילוב המקשים הגלובלי שמתחיל צילום בזמן שתוכנית העזר מופעלת."
 tip_instant_screenshot = "הפעלת קיצור דרך שני שמשמיר את כל המסך מיד ללוח ולתיקיית צילומי המסך, ללא עורך."
@@ -525,6 +529,9 @@ nudge_month = "להזכיר לי בעוד חודש"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "חלק מההגדרות לא נשמרו ב-{path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" ו-\"{b}\" מוגדרים לאותו קיצור. הגדירו צירוף מקשים שונה לאחד מהם ושמרו שוב."
 save_failed_registry = "הרישום"
 sync_disconnected_body = "הסנכרון נותק. ההגדרות שלכם נשארות במחשב הזה."
 sync_portable_notice = "עותק נייד: ההתחברות הזו נשמרת ליד העותק הזה של SageThumbs 2K, לא בחשבון של המחשב הזה. כל מי שמשתמש באותו עותק נייד יכול לסנכרן את ההגדרות שלכם, אז התנתקו לפני שאתם מוסרים את הכונן."

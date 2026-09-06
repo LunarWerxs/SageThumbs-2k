@@ -226,6 +226,10 @@ chk_screenshot = "تمكين مفتاح الاختصار لأخذ اللقطة"
 lbl_shot_hotkey = "مفتاح الاختصار للالتقاط:"
 chk_instant_screenshot = "تمكين الحفظ السريع للقطة"
 lbl_shot_quick_hotkey = "مفتاح الحفظ السريع:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "مفتاح الاختصار للالتقاط"
+hotkey_name_quick = "مفتاح الحفظ السريع"
 tip_screenshot = "تشغيل برنامج مساعد صغير في الخلفية حتى يمكن لمفتاح الاختصار التقاط منطقة الشاشة التي يمكنك رسمها أو نسخها أو حفظها أو تثبيتها أو رفعها. معطل بشكل افتراضي — لا شيء يعمل في الخلفية حتى تمكنه."
 tip_shot_hotkey = "مفتاح الاختصار العام الذي يبدأ الالتقاط أثناء تمكين البرنامج المساعد."
 tip_instant_screenshot = "تشغيل مفتاح اختصار ثانٍ يحفظ فوريًا كل الشاشة في الحافظة ومجلد لقطات الشاشة، بدون محرر."
@@ -521,6 +525,9 @@ nudge_month = "ذكّرني بعد شهر"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "تعذّر حفظ بعض الإعدادات في {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" و\"{b}\" معينان لنفس الاختصار. غيّر تركيبة المفاتيح لأحدهما ثم احفظ مرة أخرى."
 save_failed_registry = "السجل"
 sync_disconnected_body = "انقطعت المزامنة. تبقى إعداداتك على هذا الكمبيوتر."
 sync_portable_notice = "نسخة محمولة: يُخزَّن تسجيل الدخول هذا بجانب هذه النسخة من SageThumbs 2K، وليس في حساب هذا الكمبيوتر. يمكن لأي شخص يستخدم النسخة المحمولة نفسها مزامنة إعداداتك، لذا سجّل الخروج قبل تسليم القرص."

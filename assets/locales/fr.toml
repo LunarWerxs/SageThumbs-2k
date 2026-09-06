@@ -226,6 +226,10 @@ chk_screenshot = "Activer le raccourci de capture d'écran"
 lbl_shot_hotkey = "Raccourci de capture :"
 chk_instant_screenshot = "Activer l'enregistrement rapide de capture"
 lbl_shot_quick_hotkey = "Raccourci d'enregistrement rapide :"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Raccourci de capture"
+hotkey_name_quick = "Raccourci d'enregistrement rapide"
 tip_screenshot = "Exécute un petit assistant en arrière-plan afin qu'un raccourci capture une région d'écran que vous pouvez dessiner, copier, enregistrer, épingler ou importer. Désactivé par défaut — rien ne s'exécute en arrière-plan jusqu'à ce que vous l'activiez."
 tip_shot_hotkey = "La combinaison de touches globale qui lance une capture tandis que l'assistant est activé."
 tip_instant_screenshot = "Active un deuxième raccourci qui enregistre instantanément l'écran entier dans le presse-papiers et le dossier Captures, sans éditeur."
@@ -523,6 +527,9 @@ nudge_month = "Me le rappeler dans un mois"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Certains réglages n'ont pas pu être enregistrés dans {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" et \"{b}\" utilisent le même raccourci. Attribuez une combinaison de touches différente à l'un des deux, puis enregistrez de nouveau."
 save_failed_registry = "le Registre"
 sync_disconnected_body = "Synchronisation déconnectée. Vos réglages restent sur ce PC."
 sync_portable_notice = "Copie portable : cette connexion est enregistrée à côté de cette copie de SageThumbs 2K, et non dans le compte de ce PC. Toute personne utilisant la même copie portable peut synchroniser vos réglages ; déconnectez-vous donc avant de remettre le disque."

@@ -220,6 +220,10 @@ chk_screenshot = "I-enable ang screenshot shortcut"
 lbl_shot_hotkey = "Shortcut ng kumuha:"
 chk_instant_screenshot = "I-enable ang mabilis na pag-save ng screenshot"
 lbl_shot_quick_hotkey = "Shortcut ng mabilis na pag-save:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Shortcut ng kumuha"
+hotkey_name_quick = "Shortcut ng mabilis na pag-save"
 tip_screenshot = "Magpatakbo ng maliit na tulong sa background upang ang shortcut ay makakuha ng rehiyon ng screen na maaari mong iguhit, kopyahin, i-save, i-pin, o i-upload. Off by default — walang tumatakbo sa background hanggang sa i-enable mo ito."
 tip_shot_hotkey = "Ang pandaigdigang kombinasyon ng susi na nagsisimula ng pagkuha habang ang tulong ay naka-enable."
 tip_instant_screenshot = "Gawin ang pangalawang shortcut na agad na nagsasave ng buong screen sa clipboard at screenshots folder, nang walang editor."
@@ -517,6 +521,9 @@ nudge_month = "Ipaalala sa isang buwan"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Hindi ma-save ang ilang setting sa {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "Parehong naka-set ang \"{a}\" at \"{b}\" sa iisang shortcut. Bigyan ng ibang key combination ang isa sa mga ito, pagkatapos i-save muli."
 save_failed_registry = "registry"
 sync_disconnected_body = "Naputol ang pag-sync. Nananatili sa PC na ito ang mga setting mo."
 sync_portable_notice = "Portable na kopya: naka-save ang sign-in na ito katabi ng kopyang ito ng SageThumbs 2K, hindi sa account ng PC na ito. Kahit sino na gumamit ng parehong portable na kopya ay pwedeng mag-sync ng mga setting mo, kaya mag-sign out ka bago ibigay ang drive."

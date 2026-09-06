@@ -220,6 +220,10 @@ chk_screenshot = "Povoliť klávesovú skratku pre snímky"
 lbl_shot_hotkey = "Klávesa zachytenia:"
 chk_instant_screenshot = "Povoliť rýchle ukladanie snímkov"
 lbl_shot_quick_hotkey = "Klávesa rýchleho ukladania:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Klávesa zachytenia"
+hotkey_name_quick = "Klávesa rýchleho ukladania"
 tip_screenshot = "Spustí malý pomocný program na pozadí, ktorý umožňuje klávesovej skratke zachytiť oblasť obrazovky, ktorú môžete nakresliť, kopírovať, uložiť, pripnúť alebo nahrať. Štandardne je vypnuté — nič nebeží na pozadí, dokým to nepovolíte."
 tip_shot_hotkey = "Globálna klávesová skratka, ktorá spustí zachytenie, keď je pomocný program povolený."
 tip_instant_screenshot = "Zapnúť druhú skratku, ktorá okamžite uloží celú obrazovku do schránky a do priečinka Snímky bez editora."
@@ -519,6 +523,9 @@ nudge_month = "Pripomenúť o mesiac"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Niektoré nastavenia sa nepodarilo uložiť: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" a \"{b}\" majú nastavenú rovnakú klávesovú skratku. Nastavte jednej z nich inú kombináciu klávesov a uložte znova."
 save_failed_registry = "register"
 sync_disconnected_body = "Synchronizácia odpojená. Vaše nastavenia zostávajú v tomto počítači."
 sync_portable_notice = "Prenosná kópia: toto prihlásenie sa ukladá vedľa tejto kópie SageThumbs 2K, nie v účte tohto počítača. Ktokoľvek, kto použije rovnakú prenosnú kópiu, môže synchronizovať vaše nastavenia, preto sa pred odovzdaním disku odhláste."

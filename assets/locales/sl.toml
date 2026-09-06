@@ -222,6 +222,10 @@ chk_screenshot = "Omogoči bližnjico za posnetke"
 lbl_shot_hotkey = "Bližnjica zajema:"
 chk_instant_screenshot = "Omogoči hitro shranjevanje posnetkov"
 lbl_shot_quick_hotkey = "Bližnjica hitrega shranjevanja:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Bližnjica zajema"
+hotkey_name_quick = "Bližnjica hitrega shranjevanja"
 tip_screenshot = "Zažene mali pomožni program v ozadju, ki omogoči bližnjici, da zajame področje zaslona, ki ga lahko narišete, kopirate, shranite, pripnete ali naložite. Privzeto je izklopljeno — nič ne teče v ozadju, dokler ga ne omogočite."
 tip_shot_hotkey = "Globalna kombinacija tipk, ki zažene zajemanje, ko je pomožni program omogočen."
 tip_instant_screenshot = "Vključi drugo bližnjico, ki takoj shrani celoten zaslon v odložišče in mapo Posnetki brez urejevalnika."
@@ -521,6 +525,9 @@ nudge_month = "Opomni me čez mesec dni"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Nekaterih nastavitev ni bilo mogoče shraniti: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" in \"{b}\" imata nastavljeno enako bližnjico. Eni od njiju določite drugo kombinacijo tipk in znova shranite."
 save_failed_registry = "register"
 sync_disconnected_body = "Sinhronizacija je prekinjena. Vaše nastavitve ostanejo na tem računalniku."
 sync_portable_notice = "Prenosna kopija: ta prijava je shranjena poleg te kopije SageThumbs 2K, ne v računu tega računalnika. Vsak, ki uporablja isto prenosno kopijo, lahko sinhronizira vaše nastavitve, zato se pred predajo pogona odjavite."

@@ -109,6 +109,10 @@ chk_screenshot = "Enable screenshot hotkey"
 lbl_shot_hotkey = "Capture hotkey:"
 chk_instant_screenshot = "Enable quick-save screenshot"
 lbl_shot_quick_hotkey = "Quick-save hotkey:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Capture hotkey"
+hotkey_name_quick = "Quick-save hotkey"
 
 # Settings control tooltips (hover hints — every control gets one)
 tip_enable_thumbs = "Show thumbnails in Explorer for the file types ticked on the right."
@@ -586,6 +590,9 @@ nudge_month = "Remind me in a month"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Some settings could not be saved to {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" and \"{b}\" are set to the same hotkey. Give one of them a different key combination, then save again."
 save_failed_registry = "the registry"
 sync_disconnected_body = "Sync disconnected. Your settings stay on this PC."
 sync_portable_notice = "Portable copy: this sign-in is stored next to this copy of SageThumbs 2K, not in this PC's account. Anyone using the same portable copy can sync your settings, so sign out before handing off the drive."

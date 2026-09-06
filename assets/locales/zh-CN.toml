@@ -227,6 +227,10 @@ chk_screenshot = "启用截图热键"
 lbl_shot_hotkey = "截图热键："
 chk_instant_screenshot = "启用快速保存截图"
 lbl_shot_quick_hotkey = "快速保存热键："
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "截图热键"
+hotkey_name_quick = "快速保存热键"
 tip_screenshot = "运行一个小的后台助手，这样按快捷键就可以截取屏幕区域供你绘制、复制、保存、固定或上传。默认关闭 — 启用后才会在后台运行。"
 tip_shot_hotkey = "在助手启用时开始截取的全局快捷键。"
 tip_instant_screenshot = "打开第二个快捷键，立即将整个屏幕保存到剪贴板和截图文件夹，无需编辑器。"
@@ -524,6 +528,9 @@ nudge_month = "一个月后提醒我"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "部分设置未能保存到{path}。"
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" 和 \"{b}\" 设置了相同的热键。请为其中一个指定不同的按键组合，然后重新保存。"
 save_failed_registry = "注册表"
 sync_disconnected_body = "同步已断开。你的设置仍保留在这台电脑上。"
 sync_portable_notice = "便携版：此登录信息保存在这份 SageThumbs 2K 副本旁边，而不是这台电脑的账户中。任何使用同一便携副本的人都可以同步你的设置，因此在移交这个驱动器之前请先退出登录。"

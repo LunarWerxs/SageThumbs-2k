@@ -225,6 +225,10 @@ chk_screenshot = "스크린샷 단축키 사용"
 lbl_shot_hotkey = "캡처 단축키:"
 chk_instant_screenshot = "빠른 저장 스크린샷 사용"
 lbl_shot_quick_hotkey = "빠른 저장 단축키:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "캡처 단축키"
+hotkey_name_quick = "빠른 저장 단축키"
 tip_screenshot = "작은 백그라운드 헬퍼를 실행하여 단축키로 화면 영역을 캡처한 후 그리거나, 복사하거나, 저장하거나, 고정하거나, 업로드할 수 있습니다. 기본값은 끄기 — 활성화할 때까지 백그라운드에서는 아무것도 실행되지 않습니다."
 tip_shot_hotkey = "헬퍼가 활성화된 동안 캡처를 시작하는 전역 키 조합입니다."
 tip_instant_screenshot = "두 번째 단축키를 켜면 전체 화면을 클립보드와 스크린샷 폴더에 즉시 저장할 수 있으며, 편집기는 필요하지 않습니다."
@@ -526,6 +530,9 @@ nudge_month = "한 달 뒤에 다시 알림"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "일부 설정을 {path}에 저장하지 못했습니다."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\"와(과) \"{b}\"에 동일한 단축키가 설정되어 있습니다. 둘 중 하나에 다른 키 조합을 지정한 뒤 다시 저장하세요."
 save_failed_registry = "레지스트리"
 sync_disconnected_body = "동기화가 연결 해제되었습니다. 설정은 이 PC에 남아 있습니다."
 sync_portable_notice = "휴대용 사본: 이 로그인은 이 PC의 계정이 아니라 SageThumbs 2K의 이 사본 옆에 저장됩니다. 같은 휴대용 사본을 사용하는 누구나 설정을 동기화할 수 있으므로 드라이브를 넘기기 전에 로그아웃하세요."

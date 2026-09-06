@@ -223,6 +223,10 @@ chk_screenshot = "Hidupkan pintasan tangkap skrin"
 lbl_shot_hotkey = "Pintasan tangkap:"
 chk_instant_screenshot = "Hidupkan simpan pantas tangkap skrin"
 lbl_shot_quick_hotkey = "Pintasan simpan pantas:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Pintasan tangkap"
+hotkey_name_quick = "Pintasan simpan pantas"
 tip_screenshot = "Jalankan pembantu latar belakang kecil supaya pintasan boleh tangkap kawasan skrin yang boleh anda lukis, salin, simpan, pasak, atau muat naik. Matikan secara default — tiada berjalan di latar belakang sehingga anda menghidupkannya."
 tip_shot_hotkey = "Gabungan kunci sejagat yang memulai tangkapan ketika pembantu dihidupkan."
 tip_instant_screenshot = "Hidupkan pintasan kedua yang langsung simpan seluruh skrin ke papan keratan dan folder Tangkap Skrin, tanpa editor."
@@ -524,6 +528,9 @@ nudge_month = "Ingatkan saya sebulan lagi"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Sesetengah tetapan tidak dapat disimpan ke {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" dan \"{b}\" ditetapkan kepada pintasan yang sama. Berikan salah satu daripadanya kombinasi kekunci yang berbeza, kemudian simpan semula."
 save_failed_registry = "registri"
 sync_disconnected_body = "Penyegerakan terputus. Tetapan anda kekal pada PC ini."
 sync_portable_notice = "Salinan mudah alih: log masuk ini disimpan di sebelah salinan SageThumbs 2K ini, bukan dalam akaun PC ini. Sesiapa yang menggunakan salinan mudah alih yang sama boleh menyegerakkan tetapan anda, jadi log keluar sebelum menyerahkan pemacu itu."

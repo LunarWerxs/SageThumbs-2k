@@ -222,6 +222,10 @@ chk_screenshot = "เปิดใช้งานแป้นพิมพ์ล�
 lbl_shot_hotkey = "แป้นพิมพ์ลัดจับภาพ:"
 chk_instant_screenshot = "เปิดใช้งานบันทึกอย่างรวดเร็วภาพหน้าจอ"
 lbl_shot_quick_hotkey = "แป้นพิมพ์ลัดบันทึกอย่างรวดเร็ว:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "แป้นพิมพ์ลัดจับภาพ"
+hotkey_name_quick = "แป้นพิมพ์ลัดบันทึกอย่างรวดเร็ว"
 tip_screenshot = "เรียกใช้งานโปรแกรมช่วยเล็ก ๆ ในพื้นหลังเพื่อให้คุณสามารถใช้แป้นพิมพ์ลัดในการจับภาพขอบเขตหน้าจอ ซึ่งคุณสามารถวาด คัดลอก บันทึก ปักหมุด หรืออัปโหลด ปิดใช้งานตามค่าเริ่มต้น — ไม่มีอะไรทำงานในพื้นหลังจนกว่าคุณจะเปิดใช้งาน"
 tip_shot_hotkey = "แป้นพิมพ์ลัดส่วนกลางที่เริ่มจับภาพขณะที่เปิดใช้งานตัวช่วย"
 tip_instant_screenshot = "เปิดใช้งานแป้นพิมพ์ลัดที่สองซึ่งบันทึกหน้าจอทั้งหมดลงในคลิปบอร์ดและโฟลเดอร์ภาพหน้าจออย่างทันทีโดยไม่ต้องมีตัวแก้ไข"
@@ -521,6 +525,9 @@ nudge_month = "เตือนอีกครั้งในอีกหนึ�
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "บันทึกการตั้งค่าบางส่วนไปยัง {path} ไม่ได้"
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" และ \"{b}\" ถูกตั้งค่าให้ใช้แป้นพิมพ์ลัดเดียวกัน โปรดกำหนดชุดปุ่มอื่นให้กับตัวใดตัวหนึ่ง แล้วบันทึกอีกครั้ง"
 save_failed_registry = "รีจิสทรี"
 sync_disconnected_body = "การซิงค์ถูกตัดการเชื่อมต่อแล้ว การตั้งค่าของคุณจะยังอยู่บนเครื่องนี้"
 sync_portable_notice = "สำเนาแบบพกพา: การลงชื่อเข้าใช้นี้จะถูกเก็บไว้ข้างสำเนา SageThumbs 2K นี้ ไม่ใช่ในบัญชีของเครื่องนี้ ใครก็ตามที่ใช้สำเนาแบบพกพาเดียวกันสามารถซิงค์การตั้งค่าของคุณได้ ดังนั้นให้ลงชื่อออกก่อนส่งมอบไดรฟ์"

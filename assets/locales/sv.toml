@@ -222,6 +222,10 @@ chk_screenshot = "Aktivera skärmbildsgenväg"
 lbl_shot_hotkey = "Skärmfångstgenväg:"
 chk_instant_screenshot = "Aktivera snabb sparning av skärmbilder"
 lbl_shot_quick_hotkey = "Genväg för snabb sparning:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Skärmfångstgenväg"
+hotkey_name_quick = "Genväg för snabb sparning"
 tip_screenshot = "Kör en liten bakgrundshjälp så att en genväg fångar en skärmregion som du kan rita på, kopiera, spara, fästa eller ladda upp. Av som standard — ingenting körs i bakgrunden förrän du aktiverar det."
 tip_shot_hotkey = "Den globala tangentkombo som startar en skärmfångst medan hjälpen är aktiverad."
 tip_instant_screenshot = "Aktiverar en andra genväg som omedelbar sparar hela skärmen till Urklipp och Skärmbilder-mappen, utan editor."
@@ -521,6 +525,9 @@ nudge_month = "Påminn mig om en månad"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Vissa inställningar kunde inte sparas till {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" och \"{b}\" är inställda på samma snabbtangent. Ge en av dem en annan tangentkombination och spara igen."
 save_failed_registry = "registret"
 sync_disconnected_body = "Synkroniseringen är frånkopplad. Dina inställningar stannar på den här datorn."
 sync_portable_notice = "Portabel kopia: den här inloggningen sparas bredvid den här kopian av SageThumbs 2K, inte i kontot för den här datorn. Alla som använder samma portabla kopia kan synkronisera dina inställningar, så logga ut innan du lämnar ifrån dig enheten."

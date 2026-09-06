@@ -222,6 +222,10 @@ chk_screenshot = "فعال کردن میانبر عکس‌برداری"
 lbl_shot_hotkey = "میانبر عکس‌برداری:"
 chk_instant_screenshot = "فعال کردن ذخیره فوری"
 lbl_shot_quick_hotkey = "میانبر ذخیره فوری:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "میانبر عکس‌برداری"
+hotkey_name_quick = "میانبر ذخیره فوری"
 tip_screenshot = "اجرای یک برنامهٔ کمکی کوچک در پس‌زمینه تا میانبر یک ناحیهٔ صفحه را عکس‌برداری کند که می‌تواند روی آن رسم کنید، کپی کنید، ذخیره کنید، سنجاق کنید یا بارگذاری کنید. به‌طور پیش‌فرض خاموش است — تا زمان فعال کردن، هیچ‌چیزی در پس‌زمینه اجرا نمی‌شود."
 tip_shot_hotkey = "ترکیب کلید جهانی که عکس‌برداری را آغاز می‌کند در حالی که برنامهٔ کمکی فعال است."
 tip_instant_screenshot = "فعال کردن میانبر دوم که فوری تمام صفحه را در کلیپ‌بورد و پوشهٔ عکس‌برداری ذخیره می‌کند، بدون ویرایشگر."
@@ -517,6 +521,9 @@ nudge_month = "یک ماه دیگر یادآوری کن"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "برخی تنظیمات در {path} ذخیره نشدند."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" و \"{b}\" روی یک میانبر یکسان تنظیم شده‌اند. برای یکی از آن‌ها ترکیب کلید دیگری انتخاب کنید و دوباره ذخیره کنید."
 save_failed_registry = "رجیستری"
 sync_disconnected_body = "همگام‌سازی قطع شد. تنظیمات شما روی همین رایانه باقی می‌مانند."
 sync_portable_notice = "نسخهٔ پرتابل: این ورود در کنار همین نسخه از SageThumbs 2K ذخیره می‌شود، نه در حساب این رایانه. هر کسی که از همین نسخهٔ پرتابل استفاده کند می‌تواند تنظیمات شما را همگام‌سازی کند، پس پیش از تحویل درایو از حساب خارج شوید."
