@@ -697,27 +697,93 @@ fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport
         .filter(|p| is_image(p.as_str()))
         .cloned()
         .collect();
-    let target = size.target_bytes();
-    let outs: Vec<PathBuf> =
-        crate::parallel::map(&imgs, |_, p| match compress_to_size(p, target) {
-            Ok(out) => Some(out),
-            Err(e) => {
-                crate::safety::log(&format!("Compress to size failed for {p}: {e:?}"));
-                None
-            }
-        })
-        .into_iter()
-        .flatten()
-        .collect();
+    compress_batch_report(&imgs, size.target_bytes())
+}
+
+/// The byte-target half of [`handle_compress_to_size`], split out so the shortfall
+/// aggregation below is testable against a REAL unmeetable target (no `CompressSize`
+/// preset is small enough to trigger one - the smallest is 1 MB).
+///
+/// Per audit F32 (2026-09-05): `compress_to_size` refuses an unmeetable target and names
+/// the smallest size it could reach ([`compress_to_size`]'s doc comment); the CLI/MCP
+/// `compress` tool surface that text verbatim, but this verb used to just log the error
+/// and report a generic "couldn't compress some images" - a right-click on an unmeetable
+/// target told the user nothing they could act on, unlike its CLI/MCP siblings. It now
+/// names the same numbers, in the same units (bytes), that `st2k compress` would.
+fn compress_batch_report(imgs: &[String], target: u64) -> ActionReport {
+    let results = crate::parallel::map(imgs, |_, p| compress_one_to_size(p, target));
     let attempted = imgs.len();
+    let mut outs = Vec::with_capacity(results.len());
+    // The largest of the per-image "smallest reachable" numbers among the failures: asking
+    // for at least that many bytes would let every failing image in this batch succeed,
+    // which generalizes the CLI's single-file "ask for at least N bytes" advice.
+    let mut worst_achievable: Option<u64> = None;
+    for r in results {
+        match r {
+            Ok(p) => outs.push(p),
+            Err(achievable) => {
+                worst_achievable = Some(match worst_achievable {
+                    Some(w) => w.max(achievable),
+                    None => achievable,
+                });
+            }
+        }
+    }
     let done = outs.len();
     let first = outs.into_iter().next();
     let mut rep = ActionReport::applied(attempted, done);
-    if done < attempted {
-        rep.note = Some("couldn't compress some images".into());
+    if let Some(achievable) = worst_achievable {
+        rep.note = Some(compress_shortfall_note(
+            target,
+            achievable,
+            attempted - done,
+        ));
     }
     rep.output = first;
     rep
+}
+
+/// One image's compress attempt for [`compress_batch_report`]'s batch map. `Ok` carries the
+/// written "(compressed)" sibling's path; `Err` carries the smallest byte count THIS image
+/// could reach, parsed out of [`compress_to_size`]'s error text via
+/// [`parse_smallest_achievable`] and falling back to `target` when the text doesn't match
+/// the expected "cannot fit" shape (e.g. a decode failure instead of an unmeetable target) -
+/// so the batch still reports a real number rather than losing the failure silently.
+fn compress_one_to_size(path: &str, target: u64) -> std::result::Result<PathBuf, u64> {
+    compress_to_size(path, target).map_err(|e| {
+        let msg = e.to_string();
+        crate::safety::log(&format!("Compress to size failed for {path}: {msg}"));
+        parse_smallest_achievable(&msg).unwrap_or(target)
+    })
+}
+
+/// Pull the "the smallest JPEG this can make is N bytes" number out of
+/// [`compress_to_size`]'s unmeetable-target error text (see its doc comment for the exact
+/// wording). `None` for any other failure (decode error, write failure, ...) or if the text
+/// doesn't match - callers fall back to a sane default rather than treating `None` as fatal.
+/// Pure and panic-free: worst case on malformed input is `None`.
+fn parse_smallest_achievable(message: &str) -> Option<u64> {
+    const MARKER: &str = "the smallest JPEG this can make is ";
+    let after = message.split_once(MARKER)?.1;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+/// The Explorer verb's note when one or more images in the batch couldn't be compressed
+/// under `target_bytes` - same wording and units (bytes) as the CLI/MCP `compress` error
+/// text, so a right-click failure reads the same story as `st2k compress`'s: the target
+/// that couldn't be met, and the smallest size that WAS reachable. See
+/// [`compress_batch_report`] for how `achievable_bytes` is picked across a multi-file batch.
+fn compress_shortfall_note(target_bytes: u64, achievable_bytes: u64, failed: usize) -> String {
+    let plural = if failed == 1 { "image" } else { "images" };
+    format!(
+        "cannot fit {failed} {plural} in {target_bytes} bytes: the smallest reachable was \
+         {achievable_bytes} bytes. Ask for at least {achievable_bytes} bytes."
+    )
 }
 
 /// `VerbAction::SetFolderIcon` - one folder icon. Use the first *image* in the
@@ -1020,6 +1086,77 @@ mod tests {
             out.extension().and_then(|e| e.to_str()),
             Some("jpg"),
             "compress always writes a JPEG"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F32 (2026-09-05): the note-formatting helper is pure - exact text, exact units
+    /// (bytes), same shape whether one or several images share the note.
+    #[test]
+    fn compress_shortfall_note_matches_cli_wording_and_units() {
+        let one = super::compress_shortfall_note(1_000_000, 734_521, 1);
+        assert_eq!(
+            one,
+            "cannot fit 1 image in 1000000 bytes: the smallest reachable was 734521 bytes. \
+             Ask for at least 734521 bytes."
+        );
+        let many = super::compress_shortfall_note(5_000_000, 900_000, 3);
+        assert_eq!(
+            many,
+            "cannot fit 3 images in 5000000 bytes: the smallest reachable was 900000 bytes. \
+             Ask for at least 900000 bytes."
+        );
+    }
+
+    /// The parser reads the exact wording `compress_to_size` produces (see its doc comment)
+    /// and stays `None`, never panics, on anything else - a decode-failure message included.
+    #[test]
+    fn parse_smallest_achievable_reads_the_compress_error_and_ignores_others() {
+        let msg = "cannot fit in 1 bytes: the smallest JPEG this can make is 734521 bytes \
+                    (quality 20 at 32x32 px); nothing was written. Ask for at least 734521 bytes.";
+        assert_eq!(super::parse_smallest_achievable(msg), Some(734521));
+        assert_eq!(
+            super::parse_smallest_achievable("decode failed: bad header"),
+            None
+        );
+        assert_eq!(super::parse_smallest_achievable(""), None);
+    }
+
+    /// F32: `compress_batch_report` (the testable seam behind `handle_compress_to_size` - no
+    /// `CompressSize` preset is small enough to hit an unmeetable target for real) must name
+    /// the smallest reachable size instead of the old generic "couldn't compress some
+    /// images", write nothing, and report the shortfall as a real failure.
+    #[test]
+    fn compress_batch_report_names_the_smallest_reachable_size_on_an_unmeetable_target() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_actions_compress_shortfall_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Per-pixel noise so the JPEG has real size to search over (a flat image would
+        // compress to almost nothing and might satisfy even a 1-byte target's neighbors).
+        let img = image::RgbImage::from_fn(96, 96, |x, y| {
+            let h = (x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B)).rotate_left(7);
+            image::Rgb([h as u8, (h >> 8) as u8, (h >> 16) as u8])
+        });
+        let src = dir.join("noise.png");
+        image::DynamicImage::ImageRgb8(img).save(&src).unwrap();
+        let path = src.to_str().unwrap().to_string();
+
+        let report = super::compress_batch_report(&[path], 1);
+        assert_eq!(report.attempted, 1);
+        assert_eq!(report.done, 0, "an impossible target must write nothing");
+        assert!(report.output.is_none());
+        let note = report.note.expect("a shortfall must produce a note");
+        assert!(
+            note.contains("cannot fit 1 image in 1 bytes") && note.contains("smallest reachable"),
+            "{note}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
