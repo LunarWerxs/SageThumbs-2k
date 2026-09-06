@@ -2,8 +2,6 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased - ships as 3.0
-
 > **The next release is 3.0, and it does not ship until the installer is code-signed**
 > (owner decision, Michael, 2026-09-06). Two things follow from that, and both are
 > deliberate:
@@ -13,14 +11,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 >   string is consumed by the installer, the MSIX manifest and the website generator, so the
 >   bump is a release-time step done once, with the gate run, not a bookkeeping change made
 >   in advance.
-> - **Nothing here is waiting on engineering.** The work below is on `main` and green. The
->   signing account itself is already live and its certificate profile is Active; what remains
->   is a single client secret that only a person can copy out of the Azure portal.
->   `docs/RELEASE-SECURITY.md` has the current state and the one remaining step.
+> - **Nothing here is waiting on engineering.** The Unreleased section is on `main` and
+>   green. The signing account itself is already live and its certificate profile is Active;
+>   what remains is a single client secret that only a person can copy out of the Azure
+>   portal. `docs/RELEASE-SECURITY.md` has the current state and the one remaining step.
 >
 > 3.0 rather than 2.6 because this is the release that stops shipping unsigned, on top of an
-> unusually large body of change: 60-plus user-facing entries below, and a 38-finding audit
+> unusually large body of change: 60-plus user-facing entries, and a 38-finding audit
 > burn-down behind them.
+>
+> This note sits ABOVE the section heading on purpose. `Get-ReleaseChangelogSection` (used by
+> `release.ps1` and `export-release-notes.ps1`) takes everything under the exact `## 3.0.0`
+> heading as the published release notes, so on release day the only edit here is renaming
+> the heading below to `## 3.0.0`; this note is not part of what ships.
+
+## Unreleased
 
 ### Added
 
