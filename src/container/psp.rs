@@ -144,14 +144,50 @@ fn sub_blocks(b: &[u8], content: usize, end: usize) -> Vec<(u16, usize, usize)> 
 }
 
 /// Inflate a zlib stream, refusing to produce more than `limit` bytes so a compression bomb
-/// can't exhaust memory inside the shell.
+/// can't exhaust memory inside the shell. `limit` is the exact plane size (`w * h`) the
+/// caller expects: a real channel block's compressed data decompresses to exactly that
+/// many bytes, never more, so an over-`limit` inflate means the declared attributes don't
+/// match the real content.
+///
+/// Routed through the same "read the complete output within a limit, reject overflow"
+/// contract as [`crate::decode::read_bounded`] (2026-09-05 audit, F15), but NOT through
+/// that primitive itself: this used to `.take(limit)` (no `+1`) via
+/// `flate2::read::ZlibDecoder` and hand back whatever inflated, so a channel whose real
+/// decompressed size was PAST `limit` silently came back as exactly `limit` bytes and
+/// looked like a complete, correctly-sized plane to [`read_channel_plane`]'s `raw.len() <
+/// px` check below: it can only catch a SHORT plane, never a long one truncated down to
+/// the right length. Now an over-limit stream is refused outright, so the caller falls
+/// back to the JPEG composite carve exactly as it already does for a short/corrupt plane.
+///
+/// This drives `flate2::Decompress` directly rather than `read_bounded` over
+/// `flate2::read::ZlibDecoder`'s `Read` impl, because that `Read` impl cannot tell a
+/// genuinely truncated/corrupt zlib stream from a complete one: `flate2`'s shared read
+/// loop (`zio::read`) treats "ran out of input before the stream reached its own end"
+/// the same as ordinary EOF and returns `Ok` with whatever partial output it managed:
+/// confirmed empirically (a stream truncated at half its compressed length still came
+/// back `Ok` with a plausible short output, no error). `Status::StreamEnd` from the
+/// low-level API is the only reliable "this is really the whole stream, and for zlib its
+/// ADLER32 checked out" signal, so we require it explicitly instead of trusting `Read`'s
+/// idea of done. `gunzip_bounded` and `read_named`/`read_index_bounded` do not need this:
+/// gzip's trailer read independently errors on a short stream (see their doc comments),
+/// and the `zip` crate's own entry reader propagates a genuine `io::Error` on a corrupt
+/// deflate member.
 fn inflate_capped(data: &[u8], limit: usize) -> Option<Vec<u8>> {
-    use std::io::Read;
+    use flate2::{Decompress, FlushDecompress, Status};
+
+    let cap = limit.checked_add(1)?;
     let mut out = Vec::new();
-    flate2::read::ZlibDecoder::new(data)
-        .take(limit as u64)
-        .read_to_end(&mut out)
+    out.try_reserve(cap).ok()?;
+    let mut dec = Decompress::new(true);
+    let status = dec
+        .decompress_vec(data, &mut out, FlushDecompress::Finish)
         .ok()?;
+    if status != Status::StreamEnd || out.len() > limit {
+        // Either the reserved `limit + 1`-byte output space filled up before the stream
+        // finished (over the limit) or the input ran out first without reaching a valid
+        // end (truncated/corrupt): both are refused, never handed back as a partial plane.
+        return None;
+    }
     (!out.is_empty()).then_some(out)
 }
 
@@ -631,6 +667,70 @@ mod tests {
             (d.width(), d.height()),
             (200, 150),
             "should pick the larger composite"
+        );
+    }
+
+    fn zlib(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(bytes).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// F15 (2026-09-05 audit): `inflate_capped` used to `.take(limit)` (no `+1`) and hand
+    /// back whatever inflated, so a channel plane whose real decompressed size is PAST
+    /// `limit` silently came back as an exactly-`limit`-byte buffer, indistinguishable from
+    /// a genuinely correct-sized plane to `read_channel_plane`'s `raw.len() < px` check
+    /// (which can only catch a SHORT plane, never one truncated down from something
+    /// longer). Reverting the fix (swap `read_bounded` back for the old
+    /// `.take(limit).read_to_end(..)`) makes this assert fail: it would return `Some(_)`
+    /// with exactly `limit` bytes instead of `None`.
+    #[test]
+    fn inflate_capped_refuses_output_over_the_limit() {
+        let limit = 64usize;
+        let z = zlib(&vec![7u8; limit + 1]);
+        assert!(
+            inflate_capped(&z, limit).is_none(),
+            "a plane one byte over the limit must be refused, never truncated"
+        );
+    }
+
+    /// The exact-limit boundary must still succeed: refuse OVER the limit, never AT it.
+    #[test]
+    fn inflate_capped_accepts_output_exactly_at_the_limit() {
+        let limit = 64usize;
+        let inner = vec![7u8; limit];
+        let z = zlib(&inner);
+        assert_eq!(inflate_capped(&z, limit), Some(inner));
+    }
+
+    /// A truncated zlib stream must fail rather than returning a partial inflate. This is
+    /// the specific case `inflate_capped`'s switch away from `flate2::read::ZlibDecoder`
+    /// exists for: verified empirically that the old `read_bounded`-over-`Read` approach
+    /// let this one through as `Some` with a short, silently-truncated buffer, because
+    /// `flate2`'s `Read` impl does not distinguish "ran out of input" from "reached the
+    /// real end of the stream": only the low-level `Status::StreamEnd` this function now
+    /// requires does.
+    #[test]
+    fn inflate_capped_rejects_a_truncated_zlib_stream() {
+        let mut z = zlib(&vec![7u8; 4096]);
+        z.truncate(z.len() / 2);
+        assert!(
+            inflate_capped(&z, 4096).is_none(),
+            "a stream truncated mid-block must be refused, never a short partial inflate"
+        );
+    }
+
+    /// A corrupted (bit-flipped) zlib stream must also fail, distinct from truncation.
+    #[test]
+    fn inflate_capped_rejects_a_corrupted_zlib_stream() {
+        let mut z = zlib(&vec![7u8; 4096]);
+        let mid = z.len() / 2;
+        z[mid] ^= 0xFF;
+        z[mid + 1] ^= 0xFF;
+        assert!(
+            inflate_capped(&z, 4096).is_none(),
+            "corrupted compressed bytes must be refused, never a garbage partial inflate"
         );
     }
 }

@@ -262,6 +262,10 @@ pub(crate) fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>, idx: usize) ->
 /// [`read_index`] with the read capped at `cap` as well as `MAX_COVER`. An entry that
 /// inflates past the smaller of the two is refused whole (`None`), not handed back cut
 /// off: the declared size is only a hint for the allocation, never the bound.
+///
+/// Routed through [`crate::decode::read_bounded`] (2026-09-05 audit, F15): the ONE
+/// shared "read the complete output within a limit, reject overflow" primitive, so this
+/// and [`read_named`] below can't drift into two different overflow contracts again.
 fn read_index_bounded<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     idx: usize,
@@ -272,21 +276,26 @@ fn read_index_bounded<R: Read + Seek>(
     if f.size() > cap {
         return None;
     }
-    let mut buf = Vec::with_capacity(f.size().min(cap) as usize);
-    f.take(cap.saturating_add(1)).read_to_end(&mut buf).ok()?;
-    if buf.len() as u64 > cap {
-        return None;
-    }
+    let buf = crate::decode::read_bounded(f, cap).ok()?;
     (!buf.is_empty()).then_some(buf)
 }
 
+/// F15 (2026-09-05 audit): this used to read AT MOST `MAX_COVER` bytes
+/// (`f.take(MAX_COVER)`, no `+1`) and hand back whatever came out as a successful
+/// complete read, so an entry that actually inflates PAST the cap silently returned a
+/// truncated prefix as though it were the whole entry, instead of refusing like
+/// [`read_index_bounded`] beside it already did. A caller expecting a complete cover
+/// (e.g. `container::project::extract`'s Krita/OpenRaster/EPUB-style named lookups) could
+/// then decode a partial document rather than getting the "too big" refusal it would get
+/// from every other bounded read in this module. Now shares the same
+/// [`crate::decode::read_bounded`] primitive as `read_index_bounded`, so the contract is
+/// identical: an entry over `MAX_COVER` is refused, never truncated.
 pub(crate) fn read_named<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<Vec<u8>> {
     let f = zip.by_name(name).ok()?;
     if f.size() > super::MAX_COVER {
         return None;
     }
-    let mut buf = Vec::with_capacity(f.size().min(super::MAX_COVER) as usize);
-    f.take(super::MAX_COVER).read_to_end(&mut buf).ok()?;
+    let buf = crate::decode::read_bounded(f, super::MAX_COVER).ok()?;
     (!buf.is_empty()).then_some(buf)
 }
 
@@ -446,5 +455,99 @@ mod tests {
     #[test]
     fn prefer_utf8_is_a_no_op_for_ascii() {
         assert_eq!(prefer_utf8(b"readme.txt", "readme.txt"), "readme.txt");
+    }
+
+    /// F15 (2026-09-05 audit): `read_named` used to `.take(MAX_COVER)` (no `+1`) and hand
+    /// back whatever came out as a successful read, so an entry that genuinely inflates
+    /// PAST the cap silently returned a truncated `MAX_COVER`-byte prefix as though it
+    /// were the complete entry. Reverting the fix (swap `read_bounded(f, cap)` back for the
+    /// old `f.take(cap).read_to_end(..)`) makes this assert fail: it would return
+    /// `Some(_)` with exactly `MAX_COVER` bytes instead of refusing.
+    #[test]
+    fn read_named_refuses_an_entry_that_inflates_past_max_cover() {
+        let cap = crate::container::MAX_COVER;
+        let name = "big.bin";
+        // All-zero, so a `cap + 1`-byte payload compresses to a few KB and both the write
+        // and the later inflate stay fast despite the entry being over the cap.
+        let payload = vec![0u8; (cap + 1) as usize];
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file(name, opts).unwrap();
+        writer.write_all(&payload).unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+
+        let mut zip = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        assert_eq!(
+            zip.by_name(name).unwrap().size(),
+            cap + 1,
+            "the declared uncompressed size must be over the cap"
+        );
+        assert!(
+            read_named(&mut zip, name).is_none(),
+            "an entry that inflates past MAX_COVER must be refused, never handed back as a \
+             truncated prefix"
+        );
+    }
+
+    /// The exact-cap boundary must still succeed: `read_named` (like `read_index_bounded`)
+    /// refuses OVER the cap, never AT it.
+    #[test]
+    fn read_named_accepts_an_entry_exactly_at_max_cover() {
+        let cap = crate::container::MAX_COVER;
+        let name = "exact.bin";
+        let payload = vec![0u8; cap as usize];
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file(name, opts).unwrap();
+        writer.write_all(&payload).unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+
+        let mut zip = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let out = read_named(&mut zip, name).expect("exactly the cap must be allowed");
+        assert_eq!(out.len(), cap as usize);
+    }
+
+    /// A named entry whose compressed bytes are corrupted on disk (bit rot, a truncated
+    /// download, a hostile archive) must fail through `read_bounded`'s `Read` error, not
+    /// hand back whatever partial bytes came through before the stream broke. This flips
+    /// bytes squarely inside the entry's compressed payload (found via the end-of-central-
+    /// directory record's own central-directory offset, so the local header and central
+    /// directory themselves are untouched) rather than truncating the whole file, which
+    /// would instead break archive parsing before `read_named` ever runs.
+    #[test]
+    fn read_named_rejects_a_corrupted_deflate_entry() {
+        let name = "corrupt.bin";
+        // Highly compressible so the deflate output is small but still several bytes,
+        // giving room to corrupt without running past the entry into the central directory.
+        let payload = vec![0u8; 4096];
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file(name, opts).unwrap();
+        writer.write_all(&payload).unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
+
+        // The EOCD record is the fixed-size 22-byte trailer (no archive comment here); its
+        // last 4 bytes before that are the central-directory offset (little-endian u32).
+        let eocd = bytes.len() - 22;
+        let cd_offset = u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap());
+        // Local file header (30 bytes) + the entry name, with no extra field, is where this
+        // entry's compressed data starts; it runs up to `cd_offset`.
+        let data_start = 30 + name.len();
+        assert!(
+            (data_start as u32) < cd_offset,
+            "the entry must have at least one byte of compressed data to corrupt"
+        );
+        for b in &mut bytes[data_start..cd_offset as usize] {
+            *b ^= 0xFF;
+        }
+
+        let mut zip = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        assert!(
+            read_named(&mut zip, name).is_none(),
+            "a corrupted compressed entry must be refused, never a truncated partial decode"
+        );
     }
 }

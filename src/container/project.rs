@@ -120,18 +120,18 @@ fn read_suffix<R: Read + Seek>(zip: &mut ZipArchive<R>, suffix_lc: &str) -> Opti
     }
     // None here means the crate couldn't inflate it — for Fusion that's the zstd-
     // compressed PNG. Read the raw entry bytes and inflate with the pure-Rust ruzstd.
-    let mut f = zip.by_index_raw(idx).ok()?;
-    let mut raw = Vec::new();
-    f.by_ref()
-        .take(super::MAX_COVER)
-        .read_to_end(&mut raw)
-        .ok()?;
-    let mut dec = ruzstd::decoding::StreamingDecoder::new(raw.as_slice()).ok()?;
-    let mut out = Vec::new();
-    dec.by_ref()
-        .take(super::MAX_COVER)
-        .read_to_end(&mut out)
-        .ok()?;
+    //
+    // Both reads are routed through `crate::decode::read_bounded` (2026-09-05 audit, F15):
+    // they used to `.take(MAX_COVER)` (no `+1`) and hand back whatever came through, so
+    // either a raw compressed entry or a zstd-decompressed output PAST the cap silently
+    // came back as a truncated-but-successful prefix: a partial zstd frame or a partial
+    // PNG handed to the decode tiers as if it were the whole thing, rather than the "too
+    // big, refuse" every other bounded read in this module gives. A 256px Fusion preview
+    // is nowhere near MAX_COVER either way, so this changes nothing for a real file.
+    let f = zip.by_index_raw(idx).ok()?;
+    let raw = crate::decode::read_bounded(f, super::MAX_COVER).ok()?;
+    let dec = ruzstd::decoding::StreamingDecoder::new(raw.as_slice()).ok()?;
+    let out = crate::decode::read_bounded(dec, super::MAX_COVER).ok()?;
     (!out.is_empty()).then_some(out)
 }
 
@@ -250,5 +250,54 @@ mod tests {
         // A plain image zip (CBZ-style) must NOT be treated as a project file.
         let cbz = make_zip(&[("001.png", &png)]);
         assert!(extract_bytes(&cbz).is_none());
+    }
+
+    /// F15 (2026-09-05 audit): `read_suffix`'s zstd path used to `.take(MAX_COVER)` (no
+    /// `+1`) on the decompressed output and hand back whatever came through as a
+    /// successful read, so a Fusion preview whose real decompressed size is PAST the cap
+    /// would silently come back as a truncated `MAX_COVER`-byte prefix (a partially
+    /// decodable PNG) rather than being refused. This exercises the exact
+    /// `crate::decode::read_bounded` application over a real
+    /// `ruzstd::decoding::StreamingDecoder` that `read_suffix` runs its zstd output
+    /// through, using `ruzstd`'s own encoder (already a dependency, no new one added)
+    /// to build a real frame rather than a hand-rolled one.
+    #[test]
+    fn zstd_decode_bound_accepts_exactly_the_cap_and_refuses_one_byte_over() {
+        use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+
+        let cap = 256u64;
+        let at_cap = vec![9u8; cap as usize];
+        let frame = compress_to_vec(at_cap.as_slice(), CompressionLevel::Fastest);
+        let dec = ruzstd::decoding::StreamingDecoder::new(frame.as_slice()).unwrap();
+        assert_eq!(
+            crate::decode::read_bounded(dec, cap).unwrap(),
+            at_cap,
+            "exactly the cap must be allowed"
+        );
+
+        let over_cap = vec![9u8; (cap + 1) as usize];
+        let frame = compress_to_vec(over_cap.as_slice(), CompressionLevel::Fastest);
+        let dec = ruzstd::decoding::StreamingDecoder::new(frame.as_slice()).unwrap();
+        assert!(
+            crate::decode::read_bounded(dec, cap).is_err(),
+            "output one byte over the cap must be refused, never truncated"
+        );
+    }
+
+    /// A truncated / corrupt zstd frame must fail rather than yielding a partial decode.
+    #[test]
+    fn zstd_decode_rejects_a_truncated_frame() {
+        use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+
+        let mut frame = compress_to_vec(vec![9u8; 4096].as_slice(), CompressionLevel::Fastest);
+        frame.truncate(frame.len() / 2);
+        let refused = match ruzstd::decoding::StreamingDecoder::new(frame.as_slice()) {
+            Err(_) => true,
+            Ok(dec) => crate::decode::read_bounded(dec, 4096).is_err(),
+        };
+        assert!(
+            refused,
+            "a truncated zstd frame must never yield a partial decode"
+        );
     }
 }

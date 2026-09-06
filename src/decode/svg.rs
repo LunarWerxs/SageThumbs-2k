@@ -16,16 +16,18 @@ pub(crate) const GUNZIP_MAX: u64 = 64 * 1024 * 1024;
 /// shared by this module's `.svgz`/`.emz` callers (which pass [`GUNZIP_MAX`]) and by
 /// [`strip::gunzip_bounded`](crate::strip) (C5), which passes its own cap rather than
 /// duplicating this read loop. `flate2` (rust_backend / miniz_oxide) is already in the
-/// tree for `zip`, so this adds no dependency and stays pure-Rust. Returns `None` on any
-/// inflate error or empty output; a truncated-at-cap inflate just fails to parse
-/// downstream and falls back to the default icon.
+/// tree for `zip`, so this adds no dependency and stays pure-Rust.
+///
+/// Routed through [`read_bounded`] (2026-09-05 audit, F15): this used to `.take(cap)` (no
+/// `+1`) and hand back whatever inflated, so an SVG/EMZ whose real decompressed size was
+/// PAST `cap` silently got treated as a complete document consisting of its first `cap`
+/// bytes, instead of being refused. `decode_svg_if_svg`'s caller already treats `None` as
+/// "fall through to the raster tiers" (same as any other decode failure), so refusing
+/// outright here changes nothing about the fallback path, only what triggers it. Returns
+/// `None` on any inflate error, empty output, or output over `cap`: never a truncated
+/// prefix.
 pub(crate) fn gunzip_bounded(bytes: &[u8], cap: u64) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let mut out = Vec::new();
-    flate2::read::GzDecoder::new(bytes)
-        .take(cap)
-        .read_to_end(&mut out)
-        .ok()?;
+    let out = read_bounded(flate2::read::GzDecoder::new(bytes), cap).ok()?;
     (!out.is_empty()).then_some(out)
 }
 
@@ -206,5 +208,53 @@ mod worker_tests {
             Ok(DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2)))
         });
         assert_eq!(r.map(|i| (i.width(), i.height())).ok(), Some((2, 2)));
+    }
+}
+
+#[cfg(test)]
+mod gunzip_tests {
+    use super::*;
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(bytes).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// F15 (2026-09-05 audit): `gunzip_bounded` used to `.take(cap)` (no `+1`) and hand back
+    /// whatever inflated, so a stream whose real decompressed size is PAST `cap` silently
+    /// came back as a `cap`-byte prefix instead of being refused. Reverting the fix (swap
+    /// `read_bounded` back for the old bare `.take(cap).read_to_end(..)`) makes this assert
+    /// fail: it would return `Some(_)` with exactly `cap` bytes instead of `None`.
+    #[test]
+    fn gunzip_bounded_refuses_output_over_the_cap() {
+        let cap = 64u64;
+        let inner = vec![b'x'; (cap + 1) as usize];
+        let gz = gzip(&inner);
+        assert!(
+            gunzip_bounded(&gz, cap).is_none(),
+            "output one byte over the cap must be refused, never truncated"
+        );
+    }
+
+    /// The exact-cap boundary must still succeed (refuse OVER the cap, never AT it).
+    #[test]
+    fn gunzip_bounded_accepts_output_exactly_at_the_cap() {
+        let cap = 64u64;
+        let inner = vec![b'x'; cap as usize];
+        let gz = gzip(&inner);
+        assert_eq!(gunzip_bounded(&gz, cap), Some(inner));
+    }
+
+    /// A truncated / corrupt gzip stream must fail rather than returning a partial inflate.
+    #[test]
+    fn gunzip_bounded_rejects_a_truncated_gzip_stream() {
+        let mut gz = gzip(&vec![b'x'; 4096]);
+        gz.truncate(gz.len() / 2);
+        assert!(
+            gunzip_bounded(&gz, 4096).is_none(),
+            "a truncated gzip member must fail, not return a partial inflate"
+        );
     }
 }
