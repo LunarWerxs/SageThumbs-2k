@@ -58,12 +58,12 @@ if (-not $failed) {
 if (-not $failed) { Step 'build debug test DLL (mirrors CI)' { cargo build --locked } }
 if (-not $failed) { Step 'unit + integration tests, debug profile (mirrors CI)' { cargo test --locked --tests } }
 
-# `--lib` is explicit and not left to ride along with `--tests`: ci.yml's own build-test job
-# comment asserts `--tests` alone already covers library unit tests, but that reading is not
-# how `--tests` is documented (it selects the integration-test targets under tests/, not the
-# lib target) - and docs/TODO.md separately calls `cargo test --lib --bin SageThumbs2K` "the
-# correct gate" for exactly the ~1190 #[test]s under src/. Passing both selectors here is
-# correct under either reading, so this step no longer depends on resolving that disagreement.
+# `--tests` DOES include the library and binary unit tests: Cargo's documented target
+# selection builds every target that has `test = true` in test mode, which is the lib, the
+# bins and the tests/ targets alike. An earlier version of this comment claimed the opposite
+# (that `--tests` selected only tests/), and that claim was wrong (verified against the Cargo
+# reference and by enumerating the targets, 2026-09-05 audit, F21). `--lib` stays alongside
+# it as an explicit, harmless second selector, not because anything depends on the disagreement.
 if (-not $failed) { Step 'unit + integration tests (lib + tests)' { cargo test --release --lib --tests } }
 if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
 # Rustfmt was MISSING here until 2026-08-05, so this gate printed "safe to push" on a commit
