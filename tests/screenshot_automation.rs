@@ -23,9 +23,20 @@ use std::time::{Duration, Instant};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationElementArray,
+    IUIAutomationInvokePattern, IUIAutomationSelectionItemPattern, TreeScope_Children,
+    UIA_ButtonControlTypeId, UIA_InvokePatternId, UIA_RadioButtonControlTypeId,
+    UIA_SelectionItemPatternId,
+};
 use windows::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_TAB;
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindow, GetWindowLongPtrW,
     GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
@@ -346,6 +357,478 @@ fn synthetic_overlay_is_discoverable_by_windows_automation() {
             std::thread::sleep(Duration::from_millis(25));
         }
     }
+
+    child.close_and_wait(hwnd);
+}
+
+// ---------------------------------------------------------------------------------------
+// The UI Automation provider, exercised the way Narrator or Accessibility Insights would:
+// as a real UIA CLIENT in a separate process, driving the editor through the tree.
+// ---------------------------------------------------------------------------------------
+
+/// Launch the synthetic overlay and hand back its window once it has painted once.
+///
+/// The discoverability test above keeps its own inline copy of this dance because it asserts
+/// the window styles step by step as it goes. The client test below needs only a painted
+/// window, and the first paint matters to it for a different reason: the toolbar, and so
+/// every element the provider can describe, is laid out from the committed selection.
+unsafe fn launch_painted_overlay() -> (TestChild, windows::Win32::Foundation::HWND) {
+    assert!(
+        automation_window().is_none(),
+        "a screenshot automation overlay is already running; close it before this test"
+    );
+    assert!(
+        normal_capture_window().is_none(),
+        "a normal screenshot overlay is already running; close it before this test"
+    );
+
+    let child = Command::new(env!("CARGO_BIN_EXE_SageThumbs2K"))
+        .arg("--screenshot-automation")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch synthetic screenshot automation mode");
+    let child_id = child.id();
+    let mut child = TestChild(child);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let hwnd = loop {
+        if let Some(status) = child.0.try_wait().expect("query automation child") {
+            panic!("automation child exited before creating its window: {status}");
+        }
+        if let Some(hwnd) = automation_window() {
+            // The bare prefix is set at CreateWindowEx time, so only the full telemetry
+            // title proves the first real WM_PAINT completed.
+            if IsWindowVisible(hwnd).as_bool() && window_title(hwnd) == INITIAL_PAINTED_TITLE {
+                break hwnd;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automation overlay did not become visible within 10 seconds"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    let mut window_pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
+    assert_eq!(
+        window_pid, child_id,
+        "the discovered automation window must belong to this test's exact child"
+    );
+    (child, hwnd)
+}
+
+/// Drag out the capture region, which is what brings the toolbar into existence.
+///
+/// Not incidental setup: with no committed selection `uia::children` returns an empty list by
+/// design, so every element assertion below would be measuring the wrong state entirely.
+unsafe fn commit_capture_region(hwnd: windows::Win32::Foundation::HWND, width: i32, height: i32) {
+    PostMessageW(Some(hwnd), WM_LBUTTONDOWN, WPARAM(1), point_lparam(40, 40))
+        .expect("start automation selection");
+    PostMessageW(
+        Some(hwnd),
+        WM_MOUSEMOVE,
+        WPARAM(1),
+        point_lparam(width - 40, height - 40),
+    )
+    .expect("drag automation selection");
+    PostMessageW(
+        Some(hwnd),
+        WM_LBUTTONUP,
+        WPARAM(0),
+        point_lparam(width - 40, height - 40),
+    )
+    .expect("finish automation selection");
+}
+
+/// Draw one annotation with whatever tool is currently active, then wait for the overlay to
+/// publish `tool=<expected>` in its title.
+///
+/// This is the only way the ACTIVE tool becomes observable from another process:
+/// `automation_title` appends `tool=` from the last COMMITTED drag, not from `Shot::tool`, so
+/// a drag has to happen before the title can report which tool performed it.
+unsafe fn draw_and_expect_tool(
+    hwnd: windows::Win32::Foundation::HWND,
+    anchor: (i32, i32),
+    expected: &str,
+) {
+    let end = (anchor.0 + 150, anchor.1 + 80);
+    PostMessageW(
+        Some(hwnd),
+        WM_LBUTTONDOWN,
+        WPARAM(1),
+        point_lparam(anchor.0, anchor.1),
+    )
+    .expect("start annotation drag");
+    PostMessageW(
+        Some(hwnd),
+        WM_MOUSEMOVE,
+        WPARAM(1),
+        point_lparam(end.0, end.1),
+    )
+    .expect("preview annotation drag");
+    PostMessageW(
+        Some(hwnd),
+        WM_LBUTTONUP,
+        WPARAM(0),
+        point_lparam(end.0, end.1),
+    )
+    .expect("commit annotation drag");
+
+    let needle = format!("| tool={expected} |");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let title = window_title(hwnd);
+        if title.contains(&needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the overlay never published {needle:?}; last title was {title:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Everything the toolbar walk hands back to the test that owns it.
+///
+/// `kids` and `child_count` travel with the names because the focus proof re-reads the very same
+/// collection, and `automation_ids` because a focused element is only proven to be one of OURS by
+/// matching an id this walk collected.
+struct EditorChildren {
+    kids: IUIAutomationElementArray,
+    child_count: i32,
+    names: Vec<String>,
+    automation_ids: Vec<String>,
+    line_element: Option<IUIAutomationElement>,
+}
+
+/// Walk the editor's children as a client would, proving there are enough of them and that every
+/// one is a named control of a type a screen reader can announce.
+unsafe fn enumerate_named_controls(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+) -> EditorChildren {
+    let condition = automation
+        .CreateTrueCondition()
+        .expect("create a match-everything condition");
+    let kids = root
+        .FindAll(TreeScope_Children, &condition)
+        .expect("enumerate the editor's children");
+    let child_count = kids.Length().expect("count the editor's children");
+    assert!(
+        child_count > 0,
+        "the editor reported no children at all, so its toolbar is invisible to a screen reader"
+    );
+    // The bar carries twelve tools plus colour, undo, redo, copy, OCR, save, upload and
+    // close, so anything at or below ten means the walk found the window chrome rather
+    // than the editor's own controls. THIS is the assertion that fails outright against a
+    // build with no provider: an ownerless popup with no child windows has zero children.
+    assert!(
+        child_count > 10,
+        "the toolbar alone has more than ten buttons, but only {child_count} children were found"
+    );
+
+    let mut names: Vec<String> = Vec::new();
+    let mut automation_ids: Vec<String> = Vec::new();
+    let mut line_element: Option<IUIAutomationElement> = None;
+    for i in 0..child_count {
+        let el = kids.GetElement(i).expect("read one child element");
+        let name = el
+            .CurrentName()
+            .expect("read a child element's Name")
+            .to_string();
+        // A control a screen reader cannot name is announced as a bare "button", which is
+        // indistinguishable from the nineteen others beside it.
+        assert!(
+            !name.is_empty(),
+            "child {i} of the editor has an empty Name"
+        );
+        let control_type = el
+            .CurrentControlType()
+            .expect("read a child element's ControlType");
+        assert!(
+            control_type.0 == UIA_ButtonControlTypeId.0
+                || control_type.0 == UIA_RadioButtonControlTypeId.0,
+            "child {i} ({name:?}) reported control type {}, but every element of this \
+             chrome is either a button or, for the mutually exclusive tools, a radio button",
+            control_type.0
+        );
+        automation_ids.push(
+            el.CurrentAutomationId()
+                .expect("read a child element's AutomationId")
+                .to_string(),
+        );
+        if name == "Line" {
+            line_element = Some(el);
+        }
+        names.push(name);
+    }
+
+    EditorChildren {
+        kids,
+        child_count,
+        names,
+        automation_ids,
+        line_element,
+    }
+}
+
+/// Press the Line tool the way a screen reader user would, then wait for the provider to agree
+/// that Line is now the selected tool.
+///
+/// Reading a tree is half an accessible control; a screen reader user presses the button too.
+unsafe fn prove_invoke_selects_the_line_tool(line: &IUIAutomationElement) {
+    let invoke: IUIAutomationInvokePattern = line
+        .GetCurrentPatternAs(UIA_InvokePatternId)
+        .expect("the Line tool must expose the Invoke pattern");
+    invoke
+        .Invoke()
+        .expect("invoking the Line tool through UI Automation must succeed");
+
+    // `Invoke` is contractually asynchronous and the provider POSTS the work, so this
+    // waits on the outcome rather than assuming the message has been handled. The tools
+    // are one selection set, so IsSelected is the provider's own answer to "which tool is
+    // active", read back through the client.
+    let selected: IUIAutomationSelectionItemPattern = line
+        .GetCurrentPatternAs(UIA_SelectionItemPatternId)
+        .expect("a tool must expose the SelectionItem pattern");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if selected
+            .CurrentIsSelected()
+            .map(|b| b.as_bool())
+            .unwrap_or(false)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the Line tool never reported itself selected after Invoke"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// The first of the two routes a client has to keyboard focus: ask the automation object outright,
+/// and accept the answer only when it belongs to this editor.
+unsafe fn focused_automation_id_within(
+    automation: &IUIAutomation,
+    automation_ids: &[String],
+) -> Option<String> {
+    let Ok(el) = automation.GetFocusedElement() else {
+        return None;
+    };
+    let id = el
+        .CurrentAutomationId()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    // The ids are this provider's own ("toolbar.N"), so matching one proves
+    // the focused element is inside THIS window and not merely somewhere.
+    if automation_ids.contains(&id) {
+        return Some(id);
+    }
+    None
+}
+
+/// The second route: ask each child of the editor whether it holds the keyboard, which is the
+/// property a reader polls rather than the focus event it subscribes to.
+unsafe fn child_name_with_keyboard_focus(
+    kids: &IUIAutomationElementArray,
+    child_count: i32,
+) -> Option<String> {
+    for i in 0..child_count {
+        let Ok(el) = kids.GetElement(i) else { continue };
+        if el
+            .CurrentHasKeyboardFocus()
+            .map(|b| b.as_bool())
+            .unwrap_or(false)
+        {
+            return el.CurrentName().ok().map(|n| n.to_string());
+        }
+    }
+    None
+}
+
+/// Post Tab and wait for the editor to report keyboard focus by either client route, returning the
+/// line the test logs about what each route saw.
+///
+/// A reader follows the keyboard, so an element that never claims focus is one the user is never
+/// told they have arrived at.
+unsafe fn prove_tab_reports_keyboard_focus(
+    hwnd: windows::Win32::Foundation::HWND,
+    automation: &IUIAutomation,
+    kids: &IUIAutomationElementArray,
+    child_count: i32,
+    automation_ids: &[String],
+) -> String {
+    PostMessageW(Some(hwnd), WM_KEYDOWN, WPARAM(VK_TAB.0 as usize), LPARAM(1))
+        .expect("post Tab to move keyboard focus into the toolbar");
+
+    let mut by_get_focus: Option<String> = None;
+    let mut by_property: Option<String> = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if by_get_focus.is_none() {
+            by_get_focus = focused_automation_id_within(automation, automation_ids);
+        }
+        if by_property.is_none() {
+            by_property = child_name_with_keyboard_focus(kids, child_count);
+        }
+        if by_get_focus.is_some() && by_property.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        by_get_focus.is_some() || by_property.is_some(),
+        "after Tab, neither GetFocusedElement nor HasKeyboardFocus placed keyboard focus \
+         on any element of this editor, so a screen reader would never announce it"
+    );
+    format!("GetFocusedElement -> {by_get_focus:?}, HasKeyboardFocus -> {by_property:?}")
+}
+
+/// The provider must survive contact with a real assistive-technology client, not merely
+/// expose a window that automation enumerators can see.
+///
+/// The neighbour above proves DISCOVERABILITY: the popup is not a tool window, not cloaked,
+/// not owned, so an enumerator finds it. That says nothing about what is inside it, and for
+/// most of this editor's life the honest answer was "one blank rectangle": a single
+/// owner-drawn popup with no child windows, so every button was invisible to Narrator. This
+/// test is the other half. It becomes a UIA client, walks the tree, and then OPERATES it,
+/// because a tree a client can read but not drive is still an editor a screen reader user
+/// cannot use.
+///
+/// Kept `#[ignore]` for the same reason as its neighbour: it opens an opaque, topmost window
+/// over the whole virtual desktop.
+#[test]
+#[ignore = "opens the synthetic full-screen screenshot automation overlay and drives it over UI Automation"]
+fn a_screen_reader_can_find_name_and_operate_the_editor() {
+    if !unsafe { running_on_interactive_desktop() } {
+        eprintln!(
+            "skipping: no interactive window station (Session 0 service, or a CI runner \
+             with no logged-on user) - UI Automation cannot reach a window that has no \
+             visible desktop to live on"
+        );
+        return;
+    }
+
+    // Same reason as the neighbour: match the PMv2-aware app before reading virtual-screen
+    // metrics, or Windows DPI-virtualises the caller and the drag coordinates land elsewhere.
+    unsafe {
+        let _ = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
+    let (mut child, hwnd) = unsafe { launch_painted_overlay() };
+
+    let mut bounds = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut bounds) }.expect("query automation window bounds");
+    let width = bounds.right - bounds.left;
+    let height = bounds.bottom - bounds.top;
+    assert!(
+        width >= 500 && height >= 400,
+        "this test needs a virtual desktop of at least 500x400; got {width}x{height}"
+    );
+
+    unsafe {
+        commit_capture_region(hwnd, width, height);
+
+        // Put the editor into a KNOWN tool that is NOT the one the Invoke below selects. The
+        // starting tool comes from the user's settings, so without this the "tool=Line" proof
+        // at the end could just as well be reporting a machine that already started on Line.
+        PostMessageW(Some(hwnd), WM_KEYDOWN, WPARAM(b'R' as usize), LPARAM(1))
+            .expect("select the Rectangle tool");
+        draw_and_expect_tool(hwnd, (width / 3, height / 2), "Rect");
+    }
+
+    // COM is initialised on THIS thread only, and torn down before the function returns, so
+    // the rest of the test binary is unaffected. Apartment-threaded because that is what a
+    // desktop assistive technology uses, and a UIA client that only makes outgoing calls is
+    // well behaved in an STA.
+    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    assert!(
+        hr.is_ok(),
+        "CoInitializeEx(COINIT_APARTMENTTHREADED) failed: {hr:?}"
+    );
+
+    let (child_count, names, focus_report) = unsafe {
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                .expect("create the CUIAutomation client object");
+
+        // The first thing any client does with a window. A failure here means WM_GETOBJECT
+        // never answered UiaRootObjectId, which is the state the editor was in before the
+        // provider existed: findable window, no accessible content at all.
+        let root = automation
+            .ElementFromHandle(hwnd)
+            .expect("UI Automation must resolve the overlay HWND to an element");
+        let root_name = root
+            .CurrentName()
+            .expect("read the editor root's Name")
+            .to_string();
+        assert!(
+            !root_name.is_empty(),
+            "the editor root must name itself; an unnamed root is announced as nothing at all"
+        );
+
+        let children = enumerate_named_controls(&automation, &root);
+        let names = children.names;
+
+        // Names come from `uia::spoken_name`, which keeps the head of the tooltip and drops
+        // the keyboard hint, so "Line (L) - drag to draw" is spoken as "Line" and
+        // "Copy to the clipboard (Ctrl+C / Enter)" as "Copy to the clipboard". Asserting the
+        // reduced forms is what pins that reduction from the outside.
+        assert!(
+            names.iter().any(|n| n == "Line"),
+            "the Line tool must be reachable by name; saw {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.contains("Copy")),
+            "the clipboard buttons must be reachable by name; saw {names:?}"
+        );
+
+        // ---------------------------------------------------------------------------
+        // The operation proof. Reading a tree is half an accessible control; a screen
+        // reader user presses the button too.
+        // ---------------------------------------------------------------------------
+        let line = children
+            .line_element
+            .expect("the toolbar must expose an element named \"Line\"");
+        prove_invoke_selects_the_line_tool(&line);
+
+        // The independent proof, out of band from UIA entirely: draw again and let the
+        // overlay say through its own window title which tool drew it. The drag posts no
+        // tool change of its own, so "tool=Line" here can only have come from the Invoke,
+        // and the earlier "tool=Rect" is what makes that a change rather than a coincidence.
+        draw_and_expect_tool(hwnd, (width / 2, height / 2), "Line");
+
+        // ---------------------------------------------------------------------------
+        // Focus reporting. A reader follows the keyboard, so an element that never claims
+        // focus is one the user is never told they have arrived at.
+        // ---------------------------------------------------------------------------
+        let focus_report = prove_tab_reports_keyboard_focus(
+            hwnd,
+            &automation,
+            &children.kids,
+            children.child_count,
+            &children.automation_ids,
+        );
+
+        (children.child_count, names, focus_report)
+    };
+
+    // Every interface above went out of scope with the block, so nothing is still holding a
+    // provider when the apartment is torn down.
+    unsafe { CoUninitialize() };
+
+    eprintln!("UIA children: {child_count}");
+    eprintln!("UIA names: {names:?}");
+    eprintln!("UIA focus: {focus_report}");
 
     child.close_and_wait(hwnd);
 }
