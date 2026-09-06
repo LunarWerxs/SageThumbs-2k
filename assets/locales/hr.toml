@@ -224,6 +224,10 @@ chk_screenshot = "Omogući prečac za snimke"
 lbl_shot_hotkey = "Prečac za hvatanje:"
 chk_instant_screenshot = "Omogući brzo spremanje snimki"
 lbl_shot_quick_hotkey = "Prečac brzog spremanja:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Prečac za hvatanje"
+hotkey_name_quick = "Prečac brzog spremanja"
 tip_screenshot = "Pokreće mali pomoćni program u pozadini koji omogućuje prečacu da hvati područje zaslona koje možete nacrtati, kopirati, spremiti, pripnuti ili učitati. Zadano je isključeno — ništa se ne izvršava u pozadini dok ga ne omogućite."
 tip_shot_hotkey = "Globalni prečac tipki koji počinje hvatanje kada je pomoćni program omogućen."
 tip_instant_screenshot = "Uključi drugi prečac koji odmah sprema cijeli zaslon u međuspremnik i mapu Snimke bez urejenika."
@@ -525,6 +529,9 @@ nudge_month = "Podsjeti me za mjesec dana"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Neke postavke nije bilo moguće spremiti: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" i \"{b}\" postavljeni su na isti prečac. Dodijelite jednoj od njih drugu kombinaciju tipki i ponovno spremite."
 save_failed_registry = "registar"
 sync_disconnected_body = "Sinkronizacija je prekinuta. Vaše postavke ostaju na ovom računalu."
 sync_portable_notice = "Prijenosna kopija: ova prijava sprema se pored ove kopije SageThumbs 2K, a ne u računu ovog računala. Svatko tko koristi istu prijenosnu kopiju može sinkronizirati vaše postavke, stoga se odjavite prije predaje diska."

@@ -222,6 +222,10 @@ chk_screenshot = "Ενεργοποίηση γρήγορου πλήκτρου σ�
 lbl_shot_hotkey = "Γρήγορο πλήκτρο σύλληψης:"
 chk_instant_screenshot = "Ενεργοποίηση γρήγορης αποθήκευσης στιγμιοτύπου"
 lbl_shot_quick_hotkey = "Γρήγορο πλήκτρο γρήγορης αποθήκευσης:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Γρήγορο πλήκτρο σύλληψης"
+hotkey_name_quick = "Γρήγορο πλήκτρο γρήγορης αποθήκευσης"
 tip_screenshot = "Εκτελεί έναν μικρό βοηθό φόντου ώστε ένα γρήγορο πλήκτρο να εντοπίζει μια περιοχή οθόνης που μπορείτε να σχεδιάσετε, αντιγράψετε, αποθηκεύσετε, καρφιτσώσετε ή ανεβάσετε. Προεπιλογή απενεργοποιημένο — δεν εκτελείται τίποτα στο φόντο έως ότου το ενεργοποιήσετε."
 tip_shot_hotkey = "Ο συνδυασμός παγκόσμιων πλήκτρων που ξεκινά την σύλληψη ενώ ο βοηθός είναι ενεργοποιημένος."
 tip_instant_screenshot = "Ενεργοποιήστε ένα δεύτερο γρήγορο πλήκτρο που αποθηκεύει αμέσως ολόκληρη την οθόνη στο πρόχειρό σας και στο φάκελο Στιγμιότυπα, χωρίς επεξεργαστή."
@@ -517,6 +521,9 @@ nudge_month = "Υπενθύμιση σε έναν μήνα"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Ορισμένες ρυθμίσεις δεν ήταν δυνατό να αποθηκευτούν: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "Τα \"{a}\" και \"{b}\" έχουν οριστεί στο ίδιο πλήκτρο συντόμευσης. Δώστε σε ένα από τα δύο διαφορετικό συνδυασμό πλήκτρων και αποθηκεύστε ξανά."
 save_failed_registry = "το μητρώο"
 sync_disconnected_body = "Ο συγχρονισμός αποσυνδέθηκε. Οι ρυθμίσεις σας παραμένουν σε αυτόν τον υπολογιστή."
 sync_portable_notice = "Φορητό αντίγραφο: αυτή η σύνδεση αποθηκεύεται δίπλα σε αυτό το αντίγραφο του SageThumbs 2K, όχι στον λογαριασμό αυτού του υπολογιστή. Όποιος χρησιμοποιεί το ίδιο φορητό αντίγραφο μπορεί να συγχρονίσει τις ρυθμίσεις σας, γι' αυτό αποσυνδεθείτε πριν παραδώσετε τον δίσκο."

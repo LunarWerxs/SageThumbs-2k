@@ -227,6 +227,10 @@ chk_screenshot = "啟用螢幕擷取快速鍵"
 lbl_shot_hotkey = "擷取快速鍵："
 chk_instant_screenshot = "啟用快速儲存螢幕擷取"
 lbl_shot_quick_hotkey = "快速儲存快速鍵："
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "擷取快速鍵"
+hotkey_name_quick = "快速儲存快速鍵"
 tip_screenshot = "執行一個小型背景協助程式，按下快速鍵即可擷取螢幕區域供你繪製、複製、儲存、釘選或上傳。預設關閉 — 啟用後才會在背景執行。"
 tip_shot_hotkey = "在協助程式啟用時開始擷取的全域快速鍵組合。"
 tip_instant_screenshot = "開啟第二個快速鍵，立即將整個螢幕儲存到剪貼簿和螢幕擷取資料夾，無需編輯器。"
@@ -524,6 +528,9 @@ nudge_month = "一個月後提醒我"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "部分設定未能儲存到{path}。"
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" 和 \"{b}\" 設定了相同的快速鍵。請為其中一個指定不同的按鍵組合，然後重新儲存。"
 save_failed_registry = "登錄檔"
 sync_disconnected_body = "同步已中斷。你的設定仍保留在這台電腦上。"
 sync_portable_notice = "可攜式版本：這個登入資訊會儲存在這份 SageThumbs 2K 副本旁邊，而不是這台電腦的帳戶中。任何使用同一可攜式副本的人都能同步你的設定，因此在交出這個磁碟機之前請先登出。"

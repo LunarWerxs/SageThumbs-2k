@@ -225,6 +225,10 @@ chk_screenshot = "スクリーンショットホットキーを有効にする"
 lbl_shot_hotkey = "キャプチャホットキー："
 chk_instant_screenshot = "クイックセーブスクリーンショットを有効にする"
 lbl_shot_quick_hotkey = "クイックセーブホットキー："
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "キャプチャホットキー"
+hotkey_name_quick = "クイックセーブホットキー"
 tip_screenshot = "小さなバックグラウンドヘルパーを実行し、ホットキーでスクリーン領域をキャプチャして、描画したり、コピーしたり、保存したり、ピン留めしたり、アップロードしたりできます。既定ではオフ — 有効にするまでバックグラウンドでは何も実行されません。"
 tip_shot_hotkey = "ヘルパーが有効な間、キャプチャを開始するグローバルキーコンボ。"
 tip_instant_screenshot = "2つ目のホットキーをオンにすると、画面全体をクリップボードとスクリーンショットフォルダーに即座に保存でき、エディターは不要。"
@@ -526,6 +530,9 @@ nudge_month = "1 か月後に通知"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "一部の設定を{path}に保存できませんでした。"
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" と \"{b}\" が同じホットキーに設定されています。どちらか一方に別のキーの組み合わせを設定してから、もう一度保存してください。"
 save_failed_registry = "レジストリ"
 sync_disconnected_body = "同期が切断されました。設定はこの PC に残ります。"
 sync_portable_notice = "ポータブル版: このサインインは SageThumbs 2K のこのコピーの隣に保存され、この PC のアカウントには保存されません。同じポータブルコピーを使う人は誰でも設定を同期できるため、ドライブを渡す前にサインアウトしてください。"

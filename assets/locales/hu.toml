@@ -226,6 +226,10 @@ chk_screenshot = "Képernyőfotó-gyorsbillentyű engedélyezése"
 lbl_shot_hotkey = "Rögzítési gyorsbillentyű:"
 chk_instant_screenshot = "Azonnali képernyőfotó-mentés engedélyezése"
 lbl_shot_quick_hotkey = "Gyorsmentés-gyorsbillentyű:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Rögzítési gyorsbillentyű"
+hotkey_name_quick = "Gyorsmentés-gyorsbillentyű"
 tip_screenshot = "Egy kis háttérhelper futtatása, amely egy gyorsbillentyűvel képernyőtartományt rögzít, amelyet megrajzolhat, másolhat, menthet, rögzíthet vagy feltölthet. Alapértelmezés szerint ki van kapcsolva — semmi nem fut a háttérben, amíg engedélyezi."
 tip_shot_hotkey = "A globális kombinációbillentyű, amely elindítja a rögzítést, miközben a helper engedélyezve van."
 tip_instant_screenshot = "Kapcsoljon be egy második gyorsbillentyűt, amely azonnal elmenti a teljes képernyőt a vágólapra és a Képernyőfotók mappába, szerkesztő nélkül."
@@ -527,6 +531,9 @@ nudge_month = "Emlékeztessen egy hónap múlva"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Néhány beállítást nem sikerült menteni: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "A(z) \"{a}\" és a(z) \"{b}\" ugyanarra a gyorsbillentyűre van beállítva. Adjon az egyiknek másik billentyűkombinációt, majd mentsen újra."
 save_failed_registry = "a rendszerleíró adatbázis"
 sync_disconnected_body = "A szinkronizálás megszakadt. A beállításai ezen a gépen maradnak."
 sync_portable_notice = "Hordozható másolat: ez a bejelentkezés a SageThumbs 2K ezen másolata mellett tárolódik, nem ennek a gépnek a fiókjában. Bárki, aki ugyanezt a hordozható másolatot használja, szinkronizálhatja a beállításait, ezért jelentkezzen ki, mielőtt átadja a meghajtót."

@@ -225,6 +225,10 @@ chk_screenshot = "Sneltoets voor schermafbeelding inschakelen"
 lbl_shot_hotkey = "Sneltoets voor vastleggen:"
 chk_instant_screenshot = "Snel opslaan van schermafbeelding inschakelen"
 lbl_shot_quick_hotkey = "Sneltoets voor snel opslaan:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Sneltoets voor vastleggen"
+hotkey_name_quick = "Sneltoets voor snel opslaan"
 tip_screenshot = "Voert een kleine achtergrondhelper uit zodat je met een sneltoets een schermregio kunt vastleggen die je kunt tekenen, kopiëren, opslaan, vastmaken of uploaden. Standaard uit — niets wordt op de achtergrond uitgevoerd totdat je het inschakelt."
 tip_shot_hotkey = "De globale sneltoetscombinatie waarmee vastleggen wordt gestart terwijl de helper is ingeschakeld."
 tip_instant_screenshot = "Schakelt een tweede sneltoets in waarmee het hele scherm onmiddellijk naar je klembord en de Schermafbeeldingen-map wordt opgeslagen, zonder editor."
@@ -526,6 +530,9 @@ nudge_month = "Herinner me over een maand"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Sommige instellingen konden niet worden opgeslagen in {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" en \"{b}\" zijn ingesteld op dezelfde sneltoets. Geef een van beide een andere toetsencombinatie en sla opnieuw op."
 save_failed_registry = "het register"
 sync_disconnected_body = "Synchronisatie verbroken. Je instellingen blijven op deze pc."
 sync_portable_notice = "Draagbare kopie: deze aanmelding wordt opgeslagen naast deze kopie van SageThumbs 2K, niet in het account van deze pc. Iedereen die dezelfde draagbare kopie gebruikt, kan je instellingen synchroniseren, dus meld je af voordat je de schijf overhandigt."

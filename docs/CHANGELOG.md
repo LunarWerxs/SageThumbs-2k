@@ -117,6 +117,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   lists it wrote itself (including the ones written by much older versions of SageThumbs 2K) and
   leaves anything that was changed or added afterwards exactly as it was.
 
+- **Settings now catches it when you assign the same hotkey to two different screenshot
+  actions.** Give the capture hotkey, the quick-save hotkey, or the custom action the same key
+  combination and Settings now tells you which two collide and refuses to save until you pick
+  a different combination for one of them, instead of silently saving both and leaving one of
+  them unreachable.
+
 - **One video Windows cannot decode can no longer take every thumbnail on the PC down with
   it.** A reporter found an MP4 whose H.264 stream uses the 4:4:4 colour format, which the
   Windows decoder does not support; on Windows 10 the decoder hung instead of declining, our

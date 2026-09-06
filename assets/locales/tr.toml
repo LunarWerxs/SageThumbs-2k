@@ -227,6 +227,10 @@ chk_screenshot = "Ekran görüntüsü kısayolunu etkinleştir"
 lbl_shot_hotkey = "Yakalama kısayolu:"
 chk_instant_screenshot = "Anlık ekran görüntüsü kaydetmeyi etkinleştir"
 lbl_shot_quick_hotkey = "Hızlı kaydetme kısayolu:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Yakalama kısayolu"
+hotkey_name_quick = "Hızlı kaydetme kısayolu"
 tip_screenshot = "Bir kısayol tuşu ile ekran alanı yakalaması yapabileceğiniz, çizebileceğiniz, kopyalayabileceğiniz, kaydedebileceğiniz, sabitleyebileceğiniz veya yükleyebileceğiniz küçük bir arka plan yardımcısı çalıştırır. Varsayılan olarak kapalıdır — etkinleştirene kadar arka planda hiçbir şey çalışmaz."
 tip_shot_hotkey = "Yardımcı etkinleştirilirken bir yakalamayı başlatan genel tuş kombinasyonu."
 tip_instant_screenshot = "Tüm ekranı panoya ve Ekran Görüntüleri klasörüne anında kaydeden ikinci bir kısayol tuşu etkinleştir, editör olmadan."
@@ -526,6 +530,9 @@ nudge_month = "Bir ay sonra hatırlat"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Bazı ayarlar kaydedilemedi: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" ve \"{b}\" aynı kısayola ayarlanmış. Bunlardan birine farklı bir tuş kombinasyonu verip yeniden kaydedin."
 save_failed_registry = "kayıt defteri"
 sync_disconnected_body = "Senkronizasyon bağlantısı kesildi. Ayarlarınız bu bilgisayarda kalır."
 sync_portable_notice = "Taşınabilir kopya: bu oturum açma bilgisi, bu bilgisayarın hesabında değil, SageThumbs 2K'nın bu kopyasının yanında saklanır. Aynı taşınabilir kopyayı kullanan herkes ayarlarınızı senkronize edebilir, bu yüzden sürücüyü teslim etmeden önce oturumu kapatın."

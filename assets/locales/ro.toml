@@ -223,6 +223,10 @@ chk_screenshot = "Activează hotkey-ul de captură"
 lbl_shot_hotkey = "Hotkey-ul de captură:"
 chk_instant_screenshot = "Activează salvarea rapidă a capturilor"
 lbl_shot_quick_hotkey = "Hotkey-ul de salvare rapidă:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Hotkey-ul de captură"
+hotkey_name_quick = "Hotkey-ul de salvare rapidă"
 tip_screenshot = "Execută un mic asistent de fundal pentru ca un hotkey să captureze o regiune a ecranului pe care o poți desena, copia, salva, fixa sau încărca. Dezactivat implicit — nimic nu se execută în fundal până când nu-l activezi."
 tip_shot_hotkey = "Combinația globală de taste care inițiază o captură în timp ce asistentul este activat."
 tip_instant_screenshot = "Activează un al doilea hotkey care salvează instantaneu tot ecranul în clipboard și în dosarul Capturi, fără editor."
@@ -522,6 +526,9 @@ nudge_month = "Amintește-mi peste o lună"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Unele setări nu au putut fi salvate în {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" și \"{b}\" sunt setate pe aceeași combinație de taste. Alegeți o altă combinație pentru una dintre ele, apoi salvați din nou."
 save_failed_registry = "registrul"
 sync_disconnected_body = "Sincronizare deconectată. Setările tale rămân pe acest PC."
 sync_portable_notice = "Copie portabilă: această autentificare este stocată lângă această copie a SageThumbs 2K, nu în contul acestui PC. Oricine folosește aceeași copie portabilă îți poate sincroniza setările, așa că deconectează-te înainte să predai unitatea."

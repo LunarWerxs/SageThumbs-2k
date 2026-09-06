@@ -224,6 +224,10 @@ chk_screenshot = "स्क्रीनशॉट हॉटकी चालू �
 lbl_shot_hotkey = "कैप्चर हॉटकी:"
 chk_instant_screenshot = "तत्काल स्क्रीनशॉट सेव चालू करें"
 lbl_shot_quick_hotkey = "तत्काल-सेव हॉटकी:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "कैप्चर हॉटकी"
+hotkey_name_quick = "तत्काल-सेव हॉटकी"
 tip_screenshot = "एक छोटा पृष्ठभूमि सहायक चलाएँ ताकि एक हॉटकी स्क्रीन के क्षेत्र का कैप्चर ले सके जिसे आप ड्रा, कॉपी, सेव, पिन या अपलोड कर सकें। डिफ़ॉल्ट रूप से बंद — जब तक आप इसे चालू न करें तब तक पृष्ठभूमि में कुछ नहीं चलता।"
 tip_shot_hotkey = "वैश्विक कुंजी संयोजन जो सहायक सक्षम होने के दौरान कैप्चर शुरू करता है।"
 tip_instant_screenshot = "एक दूसरी हॉटकी चालू करें जो तुरंत पूरी स्क्रीन को क्लिपबोर्ड और स्क्रीनशॉट फ़ोल्डर में सेव करे, बिना एडिटर के।"
@@ -525,6 +529,9 @@ nudge_month = "एक महीने बाद याद दिलाएँ"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "कुछ सेटिंग्स {path} में सेव नहीं हो सकीं।"
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" और \"{b}\" दोनों एक ही हॉटकी पर सेट हैं। इनमें से किसी एक के लिए अलग कुंजी संयोजन चुनें, फिर दोबारा सेव करें।"
 save_failed_registry = "रजिस्ट्री"
 sync_disconnected_body = "सिंक डिस्कनेक्ट हो गया। आपकी सेटिंग्स इसी कंप्यूटर पर रहेंगी।"
 sync_portable_notice = "पोर्टेबल कॉपी: यह साइन-इन SageThumbs 2K की इस कॉपी के साथ सेव होता है, इस कंप्यूटर के खाते में नहीं। वही पोर्टेबल कॉपी इस्तेमाल करने वाला कोई भी व्यक्ति आपकी सेटिंग्स सिंक कर सकता है, इसलिए ड्राइव सौंपने से पहले साइन आउट करें।"

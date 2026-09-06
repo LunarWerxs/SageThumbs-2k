@@ -225,6 +225,10 @@ chk_screenshot = "Aktiver skjermbildets hurtigtast"
 lbl_shot_hotkey = "Hurtigtast for avbildning:"
 chk_instant_screenshot = "Aktiver rask lagring av skjermbilder"
 lbl_shot_quick_hotkey = "Hurtigtast for rask lagring:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Hurtigtast for avbildning"
+hotkey_name_quick = "Hurtigtast for rask lagring"
 tip_screenshot = "Kjører en liten bakgrunnshjelper slik at en hurtigtast fanger en skjermregion som du kan tegne på, kopiere, lagre, feste eller laste opp. Av som standard — ingenting kjøres i bakgrunnen før du aktiverer det."
 tip_shot_hotkey = "Den globale tastetasten som starter en avbildning mens hjelperen er aktivert."
 tip_instant_screenshot = "Slår på en andre hurtigtast som øyeblikkelig lagrer hele skjermen til utklippstavlen din og Skjermbilder-mappen, uten editor."
@@ -526,6 +530,9 @@ nudge_month = "Minn meg på om en måned"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Noen innstillinger kunne ikke lagres til {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" og \"{b}\" er satt til den samme hurtigtasten. Gi en av dem en annen tastekombinasjon, og lagre på nytt."
 save_failed_registry = "registeret"
 sync_disconnected_body = "Synkronisering frakoblet. Innstillingene dine blir værende på denne PC-en."
 sync_portable_notice = "Bærbar kopi: denne innloggingen lagres ved siden av denne kopien av SageThumbs 2K, ikke på kontoen til denne PC-en. Alle som bruker samme bærbare kopi kan synkronisere innstillingene dine, så logg ut før du gir fra deg stasjonen."

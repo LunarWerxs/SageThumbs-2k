@@ -222,6 +222,10 @@ chk_screenshot = "Ota kuvakaappauspikanäppäin käyttöön"
 lbl_shot_hotkey = "Kaappauksen pikanäppäin:"
 chk_instant_screenshot = "Ota pikaisten kuvakaappauksien tallennus käyttöön"
 lbl_shot_quick_hotkey = "Pikatallennus-pikanäppäin:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Kaappauksen pikanäppäin"
+hotkey_name_quick = "Pikatallennus-pikanäppäin"
 tip_screenshot = "Ajaa pienen taustaprosessin, joka ottaa kuvakaappauksen näyttöalueesta, jossa voit piirtää valinnan, kopioida, tallentaa, kiinnittää tai ladata sen. Oletuksena pois päältä — mikään ei kulje taustalla, kunnes otat sen käyttöön."
 tip_shot_hotkey = "Maailmanlaajuinen näppäinyhdistelmä, joka aloittaa kaappauksen prosessin ollessa käytössä."
 tip_instant_screenshot = "Kytke päälle toinen pikanäppäin, joka tallentaa koko näytön välittömästi leikepöydällä ja kuvakaappauskansioihin ilman editoria."
@@ -517,6 +521,9 @@ nudge_month = "Muistuta kuukauden kuluttua"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Joitakin asetuksia ei voitu tallentaa: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" ja \"{b}\" on asetettu samaan pikanäppäimeen. Anna toiselle niistä eri näppäinyhdistelmä ja tallenna uudelleen."
 save_failed_registry = "rekisteri"
 sync_disconnected_body = "Synkronointi katkaistu. Asetuksesi pysyvät tällä koneella."
 sync_portable_notice = "Kannettava kopio: tämä kirjautuminen tallennetaan tämän SageThumbs 2K -kopion viereen, ei tämän koneen tilille. Kuka tahansa samaa kannettavaa kopiota käyttävä voi synkronoida asetuksesi, joten kirjaudu ulos ennen aseman luovuttamista."

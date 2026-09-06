@@ -226,6 +226,10 @@ chk_screenshot = "Tastenkürzel für Bildschirmfoto aktivieren"
 lbl_shot_hotkey = "Aufnahme-Tastenkombi:"
 chk_instant_screenshot = "Direktes Speichern von Bildschirmfotos aktivieren"
 lbl_shot_quick_hotkey = "Schnellspeicher-Tastenkombi:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Aufnahme-Tastenkombi"
+hotkey_name_quick = "Schnellspeicher-Tastenkombi"
 tip_screenshot = "Startet einen kleinen Hintergrund-Helfer, sodass eine Tastenkombination einen Bildschirmausschnitt erfasst, den Sie zeichnen, kopieren, speichern, anheften oder hochladen können. Standardmäßig aus — im Hintergrund wird nichts ausgeführt, bis Sie es aktivieren."
 tip_shot_hotkey = "Die globale Tastenkombination, die eine Erfassung startet, wenn der Helfer aktiviert ist."
 tip_instant_screenshot = "Aktiviert eine zweite Tastenkombination, die den gesamten Bildschirm sofort in die Zwischenablage und den Ordner \"Bildschirmfotos\" speichert, ohne einen Editor zu öffnen."
@@ -521,6 +525,9 @@ nudge_month = "In einem Monat erinnern"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Einige Einstellungen konnten nicht gespeichert werden: {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" und \"{b}\" sind auf dieselbe Tastenkombination eingestellt. Weisen Sie einer von beiden eine andere Kombination zu und speichern Sie erneut."
 save_failed_registry = "die Registrierung"
 sync_disconnected_body = "Synchronisierung getrennt. Deine Einstellungen bleiben auf diesem PC."
 sync_portable_notice = "Portable Version: Diese Anmeldung wird neben dieser Kopie von SageThumbs 2K gespeichert, nicht im Konto dieses PCs. Jeder, der dieselbe portable Kopie nutzt, kann deine Einstellungen synchronisieren – melde dich also ab, bevor du das Laufwerk weitergibst."

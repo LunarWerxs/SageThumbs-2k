@@ -1125,6 +1125,157 @@ pub(super) fn custom_action_hk_combo_index(packed: u32, vk: u32) -> usize {
     }
 }
 
+/// Which of the three hotkey-bearing controls a binding in [`conflicting_hotkeys`] came
+/// from, so the caller can name it in the Save-blocking message (2026-09-05 audit, F27).
+/// Kept out of the chord comparison itself, which only ever needs to know two chords are
+/// equal, not what owns them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotkeyRole {
+    /// The main capture hotkey (`ID_SHOT_HOTKEY`).
+    Capture,
+    /// The instant/quick-save hotkey (`ID_SHOT_QUICK_HOTKEY`). Only live while its checkbox
+    /// is on AND the screenshot feature itself is enabled, same gate `register_configured_hotkey`
+    /// applies (daemon.rs).
+    QuickSave,
+    /// The user-assignable custom-action hotkey (`ID_SHOT_ACTION_HK`). Registered whenever it
+    /// has a non-zero chord, independent of the screenshot feature.
+    CustomAction,
+}
+
+/// One hotkey-bearing control's CURRENT on-screen chord, read before Save folds an unchecked
+/// "instant screenshot" box down to a stored `0` (see `apply_screenshot_hotkeys`). `enabled`
+/// says whether this binding will actually be registered if Save proceeds, independent of
+/// whatever chord its combo happens to be showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HotkeyBinding {
+    pub(super) role: HotkeyRole,
+    pub(super) enabled: bool,
+    pub(super) packed: u32,
+}
+
+/// Every pair of bindings that are both enabled, both non-zero, and share the same packed
+/// chord. Before this existed, `apply_screenshot_hotkeys` wrote each of the three bindings
+/// independently, so two functions could end up on the identical chord and save that way:
+/// the daemon's sequential `RegisterHotKey` calls (`register_configured_hotkey`) would then
+/// fail the LATER registration and record it as a bind failure the status line reports as
+/// "another app", when the real cause was this dialog handing out one chord twice
+/// (2026-09-05 audit, F27). Pure: it knows nothing about the daemon, so genuine external
+/// contention (a different process already holding a chord) stays entirely the daemon's
+/// concern, unaffected by this check.
+pub(super) fn conflicting_hotkeys(bindings: &[HotkeyBinding]) -> Vec<(HotkeyRole, HotkeyRole)> {
+    let mut conflicts = Vec::new();
+    for i in 0..bindings.len() {
+        let a = &bindings[i];
+        if !a.enabled || a.packed == 0 {
+            continue;
+        }
+        for b in &bindings[i + 1..] {
+            if b.enabled && b.packed == a.packed {
+                conflicts.push((a.role, b.role));
+            }
+        }
+    }
+    conflicts
+}
+
+/// The current selection's `CB_GETITEMDATA` packed chord for a hotkey combo, or `0` if
+/// nothing is selected (`CB_ERR`). Every hotkey combo's items store the real packed chord
+/// (curated preset, "(none)", or an appended unrecognized chord) as their item data, so this
+/// mirrors exactly what `apply_screenshot_hotkeys` reads back on Save.
+unsafe fn combo_item_data(hwnd: HWND, id: i32) -> u32 {
+    let Ok(c) = GetDlgItem(Some(hwnd), id) else {
+        return 0;
+    };
+    let sel = SendMessageW(c, CB_GETCURSEL, None, None).0;
+    if sel < 0 {
+        return 0;
+    }
+    SendMessageW(c, CB_GETITEMDATA, Some(WPARAM(sel as usize)), None).0 as u32
+}
+
+/// Read the three hotkey-bearing controls' current on-screen state into [`HotkeyBinding`]s
+/// for [`conflicting_hotkeys`] to check, ahead of Save actually writing anything.
+unsafe fn read_hotkey_bindings(hwnd: HWND) -> [HotkeyBinding; 3] {
+    let shot_on = checked(hwnd, ID_SHOT_ENABLE);
+    let quick_on = checked(hwnd, ID_SHOT_QUICK_ENABLE);
+    let custom_packed = combo_item_data(hwnd, ID_SHOT_ACTION_HK);
+    [
+        HotkeyBinding {
+            role: HotkeyRole::Capture,
+            enabled: shot_on,
+            packed: combo_item_data(hwnd, ID_SHOT_HOTKEY),
+        },
+        HotkeyBinding {
+            role: HotkeyRole::QuickSave,
+            enabled: shot_on && quick_on,
+            packed: combo_item_data(hwnd, ID_SHOT_QUICK_HOTKEY),
+        },
+        HotkeyBinding {
+            role: HotkeyRole::CustomAction,
+            // Mirrors `register_configured_hotkey`: bound iff its own chord is non-zero,
+            // with no separate enable flag of its own.
+            enabled: custom_packed != 0,
+            packed: custom_packed,
+        },
+    ]
+}
+
+/// Human-readable name for a [`HotkeyRole`] in the conflict message. The two fixed hotkeys
+/// get a short locale label; the custom action's name depends on which action is currently
+/// selected in its dropdown, so it is read live rather than hard-coded.
+unsafe fn hotkey_role_name(hwnd: HWND, role: HotkeyRole) -> String {
+    match role {
+        HotkeyRole::Capture => t("hotkey_name_capture").to_string(),
+        HotkeyRole::QuickSave => t("hotkey_name_quick").to_string(),
+        HotkeyRole::CustomAction => {
+            let sel = GetDlgItem(Some(hwnd), ID_SHOT_ACTION)
+                .map(|c| SendMessageW(c, CB_GETCURSEL, None, None).0.max(0) as usize)
+                .unwrap_or(0);
+            crate::hotkey::ACTIONS
+                .get(sel)
+                .map(|&(_, key)| crate::hotkey::action_label(key).to_string())
+                .unwrap_or_else(|| t("lbl_custom_action").to_string())
+        }
+    }
+}
+
+/// The pure IDOK Save-blocking decision: given the bindings currently on screen, which two
+/// roles collide (if any) and must refuse the whole Save. `None` means Save may proceed.
+///
+/// Factored out of [`block_on_hotkey_conflict`] on 2026-09-05 (audit F27 follow-up) so the
+/// wiring the IDOK handler relies on — read bindings, DECIDE, show message — is three
+/// separately testable steps instead of one opaque HWND-driven function. Before this split,
+/// the only tests exercising the conflict math were `conflicting_hotkeys`'s own four; nothing
+/// proved the decision built from its result actually reached the Save path, so an inverted
+/// or dropped `if !block_on_hotkey_conflict(hwnd)` in `mod.rs` would have compiled clean and
+/// passed every test that existed. Thin on purpose: it does no more than
+/// `conflicting_hotkeys` already did, but naming the step lets it be called and asserted on
+/// directly, with no HWND, from both this file's tests and (indirectly) the source-contract
+/// test in `mod.rs` that checks the wiring is really there.
+pub(super) fn hotkey_conflict_decision(
+    bindings: &[HotkeyBinding],
+) -> Option<(HotkeyRole, HotkeyRole)> {
+    conflicting_hotkeys(bindings).into_iter().next()
+}
+
+/// If the currently-selected hotkeys conflict (the same chord bound to two enabled
+/// functions), tell the user which two and refuse to Save. A duplicate used to be written
+/// as if both halves worked; the later `RegisterHotKey` would just fail silently, leaving one
+/// function unreachable with no indication it was this dialog's own doing (2026-09-05 audit,
+/// F27). Returns `true` when Save must be blocked (the caller shows the message and does not
+/// call `apply_settings`).
+pub(super) unsafe fn block_on_hotkey_conflict(hwnd: HWND) -> bool {
+    let bindings = read_hotkey_bindings(hwnd);
+    let Some((a, b)) = hotkey_conflict_decision(&bindings) else {
+        return false;
+    };
+    let msg = t("msg_hotkey_conflict")
+        .replace("{a}", &hotkey_role_name(hwnd, a))
+        .replace("{b}", &hotkey_role_name(hwnd, b));
+    message_box(hwnd, &msg, "SageThumbs 2K");
+    true
+}
+
 /// Re-select every combo whose current index [`load_values`] cannot restore on its own — it
 /// has no `CB_SETCURSEL` calls of its own, because these combos are seeded ONCE, inline,
 /// when `build::build_controls` creates them. That is fine for the dialog's normal lifetime
@@ -1545,5 +1696,188 @@ mod combo_reseed_tests {
             SAVE_FAILED.with(|f| f.get()),
             "a later success must not clear an earlier failure"
         );
+    }
+}
+
+#[cfg(test)]
+mod hotkey_conflict_tests {
+    use super::*;
+
+    /// Build one binding tersely for the table below.
+    fn b(role: HotkeyRole, enabled: bool, packed: u32) -> HotkeyBinding {
+        HotkeyBinding {
+            role,
+            enabled,
+            packed,
+        }
+    }
+
+    /// Every combination of two (or three) enabled bindings sharing a chord must be flagged,
+    /// naming the actual pair(s), not just "a conflict exists somewhere" (2026-09-05 audit,
+    /// F27 acceptance: "all equal pairs among the bindings"). Before this function existed
+    /// nothing checked this at all, so two enabled bindings on the same chord saved as if
+    /// both would work.
+    #[test]
+    fn every_pair_of_enabled_bindings_sharing_a_chord_is_flagged() {
+        use HotkeyRole::*;
+        // (capture, quick, custom) packed chords -> expected conflicting pairs, in the
+        // (i, j) order `conflicting_hotkeys` walks them.
+        type Case = (u32, u32, u32, &'static [(HotkeyRole, HotkeyRole)]);
+        let cases: &[Case] = &[
+            (0x0203, 0x0203, 0x0450, &[(Capture, QuickSave)]),
+            (0x0203, 0x0450, 0x0203, &[(Capture, CustomAction)]),
+            (0x0450, 0x0203, 0x0203, &[(QuickSave, CustomAction)]),
+            (
+                0x0203,
+                0x0203,
+                0x0203,
+                &[
+                    (Capture, QuickSave),
+                    (Capture, CustomAction),
+                    (QuickSave, CustomAction),
+                ],
+            ),
+            (0x0203, 0x0450, 0x0999, &[]),
+        ];
+        for &(cap, quick, custom, expected) in cases {
+            let bindings = [
+                b(Capture, true, cap),
+                b(QuickSave, true, quick),
+                b(CustomAction, true, custom),
+            ];
+            assert_eq!(
+                conflicting_hotkeys(&bindings),
+                expected.to_vec(),
+                "capture={cap:#06x} quick={quick:#06x} custom={custom:#06x}"
+            );
+        }
+    }
+
+    /// A binding held disabled (its checkbox off, e.g. "instant screenshot" unticked while its
+    /// combo still shows a leftover chord) can never actually register, so it must never be
+    /// reported as conflicting even while it shares a chord with something that IS enabled
+    /// (F27 acceptance: "a disabled action holding the same chord").
+    #[test]
+    fn a_disabled_binding_holding_the_same_chord_never_conflicts() {
+        let bindings = [
+            HotkeyBinding {
+                role: HotkeyRole::Capture,
+                enabled: true,
+                packed: 0x0203,
+            },
+            HotkeyBinding {
+                role: HotkeyRole::QuickSave,
+                enabled: false, // "instant screenshot" unticked
+                packed: 0x0203,
+            },
+            HotkeyBinding {
+                role: HotkeyRole::CustomAction,
+                enabled: true,
+                packed: 0x0450,
+            },
+        ];
+        assert!(conflicting_hotkeys(&bindings).is_empty());
+    }
+
+    /// A packed value of `0` means "unbound" for every one of these controls (the custom
+    /// action's "(none)" item, or a quick-save chord folded to 0 when its box is off) and must
+    /// never conflict with another `0`, even if both bindings are otherwise "enabled" (F27
+    /// acceptance: "zero/unbound values").
+    #[test]
+    fn a_zero_unbound_chord_never_conflicts_even_when_enabled() {
+        let bindings = [
+            HotkeyBinding {
+                role: HotkeyRole::Capture,
+                enabled: true,
+                packed: 0,
+            },
+            HotkeyBinding {
+                role: HotkeyRole::QuickSave,
+                enabled: true,
+                packed: 0,
+            },
+            HotkeyBinding {
+                role: HotkeyRole::CustomAction,
+                enabled: true,
+                packed: 0,
+            },
+        ];
+        assert!(conflicting_hotkeys(&bindings).is_empty());
+    }
+
+    /// A hand-edited or legacy chord outside the curated [`SHOT_PRESETS`] list (the same shape
+    /// `append_unknown_chord_item` gives its own combo row) still conflicts like any other
+    /// chord: the comparison is on the raw packed value, never on preset membership (F27
+    /// acceptance: "custom stored chords").
+    #[test]
+    fn a_stored_chord_outside_the_curated_presets_still_conflicts_if_shared() {
+        let foreign = 0x0777;
+        assert!(
+            SHOT_PRESETS.iter().all(|&(_, p)| p != foreign),
+            "test fixture must actually be outside the curated presets"
+        );
+        let bindings = [
+            HotkeyBinding {
+                role: HotkeyRole::Capture,
+                enabled: true,
+                packed: foreign,
+            },
+            HotkeyBinding {
+                role: HotkeyRole::QuickSave,
+                enabled: true,
+                packed: 0x0450,
+            },
+            HotkeyBinding {
+                role: HotkeyRole::CustomAction,
+                enabled: true,
+                packed: foreign,
+            },
+        ];
+        assert_eq!(
+            conflicting_hotkeys(&bindings),
+            vec![(HotkeyRole::Capture, HotkeyRole::CustomAction)]
+        );
+    }
+
+    /// The IDOK decision itself, not just the underlying chord math: with a conflicting pair
+    /// present, `hotkey_conflict_decision` must refuse (return `Some`) and identify BOTH
+    /// colliding roles, and each must actually be nameable for the message
+    /// `block_on_hotkey_conflict` builds from them (2026-09-05 audit, F27 follow-up — the gap
+    /// was that nothing proved the decision reached the message, only that the chord math was
+    /// right). `HWND::default()` is enough here because neither role in this case is
+    /// `CustomAction`, the only branch of `hotkey_role_name` that touches a real control.
+    #[test]
+    fn decision_refuses_and_both_roles_are_nameable_when_bindings_conflict() {
+        let bindings = [
+            b(HotkeyRole::Capture, true, 0x0203),
+            b(HotkeyRole::QuickSave, true, 0x0203),
+            b(HotkeyRole::CustomAction, true, 0x0450),
+        ];
+        let decision = hotkey_conflict_decision(&bindings);
+        assert_eq!(decision, Some((HotkeyRole::Capture, HotkeyRole::QuickSave)));
+        let (a, other) = decision.expect("checked above");
+        let (name_a, name_b) = unsafe {
+            (
+                hotkey_role_name(HWND::default(), a),
+                hotkey_role_name(HWND::default(), other),
+            )
+        };
+        assert_eq!(name_a, t("hotkey_name_capture"));
+        assert_eq!(name_b, t("hotkey_name_quick"));
+        assert_ne!(name_a, name_b, "the message must name two DIFFERENT roles");
+    }
+
+    /// The mirror case: no enabled pair shares a chord, so the decision must let Save
+    /// proceed. Paired with the test above, this is the pair the F27 acceptance criteria
+    /// asked for directly: "(a) with a conflicting pair the decision refuses ... (b) with no
+    /// conflict it proceeds."
+    #[test]
+    fn decision_allows_save_to_proceed_when_bindings_do_not_conflict() {
+        let bindings = [
+            b(HotkeyRole::Capture, true, 0x0203),
+            b(HotkeyRole::QuickSave, true, 0x0450),
+            b(HotkeyRole::CustomAction, false, 0x0203), // disabled, so shares Capture's chord for free
+        ];
+        assert_eq!(hotkey_conflict_decision(&bindings), None);
     }
 }

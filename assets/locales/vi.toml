@@ -227,6 +227,10 @@ chk_screenshot = "Bật phím tắt chụp ảnh"
 lbl_shot_hotkey = "Phím tắt chụp ảnh:"
 chk_instant_screenshot = "Bật chụp ảnh lưu nhanh"
 lbl_shot_quick_hotkey = "Phím tắt lưu nhanh:"
+# Short names for the hotkey-conflict message below (msg_hotkey_conflict). The custom
+# action's own name is read live from its dropdown, so it needs no key here.
+hotkey_name_capture = "Phím tắt chụp ảnh"
+hotkey_name_quick = "Phím tắt lưu nhanh"
 tip_screenshot = "Chạy một trợ giúp nền nhỏ để bạn có thể dùng phím tắt để chụp vùng màn hình mà bạn có thể vẽ, sao chép, lưu, ghim hoặc tải lên. Mặc định tắt — không có gì chạy nền cho đến khi bạn bật."
 tip_shot_hotkey = "Tổ hợp phím toàn cầu bắt đầu chụp ảnh trong khi trợ giúp được bật."
 tip_instant_screenshot = "Bật phím tắt thứ hai để lưu toàn bộ màn hình ngay lập tức vào khay nhớ tạm và thư mục ảnh chụp màn hình, không cần trình chỉnh sửa."
@@ -524,6 +528,9 @@ nudge_month = "Nhắc tôi sau một tháng"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Không thể lưu một số cài đặt vào {path}."
+# Two of the three hotkey-bearing controls (main capture, quick-save, custom action) share
+# the same chord. Save is refused rather than silently letting only one of them work.
+msg_hotkey_conflict = "\"{a}\" và \"{b}\" đang dùng chung một phím tắt. Hãy đặt tổ hợp phím khác cho một trong hai, rồi lưu lại."
 save_failed_registry = "registry"
 sync_disconnected_body = "Đồng bộ đã ngắt kết nối. Cài đặt của bạn vẫn ở trên máy tính này."
 sync_portable_notice = "Bản sao di động: thông tin đăng nhập này được lưu bên cạnh bản sao SageThumbs 2K này, không phải trong tài khoản của máy tính này. Bất kỳ ai dùng cùng bản sao di động đều có thể đồng bộ cài đặt của bạn, vì vậy hãy đăng xuất trước khi giao ổ đĩa cho người khác."
