@@ -8,7 +8,63 @@
 
 use std::path::Path;
 
+use windows::Win32::Foundation::E_FAIL;
+
 use crate::{decode, formats, ocr, settings, strip, topdf, verbs};
+
+/// Refuse an `output` that is one of the `inputs`, before anything is read or written
+/// (2026-09-05 audit, F30). Every exact-destination verb here reads its inputs and then
+/// replaces the destination, so `thumbnail same.png same.png` destroyed the original; a
+/// case variant, a relative or `..` spelling and a hard link all did the same and none of
+/// them is caught by comparing the strings. `fsutil::same_file` compares canonical paths
+/// and, for hard links, the file's own identity. No verb here offers an in-place form, so
+/// there is no flag that lifts this.
+fn reject_output_alias<'a>(
+    output: &str,
+    inputs: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    match crate::fsutil::aliased_input(Path::new(output), inputs) {
+        Some(input) => Err(format!(
+            "output {output} is the same file as input {input}; refusing to overwrite the \
+             source (write to a different path)"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The composer behind a verb writes exactly one file type, so its destination has to say
+/// so (2026-09-05 audit, F30): `pdf same.png same.png` used to put PDF bytes into a `.png`.
+/// Case-insensitive, like every other extension test in this crate.
+fn require_output_ext(output: &str, ext: &str) -> Result<(), String> {
+    let got = Path::new(output)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if got.eq_ignore_ascii_case(ext) {
+        Ok(())
+    } else {
+        Err(format!(
+            "output must be a .{ext} file (got {output}); this command only writes .{ext}"
+        ))
+    }
+}
+
+/// Write `img` to `output` through the shared atomic writer (temp sibling + rename), the
+/// same path the convert verbs take. `thumbnail` used to call `DynamicImage::save`, which
+/// truncates the destination BEFORE encoding, so a failed encode left a 0-byte file where a
+/// good one had been (2026-09-05 audit, F30). `format` was decided from `output`'s extension
+/// up front, because the temp file's own extension is `.st2ktmp`.
+fn save_atomic(
+    img: &image::DynamicImage,
+    output: &str,
+    format: image::ImageFormat,
+) -> Result<(), String> {
+    verbs::write_atomic(Path::new(output), |tmp| {
+        img.save_with_format(tmp, format)
+            .map_err(|e| windows::core::Error::new(E_FAIL, format!("write {output}: {e}")))
+    })
+    .map_err(|e| e.message())
+}
 
 /// Ctrl+C -> graceful cancel for [`prebuild`], the one CLI verb long enough to need it
 /// (`prebuild.rs`'s module doc promises "v1 offers cancel (Ctrl+C) instead" of pause/resume).
@@ -184,7 +240,13 @@ fn fit_for_cli(img: image::DynamicImage, max_dim: u32) -> image::DynamicImage {
 
 /// `max_dim` px on the long edge (`0` = full size). The headline verb: produces
 /// previews for the formats Windows itself can't.
+///
+/// Refuses an `output` that is the `input` under any spelling, and an `output` whose
+/// extension names no writable format, before any decode work (2026-09-05 audit, F30).
 pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, String> {
+    reject_output_alias(output, [input])?;
+    let format = image::ImageFormat::from_path(output)
+        .map_err(|_| format!("cannot write {output}: the extension names no image format"))?;
     let archive_ext = Path::new(input)
         .extension()
         .and_then(|e| e.to_str())
@@ -199,7 +261,7 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
     // tiers still get their shot.
     if let Some(img) = archive_thumbnail(input) {
         let out = fit_for_cli(img, max_dim);
-        out.save(output).map_err(|e| e.to_string())?;
+        save_atomic(&out, output, format)?;
         return Ok(output.to_string());
     }
     // Cap the read at the shared input budget (metadata-checked before allocating)
@@ -233,7 +295,7 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
         }
     };
     let out = fit_for_cli(img, max_dim);
-    out.save(output).map_err(|e| e.to_string())?;
+    save_atomic(&out, output, format)?;
     Ok(output.to_string())
 }
 
@@ -290,7 +352,9 @@ fn archive_thumbnail(input: &str) -> Option<image::DynamicImage> {
 
 /// Convert `input` to the exact `output` path at `quality`, optional `resize`.
 /// `webp_quality = Some(q)` writes lossy WebP at quality `q` (only meaningful when
-/// `output` is a `.webp`); `None` keeps WebP lossless.
+/// `output` is a `.webp`); `None` keeps WebP lossless. Refuses an `output` that is the
+/// `input` under any spelling (2026-09-05 audit, F30): the write replaces the destination,
+/// and there is no in-place form of this verb.
 pub fn convert(
     input: &str,
     output: &str,
@@ -298,6 +362,7 @@ pub fn convert(
     webp_quality: Option<u8>,
     resize: verbs::Resize,
 ) -> Result<String, String> {
+    reject_output_alias(output, [input])?;
     // Clamp HERE, not just at each front end, so the CLI (which only clamped via
     // `u8::from_str` rejecting out-of-range strings, not in-range-but-silly ones like 0 or
     // 255) and the MCP surface (which already clamped) actually agree on what a "quality"
@@ -347,7 +412,9 @@ pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
 }
 
 /// Compress to a target file size → a "(compressed)" JPEG sibling at or under
-/// `target_bytes` (quality binary-search + downscale fallback). See [`parse_size`].
+/// `target_bytes` (quality binary-search + downscale). See [`parse_size`]. A target the
+/// search cannot meet fails and writes nothing; the error names the smallest size it can
+/// reach (2026-09-05 audit, F32). The MCP `compress` tool shares this exact contract.
 pub fn compress(input: &str, target_bytes: u64) -> Result<String, String> {
     verbs::compress_to_size(input, target_bytes)
         .map(|p| p.display().to_string())
@@ -409,30 +476,83 @@ pub fn ocr(input: &str) -> Result<String, String> {
     })
 }
 
-/// Combine images into one PDF (one page each).
-pub fn pdf(output: &str, inputs: &[String]) -> Result<String, String> {
+/// How the multi-input verbs (`pdf`, `cbz`) report and police omitted inputs, from either
+/// front door (2026-09-05 audit, F31).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CombineOpts {
+    /// Fail, writing nothing, if any input would be left out (`--strict`).
+    pub strict: bool,
+    /// Return the [`verbs::Combined`] JSON instead of text (`--json`; always on over MCP).
+    pub json: bool,
+}
+
+impl CombineOpts {
+    fn on_omit(self) -> verbs::OnOmit {
+        if self.strict {
+            verbs::OnOmit::Fail
+        } else {
+            verbs::OnOmit::Report
+        }
+    }
+}
+
+/// Render a composer's result for the caller. The all-good text form is exactly the output
+/// path, as it always was, so a script reading stdout keeps working; a partial result adds
+/// a `partial:` status line and one tab-separated `omitted` line per left-out input, the
+/// same lines a `--strict` refusal carries. The JSON form is [`verbs::Combined::to_json`].
+fn combined_report(c: &verbs::Combined, opts: CombineOpts) -> String {
+    if opts.json {
+        return c.to_json().to_string();
+    }
+    let mut s = c.output.display().to_string();
+    if c.is_partial() {
+        s.push_str(&format!(
+            "\npartial: {} of {} inputs combined, {} omitted",
+            c.used,
+            c.requested(),
+            c.omitted.len()
+        ));
+        for o in &c.omitted {
+            s.push('\n');
+            s.push_str(&o.as_line());
+        }
+    }
+    s
+}
+
+/// Combine images into one PDF (one page each). The destination must be a `.pdf` and must
+/// not be one of the inputs (2026-09-05 audit, F30); inputs the composer cannot use are
+/// reported per input, or refused outright under `opts.strict` (F31).
+pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String, String> {
     if inputs.is_empty() {
         return Err("no input images".to_string());
     }
+    require_output_ext(output, "pdf")?;
     // Same JPEG quality the right-click Combine-to-PDF verb uses (the user's configured
     // setting) — a hardcoded 85 silently diverged from the menu path for no reason.
-    topdf::combine_to_pdf(inputs, Path::new(output), crate::settings::jpeg_quality())
-        .map_err(|e| format!("pdf build failed: {e}"))?;
-    Ok(output.to_string())
+    let combined = topdf::combine_to_pdf(
+        inputs,
+        Path::new(output),
+        crate::settings::jpeg_quality(),
+        opts.on_omit(),
+    )
+    .map_err(|e| format!("pdf build failed: {}", e.message()))?;
+    Ok(combined_report(&combined, opts))
 }
 
 /// Combine images into one CBZ (comic-book zip) archive, natural-sorted, with a
 /// `ComicInfo.xml` sidecar as the first entry. Same combiner the right-click
 /// "Combine to CBZ" verb uses (`verbs::actions::handle_combine_to_cbz`) — this is
 /// just its CLI/MCP front door, which never existed even though the PDF sibling
-/// always had one.
-pub fn cbz(output: &str, inputs: &[String]) -> Result<String, String> {
+/// always had one. Same destination and omission contract as [`pdf`].
+pub fn cbz(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String, String> {
     if inputs.is_empty() {
         return Err("no input images".to_string());
     }
-    verbs::combine_to_cbz(inputs, Path::new(output))
-        .map_err(|e| format!("cbz build failed: {e}"))?;
-    Ok(output.to_string())
+    require_output_ext(output, "cbz")?;
+    let combined = verbs::combine_to_cbz(inputs, Path::new(output), opts.on_omit())
+        .map_err(|e| format!("cbz build failed: {}", e.message()))?;
+    Ok(combined_report(&combined, opts))
 }
 
 /// Image dimensions + EXIF (camera/date/GPS/bit depth/DPI), as text or JSON — or, for one
@@ -1551,14 +1671,20 @@ mod tests {
             .unwrap();
 
         let out = dir.join("comic.cbz");
-        cbz(
+        let text = cbz(
             out.to_str().unwrap(),
             &[
                 a.to_str().unwrap().to_string(),
                 b.to_str().unwrap().to_string(),
             ],
+            CombineOpts::default(),
         )
         .unwrap();
+        assert_eq!(
+            text,
+            out.to_str().unwrap(),
+            "an all-good combine prints exactly the output path"
+        );
         assert!(out.exists());
         let f = std::fs::File::open(&out).unwrap();
         let zip = zip::ZipArchive::new(f).unwrap();
@@ -1589,6 +1715,379 @@ mod tests {
 
         let err = info(bogus.to_str().unwrap(), true).unwrap_err();
         assert!(err.contains("cannot read"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn save_png(path: &Path, w: u32, h: u32) -> String {
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            w,
+            h,
+            image::Rgb([40, 90, 200]),
+        ))
+        .save(path)
+        .unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    /// 2026-09-05 audit, F30: `thumbnail same.png same.png` used to decode the file and then
+    /// save the 128 px result over it, destroying the original. Every spelling of the input
+    /// (itself, a case variant, a `..` detour, a hard link) must be refused BEFORE anything
+    /// is written, and the input must be byte-identical afterwards. Against the pre-fix code
+    /// this fails at the first `is_err` (the call succeeds) and the bytes differ.
+    #[test]
+    fn thumbnail_refuses_every_spelling_of_its_own_input() {
+        let dir = scratch("alias");
+        let src = save_png(&dir.join("Photo.png"), 300, 200);
+        let before = std::fs::read(&src).unwrap();
+        let link = dir.join("link.png");
+        std::fs::hard_link(&src, &link).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+
+        let aliases = [
+            src.clone(),
+            dir.join("PHOTO.PNG").to_string_lossy().into_owned(),
+            dir.join("sub")
+                .join("..")
+                .join("Photo.png")
+                .to_string_lossy()
+                .into_owned(),
+            link.to_string_lossy().into_owned(),
+        ];
+        for alias in &aliases {
+            let err = thumbnail(&src, alias, 128).expect_err(alias);
+            assert!(err.contains("same file"), "the refusal must say why: {err}");
+            assert_eq!(
+                std::fs::read(&src).unwrap(),
+                before,
+                "the input was modified via alias {alias}"
+            );
+        }
+
+        // A distinct destination still works.
+        let out = dir.join("thumb.png");
+        thumbnail(&src, out.to_str().unwrap(), 128).unwrap();
+        assert!(image::open(&out).unwrap().width() <= 128);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F30: `thumbnail` wrote its output with a plain `DynamicImage::save`,
+    /// which truncates the destination BEFORE encoding, so an encode failure left a 0-byte
+    /// file where a good one had been. The write now goes through the shared atomic writer.
+    /// ICO is the deterministic failure: its header cannot express an edge over 256 px, so a
+    /// full-size render of a 400 px source fails inside the encoder, after the file is open.
+    /// Against the pre-fix code the existing `out.ico` is left at 0 bytes.
+    #[test]
+    fn a_failed_thumbnail_write_leaves_an_existing_output_intact() {
+        let dir = scratch("atomic");
+        let src = save_png(&dir.join("big.png"), 400, 300);
+        let out = dir.join("out.ico");
+        let existing = b"an existing icon the user wants to keep".to_vec();
+        std::fs::write(&out, &existing).unwrap();
+
+        let err = thumbnail(&src, out.to_str().unwrap(), 0).expect_err("ico cannot hold 400 px");
+        assert!(!err.is_empty());
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            existing,
+            "a failed write must not touch the existing destination"
+        );
+        assert!(
+            !verbs::with_tmp_suffix(&out).exists(),
+            "the temp file must be cleaned up"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F31: a PDF from one good PNG, one corrupt PNG and one missing file
+    /// used to exit 0 printing only the output path. The report now carries the counts, a
+    /// `partial` status and one machine-readable line per omitted input with a DISTINCT
+    /// cause (corrupt = undecodable, missing = unreadable), in both the text and the JSON
+    /// form; `strict` refuses to write at all. Against the pre-fix code the text is the bare
+    /// path (no `partial:` line) and the JSON form does not exist.
+    #[test]
+    fn pdf_reports_each_omitted_input_with_its_cause_and_strict_refuses() {
+        let dir = scratch("pdf_partial");
+        let good = save_png(&dir.join("good.png"), 30, 20);
+        let corrupt = dir.join("corrupt.png");
+        std::fs::write(&corrupt, b"not a png at all").unwrap();
+        let corrupt = corrupt.to_str().unwrap().to_string();
+        let missing = dir.join("missing.png").to_str().unwrap().to_string();
+        let inputs = [good.clone(), corrupt.clone(), missing.clone()];
+
+        let out = dir.join("out.pdf");
+        let text = pdf(out.to_str().unwrap(), &inputs, CombineOpts::default()).unwrap();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            out.to_str(),
+            "first line stays the output path"
+        );
+        assert_eq!(
+            lines.next(),
+            Some("partial: 1 of 3 inputs combined, 2 omitted")
+        );
+        let omitted: Vec<Vec<&str>> = lines.map(|l| l.split('\t').collect()).collect();
+        assert_eq!(omitted.len(), 2, "{text}");
+        for row in &omitted {
+            assert_eq!(row[0], "omitted");
+            assert_eq!(
+                row.len(),
+                4,
+                "omitted<TAB>input<TAB>cause<TAB>detail: {row:?}"
+            );
+        }
+        let cause_of = |input: &str| {
+            omitted
+                .iter()
+                .find(|r| r[1] == input)
+                .map(|r| r[2])
+                .unwrap_or_else(|| panic!("{input} not listed in {text}"))
+        };
+        assert_eq!(cause_of(&corrupt), "undecodable");
+        assert_eq!(cause_of(&missing), "unreadable");
+
+        // The JSON form carries the same facts for an MCP caller.
+        let json_out = dir.join("out2.pdf");
+        let opts = CombineOpts {
+            json: true,
+            ..CombineOpts::default()
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&pdf(json_out.to_str().unwrap(), &inputs, opts).unwrap()).unwrap();
+        assert_eq!(v["status"], "partial");
+        assert_eq!(v["requested"], 3);
+        assert_eq!(v["combined"], 1);
+        assert_eq!(v["output"], json_out.to_str().unwrap());
+        let causes: Vec<(&str, &str)> = v["omitted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| (o["input"].as_str().unwrap(), o["cause"].as_str().unwrap()))
+            .collect();
+        assert!(causes.contains(&(corrupt.as_str(), "undecodable")), "{v}");
+        assert!(causes.contains(&(missing.as_str(), "unreadable")), "{v}");
+
+        // Strict: fail, name both, write nothing.
+        let strict_out = dir.join("strict.pdf");
+        let opts = CombineOpts {
+            strict: true,
+            ..CombineOpts::default()
+        };
+        let err = pdf(strict_out.to_str().unwrap(), &inputs, opts).unwrap_err();
+        assert!(!strict_out.exists(), "strict must not write a partial PDF");
+        assert!(err.contains("strict"), "{err}");
+        assert!(err.contains(&corrupt) && err.contains(&missing), "{err}");
+
+        // An all-good combine still prints exactly the path, and its JSON says "ok".
+        let clean = dir.join("clean.pdf");
+        assert_eq!(
+            pdf(
+                clean.to_str().unwrap(),
+                std::slice::from_ref(&good),
+                CombineOpts::default()
+            )
+            .unwrap(),
+            clean.to_str().unwrap()
+        );
+        let opts = CombineOpts {
+            json: true,
+            ..CombineOpts::default()
+        };
+        let clean2 = dir.join("clean2.pdf");
+        let v: serde_json::Value =
+            serde_json::from_str(&pdf(clean2.to_str().unwrap(), &[good], opts).unwrap()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["omitted"].as_array().map(Vec::len), Some(0));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The CBZ sibling of the test above: a missing input is listed as `unreadable` with its
+    /// count, and `strict` writes nothing. Against the pre-fix code the text is the bare path.
+    #[test]
+    fn cbz_reports_a_missing_input_as_unreadable_and_strict_refuses() {
+        let dir = scratch("cbz_partial");
+        let good = save_png(&dir.join("p1.png"), 10, 10);
+        let missing = dir.join("p2.png").to_str().unwrap().to_string();
+        let inputs = [good, missing.clone()];
+
+        let out = dir.join("out.cbz");
+        let text = cbz(out.to_str().unwrap(), &inputs, CombineOpts::default()).unwrap();
+        assert!(
+            text.contains("partial: 1 of 2 inputs combined, 1 omitted"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("omitted\t{missing}\tunreadable\t")),
+            "{text}"
+        );
+        let zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        assert_eq!(zip.len(), 2, "the sidecar plus the one readable page");
+
+        let strict_out = dir.join("strict.cbz");
+        let opts = CombineOpts {
+            strict: true,
+            ..CombineOpts::default()
+        };
+        let err = cbz(strict_out.to_str().unwrap(), &inputs, opts).unwrap_err();
+        assert!(!strict_out.exists(), "strict must not write a partial CBZ");
+        assert!(err.contains(&missing), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F30: `pdf same.png same.png` and `cbz same.png same.png` exited 0
+    /// and replaced the PNG with PDF/ZIP bytes. The destination must carry the composer's
+    /// extension, and an output that IS an input (here a real PDF/CBZ re-combined over itself,
+    /// the same-type alias the extension test cannot catch) is refused with the source left
+    /// byte-identical. Against the pre-fix code every one of these calls succeeds.
+    #[test]
+    fn pdf_and_cbz_refuse_a_foreign_extension_and_an_output_that_is_an_input() {
+        let dir = scratch("pdf_cbz_alias");
+        let png = save_png(&dir.join("same.png"), 30, 20);
+        let png_before = std::fs::read(&png).unwrap();
+
+        type Verb = fn(&str, &[String], CombineOpts) -> Result<String, String>;
+        let verbs: [(Verb, &str); 2] = [(pdf, "pdf"), (cbz, "cbz")];
+        for (verb, name) in verbs {
+            let err =
+                verb(&png, std::slice::from_ref(&png), CombineOpts::default()).expect_err(name);
+            assert!(err.contains(&format!(".{name}")), "{name}: {err}");
+            assert_eq!(
+                std::fs::read(&png).unwrap(),
+                png_before,
+                "{name} touched the PNG"
+            );
+        }
+
+        let doc = dir.join("doc.pdf");
+        pdf(
+            doc.to_str().unwrap(),
+            std::slice::from_ref(&png),
+            CombineOpts::default(),
+        )
+        .unwrap();
+        let doc_before = std::fs::read(&doc).unwrap();
+        let err = pdf(
+            dir.join("DOC.PDF").to_str().unwrap(),
+            &[png.clone(), doc.to_str().unwrap().to_string()],
+            CombineOpts::default(),
+        )
+        .expect_err("a PDF re-combined over itself");
+        assert!(err.contains("same file"), "{err}");
+        assert_eq!(
+            std::fs::read(&doc).unwrap(),
+            doc_before,
+            "the PDF was modified"
+        );
+
+        let comic = dir.join("comic.cbz");
+        cbz(
+            comic.to_str().unwrap(),
+            std::slice::from_ref(&png),
+            CombineOpts::default(),
+        )
+        .unwrap();
+        let comic_before = std::fs::read(&comic).unwrap();
+        let err = cbz(
+            comic.to_str().unwrap(),
+            &[png, comic.to_str().unwrap().to_string()],
+            CombineOpts::default(),
+        )
+        .expect_err("a CBZ re-combined over itself");
+        assert!(err.contains("same file"), "{err}");
+        assert_eq!(
+            std::fs::read(&comic).unwrap(),
+            comic_before,
+            "the CBZ was modified"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F30: `convert` has no in-place form either, so the same alias
+    /// guard applies; a distinct destination still converts.
+    #[test]
+    fn convert_refuses_an_output_that_is_its_input() {
+        let dir = scratch("convert_alias");
+        let src = save_png(&dir.join("a.png"), 20, 20);
+        let before = std::fs::read(&src).unwrap();
+        let err = convert(&src, &src, 90, None, verbs::Resize::None).unwrap_err();
+        assert!(err.contains("same file"), "{err}");
+        assert_eq!(std::fs::read(&src).unwrap(), before);
+        let out = dir.join("a.jpg");
+        convert(&src, out.to_str().unwrap(), 90, None, verbs::Resize::None).unwrap();
+        assert!(out.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F32: `compress x.png --max-size 1` used to succeed with a 628-byte
+    /// JPEG while the help promised "at or under". One policy now: a target the search cannot
+    /// meet (0, 1) fails, writes nothing, and names the smallest size it can reach; an exact
+    /// fit and a normal target succeed at or under the target. Against the pre-fix code the
+    /// first two calls succeed and leave a "(compressed)" file behind.
+    #[test]
+    fn compress_refuses_an_impossible_target_and_honours_a_feasible_one() {
+        let dir = scratch("compress_policy");
+        // Per-pixel noise so the JPEG has real size to search over.
+        let img = image::RgbImage::from_fn(96, 96, |x, y| {
+            let h = (x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B)).rotate_left(7);
+            image::Rgb([h as u8, (h >> 8) as u8, (h >> 16) as u8])
+        });
+        let src = dir.join("noise.png");
+        image::DynamicImage::ImageRgb8(img).save(&src).unwrap();
+        let src = src.to_str().unwrap().to_string();
+        let sibling_count = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .filter(|e| e.is_ok())
+                .count()
+        };
+
+        for impossible in [0u64, 1] {
+            let err = compress(&src, impossible).unwrap_err();
+            assert!(
+                err.contains(&format!("cannot fit in {impossible} bytes"))
+                    && err.contains("smallest")
+                    && err.contains("nothing was written"),
+                "{err}"
+            );
+            assert_eq!(
+                sibling_count(),
+                1,
+                "a refused compress must write nothing: {err}"
+            );
+        }
+
+        // A normal target: the output is at or under it.
+        let normal = compress(&src, 100_000).unwrap();
+        let normal_len = std::fs::metadata(&normal).unwrap().len();
+        assert!(
+            normal_len <= 100_000,
+            "{normal_len} bytes over a 100000-byte target"
+        );
+
+        // An exact fit: asking for precisely what the search produced must succeed at
+        // exactly that size, not be refused as "over".
+        let exact = compress(&src, normal_len).unwrap();
+        assert_eq!(std::fs::metadata(&exact).unwrap().len(), normal_len);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

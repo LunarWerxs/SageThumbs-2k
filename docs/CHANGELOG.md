@@ -83,6 +83,29 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **The `st2k` command line and the MCP tools can no longer overwrite a source file with their
+  own output.** `st2k pdf same.png same.png` (and `cbz`, `thumbnail`, `convert`) used to read the
+  file and then replace it. An output that is one of the inputs is now refused before anything is
+  written, under any spelling of the path (a different case, a relative path, a hard link), and
+  `pdf`/`cbz` insist on a `.pdf`/`.cbz` destination. Thumbnails are also written through a
+  temporary file, so a failed write leaves an existing output untouched.
+
+- **`st2k pdf` and `st2k cbz` say which inputs they left out, and why.** A combine with one
+  unreadable or corrupt input used to print only the output path and exit 0. It now prints a
+  `partial` line with the counts and one `omitted` line per left-out file (unreadable, undecodable
+  or unencodable); `--json` returns the same as JSON, and `--strict` fails instead of writing a
+  partial file. The MCP `pdf`/`cbz` tools return that JSON and accept `strict`.
+
+- **`st2k compress` no longer reports success when it missed the target.** Asking for a size
+  below what a JPEG can reach used to quietly write the smallest file it could and exit 0. It now
+  fails, writes nothing, and tells you the smallest size it can make; the MCP `compress` tool and
+  the right-click verb follow the same rule.
+
+- **Single-file `st2k` commands reject extra file names instead of ignoring them.** `st2k strip
+  a.jpg b.jpg` used to strip only the first file and say nothing about the second. Every
+  single-file command now refuses a surplus argument before doing anything; `pdf`, `cbz`, `batch`
+  and `prebuild` still take a list.
+
 - **The colour picker froze on its first mouse move.** Since 2.5.0 the eyedropper locked up the
   moment its magnifier tried to draw, so it never showed a colour and had to be killed. It
   paints again, and a test now runs the picker's paint path end to end so it cannot silently

@@ -44,38 +44,60 @@ pub(super) fn jpeg_under(img: &DynamicImage, target: u64) -> Result<Option<Vec<u
     Ok(Some(best))
 }
 
+/// The downscale half of the search: shrink `img` 20% a step (down to a ~32 px floor, at
+/// most 8 steps) until [`jpeg_under`] finds a JPEG at or under `target`, or `None` when
+/// even the smallest step at [`COMPRESS_Q_MIN`] overshoots. `img` is left at the last size
+/// tried, so the caller can name the floor it could not get under.
+fn shrink_until_under(img: &mut DynamicImage, target: u64) -> Result<Option<Vec<u8>>> {
+    for _ in 0..8 {
+        if let Some(b) = jpeg_under(img, target)? {
+            return Ok(Some(b));
+        }
+        let (w, h) = (img.width(), img.height());
+        if w.min(h) <= 32 {
+            break; // already tiny — stop shrinking
+        }
+        *img = img.resize(
+            (w * 4 / 5).max(1),
+            (h * 4 / 5).max(1),
+            image::imageops::FilterType::Lanczos3,
+        );
+    }
+    Ok(None)
+}
+
 /// Compress `path` into a JPEG at or under `target_bytes`, by binary-searching JPEG
-/// quality and — if even the lowest quality overshoots — progressively downscaling (20%
+/// quality and, if even the lowest quality overshoots, progressively downscaling (20%
 /// a step, down to a ~32px floor). The "(compressed)" sibling never upscales and never
-/// overwrites the original. With an unreasonably tiny target it ships the smallest it can
-/// make (which may slightly exceed it). Reusable by the CLI and a future menu/dialog.
+/// overwrites the original.
+///
+/// Success MEANS at or under the target, on every surface. A target the search cannot meet
+/// (0, 1, anything below the smallest JPEG the floor quality and the 32 px minimum can
+/// produce) is refused and nothing is written; the error names the requested size and the
+/// smallest this can make, so the caller can ask for a feasible one. It used to ship that
+/// smallest file anyway and report success while the CLI help and the MCP tool promised
+/// "at or under the limit" (2026-09-05 audit, F32).
 pub fn compress_to_size(path: &str, target_bytes: u64) -> Result<PathBuf> {
     let bytes = read_full_fidelity_capped(path)?;
     // JPEG has no alpha → flatten transparency onto white, like shrink-for-email.
     // `decode_full_for_path` (not `decode_full`): the path-aware decode is what every
     // sibling verb uses, so a camera RAW gets the same full-resolution re-read here.
     let mut img = flatten_onto_white(&decode::decode_full_for_path(&bytes, path)?);
-    let target = target_bytes.max(1);
 
-    let mut chosen = None;
-    for _ in 0..8 {
-        if let Some(b) = jpeg_under(&img, target)? {
-            chosen = Some(b);
-            break;
-        }
-        let (w, h) = (img.width(), img.height());
-        if w.min(h) <= 32 {
-            break; // already tiny — stop shrinking
-        }
-        img = img.resize(
-            (w * 4 / 5).max(1),
-            (h * 4 / 5).max(1),
-            image::imageops::FilterType::Lanczos3,
-        );
-    }
-    let data = match chosen {
-        Some(b) => b,
-        None => jpeg_bytes(&img, COMPRESS_Q_MIN)?, // best-effort floor
+    let Some(data) = shrink_until_under(&mut img, target_bytes)? else {
+        let floor = jpeg_bytes(&img, COMPRESS_Q_MIN)?;
+        return Err(Error::new(
+            E_FAIL,
+            format!(
+                "cannot fit in {target_bytes} bytes: the smallest JPEG this can make is {} bytes \
+                 (quality {COMPRESS_Q_MIN} at {}x{} px); nothing was written. Ask for at least \
+                 {} bytes.",
+                floor.len(),
+                img.width(),
+                img.height(),
+                floor.len()
+            ),
+        ));
     };
 
     let src = Path::new(path);
