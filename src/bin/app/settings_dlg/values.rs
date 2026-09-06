@@ -1236,6 +1236,25 @@ unsafe fn hotkey_role_name(hwnd: HWND, role: HotkeyRole) -> String {
     }
 }
 
+/// The pure IDOK Save-blocking decision: given the bindings currently on screen, which two
+/// roles collide (if any) and must refuse the whole Save. `None` means Save may proceed.
+///
+/// Factored out of [`block_on_hotkey_conflict`] on 2026-09-05 (audit F27 follow-up) so the
+/// wiring the IDOK handler relies on — read bindings, DECIDE, show message — is three
+/// separately testable steps instead of one opaque HWND-driven function. Before this split,
+/// the only tests exercising the conflict math were `conflicting_hotkeys`'s own four; nothing
+/// proved the decision built from its result actually reached the Save path, so an inverted
+/// or dropped `if !block_on_hotkey_conflict(hwnd)` in `mod.rs` would have compiled clean and
+/// passed every test that existed. Thin on purpose: it does no more than
+/// `conflicting_hotkeys` already did, but naming the step lets it be called and asserted on
+/// directly, with no HWND, from both this file's tests and (indirectly) the source-contract
+/// test in `mod.rs` that checks the wiring is really there.
+pub(super) fn hotkey_conflict_decision(
+    bindings: &[HotkeyBinding],
+) -> Option<(HotkeyRole, HotkeyRole)> {
+    conflicting_hotkeys(bindings).into_iter().next()
+}
+
 /// If the currently-selected hotkeys conflict (the same chord bound to two enabled
 /// functions), tell the user which two and refuse to Save. A duplicate used to be written
 /// as if both halves worked; the later `RegisterHotKey` would just fail silently, leaving one
@@ -1244,7 +1263,7 @@ unsafe fn hotkey_role_name(hwnd: HWND, role: HotkeyRole) -> String {
 /// call `apply_settings`).
 pub(super) unsafe fn block_on_hotkey_conflict(hwnd: HWND) -> bool {
     let bindings = read_hotkey_bindings(hwnd);
-    let Some(&(a, b)) = conflicting_hotkeys(&bindings).first() else {
+    let Some((a, b)) = hotkey_conflict_decision(&bindings) else {
         return false;
     };
     let msg = t("msg_hotkey_conflict")
@@ -1815,5 +1834,47 @@ mod hotkey_conflict_tests {
             conflicting_hotkeys(&bindings),
             vec![(HotkeyRole::Capture, HotkeyRole::CustomAction)]
         );
+    }
+
+    /// The IDOK decision itself, not just the underlying chord math: with a conflicting pair
+    /// present, `hotkey_conflict_decision` must refuse (return `Some`) and identify BOTH
+    /// colliding roles, and each must actually be nameable for the message
+    /// `block_on_hotkey_conflict` builds from them (2026-09-05 audit, F27 follow-up — the gap
+    /// was that nothing proved the decision reached the message, only that the chord math was
+    /// right). `HWND::default()` is enough here because neither role in this case is
+    /// `CustomAction`, the only branch of `hotkey_role_name` that touches a real control.
+    #[test]
+    fn decision_refuses_and_both_roles_are_nameable_when_bindings_conflict() {
+        let bindings = [
+            b(HotkeyRole::Capture, true, 0x0203),
+            b(HotkeyRole::QuickSave, true, 0x0203),
+            b(HotkeyRole::CustomAction, true, 0x0450),
+        ];
+        let decision = hotkey_conflict_decision(&bindings);
+        assert_eq!(decision, Some((HotkeyRole::Capture, HotkeyRole::QuickSave)));
+        let (a, other) = decision.expect("checked above");
+        let (name_a, name_b) = unsafe {
+            (
+                hotkey_role_name(HWND::default(), a),
+                hotkey_role_name(HWND::default(), other),
+            )
+        };
+        assert_eq!(name_a, t("hotkey_name_capture"));
+        assert_eq!(name_b, t("hotkey_name_quick"));
+        assert_ne!(name_a, name_b, "the message must name two DIFFERENT roles");
+    }
+
+    /// The mirror case: no enabled pair shares a chord, so the decision must let Save
+    /// proceed. Paired with the test above, this is the pair the F27 acceptance criteria
+    /// asked for directly: "(a) with a conflicting pair the decision refuses ... (b) with no
+    /// conflict it proceeds."
+    #[test]
+    fn decision_allows_save_to_proceed_when_bindings_do_not_conflict() {
+        let bindings = [
+            b(HotkeyRole::Capture, true, 0x0203),
+            b(HotkeyRole::QuickSave, true, 0x0450),
+            b(HotkeyRole::CustomAction, false, 0x0203), // disabled, so shares Capture's chord for free
+        ];
+        assert_eq!(hotkey_conflict_decision(&bindings), None);
     }
 }
