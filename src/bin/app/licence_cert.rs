@@ -33,9 +33,29 @@
 //! the rest of `license.rs` follows ("everything here fails toward Personal/free"), read
 //! the other way round: a certificate can only ever ADD standing, never remove it.
 //!
-//! REFRESH. A certificate carries an `exp` (30 days by default). Re-presenting the same
-//! redemption code to `/license/redeem` mints a fresh one - a replay is expected and
-//! answers `replayed: true` - which is why [`crate::cred_store`] keeps the code.
+//! EXPIRY, AND WHAT DOES NOT HAPPEN (corrected 2026-09-06, audit finding F17). A certificate
+//! carries an `exp`, 30 days by default, and **nothing renews it**. There is no automatic
+//! re-minting, scheduled or opportunistic, anywhere in this crate.
+//!
+//! This block used to claim the opposite: that re-presenting the redemption code to
+//! `/license/redeem` mints a fresh certificate "which is why [`crate::cred_store`] keeps the
+//! code". The first half is true of the SERVER (a replay is expected and answers
+//! `replayed: true`), but the second half was never true of us: `cred_store` stores the
+//! refresh token, the certificate and the identity, and has no save/load pair for a
+//! redemption code at all. So the comment described a feature that does not exist, which is
+//! worse than not describing it, because the next reader plans around it.
+//!
+//! What actually happens on day 31 is the FAIL DIRECTION above: the certificate stops
+//! verifying, that is read as "no certificate" rather than "not licensed", and standing
+//! falls through to the relay check and the local licence history exactly as it does for a
+//! machine that never had one. An online user notices nothing. What is genuinely lost is the
+//! offline resilience the certificate exists to provide, for a machine that stays offline
+//! past the expiry.
+//!
+//! Do not "fix" this by persisting the raw purchase key on disk to match the old sentence.
+//! That trades a documentation bug for a credential-storage liability. If offline renewal is
+//! ever wanted, it needs a renewal credential designed for it, or an explicit user-visible
+//! refresh action.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
