@@ -752,7 +752,14 @@ fn looks_like_text(path: &str) -> bool {
 }
 
 /// Read up to `cap` bytes of `path`; the bool is whether the file was longer (i.e. truncated).
+///
+/// The shared bottom of both the unknown-extension sniff (`looks_like_text`/`looks_like_image`,
+/// via `classify`) and the text/markdown read (`read_text`/`read_doc`), the two file reads the
+/// 2026-09-05 audit (F10) named as blocking the UI thread on slow/stalled storage before the
+/// viewer could even show. `loader::resolve_load` now runs both off the UI thread; see
+/// `slow_read_seam` for the test hook that proves it.
 pub(super) fn read_capped(path: &str, cap: usize) -> Option<(Vec<u8>, bool)> {
+    slow_read_seam();
     use std::io::Read;
     let f = std::fs::File::open(path).ok()?;
     let mut buf = Vec::new();
@@ -761,6 +768,25 @@ pub(super) fn read_capped(path: &str, cap: usize) -> Option<(Vec<u8>, bool)> {
     let capped = buf.len() > cap;
     buf.truncate(cap);
     Some((buf, capped))
+}
+
+/// Test-only delay hook (2026-09-05 audit, F10 acceptance): set `ST2K_PREVIEW_SLOW_READ_MS` to
+/// make every call to [`read_capped`] sleep that long first, so a test can prove the viewer
+/// window shows and stays responsive while a "slow disk" read is still in flight, and that
+/// switching selections never lets a slow, stale read paint over a newer one, without touching
+/// a real network share. Read once (like `ST2K_NO_CANCEL`/`ST2K_THEME`), so the hot path costs
+/// one atomic load when unset (the default).
+fn slow_read_seam() {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let ms = *MS.get_or_init(|| {
+        std::env::var("ST2K_PREVIEW_SLOW_READ_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    });
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
 }
 
 /// Two consecutive NUL bytes in the first 16 KB = binary (matches the plan's sniff).

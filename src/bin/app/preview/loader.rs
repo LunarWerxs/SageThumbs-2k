@@ -17,35 +17,30 @@ use super::window::{
 };
 
 /// Switch the viewer to preview `path` (async decode). Resets the open grace window.
+///
+/// Shows the window in its Loading state immediately, before anything on `path` is read
+/// (2026-09-05 audit, F10): everything past that used to run synchronously here, the file
+/// sniff, archive listing, DB/mail markdown and the text/markdown read, which blocked the UI
+/// thread on slow/stalled storage before the window could even appear, let alone respond. That
+/// work now runs on a worker thread via [`spawn_prepare_load`] and lands back through
+/// `WM_APP_LOAD_RESOLVED` ([`apply_resolved`]), fenced by generation exactly like the image
+/// decode path (`content::spawn_decode`) already was.
 pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     let st = &*state(hwnd);
     let gen = reset_viewer_state(hwnd, st, path);
 
-    // "View source" is on and this file has a rendered view to toggle away from → show the raw
-    // text instead. A failed/binary read falls through to the normal rendered path.
-    if st.src_capable.get() && st.src_view.get() && show_source(hwnd, path) {
-        return;
-    }
+    st.kind.set(ContentKind::Loading);
+    ensure_shown(hwnd);
 
-    if try_show_archive_listing(hwnd, st, path) {
-        return;
-    }
-    if try_show_db_markdown(hwnd, st, path) {
-        return;
-    }
-    if try_show_mail_markdown(hwnd, st, path) {
-        return;
-    }
+    // Font specimens stay synchronous: the extension check is free, and unlike the branches
+    // below a font read/parse is not a case the audit evidence names, kept out of the async
+    // path to hold the diff to the cited hot paths (see the finding report).
     if try_show_font_specimen(hwnd, st, path) {
         return;
     }
-    // HTML / .url: WebView2-hosted render (feature `html-preview`, gated behind Settings toggles).
-    #[cfg(feature = "html-preview")]
-    if try_load_web(hwnd, path) {
-        return;
-    }
 
-    dispatch_by_content_kind(hwnd, st, path, gen);
+    let view_source_active = st.src_capable.get() && st.src_view.get();
+    spawn_prepare_load(hwnd, path.to_string(), gen, view_source_active);
 }
 
 /// Reset all per-document viewer state ahead of loading `path`. Returns the new decode
@@ -57,6 +52,7 @@ unsafe fn reset_viewer_state(hwnd: HWND, st: &ViewerState, path: &str) -> u64 {
     st.decode_gen.set(gen);
     // Tell any worker still running for an earlier file that nobody is waiting for it now.
     super::content::begin_generation(gen);
+    abandon_pending_prepare();
     *st.render.borrow_mut() = None;
     *st.art.borrow_mut() = None; // drops the previous track's cover-art DIB
     *st.card.borrow_mut() = None;
@@ -107,17 +103,17 @@ unsafe fn reset_viewer_state(hwnd: HWND, st: &ViewerState, path: &str) -> u64 {
     gen
 }
 
-/// Set `st`'s text + kind for an archive listing — the one state-setting body shared by the
-/// async `load` hook ([`try_show_archive_listing`]) and the headless `load_static` hook
-/// ([`try_static_archive_listing`]), which differ only in whether they also touch the window.
+/// Set `st`'s text + kind for an archive listing, the one state-setting body shared by the
+/// async `load` path ([`apply_resolved`], via [`resolve_load`]) and the headless `load_static`
+/// hook ([`try_static_archive_listing`]), which differ only in whether they also touch the window.
 fn set_archive_listing_state(st: &ViewerState, listing: String) {
     *st.text.borrow_mut() = Some(listing);
     st.kind.set(ContentKind::Text);
 }
 
 /// Set `st`'s text + kind for a generated Markdown document (the DB schema view or the mail
-/// headers/body view) — the one state-setting body shared by both the async `load` hooks
-/// ([`try_show_db_markdown`], [`try_show_mail_markdown`]) and their `load_static` counterparts
+/// headers/body view), the one state-setting body shared by both the async `load` path
+/// ([`apply_resolved`], via [`resolve_load`]) and the headless `load_static` counterparts
 /// ([`try_static_db_markdown`], [`try_static_mail_markdown`]). Both sources are generated text
 /// with nothing remote in it, so `md_remote_ok` always stays off.
 fn set_markdown_doc_state(st: &ViewerState, md: String) {
@@ -125,54 +121,6 @@ fn set_markdown_doc_state(st: &ViewerState, md: String) {
     st.md_has_headings.set(true);
     st.md_remote_ok.set(false);
     st.kind.set(ContentKind::Markdown);
-}
-
-/// Archives (zip/7z/rar-family with no cover): show a file listing in the text pane. Returns
-/// `true` (having already updated state, repainted, and refreshed search) if `path` was a
-/// recognized archive; `false` to fall through to normal classification.
-unsafe fn try_show_archive_listing(hwnd: HWND, st: &ViewerState, path: &str) -> bool {
-    if !content::is_archive_ext(&ext_of(path)) {
-        return false;
-    }
-    let Some(listing) = content::archive_listing(path) else {
-        return false;
-    };
-    set_archive_listing_state(st, listing);
-    ensure_shown(hwnd);
-    let _ = InvalidateRect(Some(hwnd), None, false);
-    set_title(hwnd);
-    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-    true
-}
-
-/// SQLite databases: schema + the first rows of each table, through the markdown pipeline.
-/// Gated on the TEXT toggle (it's a data view, like the CSV table — see `classify`). A `.db`
-/// that isn't SQLite (Thumbs.db, an SQL Server file) returns `false` and falls through.
-unsafe fn try_show_db_markdown(hwnd: HWND, st: &ViewerState, path: &str) -> bool {
-    let Some(md) = db_markdown(path) else {
-        return false;
-    };
-    set_markdown_doc_state(st, md);
-    ensure_shown(hwnd);
-    let _ = InvalidateRect(Some(hwnd), None, false);
-    set_title(hwnd);
-    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-    true
-}
-
-/// Email (.eml / Outlook .msg): headers + body + attachment list, through the markdown
-/// pipeline. Same hook shape as the DB view above; a file that isn't really mail returns
-/// `false`, falling through to exactly what it did before.
-unsafe fn try_show_mail_markdown(hwnd: HWND, st: &ViewerState, path: &str) -> bool {
-    let Some(md) = mail_markdown(path) else {
-        return false;
-    };
-    set_markdown_doc_state(st, md);
-    ensure_shown(hwnd);
-    let _ = InvalidateRect(Some(hwnd), None, false);
-    set_title(hwnd);
-    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-    true
 }
 
 /// Font files: render a specimen (name + pangram + glyph sheet) as an image.
@@ -236,42 +184,6 @@ unsafe fn dispatch_video_kind(hwnd: HWND, st: &ViewerState, path: &str, gen: u64
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
 
-/// `ContentKind::Text`/`Markdown`: read is fast + small (5 MB cap), so resolve it synchronously.
-/// Structured docs (CSV/TSV/ipynb) read UNtruncated so their parse sees the whole file.
-unsafe fn dispatch_text_or_markdown_kind(
-    hwnd: HWND,
-    st: &ViewerState,
-    path: &str,
-    kind: ContentKind,
-) {
-    let read = if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
-        content::read_doc(path)
-    } else {
-        content::read_text(path)
-    };
-    match read {
-        Some(mut t) => {
-            if kind == ContentKind::Markdown {
-                // CSV/TSV/ipynb convert to synthesized markdown first (see `docconv`),
-                // then one full parse at load — the paint path reads the cached flag.
-                if let Some(conv) = super::docconv::to_markdown(&ext_of(path), &t) {
-                    t = conv.md;
-                    seed_md_attachments(st, conv.attachments);
-                }
-                st.md_has_headings.set(super::markdown::has_headings(&t));
-                st.md_has_remote.set(super::markdown::has_remote_images(&t));
-                st.md_remote_ok
-                    .set(sagethumbs2k_core::settings::preview_md_remote_img());
-            }
-            *st.text.borrow_mut() = Some(t);
-            st.kind.set(kind);
-        }
-        None => show_info_card(st, path), // unreadable / turned out binary → the calm card
-    }
-    ensure_shown(hwnd);
-    let _ = InvalidateRect(Some(hwnd), None, false);
-}
-
 /// Show the fallback info card (unrecognized/unreadable content).
 unsafe fn show_info_card(st: &ViewerState, path: &str) {
     *st.card.borrow_mut() = Some(infocard::gather(path));
@@ -285,18 +197,265 @@ unsafe fn dispatch_fallback_kind(hwnd: HWND, st: &ViewerState, path: &str) {
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
 
-/// Classify `path` and dispatch to the matching content kind's load path (image/PDF, video,
-/// text/markdown, or the fallback info card).
-unsafe fn dispatch_by_content_kind(hwnd: HWND, st: &ViewerState, path: &str, gen: u64) {
-    let kind = content::classify(path);
+// ── async classify + read (2026-09-05 audit, F10) ──────────────────────────────────────────
+//
+// Everything below used to run synchronously in `load()`, on the UI thread, before the window
+// could show or the message pump could turn: the archive listing, the DB/mail markdown, the
+// view-source read, and `classify`'s own unknown-extension sniff, each capable of blocking on
+// slow or stalled removable/network storage. `resolve_load` is the pure computation (touches
+// only `path` + process-wide settings, never `ViewerState`/`HWND`) run on a worker thread by
+// [`spawn_prepare_load`]; [`apply_resolved`] is the UI-thread half that used to be interleaved
+// with the reads themselves. Image/Video/InfoCard carry no data of their own here, they
+// already have their own async decode dispatch (`dispatch_image_kind`/`dispatch_video_kind`).
+
+/// The outcome of [`resolve_load`], carried from the worker thread to the UI thread in a
+/// `WM_APP_LOAD_RESOLVED` payload. `Send`: every field is owned data, never a GDI handle or a
+/// `ViewerState` reference. GDI object creation stays on the UI thread, as it already does for
+/// an image decode (`content::spawn_decode` posts raw RGBA, never an HBITMAP).
+pub(super) enum Resolved {
+    SourceText(String),
+    Archive(String),
+    DbMarkdown(String),
+    MailMarkdown(String),
+    TextOrMarkdown {
+        kind: ContentKind,
+        text: String,
+        attachments: Vec<(String, Vec<u8>)>,
+        /// `(has_headings, has_remote_images, remote_images_allowed)`, set only for Markdown.
+        md_flags: Option<(bool, bool, bool)>,
+    },
+    /// Neither of the above matched: `classify`'s verdict, for the existing per-kind dispatch
+    /// (which may still need the html-preview check, or the image/video decode worker).
+    Dispatch(ContentKind),
+}
+
+/// Whether a `WM_APP_LOAD_RESOLVED` completion tagged `gen` should still be applied against the
+/// window's CURRENT decode generation. `false` means the user already switched files/selections
+/// while this completion was in flight, so it must never paint over whatever loaded after it
+/// (2026-09-05 audit, F10 acceptance). Strict equality, not `gen >= current` or `gen <= current`:
+/// `decode_gen` only ever increases, so a completion is current for exactly the one load it was
+/// started for, matching the equivalent check `on_render` already uses for the image path.
+pub(super) fn is_load_current(gen: u64, current: u64) -> bool {
+    gen == current
+}
+
+/// `resolve_load`'s view-source branch: read `path` as text if view-source is active for it.
+/// `None` means "not source view, or the read failed": either way the caller falls through to
+/// the normal rendered path, exactly like the old `show_source` returning `false` did.
+fn resolve_source_text(path: &str, view_source_active: bool) -> Option<Resolved> {
+    if !view_source_active {
+        return None;
+    }
+    content::read_text(path).map(Resolved::SourceText)
+}
+
+/// `resolve_load`'s tail: classify `path`, then read text/markdown content on the SAME worker
+/// so the UI thread applies the whole result in one step (image/PDF/video need no read here,
+/// they already decode asynchronously once dispatched).
+fn resolve_by_content_kind(path: &str) -> Resolved {
+    match content::classify(path) {
+        kind @ (ContentKind::Text | ContentKind::Markdown) => resolve_text_or_markdown(path, kind),
+        kind => Resolved::Dispatch(kind),
+    }
+}
+
+/// The `Text`/`Markdown` arm of [`resolve_by_content_kind`]. `kind` is `classify`'s verdict
+/// (already gated on the Text/Markdown Settings toggles, not re-derived here). Structured docs
+/// (CSV/TSV/ipynb) read UNtruncated so their parse sees the whole file. A read failure
+/// (unreadable / turned out binary) falls back to the info card, exactly like the old
+/// synchronous dispatch did.
+fn resolve_text_or_markdown(path: &str, kind: ContentKind) -> Resolved {
+    let ext = ext_of(path);
+    let read = if sagethumbs2k_core::formats::is_preview_doc(&ext) {
+        content::read_doc(path)
+    } else {
+        content::read_text(path)
+    };
+    let Some(mut t) = read else {
+        return Resolved::Dispatch(ContentKind::InfoCard);
+    };
+    let mut attachments = Vec::new();
+    let mut md_flags = None;
+    if kind == ContentKind::Markdown {
+        // CSV/TSV/ipynb convert to synthesized markdown first (see `docconv`), then one full
+        // parse here, the paint path reads the cached flags this computes.
+        if let Some(conv) = super::docconv::to_markdown(&ext, &t) {
+            t = conv.md;
+            attachments = conv.attachments;
+        }
+        md_flags = Some((
+            super::markdown::has_headings(&t),
+            super::markdown::has_remote_images(&t),
+            sagethumbs2k_core::settings::preview_md_remote_img(),
+        ));
+    }
+    Resolved::TextOrMarkdown {
+        kind,
+        text: t,
+        attachments,
+        md_flags,
+    }
+}
+
+/// The pure computation behind the async load: everything `load()` used to decide and read
+/// directly, in the same order (view-source, archive, DB, mail, then classify + text read).
+/// Touches only `path` and process-wide settings, never `ViewerState`/`HWND`, so it is safe
+/// to run on a worker thread; [`apply_resolved`] applies the result back on the UI thread.
+fn resolve_load(path: &str, view_source_active: bool) -> Resolved {
+    if let Some(r) = resolve_source_text(path, view_source_active) {
+        return r;
+    }
+    let ext = ext_of(path);
+    if content::is_archive_ext(&ext) {
+        if let Some(listing) = content::archive_listing(path) {
+            return Resolved::Archive(listing);
+        }
+    }
+    if let Some(md) = db_markdown(path) {
+        return Resolved::DbMarkdown(md);
+    }
+    if let Some(md) = mail_markdown(path) {
+        return Resolved::MailMarkdown(md);
+    }
+    resolve_by_content_kind(path)
+}
+
+/// The still-running prepare worker's ticket, if the load it was started for hasn't been
+/// superseded yet. Mirrors `content::LIVE_GEN`'s "tell the old worker nobody is waiting"
+/// bookkeeping, but for the process-wide abandoned-worker BUDGET rather than the paint fence:
+/// this worker posts back through `PostMessageW`, never through a receiver the caller can time
+/// out on, so `safety::AbandonTicket` is how the budget learns it might still be blocked in I/O
+/// on a dead share (2026-09-05 audit, F10), same shape as `contextmenu::thumb`'s `MenuThumbJob`.
+static PENDING_PREPARE: std::sync::Mutex<Option<sagethumbs2k_core::safety::AbandonTicket>> =
+    std::sync::Mutex::new(None);
+
+/// Mark any still-outstanding prepare worker as abandoned. Called at the start of every new
+/// load ([`reset_viewer_state`]), right next to `content::begin_generation`'s equivalent step.
+fn abandon_pending_prepare() {
+    let prev = PENDING_PREPARE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(ticket) = prev {
+        ticket.caller_gave_up();
+    }
+}
+
+/// Post a `resolve_load` result to the UI thread, reclaiming the box if the window died first.
+unsafe fn post_resolved(hwnd: HWND, gen: u64, resolved: Resolved) {
+    let payload: Box<(u64, Resolved)> = Box::new((gen, resolved));
+    let raw = Box::into_raw(payload);
+    if PostMessageW(
+        Some(hwnd),
+        super::window::WM_APP_LOAD_RESOLVED,
+        WPARAM(gen as usize),
+        LPARAM(raw as isize),
+    )
+    .is_err()
+    {
+        drop(Box::from_raw(raw)); // window died between resolve and post, reclaim, don't leak
+    }
+}
+
+/// Kick off the async classify/read step for `path` on a detached worker (2026-09-05 audit,
+/// F10). Mirrors `content::spawn_decode`'s generation-fenced post-back, but for the work that
+/// used to run synchronously in `load()` before the window could even show.
+///
+/// Bounded by the same process-wide abandoned-worker budget the DLL's detached decodes use
+/// (`safety::abandoned_budget_exhausted`): a worker that never returns (a hung network share)
+/// is tracked with an `AbandonTicket` so repeatedly opening files on the same dead share cannot
+/// grow the viewer's thread count without limit. Past the budget this refuses to start another
+/// worker and leaves the window in its Loading state instead of adding one more blocked thread.
+unsafe fn spawn_prepare_load(hwnd: HWND, path: String, gen: u64, view_source_active: bool) {
+    if sagethumbs2k_core::safety::abandoned_budget_exhausted() {
+        sagethumbs2k_core::safety::log_debug(&format!(
+            "preview load: too many workers still running past their budget; leaving {path} \
+             in its Loading state"
+        ));
+        return;
+    }
+    let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
+    *PENDING_PREPARE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket.clone());
+    let hwnd_raw = hwnd.0 as isize;
+    let spawned = std::thread::Builder::new()
+        .name("st2k-preview-load".to_string())
+        .spawn(move || {
+            let resolved = resolve_load(&path, view_source_active);
+            ticket.worker_finished();
+            let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+            post_resolved(hwnd, gen, resolved);
+        });
+    if spawned.is_err() {
+        // `Builder::spawn` refused to create the OS thread: nothing was started (and the
+        // closure, with it the ticket, was dropped unstarted), so the window is simply
+        // left in its Loading state, the same degraded outcome a budget refusal leaves it in.
+        sagethumbs2k_core::safety::log_debug("preview load: failed to start the prepare worker");
+    }
+}
+
+/// Install a resolved `Text`/`Markdown` read. `md_flags` is `Some` only for Markdown, mirrors
+/// the old synchronous dispatch, which only ever computed/consulted these for that kind.
+unsafe fn apply_text_or_markdown(
+    st: &ViewerState,
+    kind: ContentKind,
+    text: String,
+    attachments: Vec<(String, Vec<u8>)>,
+    md_flags: Option<(bool, bool, bool)>,
+) {
+    if let Some((has_headings, has_remote, remote_ok)) = md_flags {
+        seed_md_attachments(st, attachments);
+        st.md_has_headings.set(has_headings);
+        st.md_has_remote.set(has_remote);
+        st.md_remote_ok.set(remote_ok);
+    }
+    *st.text.borrow_mut() = Some(text);
+    st.kind.set(kind);
+}
+
+/// `Resolved::Dispatch`: neither view-source, archive, DB nor mail matched, so fall back to
+/// `classify`'s verdict, the same tail `dispatch_by_content_kind` used to run synchronously,
+/// including the html-preview check (still synchronous: it needs the UI thread for WebView2).
+unsafe fn apply_resolved_dispatch(hwnd: HWND, st: &ViewerState, path: &str, kind: ContentKind) {
+    #[cfg(feature = "html-preview")]
+    if try_load_web(hwnd, path) {
+        return; // sets its own title/find-refresh (or defers via busy/pending)
+    }
+    let gen = st.decode_gen.get();
     match kind {
         ContentKind::Image => dispatch_image_kind(hwnd, st, path, gen),
         ContentKind::Video => dispatch_video_kind(hwnd, st, path, gen),
-        ContentKind::Text | ContentKind::Markdown => {
-            dispatch_text_or_markdown_kind(hwnd, st, path, kind)
-        }
         _ => dispatch_fallback_kind(hwnd, st, path),
     }
+    set_title(hwnd);
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
+}
+
+/// Apply a `WM_APP_LOAD_RESOLVED` result. The caller (`window::on_app_load_resolved`) has
+/// already dropped a stale generation, so everything here is for the CURRENT load.
+pub(super) unsafe fn apply_resolved(hwnd: HWND, st: &ViewerState, resolved: Resolved) {
+    let path = st.path.borrow().clone().unwrap_or_default();
+    match resolved {
+        Resolved::SourceText(text) => {
+            *st.text.borrow_mut() = Some(text);
+            st.kind.set(ContentKind::Text);
+        }
+        Resolved::Archive(listing) => set_archive_listing_state(st, listing),
+        Resolved::DbMarkdown(md) | Resolved::MailMarkdown(md) => set_markdown_doc_state(st, md),
+        Resolved::TextOrMarkdown {
+            kind,
+            text,
+            attachments,
+            md_flags,
+        } => apply_text_or_markdown(st, kind, text, attachments, md_flags),
+        Resolved::Dispatch(kind) => {
+            apply_resolved_dispatch(hwnd, st, &path, kind);
+            return; // dispatch_*_kind/try_load_web already show/invalidate/title/refresh
+        }
+    }
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
     set_title(hwnd);
     super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
 }
@@ -780,23 +939,6 @@ pub(super) fn source_capable(ext: &str) -> bool {
     ext == "svg"
 }
 
-/// Show `path` as raw text (the "view source" branch of [`load`]). Returns false if the file
-/// can't be read as text, so the caller can fall through to the rendered path rather than
-/// stranding the viewer on an empty pane.
-pub(super) unsafe fn show_source(hwnd: HWND, path: &str) -> bool {
-    let st = &*state(hwnd);
-    let Some(text) = content::read_text(path) else {
-        return false;
-    };
-    *st.text.borrow_mut() = Some(text);
-    st.kind.set(ContentKind::Text);
-    ensure_shown(hwnd);
-    let _ = InvalidateRect(Some(hwnd), None, false);
-    set_title(hwnd);
-    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
-    true
-}
-
 /// The database view for `path`, or `None` if it isn't a database file we preview (wrong
 /// extension, the Text toggle is off, or the bytes aren't SQLite). One helper because both the
 /// async `load` and the headless `load_static` must gate identically.
@@ -1107,7 +1249,26 @@ pub(super) unsafe fn forget_size(hwnd: HWND) {
 mod tests {
     #[cfg(feature = "html-preview")]
     use super::parse_url_shortcut;
-    use super::{clamp_remembered_size, source_capable};
+    use super::{clamp_remembered_size, is_load_current, source_capable};
+
+    /// 2026-09-05 audit, F10 acceptance: "switching selections repeatedly never displays an
+    /// older selection's completion over the newest one". A completion is current for exactly
+    /// the load it was started for, never for an older OR a hypothetical later generation,
+    /// so a naive `gen >= current` (which would let a late completion win a race it lost) or
+    /// `gen <= current` (which would accept a completion for a load that hasn't started yet)
+    /// both fail this test; only strict equality passes.
+    #[test]
+    fn a_stale_generation_is_never_current() {
+        // The load this completion was started for is still the one showing: apply it.
+        assert!(is_load_current(5, 5));
+        // The user already switched away (repeatedly, in the acceptance scenario) before this
+        // slow completion landed: an OLDER generation must never paint over the current one.
+        assert!(!is_load_current(3, 5));
+        assert!(!is_load_current(1, 5));
+        // Defensive: `decode_gen` only ever increases, so this can't happen in practice, but the
+        // check must be exact equality, not merely "not older".
+        assert!(!is_load_current(7, 5));
+    }
 
     #[test]
     fn source_capable_reaches_eml_but_not_msg() {
