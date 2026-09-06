@@ -13,10 +13,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 >   string is consumed by the installer, the MSIX manifest and the website generator, so the
 >   bump is a release-time step done once, with the gate run, not a bookkeeping change made
 >   in advance.
-> - **Nothing here is waiting on engineering.** The work below is on `main` and green; it is
->   waiting on the Azure Artifact Signing account, which is a purchase and an identity
->   validation only the owner can complete. `docs/RELEASE-SECURITY.md` has the ordered steps
->   and the current state.
+> - **Nothing here is waiting on engineering.** The work below is on `main` and green. The
+>   signing account itself is already live and its certificate profile is Active; what remains
+>   is a single client secret that only a person can copy out of the Azure portal.
+>   `docs/RELEASE-SECURITY.md` has the current state and the one remaining step.
 >
 > 3.0 rather than 2.6 because this is the release that stops shipping unsigned, on top of an
 > unusually large body of change: 60-plus user-facing entries below, and a 38-finding audit

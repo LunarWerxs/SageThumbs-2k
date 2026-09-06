@@ -195,32 +195,51 @@ is the one verdict users see without going looking.
 #### The release gate, decided 2026-09-06
 
 **No release ships until the installer is signed, and the next one is numbered 3.0** (owner
-decision, Michael, 2026-09-06). This is now a hard gate rather than a preference: the work on
-`main` is finished and green, and it waits on the signing account rather than on engineering.
-Do not cut a release, bump `Cargo.toml`, or tag anything until the six environment variables
-below resolve and `sign-release.ps1 -Status` reports READY. The version bump is a release-time
-step for exactly that reason, so a development build never claims to be 3.0.
+decision, Michael, 2026-09-06). Do not cut a release, bump `Cargo.toml`, or tag anything until
+`sign-release.ps1 -Status` reports READY. The version bump is a release-time step for exactly
+that reason, so a development build never claims to be 3.0.
 
-#### Where it stands on 2026-09-05 (verified through the Connections vault, not assumed)
+#### The signing account IS live. One human step remains. (corrected 2026-09-06)
 
-- **The signing identity now exists; nothing else does.** An app registration named
-  `lunawerx-artifact-signing` (appId `71d21f76-5d65-40b3-921b-b97390cafa85`) was created in the
-  Lunarwerx tenant (`fdd11984-71bb-4c74-aca1-1d777f195b0f`) on 2026-09-05 at 18:17 UTC. It has
-  **no client secret and no certificate yet**, so there is nothing to put in `AZURE_CLIENT_SECRET`,
-  and it carries only the default `User.Read` scope, which is irrelevant to signing (the signer
-  role is an Azure RBAC assignment on the certificate profile, granted after the account exists).
-- **Still zero Azure subscriptions** as seen by every Entra credential the vault holds. A service
-  principal only lists subscriptions it has a role on, so this is either "none exists" or "one
-  exists and no principal has been granted a role on it"; the vault cannot tell the two apart, and
-  the Azure portal is the only place that can. Either way the ordered list below is unchanged and
-  the subscription is still the first item.
+**The account exists and the certificate profile is Active**, verified in the Azure portal on
+2026-09-05 by a session signed in as the owner, reading the resources rather than an email.
+Identity validation for the company passed on its first documentation attempt, the Public
+Trust certificate profile is Active, and the signer role is held both by the owner's user and
+by the `lunawerx-artifact-signing` service principal. The internal identifiers (subscription,
+resource group, validation and principal object ids) are deliberately NOT repeated in this
+public file; they live in the Connections memory
+`azure-artifact-signing-is-live-lunawerx-public-trust`.
+
+**What is still missing is one client secret, and it has to be a person.** Azure reveals a
+secret's Value exactly once, inside a cross-origin portal iframe that an agent's browser tools
+cannot read, so an agent attempting it only burns a secret it must then delete. Until that
+paste happens, signing works interactively as the owner and not in any pipeline.
+
+⛔ **Correct a stale claim before repeating it.** An earlier entry here, and the previous
+paragraph of this document, said the tenant had zero Azure subscriptions and therefore no
+signing account. **That was a measurement artifact, not a fact.** The Connections vault's
+Microsoft credential is a Graph-scoped app registration with no Azure RBAC anywhere, so
+`GET /subscriptions` returns an empty list for it whether or not subscriptions exist. An
+empty list from that credential is evidence about the credential, never about the tenant. The
+`lunawerx-artifact-signing` registration also carries no client secret by design, which is
+exactly what "the only missing piece is the paste" looks like from the outside, and it was
+misread as "nothing has been set up".
+
 - **This machine is one configuration away from READY.** `Microsoft.ArtifactSigning.Client`
-  1.0.128 is dropped under `tools/artifact-signing/` (gitignored as of today, so it can never ship
-  in the public repo); `-Status` finds the dlib and the signtool, and `-SelfTest` passes. Setting
-  the three `ST2K_SIGN_*` names plus the three `AZURE_*` values flips the verdict to READY with no
-  code change. The `AZURE_CLIENT_SECRET` must reach the build shell without ever being written into
-  a file in the repo or pasted into an agent's context: mint it on the app registration, capture
-  it into the Connections vault, and inject it into the build shell from there.
+  1.0.128 is dropped under `tools/artifact-signing/` (gitignored, so it can never ship in the
+  public repo); `-Status` finds the dlib and the signtool, and `-SelfTest` passes. Setting the
+  three `ST2K_SIGN_*` names plus the three `AZURE_*` values flips the verdict to READY with no
+  code change. The `AZURE_CLIENT_SECRET` must never be written into a file in this repo or
+  pasted into an agent's context: it goes into the Connections vault and is injected into the
+  build shell from there.
+- **Timestamping is mandatory, not optional.** Artifact Signing certificates are short-lived
+  by design, so an untimestamped signature stops validating within days.
+  `sign-release.ps1` already timestamps through `timestamp.acs.microsoft.com`; do not remove
+  it as an optimisation.
+- **Signing does not silence SmartScreen on day one.** Reputation still accrues with download
+  history, and Artifact Signing does not issue EV certificates, so there is no instant-trust
+  option to buy. It is what stops the machine-learning "unknown binary" verdicts and gives the
+  false-positive submissions a publisher to attach to.
 
 #### Where it stands on 2026-09-04
 
