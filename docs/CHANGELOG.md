@@ -357,6 +357,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   reported how many succeeded and nothing else, so a run that skipped nine files out of sixty
   gave you no way to tell which nine. It now names them.
 
+- **Exporting settings can no longer destroy your previous backup if the export fails
+  partway through.** Overwriting an existing settings backup and then hitting a disk-full,
+  removed-drive, or permissions error used to leave the old backup truncated even though
+  SageThumbs reported the export as failed. The export is now written safely to a temporary
+  file first and only swapped in once it's complete, so a failed export leaves your previous
+  backup exactly as it was.
+
 ## 2.5.0
 
 ### Added

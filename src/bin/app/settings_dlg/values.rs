@@ -957,12 +957,15 @@ fn notify_shell_assoc_changed() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 
-/// Export the saved settings to a user-chosen `.json` file (Diagnostics ▸ Export).
+/// Export the saved settings to a user-chosen `.json` file (Diagnostics ▸ Export). Written
+/// ATOMICALLY (`settings_io::export_settings_to_path`, 2026-09-05 audit, F13) — replacing an
+/// existing backup and then hitting a write failure must leave the OLD backup intact rather
+/// than truncated, since the dialog is reporting the export as FAILED either way.
 pub(super) unsafe fn export_settings_to_file(hwnd: HWND) {
     let Some(path) = crate::win::pick_save_settings(hwnd, "SageThumbs2K-settings.json") else {
         return;
     };
-    match std::fs::write(&path, crate::settings_io::export_settings()) {
+    match crate::settings_io::export_settings_to_path(std::path::Path::new(&path)) {
         Ok(()) => msg(
             hwnd,
             &format!("Settings exported to:\n{path}"),

@@ -830,8 +830,11 @@ unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
         return true;
     }
     if let Some(pos) = args.iter().position(|a| a == "--export-settings") {
+        // Atomic (2026-09-05 audit, F13): a straight `fs::write` here could truncate a
+        // prior backup at the same path on a failed overwrite. See
+        // `settings_io::export_settings_to_path`.
         let ok = args.get(pos + 1).is_some_and(|path| {
-            std::fs::write(path, crate::settings_io::export_settings()).is_ok()
+            crate::settings_io::export_settings_to_path(std::path::Path::new(path)).is_ok()
         });
         std::process::exit(if ok { 0 } else { 1 });
     }

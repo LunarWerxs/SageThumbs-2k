@@ -28,6 +28,8 @@
 
 use std::collections::BTreeMap;
 
+use std::path::Path;
+
 use serde_json::{Map, Value as Json};
 use windows_registry::{Key, CURRENT_USER};
 
@@ -145,6 +147,17 @@ pub(crate) fn export_settings() -> String {
     // touches the developer's real settings even while the rest of the process is sandboxed
     // (item 95).
     export_tree(CURRENT_USER.open(settings::hkcu_root_path()).ok().as_ref())
+}
+
+/// Export the current settings to `path` ATOMICALLY (Diagnostics > Export and the hidden
+/// `--export-settings <path>` CLI flag both call this - one entry point, so the guarantee
+/// can't drift between them). Delegates to
+/// [`sagethumbs2k_core::fsutil::write_atomically`]: the JSON is staged in a temp file
+/// beside `path` and swapped in, so a failed overwrite (disk full, a removed drive, a
+/// destination that refuses the rename) can never destroy a PRIOR backup at that path -
+/// the straight `fs::write` this replaces could (2026-09-05 audit, F13).
+pub(crate) fn export_settings_to_path(path: &Path) -> std::io::Result<()> {
+    sagethumbs2k_core::fsutil::write_atomically(path, export_settings().as_bytes())
 }
 
 // ---- import: plan first ----------------------------------------------------------------
@@ -732,5 +745,88 @@ mod tests {
         );
 
         let _ = CURRENT_USER.remove_tree(KEY); // cleanup
+    }
+
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_settings_io_export_{label}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn assert_no_leftover_temp_files(dir: &Path) {
+        let leftovers: Vec<String> = std::fs::read_dir(dir)
+            .expect("read scratch dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    /// A successful export writes something that parses as the documented shape — the
+    /// `_about` field plus `values`/`subkeys` objects [`export_tree`]'s own tests already
+    /// pin the CONTENT of — and leaves no staging file behind.
+    #[test]
+    fn export_settings_to_path_writes_parseable_json_with_no_leftover_temp_file() {
+        let dir = scratch_dir("success");
+        let path = dir.join("SageThumbs2K-settings.json");
+
+        export_settings_to_path(&path).expect("export_settings_to_path");
+
+        let text = std::fs::read_to_string(&path).expect("read exported file");
+        let doc: Json = serde_json::from_str(&text).expect("exported file must be valid JSON");
+        assert!(doc.get("_about").is_some(), "{text}");
+        assert!(doc.get("values").is_some(), "{text}");
+        assert!(doc.get("subkeys").is_some(), "{text}");
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F13, and its 2026-09-05 follow-up: `export_settings_to_file`
+    /// (Diagnostics ▸ Export) and `--export-settings` both used to `fs::write` straight to
+    /// the chosen path, so replacing an existing backup and then hitting a write failure
+    /// left the OLD backup truncated even though the app reported the export as failed.
+    /// **The read-only-destination version of this test had no teeth**: on Windows,
+    /// `fs::write` on a read-only file fails at `CreateFileW`, before a single byte is
+    /// written, so the OLD, unfixed `export_settings_to_file` (a bare `fs::write` straight
+    /// onto `path`) would ALSO have left `original` untouched in that scenario — the test
+    /// passed identically before and after the fix and proved nothing, despite its doc
+    /// comment claiming otherwise.
+    ///
+    /// This drives the same fail-point `fsutil::write_atomically`'s own tests use
+    /// (`sagethumbs2k_core::fsutil::inject_partial_write_failure` — exposed across the
+    /// crate boundary rather than gated `#[cfg(test)]`, because `#[cfg(test)]` items are
+    /// only compiled when the LIB itself is the crate under test and are invisible to this
+    /// bin crate's own tests; see that function's doc comment) to fail the write after 4 of
+    /// the new content's bytes have already landed in the staging file — a scenario a bare
+    /// `fs::write` to `path` cannot survive.
+    #[test]
+    fn export_settings_to_path_never_destroys_a_prior_backup_on_failed_replace() {
+        let dir = scratch_dir("partial_write_failure");
+        let path = dir.join("SageThumbs2K-settings.json");
+        let original: &[u8] = b"a previous export backup, not valid JSON on purpose";
+        std::fs::write(&path, original).unwrap();
+
+        sagethumbs2k_core::fsutil::inject_partial_write_failure(4);
+        let result = export_settings_to_path(&path);
+        sagethumbs2k_core::fsutil::clear_partial_write_failure();
+
+        assert!(
+            result.is_err(),
+            "an injected mid-write failure must be reported, not silently succeed"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "the prior backup must survive byte-identical after a failed export"
+        );
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

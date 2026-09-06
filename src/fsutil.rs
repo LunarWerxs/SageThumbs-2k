@@ -1,6 +1,8 @@
 //! Small filesystem helpers shared across the verb / strip write paths.
 
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 /// A fresh write or a move can briefly hit a transient Explorer / thumbnail-cache
@@ -21,11 +23,14 @@ const ERROR_ACCESS_DENIED: i32 = 5;
 const ERROR_SHARING_VIOLATION: i32 = 32;
 
 /// Whether `e` is one of the two documented transient lock codes (see the module
-/// docs above) worth retrying. A permission failure on a genuinely read-only
-/// destination, a cross-volume rename, or a path-too-long error all surface as
-/// DIFFERENT codes and are permanent — sleeping `RENAME_RETRIES` times before
-/// reporting them back just adds ~200 ms of dead time per file (~100 s across a
-/// 500-file batch against, say, a read-only destination).
+/// docs above) worth retrying. **A rename onto a genuinely read-only destination is
+/// NOT one of the cases this skips**: verified on this machine, `MoveFileEx` onto a
+/// read-only file raises the exact same `ERROR_ACCESS_DENIED` (os error 5) as a
+/// transient Explorer/AV lock, so it is retried the full `RENAME_RETRIES` times
+/// (~200 ms) before this function's caller finally reports it — there is no cheap
+/// way to tell the two apart from the error code alone. A cross-volume rename or a
+/// path-too-long error DO surface as different, genuinely permanent codes and return
+/// on the first attempt.
 fn is_transient(e: &std::io::Error) -> bool {
     matches!(
         e.raw_os_error(),
@@ -54,6 +59,111 @@ pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
         std::thread::sleep(RENAME_BACKOFF);
     }
     last
+}
+
+/// A per-process counter folded into every staging filename [`write_atomically`] stages,
+/// so two atomic writes to the SAME destination from this process (the user clicking
+/// Settings ▸ Export twice, or two `st2k --export-settings` runs) can never stage into the
+/// same temp file and clobber each other's write.
+static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// A staging path in the SAME directory as `path` — so the swap-in rename stays on one
+/// volume and can succeed — with a name nothing else here would produce: the destination's
+/// own file name, this process id, and a counter that only goes up. Two different processes
+/// racing the same destination can't collide either (different pids).
+fn staging_path(path: &Path) -> PathBuf {
+    let n = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
+}
+
+/// Write `content` to `path` without ever leaving `path` partially written or destroyed —
+/// even when `path` already holds a file worth keeping (2026-09-05 audit, F13: exporting
+/// settings used to `fs::write` straight to the user's chosen path, so replacing an
+/// existing backup followed by a disk-full / removed-drive / permission failure left the
+/// OLD backup truncated too, with the app merely reporting failure). Stages the full
+/// content into a uniquely-named temp file beside `path`, best-effort-flushes it (see
+/// [`stage_then_swap`] for why a failed flush is not fatal), then swaps it in via
+/// [`rename_retrying`] (absorbing the same transient AV/indexer lock every other write
+/// path here does) — so a failure at any point before the rename leaves whatever `path`
+/// already held completely untouched, and the temp file is always removed rather than
+/// left behind on failure.
+pub fn write_atomically(path: &Path, content: &[u8]) -> io::Result<()> {
+    let tmp = staging_path(path);
+    let result = stage_then_swap(&tmp, path, content);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Stage `content` into `tmp` and swap it onto `path`. The write itself is the one step
+/// that must be fatal on failure — an error here means `tmp` holds less than the full
+/// content, and letting the swap proceed would replace `path` with that short file, which
+/// is exactly the corruption this whole module exists to prevent.
+///
+/// `sync_all` is deliberately **best-effort** (2026-09-05 audit, F13 follow-up): some
+/// destinations — certain network shares, cloud-sync placeholder files (OneDrive, etc.) —
+/// refuse `fsync` even though the write itself succeeded, and this store now runs from
+/// inside the shell DLL as well as the app EXEs. Before this module existed, a plain
+/// `fs::write` gave no fsync guarantee at all and those destinations worked fine; making
+/// `sync_all`'s error fatal here would turn a previously-working portable copy read-only
+/// on exactly those filesystems. The durability guarantee this function actually promises
+/// is the completed RENAME (the old content survives until that one atomic step, and the
+/// new content is fully staged and named before it happens) — `sync_all` is a best-effort
+/// improvement on top of that, not a precondition for it, so its own failure is swallowed
+/// rather than propagated.
+fn stage_then_swap(tmp: &Path, path: &Path, content: &[u8]) -> io::Result<()> {
+    let mut f = std::fs::File::create(tmp)?;
+    write_staged_content(&mut f, content)?;
+    let _ = f.sync_all();
+    drop(f);
+    rename_retrying(tmp, path)
+}
+
+/// Write `content` to the already-open staging file `f`. This indirection exists so
+/// [`inject_partial_write_failure`] can make it fail partway through, for a test to prove
+/// [`write_atomically`] never lets a short staging write reach `path`. The check below
+/// cannot be `#[cfg(test)]`, for the same cross-crate reason [`inject_partial_write_failure`]
+/// itself is not: this crate is compiled WITHOUT `--cfg test` when it is linked as an
+/// ordinary dependency of another crate's test binary (the app EXE's `settings_io` tests),
+/// so a `#[cfg(test)]` branch here would simply not exist in that build and the seam would
+/// silently never fire — which is exactly the bug this indirection was almost shipped with.
+fn write_staged_content(f: &mut std::fs::File, content: &[u8]) -> io::Result<()> {
+    if let Some(n) = PARTIAL_WRITE_FAILURE.with(|cell| cell.take()) {
+        let n = n.min(content.len());
+        f.write_all(&content[..n])?;
+        return Err(io::Error::other(
+            "test seam: injected failure after a partial staging write",
+        ));
+    }
+    f.write_all(content)
+}
+
+/// Test-only seam, but deliberately **not** `#[cfg(test)]`: `#[cfg(test)]` items are only
+/// compiled when THIS crate is the one under test, so they are invisible to another crate
+/// linking `sagethumbs2k_core` as an ordinary dependency — which is exactly what the app
+/// EXE's `settings_io` tests do to prove `write_atomically` protects a prior export/backup
+/// even when the write fails midway (not just when the destination refuses to open at
+/// all, which a read-only file or a held lock both do — see that module's tests). So this
+/// is always compiled, but it is a plain thread-local flag nothing in this codebase's
+/// non-test code ever sets, and it costs one `Cell::take()` per staged write when unset.
+#[doc(hidden)]
+pub fn inject_partial_write_failure(bytes_before_failure: usize) {
+    PARTIAL_WRITE_FAILURE.with(|cell| cell.set(Some(bytes_before_failure)));
+}
+
+/// Disarm the seam set by [`inject_partial_write_failure`]. Thread-local, like the seam
+/// itself, so parallel tests can't see each other's armed failures.
+#[doc(hidden)]
+pub fn clear_partial_write_failure() {
+    PARTIAL_WRITE_FAILURE.with(|cell| cell.set(None));
+}
+
+thread_local! {
+    /// Per-thread so two tests running in parallel cannot arm or clear each other's seam.
+    static PARTIAL_WRITE_FAILURE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Compiled out of every shipping build — see [`on_transient_failure`] for what it is for.
@@ -193,5 +303,101 @@ mod tests {
         assert!(!is_transient(&make(17))); // ERROR_NOT_SAME_DEVICE (cross-volume)
         assert!(!is_transient(&make(206))); // ERROR_FILENAME_EXCED_RANGE (path too long)
         assert!(!is_transient(&make(2))); // ERROR_FILE_NOT_FOUND
+    }
+
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("st2k_fsutil_atomic_{label}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// No file in `dir` may end in `.tmp` — [`write_atomically`]'s staging files must never
+    /// survive either a success or a failure.
+    fn assert_no_leftover_temp_files(dir: &Path) {
+        let leftovers: Vec<String> = std::fs::read_dir(dir)
+            .expect("read scratch dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    /// The success path: a fresh write replaces an existing destination's content exactly,
+    /// with no staging file left behind.
+    #[test]
+    fn write_atomically_replaces_the_destination_with_new_content() {
+        let dir = scratch_dir("success");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"old content").unwrap();
+
+        write_atomically(&path, b"new content").expect("write_atomically");
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new content");
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F13, and its 2026-09-05 follow-up: a bare `fs::write` to the
+    /// destination starts truncating the OLD file the instant the write begins, so a
+    /// failure partway through (disk full, a removed drive) destroys the prior backup
+    /// along with the new one. **The read-only-destination version of this test that used
+    /// to live here had no teeth**: on Windows, `fs::write` on a read-only file fails at
+    /// `CreateFileW`, before a single byte is written, so the OLD, unfixed code (a bare
+    /// `fs::write` straight onto `path`) would ALSO have left `original` untouched by that
+    /// scenario — the test passed identically before and after the fix and proved nothing,
+    /// despite its doc comment claiming otherwise.
+    ///
+    /// This version uses [`inject_partial_write_failure`] to fail the write after 4 of the
+    /// new content's bytes have already landed in the STAGING file — a scenario a bare
+    /// `fs::write` to `path` cannot survive. Proof it has teeth: temporarily replacing
+    /// `write_atomically`'s body with `std::fs::write(path, content)` and re-running this
+    /// test makes it FAIL on the very first assertion below — a bare `fs::write` never
+    /// calls [`write_staged_content`] at all, so the seam is never consulted, the write
+    /// completes in full, and `result` comes back `Ok` instead of `Err` (the destination
+    /// would then read back as the ENTIRE new content, not `original`, had the assertion
+    /// not already panicked); restoring `write_atomically`'s real body makes it pass again.
+    #[test]
+    fn write_atomically_leaves_the_prior_file_untouched_on_a_failed_replace() {
+        let dir = scratch_dir("partial_write_failure");
+        let path = dir.join("settings.json");
+        let original: &[u8] = b"[Settings]\nA=1\n";
+        std::fs::write(&path, original).unwrap();
+
+        inject_partial_write_failure(4);
+        let result = write_atomically(&path, b"new content that must never land");
+        clear_partial_write_failure();
+
+        assert!(
+            result.is_err(),
+            "an injected mid-write failure must be reported, not silently succeed"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "the prior backup must survive byte-identical after a failed export"
+        );
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A destination that doesn't exist yet (no prior backup to protect) still succeeds and
+    /// leaves no temp file, and the staging path sits beside the destination rather than in
+    /// a shared/system temp directory (same volume — required for the rename to be atomic).
+    #[test]
+    fn write_atomically_creates_a_new_file_in_the_same_directory() {
+        let dir = scratch_dir("new_file");
+        let path = dir.join("brand-new.json");
+
+        write_atomically(&path, b"{}").expect("write_atomically");
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
