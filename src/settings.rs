@@ -577,23 +577,39 @@ mod store {
             }
         }
 
+        /// No entry in `dir` may end in `.tmp` — `write_atomic`'s staging files (named
+        /// `.{name}.{pid}.{n}.tmp` by `fsutil::staging_path`, not the destination's own name
+        /// with its extension swapped for `tmp`) must never survive a write. A prior version
+        /// of this assertion checked `path.with_extension("tmp")`, a filename the current
+        /// staging scheme never produces, so that half of the test was vacuous — it would
+        /// have passed even if staging files were leaking, as long as none happened to be
+        /// named exactly `probe.tmp`.
+        fn assert_no_leftover_tmp_files(dir: &std::path::Path) {
+            let leftovers: Vec<String> = std::fs::read_dir(dir)
+                .expect("read scratch dir")
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(".tmp"))
+                .collect();
+            assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+        }
+
         #[test]
         fn write_atomic_writes_full_content_and_leaves_no_tmp_behind() {
             let dir =
                 std::env::temp_dir().join(format!("st2k_write_atomic_test_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch dir");
             let path = dir.join("probe.ini");
 
             write_atomic(&path, "[Settings]\nA=1\n").expect("write_atomic");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Settings]\nA=1\n");
-            assert!(
-                !path.with_extension("tmp").exists(),
-                "write_atomic must not leave its .tmp sibling behind"
-            );
+            assert_no_leftover_tmp_files(&dir);
 
             // A second write REPLACES the file rather than appending to or corrupting it.
             write_atomic(&path, "[Settings]\nA=2\n").expect("second write_atomic");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Settings]\nA=2\n");
+            assert_no_leftover_tmp_files(&dir);
 
             let _ = std::fs::remove_dir_all(&dir);
         }

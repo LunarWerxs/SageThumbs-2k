@@ -560,28 +560,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 2026-09-05 audit, F13: `export_settings_to_file` (Diagnostics ▸ Export) and
-    /// `--export-settings` both used to `fs::write` straight to the chosen path, so
-    /// replacing an existing backup and then hitting a write failure left the OLD backup
-    /// truncated even though the app reported the export as failed. Proven here with a REAL
-    /// failure (a read-only destination file, which Windows refuses to rename over) rather
-    /// than a mock: if `export_settings_to_path` were reverted to a bare `fs::write`, this
-    /// destination would come back empty/partial instead of byte-identical to the original.
+    /// 2026-09-05 audit, F13, and its 2026-09-05 follow-up: `export_settings_to_file`
+    /// (Diagnostics ▸ Export) and `--export-settings` both used to `fs::write` straight to
+    /// the chosen path, so replacing an existing backup and then hitting a write failure
+    /// left the OLD backup truncated even though the app reported the export as failed.
+    /// **The read-only-destination version of this test had no teeth**: on Windows,
+    /// `fs::write` on a read-only file fails at `CreateFileW`, before a single byte is
+    /// written, so the OLD, unfixed `export_settings_to_file` (a bare `fs::write` straight
+    /// onto `path`) would ALSO have left `original` untouched in that scenario — the test
+    /// passed identically before and after the fix and proved nothing, despite its doc
+    /// comment claiming otherwise.
+    ///
+    /// This drives the same fail-point `fsutil::write_atomically`'s own tests use
+    /// (`sagethumbs2k_core::fsutil::inject_partial_write_failure` — exposed across the
+    /// crate boundary rather than gated `#[cfg(test)]`, because `#[cfg(test)]` items are
+    /// only compiled when the LIB itself is the crate under test and are invisible to this
+    /// bin crate's own tests; see that function's doc comment) to fail the write after 4 of
+    /// the new content's bytes have already landed in the staging file — a scenario a bare
+    /// `fs::write` to `path` cannot survive.
     #[test]
     fn export_settings_to_path_never_destroys_a_prior_backup_on_failed_replace() {
-        let dir = scratch_dir("readonly_dest");
+        let dir = scratch_dir("partial_write_failure");
         let path = dir.join("SageThumbs2K-settings.json");
         let original: &[u8] = b"a previous export backup, not valid JSON on purpose";
         std::fs::write(&path, original).unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(&path, perms).unwrap();
 
+        sagethumbs2k_core::fsutil::inject_partial_write_failure(4);
         let result = export_settings_to_path(&path);
+        sagethumbs2k_core::fsutil::clear_partial_write_failure();
 
         assert!(
             result.is_err(),
-            "a rename onto a read-only destination must fail, not silently succeed"
+            "an injected mid-write failure must be reported, not silently succeed"
         );
         assert_eq!(
             std::fs::read(&path).unwrap(),
@@ -590,21 +600,6 @@ mod tests {
         );
         assert_no_leftover_temp_files(&dir);
 
-        clear_readonly(&path);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Clear the read-only bit a test set on `path` so its scratch dir can be removed
-    /// afterwards. Windows-only test helper — `clippy::permissions_set_readonly_false`
-    /// warns about `false` making a file world-writable, which is a Unix-permissions
-    /// concern this project (Windows-only) never has.
-    #[allow(
-        clippy::permissions_set_readonly_false,
-        reason = "Windows-only test cleanup; no Unix world-writable implication here"
-    )]
-    fn clear_readonly(path: &Path) {
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_readonly(false);
-        std::fs::set_permissions(path, perms).unwrap();
     }
 }
