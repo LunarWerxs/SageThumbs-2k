@@ -83,6 +83,33 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **The colour picker froze on its first mouse move.** Since 2.5.0 the eyedropper locked up the
+  moment its magnifier tried to draw, so it never showed a colour and had to be killed. It
+  paints again, and a test now runs the picker's paint path end to end so it cannot silently
+  come back.
+
+- **Importing an empty or unusable settings file no longer wipes your settings first.** Import
+  used to clear the existing configuration and only then discover the file carried nothing,
+  reporting "No settings were found" over settings that were already gone. A file with nothing
+  usable in it is now refused before anything is touched, and on a portable copy a real import
+  replaces the settings file in one step instead of value by value.
+
+- **Settings backups from a portable copy no longer carry your sign-in.** The exported file
+  included the (encrypted) sign-in token, licence certificate and account name, and importing
+  someone else's backup replaced or removed the current sign-in. Those are left out of exports
+  and left alone by imports, on portable and installed copies alike.
+
+- **A failed settings sync retried forever.** After one push to the cloud failed, the "retry
+  later" marker could never be cleared, so every later Settings open pushed again before
+  pulling. It clears on success now, and a portable copy keeps the marker beside its own
+  settings instead of in the host PC's registry.
+
+- **Slow or hostile files cannot pile up background work inside Explorer.** SVG rendering and
+  the right-click preview thumbnail now use the same time-limit bookkeeping as every other
+  background decode, a bookkeeping race that could permanently refuse new work after enough
+  timeouts is fixed, and a file that grows while it is being read is stopped at the size limit
+  instead of read in full.
+
 - **One video Windows cannot decode can no longer take every thumbnail on the PC down with
   it.** A reporter found an MP4 whose H.264 stream uses the 4:4:4 colour format, which the
   Windows decoder does not support; on Windows 10 the decoder hung instead of declining, our

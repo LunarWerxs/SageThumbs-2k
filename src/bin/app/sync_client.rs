@@ -20,7 +20,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value};
 
 use sagethumbs2k_core::settings;
-use windows_registry::CURRENT_USER;
 
 use crate::{cred_store, http, oauth};
 
@@ -571,23 +570,44 @@ pub(crate) fn is_signed_in() -> bool {
     cred_store::is_signed_in()
 }
 
+// The durable "a Save's push failed, retry it" marker, kept through `settings`' own
+// root-value accessors rather than a direct `CURRENT_USER` open. The direct form got two
+// things wrong at once (2026-09-05 audit, F06/F07): `Key::open` hands back a READ-ONLY key
+// on which `remove_value` fails silently, so a successful push never cleared the marker and
+// every later Settings open re-pushed before pulling; and a portable copy wrote the marker
+// into the borrowed host's HKCU, where it was shared with an installed copy and left behind,
+// instead of into the ini beside the settings it describes. `settings::remove_dword`
+// documents the read-only trap and routes to the ini when portable; these three are
+// name-parameterised so the round-trip is testable against a scratch value name.
+fn set_marker(name: &str) {
+    let _ = settings::set_dword(name, 1);
+}
+
+fn clear_marker(name: &str) {
+    settings::remove_dword(name);
+}
+
+fn marker_set(name: &str) -> bool {
+    settings::get_dword_opt(name).is_some_and(|value| value != 0)
+}
+
 pub(crate) fn mark_push_pending() {
-    if let Ok(key) = CURRENT_USER.create(settings::ROOT) {
-        let _ = key.set_u32(PENDING_VALUE, 1);
-    }
+    set_marker(PENDING_VALUE);
 }
 
 fn clear_push_pending() {
-    if let Ok(key) = CURRENT_USER.open(settings::ROOT) {
-        let _ = key.remove_value(PENDING_VALUE);
-    }
+    clear_marker(PENDING_VALUE);
 }
 
 pub(crate) fn has_pending_push() -> bool {
-    CURRENT_USER
-        .open(settings::ROOT)
-        .and_then(|key| key.get_u32(PENDING_VALUE))
-        .is_ok_and(|value| value != 0)
+    marker_set(PENDING_VALUE)
+}
+
+/// Whether `name` is this module's sync-state marker. It is retry state, not a preference,
+/// so the settings export/import (`settings_io`) neither exports it nor lets a backup from
+/// another machine set or clear it, in either storage backend.
+pub(crate) fn is_sync_state_value(name: &str) -> bool {
+    name.eq_ignore_ascii_case(PENDING_VALUE)
 }
 
 pub(crate) fn begin_push_worker() {
@@ -938,5 +958,33 @@ mod tests {
                 "{key} is in ALLOW and NEVER_SYNCED at the same time"
             );
         }
+    }
+
+    /// F06: the marker must actually CLEAR. `clear` used to go through a read-only
+    /// `Key::open`, on which `remove_value` fails silently, so a successful push left the
+    /// marker set for good and every later Settings open re-pushed. Round-trips a scratch
+    /// name so the developer's real marker is never touched, and leaves nothing behind.
+    #[test]
+    fn the_pending_marker_clears_after_a_successful_push() {
+        let name = format!("ConnectionsSyncPendingTest{}", std::process::id());
+        clear_marker(&name);
+        assert!(!marker_set(&name), "a never-set marker reads as clear");
+        set_marker(&name);
+        assert!(marker_set(&name), "mark must read back");
+        clear_marker(&name);
+        assert!(
+            !marker_set(&name),
+            "clear must DELETE the value, not fail silently on a read-only key"
+        );
+    }
+
+    /// The marker is state, not a preference: the settings export/import consults this to
+    /// leave it alone, case-insensitively like every registry value name.
+    #[test]
+    fn the_pending_marker_is_classified_as_sync_state() {
+        assert!(is_sync_state_value(PENDING_VALUE));
+        assert!(is_sync_state_value("connectionssyncpending"));
+        assert!(!is_sync_state_value("Theme"));
+        assert!(!is_sync_state_value("ConnectionsSyncPendingX"));
     }
 }

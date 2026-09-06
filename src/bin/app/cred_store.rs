@@ -40,6 +40,29 @@ const V_PICTURE: &str = "Picture";
 /// than the `OAuth` registry subkey used on an installed copy.
 const PORTABLE_PREFIX: &str = "OAuth_";
 
+/// The registry subkey (under the settings root) holding everything this module stores on an
+/// installed copy. See [`oauth_key`].
+const OAUTH_SUBKEY: &str = "OAuth";
+
+/// Whether `name` is this module's registry subkey, so the settings export/import
+/// (`settings_io`) leaves it alone: it holds the DPAPI blob, the offline licence certificate
+/// and the signed-in identity, none of which is a preference. Case-insensitive, as registry
+/// key names are.
+pub(crate) fn is_credential_subkey(name: &str) -> bool {
+    name.eq_ignore_ascii_case(OAUTH_SUBKEY)
+}
+
+/// The portable-mode twin of [`is_credential_subkey`]. On a portable copy the same values
+/// live as `OAuth_*` names in the ini's ROOT section, beside every ordinary preference, and a
+/// "serialize the whole root" export carried the encrypted refresh token, the licence
+/// certificate and the account identity in a file the export itself calls safe to hand-edit,
+/// while importing another backup replaced or deleted the current sign-in (2026-09-05 audit,
+/// F05). One classification for both backends, owned here beside the names it classifies.
+pub(crate) fn is_credential_root_value(name: &str) -> bool {
+    let n = PORTABLE_PREFIX.len();
+    name.len() >= n && name.is_char_boundary(n) && name[..n].eq_ignore_ascii_case(PORTABLE_PREFIX)
+}
+
 /// The signed-in user's identity, for the "Synced as …" UI row. Not a secret. `email` is a
 /// per-app privacy-relay address (`<hex>@privaterelay.connections.icu`), never the user's
 /// real inbox — `name` is preferred for display. `picture` is a profile-picture URL (needs
@@ -61,7 +84,7 @@ pub(crate) struct Identity {
 /// "reset all settings" never touches credentials, and `clear()` here never touches
 /// settings.
 fn oauth_key() -> String {
-    format!(r"{}\OAuth", settings::ROOT)
+    format!(r"{}\{OAUTH_SUBKEY}", settings::ROOT)
 }
 
 // ---- DPAPI ---------------------------------------------------------------

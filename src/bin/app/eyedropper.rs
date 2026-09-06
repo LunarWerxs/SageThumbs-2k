@@ -518,7 +518,14 @@ unsafe fn on_destroy() -> LRESULT {
 unsafe fn eye_paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
-    if let Some((shot, _)) = *EYE_SHOT.lock().unwrap() {
+    // Copy the handle OUT under a lock scope that ends with this statement. Holding the guard
+    // through the body (an `if let` on `*EYE_SHOT.lock()` keeps the scrutinee's temporary alive
+    // for the whole block) deadlocked the message thread on its first loupe paint:
+    // `eye_draw_loupe` calls `eye_sample`, and `eye_sample` locks the same non-reentrant mutex.
+    // The live picker hit it on its first mouse move and the `--shot --window eyedropper`
+    // harness on its first paint (2026-09-05 audit, F26; regressed in cb09cfb1).
+    let shot = EYE_SHOT.lock().ok().and_then(|g| *g);
+    if let Some((shot, _)) = shot {
         let shotdc = HDC(shot as *mut c_void);
         let pr = ps.rcPaint;
         // Restore the snapshot under the invalid region (erasing the old loupe).

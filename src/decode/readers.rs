@@ -380,6 +380,25 @@ pub fn decode_preview_path(path: &str, target_edge: u32) -> Result<DynamicImage>
     super::decode_preview_capped_for_path(&bytes, 0, path)
 }
 
+/// Read `src` to its end, refusing (not truncating) an input of more than `max` bytes.
+///
+/// The cap is enforced by the reader itself, so a source whose length was checked a moment
+/// ago and has grown since cannot exceed it; one extra byte is requested only to tell
+/// "exactly at the cap" from "past it". Shared by the by-path preview read above and the
+/// in-process menu-preview worker (`contextmenu::thumb`), both of which used to check
+/// metadata and then read unbounded.
+pub fn read_bounded<R: std::io::Read>(src: R, max: u64) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    src.take(max.saturating_add(1)).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("input is over the {max} byte limit (it grew or was replaced after its size was checked)"),
+        ));
+    }
+    Ok(buf)
+}
+
 /// Bounded head prefix that's ample for every [`crate::container::has_head_preview`]
 /// format: a Blender `TEST` thumbnail block sits ~100 bytes in, and a Photoshop
 /// image-resources section (baked preview, resource 1036) is at most a few MB past
@@ -452,7 +471,13 @@ pub(super) fn read_preview_capped_at(
         if let Some(head) = head_preview_file_fast(path, len, prefix, target_edge) {
             return Ok(head);
         }
-        return std::fs::read(path);
+        // `len` is a SNAPSHOT, not a bound (see `read_capped`): a file that grows or is
+        // replaced between the metadata call and this read (a download in progress, a cloud
+        // or network writer) made a plain `std::fs::read` follow it to EOF, so the advertised
+        // cap bounded nothing and the allocation could exceed it inside the preview host or
+        // the CLI (2026-09-05 audit, F03). The reader enforces the ceiling itself, and an
+        // input that proves to be past it is REFUSED rather than handed back truncated.
+        return read_bounded(std::fs::File::open(path)?, max);
     }
     // Sniff just the magic before committing to a rescue, so a plain oversized
     // file is rejected without touching more than 8 bytes of it.
@@ -770,6 +795,67 @@ mod tests {
         assert!(
             got.iter().all(|&b| b == b'a'),
             "must be exactly the original bytes, no appended ones"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A source that yields more than its metadata advertised (a file growing under the
+    /// read) must be refused at the bound, not returned truncated and not read to EOF; a
+    /// source of exactly the cap is fine. Driven with in-memory readers so the grow-on-read
+    /// case is deterministic rather than a race against a writer thread.
+    #[test]
+    fn read_bounded_refuses_a_source_past_the_cap_and_accepts_one_at_it() {
+        let at_cap = vec![b'x'; 64];
+        assert_eq!(
+            read_bounded(&at_cap[..], 64).expect("exactly the cap is allowed"),
+            at_cap
+        );
+        let grown = [b'x'; 65];
+        let err = read_bounded(&grown[..], 64).expect_err("one past the cap must be refused");
+        assert!(
+            err.to_string().contains("over the 64 byte limit"),
+            "the refusal must say why, got: {err}"
+        );
+        // Far past the cap: the reader must stop at cap+1, not read the lot.
+        struct Endless;
+        impl std::io::Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                buf.fill(b'y');
+                Ok(buf.len())
+            }
+        }
+        assert!(
+            read_bounded(Endless, 1024).is_err(),
+            "an endless source is refused"
+        );
+    }
+
+    /// The by-path preview read's under-cap branch goes through the bounded reader: a file
+    /// that is under the cap at metadata time but over it by the time it is read is refused
+    /// instead of allocated in full. The file is grown BEFORE the read here, so the outcome
+    /// is deterministic; the reader-level race is pinned by the test above.
+    #[test]
+    fn preview_read_refuses_a_file_that_grew_past_the_cap_after_its_size_was_checked() {
+        let path =
+            std::env::temp_dir().join(format!("st2k_preview_grown_{}.bin", std::process::id()));
+        std::fs::write(&path, vec![b'a'; 100]).expect("stage temp file");
+        let p = path.to_string_lossy().into_owned();
+
+        // Under the cap: read byte-for-byte.
+        let got = read_preview_capped_at(&p, 100, 16, ANY_PREVIEW).expect("at the cap reads");
+        assert_eq!(got.len(), 100);
+
+        // Now the cap is smaller than the file: the under-cap branch is never entered, and
+        // a plain (non-head-preview) file is refused by the oversize path, as before.
+        assert!(read_preview_capped_at(&p, 99, 16, ANY_PREVIEW).is_err());
+
+        // A source that reports one size and delivers another is the reader's job:
+        // the same bytes through `read_bounded` with the metadata-time cap are refused.
+        let f = std::fs::File::open(&path).expect("open");
+        assert!(
+            read_bounded(f, 99).is_err(),
+            "the reader, not the metadata call, must enforce the cap"
         );
 
         let _ = std::fs::remove_file(&path);

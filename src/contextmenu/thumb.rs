@@ -84,7 +84,16 @@ impl Drop for MenuPreviewWorker {
 /// COM (the WIC HEIC/AVIF/RAW tier needs an apartment). Uses only the cheap in-process tiers
 /// (`decode_menu_preview` — container covers, fast image/WIC tiers, and pure-Rust resvg for
 /// SVG; no magick/video/pdf), so the worker is fast and bundled-byte-free.
-pub(crate) fn start_menu_thumb(path: &str) -> Option<std::sync::mpsc::Receiver<Option<MenuThumb>>> {
+pub(crate) fn start_menu_thumb(path: &str) -> Option<MenuThumbJob> {
+    // The lease below bounds how many workers may be STARTED per window and lets a healthy
+    // request reclaim a slot from a hung one; it says nothing about how many hung workers are
+    // still alive, since a reclaimed slot's previous holder keeps running. That ceiling is the
+    // process-wide abandoned budget's job, so it is consulted here the way `spawn_budgeted`
+    // consults it: past the limit this degrades to the caption-only tile instead of starting
+    // one more thread that would pin the DLL inside explorer.exe (2026-09-05 audit, F34).
+    if safety::abandoned_budget_exhausted() {
+        return None;
+    }
     let now = safety::elapsed_ms() as usize;
     let index = acquire_menu_preview_slot(now)?;
     let expiry = now.saturating_add(MENU_PREVIEW_LEASE_MS);
@@ -97,6 +106,8 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<std::sync::mpsc::Receiver<O
     #[allow(clippy::default_constructed_unit_structs)]
     let module = crate::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
+    let ticket = safety::AbandonTicket::new();
+    let worker_ticket = ticket.clone();
     let worker = std::thread::Builder::new()
         .name("st2k-menu-preview".into())
         .spawn(move || {
@@ -114,11 +125,15 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<std::sync::mpsc::Receiver<O
                 // file that grows or gets replaced between that gate and this worker running
                 // (download in progress, rename onto a bigger file) must not be read in full
                 // into explorer.exe unbounded. Same shared budget `build_preview` re-checks.
+                // The metadata is still only a snapshot, so the READ enforces the cap too
+                // (`read_bounded`, F03): a file that grows between the two calls is refused
+                // at the limit rather than followed to EOF.
                 let meta = std::fs::metadata(&path).ok()?;
                 if !within_preview_budget(meta.len()) {
                     return None;
                 }
-                let bytes = std::fs::read(&path).ok()?;
+                let file = std::fs::File::open(&path).ok()?;
+                let bytes = crate::decode::read_bounded(file, meta.len()).ok()?;
                 let img = crate::decode::decode_menu_preview(&bytes).ok()?;
                 let (ow, oh) =
                     crate::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
@@ -151,28 +166,121 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<std::sync::mpsc::Receiver<O
                 unsafe { windows::Win32::System::Com::CoUninitialize() };
             }
             let _ = tx.send(out);
+            worker_ticket.worker_finished();
         });
     if worker.is_err() {
         release_menu_preview_slot(index, expiry);
         return None;
     }
-    Some(rx)
+    Some(MenuThumbJob {
+        rx,
+        ticket,
+        collected: false,
+    })
+}
+
+/// A started menu-preview decode: the receiver for its result plus the
+/// [`safety::AbandonTicket`] that keeps the process-wide late-worker count honest for it.
+/// Awaiting it consumes it. Dropping it un-awaited (a menu torn down before it ever painted,
+/// which is where `Initialize`'s prefetch ends up when the user right-clicks and moves on)
+/// counts the worker as abandoned exactly like a timeout does, so a worker nobody will ever
+/// collect is a worker the budget knows about.
+pub(crate) struct MenuThumbJob {
+    rx: std::sync::mpsc::Receiver<Option<MenuThumb>>,
+    ticket: safety::AbandonTicket,
+    collected: bool,
+}
+
+impl MenuThumbJob {
+    /// Wait up to `budget` for the result. On timeout the worker is counted as abandoned
+    /// until it finishes on its own.
+    fn recv_timeout(mut self, budget: std::time::Duration) -> Option<MenuThumb> {
+        self.collected = true;
+        match self.rx.recv_timeout(budget) {
+            Ok(r) => r,
+            Err(_) => {
+                self.ticket.caller_gave_up();
+                None
+            }
+        }
+    }
+}
+
+impl Drop for MenuThumbJob {
+    fn drop(&mut self) {
+        if !self.collected {
+            self.ticket.caller_gave_up();
+        }
+    }
 }
 
 /// Finish a previously-started decode, or start one on demand for diagnostic
-/// callers. The shell path normally supplies a prefetched receiver, hiding most
+/// callers. The shell path normally supplies a prefetched job, hiding most
 /// or all of this bounded wait behind Explorer's own menu construction.
 pub(crate) fn decode_menu_thumb_budgeted(
     path: &str,
-    prefetched: Option<std::sync::mpsc::Receiver<Option<MenuThumb>>>,
+    prefetched: Option<MenuThumbJob>,
 ) -> Option<MenuThumb> {
-    let rx = prefetched.or_else(|| start_menu_thumb(path))?;
-    rx.recv_timeout(MENU_PREVIEW_BUDGET).ok().flatten()
+    let job = prefetched.or_else(|| start_menu_thumb(path))?;
+    job.recv_timeout(MENU_PREVIEW_BUDGET)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A job the shell never collects (menu dismissed before it painted) and a job that times
+    /// out both count their worker as abandoned until it finishes, so the process-wide budget
+    /// sees menu-preview workers stuck on hung storage the same way it sees every other late
+    /// worker (F34). A collected job counts nothing. Asserted on the per-ticket state, which
+    /// is exact; the shared count is read by other tests' workers concurrently.
+    #[test]
+    fn an_uncollected_or_timed_out_job_counts_its_worker_until_it_finishes() {
+        // Dropped un-awaited: counted, then released when the worker reports in.
+        let (_tx, rx) = std::sync::mpsc::channel::<Option<MenuThumb>>();
+        let ticket = safety::AbandonTicket::new();
+        let worker = ticket.clone();
+        drop(MenuThumbJob {
+            rx,
+            ticket,
+            collected: false,
+        });
+        assert!(worker.is_counted(), "an uncollected job is late work");
+        worker.worker_finished();
+        assert!(!worker.is_counted(), "released once the worker finishes");
+
+        // Timed out: same accounting through `recv_timeout`.
+        let (_tx, rx) = std::sync::mpsc::channel::<Option<MenuThumb>>();
+        let ticket = safety::AbandonTicket::new();
+        let worker = ticket.clone();
+        let job = MenuThumbJob {
+            rx,
+            ticket,
+            collected: false,
+        };
+        assert!(job
+            .recv_timeout(std::time::Duration::from_millis(1))
+            .is_none());
+        assert!(worker.is_counted(), "a timed-out job is late work");
+        worker.worker_finished();
+        assert!(!worker.is_counted());
+
+        // Collected in time: the worker finished first, nothing is counted at any point.
+        let (tx, rx) = std::sync::mpsc::channel::<Option<MenuThumb>>();
+        let ticket = safety::AbandonTicket::new();
+        let worker = ticket.clone();
+        tx.send(None).unwrap();
+        worker.worker_finished();
+        let job = MenuThumbJob {
+            rx,
+            ticket,
+            collected: false,
+        };
+        assert!(job
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_none());
+        assert!(!worker.is_counted(), "a prompt job counts nothing");
+    }
 
     /// The slots must be a LEASE, not a permanent claim. Two files whose reads hang forever
     /// (a OneDrive placeholder, a dropped SMB share) used to hold both slots for the life of

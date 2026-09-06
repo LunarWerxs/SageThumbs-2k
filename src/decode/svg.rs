@@ -61,26 +61,34 @@ pub(super) fn has_css_animation(bytes: &[u8]) -> bool {
 
 /// Rasterize an SVG to straight (non-premultiplied) RGBA via resvg/tiny-skia.
 ///
-/// Parse+render run on a dedicated worker thread joined with a deadline
-/// ([`SVG_TIMEOUT`]), mirroring `pdf.rs`: resvg has no internal timeout and runs
-/// in-process inside Explorer's thumbnail host, so an unbounded run is a DoS
-/// vector. On timeout we return E_FAIL and let the worker finish on its own — a
-/// leaked thread in a disposable host is acceptable (same trade-off as pdf.rs).
+/// Parse+render run on a budgeted worker ([`crate::safety::spawn_budgeted`]) joined with a
+/// deadline ([`SVG_TIMEOUT`]): resvg has no internal timeout and runs in-process inside
+/// Explorer's thumbnail host and, through `decode_menu_preview`, inside explorer.exe itself,
+/// so an unbounded run is a DoS vector. On timeout this returns E_FAIL and the worker
+/// finishes on its own, pinning the DLL (the `ModuleRef` `spawn_budgeted` takes before it
+/// spawns) and counted against [`crate::safety::MAX_ABANDONED_WORKERS`] like every other
+/// late worker, so repeated hostile SVGs cannot pile render threads up past the process-wide
+/// budget. This used to spawn a bare `std::thread`, which was the one detached-worker path
+/// that budget did not cover (2026-09-05 audit, F01).
 pub(super) fn decode_svg(bytes: &[u8]) -> Result<DynamicImage> {
+    decode_svg_with(bytes, SVG_TIMEOUT, render_svg)
+}
+
+/// [`decode_svg`] with the render and the deadline as parameters, so a test can stand in a
+/// render that blocks on command and prove the timeout, the abandoned accounting and the
+/// recovery without a pathological SVG or a ten-second wait.
+pub(super) fn decode_svg_with<F>(bytes: &[u8], timeout: Duration, render: F) -> Result<DynamicImage>
+where
+    F: FnOnce(&[u8]) -> Result<DynamicImage> + Send + 'static,
+{
     let owned = bytes.to_vec();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        // Pin the DLL for this detached worker's lifetime — on timeout it outlives this call
-        // and `DllCanUnloadNow` ignores it, so the in-process thumbnail/preview host could
-        // unload the DLL mid-render and crash. Mirrors run_action_detached.
-        #[allow(clippy::default_constructed_unit_structs)]
-        let _module = crate::ModuleRef::default();
-        let _ = tx.send(render_svg(&owned));
-    });
-    match rx.recv_timeout(SVG_TIMEOUT) {
-        Ok(r) => r,
-        Err(_) => {
-            crate::safety::log_debug("SVG render exceeded the wall-clock deadline");
+    match crate::safety::spawn_budgeted("st2k-svg-render", timeout, move || render(&owned)) {
+        Some(r) => r,
+        None => {
+            crate::safety::log_debug(
+                "SVG render exceeded the wall-clock deadline, or the abandoned-worker budget \
+                 refused to start it",
+            );
             Err(Error::from(E_FAIL))
         }
     }
@@ -155,4 +163,48 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     }
     let img = image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))?;
     Ok(DynamicImage::ImageRgba8(img))
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::*;
+
+    /// A render that never returns must time out, be counted as abandoned while it runs, and
+    /// be uncounted once it finishes, all through the budgeted path `decode_svg` now uses.
+    /// A bare thread (the previous shape) satisfied the first and none of the rest. Relative
+    /// assertions only: other tests in this binary run budgeted workers concurrently.
+    #[test]
+    fn a_blocking_render_times_out_and_is_accounted_for() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let r = decode_svg_with(b"<svg/>", Duration::from_millis(20), move |_| {
+            let _ = release_rx.recv();
+            let _ = done_tx.send(());
+            Err(Error::from(E_FAIL))
+        });
+        assert!(r.is_err(), "a blocked render must time out to E_FAIL");
+        // Our render is still blocked and counted, so the count is at least one whatever
+        // other tests' workers do in the meantime.
+        assert!(
+            crate::safety::abandoned_workers() >= 1,
+            "the still-blocked render must be counted as abandoned"
+        );
+        let _ = release_tx.send(());
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the abandoned render must still run to completion on its own"
+        );
+        // Its release from the count is the handshake `safety::worker_tests` pins
+        // deterministically; the shared count cannot be read exactly here while other tests
+        // run budgeted workers beside this one.
+    }
+
+    /// A prompt render returns its result through the same path.
+    #[test]
+    fn a_prompt_render_returns_its_result() {
+        let r = decode_svg_with(b"<svg/>", Duration::from_secs(10), |_| {
+            Ok(DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2)))
+        });
+        assert_eq!(r.map(|i| (i.width(), i.height())).ok(), Some((2, 2)));
+    }
 }

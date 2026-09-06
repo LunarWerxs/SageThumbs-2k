@@ -295,7 +295,7 @@ where
     R: Send + 'static,
     F: FnOnce() -> R + Send + 'static,
 {
-    if ABANDONED_WORKERS.load(Ordering::Acquire) >= MAX_ABANDONED_WORKERS {
+    if abandoned_budget_exhausted() {
         static LOGGED: Once = Once::new();
         LOGGED.call_once(|| {
             log_error(&format!(
@@ -308,19 +308,14 @@ where
     #[allow(clippy::default_constructed_unit_structs)]
     let module = crate::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
-    let state = Arc::new(AtomicU8::new(WORKER_RUNNING));
-    let worker_state = Arc::clone(&state);
+    let ticket = AbandonTicket::new();
+    let worker_ticket = ticket.clone();
     let worker = std::thread::Builder::new()
         .name(thread_name.to_string())
         .spawn(move || {
             let _module = module;
             let _ = tx.send(op());
-            if worker_finished(&worker_state) {
-                // `checked_sub`: a count that is already zero is left alone rather than
-                // wrapped, though the handshake above makes that unreachable.
-                let _ = ABANDONED_WORKERS
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
-            }
+            worker_ticket.worker_finished();
         });
     // The OS refusing a new thread is the same terminal state as a timeout: no result, and
     // (per the doc above) any guard `op` captured has already been dropped by `spawn` itself.
@@ -328,25 +323,34 @@ where
     match rx.recv_timeout(timeout) {
         Ok(r) => Some(r),
         Err(_) => {
-            if worker_abandoned(&state) {
-                ABANDONED_WORKERS.fetch_add(1, Ordering::AcqRel);
-            }
+            ticket.caller_gave_up();
             None
         }
     }
 }
 
-/// Live workers that ran past their [`spawn_budgeted`] budget and have not finished yet.
+/// Live workers that ran past their budget and have not finished yet: every
+/// [`spawn_budgeted`] worker, plus any detached worker whose caller holds an
+/// [`AbandonTicket`] for it (the menu-preview decode in `contextmenu::thumb`).
 static ABANDONED_WORKERS: AtomicU64 = AtomicU64::new(0);
 
-/// Once this many abandoned workers are alive in the process, [`spawn_budgeted`] refuses to
-/// start more. Each one is a blocked thread pinning the DLL; eight is well past what a
-/// healthy host ever accumulates and small enough that a hung share cannot exhaust the host.
+/// Once this many abandoned workers are alive in the process, [`spawn_budgeted`] (and every
+/// other [`AbandonTicket`] user) refuses to start more. Each one is a blocked thread pinning
+/// the DLL; eight is well past what a healthy host ever accumulates and small enough that a
+/// hung share cannot exhaust the host.
 pub const MAX_ABANDONED_WORKERS: u64 = 8;
 
 /// The number of budgeted workers currently running past their budget.
 pub fn abandoned_workers() -> u64 {
     ABANDONED_WORKERS.load(Ordering::Acquire)
+}
+
+/// Whether the process has already accumulated [`MAX_ABANDONED_WORKERS`] live abandoned
+/// workers, so no caller should start another detached worker until some finish. The one
+/// gate every detached-worker entry point consults; a path that spawns its own thread
+/// without asking this is a path the budget does not cover.
+pub fn abandoned_budget_exhausted() -> bool {
+    abandoned_workers() >= MAX_ABANDONED_WORKERS
 }
 
 // Per-worker handshake between the caller (which may give up waiting) and the worker (which
@@ -359,14 +363,115 @@ const WORKER_ABANDONED: u8 = 2;
 
 /// Caller side: mark the worker abandoned. True when it was still running, so the caller
 /// owns the increment; false when the worker had already finished (nothing to count).
+///
+/// A compare-exchange from RUNNING, not a swap: a swap would write ABANDONED over a worker
+/// that had already marked itself DONE, so the state would read "counted" for a worker that
+/// never was. The accounting did not care (the swap's return value still said "not owned"),
+/// but the state is what a test and any future reader of it must be able to trust, so
+/// ABANDONED now means exactly "the caller gave up while the worker was still running, and
+/// the worker has not finished since".
 fn worker_abandoned(state: &AtomicU8) -> bool {
-    state.swap(WORKER_ABANDONED, Ordering::AcqRel) == WORKER_RUNNING
+    state
+        .compare_exchange(
+            WORKER_RUNNING,
+            WORKER_ABANDONED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
 }
 
 /// Worker side: mark the worker done. True when the caller had already abandoned it, so the
 /// worker owns the decrement; false when it finished in time (nothing was counted).
 fn worker_finished(state: &AtomicU8) -> bool {
     state.swap(WORKER_DONE, Ordering::AcqRel) == WORKER_ABANDONED
+}
+
+/// Caller side of the accounting, step 1 of 2: reserve the count BEFORE publishing the
+/// abandonment. Split from step 2 so a test can interleave the worker between them.
+///
+/// The order is the whole fix. The first version published the state first and incremented
+/// afterwards, and the worker could finish in that gap: it saw ABANDONED, ran its decrement
+/// against a count that did not yet include it (a `checked_sub` at zero is a no-op), and the
+/// caller then incremented a count nothing would ever decrement again. Eight such phantoms
+/// and [`spawn_budgeted`] refused every worker for the life of the host, with every real
+/// worker long finished. Reserving first means the worker's decrement can only ever run
+/// AFTER the increment it undoes: the decrement is gated on seeing ABANDONED, ABANDONED is
+/// written only in step 2, and step 2 runs after this on the same thread.
+fn reserve_abandoned(count: &AtomicU64) {
+    count.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Caller side, step 2 of 2: publish the abandonment. If the worker had already finished
+/// (it saw RUNNING and counted nothing), the reservation from step 1 is undone here; the
+/// count then reads exactly as if the worker had never been late. Calling this twice for one
+/// worker is harmless: the second swap does not see RUNNING either, so it undoes its own
+/// reservation and nets to zero.
+fn publish_abandoned(state: &AtomicU8, count: &AtomicU64) {
+    if !worker_abandoned(state) {
+        count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Worker side: mark done and, if the caller had already abandoned this worker, release the
+/// count the caller reserved for it. `checked_sub` is defence in depth only: the ordering
+/// above guarantees the reservation precedes this, so the count is never zero here for a
+/// correctly paired ticket, and a bug that broke the pairing must not wrap the counter to
+/// `u64::MAX` (which would refuse every worker forever, the exact failure this exists to
+/// prevent).
+fn finish_worker(state: &AtomicU8, count: &AtomicU64) {
+    if worker_finished(state) {
+        let _ = count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+    }
+}
+
+/// The accounting handshake for ONE detached worker against the process-wide abandoned
+/// count, for callers that cannot route their worker through [`spawn_budgeted`] (the
+/// menu-preview decode hands its receiver to a later shell callback, so the timeout is not
+/// observed where the thread is spawned).
+///
+/// Clone it once: the caller keeps one half and the worker's closure the other. The worker
+/// calls [`worker_finished`](Self::worker_finished) as its last act; the caller calls
+/// [`caller_gave_up`](Self::caller_gave_up) when it stops waiting, whether by timeout or by
+/// never collecting the result. Both are idempotent, and the pairing guarantees the count
+/// rises by exactly one for a worker that outlives its caller and returns to its baseline
+/// when that worker eventually finishes, on every interleaving of the two sides.
+#[derive(Clone)]
+pub struct AbandonTicket {
+    state: Arc<AtomicU8>,
+}
+
+impl AbandonTicket {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(WORKER_RUNNING)),
+        }
+    }
+
+    /// The caller has stopped waiting for the worker's result.
+    pub fn caller_gave_up(&self) {
+        reserve_abandoned(&ABANDONED_WORKERS);
+        publish_abandoned(&self.state, &ABANDONED_WORKERS);
+    }
+
+    /// The worker has produced its result (or given up) and is about to exit.
+    pub fn worker_finished(&self) {
+        finish_worker(&self.state, &ABANDONED_WORKERS);
+    }
+
+    /// Whether this worker is counted against the budget right now: the caller gave up and
+    /// the worker has not finished. For tests, which cannot read the process-wide count
+    /// deterministically while other tests run budgeted workers beside them.
+    #[cfg(test)]
+    pub fn is_counted(&self) -> bool {
+        self.state.load(Ordering::Acquire) == WORKER_ABANDONED
+    }
+}
+
+impl Default for AbandonTicket {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A fixed number of concurrency slots, each held under a LEASE rather than a permanent
@@ -618,6 +723,145 @@ mod worker_tests {
         let s = AtomicU8::new(WORKER_RUNNING);
         assert!(!worker_finished(&s));
         assert!(!worker_abandoned(&s));
+    }
+
+    /// Every interleaving of the worker's finish against the caller's two accounting steps
+    /// must leave the count at its baseline once both sides are done, and must count the
+    /// worker as abandoned for exactly the window in which it really is. Driven against a
+    /// LOCAL counter with the steps called by hand, so each ordering is exercised
+    /// deterministically rather than hoped for under a scheduler.
+    ///
+    /// The middle case is the one that used to fail: the caller published ABANDONED, the
+    /// worker finished and decremented a count that was still zero (no-op), and the caller
+    /// then incremented. That phantom was never removed, and eight of them shut every
+    /// budgeted worker out of the host for good. The reproduction is `repros/
+    /// f02_worker_counter_repro.rs` in the 2026-09-05 audit; this pins the fix.
+    #[test]
+    fn abandoned_count_returns_to_baseline_on_every_interleaving() {
+        // Worker finishes BEFORE the caller gives up: nothing is ever counted.
+        let count = AtomicU64::new(0);
+        let s = AtomicU8::new(WORKER_RUNNING);
+        finish_worker(&s, &count);
+        reserve_abandoned(&count);
+        publish_abandoned(&s, &count);
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "worker-first must count nothing"
+        );
+
+        // Worker finishes BETWEEN the caller's reservation and its publication: the
+        // reservation is undone, and the worker (which saw RUNNING) touched nothing.
+        let count = AtomicU64::new(0);
+        let s = AtomicU8::new(WORKER_RUNNING);
+        reserve_abandoned(&count);
+        finish_worker(&s, &count);
+        publish_abandoned(&s, &count);
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "a worker finishing inside the caller's gap must leave no phantom"
+        );
+
+        // Worker finishes AFTER the caller gave up: counted while late, uncounted when done.
+        let count = AtomicU64::new(0);
+        let s = AtomicU8::new(WORKER_RUNNING);
+        reserve_abandoned(&count);
+        publish_abandoned(&s, &count);
+        assert_eq!(count.load(Ordering::Acquire), 1, "a late worker is counted");
+        finish_worker(&s, &count);
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "and uncounted when it finishes"
+        );
+
+        // Both sides repeated: a caller that times out and later drops its handle, a worker
+        // path that reports twice. Neither may move the count a second time.
+        let count = AtomicU64::new(0);
+        let s = AtomicU8::new(WORKER_RUNNING);
+        reserve_abandoned(&count);
+        publish_abandoned(&s, &count);
+        reserve_abandoned(&count);
+        publish_abandoned(&s, &count);
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "a second give-up is a no-op"
+        );
+        finish_worker(&s, &count);
+        finish_worker(&s, &count);
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "a second finish is a no-op"
+        );
+    }
+
+    /// The refusal predicate over the same local counter: eight workers abandoned in the
+    /// racy ordering used to leave eight phantoms and a permanent refusal. Now the same
+    /// eight leave zero, the ninth start is allowed, and the threshold trips only while
+    /// eight workers are GENUINELY still running late, recovering as they finish.
+    #[test]
+    fn eight_workers_finishing_inside_the_gap_do_not_exhaust_the_budget() {
+        let count = AtomicU64::new(0);
+        let exhausted = |c: &AtomicU64| c.load(Ordering::Acquire) >= MAX_ABANDONED_WORKERS;
+
+        for _ in 0..MAX_ABANDONED_WORKERS {
+            let s = AtomicU8::new(WORKER_RUNNING);
+            reserve_abandoned(&count);
+            finish_worker(&s, &count); // the worker slips in before the publication
+            publish_abandoned(&s, &count);
+        }
+        assert_eq!(count.load(Ordering::Acquire), 0);
+        assert!(
+            !exhausted(&count),
+            "no phantoms, so the budget must still be open"
+        );
+
+        // Eight genuinely late workers DO trip it, and finishing them reopens it.
+        let states: Vec<AtomicU8> = (0..MAX_ABANDONED_WORKERS)
+            .map(|_| AtomicU8::new(WORKER_RUNNING))
+            .collect();
+        for s in &states {
+            reserve_abandoned(&count);
+            publish_abandoned(s, &count);
+        }
+        assert!(
+            exhausted(&count),
+            "eight live late workers exhaust the budget"
+        );
+        finish_worker(&states[0], &count);
+        assert!(!exhausted(&count), "one finishing reopens it");
+        for s in &states[1..] {
+            finish_worker(s, &count);
+        }
+        assert_eq!(count.load(Ordering::Acquire), 0, "back to baseline");
+    }
+
+    /// The public ticket wraps the same steps around the process-wide counter. The per-ticket
+    /// state is asserted exactly; the shared count only relatively, since other tests in this
+    /// binary run budgeted workers concurrently.
+    #[test]
+    fn abandon_ticket_counts_only_while_the_worker_is_genuinely_late() {
+        let t = AbandonTicket::new();
+        let w = t.clone();
+        w.worker_finished();
+        t.caller_gave_up();
+        assert!(
+            !t.is_counted(),
+            "a worker that finished first must not be counted"
+        );
+
+        let t = AbandonTicket::new();
+        let w = t.clone();
+        t.caller_gave_up();
+        assert!(t.is_counted(), "a late worker is counted");
+        // Ours is live and counted, so the shared count is at least one whatever other tests'
+        // workers do in the meantime.
+        assert!(abandoned_workers() >= 1, "and the shared count saw it");
+        w.worker_finished();
+        assert!(!t.is_counted(), "and released on finish");
     }
 
     /// A worker that outlives its budget is counted while it runs and uncounted when it

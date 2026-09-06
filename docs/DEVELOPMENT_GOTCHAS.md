@@ -785,3 +785,38 @@ met the lock. The seam compiles to nothing outside `cfg(test)`.
 Verified in both directions, which is the only thing that makes any of this trustworthy: with
 `RENAME_RETRIES` forced to 1 all three fail on "Access is denied. (os error 5)"; with the policy
 restored all three pass, individually and inside a full workspace run.
+
+## `if let Some(x) = *MUTEX.lock()` holds the lock for the whole body
+
+The eyedropper shipped frozen in 2.5.0 because of one line (`eyedropper.rs`, `eye_paint`,
+regressed in cb09cfb1):
+
+```rust
+if let Some((shot, _)) = *EYE_SHOT.lock().unwrap() {
+    // ... eye_draw_loupe(...) -> eye_sample() -> EYE_SHOT.lock() ...
+}
+```
+
+The pattern binds a `Copy` value, so it LOOKS like the guard is consumed by the deref and gone.
+It is not: a temporary created in an `if let` scrutinee lives to the end of the whole `if`/`else`
+(edition 2021; edition 2024 only moves the drop ahead of the `else` branch, the `then` body still
+holds it). So the guard was alive through every paint, `eye_sample` re-locked the same
+non-reentrant `std::sync::Mutex` three calls down, and the message thread deadlocked on the first
+frame that drew the loupe. The live picker hit it on its first mouse move; the `--shot --window
+eyedropper` harness hit it on its first paint and never exited. `let ... else` does NOT have this
+problem (its temporaries drop at the end of the `let`), which is why `eye_sample` itself, written
+that way, was fine.
+
+The shape to write instead is a one-statement lock scope that copies the value out:
+
+```rust
+let shot = EYE_SHOT.lock().ok().and_then(|g| *g);   // guard dropped here
+if let Some((shot, _)) = shot { ... }
+```
+
+Two things make this class of bug worse than it sounds. It does not fail any test that only
+exercises the lock's own lifecycle (`set_snapshot`/`free_snapshot` tests passed throughout), and
+it does not FAIL the harness, it HANGS it, which a plain `Command::status()` waits on forever.
+`tests/eyedropper_shot.rs` therefore runs the child under a 60 s bound and treats the bound as
+the assertion. When a function that takes a lock calls anything that might take the same lock,
+copy out under a short scope and audit every `if let`/`match`/`while let` whose scrutinee locks.

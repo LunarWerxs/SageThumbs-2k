@@ -126,7 +126,7 @@ pub struct ContextMenu {
     /// Preview decode started from `IShellExtInit::Initialize` for either visible
     /// placement. The shell can continue querying its other handlers while this
     /// worker runs, so menu construction normally arrives with no UI wait.
-    preview_job: RefCell<Option<std::sync::mpsc::Receiver<Option<MenuThumb>>>>,
+    preview_job: RefCell<Option<MenuThumbJob>>,
     /// Snapshot of the cheap single-image/size gate taken during initialization,
     /// avoiding a second filesystem metadata query in `QueryContextMenu`.
     preview_eligible: Cell<bool>,
@@ -255,7 +255,7 @@ fn preview_metadata(path: &str) -> Option<std::fs::Metadata> {
 /// thread) for the same file on the same right-click.
 fn build_preview(
     path: &str,
-    prefetched: Option<std::sync::mpsc::Receiver<Option<MenuThumb>>>,
+    prefetched: Option<MenuThumbJob>,
     meta: Option<std::fs::Metadata>,
 ) -> Option<Preview> {
     let meta = match meta {

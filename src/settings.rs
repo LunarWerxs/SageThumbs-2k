@@ -28,7 +28,7 @@ use windows_registry::CURRENT_USER;
 /// HKCU root for all our settings (and the per-extension subkeys).
 pub const ROOT: &str = r"Software\SageThumbs2K";
 
-pub use store::{ini_path, portable, INI_NAME};
+pub use store::{ini_path, portable, INI_NAME, ROOT_SECTION as PORTABLE_ROOT_SECTION};
 
 /// The subkey (registry) / section (portable ini) holding per-menu-item visibility.
 const MENU_ITEMS: &str = "MenuItems";
@@ -63,6 +63,23 @@ pub fn portable_remove(sub: Option<&str>, name: &str) {
 /// mention at all (item 33/221).
 pub fn portable_remove_subkey(name: &str) {
     store::remove_section(name)
+}
+
+/// Rewrite the WHOLE portable ini in one load-edit-write under the ini lock, written back
+/// atomically (temp file + rename), for the settings import. Its replace-not-merge pass drops
+/// and writes many values, and doing that through [`portable_set`]/[`portable_remove`] one
+/// value at a time was one load-edit-write per value, each a window in which a crash or a
+/// concurrent process saw a half-imported file. One edit over the parsed document means the
+/// file on disk is either the old configuration or the fully imported one, never a mix
+/// (2026-09-05 audit, F04). `edit` sees sections by name ([`PORTABLE_ROOT_SECTION`] holds
+/// what the registry keeps as root values); an unreadable existing file aborts without
+/// writing, like every other portable write.
+pub fn portable_edit(
+    edit: impl FnOnce(
+        &mut std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    ),
+) -> std::io::Result<()> {
+    store::update(edit)
 }
 
 /// The HKCU subkey path every settings read/write below opens — normally [`ROOT`], but
@@ -142,7 +159,7 @@ mod store {
     /// The file whose presence next to the running module means "portable".
     pub const INI_NAME: &str = "SageThumbs2K.ini";
     /// The section holding what would otherwise be the root key's values.
-    const ROOT_SECTION: &str = "Settings";
+    pub const ROOT_SECTION: &str = "Settings";
 
     /// section -> (value name -> raw text). `BTreeMap` so a rewritten file has a stable,
     /// diffable order rather than whatever the hash seed produced this run.
@@ -355,7 +372,7 @@ mod store {
     /// portable configuration with no error anywhere (item 9/204/P9). Logged via
     /// `log_debug` so the failure leaves a trace even though every public setter here is
     /// best-effort.
-    fn update(edit: impl FnOnce(&mut Doc)) -> io::Result<()> {
+    pub(super) fn update(edit: impl FnOnce(&mut Doc)) -> io::Result<()> {
         let path = ini_path().ok_or_else(|| io::Error::other("not in portable mode"))?;
         let _lock = IniLock::acquire();
         let mut doc = match load() {
