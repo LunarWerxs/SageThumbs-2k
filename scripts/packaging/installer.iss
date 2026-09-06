@@ -285,6 +285,31 @@ Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
 ; install's copy of the same self-signed cert with a different key and thumbprint). See the
 ; [UninstallRun] entry below for the removal half.
 ;
+; F09 ADDENDUM (migration + rotation, same audit, review pass 2): the rule above was
+; incomplete on two real paths.
+;
+; MIGRATION: everybody who upgraded from a build older than this fix already has the
+; certificate trusted (an earlier version of this step imported it) but no
+; `ModernMenuCertThumbprint` marker (that property did not exist yet), because the marker was
+; only ever written in the "not already trusted" branch and their thumbprint WAS already
+; trusted the moment this code first ran for them. Left alone, uninstall then treats that
+; certificate as "not ours" and leaves it behind forever - the exact leak F09 exists to close,
+; just arriving a release late. So the "already trusted" branch now checks: no marker
+; recorded yet, AND this is an upgrade (`$env:ST2K_ISUPGRADE`, set by CurStepChanged the same
+; way as `$env:ST2K_APPDIR` below) -> record THIS thumbprint as ours. A fresh install with no
+; prior SageThumbs presence is never an upgrade, so it can never claim a foreign certificate
+; this way; see IsUpgrade's own comment for why that flag is trustworthy.
+;
+; ROTATION: `make-msix.ps1` mints a fresh self-signed cert on any signing machine that lacks
+; the old one, so two releases built on different machines can carry different thumbprints
+; under the same subject. Before this, importing a new thumbprint just overwrote the marker,
+; and the PREVIOUS thumbprint - which this installer itself introduced - stayed trusted
+; forever with nothing left to ever remove it. The "not already trusted" (import) branch now
+; reads the recorded marker first; if one exists and differs from the thumbprint about to be
+; imported, it removes THAT exact old certificate (by thumbprint, never by subject) before
+; importing the new one and recording its thumbprint as the new marker. No marker recorded
+; yet (a genuinely fresh install) means nothing to remove, so this is a no-op there.
+;
 ; Single quotes only inside the PowerShell text - no double quote appears there - so the Inno
 ; string below needs only the one outer "" wrapping, no nested escaping to get wrong.
 ;
@@ -297,7 +322,7 @@ Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
 ; `installer_iss::powershell_braces_are_escaped_for_inno` and check-installer.ps1's own
 ; per-line brace scan, which now catch it in a second.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$d=$env:ST2K_APPDIR; $c=$d+'\SageThumbs2K.cer'; $t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ($c)).Thumbprint; New-Item -Path 'HKLM:\Software\SageThumbs2K' -Force|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -Value $d; if(-not(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t))){{Import-Certificate -FilePath $c -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}"""; \
+  Parameters: "-NoProfile -Command ""$d=$env:ST2K_APPDIR; $c=$d+'\SageThumbs2K.cer'; $t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ($c)).Thumbprint; New-Item -Path 'HKLM:\Software\SageThumbs2K' -Force|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -Value $d; $m=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -ErrorAction SilentlyContinue).ModernMenuCertThumbprint; if(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t)){{if((-not $m) -and ($env:ST2K_ISUPGRADE -eq '1')){{Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}}else{{if($m -and ($m -ne $t)){{Remove-Item -Path ('Cert:\LocalMachine\TrustedPeople\'+$m) -Force -ErrorAction SilentlyContinue}; Import-Certificate -FilePath $c -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}"""; \
   StatusMsg: "Trusting the modern context menu certificate..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
 ; Per-user package registration (F08): Add-AppxPackage registers the sparse package into the
 ; CALLING user's own profile, so - unlike the cert trust above - this step must run as the
@@ -680,6 +705,15 @@ begin
     // For the modern-menu [Run] powershell entry below: see its own comment for why the
     // install path travels through the environment instead of a quoted {app} literal.
     SetEnvironmentVariableW('ST2K_APPDIR', ExpandConstant('{app}'));
+    // F09 migration addendum: same environment-variable indirection, so the cert-trust step
+    // can tell "already trusted, no marker" (an upgrade from before F09 existed - claim the
+    // thumbprint) apart from "already trusted, no marker, fresh install" (someone else's
+    // certificate - never claim it). WasUpgrade is set in PrepareToInstall, which always runs
+    // before ssInstall, so it already holds its final value here.
+    if WasUpgrade then
+      SetEnvironmentVariableW('ST2K_ISUPGRADE', '1')
+    else
+      SetEnvironmentVariableW('ST2K_ISUPGRADE', '0');
   end;
   if CurStep = ssPostInstall then
   begin
@@ -1203,6 +1237,44 @@ begin
   end;
 end;
 
+// F08 uninstall fix (2026-09-05 audit, review pass 2): remove the modern-menu sparse package
+// SYNCHRONOUSLY, from THIS already-elevated [Code] context, with no dependency on which
+// account is signed in. The prior version ran the removal through RunAsOriginalUser (a
+// scheduled task run as whoever the original UAC-answering session belonged to), which is
+// exactly wrong here: under F08's own alternate-admin scenario, the package registered under
+// an account that is neither "whoever is elevated" nor necessarily "whoever is signed in
+// right now" - it is whichever original user ran the install. `-AllUsers` on BOTH
+// Get-AppxPackage and Remove-AppxPackage removes a per-user registration made by ANY account
+// on the machine, which covers that case without having to know or guess who it was; it needs
+// elevation to enumerate other users' registrations, which this step already has.
+//
+// The package NAME comes from scripts\packaging\AppxManifest.xml's own
+// <Identity Name="SageThumbs2K" .../> - it is not a guess, it is the one place the package
+// identity is defined, and 'SageThumbs2K' below must always read the same as that file.
+//
+// waituntilterminated (ewWaitUntilTerminated): the entire point of this fix is knowing
+// whether the removal actually happened, so uninstall must wait for it, and a failure is
+// logged to the uninstall log (Log()) rather than silently swallowed the way the old
+// fire-and-forget scheduled task effectively was (it never even checked whether the task it
+// launched had succeeded).
+procedure RemoveModernMenuPackageForAllUsers;
+var
+  R: Integer;
+begin
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -Command "Get-AppxPackage -AllUsers -Name SageThumbs2K | Remove-AppxPackage -AllUsers -ErrorAction Stop"',
+      '', SW_HIDE, ewWaitUntilTerminated, R) then
+  begin
+    Log('SageThumbs 2K: could not launch PowerShell to remove the modern-menu package ' +
+      '(Get-AppxPackage -AllUsers | Remove-AppxPackage -AllUsers); it may still be ' +
+      'registered for one or more users.');
+    Exit;
+  end;
+  if R <> 0 then
+    Log('SageThumbs 2K: Remove-AppxPackage -AllUsers for SageThumbs2K exited ' + IntToStr(R) +
+      '; the modern-menu package may still be registered for one or more users.');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
@@ -1224,17 +1296,18 @@ begin
     // to that section), matching the order the per-user shell sync uses on install.
     RunAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--remove-user-shell');
     RunAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--remove-user-state');
-    // F08 (2026-09-05 audit): the modern-menu sparse package is a PER-USER registration
-    // (Add-AppxPackage registers into the calling user's own profile - see the [Run] entry
-    // that installs it), so its removal has the same "must run as the real user, not whoever
-    // answered UAC" requirement as the two calls above. [UninstallRun] cannot carry
-    // `runasoriginaluser` (see RunAsOriginalUser's own comment), so this goes through the same
-    // scheduled-task de-elevation helper. No path text is involved - Get-AppxPackage looks the
-    // package up by name, so there is nothing here for an apostrophe in the install path to
-    // break - and the command has no failure signal worth inspecting: a missing package is a
-    // silent no-op, matching the [UninstallRun] cert-removal entry's "best-effort" framing.
-    RunAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-      '-NoProfile -Command Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage -ErrorAction SilentlyContinue');
+    // F08 (2026-09-05 audit, review pass 2): the modern-menu sparse package is a PER-USER
+    // registration (Add-AppxPackage registers into the calling user's own profile - see the
+    // [Run] entry that installs it). This USED to go through RunAsOriginalUser, same as the
+    // two calls above - which is wrong for exactly the scenario F08 is about: on a machine
+    // where a standard user supplied a DIFFERENT administrator's UAC credentials, "the
+    // original user" is not the account the package registered under, so removal silently
+    // no-oped for the account that actually has it (or ran for nobody, if that other admin was
+    // not even signed in). It was also fire-and-forget - RunAsOriginalUser's scheduled task is
+    // triggered, given 1.5s, then force-deleted, well before PowerShell has loaded the Appx
+    // module, so its success or failure was never observed either way.
+    // See RemoveModernMenuPackageForAllUsers above.
+    RemoveModernMenuPackageForAllUsers;
     // Belt and braces for a shared/RDS machine: --remove-user-state above only ever reaches
     // the ONE original interactive user's hive. Every OTHER signed-in account's Run-key entry
     // (which --sync-user-shell never touched for them in the first place, since it also only

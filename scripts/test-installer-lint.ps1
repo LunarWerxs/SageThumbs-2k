@@ -151,10 +151,86 @@ function Test-NoSubjectWildcardCertRemoval([string]$Text) {
     return -not $Text.Contains('Subject -like', [StringComparison]::Ordinal)
 }
 function Test-ExactThumbprintCertRemoval([string]$Text) {
-    # The fix's own mechanism: a thumbprint recorded ONLY when the cert-trust step actually
-    # imported the certificate (see that [Run] entry's comment), read back at uninstall so only
-    # the exact certificate this installation introduced is ever removed.
-    return $Text.Contains('ModernMenuCertThumbprint', [StringComparison]::Ordinal)
+    # The old version of this check was satisfied by the WORD 'ModernMenuCertThumbprint'
+    # appearing anywhere in the file - a comment mentioning the property name alone would
+    # pass it. This now requires the [UninstallRun] section to actually (a) read the marker
+    # into a variable and (b) build the certificate path to remove from THAT SAME variable
+    # (thumbprint equality via path construction - Cert:\LocalMachine\TrustedPeople\<value>),
+    # not merely mention the property name in prose.
+    # Anchored to a LINE that is exactly "[UninstallRun]" (^, multiline) - the bare
+    # "(?s)\[UninstallRun\]" this used to be also matches the phrase inside prose comments
+    # (e.g. "see [UninstallRun] below"), which can capture from an unrelated earlier comment
+    # all the way to some later section and silently look at the wrong text.
+    $section = [regex]::Match($Text, '(?ms)^\[UninstallRun\]\r?\n(.*?)(?=\r?\n\[[A-Za-z]|\z)')
+    if (-not $section.Success) { return $false }
+    $block = $section.Value
+    $read = [regex]::Match($block,
+        "\`$(\w+)\s*=\s*\(Get-ItemProperty\s+-Path\s+'HKLM:\\Software\\SageThumbs2K'\s+-Name\s+ModernMenuCertThumbprint[^)]*\)\.ModernMenuCertThumbprint")
+    if (-not $read.Success) { return $false }
+    $varName = $read.Groups[1].Value
+    $removal = [regex]::Match($block, "Remove-Item\s+-Path\s+\('Cert:\\LocalMachine\\TrustedPeople\\'\s*\+\s*\`$$varName\)")
+    return $removal.Success
+}
+function Test-NoWildcardCertMatch([string]$Text) {
+    # F09's bug generalised: no certificate-removal command ANYWHERE in the file may match by
+    # a wildcard or a `-like` comparison against Subject (or against the TrustedPeople path
+    # itself) - the exact shape that deletes a developer's manual trust or another install's
+    # copy of the same self-signed certificate under a different key/thumbprint.
+    if ($Text.Contains('Subject -like', [StringComparison]::Ordinal)) { return $false }
+    if ([regex]::IsMatch($Text, '(?i)TrustedPeople[^\r\n]{0,80}-like')) { return $false }
+    if ([regex]::IsMatch($Text, "TrustedPeople\\'\s*\+[^\r\n]*'\*")) { return $false }
+    return $true
+}
+function Test-ModernMenuMigratesPreFixThumbprint([string]$Text) {
+    # F09 migration (review pass 2): everybody who upgraded from a build older than this fix
+    # already has the certificate trusted with no ModernMenuCertThumbprint marker recorded (the
+    # marker did not exist yet). Left alone, the "already trusted" branch would silently skip
+    # the import AND never write a marker, so uninstall could never remove a certificate this
+    # product genuinely introduced. The cert-trust [Run] step must recognise that case (already
+    # trusted, no marker, and this run is an upgrade) and record the marker there.
+    $registerBlock = [regex]::Match($Text,
+        "(?s)Set-ItemProperty -Path 'HKLM:\\Software\\SageThumbs2K' -Name ModernMenuInstallDir.*?Check: ModernMenuUsable")
+    if (-not $registerBlock.Success) { return $false }
+    $block = $registerBlock.Value
+    if (-not $block.Contains('ST2K_ISUPGRADE', [StringComparison]::Ordinal)) { return $false }
+    # The upgrade flag must be tested INSIDE the already-trusted branch (right after the
+    # Test-Path(...TrustedPeople...) that is true when the cert needs no import), not merely
+    # appear somewhere in the step.
+    return [regex]::IsMatch($block,
+        "Test-Path\s+\('Cert:\\LocalMachine\\TrustedPeople\\'\+\`$t\)\)\{[^}]*ST2K_ISUPGRADE")
+}
+function Test-ModernMenuRemovesRotatedThumbprint([string]$Text) {
+    # Certificate rotation: make-msix.ps1 mints a fresh self-signed cert on any signing machine
+    # that lacks the previous one, so two releases can carry different thumbprints under the
+    # same subject. Importing a new thumbprint must remove the PREVIOUSLY recorded one (which
+    # this installer itself introduced) before recording the new marker, or the old certificate
+    # stays trusted forever with nothing left to ever remove it.
+    $registerBlock = [regex]::Match($Text,
+        "(?s)Set-ItemProperty -Path 'HKLM:\\Software\\SageThumbs2K' -Name ModernMenuInstallDir.*?Check: ModernMenuUsable")
+    if (-not $registerBlock.Success) { return $false }
+    $block = $registerBlock.Value
+    if (-not [regex]::IsMatch($block, '\$m\s*-ne\s*\$t')) { return $false }
+    $removeOld = [regex]::Match($block, "Remove-Item\s+-Path\s+\('Cert:\\LocalMachine\\TrustedPeople\\'\+\`$m\)")
+    if (-not $removeOld.Success) { return $false }
+    $importIdx = $block.IndexOf('Import-Certificate', [StringComparison]::Ordinal)
+    return ($importIdx -gt 0) -and ($removeOld.Index -lt $importIdx)
+}
+function Test-PackageRemovalIsSynchronousAllUsers([string]$Text) {
+    # F08 uninstall fix (review pass 2): package removal must no longer go through the
+    # fire-and-forget RunAsOriginalUser scheduled-task helper (asynchronous, and tied to
+    # whichever user happens to be signed in) - it must be a SYNCHRONOUS, ELEVATED, -AllUsers
+    # removal instead, so it works regardless of who is logged on, and its outcome is known
+    # before uninstall proceeds.
+    if ($Text -match 'RunAsOriginalUser\([^;]*Remove-AppxPackage') { return $false }
+    $proc = [regex]::Match($Text, '(?s)procedure RemoveModernMenuPackageForAllUsers;.*?\r?\nend;')
+    if (-not $proc.Success) { return $false }
+    $body = $proc.Value
+    if (-not [regex]::IsMatch($body, 'Get-AppxPackage\s+-AllUsers[^"]*Remove-AppxPackage\s+-AllUsers')) { return $false }
+    if (-not $body.Contains('ewWaitUntilTerminated', [StringComparison]::Ordinal)) { return $false }
+    if (-not $body.Contains('Log(', [StringComparison]::Ordinal)) { return $false }
+    # And it must actually be CALLED (from CurUninstallStepChanged), not merely declared.
+    $callCount = ([regex]::Matches($Text, 'RemoveModernMenuPackageForAllUsers')).Count
+    return $callCount -ge 2
 }
 function Assert-ModernMenuUserContextContract([string]$Text) {
     if (-not (Test-ModernMenuRegistersAsOriginalUser $Text)) {
@@ -165,9 +241,29 @@ function Assert-ModernMenuUserContextContract([string]$Text) {
         throw 'F09: certificate cleanup must never match by subject wildcard - it can ' +
             'delete a developer''s or another install''s trust in the same-named certificate'
     }
+    if (-not (Test-NoWildcardCertMatch $Text)) {
+        throw 'F09: no certificate-removal command anywhere may match by a wildcard or ' +
+            '-like comparison against Subject or the TrustedPeople path'
+    }
     if (-not (Test-ExactThumbprintCertRemoval $Text)) {
-        throw 'F09: certificate cleanup must remove only the exact thumbprint this ' +
-            'installer introduced (no ModernMenuCertThumbprint provenance tracking found)'
+        throw 'F09: [UninstallRun] must read ModernMenuCertThumbprint into a variable and ' +
+            'remove the certificate at that exact thumbprint path - a mention of the ' +
+            'property name alone (e.g. in a comment) is not enough'
+    }
+    if (-not (Test-ModernMenuMigratesPreFixThumbprint $Text)) {
+        throw 'F09 migration: an upgrade whose certificate is already trusted but has no ' +
+            'recorded marker must record this thumbprint as ours (ST2K_ISUPGRADE gate ' +
+            'inside the already-trusted branch), or uninstall can never remove it'
+    }
+    if (-not (Test-ModernMenuRemovesRotatedThumbprint $Text)) {
+        throw 'F09 rotation: importing a certificate whose thumbprint differs from the ' +
+            'recorded marker must remove the previously recorded thumbprint from ' +
+            'TrustedPeople before recording the new one'
+    }
+    if (-not (Test-PackageRemovalIsSynchronousAllUsers $Text)) {
+        throw 'F08 uninstall: package removal must be a synchronous, elevated, -AllUsers ' +
+            'Get-AppxPackage | Remove-AppxPackage call (RemoveModernMenuPackageForAllUsers), ' +
+            'not the RunAsOriginalUser scheduled-task helper'
     }
 }
 
@@ -246,6 +342,87 @@ try {
     if (-not (Test-ModernMenuRegistersAsOriginalUser $noThumbprintTracking)) { throw 'F08 runasoriginaluser check should still pass here' }
     if (-not (Test-NoSubjectWildcardCertRemoval $noThumbprintTracking)) { throw 'F09 subject-wildcard check should still pass here' }
     Write-Host '  PASS  F09 teeth proof: missing exact-thumbprint tracking is caught' -ForegroundColor Green
+    $script:passed++
+
+    # --- F09 migration (review pass 2): an upgrade whose certificate is already trusted but
+    # carries no marker yet must record it. Mutation drops the ST2K_ISUPGRADE gate from the
+    # already-trusted branch's condition, reverting to "never write a marker for an
+    # already-trusted cert" - the exact shape that leaks a pre-fix installation's certificate
+    # forever, undetectable by any of the OTHER checks above.
+    $noMigration = $source.Replace(
+        "if((-not `$m) -and (`$env:ST2K_ISUPGRADE -eq '1')){{Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value `$t}}else{{",
+        "if((-not `$m)){{Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value `$t}}else{{"
+    )
+    if ($noMigration -ceq $source) { throw 'test mutation did not remove the ST2K_ISUPGRADE migration gate' }
+    if (Test-ModernMenuMigratesPreFixThumbprint $noMigration) {
+        throw 'expected F09 migration teeth proof to fail: ST2K_ISUPGRADE gate is gone'
+    }
+    if (-not (Test-ModernMenuRegistersAsOriginalUser $noMigration)) { throw 'F08 runasoriginaluser check should still pass here' }
+    if (-not (Test-NoSubjectWildcardCertRemoval $noMigration)) { throw 'F09 subject-wildcard check should still pass here' }
+    if (-not (Test-NoWildcardCertMatch $noMigration)) { throw 'F09 no-wildcard check should still pass here' }
+    if (-not (Test-ExactThumbprintCertRemoval $noMigration)) { throw 'F09 exact-thumbprint removal check should still pass here' }
+    if (-not (Test-ModernMenuRemovesRotatedThumbprint $noMigration)) { throw 'F09 rotation check should still pass here' }
+    if (-not (Test-PackageRemovalIsSynchronousAllUsers $noMigration)) { throw 'F08 AllUsers-removal check should still pass here' }
+    Write-Host '  PASS  F09 migration teeth proof: missing upgrade-gated marker recording is caught' -ForegroundColor Green
+    $script:passed++
+
+    # --- F09 rotation: a new signing-machine thumbprint must remove the PREVIOUSLY recorded
+    # certificate before importing the new one. Mutation drops that whole cleanup conditional,
+    # reverting to "just import" - the shape that leaves an orphaned rotated certificate
+    # trusted forever with no marker left pointing at it.
+    $noRotationCleanup = $source.Replace(
+        "if(`$m -and (`$m -ne `$t)){{Remove-Item -Path ('Cert:\LocalMachine\TrustedPeople\'+`$m) -Force -ErrorAction SilentlyContinue}; Import-Certificate",
+        'Import-Certificate'
+    )
+    if ($noRotationCleanup -ceq $source) { throw 'test mutation did not remove the rotation cleanup conditional' }
+    if (Test-ModernMenuRemovesRotatedThumbprint $noRotationCleanup) {
+        throw 'expected F09 rotation teeth proof to fail: old-thumbprint cleanup is gone'
+    }
+    if (-not (Test-ModernMenuRegistersAsOriginalUser $noRotationCleanup)) { throw 'F08 runasoriginaluser check should still pass here' }
+    if (-not (Test-NoSubjectWildcardCertRemoval $noRotationCleanup)) { throw 'F09 subject-wildcard check should still pass here' }
+    if (-not (Test-NoWildcardCertMatch $noRotationCleanup)) { throw 'F09 no-wildcard check should still pass here' }
+    if (-not (Test-ExactThumbprintCertRemoval $noRotationCleanup)) { throw 'F09 exact-thumbprint removal check should still pass here' }
+    if (-not (Test-ModernMenuMigratesPreFixThumbprint $noRotationCleanup)) { throw 'F09 migration check should still pass here' }
+    if (-not (Test-PackageRemovalIsSynchronousAllUsers $noRotationCleanup)) { throw 'F08 AllUsers-removal check should still pass here' }
+    Write-Host '  PASS  F09 rotation teeth proof: missing orphaned-certificate cleanup is caught' -ForegroundColor Green
+    $script:passed++
+
+    # --- F08 uninstall (review pass 2): package removal must be synchronous, elevated and
+    # -AllUsers, not the old fire-and-forget RunAsOriginalUser scheduled-task helper. Mutation
+    # reverts the call site back to that exact pre-fix shape.
+    $noAllUsersRemoval = $source.Replace(
+        "    RemoveModernMenuPackageForAllUsers;",
+        "    RunAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), " +
+            "'-NoProfile -Command Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage -ErrorAction SilentlyContinue');"
+    )
+    if ($noAllUsersRemoval -ceq $source) { throw 'test mutation did not revert the package-removal call site' }
+    if (Test-PackageRemovalIsSynchronousAllUsers $noAllUsersRemoval) {
+        throw 'expected F08 AllUsers-removal teeth proof to fail: call site reverted to RunAsOriginalUser'
+    }
+    if (-not (Test-ModernMenuRegistersAsOriginalUser $noAllUsersRemoval)) { throw 'F08 runasoriginaluser check should still pass here' }
+    if (-not (Test-NoSubjectWildcardCertRemoval $noAllUsersRemoval)) { throw 'F09 subject-wildcard check should still pass here' }
+    if (-not (Test-NoWildcardCertMatch $noAllUsersRemoval)) { throw 'F09 no-wildcard check should still pass here' }
+    if (-not (Test-ExactThumbprintCertRemoval $noAllUsersRemoval)) { throw 'F09 exact-thumbprint removal check should still pass here' }
+    if (-not (Test-ModernMenuMigratesPreFixThumbprint $noAllUsersRemoval)) { throw 'F09 migration check should still pass here' }
+    if (-not (Test-ModernMenuRemovesRotatedThumbprint $noAllUsersRemoval)) { throw 'F09 rotation check should still pass here' }
+    Write-Host '  PASS  F08 AllUsers-removal teeth proof: reverted RunAsOriginalUser call site is caught' -ForegroundColor Green
+    $script:passed++
+
+    # --- Baseline proof: every assertion above (old and new) must fail against main's
+    # pre-audit installer.iss, which has none of F08/F09 at all, and pass against ours. This
+    # is the requested "prove it against main" check, run against the real git history rather
+    # than a hand-written mutation.
+    $mainSource = & git show main:scripts/packaging/installer.iss 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $mainSource) {
+        throw 'could not read scripts/packaging/installer.iss from main for the baseline proof'
+    }
+    $mainSource = $mainSource -join "`r`n"
+    $mainFailed = $false
+    try { Assert-ModernMenuUserContextContract $mainSource } catch { $mainFailed = $true }
+    if (-not $mainFailed) {
+        throw 'expected the full F08/F09 contract to fail against main (pre-audit) installer.iss'
+    }
+    Write-Host '  PASS  F08/F09 contract fails against main (pre-audit) installer.iss' -ForegroundColor Green
     $script:passed++
 
     Assert-LintPasses 'real installer exact cleanup allowlist' {

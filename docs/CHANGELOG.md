@@ -451,10 +451,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **The modern Windows 11 context menu now registers for the account actually using the
   PC, even when a different administrator's credentials were used to approve the install.**
   Installing as a standard user and supplying another admin's password at the prompt used
-  to register the modern menu for that admin's own account instead of yours, and uninstalling
-  had the same mismatch in reverse. Both now run in the right account. Uninstalling also no
-  longer removes a certificate someone else trusted just because it shares the same name;
-  it removes only the exact one this installer added.
+  to register the modern menu for that admin's own account instead of yours. Uninstalling now
+  removes it regardless of which account is signed in, instead of only for whoever happened
+  to answer the prompt. Uninstalling also no longer removes a certificate someone else
+  trusted just because it shares the same name; it removes only the exact one this installer
+  added, and an upgrade from an older version now correctly picks up that it was the one that
+  trusted it in the first place.
 
 ## 2.5.0
 
