@@ -139,3 +139,7 @@ Assert-Passes 'regression.ps1 computes its final verdict through Get-GateQualifi
 }
 
 Write-Host "Regression gate-classification tests passed: $script:passed" -ForegroundColor Green
+# The stub-child cases above deliberately leave $LASTEXITCODE at 1 and 2. CI runs this under
+# "shell: pwsh", which appends "exit $LASTEXITCODE", so a green run must end with an explicit 0
+# or the step fails on the last stub's code (the exact trap CLAUDE.md 6.1 warns about).
+exit 0

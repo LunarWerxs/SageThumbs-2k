@@ -37,7 +37,15 @@ function Write-ReleaseStageOutcome {
         [Parameter(Mandatory)][string]$Stage,
         [Parameter(Mandatory)][string]$Reason
     )
-    $color = if ($Outcome -eq 'PASSED') { 'Green' } else { 'Yellow' }
+    # Three colours, not two: a non-fatal FAILURE (winget did not complete, SourceForge did not
+    # flip) must not blend into routine yellow skips and overrides in console scrollback. The
+    # first cut of this helper mapped everything but PASSED to Yellow and lost the red the
+    # winget failure used to print in (caught in review, 2026-09-05 audit, F22).
+    $color = switch ($Outcome) {
+        'PASSED' { 'Green' }
+        'FAILED (non-fatal)' { 'Red' }
+        default { 'Yellow' }
+    }
     Write-Host "      ${Outcome}: ${Stage}: ${Reason}" -ForegroundColor $color
 }
 
