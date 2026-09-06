@@ -21,6 +21,26 @@ param([switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
+
+# Standardised stage-outcome line (2026-09-05 audit, finding F22b): before this, a stage that
+# skipped for a good reason ("scanner absent") and one that ran clean printed in whatever prose
+# that call site happened to use, so scanning the run's own console output (its only record -
+# this script writes no separate run log) could not tell the two apart at a glance. Every
+# stage that can do something other than a plain pass/throw goes through this so the outcome
+# word is always one of: PASSED, FAILED (non-fatal), SKIPPED (optional), OVERRIDDEN. A stage
+# whose only outcomes are "ran fine" or "threw and aborted the release" needs no call here -
+# the throw itself is already an unambiguous FAILED.
+function Write-ReleaseStageOutcome {
+    param(
+        [Parameter(Mandatory)][ValidateSet('PASSED', 'FAILED (non-fatal)', 'SKIPPED (optional)', 'OVERRIDDEN')]
+        [string]$Outcome,
+        [Parameter(Mandatory)][string]$Stage,
+        [Parameter(Mandatory)][string]$Reason
+    )
+    $color = if ($Outcome -eq 'PASSED') { 'Green' } else { 'Yellow' }
+    Write-Host "      ${Outcome}: ${Stage}: ${Reason}" -ForegroundColor $color
+}
+
 Push-Location $root
 try {
     $ver = ([regex]::Match((Get-Content "$root\Cargo.toml" -Raw), '(?m)^\s*version\s*=\s*"([^"]+)"')).Groups[1].Value
@@ -206,7 +226,10 @@ try {
             if ($LASTEXITCODE) { throw "$($artifact.Architecture) installer build failed" }
         }
     } else {
-        Write-Host "[4/6] -SkipBuild: require exact full-build provenance for $($releaseArtifacts.Architecture -join ' + ')" -ForegroundColor Yellow
+        Write-Host "[4/6] -SkipBuild" -ForegroundColor Yellow
+        Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'build installers' -Reason (
+            "-SkipBuild flag: requires exact full-build provenance for $($releaseArtifacts.Architecture -join ' + ') from a prior build, re-hashed below"
+        )
     }
     foreach ($artifact in $releaseArtifacts) {
         $artifact.Setup = Get-Item -LiteralPath $artifact.SetupPath -ErrorAction Stop
@@ -264,18 +287,23 @@ try {
             # already built. Same rule as a missing scanner above: tooling absence must
             # not block a release, only a real detection. A real detection still exits 1.
             if ($LASTEXITCODE -eq 75) {
-                Write-Host "      VT analysis did not finish in time for $($artifact.Setup.Name)." -ForegroundColor Yellow
-                Write-Host "      NOT blocking. Re-check the permalink above before announcing:" -ForegroundColor Yellow
-                Write-Host "        python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate" -ForegroundColor Yellow
+                Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'VirusTotal' -Reason (
+                    "analysis for $($artifact.Setup.Name) did not finish in time - not blocking; " +
+                    "re-check the permalink above before announcing (python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate)"
+                )
             } elseif ($LASTEXITCODE) {
                 throw "VirusTotal gate FAILED for $($artifact.Setup.Name) - NOT publishing. Review the permalink above."
             }
         }
     } else {
-        Write-Host "      SKIPPED - push_to_vt.py, .env, or python missing (both are gitignored;" -ForegroundColor Yellow
-        Write-Host "      recreate them after a fresh clone). Scan manually before announcing:" -ForegroundColor Yellow
+        # SKIPPED, never silent: this is exactly the line finding F22 called out as not
+        # distinguishable from a stage that ran. push_to_vt.py and .env are both gitignored, so
+        # a fresh clone never has them until recreated.
+        Write-ReleaseStageOutcome -Outcome 'SKIPPED (optional)' -Stage 'VirusTotal' -Reason (
+            'push_to_vt.py, .env, or python missing (both are gitignored; recreate them after a fresh clone)'
+        )
         foreach ($artifact in $releaseArtifacts) {
-            Write-Host "        python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate" -ForegroundColor Yellow
+            Write-Host "        scan manually: python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate" -ForegroundColor Yellow
         }
     }
 
@@ -288,8 +316,9 @@ try {
     Write-Host "[4c/6] local Defender scan (informational)" -ForegroundColor Green
     & (Join-Path $PSScriptRoot 'av-defender-check.ps1') -Path ($releaseArtifacts | ForEach-Object { $_.Setup.FullName })
     if ($LASTEXITCODE) {
-        Write-Host "      Real Defender named a threat - the submission above IS warranted." -ForegroundColor Yellow
-        Write-Host "      NOT blocking the release (the VT gate above is the blocking one)." -ForegroundColor Yellow
+        Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'Defender scan' -Reason (
+            'real Defender named a threat (the submission above IS warranted) - not blocking; the VirusTotal gate above is the blocking one'
+        )
     }
     $global:LASTEXITCODE = 0
 
@@ -307,7 +336,9 @@ try {
         & (Join-Path $PSScriptRoot 'test-self-update.ps1') -Setup $x64Artifact.Setup.FullName
         if ($LASTEXITCODE) { throw 'Self-update smoke FAILED - NOT publishing.' }
     } else {
-        Write-Host "      SKIPPED - no x64 artifact in this run (ARM64-only builds can't upgrade an x64 host)." -ForegroundColor Yellow
+        Write-ReleaseStageOutcome -Outcome 'SKIPPED (optional)' -Stage 'self-update smoke' -Reason (
+            "no x64 artifact in this run (ARM64-only builds can't upgrade an x64 host)"
+        )
     }
 
     # The build must not move HEAD or rewrite tracked inputs after we captured + validated $sha.
@@ -480,8 +511,9 @@ try {
     Write-Host "[6/6] SourceForge default download" -ForegroundColor Green
     & pwsh -NoProfile -File "$root\scripts\set-sourceforge-default.ps1" -Version $ver
     if ($LASTEXITCODE) {
-        Write-Host "  NOT set - the green Download button on SourceForge may point at the wrong" -ForegroundColor Yellow
-        Write-Host "  installer. Re-run after uploading:  pwsh scripts\set-sourceforge-default.ps1" -ForegroundColor Yellow
+        Write-ReleaseStageOutcome -Outcome 'FAILED (non-fatal)' -Stage 'SourceForge default download' -Reason (
+            'the green Download button on SourceForge may point at the wrong installer - re-run: pwsh scripts\set-sourceforge-default.ps1'
+        )
     }
 
     Write-Host "[6/6] DONE - $tag released." -ForegroundColor Cyan
@@ -509,8 +541,9 @@ try {
     Write-Host "[winget] submitting $ver to winget-pkgs..." -ForegroundColor DarkGray
     & (Join-Path $PSScriptRoot 'winget-submit.ps1') -Version $ver
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[winget] submission did NOT complete - winget users stay on the previous version." -ForegroundColor Red
-        Write-Host "  retry with: pwsh scripts\winget-submit.ps1 -Version $ver" -ForegroundColor Yellow
+        Write-ReleaseStageOutcome -Outcome 'FAILED (non-fatal)' -Stage 'winget submission' -Reason (
+            "winget users stay on the previous version - retry: pwsh scripts\winget-submit.ps1 -Version $ver"
+        )
     }
 }
 finally { Pop-Location }
