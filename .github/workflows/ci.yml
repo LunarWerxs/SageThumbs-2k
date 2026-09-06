@@ -455,6 +455,16 @@ jobs:
       - name: ImageMagick dependency freshness parser tests
         shell: pwsh
         run: ./scripts/test-magick-dependency-freshness.ps1
+      # Offline: no build, no st2k.exe, no corpus. Proves a required content gate that could
+      # not run (exit 2, missing prerequisites) fails regression.ps1 by default instead of
+      # reading as a pass, and that a stale confirmation reading is never reused as a fresh
+      # one in check-decode-speed.ps1 (finding F37, 2026-09-05 audit).
+      - name: regression gate-classification unit tests
+        shell: pwsh
+        run: ./scripts/test-regression-lib.ps1
+      - name: decode-speed confirmation-logic unit tests
+        shell: pwsh
+        run: ./scripts/test-decode-speed-lib.ps1
       - name: vendored exr provenance and local-resolution check
         shell: pwsh
         run: ./scripts/check-vendored-exr.ps1
