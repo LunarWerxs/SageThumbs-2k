@@ -273,7 +273,20 @@ reputation is earned per publisher over downloads, and the More info / Run anywa
 Leave the two dated 2026-08-31 measurements in place as history. Do NOT make that README
 change before the signed installer exists: the README is read by people downloading the
 current release, and until 3.0 is out that release is unsigned. Commit those four files on
-`main`. `release.ps1` reads
+`main`.
+
+**The website is a separate repo and does not update itself.** After the release publishes,
+in the site checkout: run the app repo's `gen-site.mjs` against the signed 3.0 `st2k.exe`
+with `--site` pointed at the site's `index.html`, which regenerates the version pill and the
+structured data; then by hand bump the `current_version` and "Last updated" lines in
+`pricing.md` and `llms-full.txt`, which that generator does not touch. Remove the
+"installer is not code-signed, click More info then Run anyway" answer from the site FAQ and
+the three matching unsigned/SmartScreen claims in `llms-full.txt`, the same edit as the
+README's antivirus answer and subject to the same rule: only once the signed installer is
+actually published. Finally, drop the "arrives in version 3.0, released shortly" clauses added
+to the licensing copy on 2026-09-06: they exist because the site sells a licence whose
+redemption screen ships in 3.0, so the moment 3.0 is out they become wrong in the other
+direction. `release.ps1` reads
 the version from `Cargo.toml`, refuses an existing tag, and runs the gate. After it, the
 `winget-submit.ps1` step is part of `release.ps1` and is idempotent. The proof that the
 pipeline only wants the names was run without a build or a secret on 2026-09-06: with the
