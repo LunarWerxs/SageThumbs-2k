@@ -1,14 +1,33 @@
 # Complexity burndown
 
+> **STATUS: the queue is CLEARED (tranche 20, 2026-08-28). Nothing here is outstanding
+> work.** Every row below is checked off and the accepting rescan reported 0
+> cognitive/cyclomatic gating errors repo-wide (see "Correction" and tranche 20). This file
+> is kept for the standing lessons in "Threshold discipline" and the wndproc note, which is
+> why it has not been assimilated and deleted the way a finished item normally is. Do not
+> read the unchecked-looking prose as a backlog; read the Queue table, which is all `|x|`.
+>
+> One genuine follow-up remains, and it is a verification debt rather than a refactor: the
+> wndproc splits (tranches 3-5 and 20) are proven only by build, tests and clippy, none of
+> which can drive real window messages through the OS message loop. A human click-through of
+> the preview window is still owed before the next release.
+
 What this is: a ranked queue of functions over the cognitive/cyclomatic complexity gates,
 for gradual reduction via extract-helper refactors. No behavior change intended anywhere
 in this list.
 
 Scan source: Odin's portable arkitect roster, 2026-08-28. This repo's own `.arkitect`
 config does not run cognitive/cyclomatic checks, so `bun run arkitect:counts` (or
-equivalent) reports 0 for this category. That mismatch between the portable scan and the
-repo's own gate is a standing risk flag: the local gate will not catch new complexity
-regressions in this dimension until it grows a check of its own.
+equivalent) reports 0 for this category.
+
+**That mismatch was a standing risk flag until 2026-09-05, and it is now half closed.**
+`scripts/check-complexity.ps1` (audit finding F22) is the tracked half of the gate: it wraps
+odin's probe with distinct exit codes for missing-tool / pass / fail, plus a `-ProveItFails`
+self-test, so a regression in this dimension is catchable locally and by `release.ps1`.
+The half that is still open is CI: the script needs odin's `probe.py`, which lives outside
+this repository in the shared `odin` clone, so a GitHub runner structurally cannot run it.
+Until that changes, complexity regressions are caught only on a machine that has odin, and
+never by a pull request. Treat a green CI run as saying nothing about this dimension.
 
 Method: extract coherent, well-named helper functions out of each oversized function. No
 behavior change. Run `cargo test` (scoped to the touched module when the full suite is
