@@ -42,6 +42,11 @@ mod dialogs;
 mod input;
 mod loupe;
 mod paint;
+// Layer 2 of the accessibility work: the UI Automation provider. Deliberately NOT
+// glob-imported into this hub like its siblings - it is a self-contained boundary with a
+// handful of entry points, and spelling `uia::` at each call site says which side of that
+// boundary you are on.
+mod uia;
 
 // Parent-hub imports: the children are glob-imported PRIVATELY so this file and every
 // sibling still see one flat namespace, exactly as when all of this lived in one file.

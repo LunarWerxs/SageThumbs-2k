@@ -15,6 +15,9 @@ use std::cell::Cell;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_DOWN, VK_LEFT, VK_MENU, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
 };
+// The one UI Automation name this file needs: the WM_GETOBJECT object id that means "a
+// client wants your UIA provider". Everything else about that layer lives in `uia`.
+use windows::Win32::UI::Accessibility::UiaRootObjectId;
 
 thread_local! {
     /// The Move tool's current/most-recently-finished drag: `(shape index, total dx,
@@ -154,29 +157,73 @@ pub(super) extern "system" fn shot_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-        // The Shot state is attached only after CreateWindowExW returns; any message
-        // during creation has no state yet — pass it through so the deref'ing arms
-        // always see a valid pointer. (WM_DESTROY guards its own null.)
-        if shot_ptr(hwnd).is_null() && msg != WM_DESTROY {
-            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        // Layer 2 (UI Automation) brackets the dispatch instead of reaching into the handlers.
+        //
+        // The snapshot is what a screen reader has to be TOLD about (where focus is, which
+        // panels are open) rather than asked for. Taking it around the whole dispatch means
+        // mouse, keyboard and automation all report through one seam instead of every handler
+        // that moves focus having to remember to announce it. It costs nothing while no
+        // assistive technology is listening: `uia::watch_before` checks that first, and ignores
+        // every message that could not change the answer anyway.
+        //
+        // Deliberately OUTSIDE `uia`'s borrow guard (see `shot_dispatch`): raising an event can
+        // make UIA turn straight round and ask this window for the new element's properties on
+        // this very thread, and nothing is holding `Shot` at this point, so that question must
+        // be answerable rather than refused as re-entrant.
+        let before = uia::watch_before(hwnd, msg);
+        let r = shot_dispatch(hwnd, msg, wparam, lparam);
+        uia::watch_after(hwnd, before);
+        r
+    }
+}
+
+/// The window procedure proper. Split out of [`shot_wndproc`] so the accessibility seam above
+/// wraps every route through it, including the early returns.
+unsafe fn shot_dispatch(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // UI Automation asks for the provider with WM_GETOBJECT, and it is answered AHEAD of the
+    // null-state guard below on purpose: the provider is addressed by HWND alone and every
+    // read it performs already copes with the state not being attached, so there is no reason
+    // to make an assistive technology re-ask later just because the query arrived early.
+    //
+    // Also ahead of the borrow guard, because handing UIA the root can make it ask for
+    // properties re-entrantly and this arm borrows nothing.
+    if msg == WM_GETOBJECT && lparam.0 as i32 == UiaRootObjectId {
+        return uia::on_get_object(hwnd, wparam, lparam);
+    }
+    // The Shot state is attached only after CreateWindowExW returns; any message
+    // during creation has no state yet, so pass it through and let the deref'ing arms
+    // always see a valid pointer. (WM_DESTROY guards its own null.)
+    if shot_ptr(hwnd).is_null() && msg != WM_DESTROY {
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    // Everything below this line borrows `Shot`, and this counter is how `uia` knows it.
+    // A modal dialog opened from one of these arms (the colour picker, the font picker, the
+    // Save dialog) pumps messages while the arm that opened it still holds `&mut Shot`, so a
+    // UIA message arriving during that pump sees a depth above one and declines rather than
+    // handing out a second `&mut` to the same state.
+    let _borrow = uia::DispatchGuard::enter();
+    match msg {
+        WM_ERASEBKGND => LRESULT(1), // the snapshot covers every pixel
+        WM_LBUTTONDOWN => on_lbuttondown(hwnd, lparam),
+        WM_MOUSEMOVE => on_mousemove(hwnd, lparam),
+        WM_LBUTTONUP => on_lbuttonup(hwnd, lparam),
+        WM_CHAR => on_char(hwnd, wparam),
+        WM_KEYDOWN => on_keydown(hwnd, wparam, lparam),
+        WM_KEYUP => on_keyup(hwnd, wparam),
+        WM_TIMER => on_timer(hwnd, wparam),
+        WM_SETCURSOR => on_setcursor(hwnd, wparam, lparam),
+        WM_PAINT => {
+            shot_paint(hwnd);
+            LRESULT(0)
         }
-        match msg {
-            WM_ERASEBKGND => LRESULT(1), // the snapshot covers every pixel
-            WM_LBUTTONDOWN => on_lbuttondown(hwnd, lparam),
-            WM_MOUSEMOVE => on_mousemove(hwnd, lparam),
-            WM_LBUTTONUP => on_lbuttonup(hwnd, lparam),
-            WM_CHAR => on_char(hwnd, wparam),
-            WM_KEYDOWN => on_keydown(hwnd, wparam, lparam),
-            WM_KEYUP => on_keyup(hwnd, wparam),
-            WM_TIMER => on_timer(hwnd, wparam),
-            WM_SETCURSOR => on_setcursor(hwnd, wparam, lparam),
-            WM_PAINT => {
-                shot_paint(hwnd);
-                LRESULT(0)
-            }
-            WM_DESTROY => on_destroy(hwnd),
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-        }
+        WM_DESTROY => on_destroy(hwnd),
+        // The three private messages the UI Automation provider marshals its work through.
+        // Nothing outside this process can produce them: they are plain WM_APP ids on a
+        // window class only this module registers.
+        uia::WM_UIA_JOB => uia::run_job(hwnd, lparam),
+        uia::WM_UIA_INVOKE => uia::run_invoke(hwnd, wparam, lparam),
+        uia::WM_UIA_FOCUS => uia::run_set_focus(hwnd, wparam, lparam),
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -550,7 +597,11 @@ unsafe fn update_window_hint(hwnd: HWND, s: &mut Shot, p: POINT) {
 /// and WM_SETCURSOR (`is_over_toolbar_ui`) both ask for the layout on essentially every
 /// tick — Windows sends both messages per mouse move — so until now each rebuilt the
 /// same 24-button layout from scratch a second time.
-unsafe fn toolbar_layout_cached(s: &mut Shot, sel: RECT, dpi: i32) -> Vec<(Button, RECT)> {
+pub(super) unsafe fn toolbar_layout_cached(
+    s: &mut Shot,
+    sel: RECT,
+    dpi: i32,
+) -> Vec<(Button, RECT)> {
     let key = (sel.left, sel.top, sel.right, sel.bottom, dpi);
     if s.tb_cache_key != Some(key) {
         s.tb_cache = toolbar::layout(sel, s.vw, s.vh, dpi);
@@ -820,8 +871,14 @@ unsafe fn is_over_toolbar_ui(s: &mut Shot, p: POINT) -> bool {
     false
 }
 
-/// `WM_DESTROY`: free the boxed `Shot` and its GDI objects, then quit the message loop.
+/// `WM_DESTROY`: retire the automation providers, free the boxed `Shot` and its GDI objects,
+/// then quit the message loop.
 unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
+    // FIRST, before the box below is freed. An assistive technology can still be holding a
+    // provider object for this window, and every one of those objects answers by reaching for
+    // the `Shot` that is about to stop existing. See `uia::on_destroy` for why this is a
+    // correctness requirement and not a tidy-up.
+    uia::on_destroy(hwnd);
     let ptr = shot_ptr(hwnd);
     if !ptr.is_null() {
         let s = Box::from_raw(ptr);
@@ -1068,7 +1125,7 @@ fn is_focus_key(vk: u16) -> bool {
 /// The laid-out colour-palette items, or `None` when the palette is not open. This is the
 /// same call the mouse hit-test makes, so a focus index can never address a cell the mouse
 /// could not have clicked.
-fn color_flyout_items(
+pub(super) fn color_flyout_items(
     s: &Shot,
     buttons: &[(Button, RECT)],
     dpi: i32,
@@ -1083,7 +1140,7 @@ fn color_flyout_items(
 /// The laid-out text-settings items, or `None` when that flyout is not open. Note the list
 /// LENGTHENS by one row per preset font while the dropdown is expanded, which is why nothing
 /// here may assume an index survives a state change.
-fn text_flyout_items(
+pub(super) fn text_flyout_items(
     s: &Shot,
     buttons: &[(Button, RECT)],
     dpi: i32,
@@ -1099,7 +1156,7 @@ fn text_flyout_items(
 
 /// Where `btn` sits on the bar, used to hand focus back to the button that OWNS a flyout
 /// once that flyout is gone.
-fn button_index(buttons: &[(Button, RECT)], btn: Button) -> Option<usize> {
+pub(super) fn button_index(buttons: &[(Button, RECT)], btn: Button) -> Option<usize> {
     buttons.iter().position(|(b, _)| *b == btn)
 }
 
@@ -1154,7 +1211,12 @@ fn focus_into_open_flyout(s: &mut Shot) {
 /// uses, INCLUDING its "true means the window is gone" contract: when it returns true this
 /// returns immediately and touches neither `s` nor `hwnd` again, because `DestroyWindow`
 /// delivers `WM_DESTROY` synchronously and that frees the boxed `Shot` out from under us.
-unsafe fn invoke_focus(hwnd: HWND, s: &mut Shot, buttons: &[(Button, RECT)], dpi: i32) -> bool {
+pub(super) unsafe fn invoke_focus(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+) -> bool {
     match s.focus {
         Some(FocusTarget::Toolbar(i)) => {
             let Some((btn, _)) = buttons.get(i).copied() else {
