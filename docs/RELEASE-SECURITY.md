@@ -275,6 +275,14 @@ change before the signed installer exists: the README is read by people download
 current release, and until 3.0 is out that release is unsigned. Commit those four files on
 `main`.
 
+**Verify the notes before you publish them.** A release note is a public promise, and these
+were largely written by agents. The Script Vault instrument `changelog_claim_verifier` pulls
+every mechanically checkable token out of the release section (keyboard shortcuts, CLI flags,
+verb names, file extensions) and asserts each one exists in the source, exiting non-zero with
+the offending list. Run it after renaming the heading and before `release.ps1`. It last ran
+clean on 2026-09-06 over 36 tokens. It cannot check prose, so it lowers the risk rather than
+removing it.
+
 **The website is a separate repo and does not update itself.** After the release publishes,
 in the site checkout: run the app repo's `gen-site.mjs` against the signed 3.0 `st2k.exe`
 with `--site` pointed at the site's `index.html`, which regenerates the version pill and the
